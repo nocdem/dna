@@ -402,11 +402,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   tooltip: 'Jump to date',
                   onPressed: () => _jumpToDate(messages.valueOrNull ?? []),
                 ),
-                // Send CPUNK button
+                // Send tokens button
                 IconButton(
                   icon: const FaIcon(FontAwesomeIcons.dollarSign),
-                  tooltip: 'Send CPUNK',
-                  onPressed: () => _showSendCpunk(context, contact),
+                  tooltip: 'Send Tokens',
+                  onPressed: () => _showSendTokens(context, contact),
                 ),
                 // Check offline messages button
                 IconButton(
@@ -1156,7 +1156,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Note: setState not needed - listener handles _hasText updates
   }
 
-  void _showSendCpunk(BuildContext context, Contact contact) {
+  void _showSendTokens(BuildContext context, Contact contact) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -2298,7 +2298,61 @@ class _MessageBubble extends StatelessWidget {
   }
 }
 
-/// Simplified send sheet for CPUNK transfers from chat
+/// Token entry for the send sheet dropdown
+class _TokenOption {
+  final String token;
+  final String network;
+  final String chain;
+  final String displayName;
+  final String profileField;
+
+  const _TokenOption({
+    required this.token,
+    required this.network,
+    required this.chain,
+    required this.displayName,
+    required this.profileField,
+  });
+
+  static const List<_TokenOption> all = [
+    _TokenOption(token: 'CELL', network: 'Cellframe', chain: 'cellframe', displayName: 'CELL (Cellframe)', profileField: 'backbone'),
+    _TokenOption(token: 'CPUNK', network: 'Cellframe', chain: 'cellframe', displayName: 'CPUNK (Cellframe)', profileField: 'backbone'),
+    _TokenOption(token: 'USDC', network: 'Cellframe', chain: 'cellframe', displayName: 'USDC (Cellframe)', profileField: 'backbone'),
+    _TokenOption(token: 'ETH', network: 'Ethereum', chain: 'ethereum', displayName: 'ETH (Ethereum)', profileField: 'eth'),
+    _TokenOption(token: 'USDT', network: 'Ethereum', chain: 'ethereum', displayName: 'USDT (Ethereum)', profileField: 'eth'),
+    _TokenOption(token: 'USDC', network: 'Ethereum', chain: 'ethereum', displayName: 'USDC (Ethereum)', profileField: 'eth'),
+    _TokenOption(token: 'SOL', network: 'Solana', chain: 'solana', displayName: 'SOL (Solana)', profileField: 'sol'),
+    _TokenOption(token: 'USDT', network: 'Solana', chain: 'solana', displayName: 'USDT (Solana)', profileField: 'sol'),
+    _TokenOption(token: 'USDC', network: 'Solana', chain: 'solana', displayName: 'USDC (Solana)', profileField: 'sol'),
+    _TokenOption(token: 'TRX', network: 'Tron', chain: 'tron', displayName: 'TRX (TRON)', profileField: 'trx'),
+    _TokenOption(token: 'USDT', network: 'Tron', chain: 'tron', displayName: 'USDT (TRON)', profileField: 'trx'),
+    _TokenOption(token: 'USDC', network: 'Tron', chain: 'tron', displayName: 'USDC (TRON)', profileField: 'trx'),
+  ];
+
+  static List<_TokenOption> forProfile(UserProfile profile) {
+    return all.where((opt) {
+      switch (opt.profileField) {
+        case 'backbone': return profile.backbone.isNotEmpty;
+        case 'eth': return profile.eth.isNotEmpty;
+        case 'sol': return profile.sol.isNotEmpty;
+        case 'trx': return profile.trx.isNotEmpty;
+        default: return false;
+      }
+    }).toList();
+  }
+
+  String getAddress(UserProfile profile) {
+    switch (profileField) {
+      case 'backbone': return profile.backbone;
+      case 'eth': return profile.eth;
+      case 'sol': return profile.sol;
+      case 'trx': return profile.trx;
+      default: return '';
+    }
+  }
+}
+
+/// Simplified send sheet for token transfers from chat
 class _ChatSendSheet extends ConsumerStatefulWidget {
   final Contact contact;
 
@@ -2311,11 +2365,12 @@ class _ChatSendSheet extends ConsumerStatefulWidget {
 class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
   final _amountController = TextEditingController();
   bool _isSending = false;
-  String? _resolvedAddress;
-  String? _resolveError;
-  String? _sendError;  // Error message to display in dialog
+  String? _sendError;
   bool _isResolving = true;
   int _selectedGasSpeed = 1; // 0=slow, 1=normal, 2=fast
+  UserProfile? _contactProfile;
+  List<_TokenOption> _availableTokens = [];
+  _TokenOption? _selectedToken;
 
   // Cellframe network fees (validator fee varies by speed, network fee is fixed)
   static const double _cellframeNetworkFee = 0.002;
@@ -2326,7 +2381,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
   @override
   void initState() {
     super.initState();
-    _resolveContactWallet();
+    _resolveContactProfile();
   }
 
   @override
@@ -2335,46 +2390,48 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
     super.dispose();
   }
 
-  Future<void> _resolveContactWallet() async {
+  Future<void> _resolveContactProfile() async {
     try {
       final engine = await ref.read(engineProvider.future);
       final profile = await engine.lookupProfile(widget.contact.fingerprint);
 
       if (!mounted) return;
 
-      if (profile == null || profile.backbone.isEmpty) {
+      if (profile == null) {
         setState(() {
           _isResolving = false;
-          _resolveError = 'Contact has no Cellframe wallet';
         });
         return;
       }
 
+      final tokens = _TokenOption.forProfile(profile);
       setState(() {
         _isResolving = false;
-        _resolvedAddress = profile.backbone;
+        _contactProfile = profile;
+        _availableTokens = tokens;
+        _selectedToken = tokens.isNotEmpty ? tokens.first : null;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _isResolving = false;
-        _resolveError = 'Failed to lookup wallet address';
       });
     }
   }
 
-  /// Get current CPUNK balance
-  String? _getCpunkBalance() {
+  /// Get balance for the currently selected token
+  String? _getSelectedBalance() {
+    if (_selectedToken == null) return null;
     final walletsAsync = ref.watch(walletsProvider);
     return walletsAsync.whenOrNull(
       data: (wallets) {
         if (wallets.isEmpty) return null;
-        // Use first wallet (current identity's wallet)
         final balancesAsync = ref.watch(balancesProvider(0));
         return balancesAsync.whenOrNull(
           data: (balances) {
             for (final b in balances) {
-              if (b.token == 'CPUNK' && b.network == 'Cellframe') {
+              if (b.token == _selectedToken!.token &&
+                  b.network.toLowerCase() == _selectedToken!.network.toLowerCase()) {
                 return b.balance;
               }
             }
@@ -2385,9 +2442,9 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
     );
   }
 
-  /// Calculate max sendable amount (CPUNK has no fee deduction since fees are paid in CELL)
+  /// Calculate max sendable amount
   double? _calculateMaxAmount() {
-    final balanceStr = _getCpunkBalance();
+    final balanceStr = _getSelectedBalance();
     if (balanceStr == null || balanceStr.isEmpty) return null;
     final balance = double.tryParse(balanceStr);
     if (balance == null || balance <= 0) return null;
@@ -2396,12 +2453,14 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
 
   bool _canSend() {
     if (_isSending || _isResolving) return false;
-    if (_resolvedAddress == null || _resolveError != null) return false;
+    if (_selectedToken == null || _contactProfile == null) return false;
     if (_amountController.text.trim().isEmpty) return false;
     final amount = double.tryParse(_amountController.text.trim());
     if (amount == null || amount <= 0) return false;
     return true;
   }
+
+  bool get _showSpeedSelector => _selectedToken?.chain == 'cellframe';
 
   Future<void> _send() async {
     // Clear previous error
@@ -2426,18 +2485,19 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
     if (maxAmount != null && amount > maxAmount) {
       setState(() {
         _isSending = false;
-        _sendError = 'Insufficient CPUNK balance';
+        _sendError = 'Insufficient ${_selectedToken!.token} balance';
       });
       return;
     }
 
     try {
+      final recipientAddress = _selectedToken!.getAddress(_contactProfile!);
       final txHash = await ref.read(walletsProvider.notifier).sendTokens(
         walletIndex: 0, // Current identity's wallet
-        recipientAddress: _resolvedAddress!,
+        recipientAddress: recipientAddress,
         amount: amountStr,
-        token: 'CPUNK',
-        network: 'Cellframe',
+        token: _selectedToken!.token,
+        network: _selectedToken!.network,
         gasSpeed: _selectedGasSpeed,
       );
 
@@ -2446,11 +2506,11 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
         final transferData = jsonEncode({
           'type': 'token_transfer',
           'amount': amountStr,
-          'token': 'CPUNK',
-          'network': 'Cellframe',
-          'chain': 'cellframe',
+          'token': _selectedToken!.token,
+          'network': _selectedToken!.network,
+          'chain': _selectedToken!.chain,
           'txHash': txHash,
-          'recipientAddress': _resolvedAddress,
+          'recipientAddress': recipientAddress,
           'recipientName': widget.contact.displayName,
         });
 
@@ -2462,7 +2522,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Sent $amountStr CPUNK'),
+            content: Text('Sent $amountStr ${_selectedToken!.token}'),
             backgroundColor: DnaColors.snackbarSuccess,
           ),
         );
@@ -2482,7 +2542,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final balance = _getCpunkBalance();
+    final balance = _getSelectedBalance();
     final maxAmount = _calculateMaxAmount();
 
     return Container(
@@ -2511,7 +2571,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Send CPUNK',
+                        'Send Tokens',
                         style: theme.textTheme.titleLarge,
                       ),
                       Text(
@@ -2538,12 +2598,12 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                     children: [
                       CircularProgressIndicator(),
                       SizedBox(height: 12),
-                      Text('Looking up wallet address...'),
+                      Text('Looking up wallet addresses...'),
                     ],
                   ),
                 ),
               )
-            else if (_resolveError != null)
+            else if (_availableTokens.isEmpty)
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -2556,7 +2616,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        _resolveError!,
+                        'Contact has no wallet addresses in their profile',
                         style: TextStyle(color: DnaColors.warning),
                       ),
                     ),
@@ -2564,29 +2624,56 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                 ),
               )
             else ...[
-              // Resolved address indicator
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: DnaColors.success.withAlpha(20),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: DnaColors.success.withAlpha(50)),
+              // Token selector
+              DropdownButtonFormField<_TokenOption>(
+                value: _selectedToken,
+                decoration: const InputDecoration(
+                  labelText: 'Token',
                 ),
-                child: Row(
-                  children: [
-                    FaIcon(FontAwesomeIcons.circleCheck, color: DnaColors.success, size: 20),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '${_resolvedAddress!.substring(0, 12)}...${_resolvedAddress!.substring(_resolvedAddress!.length - 8)}',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontFamily: 'monospace',
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                items: _availableTokens.map((opt) {
+                  return DropdownMenuItem<_TokenOption>(
+                    value: opt,
+                    child: Text(opt.displayName),
+                  );
+                }).toList(),
+                onChanged: (opt) {
+                  if (opt != null) {
+                    setState(() {
+                      _selectedToken = opt;
+                      _sendError = null;
+                    });
+                  }
+                },
               ),
+              const SizedBox(height: 16),
+
+              // Resolved address indicator
+              if (_selectedToken != null && _contactProfile != null)
+                Builder(builder: (context) {
+                  final addr = _selectedToken!.getAddress(_contactProfile!);
+                  return Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: DnaColors.success.withAlpha(20),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: DnaColors.success.withAlpha(50)),
+                    ),
+                    child: Row(
+                      children: [
+                        FaIcon(FontAwesomeIcons.circleCheck, color: DnaColors.success, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${addr.substring(0, addr.length >= 12 ? 12 : addr.length)}...${addr.substring(addr.length >= 8 ? addr.length - 8 : 0)}',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
               const SizedBox(height: 16),
 
               // Amount input
@@ -2596,8 +2683,8 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                 decoration: InputDecoration(
                   labelText: 'Amount',
                   hintText: '0.00',
-                  suffixText: 'CPUNK',
-                  helperText: balance != null ? 'Available: $balance CPUNK' : null,
+                  suffixText: _selectedToken?.token ?? '',
+                  helperText: balance != null ? 'Available: $balance ${_selectedToken?.token ?? ''}' : null,
                 ),
                 onChanged: (_) => setState(() {}),
               ),
@@ -2619,22 +2706,24 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                 ),
               const SizedBox(height: 16),
 
-              // Transaction speed selector
-              Text(
-                'Transaction Speed',
-                style: theme.textTheme.bodySmall,
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  _buildSpeedChip('Slow', _cellframeValidatorSlow + _cellframeNetworkFee, 0),
-                  const SizedBox(width: 8),
-                  _buildSpeedChip('Normal', _cellframeValidatorNormal + _cellframeNetworkFee, 1),
-                  const SizedBox(width: 8),
-                  _buildSpeedChip('Fast', _cellframeValidatorFast + _cellframeNetworkFee, 2),
-                ],
-              ),
-              const SizedBox(height: 16),
+              // Transaction speed selector (Cellframe only)
+              if (_showSpeedSelector) ...[
+                Text(
+                  'Transaction Speed',
+                  style: theme.textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    _buildSpeedChip('Slow', _cellframeValidatorSlow + _cellframeNetworkFee, 0),
+                    const SizedBox(width: 8),
+                    _buildSpeedChip('Normal', _cellframeValidatorNormal + _cellframeNetworkFee, 1),
+                    const SizedBox(width: 8),
+                    _buildSpeedChip('Fast', _cellframeValidatorFast + _cellframeNetworkFee, 2),
+                  ],
+                ),
+                const SizedBox(height: 16),
+              ],
 
               // Error display
               if (_sendError != null)
@@ -2670,7 +2759,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                         height: 20,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Text('Send CPUNK'),
+                    : Text('Send ${_selectedToken?.token ?? ''}'),
               ),
             ],
           ],
