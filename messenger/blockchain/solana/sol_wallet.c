@@ -10,9 +10,9 @@
 
 #include "sol_wallet.h"
 #include "crypto/utils/base58.h"
+#include "crypto/sign/ed25519_sign.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
-#include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/err.h>
 #include <string.h>
@@ -152,32 +152,7 @@ static int slip10_derive_solana(
  * ED25519 KEY OPERATIONS
  * ============================================================================ */
 
-/**
- * Generate Ed25519 public key from private key using OpenSSL
- */
-static int ed25519_pubkey_from_private(
-    const uint8_t private_key[32],
-    uint8_t public_key_out[32]
-) {
-    EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key(
-        EVP_PKEY_ED25519, NULL, private_key, 32
-    );
-    if (!pkey) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create Ed25519 key: %s",
-                     ERR_error_string(ERR_get_error(), NULL));
-        return -1;
-    }
-
-    size_t pubkey_len = 32;
-    if (EVP_PKEY_get_raw_public_key(pkey, public_key_out, &pubkey_len) != 1) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get Ed25519 public key");
-        EVP_PKEY_free(pkey);
-        return -1;
-    }
-
-    EVP_PKEY_free(pkey);
-    return 0;
-}
+/* ed25519_pubkey_from_private() is now in crypto/sign/ed25519_sign.c */
 
 /* ============================================================================
  * WALLET GENERATION
@@ -305,43 +280,9 @@ int sol_sign_message(
     const uint8_t public_key[SOL_PUBLIC_KEY_SIZE],
     uint8_t signature_out[SOL_SIGNATURE_SIZE]
 ) {
-    (void)public_key; /* Not needed for OpenSSL Ed25519 signing */
+    (void)public_key; /* Not needed for Ed25519 signing */
 
-    if (!message || !private_key || !signature_out) {
-        return -1;
-    }
-
-    /* Create Ed25519 key from private key */
-    EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key(
-        EVP_PKEY_ED25519, NULL, private_key, 32
-    );
-    if (!pkey) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create Ed25519 key for signing");
-        return -1;
-    }
-
-    /* Create signing context */
-    EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
-    if (!md_ctx) {
-        EVP_PKEY_free(pkey);
-        return -1;
-    }
-
-    size_t sig_len = SOL_SIGNATURE_SIZE;
-    int ret = -1;
-
-    if (EVP_DigestSignInit(md_ctx, NULL, NULL, NULL, pkey) == 1 &&
-        EVP_DigestSign(md_ctx, signature_out, &sig_len, message, message_len) == 1) {
-        ret = 0;
-    } else {
-        QGP_LOG_ERROR(LOG_TAG, "Ed25519 signing failed: %s",
-                     ERR_error_string(ERR_get_error(), NULL));
-    }
-
-    EVP_MD_CTX_free(md_ctx);
-    EVP_PKEY_free(pkey);
-
-    return ret;
+    return ed25519_sign(private_key, message, message_len, signature_out);
 }
 
 /* ============================================================================

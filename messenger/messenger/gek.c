@@ -15,12 +15,12 @@
 #include "../messenger.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_random.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_platform.h"
-#include "crypto/utils/qgp_kyber.h"
-#include "crypto/utils/qgp_aes.h"
-#include "crypto/utils/qgp_dilithium.h"
-#include "crypto/utils/aes_keywrap.h"
+#include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_aes.h"
+#include "crypto/sign/qgp_dilithium.h"
+#include "crypto/enc/aes_keywrap.h"
 #include "crypto/utils/qgp_log.h"
 #ifdef _WIN32
 #include <winsock2.h>

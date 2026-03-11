@@ -5,8 +5,8 @@
  */
 
 #include "crypto/nodus_sign.h"
-#include "crypto/utils/qgp_dilithium.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_platform.h"
 #include <string.h>
 

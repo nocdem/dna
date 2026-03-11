@@ -28,10 +28,10 @@ endif()
 # These are already built by the main messenger CMakeLists.txt.
 # When built standalone, we add them ourselves.
 if(NOT TARGET dsa)
-    add_subdirectory(${SHARED_DIR}/crypto/dsa ${CMAKE_BINARY_DIR}/dsa)
+    add_subdirectory(${SHARED_DIR}/crypto/sign/dsa ${CMAKE_BINARY_DIR}/dsa)
 endif()
 if(NOT TARGET kem)
-    add_subdirectory(${SHARED_DIR}/crypto/kem ${CMAKE_BINARY_DIR}/kem)
+    add_subdirectory(${SHARED_DIR}/crypto/enc/kem ${CMAKE_BINARY_DIR}/kem)
 endif()
 
 # ── Standalone mode ──────────────────────────────────────────────────
@@ -43,8 +43,8 @@ option(NODUS_STANDALONE "Include shared crypto sources and log shim" ON)
 set(SHARED_CRYPTO_SOURCES "")
 if(NODUS_STANDALONE)
     list(APPEND SHARED_CRYPTO_SOURCES
-        ${SHARED_DIR}/crypto/utils/qgp_sha3.c
-        ${SHARED_DIR}/crypto/utils/qgp_dilithium.c
+        ${SHARED_DIR}/crypto/hash/qgp_sha3.c
+        ${SHARED_DIR}/crypto/sign/qgp_dilithium.c
         ${SHARED_DIR}/crypto/utils/qgp_random.c
         # qgp_log.c depends on dna_config.h — use nodus_log_shim.c instead
     )

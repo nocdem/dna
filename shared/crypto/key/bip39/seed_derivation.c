@@ -19,7 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "crypto/kem/fips202_kyber.h"
+#include "crypto/enc/kem/fips202_kyber.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 

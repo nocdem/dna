@@ -25,9 +25,9 @@
 #include "nodus_ops.h"
 #include "nodus_init.h"
 #include "dnac/safe_math.h"
-#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_log.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "dnac/crypto_helpers.h"
 
 #define LOG_TAG "DNAC_BUILDER"

@@ -15,8 +15,8 @@
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include <secp256k1.h>
-#include "../utils/qgp_log.h"
-#include "../utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "BIP32"
 

@@ -16,7 +16,7 @@
 
 #include "dna_channels.h"
 #include "../shared/nodus_ops.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_types.h"
 

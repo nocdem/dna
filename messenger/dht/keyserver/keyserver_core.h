@@ -39,8 +39,8 @@
 #include "../core/dht_keyserver.h"  // Includes size constants and dna_unified_identity_t
 #include "dht/shared/nodus_ops.h"   // Nodus DHT operations
 #include "../client/dna_profile.h"
-#include "crypto/utils/qgp_dilithium.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "../../blockchain/cellframe/cellframe_rpc.h"
 #include <openssl/evp.h>
 #include <json-c/json.h>

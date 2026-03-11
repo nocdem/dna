@@ -8,11 +8,11 @@
  * @date 2025-12-11
  */
 
-#include "seed_storage.h"
-#include "qgp_kyber.h"
-#include "qgp_aes.h"
-#include "qgp_platform.h"
-#include "qgp_log.h"
+#include "crypto/key/seed_storage.h"
+#include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_aes.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
 
 #include <stdio.h>
 #include <stdlib.h>

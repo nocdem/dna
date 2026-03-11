@@ -10,9 +10,9 @@
 
 #include "dht_geks.h"
 #include "../shared/nodus_ops.h"
-#include "crypto/utils/qgp_sha3.h"
-#include "crypto/utils/qgp_dilithium.h"
-#include "crypto/utils/qgp_kyber.h"
+#include "crypto/hash/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
+#include "crypto/enc/qgp_kyber.h"
 #include "../dna_api.h"
 #include <stdio.h>
 #include <stdlib.h>

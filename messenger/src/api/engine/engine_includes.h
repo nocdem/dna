@@ -93,12 +93,12 @@ static inline char* win_strptime(const char* s, const char* format, struct tm* t
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_log.h"
-#include "crypto/utils/qgp_sha3.h"
-#include "crypto/utils/qgp_dilithium.h"
-#include "crypto/utils/key_encryption.h"
-#include "crypto/utils/seed_storage.h"
+#include "crypto/hash/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
+#include "crypto/key/key_encryption.h"
+#include "crypto/key/seed_storage.h"
 #include "crypto/utils/base58.h"
-#include "crypto/bip39/bip39.h"
+#include "crypto/key/bip39/bip39.h"
 
 /* Messenger core */
 #include "messenger.h"

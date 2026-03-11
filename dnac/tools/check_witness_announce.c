@@ -13,7 +13,7 @@
 
 #include <dna/dna_engine.h>
 #include "nodus_ops.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_types.h"
 #include "dnac/epoch.h"
 

@@ -16,7 +16,7 @@
 #include <openssl/evp.h>
 
 /* libdna crypto utilities */
-#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/utils/qgp_log.h"
 #include "dnac/safe_math.h"

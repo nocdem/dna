@@ -8,7 +8,7 @@
 #include "cellframe_wallet_create.h"
 #include "cellframe_addr.h"
 #include "cellframe_minimal.h"
-#include "crypto/cellframe_dilithium/dilithium_params.h"
+#include "crypto/sign/cellframe_dilithium/dilithium_params.h"
 #include <stdlib.h>
 #include <string.h>
 #include <openssl/evp.h>

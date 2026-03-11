@@ -1,7 +1,7 @@
 #include "dht_offline_queue.h"
 #include "dht_dm_outbox.h"  /* Daily bucket messaging (v0.4.81+) */
 #include "nodus_ops.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>

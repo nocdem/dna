@@ -8,8 +8,8 @@
  * @date 2025-12-08
  */
 
-#include "keccak256.h"
-#include "qgp_log.h"
+#include "crypto/hash/keccak256.h"
+#include "crypto/utils/qgp_log.h"
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>

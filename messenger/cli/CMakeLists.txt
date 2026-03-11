@@ -11,7 +11,7 @@ add_executable(dna-messenger-cli
 
 target_include_directories(dna-messenger-cli PRIVATE
     ${CMAKE_SOURCE_DIR}/include
-    ${SHARED_DIR}/crypto/bip39
+    ${SHARED_DIR}/crypto/key/bip39
     ${CMAKE_SOURCE_DIR}
 )
 

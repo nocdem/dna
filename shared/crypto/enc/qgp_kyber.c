@@ -1,5 +1,5 @@
-#include "crypto/utils/qgp_kyber.h"
-#include "crypto/kem/kem.h"
+#include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/kem/kem.h"
 #include <string.h>
 
 // QGP KEM-1024 API (ML-KEM-1024)

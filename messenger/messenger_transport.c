@@ -14,7 +14,7 @@
 #include "database/keyserver_cache.h"
 #include "database/contacts_db.h"
 #include "database/group_invitations.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_types.h"

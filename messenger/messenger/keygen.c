@@ -19,12 +19,12 @@
 
 #define LOG_TAG "KEYGEN"
 #include "crypto/utils/qgp_types.h"
-#include "crypto/utils/qgp_dilithium.h"
-#include "crypto/utils/qgp_kyber.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
+#include "crypto/enc/qgp_kyber.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "../qgp.h"
-#include "crypto/bip39/bip39.h"
-#include "crypto/utils/kyber_deterministic.h"
+#include "crypto/key/bip39/bip39.h"
+#include "crypto/enc/kyber_deterministic.h"
 #include "../dht/core/dht_keyserver.h"
 #include "crypto/nodus_identity.h"
 #include "../database/keyserver_cache.h"
@@ -36,7 +36,7 @@
 #include "../blockchain/cellframe/cellframe_wallet.h"
 #include "../blockchain/blockchain_wallet.h"
 #include "../blockchain/tron/trx_wallet.h"
-#include "crypto/utils/seed_storage.h"
+#include "crypto/key/seed_storage.h"
 
 // Network byte order conversion
 #ifdef _WIN32

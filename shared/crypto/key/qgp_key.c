@@ -13,7 +13,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_compiler.h"
-#include "crypto/utils/key_encryption.h"
+#include "crypto/key/key_encryption.h"
 #include "qgp.h"  /* For write_armored_file */
 
 #define LOG_TAG "KEY"

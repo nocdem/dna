@@ -21,10 +21,10 @@
 #include "dnac/db.h"
 #include "dnac/ledger.h"
 #include "crypto/utils/qgp_log.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "dnac/crypto_helpers.h"
 #include "crypto/utils/qgp_random.h"
-#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/sign/qgp_dilithium.h"
 #include <dna/dna_engine.h>
 #include <openssl/evp.h>
 #include <stdlib.h>

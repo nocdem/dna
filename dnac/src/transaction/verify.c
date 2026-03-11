@@ -13,7 +13,7 @@
 #include <stdbool.h>
 
 /* libdna crypto utilities */
-#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "DNAC_VERIFY"

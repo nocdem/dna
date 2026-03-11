@@ -5,13 +5,13 @@
  */
 
 #include "cli_commands.h"
-#include "bip39.h"
+#include "crypto/key/bip39/bip39.h"
 #include "blockchain/ethereum/eth_wallet.h"
 #include "blockchain/ethereum/eth_erc20.h"
 #include "blockchain/ethereum/eth_tx.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_types.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/shared/nodus_ops.h"

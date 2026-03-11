@@ -82,9 +82,9 @@ include(${CMAKE_SOURCE_DIR}/cmake/Dependencies.cmake)
 # include(${CMAKE_SOURCE_DIR}/cmake/Libjuice.cmake)
 
 # Vendored Cryptographic Libraries (in shared/crypto/)
-add_subdirectory(${SHARED_DIR}/crypto/kem ${CMAKE_BINARY_DIR}/crypto/kem)          # ML-KEM-1024 KEM
-add_subdirectory(${SHARED_DIR}/crypto/dsa ${CMAKE_BINARY_DIR}/crypto/dsa)          # ML-DSA-87 signatures
-add_subdirectory(${SHARED_DIR}/crypto/cellframe_dilithium ${CMAKE_BINARY_DIR}/crypto/cellframe_dilithium)  # Cellframe Dilithium
+add_subdirectory(${SHARED_DIR}/crypto/enc/kem ${CMAKE_BINARY_DIR}/crypto/kem)          # ML-KEM-1024 KEM
+add_subdirectory(${SHARED_DIR}/crypto/sign/dsa ${CMAKE_BINARY_DIR}/crypto/dsa)          # ML-DSA-87 signatures
+add_subdirectory(${SHARED_DIR}/crypto/sign/cellframe_dilithium ${CMAKE_BINARY_DIR}/crypto/cellframe_dilithium)  # Cellframe Dilithium
 
 # secp256k1 for Ethereum/Bitcoin key derivation (BIP-32/BIP-44)
 include(${CMAKE_SOURCE_DIR}/cmake/Secp256k1.cmake)
@@ -129,29 +129,31 @@ endif()
 # =============================================================================
 set(COMMON_SOURCES
     # NOTE: archive/legacy-tools/ removed - functions moved to:
-    #   cmd_export_pubkey → crypto/utils/qgp_key.c
+    #   cmd_export_pubkey → crypto/key/qgp_key.c
     #   cmd_restore_key_from_seed → messenger/keygen.c
     #   read_file_data → qgp_platform_*.c
     #   get_home_dir, build_path, file_exists → replaced with qgp_platform_* calls
     ${SHARED_DIR}/crypto/utils/armor.c
-    ${SHARED_DIR}/crypto/utils/aes_keywrap.c
-    ${SHARED_DIR}/crypto/bip39/bip39.c
-    ${SHARED_DIR}/crypto/bip39/bip39_pbkdf2.c
-    ${SHARED_DIR}/crypto/bip39/seed_derivation.c
-    ${SHARED_DIR}/crypto/utils/kyber_deterministic.c
+    ${SHARED_DIR}/crypto/enc/aes_keywrap.c
+    ${SHARED_DIR}/crypto/key/bip39/bip39.c
+    ${SHARED_DIR}/crypto/key/bip39/bip39_pbkdf2.c
+    ${SHARED_DIR}/crypto/key/bip39/seed_derivation.c
+    ${SHARED_DIR}/crypto/enc/kyber_deterministic.c
     dna_config.c
     # SDK Independence: New crypto modules
     ${SHARED_DIR}/crypto/utils/qgp_random.c
-    ${SHARED_DIR}/crypto/utils/qgp_aes.c
-    ${SHARED_DIR}/crypto/utils/qgp_kyber.c
-    ${SHARED_DIR}/crypto/utils/qgp_dilithium.c
-    ${SHARED_DIR}/crypto/utils/seed_storage.c
-    ${SHARED_DIR}/crypto/utils/qgp_sha3.c         # SHA3-512 for Category 5 security
+    ${SHARED_DIR}/crypto/enc/qgp_aes.c
+    ${SHARED_DIR}/crypto/enc/qgp_kyber.c
+    ${SHARED_DIR}/crypto/sign/qgp_dilithium.c
+    ${SHARED_DIR}/crypto/key/seed_storage.c
+    ${SHARED_DIR}/crypto/hash/qgp_sha3.c         # SHA3-512 for Category 5 security
     # NOTE: qgp_log.c is ONLY in dht_lib to ensure single copy of static vars
     # SDK Independence: Infrastructure modules
-    ${SHARED_DIR}/crypto/utils/qgp_key.c
-    ${SHARED_DIR}/crypto/utils/key_encryption.c
-    ${SHARED_DIR}/crypto/utils/qgp_signature.c
+    ${SHARED_DIR}/crypto/key/qgp_key.c
+    ${SHARED_DIR}/crypto/key/key_encryption.c
+    ${SHARED_DIR}/crypto/sign/qgp_signature.c
+    ${SHARED_DIR}/crypto/sign/secp256k1_sign.c        # secp256k1 ECDSA recoverable signing
+    ${SHARED_DIR}/crypto/sign/ed25519_sign.c           # Ed25519 signing (Solana)
     ${SHARED_DIR}/crypto/utils/qgp_utils_standalone.c
     ${SHARED_DIR}/crypto/utils/threadpool.c       # Centralized thread pool for parallel I/O
     # Cross-platform abstraction layer
@@ -247,8 +249,8 @@ if(BUILD_SHARED_LIB)
         blockchain/tron/trx_chain.c                    # TRON blockchain_ops implementation
         blockchain/tron/trx_tx.c                       # TRON transaction building/signing
         blockchain/tron/trx_trc20.c                    # TRC-20 token support (USDT, USDC)
-        ${SHARED_DIR}/crypto/bip32/bip32.c                           # BIP-32 HD key derivation
-        ${SHARED_DIR}/crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
+        ${SHARED_DIR}/crypto/key/bip32/bip32.c                           # BIP-32 HD key derivation
+        ${SHARED_DIR}/crypto/hash/keccak256.c                       # Keccak-256 (Ethereum hash)
         ${SHARED_DIR}/crypto/utils/base58.c       # Base58 encoding for addresses
         ${COMMON_SOURCES}
     )
@@ -331,8 +333,8 @@ else()
         blockchain/tron/trx_chain.c                    # TRON blockchain_ops implementation
         blockchain/tron/trx_tx.c                       # TRON transaction building/signing
         blockchain/tron/trx_trc20.c                    # TRC-20 token support (USDT, USDC)
-        ${SHARED_DIR}/crypto/bip32/bip32.c                           # BIP-32 HD key derivation
-        ${SHARED_DIR}/crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
+        ${SHARED_DIR}/crypto/key/bip32/bip32.c                           # BIP-32 HD key derivation
+        ${SHARED_DIR}/crypto/hash/keccak256.c                       # Keccak-256 (Ethereum hash)
         ${SHARED_DIR}/crypto/utils/base58.c       # Base58 encoding for addresses
         ${COMMON_SOURCES}
     )

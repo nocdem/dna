@@ -107,8 +107,8 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/client/dht_addressbook.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
-#include "crypto/utils/key_encryption.h"
-#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/key/key_encryption.h"
+#include "crypto/sign/qgp_dilithium.h"
 #include "client/nodus_republish.h"
 
 /* Blockchain/Wallet includes for send_tokens */
@@ -116,7 +116,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 
 /* JSON and SHA3 for version check API */
 #include <json-c/json.h>
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "cellframe_wallet_create.h"
 #include "cellframe_rpc.h"
 #include "cellframe_tx_builder.h"
@@ -133,8 +133,8 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "blockchain/tron/trx_trc20.h"
 #include "blockchain/blockchain_wallet.h"
 #include "blockchain/cellframe/cellframe_addr.h"
-#include "crypto/utils/seed_storage.h"
-#include "crypto/bip39/bip39.h"
+#include "crypto/key/seed_storage.h"
+#include "crypto/key/bip39/bip39.h"
 #include "messenger/gek.h"
 #include <dirent.h>
 #include <sys/stat.h>

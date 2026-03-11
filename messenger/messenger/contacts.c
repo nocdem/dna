@@ -8,7 +8,7 @@
 #include <string.h>
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_types.h"
-#include "crypto/utils/key_encryption.h"
+#include "crypto/key/key_encryption.h"
 #include "../dht/client/dht_contactlist.h"
 #include "../dht/keyserver/keyserver_core.h"
 #include "../database/contacts_db.h"

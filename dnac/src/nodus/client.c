@@ -13,7 +13,7 @@
 #include <stdlib.h>
 
 /* libdna crypto utilities */
-#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_log.h"
 
 /* Nodus client SDK (public API) */

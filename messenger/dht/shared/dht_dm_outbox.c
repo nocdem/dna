@@ -13,7 +13,7 @@
 #include "dht_dm_outbox.h"
 #include "dht_offline_queue.h"
 #include "nodus_ops.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>

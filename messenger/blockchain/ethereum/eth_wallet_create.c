@@ -9,8 +9,8 @@
  */
 
 #include "eth_wallet.h"
-#include "crypto/bip32/bip32.h"
-#include "crypto/utils/keccak256.h"
+#include "crypto/key/bip32/bip32.h"
+#include "crypto/hash/keccak256.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include <secp256k1.h>

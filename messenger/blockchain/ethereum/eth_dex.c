@@ -25,7 +25,7 @@
 #include "eth_tx.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
-#include "crypto/utils/keccak256.h"
+#include "crypto/hash/keccak256.h"
 /* secp256k1 no longer needed here — EIP-712 signing moved to eth_eip712.c */
 #include <time.h>
 #include <unistd.h>

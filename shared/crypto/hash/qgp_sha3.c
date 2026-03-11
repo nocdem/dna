@@ -1,4 +1,4 @@
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include <string.h>
 #include <stdio.h>
 #include <openssl/evp.h>

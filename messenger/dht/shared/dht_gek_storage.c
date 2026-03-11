@@ -13,7 +13,7 @@
 
 #include "dht_gek_storage.h"
 #include "nodus_ops.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -5,7 +5,7 @@
  */
 
 #include "cellframe_sign.h"
-#include "crypto/cellframe_dilithium/cellframe_dilithium_api.h"
+#include "crypto/sign/cellframe_dilithium/cellframe_dilithium_api.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

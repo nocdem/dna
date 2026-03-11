@@ -16,7 +16,7 @@
 #include <errno.h>
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 
 #define LOG_TAG "MSG_BACKUP"
 

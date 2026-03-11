@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
-#include "crypto/utils/qgp_aes.h"
+#include "crypto/enc/qgp_aes.h"
 #include "crypto/utils/qgp_random.h"
 
 #define TEST_PASSED(name) printf("   ✓ %s\n", name)

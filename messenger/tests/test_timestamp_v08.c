@@ -12,8 +12,8 @@
 #include <string.h>
 #include <time.h>
 #include "../dna_api.h"
-#include "crypto/utils/qgp_kyber.h"
-#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/enc/qgp_kyber.h"
+#include "crypto/sign/qgp_dilithium.h"
 
 int main(void) {
     printf("=== v0.08 Timestamp Encryption Test ===\n\n");

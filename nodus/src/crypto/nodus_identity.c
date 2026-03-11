@@ -8,7 +8,7 @@
 
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
-#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_platform.h"
 #include <string.h>
 #include <stdio.h>

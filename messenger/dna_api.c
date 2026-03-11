@@ -13,11 +13,11 @@
 
 #define LOG_TAG "DNA_API"
 #include "crypto/utils/qgp_random.h"
-#include "crypto/utils/qgp_aes.h"
-#include "crypto/utils/qgp_kyber.h"
-#include "crypto/utils/qgp_dilithium.h"
-#include "crypto/utils/qgp_sha3.h"
-#include "crypto/utils/aes_keywrap.h"
+#include "crypto/enc/qgp_aes.h"
+#include "crypto/enc/qgp_kyber.h"
+#include "crypto/sign/qgp_dilithium.h"
+#include "crypto/hash/qgp_sha3.h"
+#include "crypto/enc/aes_keywrap.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

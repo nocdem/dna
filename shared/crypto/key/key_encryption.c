@@ -8,10 +8,10 @@
  * @date 2025-12-15
  */
 
-#include "key_encryption.h"
-#include "qgp_random.h"
-#include "qgp_log.h"
-#include "qgp_platform.h"
+#include "crypto/key/key_encryption.h"
+#include "crypto/utils/qgp_random.h"
+#include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>

@@ -10,13 +10,13 @@
 #include <string.h>
 
 // Include Kyber internals from vendored implementation
-#include "crypto/kem/params.h"
-#include "crypto/kem/kem.h"
-#include "crypto/kem/indcpa.h"
-#include "crypto/kem/symmetric.h"
-#include "crypto/kem/poly_kyber.h"
-#include "crypto/kem/polyvec.h"
-#include "crypto/kem/ntt_kyber.h"
+#include "crypto/enc/kem/params.h"
+#include "crypto/enc/kem/kem.h"
+#include "crypto/enc/kem/indcpa.h"
+#include "crypto/enc/kem/symmetric.h"
+#include "crypto/enc/kem/poly_kyber.h"
+#include "crypto/enc/kem/polyvec.h"
+#include "crypto/enc/kem/ntt_kyber.h"
 
 // Use vendored Kyber's gen_matrix function
 #define gen_a(A,B)  gen_matrix(A,B,0)

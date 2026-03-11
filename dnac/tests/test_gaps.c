@@ -18,9 +18,9 @@
 #include "dnac/bft.h"
 #include "dnac/transaction.h"
 #include "dnac/nodus.h"
-#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_random.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 
 /* Test counters */
 static int tests_run = 0;

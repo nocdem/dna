@@ -35,15 +35,15 @@
 #include "messenger_transport.h"  // Phase 9.1b: P2P delivery integration
 #include "dna_config.h"
 #include "crypto/utils/qgp_platform.h"
-#include "crypto/utils/qgp_dilithium.h"
-#include "crypto/utils/qgp_kyber.h"
-#include "crypto/utils/qgp_sha3.h"  // For SHA3-512 fingerprint computation
+#include "crypto/sign/qgp_dilithium.h"
+#include "crypto/enc/qgp_kyber.h"
+#include "crypto/hash/qgp_sha3.h"  // For SHA3-512 fingerprint computation
 #include "crypto/utils/qgp_types.h"  // For qgp_key_load, qgp_key_free
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
-#include "crypto/bip39/bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic
-#include "crypto/utils/kyber_deterministic.h"  // For crypto_kem_keypair_derand
-#include "crypto/utils/qgp_aes.h"  // For qgp_aes256_encrypt
-#include "crypto/utils/aes_keywrap.h"  // For aes256_wrap_key
+#include "crypto/key/bip39/bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic
+#include "crypto/enc/kyber_deterministic.h"  // For crypto_kem_keypair_derand
+#include "crypto/enc/qgp_aes.h"  // For qgp_aes256_encrypt
+#include "crypto/enc/aes_keywrap.h"  // For aes256_wrap_key
 #include "crypto/utils/qgp_random.h"  // For qgp_randombytes
 #include "database/keyserver_cache.h"  // Phase 4: Keyserver cache
 #include "dht/core/dht_keyserver.h"   // Phase 9.4: DHT-based keyserver

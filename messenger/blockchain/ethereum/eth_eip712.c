@@ -9,10 +9,9 @@
  */
 
 #include "eth_eip712.h"
-#include "crypto/utils/keccak256.h"
+#include "crypto/hash/keccak256.h"
+#include "crypto/sign/secp256k1_sign.h"
 #include "crypto/utils/qgp_log.h"
-#include <secp256k1.h>
-#include <secp256k1_recovery.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -100,27 +99,10 @@ int eip712_sign_typed_data(
     keccak256(msg, 66, msg_hash);
 
     /* Sign with secp256k1 */
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    if (!ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create secp256k1 context");
-        return -1;
-    }
-
-    secp256k1_ecdsa_recoverable_signature sig;
-    if (secp256k1_ecdsa_sign_recoverable(ctx, &sig, msg_hash, private_key, NULL, NULL) != 1) {
+    if (secp256k1_sign_hash(private_key, msg_hash, sig_out, NULL) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "EIP-712 signing failed");
-        secp256k1_context_destroy(ctx);
         return -1;
     }
-
-    uint8_t sig_data[64];
-    int recovery_id;
-    secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, sig_data, &recovery_id, &sig);
-    secp256k1_context_destroy(ctx);
-
-    /* r + s + v (v = 27 + recovery_id) */
-    memcpy(sig_out, sig_data, 64);
-    sig_out[64] = (uint8_t)(27 + recovery_id);
 
     return 0;
 }

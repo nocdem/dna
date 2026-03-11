@@ -22,7 +22,7 @@
 #include "dnac/db.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/utils/qgp_log.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 
 /* Nodus client SDK (public API) */
 #include "nodus/nodus.h"

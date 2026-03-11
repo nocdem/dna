@@ -40,10 +40,10 @@ set(DHT_COMMON_SOURCES
     keyserver/keyserver_profiles.c
     keyserver/keyserver_addresses.c
     # Crypto utilities
-    ${SHARED_DIR}/crypto/utils/qgp_sha3.c
-    ${SHARED_DIR}/crypto/utils/qgp_dilithium.c
+    ${SHARED_DIR}/crypto/hash/qgp_sha3.c
+    ${SHARED_DIR}/crypto/sign/qgp_dilithium.c
     ${SHARED_DIR}/crypto/utils/qgp_random.c
-    ${SHARED_DIR}/crypto/utils/qgp_aes.c
+    ${SHARED_DIR}/crypto/enc/qgp_aes.c
     ${SHARED_DIR}/crypto/utils/qgp_log.c
     # Config (needed by qgp_log.c for auto-loading log settings)
     ../dna_config.c

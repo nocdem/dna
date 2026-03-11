@@ -14,8 +14,7 @@
 #include "trx_base58.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
-#include <secp256k1.h>
-#include <secp256k1_recovery.h>
+#include "crypto/sign/secp256k1_sign.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -370,35 +369,11 @@ int trx_tx_sign(
         return -1;
     }
 
-    /* Create secp256k1 context */
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    if (!ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create secp256k1 context");
-        return -1;
-    }
-
-    /* Sign with recoverable signature */
-    secp256k1_ecdsa_recoverable_signature sig;
-    if (secp256k1_ecdsa_sign_recoverable(ctx, &sig, tx_hash, private_key, NULL, NULL) != 1) {
+    /* Sign with secp256k1 */
+    if (secp256k1_sign_hash(private_key, tx_hash, signed_out->signature, NULL) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to sign transaction");
-        secp256k1_context_destroy(ctx);
         return -1;
     }
-
-    /* Serialize signature */
-    uint8_t sig_data[64];
-    int recovery_id;
-    if (secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, sig_data, &recovery_id, &sig) != 1) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize signature");
-        secp256k1_context_destroy(ctx);
-        return -1;
-    }
-
-    secp256k1_context_destroy(ctx);
-
-    /* TRON signature format: r (32 bytes) + s (32 bytes) + v (1 byte) */
-    memcpy(signed_out->signature, sig_data, 64);
-    signed_out->signature[64] = (uint8_t)(recovery_id + 27);
 
     QGP_LOG_INFO(LOG_TAG, "Transaction signed: %s", signed_out->tx_id);
     return 0;

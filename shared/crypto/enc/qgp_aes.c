@@ -4,7 +4,7 @@
  * OpenSSL-based AES-256-GCM implementation providing authenticated encryption.
  */
 
-#include "crypto/utils/qgp_aes.h"
+#include "crypto/enc/qgp_aes.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"

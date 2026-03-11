@@ -9,7 +9,7 @@
 
 #include "dht_channel_subscriptions.h"
 #include "nodus_ops.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 #include <string.h>
 #include <stdlib.h>

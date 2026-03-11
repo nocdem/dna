@@ -6,9 +6,9 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 
 ## 5. Cryptography Utilities
 
-**Directory:** `crypto/utils/`
+**Directories:** `crypto/sign/`, `crypto/enc/`, `crypto/hash/`, `crypto/key/`, `crypto/utils/`
 
-### 5.1 AES-256-GCM (`qgp_aes.h`)
+### 5.1 AES-256-GCM (`crypto/enc/qgp_aes.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -16,7 +16,7 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `int qgp_aes256_encrypt(...)` | Encrypt data with AES-256-GCM (AEAD) |
 | `int qgp_aes256_decrypt(...)` | Decrypt data with AES-256-GCM (AEAD) |
 
-### 5.2 SHA3-512 Hashing (`qgp_sha3.h`)
+### 5.2 SHA3-512 Hashing (`crypto/hash/qgp_sha3.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -24,7 +24,7 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `int qgp_sha3_512_hex(...)` | Compute SHA3-512 and return as hex string |
 | `int qgp_sha3_512_fingerprint(...)` | Compute SHA3-512 fingerprint of public key |
 
-### 5.3 Kyber1024 KEM (`qgp_kyber.h`)
+### 5.3 Kyber1024 KEM (`crypto/enc/qgp_kyber.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -32,7 +32,7 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `int qgp_kem1024_encapsulate(uint8_t *ct, uint8_t *ss, const uint8_t *pk)` | Generate shared secret and ciphertext |
 | `int qgp_kem1024_decapsulate(uint8_t *ss, const uint8_t *ct, const uint8_t *sk)` | Recover shared secret from ciphertext |
 
-### 5.4 Dilithium5 DSA (`qgp_dilithium.h`)
+### 5.4 Dilithium5 DSA (`crypto/sign/qgp_dilithium.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -41,7 +41,20 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `int qgp_dsa87_sign(uint8_t *sig, size_t *siglen, ...)` | Sign message (detached signature) |
 | `int qgp_dsa87_verify(const uint8_t *sig, size_t siglen, ...)` | Verify signature |
 
-### 5.5 Key Encryption (`key_encryption.h`)
+### 5.4b secp256k1 ECDSA (`crypto/sign/secp256k1_sign.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int secp256k1_sign_hash(const uint8_t[32], const uint8_t[32], uint8_t[65], int*)` | Sign hash with secp256k1 recoverable ECDSA (r+s+v) |
+
+### 5.4c Ed25519 (`crypto/sign/ed25519_sign.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int ed25519_sign(const uint8_t[32], const uint8_t*, size_t, uint8_t[64])` | Sign message with Ed25519 |
+| `int ed25519_pubkey_from_private(const uint8_t[32], uint8_t[32])` | Derive Ed25519 public key from private key |
+
+### 5.5 Key Encryption (`crypto/key/key_encryption.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -53,33 +66,33 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `int key_change_password(...)` | Change password on encrypted key file |
 | `int key_verify_password(...)` | Verify password against key file |
 
-### 5.6 AES Key Wrap (`aes_keywrap.h`)
+### 5.6 AES Key Wrap (`crypto/enc/aes_keywrap.h`)
 
 | Function | Description |
 |----------|-------------|
 | `int aes256_wrap_key(...)` | AES-256 key wrap (RFC 3394) |
 | `int aes256_unwrap_key(...)` | AES-256 key unwrap (RFC 3394) |
 
-### 5.7 Deterministic Kyber (`kyber_deterministic.h`)
+### 5.7 Deterministic Kyber (`crypto/enc/kyber_deterministic.h`)
 
 | Function | Description |
 |----------|-------------|
 | `int crypto_kem_keypair_derand(unsigned char *pk, unsigned char *sk, const uint8_t *seed)` | Deterministic keypair from seed |
 
-### 5.8 Random Number Generation (`qgp_random.h`)
+### 5.8 Random Number Generation (`crypto/utils/qgp_random.h`)
 
 | Function | Description |
 |----------|-------------|
 | `int qgp_randombytes(uint8_t *buf, size_t len)` | Generate cryptographically secure random bytes |
 
-### 5.9 Base58 Encoding (`base58.h`)
+### 5.9 Base58 Encoding (`crypto/utils/base58.h`)
 
 | Function | Description |
 |----------|-------------|
 | `size_t base58_encode(const void *a_in, size_t a_in_size, char *a_out)` | Encode binary data to base58 string |
 | `size_t base58_decode(const char *a_in, void *a_out)` | Decode base58 string to binary data |
 
-### 5.10 Keccak-256 / Ethereum (`keccak256.h`)
+### 5.10 Keccak-256 / Ethereum (`crypto/hash/keccak256.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -90,7 +103,7 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `int eth_address_checksum(const char*, char[41])` | Apply EIP-55 checksum |
 | `int eth_address_verify_checksum(const char *address)` | Validate Ethereum address checksum |
 
-### 5.11 Seed Storage (`seed_storage.h`)
+### 5.11 Seed Storage (`crypto/key/seed_storage.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -102,7 +115,7 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `int mnemonic_storage_load(...)` | Load mnemonic decrypted with Kyber1024 KEM |
 | `bool mnemonic_storage_exists(const char *identity_dir)` | Check if encrypted mnemonic file exists |
 
-### 5.12 Platform Abstraction (`qgp_platform.h`)
+### 5.12 Platform Abstraction (`crypto/utils/qgp_platform.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -122,7 +135,7 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `const char* qgp_platform_ca_bundle_path(void)` | Get CA certificate bundle path |
 | `int qgp_platform_sanitize_filename(const char *filename)` | Validate filename for path traversal safety |
 
-### 5.13 QGP Types (`qgp_types.h`)
+### 5.13 QGP Types (`crypto/utils/qgp_types.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -145,7 +158,7 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `char* qgp_base64_encode(const uint8_t*, size_t, size_t*)` | Encode to base64 |
 | `uint8_t* qgp_base64_decode(const char*, size_t*)` | Decode from base64 |
 
-### 5.14 Logging (`qgp_log.h`)
+### 5.14 Logging (`crypto/utils/qgp_log.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -176,7 +189,7 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 
 ## 6. Cryptography KEM (Kyber Internals)
 
-**Directory:** `crypto/kem/`
+**Directory:** `crypto/enc/kem/`
 
 Internal Kyber1024 (ML-KEM-1024) implementation from pq-crystals reference.
 
@@ -289,7 +302,7 @@ Internal Kyber1024 (ML-KEM-1024) implementation from pq-crystals reference.
 
 ## 7. Cryptography DSA (Dilithium Internals)
 
-**Directory:** `crypto/dsa/`
+**Directory:** `crypto/sign/dsa/`
 
 Internal Dilithium5 (ML-DSA-87) implementation from pq-crystals reference.
 
@@ -432,7 +445,7 @@ Internal Dilithium5 (ML-DSA-87) implementation from pq-crystals reference.
 
 ## 8. BIP39/BIP32 Key Derivation
 
-**Directory:** `crypto/bip39/`, `crypto/bip32/`
+**Directory:** `crypto/key/bip39/`, `crypto/key/bip32/`
 
 BIP39 mnemonic generation and BIP32 hierarchical deterministic key derivation.
 

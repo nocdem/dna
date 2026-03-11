@@ -11,7 +11,7 @@
 
 #include "dht_groups.h"
 #include "nodus_ops.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_random.h"
 #include <stdio.h>
 #include <stdlib.h>

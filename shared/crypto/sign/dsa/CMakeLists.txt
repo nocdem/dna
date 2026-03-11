@@ -42,7 +42,7 @@ add_library(dsa STATIC ${DILITHIUM_SOURCES})
 # Include directories
 target_include_directories(dsa PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../..  # For qgp_random.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../..  # For crypto/utils/qgp_random.h (shared/ dir)
 )
 
 # Compiler flags (cross-platform)

@@ -1,11 +1,11 @@
-#include "crypto/utils/qgp_dilithium.h"
-#include "crypto/dsa/api.h"
-#include "crypto/dsa/params.h"
-#include "crypto/dsa/sign.h"
-#include "crypto/dsa/packing.h"
-#include "crypto/dsa/polyvec.h"
-#include "crypto/dsa/poly.h"
-#include "crypto/dsa/fips202.h"
+#include "crypto/sign/qgp_dilithium.h"
+#include "crypto/sign/dsa/api.h"
+#include "crypto/sign/dsa/params.h"
+#include "crypto/sign/dsa/sign.h"
+#include "crypto/sign/dsa/packing.h"
+#include "crypto/sign/dsa/polyvec.h"
+#include "crypto/sign/dsa/poly.h"
+#include "crypto/sign/dsa/fips202.h"
 #include <string.h>
 #include <stdio.h>
 

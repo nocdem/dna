@@ -19,7 +19,7 @@
 
 #include "nodus_ops.h"
 #include "crypto/utils/qgp_log.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "dnac/crypto_helpers.h"
 
 #define LOG_TAG "DNAC_WALLET"

@@ -9,11 +9,10 @@
 #include "eth_tx.h"
 #include "eth_rlp.h"
 #include "eth_wallet.h"
-#include "crypto/utils/keccak256.h"
+#include "crypto/hash/keccak256.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
-#include <secp256k1.h>
-#include <secp256k1_recovery.h>
+#include "crypto/sign/secp256k1_sign.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -418,13 +417,6 @@ int eth_tx_sign(
 
     memset(signed_out, 0, sizeof(*signed_out));
 
-    /* Create secp256k1 context */
-    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    if (!ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create secp256k1 context");
-        return -1;
-    }
-
     int ret = -1;
     eth_rlp_buffer_t rlp_buf = {0};
 
@@ -446,24 +438,17 @@ int eth_tx_sign(
         goto cleanup;
     }
 
-    /* Sign with secp256k1 recoverable signature */
-    secp256k1_ecdsa_recoverable_signature sig;
-    if (secp256k1_ecdsa_sign_recoverable(ctx, &sig, tx_hash, private_key, NULL, NULL) != 1) {
+    /* Sign with secp256k1 */
+    uint8_t sig_bytes[65];
+    int recovery_id;
+    if (secp256k1_sign_hash(private_key, tx_hash, sig_bytes, &recovery_id) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to sign transaction");
         goto cleanup;
     }
 
-    /* Extract r, s, recovery_id */
-    uint8_t sig_data[64];
-    int recovery_id;
-    if (secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, sig_data, &recovery_id, &sig) != 1) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize signature");
-        goto cleanup;
-    }
-
     uint8_t r[32], s[32];
-    memcpy(r, sig_data, 32);
-    memcpy(s, sig_data + 32, 32);
+    memcpy(r, sig_bytes, 32);
+    memcpy(s, sig_bytes + 32, 32);
 
     /* Calculate v = recovery_id + chainId * 2 + 35 (EIP-155) */
     uint64_t v = (uint64_t)recovery_id + tx->chain_id * 2 + 35;
@@ -502,7 +487,6 @@ int eth_tx_sign(
 
 cleanup:
     eth_rlp_free(&rlp_buf);
-    secp256k1_context_destroy(ctx);
     return ret;
 }
 

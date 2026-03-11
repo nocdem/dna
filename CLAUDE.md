@@ -398,7 +398,7 @@ git push origin main    # GitHub second (mirror)
 
 ```
 /opt/dna/
-├── shared/crypto/     # Post-quantum crypto (Kyber1024, Dilithium5, BIP39, SHA3)
+├── shared/crypto/     # Post-quantum crypto (sign/, enc/, hash/, key/, utils/)
 ├── messenger/         # DNA Messenger - C library + Flutter app
 ├── nodus/             # Nodus - DHT server + client SDK (pure C)
 ├── dnac/              # DNA Cash - UTXO digital cash over DHT
@@ -555,11 +555,47 @@ UTXO-based digital cash with BFT witness consensus:
 
 All post-quantum crypto lives here. Used by messenger, nodus, and dnac.
 
+**Directory layout:**
+```
+shared/crypto/
+├── sign/                    # Signing (Dilithium5, secp256k1, Ed25519)
+│   ├── dsa/                 # ML-DSA-87 reference impl
+│   ├── cellframe_dilithium/ # Cellframe Dilithium fork
+│   ├── qgp_dilithium.c/h   # Dilithium5 wrapper
+│   ├── qgp_signature.c     # Signature utilities
+│   ├── secp256k1_sign.c/h  # secp256k1 ECDSA (ETH/TRON/EIP-712)
+│   └── ed25519_sign.c/h    # Ed25519 (Solana)
+├── enc/                     # Encryption (Kyber1024, AES-256-GCM)
+│   ├── kem/                 # ML-KEM-1024 reference impl
+│   ├── qgp_kyber.c/h       # Kyber wrapper
+│   ├── qgp_aes.c/h         # AES-256-GCM
+│   ├── aes_keywrap.c/h     # AES Key Wrap
+│   └── kyber_deterministic.c/h
+├── hash/                    # Hashing (SHA3-512, Keccak-256)
+│   ├── qgp_sha3.c/h        # SHA3-512
+│   └── keccak256.c/h       # Keccak-256 (Ethereum)
+├── key/                     # Key management (BIP32, BIP39, PBKDF2)
+│   ├── bip32/               # HD key derivation
+│   ├── bip39/               # Mnemonic seed
+│   ├── qgp_key.c           # Key load/save
+│   ├── key_encryption.c/h  # PBKDF2 + AES key encryption
+│   └── seed_storage.c/h    # Kyber KEM seed storage
+└── utils/                   # Infra / platform / encoding
+    ├── qgp_log.c/h          # Logging
+    ├── qgp_random.c/h       # CSPRNG
+    ├── qgp_platform*.c/h   # Platform abstraction
+    ├── qgp_types.h          # Type definitions
+    ├── base58.c/h           # Base58 encoding
+    └── threadpool.c/h       # Thread pool
+```
+
 **Include pattern in C source files:**
 ```c
-#include "crypto/utils/qgp_sha3.h"       // Resolved via -I /opt/dna/shared
-#include "crypto/utils/qgp_dilithium.h"
-#include "crypto/utils/qgp_kyber.h"
+#include "crypto/hash/qgp_sha3.h"        // Resolved via -I /opt/dna/shared
+#include "crypto/sign/qgp_dilithium.h"
+#include "crypto/enc/qgp_kyber.h"
+#include "crypto/key/bip39/bip39.h"
+#include "crypto/utils/qgp_log.h"
 ```
 
 **CMake pattern in each project:**
@@ -573,10 +609,13 @@ target_include_directories(my_target PUBLIC ${SHARED_DIR})
 **Key algorithms:**
 | Algorithm | Header | Sizes |
 |-----------|--------|-------|
-| Dilithium5 (ML-DSA-87) | `crypto/utils/qgp_dilithium.h` | pubkey=2592B, secret=4896B, sig=4627B |
-| Kyber1024 (ML-KEM-1024) | `crypto/utils/qgp_kyber.h` | pubkey=1568B, secret=3168B, ciphertext=1568B |
-| SHA3-512 | `crypto/utils/qgp_sha3.h` | 64-byte digest |
-| BIP39 | `crypto/bip39/bip39.h` | 12-24 word mnemonic phrases |
+| Dilithium5 (ML-DSA-87) | `crypto/sign/qgp_dilithium.h` | pubkey=2592B, secret=4896B, sig=4627B |
+| Kyber1024 (ML-KEM-1024) | `crypto/enc/qgp_kyber.h` | pubkey=1568B, secret=3168B, ciphertext=1568B |
+| SHA3-512 | `crypto/hash/qgp_sha3.h` | 64-byte digest |
+| Keccak-256 | `crypto/hash/keccak256.h` | 32-byte digest (Ethereum) |
+| secp256k1 ECDSA | `crypto/sign/secp256k1_sign.h` | 65-byte recoverable sig |
+| Ed25519 | `crypto/sign/ed25519_sign.h` | 64-byte sig |
+| BIP39 | `crypto/key/bip39/bip39.h` | 12-24 word mnemonic phrases |
 
 ---
 

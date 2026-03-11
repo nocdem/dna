@@ -8,7 +8,7 @@
 
 #include "dht_bootstrap_registry.h"
 #include "dht/shared/nodus_ops.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include <json-c/json.h>
 #include <string.h>
 #include <stdio.h>

@@ -4,7 +4,7 @@
  */
 
 #include "dnac/crypto_helpers.h"
-#include "crypto/utils/qgp_sha3.h"
+#include "crypto/hash/qgp_sha3.h"
 #include <string.h>
 
 int dnac_build_inbox_key(const char *owner_fp, const uint8_t *chain_id,
