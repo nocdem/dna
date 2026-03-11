@@ -2800,141 +2800,155 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
     final quote = _selectedQuote;
     if (quote == null) return;
 
-    // Confirmation dialog
-    final confirmed = await showDialog<bool>(
+    // Confirmation bottom sheet
+    final confirmed = await showModalBottomSheet<bool>(
       context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       builder: (context) {
         final theme = Theme.of(context);
         final l10n = AppLocalizations.of(context);
         final subtitleColor = theme.colorScheme.onSurface.withAlpha(150);
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(DnaSpacing.radiusLg),
+        return Container(
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(DnaSpacing.radiusXl)),
           ),
-          child: Padding(
-            padding: const EdgeInsets.all(DnaSpacing.xl),
+          child: SafeArea(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Header icon
+                // Handle bar
                 Container(
-                  width: 56,
-                  height: 56,
+                  margin: const EdgeInsets.only(top: DnaSpacing.sm),
+                  width: 40,
+                  height: 4,
                   decoration: BoxDecoration(
-                    gradient: DnaGradients.primary,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Center(
-                    child: FaIcon(FontAwesomeIcons.arrowRightArrowLeft,
-                        size: 22, color: Colors.white),
+                    color: theme.dividerColor,
+                    borderRadius: BorderRadius.circular(2),
                   ),
                 ),
-                const SizedBox(height: DnaSpacing.lg),
-                Text(l10n.swapConfirm,
-                    style: theme.textTheme.titleLarge
-                        ?.copyWith(fontWeight: FontWeight.w700)),
-                const SizedBox(height: DnaSpacing.xl),
-
-                // From → To summary
+                // Gradient header with amounts
                 Container(
-                  padding: const EdgeInsets.all(DnaSpacing.lg),
+                  width: double.infinity,
+                  margin: const EdgeInsets.all(DnaSpacing.lg),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: DnaSpacing.xl, vertical: DnaSpacing.xl + 4),
                   decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest
-                        .withAlpha(80),
-                    borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
+                    gradient: DnaGradients.primaryVertical,
+                    borderRadius: BorderRadius.circular(DnaSpacing.radiusLg),
                   ),
                   child: Column(
                     children: [
-                      // "You pay" row
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(l10n.swapYouPay, style: TextStyle(
-                              fontSize: 13, color: subtitleColor)),
-                          Text('${quote.amountIn} ${quote.fromToken}',
-                              style: const TextStyle(
-                                  fontSize: 16, fontWeight: FontWeight.w600)),
-                        ],
-                      ),
+                      // "You pay" label + amount
+                      Text(l10n.swapYouPay,
+                          style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.7),
+                              fontSize: 13, fontWeight: FontWeight.w500)),
+                      const SizedBox(height: DnaSpacing.xs),
+                      Text('${quote.amountIn} ${quote.fromToken}',
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 28,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: -0.5),
+                          textAlign: TextAlign.center),
+                      // Arrow
                       Padding(
                         padding: const EdgeInsets.symmetric(
-                            vertical: DnaSpacing.sm),
-                        child: Row(
-                          children: [
-                            Expanded(child: Divider(
-                                color: theme.dividerColor.withAlpha(40))),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: DnaSpacing.sm),
-                              child: FaIcon(FontAwesomeIcons.arrowDown,
-                                  size: 12,
-                                  color: DnaColors.gradientStart.withAlpha(180)),
-                            ),
-                            Expanded(child: Divider(
-                                color: theme.dividerColor.withAlpha(40))),
-                          ],
+                            vertical: DnaSpacing.md),
+                        child: Container(
+                          width: 32,
+                          height: 32,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.2),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Center(
+                            child: FaIcon(FontAwesomeIcons.arrowDown,
+                                size: 14, color: Colors.white),
+                          ),
                         ),
                       ),
-                      // "You receive" row
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(l10n.swapYouReceive, style: TextStyle(
-                              fontSize: 13, color: subtitleColor)),
-                          Text('~${quote.amountOut} ${quote.toToken}',
-                              style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                  color: DnaColors.success)),
-                        ],
+                      // "You receive" label + amount
+                      Text(l10n.swapYouReceive,
+                          style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.7),
+                              fontSize: 13, fontWeight: FontWeight.w500)),
+                      const SizedBox(height: DnaSpacing.xs),
+                      Text('~${quote.amountOut} ${quote.toToken}',
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 28,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: -0.5),
+                          textAlign: TextAlign.center),
+                    ],
+                  ),
+                ),
+                // Detail rows
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: DnaSpacing.lg),
+                  child: Column(
+                    children: [
+                      _buildSwapDetailRow(theme,
+                          icon: FontAwesomeIcons.buildingColumns,
+                          label: l10n.swapDex,
+                          value: quote.dexName),
+                      _buildSwapDivider(theme),
+                      _buildSwapDetailRow(theme,
+                          icon: FontAwesomeIcons.arrowRightArrowLeft,
+                          label: l10n.swapRate,
+                          value:
+                              '1 ${quote.fromToken} ≈ ${quote.price} ${quote.toToken}'),
+                      if (quote.fee.isNotEmpty) ...[
+                        _buildSwapDivider(theme),
+                        _buildSwapDetailRow(theme,
+                            icon: FontAwesomeIcons.percent,
+                            label: l10n.swapFee,
+                            value: quote.fee),
+                      ],
+                      if (quote.priceImpact.isNotEmpty) ...[
+                        _buildSwapDivider(theme),
+                        _buildSwapDetailRow(theme,
+                            icon: FontAwesomeIcons.chartLine,
+                            label: l10n.swapSlippage,
+                            value: '${quote.priceImpact}%'),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: DnaSpacing.xl),
+                // Buttons
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: DnaSpacing.lg),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: DnaButton(
+                          label: l10n.cancel,
+                          variant: DnaButtonVariant.ghost,
+                          expand: true,
+                          onPressed: () => Navigator.of(context).pop(false),
+                        ),
+                      ),
+                      const SizedBox(width: DnaSpacing.md),
+                      Expanded(
+                        child: DnaButton(
+                          label: l10n.walletSwap,
+                          variant: DnaButtonVariant.primary,
+                          icon: FontAwesomeIcons.arrowRightArrowLeft,
+                          expand: true,
+                          onPressed: () => Navigator.of(context).pop(true),
+                        ),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: DnaSpacing.md),
-
-                // Via DEX
-                Text('via ${quote.dexName}',
-                    style: TextStyle(fontSize: 13, color: subtitleColor)),
-
-                // Price impact & fee (small, bottom)
-                if (quote.priceImpact.isNotEmpty || quote.fee.isNotEmpty) ...[
-                  const SizedBox(height: DnaSpacing.sm),
-                  Text(
-                    [
-                      if (quote.priceImpact.isNotEmpty)
-                        l10n.swapImpact(quote.priceImpact),
-                      if (quote.fee.isNotEmpty)
-                        l10n.swapFeeValue(quote.fee),
-                    ].join('  ·  '),
-                    style: TextStyle(fontSize: 11, color: subtitleColor.withAlpha(120)),
-                  ),
-                ],
-                const SizedBox(height: DnaSpacing.xl),
-
-                // Buttons
-                Row(
-                  children: [
-                    Expanded(
-                      child: DnaButton(
-                        label: l10n.cancel,
-                        variant: DnaButtonVariant.ghost,
-                        expand: true,
-                        onPressed: () => Navigator.of(context).pop(false),
-                      ),
-                    ),
-                    const SizedBox(width: DnaSpacing.md),
-                    Expanded(
-                      child: DnaButton(
-                        label: AppLocalizations.of(context).walletSwap,
-                        variant: DnaButtonVariant.primary,
-                        icon: FontAwesomeIcons.arrowRightArrowLeft,
-                        expand: true,
-                        onPressed: () => Navigator.of(context).pop(true),
-                      ),
-                    ),
-                  ],
-                ),
+                const SizedBox(height: DnaSpacing.lg),
               ],
             ),
           ),
@@ -2980,6 +2994,49 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
         );
       }
     }
+  }
+
+  Widget _buildSwapDetailRow(ThemeData theme,
+      {required IconData icon,
+      required String label,
+      required String value}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: DnaSpacing.md),
+      child: Row(
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest.withAlpha(120),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Center(
+              child: FaIcon(icon, size: 14,
+                  color: theme.colorScheme.onSurface.withAlpha(140)),
+            ),
+          ),
+          const SizedBox(width: DnaSpacing.md),
+          Expanded(
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 14,
+                    color: theme.colorScheme.onSurface.withAlpha(150))),
+          ),
+          Flexible(
+            child: Text(value,
+                style: const TextStyle(
+                    fontSize: 14, fontWeight: FontWeight.w600),
+                textAlign: TextAlign.end,
+                overflow: TextOverflow.ellipsis),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSwapDivider(ThemeData theme) {
+    return Divider(height: 1, color: theme.dividerColor.withAlpha(40));
   }
 
   /// Build the token amount card (From or To)
