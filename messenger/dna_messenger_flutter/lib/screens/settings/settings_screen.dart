@@ -720,7 +720,51 @@ class _DataSectionState extends ConsumerState<_DataSection> {
                 ? null
                 : () => ref.read(syncSettingsProvider.notifier).syncNow(),
           ),
+        // Delete All Messages
+        ListTile(
+          leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.error),
+          title: Text(AppLocalizations.of(context).settingsDeleteAllMessages),
+          subtitle: Text(AppLocalizations.of(context).settingsDeleteAllMessagesSubtitle),
+          onTap: () => _confirmPurgeAll(context, ref),
+        ),
       ],
+    );
+  }
+
+  void _confirmPurgeAll(BuildContext context, WidgetRef ref) {
+    final l10n = AppLocalizations.of(context);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l10n.settingsDeleteAllMessagesTitle),
+        content: Text(l10n.settingsDeleteAllMessagesWarning),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(l10n.cancel),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              final eng = ref.read(engineProvider).valueOrNull;
+              if (eng != null) {
+                final success = await eng.deleteAllMessages();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(success
+                          ? l10n.settingsAllMessagesDeleted
+                          : l10n.settingsDeleteAllMessagesFailed),
+                    ),
+                  );
+                }
+              }
+            },
+            style: TextButton.styleFrom(foregroundColor: DnaColors.error),
+            child: Text(l10n.settingsDeleteEverything),
+          ),
+        ],
+      ),
     );
   }
 }

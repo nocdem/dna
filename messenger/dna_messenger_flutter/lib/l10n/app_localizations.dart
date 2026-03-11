@@ -2173,6 +2173,96 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Unsubscribe from {name}'**
   String unsubscribeFrom(String name);
+
+  /// No description provided for @chatSenderDeletedThis.
+  ///
+  /// In en, this message translates to:
+  /// **'Sender deleted this'**
+  String get chatSenderDeletedThis;
+
+  /// No description provided for @chatDeleteMessageTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete Message'**
+  String get chatDeleteMessageTitle;
+
+  /// No description provided for @chatDeleteMessageConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete this message from all your devices and notify the other person?'**
+  String get chatDeleteMessageConfirm;
+
+  /// No description provided for @chatDeleteConversation.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete Conversation'**
+  String get chatDeleteConversation;
+
+  /// No description provided for @chatDeleteConversationTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete Conversation'**
+  String get chatDeleteConversationTitle;
+
+  /// No description provided for @chatDeleteConversationConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete all messages in this conversation? This will delete from all your devices.'**
+  String get chatDeleteConversationConfirm;
+
+  /// No description provided for @chatConversationDeleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Conversation deleted'**
+  String get chatConversationDeleted;
+
+  /// No description provided for @chatDeleteConversationFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to delete conversation'**
+  String get chatDeleteConversationFailed;
+
+  /// No description provided for @settingsDeleteAllMessages.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete All Messages'**
+  String get settingsDeleteAllMessages;
+
+  /// No description provided for @settingsDeleteAllMessagesSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove all messages from all devices'**
+  String get settingsDeleteAllMessagesSubtitle;
+
+  /// No description provided for @settingsDeleteAllMessagesTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete All Messages?'**
+  String get settingsDeleteAllMessagesTitle;
+
+  /// No description provided for @settingsDeleteAllMessagesWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'This will permanently delete ALL messages from ALL conversations across all your devices. This cannot be undone.'**
+  String get settingsDeleteAllMessagesWarning;
+
+  /// No description provided for @settingsAllMessagesDeleted.
+  ///
+  /// In en, this message translates to:
+  /// **'All messages deleted'**
+  String get settingsAllMessagesDeleted;
+
+  /// No description provided for @settingsDeleteAllMessagesFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to delete messages'**
+  String get settingsDeleteAllMessagesFailed;
+
+  /// No description provided for @settingsDeleteEverything.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete Everything'**
+  String get settingsDeleteEverything;
 }
 
 class _AppLocalizationsDelegate

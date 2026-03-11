@@ -271,6 +271,7 @@ class Message {
   final bool isOutgoing;
   final MessageStatus status;
   final MessageType type;
+  final bool deletedBySender;
 
   Message({
     required this.id,
@@ -281,6 +282,7 @@ class Message {
     required this.isOutgoing,
     required this.status,
     required this.type,
+    this.deletedBySender = false,
   });
 
   factory Message.fromNative(dna_message_t native) {
@@ -301,6 +303,7 @@ class Message {
           : (native.message_type == 1
               ? MessageType.groupInvitation
               : MessageType.chat),
+      deletedBySender: native.deleted_by_sender,
     );
   }
 
@@ -320,11 +323,12 @@ class Message {
       isOutgoing: true,
       status: MessageStatus.pending,
       type: type,
+      deletedBySender: false,
     );
   }
 
   /// Create a copy with updated status
-  Message copyWith({MessageStatus? status, int? id}) {
+  Message copyWith({MessageStatus? status, int? id, bool? deletedBySender}) {
     return Message(
       id: id ?? this.id,
       sender: sender,
@@ -334,6 +338,7 @@ class Message {
       isOutgoing: isOutgoing,
       status: status ?? this.status,
       type: type,
+      deletedBySender: deletedBySender ?? this.deletedBySender,
     );
   }
 }
@@ -2574,10 +2579,99 @@ class DnaEngine {
     return completer.future;
   }
 
-  /// Delete a message from local database
+  /// Delete a message from local database (synchronous, local only)
   /// Returns true on success, false on error
   bool deleteMessage(int messageId) {
     return _bindings.dna_engine_delete_message_sync(_engine, messageId) == 0;
+  }
+
+  /// Delete a message with full pipeline (local + DHT + notices)
+  Future<bool> deleteMessageFull(int messageId, {bool sendNotices = true}) async {
+    final completer = Completer<bool>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      completer.complete(error == 0);
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_delete_message(
+      _engine,
+      messageId,
+      sendNotices,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit delete message request');
+    }
+
+    return completer.future;
+  }
+
+  /// Delete all messages with a contact
+  Future<bool> deleteConversation(String contactFingerprint, {bool sendNotices = true}) async {
+    final completer = Completer<bool>();
+    final localId = _nextLocalId++;
+    final contactPtr = contactFingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(contactPtr);
+      completer.complete(error == 0);
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_delete_conversation(
+      _engine,
+      contactPtr.cast(),
+      sendNotices,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(contactPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit delete conversation request');
+    }
+
+    return completer.future;
+  }
+
+  /// Delete all messages
+  Future<bool> deleteAllMessages({bool sendNotices = true}) async {
+    final completer = Completer<bool>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      completer.complete(error == 0);
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_delete_all_messages(
+      _engine,
+      sendNotices,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit delete all messages request');
+    }
+
+    return completer.future;
   }
 
   // ---------------------------------------------------------------------------

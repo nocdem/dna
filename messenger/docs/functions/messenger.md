@@ -63,6 +63,22 @@ Core messenger functionality including identity management, key generation, mess
 | `void messenger_free_messages(message_info_t*, int)` | Free message array |
 | `int messenger_search_by_date(...)` | Search messages by date range |
 
+### 3.5a Message Deletion
+
+**File:** `messenger/messages.h`, `messenger/messages.c`
+
+| Function | Description |
+|----------|-------------|
+| `int messenger_delete_message_full(messenger_context_t*, const char *fp, const char *hash, bool is_outgoing)` | Delete single message: local delete + outbox rebuild (if sent) + DELETE notice |
+| `int messenger_delete_conversation_full(messenger_context_t*, const char *fp)` | Delete all messages with contact: batch delete + outbox rebuild + DELETE_CONVERSATION notice |
+| `int messenger_delete_all_messages(messenger_context_t*)` | Delete all messages across all contacts |
+| `int messenger_send_delete_notice(messenger_context_t*, const char *recipient_fp, int action, const char **hashes, int hash_count)` | Send DELETE notice message via outbox (encrypted, signed) |
+
+**Types:**
+| Type | Description |
+|------|-------------|
+| `delete_action_t` | Enum: `DELETE_SINGLE=0`, `DELETE_CONVERSATION=1`, `DELETE_ALL=2` |
+
 ### 3.6 Message Status
 
 | Function | Description |
@@ -183,6 +199,12 @@ Database-level encryption (SQLCipher) planned for future.
 | `int message_backup_save(ctx, sender, recipient, plaintext, sender_fp, timestamp, is_outgoing, group_id, message_type, offline_seq)` | Save plaintext message to local backup (v14) |
 | `bool message_backup_exists(ctx, content_hash)` | Check if message exists (v16: by SHA3-256 content hash) |
 | `int message_backup_delete(message_backup_context_t*, int)` | Delete message by ID |
+| `int message_backup_delete_conversation(ctx, fingerprint)` | Delete all messages with a specific contact |
+| `int message_backup_delete_all(message_backup_context_t*)` | Delete all messages |
+| `int message_backup_delete_by_content_hash(ctx, content_hash)` | Delete message by content hash |
+| `int message_backup_mark_deleted_by_sender(ctx, content_hash)` | Set deleted_by_sender flag for a message |
+| `char* message_backup_get_content_hash_by_id(ctx, message_id)` | Get content hash for a message by ID (caller frees) |
+| `int message_backup_get_all_content_hashes(ctx, fingerprint, hashes_out, count_out)` | Get all content hashes for a contact's messages |
 | `void message_backup_free_messages(backup_message_t*, int)` | Free message array |
 
 ### 4.3 Message Status

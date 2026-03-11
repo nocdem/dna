@@ -33,6 +33,7 @@ typedef struct message_backup_context message_backup_context_t;
 #define MESSAGE_TYPE_CHAT 0
 #define MESSAGE_TYPE_GROUP_INVITATION 1
 #define MESSAGE_TYPE_CPUNK_TRANSFER 2
+#define MESSAGE_TYPE_DELETE 3  /* Deletion notice (v17) */
 
 /**
  * Message Status Values (v15: Simplified 4-state model)
@@ -81,6 +82,7 @@ typedef struct {
     int invitation_status;  // 0=pending, 1=accepted, 2=declined - Phase 6.2
     int retry_count;  // Number of send retry attempts (for failed messages)
     bool is_outgoing;  // true if we sent it, false if we received it
+    bool deleted_by_sender;  // true if sender sent deletion notice (v17)
 } backup_message_t;
 
 /**
@@ -348,6 +350,72 @@ int message_backup_search_by_identity(message_backup_context_t *ctx,
  * @return 0 on success, -1 on error
  */
 int message_backup_delete(message_backup_context_t *ctx, int message_id);
+
+/**
+ * Delete all messages in a conversation with a contact
+ *
+ * @param ctx Backup context
+ * @param contact_identity Contact identity (fingerprint or name)
+ * @return Number of deleted messages, or -1 on error
+ */
+int message_backup_delete_conversation(message_backup_context_t *ctx,
+                                        const char *contact_identity);
+
+/**
+ * Delete all messages in the database
+ *
+ * @param ctx Backup context
+ * @return Number of deleted messages, or -1 on error
+ */
+int message_backup_delete_all(message_backup_context_t *ctx);
+
+/**
+ * Mark a message as deleted by sender (remote deletion notice)
+ *
+ * @param ctx Backup context
+ * @param content_hash SHA3-256 hex string (64 chars) identifying the message
+ * @return 0 on success, -1 on error or not found
+ */
+int message_backup_mark_deleted_by_sender(message_backup_context_t *ctx,
+                                           const char *content_hash);
+
+/**
+ * Get content hash for a message by ID
+ *
+ * @param ctx Backup context
+ * @param message_id Message ID from database
+ * @param hash_out Buffer to receive content hash (must be >= 65 bytes)
+ * @param hash_out_size Size of hash_out buffer
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_content_hash_by_id(message_backup_context_t *ctx,
+                                           int message_id,
+                                           char *hash_out,
+                                           size_t hash_out_size);
+
+/**
+ * Get all content hashes for a conversation with a contact
+ *
+ * @param ctx Backup context
+ * @param contact_identity Contact identity
+ * @param hashes_out Array of content hash strings (caller must free each + array)
+ * @param count_out Number of hashes returned
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_all_content_hashes(message_backup_context_t *ctx,
+                                           const char *contact_identity,
+                                           char ***hashes_out,
+                                           int *count_out);
+
+/**
+ * Delete a message by content hash
+ *
+ * @param ctx Backup context
+ * @param content_hash SHA3-256 hex string (64 chars) identifying the message
+ * @return 0 on success, -1 on error or not found
+ */
+int message_backup_delete_by_content_hash(message_backup_context_t *ctx,
+                                           const char *content_hash);
 
 /**
  * Free message array

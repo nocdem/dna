@@ -356,19 +356,29 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
     }
   }
 
-  /// Delete a message from local database
-  /// Returns true on success
-  Future<bool> deleteMessage(int messageId) async {
+  /// Delete a message with full pipeline (local + DHT + notices)
+  Future<bool> deleteMessage(int messageId, {bool sendNotices = true}) async {
     final engine = ref.read(engineProvider).valueOrNull;
     if (engine == null) return false;
 
-    final success = engine.deleteMessage(messageId);
+    final success = await engine.deleteMessageFull(messageId, sendNotices: sendNotices);
     if (success) {
-      // Remove from UI immediately (optimistic)
       state.whenData((messages) {
         final updated = messages.where((m) => m.id != messageId).toList();
         state = AsyncValue.data(updated);
       });
+    }
+    return success;
+  }
+
+  /// Delete entire conversation with a contact
+  Future<bool> deleteConversation({bool sendNotices = true}) async {
+    final engine = ref.read(engineProvider).valueOrNull;
+    if (engine == null) return false;
+
+    final success = await engine.deleteConversation(arg, sendNotices: sendNotices);
+    if (success) {
+      state = const AsyncValue.data([]);
     }
     return success;
   }

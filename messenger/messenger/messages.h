@@ -199,6 +199,66 @@ int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_
 int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,
                               const char *end_date, bool include_sent, bool include_received);
 
+/**
+ * Deletion action types (v17)
+ */
+typedef enum {
+    DELETE_ACTION_SINGLE = 0,
+    DELETE_ACTION_CONVERSATION = 1,
+    DELETE_ACTION_ALL = 2
+} delete_action_t;
+
+/**
+ * Delete a single message with optional remote notice
+ *
+ * Gets content_hash by message ID, deletes from local SQLite.
+ * Notice sending is handled at the engine layer.
+ *
+ * @param ctx Messenger context
+ * @param message_id Message ID from SQLite
+ * @param send_notices If true, caller should send delete notices (reserved)
+ * @return 0 on success, -1 on error
+ */
+int messenger_delete_message_full(messenger_context_t *ctx, int message_id,
+                                   bool send_notices);
+
+/**
+ * Delete all messages in a conversation
+ *
+ * @param ctx Messenger context
+ * @param contact_identity Contact identity (fingerprint or name)
+ * @return Number of deleted messages, or -1 on error
+ */
+int messenger_delete_conversation_full(messenger_context_t *ctx,
+                                        const char *contact_identity);
+
+/**
+ * Delete all messages in the database
+ *
+ * @param ctx Messenger context
+ * @return Number of deleted messages, or -1 on error
+ */
+int messenger_delete_all_messages(messenger_context_t *ctx);
+
+/**
+ * Send a deletion notice to a recipient
+ *
+ * Builds JSON notice and sends via the existing message pipeline
+ * with MESSAGE_TYPE_DELETE.
+ *
+ * @param ctx Messenger context
+ * @param recipient Recipient identity
+ * @param action Deletion action type
+ * @param content_hashes Array of content hash strings (may be NULL)
+ * @param hash_count Number of hashes
+ * @return 0 on success, -1 on error
+ */
+int messenger_send_delete_notice(messenger_context_t *ctx,
+                                  const char *recipient,
+                                  delete_action_t action,
+                                  const char **content_hashes,
+                                  int hash_count);
+
 #ifdef __cplusplus
 }
 #endif

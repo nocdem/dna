@@ -1110,4 +1110,53 @@ class AppLocalizationsEn extends AppLocalizations {
   String unsubscribeFrom(String name) {
     return 'Unsubscribe from $name';
   }
+
+  @override
+  String get chatSenderDeletedThis => 'Sender deleted this';
+
+  @override
+  String get chatDeleteMessageTitle => 'Delete Message';
+
+  @override
+  String get chatDeleteMessageConfirm =>
+      'Delete this message from all your devices and notify the other person?';
+
+  @override
+  String get chatDeleteConversation => 'Delete Conversation';
+
+  @override
+  String get chatDeleteConversationTitle => 'Delete Conversation';
+
+  @override
+  String get chatDeleteConversationConfirm =>
+      'Delete all messages in this conversation? This will delete from all your devices.';
+
+  @override
+  String get chatConversationDeleted => 'Conversation deleted';
+
+  @override
+  String get chatDeleteConversationFailed => 'Failed to delete conversation';
+
+  @override
+  String get settingsDeleteAllMessages => 'Delete All Messages';
+
+  @override
+  String get settingsDeleteAllMessagesSubtitle =>
+      'Remove all messages from all devices';
+
+  @override
+  String get settingsDeleteAllMessagesTitle => 'Delete All Messages?';
+
+  @override
+  String get settingsDeleteAllMessagesWarning =>
+      'This will permanently delete ALL messages from ALL conversations across all your devices. This cannot be undone.';
+
+  @override
+  String get settingsAllMessagesDeleted => 'All messages deleted';
+
+  @override
+  String get settingsDeleteAllMessagesFailed => 'Failed to delete messages';
+
+  @override
+  String get settingsDeleteEverything => 'Delete Everything';
 }

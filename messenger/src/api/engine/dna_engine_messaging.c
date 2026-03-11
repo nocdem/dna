@@ -190,6 +190,7 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
             }
 
             messages[i].message_type = msg_infos[i].message_type;
+            messages[i].deleted_by_sender = msg_infos[i].deleted_by_sender;
         }
         count = msg_count;
 
@@ -284,6 +285,7 @@ void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task) {
             }
 
             messages[i].message_type = msg_infos[i].message_type;
+            messages[i].deleted_by_sender = msg_infos[i].deleted_by_sender;
         }
         count = msg_count;
 
@@ -925,4 +927,171 @@ int dna_engine_delete_message_sync(
     if (!engine->messenger) return -1;
 
     return messenger_delete_message(engine->messenger, message_id);
+}
+
+/* ============================================================================
+ * MESSAGE DELETION HANDLERS (v17)
+ * ============================================================================ */
+
+void dna_handle_delete_message(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    int message_id = task->params.delete_message.message_id;
+
+    int rc = messenger_delete_message(engine->messenger, message_id);
+    if (rc != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+    }
+
+done:
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_delete_conversation(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    char **hashes = NULL;
+    int hash_count = 0;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    const char *contact = task->params.delete_conversation.contact;
+    bool notices = task->params.delete_conversation.send_notices;
+
+    /* Collect content hashes before deletion (needed for notices) */
+    if (notices) {
+        message_backup_get_all_content_hashes(engine->messenger->backup_ctx,
+                                               contact, &hashes, &hash_count);
+    }
+
+    /* Delete conversation locally */
+    int deleted = messenger_delete_conversation_full(engine->messenger, contact);
+    if (deleted < 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    /* Rebuild outbox (removes deleted messages from DHT) */
+    messenger_flush_recipient_outbox(engine->messenger, contact);
+
+    /* Send DELETE notices to contact and self (cross-device sync) */
+    if (notices && hash_count > 0) {
+        messenger_send_delete_notice(engine->messenger, contact,
+                                      DELETE_ACTION_CONVERSATION,
+                                      (const char **)hashes, hash_count);
+        messenger_send_delete_notice(engine->messenger, engine->fingerprint,
+                                      DELETE_ACTION_CONVERSATION,
+                                      (const char **)hashes, hash_count);
+    }
+
+done:
+    if (hashes) {
+        for (int i = 0; i < hash_count; i++) free(hashes[i]);
+        free(hashes);
+    }
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_delete_all_messages(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    bool notices = task->params.delete_all_messages.send_notices;
+
+    /* Send DELETE notices to each contact before deleting */
+    if (notices) {
+        contact_list_t *contacts = NULL;
+        if (contacts_db_list(&contacts) == 0 && contacts && contacts->count > 0) {
+            for (size_t i = 0; i < contacts->count; i++) {
+                const char *contact_fp = contacts->contacts[i].identity;
+                char **hashes = NULL;
+                int hash_count = 0;
+
+                message_backup_get_all_content_hashes(engine->messenger->backup_ctx,
+                                                       contact_fp, &hashes, &hash_count);
+                if (hash_count > 0) {
+                    messenger_send_delete_notice(engine->messenger, contact_fp,
+                                                  DELETE_ACTION_ALL,
+                                                  (const char **)hashes, hash_count);
+                    messenger_send_delete_notice(engine->messenger, engine->fingerprint,
+                                                  DELETE_ACTION_ALL,
+                                                  (const char **)hashes, hash_count);
+                }
+
+                /* Rebuild outbox for each contact */
+                messenger_flush_recipient_outbox(engine->messenger, contact_fp);
+
+                if (hashes) {
+                    for (int j = 0; j < hash_count; j++) free(hashes[j]);
+                    free(hashes);
+                }
+            }
+            contacts_db_free_list(contacts);
+        }
+    }
+
+    /* Delete all messages locally */
+    int deleted = messenger_delete_all_messages(engine->messenger);
+    if (deleted < 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+    }
+
+done:
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+/* ============================================================================
+ * PUBLIC API - Message Deletion (v17)
+ * ============================================================================ */
+
+dna_request_id_t dna_engine_delete_message(
+    dna_engine_t *engine, int message_id, bool send_notices,
+    dna_completion_cb callback, void *user_data)
+{
+    if (!engine || message_id <= 0 || !callback) return DNA_REQUEST_ID_INVALID;
+    dna_task_params_t params = {0};
+    params.delete_message.message_id = message_id;
+    params.delete_message.send_notices = send_notices;
+    return dna_submit_task(engine, TASK_DELETE_MESSAGE, &params,
+                           (dna_task_callback_t){.completion = callback}, user_data);
+}
+
+dna_request_id_t dna_engine_delete_conversation(
+    dna_engine_t *engine, const char *contact_fingerprint, bool send_notices,
+    dna_completion_cb callback, void *user_data)
+{
+    if (!engine || !contact_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+    dna_task_params_t params = {0};
+    strncpy(params.delete_conversation.contact, contact_fingerprint, 128);
+    params.delete_conversation.send_notices = send_notices;
+    return dna_submit_task(engine, TASK_DELETE_CONVERSATION, &params,
+                           (dna_task_callback_t){.completion = callback}, user_data);
+}
+
+dna_request_id_t dna_engine_delete_all_messages(
+    dna_engine_t *engine, bool send_notices,
+    dna_completion_cb callback, void *user_data)
+{
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+    dna_task_params_t params = {0};
+    params.delete_all_messages.send_notices = send_notices;
+    return dna_submit_task(engine, TASK_DELETE_ALL_MESSAGES, &params,
+                           (dna_task_callback_t){.completion = callback}, user_data);
 }

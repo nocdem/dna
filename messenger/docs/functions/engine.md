@@ -72,6 +72,9 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_send_message(dna_engine_t*, dna_task_t*)` | Handle send message |
 | `void dna_handle_get_conversation(dna_engine_t*, dna_task_t*)` | Handle get conversation |
 | `void dna_handle_check_offline_messages(dna_engine_t*, dna_task_t*)` | Handle check offline |
+| `void dna_handle_delete_message(dna_engine_t*, dna_task_t*)` | Handle single message deletion with DHT cleanup + notices |
+| `void dna_handle_delete_conversation(dna_engine_t*, dna_task_t*)` | Handle conversation purge with DHT cleanup + notices |
+| `void dna_handle_delete_all_messages(dna_engine_t*, dna_task_t*)` | Handle purge all messages |
 
 ### Task Handlers - Groups
 

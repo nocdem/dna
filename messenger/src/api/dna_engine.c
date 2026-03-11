@@ -950,6 +950,15 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_CHECK_OFFLINE_MESSAGES_FROM:
             dna_handle_check_offline_messages_from(engine, task);
             break;
+        case TASK_DELETE_MESSAGE:
+            dna_handle_delete_message(engine, task);
+            break;
+        case TASK_DELETE_CONVERSATION:
+            dna_handle_delete_conversation(engine, task);
+            break;
+        case TASK_DELETE_ALL_MESSAGES:
+            dna_handle_delete_all_messages(engine, task);
+            break;
 
         /* Groups */
         case TASK_GET_GROUPS:

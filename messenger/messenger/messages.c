@@ -43,6 +43,7 @@
 #include "../database/contacts_db.h"
 #include "keys.h"
 #include "crypto/utils/qgp_log.h"
+#include <json-c/json.h>
 
 #define LOG_TAG "MSG"
 
@@ -1164,6 +1165,7 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         messages[i].delivered_at = backup_messages[i].delivered ? strdup(messages[i].timestamp) : NULL;
         messages[i].read_at = backup_messages[i].read ? strdup(messages[i].timestamp) : NULL;
         messages[i].message_type = backup_messages[i].message_type;
+        messages[i].deleted_by_sender = backup_messages[i].deleted_by_sender;
 
         // v14: Direct plaintext copy - no decryption needed
         messages[i].plaintext = backup_messages[i].plaintext ? strdup(backup_messages[i].plaintext) : strdup("");
@@ -1270,6 +1272,7 @@ int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_
         messages[i].delivered_at = backup_messages[i].delivered ? strdup(messages[i].timestamp) : NULL;
         messages[i].read_at = backup_messages[i].read ? strdup(messages[i].timestamp) : NULL;
         messages[i].message_type = backup_messages[i].message_type;
+        messages[i].deleted_by_sender = backup_messages[i].deleted_by_sender;
 
         // v14: Direct plaintext copy - no decryption needed
         messages[i].plaintext = backup_messages[i].plaintext ? strdup(backup_messages[i].plaintext) : strdup("");
@@ -1433,6 +1436,89 @@ int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,
     printf("\n");
     message_backup_free_messages(all_messages, all_count);
     return 0;
+}
+
+// ============================================================================
+// MESSAGE DELETION (v17)
+// ============================================================================
+
+int messenger_delete_message_full(messenger_context_t *ctx, int message_id,
+                                   bool send_notices) {
+    if (!ctx || !ctx->backup_ctx) return -1;
+
+    (void)send_notices;  // Notice sending handled at engine layer
+
+    int rc = message_backup_delete(ctx->backup_ctx, message_id);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete message id=%d", message_id);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Deleted message id=%d", message_id);
+    return 0;
+}
+
+int messenger_delete_conversation_full(messenger_context_t *ctx,
+                                        const char *contact_identity) {
+    if (!ctx || !ctx->backup_ctx || !contact_identity) return -1;
+
+    int count = message_backup_delete_conversation(ctx->backup_ctx, contact_identity);
+    if (count < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete conversation with %s", contact_identity);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Deleted %d messages in conversation with %s",
+                 count, contact_identity);
+    return count;
+}
+
+int messenger_delete_all_messages(messenger_context_t *ctx) {
+    if (!ctx || !ctx->backup_ctx) return -1;
+
+    int count = message_backup_delete_all(ctx->backup_ctx);
+    if (count < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete all messages");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Deleted all messages (count=%d)", count);
+    return count;
+}
+
+int messenger_send_delete_notice(messenger_context_t *ctx,
+                                  const char *recipient,
+                                  delete_action_t action,
+                                  const char **content_hashes,
+                                  int hash_count) {
+    if (!ctx || !recipient) return -1;
+
+    json_object *j_notice = json_object_new_object();
+    if (!j_notice) return -1;
+
+    json_object_object_add(j_notice, "type", json_object_new_string("delete"));
+    json_object_object_add(j_notice, "action", json_object_new_int(action));
+
+    if (content_hashes && hash_count > 0) {
+        json_object *j_hashes = json_object_new_array();
+        for (int i = 0; i < hash_count; i++) {
+            json_object_array_add(j_hashes,
+                                  json_object_new_string(content_hashes[i]));
+        }
+        json_object_object_add(j_notice, "hashes", j_hashes);
+    }
+
+    if (action == DELETE_ACTION_CONVERSATION) {
+        json_object_object_add(j_notice, "contact",
+                               json_object_new_string(recipient));
+    }
+
+    const char *json_str = json_object_to_json_string(j_notice);
+    const char *recipients[1] = { recipient };
+    int rc = messenger_send_message(ctx, recipients, 1, json_str,
+                                     0, MESSAGE_TYPE_DELETE, 0);
+    json_object_put(j_notice);
+    return rc;
 }
 
 // ============================================================================

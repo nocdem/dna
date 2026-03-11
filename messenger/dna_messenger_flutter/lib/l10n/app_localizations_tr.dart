@@ -1122,4 +1122,53 @@ class AppLocalizationsTr extends AppLocalizations {
   String unsubscribeFrom(String name) {
     return '$name aboneliğinden çık';
   }
+
+  @override
+  String get chatSenderDeletedThis => 'Gönderen bunu sildi';
+
+  @override
+  String get chatDeleteMessageTitle => 'Mesajı Sil';
+
+  @override
+  String get chatDeleteMessageConfirm =>
+      'Bu mesajı tüm cihazlarınızdan silmek ve karşı tarafı bilgilendirmek istiyor musunuz?';
+
+  @override
+  String get chatDeleteConversation => 'Konuşmayı Sil';
+
+  @override
+  String get chatDeleteConversationTitle => 'Konuşmayı Sil';
+
+  @override
+  String get chatDeleteConversationConfirm =>
+      'Bu konuşmadaki tüm mesajları silmek istediğinize emin misiniz? Tüm cihazlarınızdan silinecek.';
+
+  @override
+  String get chatConversationDeleted => 'Konuşma silindi';
+
+  @override
+  String get chatDeleteConversationFailed => 'Konuşma silinemedi';
+
+  @override
+  String get settingsDeleteAllMessages => 'Tüm Mesajları Sil';
+
+  @override
+  String get settingsDeleteAllMessagesSubtitle =>
+      'Tüm cihazlardan tüm mesajları kaldır';
+
+  @override
+  String get settingsDeleteAllMessagesTitle => 'Tüm Mesajlar Silinsin mi?';
+
+  @override
+  String get settingsDeleteAllMessagesWarning =>
+      'Bu işlem tüm konuşmalardaki TÜM mesajları tüm cihazlarınızdan kalıcı olarak silecektir. Bu işlem geri alınamaz.';
+
+  @override
+  String get settingsAllMessagesDeleted => 'Tüm mesajlar silindi';
+
+  @override
+  String get settingsDeleteAllMessagesFailed => 'Mesajlar silinemedi';
+
+  @override
+  String get settingsDeleteEverything => 'Her Şeyi Sil';
 }

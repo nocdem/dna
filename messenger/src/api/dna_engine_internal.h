@@ -93,6 +93,11 @@ typedef enum {
     TASK_CHECK_OFFLINE_MESSAGES,
     TASK_CHECK_OFFLINE_MESSAGES_FROM,
 
+    /* Message deletion (v17) */
+    TASK_DELETE_MESSAGE,
+    TASK_DELETE_CONVERSATION,
+    TASK_DELETE_ALL_MESSAGES,
+
     /* Groups */
     TASK_GET_GROUPS,
     TASK_GET_GROUP_INFO,
@@ -262,6 +267,23 @@ typedef union {
     struct {
         char contact_fingerprint[129];
     } check_offline_messages_from;
+
+    /* Delete message */
+    struct {
+        int message_id;
+        bool send_notices;
+    } delete_message;
+
+    /* Delete conversation */
+    struct {
+        char contact[129];
+        bool send_notices;
+    } delete_conversation;
+
+    /* Delete all messages */
+    struct {
+        bool send_notices;
+    } delete_all_messages;
 
     /* Create group */
     struct {
@@ -802,6 +824,9 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_check_offline_messages_from(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_delete_message(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_delete_conversation(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_delete_all_messages(dna_engine_t *engine, dna_task_t *task);
 
 /* Groups */
 void dna_handle_get_groups(dna_engine_t *engine, dna_task_t *task);

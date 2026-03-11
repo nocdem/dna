@@ -5,6 +5,7 @@
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.16.0 (2026-03-11): Added Message Deletion API — `dna_engine_delete_message`, `dna_engine_delete_conversation`, `dna_engine_delete_all_messages`. Three deletion scopes (single, conversation, all) with local delete + DHT outbox rebuild + DELETE notices to contacts + cross-device sync via self-addressed outbox messages. New types: `deleted_by_sender` field in `dna_message_t`, `MESSAGE_TYPE_DELETE` (3), `delete_action_t` enum. DB schema v17: `deleted_by_sender` column.
 - v1.15.0 (2026-03-10): Added mandatory version enforcement — `dna_version_check_result_t` now includes `library_below_minimum` and `app_below_minimum` flags. When local version is below DHT-published minimum, Flutter app blocks usage with UpdateRequiredScreen.
 - v1.14.0 (2026-02-25): Added Wall API (section 5b) - user wall posts with images, comments, and timeline. New functions: `dna_engine_wall_post`, `dna_engine_wall_post_with_image`, `dna_engine_wall_delete`, `dna_engine_wall_load`, `dna_engine_wall_timeline`, `dna_engine_wall_add_comment`, `dna_engine_wall_get_comments`. New types: `dna_wall_post_info_t` (includes `image_json` field), `dna_wall_comment_info_t`, `dna_wall_post_cb`, `dna_wall_posts_cb`, `dna_wall_comment_cb`, `dna_wall_comments_cb`. Free functions: `dna_free_wall_posts`, `dna_free_wall_comments`.
 - v1.13.0 (2026-01-31): Added threaded comment replies - `dna_engine_feed_add_comment` now accepts `parent_comment_uuid` parameter for single-level threading. Comments can reply to other comments (not reply-to-reply). Added `parent_comment_uuid` field to `dna_feed_comment_info_t` struct.
@@ -156,7 +157,7 @@ if (bindings.dna_engine_has_identity(engine, dataDir.toNativeUtf8())) {
 | [Profile](#2a-profile) | 2 | Get/update user profile (wallets, socials, bio, avatar) |
 | [Contacts](#3-contacts) | 3 | Get, add, remove contacts |
 | [Contact Requests](#3a-contact-requests) | 9 | ICQ-style contact requests, block/unblock |
-| [Messaging](#4-messaging) | 3 | Send messages, get conversations |
+| [Messaging](#4-messaging) | 6 | Send messages, get conversations, delete messages |
 | [Groups](#5-groups) | 6 | Create groups, send group messages, invitations |
 | [Feeds v2](#5a-feeds-v2) | 7 | Topic-based public feeds with categories |
 | [Wall](#5b-wall) | 7 | User wall posts, images, comments, timeline |
@@ -1241,6 +1242,88 @@ for each message in pending_messages:
 **Max Retries:** 10 attempts per message. After 10 failures, message remains FAILED and requires manual retry via UI.
 
 **Source:** `src/api/dna_engine.c:4862-4920`, `message_backup.c:644-721`
+
+### dna_engine_delete_message
+
+```c
+dna_request_id_t dna_engine_delete_message(
+    dna_engine_t *engine,
+    int message_id,
+    const char *contact_fingerprint,
+    dna_generic_cb cb,
+    void *user_data
+);
+```
+
+Delete a single message with full DHT cleanup and cross-device sync.
+
+**Parameters:**
+- `engine` - Engine instance
+- `message_id` - Local SQLite message ID
+- `contact_fingerprint` - Fingerprint of the contact in the conversation
+- `cb` - Callback: `void cb(dna_request_id_t, int error, void*)`
+- `user_data` - User context
+
+**What it does:**
+1. Gets content hash for the message from SQLite
+2. Deletes message from local database
+3. If message was sent by me: rebuilds outbox for that contact (removes deleted message from DHT)
+4. Sends DELETE notice to contact (encrypted via existing outbox mechanism)
+5. Sends self-addressed DELETE notice for cross-device sync
+
+**Source:** `src/api/engine/dna_engine_messaging.c`
+
+### dna_engine_delete_conversation
+
+```c
+dna_request_id_t dna_engine_delete_conversation(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    dna_generic_cb cb,
+    void *user_data
+);
+```
+
+Delete all messages with a specific contact (conversation purge).
+
+**Parameters:**
+- `engine` - Engine instance
+- `contact_fingerprint` - Fingerprint of the contact
+- `cb` - Callback: `void cb(dna_request_id_t, int error, void*)`
+- `user_data` - User context
+
+**What it does:**
+1. Collects all content hashes for messages in the conversation
+2. Deletes all messages for that contact from local database
+3. Rebuilds outbox for that contact (removes all sent messages from DHT)
+4. Sends DELETE_CONVERSATION notice to contact
+5. Sends self-addressed DELETE_CONVERSATION notice for cross-device sync
+
+**Source:** `src/api/engine/dna_engine_messaging.c`
+
+### dna_engine_delete_all_messages
+
+```c
+dna_request_id_t dna_engine_delete_all_messages(
+    dna_engine_t *engine,
+    dna_generic_cb cb,
+    void *user_data
+);
+```
+
+Delete all messages across all contacts (purge everything).
+
+**Parameters:**
+- `engine` - Engine instance
+- `cb` - Callback: `void cb(dna_request_id_t, int error, void*)`
+- `user_data` - User context
+
+**What it does:**
+1. Deletes all messages from local database
+2. Sends DELETE_ALL notice to self for cross-device sync
+3. Does NOT send notices to individual contacts (purge is local + cross-device only)
+
+**Source:** `src/api/engine/dna_engine_messaging.c`
 
 ---
 

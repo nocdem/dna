@@ -70,7 +70,8 @@ static const char *SCHEMA_SQL =
     "  message_type INTEGER DEFAULT 0,"   // 0=chat, 1=group_invitation (Phase 6.2)
     "  invitation_status INTEGER DEFAULT 0,"  // 0=pending, 1=accepted, 2=declined (Phase 6.2)
     "  retry_count INTEGER DEFAULT 0,"    // Send retry attempts
-    "  content_hash TEXT"                 // v16: SHA3-256 dedup hash (64 hex chars)
+    "  content_hash TEXT,"               // v16: SHA3-256 dedup hash (64 hex chars)
+    "  deleted_by_sender INTEGER DEFAULT 0"  // v17: remote deletion flag
     ");"
     ""
     "CREATE INDEX IF NOT EXISTS idx_sender ON messages(sender);"
@@ -83,7 +84,7 @@ static const char *SCHEMA_SQL =
     "  value TEXT"
     ");"
     ""
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '16');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '17');";
 
 /**
  * Get database path
@@ -491,7 +492,22 @@ message_backup_context_t* message_backup_init(const char *identity) {
     const char *ver_update_v16 = "UPDATE metadata SET value = '16' WHERE key = 'version'";
     sqlite3_exec(ctx->db, ver_update_v16, NULL, NULL, NULL);
 
-    QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (PLAINTEXT STORAGE, v16)\n", identity);
+    /* Migration v17: deleted_by_sender flag for remote deletion notices */
+    const char *migration_sql_v17 =
+        "ALTER TABLE messages ADD COLUMN deleted_by_sender INTEGER DEFAULT 0";
+
+    rc = sqlite3_exec(ctx->db, migration_sql_v17, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_DEBUG(LOG_TAG, "v17 deleted_by_sender column note: %s\n", err_msg);
+        sqlite3_free(err_msg);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "v17: Added deleted_by_sender column\n");
+    }
+
+    const char *ver_update_v17 = "UPDATE metadata SET value = '17' WHERE key = 'version'";
+    sqlite3_exec(ctx->db, ver_update_v17, NULL, NULL, NULL);
+
+    QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (PLAINTEXT STORAGE, v17)\n", identity);
     return ctx;
 }
 
@@ -760,7 +776,7 @@ int message_backup_get_conversation_page(message_backup_context_t *ctx,
     // Get paginated messages - ORDER BY timestamp DESC for newest-first
     // This allows efficient loading for reverse-scroll chat UI
     const char *sql =
-        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, is_outgoing "
+        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, is_outgoing, deleted_by_sender "
         "FROM messages "
         "WHERE (sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?) "
         "ORDER BY timestamp DESC "
@@ -809,6 +825,7 @@ int message_backup_get_conversation_page(message_backup_context_t *ctx,
         messages[idx].group_id = sqlite3_column_int(stmt, 9);
         messages[idx].message_type = sqlite3_column_int(stmt, 10);
         messages[idx].is_outgoing = sqlite3_column_int(stmt, 11) != 0;
+        messages[idx].deleted_by_sender = sqlite3_column_int(stmt, 12) != 0;
         idx++;
     }
 
@@ -833,7 +850,7 @@ int message_backup_get_group_conversation(message_backup_context_t *ctx,
     if (group_id <= 0) return -1;  // group_id must be positive
 
     const char *sql =
-        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, is_outgoing "
+        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, is_outgoing, deleted_by_sender "
         "FROM messages "
         "WHERE group_id = ? "
         "ORDER BY timestamp ASC";
@@ -889,6 +906,7 @@ int message_backup_get_group_conversation(message_backup_context_t *ctx,
         messages[idx].status = sqlite3_column_int(stmt, 8);
         messages[idx].group_id = sqlite3_column_int(stmt, 9);
         messages[idx].is_outgoing = sqlite3_column_int(stmt, 10) != 0;
+        messages[idx].deleted_by_sender = sqlite3_column_int(stmt, 11) != 0;
         idx++;
     }
 
@@ -995,13 +1013,13 @@ int message_backup_get_pending_messages(message_backup_context_t *ctx,
     // Query outgoing messages with status PENDING(0) or FAILED(3)
     // max_retries=0 means unlimited (no retry_count filter)
     const char *sql_unlimited =
-        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, retry_count "
+        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, retry_count, deleted_by_sender "
         "FROM messages "
         "WHERE is_outgoing = 1 AND (status = 0 OR status = 3) "
         "ORDER BY timestamp ASC";
 
     const char *sql_limited =
-        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, retry_count "
+        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, retry_count, deleted_by_sender "
         "FROM messages "
         "WHERE is_outgoing = 1 AND (status = 0 OR status = 3) AND retry_count < ? "
         "ORDER BY timestamp ASC";
@@ -1061,6 +1079,7 @@ int message_backup_get_pending_messages(message_backup_context_t *ctx,
         messages[idx].group_id = sqlite3_column_int(stmt, 9);
         messages[idx].message_type = sqlite3_column_int(stmt, 10);
         messages[idx].retry_count = sqlite3_column_int(stmt, 11);
+        messages[idx].deleted_by_sender = sqlite3_column_int(stmt, 12) != 0;
         messages[idx].is_outgoing = true;
         idx++;
     }
@@ -1085,7 +1104,7 @@ int message_backup_get_pending_for_recipient(message_backup_context_t *ctx,
 
     const char *sql =
         "SELECT id, sender, recipient, plaintext, sender_fingerprint, "
-        "       timestamp, delivered, read, status, group_id, message_type, retry_count "
+        "       timestamp, delivered, read, status, group_id, message_type, retry_count, deleted_by_sender "
         "FROM messages "
         "WHERE is_outgoing = 1 AND status IN (0, 3) AND recipient = ? "
         "ORDER BY timestamp ASC";
@@ -1131,6 +1150,7 @@ int message_backup_get_pending_for_recipient(message_backup_context_t *ctx,
         messages[idx].group_id = sqlite3_column_int(stmt, 9);
         messages[idx].message_type = sqlite3_column_int(stmt, 10);
         messages[idx].retry_count = sqlite3_column_int(stmt, 11);
+        messages[idx].deleted_by_sender = sqlite3_column_int(stmt, 12) != 0;
         messages[idx].is_outgoing = true;
         idx++;
     }
@@ -1253,7 +1273,7 @@ int message_backup_search_by_identity(message_backup_context_t *ctx,
     if (!ctx || !ctx->db || !identity) return -1;
 
     const char *sql =
-        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, is_outgoing "
+        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, is_outgoing, deleted_by_sender "
         "FROM messages "
         "WHERE sender = ? OR recipient = ? "
         "ORDER BY timestamp DESC";
@@ -1304,6 +1324,7 @@ int message_backup_search_by_identity(message_backup_context_t *ctx,
         messages[idx].read = sqlite3_column_int(stmt, 7) != 0;
         messages[idx].status = sqlite3_column_int(stmt, 8);
         messages[idx].is_outgoing = sqlite3_column_int(stmt, 9) != 0;
+        messages[idx].deleted_by_sender = sqlite3_column_int(stmt, 10) != 0;
         idx++;
     }
 
@@ -1349,6 +1370,242 @@ int message_backup_delete(message_backup_context_t *ctx, int message_id) {
 
     QGP_LOG_INFO(LOG_TAG, "Deleted message %d\n", message_id);
     return 0;
+}
+
+/**
+ * Delete all messages in a conversation with a contact
+ */
+int message_backup_delete_conversation(message_backup_context_t *ctx,
+                                        const char *contact_identity) {
+    if (!ctx || !ctx->db || !contact_identity) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context or contact_identity\n");
+        return -1;
+    }
+
+    const char *sql = "DELETE FROM messages WHERE sender = ? OR recipient = ?";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare delete_conversation: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, contact_identity, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, contact_identity, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete conversation: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    int changes = sqlite3_changes(ctx->db);
+    QGP_LOG_INFO(LOG_TAG, "Deleted %d messages in conversation with %.20s...\n", changes, contact_identity);
+    return changes;
+}
+
+/**
+ * Delete all messages in the database
+ */
+int message_backup_delete_all(message_backup_context_t *ctx) {
+    if (!ctx || !ctx->db) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context\n");
+        return -1;
+    }
+
+    const char *sql = "DELETE FROM messages";
+    char *err_msg = NULL;
+
+    int rc = sqlite3_exec(ctx->db, sql, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete all messages: %s\n", err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+
+    int changes = sqlite3_changes(ctx->db);
+    QGP_LOG_INFO(LOG_TAG, "Deleted all %d messages\n", changes);
+    return changes;
+}
+
+/**
+ * Mark a message as deleted by sender (remote deletion notice)
+ */
+int message_backup_mark_deleted_by_sender(message_backup_context_t *ctx,
+                                           const char *content_hash) {
+    if (!ctx || !ctx->db || !content_hash) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context or content_hash\n");
+        return -1;
+    }
+
+    const char *sql = "UPDATE messages SET deleted_by_sender = 1 WHERE content_hash = ?";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare mark_deleted_by_sender: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, content_hash, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to mark deleted_by_sender: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    int changes = sqlite3_changes(ctx->db);
+    if (changes > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Marked %d message(s) as deleted_by_sender (hash=%.16s...)\n", changes, content_hash);
+    }
+    return changes > 0 ? 0 : -1;
+}
+
+/**
+ * Get content hash for a message by ID
+ */
+int message_backup_get_content_hash_by_id(message_backup_context_t *ctx,
+                                           int message_id,
+                                           char *hash_out,
+                                           size_t hash_out_size) {
+    if (!ctx || !ctx->db || !hash_out || hash_out_size < 65) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context, hash_out, or hash_out_size\n");
+        return -1;
+    }
+
+    const char *sql = "SELECT content_hash FROM messages WHERE id = ?";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare get_content_hash_by_id: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, message_id);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        QGP_LOG_ERROR(LOG_TAG, "Message %d not found\n", message_id);
+        return -1;
+    }
+
+    const char *hash = (const char *)sqlite3_column_text(stmt, 0);
+    if (!hash) {
+        sqlite3_finalize(stmt);
+        QGP_LOG_ERROR(LOG_TAG, "Message %d has no content_hash\n", message_id);
+        return -1;
+    }
+
+    strncpy(hash_out, hash, hash_out_size - 1);
+    hash_out[hash_out_size - 1] = '\0';
+    sqlite3_finalize(stmt);
+
+    return 0;
+}
+
+/**
+ * Get all content hashes for a conversation with a contact
+ */
+int message_backup_get_all_content_hashes(message_backup_context_t *ctx,
+                                           const char *contact_identity,
+                                           char ***hashes_out,
+                                           int *count_out) {
+    if (!ctx || !ctx->db || !contact_identity || !hashes_out || !count_out) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for get_all_content_hashes\n");
+        return -1;
+    }
+
+    *hashes_out = NULL;
+    *count_out = 0;
+
+    const char *sql =
+        "SELECT content_hash FROM messages "
+        "WHERE (sender = ? OR recipient = ?) AND content_hash IS NOT NULL";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare get_all_content_hashes: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, contact_identity, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, contact_identity, -1, SQLITE_STATIC);
+
+    /* Count results */
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) count++;
+    sqlite3_reset(stmt);
+
+    if (count == 0) {
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+
+    char **hashes = calloc(count, sizeof(char *));
+    if (!hashes) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    int idx = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && idx < count) {
+        const char *hash = (const char *)sqlite3_column_text(stmt, 0);
+        hashes[idx] = hash ? strdup(hash) : NULL;
+        idx++;
+    }
+
+    sqlite3_finalize(stmt);
+
+    *hashes_out = hashes;
+    *count_out = idx;
+
+    QGP_LOG_INFO(LOG_TAG, "Retrieved %d content hashes for %.20s...\n", idx, contact_identity);
+    return 0;
+}
+
+/**
+ * Delete a message by content hash
+ */
+int message_backup_delete_by_content_hash(message_backup_context_t *ctx,
+                                           const char *content_hash) {
+    if (!ctx || !ctx->db || !content_hash) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context or content_hash\n");
+        return -1;
+    }
+
+    const char *sql = "DELETE FROM messages WHERE content_hash = ?";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare delete_by_content_hash: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, content_hash, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete by content_hash: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    int changes = sqlite3_changes(ctx->db);
+    if (changes > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Deleted %d message(s) by content_hash (%.16s...)\n", changes, content_hash);
+    }
+    return changes > 0 ? 0 : -1;
 }
 
 /**

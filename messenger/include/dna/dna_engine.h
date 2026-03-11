@@ -134,6 +134,7 @@ typedef struct {
     bool is_outgoing;           /* true if sent by current identity */
     int status;                 /* 0=pending, 1=sent, 2=received, 3=failed */
     int message_type;           /* 0=chat, 1=group_invitation */
+    bool deleted_by_sender;     /* true if sender deleted this message (v17) */
 } dna_message_t;
 
 /**
@@ -1753,6 +1754,27 @@ DNA_API int dna_engine_delete_message_sync(
     dna_engine_t *engine,
     int message_id
 );
+
+/**
+ * Delete a message with full pipeline (local + DHT + notices)
+ */
+DNA_API dna_request_id_t dna_engine_delete_message(
+    dna_engine_t *engine, int message_id, bool send_notices,
+    dna_completion_cb callback, void *user_data);
+
+/**
+ * Delete all messages with a contact (purge conversation)
+ */
+DNA_API dna_request_id_t dna_engine_delete_conversation(
+    dna_engine_t *engine, const char *contact_fingerprint, bool send_notices,
+    dna_completion_cb callback, void *user_data);
+
+/**
+ * Delete all messages (purge everything)
+ */
+DNA_API dna_request_id_t dna_engine_delete_all_messages(
+    dna_engine_t *engine, bool send_notices,
+    dna_completion_cb callback, void *user_data);
 
 /**
  * Retry all pending/failed messages

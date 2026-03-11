@@ -112,6 +112,13 @@ final class dna_message_t extends Struct {
 
   @Int32()
   external int message_type;
+
+  @Bool()
+  external bool deleted_by_sender;
+
+  // 3 bytes padding to align struct to 8-byte boundary
+  @Array(3)
+  external Array<Uint8> _padding3;
 }
 
 /// Group information
@@ -2099,6 +2106,59 @@ class DnaBindings {
     int messageId,
   ) {
     return _dna_engine_delete_message_sync(engine, messageId);
+  }
+
+  // Delete a message with full pipeline (local + DHT + notices)
+  late final _dna_engine_delete_message = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Int32, Bool,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, int, bool,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_delete_message');
+
+  /// Delete a message with full pipeline (local + DHT + notices, async)
+  int dna_engine_delete_message(
+    Pointer<dna_engine_t> engine,
+    int messageId,
+    bool sendNotices,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_delete_message(engine, messageId, sendNotices, callback, user_data);
+  }
+
+  // Delete all messages with a contact (purge conversation)
+  late final _dna_engine_delete_conversation = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Bool,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, bool,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_delete_conversation');
+
+  /// Delete all messages with a contact (async)
+  int dna_engine_delete_conversation(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> contactFingerprint,
+    bool sendNotices,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_delete_conversation(engine, contactFingerprint, sendNotices, callback, user_data);
+  }
+
+  // Delete all messages (purge everything)
+  late final _dna_engine_delete_all_messages = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Bool,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, bool,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_delete_all_messages');
+
+  /// Delete all messages (async)
+  int dna_engine_delete_all_messages(
+    Pointer<dna_engine_t> engine,
+    bool sendNotices,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_delete_all_messages(engine, sendNotices, callback, user_data);
   }
 
   // ---------------------------------------------------------------------------

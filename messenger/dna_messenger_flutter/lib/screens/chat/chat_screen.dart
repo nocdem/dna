@@ -1209,6 +1209,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               },
             ),
             ListTile(
+              leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.error),
+              title: Text(
+                AppLocalizations.of(context).chatDeleteConversation,
+                style: TextStyle(color: DnaColors.error),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _confirmDeleteConversation();
+              },
+            ),
+            ListTile(
               leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.warning),
               title: Text(
                 'Remove Contact',
@@ -1509,15 +1520,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _confirmDeleteMessage(Message message) {
+    final l10n = AppLocalizations.of(context);
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete Message'),
-        content: const Text('Are you sure you want to delete this message? This cannot be undone.'),
+        title: Text(l10n.chatDeleteMessageTitle),
+        content: Text(l10n.chatDeleteMessageConfirm),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            child: Text(l10n.cancel),
           ),
           TextButton(
             onPressed: () {
@@ -1525,7 +1537,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               _deleteMessage(message);
             },
             style: TextButton.styleFrom(foregroundColor: DnaColors.error),
-            child: const Text('Delete'),
+            child: Text(l10n.delete),
           ),
         ],
       ),
@@ -1549,6 +1561,46 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       );
     }
+  }
+
+  void _confirmDeleteConversation() {
+    final contact = ref.read(selectedContactProvider);
+    if (contact == null) return;
+    final l10n = AppLocalizations.of(context);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l10n.chatDeleteConversationTitle),
+        content: Text(l10n.chatDeleteConversationConfirm),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(l10n.cancel),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              final success = await ref
+                  .read(conversationProvider(contact.fingerprint).notifier)
+                  .deleteConversation();
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(success
+                        ? l10n.chatConversationDeleted
+                        : l10n.chatDeleteConversationFailed),
+                    backgroundColor: success ? DnaColors.snackbarSuccess : DnaColors.error,
+                  ),
+                );
+              }
+            },
+            style: TextButton.styleFrom(foregroundColor: DnaColors.error),
+            child: Text(l10n.delete),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showReplyForwardOptions(Message message) {
@@ -2120,6 +2172,33 @@ class _MessageBubble extends StatelessWidget {
                     : theme.colorScheme.onSurface,
               ),
             ),
+            if (message.deletedBySender)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    FaIcon(
+                      FontAwesomeIcons.trash,
+                      size: 10,
+                      color: isOutgoing
+                          ? theme.colorScheme.onPrimary.withAlpha(179)
+                          : DnaColors.textMuted,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      AppLocalizations.of(context).chatSenderDeletedThis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic,
+                        color: isOutgoing
+                            ? theme.colorScheme.onPrimary.withAlpha(179)
+                            : DnaColors.textMuted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 4),
             Row(
               mainAxisSize: MainAxisSize.min,

@@ -82,6 +82,9 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_check_offline_messages_cached(...)` | Check offline messages without publishing watermarks (v0.6.15+, for background service) |
 | `dna_request_id_t dna_engine_check_offline_messages_from(...)` | Check offline messages from specific contact |
 | `int dna_engine_delete_message_sync(...)` | Delete message from local database |
+| `dna_request_id_t dna_engine_delete_message(engine, message_id, contact_fp, cb, ud)` | Delete single message with DHT cleanup + cross-device sync |
+| `dna_request_id_t dna_engine_delete_conversation(engine, contact_fp, cb, ud)` | Delete all messages with contact (conversation purge) |
+| `dna_request_id_t dna_engine_delete_all_messages(engine, cb, ud)` | Delete all messages across all contacts (purge everything) |
 | `int dna_engine_retry_pending_messages(...)` | Retry all pending/failed messages |
 | `int dna_engine_retry_message(...)` | Retry single failed message by ID |
 | `int dna_engine_get_unread_count(...)` | Get unread message count (sync) |

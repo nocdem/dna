@@ -21,6 +21,8 @@
 #include "database/presence_cache.h"
 #include "database/profile_manager.h"
 #include "database/profile_cache.h"
+#include "message_backup.h"
+#include "messenger/messages.h"
 #include "dna_api.h"
 #include "dna_config.h"
 #include "dna/dna_engine.h"
@@ -662,6 +664,78 @@ static void transport_message_received_internal(
                             }
                         }
                     }
+                }
+
+                /* DELETE notice handling (v17) */
+                if (type_str && strcmp(type_str, "delete") == 0) {
+                    json_object *j_action = NULL, *j_hashes = NULL;
+                    json_object_object_get_ex(j_msg, "action", &j_action);
+                    json_object_object_get_ex(j_msg, "hashes", &j_hashes);
+
+                    int action = j_action ? json_object_get_int(j_action) : 0;
+                    bool is_self = (strcmp(sender_identity, ctx->identity) == 0);
+
+                    if (is_self) {
+                        /* Cross-device sync — actually delete from local DB */
+                        if (action == 0 && j_hashes) {
+                            /* DELETE_ACTION_SINGLE */
+                            int arr_len = json_object_array_length(j_hashes);
+                            for (int h = 0; h < arr_len; h++) {
+                                json_object *j_hash = json_object_array_get_idx(j_hashes, h);
+                                const char *hash = json_object_get_string(j_hash);
+                                if (hash) {
+                                    message_backup_delete_by_content_hash(ctx->backup_ctx, hash);
+                                    QGP_LOG_INFO(LOG_TAG, "Self-DELETE: removed hash %.16s...", hash);
+                                }
+                            }
+                        } else if (action == 1) {
+                            /* DELETE_ACTION_CONVERSATION */
+                            json_object *j_contact = NULL;
+                            json_object_object_get_ex(j_msg, "contact", &j_contact);
+                            if (j_contact) {
+                                const char *contact = json_object_get_string(j_contact);
+                                if (contact) {
+                                    message_backup_delete_conversation(ctx->backup_ctx, contact);
+                                    QGP_LOG_INFO(LOG_TAG, "Self-DELETE: purged conversation with %.20s...", contact);
+                                }
+                            }
+                        } else if (action == 2) {
+                            /* DELETE_ACTION_ALL */
+                            message_backup_delete_all(ctx->backup_ctx);
+                            QGP_LOG_INFO(LOG_TAG, "Self-DELETE: purged all messages");
+                        }
+                    } else {
+                        /* From other user — mark with deleted_by_sender flag */
+                        if (j_hashes) {
+                            int arr_len = json_object_array_length(j_hashes);
+                            for (int h = 0; h < arr_len; h++) {
+                                json_object *j_hash = json_object_array_get_idx(j_hashes, h);
+                                const char *hash = json_object_get_string(j_hash);
+                                if (hash) {
+                                    message_backup_mark_deleted_by_sender(ctx->backup_ctx, hash);
+                                    QGP_LOG_INFO(LOG_TAG, "DELETE notice from %.20s...: marked hash %.16s...",
+                                                 sender_identity, hash);
+                                }
+                            }
+                        }
+                    }
+
+                    /* Fire event so UI can refresh */
+                    dna_engine_t *engine = dna_engine_get_global();
+                    if (engine) {
+                        dna_event_t event = {0};
+                        event.type = DNA_EVENT_MESSAGE_RECEIVED;
+                        strncpy(event.data.message_received.message.sender,
+                                sender_identity,
+                                sizeof(event.data.message_received.message.sender) - 1);
+                        dna_dispatch_event(engine, &event);
+                    }
+
+                    /* Don't save DELETE notices as regular messages — return early */
+                    json_object_put(j_msg);
+                    free(plaintext);
+                    free(sender_identity);
+                    return;
                 }
             }
             json_object_put(j_msg);

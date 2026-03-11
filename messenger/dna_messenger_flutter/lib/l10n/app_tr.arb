@@ -380,5 +380,21 @@
   "approvedContact": "{name} onaylandı",
   "deniedContact": "{name} reddedildi",
   "blockedContact": "{name} engellendi",
-  "unsubscribeFrom": "{name} aboneliğinden çık"
+  "unsubscribeFrom": "{name} aboneliğinden çık",
+
+  "chatSenderDeletedThis": "Gönderen bunu sildi",
+  "chatDeleteMessageTitle": "Mesajı Sil",
+  "chatDeleteMessageConfirm": "Bu mesajı tüm cihazlarınızdan silmek ve karşı tarafı bilgilendirmek istiyor musunuz?",
+  "chatDeleteConversation": "Konuşmayı Sil",
+  "chatDeleteConversationTitle": "Konuşmayı Sil",
+  "chatDeleteConversationConfirm": "Bu konuşmadaki tüm mesajları silmek istediğinize emin misiniz? Tüm cihazlarınızdan silinecek.",
+  "chatConversationDeleted": "Konuşma silindi",
+  "chatDeleteConversationFailed": "Konuşma silinemedi",
+  "settingsDeleteAllMessages": "Tüm Mesajları Sil",
+  "settingsDeleteAllMessagesSubtitle": "Tüm cihazlardan tüm mesajları kaldır",
+  "settingsDeleteAllMessagesTitle": "Tüm Mesajlar Silinsin mi?",
+  "settingsDeleteAllMessagesWarning": "Bu işlem tüm konuşmalardaki TÜM mesajları tüm cihazlarınızdan kalıcı olarak silecektir. Bu işlem geri alınamaz.",
+  "settingsAllMessagesDeleted": "Tüm mesajlar silindi",
+  "settingsDeleteAllMessagesFailed": "Mesajlar silinemedi",
+  "settingsDeleteEverything": "Her Şeyi Sil"
 }

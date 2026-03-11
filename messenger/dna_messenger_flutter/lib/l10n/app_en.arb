@@ -505,5 +505,21 @@
     "placeholders": {
       "name": { "type": "String" }
     }
-  }
+  },
+
+  "chatSenderDeletedThis": "Sender deleted this",
+  "chatDeleteMessageTitle": "Delete Message",
+  "chatDeleteMessageConfirm": "Delete this message from all your devices and notify the other person?",
+  "chatDeleteConversation": "Delete Conversation",
+  "chatDeleteConversationTitle": "Delete Conversation",
+  "chatDeleteConversationConfirm": "Delete all messages in this conversation? This will delete from all your devices.",
+  "chatConversationDeleted": "Conversation deleted",
+  "chatDeleteConversationFailed": "Failed to delete conversation",
+  "settingsDeleteAllMessages": "Delete All Messages",
+  "settingsDeleteAllMessagesSubtitle": "Remove all messages from all devices",
+  "settingsDeleteAllMessagesTitle": "Delete All Messages?",
+  "settingsDeleteAllMessagesWarning": "This will permanently delete ALL messages from ALL conversations across all your devices. This cannot be undone.",
+  "settingsAllMessagesDeleted": "All messages deleted",
+  "settingsDeleteAllMessagesFailed": "Failed to delete messages",
+  "settingsDeleteEverything": "Delete Everything"
 }

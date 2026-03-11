@@ -1,7 +1,7 @@
 # DNA Messenger - Message System Documentation
 
-**Version:** v0.10 (Phase 14 - DHT-Only Messaging, Spillway v2, Group Status v2)
-**Last Updated:** 2026-01-31
+**Version:** v0.11 (Message Deletion + Cross-Device Sync)
+**Last Updated:** 2026-03-11
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document describes how the DNA Messenger message system works, with all facts verified directly from source code.
@@ -1199,7 +1199,7 @@ if (qgp_sha3_512(sender_sign_key->public_key,
 ### 9.1 Messages Table (messages.db)
 
 ```sql
--- Source: message_backup.c - Schema v14
+-- Source: message_backup.c - Schema v17
 -- NOTE: v14 stores plaintext directly (no per-message encryption)
 --       Database encryption handled by SQLCipher in future update
 
@@ -1215,10 +1215,12 @@ CREATE TABLE IF NOT EXISTS messages (
   is_outgoing INTEGER DEFAULT 0,
   status INTEGER DEFAULT 1,         -- v15: 0=PENDING, 1=SENT, 2=RECEIVED, 3=FAILED
   group_id INTEGER DEFAULT 0,       -- 0=direct message, >0=group ID
-  message_type INTEGER DEFAULT 0,   -- 0=chat, 1=group_invitation
+  message_type INTEGER DEFAULT 0,   -- 0=chat, 1=group_invitation, 3=delete
   invitation_status INTEGER DEFAULT 0,  -- 0=pending, 1=accepted, 2=declined
   retry_count INTEGER DEFAULT 0,    -- Retry attempts for failed messages
-  offline_seq INTEGER DEFAULT 0     -- DHT offline queue sequence number
+  offline_seq INTEGER DEFAULT 0,    -- DHT offline queue sequence number
+  content_hash TEXT,                -- SHA3-256 hash for dedup (v16)
+  deleted_by_sender INTEGER DEFAULT 0  -- Sender deleted this message indicator (v17)
 );
 ```
 
@@ -1244,8 +1246,43 @@ CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint
 |------|-------|-------------|
 | `MESSAGE_TYPE_CHAT` | 0 | Regular chat message |
 | `MESSAGE_TYPE_GROUP_INVITATION` | 1 | Group invitation |
+| `MESSAGE_TYPE_DELETE` | 3 | Deletion notice (single, conversation, or all) |
 
-**Source:** `message_backup.h:32-34`
+**Source:** `message_backup.h:32-36`
+
+### 9.3a Message Deletion
+
+Messages can be deleted locally with cross-device sync and sender notification via DELETE notices.
+
+**Deletion Scopes:**
+
+| Action | Value | Description |
+|--------|-------|-------------|
+| `DELETE_SINGLE` | 0 | Delete a single message by content hash |
+| `DELETE_CONVERSATION` | 1 | Delete all messages with a specific contact |
+| `DELETE_ALL` | 2 | Delete all messages across all contacts |
+
+**DELETE Notice Format (plaintext JSON):**
+```json
+{"type":"delete","action":0,"hashes":["<content_hash1>","<content_hash2>"]}
+```
+
+**Flow:**
+1. **Local delete** — message(s) removed from SQLite via `message_backup_delete()`
+2. **Outbox rebuild** (sender only) — if deleted message was sent by me, flush outbox for that contact (`messenger_flush_recipient_outbox()`) to physically remove from DHT
+3. **DELETE notice to recipient** — sent via existing outbox mechanism (encrypted, Dilithium5-signed)
+4. **Cross-device sync** — self-addressed DELETE notice sent to own outbox; other devices delete on receipt
+
+**Recipient Behavior:**
+- Message content stays intact (not deleted from recipient's local DB)
+- `deleted_by_sender` flag set to 1 — UI shows "Sender deleted this" indicator
+- Recipient can choose to delete the message themselves
+
+**Database columns (v16-v17):**
+- `content_hash TEXT` (v16) — SHA3-256 of sender+recipient+plaintext+timestamp for message identification
+- `deleted_by_sender INTEGER DEFAULT 0` (v17) — flag set when sender sends DELETE notice
+
+**Source:** `messenger/messages.h`, `messenger/messages.c`, `messenger_transport.c`
 
 ### 9.4 Invitation Status
 
