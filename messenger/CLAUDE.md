@@ -512,6 +512,43 @@ All technical complexity must be hidden. The UI should feel as simple as WhatsAp
 - **No jargon in labels, buttons, or descriptions**: Use plain language. "Recovery Phrase" not "BIP39 Mnemonic". "Your ID" not "Fingerprint".
 - **This rule applies ONLY to Flutter/Dart UI code** (`lib/`, Flutter widgets, user-facing strings). C library, CLI tool, logs, and documentation are NOT affected.
 
+## INTERNATIONALIZATION (i18n) - MANDATORY FOR ALL FLUTTER UI
+
+**All user-visible strings in Flutter code MUST be localized.** Never hardcode strings.
+
+**Supported languages:** English (source), Turkish (Türkçe)
+
+**How to use in screens:**
+```dart
+import '../../l10n/app_localizations.dart';
+
+// In build() method:
+final l10n = AppLocalizations.of(context);
+Text(l10n.settingsTitle)           // "Settings" or "Ayarlar"
+Text(l10n.contactsLastSeen('5m'))  // parameterized
+```
+
+**When adding a new screen or feature:**
+1. Add ALL user-visible strings to `lib/l10n/app_en.arb` (English, source)
+2. Add Turkish translations to `lib/l10n/app_tr.arb`
+3. Run `flutter gen-l10n` (or `flutter build` which runs it automatically)
+4. Use `AppLocalizations.of(context).keyName` in code — **NEVER** use hardcoded `'String'`
+
+**Key rules:**
+- ARB keys are camelCase, grouped by screen (e.g., `chatTypeMessage`, `settingsDarkMode`)
+- Parameterized strings use `{placeholder}` syntax in ARB, positional args in Dart
+- `@key` metadata (placeholders) goes in `app_en.arb` only (not in `app_tr.arb`)
+- `const Text('...')` is NOT allowed for user-visible strings — use `Text(l10n.key)` instead
+- Language picker labels ('English', 'Türkçe') stay hardcoded (must be readable in any language)
+- Adding a new language: create `app_XX.arb`, add option to `_LanguageSection` in settings
+
+**Files:**
+- `lib/l10n/app_en.arb` — English strings (source, ~280 keys)
+- `lib/l10n/app_tr.arb` — Turkish translations
+- `lib/l10n/app_localizations.dart` — Generated (do NOT edit)
+- `lib/providers/locale_provider.dart` — Language selection state
+- `l10n.yaml` — gen-l10n configuration
+
 ## FLUTTER ICONS - FONT AWESOME ONLY
 **ALWAYS use Font Awesome icons in Flutter code.** Do not use Material Icons.
 - **Package**: `font_awesome_flutter` (already in pubspec.yaml)

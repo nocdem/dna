@@ -657,6 +657,14 @@ C platform-specific code goes in `shared/crypto/utils/qgp_platform_*.c` (linux, 
 
 Flutter platform code uses the handler pattern: `lib/platform/platform_handler.dart` (abstract) with `android/` and `desktop/` implementations. **Never use `Platform.isAndroid` in business logic.**
 
+### Flutter Internationalization (i18n) — MANDATORY
+
+**All user-visible strings in Flutter code MUST be localized.** Never hardcode strings.
+- Supported: English (source) + Turkish
+- Use `AppLocalizations.of(context).keyName` — never `'Hardcoded string'`
+- Add new strings to both `lib/l10n/app_en.arb` and `lib/l10n/app_tr.arb`
+- See `messenger/CLAUDE.md` for full i18n guide
+
 ### Flutter Icons
 
 Always use Font Awesome (`FaIcon(FontAwesomeIcons.xxx)`), never Material Icons.
