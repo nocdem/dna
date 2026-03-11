@@ -1,0 +1,31 @@
+Copyright 2024-2026 cpunk.io. All rights reserved.
+
+SOURCE-AVAILABLE LICENSE
+
+This source code is made available for viewing, auditing, and educational
+purposes only.
+
+You may:
+  - View and read the source code
+  - Audit the code for security vulnerabilities
+  - Submit bug reports and feature requests
+  - Contribute patches (subject to Contributor License Agreement)
+
+You may NOT:
+  - Copy, modify, or distribute this code
+  - Use this code in your own projects
+  - Create derivative works based on this code
+  - Use this code for commercial purposes
+  - Reverse engineer the compiled binaries for purposes other than
+    interoperability
+
+The underlying DNA Messenger C library, Nodus DHT, and shared cryptographic
+libraries are licensed separately under the Apache License 2.0. This
+proprietary license applies only to the Flutter application code in this
+directory.
+
+For licensing inquiries, contact: licensing@cpunk.io
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
