@@ -458,7 +458,20 @@ int dna_wall_comments_get(const char *post_uuid,
             }
 
             for (size_t j = 0; j < bucket_count; j++) {
-                all_comments[total_count++] = bucket_comments[j];
+                /* Deduplicate by UUID — skip if already merged */
+                bool duplicate = false;
+                for (size_t k = 0; k < total_count; k++) {
+                    if (strncmp(all_comments[k].uuid, bucket_comments[j].uuid, 36) == 0) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) {
+                    all_comments[total_count++] = bucket_comments[j];
+                } else {
+                    QGP_LOG_DEBUG(LOG_TAG, "Skipping duplicate comment %s",
+                                  bucket_comments[j].uuid);
+                }
             }
             free(bucket_comments);
         }
