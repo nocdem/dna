@@ -107,6 +107,46 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     super.dispose();
   }
 
+  /// Async backfill: recover registered name from DHT after DHT connects.
+  /// If name found → cache it. If not found → show registration screen.
+  void _backfillNameFromDht(dynamic engine, String fp) {
+    Future.delayed(const Duration(seconds: 3), () async {
+      // Wait for DHT to connect (up to 15s total, checking every 2s)
+      for (int i = 0; i < 6; i++) {
+        if (engine.isDhtConnected()) break;
+        await Future.delayed(const Duration(seconds: 2));
+      }
+
+      if (!mounted) return;
+
+      try {
+        final registeredName = await engine.getRegisteredName();
+        if (registeredName != null && registeredName.isNotEmpty) {
+          engine.debugLog('STARTUP', 'Backfill: recovered name from DHT: $registeredName');
+          await CacheDatabase.instance.saveIdentity(fp, registeredName, '');
+          if (mounted) {
+            ref.read(identityProfileCacheProvider.notifier).updateIdentity(fp, registeredName, '');
+          }
+        } else {
+          // No name in DHT — this is a genuinely incomplete registration
+          engine.debugLog('STARTUP', 'Backfill: no registered name in DHT — showing registration');
+          if (mounted) {
+            setState(() {
+              _registrationIncomplete = true;
+            });
+          }
+        }
+      } catch (e) {
+        engine.debugLog('STARTUP', 'Backfill: DHT lookup failed: $e — showing registration');
+        if (mounted) {
+          setState(() {
+            _registrationIncomplete = true;
+          });
+        }
+      }
+    });
+  }
+
   /// Try to auto-load identity if one exists on disk (runs once at startup)
   /// v0.100.94: Added try/catch to prevent permanent loading screen on errors.
   /// v0.101.36: If engine is reused (Activity recreation), restore state without re-loading.
@@ -144,29 +184,15 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');
 
           // v0.101.38: Check if registration was completed (user has a registered name)
-          // If app was closed mid-registration, keys exist but no name was registered.
           // Check local profile cache (SQLite) — does not require network.
           final fp = ref.read(currentFingerprintProvider);
           if (fp != null) {
             final cached = await CacheDatabase.instance.getIdentity(fp);
             if (cached == null || cached.displayName.isEmpty) {
-              // Cache miss — try to recover name from DHT before declaring incomplete
-              engine.debugLog('STARTUP', 'No cached name for ${fp.substring(0, 16)}... — fetching from DHT');
-              try {
-                final registeredName = await engine.getRegisteredName();
-                if (registeredName != null && registeredName.isNotEmpty) {
-                  engine.debugLog('STARTUP', 'Recovered name from DHT: $registeredName');
-                  await CacheDatabase.instance.saveIdentity(fp, registeredName, '');
-                  ref.read(identityProfileCacheProvider.notifier).updateIdentity(fp, registeredName, '');
-                  // Avatar will be fetched by prefetchIdentities in background
-                } else {
-                  engine.debugLog('STARTUP', 'No registered name in DHT — registration incomplete');
-                  _registrationIncomplete = true;
-                }
-              } catch (e) {
-                engine.debugLog('STARTUP', 'DHT lookup failed: $e — registration incomplete');
-                _registrationIncomplete = true;
-              }
+              // Cache miss — go to home screen now, backfill name from DHT async.
+              // If DHT lookup finds no name, THEN show registration screen.
+              engine.debugLog('STARTUP', 'No cached name for ${fp.substring(0, 16)}... — will backfill from DHT async');
+              _backfillNameFromDht(engine, fp);
             }
           }
         } else {
