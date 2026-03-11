@@ -141,7 +141,7 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
 
     // Cache own profile immediately so UI shows name without waiting for DHT propagation
     // (DHT PUT is async and may not be queryable yet)
-    await ref.read(identityProfileCacheProvider.notifier).updateIdentity(fingerprint, name, '');
+    await ref.read(identityProfileCacheProvider.notifier).updateIdentity(fingerprint, name, '', registeredName: name);
 
     // Android: Store fingerprint for background service
     if (Platform.isAndroid) {
@@ -306,7 +306,7 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     final fingerprint = ref.read(currentFingerprintProvider);
     if (fingerprint != null && name.isNotEmpty) {
       // Update SQLite-backed cache (used by userProfileProvider)
-      await ref.read(identityProfileCacheProvider.notifier).updateIdentity(fingerprint, name, '');
+      await ref.read(identityProfileCacheProvider.notifier).updateIdentity(fingerprint, name, '', registeredName: name);
     }
 
     // Invalidate profile providers to refresh with new name

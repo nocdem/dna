@@ -96,6 +96,7 @@ class IdentityProfileCacheNotifier extends StateNotifier<Map<String, CachedIdent
         fingerprint: fingerprint,
         displayName: displayName,
         avatarBase64: profile.avatarBase64,
+        registeredName: displayName, // DHT displayName IS the registered name
         cachedAt: DateTime.now(),
       );
 
@@ -104,7 +105,7 @@ class IdentityProfileCacheNotifier extends StateNotifier<Map<String, CachedIdent
         state = {...state, fingerprint: identity};
       }
       // Persist to SQLite (fire and forget)
-      _db.saveIdentity(fingerprint, displayName, profile.avatarBase64);
+      _db.saveIdentity(fingerprint, displayName, profile.avatarBase64, registeredName: displayName);
 
       return identity;
     } catch (e) {
@@ -158,16 +159,21 @@ class IdentityProfileCacheNotifier extends StateNotifier<Map<String, CachedIdent
   }
 
   /// Update a specific identity in cache (e.g., after profile edit)
-  Future<void> updateIdentity(String fingerprint, String displayName, String avatarBase64) async {
+  Future<void> updateIdentity(String fingerprint, String displayName, String avatarBase64, {String? registeredName}) async {
+    // Preserve existing registeredName if not explicitly provided
+    final existing = state[fingerprint];
+    final regName = registeredName ?? existing?.registeredName ?? '';
+
     final identity = CachedIdentity(
       fingerprint: fingerprint,
       displayName: displayName,
       avatarBase64: avatarBase64,
+      registeredName: regName,
       cachedAt: DateTime.now(),
     );
     state = {...state, fingerprint: identity};
     try {
-      await _db.saveIdentity(fingerprint, displayName, avatarBase64);
+      await _db.saveIdentity(fingerprint, displayName, avatarBase64, registeredName: regName);
     } catch (_) {}
   }
 

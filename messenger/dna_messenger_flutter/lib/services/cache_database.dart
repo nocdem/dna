@@ -21,12 +21,14 @@ class CachedIdentity {
   final String fingerprint;
   final String displayName;
   final String avatarBase64;
+  final String registeredName; // DHT-registered DNA name (immutable)
   final DateTime cachedAt;
 
   CachedIdentity({
     required this.fingerprint,
     required this.displayName,
     required this.avatarBase64,
+    this.registeredName = '',
     required this.cachedAt,
   });
 }
@@ -34,7 +36,7 @@ class CachedIdentity {
 /// SQLite database for caching profiles (contacts + identities)
 class CacheDatabase {
   static const _databaseName = 'dna_cache.db';
-  static const _databaseVersion = 4; // Bumped for starred_messages table
+  static const _databaseVersion = 5; // Bumped for registered_name column
 
   // Singleton instance
   static CacheDatabase? _instance;
@@ -102,6 +104,7 @@ class CacheDatabase {
         fingerprint TEXT PRIMARY KEY,
         display_name TEXT,
         avatar_base64 TEXT,
+        registered_name TEXT DEFAULT '',
         cached_at INTEGER
       )
     ''');
@@ -299,7 +302,7 @@ class CacheDatabase {
   }
 
   /// Save identity to cache
-  Future<void> saveIdentity(String fingerprint, String displayName, String avatarBase64) async {
+  Future<void> saveIdentity(String fingerprint, String displayName, String avatarBase64, {String registeredName = ''}) async {
     final db = await database;
     final now = DateTime.now().millisecondsSinceEpoch;
 
@@ -309,10 +312,27 @@ class CacheDatabase {
         'fingerprint': fingerprint,
         'display_name': displayName,
         'avatar_base64': avatarBase64,
+        'registered_name': registeredName,
         'cached_at': now,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  /// Save registered name only (without overwriting other fields)
+  Future<void> saveRegisteredName(String fingerprint, String registeredName) async {
+    final db = await database;
+    final existing = await getIdentity(fingerprint);
+    if (existing != null) {
+      await db.update(
+        'identity_profiles',
+        {'registered_name': registeredName},
+        where: 'fingerprint = ?',
+        whereArgs: [fingerprint],
+      );
+    } else {
+      await saveIdentity(fingerprint, '', '', registeredName: registeredName);
+    }
   }
 
   /// Delete identity from cache
@@ -350,6 +370,7 @@ class CacheDatabase {
       fingerprint: row['fingerprint'] as String,
       displayName: row['display_name'] as String? ?? '',
       avatarBase64: row['avatar_base64'] as String? ?? '',
+      registeredName: row['registered_name'] as String? ?? '',
       cachedAt: DateTime.fromMillisecondsSinceEpoch(row['cached_at'] as int? ?? 0),
     );
   }

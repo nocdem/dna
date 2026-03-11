@@ -123,7 +123,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
         final registeredName = await engine.getRegisteredName();
         if (registeredName != null && registeredName.isNotEmpty) {
           engine.debugLog('STARTUP', 'Backfill: recovered name from DHT: $registeredName');
-          await CacheDatabase.instance.saveIdentity(fp, registeredName, '');
+          await CacheDatabase.instance.saveRegisteredName(fp, registeredName);
           if (mounted) {
             ref.read(identityProfileCacheProvider.notifier).updateIdentity(fp, registeredName, '');
           }
@@ -183,15 +183,15 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           await ref.read(identitiesProvider.notifier).loadIdentity();
           engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');
 
-          // v0.101.38: Check if registration was completed (user has a registered name)
-          // Check local profile cache (SQLite) — does not require network.
+          // Check if registration was completed (user has a registered DNA name)
+          // Uses registeredName field (immutable) — not displayName (editable)
           final fp = ref.read(currentFingerprintProvider);
           if (fp != null) {
             final cached = await CacheDatabase.instance.getIdentity(fp);
-            if (cached == null || cached.displayName.isEmpty) {
-              // Cache miss — go to home screen now, backfill name from DHT async.
-              // If DHT lookup finds no name, THEN show registration screen.
-              engine.debugLog('STARTUP', 'No cached name for ${fp.substring(0, 16)}... — will backfill from DHT async');
+            if (cached == null || cached.registeredName.isEmpty) {
+              // No registered name cached — go to home screen, backfill from DHT async.
+              // If DHT confirms no name exists, THEN show registration screen.
+              engine.debugLog('STARTUP', 'No cached registeredName for ${fp.substring(0, 16)}... — will backfill from DHT async');
               _backfillNameFromDht(engine, fp);
             }
           }
@@ -256,7 +256,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           // this rebuilds and routes to HomeScreen automatically.
           final profileCache = ref.watch(identityProfileCacheProvider);
           final cached = profileCache[currentFingerprint];
-          final hasName = cached != null && cached.displayName.isNotEmpty;
+          final hasName = cached != null && cached.registeredName.isNotEmpty;
 
           if (!hasName && _registrationIncomplete) {
             // Keys exist but no registered name — send back to registration
