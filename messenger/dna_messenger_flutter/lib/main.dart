@@ -150,8 +150,23 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           if (fp != null) {
             final cached = await CacheDatabase.instance.getIdentity(fp);
             if (cached == null || cached.displayName.isEmpty) {
-              engine.debugLog('STARTUP', 'v0.101.38: No cached name for $fp — registration incomplete');
-              _registrationIncomplete = true;
+              // Cache miss — try to recover name from DHT before declaring incomplete
+              engine.debugLog('STARTUP', 'No cached name for ${fp.substring(0, 16)}... — fetching from DHT');
+              try {
+                final registeredName = await engine.getRegisteredName();
+                if (registeredName != null && registeredName.isNotEmpty) {
+                  engine.debugLog('STARTUP', 'Recovered name from DHT: $registeredName');
+                  await CacheDatabase.instance.saveIdentity(fp, registeredName, '');
+                  ref.read(identityProfileCacheProvider.notifier).updateIdentity(fp, registeredName, '');
+                  // Avatar will be fetched by prefetchIdentities in background
+                } else {
+                  engine.debugLog('STARTUP', 'No registered name in DHT — registration incomplete');
+                  _registrationIncomplete = true;
+                }
+              } catch (e) {
+                engine.debugLog('STARTUP', 'DHT lookup failed: $e — registration incomplete');
+                _registrationIncomplete = true;
+              }
             }
           }
         } else {

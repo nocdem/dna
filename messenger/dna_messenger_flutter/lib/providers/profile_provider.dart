@@ -210,12 +210,14 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
       _ref.read(fullProfileProvider.notifier).updateState(state.profile);
 
       // Update identity profile cache (SQLite + in-memory)
-      // NOTE: displayName removed in v0.6.24 - name comes from registered name via DHT
+      // Preserve existing displayName — only update avatar here
       final fingerprint = _ref.read(currentFingerprintProvider);
       if (fingerprint != null) {
+        final existingCache = _ref.read(identityProfileCacheProvider);
+        final existingName = existingCache[fingerprint]?.displayName ?? '';
         _ref.read(identityProfileCacheProvider.notifier).updateIdentity(
           fingerprint,
-          '', // displayName removed - use registered name from DHT
+          existingName,
           state.profile.avatarBase64,
         );
 
