@@ -2559,6 +2559,12 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
             if (quote.priceImpact.isNotEmpty)
               Text('Price impact: ${quote.priceImpact}%',
                    style: const TextStyle(fontSize: 13, color: Colors.grey)),
+            if (quote.fromToken == 'ETH' || quote.toToken == 'ETH')
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text('🛡️ MEV protected (Flashbots)',
+                     style: TextStyle(fontSize: 12, color: Colors.green)),
+              ),
           ],
         ),
         actions: [
@@ -2594,7 +2600,8 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Swapped ${result.amountIn} ${result.fromToken}'
-                         ' → ${result.amountOut} ${result.toToken}'),
+                         ' → ${result.amountOut} ${result.toToken}'
+                         ' via ${result.dexName}'),
             duration: const Duration(seconds: 4),
           ),
         );
