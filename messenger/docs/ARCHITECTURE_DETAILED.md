@@ -518,6 +518,8 @@ Mobile apps must call `qgp_platform_set_app_dirs(data_dir, cache_dir)` at startu
 
 ## 5. DHT Layer
 
+> **Storage model reference:** See **[DHT_STORAGE_MODEL.md](DHT_STORAGE_MODEL.md)** for detailed documentation of how each data type (DM, Groups, Wall, Channels) is stored on the DHT — including key formats, bucket strategies, serialization, and sync patterns.
+
 ### 5.1 DHT Context
 
 **Location:** `dht/core/dht_context.h`

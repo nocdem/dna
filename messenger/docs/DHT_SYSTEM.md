@@ -1204,6 +1204,8 @@ ssh root@<IP> 'journalctl -u nodus -f'
 
 ## 8. Data Types & TTLs
 
+> **Detailed storage model documentation:** See **[DHT_STORAGE_MODEL.md](DHT_STORAGE_MODEL.md)** for comprehensive coverage of daily bucket patterns, serialization formats, sync strategies, and multi-owner patterns for each data type.
+
 | Data Type | TTL | DHT Key Format | Persisted | Notes |
 |-----------|-----|----------------|-----------|-------|
 | **Presence** | N/A | N/A (Nodus-native, v0.9.0+) | No | Server-side tracking, batch TCP query |

@@ -48,7 +48,7 @@ extern "C" {
 #define DNA_DM_OUTBOX_RECENT_DAYS 3
 
 /** Maximum messages per day bucket (DoS prevention) */
-#define DNA_DM_OUTBOX_MAX_MESSAGES_PER_BUCKET 500
+#define DNA_DM_OUTBOX_MAX_MESSAGES_PER_BUCKET 50
 
 /*============================================================================
  * Listen Context (for day rotation)
