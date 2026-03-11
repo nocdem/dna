@@ -7,6 +7,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'l10n/app_localizations.dart';
 import 'providers/providers.dart';
 import 'providers/version_check_provider.dart';
 import 'screens/screens.dart';
@@ -61,12 +62,16 @@ class DnaMessengerApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeProvider);
+    final locale = ref.watch(localeProvider);
     return MaterialApp(
       title: 'DNA Messenger',
       debugShowCheckedModeBanner: false,
       theme: DnaTheme.light(),
       darkTheme: DnaTheme.dark(),
       themeMode: themeMode,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      locale: locale,
       navigatorObservers: [routeObserver],
       home: const _AppLoader(),
     );
@@ -315,12 +320,12 @@ class _LoadingScreen extends StatelessWidget {
             ),
             const SizedBox(height: 24),
             Text(
-              'DNA Messenger',
+              AppLocalizations.of(context).appTitle,
               style: theme.textTheme.headlineMedium,
             ),
             const SizedBox(height: 8),
             Text(
-              'Initializing...',
+              AppLocalizations.of(context).initializing,
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 32),
@@ -355,7 +360,7 @@ class _ErrorScreen extends StatelessWidget {
               ),
               const SizedBox(height: 24),
               Text(
-                'Failed to initialize',
+                AppLocalizations.of(context).failedToInitialize,
                 style: theme.textTheme.headlineSmall,
               ),
               const SizedBox(height: 16),
@@ -366,7 +371,7 @@ class _ErrorScreen extends StatelessWidget {
               ),
               const SizedBox(height: 32),
               Text(
-                'Make sure the native library is available.',
+                AppLocalizations.of(context).makeSureNativeLibrary,
                 style: theme.textTheme.bodySmall,
                 textAlign: TextAlign.center,
               ),

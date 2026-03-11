@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
+import '../../l10n/app_localizations.dart';
 import '../../providers/app_lock_provider.dart';
 import '../../design_system/theme/dna_colors.dart';
 
@@ -59,7 +60,7 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
       if (!success) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Biometric authentication failed')),
+            SnackBar(content: Text(AppLocalizations.of(context).biometricFailed)),
           );
         }
         return;
@@ -81,7 +82,7 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('PIN changed successfully')),
+        SnackBar(content: Text(AppLocalizations.of(context).appLockPINChanged)),
       );
     }
   }
@@ -100,7 +101,7 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
           builder: (context, setDialogState) {
             final mutedColor = Theme.of(context).textTheme.bodySmall?.color;
             return AlertDialog(
-              title: Text(step == 1 ? 'Set PIN' : 'Confirm PIN'),
+              title: Text(step == 1 ? AppLocalizations.of(context).appLockSetPIN : AppLocalizations.of(context).appLockConfirmPIN),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -136,7 +137,7 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context, null),
-                  child: const Text('Cancel'),
+                  child: Text(AppLocalizations.of(context).cancel),
                 ),
                 TextButton(
                   onPressed: () {
@@ -153,13 +154,13 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
                       });
                     } else {
                       if (pin1 != pin2) {
-                        setDialogState(() => error = 'PINs do not match');
+                        setDialogState(() => error = AppLocalizations.of(context).appLockPINMismatch);
                         return;
                       }
                       Navigator.pop(context, pin1);
                     }
                   },
-                  child: Text(step == 1 ? 'Next' : 'Set PIN'),
+                  child: Text(step == 1 ? 'Next' : AppLocalizations.of(context).appLockSetPIN),
                 ),
               ],
             );
@@ -181,7 +182,7 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
           builder: (context, setDialogState) {
             final mutedColor = Theme.of(context).textTheme.bodySmall?.color;
             return AlertDialog(
-              title: const Text('Enter Current PIN'),
+              title: Text(AppLocalizations.of(context).appLockEnterCurrentPIN),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -210,7 +211,7 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context, false),
-                  child: const Text('Cancel'),
+                  child: Text(AppLocalizations.of(context).cancel),
                 ),
                 TextButton(
                   onPressed: () async {
@@ -224,10 +225,10 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
                     if (verified) {
                       if (context.mounted) Navigator.pop(context, true);
                     } else {
-                      setDialogState(() => error = 'Incorrect PIN');
+                      setDialogState(() => error = AppLocalizations.of(context).lockIncorrectPIN);
                     }
                   },
-                  child: const Text('Verify'),
+                  child: Text(AppLocalizations.of(context).verify),
                 ),
               ],
             );
@@ -245,15 +246,15 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('App Lock'),
+        title: Text(AppLocalizations.of(context).appLockTitle),
       ),
       body: ListView(
         children: [
           // Enable app lock
           SwitchListTile(
             secondary: const FaIcon(FontAwesomeIcons.lock),
-            title: const Text('Enable App Lock'),
-            subtitle: const Text('Require authentication to open app'),
+            title: Text(AppLocalizations.of(context).appLockEnable),
+            subtitle: Text(AppLocalizations.of(context).settingsAppLockSubtitle),
             value: appLock.enabled,
             onChanged: _toggleAppLock,
           ),
@@ -265,8 +266,8 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
             if (_biometricsAvailable) ...[
               SwitchListTile(
                 secondary: const FaIcon(FontAwesomeIcons.fingerprint),
-                title: const Text('Use Biometrics'),
-                subtitle: const Text('Fingerprint or Face ID'),
+                title: Text(AppLocalizations.of(context).appLockUseBiometrics),
+                subtitle: Text(AppLocalizations.of(context).biometricsSubtitle),
                 value: appLock.biometricsEnabled,
                 onChanged: _toggleBiometrics,
               ),
@@ -275,8 +276,8 @@ class _AppLockSettingsScreenState extends ConsumerState<AppLockSettingsScreen> {
             // Change PIN
             ListTile(
               leading: const FaIcon(FontAwesomeIcons.hashtag),
-              title: const Text('Change PIN'),
-              subtitle: const Text('Update your unlock PIN'),
+              title: Text(AppLocalizations.of(context).appLockChangePIN),
+              subtitle: Text(AppLocalizations.of(context).changePINSubtitle),
               trailing: const FaIcon(FontAwesomeIcons.chevronRight),
               onTap: _changePin,
             ),

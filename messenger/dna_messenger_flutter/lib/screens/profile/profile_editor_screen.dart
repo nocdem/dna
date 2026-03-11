@@ -11,6 +11,7 @@ import 'package:image/image.dart' as img;
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
+import '../../l10n/app_localizations.dart';
 import '../../platform/platform_handler.dart';
 import '../../providers/providers.dart';
 import '../../design_system/theme/dna_colors.dart';
@@ -131,7 +132,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Edit Profile'),
+        title: Text(AppLocalizations.of(context).profileTitle),
         actions: [
           if (state.isSaving)
             const Padding(
@@ -146,7 +147,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
             IconButton(
               icon: const FaIcon(FontAwesomeIcons.floppyDisk),
               onPressed: () => _saveProfile(notifier),
-              tooltip: 'Save',
+              tooltip: AppLocalizations.of(context).save,
             ),
         ],
       ),
@@ -173,7 +174,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
 
                   // Profile Info section
                   _buildExpansionSection(
-                    title: 'Profile Info',
+                    title: AppLocalizations.of(context).profileInfo,
                     icon: FontAwesomeIcons.user,
                     isExpanded: _profileExpanded,
                     onExpansionChanged: (expanded) {
@@ -183,14 +184,14 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                       // NOTE: displayName removed in v0.6.24 - use registered name only
                       _buildBioField(notifier),
                       _buildTextField(
-                        label: 'Location',
+                        label: AppLocalizations.of(context).profileLocation,
                         controller: _locationController,
                         hint: 'City, Country',
                         prefixIcon: FontAwesomeIcons.locationDot,
                         onChanged: (v) => notifier.updateField('location', v),
                       ),
                       _buildTextField(
-                        label: 'Website',
+                        label: AppLocalizations.of(context).profileWebsite,
                         controller: _websiteController,
                         hint: 'https://yourwebsite.com',
                         prefixIcon: FontAwesomeIcons.globe,
@@ -202,7 +203,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
 
                   // Wallet Addresses (read-only, derived from identity keys)
                   _buildExpansionSection(
-                    title: 'Wallet Addresses',
+                    title: AppLocalizations.of(context).profileWalletAddresses,
                     icon: FontAwesomeIcons.wallet,
                     isExpanded: _walletsExpanded,
                     onExpansionChanged: (expanded) {
@@ -239,7 +240,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                       Expanded(
                         child: OutlinedButton(
                           onPressed: state.isSaving ? null : () => Navigator.pop(context),
-                          child: const Text('Cancel'),
+                          child: Text(AppLocalizations.of(context).cancel),
                         ),
                       ),
                       const SizedBox(width: 16),
@@ -252,7 +253,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                                   height: 20,
                                   child: CircularProgressIndicator(strokeWidth: 2),
                                 )
-                              : const Text('Save Profile'),
+                              : Text(AppLocalizations.of(context).profileSave),
                         ),
                       ),
                     ],
@@ -273,7 +274,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
         maxLines: 4,
         maxLength: 512,
         decoration: InputDecoration(
-          labelText: 'Bio',
+          labelText: AppLocalizations.of(context).profileBio,
           hintText: 'Tell people about yourself...',
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
@@ -443,12 +444,12 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
             children: [
               ListTile(
                 leading: const FaIcon(FontAwesomeIcons.camera),
-                title: const Text('Take a Selfie'),
+                title: Text(AppLocalizations.of(context).profileTakeSelfie),
                 onTap: () => Navigator.pop(context, ImageSource.camera),
               ),
               ListTile(
                 leading: const FaIcon(FontAwesomeIcons.images),
-                title: const Text('Choose from Gallery'),
+                title: Text(AppLocalizations.of(context).profileChooseFromGallery),
                 onTap: () => Navigator.pop(context, ImageSource.gallery),
               ),
               const SizedBox(height: 8),
@@ -630,7 +631,7 @@ class _QrCodeSection extends ConsumerWidget {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  'Share My QR Code',
+                  AppLocalizations.of(context).profileShareQR,
                   style: theme.textTheme.titleMedium,
                 ),
               ],

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
+import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart';
 import '../contacts/contacts_screen.dart';
 import '../chat/chat_screen.dart';
@@ -23,7 +24,7 @@ class MessagesScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: DnaAppBar(
-        title: 'Chats',
+        title: AppLocalizations.of(context).navChats,
         leading: const SizedBox.shrink(),
         actions: [
           IconButton(
@@ -46,7 +47,7 @@ class MessagesScreen extends ConsumerWidget {
             child: Row(
               children: [
                 _FilterChip(
-                  label: 'All',
+                  label: AppLocalizations.of(context).messagesAll,
                   selected: filter == MessagesFilter.all,
                   onTap: () =>
                       ref.read(messagesFilterProvider.notifier).state =
@@ -54,7 +55,7 @@ class MessagesScreen extends ConsumerWidget {
                 ),
                 const SizedBox(width: DnaSpacing.sm),
                 _FilterChip(
-                  label: 'Unread',
+                  label: AppLocalizations.of(context).messagesUnread,
                   badgeCount: chatUnread,
                   selected: filter == MessagesFilter.unread,
                   onTap: () =>
@@ -63,7 +64,7 @@ class MessagesScreen extends ConsumerWidget {
                 ),
                 const SizedBox(width: DnaSpacing.sm),
                 _FilterChip(
-                  label: 'Chats',
+                  label: AppLocalizations.of(context).navChats,
                   badgeCount: chatUnread,
                   selected: filter == MessagesFilter.chats,
                   onTap: () =>
@@ -189,12 +190,12 @@ class _UnreadMessagesView extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'All caught up!',
+              AppLocalizations.of(context).messagesAllCaughtUp,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
             Text(
-              'No unread messages',
+              AppLocalizations.of(context).messagesNoUnread,
               style: theme.textTheme.bodySmall,
             ),
           ],

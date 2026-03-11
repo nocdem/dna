@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../../design_system/design_system.dart';
+import '../../../l10n/app_localizations.dart';
 
 /// Callback types for context menu actions
 typedef MessageAction = void Function();
@@ -36,36 +37,36 @@ class MessageContextMenu {
       items: [
         _buildMenuItem(
           icon: FontAwesomeIcons.reply,
-          label: 'Reply',
+          label: AppLocalizations.of(context).messageMenuReply,
           value: 'reply',
         ),
         _buildMenuItem(
           icon: FontAwesomeIcons.copy,
-          label: 'Copy',
+          label: AppLocalizations.of(context).messageMenuCopy,
           value: 'copy',
         ),
         _buildMenuItem(
           icon: FontAwesomeIcons.share,
-          label: 'Forward',
+          label: AppLocalizations.of(context).messageMenuForward,
           value: 'forward',
         ),
         _buildMenuItem(
           icon: isStarred ? FontAwesomeIcons.solidStar : FontAwesomeIcons.star,
-          label: isStarred ? 'Unstar' : 'Star',
+          label: isStarred ? AppLocalizations.of(context).messageMenuUnstar : AppLocalizations.of(context).messageMenuStar,
           value: 'star',
           iconColor: isStarred ? Colors.amber : null,
         ),
         if (onRetry != null)
           _buildMenuItem(
             icon: FontAwesomeIcons.arrowsRotate,
-            label: 'Retry',
+            label: AppLocalizations.of(context).messageMenuRetry,
             value: 'retry',
             iconColor: DnaColors.warning,
           ),
         const PopupMenuDivider(),
         _buildMenuItem(
           icon: FontAwesomeIcons.trash,
-          label: 'Delete',
+          label: AppLocalizations.of(context).messageMenuDelete,
           value: 'delete',
           iconColor: DnaColors.error,
           textColor: DnaColors.error,

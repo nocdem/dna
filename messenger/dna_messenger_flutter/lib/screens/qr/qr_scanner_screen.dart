@@ -10,6 +10,7 @@ import '../../design_system/theme/dna_colors.dart';
 import '../../utils/qr_payload_parser.dart';
 import 'qr_auth_screen.dart';
 import 'qr_result_screen.dart';
+import '../../l10n/app_localizations.dart';
 
 class QrScannerScreen extends ConsumerStatefulWidget {
   const QrScannerScreen({super.key});
@@ -266,7 +267,7 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Scan QR'),
+        title: Text(AppLocalizations.of(context).qrScannerTitle),
         actions: [
           IconButton(
             icon: FaIcon(_torchOn ? FontAwesomeIcons.lightbulb : FontAwesomeIcons.solidLightbulb),
@@ -434,7 +435,7 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
                 setState(() {});
               },
               icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 16),
-              label: const Text('Retry'),
+              label: Text(AppLocalizations.of(context).retry),
             ),
           ],
         ),
@@ -473,7 +474,7 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
                 _scannerArmed = true;
               },
               icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 16),
-              label: const Text('Retry'),
+              label: Text(AppLocalizations.of(context).retry),
             ),
           ],
         ),

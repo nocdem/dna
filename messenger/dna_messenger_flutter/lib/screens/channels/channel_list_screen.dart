@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../design_system/design_system.dart';
+import '../../l10n/app_localizations.dart';
 import '../../models/channel.dart';
 import '../../providers/providers.dart';
 import 'channel_detail_screen.dart';
@@ -18,7 +19,7 @@ class ChannelListScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: DnaAppBar(
-        title: 'Channels',
+        title: AppLocalizations.of(context).channelsTitle,
         leading: const SizedBox.shrink(),
         actions: [
           IconButton(
@@ -78,12 +79,12 @@ class ChannelListScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'No channels yet',
+              AppLocalizations.of(context).channelsEmpty,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
             Text(
-              'Create or discover channels',
+              AppLocalizations.of(context).channelsCreateOrDiscover,
               style: theme.textTheme.bodySmall,
             ),
           ],
@@ -138,7 +139,7 @@ class ChannelListScreen extends ConsumerWidget {
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => ref.read(channelListProvider.notifier).refresh(),
-              child: const Text('Retry'),
+              child: Text(AppLocalizations.of(context).retry),
             ),
           ],
         ),
@@ -168,7 +169,7 @@ class ChannelListScreen extends ConsumerWidget {
           children: [
             ListTile(
               leading: const FaIcon(FontAwesomeIcons.rightFromBracket),
-              title: Text('Unsubscribe from ${channel.name}'),
+              title: Text(AppLocalizations.of(context).unsubscribeFrom(channel.name)),
               onTap: () {
                 Navigator.pop(ctx);
                 ref

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../design_system/design_system.dart';
+import '../../l10n/app_localizations.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 
@@ -23,7 +24,7 @@ class GroupsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: DnaAppBar(
-        title: 'Groups',
+        title: AppLocalizations.of(context).groupsTitle,
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
@@ -39,7 +40,7 @@ class GroupsScreen extends ConsumerWidget {
       floatingActionButton: FloatingActionButton(
         heroTag: 'groups_fab',
         onPressed: () => _showCreateGroupDialog(context, ref),
-        tooltip: 'Create Group',
+        tooltip: AppLocalizations.of(context).groupsCreate,
         child: const FaIcon(FontAwesomeIcons.userGroup),
       ),
     );
@@ -82,12 +83,12 @@ class GroupsScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'No groups yet',
+              AppLocalizations.of(context).groupsEmpty,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
             Text(
-              'Tap + to create your first group',
+              AppLocalizations.of(context).groupsCreateOrJoin,
               style: theme.textTheme.bodySmall,
             ),
           ],
@@ -105,7 +106,7 @@ class GroupsScreen extends ConsumerWidget {
           // Invitations section
           if (invitations.isNotEmpty) ...[
             _SectionHeader(
-              title: 'Pending Invitations',
+              title: AppLocalizations.of(context).groupsPendingInvitations,
               count: invitations.length,
             ),
             ...invitations.map((inv) => _InvitationTile(
@@ -118,7 +119,7 @@ class GroupsScreen extends ConsumerWidget {
           // Groups section
           if (groups.isNotEmpty) ...[
             _SectionHeader(
-              title: 'Your Groups',
+              title: AppLocalizations.of(context).groupsYourGroups,
               count: groups.length,
             ),
             ...groups.map((group) => _GroupTile(
@@ -147,7 +148,7 @@ class GroupsScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'Failed to load groups',
+              AppLocalizations.of(context).contactsFailedToLoad,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
@@ -159,7 +160,7 @@ class GroupsScreen extends ConsumerWidget {
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => ref.invalidate(groupsProvider),
-              child: const Text('Retry'),
+              child: Text(AppLocalizations.of(context).contactsRetry),
             ),
           ],
         ),
@@ -210,7 +211,7 @@ class GroupsScreen extends ConsumerWidget {
       await ref.read(invitationsProvider.notifier).rejectInvitation(invitation.groupUuid);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Invitation declined')),
+          SnackBar(content: Text(AppLocalizations.of(context).groupsDecline)),
         );
       }
     } catch (e) {
@@ -294,7 +295,7 @@ class _GroupTile extends ConsumerWidget {
             ? const TextStyle(fontWeight: FontWeight.bold)
             : null,
       ),
-      subtitle: Text('${group.memberCount} members'),
+      subtitle: Text('${group.memberCount} ${AppLocalizations.of(context).groupsMembers.toLowerCase()}'),
       trailing: const FaIcon(FontAwesomeIcons.chevronRight),
       onTap: onTap,
     );
@@ -390,7 +391,7 @@ class _InvitationTileState extends State<_InvitationTile> {
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Text('Decline'),
+                    : Text(AppLocalizations.of(context).groupsDecline),
               ),
               const SizedBox(width: 8),
               ElevatedButton(
@@ -404,7 +405,7 @@ class _InvitationTileState extends State<_InvitationTile> {
                           color: Colors.white,
                         ),
                       )
-                    : const Text('Accept'),
+                    : Text(AppLocalizations.of(context).groupsAccept),
               ),
             ],
           ),
@@ -441,7 +442,7 @@ class _CreateGroupDialogState extends ConsumerState<_CreateGroupDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Create Group'),
+      title: Text(AppLocalizations.of(context).groupsCreate),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -449,8 +450,8 @@ class _CreateGroupDialogState extends ConsumerState<_CreateGroupDialog> {
           const SizedBox(height: 16),
           TextField(
             controller: _controller,
-            decoration: const InputDecoration(
-              labelText: 'Group Name',
+            decoration: InputDecoration(
+              labelText: AppLocalizations.of(context).groupsName,
               hintText: 'My Awesome Group',
             ),
             autofocus: true,
@@ -461,7 +462,7 @@ class _CreateGroupDialogState extends ConsumerState<_CreateGroupDialog> {
       actions: [
         TextButton(
           onPressed: _isCreating ? null : () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(AppLocalizations.of(context).cancel),
         ),
         ElevatedButton(
           onPressed: _isCreating || _controller.text.trim().isEmpty
@@ -473,7 +474,7 @@ class _CreateGroupDialogState extends ConsumerState<_CreateGroupDialog> {
                   height: 16,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Text('Create'),
+              : Text(AppLocalizations.of(context).groupsCreate),
         ),
       ],
     );
@@ -490,7 +491,7 @@ class _CreateGroupDialogState extends ConsumerState<_CreateGroupDialog> {
       if (mounted) {
         Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Group "${_controller.text.trim()}" created')),
+          SnackBar(content: Text(AppLocalizations.of(context).groupsCreated)),
         );
       }
     } catch (e) {
@@ -589,7 +590,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
                     maxLines: 1,
                   ),
                   Text(
-                    '${widget.group.memberCount} members',
+                    '${widget.group.memberCount} ${AppLocalizations.of(context).groupsMembers.toLowerCase()}',
                     style: theme.textTheme.bodySmall,
                   ),
                 ],
@@ -601,7 +602,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.circleInfo),
             onPressed: () => _showGroupInfo(context),
-            tooltip: 'Group Info',
+            tooltip: AppLocalizations.of(context).groupsInfo,
           ),
         ],
       ),
@@ -631,7 +632,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
                     child: TextField(
                       controller: _messageController,
                       decoration: InputDecoration(
-                        hintText: 'Type a message...',
+                        hintText: AppLocalizations.of(context).chatTypeMessage,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(24),
                           borderSide: BorderSide.none,
@@ -707,12 +708,12 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  'No messages yet',
+                  AppLocalizations.of(context).chatNoMessages,
                   style: theme.textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Send a message to start the conversation',
+                  AppLocalizations.of(context).chatSendFirstMessage,
                   style: theme.textTheme.bodySmall,
                 ),
               ],
@@ -747,14 +748,14 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              'Failed to load messages',
+              AppLocalizations.of(context).contactsFailedToLoad,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
             TextButton.icon(
               onPressed: () => ref.invalidate(groupConversationProvider(widget.group.uuid)),
               icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 16),
-              label: const Text('Retry'),
+              label: Text(AppLocalizations.of(context).contactsRetry),
             ),
           ],
         ),
@@ -872,7 +873,7 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
             color: theme.colorScheme.primary,
           ),
           const SizedBox(width: 12),
-          const Text('Group Info'),
+          Text(AppLocalizations.of(context).groupsInfo),
         ],
       ),
       content: _isLoading
@@ -886,7 +887,7 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Close'),
+          child: Text(AppLocalizations.of(context).done),
         ),
       ],
     );
@@ -903,7 +904,7 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
         ),
         const SizedBox(height: 16),
         Text(
-          'Failed to load group info',
+          AppLocalizations.of(context).contactsFailedToLoad,
           style: theme.textTheme.titleMedium,
         ),
         const SizedBox(height: 8),
@@ -967,7 +968,7 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
           // Member count
           _InfoRow(
             icon: FontAwesomeIcons.userGroup,
-            label: 'Members',
+            label: AppLocalizations.of(context).groupsMembers,
             value: '${info.memberCount}',
           ),
           const Divider(height: 24),
@@ -984,7 +985,7 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
           _InfoRow(
             icon: info.isOwner ? FontAwesomeIcons.crown : FontAwesomeIcons.user,
             label: 'Your Role',
-            value: info.isOwner ? 'Owner' : 'Member',
+            value: info.isOwner ? AppLocalizations.of(context).groupsOwner : AppLocalizations.of(context).groupsMember,
             valueColor: info.isOwner ? DnaColors.textInfo : null,
           ),
 
@@ -995,7 +996,7 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  'Members',
+                  AppLocalizations.of(context).groupsMembers,
                   style: theme.textTheme.titleSmall?.copyWith(
                     color: theme.colorScheme.primary,
                   ),
@@ -1054,7 +1055,7 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Text(
-                          'Owner',
+                          AppLocalizations.of(context).groupsOwner,
                           style: theme.textTheme.labelSmall?.copyWith(
                             color: DnaColors.textInfo,
                           ),
@@ -1068,7 +1069,7 @@ class _GroupInfoDialogState extends ConsumerState<_GroupInfoDialog> {
                           size: 12,
                           color: theme.colorScheme.error,
                         ),
-                        tooltip: 'Remove Member',
+                        tooltip: AppLocalizations.of(context).groupsRemoveMember,
                         onPressed: () => _showRemoveMemberDialog(context, member, displayName),
                         visualDensity: VisualDensity.compact,
                         padding: EdgeInsets.zero,
@@ -1176,7 +1177,7 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
             color: theme.colorScheme.primary,
           ),
           const SizedBox(width: 12),
-          const Text('Add Member'),
+          Text(AppLocalizations.of(context).groupsInvite),
         ],
       ),
       content: Column(
@@ -1235,7 +1236,7 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
       actions: [
         TextButton(
           onPressed: _isLoading ? null : () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(AppLocalizations.of(context).cancel),
         ),
         TextButton(
           onPressed: _isLoading || _selectedFingerprint == null
@@ -1247,7 +1248,7 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
                   height: 16,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Text('Add'),
+              : Text(AppLocalizations.of(context).groupsInvite),
         ),
       ],
     );
@@ -1317,7 +1318,7 @@ class _RemoveMemberDialogState extends ConsumerState<_RemoveMemberDialog> {
             color: theme.colorScheme.error,
           ),
           const SizedBox(width: 12),
-          const Text('Remove Member'),
+          Text(AppLocalizations.of(context).groupsRemoveMember),
         ],
       ),
       content: Column(
@@ -1325,7 +1326,7 @@ class _RemoveMemberDialogState extends ConsumerState<_RemoveMemberDialog> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Are you sure you want to remove ${widget.memberDisplayName} from this group?',
+            AppLocalizations.of(context).groupsKickConfirm(widget.memberDisplayName),
             style: theme.textTheme.bodyMedium,
           ),
           const SizedBox(height: 8),
@@ -1349,7 +1350,7 @@ class _RemoveMemberDialogState extends ConsumerState<_RemoveMemberDialog> {
       actions: [
         TextButton(
           onPressed: _isLoading ? null : () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(AppLocalizations.of(context).cancel),
         ),
         TextButton(
           onPressed: _isLoading ? null : _removeMember,
@@ -1362,7 +1363,7 @@ class _RemoveMemberDialogState extends ConsumerState<_RemoveMemberDialog> {
                   height: 16,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Text('Remove'),
+              : Text(AppLocalizations.of(context).groupsRemoveMember),
         ),
       ],
     );

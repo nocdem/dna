@@ -10,6 +10,7 @@ import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../ffi/dna_engine.dart';
+import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart';
 import '../../utils/logger.dart';
 import '../../design_system/design_system.dart';
@@ -317,7 +318,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 focusNode: _searchFocusNode,
                 autofocus: true,
                 decoration: InputDecoration(
-                  hintText: 'Search messages...',
+                  hintText: AppLocalizations.of(context).chatSearchMessages,
                   border: InputBorder.none,
                   hintStyle: theme.textTheme.bodyMedium?.copyWith(
                     color: theme.textTheme.bodySmall?.color,
@@ -354,8 +355,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         ),
                         Text(
                           contact.isOnline
-                              ? 'Online'
-                              : 'Last seen ${_formatLastSeen(contact.lastSeen)}',
+                              ? AppLocalizations.of(context).chatOnline
+                              : AppLocalizations.of(context).chatLastSeen(_formatLastSeen(contact.lastSeen)),
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: contact.isOnline
                                 ? DnaColors.success
@@ -384,7 +385,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 // Search button
                 IconButton(
                   icon: const FaIcon(FontAwesomeIcons.magnifyingGlass),
-                  tooltip: 'Search messages',
+                  tooltip: AppLocalizations.of(context).chatSearchMessages,
                   onPressed: () {
                     setState(() {
                       _isSearching = true;
@@ -553,12 +554,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              'No messages yet',
+              AppLocalizations.of(context).chatNoMessages,
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
             Text(
-              'Send a message to start the conversation',
+              AppLocalizations.of(context).chatSendFirstMessage,
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -747,7 +748,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             final isConnecting = dhtState == DhtConnectionState.connecting;
             final color = isConnecting ? Colors.orange : DnaColors.error;
             final icon = isConnecting ? FontAwesomeIcons.cloudArrowUp : FontAwesomeIcons.cloudBolt;
-            final text = isConnecting ? 'Connecting...' : 'Disconnected - messages will queue';
+            final text = isConnecting ? AppLocalizations.of(context).chatConnecting : 'Disconnected - messages will queue';
             return Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -869,7 +870,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 controller: _messageController,
                 focusNode: _focusNode,
                 autofocus: true,
-                hintText: 'Type a message...',
+                hintText: AppLocalizations.of(context).chatTypeMessage,
                 minLines: 1,
                 maxLines: 5,
                 onEnterPressed: () {
@@ -879,7 +880,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 },
                 // Note: onChanged not needed - _messageController.addListener handles state
                 decoration: InputDecoration(
-                  hintText: 'Type a message...',
+                  hintText: AppLocalizations.of(context).chatTypeMessage,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(24),
                     borderSide: BorderSide.none,
@@ -1009,7 +1010,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           children: [
             ListTile(
               leading: const FaIcon(FontAwesomeIcons.images),
-              title: const Text('Photo Library'),
+              title: Text(AppLocalizations.of(context).chatPhotoLibrary),
               onTap: () {
                 Navigator.pop(context);
                 _pickAndSendImage(contact, ImageSource.gallery);
@@ -1017,7 +1018,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
             ListTile(
               leading: const FaIcon(FontAwesomeIcons.camera),
-              title: const Text('Camera'),
+              title: Text(AppLocalizations.of(context).chatCamera),
               onTap: () {
                 Navigator.pop(context);
                 _pickAndSendImage(contact, ImageSource.camera);
@@ -1110,11 +1111,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Add Caption'),
+        title: Text(AppLocalizations.of(context).chatAddCaption),
         content: TextField(
           controller: controller,
-          decoration: const InputDecoration(
-            hintText: 'Optional caption...',
+          decoration: InputDecoration(
+            hintText: AppLocalizations.of(context).chatAddCaption,
           ),
           autofocus: true,
           maxLines: 3,
@@ -1127,7 +1128,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Send'),
+            child: Text(AppLocalizations.of(context).chatSendPhoto),
           ),
         ],
       ),
@@ -1381,7 +1382,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           children: [
             ListTile(
               leading: const FaIcon(FontAwesomeIcons.reply),
-              title: const Text('Reply'),
+              title: Text(AppLocalizations.of(context).messageMenuReply),
               onTap: () {
                 Navigator.pop(context);
                 _replyMessage(message);
@@ -1389,7 +1390,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
             ListTile(
               leading: const FaIcon(FontAwesomeIcons.copy),
-              title: const Text('Copy'),
+              title: Text(AppLocalizations.of(context).messageMenuCopy),
               onTap: () {
                 Navigator.pop(context);
                 _copyMessage(message);
@@ -1397,7 +1398,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
             ListTile(
               leading: const FaIcon(FontAwesomeIcons.share),
-              title: const Text('Forward'),
+              title: Text(AppLocalizations.of(context).messageMenuForward),
               onTap: () {
                 Navigator.pop(context);
                 _forwardMessage(message);
@@ -1408,7 +1409,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 isStarred ? FontAwesomeIcons.solidStar : FontAwesomeIcons.star,
                 color: isStarred ? Colors.amber : null,
               ),
-              title: Text(isStarred ? 'Unstar' : 'Star'),
+              title: Text(isStarred ? AppLocalizations.of(context).messageMenuUnstar : AppLocalizations.of(context).messageMenuStar),
               onTap: () {
                 Navigator.pop(context);
                 _toggleStarMessage(message, contact.fingerprint);
@@ -1416,7 +1417,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
             ListTile(
               leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.error),
-              title: Text('Delete', style: TextStyle(color: DnaColors.error)),
+              title: Text(AppLocalizations.of(context).messageMenuDelete, style: TextStyle(color: DnaColors.error)),
               onTap: () {
                 Navigator.pop(context);
                 _confirmDeleteMessage(message);
@@ -1542,7 +1543,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(success ? 'Message deleted' : 'Failed to delete message'),
+          content: Text(success ? AppLocalizations.of(context).chatMessageDeleted : 'Failed to delete message'),
           backgroundColor: success ? DnaColors.snackbarSuccess : DnaColors.error,
           duration: const Duration(seconds: 2),
         ),
@@ -1559,7 +1560,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           children: [
             ListTile(
               leading: const FaIcon(FontAwesomeIcons.reply),
-              title: const Text('Reply'),
+              title: Text(AppLocalizations.of(context).messageMenuReply),
               onTap: () {
                 Navigator.pop(context);
                 _replyMessage(message);
@@ -1567,7 +1568,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
             ListTile(
               leading: const FaIcon(FontAwesomeIcons.share),
-              title: const Text('Forward'),
+              title: Text(AppLocalizations.of(context).messageMenuForward),
               onTap: () {
                 Navigator.pop(context);
                 _forwardMessage(message);

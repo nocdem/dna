@@ -1,6 +1,6 @@
 # DNA Messenger Flutter UI
 
-**Last Updated:** 2026-02-25
+**Last Updated:** 2026-03-11
 **Status:** Phase 4 — Design System + UI Redesign Complete
 **Target:** Mobile-first, all platforms from single codebase
 
@@ -626,3 +626,75 @@ class DnaTheme {
 6. Add QR code generation for wallet receive
 7. Add group conversation history display
 8. Integration testing with DHT network
+
+---
+
+## Internationalization (i18n)
+
+**Framework:** Flutter gen-l10n (official Flutter solution)
+**Supported Languages:** English (source), Turkish (Türkçe)
+**Fallback:** English for unsupported locales
+
+### File Structure
+
+```
+lib/l10n/
+  app_en.arb              # English strings (source/template)
+  app_tr.arb              # Turkish translations
+  app_localizations.dart  # Generated (do not edit)
+  app_localizations_en.dart  # Generated
+  app_localizations_tr.dart  # Generated
+
+l10n.yaml                 # gen-l10n configuration (project root)
+
+lib/providers/
+  locale_provider.dart    # Language selection state (SharedPreferences)
+```
+
+### How to Use in Screens
+
+```dart
+import '../../l10n/app_localizations.dart';
+
+// In build() method:
+final l10n = AppLocalizations.of(context);
+Text(l10n.settingsTitle)  // "Settings" or "Ayarlar"
+
+// Parameterized strings:
+Text(l10n.contactsLastSeen('5 min ago'))
+Text(l10n.walletSendTitle('ETH'))
+```
+
+### How to Add a New String
+
+1. Add key + English value to `lib/l10n/app_en.arb`
+2. Add key + Turkish value to `lib/l10n/app_tr.arb`
+3. Run `flutter gen-l10n` (or just `flutter build`)
+4. Use `AppLocalizations.of(context).keyName` in code
+
+For parameterized strings, add `@key` metadata in app_en.arb only:
+```json
+"greeting": "Hello {name}",
+"@greeting": {
+  "placeholders": {
+    "name": { "type": "String" }
+  }
+}
+```
+
+### How to Add a New Language
+
+1. Create `lib/l10n/app_XX.arb` (copy from app_en.arb, translate values)
+2. Set `"@@locale": "XX"` at the top
+3. Do NOT include `@key` metadata entries (only in template file)
+4. Add the language option to `_LanguageSection` in `settings_screen.dart`
+5. Run `flutter gen-l10n`
+
+### Language Selection
+
+Users choose language in **Settings > Language**:
+- **System default** — follows device language (falls back to English)
+- **English** — forced English
+- **Türkçe** — forced Turkish
+
+Persisted via SharedPreferences (`app_locale` key). Managed by `localeProvider` (Riverpod StateNotifier).

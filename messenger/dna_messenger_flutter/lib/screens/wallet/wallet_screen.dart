@@ -12,6 +12,7 @@ import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradi
 import '../../providers/price_provider.dart';
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
+import '../../l10n/app_localizations.dart';
 
 /// Network filter for the wallet assets list (null = show all)
 final walletNetworkFilterProvider = StateProvider<String?>((ref) => null);
@@ -148,7 +149,7 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Wallet'),
+        title: Text(AppLocalizations.of(context).walletTitle),
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.addressBook),
@@ -281,7 +282,7 @@ class _ActionButtonsRow extends ConsumerWidget {
         children: [
           _PillAction(
             icon: FontAwesomeIcons.arrowUp,
-            label: 'Send',
+            label: AppLocalizations.of(context).walletSend,
             onTap: () {
               showModalBottomSheet(
                 context: context,
@@ -293,7 +294,7 @@ class _ActionButtonsRow extends ConsumerWidget {
           const SizedBox(width: 16),
           _PillAction(
             icon: FontAwesomeIcons.rightLeft,
-            label: 'Swap',
+            label: AppLocalizations.of(context).walletSwap,
             onTap: () {
               showModalBottomSheet(
                 context: context,
@@ -305,7 +306,7 @@ class _ActionButtonsRow extends ConsumerWidget {
           const SizedBox(width: 16),
           _PillAction(
             icon: FontAwesomeIcons.arrowDown,
-            label: 'Receive',
+            label: AppLocalizations.of(context).walletReceive,
             onTap: () {
               final wallets = walletsAsync.valueOrNull ?? [];
               showModalBottomSheet(
@@ -403,7 +404,7 @@ class _ReceiveSheetState extends State<_ReceiveSheet> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Receive', style: theme.textTheme.titleLarge),
+            Text(AppLocalizations.of(context).walletReceive, style: theme.textTheme.titleLarge),
             const SizedBox(height: 16),
             // Network selector
             Row(
@@ -495,7 +496,7 @@ class _ReceiveSheetState extends State<_ReceiveSheet> {
             const SizedBox(height: 16),
             // Copy button pinned at bottom
             DnaButton(
-              label: 'Copy Address',
+              label: AppLocalizations.of(context).walletCopyAddress,
               icon: FontAwesomeIcons.copy,
               expand: true,
               onPressed: address.isNotEmpty
@@ -510,8 +511,8 @@ class _ReceiveSheetState extends State<_ReceiveSheet> {
                               FaIcon(FontAwesomeIcons.circleCheck,
                                   size: 18, color: Colors.white),
                               const SizedBox(width: 10),
-                              const Text('Address copied to clipboard',
-                                  style: TextStyle(fontSize: 15)),
+                              Text(AppLocalizations.of(context).walletAddressCopied,
+                                  style: const TextStyle(fontSize: 15)),
                             ],
                           ),
                           duration: const Duration(seconds: 2),
@@ -1424,7 +1425,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                'Send',
+                AppLocalizations.of(context).walletSend,
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               const SizedBox(height: 16),
@@ -1435,7 +1436,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     child: TextField(
                       controller: _recipientController,
                       decoration: InputDecoration(
-                        labelText: 'Recipient',
+                        labelText: AppLocalizations.of(context).walletRecipientAddress,
                         hintText: 'Address or DNA fingerprint',
                         suffixIcon: _isResolving
                             ? const Padding(
@@ -1507,7 +1508,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     child: TextField(
                       controller: _amountController,
                       decoration: InputDecoration(
-                        labelText: 'Amount',
+                        labelText: AppLocalizations.of(context).walletAmount,
                         hintText: '0.00',
                         suffixText: _selectedToken,
                       ),
@@ -1531,7 +1532,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           minimumSize: const Size(50, 36),
                         ),
-                        child: const Text('Max'),
+                        child: Text(AppLocalizations.of(context).walletMax),
                       ),
                       const SizedBox(height: 4),
                       // Show max amount below button
@@ -1665,7 +1666,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                         height: 20,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Text('Send'),
+                    : Text(AppLocalizations.of(context).walletSend),
               ),
             ],
           ),
@@ -1788,7 +1789,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       if (mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Transaction submitted successfully')),
+          SnackBar(content: Text(AppLocalizations.of(context).walletSendSuccess)),
         );
 
         // After successful send, check if address should be saved
@@ -1802,7 +1803,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         setState(() => _isSending = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to send: $e'),
+            content: Text(AppLocalizations.of(context).walletSendFailed(e.toString())),
             backgroundColor: DnaColors.snackbarError,
           ),
         );
@@ -1992,7 +1993,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                       child: ElevatedButton.icon(
                         onPressed: () => _showSend(context, ref, balance),
                         icon: const FaIcon(FontAwesomeIcons.arrowUp, size: 16, color: Colors.white),
-                        label: Text('Send $token', style: const TextStyle(color: Colors.white)),
+                        label: Text(AppLocalizations.of(context).walletSendTitle(token), style: const TextStyle(color: Colors.white)),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white.withValues(alpha: 0.2),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(DnaSpacing.radiusMd)),
@@ -2031,8 +2032,8 @@ class _TokenDetailSheet extends ConsumerWidget {
                                   FaIcon(FontAwesomeIcons.circleCheck,
                                       size: 18, color: Colors.white),
                                   const SizedBox(width: 10),
-                                  const Text('Address copied to clipboard',
-                                      style: TextStyle(fontSize: 15)),
+                                  Text(AppLocalizations.of(context).walletAddressCopied,
+                                      style: const TextStyle(fontSize: 15)),
                                 ],
                               ),
                               duration: const Duration(seconds: 2),
@@ -2082,7 +2083,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                             ),
                             const SizedBox(height: 12),
                             Text(
-                              'No $token transactions yet',
+                              AppLocalizations.of(context).walletNoTransactions,
                               style: theme.textTheme.bodyMedium,
                             ),
                           ],
@@ -2919,7 +2920,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                     const SizedBox(width: DnaSpacing.md),
                     Expanded(
                       child: DnaButton(
-                        label: 'Swap',
+                        label: AppLocalizations.of(context).walletSwap,
                         variant: DnaButtonVariant.primary,
                         icon: FontAwesomeIcons.arrowRightArrowLeft,
                         expand: true,

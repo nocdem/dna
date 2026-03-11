@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../design_system/design_system.dart';
+import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart';
 
 class CreateChannelScreen extends ConsumerStatefulWidget {
@@ -42,7 +43,7 @@ class _CreateChannelScreenState extends ConsumerState<CreateChannelScreen> {
             isPublic: _isPublic,
           );
       if (mounted) {
-        DnaSnackBar.success(context, 'Channel created');
+        DnaSnackBar.success(context, AppLocalizations.of(context).channelCreated);
         Navigator.pop(context);
       }
     } catch (e) {
@@ -56,14 +57,14 @@ class _CreateChannelScreenState extends ConsumerState<CreateChannelScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: const DnaAppBar(title: 'Create Channel'),
+      appBar: DnaAppBar(title: AppLocalizations.of(context).channelsCreate),
       body: Padding(
         padding: const EdgeInsets.all(DnaSpacing.lg),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             DnaTextField(
-              label: 'Channel Name',
+              label: AppLocalizations.of(context).channelName,
               hint: 'Enter channel name',
               controller: _nameController,
               autofocus: true,
@@ -77,7 +78,7 @@ class _CreateChannelScreenState extends ConsumerState<CreateChannelScreen> {
             ),
             const SizedBox(height: DnaSpacing.lg),
             DnaTextField(
-              label: 'Description',
+              label: AppLocalizations.of(context).channelDescription,
               hint: 'What is this channel about? (optional)',
               controller: _descriptionController,
               maxLines: 3,
@@ -90,14 +91,14 @@ class _CreateChannelScreenState extends ConsumerState<CreateChannelScreen> {
             ),
             const SizedBox(height: DnaSpacing.lg),
             DnaSwitch(
-              label: 'List publicly',
-              subtitle: 'Allow others to discover this channel',
+              label: AppLocalizations.of(context).channelListPublicly,
+              subtitle: AppLocalizations.of(context).channelListPubliclyHint,
               value: _isPublic,
               onChanged: (value) => setState(() => _isPublic = value),
             ),
             const SizedBox(height: DnaSpacing.xl),
             DnaButton(
-              label: 'Create Channel',
+              label: AppLocalizations.of(context).channelsCreate,
               icon: FontAwesomeIcons.plus,
               onPressed: _canCreate ? _create : null,
               loading: _isCreating,

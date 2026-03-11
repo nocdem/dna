@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../design_system/design_system.dart';
+import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart';
 import '../../models/channel.dart';
 import '../../utils/time_format.dart';
@@ -96,7 +97,7 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
                         ),
                         const SizedBox(height: DnaSpacing.lg),
                         Text(
-                          'No posts yet \u2014 be the first to post!',
+                          AppLocalizations.of(context).channelNoPosts,
                           style: theme.textTheme.bodyLarge?.copyWith(
                             color: theme.colorScheme.onSurfaceVariant,
                           ),
@@ -146,7 +147,7 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
                               icon: const FaIcon(
                                   FontAwesomeIcons.clockRotateLeft,
                                   size: 14),
-                              label: const Text('Load older posts'),
+                              label: Text(AppLocalizations.of(context).channelLoadOlderPosts),
                               onPressed: () => ref
                                   .read(channelPostsProvider(
                                           widget.channelUuid)
@@ -188,7 +189,7 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
                     TextButton.icon(
                       icon: const FaIcon(FontAwesomeIcons.arrowsRotate,
                           size: 14),
-                      label: const Text('Retry'),
+                      label: Text(AppLocalizations.of(context).retry),
                       onPressed: () => ref
                           .read(channelPostsProvider(widget.channelUuid)
                               .notifier)
@@ -277,7 +278,7 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
                     child: TextField(
                       controller: _postController,
                       decoration: InputDecoration(
-                        hintText: 'Write a post...',
+                        hintText: AppLocalizations.of(context).channelWritePost,
                         border: OutlineInputBorder(
                           borderRadius:
                               BorderRadius.circular(DnaSpacing.radiusMd),
@@ -385,13 +386,13 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Unsubscribe'),
+        title: Text(AppLocalizations.of(context).channelUnsubscribe),
         content: Text(
             'Unsubscribe from "${widget.channelName}"? You can re-subscribe later from Discover.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context).cancel),
           ),
           TextButton(
             onPressed: () async {
@@ -404,7 +405,7 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
                 navigator.pop();
               }
             },
-            child: const Text('Unsubscribe'),
+            child: Text(AppLocalizations.of(context).channelUnsubscribe),
           ),
         ],
       ),
@@ -581,8 +582,8 @@ class _PostCard extends StatelessWidget {
       elevation: 8,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       items: [
-        _menuItem(FontAwesomeIcons.reply, 'Reply', 'reply'),
-        _menuItem(FontAwesomeIcons.copy, 'Copy', 'copy'),
+        _menuItem(FontAwesomeIcons.reply, AppLocalizations.of(context).channelReply, 'reply'),
+        _menuItem(FontAwesomeIcons.copy, AppLocalizations.of(context).channelCopy, 'copy'),
       ],
     ).then((value) {
       if (value == 'reply') onReply();
@@ -602,7 +603,7 @@ class _PostCard extends StatelessWidget {
             ListTile(
               leading: FaIcon(FontAwesomeIcons.reply,
                   size: 18, color: theme.colorScheme.primary),
-              title: const Text('Reply'),
+              title: Text(AppLocalizations.of(context).channelReply),
               onTap: () {
                 Navigator.pop(ctx);
                 onReply();
@@ -611,7 +612,7 @@ class _PostCard extends StatelessWidget {
             ListTile(
               leading: FaIcon(FontAwesomeIcons.copy,
                   size: 18, color: theme.colorScheme.onSurfaceVariant),
-              title: const Text('Copy'),
+              title: Text(AppLocalizations.of(context).channelCopy),
               onTap: () {
                 Navigator.pop(ctx);
                 Clipboard.setData(ClipboardData(text: post.body));

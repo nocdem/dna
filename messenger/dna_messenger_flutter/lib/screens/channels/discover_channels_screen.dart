@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../design_system/design_system.dart';
+import '../../l10n/app_localizations.dart';
 import '../../models/channel.dart';
 import '../../providers/providers.dart';
 
@@ -36,7 +37,7 @@ class _DiscoverChannelsScreenState
 
     return Scaffold(
       appBar: DnaAppBar(
-        title: 'Discover Channels',
+        title: AppLocalizations.of(context).channelsDiscover,
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 18),
@@ -50,7 +51,7 @@ class _DiscoverChannelsScreenState
         children: [
           // Search bar
           DnaSearchBar(
-            hint: 'Search channels...',
+            hint: AppLocalizations.of(context).channelSearchChannels,
             debounceMs: 300,
             onChanged: (value) {
               setState(() => _searchQuery = value);
@@ -74,7 +75,7 @@ class _DiscoverChannelsScreenState
                         const SizedBox(height: DnaSpacing.lg),
                         Text(
                           _searchQuery.isEmpty
-                              ? 'No public channels found'
+                              ? AppLocalizations.of(context).channelNoPublicChannels
                               : 'No channels match "$_searchQuery"',
                           style: theme.textTheme.bodyLarge?.copyWith(
                             color:
@@ -279,7 +280,7 @@ class _SubscribeButtonState extends ConsumerState<_SubscribeButton> {
       return TextButton.icon(
         onPressed: _toggle,
         icon: const FaIcon(FontAwesomeIcons.solidCircleCheck, size: 14),
-        label: const Text('Subscribed'),
+        label: Text(AppLocalizations.of(context).channelSubscribed),
         style: TextButton.styleFrom(
           foregroundColor: DnaColors.success,
         ),
@@ -289,7 +290,7 @@ class _SubscribeButtonState extends ConsumerState<_SubscribeButton> {
     return TextButton.icon(
       onPressed: _toggle,
       icon: const FaIcon(FontAwesomeIcons.plus, size: 14),
-      label: const Text('Subscribe'),
+      label: Text(AppLocalizations.of(context).channelSubscribe),
       style: TextButton.styleFrom(
         foregroundColor: DnaColors.primaryFixed,
       ),

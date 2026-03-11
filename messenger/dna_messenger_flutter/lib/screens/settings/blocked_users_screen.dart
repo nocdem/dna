@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import '../../l10n/app_localizations.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/contact_requests_provider.dart';
 import '../../design_system/theme/dna_colors.dart';
@@ -15,7 +16,7 @@ class BlockedUsersScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Blocked Users'),
+        title: Text(AppLocalizations.of(context).blockedTitle),
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
@@ -48,12 +49,12 @@ class BlockedUsersScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'No blocked users',
+              AppLocalizations.of(context).blockedEmpty,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
             Text(
-              'Users you block will appear here',
+              AppLocalizations.of(context).blockedUsersWillAppear,
               style: theme.textTheme.bodySmall,
             ),
           ],
@@ -106,7 +107,7 @@ class BlockedUsersScreen extends ConsumerWidget {
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => ref.invalidate(blockedUsersProvider),
-              child: const Text('Retry'),
+              child: Text(AppLocalizations.of(context).contactsRetry),
             ),
           ],
         ),
@@ -120,18 +121,18 @@ class BlockedUsersScreen extends ConsumerWidget {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Unblock User'),
+        title: Text(AppLocalizations.of(context).blockedUnblock),
         content: Text(
-          'Unblock ${_shortenFingerprint(blockedUser.fingerprint)}? They will be able to send you contact requests again.',
+          AppLocalizations.of(context).blockedUnblockConfirm(_shortenFingerprint(blockedUser.fingerprint)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context).cancel),
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Unblock'),
+            child: Text(AppLocalizations.of(context).blockedUnblock),
           ),
         ],
       ),
@@ -142,8 +143,8 @@ class BlockedUsersScreen extends ConsumerWidget {
         await ref.read(blockedUsersProvider.notifier).unblock(blockedUser.fingerprint);
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('User unblocked'),
+            SnackBar(
+              content: Text(AppLocalizations.of(context).userUnblocked),
             ),
           );
         }
@@ -213,7 +214,7 @@ class _BlockedUserTile extends StatelessWidget {
       ),
       trailing: TextButton(
         onPressed: onUnblock,
-        child: const Text('Unblock'),
+        child: Text(AppLocalizations.of(context).blockedUnblock),
       ),
       isThreeLine: blockedUser.reason.isNotEmpty,
     );

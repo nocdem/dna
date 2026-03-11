@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart' as dna;
+import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart';
 import '../../design_system/theme/dna_colors.dart';
 import '../../utils/logger.dart' show log, logError;
@@ -124,23 +125,24 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   }
 
   String _getStepTitle() {
+    final l10n = AppLocalizations.of(context);
     switch (_step) {
       case _OnboardingStep.welcome:
         return '';
       case _OnboardingStep.showSeed:
-        return 'Your Recovery Phrase';
+        return l10n.identityYourRecoveryPhrase;
       case _OnboardingStep.enterSeed:
-        return 'Enter Recovery Phrase';
+        return l10n.identityEnterRecoveryPhrase;
       case _OnboardingStep.processing:
         return 'Setting Up';
       case _OnboardingStep.confirmProfile:
         return 'Welcome Back';
       case _OnboardingStep.enterNickname:
-        return 'Choose Your Name';
+        return l10n.identityChooseName;
       case _OnboardingStep.creating:
         return 'Creating Identity';
       case _OnboardingStep.loading:
-        return 'Loading...';
+        return l10n.loading;
     }
   }
 
@@ -214,7 +216,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           ),
           const SizedBox(height: 24),
           Text(
-            'DNA Messenger',
+            AppLocalizations.of(context).identityTitle,
             style: theme.textTheme.headlineMedium,
             textAlign: TextAlign.center,
           ),
@@ -230,7 +232,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           ElevatedButton.icon(
             onPressed: _generateNewSeed,
             icon: const FaIcon(FontAwesomeIcons.plus),
-            label: const Text('Generate New Seed'),
+            label: Text(AppLocalizations.of(context).identityGenerateSeed),
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
@@ -239,7 +241,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           OutlinedButton.icon(
             onPressed: () => setState(() => _step = _OnboardingStep.enterSeed),
             icon: const FaIcon(FontAwesomeIcons.key),
-            label: const Text('I Have a Seed Phrase'),
+            label: Text(AppLocalizations.of(context).identityHaveSeed),
             style: OutlinedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
@@ -291,7 +293,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    'Write down these 24 words in order. This is your ONLY way to recover your account.',
+                    AppLocalizations.of(context).identityRecoveryPhraseWarning,
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
@@ -315,11 +317,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             onPressed: () {
               Clipboard.setData(ClipboardData(text: _mnemonic));
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Copied to clipboard')),
+                SnackBar(content: Text(AppLocalizations.of(context).copiedToClipboard)),
               );
             },
             icon: const FaIcon(FontAwesomeIcons.copy, size: 18),
-            label: const Text('Copy to Clipboard'),
+            label: Text(AppLocalizations.of(context).copyToClipboard),
           ),
           const SizedBox(height: 24),
           // Confirmation checkbox
@@ -327,7 +329,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             value: _seedConfirmed,
             onChanged: (v) => setState(() => _seedConfirmed = v ?? false),
             title: Text(
-              'I have written down my recovery phrase',
+              AppLocalizations.of(context).identityConfirmSaved,
               style: theme.textTheme.bodyMedium,
             ),
             controlAffinity: ListTileControlAffinity.leading,
@@ -338,7 +340,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             width: double.infinity,
             child: ElevatedButton(
               onPressed: _seedConfirmed ? _processSeed : null,
-              child: const Text('Continue'),
+              child: Text(AppLocalizations.of(context).continueButton),
             ),
           ),
         ],
@@ -420,7 +422,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Text(
-                      'Enter your 24-word recovery phrase:',
+                      AppLocalizations.of(context).identityEnterRecoveryPhraseHint,
                       style: theme.textTheme.bodyMedium,
                     ),
                     const SizedBox(height: 8),
@@ -438,7 +440,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                     OutlinedButton.icon(
                       onPressed: _pasteFromClipboard,
                       icon: const FaIcon(FontAwesomeIcons.paste, size: 18),
-                      label: const Text('Paste from Clipboard'),
+                      label: Text(AppLocalizations.of(context).pasteFromClipboard),
                     ),
                   ],
                 ),
@@ -450,7 +452,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                 width: double.infinity,
                 child: ElevatedButton(
                   onPressed: _allWordsFilled() ? _processSeed : null,
-                  child: const Text('Continue'),
+                  child: Text(AppLocalizations.of(context).continueButton),
                 ),
               ),
             ),
@@ -737,7 +739,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           const Spacer(),
           ElevatedButton(
             onPressed: _confirmAndLoad,
-            child: const Text('Continue'),
+            child: Text(AppLocalizations.of(context).continueButton),
           ),
           const SizedBox(height: 48),
         ],
@@ -824,7 +826,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             children: [
               FaIcon(FontAwesomeIcons.cloudArrowDown, color: Theme.of(context).colorScheme.primary),
               const SizedBox(width: 12),
-              const Text('Backup Found'),
+              Text(AppLocalizations.of(context).backupFound),
             ],
           ),
           content: Column(
@@ -996,7 +998,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           const Spacer(),
           ElevatedButton(
             onPressed: _isNameAvailable && !_isCheckingName ? _registerAndLoad : null,
-            child: const Text('Register & Continue'),
+            child: Text(AppLocalizations.of(context).identityRegisterContinue),
           ),
         ],
       ),
@@ -1057,7 +1059,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           setState(() {
             _isCheckingName = false;
             _isNameAvailable = available;
-            _nameError = available ? null : 'Name already taken';
+            _nameError = available ? null : AppLocalizations.of(context).identityNameTaken;
           });
         }
       } catch (e) {
@@ -1121,7 +1123,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           const CircularProgressIndicator(),
           const SizedBox(height: 24),
           Text(
-            'Creating your identity...',
+            AppLocalizations.of(context).identityCreating,
             style: theme.textTheme.titleMedium,
           ),
           const SizedBox(height: 8),
@@ -1145,7 +1147,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           const CircularProgressIndicator(),
           const SizedBox(height: 24),
           Text(
-            'Loading identity...',
+            AppLocalizations.of(context).identityRestoring,
             style: theme.textTheme.titleMedium,
           ),
         ],

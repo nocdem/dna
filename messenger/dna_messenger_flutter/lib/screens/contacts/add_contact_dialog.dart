@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../design_system/design_system.dart';
+import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart';
 
 /// Show the Add Contact dialog
@@ -142,7 +143,7 @@ class _AddContactDialogState extends ConsumerState<AddContactDialog> {
       if (fingerprint == null || fingerprint.isEmpty) {
         setState(() {
           _isSearching = false;
-          _errorMessage = 'Identity not found on DHT';
+          _errorMessage = 'not_found';
         });
         return;
       }
@@ -151,7 +152,7 @@ class _AddContactDialogState extends ConsumerState<AddContactDialog> {
       if (fingerprint == currentFingerprint) {
         setState(() {
           _isSearching = false;
-          _errorMessage = 'You cannot add yourself as a contact';
+          _errorMessage = 'cannot_add_self';
         });
         return;
       }
@@ -161,7 +162,7 @@ class _AddContactDialogState extends ConsumerState<AddContactDialog> {
       if (alreadyExists) {
         setState(() {
           _isSearching = false;
-          _errorMessage = 'Contact already exists in your list';
+          _errorMessage = 'already_contact';
         });
         return;
       }
@@ -212,7 +213,7 @@ class _AddContactDialogState extends ConsumerState<AddContactDialog> {
         Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Contact request sent to ${_foundName ?? 'user'}'),
+            content: Text(AppLocalizations.of(context).addContactRequestSent),
             backgroundColor: DnaColors.snackbarSuccess,
           ),
         );
@@ -227,6 +228,19 @@ class _AddContactDialogState extends ConsumerState<AddContactDialog> {
     }
   }
 
+  String _localizedError(AppLocalizations l10n, String errorKey) {
+    switch (errorKey) {
+      case 'not_found':
+        return l10n.addContactNotFound;
+      case 'cannot_add_self':
+        return l10n.addContactCannotAddSelf;
+      case 'already_contact':
+        return l10n.addContactAlreadyContact;
+      default:
+        return errorKey;
+    }
+  }
+
   String _shortenFingerprint(String fp) {
     if (fp.length <= 20) return fp;
     return '${fp.substring(0, 10)}...${fp.substring(fp.length - 10)}';
@@ -237,23 +251,25 @@ class _AddContactDialogState extends ConsumerState<AddContactDialog> {
     final theme = Theme.of(context);
     final inputLength = _controller.text.trim().length;
 
+    final l10n = AppLocalizations.of(context);
+
     return AlertDialog(
-      title: const Text('Add Contact'),
+      title: Text(l10n.addContactTitle),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Enter a fingerprint or registered name',
+              l10n.addContactHint,
               style: theme.textTheme.bodyMedium,
             ),
             const SizedBox(height: 16),
             TextField(
               controller: _controller,
               decoration: InputDecoration(
-                labelText: 'Fingerprint or Name',
-                hintText: 'Enter contact identifier',
+                labelText: l10n.addContactHint,
+                hintText: l10n.addContactHint,
                 suffixIcon: _isSearching
                     ? const Padding(
                         padding: EdgeInsets.all(12),
@@ -292,7 +308,7 @@ class _AddContactDialogState extends ConsumerState<AddContactDialog> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      _errorMessage!,
+                      _localizedError(l10n, _errorMessage!),
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: DnaColors.warning,
                       ),
@@ -332,7 +348,7 @@ class _AddContactDialogState extends ConsumerState<AddContactDialog> {
                                    color: DnaColors.success, size: 14),
                               const SizedBox(width: 4),
                               Text(
-                                'Found on DHT',
+                                l10n.addContactFoundOnNetwork,
                                 style: theme.textTheme.labelSmall?.copyWith(
                                   color: DnaColors.success,
                                 ),
@@ -365,7 +381,7 @@ class _AddContactDialogState extends ConsumerState<AddContactDialog> {
       actions: [
         TextButton(
           onPressed: _isAdding ? null : () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(l10n.cancel),
         ),
         ElevatedButton(
           onPressed: _isAdding || _foundFingerprint == null
@@ -377,7 +393,7 @@ class _AddContactDialogState extends ConsumerState<AddContactDialog> {
                   height: 16,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Text('Send Request'),
+              : Text(l10n.addContactSendRequest),
         ),
       ],
     );

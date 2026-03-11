@@ -10,6 +10,7 @@ import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../services/image_attachment_service.dart';
+import '../../l10n/app_localizations.dart';
 import '../../widgets/wall_post_tile.dart';
 import 'wall_post_detail_screen.dart';
 
@@ -62,7 +63,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
 
     return Scaffold(
       appBar: DnaAppBar(
-        title: 'Home',
+        title: AppLocalizations.of(context).wallTitle,
         leading: const SizedBox.shrink(),
         actions: [
           IconButton(
@@ -123,7 +124,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
             children: [
               const FaIcon(FontAwesomeIcons.triangleExclamation, size: 48),
               const SizedBox(height: DnaSpacing.md),
-              const Text('Failed to load timeline'),
+              Text(AppLocalizations.of(context).failedToLoadTimeline),
               const SizedBox(height: DnaSpacing.sm),
               DnaButton(
                 onPressed: () => ref.invalidate(wallTimelineProvider),
@@ -136,7 +137,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
       floatingActionButton: FloatingActionButton(
         heroTag: 'wall_fab',
         onPressed: () => _showCreatePostDialog(),
-        tooltip: 'New Post',
+        tooltip: AppLocalizations.of(context).wallNewPost,
         child: const FaIcon(FontAwesomeIcons.pen),
       ),
     );
@@ -156,12 +157,12 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
             ),
             const SizedBox(height: DnaSpacing.lg),
             Text(
-              'Welcome to your timeline!',
+              AppLocalizations.of(context).wallWelcome,
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: DnaSpacing.sm),
             Text(
-              'Post something to your wall or add contacts to see their posts here.',
+              AppLocalizations.of(context).wallWelcomeSubtitle,
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -192,12 +193,12 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete Post'),
-        content: const Text('Are you sure you want to delete this post?'),
+        title: Text(AppLocalizations.of(context).wallDeletePost),
+        content: Text(AppLocalizations.of(context).wallDeletePostConfirm),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context).cancel),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
@@ -213,7 +214,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                 }
               }
             },
-            child: const Text('Delete'),
+            child: Text(AppLocalizations.of(context).delete),
           ),
         ],
       ),
@@ -239,7 +240,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
             children: [
               FaIcon(FontAwesomeIcons.retweet, size: 16, color: theme.colorScheme.primary),
               const SizedBox(width: DnaSpacing.sm),
-              const Text('Repost'),
+              Text(AppLocalizations.of(dialogContext).wallRepost),
             ],
           ),
           content: SizedBox(
@@ -301,12 +302,12 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
           ),
           actions: [
             DnaButton(
-              label: 'Cancel',
+              label: AppLocalizations.of(dialogContext).cancel,
               variant: DnaButtonVariant.ghost,
               onPressed: () => Navigator.pop(dialogContext),
             ),
             DnaButton(
-              label: 'Repost',
+              label: AppLocalizations.of(dialogContext).wallRepost,
               icon: FontAwesomeIcons.retweet,
               onPressed: () async {
                 Navigator.pop(dialogContext);
@@ -318,9 +319,9 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                   await ref.read(wallTimelineProvider.notifier).createPost(fullText);
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Reposted to your wall'),
-                        duration: Duration(seconds: 2),
+                      SnackBar(
+                        content: Text(AppLocalizations.of(context).wallReposted),
+                        duration: const Duration(seconds: 2),
                       ),
                     );
                   }
@@ -463,7 +464,7 @@ class _CreatePostDialogState extends State<_CreatePostDialog> {
           FaIcon(FontAwesomeIcons.pen,
               size: 18, color: theme.colorScheme.primary),
           const SizedBox(width: DnaSpacing.sm),
-          const Text('New Post'),
+          Text(AppLocalizations.of(context).wallNewPost),
         ],
       ),
       content: SizedBox(
@@ -540,7 +541,7 @@ class _CreatePostDialogState extends State<_CreatePostDialog> {
       ),
       actions: [
         DnaButton(
-          label: 'Cancel',
+          label: AppLocalizations.of(context).cancel,
           variant: DnaButtonVariant.ghost,
           onPressed: () => Navigator.pop(context),
         ),

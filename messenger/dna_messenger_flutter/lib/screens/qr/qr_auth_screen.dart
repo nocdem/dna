@@ -7,6 +7,7 @@ import '../../services/qr_auth_service.dart';
 import '../../design_system/theme/dna_colors.dart';
 import '../../utils/qr_payload_parser.dart';
 import '../home_screen.dart';
+import '../../l10n/app_localizations.dart';
 
 class QrAuthScreen extends ConsumerStatefulWidget {
   final QrPayload payload;
@@ -87,7 +88,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
           onPressed: _close,
           tooltip: 'Close',
         ),
-        title: const Text('Authorization Request'),
+        title: Text(AppLocalizations.of(context).qrAuthRequest),
         actions: [
           IconButton(
             icon: FaIcon(_showRawPayload ? FontAwesomeIcons.eyeSlash : FontAwesomeIcons.eye, size: 18),
@@ -450,7 +451,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
               ElevatedButton.icon(
                 onPressed: canApprove ? _approve : null,
                 icon: const FaIcon(FontAwesomeIcons.check, size: 16),
-                label: const Text('Approve'),
+                label: Text(AppLocalizations.of(context).approve),
                 style: ElevatedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   backgroundColor: DnaColors.textSuccess,
@@ -460,7 +461,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
               OutlinedButton.icon(
                 onPressed: _deny,
                 icon: const FaIcon(FontAwesomeIcons.xmark, size: 16),
-                label: const Text('Deny'),
+                label: Text(AppLocalizations.of(context).deny),
                 style: OutlinedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   foregroundColor: DnaColors.textWarning,
@@ -472,7 +473,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
           // Invalid request - only show Done
           return OutlinedButton(
             onPressed: _close,
-            child: const Text('Done'),
+            child: Text(AppLocalizations.of(context).done),
           );
         }
 
@@ -498,7 +499,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
             ElevatedButton.icon(
               onPressed: _approve,
               icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 16),
-              label: const Text('Retry'),
+              label: Text(AppLocalizations.of(context).retry),
               style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16),
               ),
@@ -506,7 +507,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
             const SizedBox(height: 12),
             OutlinedButton(
               onPressed: _close,
-              child: const Text('Cancel'),
+              child: Text(AppLocalizations.of(context).cancel),
             ),
           ],
         );
@@ -515,7 +516,7 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
       case _AuthState.denied:
         return OutlinedButton(
           onPressed: _close,
-          child: const Text('Done'),
+          child: Text(AppLocalizations.of(context).done),
         );
     }
   }

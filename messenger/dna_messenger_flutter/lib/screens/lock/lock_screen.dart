@@ -6,6 +6,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../../providers/app_lock_provider.dart';
 import '../../design_system/theme/dna_colors.dart';
+import '../../l10n/app_localizations.dart';
 
 /// Lock screen - requires biometric or PIN to unlock
 class LockScreen extends ConsumerStatefulWidget {
@@ -152,7 +153,7 @@ class _LockScreenState extends ConsumerState<LockScreen>
         _unlock();
       } else {
         setState(() {
-          _error = 'Incorrect PIN';
+          _error = AppLocalizations.of(context).lockIncorrectPIN;
           _enteredPin = '';
         });
         _shakeController.forward(from: 0);
@@ -248,7 +249,7 @@ class _LockScreenState extends ConsumerState<LockScreen>
         ),
         const SizedBox(height: 16),
         Text(
-          'DNA Messenger',
+          AppLocalizations.of(context).lockTitle,
           style: TextStyle(
             color: theme.colorScheme.onSurface,
             fontSize: 24,
@@ -257,7 +258,7 @@ class _LockScreenState extends ConsumerState<LockScreen>
         ),
         const SizedBox(height: 8),
         Text(
-          'Enter PIN to unlock',
+          AppLocalizations.of(context).lockEnterPIN,
           style: TextStyle(
             color: theme.textTheme.bodySmall?.color,
             fontSize: 14,

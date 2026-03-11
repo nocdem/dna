@@ -675,6 +675,16 @@ This is a multiplatform project targeting Linux, Windows, and Android (iOS plann
 - Bug fixes must work on ALL platforms
 - Use `#ifdef` guards only in platform abstraction files, not in business logic
 
+### Non-Technical User Design (Flutter UI Only)
+This app is designed for **everyday users with zero knowledge of cryptography or security**.
+All technical complexity must be hidden. The UI should feel as simple as WhatsApp or Signal.
+
+- **NEVER show technical terms** in the UI: DHT, fingerprint, Kyber, Dilithium, SHA3, node, key derivation, etc.
+- **Security decisions are automatic** — never ask the user to choose algorithms, key sizes, or encryption modes
+- **Error messages must be user-friendly** with technical details in an expandable "Details" section
+- **No jargon in labels, buttons, or descriptions**: Use plain language (e.g., "Recovery Phrase" not "BIP39 Mnemonic")
+- **This rule applies ONLY to Flutter/Dart UI code** (`lib/`). C library, CLI, logs, and docs are NOT affected.
+
 ### Development Guidelines
 
 1. **Security First** - Never modify crypto primitives without team review
@@ -711,19 +721,15 @@ This is a multiplatform project targeting Linux, Windows, and Android (iOS plann
 
 ## Infrastructure
 
-### Production Nodus Servers (v0.6.3)
+### Production Nodus Servers (6 nodes, v0.6.3)
 | Node | IP | Ports |
 |------|-----|-------|
 | US-1 | 154.38.182.161 | UDP 4000, TCP 4001 |
 | EU-1 | 164.68.105.227 | UDP 4000, TCP 4001 |
 | EU-2 | 164.68.116.180 | UDP 4000, TCP 4001 |
-
-### Nodus Test Cluster (v0.6.2)
-| Node | IP | Ports |
-|------|-----|-------|
-| nodus-01 | 161.97.85.25 | UDP 4000, TCP 4001 |
-| nodus-02 | 156.67.24.125 | UDP 4000, TCP 4001 |
-| nodus-03 | 156.67.25.251 | UDP 4000, TCP 4001 |
+| EU-3 | 161.97.85.25 | UDP 4000, TCP 4001 |
+| EU-4 | 156.67.24.125 | UDP 4000, TCP 4001 |
+| EU-5 | 156.67.25.251 | UDP 4000, TCP 4001 |
 
 ### Old Repos (backup, DO NOT modify)
 - `/opt/dna-messenger` — original messenger repo

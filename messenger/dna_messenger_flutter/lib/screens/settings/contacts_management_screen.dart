@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import '../../l10n/app_localizations.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../design_system/theme/dna_colors.dart';
@@ -16,7 +17,7 @@ class ContactsManagementScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Manage Contacts'),
+        title: Text(AppLocalizations.of(context).contactsTitle),
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
@@ -49,7 +50,7 @@ class ContactsManagementScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'No contacts',
+              AppLocalizations.of(context).contactsEmpty,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
@@ -108,7 +109,7 @@ class ContactsManagementScreen extends ConsumerWidget {
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => ref.read(contactsProvider.notifier).refresh(),
-              child: const Text('Retry'),
+              child: Text(AppLocalizations.of(context).contactsRetry),
             ),
           ],
         ),
@@ -125,7 +126,7 @@ class ContactsManagementScreen extends ConsumerWidget {
           children: [
             FaIcon(FontAwesomeIcons.userMinus, color: DnaColors.textWarning),
             const SizedBox(width: 8),
-            const Text('Remove Contact'),
+            Text(AppLocalizations.of(context).contactsHubRemoveTitle),
           ],
         ),
         content: Column(
@@ -133,7 +134,7 @@ class ContactsManagementScreen extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Remove ${contact.displayName} from your contacts?',
+              AppLocalizations.of(context).contactsHubRemoveMessage(contact.displayName),
             ),
             const SizedBox(height: 12),
             Container(
@@ -164,7 +165,7 @@ class ContactsManagementScreen extends ConsumerWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context).cancel),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -172,7 +173,7 @@ class ContactsManagementScreen extends ConsumerWidget {
               foregroundColor: Colors.white,
             ),
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Remove'),
+            child: Text(AppLocalizations.of(context).contactsHubRemove),
           ),
         ],
       ),
@@ -205,7 +206,7 @@ class ContactsManagementScreen extends ConsumerWidget {
   void _copyFingerprint(BuildContext context, Contact contact) {
     Clipboard.setData(ClipboardData(text: contact.fingerprint));
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Fingerprint copied')),
+      SnackBar(content: Text(AppLocalizations.of(context).contactsHubFingerprintCopied)),
     );
   }
 }
@@ -250,7 +251,7 @@ class _ContactTile extends StatelessWidget {
             ),
           ),
           Text(
-            contact.isOnline ? 'Online' : 'Last seen ${_formatTime(contact.lastSeen)}',
+            contact.isOnline ? AppLocalizations.of(context).contactsOnline : AppLocalizations.of(context).contactsLastSeen(_formatTime(contact.lastSeen)),
             style: theme.textTheme.bodySmall?.copyWith(
               color: contact.isOnline ? DnaColors.textSuccess : mutedColor,
             ),
@@ -267,13 +268,13 @@ class _ContactTile extends StatelessWidget {
           }
         },
         itemBuilder: (context) => [
-          const PopupMenuItem(
+          PopupMenuItem(
             value: 'copy',
             child: Row(
               children: [
-                FaIcon(FontAwesomeIcons.copy, size: 20),
-                SizedBox(width: 8),
-                Text('Copy Fingerprint'),
+                const FaIcon(FontAwesomeIcons.copy, size: 20),
+                const SizedBox(width: 8),
+                Text(AppLocalizations.of(context).contactProfileCopyFingerprint),
               ],
             ),
           ),
@@ -283,7 +284,7 @@ class _ContactTile extends StatelessWidget {
               children: [
                 FaIcon(FontAwesomeIcons.userMinus, size: 20, color: DnaColors.textWarning),
                 const SizedBox(width: 8),
-                Text('Remove', style: TextStyle(color: DnaColors.textWarning)),
+                Text(AppLocalizations.of(context).contactsHubRemove, style: TextStyle(color: DnaColors.textWarning)),
               ],
             ),
           ),

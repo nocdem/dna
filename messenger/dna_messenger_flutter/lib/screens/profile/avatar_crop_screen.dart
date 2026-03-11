@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:crop_your_image/crop_your_image.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
+import '../../l10n/app_localizations.dart';
+
 /// Screen for cropping avatar images with circular mask
 /// Returns cropped Uint8List on success, null on cancel
 class AvatarCropScreen extends StatefulWidget {
@@ -41,7 +43,7 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
       appBar: AppBar(
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
-        title: const Text('Crop Avatar'),
+        title: Text(AppLocalizations.of(context).profileCropTitle),
         leading: IconButton(
           icon: const FaIcon(FontAwesomeIcons.xmark),
           onPressed: () => Navigator.of(context).pop(null),

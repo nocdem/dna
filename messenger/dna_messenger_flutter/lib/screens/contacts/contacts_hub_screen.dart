@@ -7,6 +7,7 @@ import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../chat/chat_screen.dart';
+import '../../l10n/app_localizations.dart';
 import 'add_contact_dialog.dart';
 
 class ContactsHubScreen extends ConsumerStatefulWidget {
@@ -50,7 +51,7 @@ class _ContactsHubScreenState extends ConsumerState<ContactsHubScreen>
 
     return Scaffold(
       appBar: DnaAppBar(
-        title: 'Contacts',
+        title: AppLocalizations.of(context).contactsHubContacts,
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
@@ -61,12 +62,12 @@ class _ContactsHubScreenState extends ConsumerState<ContactsHubScreen>
         bottom: TabBar(
           controller: _tabController,
           tabs: [
-            const Tab(text: 'Contacts'),
+            Tab(text: AppLocalizations.of(context).contactsHubContacts),
             Tab(
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('Requests'),
+                  Text(AppLocalizations.of(context).contactsHubRequests),
                   if (pendingCount > 0) ...[
                     const SizedBox(width: 6),
                     Container(
@@ -90,7 +91,7 @@ class _ContactsHubScreenState extends ConsumerState<ContactsHubScreen>
                 ],
               ),
             ),
-            const Tab(text: 'Blocked'),
+            Tab(text: AppLocalizations.of(context).contactsHubBlocked),
           ],
         ),
       ),
@@ -150,9 +151,9 @@ class _ContactsTab extends ConsumerWidget {
               color: theme.colorScheme.primary.withAlpha(128),
             ),
             const SizedBox(height: 16),
-            Text('No contacts yet', style: theme.textTheme.titleMedium),
+            Text(AppLocalizations.of(context).contactsEmpty, style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
-            Text('Tap + to add your first contact', style: theme.textTheme.bodySmall),
+            Text(AppLocalizations.of(context).contactsTapToAdd, style: theme.textTheme.bodySmall),
           ],
         ),
       );
@@ -189,13 +190,13 @@ class _ContactsTab extends ConsumerWidget {
           children: [
             FaIcon(FontAwesomeIcons.circleExclamation, size: 48, color: DnaColors.textWarning),
             const SizedBox(height: 16),
-            Text('Failed to load contacts', style: theme.textTheme.titleMedium),
+            Text(AppLocalizations.of(context).contactsFailedToLoad, style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(error.toString(), style: theme.textTheme.bodySmall, textAlign: TextAlign.center),
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => ref.read(contactsProvider.notifier).refresh(),
-              child: const Text('Retry'),
+              child: Text(AppLocalizations.of(context).contactsRetry),
             ),
           ],
         ),
@@ -249,7 +250,7 @@ class _HubContactTile extends ConsumerWidget {
         style: unreadCount > 0 ? const TextStyle(fontWeight: FontWeight.bold) : null,
       ),
       subtitle: Text(
-        contact.isOnline ? 'Online' : 'Last seen ${_formatLastSeen(contact.lastSeen)}',
+        contact.isOnline ? AppLocalizations.of(context).contactsOnline : _formatLastSeen(context, contact.lastSeen),
         style: TextStyle(
           color: contact.isOnline ? DnaColors.success : theme.textTheme.bodySmall?.color,
         ),
@@ -265,20 +266,20 @@ class _HubContactTile extends ConsumerWidget {
               if (value == 'copy') {
                 Clipboard.setData(ClipboardData(text: contact.fingerprint));
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Fingerprint copied')),
+                  SnackBar(content: Text(AppLocalizations.of(context).contactsHubFingerprintCopied)),
                 );
               } else if (value == 'remove') {
                 _removeContact(context, ref, contact);
               }
             },
             itemBuilder: (context) => [
-              const PopupMenuItem(
+              PopupMenuItem(
                 value: 'copy',
                 child: Row(
                   children: [
-                    FaIcon(FontAwesomeIcons.copy, size: 20),
-                    SizedBox(width: 8),
-                    Text('Copy Fingerprint'),
+                    const FaIcon(FontAwesomeIcons.copy, size: 20),
+                    const SizedBox(width: 8),
+                    Text(AppLocalizations.of(context).contactProfileCopyFingerprint),
                   ],
                 ),
               ),
@@ -288,7 +289,7 @@ class _HubContactTile extends ConsumerWidget {
                   children: [
                     FaIcon(FontAwesomeIcons.userMinus, size: 20, color: DnaColors.textWarning),
                     const SizedBox(width: 8),
-                    Text('Remove', style: TextStyle(color: DnaColors.textWarning)),
+                    Text(AppLocalizations.of(context).contactsHubRemove, style: TextStyle(color: DnaColors.textWarning)),
                   ],
                 ),
               ),
@@ -308,14 +309,14 @@ class _HubContactTile extends ConsumerWidget {
           children: [
             FaIcon(FontAwesomeIcons.userMinus, color: DnaColors.textWarning),
             const SizedBox(width: 8),
-            const Text('Remove Contact'),
+            Text(AppLocalizations.of(context).contactsHubRemoveTitle),
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Remove ${contact.displayName} from your contacts?'),
+            Text(AppLocalizations.of(context).contactsHubRemoveMessage(contact.displayName)),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
@@ -342,7 +343,7 @@ class _HubContactTile extends ConsumerWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context).cancel),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -350,7 +351,7 @@ class _HubContactTile extends ConsumerWidget {
               foregroundColor: Colors.white,
             ),
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Remove'),
+            child: Text(AppLocalizations.of(context).contactsHubRemove),
           ),
         ],
       ),
@@ -385,15 +386,23 @@ class _HubContactTile extends ConsumerWidget {
     return '${fp.substring(0, 8)}...${fp.substring(fp.length - 8)}';
   }
 
-  String _formatLastSeen(DateTime lastSeen) {
-    if (lastSeen.millisecondsSinceEpoch == 0) return 'Syncing...';
+  String _formatLastSeen(BuildContext context, DateTime lastSeen) {
+    if (lastSeen.millisecondsSinceEpoch == 0) return AppLocalizations.of(context).contactsSyncing;
     final now = DateTime.now();
     final diff = now.difference(lastSeen);
-    if (diff.inMinutes < 1) return 'just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    if (diff.inDays < 7) return '${diff.inDays}d ago';
-    return '${lastSeen.day}/${lastSeen.month}/${lastSeen.year}';
+    String timeStr;
+    if (diff.inMinutes < 1) {
+      timeStr = 'just now';
+    } else if (diff.inMinutes < 60) {
+      timeStr = '${diff.inMinutes}m ago';
+    } else if (diff.inHours < 24) {
+      timeStr = '${diff.inHours}h ago';
+    } else if (diff.inDays < 7) {
+      timeStr = '${diff.inDays}d ago';
+    } else {
+      timeStr = '${lastSeen.day}/${lastSeen.month}/${lastSeen.year}';
+    }
+    return AppLocalizations.of(context).contactsLastSeen(timeStr);
   }
 }
 
@@ -432,9 +441,9 @@ class _RequestsTab extends ConsumerWidget {
               color: theme.colorScheme.primary.withAlpha(128),
             ),
             const SizedBox(height: 16),
-            Text('No pending requests', style: theme.textTheme.titleMedium),
+            Text(AppLocalizations.of(context).contactRequestsEmpty, style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
-            Text('Contact requests will appear here', style: theme.textTheme.bodySmall),
+            Text(AppLocalizations.of(context).contactRequestsWillAppear, style: theme.textTheme.bodySmall),
           ],
         ),
       );
@@ -467,13 +476,13 @@ class _RequestsTab extends ConsumerWidget {
           children: [
             FaIcon(FontAwesomeIcons.circleExclamation, size: 48, color: DnaColors.textWarning),
             const SizedBox(height: 16),
-            Text('Failed to load requests', style: theme.textTheme.titleMedium),
+            Text(AppLocalizations.of(context).contactsFailedToLoad, style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(error.toString(), style: theme.textTheme.bodySmall, textAlign: TextAlign.center),
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => ref.invalidate(contactRequestsProvider),
-              child: const Text('Retry'),
+              child: Text(AppLocalizations.of(context).contactsRetry),
             ),
           ],
         ),
@@ -489,7 +498,7 @@ class _RequestsTab extends ConsumerWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Approved ${_getDisplayName(request)}'),
+            content: Text(AppLocalizations.of(context).approvedContact(_getDisplayName(request))),
             backgroundColor: DnaColors.textSuccess,
           ),
         );
@@ -509,7 +518,7 @@ class _RequestsTab extends ConsumerWidget {
       await ref.read(contactRequestsProvider.notifier).deny(request.fingerprint);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Denied ${_getDisplayName(request)}')),
+          SnackBar(content: Text(AppLocalizations.of(context).deniedContact(_getDisplayName(request)))),
         );
       }
     } catch (e) {
@@ -526,19 +535,19 @@ class _RequestsTab extends ConsumerWidget {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Block User'),
+        title: Text(AppLocalizations.of(context).contactRequestsBlock),
         content: Text(
           'Block ${_getDisplayName(request)}? They will not be able to send you requests or messages.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context).cancel),
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
             style: TextButton.styleFrom(foregroundColor: DnaColors.textWarning),
-            child: const Text('Block'),
+            child: Text(AppLocalizations.of(context).contactRequestsBlock),
           ),
         ],
       ),
@@ -551,7 +560,7 @@ class _RequestsTab extends ConsumerWidget {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Blocked ${_getDisplayName(request)}'),
+              content: Text(AppLocalizations.of(context).blockedContact(_getDisplayName(request))),
               backgroundColor: DnaColors.textWarning,
             ),
           );
@@ -637,13 +646,13 @@ class _RequestTile extends ConsumerWidget {
                     if (value == 'block') onBlock();
                   },
                   itemBuilder: (context) => [
-                    const PopupMenuItem(
+                    PopupMenuItem(
                       value: 'block',
                       child: Row(
                         children: [
-                          FaIcon(FontAwesomeIcons.ban, color: Colors.red),
-                          SizedBox(width: 8),
-                          Text('Block User'),
+                          const FaIcon(FontAwesomeIcons.ban, color: Colors.red),
+                          const SizedBox(width: 8),
+                          Text(AppLocalizations.of(context).contactRequestsBlock),
                         ],
                       ),
                     ),
@@ -667,12 +676,12 @@ class _RequestTile extends ConsumerWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton(onPressed: onDeny, child: const Text('Deny')),
+                TextButton(onPressed: onDeny, child: Text(AppLocalizations.of(context).contactRequestsDeny)),
                 const SizedBox(width: 8),
                 FilledButton.icon(
                   onPressed: onApprove,
                   icon: const FaIcon(FontAwesomeIcons.check),
-                  label: const Text('Accept'),
+                  label: Text(AppLocalizations.of(context).contactRequestsAccept),
                 ),
               ],
             ),
@@ -738,9 +747,9 @@ class _BlockedTab extends ConsumerWidget {
               color: theme.colorScheme.primary.withAlpha(128),
             ),
             const SizedBox(height: 16),
-            Text('No blocked users', style: theme.textTheme.titleMedium),
+            Text(AppLocalizations.of(context).blockedEmpty, style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
-            Text('Users you block will appear here', style: theme.textTheme.bodySmall),
+            Text(AppLocalizations.of(context).blockedUsersWillAppear, style: theme.textTheme.bodySmall),
           ],
         ),
       );
@@ -771,13 +780,13 @@ class _BlockedTab extends ConsumerWidget {
           children: [
             FaIcon(FontAwesomeIcons.circleExclamation, size: 48, color: DnaColors.textWarning),
             const SizedBox(height: 16),
-            Text('Failed to load blocked users', style: theme.textTheme.titleMedium),
+            Text(AppLocalizations.of(context).contactsFailedToLoad, style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(error.toString(), style: theme.textTheme.bodySmall, textAlign: TextAlign.center),
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => ref.invalidate(blockedUsersProvider),
-              child: const Text('Retry'),
+              child: Text(AppLocalizations.of(context).contactsRetry),
             ),
           ],
         ),
@@ -790,18 +799,18 @@ class _BlockedTab extends ConsumerWidget {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Unblock User'),
+        title: Text(AppLocalizations.of(context).blockedUnblock),
         content: Text(
           'Unblock ${_shortenFingerprint(blockedUser.fingerprint)}? They will be able to send you contact requests again.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context).cancel),
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Unblock'),
+            child: Text(AppLocalizations.of(context).blockedUnblock),
           ),
         ],
       ),
@@ -812,7 +821,7 @@ class _BlockedTab extends ConsumerWidget {
         await ref.read(blockedUsersProvider.notifier).unblock(blockedUser.fingerprint);
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('User unblocked')),
+            SnackBar(content: Text(AppLocalizations.of(context).userUnblocked)),
           );
         }
       } catch (e) {
@@ -868,7 +877,7 @@ class _BlockedUserTile extends StatelessWidget {
             ),
         ],
       ),
-      trailing: TextButton(onPressed: onUnblock, child: const Text('Unblock')),
+      trailing: TextButton(onPressed: onUnblock, child: Text(AppLocalizations.of(context).blockedUnblock)),
       isThreeLine: blockedUser.reason.isNotEmpty,
     );
   }

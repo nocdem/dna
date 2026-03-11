@@ -6,6 +6,7 @@ import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../chat/chat_screen.dart';
+import '../../l10n/app_localizations.dart';
 import 'add_contact_dialog.dart';
 import 'contact_requests_screen.dart';
 
@@ -93,12 +94,12 @@ class ContactsScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'No contacts yet',
+              AppLocalizations.of(context).contactsEmpty,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
             Text(
-              'Tap + to add your first contact',
+              AppLocalizations.of(context).contactsTapToAdd,
               style: theme.textTheme.bodySmall,
             ),
           ],
@@ -140,7 +141,7 @@ class ContactsScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'Failed to load contacts',
+              AppLocalizations.of(context).contactsFailedToLoad,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
@@ -152,7 +153,7 @@ class ContactsScreen extends ConsumerWidget {
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => ref.read(contactsProvider.notifier).refresh(),
-              child: const Text('Retry'),
+              child: Text(AppLocalizations.of(context).contactsRetry),
             ),
           ],
         ),
@@ -232,8 +233,8 @@ class _ContactTile extends ConsumerWidget {
       ),
       subtitle: Text(
         contact.isOnline
-            ? 'Online'
-            : 'Last seen ${_formatLastSeen(contact.lastSeen)}',
+            ? AppLocalizations.of(context).contactsOnline
+            : _formatLastSeen(context, contact.lastSeen),
         style: TextStyle(
           color: contact.isOnline
               ? DnaColors.success
@@ -265,19 +266,27 @@ class _ContactTile extends ConsumerWidget {
     return '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}';
   }
 
-  String _formatLastSeen(DateTime lastSeen) {
+  String _formatLastSeen(BuildContext context, DateTime lastSeen) {
     // Epoch (0) means presence data not yet fetched
     // v0.100.71: Show "Syncing..." instead of "never" for better UX during startup
-    if (lastSeen.millisecondsSinceEpoch == 0) return 'Syncing...';
+    if (lastSeen.millisecondsSinceEpoch == 0) return AppLocalizations.of(context).contactsSyncing;
 
     final now = DateTime.now();
     final diff = now.difference(lastSeen);
 
-    if (diff.inMinutes < 1) return 'just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    if (diff.inDays < 7) return '${diff.inDays}d ago';
-    return '${lastSeen.day}/${lastSeen.month}/${lastSeen.year}';
+    String timeStr;
+    if (diff.inMinutes < 1) {
+      timeStr = 'just now';
+    } else if (diff.inMinutes < 60) {
+      timeStr = '${diff.inMinutes}m ago';
+    } else if (diff.inHours < 24) {
+      timeStr = '${diff.inHours}h ago';
+    } else if (diff.inDays < 7) {
+      timeStr = '${diff.inDays}d ago';
+    } else {
+      timeStr = '${lastSeen.day}/${lastSeen.month}/${lastSeen.year}';
+    }
+    return AppLocalizations.of(context).contactsLastSeen(timeStr);
   }
 }
 

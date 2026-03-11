@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../../ffi/dna_engine.dart' show UserProfile, decodeBase64WithPadding;
+import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart' show engineProvider;
 import '../../providers/contacts_provider.dart';
 import '../../design_system/theme/dna_colors.dart';
@@ -141,12 +142,12 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
             FaIcon(FontAwesomeIcons.circleExclamation, size: 48, color: DnaColors.textWarning),
             const SizedBox(height: 16),
             Text(
-              'Failed to load profile',
+              AppLocalizations.of(context).contactProfileFailed,
               style: TextStyle(color: DnaColors.textWarning),
             ),
             const SizedBox(height: 8),
             Text(
-              _error ?? 'Unknown error',
+              _error ?? AppLocalizations.of(context).contactProfileUnknownError,
               style: TextStyle(color: theme.textTheme.bodySmall?.color, fontSize: 12),
               textAlign: TextAlign.center,
             ),
@@ -180,7 +181,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
         if (profile != null && profile.bio.isNotEmpty) ...[
           _buildSection(
             theme,
-            'Bio',
+            AppLocalizations.of(context).contactProfileBio,
             FontAwesomeIcons.circleInfo,
             [_buildTextItem(profile.bio)],
           ),
@@ -191,13 +192,13 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
         if (profile != null && (profile.location.isNotEmpty || profile.website.isNotEmpty)) ...[
           _buildSection(
             theme,
-            'Info',
+            AppLocalizations.of(context).contactProfileInfo,
             FontAwesomeIcons.locationDot,
             [
               if (profile.location.isNotEmpty)
                 _buildInfoRow(FontAwesomeIcons.locationDot, profile.location),
               if (profile.website.isNotEmpty)
-                _buildLinkRow(FontAwesomeIcons.globe, profile.website, 'Website'),
+                _buildLinkRow(FontAwesomeIcons.globe, profile.website, AppLocalizations.of(context).contactProfileWebsite),
             ],
           ),
           const SizedBox(height: 16),
@@ -213,12 +214,12 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                   FaIcon(FontAwesomeIcons.userSlash, size: 48, color: theme.textTheme.bodySmall?.color),
                   const SizedBox(height: 16),
                   Text(
-                    'No profile published',
+                    AppLocalizations.of(context).contactProfileNoProfile,
                     style: TextStyle(color: theme.textTheme.bodySmall?.color),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'This user has not published their profile to DHT yet.',
+                    AppLocalizations.of(context).contactProfileNoProfileSubtitle,
                     style: TextStyle(color: theme.textTheme.bodySmall?.color, fontSize: 12),
                     textAlign: TextAlign.center,
                   ),
@@ -296,7 +297,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Nickname',
+                    AppLocalizations.of(context).contactProfileNickname,
                     style: theme.textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.bold,
                       color: theme.colorScheme.primary,
@@ -304,7 +305,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    _currentNickname ?? 'Not set (tap to add)',
+                    _currentNickname ?? AppLocalizations.of(context).contactProfileNicknameNotSet,
                     style: TextStyle(
                       color: _currentNickname != null
                           ? theme.textTheme.bodyMedium?.color
@@ -317,7 +318,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                   if (_currentNickname != null) ...[
                     const SizedBox(height: 2),
                     Text(
-                      'Original: $originalName',
+                      AppLocalizations.of(context).contactProfileOriginal(originalName),
                       style: TextStyle(
                         fontSize: 11,
                         color: theme.textTheme.bodySmall?.color,
@@ -342,13 +343,13 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Set Nickname'),
+        title: Text(AppLocalizations.of(context).contactProfileSetNickname),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Original name: $originalName',
+              AppLocalizations.of(context).contactProfileOriginalName(originalName),
               style: TextStyle(
                 color: Theme.of(context).textTheme.bodySmall?.color,
                 fontSize: 12,
@@ -359,10 +360,10 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
               controller: controller,
               autofocus: true,
               maxLength: 63,
-              decoration: const InputDecoration(
-                labelText: 'Nickname',
-                hintText: 'Enter custom nickname',
-                helperText: 'Leave empty to use original name',
+              decoration: InputDecoration(
+                labelText: AppLocalizations.of(context).contactProfileNicknameLabel,
+                hintText: AppLocalizations.of(context).contactProfileNicknameHint,
+                helperText: AppLocalizations.of(context).contactProfileNicknameHelper,
               ),
             ),
           ],
@@ -370,7 +371,7 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context).cancel),
           ),
           ElevatedButton(
             onPressed: () async {
@@ -390,20 +391,20 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
                   messenger.showSnackBar(
                     SnackBar(
                       content: Text(nickname.isEmpty
-                          ? 'Nickname cleared'
-                          : 'Nickname set to "$nickname"'),
+                          ? AppLocalizations.of(this.context).contactProfileNicknameCleared
+                          : AppLocalizations.of(this.context).contactProfileNicknameSet(nickname)),
                     ),
                   );
                 }
               } catch (e) {
                 if (mounted) {
                   messenger.showSnackBar(
-                    SnackBar(content: Text('Failed to set nickname: $e')),
+                    SnackBar(content: Text(AppLocalizations.of(this.context).contactProfileNicknameFailed(e.toString()))),
                   );
                 }
               }
             },
-            child: const Text('Save'),
+            child: Text(AppLocalizations.of(context).save),
           ),
         ],
       ),
@@ -437,10 +438,10 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
             onPressed: () {
               Clipboard.setData(ClipboardData(text: widget.fingerprint));
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Fingerprint copied')),
+                SnackBar(content: Text(AppLocalizations.of(context).contactsHubFingerprintCopied)),
               );
             },
-            tooltip: 'Copy fingerprint',
+            tooltip: AppLocalizations.of(context).contactProfileCopyFingerprint,
           ),
         ],
       ),

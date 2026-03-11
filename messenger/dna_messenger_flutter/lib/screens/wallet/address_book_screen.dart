@@ -7,6 +7,7 @@ import '../../ffi/dna_engine.dart' show AddressBookEntry;
 import '../../providers/addressbook_provider.dart';
 import 'address_dialog.dart';
 import 'wallet_screen.dart' show getNetworkDisplayLabel;
+import '../../l10n/app_localizations.dart';
 
 class AddressBookScreen extends ConsumerWidget {
   const AddressBookScreen({super.key});
@@ -17,7 +18,7 @@ class AddressBookScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Address Book'),
+        title: Text(AppLocalizations.of(context).walletAddressBook),
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.cloudArrowDown),
@@ -131,17 +132,17 @@ class AddressBookScreen extends ConsumerWidget {
         return await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text('Delete Address'),
+            title: Text(AppLocalizations.of(context).walletDeleteAddress),
             content: Text('Delete "${entry.label}" from address book?'),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
+                child: Text(AppLocalizations.of(context).cancel),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(context, true),
                 style: TextButton.styleFrom(foregroundColor: Colors.red),
-                child: const Text('Delete'),
+                child: Text(AppLocalizations.of(context).delete),
               ),
             ],
           ),

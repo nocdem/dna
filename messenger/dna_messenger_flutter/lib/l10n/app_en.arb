@@ -1,0 +1,509 @@
+{
+  "@@locale": "en",
+
+  "appTitle": "DNA Messenger",
+  "initializing": "Initializing...",
+  "failedToInitialize": "Failed to initialize",
+  "makeSureNativeLibrary": "Make sure the native library is available.",
+
+  "navHome": "Home",
+  "navChats": "Chats",
+  "navChannels": "Channels",
+  "navMore": "More",
+
+  "messagesAll": "All",
+  "messagesUnread": "Unread",
+  "messagesAllCaughtUp": "All caught up!",
+  "messagesNoUnread": "No unread messages",
+  "messagesSearchHint": "Search chats...",
+
+  "contactsTitle": "Contacts",
+  "contactsEmpty": "No contacts yet",
+  "contactsTapToAdd": "Tap + to add a contact",
+  "contactsOnline": "Online",
+  "contactsLastSeen": "Last seen {time}",
+  "@contactsLastSeen": {
+    "placeholders": {
+      "time": { "type": "String" }
+    }
+  },
+  "contactsOffline": "Offline",
+  "contactsSyncing": "Syncing...",
+  "contactsFailedToLoad": "Failed to load contacts",
+  "contactsRetry": "Retry",
+
+  "contactsHubContacts": "Contacts",
+  "contactsHubRequests": "Requests",
+  "contactsHubBlocked": "Blocked",
+  "contactsHubRemoveTitle": "Remove Contact?",
+  "contactsHubRemoveMessage": "Are you sure you want to remove {name} from your contacts?",
+  "@contactsHubRemoveMessage": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "contactsHubRemove": "Remove",
+  "contactsHubFingerprintCopied": "Fingerprint copied",
+
+  "contactRequestsTitle": "Contact Requests",
+  "contactRequestsEmpty": "No pending requests",
+  "contactRequestsAccept": "Accept",
+  "contactRequestsDeny": "Deny",
+  "contactRequestsBlock": "Block User",
+  "contactRequestsSent": "Sent",
+  "contactRequestsReceived": "Received",
+
+  "addContactTitle": "Add Contact",
+  "addContactHint": "Enter a name or ID",
+  "addContactSearching": "Searching...",
+  "addContactFoundOnNetwork": "Found on network",
+  "addContactNotFound": "Not found",
+  "addContactSendRequest": "Send Request",
+  "addContactRequestSent": "Contact request sent",
+  "addContactAlreadyContact": "Already in your contacts",
+  "addContactCannotAddSelf": "You cannot add yourself",
+
+  "chatSearchMessages": "Search messages",
+  "chatOnline": "Online",
+  "chatOffline": "Offline",
+  "chatConnecting": "Connecting...",
+  "chatTypeMessage": "Type a message",
+  "chatNoMessages": "No messages yet",
+  "chatSendFirstMessage": "Send a message to start the conversation",
+  "chatPhotoLibrary": "Photo Library",
+  "chatCamera": "Camera",
+  "chatAddCaption": "Add Caption...",
+  "chatSendPhoto": "Send",
+  "chatImageTooLarge": "Image too large (max {maxSize})",
+  "@chatImageTooLarge": {
+    "placeholders": {
+      "maxSize": { "type": "String" }
+    }
+  },
+  "chatMessageDeleted": "Message deleted",
+  "chatLoadEarlier": "Load earlier messages",
+  "chatLastSeen": "Last seen {time}",
+  "@chatLastSeen": {
+    "placeholders": {
+      "time": { "type": "String" }
+    }
+  },
+
+  "messageMenuReply": "Reply",
+  "messageMenuCopy": "Copy",
+  "messageMenuForward": "Forward",
+  "messageMenuStar": "Star",
+  "messageMenuUnstar": "Unstar",
+  "messageMenuRetry": "Retry",
+  "messageMenuDelete": "Delete",
+
+  "channelsTitle": "Channels",
+  "channelsEmpty": "No channels yet",
+  "channelsCreateOrDiscover": "Create or discover channels",
+  "channelsCreate": "Create Channel",
+  "channelsDiscover": "Discover Channels",
+  "channelName": "Channel Name",
+  "channelDescription": "Description",
+  "channelListPublicly": "List publicly",
+  "channelListPubliclyHint": "Allow others to discover this channel",
+  "channelSubscribe": "Subscribe",
+  "channelSubscribed": "Subscribed",
+  "channelUnsubscribe": "Unsubscribe",
+  "channelWritePost": "Write a post...",
+  "channelNoPosts": "No posts yet",
+  "channelLoadOlderPosts": "Load older posts",
+  "channelSearchChannels": "Search channels...",
+  "channelNoPublicChannels": "No public channels found",
+  "channelCreated": "Channel created",
+  "channelReply": "Reply",
+  "channelCopy": "Copy",
+
+  "groupsTitle": "Groups",
+  "groupsCreate": "Create Group",
+  "groupsEmpty": "No groups yet",
+  "groupsCreateOrJoin": "Create a group or accept an invitation",
+  "groupsPendingInvitations": "Pending Invitations",
+  "groupsYourGroups": "Your Groups",
+  "groupsInfo": "Group Info",
+  "groupsMembers": "Members",
+  "groupsLeave": "Leave Group",
+  "groupsDelete": "Delete Group",
+  "groupsInvite": "Invite",
+  "groupsAccept": "Accept",
+  "groupsDecline": "Decline",
+  "groupsName": "Group Name",
+  "groupsDescription": "Description",
+  "groupsCreated": "Group created",
+  "groupsOwner": "Owner",
+  "groupsMember": "Member",
+  "groupsAdmin": "Admin",
+  "groupsRemoveMember": "Remove Member",
+  "groupsKickConfirm": "Remove {name} from the group?",
+  "@groupsKickConfirm": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+
+  "settingsTitle": "Settings",
+  "settingsAnonymous": "Anonymous",
+  "settingsNotLoaded": "Not loaded",
+  "settingsTapToEditProfile": "Tap to edit profile",
+
+  "settingsAppearance": "Appearance",
+  "settingsDarkMode": "Dark Mode",
+  "settingsDarkModeSubtitle": "Switch between dark and light theme",
+
+  "settingsLanguage": "Language",
+  "settingsLanguageSubtitle": "Choose app language",
+  "settingsLanguageSystem": "System default",
+  "settingsLanguageEnglish": "English",
+  "settingsLanguageTurkish": "Türkçe",
+
+  "settingsBattery": "Battery",
+  "settingsDisableBatteryOpt": "Disable Battery Optimization",
+  "settingsBatteryChecking": "Checking...",
+  "settingsBatteryDisabled": "Disabled — app can run in background",
+  "settingsBatteryTapToKeep": "Tap to keep app alive in background",
+
+  "settingsSecurity": "Security",
+  "settingsExportSeedPhrase": "Export Seed Phrase",
+  "settingsExportSeedSubtitle": "Back up your recovery phrase",
+  "settingsAppLock": "App Lock",
+  "settingsAppLockSubtitle": "Require authentication",
+  "settingsExportSeedWarning": "Your seed phrase gives full access to your identity. Never share it with anyone.",
+  "settingsShowSeed": "Show Seed",
+  "settingsYourSeedPhrase": "Your Seed Phrase",
+  "settingsSeedPhraseWarning": "Write these words down in order and store them safely. Anyone with this phrase can access your identity.",
+  "settingsSeedCopied": "Seed phrase copied to clipboard",
+  "settingsSeedNotAvailable": "Seed phrase not available for this identity. It was created before this feature was added.",
+  "settingsSeedError": "Unable to retrieve seed phrase",
+
+  "settingsWallet": "Wallet",
+  "settingsHideZeroBalance": "Hide 0 Balance",
+  "settingsHideZeroBalanceSubtitle": "Hide coins with zero balance",
+
+  "settingsData": "Data",
+  "settingsAutoSync": "Auto Sync",
+  "settingsAutoSyncSubtitle": "Sync messages automatically every 15 minutes",
+  "settingsLastSync": "Last sync: {time}",
+  "@settingsLastSync": {
+    "placeholders": {
+      "time": { "type": "String" }
+    }
+  },
+  "settingsSyncNow": "Sync Now",
+  "settingsSyncNowSubtitle": "Force immediate sync",
+
+  "settingsLogs": "Logs",
+  "settingsOpenLogsFolder": "Open Logs Folder",
+  "settingsOpenLogsFolderSubtitle": "Open file manager at logs directory",
+  "settingsShareLogs": "Share Logs",
+  "settingsShareLogsSubtitle": "Zip and share log files",
+  "settingsLogsFolderNotExist": "Logs folder does not exist yet",
+  "settingsNoLogFiles": "No log files found",
+  "settingsFailedCreateZip": "Failed to create zip archive",
+  "settingsNoLogsYet": "No logs yet. {debugInfo}",
+  "@settingsNoLogsYet": {
+    "placeholders": {
+      "debugInfo": { "type": "String" }
+    }
+  },
+
+  "settingsIdentity": "Identity",
+  "settingsFingerprint": "Fingerprint",
+  "settingsFingerprintCopied": "Fingerprint copied",
+  "settingsDeleteAccount": "Delete Account",
+  "settingsDeleteAccountSubtitle": "Permanently delete all data from device",
+  "settingsDeleteAccountConfirm": "Delete Account?",
+  "settingsDeleteAccountWarning": "This will permanently delete all local data:",
+  "settingsDeletePrivateKeys": "Private keys",
+  "settingsDeleteWallets": "Wallets",
+  "settingsDeleteMessages": "Messages",
+  "settingsDeleteContacts": "Contacts",
+  "settingsDeleteGroups": "Groups",
+  "settingsDeleteSeedWarning": "Make sure you have backed up your seed phrase before deleting!",
+  "settingsDeleteSuccess": "Account deleted successfully",
+  "settingsDeleteFailed": "Failed to delete account: {error}",
+  "@settingsDeleteFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+
+  "settingsAbout": "About",
+  "settingsUpdateAvailable": "Update Available",
+  "settingsTapToDownload": "Tap to download",
+  "settingsAppVersion": "DNA Messenger v{version}",
+  "@settingsAppVersion": {
+    "placeholders": {
+      "version": { "type": "String" }
+    }
+  },
+  "settingsLibVersion": "Library v{version}",
+  "@settingsLibVersion": {
+    "placeholders": {
+      "version": { "type": "String" }
+    }
+  },
+  "settingsPostQuantumMessenger": "Post-Quantum Encrypted Messenger",
+  "settingsCryptoStack": "CRYPTO STACK",
+
+  "profileTitle": "Edit Profile",
+  "profileInfo": "Profile Info",
+  "profileBio": "Bio",
+  "profileLocation": "Location",
+  "profileWebsite": "Website",
+  "profileWalletAddresses": "Wallet Addresses",
+  "profileSave": "Save Profile",
+  "profileShareQR": "Share My QR Code",
+  "profileAvatar": "Avatar",
+  "profileTakeSelfie": "Take a Selfie",
+  "profileChooseFromGallery": "Choose from Gallery",
+  "profileSaved": "Profile saved",
+  "profileSaveFailed": "Failed to save profile: {error}",
+  "@profileSaveFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "profileCropTitle": "Crop Avatar",
+  "profileCropSave": "Save",
+
+  "contactProfileFailed": "Failed to load profile",
+  "contactProfileUnknownError": "Unknown error",
+  "contactProfileNickname": "Nickname",
+  "contactProfileNicknameNotSet": "Not set (tap to add)",
+  "contactProfileOriginal": "Original: {name}",
+  "@contactProfileOriginal": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "contactProfileSetNickname": "Set Nickname",
+  "contactProfileOriginalName": "Original name: {name}",
+  "@contactProfileOriginalName": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "contactProfileNicknameLabel": "Nickname",
+  "contactProfileNicknameHint": "Enter custom nickname",
+  "contactProfileNicknameHelper": "Leave empty to use original name",
+  "contactProfileNicknameCleared": "Nickname cleared",
+  "contactProfileNicknameSet": "Nickname set to \"{name}\"",
+  "@contactProfileNicknameSet": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "contactProfileNicknameFailed": "Failed to set nickname: {error}",
+  "@contactProfileNicknameFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "contactProfileCopyFingerprint": "Copy fingerprint",
+  "contactProfileNoProfile": "No profile published",
+  "contactProfileNoProfileSubtitle": "This user has not published their profile yet.",
+  "contactProfileBio": "Bio",
+  "contactProfileInfo": "Info",
+  "contactProfileWebsite": "Website",
+
+  "identityTitle": "DNA Messenger",
+  "identityWelcome": "Welcome to DNA Messenger",
+  "identityGenerateSeed": "Generate New Seed",
+  "identityHaveSeed": "I Have a Seed Phrase",
+  "identityYourRecoveryPhrase": "Your Recovery Phrase",
+  "identityRecoveryPhraseWarning": "Write down these words and keep them safe. They are the only way to recover your account.",
+  "identityConfirmSaved": "I have saved my recovery phrase",
+  "identityEnterRecoveryPhrase": "Enter Recovery Phrase",
+  "identityEnterRecoveryPhraseHint": "Enter your 12 or 24 word recovery phrase",
+  "identityChooseName": "Choose Your Name",
+  "identityChooseNameHint": "Enter a display name",
+  "identityRegisterContinue": "Register & Continue",
+  "identityRegistering": "Registering...",
+  "identityNameTaken": "This name is already taken",
+  "identityNameInvalid": "Name must be 3-20 characters",
+  "identityCreating": "Creating your identity...",
+  "identityRestoring": "Restoring your identity...",
+
+  "wallTitle": "Home",
+  "wallWelcome": "Welcome to your timeline!",
+  "wallWelcomeSubtitle": "Follow people and channels to see their posts here.",
+  "wallNewPost": "New Post",
+  "wallDeletePost": "Delete Post",
+  "wallDeletePostConfirm": "Are you sure you want to delete this post?",
+  "wallRepost": "Repost",
+  "wallReposted": "Reposted",
+  "wallComments": "Comments",
+  "wallNoComments": "No comments yet",
+  "wallLoadingComments": "Loading comments...",
+  "wallWriteComment": "Write a comment...",
+  "wallWriteReply": "Write a reply...",
+  "wallViewAllComments": "View all {count} comments",
+  "@wallViewAllComments": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "wallPostDetail": "Post",
+  "wallCopy": "Copy",
+  "wallReply": "Reply",
+  "wallDelete": "Delete",
+
+  "walletTitle": "Wallet",
+  "walletTotalBalance": "Total Balance",
+  "walletSend": "Send",
+  "walletReceive": "Receive",
+  "walletSwap": "Swap",
+  "walletHistory": "History",
+  "walletNoTransactions": "No transactions yet",
+  "walletCopyAddress": "Copy Address",
+  "walletAddressCopied": "Address copied",
+  "walletSendTitle": "Send {coin}",
+  "@walletSendTitle": {
+    "placeholders": {
+      "coin": { "type": "String" }
+    }
+  },
+  "walletRecipientAddress": "Recipient Address",
+  "walletAmount": "Amount",
+  "walletMax": "MAX",
+  "walletSendConfirm": "Confirm Send",
+  "walletSending": "Sending...",
+  "walletSendSuccess": "Transaction sent",
+  "walletSendFailed": "Transaction failed: {error}",
+  "@walletSendFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "walletReceiveTitle": "Receive {coin}",
+  "@walletReceiveTitle": {
+    "placeholders": {
+      "coin": { "type": "String" }
+    }
+  },
+  "walletAddressBook": "Address Book",
+  "walletAddAddress": "Add Address",
+  "walletEditAddress": "Edit Address",
+  "walletDeleteAddress": "Delete Address",
+  "walletLabel": "Label",
+  "walletAddress": "Address",
+  "walletNetwork": "Network",
+
+  "qrScannerTitle": "QR Scanner",
+  "qrAddContact": "Add Contact",
+  "qrAuthRequest": "Authorization Request",
+  "qrContent": "QR Content",
+  "qrSendContactRequest": "Send Contact Request",
+  "qrScanAnother": "Scan Another",
+  "qrCopyFingerprint": "Copy",
+  "qrRequestSent": "Contact request sent",
+  "qrInvalidCode": "Invalid QR code",
+
+  "moreTitle": "More",
+  "moreWallet": "Wallet",
+  "moreQRScanner": "QR Scanner",
+  "moreAddresses": "Addresses",
+  "moreStarred": "Starred",
+  "moreContacts": "Contacts",
+  "moreSettings": "Settings",
+  "moreAppLock": "App Lock",
+
+  "lockTitle": "DNA Messenger",
+  "lockEnterPIN": "Enter PIN to unlock",
+  "lockIncorrectPIN": "Incorrect PIN",
+  "lockUseBiometrics": "Use biometrics to unlock",
+
+  "appLockTitle": "App Lock",
+  "appLockEnable": "Enable App Lock",
+  "appLockUseBiometrics": "Use Biometrics",
+  "appLockChangePIN": "Change PIN",
+  "appLockSetPIN": "Set PIN",
+  "appLockConfirmPIN": "Confirm PIN",
+  "appLockPINMismatch": "PINs do not match",
+  "appLockPINSet": "PIN set successfully",
+  "appLockPINChanged": "PIN changed",
+  "appLockEnterCurrentPIN": "Enter current PIN",
+  "appLockEnterNewPIN": "Enter new PIN",
+
+  "starredTitle": "Starred Messages",
+  "starredEmpty": "No starred messages",
+
+  "blockedTitle": "Blocked Users",
+  "blockedEmpty": "No blocked users",
+  "blockedUnblock": "Unblock",
+  "blockedUnblockConfirm": "Unblock {name}?",
+  "@blockedUnblockConfirm": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+
+  "updateTitle": "Update Required",
+  "updateMessage": "A newer version is required to continue using DNA Messenger.",
+  "updateDownload": "Download Update",
+
+  "cancel": "Cancel",
+  "save": "Save",
+  "delete": "Delete",
+  "done": "Done",
+  "copy": "Copy",
+  "ok": "OK",
+  "yes": "Yes",
+  "no": "No",
+  "error": "Error",
+  "success": "Success",
+  "loading": "Loading...",
+  "pleaseWait": "Please wait...",
+  "copied": "Copied",
+  "failed": "Failed: {error}",
+  "@failed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+
+  "retry": "Retry",
+  "continueButton": "Continue",
+  "approve": "Approve",
+  "deny": "Deny",
+  "verify": "Verify",
+  "copyToClipboard": "Copy to Clipboard",
+  "copiedToClipboard": "Copied to clipboard",
+  "pasteFromClipboard": "Paste from Clipboard",
+  "biometricsSubtitle": "Fingerprint or Face ID",
+  "changePINSubtitle": "Update your unlock PIN",
+  "biometricFailed": "Biometric authentication failed",
+  "contactRequestsWillAppear": "Contact requests will appear here",
+  "blockedUsersWillAppear": "Users you block will appear here",
+  "failedToLoadTimeline": "Failed to load timeline",
+  "userUnblocked": "User unblocked",
+  "backupFound": "Backup Found",
+  "approvedContact": "Approved {name}",
+  "@approvedContact": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "deniedContact": "Denied {name}",
+  "@deniedContact": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "blockedContact": "Blocked {name}",
+  "@blockedContact": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "unsubscribeFrom": "Unsubscribe from {name}",
+  "@unsubscribeFrom": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  }
+}

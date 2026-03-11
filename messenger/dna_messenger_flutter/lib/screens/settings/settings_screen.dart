@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../l10n/app_localizations.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
@@ -34,7 +35,7 @@ class SettingsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Settings'),
+        title: Text(AppLocalizations.of(context).settingsTitle),
       ),
       body: SafeArea(
         top: false,
@@ -48,6 +49,8 @@ class SettingsScreen extends ConsumerWidget {
             ),
             // Appearance
             const _AppearanceSection(),
+            // Language
+            const _LanguageSection(),
             // Notifications (Android only)
             const _NotificationsSection(),
             // Security
@@ -132,7 +135,7 @@ class _ProfileSection extends StatelessWidget {
                     children: [
                       simpleProfile.when(
                         data: (p) => Text(
-                          p?.nickname ?? 'Anonymous',
+                          p?.nickname ?? AppLocalizations.of(context).settingsAnonymous,
                           style: theme.textTheme.titleLarge,
                         ),
                         loading: () => const SizedBox(
@@ -141,7 +144,7 @@ class _ProfileSection extends StatelessWidget {
                           child: LinearProgressIndicator(),
                         ),
                         error: (e, st) => Text(
-                          'Anonymous',
+                          AppLocalizations.of(context).settingsAnonymous,
                           style: theme.textTheme.titleLarge,
                         ),
                       ),
@@ -149,12 +152,12 @@ class _ProfileSection extends StatelessWidget {
                       Text(
                         fingerprint != null
                             ? _shortenFingerprint(fingerprint!)
-                            : 'Not loaded',
+                            : AppLocalizations.of(context).settingsNotLoaded,
                         style: theme.textTheme.bodySmall,
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Tap to edit profile',
+                        AppLocalizations.of(context).settingsTapToEditProfile,
                         style: theme.textTheme.labelSmall?.copyWith(
                           color: theme.colorScheme.primary,
                         ),
@@ -234,14 +237,87 @@ class _AppearanceSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader('Appearance'),
+        _SectionHeader(AppLocalizations.of(context).settingsAppearance),
         DnaSwitch(
-          label: 'Dark Mode',
-          subtitle: 'Switch between dark and light theme',
+          label: AppLocalizations.of(context).settingsDarkMode,
+          subtitle: AppLocalizations.of(context).settingsDarkModeSubtitle,
           value: themeMode == ThemeMode.dark,
           onChanged: (v) => ref.read(themeModeProvider.notifier).toggle(),
         ),
       ],
+    );
+  }
+}
+
+class _LanguageSection extends ConsumerWidget {
+  const _LanguageSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final locale = ref.watch(localeProvider);
+
+    final l10n = AppLocalizations.of(context);
+    String currentLabel;
+    if (locale == null) {
+      currentLabel = l10n.settingsLanguageSystem;
+    } else if (locale.languageCode == 'tr') {
+      currentLabel = 'Türkçe';
+    } else {
+      currentLabel = 'English';
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(AppLocalizations.of(context).settingsLanguage),
+        ListTile(
+          leading: const FaIcon(FontAwesomeIcons.language),
+          title: Text(AppLocalizations.of(context).settingsLanguage),
+          subtitle: Text(currentLabel),
+          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
+          onTap: () => _showLanguagePicker(context, ref, locale),
+        ),
+      ],
+    );
+  }
+
+  void _showLanguagePicker(BuildContext context, WidgetRef ref, Locale? current) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            RadioListTile<String>(
+              title: const Text('System default'),
+              value: 'system',
+              groupValue: current == null ? 'system' : current.languageCode,
+              onChanged: (_) {
+                ref.read(localeProvider.notifier).setLocale(null);
+                Navigator.pop(context);
+              },
+            ),
+            RadioListTile<String>(
+              title: const Text('English'),
+              value: 'en',
+              groupValue: current == null ? 'system' : current.languageCode,
+              onChanged: (_) {
+                ref.read(localeProvider.notifier).setLocale(const Locale('en'));
+                Navigator.pop(context);
+              },
+            ),
+            RadioListTile<String>(
+              title: const Text('Türkçe'),
+              value: 'tr',
+              groupValue: current == null ? 'system' : current.languageCode,
+              onChanged: (_) {
+                ref.read(localeProvider.notifier).setLocale(const Locale('tr'));
+                Navigator.pop(context);
+              },
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -303,7 +379,7 @@ class _NotificationsSectionState extends State<_NotificationsSection>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader('Battery'),
+        _SectionHeader(AppLocalizations.of(context).settingsBattery),
         ListTile(
           leading: FaIcon(
             FontAwesomeIcons.batteryFull,
@@ -311,13 +387,13 @@ class _NotificationsSectionState extends State<_NotificationsSection>
                 ? Theme.of(context).colorScheme.primary
                 : null,
           ),
-          title: const Text('Disable Battery Optimization'),
+          title: Text(AppLocalizations.of(context).settingsDisableBatteryOpt),
           subtitle: Text(
             isExempt == null
-                ? 'Checking...'
+                ? AppLocalizations.of(context).settingsBatteryChecking
                 : isExempt
-                    ? 'Disabled — app can run in background'
-                    : 'Tap to keep app alive in background',
+                    ? AppLocalizations.of(context).settingsBatteryDisabled
+                    : AppLocalizations.of(context).settingsBatteryTapToKeep,
           ),
           trailing: isExempt == true
               ? FaIcon(FontAwesomeIcons.circleCheck,
@@ -341,18 +417,18 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader('Security'),
+        _SectionHeader(AppLocalizations.of(context).settingsSecurity),
         ListTile(
           leading: const FaIcon(FontAwesomeIcons.key),
-          title: const Text('Export Seed Phrase'),
-          subtitle: const Text('Back up your recovery phrase'),
+          title: Text(AppLocalizations.of(context).settingsExportSeedPhrase),
+          subtitle: Text(AppLocalizations.of(context).settingsExportSeedSubtitle),
           trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: () => _showExportSeedDialog(context),
         ),
         ListTile(
           leading: const FaIcon(FontAwesomeIcons.lock),
-          title: const Text('App Lock'),
-          subtitle: const Text('Require authentication'),
+          title: Text(AppLocalizations.of(context).settingsAppLock),
+          subtitle: Text(AppLocalizations.of(context).settingsAppLockSubtitle),
           trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: () {
             Navigator.push(
@@ -371,7 +447,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Export Seed Phrase'),
+        title: Text(AppLocalizations.of(context).settingsExportSeedPhrase),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -381,8 +457,8 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
               color: DnaColors.textWarning,
             ),
             const SizedBox(height: 16),
-            const Text(
-              'Your seed phrase gives full access to your identity. Never share it with anyone.',
+            Text(
+              AppLocalizations.of(context).settingsExportSeedWarning,
               textAlign: TextAlign.center,
             ),
           ],
@@ -390,14 +466,14 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context).cancel),
           ),
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
               _showSeedPhrase(context);
             },
-            child: const Text('Show Seed'),
+            child: Text(AppLocalizations.of(context).settingsShowSeed),
           ),
         ],
       ),
@@ -421,7 +497,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                 children: [
                   FaIcon(FontAwesomeIcons.key, color: DnaColors.textWarning),
                   const SizedBox(width: 8),
-                  const Expanded(child: Text('Your Seed Phrase')),
+                  Expanded(child: Text(AppLocalizations.of(context).settingsYourSeedPhrase)),
                 ],
               ),
               content: SizedBox(
@@ -492,7 +568,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'Write these words down in order and store them safely. Anyone with this phrase can access your identity.',
+                            AppLocalizations.of(context).settingsSeedPhraseWarning,
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ),
@@ -507,22 +583,22 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: mnemonic));
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Seed phrase copied to clipboard')),
+                      SnackBar(content: Text(AppLocalizations.of(context).settingsSeedCopied)),
                     );
                   },
-                  child: const Text('Copy'),
+                  child: Text(AppLocalizations.of(context).copy),
                 ),
                 ElevatedButton(
                   onPressed: () => Navigator.pop(context),
-                  child: const Text('Done'),
+                  child: Text(AppLocalizations.of(context).done),
                 ),
               ],
             ),
           );
         } catch (e) {
-          String errorMessage = 'Unable to retrieve seed phrase';
+          String errorMessage = AppLocalizations.of(context).settingsSeedError;
           if (e.toString().contains('not stored')) {
-            errorMessage = 'Seed phrase not available for this identity. It was created before this feature was added.';
+            errorMessage = AppLocalizations.of(context).settingsSeedNotAvailable;
           }
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -534,7 +610,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
       },
       loading: () {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please wait...')),
+          SnackBar(content: Text(AppLocalizations.of(context).pleaseWait)),
         );
       },
       error: (e, st) {
@@ -559,7 +635,7 @@ class _WalletSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader('Wallet'),
+        _SectionHeader(AppLocalizations.of(context).settingsWallet),
         SwitchListTile(
           secondary: FaIcon(
             FontAwesomeIcons.eyeSlash,
@@ -567,8 +643,8 @@ class _WalletSection extends ConsumerWidget {
                 ? Theme.of(context).colorScheme.primary
                 : null,
           ),
-          title: const Text('Hide 0 Balance'),
-          subtitle: const Text('Hide coins with zero balance'),
+          title: Text(AppLocalizations.of(context).settingsHideZeroBalance),
+          subtitle: Text(AppLocalizations.of(context).settingsHideZeroBalanceSubtitle),
           value: walletSettings.hideZeroBalances,
           onChanged: (value) {
             ref.read(walletSettingsProvider.notifier).setHideZeroBalances(value);
@@ -602,7 +678,7 @@ class _DataSectionState extends ConsumerState<_DataSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader('Data'),
+        _SectionHeader(AppLocalizations.of(context).settingsData),
         // Auto-sync toggle
         SwitchListTile(
           secondary: FaIcon(
@@ -611,11 +687,11 @@ class _DataSectionState extends ConsumerState<_DataSection> {
                 ? Theme.of(context).colorScheme.primary
                 : null,
           ),
-          title: const Text('Auto Sync'),
+          title: Text(AppLocalizations.of(context).settingsAutoSync),
           subtitle: Text(
             syncState.autoSyncEnabled
-                ? 'Last sync: ${_formatLastSync(syncState.lastSyncTime)}'
-                : 'Sync messages automatically every 15 minutes',
+                ? AppLocalizations.of(context).settingsLastSync(_formatLastSync(syncState.lastSyncTime))
+                : AppLocalizations.of(context).settingsAutoSyncSubtitle,
           ),
           value: syncState.autoSyncEnabled,
           onChanged: (value) {
@@ -632,13 +708,13 @@ class _DataSectionState extends ConsumerState<_DataSection> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const FaIcon(FontAwesomeIcons.rotate),
-            title: const Text('Sync Now'),
+            title: Text(AppLocalizations.of(context).settingsSyncNow),
             subtitle: syncState.lastSyncError != null
                 ? Text(
                     syncState.lastSyncError!,
                     style: TextStyle(color: DnaColors.textWarning),
                   )
-                : const Text('Force immediate sync'),
+                : Text(AppLocalizations.of(context).settingsSyncNowSubtitle),
             trailing: syncState.isSyncing ? null : const FaIcon(FontAwesomeIcons.chevronRight),
             onTap: syncState.isSyncing
                 ? null
@@ -684,7 +760,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: const Text('Logs folder does not exist yet'),
+                content: Text(AppLocalizations.of(context).settingsLogsFolderNotExist),
                 backgroundColor: DnaColors.snackbarInfo,
               ),
             );
@@ -733,7 +809,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('No logs yet. $debugInfo'),
+                content: Text(AppLocalizations.of(context).settingsNoLogsYet(debugInfo)),
                 backgroundColor: DnaColors.snackbarInfo,
                 duration: const Duration(seconds: 10),
               ),
@@ -753,7 +829,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: const Text('No log files found'),
+                content: Text(AppLocalizations.of(context).settingsNoLogFiles),
                 backgroundColor: DnaColors.snackbarInfo,
               ),
             );
@@ -775,7 +851,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: const Text('Failed to create zip archive'),
+                content: Text(AppLocalizations.of(context).settingsFailedCreateZip),
                 backgroundColor: DnaColors.snackbarError,
               ),
             );
@@ -812,7 +888,7 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader('Logs'),
+        _SectionHeader(AppLocalizations.of(context).settingsLogs),
         // Open/Share Logs
         ListTile(
           leading: FaIcon(
@@ -822,13 +898,13 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           ),
           title: Text(
             Platform.isLinux || Platform.isWindows || Platform.isMacOS
-                ? 'Open Logs Folder'
-                : 'Share Logs',
+                ? AppLocalizations.of(context).settingsOpenLogsFolder
+                : AppLocalizations.of(context).settingsShareLogs,
           ),
           subtitle: Text(
             Platform.isLinux || Platform.isWindows || Platform.isMacOS
-                ? 'Open file manager at logs directory'
-                : 'Zip and share log files',
+                ? AppLocalizations.of(context).settingsOpenLogsFolderSubtitle
+                : AppLocalizations.of(context).settingsShareLogsSubtitle,
           ),
           trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: () => _openOrShareLogs(context),
@@ -858,11 +934,11 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader('Identity'),
+        _SectionHeader(AppLocalizations.of(context).settingsIdentity),
         if (fingerprint != null)
           ListTile(
             leading: const FaIcon(FontAwesomeIcons.fingerprint),
-            title: const Text('Fingerprint'),
+            title: Text(AppLocalizations.of(context).settingsFingerprint),
             subtitle: Text(
               fingerprint,
               maxLines: 1,
@@ -875,7 +951,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
             onTap: () {
               Clipboard.setData(ClipboardData(text: fingerprint));
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Fingerprint copied')),
+                SnackBar(content: Text(AppLocalizations.of(context).settingsFingerprintCopied)),
               );
             },
           ),
@@ -883,10 +959,10 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
         ListTile(
           leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.textWarning),
           title: Text(
-            'Delete Account',
+            AppLocalizations.of(context).settingsDeleteAccount,
             style: TextStyle(color: DnaColors.textWarning),
           ),
-          subtitle: const Text('Permanently delete all data from device'),
+          subtitle: Text(AppLocalizations.of(context).settingsDeleteAccountSubtitle),
           trailing: _isDeleting
               ? const SizedBox(
                   width: 24,
@@ -911,22 +987,22 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
           children: [
             FaIcon(FontAwesomeIcons.triangleExclamation, color: DnaColors.textWarning),
             const SizedBox(width: 8),
-            const Text('Delete Account?'),
+            Text(AppLocalizations.of(context).settingsDeleteAccountConfirm),
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'This will permanently delete all local data:',
+            Text(
+              AppLocalizations.of(context).settingsDeleteAccountWarning,
             ),
             const SizedBox(height: 12),
-            _buildBulletPoint('Private keys'),
-            _buildBulletPoint('Wallets'),
-            _buildBulletPoint('Messages'),
-            _buildBulletPoint('Contacts'),
-            _buildBulletPoint('Groups'),
+            _buildBulletPoint(AppLocalizations.of(context).settingsDeletePrivateKeys),
+            _buildBulletPoint(AppLocalizations.of(context).settingsDeleteWallets),
+            _buildBulletPoint(AppLocalizations.of(context).settingsDeleteMessages),
+            _buildBulletPoint(AppLocalizations.of(context).settingsDeleteContacts),
+            _buildBulletPoint(AppLocalizations.of(context).settingsDeleteGroups),
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(12),
@@ -941,7 +1017,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Make sure you have backed up your seed phrase before deleting!',
+                      AppLocalizations.of(context).settingsDeleteSeedWarning,
                       style: TextStyle(
                         fontSize: 13,
                         color: DnaColors.textWarning,
@@ -957,7 +1033,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context).cancel),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -968,7 +1044,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
               Navigator.pop(context);
               _deleteIdentity(fingerprint);
             },
-            child: const Text('Delete'),
+            child: Text(AppLocalizations.of(context).delete),
           ),
         ],
       ),
@@ -1002,7 +1078,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: const Text('Account deleted successfully'),
+                content: Text(AppLocalizations.of(context).settingsDeleteSuccess),
                 backgroundColor: DnaColors.snackbarSuccess,
               ),
             );
@@ -1022,7 +1098,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to delete account: $e'),
+            content: Text(AppLocalizations.of(context).settingsDeleteFailed(e.toString())),
             backgroundColor: DnaColors.snackbarError,
           ),
         );
@@ -1071,7 +1147,7 @@ class _AboutSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader('About'),
+        _SectionHeader(AppLocalizations.of(context).settingsAbout),
         // Update warning card
         if (hasUpdate && versionCheck != null)
           Padding(
@@ -1092,14 +1168,14 @@ class _AboutSection extends ConsumerWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Update Available',
+                              AppLocalizations.of(context).settingsUpdateAvailable,
                               style: theme.textTheme.bodyMedium?.copyWith(
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              'Tap to download',
+                              AppLocalizations.of(context).settingsTapToDownload,
                               style: theme.textTheme.bodySmall,
                             ),
                           ],
@@ -1118,22 +1194,22 @@ class _AboutSection extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'DNA Messenger v$appVersion',
+                AppLocalizations.of(context).settingsAppVersion(appVersion),
                 style: theme.textTheme.bodyMedium,
               ),
               const SizedBox(height: 4),
               Text(
-                'Library v$libVersion',
+                AppLocalizations.of(context).settingsLibVersion(libVersion),
                 style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: 4),
               Text(
-                'Post-Quantum Encrypted Messenger',
+                AppLocalizations.of(context).settingsPostQuantumMessenger,
                 style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: 16),
               Text(
-                'CRYPTO STACK',
+                AppLocalizations.of(context).settingsCryptoStack,
                 style: theme.textTheme.labelSmall?.copyWith(
                   fontWeight: FontWeight.w600,
                   letterSpacing: 1.2,

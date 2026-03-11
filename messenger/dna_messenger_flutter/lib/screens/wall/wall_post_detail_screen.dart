@@ -6,6 +6,7 @@ import '../../ffi/dna_engine.dart';
 import '../../providers/engine_provider.dart';
 import '../../providers/wall_provider.dart';
 import '../../widgets/wall_post_tile.dart';
+import '../../l10n/app_localizations.dart';
 import '../../widgets/wall_comment_tile.dart';
 
 /// Detail screen for a wall post with threaded comments
@@ -39,7 +40,7 @@ class _WallPostDetailScreenState extends ConsumerState<WallPostDetailScreen> {
 
     return Scaffold(
       appBar: DnaAppBar(
-        title: 'Post',
+        title: AppLocalizations.of(context).wallPostDetail,
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 20),
@@ -74,14 +75,14 @@ class _WallPostDetailScreenState extends ConsumerState<WallPostDetailScreen> {
                       skipLoadingOnRefresh: true,
                       data: (comments) => Text(
                         comments.isEmpty
-                            ? 'No comments yet'
-                            : '${comments.length} comment${comments.length == 1 ? '' : 's'}',
+                            ? AppLocalizations.of(context).wallNoComments
+                            : '${comments.length} ${AppLocalizations.of(context).wallComments}',
                         style: theme.textTheme.titleSmall?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
                       ),
                       loading: () => Text(
-                        'Loading comments...',
+                        AppLocalizations.of(context).wallLoadingComments,
                         style: theme.textTheme.titleSmall?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
@@ -177,8 +178,8 @@ class _WallPostDetailScreenState extends ConsumerState<WallPostDetailScreen> {
                       controller: _commentController,
                       decoration: InputDecoration(
                         hintText: _replyToUuid != null
-                            ? 'Write a reply...'
-                            : 'Write a comment...',
+                            ? AppLocalizations.of(context).wallWriteReply
+                            : AppLocalizations.of(context).wallWriteComment,
                         border: OutlineInputBorder(
                           borderRadius:
                               BorderRadius.circular(DnaSpacing.radiusMd),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../design_system/design_system.dart';
 import '../ffi/dna_engine.dart';
+import '../l10n/app_localizations.dart';
 import '../utils/time_format.dart';
 
 /// Displays a single wall comment (top-level or reply)
@@ -88,7 +89,7 @@ class WallCommentTile extends StatelessWidget {
                           ),
                           const SizedBox(width: 4),
                           Text(
-                            'Reply',
+                            AppLocalizations.of(context).wallReply,
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.colorScheme.onSurfaceVariant,
                               fontSize: 11,

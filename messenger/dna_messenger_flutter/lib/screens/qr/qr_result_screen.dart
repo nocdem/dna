@@ -9,6 +9,7 @@ import '../../providers/providers.dart';
 import '../../design_system/theme/dna_colors.dart';
 import '../../utils/qr_payload_parser.dart';
 import 'qr_auth_screen.dart';
+import '../../l10n/app_localizations.dart';
 
 class QrResultScreen extends ConsumerStatefulWidget {
   final QrPayload payload;
@@ -36,13 +37,14 @@ class _QrResultScreenState extends ConsumerState<QrResultScreen> {
   }
 
   String _getTitle() {
+    final l10n = AppLocalizations.of(context);
     switch (widget.payload.type) {
       case QrPayloadType.contact:
-        return 'Add Contact';
+        return l10n.qrAddContact;
       case QrPayloadType.auth:
-        return 'Authorization Request';
+        return l10n.qrAuthRequest;
       case QrPayloadType.plainText:
-        return 'QR Content';
+        return l10n.qrContent;
     }
   }
 
@@ -198,11 +200,11 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: fp));
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Fingerprint copied')),
+                      SnackBar(content: Text(AppLocalizations.of(context).contactsHubFingerprintCopied)),
                     );
                   },
                   icon: const FaIcon(FontAwesomeIcons.copy, size: 14),
-                  label: const Text('Copy Fingerprint'),
+                  label: Text(AppLocalizations.of(context).qrCopyFingerprint),
                 ),
               ],
             ),
@@ -251,7 +253,7 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Contact request sent successfully!',
+                      AppLocalizations.of(context).qrRequestSent,
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: DnaColors.textSuccess,
                       ),
@@ -273,7 +275,7 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : FaIcon(_requestSent ? FontAwesomeIcons.check : FontAwesomeIcons.userPlus, size: 16),
-            label: Text(_requestSent ? 'Request Sent' : 'Send Contact Request'),
+            label: Text(_requestSent ? AppLocalizations.of(context).qrRequestSent : AppLocalizations.of(context).qrSendContactRequest),
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
@@ -283,7 +285,7 @@ class _ContactResultState extends ConsumerState<_ContactResult> {
           // Back button - use root navigator
           OutlinedButton(
             onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
-            child: const Text('Scan Another'),
+            child: Text(AppLocalizations.of(context).qrScanAnother),
           ),
         ],
       ),
@@ -398,7 +400,7 @@ class _AuthResultState extends State<_AuthResult> {
               const SizedBox(height: 24),
               OutlinedButton(
                 onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
-                child: const Text('Scan Another'),
+                child: Text(AppLocalizations.of(context).qrScanAnother),
               ),
             ],
           ),
@@ -439,7 +441,7 @@ class _PlainTextResult extends StatelessWidget {
                     FaIcon(FontAwesomeIcons.qrcode, size: 20, color: theme.colorScheme.primary),
                     const SizedBox(width: 8),
                     Text(
-                      'QR Content',
+                      AppLocalizations.of(context).qrContent,
                       style: theme.textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.bold,
                       ),
@@ -466,7 +468,7 @@ class _PlainTextResult extends StatelessWidget {
             onPressed: () {
               Clipboard.setData(ClipboardData(text: payload.rawContent));
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Copied to clipboard')),
+                SnackBar(content: Text(AppLocalizations.of(context).copiedToClipboard)),
               );
             },
           ),
@@ -543,7 +545,7 @@ class _PlainTextResult extends StatelessWidget {
           const SizedBox(height: 24),
           OutlinedButton(
             onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
-            child: const Text('Scan Another'),
+            child: Text(AppLocalizations.of(context).qrScanAnother),
           ),
         ],
       ),

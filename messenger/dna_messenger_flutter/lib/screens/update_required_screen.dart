@@ -5,6 +5,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../design_system/theme/dna_colors.dart';
+import '../l10n/app_localizations.dart';
 
 class UpdateRequiredScreen extends StatefulWidget {
   final String libraryMinimum;
@@ -57,15 +58,14 @@ class _UpdateRequiredScreenState extends State<UpdateRequiredScreen> {
               ),
               const SizedBox(height: 16),
               Text(
-                'Update Required',
+                AppLocalizations.of(context).updateTitle,
                 style: theme.textTheme.headlineSmall?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),
               ),
               const SizedBox(height: 16),
               Text(
-                'Your version of DNA Messenger is outdated and can no longer be used. '
-                'Please update to the latest version to continue.',
+                AppLocalizations.of(context).updateMessage,
                 style: theme.textTheme.bodyMedium,
                 textAlign: TextAlign.center,
               ),
@@ -93,7 +93,7 @@ class _UpdateRequiredScreenState extends State<UpdateRequiredScreen> {
                   );
                 },
                 icon: const FaIcon(FontAwesomeIcons.download, size: 18),
-                label: const Text('Download Update'),
+                label: Text(AppLocalizations.of(context).updateDownload),
               ),
             ],
           ),

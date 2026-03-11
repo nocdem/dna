@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart' show AddressBookEntry;
+import '../../l10n/app_localizations.dart';
 
 class AddressDialogResult {
   final String address;
@@ -79,7 +80,7 @@ class _AddressDialogState extends State<AddressDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(_isEditing ? 'Edit Address' : 'Add Address'),
+      title: Text(_isEditing ? AppLocalizations.of(context).walletEditAddress : AppLocalizations.of(context).walletAddAddress),
       content: SingleChildScrollView(
         child: Form(
           key: _formKey,
@@ -90,8 +91,8 @@ class _AddressDialogState extends State<AddressDialog> {
               // Network dropdown
               DropdownButtonFormField<String>(
                 initialValue: _selectedNetwork,
-                decoration: const InputDecoration(
-                  labelText: 'Network',
+                decoration: InputDecoration(
+                  labelText: AppLocalizations.of(context).walletNetwork,
                   prefixIcon: Icon(Icons.layers),
                 ),
                 items: _networks.map((n) {
@@ -115,7 +116,7 @@ class _AddressDialogState extends State<AddressDialog> {
                 controller: _addressController,
                 enabled: !_isEditing && !_isPrefilled, // Can't change address when editing or prefilled
                 decoration: InputDecoration(
-                  labelText: 'Address',
+                  labelText: AppLocalizations.of(context).walletAddress,
                   hintText: _getAddressHint(_selectedNetwork),
                   prefixIcon: const Icon(Icons.account_balance_wallet),
                   suffixIcon: !_isEditing && !_isPrefilled
@@ -143,8 +144,8 @@ class _AddressDialogState extends State<AddressDialog> {
               // Label input
               TextFormField(
                 controller: _labelController,
-                decoration: const InputDecoration(
-                  labelText: 'Label',
+                decoration: InputDecoration(
+                  labelText: AppLocalizations.of(context).walletLabel,
                   hintText: 'e.g., My Exchange, Friend',
                   prefixIcon: Icon(Icons.label),
                 ),
@@ -180,11 +181,11 @@ class _AddressDialogState extends State<AddressDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
+          child: Text(AppLocalizations.of(context).cancel),
         ),
         ElevatedButton(
           onPressed: _submit,
-          child: Text(_isEditing ? 'Save' : 'Add'),
+          child: Text(_isEditing ? AppLocalizations.of(context).save : AppLocalizations.of(context).walletAddAddress),
         ),
       ],
     );

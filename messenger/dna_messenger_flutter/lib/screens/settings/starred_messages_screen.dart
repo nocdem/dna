@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
+import '../../l10n/app_localizations.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../services/cache_database.dart';
@@ -24,7 +25,7 @@ class StarredMessagesScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Starred Messages'),
+        title: Text(AppLocalizations.of(context).starredTitle),
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
@@ -47,7 +48,7 @@ class StarredMessagesScreen extends ConsumerWidget {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'No starred messages',
+                    AppLocalizations.of(context).starredEmpty,
                     style: theme.textTheme.titleMedium,
                   ),
                   const SizedBox(height: 8),

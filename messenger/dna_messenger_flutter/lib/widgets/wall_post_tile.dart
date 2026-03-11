@@ -7,6 +7,7 @@ import '../design_system/design_system.dart';
 import '../ffi/dna_engine.dart';
 import '../providers/contact_profile_cache_provider.dart';
 import '../providers/identity_profile_cache_provider.dart';
+import '../l10n/app_localizations.dart';
 import '../utils/time_format.dart';
 
 class WallPostTile extends ConsumerWidget {
@@ -133,7 +134,7 @@ class WallPostTile extends ConsumerWidget {
             children: [
               _ActionButton(
                 icon: FontAwesomeIcons.copy,
-                label: 'Copy',
+                label: AppLocalizations.of(context).wallCopy,
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: post.text));
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -147,20 +148,20 @@ class WallPostTile extends ConsumerWidget {
               _ActionButton(
                 icon: FontAwesomeIcons.comment,
                 label: comments != null && comments!.isNotEmpty
-                    ? 'Reply (${comments!.length})'
-                    : 'Reply',
+                    ? '${AppLocalizations.of(context).wallReply} (${comments!.length})'
+                    : AppLocalizations.of(context).wallReply,
                 onTap: onReply,
               ),
               if (!isOwn && onShare != null)
                 _ActionButton(
                   icon: FontAwesomeIcons.retweet,
-                  label: 'Repost',
+                  label: AppLocalizations.of(context).wallRepost,
                   onTap: onShare,
                 ),
               if (isOwn)
                 _ActionButton(
                   icon: FontAwesomeIcons.trash,
-                  label: 'Delete',
+                  label: AppLocalizations.of(context).wallDelete,
                   onTap: onDelete,
                   color: DnaColors.error,
                 ),
@@ -264,7 +265,7 @@ class _InlineComments extends StatelessWidget {
               child: Padding(
                 padding: const EdgeInsets.only(bottom: DnaSpacing.xs),
                 child: Text(
-                  'View all ${comments.length} comments',
+                  AppLocalizations.of(context).wallViewAllComments(comments.length),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),

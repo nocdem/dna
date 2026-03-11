@@ -5,6 +5,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../design_system/theme/dna_colors.dart';
+import '../../l10n/app_localizations.dart';
 
 class ContactRequestsScreen extends ConsumerWidget {
   const ContactRequestsScreen({super.key});
@@ -15,7 +16,7 @@ class ContactRequestsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Contact Requests'),
+        title: Text(AppLocalizations.of(context).contactRequestsTitle),
         actions: [
           IconButton(
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
@@ -52,12 +53,12 @@ class ContactRequestsScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'No pending requests',
+              AppLocalizations.of(context).contactRequestsEmpty,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
             Text(
-              'Contact requests will appear here',
+              AppLocalizations.of(context).contactRequestsWillAppear,
               style: theme.textTheme.bodySmall,
             ),
           ],
@@ -100,7 +101,7 @@ class ContactRequestsScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              'Failed to load requests',
+              AppLocalizations.of(context).contactsFailedToLoad,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
@@ -112,7 +113,7 @@ class ContactRequestsScreen extends ConsumerWidget {
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: () => ref.invalidate(contactRequestsProvider),
-              child: const Text('Retry'),
+              child: Text(AppLocalizations.of(context).contactsRetry),
             ),
           ],
         ),
@@ -129,7 +130,7 @@ class ContactRequestsScreen extends ConsumerWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Approved ${_getDisplayName(request)}'),
+            content: Text(AppLocalizations.of(context).approvedContact(_getDisplayName(request))),
             backgroundColor: DnaColors.textSuccess,
           ),
         );
@@ -153,7 +154,7 @@ class ContactRequestsScreen extends ConsumerWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Denied ${_getDisplayName(request)}'),
+            content: Text(AppLocalizations.of(context).deniedContact(_getDisplayName(request))),
           ),
         );
       }
@@ -175,21 +176,21 @@ class ContactRequestsScreen extends ConsumerWidget {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Block User'),
+        title: Text(AppLocalizations.of(context).contactRequestsBlock),
         content: Text(
           'Block ${_getDisplayName(request)}? They will not be able to send you requests or messages.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+            child: Text(AppLocalizations.of(context).cancel),
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
             style: TextButton.styleFrom(
               foregroundColor: DnaColors.textWarning,
             ),
-            child: const Text('Block'),
+            child: Text(AppLocalizations.of(context).contactRequestsBlock),
           ),
         ],
       ),
@@ -203,7 +204,7 @@ class ContactRequestsScreen extends ConsumerWidget {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Blocked ${_getDisplayName(request)}'),
+              content: Text(AppLocalizations.of(context).blockedContact(_getDisplayName(request))),
               backgroundColor: DnaColors.textWarning,
             ),
           );
@@ -306,13 +307,13 @@ class _RequestTile extends ConsumerWidget {
                     }
                   },
                   itemBuilder: (context) => [
-                    const PopupMenuItem(
+                    PopupMenuItem(
                       value: 'block',
                       child: Row(
                         children: [
-                          FaIcon(FontAwesomeIcons.ban, color: Colors.red),
-                          SizedBox(width: 8),
-                          Text('Block User'),
+                          const FaIcon(FontAwesomeIcons.ban, color: Colors.red),
+                          const SizedBox(width: 8),
+                          Text(AppLocalizations.of(context).contactRequestsBlock),
                         ],
                       ),
                     ),
@@ -341,13 +342,13 @@ class _RequestTile extends ConsumerWidget {
               children: [
                 TextButton(
                   onPressed: onDeny,
-                  child: const Text('Deny'),
+                  child: Text(AppLocalizations.of(context).contactRequestsDeny),
                 ),
                 const SizedBox(width: 8),
                 FilledButton.icon(
                   onPressed: onApprove,
                   icon: const FaIcon(FontAwesomeIcons.check),
-                  label: const Text('Accept'),
+                  label: Text(AppLocalizations.of(context).contactRequestsAccept),
                 ),
               ],
             ),

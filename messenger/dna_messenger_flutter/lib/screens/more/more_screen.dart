@@ -16,6 +16,7 @@ import '../contacts/contacts_hub_screen.dart';
 import '../settings/settings_screen.dart';
 import '../settings/app_lock_settings_screen.dart';
 import '../profile/profile_editor_screen.dart';
+import '../../l10n/app_localizations.dart';
 
 class MoreScreen extends ConsumerWidget {
   const MoreScreen({super.key});
@@ -35,7 +36,7 @@ class MoreScreen extends ConsumerWidget {
     final gridItems = <DnaMoreGridItem>[
       DnaMoreGridItem(
         icon: FontAwesomeIcons.wallet,
-        label: 'Wallet',
+        label: AppLocalizations.of(context).moreWallet,
         onTap: () => Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const WalletScreen()),
@@ -44,7 +45,7 @@ class MoreScreen extends ConsumerWidget {
       if (supportsCamera)
         DnaMoreGridItem(
           icon: FontAwesomeIcons.qrcode,
-          label: 'QR Scanner',
+          label: AppLocalizations.of(context).moreQRScanner,
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const QrScannerScreen()),
@@ -52,7 +53,7 @@ class MoreScreen extends ConsumerWidget {
         ),
       DnaMoreGridItem(
         icon: FontAwesomeIcons.addressBook,
-        label: 'Addresses',
+        label: AppLocalizations.of(context).moreAddresses,
         onTap: () => Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const AddressBookScreen()),
@@ -60,7 +61,7 @@ class MoreScreen extends ConsumerWidget {
       ),
       DnaMoreGridItem(
         icon: FontAwesomeIcons.solidStar,
-        label: 'Starred',
+        label: AppLocalizations.of(context).moreStarred,
         onTap: () => Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const StarredMessagesScreen()),
@@ -68,7 +69,7 @@ class MoreScreen extends ConsumerWidget {
       ),
       DnaMoreGridItem(
         icon: FontAwesomeIcons.addressCard,
-        label: 'Contacts',
+        label: AppLocalizations.of(context).moreContacts,
         badgeCount: ref.watch(pendingRequestCountProvider),
         onTap: () => Navigator.push(
           context,
@@ -81,7 +82,7 @@ class MoreScreen extends ConsumerWidget {
     final listItems = <DnaMoreListItem>[
       DnaMoreListItem(
         icon: FontAwesomeIcons.gear,
-        label: 'Settings',
+        label: AppLocalizations.of(context).moreSettings,
         onTap: () => Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const SettingsScreen()),
@@ -89,7 +90,7 @@ class MoreScreen extends ConsumerWidget {
       ),
       DnaMoreListItem(
         icon: FontAwesomeIcons.lock,
-        label: 'App Lock',
+        label: AppLocalizations.of(context).moreAppLock,
         onTap: () => Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const AppLockSettingsScreen()),
@@ -109,7 +110,7 @@ class MoreScreen extends ConsumerWidget {
     );
 
     return Scaffold(
-      appBar: const DnaAppBar(title: 'More'),
+      appBar: DnaAppBar(title: AppLocalizations.of(context).moreTitle),
       body: DnaMoreMenu(
         header: header,
         gridItems: gridItems,

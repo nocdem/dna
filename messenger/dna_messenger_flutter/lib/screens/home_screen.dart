@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../design_system/design_system.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/providers.dart';
 import 'wall/wall_timeline_screen.dart';
 import 'messages/messages_screen.dart';
@@ -52,23 +53,23 @@ class _MainNavigation extends ConsumerWidget {
           DnaBottomBarItem(
             icon: FontAwesomeIcons.house,
             activeIcon: FontAwesomeIcons.house,
-            label: 'Home',
+            label: AppLocalizations.of(context).navHome,
           ),
           DnaBottomBarItem(
             icon: FontAwesomeIcons.comment,
             activeIcon: FontAwesomeIcons.solidComment,
-            label: 'Chats',
+            label: AppLocalizations.of(context).navChats,
             badgeCount: totalMsgUnread,
           ),
           DnaBottomBarItem(
             icon: FontAwesomeIcons.hashtag,
             activeIcon: FontAwesomeIcons.hashtag,
-            label: 'Channels',
+            label: AppLocalizations.of(context).navChannels,
           ),
           DnaBottomBarItem(
             icon: FontAwesomeIcons.ellipsis,
             activeIcon: FontAwesomeIcons.ellipsis,
-            label: 'More',
+            label: AppLocalizations.of(context).navMore,
           ),
         ],
       ),

@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-03-09 | **Status:** BETA | **Phase:** 7 (Flutter UI)
+**Last Updated:** 2026-03-11 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.9.48 | Flutter v1.0.0-rc11 | Nodus v0.6.3
+**Versions:** Library v0.9.48 | Flutter v1.0.0-rc12 | Nodus v0.6.3
 
 ---
 
@@ -198,7 +198,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.9.48 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc11+10361 | Flutter/Dart code changes (lib/, assets/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc12+10362 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus | `../nodus/include/nodus/nodus_types.h` | v0.6.3 | Nodus code changes (../nodus/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
@@ -501,6 +501,17 @@ This project is in **BETA**. Users have real data. Breaking changes require care
 - API signature changes that affect Flutter FFI
 - DHT key format changes
 
+## NON-TECHNICAL USER DESIGN (Flutter UI Only)
+This app is designed for **everyday users with zero knowledge of cryptography or security**.
+All technical complexity must be hidden. The UI should feel as simple as WhatsApp or Signal.
+
+**Rules:**
+- **NEVER show technical terms** in the UI: DHT, fingerprint, Kyber, Dilithium, SHA3, node, key derivation, PBFT, Kademlia, etc.
+- **Security decisions are automatic** — never ask the user to choose algorithms, key sizes, or encryption modes. It just works.
+- **Error messages must be user-friendly**: Instead of "DHT connection failed", show "Could not connect to server. Check your internet connection." The raw technical error should be available in an expandable "Details" section for advanced users.
+- **No jargon in labels, buttons, or descriptions**: Use plain language. "Recovery Phrase" not "BIP39 Mnemonic". "Your ID" not "Fingerprint".
+- **This rule applies ONLY to Flutter/Dart UI code** (`lib/`, Flutter widgets, user-facing strings). C library, CLI tool, logs, and documentation are NOT affected.
+
 ## FLUTTER ICONS - FONT AWESOME ONLY
 **ALWAYS use Font Awesome icons in Flutter code.** Do not use Material Icons.
 - **Package**: `font_awesome_flutter` (already in pubspec.yaml)
@@ -596,7 +607,7 @@ cd build && make dna-messenger-cli
 
 **Key debugging commands:**
 ```bash
-CLI=/opt/dna-messenger/build/cli/dna-messenger-cli
+CLI=/opt/dna/messenger/build/cli/dna-messenger-cli
 
 # DHT Profile debugging
 $CLI lookup-profile <name|fp>    # View any user's full DHT profile
