@@ -198,6 +198,56 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get chatSendTokens => 'Send Tokens';
+
+  @override
+  String chatSendTokensTo(String name) {
+    return 'to $name';
+  }
+
+  @override
+  String get chatLookingUpWallets => 'Looking up wallet addresses...';
+
+  @override
+  String get chatNoWalletAddresses =>
+      'Contact has no wallet addresses in their profile';
+
+  @override
+  String get chatTokenLabel => 'Token';
+
+  @override
+  String get chatSendAmount => 'Amount';
+
+  @override
+  String chatSendAvailable(String balance, String token) {
+    return 'Available: $balance $token';
+  }
+
+  @override
+  String get chatSendMax => 'Max';
+
+  @override
+  String chatSendButton(String token) {
+    return 'Send $token';
+  }
+
+  @override
+  String chatSentSuccess(String amount, String token) {
+    return 'Sent $amount $token';
+  }
+
+  @override
+  String get chatInvalidAmount => 'Please enter a valid amount';
+
+  @override
+  String chatInsufficientBalance(String token) {
+    return 'Insufficient $token balance';
+  }
+
+  @override
+  String get chatNoWalletForNetwork => 'Contact has no wallet for this network';
+
+  @override
   String get messageMenuReply => 'Reply';
 
   @override

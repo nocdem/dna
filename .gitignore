@@ -5,3 +5,10 @@ tasks/
 *SECURITY_AUDIT*
 *COMPREHENSIVE_AUDIT*
 *security_audit*
+
+# Confidential design documents (never commit)
+docs/DNAC_CPUNK_DESIGN.md
+docs/CPUNK_WHITEPAPER.md
+docs/CPUNK_TOKENOMICS.md
+docs/CPUNK_TECHNICAL_SPEC.md
+docs/plans/

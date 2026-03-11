@@ -458,6 +458,84 @@ abstract class AppLocalizations {
   /// **'Last seen {time}'**
   String chatLastSeen(String time);
 
+  /// No description provided for @chatSendTokens.
+  ///
+  /// In en, this message translates to:
+  /// **'Send Tokens'**
+  String get chatSendTokens;
+
+  /// No description provided for @chatSendTokensTo.
+  ///
+  /// In en, this message translates to:
+  /// **'to {name}'**
+  String chatSendTokensTo(String name);
+
+  /// No description provided for @chatLookingUpWallets.
+  ///
+  /// In en, this message translates to:
+  /// **'Looking up wallet addresses...'**
+  String get chatLookingUpWallets;
+
+  /// No description provided for @chatNoWalletAddresses.
+  ///
+  /// In en, this message translates to:
+  /// **'Contact has no wallet addresses in their profile'**
+  String get chatNoWalletAddresses;
+
+  /// No description provided for @chatTokenLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Token'**
+  String get chatTokenLabel;
+
+  /// No description provided for @chatSendAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Amount'**
+  String get chatSendAmount;
+
+  /// No description provided for @chatSendAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Available: {balance} {token}'**
+  String chatSendAvailable(String balance, String token);
+
+  /// No description provided for @chatSendMax.
+  ///
+  /// In en, this message translates to:
+  /// **'Max'**
+  String get chatSendMax;
+
+  /// No description provided for @chatSendButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Send {token}'**
+  String chatSendButton(String token);
+
+  /// No description provided for @chatSentSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Sent {amount} {token}'**
+  String chatSentSuccess(String amount, String token);
+
+  /// No description provided for @chatInvalidAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Please enter a valid amount'**
+  String get chatInvalidAmount;
+
+  /// No description provided for @chatInsufficientBalance.
+  ///
+  /// In en, this message translates to:
+  /// **'Insufficient {token} balance'**
+  String chatInsufficientBalance(String token);
+
+  /// No description provided for @chatNoWalletForNetwork.
+  ///
+  /// In en, this message translates to:
+  /// **'Contact has no wallet for this network'**
+  String get chatNoWalletForNetwork;
+
   /// No description provided for @messageMenuReply.
   ///
   /// In en, this message translates to:

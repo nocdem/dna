@@ -107,10 +107,6 @@
     }
   },
   "chatSendMax": "Max",
-  "chatTransactionSpeed": "Transaction Speed",
-  "chatSpeedSlow": "Slow",
-  "chatSpeedNormal": "Normal",
-  "chatSpeedFast": "Fast",
   "chatSendButton": "Send {token}",
   "@chatSendButton": {
     "placeholders": {

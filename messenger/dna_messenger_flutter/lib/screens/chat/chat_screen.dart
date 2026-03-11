@@ -2315,17 +2315,13 @@ class _TokenOption {
   });
 
   static const List<_TokenOption> all = [
-    _TokenOption(token: 'CELL', network: 'Cellframe', chain: 'cellframe', displayName: 'CELL (Cellframe)', profileField: 'backbone'),
     _TokenOption(token: 'CPUNK', network: 'Cellframe', chain: 'cellframe', displayName: 'CPUNK (Cellframe)', profileField: 'backbone'),
-    _TokenOption(token: 'USDC', network: 'Cellframe', chain: 'cellframe', displayName: 'USDC (Cellframe)', profileField: 'backbone'),
-    _TokenOption(token: 'ETH', network: 'Ethereum', chain: 'ethereum', displayName: 'ETH (Ethereum)', profileField: 'eth'),
     _TokenOption(token: 'USDT', network: 'Ethereum', chain: 'ethereum', displayName: 'USDT (Ethereum)', profileField: 'eth'),
-    _TokenOption(token: 'USDC', network: 'Ethereum', chain: 'ethereum', displayName: 'USDC (Ethereum)', profileField: 'eth'),
-    _TokenOption(token: 'SOL', network: 'Solana', chain: 'solana', displayName: 'SOL (Solana)', profileField: 'sol'),
     _TokenOption(token: 'USDT', network: 'Solana', chain: 'solana', displayName: 'USDT (Solana)', profileField: 'sol'),
-    _TokenOption(token: 'USDC', network: 'Solana', chain: 'solana', displayName: 'USDC (Solana)', profileField: 'sol'),
-    _TokenOption(token: 'TRX', network: 'Tron', chain: 'tron', displayName: 'TRX (TRON)', profileField: 'trx'),
     _TokenOption(token: 'USDT', network: 'Tron', chain: 'tron', displayName: 'USDT (TRON)', profileField: 'trx'),
+    _TokenOption(token: 'USDC', network: 'Cellframe', chain: 'cellframe', displayName: 'USDC (Cellframe)', profileField: 'backbone'),
+    _TokenOption(token: 'USDC', network: 'Ethereum', chain: 'ethereum', displayName: 'USDC (Ethereum)', profileField: 'eth'),
+    _TokenOption(token: 'USDC', network: 'Solana', chain: 'solana', displayName: 'USDC (Solana)', profileField: 'sol'),
     _TokenOption(token: 'USDC', network: 'Tron', chain: 'tron', displayName: 'USDC (TRON)', profileField: 'trx'),
   ];
 
@@ -2367,16 +2363,9 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
   bool _isSending = false;
   String? _sendError;
   bool _isResolving = true;
-  int _selectedGasSpeed = 1; // 0=slow, 1=normal, 2=fast
   UserProfile? _contactProfile;
   List<_TokenOption> _availableTokens = [];
   _TokenOption? _selectedToken;
-
-  // Cellframe network fees (validator fee varies by speed, network fee is fixed)
-  static const double _cellframeNetworkFee = 0.002;
-  static const double _cellframeValidatorSlow = 0.0001;
-  static const double _cellframeValidatorNormal = 0.01;
-  static const double _cellframeValidatorFast = 0.05;
 
   @override
   void initState() {
@@ -2460,8 +2449,6 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
     return true;
   }
 
-  bool get _showSpeedSelector => _selectedToken?.chain == 'cellframe';
-
   Future<void> _send() async {
     // Clear previous error
     setState(() {
@@ -2498,7 +2485,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
         amount: amountStr,
         token: _selectedToken!.token,
         network: _selectedToken!.network,
-        gasSpeed: _selectedGasSpeed,
+        gasSpeed: 1,
       );
 
       if (mounted) {
@@ -2648,35 +2635,6 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
               ),
               const SizedBox(height: 16),
 
-              // Resolved address indicator
-              if (_selectedToken != null && _contactProfile != null)
-                Builder(builder: (context) {
-                  final addr = _selectedToken!.getAddress(_contactProfile!);
-                  return Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: DnaColors.success.withAlpha(20),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: DnaColors.success.withAlpha(50)),
-                    ),
-                    child: Row(
-                      children: [
-                        FaIcon(FontAwesomeIcons.circleCheck, color: DnaColors.success, size: 20),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            '${addr.substring(0, addr.length >= 12 ? 12 : addr.length)}...${addr.substring(addr.length >= 8 ? addr.length - 8 : 0)}',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              fontFamily: 'monospace',
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }),
-              const SizedBox(height: 16),
-
               // Amount input
               TextField(
                 controller: _amountController,
@@ -2706,25 +2664,6 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                   ),
                 ),
               const SizedBox(height: 16),
-
-              // Transaction speed selector (Cellframe only)
-              if (_showSpeedSelector) ...[
-                Text(
-                  l10n.chatTransactionSpeed,
-                  style: theme.textTheme.bodySmall,
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    _buildSpeedChip(l10n.chatSpeedSlow, _cellframeValidatorSlow + _cellframeNetworkFee, 0),
-                    const SizedBox(width: 8),
-                    _buildSpeedChip(l10n.chatSpeedNormal, _cellframeValidatorNormal + _cellframeNetworkFee, 1),
-                    const SizedBox(width: 8),
-                    _buildSpeedChip(l10n.chatSpeedFast, _cellframeValidatorFast + _cellframeNetworkFee, 2),
-                  ],
-                ),
-                const SizedBox(height: 16),
-              ],
 
               // Error display
               if (_sendError != null)
@@ -2769,41 +2708,6 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
     );
   }
 
-  Widget _buildSpeedChip(String label, double fee, int speed) {
-    final selected = _selectedGasSpeed == speed;
-    return Expanded(
-      child: GestureDetector(
-        onTap: () => setState(() => _selectedGasSpeed = speed),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-          decoration: BoxDecoration(
-            color: selected ? Theme.of(context).colorScheme.primary.withAlpha(30) : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: selected ? Theme.of(context).colorScheme.primary : Theme.of(context).dividerColor,
-            ),
-          ),
-          child: Column(
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-                  color: selected ? Theme.of(context).colorScheme.primary : null,
-                ),
-              ),
-              Text(
-                '${fee.toStringAsFixed(fee < 0.01 ? 4 : 3)} CELL',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  fontSize: 10,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 /// Special bubble for group invitation messages

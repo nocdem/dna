@@ -66,7 +66,7 @@ This repository contains the CPUNK cryptocurrency platform, a "Quantum-Safe MEME
 
 ## Project Structure
 
-### Root Directory: /home/nocdem/projects/
+### Root Directory: /opt/dna/cpunk/
 - **CLAUDE.md**: Project instructions for Claude AI
 - **CPUNK_Project_Teaser.md**: CPUNK cryptocurrency project overview
 - **Shell scripts**: Balance comparison and ledger statistics utilities
@@ -198,9 +198,9 @@ PROTOCOL MODE: ACTIVE                                  NO ASSUMPTIONS
 
 **CRITICAL**: Before editing ANY file, ALWAYS create a backup first using the backup system.
 
-- **Backup Script**: `/home/nocdem/projects/cpunk.club/backup-system.sh`
-- **Documentation**: `/home/nocdem/projects/cpunk.club/doc/backup-system.md`
-- **Backup Directory**: `/home/nocdem/projects/cpunk.club/backup/` (git ignored, not deployed)
+- **Backup Script**: `/opt/dna/cpunk/cpunk.club/backup-system.sh`
+- **Documentation**: `/opt/dna/cpunk/cpunk.club/doc/backup-system.md`
+- **Backup Directory**: `/opt/dna/cpunk/cpunk.club/backup/` (git ignored, not deployed)
 
 ### Required Workflow for File Edits:
 
@@ -216,10 +216,10 @@ PROTOCOL MODE: ACTIVE                                  NO ASSUMPTIONS
 4. **EXAMPLE**:
    ```bash
    # Step 1: Create backup
-   ./backup-system.sh backup /home/nocdem/projects/cpunk.club/js/settings.js
+   ./backup-system.sh backup /opt/dna/cpunk/cpunk.club/js/settings.js
    
    # Step 2: Verify (optional but recommended)
-   ./backup-system.sh list /home/nocdem/projects/cpunk.club/js/settings.js
+   ./backup-system.sh list /opt/dna/cpunk/cpunk.club/js/settings.js
    
    # Step 3: Edit the file
    # Use Edit tool to modify settings.js
@@ -259,7 +259,7 @@ For fast reference during Claude Code sessions:
 
 ## Current Tasks
 
-For active development tasks and priorities, see: **[TODO.md](/home/nocdem/projects/TODO.md)**
+For active development tasks and priorities, see: **[TODO.md](/opt/dna/cpunk/TODO.md)**
 
 ### Recent Additions (as of 2025-05-31):
 - **Multilingual Support**: Full translation system with 8 languages
@@ -291,7 +291,7 @@ For active development tasks and priorities, see: **[TODO.md](/home/nocdem/proje
 ## Memories
 
 - KEEP IT SIMPLE
-- Update CHANGELOG.md at /home/nocdem/projects/cpunk.club/CHANGELOG.md with each bug fix, feature addition, or significant change
+- Update CHANGELOG.md at /opt/dna/cpunk/cpunk.club/CHANGELOG.md with each bug fix, feature addition, or significant change
 - Log all deployments to ~/projects/deployment.log with the date and a brief description of the change
 - ALWAYS use backup system before editing files
 - Project is Claude Code optimized with comprehensive documentation

@@ -199,6 +199,55 @@ class AppLocalizationsTr extends AppLocalizations {
   }
 
   @override
+  String get chatSendTokens => 'Token Gönder';
+
+  @override
+  String chatSendTokensTo(String name) {
+    return '$name kişisine';
+  }
+
+  @override
+  String get chatLookingUpWallets => 'Cüzdan adresleri aranıyor...';
+
+  @override
+  String get chatNoWalletAddresses => 'Kişinin profilinde cüzdan adresi yok';
+
+  @override
+  String get chatTokenLabel => 'Token';
+
+  @override
+  String get chatSendAmount => 'Miktar';
+
+  @override
+  String chatSendAvailable(String balance, String token) {
+    return 'Kullanılabilir: $balance $token';
+  }
+
+  @override
+  String get chatSendMax => 'Maks';
+
+  @override
+  String chatSendButton(String token) {
+    return '$token Gönder';
+  }
+
+  @override
+  String chatSentSuccess(String amount, String token) {
+    return '$amount $token gönderildi';
+  }
+
+  @override
+  String get chatInvalidAmount => 'Lütfen geçerli bir miktar girin';
+
+  @override
+  String chatInsufficientBalance(String token) {
+    return 'Yetersiz $token bakiyesi';
+  }
+
+  @override
+  String get chatNoWalletForNetwork => 'Kişinin bu ağ için cüzdanı yok';
+
+  @override
   String get messageMenuReply => 'Yanıtla';
 
   @override
