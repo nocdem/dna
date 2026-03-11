@@ -1159,4 +1159,111 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsDeleteEverything => 'Delete Everything';
+
+  @override
+  String get txDetailSent => 'Sent';
+
+  @override
+  String get txDetailReceived => 'Received';
+
+  @override
+  String get txDetailDenied => 'Transaction Denied';
+
+  @override
+  String get txDetailFrom => 'From';
+
+  @override
+  String get txDetailTo => 'To';
+
+  @override
+  String get txDetailTransactionHash => 'Transaction Hash';
+
+  @override
+  String get txDetailTime => 'Time';
+
+  @override
+  String get txDetailNetwork => 'Network';
+
+  @override
+  String get txDetailAddressCopied => 'Address copied';
+
+  @override
+  String get txDetailHashCopied => 'Hash copied';
+
+  @override
+  String get txDetailAddToAddressBook => 'Add to Address Book';
+
+  @override
+  String get txDetailClose => 'Close';
+
+  @override
+  String txDetailAddedToAddressBook(String label) {
+    return 'Added \"$label\" to address book';
+  }
+
+  @override
+  String txDetailFailedToAdd(String error) {
+    return 'Failed to add: $error';
+  }
+
+  @override
+  String get swapTitle => 'Swap';
+
+  @override
+  String get swapConfirm => 'Confirm Swap';
+
+  @override
+  String get swapYouPay => 'You pay';
+
+  @override
+  String get swapYouReceive => 'You receive';
+
+  @override
+  String get swapGetQuote => 'Get Quote';
+
+  @override
+  String get swapNoQuotes => 'No quotes available';
+
+  @override
+  String get swapRate => 'Rate';
+
+  @override
+  String get swapSlippage => 'Slippage';
+
+  @override
+  String get swapFee => 'Fee';
+
+  @override
+  String get swapDex => 'DEX';
+
+  @override
+  String swapImpact(String value) {
+    return 'Impact: $value%';
+  }
+
+  @override
+  String swapFeeValue(String value) {
+    return 'Fee: $value';
+  }
+
+  @override
+  String swapBestPrice(int count) {
+    return 'Best price from $count exchanges';
+  }
+
+  @override
+  String swapSuccess(
+    String amountIn,
+    String fromToken,
+    String amountOut,
+    String toToken,
+    String dex,
+  ) {
+    return 'Swapped $amountIn $fromToken → $amountOut $toToken via $dex';
+  }
+
+  @override
+  String swapFailed(String error) {
+    return 'Swap failed: $error';
+  }
 }

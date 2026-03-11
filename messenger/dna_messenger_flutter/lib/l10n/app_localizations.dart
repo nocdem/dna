@@ -2263,6 +2263,186 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Delete Everything'**
   String get settingsDeleteEverything;
+
+  /// No description provided for @txDetailSent.
+  ///
+  /// In en, this message translates to:
+  /// **'Sent'**
+  String get txDetailSent;
+
+  /// No description provided for @txDetailReceived.
+  ///
+  /// In en, this message translates to:
+  /// **'Received'**
+  String get txDetailReceived;
+
+  /// No description provided for @txDetailDenied.
+  ///
+  /// In en, this message translates to:
+  /// **'Transaction Denied'**
+  String get txDetailDenied;
+
+  /// No description provided for @txDetailFrom.
+  ///
+  /// In en, this message translates to:
+  /// **'From'**
+  String get txDetailFrom;
+
+  /// No description provided for @txDetailTo.
+  ///
+  /// In en, this message translates to:
+  /// **'To'**
+  String get txDetailTo;
+
+  /// No description provided for @txDetailTransactionHash.
+  ///
+  /// In en, this message translates to:
+  /// **'Transaction Hash'**
+  String get txDetailTransactionHash;
+
+  /// No description provided for @txDetailTime.
+  ///
+  /// In en, this message translates to:
+  /// **'Time'**
+  String get txDetailTime;
+
+  /// No description provided for @txDetailNetwork.
+  ///
+  /// In en, this message translates to:
+  /// **'Network'**
+  String get txDetailNetwork;
+
+  /// No description provided for @txDetailAddressCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Address copied'**
+  String get txDetailAddressCopied;
+
+  /// No description provided for @txDetailHashCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Hash copied'**
+  String get txDetailHashCopied;
+
+  /// No description provided for @txDetailAddToAddressBook.
+  ///
+  /// In en, this message translates to:
+  /// **'Add to Address Book'**
+  String get txDetailAddToAddressBook;
+
+  /// No description provided for @txDetailClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close'**
+  String get txDetailClose;
+
+  /// No description provided for @txDetailAddedToAddressBook.
+  ///
+  /// In en, this message translates to:
+  /// **'Added \"{label}\" to address book'**
+  String txDetailAddedToAddressBook(String label);
+
+  /// No description provided for @txDetailFailedToAdd.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to add: {error}'**
+  String txDetailFailedToAdd(String error);
+
+  /// No description provided for @swapTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Swap'**
+  String get swapTitle;
+
+  /// No description provided for @swapConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirm Swap'**
+  String get swapConfirm;
+
+  /// No description provided for @swapYouPay.
+  ///
+  /// In en, this message translates to:
+  /// **'You pay'**
+  String get swapYouPay;
+
+  /// No description provided for @swapYouReceive.
+  ///
+  /// In en, this message translates to:
+  /// **'You receive'**
+  String get swapYouReceive;
+
+  /// No description provided for @swapGetQuote.
+  ///
+  /// In en, this message translates to:
+  /// **'Get Quote'**
+  String get swapGetQuote;
+
+  /// No description provided for @swapNoQuotes.
+  ///
+  /// In en, this message translates to:
+  /// **'No quotes available'**
+  String get swapNoQuotes;
+
+  /// No description provided for @swapRate.
+  ///
+  /// In en, this message translates to:
+  /// **'Rate'**
+  String get swapRate;
+
+  /// No description provided for @swapSlippage.
+  ///
+  /// In en, this message translates to:
+  /// **'Slippage'**
+  String get swapSlippage;
+
+  /// No description provided for @swapFee.
+  ///
+  /// In en, this message translates to:
+  /// **'Fee'**
+  String get swapFee;
+
+  /// No description provided for @swapDex.
+  ///
+  /// In en, this message translates to:
+  /// **'DEX'**
+  String get swapDex;
+
+  /// No description provided for @swapImpact.
+  ///
+  /// In en, this message translates to:
+  /// **'Impact: {value}%'**
+  String swapImpact(String value);
+
+  /// No description provided for @swapFeeValue.
+  ///
+  /// In en, this message translates to:
+  /// **'Fee: {value}'**
+  String swapFeeValue(String value);
+
+  /// No description provided for @swapBestPrice.
+  ///
+  /// In en, this message translates to:
+  /// **'Best price from {count} exchanges'**
+  String swapBestPrice(int count);
+
+  /// No description provided for @swapSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Swapped {amountIn} {fromToken} → {amountOut} {toToken} via {dex}'**
+  String swapSuccess(
+    String amountIn,
+    String fromToken,
+    String amountOut,
+    String toToken,
+    String dex,
+  );
+
+  /// No description provided for @swapFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Swap failed: {error}'**
+  String swapFailed(String error);
 }
 
 class _AppLocalizationsDelegate

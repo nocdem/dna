@@ -2273,14 +2273,16 @@ class _TransactionDetailSheet extends ConsumerWidget {
       headerGradient = DnaGradients.primaryVertical;
     }
 
-    // Human-readable description
-    final String headerText;
+    final l10n = AppLocalizations.of(context);
+
+    // Header subtitle
+    final String headerSubtitle;
     if (isDenied) {
-      headerText = 'This transaction has been denied';
+      headerSubtitle = l10n.txDetailDenied;
     } else if (isReceived) {
-      headerText = 'You have received ${transaction.amount} ${transaction.token}';
+      headerSubtitle = l10n.txDetailReceived;
     } else {
-      headerText = 'You have sent ${transaction.amount} ${transaction.token}';
+      headerSubtitle = l10n.txDetailSent;
     }
 
     return Container(
@@ -2306,33 +2308,36 @@ class _TransactionDetailSheet extends ConsumerWidget {
             Container(
               width: double.infinity,
               margin: const EdgeInsets.all(DnaSpacing.lg),
-              padding: const EdgeInsets.all(DnaSpacing.xl),
+              padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.xl, vertical: DnaSpacing.xl + 4),
               decoration: BoxDecoration(
                 gradient: headerGradient,
                 borderRadius: BorderRadius.circular(DnaSpacing.radiusLg),
               ),
               child: Column(
                 children: [
+                  // Big amount
                   Text(
-                    headerText,
+                    '${transaction.amount} ${transaction.token}',
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
+                      fontSize: 32,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.5,
                     ),
                     textAlign: TextAlign.center,
                   ),
-                  if (isDenied) ...[
-                    const SizedBox(height: DnaSpacing.sm),
-                    Text(
-                      '${transaction.amount} ${transaction.token}',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.85),
-                        fontSize: 16,
-                      ),
+                  const SizedBox(height: DnaSpacing.sm),
+                  // Subtitle (Sent / Received / Denied)
+                  Text(
+                    headerSubtitle,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.85),
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
                     ),
-                  ],
-                  const SizedBox(height: DnaSpacing.xs),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: DnaSpacing.sm),
                   _StatusChip(status: transaction.status),
                 ],
               ),
@@ -2345,33 +2350,33 @@ class _TransactionDetailSheet extends ConsumerWidget {
                   _buildDetailRow(
                     context,
                     icon: FontAwesomeIcons.user,
-                    label: isReceived ? 'From' : 'To',
+                    label: isReceived ? l10n.txDetailFrom : l10n.txDetailTo,
                     value: transaction.resolvedName ?? _formatAddress(transaction.otherAddress),
                     subtitle: transaction.resolvedName != null ? transaction.otherAddress : null,
                     monospace: transaction.resolvedName == null,
-                    onTap: () => _copyAndNotify(context, transaction.otherAddress, 'Address copied'),
+                    onTap: () => _copyAndNotify(context, transaction.otherAddress, l10n.txDetailAddressCopied),
                   ),
                   _buildDivider(theme),
                   _buildDetailRow(
                     context,
                     icon: FontAwesomeIcons.hashtag,
-                    label: 'Transaction Hash',
+                    label: l10n.txDetailTransactionHash,
                     value: _formatHash(transaction.txHash),
                     monospace: true,
-                    onTap: () => _copyAndNotify(context, transaction.txHash, 'Hash copied'),
+                    onTap: () => _copyAndNotify(context, transaction.txHash, l10n.txDetailHashCopied),
                   ),
                   _buildDivider(theme),
                   _buildDetailRow(
                     context,
                     icon: FontAwesomeIcons.clock,
-                    label: 'Time',
+                    label: l10n.txDetailTime,
                     value: _formatTimestamp(transaction.timestamp),
                   ),
                   _buildDivider(theme),
                   _buildDetailRow(
                     context,
                     icon: FontAwesomeIcons.networkWired,
-                    label: 'Network',
+                    label: l10n.txDetailNetwork,
                     value: getNetworkDisplayLabel(network),
                   ),
                 ],
@@ -2390,7 +2395,7 @@ class _TransactionDetailSheet extends ConsumerWidget {
                       child: OutlinedButton.icon(
                         onPressed: () => _addToAddressBook(context, ref),
                         icon: const FaIcon(FontAwesomeIcons.addressBook, size: 16),
-                        label: const Text('Add to Address Book'),
+                        label: Text(l10n.txDetailAddToAddressBook),
                         style: OutlinedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: DnaSpacing.md),
                           shape: RoundedRectangleBorder(
@@ -2405,7 +2410,7 @@ class _TransactionDetailSheet extends ConsumerWidget {
                     width: double.infinity,
                     child: TextButton(
                       onPressed: () => Navigator.pop(context),
-                      child: const Text('Close'),
+                      child: Text(l10n.txDetailClose),
                     ),
                   ),
                 ],
@@ -2519,6 +2524,7 @@ class _TransactionDetailSheet extends ConsumerWidget {
     );
 
     if (result != null && context.mounted) {
+      final l10n = AppLocalizations.of(context);
       try {
         await ref.read(addressBookProvider.notifier).addAddress(
               address: result.address,
@@ -2528,13 +2534,13 @@ class _TransactionDetailSheet extends ConsumerWidget {
             );
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Added "${result.label}" to address book')),
+            SnackBar(content: Text(l10n.txDetailAddedToAddressBook(result.label))),
           );
         }
       } catch (e) {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to add: $e'), backgroundColor: Colors.red),
+            SnackBar(content: Text(l10n.txDetailFailedToAdd('$e')), backgroundColor: Colors.red),
           );
         }
       }
@@ -2785,7 +2791,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
       if (mounted) {
         setState(() {
           _isLoadingQuote = false;
-          _quoteError = 'No quotes available';
+          _quoteError = AppLocalizations.of(context).swapNoQuotes;
         });
       }
     }
@@ -2800,6 +2806,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
       context: context,
       builder: (context) {
         final theme = Theme.of(context);
+        final l10n = AppLocalizations.of(context);
         final subtitleColor = theme.colorScheme.onSurface.withAlpha(150);
         return Dialog(
           shape: RoundedRectangleBorder(
@@ -2824,7 +2831,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                   ),
                 ),
                 const SizedBox(height: DnaSpacing.lg),
-                Text('Confirm Swap',
+                Text(l10n.swapConfirm,
                     style: theme.textTheme.titleLarge
                         ?.copyWith(fontWeight: FontWeight.w700)),
                 const SizedBox(height: DnaSpacing.xl),
@@ -2843,7 +2850,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text('You pay', style: TextStyle(
+                          Text(l10n.swapYouPay, style: TextStyle(
                               fontSize: 13, color: subtitleColor)),
                           Text('${quote.amountIn} ${quote.fromToken}',
                               style: const TextStyle(
@@ -2873,7 +2880,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text('You receive', style: TextStyle(
+                          Text(l10n.swapYouReceive, style: TextStyle(
                               fontSize: 13, color: subtitleColor)),
                           Text('~${quote.amountOut} ${quote.toToken}',
                               style: TextStyle(
@@ -2897,9 +2904,9 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                   Text(
                     [
                       if (quote.priceImpact.isNotEmpty)
-                        'Impact: ${quote.priceImpact}%',
+                        l10n.swapImpact(quote.priceImpact),
                       if (quote.fee.isNotEmpty)
-                        'Fee: ${quote.fee}',
+                        l10n.swapFeeValue(quote.fee),
                     ].join('  ·  '),
                     style: TextStyle(fontSize: 11, color: subtitleColor.withAlpha(120)),
                   ),
@@ -2911,7 +2918,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                   children: [
                     Expanded(
                       child: DnaButton(
-                        label: 'Cancel',
+                        label: l10n.cancel,
                         variant: DnaButtonVariant.ghost,
                         expand: true,
                         onPressed: () => Navigator.of(context).pop(false),
@@ -2953,11 +2960,11 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
         // Refresh balances
         ref.read(allBalancesProvider.notifier).refresh();
         Navigator.of(context).pop();
+        final l10n = AppLocalizations.of(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Swapped ${result.amountIn} ${result.fromToken}'
-                         ' → ${result.amountOut} ${result.toToken}'
-                         ' via ${result.dexName}'),
+            content: Text(l10n.swapSuccess(result.amountIn, result.fromToken,
+                         result.amountOut, result.toToken, result.dexName)),
             duration: const Duration(seconds: 4),
           ),
         );
@@ -2965,9 +2972,10 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
     } catch (e) {
       if (mounted) {
         setState(() => _isSwapping = false);
+        final l10n = AppLocalizations.of(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Swap failed: $e'),
+            content: Text(l10n.swapFailed('$e')),
             duration: const Duration(seconds: 4),
           ),
         );
@@ -2984,6 +2992,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
     required ValueChanged<String> onTokenChanged,
     Widget? amountWidget,
     String? balance,
+    bool isFrom = false,
   }) {
     final iconPath = getTokenIconPath(token);
     return Container(
@@ -3010,7 +3019,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
               ),
               if (balance != null)
                 GestureDetector(
-                  onTap: label == 'You pay'
+                  onTap: isFrom
                       ? () {
                           _amountController.text = balance;
                           setState(() {
@@ -3032,7 +3041,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                       Text(
                         balance,
                         style: theme.textTheme.bodySmall?.copyWith(
-                          color: label == 'You pay'
+                          color: isFrom
                               ? theme.colorScheme.primary
                               : theme.colorScheme.onSurface.withAlpha(150),
                           fontWeight: FontWeight.w500,
@@ -3123,6 +3132,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
     final tokens = _tokensForNetwork(_fromNetwork);
     final fromBalance = _getBalance(_fromToken);
 
@@ -3168,7 +3178,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                     ),
                     const SizedBox(width: 12),
                     Text(
-                      'Swap',
+                      l10n.swapTitle,
                       style: theme.textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.w700,
                       ),
@@ -3216,7 +3226,8 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                 // FROM token card
                 _buildTokenCard(
                   theme: theme,
-                  label: 'You pay',
+                  label: l10n.swapYouPay,
+                  isFrom: true,
                   token: _fromToken,
                   tokens: tokens,
                   onTokenChanged: (t) => setState(() {
@@ -3291,7 +3302,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                 // TO token card
                 _buildTokenCard(
                   theme: theme,
-                  label: 'You receive',
+                  label: l10n.swapYouReceive,
                   token: _toToken,
                   tokens: tokens,
                   balance: _getBalance(_toToken),
@@ -3359,13 +3370,13 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                       children: [
                         _QuoteDetailRow(
                           icon: FontAwesomeIcons.chartLine,
-                          label: 'Rate',
+                          label: l10n.swapRate,
                           value:
                               '1 $_fromToken = ${_selectedQuote!.price} $_toToken',
                         ),
                         _QuoteDetailRow(
                           icon: FontAwesomeIcons.gauge,
-                          label: 'Slippage',
+                          label: l10n.swapSlippage,
                           value: '${_selectedQuote!.priceImpact}%',
                           valueColor: _parseImpact(
                                       _selectedQuote!.priceImpact) >
@@ -3375,12 +3386,12 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                         ),
                         _QuoteDetailRow(
                           icon: FontAwesomeIcons.receipt,
-                          label: 'Fee',
+                          label: l10n.swapFee,
                           value: _selectedQuote!.fee,
                         ),
                         _QuoteDetailRow(
                           icon: FontAwesomeIcons.buildingColumns,
-                          label: 'DEX',
+                          label: l10n.swapDex,
                           value: _selectedQuote!.dexName,
                           isLast: true,
                         ),
@@ -3436,7 +3447,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                           size: 10, color: DnaColors.gradientStart),
                       const SizedBox(width: 6),
                       Text(
-                        'Best price from ${_quotes.length} exchanges',
+                        l10n.swapBestPrice(_quotes.length),
                         style: TextStyle(
                           fontSize: 12,
                           color: theme.colorScheme.onSurface.withAlpha(140),
@@ -3466,9 +3477,9 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                                   color: Colors.white,
                                 ),
                               )
-                            : const Text(
-                                'Get Quote',
-                                style: TextStyle(
+                            : Text(
+                                l10n.swapGetQuote,
+                                style: const TextStyle(
                                   color: Colors.white,
                                   fontWeight: FontWeight.w700,
                                   fontSize: 16,
@@ -3490,15 +3501,15 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                                     color: Colors.white,
                                   ),
                                 )
-                              : const Row(
+                              : Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    FaIcon(FontAwesomeIcons.rightLeft,
+                                    const FaIcon(FontAwesomeIcons.rightLeft,
                                         color: Colors.white, size: 14),
-                                    SizedBox(width: 8),
+                                    const SizedBox(width: 8),
                                     Text(
-                                      'Swap',
-                                      style: TextStyle(
+                                      l10n.walletSwap,
+                                      style: const TextStyle(
                                         color: Colors.white,
                                         fontWeight: FontWeight.w700,
                                         fontSize: 16,

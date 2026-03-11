@@ -1171,4 +1171,111 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get settingsDeleteEverything => 'Her Şeyi Sil';
+
+  @override
+  String get txDetailSent => 'Gönderildi';
+
+  @override
+  String get txDetailReceived => 'Alındı';
+
+  @override
+  String get txDetailDenied => 'İşlem Reddedildi';
+
+  @override
+  String get txDetailFrom => 'Kimden';
+
+  @override
+  String get txDetailTo => 'Kime';
+
+  @override
+  String get txDetailTransactionHash => 'İşlem Kodu';
+
+  @override
+  String get txDetailTime => 'Zaman';
+
+  @override
+  String get txDetailNetwork => 'Ağ';
+
+  @override
+  String get txDetailAddressCopied => 'Adres kopyalandı';
+
+  @override
+  String get txDetailHashCopied => 'İşlem kodu kopyalandı';
+
+  @override
+  String get txDetailAddToAddressBook => 'Adres Defterine Ekle';
+
+  @override
+  String get txDetailClose => 'Kapat';
+
+  @override
+  String txDetailAddedToAddressBook(String label) {
+    return '\"$label\" adres defterine eklendi';
+  }
+
+  @override
+  String txDetailFailedToAdd(String error) {
+    return 'Eklenemedi: $error';
+  }
+
+  @override
+  String get swapTitle => 'Takas';
+
+  @override
+  String get swapConfirm => 'Takası Onayla';
+
+  @override
+  String get swapYouPay => 'Ödediğiniz';
+
+  @override
+  String get swapYouReceive => 'Aldığınız';
+
+  @override
+  String get swapGetQuote => 'Fiyat Al';
+
+  @override
+  String get swapNoQuotes => 'Fiyat teklifi bulunamadı';
+
+  @override
+  String get swapRate => 'Kur';
+
+  @override
+  String get swapSlippage => 'Kayma';
+
+  @override
+  String get swapFee => 'Komisyon';
+
+  @override
+  String get swapDex => 'Borsa';
+
+  @override
+  String swapImpact(String value) {
+    return 'Etki: $value%';
+  }
+
+  @override
+  String swapFeeValue(String value) {
+    return 'Komisyon: $value';
+  }
+
+  @override
+  String swapBestPrice(int count) {
+    return '$count borsadan en iyi fiyat';
+  }
+
+  @override
+  String swapSuccess(
+    String amountIn,
+    String fromToken,
+    String amountOut,
+    String toToken,
+    String dex,
+  ) {
+    return '$amountIn $fromToken → $amountOut $toToken takas edildi ($dex)';
+  }
+
+  @override
+  String swapFailed(String error) {
+    return 'Takas başarısız: $error';
+  }
 }

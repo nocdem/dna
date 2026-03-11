@@ -521,5 +521,75 @@
   "settingsDeleteAllMessagesWarning": "This will permanently delete ALL messages from ALL conversations across all your devices. This cannot be undone.",
   "settingsAllMessagesDeleted": "All messages deleted",
   "settingsDeleteAllMessagesFailed": "Failed to delete messages",
-  "settingsDeleteEverything": "Delete Everything"
+  "settingsDeleteEverything": "Delete Everything",
+
+  "txDetailSent": "Sent",
+  "txDetailReceived": "Received",
+  "txDetailDenied": "Transaction Denied",
+  "txDetailFrom": "From",
+  "txDetailTo": "To",
+  "txDetailTransactionHash": "Transaction Hash",
+  "txDetailTime": "Time",
+  "txDetailNetwork": "Network",
+  "txDetailAddressCopied": "Address copied",
+  "txDetailHashCopied": "Hash copied",
+  "txDetailAddToAddressBook": "Add to Address Book",
+  "txDetailClose": "Close",
+  "txDetailAddedToAddressBook": "Added \"{label}\" to address book",
+  "@txDetailAddedToAddressBook": {
+    "placeholders": {
+      "label": { "type": "String" }
+    }
+  },
+  "txDetailFailedToAdd": "Failed to add: {error}",
+  "@txDetailFailedToAdd": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+
+  "swapTitle": "Swap",
+  "swapConfirm": "Confirm Swap",
+  "swapYouPay": "You pay",
+  "swapYouReceive": "You receive",
+  "swapGetQuote": "Get Quote",
+  "swapNoQuotes": "No quotes available",
+  "swapRate": "Rate",
+  "swapSlippage": "Slippage",
+  "swapFee": "Fee",
+  "swapDex": "DEX",
+  "swapImpact": "Impact: {value}%",
+  "@swapImpact": {
+    "placeholders": {
+      "value": { "type": "String" }
+    }
+  },
+  "swapFeeValue": "Fee: {value}",
+  "@swapFeeValue": {
+    "placeholders": {
+      "value": { "type": "String" }
+    }
+  },
+  "swapBestPrice": "Best price from {count} exchanges",
+  "@swapBestPrice": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "swapSuccess": "Swapped {amountIn} {fromToken} → {amountOut} {toToken} via {dex}",
+  "@swapSuccess": {
+    "placeholders": {
+      "amountIn": { "type": "String" },
+      "fromToken": { "type": "String" },
+      "amountOut": { "type": "String" },
+      "toToken": { "type": "String" },
+      "dex": { "type": "String" }
+    }
+  },
+  "swapFailed": "Swap failed: {error}",
+  "@swapFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  }
 }
