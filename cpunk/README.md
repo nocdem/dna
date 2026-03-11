@@ -102,8 +102,8 @@ This project uses Protocol Mode for Claude Code sessions:
 
 ## 📊 Current Status
 
-**Version**: 0.1.14  
-**Last Updated**: 2025-05-31
+**Version**: 0.1.14
+**Last Updated**: 2026-03-11
 
 ### Recent Improvements:
 - ✅ Full multilingual support (8 languages)
@@ -122,7 +122,7 @@ This project uses Protocol Mode for Claude Code sessions:
 - **Community-Driven**: Governance through CIP proposals
 - **Global Reach**: 8 language support
 - **Developer-Friendly**: Comprehensive documentation and APIs
-- **Production-Ready**: Live at https://cpunk.club
+- **Production-Ready**: Live at https://cpunk.io
 
 ### Technical Stack:
 - **Frontend**: HTML5, CSS3, JavaScript (ES6+)
@@ -134,7 +134,7 @@ This project uses Protocol Mode for Claude Code sessions:
 ## 🚀 Getting Started
 
 ### For Users:
-1. Visit https://cpunk.club
+1. Visit https://cpunk.io
 2. Click "Login" to authenticate with your Cellframe wallet
 3. Register your DNA (Distributed Name Address)
 4. Explore features: delegation, voting, messaging, etc.
@@ -147,9 +147,15 @@ This project uses Protocol Mode for Claude Code sessions:
 
 ### For Node Operators:
 1. Install Cellframe node: [Installation Guide](cpunk.club/doc/cellframe-node-setup-guide.md)
-2. Download CPUNK network configs from https://cpunk.club/network.html
+2. Download CPUNK network configs from https://cpunk.io/network.html
 3. Join the network and start earning rewards
 
 ---
 
 **Need Help?** Start with [CLAUDE.md](CLAUDE.md) for complete instructions and project context.
+
+---
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

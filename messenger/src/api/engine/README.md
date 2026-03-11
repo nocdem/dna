@@ -186,7 +186,7 @@ Provides common includes and cross-platform utilities:
 
 ```bash
 # Build
-cd /opt/dna-messenger/build
+cd /opt/dna/messenger/build
 cmake .. && make -j$(nproc)
 
 # Verify CLI functions
