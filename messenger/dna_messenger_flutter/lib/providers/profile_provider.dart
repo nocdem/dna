@@ -6,7 +6,7 @@ import 'engine_provider.dart' show engineProvider, currentFingerprintProvider;
 import 'identity_provider.dart' show identityAvatarCacheProvider;
 import 'identity_profile_cache_provider.dart';
 
-/// Full user profile data from DHT (wallets, socials, bio, avatar)
+/// Full user profile data from DHT (wallets, bio, avatar)
 final fullProfileProvider = AsyncNotifierProvider<ProfileNotifier, UserProfile?>(
   ProfileNotifier.new,
 );
@@ -140,28 +140,6 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
       case 'trx':
         newProfile = p.copyWith(trx: value);
         break;
-      // Socials
-      case 'telegram':
-        newProfile = p.copyWith(telegram: value);
-        break;
-      case 'twitter':
-        newProfile = p.copyWith(twitter: value);
-        break;
-      case 'github':
-        newProfile = p.copyWith(github: value);
-        break;
-      case 'facebook':
-        newProfile = p.copyWith(facebook: value);
-        break;
-      case 'instagram':
-        newProfile = p.copyWith(instagram: value);
-        break;
-      case 'linkedin':
-        newProfile = p.copyWith(linkedin: value);
-        break;
-      case 'google':
-        newProfile = p.copyWith(google: value);
-        break;
       // Profile info (NOTE: displayName removed in v0.6.24 - use registered name only)
       case 'bio':
         newProfile = p.copyWith(bio: value);
@@ -203,7 +181,17 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
     state = state.copyWith(isSaving: true, error: null, successMessage: null);
     try {
       final engine = await _ref.read(engineProvider.future);
-      await engine.updateProfile(state.profile);
+      // Clear social fields — feature removed, wipe any legacy data
+      final profileToSave = state.profile.copyWith(
+        telegram: '',
+        twitter: '',
+        github: '',
+        facebook: '',
+        instagram: '',
+        linkedin: '',
+        google: '',
+      );
+      await engine.updateProfile(profileToSave);
 
       // Optimistic update: use local data instead of re-fetching from DHT
       // This avoids race condition where GET happens before PUT propagates

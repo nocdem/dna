@@ -1,4 +1,4 @@
-// Profile Editor Screen - Edit user profile (wallets, socials, bio, avatar)
+// Profile Editor Screen - Edit user profile (wallets, bio, avatar)
 import 'dart:convert';
 import 'dart:io';
 
@@ -38,19 +38,9 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
   late TextEditingController _solController;
   late TextEditingController _trxController;
 
-  // Socials
-  late TextEditingController _telegramController;
-  late TextEditingController _twitterController;
-  late TextEditingController _githubController;
-  late TextEditingController _facebookController;
-  late TextEditingController _instagramController;
-  late TextEditingController _linkedinController;
-  late TextEditingController _googleController;
-
   // Expansion state
   bool _profileExpanded = true;
   bool _walletsExpanded = false;
-  bool _socialsExpanded = false;
 
   @override
   void initState() {
@@ -64,14 +54,6 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     _ethController = TextEditingController();
     _solController = TextEditingController();
     _trxController = TextEditingController();
-    // Socials
-    _telegramController = TextEditingController();
-    _twitterController = TextEditingController();
-    _githubController = TextEditingController();
-    _facebookController = TextEditingController();
-    _instagramController = TextEditingController();
-    _linkedinController = TextEditingController();
-    _googleController = TextEditingController();
   }
 
   @override
@@ -85,14 +67,6 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     _ethController.dispose();
     _solController.dispose();
     _trxController.dispose();
-    // Socials
-    _telegramController.dispose();
-    _twitterController.dispose();
-    _githubController.dispose();
-    _facebookController.dispose();
-    _instagramController.dispose();
-    _linkedinController.dispose();
-    _googleController.dispose();
     super.dispose();
   }
 
@@ -120,28 +94,6 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     }
     if (_trxController.text != profile.trx) {
       _trxController.text = profile.trx;
-    }
-    // Socials
-    if (_telegramController.text != profile.telegram) {
-      _telegramController.text = profile.telegram;
-    }
-    if (_twitterController.text != profile.twitter) {
-      _twitterController.text = profile.twitter;
-    }
-    if (_githubController.text != profile.github) {
-      _githubController.text = profile.github;
-    }
-    if (_facebookController.text != profile.facebook) {
-      _facebookController.text = profile.facebook;
-    }
-    if (_instagramController.text != profile.instagram) {
-      _instagramController.text = profile.instagram;
-    }
-    if (_linkedinController.text != profile.linkedin) {
-      _linkedinController.text = profile.linkedin;
-    }
-    if (_googleController.text != profile.google) {
-      _googleController.text = profile.google;
     }
   }
 
@@ -276,68 +228,6 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                         label: 'TRON (TRX)',
                         controller: _trxController,
                         icon: FontAwesomeIcons.bolt,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-
-                  // Social Media Links
-                  _buildExpansionSection(
-                    title: 'Social Media Links',
-                    icon: FontAwesomeIcons.shareNodes,
-                    isExpanded: _socialsExpanded,
-                    onExpansionChanged: (expanded) {
-                      setState(() => _socialsExpanded = expanded);
-                    },
-                    children: [
-                      _buildTextField(
-                        label: 'Telegram',
-                        controller: _telegramController,
-                        hint: '@username',
-                        prefixIcon: FontAwesomeIcons.telegram,
-                        onChanged: (v) => notifier.updateField('telegram', v),
-                      ),
-                      _buildTextField(
-                        label: 'X (Twitter)',
-                        controller: _twitterController,
-                        hint: '@username',
-                        prefixIcon: FontAwesomeIcons.xTwitter,
-                        onChanged: (v) => notifier.updateField('twitter', v),
-                      ),
-                      _buildTextField(
-                        label: 'GitHub',
-                        controller: _githubController,
-                        hint: 'username',
-                        prefixIcon: FontAwesomeIcons.github,
-                        onChanged: (v) => notifier.updateField('github', v),
-                      ),
-                      _buildTextField(
-                        label: 'Facebook',
-                        controller: _facebookController,
-                        hint: 'username',
-                        prefixIcon: FontAwesomeIcons.facebook,
-                        onChanged: (v) => notifier.updateField('facebook', v),
-                      ),
-                      _buildTextField(
-                        label: 'Instagram',
-                        controller: _instagramController,
-                        hint: '@username',
-                        prefixIcon: FontAwesomeIcons.instagram,
-                        onChanged: (v) => notifier.updateField('instagram', v),
-                      ),
-                      _buildTextField(
-                        label: 'LinkedIn',
-                        controller: _linkedinController,
-                        hint: 'profile URL or username',
-                        prefixIcon: FontAwesomeIcons.linkedin,
-                        onChanged: (v) => notifier.updateField('linkedin', v),
-                      ),
-                      _buildTextField(
-                        label: 'Google',
-                        controller: _googleController,
-                        hint: 'email@gmail.com',
-                        prefixIcon: FontAwesomeIcons.google,
-                        onChanged: (v) => notifier.updateField('google', v),
                       ),
                     ],
                   ),

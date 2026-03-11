@@ -203,17 +203,6 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
           const SizedBox(height: 16),
         ],
 
-        // Socials
-        if (profile != null && _hasSocials(profile)) ...[
-          _buildSection(
-            theme,
-            'Social',
-            FontAwesomeIcons.shareNodes,
-            _buildSocialItems(profile),
-          ),
-          const SizedBox(height: 16),
-        ],
-
         // No profile message
         if (profile == null) ...[
           Center(
@@ -529,72 +518,6 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
               ),
             ),
             FaIcon(FontAwesomeIcons.copy, size: 16, color: theme.textTheme.bodySmall?.color),
-          ],
-        ),
-      ),
-    );
-  }
-
-  bool _hasSocials(UserProfile profile) {
-    return profile.telegram.isNotEmpty ||
-        profile.twitter.isNotEmpty ||
-        profile.github.isNotEmpty ||
-        profile.facebook.isNotEmpty ||
-        profile.instagram.isNotEmpty ||
-        profile.linkedin.isNotEmpty;
-  }
-
-  List<Widget> _buildSocialItems(UserProfile profile) {
-    final items = <Widget>[];
-    if (profile.telegram.isNotEmpty) {
-      items.add(_buildSocialRow('Telegram', profile.telegram, 'https://t.me/${profile.telegram.replaceFirst('@', '')}'));
-    }
-    if (profile.twitter.isNotEmpty) {
-      items.add(_buildSocialRow('X (Twitter)', profile.twitter, 'https://x.com/${profile.twitter.replaceFirst('@', '')}'));
-    }
-    if (profile.github.isNotEmpty) {
-      items.add(_buildSocialRow('GitHub', profile.github, 'https://github.com/${profile.github}'));
-    }
-    if (profile.facebook.isNotEmpty) {
-      items.add(_buildSocialRow('Facebook', profile.facebook, 'https://facebook.com/${profile.facebook}'));
-    }
-    if (profile.instagram.isNotEmpty) {
-      items.add(_buildSocialRow('Instagram', profile.instagram, 'https://instagram.com/${profile.instagram.replaceFirst('@', '')}'));
-    }
-    if (profile.linkedin.isNotEmpty) {
-      items.add(_buildSocialRow('LinkedIn', profile.linkedin, 'https://linkedin.com/in/${profile.linkedin}'));
-    }
-    return items;
-  }
-
-  Widget _buildSocialRow(String label, String handle, String url) {
-    final theme = Theme.of(context);
-    final mutedColor = theme.textTheme.bodySmall?.color;
-    return InkWell(
-      onTap: () => _copyToClipboard(url, label),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: mutedColor,
-                    ),
-                  ),
-                  Text(
-                    handle,
-                    style: TextStyle(color: theme.colorScheme.primary),
-                  ),
-                ],
-              ),
-            ),
-            FaIcon(FontAwesomeIcons.copy, size: 16, color: mutedColor),
           ],
         ),
       ),
