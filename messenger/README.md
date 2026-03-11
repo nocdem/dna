@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20v0.101.50-blue" alt="Beta"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc1-blue" alt="RC"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-green" alt="Apache 2.0"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-orange" alt="Platforms"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Security-NIST%20Category%205-red" alt="NIST Cat 5"></a>
@@ -54,7 +54,7 @@ DNA Messenger is a **fully decentralized** messenger and **multi-chain crypto wa
 
 ### Privacy-First Architecture
 - **DHT-only transport** — No relay servers that can log traffic
-- **Nodus DHT network** — Post-quantum Kademlia with PBFT consensus
+- **Nodus DHT network** — Post-quantum Kademlia with cluster replication
 - **Dilithium5 signatures** — All DHT data cryptographically signed
 - **BIP39 recovery** — 24-word seed phrase backup
 - **Native presence** — Server-side presence tracking
@@ -143,7 +143,7 @@ cd messenger
 **Components:**
 - **Flutter App** — Cross-platform UI (Android, Linux, Windows)
 - **C Library** — Core engine with 17 modular handlers (`libdna_lib.so`)
-- **Nodus** — Pure C Kademlia DHT with PBFT consensus ([details](../nodus/README.md))
+- **Nodus** — Pure C Kademlia DHT with cluster replication ([details](../nodus/README.md))
 
 **Engine Modules** (`src/api/engine/`):
 
@@ -171,7 +171,7 @@ cd messenger
 | Component | Version |
 |-----------|---------|
 | C Library | v0.9.44 |
-| Flutter App | v0.101.50 |
+| Flutter App | v1.0.0-rc1 |
 | Nodus DHT | v0.6.3 |
 
 ---
@@ -209,5 +209,5 @@ The Flutter application is [source-available (proprietary)](dna_messenger_flutte
 ---
 
 <p align="center">
-  <strong>Beta software.</strong> Use with appropriate caution for sensitive communications.
+  <strong>Release Candidate.</strong> Use with appropriate caution for sensitive communications.
 </p>

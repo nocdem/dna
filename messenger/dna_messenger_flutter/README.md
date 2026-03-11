@@ -2,7 +2,7 @@
 
 Cross-platform UI for DNA Messenger built with Flutter and Dart.
 
-**Current Version:** v0.101.50
+**Current Version:** v1.0.0-rc1
 
 ## Platforms
 

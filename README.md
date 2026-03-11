@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="Apache 2.0"></a>
-  <a href="#status"><img src="https://img.shields.io/badge/Status-Beta-orange" alt="Beta"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-RC-orange" alt="RC"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Security-NIST%20Category%205-red" alt="NIST Cat 5"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-green" alt="Platforms"></a>
 </p>
@@ -19,39 +19,56 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 
 | Project | Description | Status |
 |---------|-------------|--------|
-| [**DNA Messenger**](messenger/) | End-to-end encrypted messenger with multi-chain crypto wallet | Beta |
-| [**Nodus**](nodus/) | Post-quantum Kademlia DHT server with PBFT consensus | Beta |
-| [**CPUNK Platform**](cpunk/) | Quantum-safe community platform on Cellframe blockchain | Live |
-| **shared/crypto/** | Post-quantum cryptographic primitives | Stable |
+| [**DNA Messenger**](messenger/) | End-to-end encrypted messenger with multi-chain crypto wallet | RC |
+| [**Nodus**](nodus/) | Post-quantum Kademlia DHT server with cluster management | RC |
+| [**CPUNK Platform**](cpunk/) | Quantum-safe community platform | Live |
 
 ---
 
 ## Architecture
 
+### DNA Messenger
+
 ```
 ┌──────────────────────────────────────────────────────┐
 │  Flutter App (Android, Linux, Windows)               │
-│  messenger/dna_messenger_flutter/                    │
 └──────────┬───────────────────────────────────────────┘
-           │ FFI (dart:ffi)
+           │ dart:ffi
 ┌──────────▼───────────────────────────────────────────┐
-│  DNA Messenger C Library                             │
-│  messenger/src/api/ — 17 modular engine handlers     │
+│  DNA Engine (C) — 17 modular handlers                │
+│  messaging · contacts · groups · wallet · presence   │
+│  identity · backup · lifecycle · version · signing   │
 ├──────────────────────────────────────────────────────┤
-│  messenger/  dht/  transport/  database/  blockchain/│
-└──────┬───────┬───────────────────────────────────────┘
-       │       │
-       │  ┌────▼──────────────────────────────────┐
-       │  │  Nodus — DHT Infrastructure            │
-       │  │  Kademlia routing + PBFT consensus     │
-       │  │  TCP client SDK ←→ Nodus server nodes  │
-       │  └───────────────────────────────────────┘
-       │
-  ┌────▼──────────────────────┐
-  │  shared/crypto/           │
-  │  sign/ enc/ hash/ key/    │
-  │  utils/                   │
-  └───────────────────────────┘
+│  Post-Quantum Crypto    │  Multi-Chain Wallet        │
+│  Kyber1024 · Dilithium5 │  ETH · SOL · TRON · Cell   │
+│  AES-256 · SHA3-512     │  ERC20 · SPL · TRC20       │
+└──────────┬───────────────────────────────────────────┘
+           │ Nodus Client SDK
+┌──────────▼───────────────────────────────────────────┐
+│  Nodus DHT Network                                   │
+│  Distributed storage · Real-time subscriptions       │
+└──────────────────────────────────────────────────────┘
+```
+
+### Nodus DHT Network
+
+```
+    Client A          Client B          Client C
+       │                 │                 │
+       ▼                 ▼                 ▼
+┌──────────┐  UDP  ┌──────────┐  UDP  ┌──────────┐
+│  US-1    │◄─────►│  EU-1    │◄─────►│  EU-2    │
+└────┬─────┘       └────┬─────┘       └────┬─────┘
+     │    Kademlia      │                  │
+     │    Replication   │                  │
+┌────▼─────┐       ┌────▼─────┐       ┌────▼─────┐
+│  EU-3    │◄─────►│  EU-4    │◄─────►│  EU-5    │
+└──────────┘       └──────────┘       └──────────┘
+
+    All values signed with Dilithium5 · 7-day TTL
+    Tier 1 (UDP 4000): Kademlia — ping, find_node, store, find_value
+    Tier 2 (TCP 4001): Client — auth, put, get, listen, presence
+```
 ```
 
 ---
@@ -136,7 +153,7 @@ dna/
 | Component | Version |
 |-----------|---------|
 | Messenger C Library | v0.9.44 |
-| Flutter App | v0.101.50 |
+| Flutter App | v1.0.0-rc1 |
 | Nodus DHT | v0.6.3 |
 
 ---
@@ -157,13 +174,18 @@ dna/
 
 ## Network
 
-DNA uses the Nodus DHT network — no central servers:
+DNA uses the Nodus DHT network. Anyone can run a Nodus node — the network is open and community-managed. Nodes store and replicate data but never see message content or metadata.
 
-| Node | Location | UDP | TCP |
-|------|----------|-----|-----|
-| US-1 | 154.38.182.161 | 4000 | 4001 |
-| EU-1 | 164.68.105.227 | 4000 | 4001 |
-| EU-2 | 164.68.116.180 | 4000 | 4001 |
+### Current Nodes
+
+| Node | Location | IP | UDP | TCP |
+|------|----------|----|-----|-----|
+| US-1 | USA | 154.38.182.161 | 4000 | 4001 |
+| EU-1 | Europe | 164.68.105.227 | 4000 | 4001 |
+| EU-2 | Europe | 164.68.116.180 | 4000 | 4001 |
+| EU-3 | Europe | 161.97.85.25 | 4000 | 4001 |
+| EU-4 | Europe | 156.67.24.125 | 4000 | 4001 |
+| EU-5 | Europe | 156.67.25.251 | 4000 | 4001 |
 
 ---
 
@@ -189,5 +211,5 @@ DNA uses the Nodus DHT network — no central servers:
 ---
 
 <p align="center">
-  <strong>Beta software.</strong> Use with appropriate caution for sensitive communications.
+  <strong>Release Candidate.</strong> Use with appropriate caution for sensitive communications.
 </p>

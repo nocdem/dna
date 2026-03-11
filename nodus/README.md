@@ -1,12 +1,12 @@
 # Nodus — Post-Quantum DHT Server
 
 <p align="center">
-  <strong>Pure C Kademlia DHT with PBFT consensus and Dilithium5 signatures</strong>
+  <strong>Pure C Kademlia DHT with Dilithium5 signatures</strong>
 </p>
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="Apache 2.0"></a>
-  <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20v0.6.3-orange" alt="Beta"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v0.6.3-orange" alt="RC"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Crypto-Dilithium5%20(FIPS%20204)-red" alt="Dilithium5"></a>
 </p>
 
@@ -14,14 +14,15 @@
 
 ## What is Nodus?
 
-Nodus is the distributed hash table (DHT) infrastructure for the DNA ecosystem. It provides decentralized storage, replication, and real-time subscriptions — all signed with post-quantum cryptography.
+Nodus is the distributed hash table (DHT) infrastructure for the DNA ecosystem. It provides decentralized storage, replication, and real-time subscriptions — all signed with post-quantum cryptography. The network is open — anyone can run a Nodus node and join.
 
 - **Pure C** — No C++ dependencies, minimal footprint
 - **Dilithium5 signatures** — All stored values cryptographically signed (FIPS 204)
-- **PBFT consensus** — Byzantine fault-tolerant replication across nodes
+- **Cluster management** — Heartbeat-based health monitoring with Kademlia replication
 - **512-bit keyspace** — Kademlia routing with k=8 buckets
 - **7-day TTL** — Values persist across restarts with SQLite storage
 - **CBOR wire format** — Efficient binary serialization
+- **Open network** — Community-managed, anyone can run a node
 
 ---
 
@@ -41,9 +42,9 @@ Nodus is the distributed hash table (DHT) infrastructure for the DNA ecosystem. 
 │                    │  presence              │
 │                    │  replication           │
 ├─────────────────────────────────────────────┤
-│  Kademlia Routing  │  PBFT Consensus        │
-│  512-bit keyspace  │  Hashring replication  │
-│  k=8 buckets       │  3-node quorum         │
+│  Kademlia Routing  │  Cluster Management    │
+│  512-bit keyspace  │  Heartbeat health      │
+│  k=8 buckets       │  K-closest replication │
 ├─────────────────────────────────────────────┤
 │  SQLite Storage    │  Presence Table        │
 │  7-day TTL         │  45s TTL, p_sync 30s   │
@@ -69,7 +70,7 @@ nodus/
 │   ├── core/        # Kademlia routing, storage
 │   ├── transport/   # UDP/TCP transport
 │   ├── channel/     # Channel/subscription system
-│   ├── consensus/   # PBFT consensus
+│   ├── consensus/   # Cluster health + leader election
 │   └── crypto/      # Nodus-specific crypto helpers
 ├── include/
 │   └── nodus/
@@ -138,13 +139,16 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-### Production Nodes
+### Current Nodes (community-managed)
 
 | Node | IP | UDP | TCP |
 |------|-----|-----|-----|
 | US-1 | 154.38.182.161 | 4000 | 4001 |
 | EU-1 | 164.68.105.227 | 4000 | 4001 |
 | EU-2 | 164.68.116.180 | 4000 | 4001 |
+| EU-3 | 161.97.85.25 | 4000 | 4001 |
+| EU-4 | 156.67.24.125 | 4000 | 4001 |
+| EU-5 | 156.67.25.251 | 4000 | 4001 |
 
 ---
 
