@@ -88,6 +88,50 @@
       "time": { "type": "String" }
     }
   },
+  "chatSendTokens": "Send Tokens",
+  "chatSendTokensTo": "to {name}",
+  "@chatSendTokensTo": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "chatLookingUpWallets": "Looking up wallet addresses...",
+  "chatNoWalletAddresses": "Contact has no wallet addresses in their profile",
+  "chatTokenLabel": "Token",
+  "chatSendAmount": "Amount",
+  "chatSendAvailable": "Available: {balance} {token}",
+  "@chatSendAvailable": {
+    "placeholders": {
+      "balance": { "type": "String" },
+      "token": { "type": "String" }
+    }
+  },
+  "chatSendMax": "Max",
+  "chatTransactionSpeed": "Transaction Speed",
+  "chatSpeedSlow": "Slow",
+  "chatSpeedNormal": "Normal",
+  "chatSpeedFast": "Fast",
+  "chatSendButton": "Send {token}",
+  "@chatSendButton": {
+    "placeholders": {
+      "token": { "type": "String" }
+    }
+  },
+  "chatSentSuccess": "Sent {amount} {token}",
+  "@chatSentSuccess": {
+    "placeholders": {
+      "amount": { "type": "String" },
+      "token": { "type": "String" }
+    }
+  },
+  "chatInvalidAmount": "Please enter a valid amount",
+  "chatInsufficientBalance": "Insufficient {token} balance",
+  "@chatInsufficientBalance": {
+    "placeholders": {
+      "token": { "type": "String" }
+    }
+  },
+  "chatNoWalletForNetwork": "Contact has no wallet for this network",
 
   "messageMenuReply": "Reply",
   "messageMenuCopy": "Copy",

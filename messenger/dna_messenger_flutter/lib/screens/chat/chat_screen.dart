@@ -11,7 +11,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../ffi/dna_engine.dart';
 import '../../l10n/app_localizations.dart';
-import '../../providers/providers.dart';
+import '../../providers/providers.dart' hide UserProfile;
 import '../../utils/logger.dart';
 import '../../design_system/design_system.dart';
 import '../../widgets/emoji_shortcode_field.dart';
@@ -2477,7 +2477,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
     if (amount == null || amount <= 0) {
       setState(() {
         _isSending = false;
-        _sendError = 'Please enter a valid amount';
+        _sendError = AppLocalizations.of(context).chatInvalidAmount;
       });
       return;
     }
@@ -2485,7 +2485,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
     if (maxAmount != null && amount > maxAmount) {
       setState(() {
         _isSending = false;
-        _sendError = 'Insufficient ${_selectedToken!.token} balance';
+        _sendError = AppLocalizations.of(context).chatInsufficientBalance(_selectedToken!.token);
       });
       return;
     }
@@ -2522,7 +2522,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Sent $amountStr ${_selectedToken!.token}'),
+            content: Text(AppLocalizations.of(context).chatSentSuccess(amountStr, _selectedToken!.token)),
             backgroundColor: DnaColors.snackbarSuccess,
           ),
         );
@@ -2542,6 +2542,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
     final balance = _getSelectedBalance();
     final maxAmount = _calculateMaxAmount();
 
@@ -2571,11 +2572,11 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Send Tokens',
+                        l10n.chatSendTokens,
                         style: theme.textTheme.titleLarge,
                       ),
                       Text(
-                        'to ${widget.contact.displayName.isNotEmpty ? widget.contact.displayName : "contact"}',
+                        l10n.chatSendTokensTo(widget.contact.displayName.isNotEmpty ? widget.contact.displayName : 'contact'),
                         style: theme.textTheme.bodySmall,
                       ),
                     ],
@@ -2591,14 +2592,14 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
 
             // Wallet resolution status
             if (_isResolving)
-              const Center(
+              Center(
                 child: Padding(
-                  padding: EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(16),
                   child: Column(
                     children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 12),
-                      Text('Looking up wallet addresses...'),
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 12),
+                      Text(l10n.chatLookingUpWallets),
                     ],
                   ),
                 ),
@@ -2616,7 +2617,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        'Contact has no wallet addresses in their profile',
+                        l10n.chatNoWalletAddresses,
                         style: TextStyle(color: DnaColors.warning),
                       ),
                     ),
@@ -2627,8 +2628,8 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
               // Token selector
               DropdownButtonFormField<_TokenOption>(
                 value: _selectedToken,
-                decoration: const InputDecoration(
-                  labelText: 'Token',
+                decoration: InputDecoration(
+                  labelText: l10n.chatTokenLabel,
                 ),
                 items: _availableTokens.map((opt) {
                   return DropdownMenuItem<_TokenOption>(
@@ -2681,10 +2682,10 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                 controller: _amountController,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 decoration: InputDecoration(
-                  labelText: 'Amount',
+                  labelText: l10n.chatSendAmount,
                   hintText: '0.00',
                   suffixText: _selectedToken?.token ?? '',
-                  helperText: balance != null ? 'Available: $balance ${_selectedToken?.token ?? ''}' : null,
+                  helperText: balance != null ? l10n.chatSendAvailable(balance, _selectedToken?.token ?? '') : null,
                 ),
                 onChanged: (_) => setState(() {}),
               ),
@@ -2701,7 +2702,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                       );
                       setState(() {});
                     },
-                    child: const Text('Max'),
+                    child: Text(l10n.chatSendMax),
                   ),
                 ),
               const SizedBox(height: 16),
@@ -2709,17 +2710,17 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
               // Transaction speed selector (Cellframe only)
               if (_showSpeedSelector) ...[
                 Text(
-                  'Transaction Speed',
+                  l10n.chatTransactionSpeed,
                   style: theme.textTheme.bodySmall,
                 ),
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    _buildSpeedChip('Slow', _cellframeValidatorSlow + _cellframeNetworkFee, 0),
+                    _buildSpeedChip(l10n.chatSpeedSlow, _cellframeValidatorSlow + _cellframeNetworkFee, 0),
                     const SizedBox(width: 8),
-                    _buildSpeedChip('Normal', _cellframeValidatorNormal + _cellframeNetworkFee, 1),
+                    _buildSpeedChip(l10n.chatSpeedNormal, _cellframeValidatorNormal + _cellframeNetworkFee, 1),
                     const SizedBox(width: 8),
-                    _buildSpeedChip('Fast', _cellframeValidatorFast + _cellframeNetworkFee, 2),
+                    _buildSpeedChip(l10n.chatSpeedFast, _cellframeValidatorFast + _cellframeNetworkFee, 2),
                   ],
                 ),
                 const SizedBox(height: 16),
@@ -2759,7 +2760,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
                         height: 20,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : Text('Send ${_selectedToken?.token ?? ''}'),
+                    : Text(l10n.chatSendButton(_selectedToken?.token ?? 'Tokens')),
               ),
             ],
           ],
