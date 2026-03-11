@@ -238,7 +238,10 @@ Release v<LIB_VERSION> / v<APP_VERSION> [BUILD] [RELEASE]
 ```
 
 **RELEASE PROCEDURE:**
-1. **UPDATE README.md** - Update version badge
+1. **UPDATE READMEs and CLAUDE.md** - Update all version references:
+   - `messenger/README.md` — version badge
+   - `README.md` (root) — version table (Messenger C Library, Flutter App, Nodus DHT)
+   - `messenger/CLAUDE.md` — header line versions + Checkpoint 8 "Current" column
 2. **COMMIT** with BOTH `[BUILD]` AND `[RELEASE]` tags (both required for CI)
 3. **PUSH** to both repos: `git push gitlab main && git push origin main`
 4. **PUBLISH** version to DHT using release identity (`-d /home/nocdem/.dna-release-identity`)

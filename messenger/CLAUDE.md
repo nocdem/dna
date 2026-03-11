@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-03-09 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.9.24 | Flutter v0.101.24 | Nodus v0.6.3
+**Versions:** Library v0.9.47 | Flutter v1.0.0-rc9 | Nodus v0.6.3
 
 ---
 
@@ -197,8 +197,8 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.7.10 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.101.24+10324 | Flutter/Dart code changes (lib/, assets/) |
+| C Library | `include/dna/version.h` | v0.9.47 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc9+10359 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus | `../nodus/include/nodus/nodus_types.h` | v0.6.3 | Nodus code changes (../nodus/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
@@ -245,7 +245,10 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
 
 **RELEASE PROCEDURE:**
 
-1. **UPDATE README.md** - Update version badge:
+1. **UPDATE READMEs and CLAUDE.md** - Update all version references:
+   - `README.md` (messenger) — version badge
+   - `../README.md` (root) — version table (Messenger C Library, Flutter App, Nodus DHT)
+   - `CLAUDE.md` (messenger) — header line versions + Checkpoint 8 "Current" column
    ```markdown
    <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20vX.Y.Z-blue" alt="Beta"></a>
    ```
