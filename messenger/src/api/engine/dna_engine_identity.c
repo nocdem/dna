@@ -853,8 +853,65 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Pass profile directly to DHT update (no more dna_profile_data_t conversion) */
-    const dna_profile_t *p = &task->params.update_profile.profile;
+    /* Copy profile from Flutter — we'll overwrite wallet fields with seed-derived addresses.
+     * Flutter only controls: bio, avatar, location, website, socials.
+     * Wallet addresses are ALWAYS derived from seed to prevent accidental overwrites. */
+    dna_profile_t profile_copy = task->params.update_profile.profile;
+    dna_profile_t *p = &profile_copy;
+
+    /* Derive wallet addresses from seed (ignore Flutter-provided wallet fields) */
+    {
+        blockchain_wallet_list_t *bc_wallets = NULL;
+        char mnemonic[512] = {0};
+        if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) == DNA_OK) {
+            uint8_t master_seed[64];
+            if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
+                blockchain_derive_wallets_from_seed(master_seed, mnemonic,
+                    engine->fingerprint, &bc_wallets);
+                qgp_secure_memzero(master_seed, sizeof(master_seed));
+            }
+            qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+        }
+
+        /* Clear Flutter-provided wallet fields and fill from seed */
+        memset(p->backbone, 0, sizeof(p->backbone));
+        memset(p->alvin, 0, sizeof(p->alvin));
+        memset(p->eth, 0, sizeof(p->eth));
+        memset(p->sol, 0, sizeof(p->sol));
+        memset(p->trx, 0, sizeof(p->trx));
+
+        if (bc_wallets) {
+            for (size_t i = 0; i < bc_wallets->count; i++) {
+                blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
+                switch (w->type) {
+                    case BLOCKCHAIN_CELLFRAME:
+                        if (w->address[0])
+                            strncpy(p->backbone, w->address, sizeof(p->backbone) - 1);
+                        break;
+                    case BLOCKCHAIN_ETHEREUM:
+                        if (w->address[0])
+                            strncpy(p->eth, w->address, sizeof(p->eth) - 1);
+                        break;
+                    case BLOCKCHAIN_SOLANA:
+                        if (w->address[0])
+                            strncpy(p->sol, w->address, sizeof(p->sol) - 1);
+                        break;
+                    case BLOCKCHAIN_TRON:
+                        if (w->address[0])
+                            strncpy(p->trx, w->address, sizeof(p->trx) - 1);
+                        break;
+                    default:
+                        break;
+                }
+            }
+            blockchain_wallet_list_free(bc_wallets);
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "update_profile: wallets derived from seed (eth=%.10s... sol=%.10s... trx=%.10s...)",
+                     p->eth[0] ? p->eth : "(none)",
+                     p->sol[0] ? p->sol : "(none)",
+                     p->trx[0] ? p->trx : "(none)");
+    }
 
     size_t avatar_len = p->avatar_base64[0] ? strlen(p->avatar_base64) : 0;
     QGP_LOG_INFO(LOG_TAG, "update_profile: avatar=%zu bytes, location='%s', website='%s'\n",

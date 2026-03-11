@@ -854,6 +854,10 @@ int cmd_profile(dna_engine_t *engine, const char *field, const char *value) {
             printf("  Backbone: %s\n", wait.profile->backbone);
         if (strlen(wait.profile->eth) > 0)
             printf("  ETH:      %s\n", wait.profile->eth);
+        if (strlen(wait.profile->sol) > 0)
+            printf("  SOL:      %s\n", wait.profile->sol);
+        if (strlen(wait.profile->trx) > 0)
+            printf("  TRX:      %s\n", wait.profile->trx);
         printf("\n");
         free(wait.profile);
     } else {
@@ -914,6 +918,8 @@ int cmd_lookup_profile(dna_engine_t *engine, const char *identifier) {
         printf("Ethereum: %s\n", identity->wallets.eth);
     if (identity->wallets.sol[0])
         printf("Solana: %s\n", identity->wallets.sol);
+    if (identity->wallets.trx[0])
+        printf("TRON: %s\n", identity->wallets.trx);
 
     printf("\n--- Social Links ---\n");
     if (identity->socials.x[0])
