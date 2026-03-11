@@ -50,7 +50,7 @@ class _AddressDialogState extends State<AddressDialog> {
   bool get _isEditing => widget.entry != null;
 
   static const _networks = [
-    ('backbone', 'Cellframe (CF20)'),
+    ('cellframe', 'Cellframe (CF20)'),
     ('ethereum', 'Ethereum (ERC20)'),
     ('solana', 'Solana (SPL)'),
     ('tron', 'TRON (TRC20)'),
@@ -64,7 +64,7 @@ class _AddressDialogState extends State<AddressDialog> {
     );
     _labelController = TextEditingController(text: widget.entry?.label ?? '');
     _notesController = TextEditingController(text: widget.entry?.notes ?? '');
-    _selectedNetwork = widget.entry?.network ?? widget.prefilledNetwork ?? 'backbone';
+    _selectedNetwork = widget.entry?.network ?? widget.prefilledNetwork ?? 'cellframe';
   }
 
   bool get _isPrefilled => widget.prefilledAddress != null;
@@ -193,7 +193,7 @@ class _AddressDialogState extends State<AddressDialog> {
 
   String _getAddressHint(String network) {
     switch (network) {
-      case 'backbone':
+      case 'cellframe':
         return 'Cellframe address...';
       case 'ethereum':
         return '0x...';
@@ -208,7 +208,7 @@ class _AddressDialogState extends State<AddressDialog> {
 
   bool _validateAddress(String address, String network) {
     switch (network) {
-      case 'backbone':
+      case 'cellframe':
         // Cellframe: Base58, 30-60 chars
         return RegExp(r'^[1-9A-HJ-NP-Za-km-z]{30,60}$').hasMatch(address);
       case 'ethereum':

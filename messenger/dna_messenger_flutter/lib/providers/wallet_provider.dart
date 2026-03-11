@@ -358,7 +358,6 @@ class TransactionsNotifier
   /// Get the wallet address from a profile for a given network
   String _getProfileAddress(UserProfile profile, String network) {
     switch (network.toLowerCase()) {
-      case 'backbone':
       case 'cellframe':
         return profile.backbone;
       case 'ethereum':

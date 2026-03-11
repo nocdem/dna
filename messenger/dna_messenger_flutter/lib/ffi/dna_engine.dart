@@ -138,7 +138,7 @@ class AddressBookEntry {
   /// Get network display name
   String get networkDisplayName {
     switch (network.toLowerCase()) {
-      case 'backbone':
+      case 'cellframe':
         return 'Cellframe';
       case 'ethereum':
         return 'Ethereum';

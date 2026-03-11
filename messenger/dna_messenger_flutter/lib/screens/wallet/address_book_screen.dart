@@ -235,7 +235,7 @@ class AddressBookScreen extends ConsumerWidget {
 
   Color _getNetworkColor(String network) {
     switch (network.toLowerCase()) {
-      case 'backbone':
+      case 'cellframe':
         return const Color(0xFF6366F1); // Purple for Cellframe
       case 'ethereum':
         return const Color(0xFF627EEA); // Ethereum blue

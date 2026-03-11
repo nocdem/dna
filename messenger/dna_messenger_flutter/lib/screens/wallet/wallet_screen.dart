@@ -64,7 +64,7 @@ String? getWalletAddressByNetwork(List<Wallet> wallets, String network) {
     case 'tron':
       targetSigType = 102;
       break;
-    default: // backbone / cellframe
+    default: // cellframe
       targetSigType = 4;
       break;
   }
@@ -78,7 +78,6 @@ String? getWalletAddressByNetwork(List<Wallet> wallets, String network) {
 /// Convert internal network name to display label
 String getNetworkDisplayLabel(String network) {
   switch (network.toLowerCase()) {
-    case 'backbone':
     case 'cellframe':
       return 'CF20';
     case 'ethereum':
@@ -381,10 +380,10 @@ class _ReceiveSheet extends StatefulWidget {
 }
 
 class _ReceiveSheetState extends State<_ReceiveSheet> {
-  String _selectedNetwork = 'backbone'; // Default to CF20
+  String _selectedNetwork = 'cellframe'; // Default to CF20
 
   static const _networks = [
-    ('backbone', 'CF20', 'assets/icons/crypto/cell.svg'),
+    ('cellframe', 'CF20', 'assets/icons/crypto/cell.svg'),
     ('ethereum', 'ERC20', 'assets/icons/crypto/eth.svg'),
     ('solana', 'SPL', 'assets/icons/crypto/sol.svg'),
     ('tron', 'TRC20', 'assets/icons/crypto/trx.svg'),
@@ -626,10 +625,10 @@ class _WalletHeroCard extends ConsumerWidget {
                 _ChainIcon(
                   asset: 'assets/icons/crypto/cell.svg',
                   label: 'CELL',
-                  isSelected: activeFilter == 'backbone',
+                  isSelected: activeFilter == 'cellframe',
                   onTap: () {
                     final notifier = ref.read(walletNetworkFilterProvider.notifier);
-                    notifier.state = activeFilter == 'backbone' ? null : 'backbone';
+                    notifier.state = activeFilter == 'cellframe' ? null : 'cellframe';
                   },
                 ),
                 const SizedBox(width: 12),
@@ -768,7 +767,7 @@ class _AllBalancesSection extends ConsumerWidget {
     var filteredList = networkFilter != null
         ? list.where((wb) =>
             wb.balance.network.toLowerCase() == networkFilter ||
-            (networkFilter == 'backbone' && wb.balance.network.toLowerCase() == 'cellframe')).toList()
+            (networkFilter == 'cellframe' && wb.balance.network.toLowerCase() == 'cellframe')).toList()
         : list.toList();
 
     // Filter zero balances if setting enabled
@@ -1044,11 +1043,11 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   String? _gasFee2; // fast
   bool _isLoadingGas = false;
 
-  // Backbone network fees (validator fee varies by speed, network fee is fixed)
-  static const double _backboneNetworkFee = 0.002;
-  static const double _backboneValidatorSlow = 0.0001;   // slow
-  static const double _backboneValidatorNormal = 0.01;   // normal
-  static const double _backboneValidatorFast = 0.05;     // fast
+  // Cellframe network fees (validator fee varies by speed, network fee is fixed)
+  static const double _cellframeNetworkFee = 0.002;
+  static const double _cellframeValidatorSlow = 0.0001;   // slow
+  static const double _cellframeValidatorNormal = 0.01;   // normal
+  static const double _cellframeValidatorFast = 0.05;     // fast
 
   // ETH default gas fees (31500 gas * typical gwei prices)
   static const double _ethDefaultGasSlow = 0.0012;   // ~20 gwei
@@ -1109,24 +1108,24 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       // For ERC-20 tokens, no fee subtraction (gas paid in ETH)
       return balance;
     } else {
-      // Backbone (Cellframe): only subtract fee when sending CELL (native token)
+      // Cellframe: only subtract fee when sending CELL (native token)
       // CPUNK and other tokens: fees are paid in CELL, not the token itself
       if (_selectedToken == 'CELL') {
         double validatorFee;
         switch (_selectedGasSpeed) {
           case 0:
-            validatorFee = _backboneValidatorSlow;
+            validatorFee = _cellframeValidatorSlow;
             break;
           case 1:
-            validatorFee = _backboneValidatorNormal;
+            validatorFee = _cellframeValidatorNormal;
             break;
           case 2:
-            validatorFee = _backboneValidatorFast;
+            validatorFee = _cellframeValidatorFast;
             break;
           default:
-            validatorFee = _backboneValidatorNormal;
+            validatorFee = _cellframeValidatorNormal;
         }
-        final totalFee = validatorFee + _backboneNetworkFee;
+        final totalFee = validatorFee + _cellframeNetworkFee;
         final max = balance - totalFee;
         return max > 0 ? max : 0;
       }
@@ -1153,7 +1152,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   void initState() {
     super.initState();
     _selectedToken = widget.preselectedToken ?? 'CPUNK';
-    _selectedNetwork = widget.preselectedNetwork ?? 'Backbone';
+    _selectedNetwork = widget.preselectedNetwork ?? 'Cellframe';
     if (_selectedNetwork == 'Ethereum') {
       _fetchGasEstimates();
     }
@@ -1209,7 +1208,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     } else if (network == 'tron') {
       return profile.trx.isNotEmpty ? profile.trx : null;
     } else {
-      // Backbone (default)
+      // Cellframe (default)
       return profile.backbone.isNotEmpty ? profile.backbone : null;
     }
   }
@@ -1224,7 +1223,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     } else if (network == 'tron') {
       return 'TRX';
     } else {
-      return 'Backbone';
+      return 'Cellframe';
     }
   }
 
@@ -1566,7 +1565,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                       decoration: const InputDecoration(labelText: 'Network'),
                       items: _getNetworkItems(),
                       onChanged: (v) {
-                        final newNetwork = v ?? 'Backbone';
+                        final newNetwork = v ?? 'Cellframe';
                         setState(() {
                           _selectedNetwork = newNetwork;
                           // Reset token to default for the new network
@@ -1624,8 +1623,8 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   ],
                 ),
               ],
-              // Transaction speed selector for Backbone (Cellframe)
-              if (_selectedNetwork == 'Backbone') ...[
+              // Transaction speed selector for Cellframe
+              if (_selectedNetwork == 'Cellframe') ...[
                 const SizedBox(height: 16),
                 Text(
                   'Transaction Speed (Validator Fee)',
@@ -1636,21 +1635,21 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   children: [
                     _GasSpeedChip(
                       label: 'Slow',
-                      sublabel: '${(_backboneValidatorSlow + _backboneNetworkFee).toStringAsFixed(4)} CELL',
+                      sublabel: '${(_cellframeValidatorSlow + _cellframeNetworkFee).toStringAsFixed(4)} CELL',
                       selected: _selectedGasSpeed == 0,
                       onSelected: () => setState(() => _selectedGasSpeed = 0),
                     ),
                     const SizedBox(width: 8),
                     _GasSpeedChip(
                       label: 'Normal',
-                      sublabel: '${(_backboneValidatorNormal + _backboneNetworkFee).toStringAsFixed(3)} CELL',
+                      sublabel: '${(_cellframeValidatorNormal + _cellframeNetworkFee).toStringAsFixed(3)} CELL',
                       selected: _selectedGasSpeed == 1,
                       onSelected: () => setState(() => _selectedGasSpeed = 1),
                     ),
                     const SizedBox(width: 8),
                     _GasSpeedChip(
                       label: 'Fast',
-                      sublabel: '${(_backboneValidatorFast + _backboneNetworkFee).toStringAsFixed(3)} CELL',
+                      sublabel: '${(_cellframeValidatorFast + _cellframeNetworkFee).toStringAsFixed(3)} CELL',
                       selected: _selectedGasSpeed == 2,
                       onSelected: () => setState(() => _selectedGasSpeed = 2),
                     ),
@@ -1705,7 +1704,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         DropdownMenuItem(value: 'USDC', child: Text('USDC')),
       ];
     }
-    // Backbone (Cellframe)
+    // Cellframe
     return const [
       DropdownMenuItem(value: 'CPUNK', child: Text('CPUNK')),
       DropdownMenuItem(value: 'CELL', child: Text('CELL')),
@@ -1725,7 +1724,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     }
     // Main Send button: show all networks
     return const [
-      DropdownMenuItem(value: 'Backbone', child: Text('CF20')),
+      DropdownMenuItem(value: 'Cellframe', child: Text('CF20')),
       DropdownMenuItem(value: 'Ethereum', child: Text('ERC20')),
       DropdownMenuItem(value: 'Solana', child: Text('SPL')),
       DropdownMenuItem(value: 'Tron', child: Text('TRC20')),
@@ -1774,7 +1773,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     final recipientAddress = _effectiveRecipient;
     final network = _selectedNetwork.toLowerCase() == 'ethereum' ? 'ethereum' :
                     _selectedNetwork.toLowerCase() == 'solana' ? 'solana' :
-                    _selectedNetwork.toLowerCase() == 'tron' ? 'tron' : 'backbone';
+                    _selectedNetwork.toLowerCase() == 'tron' ? 'tron' : 'cellframe';
 
     try {
       await ref.read(walletsProvider.notifier).sendTokens(

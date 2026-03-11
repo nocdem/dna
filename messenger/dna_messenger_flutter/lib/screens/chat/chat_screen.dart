@@ -2317,11 +2317,11 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
   bool _isResolving = true;
   int _selectedGasSpeed = 1; // 0=slow, 1=normal, 2=fast
 
-  // Backbone network fees (validator fee varies by speed, network fee is fixed)
-  static const double _backboneNetworkFee = 0.002;
-  static const double _backboneValidatorSlow = 0.0001;
-  static const double _backboneValidatorNormal = 0.01;
-  static const double _backboneValidatorFast = 0.05;
+  // Cellframe network fees (validator fee varies by speed, network fee is fixed)
+  static const double _cellframeNetworkFee = 0.002;
+  static const double _cellframeValidatorSlow = 0.0001;
+  static const double _cellframeValidatorNormal = 0.01;
+  static const double _cellframeValidatorFast = 0.05;
 
   @override
   void initState() {
@@ -2345,7 +2345,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
       if (profile == null || profile.backbone.isEmpty) {
         setState(() {
           _isResolving = false;
-          _resolveError = 'Contact has no Backbone wallet';
+          _resolveError = 'Contact has no Cellframe wallet';
         });
         return;
       }
@@ -2374,7 +2374,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
         return balancesAsync.whenOrNull(
           data: (balances) {
             for (final b in balances) {
-              if (b.token == 'CPUNK' && b.network == 'Backbone') {
+              if (b.token == 'CPUNK' && b.network == 'Cellframe') {
                 return b.balance;
               }
             }
@@ -2437,7 +2437,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
         recipientAddress: _resolvedAddress!,
         amount: amountStr,
         token: 'CPUNK',
-        network: 'Backbone',
+        network: 'Cellframe',
         gasSpeed: _selectedGasSpeed,
       );
 
@@ -2447,7 +2447,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
           'type': 'token_transfer',
           'amount': amountStr,
           'token': 'CPUNK',
-          'network': 'Backbone',
+          'network': 'Cellframe',
           'chain': 'cellframe',
           'txHash': txHash,
           'recipientAddress': _resolvedAddress,
@@ -2627,11 +2627,11 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  _buildSpeedChip('Slow', _backboneValidatorSlow + _backboneNetworkFee, 0),
+                  _buildSpeedChip('Slow', _cellframeValidatorSlow + _cellframeNetworkFee, 0),
                   const SizedBox(width: 8),
-                  _buildSpeedChip('Normal', _backboneValidatorNormal + _backboneNetworkFee, 1),
+                  _buildSpeedChip('Normal', _cellframeValidatorNormal + _cellframeNetworkFee, 1),
                   const SizedBox(width: 8),
-                  _buildSpeedChip('Fast', _backboneValidatorFast + _backboneNetworkFee, 2),
+                  _buildSpeedChip('Fast', _cellframeValidatorFast + _cellframeNetworkFee, 2),
                 ],
               ),
               const SizedBox(height: 16),
@@ -3027,7 +3027,7 @@ class _TransferBubbleState extends State<_TransferBubble> {
     final theme = Theme.of(context);
     final amount = widget.transferData['amount'] ?? '?';
     final token = widget.transferData['token'] ?? 'CPUNK';
-    final network = widget.transferData['network'] ?? 'Backbone';
+    final network = widget.transferData['network'] ?? 'Cellframe';
     final txHash = widget.transferData['txHash'] as String?;
     final recipientName = widget.transferData['recipientName'] as String?;
     final isOutgoing = widget.message.isOutgoing;
