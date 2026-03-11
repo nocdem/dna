@@ -1,5 +1,4 @@
 // Update Required Screen - blocks app when version is below DHT minimum
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -86,28 +85,16 @@ class _UpdateRequiredScreenState extends State<UpdateRequiredScreen> {
                 ),
               ),
               const SizedBox(height: 32),
-              if (Platform.isAndroid)
-                FilledButton.icon(
-                  onPressed: () {
-                    launchUrl(
-                      Uri.parse('https://play.google.com/store/apps/details?id=io.cpunk.messenger'),
-                      mode: LaunchMode.externalApplication,
-                    );
-                  },
-                  icon: const FaIcon(FontAwesomeIcons.googlePlay, size: 18),
-                  label: const Text('Update on Play Store'),
-                )
-              else
-                FilledButton.icon(
-                  onPressed: () {
-                    launchUrl(
-                      Uri.parse('https://cpunk.io'),
-                      mode: LaunchMode.externalApplication,
-                    );
-                  },
-                  icon: const FaIcon(FontAwesomeIcons.download, size: 18),
-                  label: const Text('Download Update'),
-                ),
+              FilledButton.icon(
+                onPressed: () {
+                  launchUrl(
+                    Uri.parse('https://cpunk.io/products/dna-messenger.html'),
+                    mode: LaunchMode.externalApplication,
+                  );
+                },
+                icon: const FaIcon(FontAwesomeIcons.download, size: 18),
+                label: const Text('Download Update'),
+              ),
             ],
           ),
         ),
