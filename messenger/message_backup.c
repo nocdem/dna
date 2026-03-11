@@ -1087,7 +1087,7 @@ int message_backup_get_pending_for_recipient(message_backup_context_t *ctx,
         "SELECT id, sender, recipient, plaintext, sender_fingerprint, "
         "       timestamp, delivered, read, status, group_id, message_type, retry_count "
         "FROM messages "
-        "WHERE is_outgoing = 1 AND status != 2 AND recipient = ? "
+        "WHERE is_outgoing = 1 AND status IN (0, 3) AND recipient = ? "
         "ORDER BY timestamp ASC";
 
     sqlite3_stmt *stmt;
