@@ -113,6 +113,7 @@ typedef enum {
     TASK_SEND_TOKENS,
     TASK_GET_TRANSACTIONS,
     TASK_GET_CACHED_TRANSACTIONS,
+    TASK_GET_TX_STATUS,
     TASK_ESTIMATE_GAS,
     TASK_DEX_QUOTE,
     TASK_DEX_LIST_PAIRS,
@@ -322,6 +323,12 @@ typedef union {
         char network[64];
     } get_transactions;
 
+    /* Get TX status */
+    struct {
+        char tx_hash[256];
+        char chain[32];
+    } get_tx_status;
+
     /* Update profile */
     struct {
         dna_profile_t profile;
@@ -450,6 +457,7 @@ typedef union {
     dna_dex_quote_cb dex_quote;
     dna_dex_pairs_cb dex_pairs;
     dna_dex_swap_cb dex_swap;
+    dna_tx_status_cb tx_status;
 } dna_task_callback_t;
 
 /**
@@ -819,6 +827,7 @@ void dna_handle_estimate_gas(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dex_quote(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dex_list_pairs(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dex_swap(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_tx_status(dna_engine_t *engine, dna_task_t *task);
 
 /* P2P & Presence */
 void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task);

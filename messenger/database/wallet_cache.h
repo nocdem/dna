@@ -103,8 +103,34 @@ int wallet_cache_save_transactions(int wallet_index, const char *network,
 int wallet_cache_get_transactions(int wallet_index, const char *network,
                                    dna_transaction_t **txs_out, int *count_out);
 
+/* ── Transfer verification operations ─────────────────────────────── */
+
+/* Transfer verification status */
+#define TX_STATUS_PENDING   0
+#define TX_STATUS_VERIFIED  1
+#define TX_STATUS_DENIED    2
+
 /**
- * Clear all cached data (balances + transactions)
+ * Get cached transfer verification status
+ *
+ * @param tx_hash    Transaction hash
+ * @param status_out Output: status value (TX_STATUS_*)
+ * @return 0 on success (found), -1 on error or not found
+ */
+int wallet_cache_get_tx_status(const char *tx_hash, int *status_out);
+
+/**
+ * Save transfer verification status to cache
+ *
+ * @param tx_hash Transaction hash
+ * @param chain   Chain name (e.g., "ethereum", "solana")
+ * @param status  Status value (TX_STATUS_*)
+ * @return 0 on success, -1 on error
+ */
+int wallet_cache_save_tx_status(const char *tx_hash, const char *chain, int status);
+
+/**
+ * Clear all cached data (balances + transactions + verifications)
  * Used on logout or identity switch
  *
  * @return 0 on success, -1 on error

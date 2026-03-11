@@ -270,7 +270,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
    - **Send CPUNK via chat:** Transfer CPUNK directly from chat conversation
      - App bar button in chat header
      - Auto-resolve contact fingerprint → backbone wallet address
-     - Special transfer bubble with gradient styling
+     - Transfer bubble with gradient styling and blockchain verification (orange/green/red border)
      - Transaction speed selector (slow/normal/fast)
 
 4. **Profile/Identity:**
@@ -487,7 +487,7 @@ UI in `ChannelDetailScreen`:
 - Message status indicators: pending (spinner), sent (checkmark), failed (red X)
 - Enter sends message, Shift+Enter adds newline
 - Emoji picker with shortcode support (:smile: etc.)
-- **CPUNK transfer via chat:** Send CPUNK directly from conversation with special transfer bubble
+- **Token transfer via chat:** Send tokens (CPUNK) directly from conversation with verified transfer bubble (orange=pending, green=verified, red=failed). Message type: `token_transfer`. Both sides verify independently via blockchain RPC.
 
 **Background Tasks:**
 - Initial DHT offline message poll on login (15 second delay)

@@ -77,6 +77,21 @@ static int create_schema(void) {
         return -1;
     }
 
+    const char *verifications_sql =
+        "CREATE TABLE IF NOT EXISTS transfer_verifications ("
+        "    tx_hash      TEXT PRIMARY KEY,"
+        "    chain        TEXT NOT NULL,"
+        "    status       INTEGER NOT NULL DEFAULT 0,"
+        "    last_checked INTEGER NOT NULL"
+        ");";
+
+    rc = sqlite3_exec(g_db, verifications_sql, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create verifications schema: %s", err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+
     return 0;
 }
 
@@ -371,6 +386,50 @@ int wallet_cache_get_transactions(int wallet_index, const char *network,
     return 0;
 }
 
+/* ── Transfer verification operations ──────────────────────────────── */
+
+int wallet_cache_get_tx_status(const char *tx_hash, int *status_out) {
+    if (!g_db || !tx_hash || !status_out) return -1;
+
+    const char *sql = "SELECT status FROM transfer_verifications WHERE tx_hash = ?";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_text(stmt, 1, tx_hash, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        *status_out = sqlite3_column_int(stmt, 0);
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+
+    sqlite3_finalize(stmt);
+    return -1;
+}
+
+int wallet_cache_save_tx_status(const char *tx_hash, const char *chain, int status) {
+    if (!g_db || !tx_hash || !chain) return -1;
+
+    const char *sql =
+        "INSERT OR REPLACE INTO transfer_verifications "
+        "(tx_hash, chain, status, last_checked) VALUES (?, ?, ?, ?)";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_text(stmt, 1, tx_hash, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, chain, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 3, status);
+    sqlite3_bind_int64(stmt, 4, (int64_t)time(NULL));
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
 int wallet_cache_clear(void) {
     if (!g_db) {
         return -1;
@@ -378,7 +437,8 @@ int wallet_cache_clear(void) {
 
     char *err_msg = NULL;
     int rc = sqlite3_exec(g_db,
-        "DELETE FROM wallet_balances; DELETE FROM wallet_transactions;",
+        "DELETE FROM wallet_balances; DELETE FROM wallet_transactions; "
+        "DELETE FROM transfer_verifications;",
         NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to clear cache: %s", err_msg);

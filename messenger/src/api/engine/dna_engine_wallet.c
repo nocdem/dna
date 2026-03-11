@@ -10,6 +10,7 @@
  *   - dna_handle_get_balances()
  *   - dna_handle_send_tokens()
  *   - dna_handle_get_transactions()
+ *   - dna_handle_get_tx_status()
  *   - dna_handle_dex_quote()
  *   - dna_handle_dex_list_pairs()
  *   - dna_handle_dex_swap()
@@ -22,6 +23,11 @@
 #include "blockchain/ethereum/eth_dex.h"
 #include "blockchain/cellframe/cellframe_dex.h"
 #include "database/wallet_cache.h"
+
+/* Forward declaration — defined in blockchain/blockchain_registry.c.
+   Avoids including blockchain.h which conflicts with blockchain_wallet.h
+   (both define blockchain_type_t with different enum values). */
+int blockchain_query_tx_status(const char *chain, const char *txhash, int *status_out);
 
 /* ============================================================================
  * WALLET TASK HANDLERS
@@ -1096,6 +1102,67 @@ void dna_handle_get_cached_transactions(dna_engine_t *engine, dna_task_t *task) 
     }
 }
 
+/* ── TX Status ─────────────────────────────────────────────────────── */
+
+void dna_handle_get_tx_status(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+    const char *tx_hash = task->params.get_tx_status.tx_hash;
+    const char *chain = task->params.get_tx_status.chain;
+
+    /* Check cache first */
+    int cached_status = -1;
+    if (wallet_cache_get_tx_status(tx_hash, &cached_status) == 0) {
+        /* Final states return immediately */
+        if (cached_status == TX_STATUS_VERIFIED || cached_status == TX_STATUS_DENIED) {
+            if (task->callback.tx_status) {
+                task->callback.tx_status(task->request_id, NULL, tx_hash,
+                                         cached_status, task->user_data);
+            }
+            return;
+        }
+    }
+
+    /* Query blockchain via registry convenience wrapper.
+     * bc_status: 0=PENDING, 1=SUCCESS, 2=FAILED, 3=NOT_FOUND */
+    int bc_status = 0;
+    int ret = blockchain_query_tx_status(chain, tx_hash, &bc_status);
+
+    int status;
+    if (ret != 0) {
+        /* Chain not found or query failed */
+        QGP_LOG_ERROR(LOG_TAG, "get_tx_status failed for chain=%s tx=%s", chain, tx_hash);
+        wallet_cache_save_tx_status(tx_hash, chain, TX_STATUS_DENIED);
+        if (task->callback.tx_status) {
+            task->callback.tx_status(task->request_id, "unsupported chain",
+                                     tx_hash, TX_STATUS_DENIED, task->user_data);
+        }
+        return;
+    }
+
+    /* Map blockchain_tx_status_t (int) to TX_STATUS_* */
+    switch (bc_status) {
+        case 1: /* BLOCKCHAIN_TX_SUCCESS */
+            status = TX_STATUS_VERIFIED;
+            break;
+        case 2: /* BLOCKCHAIN_TX_FAILED */
+        case 3: /* BLOCKCHAIN_TX_NOT_FOUND */
+            status = TX_STATUS_DENIED;
+            break;
+        case 0: /* BLOCKCHAIN_TX_PENDING */
+        default:
+            status = TX_STATUS_PENDING;
+            break;
+    }
+
+    /* Cache result */
+    wallet_cache_save_tx_status(tx_hash, chain, status);
+
+    if (task->callback.tx_status) {
+        task->callback.tx_status(task->request_id, NULL, tx_hash,
+                                 status, task->user_data);
+    }
+}
+
 /* ============================================================================
  * WALLET PUBLIC API WRAPPERS
  * ============================================================================ */
@@ -1246,6 +1313,23 @@ dna_request_id_t dna_engine_send_tokens(
 
     dna_task_callback_t cb = { .send_tokens = callback };
     return dna_submit_task(engine, TASK_SEND_TOKENS, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_tx_status(
+    dna_engine_t *engine,
+    const char *tx_hash,
+    const char *chain,
+    dna_tx_status_cb callback,
+    void *user_data
+) {
+    if (!engine || !tx_hash || !chain || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_tx_status.tx_hash, tx_hash, sizeof(params.get_tx_status.tx_hash) - 1);
+    strncpy(params.get_tx_status.chain, chain, sizeof(params.get_tx_status.chain) - 1);
+
+    dna_task_callback_t cb = { .tx_status = callback };
+    return dna_submit_task(engine, TASK_GET_TX_STATUS, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_get_transactions(

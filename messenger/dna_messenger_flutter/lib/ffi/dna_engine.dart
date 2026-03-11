@@ -2973,6 +2973,52 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Get transaction verification status from blockchain
+  /// Returns status: 0=pending, 1=verified, 2=denied
+  Future<int> getTxStatus({
+    required String txHash,
+    required String chain,
+  }) async {
+    final completer = Completer<int>();
+    final localId = _nextLocalId++;
+
+    final txHashPtr = txHash.toNativeUtf8();
+    final chainPtr = chain.toNativeUtf8();
+
+    void onComplete(int requestId, Pointer<Utf8> error, Pointer<Utf8> txHashResult, int status, Pointer<Void> userData) {
+      calloc.free(txHashPtr);
+      calloc.free(chainPtr);
+
+      if (error != nullptr) {
+        final errorStr = error.toDartString();
+        completer.completeError(DnaEngineException(-1, errorStr));
+      } else {
+        completer.complete(status);
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaTxStatusCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_tx_status(
+      _engine,
+      txHashPtr.cast(),
+      chainPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(txHashPtr);
+      calloc.free(chainPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit tx status request');
+    }
+
+    return completer.future;
+  }
+
   /// Get transaction history
   Future<List<Transaction>> getTransactions(int walletIndex, String network) async {
     final completer = Completer<List<Transaction>>();

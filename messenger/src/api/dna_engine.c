@@ -999,6 +999,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_SEND_TOKENS:
             dna_handle_send_tokens(engine, task);
             break;
+        case TASK_GET_TX_STATUS:
+            dna_handle_get_tx_status(engine, task);
+            break;
         case TASK_GET_TRANSACTIONS:
             dna_handle_get_transactions(engine, task);
             break;

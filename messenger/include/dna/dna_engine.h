@@ -358,6 +358,19 @@ typedef void (*dna_send_tokens_cb)(
 );
 
 /**
+ * Transaction status callback
+ * status: 0=pending, 1=verified, 2=denied
+ * tx_hash echoed back for matching
+ */
+typedef void (*dna_tx_status_cb)(
+    dna_request_id_t request_id,
+    const char *error,
+    const char *tx_hash,
+    int status,
+    void *user_data
+);
+
+/**
  * Identity created callback
  */
 typedef void (*dna_identity_created_cb)(
@@ -2118,6 +2131,27 @@ DNA_API dna_request_id_t dna_engine_send_tokens(
     const char *network,
     int gas_speed,
     dna_send_tokens_cb callback,
+    void *user_data
+);
+
+/**
+ * Get transaction verification status from blockchain
+ *
+ * Checks cache first. If cached as final (verified/denied), returns immediately.
+ * If pending or uncached, queries blockchain via the chain's get_tx_status op.
+ *
+ * @param engine    Engine instance
+ * @param tx_hash   Transaction hash to verify
+ * @param chain     Blockchain name ("cellframe", "ethereum", "solana", "tron")
+ * @param callback  Called with status result
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_get_tx_status(
+    dna_engine_t *engine,
+    const char *tx_hash,
+    const char *chain,
+    dna_tx_status_cb callback,
     void *user_data
 );
 

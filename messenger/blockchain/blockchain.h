@@ -169,6 +169,20 @@ int blockchain_init_all(void);
  */
 void blockchain_cleanup_all(void);
 
+/**
+ * Query transaction status by chain name and tx hash
+ *
+ * Convenience wrapper that looks up the chain and calls get_tx_status.
+ * status_out receives blockchain_tx_status_t cast to int:
+ *   0 = PENDING, 1 = SUCCESS, 2 = FAILED, 3 = NOT_FOUND
+ *
+ * @param chain      Chain name (e.g. "ethereum", "solana")
+ * @param txhash     Transaction hash string
+ * @param status_out Output status (int representation of blockchain_tx_status_t)
+ * @return           0 on success, -1 on error
+ */
+int blockchain_query_tx_status(const char *chain, const char *txhash, int *status_out);
+
 #ifdef __cplusplus
 }
 #endif

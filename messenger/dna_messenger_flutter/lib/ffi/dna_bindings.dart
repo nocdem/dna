@@ -819,6 +819,16 @@ typedef DnaSendTokensCbNative = Void Function(
 );
 typedef DnaSendTokensCb = NativeFunction<DnaSendTokensCbNative>;
 
+/// TX status callback - Native (error is string on failure, NULL on success)
+typedef DnaTxStatusCbNative = Void Function(
+  Uint64 request_id,
+  Pointer<Utf8> error,
+  Pointer<Utf8> tx_hash,
+  Int32 status,
+  Pointer<Void> user_data,
+);
+typedef DnaTxStatusCb = NativeFunction<DnaTxStatusCbNative>;
+
 /// Gas estimates callback - Native (all 3 speeds)
 typedef DnaGasEstimatesCbNative = Void Function(
   Uint64 request_id,
@@ -2417,6 +2427,30 @@ class DnaBindings {
   ) {
     return _dna_engine_send_tokens(engine, wallet_index, recipient_address,
         amount, token, network, gas_speed, callback, user_data);
+  }
+
+  late final _dna_engine_get_tx_status = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>,
+          Pointer<Utf8>,
+          Pointer<Utf8>,
+          Pointer<DnaTxStatusCb>,
+          Pointer<Void>),
+      int Function(
+          Pointer<dna_engine_t>,
+          Pointer<Utf8>,
+          Pointer<Utf8>,
+          Pointer<DnaTxStatusCb>,
+          Pointer<Void>)>('dna_engine_get_tx_status');
+
+  int dna_engine_get_tx_status(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> tx_hash,
+    Pointer<Utf8> chain,
+    Pointer<DnaTxStatusCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_tx_status(engine, tx_hash, chain, callback, user_data);
   }
 
   late final _dna_engine_get_transactions = _lib.lookupFunction<

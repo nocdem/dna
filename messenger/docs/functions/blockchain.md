@@ -18,6 +18,14 @@ Modular blockchain interface for multi-chain wallet operations.
 | `int blockchain_get_all(const blockchain_ops_t**, int)` | Get all registered blockchains |
 | `int blockchain_init_all(void)` | Initialize all blockchains |
 | `void blockchain_cleanup_all(void)` | Cleanup all blockchains |
+| `int blockchain_query_tx_status(const char *chain, const char *txhash, int *status_out)` | Query TX status by chain name (convenience wrapper) |
+
+### 14.2 Transfer Verification Cache (`database/wallet_cache.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int wallet_cache_get_tx_status(const char *tx_hash, int *status_out)` | Get cached TX status (0=pending, 1=verified, 2=denied) |
+| `int wallet_cache_save_tx_status(const char *tx_hash, const char *chain, int status)` | Save TX verification status to cache |
 
 ### 14.2 Blockchain Wallet (`blockchain_wallet.h`)
 

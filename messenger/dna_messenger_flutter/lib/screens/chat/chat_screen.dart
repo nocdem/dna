@@ -1885,11 +1885,11 @@ class _MessageBubble extends StatelessWidget {
 
   const _MessageBubble({required this.message, this.isStarred = false, this.onRetry});
 
-  /// Check if message is a CPUNK transfer by parsing JSON content
+  /// Check if message is a token transfer by parsing JSON content
   Map<String, dynamic>? _parseTransferData() {
     try {
       final data = jsonDecode(message.plaintext) as Map<String, dynamic>;
-      if (data['type'] == 'cpunk_transfer') {
+      if (data['type'] == 'token_transfer') {
         return data;
       }
     } catch (_) {
@@ -2364,10 +2364,11 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
       if (mounted) {
         // Create transfer message in chat with tx hash
         final transferData = jsonEncode({
-          'type': 'cpunk_transfer',
+          'type': 'token_transfer',
           'amount': amountStr,
           'token': 'CPUNK',
           'network': 'Backbone',
+          'chain': 'cellframe',
           'txHash': txHash,
           'recipientAddress': _resolvedAddress,
           'recipientName': widget.contact.displayName,
@@ -2837,21 +2838,93 @@ class _InvitationBubbleState extends ConsumerState<_InvitationBubble> {
   }
 }
 
-/// Special bubble for CPUNK transfer messages
-class _TransferBubble extends StatelessWidget {
+/// Special bubble for token transfer messages with blockchain verification
+class _TransferBubble extends StatefulWidget {
   final Message message;
   final Map<String, dynamic> transferData;
 
   const _TransferBubble({required this.message, required this.transferData});
 
   @override
+  State<_TransferBubble> createState() => _TransferBubbleState();
+}
+
+class _TransferBubbleState extends State<_TransferBubble> {
+  /// 0=pending, 1=verified, 2=denied
+  int _verificationStatus = 0;
+  bool _isVerifying = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _verifyTransaction();
+  }
+
+  Future<void> _verifyTransaction() async {
+    final txHash = widget.transferData['txHash'] as String?;
+    final chain = widget.transferData['chain'] as String? ?? 'cellframe';
+    if (txHash == null || txHash.isEmpty) return;
+
+    if (_isVerifying) return;
+    setState(() { _isVerifying = true; });
+
+    try {
+      final container = ProviderScope.containerOf(context);
+      final engine = container.read(engineProvider).valueOrNull;
+      if (engine == null) {
+        logError('TRANSFER', 'Engine not available for tx verification');
+        setState(() { _isVerifying = false; });
+        return;
+      }
+
+      final status = await engine.getTxStatus(txHash: txHash, chain: chain);
+      if (mounted) {
+        setState(() {
+          _verificationStatus = status;
+          _isVerifying = false;
+        });
+      }
+    } catch (e) {
+      logError('TRANSFER', e);
+      if (mounted) {
+        setState(() { _isVerifying = false; });
+      }
+    }
+  }
+
+  Color _getBorderColor() {
+    switch (_verificationStatus) {
+      case 1: return Colors.green;
+      case 2: return Colors.red;
+      default: return Colors.orange;
+    }
+  }
+
+  IconData _getStatusIcon() {
+    switch (_verificationStatus) {
+      case 1: return FontAwesomeIcons.circleCheck;
+      case 2: return FontAwesomeIcons.circleXmark;
+      default: return FontAwesomeIcons.clock;
+    }
+  }
+
+  String _getStatusText() {
+    switch (_verificationStatus) {
+      case 1: return 'Verified';
+      case 2: return 'Failed';
+      default: return 'Pending';
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isOutgoing = message.isOutgoing;
+    final isOutgoing = widget.message.isOutgoing;
 
-    final amount = transferData['amount'] ?? '?';
-    final token = transferData['token'] ?? 'CPUNK';
-    final txHash = transferData['txHash'] as String?;
+    final amount = widget.transferData['amount'] ?? '?';
+    final token = widget.transferData['token'] ?? 'CPUNK';
+    final txHash = widget.transferData['txHash'] as String?;
+    final borderColor = _getBorderColor();
 
     // Shorten tx hash for display (e.g., 0xABC...XYZ)
     String? shortTxHash;
@@ -2863,145 +2936,177 @@ class _TransferBubble extends StatelessWidget {
 
     return Align(
       alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: EdgeInsets.only(
-          top: 4,
-          bottom: 4,
-          left: isOutgoing ? 48 : 0,
-          right: isOutgoing ? 0 : 48,
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: isOutgoing
-                ? [theme.colorScheme.primary.withAlpha(200), theme.colorScheme.secondary.withAlpha(150)]
-                : [theme.colorScheme.surface, theme.colorScheme.surface],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+      child: GestureDetector(
+        onTap: _verifyTransaction,
+        child: Container(
+          margin: EdgeInsets.only(
+            top: 4,
+            bottom: 4,
+            left: isOutgoing ? 48 : 0,
+            right: isOutgoing ? 0 : 48,
           ),
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(isOutgoing ? 16 : 4),
-            bottomRight: Radius.circular(isOutgoing ? 4 : 16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: isOutgoing
+                  ? [theme.colorScheme.primary.withAlpha(200), theme.colorScheme.secondary.withAlpha(150)]
+                  : [theme.colorScheme.surface, theme.colorScheme.surface],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(16),
+              topRight: const Radius.circular(16),
+              bottomLeft: Radius.circular(isOutgoing ? 16 : 4),
+              bottomRight: Radius.circular(isOutgoing ? 4 : 16),
+            ),
+            border: Border.all(color: borderColor, width: 2),
           ),
-          border: isOutgoing
-              ? null
-              : Border.all(color: theme.colorScheme.primary.withAlpha(50)),
-        ),
-        child: Column(
-          crossAxisAlignment:
-              isOutgoing ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-          children: [
-            // Transfer icon and label
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FaIcon(
-                  isOutgoing ? FontAwesomeIcons.arrowUp : FontAwesomeIcons.arrowDown,
-                  size: 16,
+          child: Column(
+            crossAxisAlignment:
+                isOutgoing ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            children: [
+              // Transfer icon and label
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FaIcon(
+                    isOutgoing ? FontAwesomeIcons.arrowUp : FontAwesomeIcons.arrowDown,
+                    size: 16,
+                    color: isOutgoing
+                        ? theme.colorScheme.onPrimary
+                        : theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    isOutgoing ? 'Sent' : 'Received',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: isOutgoing
+                          ? theme.colorScheme.onPrimary.withAlpha(200)
+                          : theme.textTheme.bodySmall?.color,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+
+              // Amount
+              Text(
+                '$amount $token',
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
                   color: isOutgoing
                       ? theme.colorScheme.onPrimary
                       : theme.colorScheme.primary,
                 ),
-                const SizedBox(width: 4),
-                Text(
-                  isOutgoing ? 'Sent' : 'Received',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: isOutgoing
-                        ? theme.colorScheme.onPrimary.withAlpha(200)
-                        : theme.textTheme.bodySmall?.color,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-
-            // Amount
-            Text(
-              '$amount $token',
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: isOutgoing
-                    ? theme.colorScheme.onPrimary
-                    : theme.colorScheme.primary,
               ),
-            ),
 
-            // Transaction hash (tap to copy full hash)
-            if (shortTxHash != null && txHash != null) ...[
-              const SizedBox(height: 2),
-              GestureDetector(
-                onTap: () {
-                  Clipboard.setData(ClipboardData(text: txHash));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Copied: $txHash'),
-                      backgroundColor: DnaColors.snackbarSuccess,
-                      duration: const Duration(seconds: 3),
-                    ),
-                  );
-                },
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      shortTxHash,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        fontSize: 9,
-                        fontFamily: 'monospace',
+              // Transaction hash (tap to copy full hash)
+              if (shortTxHash != null && txHash != null) ...[
+                const SizedBox(height: 2),
+                GestureDetector(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: txHash));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Copied: $txHash'),
+                        backgroundColor: DnaColors.snackbarSuccess,
+                        duration: const Duration(seconds: 3),
+                      ),
+                    );
+                  },
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        shortTxHash,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontSize: 9,
+                          fontFamily: 'monospace',
+                          color: isOutgoing
+                              ? theme.colorScheme.onPrimary.withAlpha(150)
+                              : theme.textTheme.bodySmall?.color,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      FaIcon(
+                        FontAwesomeIcons.copy,
+                        size: 10,
                         color: isOutgoing
                             ? theme.colorScheme.onPrimary.withAlpha(150)
                             : theme.textTheme.bodySmall?.color,
                       ),
-                    ),
-                    const SizedBox(width: 4),
-                    FaIcon(
-                      FontAwesomeIcons.copy,
-                      size: 10,
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 4),
+
+              // Timestamp, verification status, and message status
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    DateFormat('HH:mm').format(widget.message.timestamp),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontSize: 10,
                       color: isOutgoing
-                          ? theme.colorScheme.onPrimary.withAlpha(150)
+                          ? theme.colorScheme.onPrimary.withAlpha(179)
                           : theme.textTheme.bodySmall?.color,
                     ),
+                  ),
+                  const SizedBox(width: 6),
+                  // Verification status indicator
+                  if (_isVerifying)
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: isOutgoing
+                            ? theme.colorScheme.onPrimary.withAlpha(179)
+                            : theme.textTheme.bodySmall?.color,
+                      ),
+                    )
+                  else
+                    FaIcon(
+                      _getStatusIcon(),
+                      size: 12,
+                      color: borderColor,
+                    ),
+                  const SizedBox(width: 3),
+                  Text(
+                    _isVerifying ? 'Checking...' : _getStatusText(),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontSize: 9,
+                      color: _isVerifying
+                          ? (isOutgoing
+                              ? theme.colorScheme.onPrimary.withAlpha(179)
+                              : theme.textTheme.bodySmall?.color)
+                          : borderColor,
+                    ),
+                  ),
+                  if (isOutgoing) ...[
+                    const SizedBox(width: 4),
+                    // Message delivery status icon
+                    FaIcon(
+                      widget.message.status == MessageStatus.pending
+                          ? FontAwesomeIcons.clock
+                          : (widget.message.status == MessageStatus.sent
+                              ? FontAwesomeIcons.check
+                              : (widget.message.status == MessageStatus.failed
+                                  ? FontAwesomeIcons.circleExclamation
+                                  : FontAwesomeIcons.checkDouble)),
+                      size: 14,
+                      color: widget.message.status == MessageStatus.failed
+                          ? DnaColors.warning
+                          : theme.colorScheme.onPrimary.withAlpha(179),
+                    ),
                   ],
-                ),
+                ],
               ),
             ],
-            const SizedBox(height: 4),
-
-            // Timestamp and status
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  DateFormat('HH:mm').format(message.timestamp),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontSize: 10,
-                    color: isOutgoing
-                        ? theme.colorScheme.onPrimary.withAlpha(179)
-                        : theme.textTheme.bodySmall?.color,
-                  ),
-                ),
-                if (isOutgoing) ...[
-                  const SizedBox(width: 4),
-                  // v15: Simplified 4-state status icon
-                  FaIcon(
-                    message.status == MessageStatus.pending
-                        ? FontAwesomeIcons.clock
-                        : (message.status == MessageStatus.sent
-                            ? FontAwesomeIcons.check
-                            : (message.status == MessageStatus.failed
-                                ? FontAwesomeIcons.circleExclamation
-                                : FontAwesomeIcons.checkDouble)),
-                    size: 14,
-                    color: message.status == MessageStatus.failed
-                        ? DnaColors.warning
-                        : theme.colorScheme.onPrimary.withAlpha(179),
-                  ),
-                ],
-              ],
-            ),
-          ],
+          ),
         ),
       ),
     );
