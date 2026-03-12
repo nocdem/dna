@@ -148,6 +148,17 @@ typedef struct {
     bool     connected;   /**< connect() completed */
 } dht_republish_conn_t;
 
+/** Pending eviction entry for ping-before-evict (Kademlia spec) */
+#define NODUS_MAX_PENDING_EVICTIONS 32
+#define NODUS_EVICT_PING_TIMEOUT    10   /* seconds */
+
+typedef struct {
+    bool          active;
+    nodus_peer_t  new_peer;       /**< Peer wanting to join */
+    nodus_peer_t  lru_peer;       /**< Existing LRU peer being pinged */
+    uint64_t      ping_sent_at;   /**< Unix timestamp of ping */
+} nodus_pending_eviction_t;
+
 /** Republish state (persistent across ticks) */
 typedef struct {
     nodus_key_t last_key;       /**< Bookmark: last key_hash processed */
@@ -198,6 +209,9 @@ typedef struct nodus_server {
     /* Periodic republish */
     dht_republish_state_t   republish;
     int                     rp_epoll_fd;
+
+    /* Ping-before-evict pending entries */
+    nodus_pending_eviction_t pending_evictions[NODUS_MAX_PENDING_EVICTIONS];
 
     bool                    running;
 } nodus_server_t;

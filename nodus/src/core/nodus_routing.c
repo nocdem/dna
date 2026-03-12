@@ -86,6 +86,54 @@ int nodus_routing_insert(nodus_routing_t *rt, const nodus_peer_t *peer) {
     return 0;
 }
 
+int nodus_routing_try_insert(nodus_routing_t *rt, const nodus_peer_t *peer,
+                              nodus_peer_t *evict_candidate) {
+    if (!rt || !peer) return -1;
+
+    int idx = nodus_routing_bucket_index(rt, &peer->node_id);
+    if (idx < 0) return -1;
+
+    nodus_bucket_t *bucket = &rt->buckets[idx];
+
+    /* Check if peer already exists */
+    for (int i = 0; i < bucket->count; i++) {
+        if (bucket->entries[i].active &&
+            nodus_key_cmp(&bucket->entries[i].peer.node_id, &peer->node_id) == 0) {
+            bucket->entries[i].peer = *peer;
+            if (bucket->entries[i].peer.last_seen == 0)
+                bucket->entries[i].peer.last_seen = (uint64_t)time(NULL);
+            return 1;  /* Already existed, updated */
+        }
+    }
+
+    /* Find empty slot */
+    for (int i = 0; i < NODUS_K; i++) {
+        if (!bucket->entries[i].active) {
+            bucket->entries[i].peer = *peer;
+            if (bucket->entries[i].peer.last_seen == 0)
+                bucket->entries[i].peer.last_seen = (uint64_t)time(NULL);
+            bucket->entries[i].active = true;
+            if (i >= bucket->count)
+                bucket->count = i + 1;
+            return 0;  /* Inserted */
+        }
+    }
+
+    /* Bucket full — return LRU candidate for ping-before-evict */
+    if (evict_candidate) {
+        int lru_idx = 0;
+        uint64_t oldest = bucket->entries[0].peer.last_seen;
+        for (int i = 1; i < NODUS_K; i++) {
+            if (bucket->entries[i].peer.last_seen < oldest) {
+                oldest = bucket->entries[i].peer.last_seen;
+                lru_idx = i;
+            }
+        }
+        *evict_candidate = bucket->entries[lru_idx].peer;
+    }
+    return 2;  /* Bucket full, ping candidate */
+}
+
 int nodus_routing_remove(nodus_routing_t *rt, const nodus_key_t *peer_id) {
     if (!rt || !peer_id) return -1;
 

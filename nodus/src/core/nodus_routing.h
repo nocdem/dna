@@ -60,6 +60,18 @@ int nodus_routing_bucket_index(const nodus_routing_t *rt, const nodus_key_t *pee
 int nodus_routing_insert(nodus_routing_t *rt, const nodus_peer_t *peer);
 
 /**
+ * Try to insert a peer. If bucket is full, returns the LRU candidate
+ * for ping-before-evict instead of immediately evicting.
+ *
+ * @param rt              Routing table
+ * @param peer            Peer to insert
+ * @param evict_candidate Output: filled with LRU peer info when return is 2
+ * @return 0 = inserted, 1 = already existed (updated), 2 = bucket full (ping candidate), -1 = error
+ */
+int nodus_routing_try_insert(nodus_routing_t *rt, const nodus_peer_t *peer,
+                              nodus_peer_t *evict_candidate);
+
+/**
  * Remove a peer from the routing table.
  *
  * @param rt       Routing table
