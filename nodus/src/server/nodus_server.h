@@ -64,6 +64,8 @@ typedef struct {
     int                 ps_count;
     uint64_t            cr_window_start;
     int                 cr_count;
+    uint64_t            w_window_start;
+    int                 w_count;
 } nodus_inter_session_t;
 
 #define NODUS_MAX_INTER_SESSIONS  NODUS_TCP_MAX_CONNS

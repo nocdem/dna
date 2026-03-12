@@ -1598,8 +1598,14 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
     /* Try T2 decode first (p_sync, ch_rep, fv, w_*) */
     if (nodus_t2_decode(payload, len, &msg) == 0) {
 
-        /* Tier 3: Witness BFT messages */
+        /* Tier 3: Witness BFT messages (per-session rate limit: 100/sec) */
         if (strncmp(msg.method, "w_", 2) == 0 && srv->witness) {
+            uint64_t w_now = nodus_time_now();
+            if (w_now != sess->w_window_start) { sess->w_window_start = w_now; sess->w_count = 0; }
+            if (++sess->w_count > 100) {
+                nodus_t2_msg_free(&msg);
+                return;
+            }
             nodus_witness_dispatch_t3(srv->witness, sess->conn, payload, len);
             nodus_t2_msg_free(&msg);
             return;
@@ -1948,7 +1954,7 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         peer.node_id = msg.node_id;
         strncpy(peer.ip, from_ip, sizeof(peer.ip) - 1);
         peer.udp_port = from_port;
-        peer.tcp_port = from_port + 1;  /* Convention: TCP = UDP + 1 */
+        peer.tcp_port = from_port + 2;  /* Peer TCP = UDP + 2 */
         peer.last_seen = nodus_time_now();
         routing_insert_or_ping(srv, &peer);
 
@@ -1971,7 +1977,7 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         rpeer.node_id = msg.node_id;
         strncpy(rpeer.ip, from_ip, sizeof(rpeer.ip) - 1);
         rpeer.udp_port = from_port;
-        rpeer.tcp_port = from_port + 1;
+        rpeer.tcp_port = from_port + 2;  /* Peer TCP = UDP + 2 */
         rpeer.last_seen = nodus_time_now();
         routing_insert_or_ping(srv, &rpeer);
 
@@ -2147,6 +2153,11 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     /* Init inter-node TCP transport (own epoll — shared epoll not possible
      * because listen socket uses NULL data.ptr as marker) */
     uint16_t peer_port = config->peer_port ? config->peer_port : NODUS_DEFAULT_PEER_PORT;
+    if (peer_port == config->tcp_port) {
+        fprintf(stderr, "ERROR: peer_port (%d) must differ from tcp_port (%d)\n",
+                peer_port, config->tcp_port);
+        return -1;
+    }
     if (nodus_tcp_init(&srv->inter_tcp, -1) != 0)
         return -1;
     srv->inter_tcp.on_accept     = on_inter_accept;

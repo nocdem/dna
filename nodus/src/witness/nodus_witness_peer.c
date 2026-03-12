@@ -7,7 +7,7 @@
  * Key adaptations from DNAC:
  *   - No pthreads (reconnection via tick function in epoll loop)
  *   - No global state (all state in nodus_witness_t)
- *   - Connections via nodus_tcp_connect() (reuses server TCP pool)
+ *   - Connections via nodus_tcp_connect() (reuses server inter-node TCP pool)
  *   - IDENT exchange via Tier 3 CBOR (not custom binary protocol)
  *   - Roster file loading only (DHT persistence not needed — we ARE the DHT)
  */
@@ -110,7 +110,7 @@ static int connect_to_entry(nodus_witness_t *w, int roster_idx) {
 
     /* Check if already have a connection to this address */
     nodus_tcp_conn_t *existing = nodus_tcp_find_by_addr(
-        &w->server->tcp, ip, port);
+        &w->server->inter_tcp, ip, port);
     if (existing && existing->state == NODUS_CONN_CONNECTED) {
         /* Already connected — update peer record */
         int pi = find_peer_by_id(w, entry_wid);
@@ -120,15 +120,15 @@ static int connect_to_entry(nodus_witness_t *w, int roster_idx) {
         return 0;
     }
 
-    /* Initiate connection */
-    nodus_tcp_conn_t *conn = nodus_tcp_connect(&w->server->tcp, ip, port);
+    /* Initiate connection via inter-node TCP pool (w_* dispatched on peer port) */
+    nodus_tcp_conn_t *conn = nodus_tcp_connect(&w->server->inter_tcp, ip, port);
     if (!conn) {
         return -1;
     }
 
-    /* Set up session so server dispatch works for this outbound conn */
-    if (conn->slot >= 0 && conn->slot < NODUS_MAX_SESSIONS) {
-        nodus_session_t *sess = &w->server->sessions[conn->slot];
+    /* Set up inter-node session so dispatch_inter works for this outbound conn */
+    if (conn->slot >= 0 && conn->slot < NODUS_MAX_INTER_SESSIONS) {
+        nodus_inter_session_t *sess = &w->server->inter_sessions[conn->slot];
         if (!sess->conn)
             sess->conn = conn;
     }
@@ -680,16 +680,16 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
 
         peer->last_attempt = now;
 
-        nodus_tcp_conn_t *conn = nodus_tcp_connect(&w->server->tcp,
+        nodus_tcp_conn_t *conn = nodus_tcp_connect(&w->server->inter_tcp,
                                                      ip, port);
         if (conn) {
             peer->conn = conn;
             peer->identified = false;
             peer->connect_failures = 0;
 
-            /* Set up session for outbound connection dispatch */
-            if (conn->slot >= 0 && conn->slot < NODUS_MAX_SESSIONS) {
-                nodus_session_t *sess = &w->server->sessions[conn->slot];
+            /* Set up inter-node session for outbound connection dispatch */
+            if (conn->slot >= 0 && conn->slot < NODUS_MAX_INTER_SESSIONS) {
+                nodus_inter_session_t *sess = &w->server->inter_sessions[conn->slot];
                 if (!sess->conn)
                     sess->conn = conn;
             }
