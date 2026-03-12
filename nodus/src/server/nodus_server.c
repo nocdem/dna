@@ -1343,18 +1343,6 @@ static void handle_t2_ch_unsubscribe(nodus_server_t *srv, nodus_session_t *sess,
     nodus_tcp_send(sess->conn, resp_buf, len);
 }
 
-/* ── Inter-node IP whitelist ─────────────────────────────────────── */
-
-/** Check if IP is a configured seed node (trusted inter-node peer). */
-static bool is_seed_ip(const nodus_server_t *srv, const char *ip) {
-    if (!ip) return false;
-    for (int i = 0; i < srv->config.seed_count; i++) {
-        if (strcmp(srv->config.seed_nodes[i], ip) == 0)
-            return true;
-    }
-    return false;
-}
-
 /* ── Ping-before-evict helpers ───────────────────────────────────── */
 
 /**
@@ -1444,9 +1432,8 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
     if (nodus_t2_decode(payload, len, &msg) != 0) {
         nodus_t2_msg_free(&msg);
 
-        /* Fallback: try T1 decode for inter-node messages (STORE, etc.)
-         * Restricted to seed nodes only (CRIT-04). */
-        if (sess->conn && is_seed_ip(srv, sess->conn->ip)) {
+        /* Fallback: try T1 decode for inter-node messages (STORE, etc.) */
+        if (sess->conn) {
             nodus_tier1_msg_t t1msg;
             memset(&t1msg, 0, sizeof(t1msg));
             if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
@@ -1475,11 +1462,7 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         } else if (strcmp(msg.method, "auth") == 0) {
             nodus_auth_handle_auth(srv, sess, &msg.sig, msg.txn_id);
         } else if (strcmp(msg.method, "sv") == 0) {
-            /* Inter-nodus DHT value replication (seed nodes only, rate-limited) */
-            if (!is_seed_ip(srv, sess->conn->ip)) {
-                nodus_t2_msg_free(&msg);
-                return;  /* Drop — not a trusted seed node */
-            }
+            /* Inter-nodus DHT value replication (rate-limited) */
             static uint64_t sv_window_start = 0;
             static int sv_count = 0;
             uint64_t sv_now = nodus_time_now();
@@ -1505,11 +1488,7 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "fv") == 0) {
-            /* Inter-nodus FIND_VALUE (seed nodes only, rate-limited) */
-            if (!is_seed_ip(srv, sess->conn->ip)) {
-                nodus_t2_msg_free(&msg);
-                return;  /* Drop — not a trusted seed node */
-            }
+            /* Inter-nodus FIND_VALUE (rate-limited) */
             static uint64_t fv_window_start = 0;
             static int fv_count = 0;
             uint64_t fv_now = nodus_time_now();
@@ -1544,11 +1523,7 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "p_sync") == 0) {
-            /* Inter-nodus presence sync (seed nodes only, rate-limited) */
-            if (!is_seed_ip(srv, sess->conn->ip)) {
-                nodus_t2_msg_free(&msg);
-                return;  /* Drop — not a trusted seed node */
-            }
+            /* Inter-nodus presence sync (rate-limited) */
             static uint64_t ps_window_start = 0;
             static int ps_count = 0;
             uint64_t ps_now = nodus_time_now();
@@ -1570,11 +1545,7 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "ch_rep") == 0) {
-            /* Inter-nodus channel replication (seed nodes only, rate-limited) */
-            if (!is_seed_ip(srv, sess->conn->ip)) {
-                nodus_t2_msg_free(&msg);
-                return;  /* Drop — not a trusted seed node */
-            }
+            /* Inter-nodus channel replication (rate-limited) */
             static uint64_t cr_window_start = 0;
             static int cr_count = 0;
             uint64_t cr_now = nodus_time_now();
@@ -1584,8 +1555,7 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
                 return;  /* Drop — rate limited */
             }
             /* TODO: Add signature verification on ch_rep posts when mutual
-             * auth is implemented. Currently deferred since this handler is
-             * already restricted to trusted seed node IPs (CRIT-04). */
+             * auth is implemented (CRIT-04). */
             nodus_channel_post_t post;
             memset(&post, 0, sizeof(post));
             memcpy(post.channel_uuid, msg.channel_uuid, NODUS_UUID_BYTES);
