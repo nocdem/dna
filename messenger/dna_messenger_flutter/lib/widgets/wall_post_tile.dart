@@ -59,7 +59,9 @@ class WallPostTile extends ConsumerWidget {
       }
     }
 
-    return DnaCard(
+    final fireLevel = _fireLevel(likeCount);
+
+    Widget card = DnaCard(
       padding: const EdgeInsets.only(
         left: DnaSpacing.lg,
         right: DnaSpacing.lg,
@@ -139,16 +141,14 @@ class WallPostTile extends ConsumerWidget {
           Row(
             children: [
               _ActionButton(
-                icon: isLikedByMe
-                    ? FontAwesomeIcons.solidHeart
-                    : FontAwesomeIcons.heart,
-                label: likeCount > 0
-                    ? '${isLikedByMe ? AppLocalizations.of(context).wallLiked : AppLocalizations.of(context).wallLike} ($likeCount)'
-                    : isLikedByMe
-                        ? AppLocalizations.of(context).wallLiked
-                        : AppLocalizations.of(context).wallLike,
+                icon: FontAwesomeIcons.fire,
+                label: likeCount > 0 ? '$likeCount' : '',
                 onTap: isLikedByMe ? null : onLike,
-                color: isLikedByMe ? DnaColors.error : null,
+                color: isLikedByMe
+                    ? const Color(0xFFFF6B35)
+                    : likeCount > 0
+                        ? const Color(0xFFFF8C42)
+                        : null,
               ),
               _ActionButton(
                 icon: FontAwesomeIcons.copy,
@@ -187,6 +187,92 @@ class WallPostTile extends ConsumerWidget {
           ),
         ],
       ),
+    );
+
+    if (fireLevel > 0) {
+      card = _FireGlow(level: fireLevel, child: card);
+    }
+
+    return card;
+  }
+
+  /// Returns fire level 0-5 based on like count
+  static int _fireLevel(int count) {
+    if (count <= 0) return 0;
+    if (count < 20) return 1;
+    if (count < 50) return 2;
+    if (count < 80) return 3;
+    if (count < 100) return 4;
+    return 5; // 100 = max fire
+  }
+}
+
+/// Wraps a card with a fire glow effect based on level (1-5)
+class _FireGlow extends StatelessWidget {
+  final int level;
+  final Widget child;
+
+  const _FireGlow({required this.level, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final Color glowColor;
+    final double blur;
+    final double spread;
+    final double borderWidth;
+
+    switch (level) {
+      case 1:
+        glowColor = const Color(0x40FF8C42); // subtle orange
+        blur = 4;
+        spread = 0;
+        borderWidth = 1;
+      case 2:
+        glowColor = const Color(0x66FF6B35); // orange
+        blur = 8;
+        spread = 1;
+        borderWidth = 1.5;
+      case 3:
+        glowColor = const Color(0x80FF4500); // red-orange
+        blur = 12;
+        spread = 2;
+        borderWidth = 2;
+      case 4:
+        glowColor = const Color(0x99FF2200); // intense red
+        blur = 16;
+        spread = 3;
+        borderWidth = 2;
+      case 5:
+        glowColor = const Color(0xBFFFD700); // gold
+        blur = 20;
+        spread = 4;
+        borderWidth = 2.5;
+      default:
+        return child;
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
+        border: Border.all(
+          color: glowColor.withAlpha(180),
+          width: borderWidth,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: glowColor,
+            blurRadius: blur,
+            spreadRadius: spread,
+          ),
+          if (level >= 3)
+            BoxShadow(
+              color: glowColor.withAlpha(glowColor.alpha ~/ 2),
+              blurRadius: blur * 2,
+              spreadRadius: spread / 2,
+            ),
+        ],
+      ),
+      child: child,
     );
   }
 }
