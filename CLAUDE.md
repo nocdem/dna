@@ -244,13 +244,12 @@ Release v<LIB_VERSION> / v<APP_VERSION> [BUILD] [RELEASE]
    - `messenger/CLAUDE.md` — header line versions + Checkpoint 8 "Current" column
 2. **COMMIT** with BOTH `[BUILD]` AND `[RELEASE]` tags (both required for CI)
 3. **PUSH** to both repos: `git push gitlab main && git push origin main`
-4. **PUBLISH** version to DHT using release identity (`-d /home/nocdem/.dna-release-identity`)
+4. **PUBLISH** version to DHT using the release identity (see internal docs for path)
 5. **VERIFY** DHT publication with `version check`
 6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
 
 **DHT Notes:**
-- **ALWAYS use release identity** for DHT publishing: `-d /home/nocdem/.dna-release-identity`
-- Release identity fingerprint: `3cbba8d8bf0c3603...` (original DHT key owner)
+- **ALWAYS use the release identity** for DHT publishing (see internal docs for path)
 - The default identity on this machine is a DIFFERENT identity and cannot publish to version DHT keys
 
 **ENFORCEMENT**: Each checkpoint requires explicit completion statement.
@@ -405,7 +404,7 @@ git push origin main    # GitHub second (mirror)
 ├── messenger/         # DNA Connect - C library + Flutter app
 ├── nodus/             # Nodus - DHT server + client SDK (pure C)
 ├── dnac/              # DNA Cash - UTXO digital cash over DHT
-├── cpunk/             # cpunk.io + cpunk.club websites + backend API
+├── cpunk/             # cpunk.io website
 └── docs/              # Top-level project docs (readiness reports)
 ```
 
@@ -729,20 +728,7 @@ All technical complexity must be hidden. The UI should feel as simple as WhatsAp
 
 ## Infrastructure
 
-### Production Nodus Servers (6 nodes, v0.6.3)
-| Node | IP | Ports |
-|------|-----|-------|
-| US-1 | 154.38.182.161 | UDP 4000, TCP 4001 |
-| EU-1 | 164.68.105.227 | UDP 4000, TCP 4001 |
-| EU-2 | 164.68.116.180 | UDP 4000, TCP 4001 |
-| EU-3 | 161.97.85.25 | UDP 4000, TCP 4001 |
-| EU-4 | 156.67.24.125 | UDP 4000, TCP 4001 |
-| EU-5 | 156.67.25.251 | UDP 4000, TCP 4001 |
-
-### Old Repos (backup, DO NOT modify)
-- `/opt/dna-messenger` — original messenger repo
-- `/opt/dnac` — original dnac repo
-- `/opt/cpunk` — original cpunk repo
+Production Nodus cluster details (IPs, ports, deploy procedures) are maintained in internal documentation only — not tracked in git for security reasons.
 
 ---
 

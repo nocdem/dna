@@ -268,37 +268,17 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
    git push gitlab main && git push origin main
    ```
 
-4. **PUBLISH** version to DHT:
-   **IMPORTANT:** MUST use the release identity (`-d /home/nocdem/.dna-release-identity`) — this is the original DHT key owner (`3cbba8d8...`). The default identity on this machine does NOT own the version DHT key and publishes will be rejected.
-   ```bash
-   cd /opt/dna/messenger/build
-   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity version publish \
-       --lib 0.9.59 --app 1.0.0-rc27 --nodus 0.6.3 \
-       --lib-min 0.9.0 --app-min 1.0.0-rc10 --nodus-min 0.6.0
-   ```
+4. **PUBLISH** version to DHT using the release identity (see internal docs for path and commands)
 
-   **MINIMUM VERSION VALUES (update when breaking changes require forced upgrade):**
-   - `--lib-min 0.9.0` — Minimum C library version
-   - `--app-min 1.0.0-rc10` — Minimum Flutter app version (users below this get forced update screen)
-   - `--nodus-min 0.6.0` — Minimum Nodus version
-
-   **WARNING:** Setting app-min too high (e.g. `1.0.0`) will lock out ALL RC users since no RC version satisfies `>= 1.0.0`. Always use the full RC tag (e.g. `1.0.0-rc10`).
-
-5. **VERIFY** DHT publication:
-   ```bash
-   ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity version check
-   ```
+5. **VERIFY** DHT publication with `version check`
 
 6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
 
 **DHT Notes:**
-- **ALWAYS use release identity** for DHT publishing: `-d /home/nocdem/.dna-release-identity`
-- Release identity fingerprint: `3cbba8d8bf0c3603...` (original DHT key owner)
+- **ALWAYS use the release identity** for DHT publishing (see internal docs for path)
 - The default identity on this machine is a DIFFERENT identity and cannot publish to version DHT keys
 - Minimum versions define compatibility - apps below minimum show warnings
-- Minimum versions use major.minor.0 format (e.g., 0.7.0 for 0.7.x releases)
-- DHT key: `SHA3-512("dna:system:version")`
-- Version info is signed with Dilithium5
+- Minimum versions must preserve pre-release suffix (e.g., `1.0.0-rc10` not `1.0.0` — semver treats `1.0.0 > 1.0.0-rcN`)
 
 **ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
 
@@ -847,34 +827,12 @@ Details: what/why/breaking
 
 **Nodus is the DHT layer.** OpenDHT has been completely removed. Messenger integrates directly via `nodus_ops.c` / `nodus_init.c`.
 
-**Production Nodus Servers (v0.6.3):**
-| Server | IP | UDP Port | TCP Port |
-|--------|-----|----------|----------|
-| US-1 | 154.38.182.161 | 4000 | 4001 |
-| EU-1 | 164.68.105.227 | 4000 | 4001 |
-| EU-2 | 164.68.116.180 | 4000 | 4001 |
-
-**Nodus Test Cluster (v0.6.2):**
-| Server | IP | UDP Port | TCP Port |
-|--------|-----|----------|----------|
-| nodus-01 | 161.97.85.25 | 4000 | 4001 |
-| nodus-02 | 156.67.24.125 | 4000 | 4001 |
-| nodus-03 | 156.67.25.251 | 4000 | 4001 |
-
 **Nodus Build:**
 ```bash
 cd /opt/dna/nodus/build && cmake .. && make -j$(nproc)
 ```
 
-**Nodus Configuration:**
-- Config file: `/etc/nodus.conf` (per-machine, each seeds the other 2)
-- Data: `/var/lib/nodus/` (identity + SQLite storage)
-- Systemd: `nodus.service` (enabled, auto-start)
-
-**Services:**
-- Kademlia (peer discovery): UDP port 4000
-- Client connections + replication: TCP port 4001
-- Values persist across restarts automatically
+Production server details (IPs, ports, configuration) are maintained in internal documentation only — not tracked in git for security reasons.
 
 **Documentation:** See [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for full details.
 

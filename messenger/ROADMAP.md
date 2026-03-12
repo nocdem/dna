@@ -91,7 +91,7 @@ Flutter UI (v0.2.0+)
     │  Cross-platform, mobile-first
 ```
 
-- Initial Qt5 GUI with theming (cpunk.io cyan, cpunk.club orange)
+- Initial Qt5 GUI with theming (cpunk.io cyan)
 - Auto-update mechanism
 - Message search and filtering
 - Migration to Flutter for cross-platform support
@@ -351,7 +351,7 @@ Client → DHT (cached) ←→ Client
 - **GitLab:** https://gitlab.cpunk.io/cpunk/dna-messenger
 - **GitHub:** https://github.com/nocdem/dna-messenger
 - **Website:** https://cpunk.io
-- **Community:** https://cpunk.club
+- **Community:** https://cpunk.io
 
 ---
 
