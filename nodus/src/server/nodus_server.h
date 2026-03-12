@@ -74,6 +74,12 @@ typedef struct {
     /* Rate limiting */
     uint64_t            rate_window_start;
     int                 puts_in_window;
+
+    /* Per-session rate limiting for pre-auth inter-nodus messages (SECURITY: HIGH-5) */
+    uint64_t            ps_window_start;    /* p_sync rate window */
+    int                 ps_count;
+    uint64_t            cr_window_start;    /* ch_rep rate window */
+    int                 cr_count;
 } nodus_session_t;
 
 /* ── FIND_VALUE async state machine ──────────────────────────────── */

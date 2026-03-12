@@ -1678,12 +1678,10 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "p_sync") == 0) {
-            /* Inter-nodus presence sync (rate-limited) */
-            static uint64_t ps_window_start = 0;
-            static int ps_count = 0;
+            /* Inter-nodus presence sync (per-session rate limit, SECURITY: HIGH-5) */
             uint64_t ps_now = nodus_time_now();
-            if (ps_now != ps_window_start) { ps_window_start = ps_now; ps_count = 0; }
-            if (++ps_count > 10) {
+            if (ps_now != sess->ps_window_start) { sess->ps_window_start = ps_now; sess->ps_count = 0; }
+            if (++sess->ps_count > 10) {
                 nodus_t2_msg_free(&msg);
                 return;  /* Drop — rate limited (10/sec, sync is every 30s) */
             }
@@ -1700,12 +1698,10 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "ch_rep") == 0) {
-            /* Inter-nodus channel replication (rate-limited) */
-            static uint64_t cr_window_start = 0;
-            static int cr_count = 0;
+            /* Inter-nodus channel replication (per-session rate limit, SECURITY: HIGH-5) */
             uint64_t cr_now = nodus_time_now();
-            if (cr_now != cr_window_start) { cr_window_start = cr_now; cr_count = 0; }
-            if (++cr_count > NODUS_SV_MAX_PER_SEC) {
+            if (cr_now != sess->cr_window_start) { sess->cr_window_start = cr_now; sess->cr_count = 0; }
+            if (++sess->cr_count > NODUS_SV_MAX_PER_SEC) {
                 nodus_t2_msg_free(&msg);
                 return;  /* Drop — rate limited */
             }

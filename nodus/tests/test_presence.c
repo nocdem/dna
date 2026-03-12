@@ -34,34 +34,37 @@ static void make_fp(nodus_key_t *fp, int index) {
 
 /* ── Presence Table Tests ──────────────────────────────────────────── */
 
+/* Shared server instance — too large for stack (HIGH-5 added per-session fields) */
+static nodus_server_t test_srv;
+
 static void test_add_remove_local(void) {
     TEST("add_local + is_online + remove_local");
 
-    nodus_server_t srv;
-    memset(&srv, 0, sizeof(srv));
+    nodus_server_t *srv = &test_srv;
+    memset(srv, 0, sizeof(*srv));
 
     nodus_key_t fp;
     make_fp(&fp, 1);
 
     /* Not online initially */
     uint8_t pi = 255;
-    if (nodus_presence_is_online(&srv, &fp, &pi)) {
+    if (nodus_presence_is_online(srv, &fp, &pi)) {
         FAIL("should not be online before add"); return;
     }
 
     /* Add local */
-    nodus_presence_add_local(&srv, &fp);
+    nodus_presence_add_local(srv, &fp);
 
     /* Now online with peer_index=0 */
     pi = 255;
-    if (!nodus_presence_is_online(&srv, &fp, &pi) || pi != 0) {
+    if (!nodus_presence_is_online(srv, &fp, &pi) || pi != 0) {
         FAIL("should be online after add"); return;
     }
 
     /* Remove */
-    nodus_presence_remove_local(&srv, &fp);
+    nodus_presence_remove_local(srv, &fp);
 
-    if (nodus_presence_is_online(&srv, &fp, NULL)) {
+    if (nodus_presence_is_online(srv, &fp, NULL)) {
         FAIL("should not be online after remove"); return;
     }
 
@@ -71,8 +74,8 @@ static void test_add_remove_local(void) {
 static void test_query_batch(void) {
     TEST("query_batch returns correct results");
 
-    nodus_server_t srv;
-    memset(&srv, 0, sizeof(srv));
+    nodus_server_t *srv = &test_srv;
+    memset(srv, 0, sizeof(*srv));
 
     /* Add 3 local clients */
     nodus_key_t fp1, fp2, fp3, fp4;
@@ -81,9 +84,9 @@ static void test_query_batch(void) {
     make_fp(&fp3, 30);
     make_fp(&fp4, 40);  /* Not added */
 
-    nodus_presence_add_local(&srv, &fp1);
-    nodus_presence_add_local(&srv, &fp2);
-    nodus_presence_add_local(&srv, &fp3);
+    nodus_presence_add_local(srv, &fp1);
+    nodus_presence_add_local(srv, &fp2);
+    nodus_presence_add_local(srv, &fp3);
 
     /* Query 4 fps (3 online, 1 offline) */
     nodus_key_t query[4];
@@ -95,7 +98,7 @@ static void test_query_batch(void) {
     bool online[4] = {false, false, false, false};
     uint8_t peers[4] = {255, 255, 255, 255};
 
-    int count = nodus_presence_query_batch(&srv, query, 4, online, peers, NULL);
+    int count = nodus_presence_query_batch(srv, query, 4, online, peers, NULL);
     if (count != 3) { FAIL("expected 3 online"); return; }
     if (!online[0] || online[1] || !online[2] || !online[3]) {
         FAIL("wrong online flags"); return;
@@ -110,23 +113,23 @@ static void test_query_batch(void) {
 static void test_merge_remote(void) {
     TEST("merge_remote + query shows remote online");
 
-    nodus_server_t srv;
-    memset(&srv, 0, sizeof(srv));
+    nodus_server_t *srv = &test_srv;
+    memset(srv, 0, sizeof(*srv));
 
     nodus_key_t fps[2];
     make_fp(&fps[0], 100);
     make_fp(&fps[1], 200);
 
     /* Merge from peer 2 */
-    nodus_presence_merge_remote(&srv, fps, 2, 2);
+    nodus_presence_merge_remote(srv, fps, 2, 2);
 
     /* Both should be online with peer_index=2 */
     uint8_t pi = 0;
-    if (!nodus_presence_is_online(&srv, &fps[0], &pi) || pi != 2) {
+    if (!nodus_presence_is_online(srv, &fps[0], &pi) || pi != 2) {
         FAIL("fp[0] not online from peer 2"); return;
     }
     pi = 0;
-    if (!nodus_presence_is_online(&srv, &fps[1], &pi) || pi != 2) {
+    if (!nodus_presence_is_online(srv, &fps[1], &pi) || pi != 2) {
         FAIL("fp[1] not online from peer 2"); return;
     }
 
@@ -136,34 +139,34 @@ static void test_merge_remote(void) {
 static void test_expire(void) {
     TEST("expire removes stale remote entries");
 
-    nodus_server_t srv;
-    memset(&srv, 0, sizeof(srv));
+    nodus_server_t *srv = &test_srv;
+    memset(srv, 0, sizeof(*srv));
 
     nodus_key_t fp_local, fp_remote;
     make_fp(&fp_local, 300);
     make_fp(&fp_remote, 400);
 
     /* Add local (never expires) */
-    nodus_presence_add_local(&srv, &fp_local);
+    nodus_presence_add_local(srv, &fp_local);
 
     /* Add remote */
-    nodus_presence_merge_remote(&srv, &fp_remote, 1, 1);
+    nodus_presence_merge_remote(srv, &fp_remote, 1, 1);
 
     /* Both online */
-    if (!nodus_presence_is_online(&srv, &fp_local, NULL) ||
-        !nodus_presence_is_online(&srv, &fp_remote, NULL)) {
+    if (!nodus_presence_is_online(srv, &fp_local, NULL) ||
+        !nodus_presence_is_online(srv, &fp_remote, NULL)) {
         FAIL("both should be online"); return;
     }
 
     /* Expire with future timestamp (TTL=45s) */
     uint64_t future = (uint64_t)time(NULL) + NODUS_PRESENCE_REMOTE_TTL + 10;
-    nodus_presence_expire(&srv, future);
+    nodus_presence_expire(srv, future);
 
     /* Local still online, remote expired */
-    if (!nodus_presence_is_online(&srv, &fp_local, NULL)) {
+    if (!nodus_presence_is_online(srv, &fp_local, NULL)) {
         FAIL("local should survive expire"); return;
     }
-    if (nodus_presence_is_online(&srv, &fp_remote, NULL)) {
+    if (nodus_presence_is_online(srv, &fp_remote, NULL)) {
         FAIL("remote should be expired"); return;
     }
 
@@ -173,20 +176,20 @@ static void test_expire(void) {
 static void test_get_local(void) {
     TEST("get_local returns only local entries");
 
-    nodus_server_t srv;
-    memset(&srv, 0, sizeof(srv));
+    nodus_server_t *srv = &test_srv;
+    memset(srv, 0, sizeof(*srv));
 
     nodus_key_t fp1, fp2, fp_remote;
     make_fp(&fp1, 500);
     make_fp(&fp2, 600);
     make_fp(&fp_remote, 700);
 
-    nodus_presence_add_local(&srv, &fp1);
-    nodus_presence_add_local(&srv, &fp2);
-    nodus_presence_merge_remote(&srv, &fp_remote, 1, 1);
+    nodus_presence_add_local(srv, &fp1);
+    nodus_presence_add_local(srv, &fp2);
+    nodus_presence_merge_remote(srv, &fp_remote, 1, 1);
 
     nodus_key_t out[10];
-    int count = nodus_presence_get_local(&srv, out, 10);
+    int count = nodus_presence_get_local(srv, out, 10);
     if (count != 2) { FAIL("expected 2 local"); return; }
 
     PASS();
@@ -195,17 +198,17 @@ static void test_get_local(void) {
 static void test_duplicate_add(void) {
     TEST("duplicate add_local does not create second entry");
 
-    nodus_server_t srv;
-    memset(&srv, 0, sizeof(srv));
+    nodus_server_t *srv = &test_srv;
+    memset(srv, 0, sizeof(*srv));
 
     nodus_key_t fp;
     make_fp(&fp, 800);
 
-    nodus_presence_add_local(&srv, &fp);
-    nodus_presence_add_local(&srv, &fp);
+    nodus_presence_add_local(srv, &fp);
+    nodus_presence_add_local(srv, &fp);
 
     nodus_key_t out[10];
-    int count = nodus_presence_get_local(&srv, out, 10);
+    int count = nodus_presence_get_local(srv, out, 10);
     if (count != 1) { FAIL("duplicate should not create second entry"); return; }
 
     PASS();
