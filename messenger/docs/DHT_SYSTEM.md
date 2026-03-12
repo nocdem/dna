@@ -39,13 +39,16 @@ The DHT is a distributed key-value store powered by Nodus (pure C, Kademlia + PB
 
 ### Production Bootstrap Nodes
 
-Three production bootstrap servers run `dna-nodus`:
+Six production Nodus servers:
 
-| Node | IP Address | Port | Location |
-|------|-----------|------|----------|
-| US-1 | 154.38.182.161 | 4000 | United States |
-| EU-1 | 164.68.105.227 | 4000 | Europe |
-| EU-2 | 164.68.116.180 | 4000 | Europe |
+| Node | IP Address | UDP | TCP | Location |
+|------|-----------|------|------|----------|
+| US-1 | 154.38.182.161 | 4000 | 4001 | United States |
+| EU-1 | 164.68.105.227 | 4000 | 4001 | Europe |
+| EU-2 | 164.68.116.180 | 4000 | 4001 | Europe |
+| EU-3 | 161.97.85.25 | 4000 | 4001 | Europe |
+| EU-4 | 156.67.24.125 | 4000 | 4001 | Europe |
+| EU-5 | 156.67.25.251 | 4000 | 4001 | Europe |
 
 ---
 
@@ -337,22 +340,36 @@ the same outbox key with new messages.
 
 #### Nodus Seed Nodes
 
-The messenger connects to the Nodus test cluster:
+The messenger connects to the Nodus production cluster (6 nodes):
 
 | Node | IP | TCP Port |
 |------|-----|----------|
-| nodus-01 | 161.97.85.25 | 4001 |
-| nodus-02 | 156.67.24.125 | 4001 |
-| nodus-03 | 156.67.25.251 | 4001 |
+| US-1 | 154.38.182.161 | 4001 |
+| EU-1 | 164.68.105.227 | 4001 |
+| EU-2 | 164.68.116.180 | 4001 |
+| EU-3 | 161.97.85.25 | 4001 |
+| EU-4 | 156.67.24.125 | 4001 |
+| EU-5 | 156.67.25.251 | 4001 |
 
 #### Initialization Flow
 
 1. Engine acquires identity lock (file-based mutex)
 2. Engine loads identity from encrypted backup
-3. Engine calls `nodus_init()` to connect to Nodus cluster
-4. Nodus client authenticates via Dilithium5 challenge/response
-5. DHT operations available via `nodus_ops_*()` convenience functions
-6. On engine destroy: `nodus_cleanup()`, release lock
+3. Engine calls `nodus_messenger_init()` to connect to Nodus cluster
+4. If `<data_dir>/preferred_node` exists, that node is moved to servers[0]
+5. Nodus client authenticates via Dilithium5 challenge/response
+6. After successful connect, background RTT probe measures TCP latency to all known nodes (hardcoded + discovered via `get_servers()`) and saves the fastest to `preferred_node`
+7. DHT operations available via `nodus_ops_*()` convenience functions
+8. On engine destroy: `nodus_messenger_close()`, release lock
+
+#### Preferred Node Selection
+
+The messenger automatically selects the fastest Nodus node:
+- **File:** `<data_dir>/preferred_node` (flat file, format: `ip:port|rtt_ms`)
+- **Startup:** If file exists, preferred node is moved to slot 0 in the server list
+- **After connect:** Background thread probes all nodes with non-blocking TCP connect, saves fastest
+- **Discovery:** Probes both hardcoded nodes and dynamically discovered nodes (via PBFT ring `get_servers()`)
+- **Effect:** Second startup connects to the fastest node first, reducing connection latency
 
 ### 4.2 DHT Identity (Deterministic)
 
