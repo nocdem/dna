@@ -1,12 +1,12 @@
-; DNA Messenger Windows Installer
+; DNA Connect Windows Installer
 ; Inno Setup Script
 ; Build with: ISCC installer.iss
 
-#define MyAppName "DNA Messenger"
-#define MyAppVersion "0.2.50"
+#define MyAppName "DNA Connect"
+#define MyAppVersion "1.0.0-rc27"
 #define MyAppPublisher "Cpunk"
 #define MyAppURL "https://cpunk.io"
-#define MyAppExeName "dna_messenger.exe"
+#define MyAppExeName "dna_connect.exe"
 
 [Setup]
 AppId={{F8A9C3B2-5D4E-6F7A-8B9C-0D1E2F3A4B5C}
@@ -22,7 +22,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
 OutputDir=..\dist
-OutputBaseFilename=dna-messenger-setup
+OutputBaseFilename=dna-connect-setup
 SetupIconFile=..\dna_messenger_flutter\windows\runner\resources\app_icon.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
