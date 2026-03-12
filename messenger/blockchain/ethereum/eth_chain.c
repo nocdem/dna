@@ -11,9 +11,33 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
+#ifdef _WIN32
+#define CURL_STATICLIB
+#endif
+#include <curl/curl.h>
+#include <json-c/json.h>
+#include "crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "ETH_CHAIN"
 #include "crypto/utils/qgp_log.h"
+
+/* Curl write callback for tx status queries */
+struct eth_resp_buf {
+    char *data;
+    size_t size;
+};
+
+static size_t eth_chain_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t realsize = size * nmemb;
+    struct eth_resp_buf *buf = (struct eth_resp_buf *)userp;
+    char *ptr = realloc(buf->data, buf->size + realsize + 1);
+    if (!ptr) return 0;
+    buf->data = ptr;
+    memcpy(&buf->data[buf->size], contents, realsize);
+    buf->size += realsize;
+    buf->data[buf->size] = 0;
+    return realsize;
+}
 
 /* ============================================================================
  * INTERFACE IMPLEMENTATIONS
@@ -157,10 +181,81 @@ static int eth_chain_get_tx_status(
     const char *txhash,
     blockchain_tx_status_t *status_out
 ) {
-    (void)txhash; /* Status available via transaction history */
-    if (status_out) {
-        *status_out = BLOCKCHAIN_TX_PENDING;
+    if (!txhash || !status_out) return -1;
+
+    *status_out = BLOCKCHAIN_TX_PENDING;
+
+    const char *endpoint = eth_rpc_get_endpoint();
+    if (!endpoint || endpoint[0] == '\0') {
+        QGP_LOG_ERROR(LOG_TAG, "ETH RPC endpoint not configured");
+        return -1;
     }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return -1;
+
+    char body[512];
+    snprintf(body, sizeof(body),
+        "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionReceipt\","
+        "\"params\":[\"%s\"],\"id\":1}", txhash);
+
+    struct eth_resp_buf resp = {0};
+    struct curl_slist *hdrs = curl_slist_append(NULL, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, endpoint);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, eth_chain_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || !resp.data) {
+        QGP_LOG_ERROR(LOG_TAG, "eth_getTransactionReceipt CURL failed: %s",
+                      curl_easy_strerror(res));
+        free(resp.data);
+        return -1;
+    }
+
+    json_object *jresp = json_tokener_parse(resp.data);
+    free(resp.data);
+    if (!jresp) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse tx receipt response");
+        return -1;
+    }
+
+    json_object *jresult;
+    if (!json_object_object_get_ex(jresp, "result", &jresult) ||
+        json_object_is_type(jresult, json_type_null)) {
+        /* null result = tx still pending in mempool */
+        *status_out = BLOCKCHAIN_TX_PENDING;
+        json_object_put(jresp);
+        return 0;
+    }
+
+    /* Receipt exists — check status field */
+    json_object *jstatus;
+    if (json_object_object_get_ex(jresult, "status", &jstatus)) {
+        const char *st = json_object_get_string(jstatus);
+        if (st && strcmp(st, "0x1") == 0) {
+            *status_out = BLOCKCHAIN_TX_SUCCESS;
+            QGP_LOG_DEBUG(LOG_TAG, "ETH tx confirmed: %s", txhash);
+        } else {
+            *status_out = BLOCKCHAIN_TX_FAILED;
+            QGP_LOG_WARN(LOG_TAG, "ETH tx reverted: %s", txhash);
+        }
+    } else {
+        /* Pre-Byzantium: no status field, assume success if receipt exists */
+        *status_out = BLOCKCHAIN_TX_SUCCESS;
+    }
+
+    json_object_put(jresp);
     return 0;
 }
 

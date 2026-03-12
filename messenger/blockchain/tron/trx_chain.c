@@ -14,9 +14,33 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#define CURL_STATICLIB
+#endif
+#include <curl/curl.h>
+#include <json-c/json.h>
+#include "crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "TRX_CHAIN"
 #include "crypto/utils/qgp_log.h"
+
+/* Curl write callback for tx status queries */
+struct trx_resp_buf {
+    char *data;
+    size_t size;
+};
+
+static size_t trx_chain_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t realsize = size * nmemb;
+    struct trx_resp_buf *buf = (struct trx_resp_buf *)userp;
+    char *ptr = realloc(buf->data, buf->size + realsize + 1);
+    if (!ptr) return 0;
+    buf->data = ptr;
+    memcpy(&buf->data[buf->size], contents, realsize);
+    buf->size += realsize;
+    buf->data[buf->size] = 0;
+    return realsize;
+}
 
 /* ============================================================================
  * INTERFACE IMPLEMENTATIONS
@@ -151,10 +175,99 @@ static int trx_chain_get_tx_status(
     const char *txhash,
     blockchain_tx_status_t *status_out
 ) {
-    (void)txhash;  /* Would need to query TronGrid API */
-    if (status_out) {
-        *status_out = BLOCKCHAIN_TX_PENDING;
+    if (!txhash || !status_out) return -1;
+
+    *status_out = BLOCKCHAIN_TX_PENDING;
+
+    const char *endpoint = trx_rpc_get_endpoint();
+    if (!endpoint || endpoint[0] == '\0') {
+        QGP_LOG_ERROR(LOG_TAG, "TRON RPC endpoint not configured");
+        return -1;
     }
+
+    /* Rate limit to avoid 429 errors */
+    trx_rate_limit_delay();
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return -1;
+
+    /* TronGrid API: POST /wallet/gettransactioninfobyid */
+    char url[256];
+    snprintf(url, sizeof(url), "%s/wallet/gettransactioninfobyid", endpoint);
+
+    char body[256];
+    snprintf(body, sizeof(body), "{\"value\":\"%s\"}", txhash);
+
+    struct trx_resp_buf resp = {0};
+    struct curl_slist *hdrs = curl_slist_append(NULL, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, trx_chain_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
+
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || !resp.data) {
+        QGP_LOG_ERROR(LOG_TAG, "gettransactioninfobyid CURL failed: %s",
+                      curl_easy_strerror(res));
+        free(resp.data);
+        return -1;
+    }
+
+    json_object *jresp = json_tokener_parse(resp.data);
+    free(resp.data);
+    if (!jresp) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse TRON tx info response");
+        return -1;
+    }
+
+    /* Empty object {} means tx not yet confirmed (pending) */
+    if (json_object_object_length(jresp) == 0) {
+        *status_out = BLOCKCHAIN_TX_PENDING;
+        json_object_put(jresp);
+        return 0;
+    }
+
+    /* Check receipt.result field */
+    json_object *jreceipt;
+    if (json_object_object_get_ex(jresp, "receipt", &jreceipt)) {
+        json_object *jresult;
+        if (json_object_object_get_ex(jreceipt, "result", &jresult)) {
+            const char *result_str = json_object_get_string(jresult);
+            if (result_str && strcasecmp(result_str, "SUCCESS") == 0) {
+                *status_out = BLOCKCHAIN_TX_SUCCESS;
+                QGP_LOG_DEBUG(LOG_TAG, "TRON tx confirmed: %s", txhash);
+            } else {
+                *status_out = BLOCKCHAIN_TX_FAILED;
+                QGP_LOG_WARN(LOG_TAG, "TRON tx failed (%s): %s",
+                             result_str ? result_str : "unknown", txhash);
+            }
+        } else {
+            /* Receipt exists but no result field — native TRX transfer success */
+            *status_out = BLOCKCHAIN_TX_SUCCESS;
+            QGP_LOG_DEBUG(LOG_TAG, "TRON tx confirmed (native): %s", txhash);
+        }
+    } else {
+        /* Has fields but no receipt — check if id exists (tx found but unconfirmed) */
+        json_object *jid;
+        if (json_object_object_get_ex(jresp, "id", &jid)) {
+            *status_out = BLOCKCHAIN_TX_SUCCESS;
+            QGP_LOG_DEBUG(LOG_TAG, "TRON tx found (no receipt): %s", txhash);
+        } else {
+            *status_out = BLOCKCHAIN_TX_PENDING;
+        }
+    }
+
+    json_object_put(jresp);
     return 0;
 }
 
