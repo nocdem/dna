@@ -2385,6 +2385,12 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet>
     _fadeAnim = CurvedAnimation(parent: _animController, curve: Curves.easeInOut);
     _animController.forward();
     _resolveContactProfile();
+    // Trigger balance refresh so send sheet shows current balances
+    Future.microtask(() {
+      if (mounted) {
+        ref.read(allBalancesProvider.notifier).refresh();
+      }
+    });
   }
 
   @override

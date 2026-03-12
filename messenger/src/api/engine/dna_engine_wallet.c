@@ -121,7 +121,10 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     ensure_wallet_cache();
     int error = DNA_OK;
     dna_balance_t *balances = NULL;
+    dna_balance_t *cached = NULL;
     int count = 0;
+    int cached_count = 0;
+    int any_fetch_succeeded = 0;  /* Track if at least one RPC succeeded */
 
     if (!engine->wallets_loaded || !engine->blockchain_wallets) {
         error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
@@ -137,6 +140,9 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     }
 
     blockchain_wallet_info_t *wallet_info = &list->wallets[idx];
+
+    /* Pre-load cached balances so we can fall back per-token on RPC failure */
+    wallet_cache_get_balances(idx, &cached, &cached_count);
 
     /* Handle non-Cellframe blockchains via modular interface */
     if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
@@ -156,6 +162,15 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         blockchain_balance_t bc_balance;
         if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
             strncpy(balances[0].balance, bc_balance.balance, sizeof(balances[0].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            /* RPC failed — preserve cached balance */
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "ETH") == 0 && strcmp(cached[ci].network, "Ethereum") == 0) {
+                    strncpy(balances[0].balance, cached[ci].balance, sizeof(balances[0].balance) - 1);
+                    break;
+                }
+            }
         }
 
         /* USDT (ERC-20) balance */
@@ -166,6 +181,14 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         char usdt_balance[64] = {0};
         if (eth_erc20_get_balance_by_symbol(wallet_info->address, "USDT", usdt_balance, sizeof(usdt_balance)) == 0) {
             strncpy(balances[1].balance, usdt_balance, sizeof(balances[1].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "USDT") == 0 && strcmp(cached[ci].network, "Ethereum") == 0) {
+                    strncpy(balances[1].balance, cached[ci].balance, sizeof(balances[1].balance) - 1);
+                    break;
+                }
+            }
         }
 
         /* USDC (ERC-20) balance */
@@ -176,6 +199,14 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         char usdc_balance_eth[64] = {0};
         if (eth_erc20_get_balance_by_symbol(wallet_info->address, "USDC", usdc_balance_eth, sizeof(usdc_balance_eth)) == 0) {
             strncpy(balances[2].balance, usdc_balance_eth, sizeof(balances[2].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "USDC") == 0 && strcmp(cached[ci].network, "Ethereum") == 0) {
+                    strncpy(balances[2].balance, cached[ci].balance, sizeof(balances[2].balance) - 1);
+                    break;
+                }
+            }
         }
 
         goto done;
@@ -198,6 +229,14 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         blockchain_balance_t bc_balance;
         if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
             strncpy(balances[0].balance, bc_balance.balance, sizeof(balances[0].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "TRX") == 0 && strcmp(cached[ci].network, "Tron") == 0) {
+                    strncpy(balances[0].balance, cached[ci].balance, sizeof(balances[0].balance) - 1);
+                    break;
+                }
+            }
         }
 
         /* USDT (TRC-20) balance */
@@ -208,6 +247,14 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         char usdt_balance[64] = {0};
         if (trx_trc20_get_balance_by_symbol(wallet_info->address, "USDT", usdt_balance, sizeof(usdt_balance)) == 0) {
             strncpy(balances[1].balance, usdt_balance, sizeof(balances[1].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "USDT") == 0 && strcmp(cached[ci].network, "Tron") == 0) {
+                    strncpy(balances[1].balance, cached[ci].balance, sizeof(balances[1].balance) - 1);
+                    break;
+                }
+            }
         }
 
         /* USDC (TRC-20) balance */
@@ -218,6 +265,14 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         char usdc_balance_trx[64] = {0};
         if (trx_trc20_get_balance_by_symbol(wallet_info->address, "USDC", usdc_balance_trx, sizeof(usdc_balance_trx)) == 0) {
             strncpy(balances[2].balance, usdc_balance_trx, sizeof(balances[2].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "USDC") == 0 && strcmp(cached[ci].network, "Tron") == 0) {
+                    strncpy(balances[2].balance, cached[ci].balance, sizeof(balances[2].balance) - 1);
+                    break;
+                }
+            }
         }
 
         goto done;
@@ -240,6 +295,14 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         blockchain_balance_t bc_balance;
         if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
             strncpy(balances[0].balance, bc_balance.balance, sizeof(balances[0].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "SOL") == 0 && strcmp(cached[ci].network, "Solana") == 0) {
+                    strncpy(balances[0].balance, cached[ci].balance, sizeof(balances[0].balance) - 1);
+                    break;
+                }
+            }
         }
 
         /* USDT (SPL) balance */
@@ -250,6 +313,14 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         char usdt_balance[64] = {0};
         if (sol_spl_get_balance_by_symbol(wallet_info->address, "USDT", usdt_balance, sizeof(usdt_balance)) == 0) {
             strncpy(balances[1].balance, usdt_balance, sizeof(balances[1].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "USDT") == 0 && strcmp(cached[ci].network, "Solana") == 0) {
+                    strncpy(balances[1].balance, cached[ci].balance, sizeof(balances[1].balance) - 1);
+                    break;
+                }
+            }
         }
 
         /* USDC (SPL) balance */
@@ -260,6 +331,14 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         char usdc_balance_sol[64] = {0};
         if (sol_spl_get_balance_by_symbol(wallet_info->address, "USDC", usdc_balance_sol, sizeof(usdc_balance_sol)) == 0) {
             strncpy(balances[2].balance, usdc_balance_sol, sizeof(balances[2].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "USDC") == 0 && strcmp(cached[ci].network, "Solana") == 0) {
+                    strncpy(balances[2].balance, cached[ci].balance, sizeof(balances[2].balance) - 1);
+                    break;
+                }
+            }
         }
 
         goto done;
@@ -304,6 +383,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     int rc = cellframe_rpc_get_balance("Backbone", address, "CPUNK", &response);
 
     if (rc == 0 && response && response->result) {
+        any_fetch_succeeded = 1;
         json_object *jresult = response->result;
 
         /* Parse response format: result[0][0]["tokens"][i] */
@@ -359,14 +439,29 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         }
 
         cellframe_rpc_response_free(response);
+    } else {
+        /* Cellframe RPC failed — preserve cached balances */
+        for (int bi = 0; bi < count; bi++) {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, balances[bi].token) == 0 &&
+                    strcmp(cached[ci].network, "Cellframe") == 0) {
+                    strncpy(balances[bi].balance, cached[ci].balance, sizeof(balances[bi].balance) - 1);
+                    break;
+                }
+            }
+        }
     }
 
 done:
-    /* Write-through: persist balances to SQLite cache on success */
-    if (error == DNA_OK && balances && count > 0) {
+    /* Write-through: persist balances to SQLite cache ONLY if at least one
+     * RPC call succeeded. This prevents rate-limit/timeout failures from
+     * overwriting valid cached balances with "0.0" defaults. */
+    if (error == DNA_OK && balances && count > 0 && any_fetch_succeeded) {
         wallet_cache_save_balances(task->params.get_balances.wallet_index,
                                    balances, count);
     }
+
+    if (cached) free(cached);
 
     task->callback.balances(task->request_id, error, balances, count, task->user_data);
 }
