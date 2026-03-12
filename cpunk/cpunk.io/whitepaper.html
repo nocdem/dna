@@ -1,0 +1,1412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>CPUNK Whitepaper — Post-Quantum Privacy Infrastructure</title>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description"
+    content="CPUNK Whitepaper: Post-quantum cryptography, self-sovereign identity, encrypted messaging, multichain wallet, and decentralized infrastructure built on Cellframe blockchain."
+  />
+  <meta name="keywords"
+    content="CPUNK, whitepaper, litepaper, post-quantum, Kyber, Dilithium, DNA identity, encrypted messenger, Nodus, Cellframe, decentralized, privacy"
+  />
+  <meta name="author" content="CPUNK Protocol" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://cpunk.io/whitepaper.html">
+
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://cpunk.io/whitepaper.html">
+  <meta property="og:title" content="CPUNK Whitepaper — Post-Quantum Privacy Infrastructure">
+  <meta property="og:description" content="The technical foundation behind CPUNK: post-quantum cryptography, self-sovereign identity, encrypted messaging, and decentralized infrastructure.">
+  <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://cpunk.io/whitepaper.html">
+  <meta name="twitter:title" content="CPUNK Whitepaper — Post-Quantum Privacy Infrastructure">
+  <meta name="twitter:description" content="The technical foundation behind CPUNK: post-quantum cryptography, self-sovereign identity, encrypted messaging, and decentralized infrastructure.">
+  <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
+  <meta name="twitter:site" content="@OfficialCpunk">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="manifest" href="/site.webmanifest">
+
+  <style>
+    :root {
+      --bg: #050712;
+      --bg-alt: #080c1a;
+      --panel: #0e1225;
+      --panel-alt: #131733;
+      --teal: #06c5d2;
+      --teal-soft: rgba(6, 197, 210, 0.08);
+      --teal-glow: rgba(6, 197, 210, 0.35);
+      --teal-dim: rgba(6, 197, 210, 0.15);
+      --orange: #f26229;
+      --orange-soft: rgba(242, 98, 41, 0.08);
+      --orange-glow: rgba(242, 98, 41, 0.35);
+      --orange-dim: rgba(242, 98, 41, 0.15);
+      --pink: #e040a0;
+      --text-main: #f0f2ff;
+      --text-muted: #8a94c0;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.5);
+      --radius-lg: 20px;
+      --radius-xl: 28px;
+      --radius-pill: 999px;
+      --transition-fast: 150ms ease-out;
+      --nav-height: 72px;
+      --max-width: 1120px;
+      --font-display: 'Orbitron', sans-serif;
+      --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      scroll-behavior: smooth;
+      max-width: 100%;
+      overflow-x: hidden;
+    }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--text-main);
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .wrap {
+      width: 100%;
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 0 1.25rem;
+    }
+
+    /* ── Animations ── */
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes pulseGlow {
+      0%, 100% { opacity: 0.4; }
+      50%      { opacity: 0.8; }
+    }
+
+    @keyframes titleGlow {
+      0%, 100% {
+        text-shadow:
+          0 0 40px rgba(6,197,210,0.35),
+          0 0 80px rgba(6,197,210,0.12),
+          0 0 120px rgba(6,197,210,0.08);
+      }
+      50% {
+        text-shadow:
+          0 0 60px rgba(6,197,210,0.5),
+          0 0 110px rgba(6,197,210,0.2),
+          0 0 160px rgba(6,197,210,0.14);
+      }
+    }
+
+    /* Scroll reveal */
+    .reveal {
+      opacity: 0;
+      transform: translateY(28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .reveal-left {
+      opacity: 0;
+      transform: translateX(-28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal-right {
+      opacity: 0;
+      transform: translateX(28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal-left.visible,
+    .reveal-right.visible {
+      opacity: 1;
+      transform: translateX(0);
+    }
+
+    .stagger > *:nth-child(1) { transition-delay: 0s; }
+    .stagger > *:nth-child(2) { transition-delay: 0.1s; }
+    .stagger > *:nth-child(3) { transition-delay: 0.2s; }
+    .stagger > *:nth-child(4) { transition-delay: 0.3s; }
+
+    /* ── Header / Nav ── */
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(12px);
+      background: linear-gradient(to bottom, rgba(5,7,18,0.96), rgba(5,7,18,0.88), transparent);
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+
+    .nav {
+      height: var(--nav-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.5rem;
+      position: relative;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
+
+    .brand-name {
+      font-family: var(--font-display);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      font-size: 1rem;
+      text-transform: uppercase;
+    }
+
+    .brand-tag { font-size: 0.7rem; color: var(--text-muted); }
+
+    .nav-menu { display: flex; align-items: center; gap: 1.5rem; }
+
+    .nav-links { display: flex; align-items: center; gap: 1.5rem; font-size: 0.9rem; }
+
+    .nav-links a {
+      color: var(--text-muted);
+      padding-bottom: 2px;
+      border-bottom: 1px solid transparent;
+      transition: color var(--transition-fast), border-bottom-color var(--transition-fast);
+    }
+
+    .nav-links a.active { color: var(--text-main); border-bottom-color: var(--teal); }
+    .nav-links a:hover { color: var(--orange); border-bottom-color: var(--orange); }
+
+    .nav-cta { display: flex; align-items: center; gap: 0.8rem; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      padding: 0.5rem 1.2rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid transparent;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      background: transparent;
+      color: var(--text-main);
+      transition: background var(--transition-fast), border var(--transition-fast),
+        transform var(--transition-fast), box-shadow var(--transition-fast);
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--orange);
+      border-color: rgba(242,98,41,0.5);
+      box-shadow: 0 8px 25px rgba(242,98,41,0.25);
+      color: #ffffff;
+      font-weight: 600;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 35px rgba(242,98,41,0.35);
+    }
+
+    .btn-ghost {
+      border-color: rgba(138,148,192,0.5);
+      background: rgba(10,12,30,0.7);
+    }
+
+    .btn-ghost:hover {
+      background: rgba(20,24,60,0.9);
+      border-color: var(--orange);
+      color: var(--orange);
+    }
+
+    .btn-lg { padding: 0.7rem 1.8rem; font-size: 0.95rem; }
+
+    .mobile-menu-toggle {
+      display: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(7,9,25,0.9);
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .mobile-menu-toggle span {
+      display: block; width: 16px; height: 2px;
+      border-radius: 999px; background: #fff; position: relative;
+    }
+
+    .mobile-menu-toggle span::before,
+    .mobile-menu-toggle span::after {
+      content: ""; position: absolute; left: 0;
+      width: 16px; height: 2px; border-radius: inherit; background: inherit;
+    }
+
+    .mobile-menu-toggle span::before { top: -5px; }
+    .mobile-menu-toggle span::after { top: 5px; }
+
+    /* Dropdown */
+    .nav-item { position: relative; }
+
+    .nav-item-label {
+      display: inline-flex; align-items: center; gap: 0.25rem;
+      cursor: pointer; color: var(--text-muted);
+    }
+
+    .nav-item:hover .nav-item-label { color: var(--text-main); }
+    .nav-item .caret { border: 4px solid transparent; border-top-color: var(--text-muted); margin-top: 2px; }
+
+    .dropdown {
+      position: absolute; top: 110%; left: 0; min-width: 190px;
+      background: rgba(5,7,18,0.98); border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 14px 30px rgba(0,0,0,0.6);
+      padding: 0.4rem 0; display: none; z-index: 30;
+    }
+
+    .dropdown a { display: block; padding: 0.4rem 0.9rem; font-size: 0.85rem; color: var(--text-muted); }
+    .dropdown a:hover { background: rgba(255,255,255,0.04); color: var(--orange); }
+    .nav-item:hover .dropdown { display: block; }
+
+    /* ── Hero ── */
+
+    .hero {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      overflow: hidden;
+      padding: 6rem 1.25rem 4rem;
+    }
+
+    .hero-bg {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      background:
+        radial-gradient(ellipse at 25% 50%, rgba(6,197,210,0.20) 0%, transparent 55%),
+        radial-gradient(ellipse at 75% 50%, rgba(6,197,210,0.10) 0%, transparent 55%),
+        var(--bg);
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 2;
+      max-width: 750px;
+      animation: fadeInUp 1s ease-out;
+    }
+
+    .hero-title {
+      font-family: var(--font-display);
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      font-weight: 900;
+      letter-spacing: 0.10em;
+      color: #ffffff;
+      animation: titleGlow 4s ease-in-out infinite;
+      margin-bottom: 1rem;
+      line-height: 1.1;
+    }
+
+    .hero-divider {
+      width: 120px;
+      height: 2px;
+      margin: 0 auto 1.5rem;
+      background: linear-gradient(90deg, var(--teal), rgba(6,197,210,0.4));
+      box-shadow: 0 0 12px rgba(6,197,210,0.3), 0 0 12px rgba(6,197,210,0.15);
+      border: none;
+      animation: pulseGlow 3s ease-in-out infinite;
+    }
+
+    .hero-subtitle {
+      font-size: 1.1rem;
+      color: var(--text-muted);
+      line-height: 1.8;
+      max-width: 600px;
+      margin: 0 auto;
+      animation: fadeInUp 1s ease-out 0.3s both;
+    }
+
+    .hero-subtitle .hl-teal { color: var(--teal); }
+    .hero-subtitle .hl-orange { color: var(--orange); }
+
+    /* ── Sections ── */
+
+    .s-section {
+      padding: 5rem 0;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .s-dark { background: var(--bg); }
+
+    .s-panel {
+      background: linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 100%);
+      border-top: 1px solid rgba(6,197,210,0.06);
+      border-bottom: 1px solid rgba(6,197,210,0.06);
+    }
+
+    .s-gradient {
+      background:
+        radial-gradient(ellipse at 20% 50%, rgba(6,197,210,0.03) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 50%, rgba(6,197,210,0.02) 0%, transparent 50%),
+        var(--bg);
+    }
+
+    .s-section::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0;
+      width: 3px; height: 100%;
+      background: linear-gradient(180deg, transparent, var(--teal-dim), var(--teal-dim), transparent);
+      opacity: 0.5;
+    }
+
+    .section-label {
+      font-family: var(--font-display);
+      font-size: 0.72rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--teal);
+      margin-bottom: 0.5rem;
+    }
+
+    .section-title {
+      font-family: var(--font-display);
+      font-size: clamp(1.3rem, 2.5vw, 1.7rem);
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 0.6rem;
+      letter-spacing: 0.02em;
+    }
+
+    .section-desc {
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      max-width: 36rem;
+      line-height: 1.6;
+    }
+
+    .section-header-center {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+
+    .section-header-center .section-label,
+    .section-header-center .section-title,
+    .section-header-center .section-desc {
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    /* ── Token Cards Grid ── */
+
+    .card-grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.2rem;
+    }
+
+    .token-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1.2rem;
+    }
+
+    .token-card {
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 1.5rem 1.2rem;
+      text-align: center;
+      transition: border-color 0.4s, transform 0.4s, box-shadow 0.4s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .token-card::after {
+      content: "";
+      position: absolute; top: 0; left: -100%;
+      width: 100%; height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(242,98,41,0.06), transparent);
+      transition: left 0.6s ease;
+    }
+
+    .token-card:hover::after { left: 100%; }
+
+    .token-card:hover {
+      border-color: rgba(242,98,41,0.4);
+      transform: translateY(-5px);
+      box-shadow: 0 12px 30px rgba(242,98,41,0.12), 0 0 0 1px rgba(242,98,41,0.1);
+    }
+
+    .token-card-icon {
+      margin-bottom: 0.8rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.4s ease;
+    }
+
+    .token-card-icon svg {
+      width: 48px; height: 48px;
+      stroke: var(--orange); stroke-width: 1.5;
+      stroke-linecap: round; stroke-linejoin: round; fill: none;
+      filter: drop-shadow(0 0 6px rgba(242,98,41,0.5)) drop-shadow(0 0 16px rgba(242,98,41,0.2));
+      transition: filter 0.4s ease;
+    }
+
+    .token-card:hover .token-card-icon svg {
+      filter: drop-shadow(0 0 10px rgba(242,98,41,0.7)) drop-shadow(0 0 28px rgba(242,98,41,0.4));
+    }
+
+    .token-card:hover .token-card-icon { transform: scale(1.15) rotate(5deg); }
+    .token-card:hover h3 { color: var(--orange); }
+
+    .token-card h3 {
+      font-family: var(--font-display);
+      font-size: 0.85rem; font-weight: 600;
+      margin-bottom: 0.4rem; letter-spacing: 0.03em;
+      color: var(--teal); position: relative; z-index: 1;
+    }
+
+    .token-card p {
+      font-size: 0.82rem; color: var(--text-muted);
+      line-height: 1.5; position: relative; z-index: 1;
+    }
+
+    /* ── Feature Cards ── */
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.2rem;
+    }
+
+    .feature-card {
+      display: flex; align-items: flex-start; gap: 1rem;
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 1.3rem 1.4rem;
+      transition: border-color 0.4s, transform 0.4s, box-shadow 0.4s;
+      position: relative; overflow: hidden;
+    }
+
+    .feature-card::after {
+      content: "";
+      position: absolute; top: 0; left: -100%;
+      width: 100%; height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(242,98,41,0.06), transparent);
+      transition: left 0.6s ease;
+    }
+
+    .feature-card:hover::after { left: 100%; }
+
+    .feature-card:hover {
+      border-color: rgba(242,98,41,0.4);
+      transform: translateY(-3px);
+      box-shadow: 0 10px 28px rgba(242,98,41,0.1), 0 0 0 1px rgba(242,98,41,0.08);
+    }
+
+    .feature-card-icon {
+      flex-shrink: 0; width: 44px; height: 44px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 12px;
+      background: var(--orange-soft);
+      border: 1px solid rgba(242,98,41,0.15);
+      transition: box-shadow 0.4s;
+    }
+
+    .feature-card-icon svg {
+      width: 24px; height: 24px;
+      stroke: var(--orange); stroke-width: 1.5;
+      stroke-linecap: round; stroke-linejoin: round; fill: none;
+      filter: drop-shadow(0 0 4px rgba(242,98,41,0.4));
+    }
+
+    .feature-card:hover .feature-card-icon { box-shadow: 0 0 16px rgba(242,98,41,0.25); }
+
+    .feature-card-text h3 {
+      font-family: var(--font-display);
+      font-size: 0.85rem; font-weight: 600; letter-spacing: 0.03em;
+      color: var(--teal); margin-bottom: 0.3rem;
+      position: relative; z-index: 1; transition: color 0.3s;
+    }
+
+    .feature-card:hover .feature-card-text h3 { color: var(--orange); }
+
+    .feature-card-text p {
+      font-size: 0.82rem; color: var(--text-muted);
+      line-height: 1.55; position: relative; z-index: 1;
+    }
+
+    /* ── DNA Row ── */
+
+    .dna-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3rem; align-items: center;
+    }
+
+    .dna-row.reverse { direction: rtl; }
+    .dna-row.reverse > * { direction: ltr; }
+
+    .dna-text h3 {
+      font-family: var(--font-display);
+      font-size: clamp(1.2rem, 2vw, 1.5rem);
+      font-weight: 700; margin-bottom: 0.8rem; letter-spacing: 0.03em;
+    }
+
+    .dna-text h3 .teal { color: var(--teal); }
+    .dna-text h3 .orange { color: var(--orange); }
+
+    .dna-text p {
+      font-size: 0.92rem; color: var(--text-muted);
+      line-height: 1.7; margin-bottom: 0.8rem;
+    }
+
+    .dna-tags { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1.2rem; }
+
+    .tag {
+      padding: 0.3rem 0.8rem; border-radius: var(--radius-pill);
+      font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em;
+      text-transform: uppercase; transition: transform 0.3s, box-shadow 0.3s;
+    }
+
+    .tag:hover { transform: translateY(-2px); }
+
+    .tag-teal {
+      background: var(--teal-soft);
+      border: 1px solid rgba(6,197,210,0.3); color: var(--teal);
+    }
+    .tag-teal:hover { box-shadow: 0 4px 12px rgba(6,197,210,0.15); }
+
+    .tag-orange {
+      background: var(--orange-soft);
+      border: 1px solid rgba(242,98,41,0.3); color: var(--orange);
+    }
+    .tag-orange:hover { box-shadow: 0 4px 12px rgba(242,98,41,0.15); }
+
+    .dna-visual {
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    .dna-icon {
+      width: 180px; height: 180px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 24px; font-size: 4.5rem;
+      transition: transform 0.5s ease, box-shadow 0.5s ease;
+    }
+
+    .dna-icon:hover { transform: scale(1.06); }
+
+    .dna-icon.glow-teal {
+      background: radial-gradient(circle, rgba(6,197,210,0.08) 0%, transparent 70%);
+      border: 1px solid rgba(6,197,210,0.15);
+      box-shadow: 0 0 30px rgba(6,197,210,0.06);
+    }
+    .dna-icon.glow-teal:hover {
+      box-shadow: 0 0 50px rgba(242,98,41,0.15);
+      border-color: rgba(242,98,41,0.2);
+    }
+
+    .dna-icon.glow-orange {
+      background: radial-gradient(circle, rgba(242,98,41,0.08) 0%, transparent 70%);
+      border: 1px solid rgba(242,98,41,0.15);
+      box-shadow: 0 0 30px rgba(242,98,41,0.06);
+    }
+    .dna-icon.glow-orange:hover {
+      box-shadow: 0 0 50px rgba(242,98,41,0.15);
+      border-color: rgba(242,98,41,0.2);
+    }
+
+    .dna-icon.glow-dual {
+      background:
+        radial-gradient(circle at 30% 30%, rgba(6,197,210,0.08) 0%, transparent 50%),
+        radial-gradient(circle at 70% 70%, rgba(242,98,41,0.08) 0%, transparent 50%);
+      border: 1px solid rgba(6,197,210,0.1);
+      box-shadow: 0 0 30px rgba(6,197,210,0.04), 0 0 30px rgba(242,98,41,0.04);
+    }
+    .dna-icon.glow-dual:hover {
+      box-shadow: 0 0 50px rgba(242,98,41,0.15);
+      border-color: rgba(242,98,41,0.2);
+    }
+
+    /* Chain badges */
+    .chain-row { display: flex; gap: 0.8rem; margin-top: 1.2rem; }
+
+    .chain-badge {
+      width: 38px; height: 38px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.65rem; font-weight: 700; font-family: var(--font-display);
+      transition: transform 0.3s, box-shadow 0.3s;
+    }
+    .chain-badge:hover { transform: scale(1.2); }
+
+    .chain-eth  { background: rgba(98,126,234,0.18); color: #627eea; border: 1px solid rgba(98,126,234,0.4); }
+    .chain-eth:hover { box-shadow: 0 4px 15px rgba(98,126,234,0.25); }
+    .chain-sol  { background: rgba(153,69,255,0.18); color: #9945ff; border: 1px solid rgba(153,69,255,0.4); }
+    .chain-sol:hover { box-shadow: 0 4px 15px rgba(153,69,255,0.25); }
+    .chain-trx  { background: rgba(255,6,10,0.18); color: #ff060a; border: 1px solid rgba(255,6,10,0.4); }
+    .chain-trx:hover { box-shadow: 0 4px 15px rgba(255,6,10,0.25); }
+    .chain-cell { background: rgba(6,197,210,0.18); color: var(--teal); border: 1px solid rgba(6,197,210,0.4); }
+    .chain-cell:hover { box-shadow: 0 4px 15px rgba(6,197,210,0.25); }
+
+    /* ── Crypto Table ── */
+
+    .crypto-table {
+      width: 100%; border-collapse: collapse;
+      font-size: 0.88rem; margin-top: 1.5rem;
+    }
+
+    .crypto-table th {
+      font-family: var(--font-display);
+      font-size: 0.72rem; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--teal);
+      text-align: left; padding: 0.7rem 0.8rem;
+      border-bottom: 1px solid rgba(6,197,210,0.15);
+    }
+
+    .crypto-table td {
+      padding: 0.6rem 0.8rem;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+    }
+
+    .crypto-table tr:hover td { background: rgba(242,98,41,0.04); }
+    .crypto-table td:first-child { color: var(--text-main); font-weight: 500; }
+
+    /* ── Stats Bar ── */
+
+    .stats-bar {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1.2rem; margin-top: 2rem;
+    }
+
+    .stat-card {
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 1.2rem 1rem; text-align: center;
+      transition: border-color 0.4s, transform 0.4s;
+    }
+    .stat-card:hover {
+      border-color: rgba(242,98,41,0.3);
+      transform: translateY(-3px);
+    }
+
+    .stat-card-value {
+      font-family: var(--font-display);
+      font-size: 1.3rem; font-weight: 700;
+      color: var(--orange); margin-bottom: 0.3rem;
+    }
+
+    .stat-card-label {
+      font-size: 0.72rem; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.08em;
+    }
+
+    /* ── CTA ── */
+
+    .cta-section { padding: 4rem 0; }
+
+    .cta-box {
+      border-radius: var(--radius-xl);
+      background:
+        radial-gradient(ellipse at 30% 50%, rgba(6,197,210,0.05) 0%, transparent 50%),
+        radial-gradient(ellipse at 70% 50%, rgba(6,197,210,0.05) 0%, transparent 50%),
+        radial-gradient(circle at top, #141840, #050712);
+      border: 1px solid rgba(6,197,210,0.15);
+      padding: 2.5rem 2rem; text-align: center;
+      box-shadow: var(--shadow-soft);
+      transition: border-color 0.4s, box-shadow 0.4s;
+    }
+    .cta-box:hover {
+      border-color: rgba(242,98,41,0.3);
+      box-shadow: 0 20px 50px rgba(242,98,41,0.1);
+    }
+
+    .cta-title {
+      font-family: var(--font-display);
+      font-size: clamp(1.2rem, 2.2vw, 1.6rem);
+      font-weight: 700; margin-bottom: 0.6rem; letter-spacing: 0.03em;
+    }
+
+    .cta-text {
+      font-size: 0.9rem; color: var(--text-muted);
+      max-width: 32rem; margin: 0 auto 1.5rem; line-height: 1.6;
+    }
+
+    .cta-actions {
+      display: flex; flex-wrap: wrap; gap: 0.7rem; justify-content: center;
+    }
+
+    /* ── Footer ── */
+
+    footer {
+      padding: 1.8rem 0 2.2rem;
+      font-size: 0.8rem; color: var(--text-muted);
+    }
+
+    .footer-row {
+      display: flex; flex-wrap: wrap; justify-content: space-between;
+      gap: 1rem; align-items: end;
+    }
+
+    .footer-links { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+    .footer-links a { color: var(--text-muted); font-size: 0.8rem; }
+    .footer-links a:hover { color: var(--orange); }
+
+    /* ── Responsive ── */
+
+    @media (max-width: 900px) {
+      .token-grid { grid-template-columns: repeat(2, 1fr); }
+      .card-grid-3 { grid-template-columns: 1fr; }
+      .stats-bar { grid-template-columns: repeat(2, 1fr); }
+      .dna-row, .dna-row.reverse {
+        grid-template-columns: 1fr; direction: ltr; text-align: center;
+      }
+      .dna-visual { order: -1; }
+      .dna-tags { justify-content: center; }
+      .chain-row { justify-content: center; }
+      .cta-box { padding: 2rem 1.2rem; }
+    }
+
+    @media (max-width: 768px) {
+      .nav-menu {
+        display: none; position: absolute; top: var(--nav-height);
+        right: 0; left: 0; padding: 0.9rem 1rem 1rem; border-radius: 14px;
+        background: rgba(5,7,18,0.98); border: 1px solid rgba(255,255,255,0.08);
+        flex-direction: column; align-items: flex-start; gap: 0.7rem; z-index: 15;
+      }
+      .nav-menu.active { display: flex; }
+      .nav-links { flex-direction: column; align-items: flex-start; width: 100%; gap: 0.75rem; }
+      .nav-links a { width: 100%; padding: 0.25rem 0; }
+      .nav-cta { width: 100%; justify-content: flex-start; margin-top: 0.4rem; }
+      .mobile-menu-toggle { display: inline-flex; }
+      .dropdown {
+        position: static; box-shadow: none; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.06); margin-top: 0.3rem;
+      }
+      .nav-item:hover .dropdown { display: none; }
+      .nav-item.open .dropdown { display: block; }
+    }
+
+    @media (max-width: 640px) {
+      .feature-grid { grid-template-columns: 1fr; }
+      .crypto-table { font-size: 0.8rem; }
+      .crypto-table th, .crypto-table td { padding: 0.5rem 0.4rem; }
+    }
+
+    @media (max-width: 480px) {
+      .token-grid { grid-template-columns: 1fr 1fr; }
+      .stats-bar { grid-template-columns: 1fr 1fr; }
+      .dna-icon { width: 140px; height: 140px; font-size: 3.5rem; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      .reveal, .reveal-left, .reveal-right { opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+
+    <header>
+      <div class="wrap">
+        <div class="nav">
+          <a href="/" class="brand">
+            <div class="brand-text">
+              <span class="brand-name">CPUNK.IO</span>
+              <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+            </div>
+          </a>
+          <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+            <span></span>
+          </button>
+          <div class="nav-menu">
+            <nav class="nav-links">
+              <a href="/">Home</a>
+              <div class="nav-item" data-dropdown="products">
+                <div class="nav-item-label">
+                  <span>Products</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/products/dna-identity.html">DNA Identity</a>
+                  <a href="/products/dna-connect.html">DNA Connect</a>
+                  <a href="/products/nodus.html">DNA Nodus</a>
+                  <a href="/products/dna-wallet.html">DNA Wallet</a>
+                </div>
+              </div>
+              <a href="/whitepaper.html" class="active">Whitepaper</a>
+              <a href="/roadmap.html">Roadmap</a>
+              <div class="nav-item" data-dropdown="about">
+                <div class="nav-item-label">
+                  <span>About</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/about.html">About CPUNK</a>
+                  <a href="/team.html">Team</a>
+                  <a href="/contact.html">Contact</a>
+                  <a href="/legal.html">Legal</a>
+                </div>
+              </div>
+            </nav>
+            <div class="nav-cta">
+              <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">Trade CPUNK</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main>
+
+      <!-- Hero -->
+      <section class="hero">
+        <div class="hero-bg"></div>
+        <div class="hero-content">
+          <h1 class="hero-title">CPUNK Whitepaper</h1>
+          <div class="hero-divider"></div>
+          <p class="hero-subtitle">
+            A technical overview of the <span class="hl-teal">post-quantum infrastructure</span> powering privacy-first identity, messaging, and finance &mdash; built for the <span class="hl-orange">quantum era</span>.
+          </p>
+        </div>
+      </section>
+
+      <!-- What is CPUNK -->
+      <section class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label">Overview</div>
+            <h2 class="section-title">What is CPUNK?</h2>
+            <p class="section-desc" style="max-width: 42rem;">
+              CPUNK is a community-driven ecosystem building privacy-preserving, quantum-resistant tools for a sovereign digital future. Every component &mdash; from identity to messaging to finance &mdash; is designed to withstand the coming quantum computing revolution while keeping users in full control of their data.
+            </p>
+          </div>
+
+          <div class="token-grid stagger">
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 2L4 6v5c0 5.25 3.4 10.2 8 11.6 4.6-1.4 8-6.35 8-11.6V6L12 2z"/><rect x="9.5" y="11" width="5" height="4" rx="1"/><path d="M10.5 11v-1.5a1.5 1.5 0 0 1 3 0V11"/></svg>
+              </span>
+              <h3>Privacy by Design</h3>
+              <p>No phone numbers, no email addresses, no KYC. Your identity is cryptographic, your communications are encrypted end-to-end, and your metadata stays invisible.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(-30 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(30 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(90 12 12)"/><circle cx="12" cy="12" r="1.8" fill="var(--orange)" stroke="none"/></svg>
+              </span>
+              <h3>Quantum Resistant</h3>
+              <p>Every cryptographic operation uses NIST-standardized post-quantum algorithms. Current and future quantum computers cannot break the encryption protecting your data.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="4" r="2"/><circle cx="4" cy="13" r="2"/><circle cx="20" cy="13" r="2"/><circle cx="7" cy="21" r="2"/><circle cx="17" cy="21" r="2"/><line x1="12" y1="6" x2="4" y2="11"/><line x1="12" y1="6" x2="20" y2="11"/><line x1="4" y1="15" x2="7" y2="19"/><line x1="20" y1="15" x2="17" y2="19"/><line x1="7" y1="21" x2="17" y2="21"/></svg>
+              </span>
+              <h3>Fully Decentralized</h3>
+              <p>No central servers, no corporate gatekeepers. The Nodus network distributes data across independent nodes using Kademlia routing with k=8 replication factor.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" fill="none"/><path d="M8 12l3 3 5-5"/></svg>
+              </span>
+              <h3>Open Source</h3>
+              <p>All code is publicly auditable. The entire stack &mdash; from low-level cryptography to the desktop and mobile apps &mdash; is transparent, verifiable, and community-owned.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Post-Quantum Cryptography -->
+      <section class="s-section s-panel">
+        <div class="wrap">
+          <div class="dna-row reveal">
+            <div class="dna-text">
+              <div class="section-label">Cryptographic Foundation</div>
+              <h3><span class="teal">Post-Quantum</span> Cryptography</h3>
+              <p>
+                CPUNK uses exclusively NIST-standardized post-quantum algorithms for all cryptographic operations. Classical algorithms like RSA and ECC are vulnerable to Shor's algorithm on quantum computers. Our stack is future-proof by design.
+              </p>
+              <p>
+                All cryptographic primitives are implemented in pure C for maximum performance and portability. The shared crypto library is used across every component of the ecosystem.
+              </p>
+              <div class="dna-tags">
+                <span class="tag tag-teal">FIPS 203</span>
+                <span class="tag tag-teal">FIPS 204</span>
+                <span class="tag tag-orange">NIST Standardized</span>
+                <span class="tag tag-teal">Pure C</span>
+              </div>
+            </div>
+            <div class="dna-visual">
+              <div class="dna-icon glow-teal">
+                <svg viewBox="0 0 24 24" width="90" height="90" stroke="var(--teal)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+                  <ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(-30 12 12)"/>
+                  <ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(30 12 12)"/>
+                  <ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(90 12 12)"/>
+                  <circle cx="12" cy="12" r="2" fill="var(--teal)" stroke="none"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+
+          <table class="crypto-table reveal" style="margin-top: 2.5rem;">
+            <thead>
+              <tr>
+                <th>Algorithm</th>
+                <th>Standard</th>
+                <th>Purpose</th>
+                <th>Key Sizes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>ML-KEM-1024 (Kyber)</td>
+                <td>FIPS 203</td>
+                <td>Key encapsulation / encryption</td>
+                <td>Public: 1568 B, Secret: 3168 B</td>
+              </tr>
+              <tr>
+                <td>ML-DSA-87 (Dilithium5)</td>
+                <td>FIPS 204</td>
+                <td>Digital signatures / identity</td>
+                <td>Public: 2592 B, Signature: 4627 B</td>
+              </tr>
+              <tr>
+                <td>SHA3-512</td>
+                <td>FIPS 202</td>
+                <td>Hashing / integrity</td>
+                <td>512-bit digest</td>
+              </tr>
+              <tr>
+                <td>AES-256-GCM</td>
+                <td>FIPS 197</td>
+                <td>Symmetric encryption</td>
+                <td>256-bit key, 128-bit auth tag</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- DNA Identity -->
+      <section class="s-section s-gradient">
+        <div class="wrap">
+          <div class="dna-row reverse reveal">
+            <div class="dna-text">
+              <div class="section-label">Self-Sovereign Identity</div>
+              <h3><span class="orange">DNA</span> Identity</h3>
+              <p>
+                DNA (Decentralized Network Applications) includes a self-sovereign identity system. Your identity is a Dilithium5 keypair derived from a BIP-39 mnemonic seed phrase. No phone number, no email, no third party &mdash; just 24 words that you control.
+              </p>
+              <p>
+                Register a human-readable name on Nodus &mdash; no blockchain transaction, no central registrar, no fee. Your multi-chain wallet addresses are automatically derived from the same seed, so your entire identity &mdash; messaging, wallets, and profile &mdash; is unified under one cryptographic root. Your DNA identity is the foundation for everything in the CPUNK ecosystem.
+              </p>
+              <div class="dna-tags">
+                <span class="tag tag-orange">BIP-39 Seed</span>
+                <span class="tag tag-teal">Dilithium5 Keypair</span>
+                <span class="tag tag-teal">DHT Registration</span>
+                <span class="tag tag-orange">Multi-Chain Addresses</span>
+              </div>
+            </div>
+            <div class="dna-visual">
+              <div class="dna-icon glow-orange">
+                <svg viewBox="0 0 24 24" width="90" height="90" stroke="var(--orange)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+                  <circle cx="12" cy="7" r="4"/>
+                  <path d="M5.5 21a6.5 6.5 0 0 1 13 0"/>
+                  <path d="M16 11l2 2 4-4"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- DNA Connect -->
+      <section class="s-section s-panel">
+        <div class="wrap">
+          <div class="dna-row reveal">
+            <div class="dna-text">
+              <div class="section-label">Encrypted Messaging</div>
+              <h3><span class="teal">DNA</span> Connect</h3>
+              <p>
+                DNA Connect is a post-quantum encrypted messenger that operates over the Nodus network. Every message is encrypted end-to-end using Kyber1024 key encapsulation and AES-256-GCM symmetric encryption. No central server ever sees your plaintext.
+              </p>
+              <p>
+                Messages are stored in the DHT with a 7-day TTL, enabling asynchronous delivery without requiring both parties to be online. Group messaging uses rotating Group Encryption Keys (GEK) for forward secrecy. Zero metadata is collected &mdash; no IP logging, no contact graphs, no read receipts leaking to servers.
+              </p>
+              <div class="dna-tags">
+                <span class="tag tag-teal">E2E Encrypted</span>
+                <span class="tag tag-orange">Zero Metadata</span>
+                <span class="tag tag-teal">DHT Delivery</span>
+                <span class="tag tag-orange">Offline Queue</span>
+              </div>
+            </div>
+            <div class="dna-visual">
+              <div class="dna-icon glow-teal">
+                <svg viewBox="0 0 24 24" width="90" height="90" stroke="var(--teal)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  <path d="M12 7v1"/>
+                  <path d="M12 12h.01"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Nodus -->
+      <section class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label">Network Infrastructure</div>
+            <h2 class="section-title">DNA Nodus Network</h2>
+            <p class="section-desc" style="max-width: 42rem;">
+              Nodus is a pure C implementation of a Kademlia distributed hash table. It forms the backbone of the entire CPUNK ecosystem &mdash; storing identities, delivering messages, and maintaining network state without any central authority.
+            </p>
+          </div>
+
+          <div class="feature-grid stagger">
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>512-bit Keyspace</h3>
+                <p>SHA3-512-based routing with Kademlia XOR distance metric. k-buckets of size 8 provide resilient peer discovery across the network.</p>
+              </div>
+            </article>
+
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>Kademlia Routing</h3>
+                <p>XOR-based distance metric for efficient peer lookup. Data is replicated to the k=8 closest nodes for high availability and fault tolerance.</p>
+              </div>
+            </article>
+
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>Community-Operated</h3>
+                <p>DNA Nodus is open source &mdash; anyone can run a node. Nodes are geographically distributed, using UDP for Kademlia peer discovery and TCP for client connections.</p>
+              </div>
+            </article>
+
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>CBOR Wire Protocol</h3>
+                <p>Compact binary serialization over custom wire frames. Two-tier protocol: Tier 1 (Kademlia DHT ops) and Tier 2 (authenticated client operations).</p>
+              </div>
+            </article>
+
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>Native Presence</h3>
+                <p>Server-side presence tracking with inter-node p_sync broadcast. Real-time online status without DHT polling overhead. 45-second TTL on remote entries.</p>
+              </div>
+            </article>
+
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>7-Day TTL Storage</h3>
+                <p>Values persist for 7 days with automatic replication to closest nodes. Up to 1 MB per value with Dilithium5 signature verification on writes.</p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- DNA Wallet -->
+      <section class="s-section s-gradient">
+        <div class="wrap">
+          <div class="dna-row reverse reveal">
+            <div class="dna-text">
+              <div class="section-label">Multi-Chain Finance</div>
+              <h3><span class="orange">DNA</span> Wallet</h3>
+              <p>
+                DNA Wallet is a non-custodial, multi-chain cryptocurrency wallet integrated directly into DNA Connect. Send and receive tokens across Cellframe, Ethereum, Solana, and Tron &mdash; all within your encrypted conversations.
+              </p>
+              <p>
+                Each chain's keys are derived from your single BIP-39 seed using standard HD key derivation paths. One recovery phrase backs up all wallets. In-chat transfers let you send crypto as easily as sending a message, with transaction details encrypted end-to-end.
+              </p>
+              <div class="chain-row">
+                <div class="chain-badge chain-cell">CF</div>
+                <div class="chain-badge chain-eth">ETH</div>
+                <div class="chain-badge chain-sol">SOL</div>
+                <div class="chain-badge chain-trx">TRX</div>
+              </div>
+              <div class="dna-tags" style="margin-top: 1rem;">
+                <span class="tag tag-orange">Non-Custodial</span>
+                <span class="tag tag-teal">HD Derivation</span>
+                <span class="tag tag-orange">In-Chat Transfers</span>
+              </div>
+            </div>
+            <div class="dna-visual">
+              <div class="dna-icon glow-dual">
+                <svg viewBox="0 0 24 24" width="90" height="90" stroke="var(--orange)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+                  <rect x="2" y="4" width="20" height="16" rx="2"/>
+                  <path d="M2 10h20"/>
+                  <circle cx="17" cy="15" r="2"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CPUNK Token -->
+      <section class="s-section s-panel">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label">Token Economics</div>
+            <h2 class="section-title">CPUNK Token</h2>
+            <p class="section-desc" style="max-width: 42rem;">
+              CPUNK is a CF20 token on the Cellframe blockchain. It serves as the governance and utility token within the DNA ecosystem. 1 billion tokens were minted at launch on February 1, 2025 &mdash; 100% unlocked, no additional minting possible.
+            </p>
+          </div>
+
+          <div class="stats-bar stagger reveal">
+            <div class="stat-card">
+              <div class="stat-card-value">1B</div>
+              <div class="stat-card-label">Fixed Supply</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-card-value">CF20</div>
+              <div class="stat-card-label">Token Standard</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-card-value">PoS</div>
+              <div class="stat-card-label">Consensus</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-card-value">CIP</div>
+              <div class="stat-card-label">Governance</div>
+            </div>
+          </div>
+
+          <div class="feature-grid stagger" style="margin-top: 2rem;">
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 10l3 3 5-5"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>Governance</h3>
+                <p>Submit and vote on CPUNK Improvement Proposals (CIPs). Token holders shape the future direction of the protocol through transparent on-chain voting.</p>
+              </div>
+            </article>
+
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>Feed &amp; Wall Access</h3>
+                <p>Posting to the public feed or personal wall requires burning CPUNK, preventing spam and giving posts economic weight within the community.</p>
+              </div>
+            </article>
+
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>In-Chat Transfers</h3>
+                <p>CPUNK is the only token transferable directly within messenger conversations. Send tokens to any DNA contact without leaving the chat.</p>
+              </div>
+            </article>
+
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>Post-Quantum Chain</h3>
+                <p>Built on Cellframe, the first production blockchain with post-quantum signature support. CPUNK inherits quantum resistance at the consensus layer.</p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Architecture Overview -->
+      <section class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label">Technical Architecture</div>
+            <h2 class="section-title">Full Stack Overview</h2>
+            <p class="section-desc" style="max-width: 42rem;">
+              The CPUNK ecosystem is a vertically integrated stack. From post-quantum cryptographic primitives at the bottom to polished desktop and mobile apps at the top, every layer is purpose-built for privacy and quantum safety.
+            </p>
+          </div>
+
+          <div class="card-grid-3 stagger">
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="12" y2="17"/></svg>
+              </span>
+              <h3>DNA Connect</h3>
+              <p>Cross-platform (Linux, Android, Windows) user interface with dart:ffi bindings to the native C engine. Riverpod state management, Font Awesome icons, full i18n support.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+              </span>
+              <h3>DNA Engine (C)</h3>
+              <p>Modular async C library with 17 domain handlers, task queue, and thread pool. Handles identity, messaging, contacts, groups, channels, wallet, and presence.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              </span>
+              <h3>Shared Crypto</h3>
+              <p>Pure C implementations of Kyber1024, Dilithium5, SHA3-512, AES-256-GCM, BIP-39, BIP-32 HD derivation, secp256k1, and Ed25519. Used by all components.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- CTA / Download -->
+      <section class="cta-section">
+        <div class="wrap">
+          <div class="cta-box reveal">
+            <h2 class="cta-title">Read the Full Litepaper</h2>
+            <p class="cta-text">
+              Download the complete CPUNK Litepaper for detailed technical specifications, tokenomics breakdown, and the full project roadmap.
+            </p>
+            <div class="cta-actions">
+              <a href="/products/dna-connect.html" class="btn btn-primary btn-lg">Download DNA Connect</a>
+              <a href="/roadmap.html" class="btn btn-ghost btn-lg">View Roadmap</a>
+              <a href="/legal.html" class="btn btn-ghost btn-lg">Legal Documents</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <footer>
+      <div class="wrap">
+        <div class="footer-row">
+          <div>&copy; 2026 CPUNK Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+          <div class="footer-links">
+            <a href="/">Home</a>
+            <a href="/products/dna-identity.html">DNA Identity</a>
+            <a href="/products/dna-connect.html">DNA Connect</a>
+            <a href="/products/nodus.html">DNA Nodus</a>
+            <a href="/products/dna-wallet.html">DNA Wallet</a>
+            <a href="/team.html">Team</a>
+            <a href="/whitepaper.html">Whitepaper</a>
+            <a href="/legal.html">Legal &amp; Compliance</a>
+          </div>
+        </div>
+      </div>
+    </footer>
+
+  </div>
+
+  <script>
+document.addEventListener('DOMContentLoaded', function() {
+  var mobileToggle = document.querySelector('.mobile-menu-toggle');
+  var navMenu = document.querySelector('.nav-menu');
+  if (mobileToggle && navMenu) {
+    mobileToggle.addEventListener('click', function() {
+      navMenu.classList.toggle('active');
+    });
+  }
+  document.querySelectorAll('.nav-item').forEach(function(item) {
+    var label = item.querySelector('.nav-item-label');
+    if (!label) return;
+    label.addEventListener('click', function(e) {
+      if (window.innerWidth <= 768) {
+        e.stopPropagation();
+        item.classList.toggle('open');
+      }
+    });
+  });
+  var revealElements = document.querySelectorAll('.reveal, .reveal-left, .reveal-right');
+  if ('IntersectionObserver' in window) {
+    var observer = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+    revealElements.forEach(function(el) { observer.observe(el); });
+  } else {
+    revealElements.forEach(function(el) { el.classList.add('visible'); });
+  }
+});
+  </script>
+</body>
+</html>

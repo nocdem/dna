@@ -2,105 +2,76 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Contact – CPUNK Protocol | CPUNK.IO</title>
+  <title>CPUNK – Contact</title>
 
-  <!-- Basic meta -->
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description"
-    content="Get in touch with the CPUNK Protocol team. Join our community on X/Twitter, Telegram, GitHub, or reach out via email."
+    content="Get in touch with the CPUNK community. Find us on X, Telegram, GitHub, or reach out via email for partnerships and press inquiries."
   />
   <meta name="keywords"
-    content="CPUNK, contact, community, Telegram, Twitter, GitHub, post-quantum, DNA identity"
+    content="CPUNK, contact, community, Telegram, Twitter, GitHub, post-quantum, privacy, decentralization"
   />
   <meta name="author" content="CPUNK Protocol" />
   <meta name="robots" content="index, follow" />
-  <link rel="canonical" href="https://cpunk.io/contact.html" />
+  <link rel="canonical" href="https://cpunk.io/contact.html">
 
-  <!-- Open Graph / Social -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://cpunk.io/contact.html">
-  <meta property="og:title" content="Contact – CPUNK Protocol | CPUNK.IO">
-  <meta property="og:description" content="Get in touch with the CPUNK Protocol team. Join our community on X/Twitter, Telegram, GitHub, or reach out via email.">
+  <meta property="og:title" content="CPUNK — Contact">
+  <meta property="og:description" content="Get in touch with the CPUNK community. Follow us on X, join Telegram, contribute on GitHub, or reach out via email.">
   <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
 
-  <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="https://cpunk.io/contact.html">
-  <meta name="twitter:title" content="Contact – CPUNK Protocol | CPUNK.IO">
-  <meta name="twitter:description" content="Get in touch with the CPUNK Protocol team. Join our community on X/Twitter, Telegram, GitHub, or reach out via email.">
+  <meta name="twitter:title" content="CPUNK — Contact">
+  <meta name="twitter:description" content="Get in touch with the CPUNK community. Follow us on X, join Telegram, contribute on GitHub, or reach out via email.">
   <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
   <meta name="twitter:site" content="@OfficialCpunk">
 
-  <!-- Security Headers (meta) -->
-  <meta
-    http-equiv="Content-Security-Policy"
-    content="default-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://cpunk.club;"
-  />
-  <meta http-equiv="X-Frame-Options" content="SAMEORIGIN" />
-
-  <!-- Favicon -->
-  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-
-  <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap"
     rel="stylesheet"
   />
 
-  <!-- JSON-LD Structured Data -->
-  <script type="application/ld+json">
-  {
-    "@context": "https://schema.org",
-    "@type": "ContactPage",
-    "name": "CPUNK Protocol Contact",
-    "url": "https://cpunk.io/contact.html",
-    "description": "Get in touch with the CPUNK Protocol team.",
-    "mainEntity": {
-      "@type": "Organization",
-      "name": "CPUNK Protocol",
-      "url": "https://cpunk.io",
-      "email": "contact@cpunk.io",
-      "sameAs": [
-        "https://x.com/OfficialCpunk",
-        "https://t.me/chippunk_official",
-        "https://github.com/nocdem"
-      ]
-    }
-  }
-  </script>
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="manifest" href="/site.webmanifest">
 
   <style>
     :root {
       --bg: #050712;
-      --bg-alt: #090c1a;
-      --panel: #111426;
-      --panel-alt: #151832;
-      --accent: #00f0ff;
-      --accent-soft: rgba(0, 240, 255, 0.08);
-      --accent-strong: #ff2cd8;
-      --text-main: #f5f7ff;
-      --text-muted: #9aa4d4;
-      --text-soft: #7c86b4;
+      --bg-alt: #080c1a;
+      --panel: #0e1225;
+      --panel-alt: #131733;
+      --teal: #06c5d2;
+      --teal-soft: rgba(6, 197, 210, 0.08);
+      --teal-glow: rgba(6, 197, 210, 0.35);
+      --teal-dim: rgba(6, 197, 210, 0.15);
+      --orange: #f26229;
+      --orange-soft: rgba(242, 98, 41, 0.08);
+      --orange-glow: rgba(242, 98, 41, 0.35);
+      --orange-dim: rgba(242, 98, 41, 0.15);
+      --pink: #e040a0;
+      --text-main: #f0f2ff;
+      --text-muted: #8a94c0;
       --border-subtle: rgba(255, 255, 255, 0.06);
       --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.5);
       --radius-lg: 20px;
       --radius-xl: 28px;
       --radius-pill: 999px;
+      --transition-fast: 150ms ease-out;
       --nav-height: 72px;
       --max-width: 1120px;
-      --transition-fast: 150ms ease-out;
+      --font-display: 'Orbitron', sans-serif;
+      --font-body: 'Inter', system-ui, -apple-system, sans-serif;
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
-    html,
-    body {
+    html, body {
       height: 100%;
       scroll-behavior: smooth;
       max-width: 100%;
@@ -108,18 +79,12 @@
     }
 
     body {
-      font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont,
-        "Segoe UI", sans-serif;
-      background:
-        radial-gradient(circle at top left, #1a1d46 0, transparent 55%),
-        radial-gradient(circle at bottom right, #0d1025 0, #050712 55%);
+      font-family: var(--font-body);
+      background: var(--bg);
       color: var(--text-main);
     }
 
-    a {
-      color: inherit;
-      text-decoration: none;
-    }
+    a { color: inherit; text-decoration: none; }
 
     .page {
       min-height: 100vh;
@@ -134,20 +99,78 @@
       padding: 0 1.25rem;
     }
 
-    /* Header / nav */
+    /* -- Animations -- */
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes pulseGlow {
+      0%, 100% { opacity: 0.4; }
+      50%      { opacity: 0.8; }
+    }
+
+    @keyframes titleGlow {
+      0%, 100% {
+        text-shadow:
+          0 0 40px rgba(6,197,210,0.35),
+          0 0 80px rgba(6,197,210,0.12),
+          0 0 120px rgba(6,197,210,0.08);
+      }
+      50% {
+        text-shadow:
+          0 0 60px rgba(6,197,210,0.5),
+          0 0 110px rgba(6,197,210,0.2),
+          0 0 160px rgba(6,197,210,0.14);
+      }
+    }
+
+    /* Scroll reveal */
+    .reveal {
+      opacity: 0;
+      transform: translateY(28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .reveal-left {
+      opacity: 0;
+      transform: translateX(-28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal-right {
+      opacity: 0;
+      transform: translateX(28px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal-left.visible,
+    .reveal-right.visible {
+      opacity: 1;
+      transform: translateX(0);
+    }
+
+    /* Staggered children */
+    .stagger > *:nth-child(1) { transition-delay: 0s; }
+    .stagger > *:nth-child(2) { transition-delay: 0.1s; }
+    .stagger > *:nth-child(3) { transition-delay: 0.2s; }
+    .stagger > *:nth-child(4) { transition-delay: 0.3s; }
+
+    /* -- Header / Nav -- */
 
     header {
       position: sticky;
       top: 0;
       z-index: 20;
       backdrop-filter: blur(12px);
-      background: linear-gradient(
-        to bottom,
-        rgba(5, 7, 18, 0.96),
-        rgba(5, 7, 18, 0.88),
-        transparent
-      );
-      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      background: linear-gradient(to bottom, rgba(5,7,18,0.96), rgba(5,7,18,0.88), transparent);
+      border-bottom: 1px solid rgba(255,255,255,0.04);
     }
 
     .nav {
@@ -165,642 +188,619 @@
       gap: 0.75rem;
     }
 
-    .brand-icon.q-core {
-      width: 48px;
-      height: 28px;
-      border-radius: 12px;
-      background:
-        linear-gradient(180deg, #111, #050712),
-        repeating-linear-gradient(
-          45deg,
-          rgba(0, 240, 255, 0.15),
-          rgba(0, 240, 255, 0.15) 3px,
-          transparent 6px
-        );
-      box-shadow:
-        inset 0 0 10px rgba(0, 240, 255, 0.4),
-        0 0 16px #00f0ff88;
-      color: #00ffd5;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-    }
-
-    .brand-text {
-      display: flex;
-      flex-direction: column;
-      line-height: 1.1;
-    }
+    .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
 
     .brand-name {
+      font-family: var(--font-display);
       font-weight: 700;
-      letter-spacing: 0.06em;
-      font-size: 0.95rem;
+      letter-spacing: 0.08em;
+      font-size: 1rem;
       text-transform: uppercase;
     }
 
-    .brand-tag {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-    }
+    .brand-tag { font-size: 0.7rem; color: var(--text-muted); }
 
-    .nav-menu {
-      display: flex;
-      align-items: center;
-      gap: 1.5rem;
-    }
+    .nav-menu { display: flex; align-items: center; gap: 1.5rem; }
 
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 1.5rem;
-      font-size: 0.9rem;
-    }
+    .nav-links { display: flex; align-items: center; gap: 1.5rem; font-size: 0.9rem; }
 
     .nav-links a {
       color: var(--text-muted);
       padding-bottom: 2px;
       border-bottom: 1px solid transparent;
-      transition: color var(--transition-fast),
-        border-bottom-color var(--transition-fast);
+      transition: color var(--transition-fast), border-bottom-color var(--transition-fast);
     }
 
-    .nav-links a:hover {
-      color: var(--text-main);
-      border-bottom-color: rgba(0, 240, 255, 0.6);
-    }
+    .nav-links a.active { color: var(--text-main); border-bottom-color: var(--teal); }
+    .nav-links a:hover { color: var(--orange); border-bottom-color: var(--orange); }
 
-    .nav-links a.active {
-      color: var(--text-main);
-      border-bottom-color: rgba(0, 240, 255, 0.9);
-    }
-
-    .dropdown a.active {
-      background: rgba(255, 255, 255, 0.06);
-      color: var(--text-main);
-    }
-
-    .nav-item {
-      position: relative;
-    }
-
-    .nav-item-label {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.25rem;
-      cursor: pointer;
-      color: var(--text-muted);
-    }
-
-    .nav-item-label:hover {
-      color: var(--text-main);
-    }
-    .nav-item:hover .nav-item-label {
-      color: var(--text-main);
-    }
-
-    .caret {
-      border: 4px solid transparent;
-      border-top-color: var(--text-muted);
-      margin-top: 2px;
-    }
-
-    .dropdown {
-      position: absolute;
-      top: 110%;
-      left: 0;
-      min-width: 190px;
-      background: rgba(5, 7, 18, 0.98);
-      border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.6);
-      padding: 0.4rem 0;
-      display: none;
-      z-index: 30;
-    }
-
-    .dropdown a {
-      display: block;
-      padding: 0.4rem 0.9rem;
-      font-size: 0.85rem;
-      color: var(--text-muted);
-    }
-
-    .dropdown a:hover {
-      background: rgba(255, 255, 255, 0.04);
-      color: var(--text-main);
-    }
-
-    .nav-item:hover .dropdown {
-      display: block;
-    }
-
-    .nav-cta {
-      display: flex;
-      align-items: center;
-      gap: 0.8rem;
-    }
+    .nav-cta { display: flex; align-items: center; gap: 0.8rem; }
 
     .btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 0.45rem;
-      padding: 0.55rem 1.2rem;
+      padding: 0.5rem 1.2rem;
       border-radius: var(--radius-pill);
       border: 1px solid transparent;
-      font-size: 0.8rem;
+      font-size: 0.85rem;
       font-weight: 500;
       cursor: pointer;
       background: transparent;
       color: var(--text-main);
       transition: background var(--transition-fast), border var(--transition-fast),
-        transform var(--transition-fast), box-shadow var(--transition-fast),
-        color var(--transition-fast);
+        transform var(--transition-fast), box-shadow var(--transition-fast);
       text-decoration: none;
       white-space: nowrap;
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-      border-color: rgba(0, 240, 255, 0.7);
-      box-shadow: 0 10px 28px rgba(0, 240, 255, 0.3);
-      color: #050712;
+      background: var(--orange);
+      border-color: rgba(242,98,41,0.5);
+      box-shadow: 0 8px 25px rgba(242,98,41,0.25);
+      color: #ffffff;
+      font-weight: 600;
     }
 
     .btn-primary:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 16px 38px rgba(0, 240, 255, 0.35);
+      transform: translateY(-2px);
+      box-shadow: 0 14px 35px rgba(242,98,41,0.35);
     }
 
     .btn-ghost {
-      border-color: rgba(154, 164, 212, 0.7);
-      background: rgba(10, 12, 30, 0.7);
+      border-color: rgba(138,148,192,0.5);
+      background: rgba(10,12,30,0.7);
     }
 
     .btn-ghost:hover {
-      background: rgba(20, 24, 60, 0.9);
-      border-color: rgba(0, 240, 255, 0.7);
+      background: rgba(20,24,60,0.9);
+      border-color: var(--orange);
+      color: var(--orange);
     }
+
+    .btn-lg { padding: 0.7rem 1.8rem; font-size: 0.95rem; }
 
     .mobile-menu-toggle {
       display: none;
       width: 32px;
       height: 32px;
       border-radius: 50%;
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      background: rgba(7, 9, 25, 0.9);
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(7,9,25,0.9);
       align-items: center;
       justify-content: center;
       cursor: pointer;
     }
 
     .mobile-menu-toggle span {
-      display: block;
-      width: 16px;
-      height: 2px;
-      border-radius: 999px;
-      background: #fff;
-      position: relative;
+      display: block; width: 16px; height: 2px;
+      border-radius: 999px; background: #fff; position: relative;
     }
 
     .mobile-menu-toggle span::before,
     .mobile-menu-toggle span::after {
-      content: "";
-      position: absolute;
-      left: 0;
-      width: 16px;
-      height: 2px;
-      border-radius: inherit;
-      background: inherit;
+      content: ""; position: absolute; left: 0;
+      width: 16px; height: 2px; border-radius: inherit; background: inherit;
     }
 
-    .mobile-menu-toggle span::before {
-      top: -5px;
+    .mobile-menu-toggle span::before { top: -5px; }
+    .mobile-menu-toggle span::after { top: 5px; }
+
+    /* Dropdown */
+    .nav-item { position: relative; }
+
+    .nav-item-label {
+      display: inline-flex; align-items: center; gap: 0.25rem;
+      cursor: pointer; color: var(--text-muted);
     }
 
-    .mobile-menu-toggle span::after {
-      top: 5px;
+    .nav-item:hover .nav-item-label { color: var(--text-main); }
+    .nav-item .caret { border: 4px solid transparent; border-top-color: var(--text-muted); margin-top: 2px; }
+
+    .dropdown {
+      position: absolute; top: 110%; left: 0; min-width: 190px;
+      background: rgba(5,7,18,0.98); border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 14px 30px rgba(0,0,0,0.6);
+      padding: 0.4rem 0; display: none; z-index: 30;
     }
 
-    /* Main / hero */
+    .dropdown a { display: block; padding: 0.4rem 0.9rem; font-size: 0.85rem; color: var(--text-muted); }
+    .dropdown a:hover { background: rgba(255,255,255,0.04); color: var(--orange); }
+    .dropdown a.active { background: rgba(255,255,255,0.04); color: var(--text-main); }
+    .nav-item:hover .dropdown { display: block; }
 
-    main {
-      flex: 1;
-      padding: 2.4rem 0 2.8rem;
-    }
+    /* -- Hero -- */
 
-    .hero-contact {
-      margin-bottom: 2rem;
-    }
-
-    .hero-inner {
-      border-radius: var(--radius-xl);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      background: radial-gradient(
-          circle at top,
-          rgba(0, 240, 255, 0.08),
-          transparent 55%
-        ),
-        rgba(7, 9, 28, 0.96);
-      padding: 1.8rem 1.6rem 1.9rem;
-      box-shadow: var(--shadow-soft);
-    }
-
-    .hero-kicker {
-      font-size: 0.76rem;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: var(--text-muted);
-      margin-bottom: 0.3rem;
-      display: inline-flex;
+    .hero {
+      position: relative;
+      min-height: 340px;
+      display: flex;
       align-items: center;
-      gap: 0.5rem;
+      justify-content: center;
+      text-align: center;
+      overflow: hidden;
+      padding: 6rem 1.25rem 4rem;
     }
 
-    .hero-kicker .glow-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 8px var(--accent), 0 0 16px rgba(0, 240, 255, 0.4);
-      animation: pulse-glow 2s ease-in-out infinite;
+    .hero-bg {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      background:
+        radial-gradient(ellipse at 25% 50%, rgba(6,197,210,0.20) 0%, transparent 55%),
+        radial-gradient(ellipse at 75% 50%, rgba(6,197,210,0.10) 0%, transparent 55%),
+        var(--bg);
     }
 
-    @keyframes pulse-glow {
-      0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--accent), 0 0 16px rgba(0, 240, 255, 0.4); }
-      50% { opacity: 0.6; box-shadow: 0 0 4px var(--accent), 0 0 8px rgba(0, 240, 255, 0.2); }
+    .hero-content {
+      position: relative;
+      z-index: 2;
+      max-width: 750px;
+      animation: fadeInUp 1s ease-out;
     }
 
     .hero-title {
-      font-size: 1.9rem;
-      font-weight: 600;
-      margin-bottom: 0.4rem;
-      background: linear-gradient(135deg, var(--text-main) 0%, var(--accent) 60%, var(--accent-strong) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+      font-family: var(--font-display);
+      font-size: clamp(2rem, 6vw, 3.5rem);
+      font-weight: 900;
+      letter-spacing: 0.1em;
+      color: #ffffff;
+      animation: titleGlow 4s ease-in-out infinite;
+      margin-bottom: 1rem;
+      line-height: 1.1;
+    }
+
+    .hero-divider {
+      width: 120px;
+      height: 2px;
+      margin: 0 auto 1.5rem;
+      background: linear-gradient(90deg, var(--teal), rgba(6,197,210,0.4));
+      box-shadow: 0 0 12px rgba(6,197,210,0.3), 0 0 12px rgba(6,197,210,0.15);
+      border: none;
+      animation: pulseGlow 3s ease-in-out infinite;
     }
 
     .hero-subtitle {
-      font-size: 0.94rem;
-      color: var(--text-muted);
-      max-width: 40rem;
-    }
-
-    /* Sections & cards */
-
-    .section {
-      margin-bottom: 2rem;
-    }
-
-    .section-title {
-      margin-bottom: 1rem;
-    }
-
-    .section-title .kicker {
-      font-size: 0.72rem;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: var(--accent);
-      margin-bottom: 0.25rem;
-    }
-
-    .section-title h2 {
-      font-size: 1.35rem;
-      margin-bottom: 0.25rem;
-    }
-
-    .section-title p {
-      font-size: 0.9rem;
-      color: var(--text-soft);
-    }
-
-    .card {
-      border-radius: var(--radius-xl);
-      background: rgba(9, 11, 28, 0.96);
-      border: 1px solid var(--border-subtle);
-      box-shadow: var(--shadow-soft);
-      padding: 1.4rem 1.4rem 1.5rem;
-      font-size: 0.9rem;
-      color: var(--text-soft);
-      transition: border-color var(--transition-fast), transform var(--transition-fast);
-    }
-
-    .card:hover {
-      border-color: rgba(0, 240, 255, 0.15);
-    }
-
-    .card h3 {
       font-size: 1.1rem;
-      margin-bottom: 0.4rem;
-      font-weight: 600;
-      color: var(--text-main);
-    }
-
-    .card p {
-      margin-bottom: 0.6rem;
-      line-height: 1.6;
-    }
-
-    .grid {
-      display: grid;
-      gap: 1.1rem;
-    }
-
-    .grid-2 {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .grid-3 {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-
-    /* Channel cards */
-
-    .channel-card {
-      display: flex;
-      flex-direction: column;
-      gap: 0.8rem;
-    }
-
-    .channel-icon {
-      width: 44px;
-      height: 44px;
-      border-radius: 14px;
-      background: var(--accent-soft);
-      border: 1px solid rgba(0, 240, 255, 0.12);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-    }
-
-    .channel-icon svg {
-      width: 22px;
-      height: 22px;
-      fill: var(--accent);
-    }
-
-    .channel-name {
-      font-size: 0.78rem;
       color: var(--text-muted);
-      font-weight: 400;
+      line-height: 1.8;
+      max-width: 540px;
+      margin: 0 auto;
     }
 
-    .channel-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      font-size: 0.82rem;
-      color: var(--accent);
-      font-weight: 500;
-      margin-top: auto;
-      transition: color var(--transition-fast);
+    /* -- Sections -- */
+
+    .s-section {
+      padding: 5rem 0;
+      position: relative;
+      overflow: hidden;
     }
 
-    .channel-link:hover {
-      color: var(--text-main);
+    .s-dark {
+      background: var(--bg);
     }
 
-    .channel-link .arrow-icon {
-      width: 14px;
-      height: 14px;
-      transition: transform var(--transition-fast);
+    .s-panel {
+      background:
+        linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 100%);
+      border-top: 1px solid rgba(6,197,210,0.06);
+      border-bottom: 1px solid rgba(6,197,210,0.06);
     }
 
-    .channel-link:hover .arrow-icon {
-      transform: translateX(2px);
+    .s-section::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 3px;
+      height: 100%;
+      background: linear-gradient(180deg, transparent, var(--teal-dim), var(--teal-dim), transparent);
+      opacity: 0.5;
     }
 
-    /* Contribute cards */
-
-    .contribute-card {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-    }
-
-    .contribute-icon {
-      width: 36px;
-      height: 36px;
-      border-radius: 10px;
-      background: rgba(255, 44, 216, 0.08);
-      border: 1px solid rgba(255, 44, 216, 0.12);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-    }
-
-    .contribute-icon svg {
-      width: 18px;
-      height: 18px;
-      fill: none;
-      stroke: var(--accent-strong);
-      stroke-width: 1.5;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
-
-    /* CTA section */
-
-    .cta-section {
-      border-radius: var(--radius-xl);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      background: radial-gradient(
-          circle at bottom,
-          rgba(255, 44, 216, 0.06),
-          transparent 55%
-        ),
-        rgba(7, 9, 28, 0.96);
-      padding: 2rem 1.6rem;
-      text-align: center;
-      box-shadow: var(--shadow-soft);
-    }
-
-    .cta-section h2 {
-      font-size: 1.35rem;
+    .section-label {
+      font-family: var(--font-display);
+      font-size: 0.72rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--teal);
       margin-bottom: 0.5rem;
     }
 
-    .cta-buttons {
+    .section-title {
+      font-family: var(--font-display);
+      font-size: clamp(1.3rem, 2.5vw, 1.7rem);
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 0.6rem;
+      letter-spacing: 0.02em;
+    }
+
+    .section-desc {
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      max-width: 36rem;
+      line-height: 1.6;
+    }
+
+    .section-header-center {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+
+    .section-header-center .section-label,
+    .section-header-center .section-title,
+    .section-header-center .section-desc {
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    /* -- Contact Grid (2x2 token-card style) -- */
+
+    .contact-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1.2rem;
+    }
+
+    .token-card {
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 1.5rem 1.2rem;
+      text-align: center;
+      transition: border-color 0.4s, transform 0.4s, box-shadow 0.4s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .token-card::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(242,98,41,0.06), transparent);
+      transition: left 0.6s ease;
+    }
+
+    .token-card:hover::after {
+      left: 100%;
+    }
+
+    .token-card:hover {
+      border-color: rgba(242,98,41,0.4);
+      transform: translateY(-5px);
+      box-shadow: 0 12px 30px rgba(242,98,41,0.12), 0 0 0 1px rgba(242,98,41,0.1);
+    }
+
+    .token-card-icon {
+      margin-bottom: 0.8rem;
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 0.8rem;
-      margin-top: 1.2rem;
-      flex-wrap: wrap;
+      transition: transform 0.4s ease;
     }
 
-    /* Footer */
+    .token-card-icon svg {
+      width: 48px;
+      height: 48px;
+      stroke: var(--orange);
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      filter: drop-shadow(0 0 6px rgba(242,98,41,0.5)) drop-shadow(0 0 16px rgba(242,98,41,0.2));
+      transition: filter 0.4s ease;
+    }
+
+    .token-card:hover .token-card-icon svg {
+      filter: drop-shadow(0 0 10px rgba(242,98,41,0.7)) drop-shadow(0 0 28px rgba(242,98,41,0.4));
+    }
+
+    .token-card:hover .token-card-icon {
+      transform: scale(1.15) rotate(5deg);
+    }
+
+    .token-card:hover h3 {
+      color: var(--orange);
+    }
+
+    .token-card h3 {
+      font-family: var(--font-display);
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 0.4rem;
+      letter-spacing: 0.03em;
+      color: var(--teal);
+      position: relative;
+      z-index: 1;
+    }
+
+    .token-card p {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+      position: relative;
+      z-index: 1;
+    }
+
+    .token-card .contact-handle {
+      font-family: var(--font-display);
+      font-size: 0.78rem;
+      font-weight: 500;
+      color: var(--text-main);
+      margin-bottom: 0.4rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .token-card .contact-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      margin-top: 0.8rem;
+      padding: 0.35rem 0.9rem;
+      border-radius: var(--radius-pill);
+      background: var(--orange-soft);
+      border: 1px solid rgba(242,98,41,0.2);
+      color: var(--orange);
+      font-size: 0.78rem;
+      font-weight: 600;
+      transition: background var(--transition-fast), transform var(--transition-fast);
+      position: relative;
+      z-index: 1;
+    }
+
+    .token-card .contact-link:hover {
+      background: rgba(242,98,41,0.15);
+      transform: translateY(-1px);
+    }
+
+    /* -- Contribute Grid (3-col feature-card style) -- */
+
+    .contribute-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.2rem;
+    }
+
+    .feature-card {
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 1.3rem 1.4rem;
+      transition: border-color 0.4s, transform 0.4s, box-shadow 0.4s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .feature-card::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(242,98,41,0.06), transparent);
+      transition: left 0.6s ease;
+    }
+
+    .feature-card:hover::after { left: 100%; }
+
+    .feature-card:hover {
+      border-color: rgba(242,98,41,0.4);
+      transform: translateY(-3px);
+      box-shadow: 0 10px 28px rgba(242,98,41,0.1), 0 0 0 1px rgba(242,98,41,0.08);
+    }
+
+    .feature-card-icon {
+      flex-shrink: 0;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      background: var(--orange-soft);
+      border: 1px solid rgba(242,98,41,0.15);
+      transition: box-shadow 0.4s;
+    }
+
+    .feature-card-icon svg {
+      width: 24px;
+      height: 24px;
+      stroke: var(--orange);
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      filter: drop-shadow(0 0 4px rgba(242,98,41,0.4));
+    }
+
+    .feature-card:hover .feature-card-icon {
+      box-shadow: 0 0 16px rgba(242,98,41,0.25);
+    }
+
+    .feature-card-text h3 {
+      font-family: var(--font-display);
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      color: var(--teal);
+      margin-bottom: 0.3rem;
+      position: relative;
+      z-index: 1;
+      transition: color 0.3s;
+    }
+
+    .feature-card:hover .feature-card-text h3 { color: var(--orange); }
+
+    .feature-card-text p {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* -- CTA -- */
+
+    .cta-section { padding: 4rem 0; }
+
+    .cta-box {
+      border-radius: var(--radius-xl);
+      background:
+        radial-gradient(ellipse at 30% 50%, rgba(6,197,210,0.05) 0%, transparent 50%),
+        radial-gradient(ellipse at 70% 50%, rgba(6,197,210,0.05) 0%, transparent 50%),
+        radial-gradient(circle at top, #141840, #050712);
+      border: 1px solid rgba(6,197,210,0.15);
+      padding: 2.5rem 2rem;
+      text-align: center;
+      box-shadow: var(--shadow-soft);
+      transition: border-color 0.4s, box-shadow 0.4s;
+    }
+
+    .cta-box:hover {
+      border-color: rgba(242,98,41,0.3);
+      box-shadow: 0 20px 50px rgba(242,98,41,0.1);
+    }
+
+    .cta-title {
+      font-family: var(--font-display);
+      font-size: clamp(1.2rem, 2.2vw, 1.6rem);
+      font-weight: 700;
+      margin-bottom: 0.6rem;
+      letter-spacing: 0.03em;
+    }
+
+    .cta-text {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      max-width: 32rem;
+      margin: 0 auto 1.5rem;
+      line-height: 1.6;
+    }
+
+    .cta-actions {
+      display: flex; flex-wrap: wrap; gap: 0.7rem; justify-content: center;
+    }
+
+    /* -- Footer -- */
 
     footer {
-      padding: 1.7rem 0 2.2rem;
+      padding: 1.8rem 0 2.2rem;
       font-size: 0.8rem;
       color: var(--text-muted);
-      margin-top: auto;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
-      background: rgba(5, 7, 18, 0.96);
     }
 
     .footer-row {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: center;
+      display: flex; flex-wrap: wrap; justify-content: space-between;
+      gap: 1rem; align-items: end;
     }
 
-    .footer-links {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.9rem;
-    }
+    .footer-links { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+    .footer-links a { color: var(--text-muted); font-size: 0.8rem; }
+    .footer-links a:hover { color: var(--orange); }
 
-    .footer-links a {
-      color: var(--text-muted);
-      font-size: 0.8rem;
-    }
-
-    .footer-links a:hover {
-      color: var(--accent);
-    }
-
-    /* Responsive */
+    /* -- Responsive -- */
 
     @media (max-width: 900px) {
-      .grid-2 {
-        grid-template-columns: minmax(0, 1fr);
-      }
-      .grid-3 {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
+      .contact-grid { grid-template-columns: 1fr; }
+      .contribute-grid { grid-template-columns: 1fr; }
+      .cta-box { padding: 2rem 1.2rem; }
     }
 
     @media (max-width: 768px) {
       .nav-menu {
-        display: none;
-        position: absolute;
-        top: var(--nav-height);
-        right: 0;
-        left: 0;
-        padding: 0.9rem 1rem 1rem;
-        border-radius: 14px;
-        background: rgba(5, 7, 18, 0.98);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 0.7rem;
-        z-index: 15;
+        display: none; position: absolute; top: var(--nav-height);
+        right: 0; left: 0; padding: 0.9rem 1rem 1rem; border-radius: 14px;
+        background: rgba(5,7,18,0.98); border: 1px solid rgba(255,255,255,0.08);
+        flex-direction: column; align-items: flex-start; gap: 0.7rem; z-index: 15;
       }
 
-      .nav-menu.active {
-        display: flex;
-      }
+      .nav-menu.active { display: flex; }
 
-      .nav {
-        align-items: flex-start;
-      }
-
-      .nav-links {
-        flex-direction: column;
-        align-items: flex-start;
-        width: 100%;
-        gap: 0.75rem;
-      }
-
-      .nav-links a {
-        width: 100%;
-        padding: 0.25rem 0;
-      }
-
-      .nav-cta {
-        width: 100%;
-        justify-content: flex-start;
-        margin-top: 0.4rem;
-      }
-
-      .mobile-menu-toggle {
-        display: inline-flex;
-      }
+      .nav-links { flex-direction: column; align-items: flex-start; width: 100%; gap: 0.75rem; }
+      .nav-links a { width: 100%; padding: 0.25rem 0; }
+      .nav-cta { width: 100%; justify-content: flex-start; margin-top: 0.4rem; }
+      .mobile-menu-toggle { display: inline-flex; }
 
       .dropdown {
-        position: static;
-        box-shadow: none;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        margin-top: 0.3rem;
+        position: static; box-shadow: none; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.06); margin-top: 0.3rem;
       }
 
-      .nav-item:hover .dropdown {
-        display: none;
-      }
-
-      .nav-item.open .dropdown {
-        display: block;
-      }
-
-      main {
-        padding-top: 2rem;
-        padding-bottom: 2.2rem;
-      }
-
-      .hero-inner {
-        padding: 1.4rem 1.2rem 1.5rem;
-      }
-
-      .grid-3 {
-        grid-template-columns: minmax(0, 1fr);
-      }
+      .nav-item:hover .dropdown { display: none; }
+      .nav-item.open .dropdown { display: block; }
     }
 
     @media (max-width: 480px) {
-      .hero-title {
-        font-size: 1.6rem;
-      }
+      .hero-title { font-size: 2rem; }
+      .contact-grid { grid-template-columns: 1fr; }
+      .contribute-grid { grid-template-columns: 1fr; }
+    }
 
-      .cta-buttons {
-        flex-direction: column;
-        width: 100%;
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
       }
-
-      .cta-buttons .btn {
-        width: 100%;
-      }
+      .reveal, .reveal-left, .reveal-right { opacity: 1; transform: none; }
     }
   </style>
 </head>
 <body>
   <div class="page">
-    <!-- Header / nav -->
+
+    <!-- Header / Nav -->
     <header>
       <div class="wrap">
         <div class="nav">
-          <a href="/index.html" class="brand">
-            <div class="brand-icon q-core">DNA</div>
+          <a href="/" class="brand">
             <div class="brand-text">
               <span class="brand-name">CPUNK.IO</span>
-              <span class="brand-tag">Post-Quantum Identity &amp; Messaging</span>
+              <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
             </div>
           </a>
-          <button class="mobile-menu-toggle" aria-label="Toggle navigation"><span></span></button>
+
+          <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+            <span></span>
+          </button>
+
           <div class="nav-menu">
             <nav class="nav-links">
-              <a href="/index.html">Home</a>
+              <a href="/">Home</a>
+
               <div class="nav-item" data-dropdown="products">
-                <div class="nav-item-label"><span>Products</span><span class="caret"></span></div>
+                <div class="nav-item-label">
+                  <span>Products</span>
+                  <span class="caret"></span>
+                </div>
                 <div class="dropdown">
-                  <a href="/services/dna.html">DNA Identity</a>
-                  <a href="/products/dna-messenger.html">DNA Connect</a>
-                  <a href="/products/dht.html">DHT &amp; Bootstrap Nodes</a>
+                  <a href="/products/dna-identity.html">DNA Identity</a>
+                  <a href="/products/dna-connect.html">DNA Connect</a>
+                  <a href="/products/nodus.html">DNA Nodus</a>
+                  <a href="/products/dna-wallet.html">DNA Wallet</a>
                 </div>
               </div>
+
               <a href="/whitepaper.html">Whitepaper</a>
               <a href="/roadmap.html">Roadmap</a>
+
               <div class="nav-item" data-dropdown="about">
-                <div class="nav-item-label"><span>About</span><span class="caret"></span></div>
+                <div class="nav-item-label">
+                  <span>About</span>
+                  <span class="caret"></span>
+                </div>
                 <div class="dropdown">
                   <a href="/about.html">About CPUNK</a>
                   <a href="/team.html">Team</a>
@@ -809,8 +809,11 @@
                 </div>
               </div>
             </nav>
+
             <div class="nav-cta">
-              <a href="https://cpunk.club" target="_blank" rel="noreferrer" class="btn btn-primary">Open CPUNK.CLUB</a>
+              <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
+                Trade CPUNK
+              </a>
             </div>
           </div>
         </div>
@@ -818,199 +821,219 @@
     </header>
 
     <main>
-      <div class="wrap">
-        <!-- Hero -->
-        <section class="hero-contact">
-          <div class="hero-inner">
-            <div class="hero-kicker">
-              <span class="glow-dot"></span>
-              CONTACT
-            </div>
-            <h1 class="hero-title">Get in Touch</h1>
-            <p class="hero-subtitle">
-              We're a decentralized project — no corporate HQ, no receptionist.
-              Reach us where the community lives.
+
+      <!-- Hero -->
+      <section class="hero">
+        <div class="hero-bg"></div>
+        <div class="hero-content">
+          <h1 class="hero-title">Get in Touch</h1>
+          <div class="hero-divider"></div>
+          <p class="hero-subtitle">
+            CPUNK is built in the open by a global community. Reach out through any of the channels below &mdash; we'd love to hear from you.
+          </p>
+        </div>
+      </section>
+
+      <!-- Contact Channels -->
+      <section class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label">Contact Channels</div>
+            <h2 class="section-title">Where to find us</h2>
+            <p class="section-desc" style="max-width: 34rem;">
+              Whether you want to follow updates, join the conversation, contribute code, or discuss partnerships &mdash; pick the channel that works best for you.
             </p>
           </div>
-        </section>
 
-        <!-- Contact Channels -->
-        <section class="section">
-          <div class="section-title">
-            <h2>Contact Channels</h2>
-            <p>Find us on the platforms you already use</p>
-          </div>
+          <div class="contact-grid stagger">
 
-          <div class="grid grid-2">
             <!-- X / Twitter -->
-            <article class="card channel-card">
-              <div class="channel-icon">
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-                </svg>
-              </div>
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M4 4l6.5 8L4 20h2l5.5-6.8L16 20h4l-6.8-8.5L19.5 4H18l-5 6.2L9 4H4z"/></svg>
+              </span>
               <h3>X / Twitter</h3>
-              <span class="channel-name">@OfficialCpunk</span>
-              <p>Follow for announcements, updates, and community discussion.</p>
-              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noopener noreferrer" class="channel-link">
-                Follow on X
-                <svg class="arrow-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-              </a>
+              <div class="contact-handle">@OfficialCpunk</div>
+              <p>Follow for updates, engage with the community, and stay in the loop on everything CPUNK.</p>
+              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="contact-link">Follow on X &rarr;</a>
             </article>
 
             <!-- Telegram -->
-            <article class="card channel-card">
-              <div class="channel-icon">
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0h-.056zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/>
-                </svg>
-              </div>
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2L15 22l-4-9-9-4L22 2z"/></svg>
+              </span>
               <h3>Telegram</h3>
-              <span class="channel-name">CPUNK Community</span>
-              <p>Join our Telegram group for real-time chat with the team and community.</p>
-              <a href="https://t.me/chippunk_official" target="_blank" rel="noopener noreferrer" class="channel-link">
-                Join Telegram
-                <svg class="arrow-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-              </a>
+              <div class="contact-handle">@chippunk_official</div>
+              <p>Join the conversation, ask questions, and connect with other community members in real time.</p>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="contact-link">Join Telegram &rarr;</a>
             </article>
 
             <!-- GitHub -->
-            <article class="card channel-card">
-              <div class="channel-icon">
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
-                </svg>
-              </div>
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+              </span>
               <h3>GitHub</h3>
-              <span class="channel-name">nocdem</span>
-              <p>Browse the source code, report issues, submit pull requests.</p>
-              <a href="https://github.com/nocdem" target="_blank" rel="noopener noreferrer" class="channel-link">
-                View on GitHub
-                <svg class="arrow-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-              </a>
+              <div class="contact-handle">nocdem/dna</div>
+              <p>Browse the source code, report bugs, open pull requests, and contribute to the project.</p>
+              <a href="https://github.com/nocdem/dna" target="_blank" rel="noreferrer" class="contact-link">View on GitHub &rarr;</a>
             </article>
 
             <!-- Email -->
-            <article class="card channel-card">
-              <div class="channel-icon">
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M1.5 8.67v8.58a3 3 0 0 0 3 3h15a3 3 0 0 0 3-3V8.67l-8.928 5.493a3 3 0 0 1-3.144 0L1.5 8.67z"/>
-                  <path d="M22.5 6.908V6.75a3 3 0 0 0-3-3h-15a3 3 0 0 0-3 3v.158l9.714 5.978a1.5 1.5 0 0 0 1.572 0L22.5 6.908z"/>
-                </svg>
-              </div>
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 4L12 13 2 4"/></svg>
+              </span>
               <h3>Email</h3>
-              <span class="channel-name">contact@cpunk.io</span>
-              <p>For enterprise inquiries, partnerships, and press.</p>
-              <a href="mailto:contact@cpunk.io" class="channel-link">
-                Send Email
-                <svg class="arrow-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-              </a>
+              <div class="contact-handle">contact@cpunk.io</div>
+              <p>Business inquiries, partnerships, press, and anything that needs a direct conversation.</p>
+              <a href="mailto:contact@cpunk.io" class="contact-link">Send Email &rarr;</a>
             </article>
+
           </div>
-        </section>
+        </div>
+      </section>
 
-        <!-- Join the Movement -->
-        <section class="section">
-          <div class="section-title">
-            <div class="kicker">JOIN THE MOVEMENT</div>
-            <h2>Help Build the Future of Privacy</h2>
-          </div>
-
-          <div class="grid grid-3">
-            <article class="card contribute-card">
-              <div class="contribute-icon">
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <circle cx="12" cy="12" r="3"/>
-                  <path d="M12 1v4m0 14v4M4.22 4.22l2.83 2.83m9.9 9.9l2.83 2.83M1 12h4m14 0h4M4.22 19.78l2.83-2.83m9.9-9.9l2.83-2.83"/>
-                </svg>
-              </div>
-              <h3>Run a Nodus Node</h3>
-              <p>
-                Support the decentralized network by operating a DHT node.
-                Minimal hardware requirements. Every node strengthens the network.
-              </p>
-            </article>
-
-            <article class="card contribute-card">
-              <div class="contribute-icon">
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M16 18l2-2-2-2M8 18l-2-2 2-2M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5zm9-1v4"/>
-                </svg>
-              </div>
-              <h3>Contribute Code</h3>
-              <p>
-                Apache 2.0 licensed. Fix bugs, add features, improve documentation.
-                Every contribution counts.
-              </p>
-            </article>
-
-            <article class="card contribute-card">
-              <div class="contribute-icon">
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-                </svg>
-              </div>
-              <h3>Translate the App</h3>
-              <p>
-                Help us reach more people. DNA Connect currently supports 10
-                languages — help us add yours.
-              </p>
-            </article>
-          </div>
-        </section>
-
-        <!-- CTA -->
-        <section class="section">
-          <div class="cta-section">
-            <h2>Ready to dive in?</h2>
-            <p style="color: var(--text-muted); max-width: 28rem; margin: 0 auto;">
-              Explore the protocol, join the community, and help build a
-              quantum-safe future for digital identity and communication.
+      <!-- Contribute -->
+      <section class="s-section s-panel">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label">Contribute</div>
+            <h2 class="section-title">Help build the future</h2>
+            <p class="section-desc" style="max-width: 34rem;">
+              CPUNK is a community project. There are many ways to get involved &mdash; no matter your skill set.
             </p>
-            <div class="cta-buttons">
-              <a href="/whitepaper.html" class="btn btn-ghost">Read the Whitepaper</a>
-              <a href="https://cpunk.club" target="_blank" rel="noreferrer" class="btn btn-primary">Open CPUNK.CLUB</a>
+          </div>
+
+          <div class="contribute-grid stagger">
+
+            <!-- Run a Nodus Node -->
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>Run a Nodus Node</h3>
+                <p>Help decentralize the network by running a Nodus node. Every node strengthens the infrastructure that powers messaging, identity, and data storage.</p>
+              </div>
+            </article>
+
+            <!-- Contribute Code -->
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>Contribute Code</h3>
+                <p>The entire stack is Apache 2.0 licensed and open to all. From C library patches to app UI improvements &mdash; every contribution counts.</p>
+              </div>
+            </article>
+
+            <!-- Translate -->
+            <article class="feature-card reveal">
+              <div class="feature-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M5 8l6 6"/><path d="M4 14l6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="M22 22l-5-10-5 10"/><path d="M14 18h6"/></svg>
+              </div>
+              <div class="feature-card-text">
+                <h3>Translate</h3>
+                <p>Help us reach more people. DNA Connect currently supports 10 languages &mdash; and we are always looking to add more with community help.</p>
+              </div>
+            </article>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- CTA -->
+      <section class="cta-section">
+        <div class="wrap">
+          <div class="cta-box reveal">
+            <h2 class="cta-title">Join the CPUNK movement</h2>
+            <p class="cta-text">
+              Download DNA Connect, join the conversation, and find a piece of the project
+              you want to improve. Every meaningful contributor once started as a community member.
+            </p>
+            <div class="cta-actions">
+              <a href="/products/dna-connect.html" class="btn btn-primary btn-lg">Download DNA Connect</a>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Join Telegram</a>
+              <a href="https://github.com/nocdem/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Explore Code</a>
+              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Follow on X</a>
             </div>
           </div>
-        </section>
-      </div>
+        </div>
+      </section>
+
     </main>
 
     <!-- Footer -->
     <footer>
       <div class="wrap">
         <div class="footer-row">
-          <div>© 2026 CPUNK Protocol – Quantum-safe, Decentralized, Community-driven.</div>
+          <div>&copy; 2026 CPUNK Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
             <a href="/">Home</a>
-            <a href="/whitepaper.html">Whitepaper</a>
-            <a href="/roadmap.html">Roadmap</a>
-            <a href="/legal.html">Legal &amp; Compliance</a>
+            <a href="/products/dna-identity.html">DNA Identity</a>
+            <a href="/products/dna-connect.html">DNA Connect</a>
+            <a href="/products/nodus.html">DNA Nodus</a>
+            <a href="/products/dna-wallet.html">DNA Wallet</a>
             <a href="/team.html">Team</a>
-            <a href="/contact.html">Contact</a>
-            <a href="https://cpunk.club" target="_blank" rel="noreferrer">CPUNK.CLUB</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
+            <a href="/doc/cpunk-legal.pdf" target="_blank">Legal &amp; Compliance</a>
           </div>
         </div>
       </div>
     </footer>
   </div>
 
-  <!-- JS: mobile nav + dropdowns -->
   <script>
+    /* -- Mobile Nav -- */
     document.addEventListener('DOMContentLoaded', function() {
-      const mobileToggle = document.querySelector('.mobile-menu-toggle');
-      const navMenu = document.querySelector('.nav-menu');
+      var mobileToggle = document.querySelector('.mobile-menu-toggle');
+      var navMenu = document.querySelector('.nav-menu');
+
       if (mobileToggle && navMenu) {
-        mobileToggle.addEventListener('click', function() { navMenu.classList.toggle('active'); });
+        mobileToggle.addEventListener('click', function() {
+          navMenu.classList.toggle('active');
+        });
       }
+
       document.querySelectorAll('.nav-item').forEach(function(item) {
-        const label = item.querySelector('.nav-item-label');
+        var label = item.querySelector('.nav-item-label');
         if (!label) return;
         label.addEventListener('click', function(e) {
-          if (window.innerWidth <= 768) { e.stopPropagation(); item.classList.toggle('open'); }
+          if (window.innerWidth <= 768) {
+            e.stopPropagation();
+            item.classList.toggle('open');
+          }
         });
       });
+
+      /* -- Scroll Reveal (IntersectionObserver) -- */
+      var revealElements = document.querySelectorAll('.reveal, .reveal-left, .reveal-right');
+
+      if ('IntersectionObserver' in window) {
+        var observer = new IntersectionObserver(function(entries) {
+          entries.forEach(function(entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('visible');
+              observer.unobserve(entry.target);
+            }
+          });
+        }, {
+          threshold: 0.12,
+          rootMargin: '0px 0px -40px 0px'
+        });
+
+        revealElements.forEach(function(el) {
+          observer.observe(el);
+        });
+      } else {
+        /* Fallback: show everything */
+        revealElements.forEach(function(el) {
+          el.classList.add('visible');
+        });
+      }
     });
   </script>
 </body>
