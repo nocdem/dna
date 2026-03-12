@@ -499,37 +499,57 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
         try {
           final mnemonic = engine.getMnemonic();
           final words = mnemonic.split(' ');
+          final theme = Theme.of(context);
+          final isDark = theme.brightness == Brightness.dark;
 
           showDialog(
             context: context,
             barrierDismissible: false,
-            builder: (context) => AlertDialog(
-              title: Row(
-                children: [
-                  FaIcon(FontAwesomeIcons.key, color: DnaColors.textWarning),
-                  const SizedBox(width: 8),
-                  Expanded(child: Text(AppLocalizations.of(context).settingsYourSeedPhrase)),
-                ],
-              ),
-              content: SizedBox(
-                width: double.maxFinite,
-                child: SingleChildScrollView(
+            builder: (context) => Dialog(
+              insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 32),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              backgroundColor: theme.dialogBackgroundColor,
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+                      // Header icon with gradient background
+                      Container(
+                        width: 56,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: [
+                              DnaColors.gradientStart.withAlpha(40),
+                              DnaColors.gradientEnd.withAlpha(40),
+                            ],
+                          ),
+                        ),
+                        child: Center(
+                          child: FaIcon(
+                            FontAwesomeIcons.shieldHalved,
+                            color: DnaColors.gradientStart,
+                            size: 24,
+                          ),
+                        ),
                       ),
-                      child: LayoutBuilder(
+                      const SizedBox(height: 16),
+                      // Title
+                      Text(
+                        AppLocalizations.of(context).settingsYourSeedPhrase,
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      // Word grid — 3 columns
+                      LayoutBuilder(
                         builder: (context, constraints) {
-                          final columns = constraints.maxWidth < 200 ? 2 : (constraints.maxWidth < 300 ? 3 : 4);
+                          const columns = 3;
                           final rows = (words.length / columns).ceil();
-                          final theme = Theme.of(context);
 
                           return Column(
                             children: List.generate(rows, (rowIndex) {
@@ -548,18 +568,43 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                                       child: Padding(
                                         padding: EdgeInsets.only(right: colIndex < columns - 1 ? 8 : 0),
                                         child: Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                                           decoration: BoxDecoration(
-                                            color: theme.scaffoldBackgroundColor,
-                                            borderRadius: BorderRadius.circular(8),
-                                            border: Border.all(color: theme.colorScheme.primary.withAlpha(51)),
-                                          ),
-                                          child: Text(
-                                            '$displayIndex. $word',
-                                            style: theme.textTheme.bodyMedium?.copyWith(
-                                              fontFamily: 'monospace',
+                                            color: isDark
+                                                ? DnaColors.darkSurfaceVariant
+                                                : DnaColors.lightSurfaceVariant,
+                                            borderRadius: BorderRadius.circular(10),
+                                            border: Border.all(
+                                              color: isDark
+                                                  ? Colors.white.withAlpha(15)
+                                                  : Colors.black.withAlpha(15),
                                             ),
-                                            textAlign: TextAlign.center,
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              SizedBox(
+                                                width: 22,
+                                                child: Text(
+                                                  '$displayIndex',
+                                                  style: theme.textTheme.bodySmall?.copyWith(
+                                                    color: isDark
+                                                        ? DnaColors.darkTextSecondary
+                                                        : DnaColors.lightTextSecondary,
+                                                    fontWeight: FontWeight.w500,
+                                                    fontSize: 11,
+                                                  ),
+                                                ),
+                                              ),
+                                              Expanded(
+                                                child: Text(
+                                                  word,
+                                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                                    fontWeight: FontWeight.w600,
+                                                    letterSpacing: 0.3,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
                                       ),
@@ -571,39 +616,107 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                           );
                         },
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Icon(FontAwesomeIcons.triangleExclamation, size: 16, color: DnaColors.textWarning),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            AppLocalizations.of(context).settingsSeedPhraseWarning,
-                            style: Theme.of(context).textTheme.bodySmall,
+                      const SizedBox(height: 20),
+                      // Warning banner
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: DnaColors.warning.withAlpha(isDark ? 25 : 30),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: DnaColors.warning.withAlpha(isDark ? 50 : 60),
                           ),
                         ),
-                      ],
-                    ),
-                  ],
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.only(top: 1),
+                              child: FaIcon(
+                                FontAwesomeIcons.triangleExclamation,
+                                size: 15,
+                                color: DnaColors.warning,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                AppLocalizations.of(context).settingsSeedPhraseWarning,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: isDark
+                                      ? DnaColors.warning.withAlpha(220)
+                                      : DnaColors.warning.withAlpha(200),
+                                  height: 1.4,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      // Copy button — gradient style
+                      SizedBox(
+                        width: double.infinity,
+                        height: 46,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(
+                              colors: [DnaColors.gradientStart, DnaColors.gradientEnd],
+                            ),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: ElevatedButton.icon(
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: mnemonic));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(AppLocalizations.of(context).settingsSeedCopied)),
+                              );
+                            },
+                            icon: const FaIcon(FontAwesomeIcons.copy, size: 16),
+                            label: Text(AppLocalizations.of(context).copy),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.transparent,
+                              shadowColor: Colors.transparent,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              textStyle: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 15,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      // Done button — outlined
+                      SizedBox(
+                        width: double.infinity,
+                        height: 46,
+                        child: OutlinedButton(
+                          onPressed: () => Navigator.pop(context),
+                          style: OutlinedButton.styleFrom(
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            side: BorderSide(
+                              color: isDark
+                                  ? Colors.white.withAlpha(40)
+                                  : Colors.black.withAlpha(40),
+                            ),
+                            textStyle: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
+                          ),
+                          child: Text(AppLocalizations.of(context).done),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            actions: [
-                TextButton(
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: mnemonic));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text(AppLocalizations.of(context).settingsSeedCopied)),
-                    );
-                  },
-                  child: Text(AppLocalizations.of(context).copy),
-                ),
-                ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(AppLocalizations.of(context).done),
-                ),
-              ],
             ),
           );
         } catch (e) {
