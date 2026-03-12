@@ -1308,14 +1308,17 @@ static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
     nodus_t2_server_info_t infos[NODUS_PBFT_MAX_PEERS + 1];
     int count = 0;
 
-    /* Self first — use external_ip if configured, otherwise bind_ip */
-    memset(&infos[count], 0, sizeof(infos[0]));
+    /* Self first — use external_ip if configured, otherwise bind_ip.
+     * Skip self if resolved IP is 0.0.0.0 (not routable). */
     const char *self_ip = srv->config.external_ip[0] ? srv->config.external_ip
                         : srv->config.bind_ip[0]     ? srv->config.bind_ip
-                        : "0.0.0.0";
-    snprintf(infos[count].ip, sizeof(infos[0].ip), "%s", self_ip);
-    infos[count].tcp_port = srv->config.tcp_port;
-    count++;
+                        : NULL;
+    if (self_ip && strcmp(self_ip, "0.0.0.0") != 0) {
+        memset(&infos[count], 0, sizeof(infos[0]));
+        snprintf(infos[count].ip, sizeof(infos[0].ip), "%s", self_ip);
+        infos[count].tcp_port = srv->config.tcp_port;
+        count++;
+    }
 
     /* Alive peers */
     for (int i = 0; i < srv->pbft.peer_count && count < NODUS_PBFT_MAX_PEERS + 1; i++) {
