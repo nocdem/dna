@@ -2348,7 +2348,7 @@ class _TokenOption {
   }
 }
 
-/// Simplified send sheet for token transfers from chat
+/// 3-step animated send sheet for token transfers from chat
 class _ChatSendSheet extends ConsumerStatefulWidget {
   final Contact contact;
 
@@ -2358,7 +2358,8 @@ class _ChatSendSheet extends ConsumerStatefulWidget {
   ConsumerState<_ChatSendSheet> createState() => _ChatSendSheetState();
 }
 
-class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
+class _ChatSendSheetState extends ConsumerState<_ChatSendSheet>
+    with SingleTickerProviderStateMixin {
   final _amountController = TextEditingController();
   bool _isSending = false;
   String? _sendError;
@@ -2367,16 +2368,41 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
   List<_TokenOption> _availableTokens = [];
   _TokenOption? _selectedToken;
 
+  /// Current step: 0=token, 1=network, 2=amount
+  int _step = 0;
+  String? _selectedTokenName; // 'CPUNK', 'USDT', 'USDC'
+
+  late AnimationController _animController;
+  late Animation<double> _fadeAnim;
+
   @override
   void initState() {
     super.initState();
+    _animController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _fadeAnim = CurvedAnimation(parent: _animController, curve: Curves.easeInOut);
+    _animController.forward();
     _resolveContactProfile();
   }
 
   @override
   void dispose() {
     _amountController.dispose();
+    _animController.dispose();
     super.dispose();
+  }
+
+  void _goToStep(int step) {
+    _animController.reverse().then((_) {
+      if (!mounted) return;
+      setState(() {
+        _step = step;
+        _sendError = null;
+      });
+      _animController.forward();
+    });
   }
 
   Future<void> _resolveContactProfile() async {
@@ -2387,9 +2413,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
       if (!mounted) return;
 
       if (profile == null) {
-        setState(() {
-          _isResolving = false;
-        });
+        setState(() => _isResolving = false);
         return;
       }
 
@@ -2398,40 +2422,57 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
         _isResolving = false;
         _contactProfile = profile;
         _availableTokens = tokens;
-        _selectedToken = tokens.isNotEmpty ? tokens.first : null;
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _isResolving = false;
-      });
+      setState(() => _isResolving = false);
     }
   }
 
-  /// Get balance for the currently selected token
-  String? _getSelectedBalance() {
-    if (_selectedToken == null) return null;
+  /// Get balance for a specific token+network combo
+  String _getBalance(String token, String network) {
     final walletsAsync = ref.watch(walletsProvider);
     return walletsAsync.whenOrNull(
       data: (wallets) {
-        if (wallets.isEmpty) return null;
+        if (wallets.isEmpty) return '0';
         final balancesAsync = ref.watch(balancesProvider(0));
         return balancesAsync.whenOrNull(
           data: (balances) {
             for (final b in balances) {
-              if (b.token == _selectedToken!.token &&
-                  b.network.toLowerCase() == _selectedToken!.network.toLowerCase()) {
+              if (b.token == token &&
+                  b.network.toLowerCase() == network.toLowerCase()) {
                 return b.balance;
               }
             }
-            return null;
+            return '0';
           },
         );
       },
-    );
+    ) ?? '0';
   }
 
-  /// Calculate max sendable amount
+  /// Get total balance for a token across all networks
+  String _getTotalBalance(String token) {
+    final networks = token == 'CPUNK'
+        ? ['Cellframe']
+        : ['Ethereum', 'Solana', 'Tron'];
+    double total = 0;
+    for (final net in networks) {
+      total += double.tryParse(_getBalance(token, net)) ?? 0;
+    }
+    if (total == 0) return '0';
+    return total < 0.01
+        ? total.toStringAsFixed(8)
+        : (total < 1 ? total.toStringAsFixed(4) : total.toStringAsFixed(2));
+  }
+
+  /// Get balance for the currently selected token option
+  String? _getSelectedBalance() {
+    if (_selectedToken == null) return null;
+    final bal = _getBalance(_selectedToken!.token, _selectedToken!.network);
+    return bal == '0' ? null : bal;
+  }
+
   double? _calculateMaxAmount() {
     final balanceStr = _getSelectedBalance();
     if (balanceStr == null || balanceStr.isEmpty) return null;
@@ -2450,13 +2491,11 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
   }
 
   Future<void> _send() async {
-    // Clear previous error
     setState(() {
       _sendError = null;
       _isSending = true;
     });
 
-    // Validate amount against balance before sending
     final amountStr = _amountController.text.trim();
     final amount = double.tryParse(amountStr);
     final maxAmount = _calculateMaxAmount();
@@ -2480,7 +2519,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
     try {
       final recipientAddress = _selectedToken!.getAddress(_contactProfile!);
       final txHash = await ref.read(walletsProvider.notifier).sendTokens(
-        walletIndex: 0, // Current identity's wallet
+        walletIndex: 0,
         recipientAddress: recipientAddress,
         amount: amountStr,
         token: _selectedToken!.token,
@@ -2489,7 +2528,6 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
       );
 
       if (mounted) {
-        // Create transfer message in chat with tx hash
         final transferData = jsonEncode({
           'type': 'token_transfer',
           'amount': amountStr,
@@ -2501,11 +2539,9 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
           'recipientName': widget.contact.displayName,
         });
 
-        // Send the transfer message to the conversation
         ref.read(conversationProvider(widget.contact.fingerprint).notifier)
             .sendMessage(transferData);
 
-        // Close dialog and show success
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -2516,7 +2552,6 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
       }
     } catch (e) {
       if (mounted) {
-        // Show error in dialog - don't close
         final message = e is DnaEngineException ? e.message : e.toString();
         setState(() {
           _isSending = false;
@@ -2526,188 +2561,556 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
     }
   }
 
+  void _selectToken(String tokenName) {
+    _selectedTokenName = tokenName;
+    if (tokenName == 'CPUNK') {
+      // CPUNK has only Cellframe — skip network step
+      _selectedToken = _availableTokens.firstWhere(
+        (t) => t.token == 'CPUNK',
+        orElse: () => _availableTokens.first,
+      );
+      _goToStep(2);
+    } else {
+      _goToStep(1);
+    }
+  }
+
+  void _selectNetwork(String network) {
+    _selectedToken = _availableTokens.firstWhere(
+      (t) => t.token == _selectedTokenName && t.network == network,
+      orElse: () => _availableTokens.first,
+    );
+    _goToStep(2);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final l10n = AppLocalizations.of(context);
-    final balance = _getSelectedBalance();
-    final maxAmount = _calculateMaxAmount();
+    final isDark = theme.brightness == Brightness.dark;
+    final contactName = widget.contact.displayName.isNotEmpty
+        ? widget.contact.displayName
+        : 'contact';
+
+    final totalSteps = _selectedTokenName == 'CPUNK' ? '2' : '3';
+    final currentStep = _selectedTokenName == 'CPUNK'
+        ? (_step == 0 ? '1' : '2')
+        : '${_step + 1}';
 
     return Container(
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
       ),
       child: Padding(
         padding: EdgeInsets.only(
           left: 24,
           right: 24,
-          top: 24,
+          top: 16,
           bottom: MediaQuery.of(context).viewInsets.bottom + 24,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Header
+            // Drag handle
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.onSurface.withAlpha(40),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+
+            // Header with back button
             Row(
               children: [
-                const FaIcon(FontAwesomeIcons.moneyBillTransfer, size: 24),
-                const SizedBox(width: 12),
+                if (_step > 0)
+                  IconButton(
+                    icon: FaIcon(FontAwesomeIcons.arrowLeft, size: 18,
+                      color: theme.colorScheme.primary),
+                    onPressed: () {
+                      if (_step == 2 && _selectedTokenName == 'CPUNK') {
+                        _goToStep(0);
+                      } else {
+                        _goToStep(_step - 1);
+                      }
+                    },
+                  )
+                else
+                  const SizedBox(width: 48),
                 Expanded(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        l10n.chatSendTokens,
-                        style: theme.textTheme.titleLarge,
+                        l10n.chatSendTokensTo(contactName),
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                        textAlign: TextAlign.center,
                       ),
-                      Text(
-                        l10n.chatSendTokensTo(widget.contact.displayName.isNotEmpty ? widget.contact.displayName : 'contact'),
-                        style: theme.textTheme.bodySmall,
-                      ),
+                      if (!_isResolving && _availableTokens.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            l10n.chatStepOf(currentStep, totalSteps),
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.primary,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
                 IconButton(
-                  icon: const FaIcon(FontAwesomeIcons.xmark),
+                  icon: FaIcon(FontAwesomeIcons.xmark, size: 18,
+                    color: theme.colorScheme.onSurface.withAlpha(150)),
                   onPressed: () => Navigator.pop(context),
                 ),
               ],
             ),
-            const SizedBox(height: 24),
 
-            // Wallet resolution status
-            if (_isResolving)
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    children: [
-                      const CircularProgressIndicator(),
-                      const SizedBox(height: 12),
-                      Text(l10n.chatLookingUpWallets),
-                    ],
-                  ),
-                ),
-              )
-            else if (_availableTokens.isEmpty)
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: DnaColors.warning.withAlpha(30),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    FaIcon(FontAwesomeIcons.circleExclamation, color: DnaColors.warning),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        l10n.chatNoWalletAddresses,
-                        style: TextStyle(color: DnaColors.warning),
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            else ...[
-              // Token selector
-              DropdownButtonFormField<_TokenOption>(
-                value: _selectedToken,
-                decoration: InputDecoration(
-                  labelText: l10n.chatTokenLabel,
-                ),
-                items: _availableTokens.map((opt) {
-                  return DropdownMenuItem<_TokenOption>(
-                    value: opt,
-                    child: Text(opt.displayName),
-                  );
-                }).toList(),
-                onChanged: (opt) {
-                  if (opt != null) {
-                    setState(() {
-                      _selectedToken = opt;
-                      _sendError = null;
-                    });
-                  }
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // Amount input
-              TextField(
-                controller: _amountController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(
-                  labelText: l10n.chatSendAmount,
-                  hintText: '0.00',
-                  suffixText: _selectedToken?.token ?? '',
-                  helperText: balance != null ? l10n.chatSendAvailable(balance, _selectedToken?.token ?? '') : null,
-                ),
-                onChanged: (_) => setState(() {}),
-              ),
-              const SizedBox(height: 8),
-
-              // Max button
-              if (maxAmount != null && maxAmount > 0)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: () {
-                      _amountController.text = maxAmount.toStringAsFixed(
-                        maxAmount < 0.01 ? 8 : (maxAmount < 1 ? 4 : 2),
-                      );
-                      setState(() {});
-                    },
-                    child: Text(l10n.chatSendMax),
-                  ),
-                ),
-              const SizedBox(height: 16),
-
-              // Error display
-              if (_sendError != null)
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: DnaColors.error.withAlpha(20),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: DnaColors.error.withAlpha(50)),
-                  ),
-                  child: Row(
-                    children: [
-                      FaIcon(FontAwesomeIcons.circleExclamation,
-                             color: DnaColors.error, size: 16),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          _sendError!,
-                          style: TextStyle(color: DnaColors.error, fontSize: 13),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-              // Send button
-              ElevatedButton(
-                onPressed: _canSend() ? _send : null,
-                child: _isSending
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text(l10n.chatSendButton(_selectedToken?.token ?? 'Tokens')),
-              ),
+            // Step progress indicator
+            if (!_isResolving && _availableTokens.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              _buildProgressBar(theme),
             ],
+
+            const SizedBox(height: 20),
+
+            // Content with fade animation
+            if (_isResolving)
+              _buildLoading(l10n)
+            else if (_availableTokens.isEmpty)
+              _buildNoWallets(l10n, theme)
+            else
+              FadeTransition(
+                opacity: _fadeAnim,
+                child: _step == 0
+                    ? _buildTokenStep(theme, l10n, isDark)
+                    : _step == 1
+                        ? _buildNetworkStep(theme, l10n, isDark)
+                        : _buildAmountStep(theme, l10n),
+              ),
           ],
         ),
       ),
     );
   }
 
+  Widget _buildProgressBar(ThemeData theme) {
+    final steps = _selectedTokenName == 'CPUNK' ? 2 : 3;
+    final activeStep = _selectedTokenName == 'CPUNK'
+        ? (_step == 0 ? 0 : 1)
+        : _step;
+    return Row(
+      children: List.generate(steps, (i) {
+        final isActive = i <= activeStep;
+        return Expanded(
+          child: Container(
+            height: 3,
+            margin: EdgeInsets.only(right: i < steps - 1 ? 4 : 0),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(2),
+              color: isActive
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.onSurface.withAlpha(30),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  Widget _buildLoading(AppLocalizations l10n) {
+    return Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        children: [
+          const CircularProgressIndicator(),
+          const SizedBox(height: 16),
+          Text(l10n.chatLookingUpWallets),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoWallets(AppLocalizations l10n, ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: DnaColors.warning.withAlpha(20),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          FaIcon(FontAwesomeIcons.circleExclamation, color: DnaColors.warning),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(l10n.chatNoWalletAddresses,
+                style: TextStyle(color: DnaColors.warning)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Step 1: Token selection
+  Widget _buildTokenStep(ThemeData theme, AppLocalizations l10n, bool isDark) {
+    final tokens = ['CPUNK', 'USDT', 'USDC'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(l10n.chatSelectToken,
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.5,
+              color: theme.colorScheme.onSurface.withAlpha(150),
+            )),
+        const SizedBox(height: 12),
+        ...tokens.map((token) {
+          final balance = _getTotalBalance(token);
+          final hasBalance = balance != '0';
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: _SendOptionCard(
+              icon: _tokenIcon(token),
+              iconColor: _tokenColor(token),
+              title: token,
+              subtitle: hasBalance ? balance : '0.00',
+              isDark: isDark,
+              onTap: () => _selectToken(token),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  /// Step 2: Network selection (USDT/USDC only)
+  Widget _buildNetworkStep(ThemeData theme, AppLocalizations l10n, bool isDark) {
+    final networks = [
+      ('Ethereum', 'ERC-20'),
+      ('Solana', 'Solana'),
+      ('Tron', 'TRC-20'),
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(l10n.chatSelectNetwork,
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.5,
+              color: theme.colorScheme.onSurface.withAlpha(150),
+            )),
+        const SizedBox(height: 12),
+        ...networks.where((net) {
+          // Hide networks with 0 balance
+          final bal = _getBalance(_selectedTokenName!, net.$1);
+          return (double.tryParse(bal) ?? 0) > 0;
+        }).map((net) {
+          final balance = _getBalance(_selectedTokenName!, net.$1);
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: _SendOptionCard(
+              icon: _networkIcon(net.$1),
+              iconColor: _networkColor(net.$1),
+              title: net.$2,
+              subtitle: balance,
+              isDark: isDark,
+              onTap: () => _selectNetwork(net.$1),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  /// Step 3: Amount + Send
+  Widget _buildAmountStep(ThemeData theme, AppLocalizations l10n) {
+    final balance = _getSelectedBalance();
+    final maxAmount = _calculateMaxAmount();
+    final networkLabel = _selectedToken?.network == 'Ethereum'
+        ? 'ERC-20'
+        : _selectedToken?.network == 'Tron'
+            ? 'TRC-20'
+            : _selectedToken?.network ?? '';
+    final tokenLabel = _selectedTokenName == 'CPUNK'
+        ? 'CPUNK'
+        : '$_selectedTokenName ($networkLabel)';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Selected token display
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.primary.withAlpha(15),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: theme.colorScheme.primary.withAlpha(40)),
+          ),
+          child: Row(
+            children: [
+              FaIcon(_tokenIcon(_selectedTokenName ?? 'CPUNK'),
+                  size: 20, color: _tokenColor(_selectedTokenName ?? 'CPUNK')),
+              const SizedBox(width: 12),
+              Text(tokenLabel,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  )),
+              const Spacer(),
+              if (balance != null)
+                Text(
+                  '$balance ${_selectedToken?.token ?? ''}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withAlpha(150),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+
+        // Amount input
+        TextField(
+          controller: _amountController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          autofocus: true,
+          style: theme.textTheme.headlineSmall?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+          decoration: InputDecoration(
+            hintText: '0.00',
+            hintStyle: theme.textTheme.headlineSmall?.copyWith(
+              color: theme.colorScheme.onSurface.withAlpha(60),
+              fontWeight: FontWeight.w600,
+            ),
+            suffixText: _selectedToken?.token ?? '',
+            suffixStyle: theme.textTheme.titleMedium?.copyWith(
+              color: theme.colorScheme.primary,
+              fontWeight: FontWeight.w600,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          ),
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 8),
+
+        // Max button
+        if (maxAmount != null && maxAmount > 0)
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: () {
+                _amountController.text = maxAmount.toStringAsFixed(
+                  maxAmount < 0.01 ? 8 : (maxAmount < 1 ? 4 : 2),
+                );
+                setState(() {});
+              },
+              icon: FaIcon(FontAwesomeIcons.arrowUp, size: 12,
+                  color: theme.colorScheme.primary),
+              label: Text(l10n.chatSendMax),
+            ),
+          ),
+        const SizedBox(height: 12),
+
+        // Error display
+        if (_sendError != null)
+          Container(
+            padding: const EdgeInsets.all(12),
+            margin: const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(
+              color: DnaColors.error.withAlpha(15),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: DnaColors.error.withAlpha(40)),
+            ),
+            child: Row(
+              children: [
+                FaIcon(FontAwesomeIcons.circleExclamation,
+                    color: DnaColors.error, size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(_sendError!,
+                      style: TextStyle(color: DnaColors.error, fontSize: 13)),
+                ),
+              ],
+            ),
+          ),
+
+        // Send button with gradient
+        Container(
+          height: 50,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            gradient: _canSend()
+                ? LinearGradient(
+                    colors: [
+                      theme.colorScheme.primary,
+                      theme.colorScheme.primary.withAlpha(200),
+                    ],
+                  )
+                : null,
+            color: _canSend() ? null : theme.colorScheme.onSurface.withAlpha(30),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: _canSend() ? _send : null,
+              child: Center(
+                child: _isSending
+                    ? SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          color: theme.colorScheme.onPrimary,
+                        ),
+                      )
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          FaIcon(FontAwesomeIcons.paperPlane, size: 16,
+                              color: _canSend()
+                                  ? theme.colorScheme.onPrimary
+                                  : theme.colorScheme.onSurface.withAlpha(100)),
+                          const SizedBox(width: 10),
+                          Text(
+                            l10n.chatSendButton(_selectedToken?.token ?? 'Tokens'),
+                            style: TextStyle(
+                              color: _canSend()
+                                  ? theme.colorScheme.onPrimary
+                                  : theme.colorScheme.onSurface.withAlpha(100),
+                              fontWeight: FontWeight.w600,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  IconData _tokenIcon(String token) {
+    switch (token) {
+      case 'CPUNK': return FontAwesomeIcons.coins;
+      case 'USDT': return FontAwesomeIcons.dollarSign;
+      case 'USDC': return FontAwesomeIcons.dollarSign;
+      default: return FontAwesomeIcons.coins;
+    }
+  }
+
+  Color _tokenColor(String token) {
+    switch (token) {
+      case 'CPUNK': return const Color(0xFF8B5CF6);
+      case 'USDT': return const Color(0xFF26A17B);
+      case 'USDC': return const Color(0xFF2775CA);
+      default: return Colors.grey;
+    }
+  }
+
+  IconData _networkIcon(String network) {
+    switch (network) {
+      case 'Ethereum': return FontAwesomeIcons.ethereum;
+      case 'Solana': return FontAwesomeIcons.bolt;
+      case 'Tron': return FontAwesomeIcons.bolt;
+      default: return FontAwesomeIcons.networkWired;
+    }
+  }
+
+  Color _networkColor(String network) {
+    switch (network) {
+      case 'Ethereum': return const Color(0xFF627EEA);
+      case 'Solana': return const Color(0xFF9945FF);
+      case 'Tron': return const Color(0xFFEB0029);
+      default: return Colors.grey;
+    }
+  }
+}
+
+/// Reusable card button for token/network selection
+class _SendOptionCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final bool isDark;
+  final VoidCallback onTap;
+
+  const _SendOptionCard({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.isDark,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            color: isDark
+                ? Colors.white.withAlpha(8)
+                : Colors.black.withAlpha(5),
+            border: Border.all(
+              color: isDark
+                  ? Colors.white.withAlpha(15)
+                  : Colors.black.withAlpha(10),
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: iconColor.withAlpha(25),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Center(
+                  child: FaIcon(icon, size: 18, color: iconColor),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Text(title,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  )),
+              const Spacer(),
+              Text(subtitle,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurface.withAlpha(150),
+                    fontWeight: FontWeight.w500,
+                  )),
+              const SizedBox(width: 8),
+              FaIcon(FontAwesomeIcons.chevronRight, size: 12,
+                  color: theme.colorScheme.onSurface.withAlpha(80)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Special bubble for group invitation messages

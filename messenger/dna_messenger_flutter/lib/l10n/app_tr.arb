@@ -81,6 +81,10 @@
   "chatInvalidAmount": "Lütfen geçerli bir miktar girin",
   "chatInsufficientBalance": "Yetersiz {token} bakiyesi",
   "chatNoWalletForNetwork": "Kişinin bu ağ için cüzdanı yok",
+  "chatSelectToken": "Token Seç",
+  "chatSelectNetwork": "Ağ Seç",
+  "chatEnterAmount": "Miktar Gir",
+  "chatStepOf": "Adım {current} / {total}",
 
   "messageMenuReply": "Yanıtla",
   "messageMenuCopy": "Kopyala",
@@ -284,8 +288,6 @@
   "wallCopy": "Kopyala",
   "wallReply": "Yanıtla",
   "wallDelete": "Sil",
-  "wallLike": "Beğen",
-  "wallLiked": "Beğenildi",
 
   "walletTitle": "Cüzdan",
   "walletTotalBalance": "Toplam Bakiye",

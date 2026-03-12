@@ -128,6 +128,16 @@
     }
   },
   "chatNoWalletForNetwork": "Contact has no wallet for this network",
+  "chatSelectToken": "Select Token",
+  "chatSelectNetwork": "Select Network",
+  "chatEnterAmount": "Enter Amount",
+  "chatStepOf": "Step {current} of {total}",
+  "@chatStepOf": {
+    "placeholders": {
+      "current": { "type": "String" },
+      "total": { "type": "String" }
+    }
+  },
 
   "messageMenuReply": "Reply",
   "messageMenuCopy": "Copy",
@@ -391,8 +401,6 @@
   "wallCopy": "Copy",
   "wallReply": "Reply",
   "wallDelete": "Delete",
-  "wallLike": "Like",
-  "wallLiked": "Liked",
 
   "walletTitle": "Wallet",
   "walletTotalBalance": "Total Balance",
