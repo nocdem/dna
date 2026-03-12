@@ -604,6 +604,15 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
+    /* Check storage quotas (global count, global bytes, per-owner count) */
+    if (nodus_storage_check_quota(&srv->storage, &sess->client_fp) != 0) {
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_QUOTA_EXCEEDED,
+                        "storage quota exceeded", resp_buf, sizeof(resp_buf), &len);
+        nodus_tcp_send(sess->conn, resp_buf, len);
+        return;
+    }
+
     /* Create value from message fields + authenticated session identity */
     nodus_value_t *val = NULL;
     int rc = nodus_value_create(&msg->key, msg->data, msg->data_len,
@@ -1334,6 +1343,97 @@ static void handle_t2_ch_unsubscribe(nodus_server_t *srv, nodus_session_t *sess,
     nodus_tcp_send(sess->conn, resp_buf, len);
 }
 
+/* ── Inter-node IP whitelist ─────────────────────────────────────── */
+
+/** Check if IP is a configured seed node (trusted inter-node peer). */
+static bool is_seed_ip(const nodus_server_t *srv, const char *ip) {
+    if (!ip) return false;
+    for (int i = 0; i < srv->config.seed_count; i++) {
+        if (strcmp(srv->config.seed_nodes[i], ip) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* ── Ping-before-evict helpers ───────────────────────────────────── */
+
+/**
+ * Try to insert a peer into the routing table. If the bucket is full,
+ * send a UDP PING to the LRU candidate and queue the eviction.
+ * The main loop sweep handles timeout-based eviction.
+ */
+static void routing_insert_or_ping(nodus_server_t *srv, const nodus_peer_t *peer) {
+    nodus_peer_t lru;
+    memset(&lru, 0, sizeof(lru));
+    int rc = nodus_routing_try_insert(&srv->routing, peer, &lru);
+
+    if (rc != 2) return;  /* 0=inserted, 1=updated, -1=error — all done */
+
+    /* Bucket full — check if we already have a pending eviction for this LRU */
+    for (int i = 0; i < NODUS_MAX_PENDING_EVICTIONS; i++) {
+        if (srv->pending_evictions[i].active &&
+            nodus_key_cmp(&srv->pending_evictions[i].lru_peer.node_id,
+                          &lru.node_id) == 0)
+            return;  /* Already pinging this LRU, discard new peer */
+    }
+
+    /* Find a free slot */
+    for (int i = 0; i < NODUS_MAX_PENDING_EVICTIONS; i++) {
+        if (!srv->pending_evictions[i].active) {
+            srv->pending_evictions[i].active = true;
+            srv->pending_evictions[i].new_peer = *peer;
+            srv->pending_evictions[i].lru_peer = lru;
+            srv->pending_evictions[i].ping_sent_at = nodus_time_now();
+
+            /* Send UDP PING to the LRU candidate */
+            uint8_t ping_buf[256];
+            size_t plen = 0;
+            nodus_t1_ping(0, &srv->identity.node_id,
+                           ping_buf, sizeof(ping_buf), &plen);
+            nodus_udp_send(&srv->udp, ping_buf, plen,
+                            lru.ip, lru.udp_port);
+            return;
+        }
+    }
+    /* No free slot — discard the new peer (conservative, favors existing) */
+}
+
+/**
+ * Called from the PONG handler: if the responding peer is an LRU candidate
+ * in a pending eviction, cancel the eviction (keep existing peer).
+ */
+static void eviction_on_pong(nodus_server_t *srv, const nodus_key_t *node_id) {
+    for (int i = 0; i < NODUS_MAX_PENDING_EVICTIONS; i++) {
+        if (srv->pending_evictions[i].active &&
+            nodus_key_cmp(&srv->pending_evictions[i].lru_peer.node_id,
+                          node_id) == 0) {
+            /* LRU responded — keep it, discard new peer */
+            srv->pending_evictions[i].active = false;
+            nodus_routing_touch(&srv->routing, node_id);
+        }
+    }
+}
+
+/**
+ * Periodic sweep: evict LRU peers that didn't respond to PING within timeout.
+ * Called from the main event loop.
+ */
+static void eviction_sweep(nodus_server_t *srv) {
+    uint64_t now = nodus_time_now();
+    for (int i = 0; i < NODUS_MAX_PENDING_EVICTIONS; i++) {
+        if (!srv->pending_evictions[i].active) continue;
+        if (now - srv->pending_evictions[i].ping_sent_at < NODUS_EVICT_PING_TIMEOUT)
+            continue;
+
+        /* Timeout — evict LRU and insert new peer */
+        nodus_routing_remove(&srv->routing,
+                              &srv->pending_evictions[i].lru_peer.node_id);
+        nodus_routing_insert(&srv->routing,
+                              &srv->pending_evictions[i].new_peer);
+        srv->pending_evictions[i].active = false;
+    }
+}
+
 /* ── TCP frame dispatch ──────────────────────────────────────────── */
 
 static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
@@ -1344,17 +1444,20 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
     if (nodus_t2_decode(payload, len, &msg) != 0) {
         nodus_t2_msg_free(&msg);
 
-        /* Fallback: try T1 decode for inter-node messages (STORE, etc.) */
-        nodus_tier1_msg_t t1msg;
-        memset(&t1msg, 0, sizeof(t1msg));
-        if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
-            strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
-            if (nodus_value_verify(t1msg.value) == 0) {
-                if (nodus_storage_put_if_newer(&srv->storage, t1msg.value) == 0)
-                    notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
+        /* Fallback: try T1 decode for inter-node messages (STORE, etc.)
+         * Restricted to seed nodes only (CRIT-04). */
+        if (sess->conn && is_seed_ip(srv, sess->conn->ip)) {
+            nodus_tier1_msg_t t1msg;
+            memset(&t1msg, 0, sizeof(t1msg));
+            if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
+                strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
+                if (nodus_value_verify(t1msg.value) == 0) {
+                    if (nodus_storage_put_if_newer(&srv->storage, t1msg.value) == 0)
+                        notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
+                }
             }
+            nodus_t1_msg_free(&t1msg);
         }
-        nodus_t1_msg_free(&t1msg);
         return;
     }
 
@@ -1372,7 +1475,11 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         } else if (strcmp(msg.method, "auth") == 0) {
             nodus_auth_handle_auth(srv, sess, &msg.sig, msg.txn_id);
         } else if (strcmp(msg.method, "sv") == 0) {
-            /* Inter-nodus DHT value replication (no auth required, rate-limited) */
+            /* Inter-nodus DHT value replication (seed nodes only, rate-limited) */
+            if (!is_seed_ip(srv, sess->conn->ip)) {
+                nodus_t2_msg_free(&msg);
+                return;  /* Drop — not a trusted seed node */
+            }
             static uint64_t sv_window_start = 0;
             static int sv_count = 0;
             uint64_t sv_now = nodus_time_now();
@@ -1398,7 +1505,11 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "fv") == 0) {
-            /* Inter-nodus FIND_VALUE (no auth required, rate-limited) */
+            /* Inter-nodus FIND_VALUE (seed nodes only, rate-limited) */
+            if (!is_seed_ip(srv, sess->conn->ip)) {
+                nodus_t2_msg_free(&msg);
+                return;  /* Drop — not a trusted seed node */
+            }
             static uint64_t fv_window_start = 0;
             static int fv_count = 0;
             uint64_t fv_now = nodus_time_now();
@@ -1433,32 +1544,48 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "p_sync") == 0) {
-            /* Inter-nodus presence sync (no auth required) */
+            /* Inter-nodus presence sync (seed nodes only, rate-limited) */
+            if (!is_seed_ip(srv, sess->conn->ip)) {
+                nodus_t2_msg_free(&msg);
+                return;  /* Drop — not a trusted seed node */
+            }
+            static uint64_t ps_window_start = 0;
+            static int ps_count = 0;
+            uint64_t ps_now = nodus_time_now();
+            if (ps_now != ps_window_start) { ps_window_start = ps_now; ps_count = 0; }
+            if (++ps_count > 10) {
+                nodus_t2_msg_free(&msg);
+                return;  /* Drop — rate limited (10/sec, sync is every 30s) */
+            }
+
             if (msg.pq_fps && msg.pq_count > 0 && sess->conn) {
-                /* Verify sender is in routing table + compute stable peer_index
-                 * from IP hash. peer_index must be non-zero (0 = local). */
-                uint8_t pi = 0;
-                for (int b = 0; b < NODUS_BUCKETS && pi == 0; b++) {
-                    const nodus_bucket_t *bkt = &srv->routing.buckets[b];
-                    for (int e = 0; e < bkt->count; e++) {
-                        if (bkt->entries[e].active &&
-                            strcmp(bkt->entries[e].peer.ip, sess->conn->ip) == 0) {
-                            /* hash(IP) % 254 + 1 → stable value 1..254 */
-                            uint32_t h = 5381;
-                            for (const char *c = sess->conn->ip; *c; c++)
-                                h = h * 33 + (uint8_t)*c;
-                            pi = (uint8_t)(h % 254 + 1);
-                            break;
-                        }
-                    }
-                }
-                if (pi > 0)
-                    nodus_presence_merge_remote(srv, msg.pq_fps, msg.pq_count, pi);
+                /* Compute stable peer_index from IP hash.
+                 * peer_index must be non-zero (0 = local). */
+                uint32_t h = 5381;
+                for (const char *c = sess->conn->ip; *c; c++)
+                    h = h * 33 + (uint8_t)*c;
+                uint8_t pi = (uint8_t)(h % 254 + 1);
+                nodus_presence_merge_remote(srv, msg.pq_fps, msg.pq_count, pi);
             }
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "ch_rep") == 0) {
-            /* Inter-nodus channel replication (no auth required) */
+            /* Inter-nodus channel replication (seed nodes only, rate-limited) */
+            if (!is_seed_ip(srv, sess->conn->ip)) {
+                nodus_t2_msg_free(&msg);
+                return;  /* Drop — not a trusted seed node */
+            }
+            static uint64_t cr_window_start = 0;
+            static int cr_count = 0;
+            uint64_t cr_now = nodus_time_now();
+            if (cr_now != cr_window_start) { cr_window_start = cr_now; cr_count = 0; }
+            if (++cr_count > NODUS_SV_MAX_PER_SEC) {
+                nodus_t2_msg_free(&msg);
+                return;  /* Drop — rate limited */
+            }
+            /* TODO: Add signature verification on ch_rep posts when mutual
+             * auth is implemented. Currently deferred since this handler is
+             * already restricted to trusted seed node IPs (CRIT-04). */
             nodus_channel_post_t post;
             memset(&post, 0, sizeof(post));
             memcpy(post.channel_uuid, msg.channel_uuid, NODUS_UUID_BYTES);
@@ -1614,7 +1741,7 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
                        resp_buf, sizeof(resp_buf), &rlen);
         nodus_udp_send(&srv->udp, resp_buf, rlen, from_ip, from_port);
 
-        /* Update routing table */
+        /* Update routing table (ping-before-evict if bucket full) */
         nodus_peer_t peer;
         memset(&peer, 0, sizeof(peer));
         peer.node_id = msg.node_id;
@@ -1622,16 +1749,20 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         peer.udp_port = from_port;
         peer.tcp_port = from_port + 1;  /* Convention: TCP = UDP + 1 */
         peer.last_seen = nodus_time_now();
-        nodus_routing_insert(&srv->routing, &peer);
+        routing_insert_or_ping(srv, &peer);
 
-        /* FIX 0c: A received PING proves the peer is alive (same as PONG).
-         * Without this, DEAD peers can never recover — permanent deadlock. */
+        /* A received PING proves the peer is alive (same as PONG).
+         * Cancel any pending eviction for this peer. */
+        eviction_on_pong(srv, &msg.node_id);
         nodus_pbft_on_pong(&srv->pbft, &msg.node_id, from_ip, from_port);
 
     } else if (strcmp(msg.method, "pong") == 0) {
         /* Update routing table + PBFT health (IP-aware for seed discovery) */
         nodus_routing_touch(&srv->routing, &msg.node_id);
         nodus_pbft_on_pong(&srv->pbft, &msg.node_id, from_ip, from_port);
+
+        /* Cancel pending evictions for this peer (it responded) */
+        eviction_on_pong(srv, &msg.node_id);
 
         /* Also insert into routing table if new */
         nodus_peer_t rpeer;
@@ -1641,7 +1772,7 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         rpeer.udp_port = from_port;
         rpeer.tcp_port = from_port + 1;
         rpeer.last_seen = nodus_time_now();
-        nodus_routing_insert(&srv->routing, &rpeer);
+        routing_insert_or_ping(srv, &rpeer);
 
     } else if (strcmp(msg.method, "fn") == 0) {
         /* FIND_NODE: return k closest nodes */
@@ -1657,7 +1788,7 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         /* NODES_FOUND: add discovered peers to routing table */
         for (int i = 0; i < msg.peer_count; i++) {
             msg.peers[i].last_seen = nodus_time_now();
-            nodus_routing_insert(&srv->routing, &msg.peers[i]);
+            routing_insert_or_ping(srv, &msg.peers[i]);
         }
 
     } else if (strcmp(msg.method, "sv") == 0) {
@@ -1876,6 +2007,9 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* PBFT: send heartbeats, check peer health */
         nodus_pbft_tick(&srv->pbft);
+
+        /* Ping-before-evict: evict LRU peers that didn't respond */
+        eviction_sweep(srv);
 
         /* Witness BFT: timeout checks, peer reconnection */
         if (srv->witness)
