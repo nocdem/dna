@@ -25,7 +25,7 @@ variables:
   FLUTTER_VERSION: "3.38"
 
 # =============================================================================
-# STAGE 1: Build Native Libraries (dna_lib)
+# STAGE 1: Build Native Libraries (dna)
 # =============================================================================
 
 # Build native library for Linux x64
@@ -47,9 +47,9 @@ build:native-linux-x64:
     - cd messenger
     - mkdir -p build && cd build
     - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON
-    - make -j$(nproc) dna_lib
+    - make -j$(nproc) dna
     - mkdir -p ${CI_PROJECT_DIR}/native-libs/linux-x64
-    - cp libdna_lib.so ${CI_PROJECT_DIR}/native-libs/linux-x64/
+    - cp libdna.so ${CI_PROJECT_DIR}/native-libs/linux-x64/
   artifacts:
     paths:
       - native-libs/linux-x64/
@@ -337,9 +337,9 @@ build:native-android-arm64:
         -DANDROID_STL=c++_static \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_SHARED_LIB=ON
-    - make -j$(nproc) dna_lib
+    - make -j$(nproc) dna
     - mkdir -p ${CI_PROJECT_DIR}/native-libs/android-arm64
-    - cp libdna_lib.so ${CI_PROJECT_DIR}/native-libs/android-arm64/
+    - cp libdna.so ${CI_PROJECT_DIR}/native-libs/android-arm64/
   artifacts:
     paths:
       - native-libs/android-arm64/
@@ -373,7 +373,7 @@ build:flutter-linux:
     - cd messenger/dna_messenger_flutter
     # Copy native library
     - mkdir -p linux/libs
-    - cp ${CI_PROJECT_DIR}/native-libs/linux-x64/libdna_lib.so linux/libs/
+    - cp ${CI_PROJECT_DIR}/native-libs/linux-x64/libdna.so linux/libs/
     # Build Flutter Linux app
     - flutter pub upgrade
     - flutter pub get
@@ -381,36 +381,36 @@ build:flutter-linux:
     # Package as tarball
     - mkdir -p ${CI_PROJECT_DIR}/dist/flutter-linux
     - cp -r build/linux/x64/release/bundle/* ${CI_PROJECT_DIR}/dist/flutter-linux/
-    - cd ${CI_PROJECT_DIR}/dist && tar -czf dna-messenger-linux-${CI_COMMIT_SHORT_SHA}.tar.gz flutter-linux/
+    - cd ${CI_PROJECT_DIR}/dist && tar -czf dna-connect-linux-${CI_COMMIT_SHORT_SHA}.tar.gz flutter-linux/
     # Create AppImage
     - cd ${CI_PROJECT_DIR}
     - mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
     - cp -r messenger/dna_messenger_flutter/build/linux/x64/release/bundle/* AppDir/usr/bin/
-    - cp native-libs/linux-x64/libdna_lib.so AppDir/usr/lib/
-    # Bundle libraries that libdna_lib.so depends on (using ldd)
+    - cp native-libs/linux-x64/libdna.so AppDir/usr/lib/
+    # Bundle libraries that libdna.so depends on (using ldd)
     # Exclude core system libs (libc, libm, libdl, libpthread, ld-linux) - these must come from the system
-    - ldd native-libs/linux-x64/libdna_lib.so | grep "=> /" | grep -v -E "libc\.|libm\.|libdl\.|libpthread\.|ld-linux" | awk '{print $3}' | xargs -I{} cp -L {} AppDir/usr/lib/ 2>/dev/null || true
+    - ldd native-libs/linux-x64/libdna.so | grep "=> /" | grep -v -E "libc\.|libm\.|libdl\.|libpthread\.|ld-linux" | awk '{print $3}' | xargs -I{} cp -L {} AppDir/usr/lib/ 2>/dev/null || true
     - ls -la AppDir/usr/lib/
     # Create desktop file
     - |
-      cat > AppDir/usr/share/applications/dna-messenger.desktop << 'DESKTOP'
+      cat > AppDir/usr/share/applications/dna-connect.desktop << 'DESKTOP'
       [Desktop Entry]
-      Name=DNA Messenger
-      Comment=Post-quantum encrypted P2P messenger
-      Exec=dna_messenger
-      Icon=dna-messenger
+      Name=DNA Connect
+      Comment=Post-quantum encrypted P2P communication
+      Exec=dna_connect
+      Icon=dna-connect
       Type=Application
       Categories=Network;InstantMessaging;Security;
       DESKTOP
-    - cp AppDir/usr/share/applications/dna-messenger.desktop AppDir/
+    - cp AppDir/usr/share/applications/dna-connect.desktop AppDir/
     # Use app icon or create placeholder
     - |
       if [ -f messenger/dna_messenger_flutter/assets/icon.png ]; then
-        cp messenger/dna_messenger_flutter/assets/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/dna-messenger.png
-        cp messenger/dna_messenger_flutter/assets/icon.png AppDir/dna-messenger.png
+        cp messenger/dna_messenger_flutter/assets/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/dna-connect.png
+        cp messenger/dna_messenger_flutter/assets/icon.png AppDir/dna-connect.png
       else
-        touch AppDir/dna-messenger.png
-        touch AppDir/usr/share/icons/hicolor/256x256/apps/dna-messenger.png
+        touch AppDir/dna-connect.png
+        touch AppDir/usr/share/icons/hicolor/256x256/apps/dna-connect.png
       fi
     # Create AppRun
     - |
@@ -420,15 +420,15 @@ build:flutter-linux:
       HERE=${SELF%/*}
       export LD_LIBRARY_PATH="${HERE}/usr/bin/lib:${HERE}/usr/lib:${LD_LIBRARY_PATH}"
       cd "${HERE}/usr/bin"
-      exec "./dna_messenger" "$@"
+      exec "./dna_connect" "$@"
       APPRUN
     - chmod +x AppDir/AppRun
     # Download appimagetool and create AppImage
     - wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
     - chmod +x appimagetool
-    - ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir dist/dna-messenger-${CI_COMMIT_SHORT_SHA}-x86_64.AppImage
+    - ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir dist/dna-connect-${CI_COMMIT_SHORT_SHA}-x86_64.AppImage
   artifacts:
-    name: "dna-messenger-linux-${CI_COMMIT_SHORT_SHA}"
+    name: "dna-connect-linux-${CI_COMMIT_SHORT_SHA}"
     paths:
       - dist/*.tar.gz
       - dist/*.AppImage
@@ -463,16 +463,16 @@ build:flutter-android:
     - cd messenger/dna_messenger_flutter
     # Copy native library to jniLibs
     - mkdir -p android/app/src/main/jniLibs/arm64-v8a
-    - cp ${CI_PROJECT_DIR}/native-libs/android-arm64/libdna_lib.so android/app/src/main/jniLibs/arm64-v8a/
+    - cp ${CI_PROJECT_DIR}/native-libs/android-arm64/libdna.so android/app/src/main/jniLibs/arm64-v8a/
     # Build APK
     - flutter pub upgrade
     - flutter pub get
     - flutter build apk --release
     # Package
     - mkdir -p ${CI_PROJECT_DIR}/dist
-    - cp build/app/outputs/flutter-apk/app-release.apk ${CI_PROJECT_DIR}/dist/dna-messenger-android-${CI_COMMIT_SHORT_SHA}.apk
+    - cp build/app/outputs/flutter-apk/app-release.apk ${CI_PROJECT_DIR}/dist/dna-connect-android-${CI_COMMIT_SHORT_SHA}.apk
   artifacts:
-    name: "dna-messenger-android-${CI_COMMIT_SHORT_SHA}"
+    name: "dna-connect-android-${CI_COMMIT_SHORT_SHA}"
     paths:
       - dist/*.apk
     expire_in: 1 day
@@ -495,10 +495,10 @@ build:windows:
   script:
     # Build native library with MSYS2/MinGW
     - $env:MSYSTEM = "MINGW64"
-    - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR/messenger' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON && mingw32-make -j4 dna_lib"
+    - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR/messenger' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON && mingw32-make -j4 dna"
     # Copy native library to Flutter
     - mkdir -p messenger\dna_messenger_flutter\windows\libs
-    - copy messenger\build-windows\libdna_lib.dll messenger\dna_messenger_flutter\windows\libs\dna_lib.dll
+    - copy messenger\build-windows\libdna.dll messenger\dna_messenger_flutter\windows\libs\dna.dll
     # Build Flutter Windows app (requires LongPathsEnabled in registry)
     - cd messenger\dna_messenger_flutter
     - flutter pub upgrade
@@ -507,20 +507,20 @@ build:windows:
     # Package — output to messenger/dist/ (installer.iss expects paths relative to messenger/)
     - mkdir -p ..\dist\flutter-windows
     - xcopy /E /I build\windows\x64\runner\Release ..\dist\flutter-windows
-    - copy windows\libs\dna_lib.dll ..\dist\flutter-windows\
-    # Bundle MinGW runtime DLLs that dna_lib.dll depends on
+    - copy windows\libs\dna.dll ..\dist\flutter-windows\
+    # Bundle MinGW runtime DLLs that dna.dll depends on
     - cd ..
     - copy C:\tools\msys64\mingw64\bin\*.dll dist\flutter-windows\
     # Check artifact size
     - powershell -Command "(Get-ChildItem -Path dist\flutter-windows -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB"
     # Build Windows installer with Inno Setup (pre-installed on runner)
     - '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="${CI_COMMIT_SHORT_SHA}" scripts\installer.iss'
-    - move dist\dna-messenger-setup.exe dist\dna-messenger-setup-${CI_COMMIT_SHORT_SHA}.exe
+    - move dist\dna-connect-setup.exe dist\dna-connect-setup-${CI_COMMIT_SHORT_SHA}.exe
   artifacts:
-    name: "dna-messenger-windows-${CI_COMMIT_SHORT_SHA}"
+    name: "dna-connect-windows-${CI_COMMIT_SHORT_SHA}"
     paths:
       - messenger/dist/flutter-windows/
-      - messenger/dist/dna-messenger-setup-*.exe
+      - messenger/dist/dna-connect-setup-*.exe
     expire_in: 1 day
   allow_failure: true
   rules:
@@ -541,11 +541,11 @@ build:flutter-macos:
     - cd ${CI_PROJECT_DIR}/messenger
     - mkdir -p build-macos && cd build-macos
     - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
-    - make -j$(sysctl -n hw.ncpu) dna_lib
+    - make -j$(sysctl -n hw.ncpu) dna
     # Copy to Flutter
     - cd ${CI_PROJECT_DIR}/messenger/dna_messenger_flutter
     - mkdir -p macos/Frameworks
-    - cp ${CI_PROJECT_DIR}/messenger/build-macos/libdna_lib.dylib macos/Frameworks/
+    - cp ${CI_PROJECT_DIR}/messenger/build-macos/libdna.dylib macos/Frameworks/
     # Build Flutter macOS app
     - flutter pub upgrade
     - flutter pub get
@@ -553,9 +553,9 @@ build:flutter-macos:
     # Package
     - mkdir -p ${CI_PROJECT_DIR}/dist
     - cd build/macos/Build/Products/Release
-    - zip -r ${CI_PROJECT_DIR}/dist/dna-messenger-macos-${CI_COMMIT_SHORT_SHA}.zip "DNA Messenger.app"
+    - zip -r ${CI_PROJECT_DIR}/dist/dna-connect-macos-${CI_COMMIT_SHORT_SHA}.zip "DNA Connect.app"
   artifacts:
-    name: "dna-messenger-macos-${CI_COMMIT_SHORT_SHA}"
+    name: "dna-connect-macos-${CI_COMMIT_SHORT_SHA}"
     paths:
       - dist/*.zip
     expire_in: 1 day
