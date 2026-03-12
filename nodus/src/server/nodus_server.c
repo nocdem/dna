@@ -1740,11 +1740,10 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             return;
         }
 
-        /* Unknown T2 method on inter-node port — ignore */
+        /* T2 decode succeeded but method is not a known T2 inter-node method.
+         * Fall through to T1 decode — sv payloads can parse as valid T2 CBOR. */
         nodus_t2_msg_free(&msg);
-        return;
     }
-    nodus_t2_msg_free(&msg);
 
     /* Try T1 decode for STORE_VALUE replication */
     nodus_tier1_msg_t t1msg;
