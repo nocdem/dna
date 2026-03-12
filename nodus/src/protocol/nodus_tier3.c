@@ -11,6 +11,7 @@
 #include "crypto/nodus_sign.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 
 #define LOG_TAG "T3"
@@ -911,14 +912,19 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
 int nodus_t3_verify(const nodus_t3_msg_t *msg, const nodus_pubkey_t *pk) {
     if (!msg || !pk || !msg->wsig) return -1;
 
-    /* Re-encode sign payload for verification */
-    static uint8_t sign_buf[NODUS_T3_MAX_MSG_SIZE];
-    size_t sign_len = 0;
+    /* Heap-allocate sign buffer (thread-safe, no persistent 131KB BSS) */
+    uint8_t *sign_buf = malloc(NODUS_T3_MAX_MSG_SIZE);
+    if (!sign_buf) return -1;
 
-    if (enc_sign_payload(msg, sign_buf, sizeof(sign_buf), &sign_len) != 0)
+    size_t sign_len = 0;
+    if (enc_sign_payload(msg, sign_buf, NODUS_T3_MAX_MSG_SIZE, &sign_len) != 0) {
+        free(sign_buf);
         return -1;
+    }
 
     nodus_sig_t sig;
     memcpy(sig.bytes, msg->wsig, NODUS_SIG_BYTES);
-    return nodus_verify(&sig, sign_buf, sign_len, pk);
+    int result = nodus_verify(&sig, sign_buf, sign_len, pk);
+    free(sign_buf);
+    return result;
 }
