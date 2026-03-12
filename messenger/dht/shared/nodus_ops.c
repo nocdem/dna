@@ -37,6 +37,24 @@ typedef struct {
 static ops_listener_t g_listeners[MAX_OPS_LISTENERS];
 static size_t g_next_token = 1;
 
+/* Mutex protecting g_listeners[] and g_next_token.
+ * Pattern: lock → read/write fields → unlock → invoke callbacks outside lock. */
+#ifdef _WIN32
+  #include <windows.h>
+  static CRITICAL_SECTION g_listener_cs;
+  static int g_listener_cs_init = 0;
+  static void listener_lock(void) {
+      if (!g_listener_cs_init) { InitializeCriticalSection(&g_listener_cs); g_listener_cs_init = 1; }
+      EnterCriticalSection(&g_listener_cs);
+  }
+  static void listener_unlock(void) { LeaveCriticalSection(&g_listener_cs); }
+#else
+  #include <pthread.h>
+  static pthread_mutex_t g_listener_mutex = PTHREAD_MUTEX_INITIALIZER;
+  static void listener_lock(void)   { pthread_mutex_lock(&g_listener_mutex); }
+  static void listener_unlock(void) { pthread_mutex_unlock(&g_listener_mutex); }
+#endif
+
 /* ── Internal helpers ──────────────────────────────────────────── */
 
 /** Hash raw key bytes to nodus_key_t (SHA3-512). */
@@ -279,20 +297,51 @@ void nodus_ops_dispatch(const nodus_key_t *key,
                         const nodus_value_t *val,
                         void *user_data) {
     (void)user_data;
-    for (int i = 0; i < MAX_OPS_LISTENERS; i++) {
+
+    /* Snapshot matching listeners under lock, invoke outside lock.
+     * This prevents deadlock if a callback calls cancel_listen. */
+    typedef struct {
+        int                     idx;
+        nodus_ops_listen_cb_t   callback;
+        void                   *user_data;
+    } match_t;
+    match_t matches[32];
+    int match_count = 0;
+
+    listener_lock();
+    for (int i = 0; i < MAX_OPS_LISTENERS && match_count < 32; i++) {
         if (!g_listeners[i].active) continue;
         if (nodus_key_cmp(&g_listeners[i].key, key) != 0) continue;
+        matches[match_count].idx = i;
+        matches[match_count].callback = g_listeners[i].callback;
+        matches[match_count].user_data = g_listeners[i].user_data;
+        match_count++;
+    }
+    listener_unlock();
 
-        bool keep = g_listeners[i].callback(
+    /* Invoke callbacks outside lock */
+    for (int m = 0; m < match_count; m++) {
+        bool keep = matches[m].callback(
             val ? val->data : NULL,
             val ? val->data_len : 0,
             false,
-            g_listeners[i].user_data
+            matches[m].user_data
         );
         if (!keep) {
-            g_listeners[i].active = false;
-            if (g_listeners[i].cleanup)
-                g_listeners[i].cleanup(g_listeners[i].user_data);
+            nodus_ops_listen_cleanup_t cleanup_fn = NULL;
+            void *cleanup_data = NULL;
+
+            listener_lock();
+            int idx = matches[m].idx;
+            if (g_listeners[idx].active) {
+                g_listeners[idx].active = false;
+                cleanup_fn = g_listeners[idx].cleanup;
+                cleanup_data = g_listeners[idx].user_data;
+            }
+            listener_unlock();
+
+            if (cleanup_fn)
+                cleanup_fn(cleanup_data);
         }
     }
 }
@@ -312,6 +361,8 @@ size_t nodus_ops_listen(const uint8_t *key, size_t key_len,
     if (rc != 0) return 0;
 
     /* Track locally for callback dispatch */
+    size_t token = 0;
+    listener_lock();
     for (int i = 0; i < MAX_OPS_LISTENERS; i++) {
         if (!g_listeners[i].active) {
             g_listeners[i].token = g_next_token++;
@@ -320,54 +371,94 @@ size_t nodus_ops_listen(const uint8_t *key, size_t key_len,
             g_listeners[i].user_data = user_data;
             g_listeners[i].cleanup = cleanup;
             g_listeners[i].active = true;
-            return g_listeners[i].token;
+            token = g_listeners[i].token;
+            break;
         }
     }
-    return 0;  /* No slot available */
+    listener_unlock();
+    return token;
 }
 
 void nodus_ops_cancel_listen(size_t token) {
+    nodus_key_t key;
+    nodus_ops_listen_cleanup_t cleanup_fn = NULL;
+    void *cleanup_data = NULL;
+    bool found = false;
+
+    listener_lock();
     for (int i = 0; i < MAX_OPS_LISTENERS; i++) {
         if (g_listeners[i].active && g_listeners[i].token == token) {
-            nodus_client_t *c = nodus_singleton_get();
-            if (c && nodus_client_is_ready(c)) {
-                nodus_client_unlisten(c, &g_listeners[i].key);
-            }
+            key = g_listeners[i].key;
+            cleanup_fn = g_listeners[i].cleanup;
+            cleanup_data = g_listeners[i].user_data;
             g_listeners[i].active = false;
-            if (g_listeners[i].cleanup)
-                g_listeners[i].cleanup(g_listeners[i].user_data);
-            return;
+            found = true;
+            break;
         }
+    }
+    listener_unlock();
+
+    if (found) {
+        nodus_client_t *c = nodus_singleton_get();
+        if (c && nodus_client_is_ready(c))
+            nodus_client_unlisten(c, &key);
+        if (cleanup_fn)
+            cleanup_fn(cleanup_data);
     }
 }
 
 void nodus_ops_cancel_all(void) {
+    /* Collect all active listeners under lock */
+    typedef struct {
+        nodus_key_t                 key;
+        nodus_ops_listen_cleanup_t  cleanup;
+        void                       *user_data;
+    } entry_t;
+    entry_t entries[MAX_OPS_LISTENERS];
+    int count = 0;
+
+    listener_lock();
     for (int i = 0; i < MAX_OPS_LISTENERS; i++) {
         if (g_listeners[i].active) {
-            nodus_client_t *c = nodus_singleton_get();
-            if (c && nodus_client_is_ready(c)) {
-                nodus_client_unlisten(c, &g_listeners[i].key);
-            }
+            entries[count].key = g_listeners[i].key;
+            entries[count].cleanup = g_listeners[i].cleanup;
+            entries[count].user_data = g_listeners[i].user_data;
+            count++;
             g_listeners[i].active = false;
-            if (g_listeners[i].cleanup)
-                g_listeners[i].cleanup(g_listeners[i].user_data);
         }
+    }
+    listener_unlock();
+
+    /* Unlisten + cleanup outside lock */
+    nodus_client_t *c = nodus_singleton_get();
+    for (int i = 0; i < count; i++) {
+        if (c && nodus_client_is_ready(c))
+            nodus_client_unlisten(c, &entries[i].key);
+        if (entries[i].cleanup)
+            entries[i].cleanup(entries[i].user_data);
     }
 }
 
 size_t nodus_ops_listen_count(void) {
     size_t count = 0;
+    listener_lock();
     for (int i = 0; i < MAX_OPS_LISTENERS; i++)
         if (g_listeners[i].active) count++;
+    listener_unlock();
     return count;
 }
 
 bool nodus_ops_is_listener_active(size_t token) {
+    bool active = false;
+    listener_lock();
     for (int i = 0; i < MAX_OPS_LISTENERS; i++) {
-        if (g_listeners[i].token == token)
-            return g_listeners[i].active;
+        if (g_listeners[i].token == token) {
+            active = g_listeners[i].active;
+            break;
+        }
     }
-    return false;
+    listener_unlock();
+    return active;
 }
 
 /* ── Presence ──────────────────────────────────────────────────── */
