@@ -2,8 +2,12 @@
 # Deploy artifacts to artifacts.cpunk.io
 set -e
 
-VERSION=$(grep '^version:' dna_messenger_flutter/pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
-BUILD_CODE=$(grep '^version:' dna_messenger_flutter/pubspec.yaml | sed 's/version: //' | cut -d'+' -f2)
+PUBSPEC="messenger/dna_messenger_flutter/pubspec.yaml"
+if [ ! -f "$PUBSPEC" ]; then
+  PUBSPEC="dna_messenger_flutter/pubspec.yaml"
+fi
+VERSION=$(grep '^version:' "$PUBSPEC" | sed 's/version: //' | cut -d'+' -f1)
+BUILD_CODE=$(grep '^version:' "$PUBSPEC" | sed 's/version: //' | cut -d'+' -f2)
 SHORT_SHA="${CI_COMMIT_SHORT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')}"
 echo "Deploying version ${VERSION} (build ${BUILD_CODE}, commit ${SHORT_SHA})"
 
