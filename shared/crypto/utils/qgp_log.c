@@ -17,6 +17,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <errno.h>
+#include <stdlib.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -435,7 +436,7 @@ int qgp_log_export_to_file(const char *filepath) {
  * ============================================================================ */
 
 #define QGP_LOG_FILE_DEFAULT_MAX_SIZE_KB 51200  /* 50 MB default */
-#define QGP_LOG_FILE_DEFAULT_MAX_FILES 3       /* Keep 3 rotated files */
+#define QGP_LOG_FILE_DEFAULT_MAX_FILES 10      /* Keep 10 most recent log files */
 #define QGP_LOG_FILE_PATH_MAX 512
 
 static FILE *g_log_file = NULL;
@@ -485,16 +486,31 @@ static void build_log_paths(void) {
 #endif
 }
 
-/* Clean up log files older than max_age_days */
-#define QGP_LOG_MAX_AGE_DAYS 7
+/* Clean up old log files — keep only the most recent g_file_max_files files */
+
+typedef struct {
+    char path[QGP_LOG_FILE_PATH_MAX];
+    time_t mtime;
+} log_file_entry_t;
+
+/* qsort comparator: newest first (descending mtime) */
+static int cmp_log_mtime_desc(const void *a, const void *b) {
+    const log_file_entry_t *fa = (const log_file_entry_t *)a;
+    const log_file_entry_t *fb = (const log_file_entry_t *)b;
+    if (fb->mtime > fa->mtime) return 1;
+    if (fb->mtime < fa->mtime) return -1;
+    return 0;
+}
+
+#define MAX_LOG_ENTRIES 128  /* max log files we'll scan */
 
 static void cleanup_old_logs(void) {
     if (g_log_dir_path[0] == '\0') {
         return;
     }
 
-    time_t now = time(NULL);
-    time_t max_age = (time_t)QGP_LOG_MAX_AGE_DAYS * 24 * 60 * 60;
+    log_file_entry_t entries[MAX_LOG_ENTRIES];
+    int count = 0;
 
 #ifdef _WIN32
     /* Windows: Use FindFirstFile/FindNextFile */
@@ -508,14 +524,13 @@ static void cleanup_old_logs(void) {
     }
 
     do {
-        char file_path[QGP_LOG_FILE_PATH_MAX];
-        snprintf(file_path, sizeof(file_path), "%s\\%s", g_log_dir_path, find_data.cFileName);
-
+        if (count >= MAX_LOG_ENTRIES) break;
+        snprintf(entries[count].path, sizeof(entries[count].path),
+                 "%s\\%s", g_log_dir_path, find_data.cFileName);
         struct stat st;
-        if (stat(file_path, &st) == 0) {
-            if ((now - st.st_mtime) > max_age) {
-                remove(file_path);
-            }
+        if (stat(entries[count].path, &st) == 0) {
+            entries[count].mtime = st.st_mtime;
+            count++;
         }
     } while (FindNextFileA(hFind, &find_data));
 
@@ -529,6 +544,7 @@ static void cleanup_old_logs(void) {
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
+        if (count >= MAX_LOG_ENTRIES) break;
         /* Only process dna_*.log files */
         if (strncmp(entry->d_name, "dna_", 4) != 0) {
             continue;
@@ -538,19 +554,25 @@ static void cleanup_old_logs(void) {
             continue;
         }
 
-        char file_path[QGP_LOG_FILE_PATH_MAX];
-        snprintf(file_path, sizeof(file_path), "%s/%s", g_log_dir_path, entry->d_name);
-
+        snprintf(entries[count].path, sizeof(entries[count].path),
+                 "%s/%s", g_log_dir_path, entry->d_name);
         struct stat st;
-        if (stat(file_path, &st) == 0) {
-            if ((now - st.st_mtime) > max_age) {
-                remove(file_path);
-            }
+        if (stat(entries[count].path, &st) == 0) {
+            entries[count].mtime = st.st_mtime;
+            count++;
         }
     }
 
     closedir(dir);
 #endif
+
+    /* Sort by mtime descending (newest first), delete beyond limit */
+    if (count > g_file_max_files) {
+        qsort(entries, count, sizeof(log_file_entry_t), cmp_log_mtime_desc);
+        for (int i = g_file_max_files; i < count; i++) {
+            remove(entries[i].path);
+        }
+    }
 }
 
 /* Rotate to new timestamped file when current file gets too big */

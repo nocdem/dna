@@ -873,12 +873,21 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           return;
         }
 
-        // Find all log files
-        final logFiles = await logsDir
+        // Find log files, keep only 10 most recent
+        var logFiles = await logsDir
             .list()
             .where((f) => f is File && f.path.contains('dna') && f.path.endsWith('.log'))
             .cast<File>()
             .toList();
+
+        // Sort by modification time (newest first), keep last 10
+        if (logFiles.length > 1) {
+          final stats = await Future.wait(
+            logFiles.map((f) async => MapEntry(f, await f.stat())),
+          );
+          stats.sort((a, b) => b.value.modified.compareTo(a.value.modified));
+          logFiles = stats.take(10).map((e) => e.key).toList();
+        }
 
         if (logFiles.isEmpty) {
           if (context.mounted) {
