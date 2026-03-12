@@ -2429,24 +2429,18 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet>
     }
   }
 
-  /// Get balance for a specific token+network combo
+  /// Get balance for a specific token+network combo (searches ALL wallets)
   String _getBalance(String token, String network) {
-    final walletsAsync = ref.watch(walletsProvider);
-    return walletsAsync.whenOrNull(
-      data: (wallets) {
-        if (wallets.isEmpty) return '0';
-        final balancesAsync = ref.watch(balancesProvider(0));
-        return balancesAsync.whenOrNull(
-          data: (balances) {
-            for (final b in balances) {
-              if (b.token == token &&
-                  b.network.toLowerCase() == network.toLowerCase()) {
-                return b.balance;
-              }
-            }
-            return '0';
-          },
-        );
+    final allBalances = ref.watch(allBalancesProvider);
+    return allBalances.whenOrNull(
+      data: (balances) {
+        for (final wb in balances) {
+          if (wb.balance.token == token &&
+              wb.balance.network.toLowerCase() == network.toLowerCase()) {
+            return wb.balance.balance;
+          }
+        }
+        return '0';
       },
     ) ?? '0';
   }
