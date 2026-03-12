@@ -20,7 +20,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "dna_config.h"
-#include "bootstrap_cache.h"
+/* #include "bootstrap_cache.h" — disabled, stale port data caused startup delay */
 
 #include <string.h>
 #include <stdlib.h>
@@ -46,9 +46,7 @@ static void ensure_config(void) {
         dna_config_load(&g_config);
         g_config_loaded = true;
 
-        if (bootstrap_cache_init(NULL) != 0) {
-            QGP_LOG_WARN(LOG_TAG, "Failed to initialize bootstrap cache");
-        }
+        /* bootstrap_cache disabled — stale port 4000 entries caused startup delay */
     }
 }
 
@@ -145,31 +143,17 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
     nconfig.on_value_changed = nodus_ops_dispatch;
     nconfig.on_state_change = on_state_change;
 
-    /* ── Try sources in order: cache → config → hardcoded fallback ── */
+    /* ── Try sources in order: config → hardcoded fallback ── */
+    /* Note: bootstrap_cache disabled — nobody writes to it, and stale entries
+       with wrong port (4000 instead of 4001) caused ~1.5s startup delay. */
 
-    /* Source 1: Cached bootstrap nodes */
-    bool used_cache = false;
-    bootstrap_cache_entry_t *cached_nodes = NULL;
-    size_t cached_count = 0;
-    if (bootstrap_cache_get_best(3, &cached_nodes, &cached_count) == 0 && cached_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Using %zu cached bootstrap nodes", cached_count);
-        for (size_t i = 0; i < cached_count && nconfig.server_count < NODUS_CLIENT_MAX_SERVERS; i++) {
-            strncpy(nconfig.servers[nconfig.server_count].ip, cached_nodes[i].ip,
-                    sizeof(nconfig.servers[0].ip) - 1);
-            nconfig.servers[nconfig.server_count].port = cached_nodes[i].port;
-            nconfig.server_count++;
-        }
-        free(cached_nodes);
-        used_cache = true;
-    }
-
-    /* Source 2: Config file nodes (if no cache) */
-    if (nconfig.server_count == 0 && g_config.bootstrap_count > 0) {
+    /* Source 1: Config file nodes */
+    if (g_config.bootstrap_count > 0) {
         QGP_LOG_INFO(LOG_TAG, "Using %d config bootstrap nodes", g_config.bootstrap_count);
         load_config_nodes(&nconfig);
     }
 
-    /* Source 3: Hardcoded fallback (if nothing else) */
+    /* Source 2: Hardcoded fallback (if no config) */
     if (nconfig.server_count == 0) {
         QGP_LOG_INFO(LOG_TAG, "Using %d hardcoded fallback nodes", g_fallback_count);
         load_fallback_nodes(&nconfig);
@@ -198,12 +182,10 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
     rc = nodus_singleton_connect();
     fprintf(stderr, "[NODUS_INIT] Singleton connect rc=%d\n", rc);
 
-    /* If cache/config nodes failed, retry with hardcoded fallback */
+    /* If config nodes failed, retry with hardcoded fallback */
     if (rc != 0) {
         QGP_LOG_WARN(LOG_TAG, "Connect failed, retrying with hardcoded fallback nodes");
         nodus_singleton_close();
-
-        if (used_cache) bootstrap_cache_expire(0);
 
         memset(&nconfig, 0, sizeof(nconfig));
         nconfig.auto_reconnect = true;
@@ -266,8 +248,7 @@ void nodus_messenger_close(void) {
     /* Clear stored identity */
     nodus_identity_clear(&g_stored_identity);
 
-    /* Cleanup bootstrap cache */
-    bootstrap_cache_cleanup();
+    /* bootstrap_cache disabled — no cleanup needed */
 
     g_initialized = false;
 }

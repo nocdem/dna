@@ -929,15 +929,19 @@ void dna_handle_wall_like(dna_engine_t *engine, dna_task_t *task) {
     );
     qgp_key_free(key);
 
-    if (ret != 0) {
+    if (ret != 0 && ret != -3) {
         int error = DNA_ERROR_INTERNAL;
-        if (ret == -3) error = DNA_ENGINE_ERROR_ALREADY_EXISTS;
         if (ret == -4) error = DNA_ENGINE_ERROR_LIMIT_REACHED;
         QGP_LOG_ERROR(LOG_TAG, "Failed to like post %s: %d",
                       task->params.wall_like.post_uuid, ret);
         task->callback.wall_likes(task->request_id, error,
                                    NULL, 0, task->user_data);
         return;
+    }
+
+    if (ret == -3) {
+        QGP_LOG_INFO(LOG_TAG, "Already liked post %s, fetching current likes",
+                     task->params.wall_like.post_uuid);
     }
 
     /* Fetch updated likes to return */
