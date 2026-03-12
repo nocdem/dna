@@ -215,7 +215,9 @@ void dna_handle_wall_load(dna_engine_t *engine, dna_task_t *task) {
     int ret = dna_wall_load(fp, &wall);
 
     if (ret == -2) {
-        /* Not found - return empty list (not an error) */
+        /* Not found - return empty list (not an error).
+         * Mark meta fresh so we don't re-fetch every call. */
+        wall_cache_update_meta(fp);
         QGP_LOG_INFO(LOG_TAG, "Wall load: %s - no posts found", fp);
         task->callback.wall_posts(task->request_id, DNA_OK,
                                   NULL, 0, task->user_data);
@@ -261,6 +263,7 @@ void dna_handle_wall_load(dna_engine_t *engine, dna_task_t *task) {
 
 typedef struct {
     char fingerprint[129];
+    atomic_int *updated_count;  /* shared counter: incremented when new data found */
 } wall_fetch_ctx_t;
 
 static void *wall_fetch_thread(void *arg) {
@@ -272,12 +275,13 @@ static void *wall_fetch_thread(void *arg) {
     if (ret == 0) {
         wall_cache_store(ctx->fingerprint, wall.posts, wall.post_count);
         wall_cache_update_meta(ctx->fingerprint);
+        if (ctx->updated_count) atomic_fetch_add(ctx->updated_count, 1);
     } else if (ret == -2) {
-        /* Not found on DHT - keep existing cached posts.
-         * DHT lookups can temporarily fail (propagation delay,
-         * node offline). Don't wipe cache; leave stale so
-         * next timeline load retries the fetch. */
-        QGP_LOG_DEBUG(LOG_TAG, "Wall not found on DHT for %.16s..., keeping cache",
+        /* Not found on DHT - keep existing cached posts but mark meta
+         * as fresh so we don't re-fetch every second.  Will retry after
+         * the normal 5-minute TTL (WALL_CACHE_TTL_SECONDS). */
+        wall_cache_update_meta(ctx->fingerprint);
+        QGP_LOG_DEBUG(LOG_TAG, "Wall not found on DHT for %.16s..., keeping cache (marked fresh)",
                       ctx->fingerprint);
     }
     dna_wall_free(&wall);
@@ -290,6 +294,7 @@ typedef struct {
     dna_engine_t *engine;
     wall_fetch_ctx_t *stale_ctxs;
     int stale_count;
+    atomic_int updated_count;  /* how many walls had new data from DHT */
 } wall_bg_refresh_ctx_t;
 
 static void *wall_bg_refresh_thread(void *arg) {
@@ -297,31 +302,40 @@ static void *wall_bg_refresh_thread(void *arg) {
     if (!ctx) return NULL;
 
     dna_engine_t *engine = ctx->engine;
+    int n = ctx->stale_count;
+    if (n <= 0) { free(ctx->stale_ctxs); free(ctx); return NULL; }
+    atomic_store(&ctx->updated_count, 0);
+
+    /* Point each fetch context at the shared counter */
+    for (int i = 0; i < n; i++) {
+        ctx->stale_ctxs[i].updated_count = &ctx->updated_count;
+    }
 
     /* Spawn parallel fetch threads for stale walls */
-    pthread_t *threads = calloc(ctx->stale_count, sizeof(pthread_t));
-    bool *created = calloc(ctx->stale_count, sizeof(bool));
+    pthread_t *threads = calloc((size_t)n, sizeof(pthread_t));
+    bool *created = calloc((size_t)n, sizeof(bool));
 
     if (threads && created) {
-        for (int i = 0; i < ctx->stale_count; i++) {
+        for (int i = 0; i < n; i++) {
             if (atomic_load(&engine->shutdown_requested)) break;
             created[i] = (pthread_create(&threads[i], NULL,
                                           wall_fetch_thread, &ctx->stale_ctxs[i]) == 0);
         }
 
-        for (int i = 0; i < ctx->stale_count; i++) {
+        for (int i = 0; i < n; i++) {
             if (created[i]) {
                 pthread_join(threads[i], NULL);
             }
         }
 
-        QGP_LOG_INFO(LOG_TAG, "Timeline bg-refresh: refreshed %d stale walls", ctx->stale_count);
+        int updated = atomic_load(&ctx->updated_count);
+        QGP_LOG_INFO(LOG_TAG, "Timeline bg-refresh: %d/%d walls had new data",
+                     updated, n);
 
-        /* Notify Flutter to re-fetch timeline (reuse existing event type) */
-        if (!atomic_load(&engine->shutdown_requested)) {
+        /* Only notify Flutter if at least one wall had new data */
+        if (updated > 0 && !atomic_load(&engine->shutdown_requested)) {
             dna_event_t event = {0};
             event.type = DNA_EVENT_WALL_NEW_POST;
-            /* author_fingerprint left empty — Flutter just invalidates timeline */
             dna_dispatch_event(engine, &event);
         }
     }
