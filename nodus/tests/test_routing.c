@@ -28,7 +28,7 @@ static nodus_peer_t make_peer(uint8_t id_fill, const char *ip, uint16_t port) {
     memset(p.node_id.bytes, id_fill, NODUS_KEY_BYTES);
     strncpy(p.ip, ip, sizeof(p.ip) - 1);
     p.udp_port = port;
-    p.tcp_port = port + 1;
+    p.tcp_port = port + 2;
     p.last_seen = (uint64_t)time(NULL);
     return p;
 }

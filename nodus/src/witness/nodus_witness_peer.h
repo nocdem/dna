@@ -9,7 +9,7 @@
  * Key differences from DNAC:
  *   - No pthreads (reconnection in tick, not separate thread)
  *   - No global state (all in nodus_witness_t)
- *   - Connections via nodus_tcp_connect() (reuses server TCP)
+ *   - Connections via nodus_tcp_connect() (reuses server inter-node TCP pool)
  *   - IDENT exchange via T3 CBOR protocol
  *
  * @file nodus_witness_peer.h

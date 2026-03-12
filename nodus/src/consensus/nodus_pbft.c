@@ -86,8 +86,9 @@ void nodus_pbft_init(nodus_pbft_t *pbft, struct nodus_server *srv) {
     nodus_server_t *s = (nodus_server_t *)srv;
 
     /* Add self to the hash ring */
+    uint16_t self_peer_port = s->config.peer_port ? s->config.peer_port : NODUS_DEFAULT_PEER_PORT;
     nodus_hashring_add(&s->ring, &s->identity.node_id,
-                        s->config.bind_ip, s->config.tcp_port);
+                        s->config.bind_ip, self_peer_port);
 
     /* Self is initial leader */
     pbft->leader_id = s->identity.node_id;

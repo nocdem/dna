@@ -1336,7 +1336,9 @@ static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
         if (srv->pbft.peers[i].state != NODUS_NODE_ALIVE) continue;
         memset(&infos[count], 0, sizeof(infos[0]));
         snprintf(infos[count].ip, sizeof(infos[0].ip), "%s", srv->pbft.peers[i].ip);
-        infos[count].tcp_port = srv->pbft.peers[i].tcp_port - 1;  /* Client port = peer port - 1 */
+        /* Client port = peer port - 1 (convention: UDP, UDP+1=client, UDP+2=peer).
+         * NOTE: breaks if non-standard port gaps are configured. */
+        infos[count].tcp_port = srv->pbft.peers[i].tcp_port - 1;
         count++;
     }
 
