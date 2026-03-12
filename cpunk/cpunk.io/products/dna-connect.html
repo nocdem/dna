@@ -582,6 +582,12 @@
       gap: 1.2rem;
     }
 
+    .card-grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1.2rem;
+    }
+
     .token-card {
       border-radius: var(--radius-lg);
       background: var(--panel);
@@ -1064,7 +1070,8 @@
       .hero-split-media { order: -1; }
 
       .card-grid-3,
-      .card-grid-2 { grid-template-columns: 1fr; }
+      .card-grid-4,
+      .card-grid-2 { grid-template-columns: 1fr 1fr; }
 
       .privacy-pillars { grid-template-columns: repeat(2, 1fr); }
 
@@ -1106,6 +1113,7 @@
     @media (max-width: 480px) {
       .hero-split-text h1 { font-size: 1.9rem; }
       .card-grid-3,
+      .card-grid-4,
       .card-grid-2 { grid-template-columns: 1fr; }
       .privacy-pillars { grid-template-columns: 1fr; }
     }
@@ -1152,7 +1160,7 @@
                   <a href="/products/dna-identity.html">DNA Identity</a>
                   <a href="/products/dna-connect.html" class="active">DNA Connect</a>
                   <a href="/products/nodus.html">DNA Nodus</a>
-                  <a href="/products/dna-wallet.html">DNA Wallet</a>
+                  <a href="/products/dna-library.html">DNA Library</a>
                 </div>
               </div>
 
@@ -1421,6 +1429,85 @@
         </div>
       </section>
 
+      <!-- ══ Wallet ══ -->
+      <section id="wallet" class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label">Wallet</div>
+            <h2 class="section-title">Multi-chain wallet, built into the messenger</h2>
+            <p class="section-desc" style="max-width: 38rem;">
+              A single BIP-39 seed phrase derives wallets across four blockchains. Send and receive tokens without leaving the conversation &mdash; no address copying, no app switching.
+            </p>
+          </div>
+
+          <div class="card-grid-3 stagger">
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"/></svg>
+              </span>
+              <h3>Multi-Chain Architecture</h3>
+              <p>
+                One wallet interface, four blockchains managed from a single unified view. Each chain uses its native signing algorithm.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h.01"/><path d="M12 10h.01"/><path d="M16 10h.01"/></svg>
+              </span>
+              <h3>In-Chat Transfers</h3>
+              <p>
+                Send tokens to any DNA contact directly inside a conversation. The recipient's wallet address is resolved automatically from their DNA identity.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              </span>
+              <h3>DEX Integration</h3>
+              <p>
+                Swap tokens directly in the app via <strong style="color:var(--text-main)">Uniswap, PancakeSwap, Jupiter</strong>, and Cellframe DEX. Best-rate routing across multiple pools.
+              </p>
+            </article>
+          </div>
+
+          <div class="card-grid-4 stagger" style="margin-top: 1.5rem;">
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+              </span>
+              <h3>Cellframe</h3>
+              <p>Post-quantum blockchain with Dilithium signatures. Native CPUNK &amp; CELL tokens.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              </span>
+              <h3>Ethereum</h3>
+              <p>Full mainnet support with ERC-20 tokens, dynamic gas estimation, and DEX swaps.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 8h2"/><path d="M15 8h2"/><path d="M7 12h10"/></svg>
+              </span>
+              <h3>Solana</h3>
+              <p>High-throughput chain with Ed25519 signatures, SPL token transfers, and Jupiter swaps.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 2L2 19.5h20L12 2z"/><path d="M12 8v5"/><circle cx="12" cy="16" r="0.5" fill="var(--orange)" stroke="none"/></svg>
+              </span>
+              <h3>TRON</h3>
+              <p>TRON mainnet with TRC-20 token support. secp256k1 signing with Base58Check addresses.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
       <!-- ══ Architecture ══ -->
       <section id="architecture" class="s-section s-panel">
         <div class="wrap">
@@ -1559,7 +1646,7 @@
             <a href="/products/dna-identity.html">DNA Identity</a>
             <a href="/products/dna-connect.html">DNA Connect</a>
             <a href="/products/nodus.html">DNA Nodus</a>
-            <a href="/products/dna-wallet.html">DNA Wallet</a>
+            <a href="/products/dna-library.html">DNA Library</a>
             <a href="/team.html">Team</a>
             <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
             <a href="/doc/cpunk-legal.pdf" target="_blank">Legal &amp; Compliance</a>
