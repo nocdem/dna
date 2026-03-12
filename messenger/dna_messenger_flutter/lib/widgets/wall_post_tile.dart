@@ -7,6 +7,7 @@ import '../design_system/design_system.dart';
 import '../ffi/dna_engine.dart';
 import '../providers/contact_profile_cache_provider.dart';
 import '../providers/identity_profile_cache_provider.dart';
+import '../providers/profile_provider.dart';
 import '../l10n/app_localizations.dart';
 import '../utils/time_format.dart';
 
@@ -56,6 +57,11 @@ class WallPostTile extends ConsumerWidget {
         try {
           avatarBytes = base64Decode(cachedIdentity.avatarBase64);
         } catch (_) {}
+      }
+      // Fallback: use local profile (available before DHT connects)
+      if (avatarBytes == null) {
+        final ownProfile = ref.watch(fullProfileProvider).valueOrNull;
+        avatarBytes = ownProfile?.decodeAvatar();
       }
     }
 

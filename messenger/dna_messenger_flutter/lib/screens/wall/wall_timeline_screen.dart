@@ -9,6 +9,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
+import '../../providers/contact_profile_cache_provider.dart';
 import '../../services/image_attachment_service.dart';
 import '../../l10n/app_localizations.dart';
 import '../../widgets/wall_post_tile.dart';
@@ -359,6 +360,9 @@ class _WallPostWithComments extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Trigger profile fetch for post author (populates avatar cache)
+    ref.read(contactProfileCacheProvider.notifier).fetchAndCache(post.authorFingerprint);
+
     final commentsAsync = ref.watch(wallCommentsProvider(post.uuid));
     final comments = commentsAsync.valueOrNull;
     final likesAsync = ref.watch(wallLikesProvider(post.uuid));
