@@ -1170,10 +1170,12 @@ static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
     nodus_t2_server_info_t infos[NODUS_PBFT_MAX_PEERS + 1];
     int count = 0;
 
-    /* Self first */
+    /* Self first — use external_ip if configured, otherwise bind_ip */
     memset(&infos[count], 0, sizeof(infos[0]));
-    snprintf(infos[count].ip, sizeof(infos[0].ip), "%s",
-             srv->config.bind_ip[0] ? srv->config.bind_ip : "0.0.0.0");
+    const char *self_ip = srv->config.external_ip[0] ? srv->config.external_ip
+                        : srv->config.bind_ip[0]     ? srv->config.bind_ip
+                        : "0.0.0.0";
+    snprintf(infos[count].ip, sizeof(infos[0].ip), "%s", self_ip);
     infos[count].tcp_port = srv->config.tcp_port;
     count++;
 

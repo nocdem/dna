@@ -27,6 +27,59 @@
 #define LOG_TAG "DHT_DM_OUTBOX"
 
 /*============================================================================
+ * Blob Hash Cache — skip re-processing unchanged DHT blobs
+ *
+ * Tracks SHA3-256 hash of the last processed blob per DHT key.
+ * If the same blob is fetched again (same hash), all messages in it
+ * have already been delivered — skip deserialize + decrypt entirely.
+ *============================================================================*/
+
+#define BLOB_CACHE_MAX 128  /* max tracked DHT keys (3 contacts × 8 days × 2 syncs = 48) */
+
+typedef struct {
+    char dht_key[512];
+    uint8_t blob_hash[32];  /* SHA3-256 of raw DHT value */
+} blob_cache_entry_t;
+
+static blob_cache_entry_t g_blob_cache[BLOB_CACHE_MAX];
+static int g_blob_cache_count = 0;
+static pthread_mutex_t g_blob_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Check if blob was already processed (returns true if duplicate) */
+static bool blob_cache_check_and_update(const char *dht_key, const uint8_t *data, size_t data_len) {
+    uint8_t hash[64];  /* SHA3-512 output, we use first 32 bytes */
+    qgp_sha3_512(data, data_len, hash);
+
+    pthread_mutex_lock(&g_blob_cache_mutex);
+
+    /* Look for existing entry */
+    for (int i = 0; i < g_blob_cache_count; i++) {
+        if (strcmp(g_blob_cache[i].dht_key, dht_key) == 0) {
+            if (memcmp(g_blob_cache[i].blob_hash, hash, 32) == 0) {
+                /* Same blob — already processed */
+                pthread_mutex_unlock(&g_blob_cache_mutex);
+                return true;
+            }
+            /* Updated blob — store new hash */
+            memcpy(g_blob_cache[i].blob_hash, hash, 32);
+            pthread_mutex_unlock(&g_blob_cache_mutex);
+            return false;
+        }
+    }
+
+    /* New entry */
+    if (g_blob_cache_count < BLOB_CACHE_MAX) {
+        strncpy(g_blob_cache[g_blob_cache_count].dht_key, dht_key,
+                sizeof(g_blob_cache[0].dht_key) - 1);
+        memcpy(g_blob_cache[g_blob_cache_count].blob_hash, hash, 32);
+        g_blob_cache_count++;
+    }
+
+    pthread_mutex_unlock(&g_blob_cache_mutex);
+    return false;
+}
+
+/*============================================================================
  * Parallel Fetch Worker (for sync_all_contacts)
  *============================================================================*/
 
@@ -436,6 +489,14 @@ int dht_dm_outbox_sync_day(
     if (fetch_result != 0 || !data || data_len == 0) {
         QGP_LOG_DEBUG(LOG_TAG, "No messages found for day=%lu", (unsigned long)day_bucket);
         return 0;  /* No messages is not an error */
+    }
+
+    /* Blob-level dedup: skip if we already processed this exact blob */
+    if (blob_cache_check_and_update(base_key, data, data_len)) {
+        QGP_LOG_DEBUG(LOG_TAG, "Blob unchanged for day=%lu from %.16s... (skipping)",
+                     (unsigned long)day_bucket, contact_fp);
+        free(data);
+        return 0;
     }
 
     /* Deserialize */

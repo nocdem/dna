@@ -152,20 +152,39 @@ static int send_request(nodus_client_t *client, const uint8_t *payload, size_t l
 /* ── Pending slot management ───────────────────────────────────── */
 
 static nodus_pending_t *alloc_pending(nodus_client_t *client, uint32_t txn) {
-    pthread_mutex_lock(&client->pending_mutex);
-    for (int i = 0; i < NODUS_MAX_PENDING; i++) {
-        if (!client->pending[i].in_use) {
-            nodus_pending_t *p = &client->pending[i];
-            memset(p, 0, sizeof(*p));
-            p->txn = txn;
-            p->response = calloc(1, sizeof(nodus_tier2_msg_t));
-            p->in_use = true;
-            pthread_mutex_unlock(&client->pending_mutex);
-            return p;
+    /* Retry with exponential backoff if all slots are busy (startup burst) */
+    const int max_retries = 5;
+    int backoff_ms = 10;
+
+    for (int attempt = 0; attempt <= max_retries; attempt++) {
+        pthread_mutex_lock(&client->pending_mutex);
+        for (int i = 0; i < NODUS_MAX_PENDING; i++) {
+            if (!client->pending[i].in_use) {
+                nodus_pending_t *p = &client->pending[i];
+                memset(p, 0, sizeof(*p));
+                p->txn = txn;
+                p->response = calloc(1, sizeof(nodus_tier2_msg_t));
+                p->in_use = true;
+                pthread_mutex_unlock(&client->pending_mutex);
+                if (attempt > 0) {
+                    QGP_LOG_DEBUG(LOG_TAG, "Pending slot acquired after %d retries", attempt);
+                }
+                return p;
+            }
+        }
+        pthread_mutex_unlock(&client->pending_mutex);
+
+        if (attempt < max_retries) {
+            QGP_LOG_WARN(LOG_TAG, "All %d pending slots busy, retry %d/%d in %dms",
+                         NODUS_MAX_PENDING, attempt + 1, max_retries, backoff_ms);
+            struct timespec ts = { .tv_sec = 0, .tv_nsec = backoff_ms * 1000000L };
+            nanosleep(&ts, NULL);
+            backoff_ms *= 2;  /* 10, 20, 40, 80, 160ms */
         }
     }
-    pthread_mutex_unlock(&client->pending_mutex);
-    QGP_LOG_ERROR(LOG_TAG, "No pending slots available (max %d)", NODUS_MAX_PENDING);
+
+    QGP_LOG_ERROR(LOG_TAG, "No pending slots available (max %d) after %d retries",
+                  NODUS_MAX_PENDING, max_retries);
     return NULL;
 }
 

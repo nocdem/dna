@@ -117,20 +117,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     try {
       final engine = await ref.read(engineProvider.future);
+      if (!mounted) return;
+
       log('CHAT', 'Checking offline messages from ${contact.fingerprint.substring(0, 16)}...');
 
       // Use targeted fetch for this specific contact (faster than checking all)
       await engine.checkOfflineMessagesFrom(contact.fingerprint);
+      if (!mounted) return;
 
       // Record fetch time for cooldown
       recordOfflineFetch(ref, contact.fingerprint);
 
       // Merge any new messages without showing loading state
-      if (mounted) {
-        await ref.read(conversationProvider(contact.fingerprint).notifier).mergeLatest();
-      }
+      await ref.read(conversationProvider(contact.fingerprint).notifier).mergeLatest();
     } catch (e) {
-      log('CHAT', 'Offline check failed: $e');
+      if (mounted) {
+        log('CHAT', 'Offline check failed: $e');
+      }
     }
   }
 

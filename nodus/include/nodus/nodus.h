@@ -89,7 +89,7 @@ typedef struct {
 
 /* ── Concurrent request slot ────────────────────────────────────── */
 
-#define NODUS_MAX_PENDING  16
+#define NODUS_MAX_PENDING  64
 
 typedef struct {
     uint32_t    txn;

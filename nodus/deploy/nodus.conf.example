@@ -1,5 +1,6 @@
 {
     "bind_ip": "0.0.0.0",
+    "external_ip": "",
     "udp_port": 4000,
     "tcp_port": 4001,
     "identity_path": "/var/lib/nodus/identity",

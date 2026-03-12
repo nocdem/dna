@@ -36,6 +36,7 @@ extern "C" {
 
 typedef struct {
     char        bind_ip[64];
+    char        external_ip[64];    /* Public IP to advertise to clients (empty = use bind_ip) */
     uint16_t    udp_port;
     uint16_t    tcp_port;
     char        identity_path[256];

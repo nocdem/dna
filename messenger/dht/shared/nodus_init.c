@@ -348,6 +348,22 @@ static void *rtt_probe_thread(void *arg) {
  * Spawn background thread to probe all known nodes and save the fastest.
  * Merges hardcoded list with get_servers() results.
  */
+
+/** Returns true if IP is invalid for client use (0.0.0.0, private, loopback) */
+static bool is_invalid_server_ip(const char *ip) {
+    if (!ip || !ip[0]) return true;
+    if (strcmp(ip, "0.0.0.0") == 0) return true;
+    if (strcmp(ip, "127.0.0.1") == 0) return true;
+    if (strncmp(ip, "10.", 3) == 0) return true;
+    if (strncmp(ip, "192.168.", 8) == 0) return true;
+    /* 172.16.0.0 – 172.31.255.255 */
+    if (strncmp(ip, "172.", 4) == 0) {
+        int second = atoi(ip + 4);
+        if (second >= 16 && second <= 31) return true;
+    }
+    return false;
+}
+
 static void start_rtt_probe(void) {
     rtt_probe_ctx_t *ctx = calloc(1, sizeof(rtt_probe_ctx_t));
     if (!ctx) return;
@@ -381,10 +397,13 @@ static void start_rtt_probe(void) {
                         break;
                     }
                 }
-                if (!dup) {
+                if (!dup && !is_invalid_server_ip(discovered[d].ip)) {
                     ctx->servers[ctx->server_count] = discovered[d];
                     ctx->server_count++;
                     QGP_LOG_INFO(LOG_TAG, "[RTT] Discovered new node: %s:%d",
+                                 discovered[d].ip, discovered[d].port);
+                } else if (!dup) {
+                    QGP_LOG_WARN(LOG_TAG, "[RTT] Ignoring invalid server IP: %s:%d",
                                  discovered[d].ip, discovered[d].port);
                 }
             }

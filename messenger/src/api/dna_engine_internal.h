@@ -639,6 +639,7 @@ struct dna_engine {
     char fingerprint[129];           /* Current identity fingerprint */
     bool identity_loaded;            /* True if identity is active */
     bool listeners_starting;         /* True if listener setup in progress (race prevention) */
+    bool dm_full_sync_done;          /* True after first full DM sync (prevents double sync on startup) */
     time_t profile_published_at;     /* Timestamp when profile was last published (0 = never) */
 
     /* Password protection (session state) */

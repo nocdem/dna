@@ -70,6 +70,9 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
     if (json_object_object_get_ex(root, "bind_ip", &val))
         snprintf(cfg->bind_ip, sizeof(cfg->bind_ip), "%s",
                  json_object_get_string(val));
+    if (json_object_object_get_ex(root, "external_ip", &val))
+        snprintf(cfg->external_ip, sizeof(cfg->external_ip), "%s",
+                 json_object_get_string(val));
     if (json_object_object_get_ex(root, "udp_port", &val))
         cfg->udp_port = (uint16_t)json_object_get_int(val);
     if (json_object_object_get_ex(root, "tcp_port", &val))

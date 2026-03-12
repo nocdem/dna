@@ -426,8 +426,8 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
 
     /* Sync DM messages from all contacts BEFORE setting up listeners.
      * Use FULL sync (8 days) to catch all messages received by other devices.
-     * This matches group behavior (dna_engine_subscribe_all_groups does sync first). */
-    if (engine->messenger) {
+     * Skip if stabilization thread already did a full sync (prevents double sync). */
+    if (engine->messenger && !engine->dm_full_sync_done) {
         size_t dm_sync_count = 0;
         QGP_LOG_INFO(LOG_TAG, "[LISTEN] Full DM sync before listener setup...");
         int sync_result = messenger_transport_check_offline_messages(
@@ -442,6 +442,9 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
         } else {
             QGP_LOG_WARN(LOG_TAG, "[LISTEN] DM sync failed (non-fatal): %d", sync_result);
         }
+        engine->dm_full_sync_done = true;
+    } else if (engine->dm_full_sync_done) {
+        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Skipping DM sync (already done by stabilization thread)");
     }
 
     /* PERF: Start listeners in parallel (mobile performance optimization)
