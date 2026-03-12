@@ -284,6 +284,55 @@ static void *wall_fetch_thread(void *arg) {
     return NULL;
 }
 
+/* ── Background refresh thread for stale walls (cache-first pattern) ── */
+
+typedef struct {
+    dna_engine_t *engine;
+    wall_fetch_ctx_t *stale_ctxs;
+    int stale_count;
+} wall_bg_refresh_ctx_t;
+
+static void *wall_bg_refresh_thread(void *arg) {
+    wall_bg_refresh_ctx_t *ctx = (wall_bg_refresh_ctx_t *)arg;
+    if (!ctx) return NULL;
+
+    dna_engine_t *engine = ctx->engine;
+
+    /* Spawn parallel fetch threads for stale walls */
+    pthread_t *threads = calloc(ctx->stale_count, sizeof(pthread_t));
+    bool *created = calloc(ctx->stale_count, sizeof(bool));
+
+    if (threads && created) {
+        for (int i = 0; i < ctx->stale_count; i++) {
+            if (atomic_load(&engine->shutdown_requested)) break;
+            created[i] = (pthread_create(&threads[i], NULL,
+                                          wall_fetch_thread, &ctx->stale_ctxs[i]) == 0);
+        }
+
+        for (int i = 0; i < ctx->stale_count; i++) {
+            if (created[i]) {
+                pthread_join(threads[i], NULL);
+            }
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "Timeline bg-refresh: refreshed %d stale walls", ctx->stale_count);
+
+        /* Notify Flutter to re-fetch timeline (reuse existing event type) */
+        if (!atomic_load(&engine->shutdown_requested)) {
+            dna_event_t event = {0};
+            event.type = DNA_EVENT_WALL_NEW_POST;
+            /* author_fingerprint left empty — Flutter just invalidates timeline */
+            dna_dispatch_event(engine, &event);
+        }
+    }
+
+    free(threads);
+    free(created);
+    free(ctx->stale_ctxs);
+    free(ctx);
+    return NULL;
+}
+
 void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->identity_loaded) {
         task->callback.wall_posts(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
@@ -315,12 +364,11 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
-    /* Phase 1: Refresh stale entries in parallel */
+    /* Phase 1: Kick off background refresh for stale walls (non-blocking)
+     * v0.9.53: Cache-first pattern — return cached data immediately,
+     * refresh stale entries in background, fire event when done. */
     {
-        /* Collect stale fingerprints */
-        wall_fetch_ctx_t *stale_ctxs = NULL;
         int stale_count = 0;
-
         for (size_t i = 0; i < fp_count; i++) {
             if (wall_cache_is_stale(fingerprints[i])) {
                 stale_count++;
@@ -328,11 +376,8 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
         }
 
         if (stale_count > 0) {
-            stale_ctxs = calloc(stale_count, sizeof(wall_fetch_ctx_t));
-            pthread_t *threads = calloc(stale_count, sizeof(pthread_t));
-            bool *created = calloc(stale_count, sizeof(bool));
-
-            if (stale_ctxs && threads && created) {
+            wall_fetch_ctx_t *stale_ctxs = calloc(stale_count, sizeof(wall_fetch_ctx_t));
+            if (stale_ctxs) {
                 int idx = 0;
                 for (size_t i = 0; i < fp_count && idx < stale_count; i++) {
                     if (wall_cache_is_stale(fingerprints[i])) {
@@ -342,29 +387,30 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
                     }
                 }
 
-                /* Spawn parallel fetch threads */
-                for (int i = 0; i < stale_count; i++) {
-                    created[i] = (pthread_create(&threads[i], NULL,
-                                                  wall_fetch_thread, &stale_ctxs[i]) == 0);
-                }
+                wall_bg_refresh_ctx_t *bg_ctx = calloc(1, sizeof(wall_bg_refresh_ctx_t));
+                if (bg_ctx) {
+                    bg_ctx->engine = engine;
+                    bg_ctx->stale_ctxs = stale_ctxs;
+                    bg_ctx->stale_count = stale_count;
 
-                /* Join all threads */
-                for (int i = 0; i < stale_count; i++) {
-                    if (created[i]) {
-                        pthread_join(threads[i], NULL);
+                    pthread_t bg_thread;
+                    if (pthread_create(&bg_thread, NULL, wall_bg_refresh_thread, bg_ctx) == 0) {
+                        pthread_detach(bg_thread);
+                        QGP_LOG_INFO(LOG_TAG, "Timeline: %d stale walls, refreshing in background", stale_count);
+                    } else {
+                        /* Thread creation failed — free context, continue with stale cache */
+                        free(stale_ctxs);
+                        free(bg_ctx);
+                        QGP_LOG_WARN(LOG_TAG, "Timeline: failed to spawn bg refresh thread");
                     }
+                } else {
+                    free(stale_ctxs);
                 }
-
-                QGP_LOG_INFO(LOG_TAG, "Timeline: refreshed %d stale walls", stale_count);
             }
-
-            free(stale_ctxs);
-            free(threads);
-            free(created);
         }
     }
 
-    /* Phase 2: Load all from cache (now fresh) */
+    /* Phase 2: Return from cache immediately (may be stale, bg refresh will update) */
     dna_wall_post_t *cached_posts = NULL;
     size_t cached_count = 0;
     int cache_ret = wall_cache_load_timeline(fingerprints, fp_count,
@@ -396,7 +442,7 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
 
     wall_cache_free_posts(cached_posts, cached_count);
 
-    QGP_LOG_INFO(LOG_TAG, "Timeline: %zu posts", cached_count);
+    QGP_LOG_INFO(LOG_TAG, "Timeline: %zu posts (cache-first)", cached_count);
     task->callback.wall_posts(task->request_id, DNA_OK, info, (int)cached_count, task->user_data);
 }
 
@@ -481,6 +527,80 @@ static int wall_comment_infos_from_json(const char *json, dna_wall_comment_info_
             strncpy(infos[i].body, json_object_get_string(j_val), 2000);
         if (json_object_object_get_ex(obj, "created_at", &j_val))
             infos[i].created_at = json_object_get_int64(j_val);
+        if (json_object_object_get_ex(obj, "verified", &j_val))
+            infos[i].verified = json_object_get_boolean(j_val);
+    }
+
+    json_object_put(arr);
+    *infos_out = infos;
+    *count_out = len;
+    return 0;
+}
+
+/* ============================================================================
+ * WALL LIKES - JSON Helpers for Cache (v0.9.53+)
+ * ============================================================================ */
+
+/**
+ * Serialize wall like info array to JSON for caching
+ */
+static int wall_like_infos_to_json(const dna_wall_like_info_t *infos, int count, char **json_out) {
+    json_object *arr = json_object_new_array();
+    if (!arr) return -1;
+
+    for (int i = 0; i < count; i++) {
+        json_object *obj = json_object_new_object();
+        if (!obj) continue;
+
+        json_object_object_add(obj, "author_fp", json_object_new_string(infos[i].author_fingerprint));
+        json_object_object_add(obj, "author_name", json_object_new_string(infos[i].author_name));
+        json_object_object_add(obj, "timestamp", json_object_new_int64((int64_t)infos[i].timestamp));
+        json_object_object_add(obj, "verified", json_object_new_boolean(infos[i].verified));
+
+        json_object_array_add(arr, obj);
+    }
+
+    const char *str = json_object_to_json_string_ext(arr, JSON_C_TO_STRING_PLAIN);
+    *json_out = str ? strdup(str) : NULL;
+    json_object_put(arr);
+    return *json_out ? 0 : -1;
+}
+
+/**
+ * Deserialize wall like info array from cached JSON
+ */
+static int wall_like_infos_from_json(const char *json, dna_wall_like_info_t **infos_out, int *count_out) {
+    *infos_out = NULL;
+    *count_out = 0;
+
+    json_object *arr = json_tokener_parse(json);
+    if (!arr || !json_object_is_type(arr, json_type_array)) {
+        if (arr) json_object_put(arr);
+        return -1;
+    }
+
+    int len = json_object_array_length(arr);
+    if (len == 0) {
+        json_object_put(arr);
+        return 0;
+    }
+
+    dna_wall_like_info_t *infos = calloc(len, sizeof(dna_wall_like_info_t));
+    if (!infos) {
+        json_object_put(arr);
+        return -1;
+    }
+
+    for (int i = 0; i < len; i++) {
+        json_object *obj = json_object_array_get_idx(arr, i);
+        json_object *j_val;
+
+        if (json_object_object_get_ex(obj, "author_fp", &j_val))
+            strncpy(infos[i].author_fingerprint, json_object_get_string(j_val), 128);
+        if (json_object_object_get_ex(obj, "author_name", &j_val))
+            strncpy(infos[i].author_name, json_object_get_string(j_val), 64);
+        if (json_object_object_get_ex(obj, "timestamp", &j_val))
+            infos[i].timestamp = (uint64_t)json_object_get_int64(j_val);
         if (json_object_object_get_ex(obj, "verified", &j_val))
             infos[i].verified = json_object_get_boolean(j_val);
     }
@@ -854,6 +974,13 @@ void dna_handle_wall_like(dna_engine_t *engine, dna_task_t *task) {
 
     dna_wall_likes_free(likes, count);
 
+    /* Update likes cache with fresh data */
+    char *likes_json = NULL;
+    if (wall_like_infos_to_json(info, (int)count, &likes_json) == 0 && likes_json) {
+        wall_cache_store_likes(task->params.wall_like.post_uuid, likes_json, (int)count);
+        free(likes_json);
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Like added for post %s, total: %zu",
                  task->params.wall_like.post_uuid, count);
     task->callback.wall_likes(task->request_id, DNA_OK,
@@ -862,13 +989,35 @@ void dna_handle_wall_like(dna_engine_t *engine, dna_task_t *task) {
 
 void dna_handle_wall_get_likes(dna_engine_t *engine, dna_task_t *task) {
     (void)engine;
+    const char *post_uuid = task->params.wall_get_likes.post_uuid;
 
+    /* ── Cache-first: return cached likes if fresh ── */
+    if (!wall_cache_is_stale_likes(post_uuid)) {
+        char *json = NULL;
+        int cached_count = 0;
+        if (wall_cache_load_likes(post_uuid, &json, &cached_count) == 0 && json) {
+            dna_wall_like_info_t *infos = NULL;
+            int info_count = 0;
+            if (wall_like_infos_from_json(json, &infos, &info_count) == 0) {
+                free(json);
+                QGP_LOG_DEBUG(LOG_TAG, "Likes cache hit for %s (%d)", post_uuid, info_count);
+                task->callback.wall_likes(task->request_id, DNA_OK,
+                                           infos, info_count, task->user_data);
+                return;
+            }
+            free(json);
+        }
+        /* Cache parse failed — fall through to DHT */
+    }
+
+    /* ── Cache miss or stale: fetch from DHT ── */
     dna_wall_like_t *likes = NULL;
     size_t count = 0;
-    int ret = dna_wall_likes_get(task->params.wall_get_likes.post_uuid, &likes, &count);
+    int ret = dna_wall_likes_get(post_uuid, &likes, &count);
 
     if (ret == -2 || count == 0) {
-        /* No likes */
+        /* No likes — cache empty result */
+        wall_cache_store_likes(post_uuid, "[]", 0);
         task->callback.wall_likes(task->request_id, DNA_OK,
                                    NULL, 0, task->user_data);
         if (likes) dna_wall_likes_free(likes, count);
@@ -900,8 +1049,15 @@ void dna_handle_wall_get_likes(dna_engine_t *engine, dna_task_t *task) {
 
     dna_wall_likes_free(likes, count);
 
-    QGP_LOG_INFO(LOG_TAG, "Fetched %zu likes for post %s",
-                 count, task->params.wall_get_likes.post_uuid);
+    /* Store in cache for next time */
+    char *likes_json = NULL;
+    if (wall_like_infos_to_json(info, (int)count, &likes_json) == 0 && likes_json) {
+        wall_cache_store_likes(post_uuid, likes_json, (int)count);
+        free(likes_json);
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Fetched %zu likes for post %s (from DHT)",
+                 count, post_uuid);
     task->callback.wall_likes(task->request_id, DNA_OK,
                                info, (int)count, task->user_data);
 }

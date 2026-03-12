@@ -79,6 +79,14 @@ static int create_schema(void) {
         "    comments_json TEXT NOT NULL,"
         "    comment_count INTEGER DEFAULT 0,"
         "    cached_at INTEGER NOT NULL"
+        ");"
+
+        /* ── wall_likes (v0.9.53+) ───────────────────────────── */
+        "CREATE TABLE IF NOT EXISTS wall_likes ("
+        "    post_uuid TEXT PRIMARY KEY,"
+        "    likes_json TEXT NOT NULL,"
+        "    like_count INTEGER DEFAULT 0,"
+        "    cached_at INTEGER NOT NULL"
         ");";
 
     char *err_msg = NULL;
@@ -840,6 +848,127 @@ bool wall_cache_is_stale_comments(const char *post_uuid) {
     }
 
     const char *sql = "SELECT cached_at FROM wall_comments WHERE post_uuid = ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return true;
+
+    sqlite3_bind_text(stmt, 1, post_uuid, -1, SQLITE_STATIC);
+
+    bool stale = true;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        uint64_t cached_at = (uint64_t)sqlite3_column_int64(stmt, 0);
+        uint64_t age = (uint64_t)time(NULL) - cached_at;
+        stale = (age >= WALL_CACHE_TTL_SECONDS);
+    }
+
+    sqlite3_finalize(stmt);
+    return stale;
+}
+
+/* ── Likes cache (v0.9.53+) ──────────────────────────────────────── */
+
+int wall_cache_store_likes(const char *post_uuid, const char *likes_json, int count) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -1;
+    }
+    if (!post_uuid || !likes_json) return -1;
+
+    const char *sql =
+        "INSERT OR REPLACE INTO wall_likes "
+        "(post_uuid, likes_json, like_count, cached_at) VALUES (?, ?, ?, ?);";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "store_likes prepare: %s", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, post_uuid, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, likes_json, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 3, count);
+    sqlite3_bind_int64(stmt, 4, (int64_t)time(NULL));
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "store_likes step: %s", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    return 0;
+}
+
+int wall_cache_load_likes(const char *post_uuid, char **json_out, int *count_out) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -1;
+    }
+    if (!post_uuid || !json_out || !count_out) return -1;
+
+    *json_out = NULL;
+    *count_out = 0;
+
+    const char *sql =
+        "SELECT likes_json, like_count FROM wall_likes WHERE post_uuid = ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "load_likes prepare: %s", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, post_uuid, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -2; /* Not found */
+    }
+
+    const char *json = (const char *)sqlite3_column_text(stmt, 0);
+    int cnt = sqlite3_column_int(stmt, 1);
+
+    if (json) {
+        *json_out = strdup(json);
+    }
+    *count_out = cnt;
+
+    sqlite3_finalize(stmt);
+    return (*json_out) ? 0 : -1;
+}
+
+int wall_cache_invalidate_likes(const char *post_uuid) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -1;
+    }
+    if (!post_uuid) return -1;
+
+    const char *sql = "DELETE FROM wall_likes WHERE post_uuid = ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "invalidate_likes prepare: %s", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, post_uuid, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+bool wall_cache_is_stale_likes(const char *post_uuid) {
+    if (!post_uuid) return true;
+    if (!g_db) {
+        if (wall_cache_init() != 0) return true;
+    }
+
+    const char *sql = "SELECT cached_at FROM wall_likes WHERE post_uuid = ?;";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);

@@ -186,6 +186,44 @@ int wall_cache_invalidate_comments(const char *post_uuid);
  */
 bool wall_cache_is_stale_comments(const char *post_uuid);
 
+/* ── Likes cache (v0.9.53+) ──────────────────────────────────────── */
+
+/**
+ * Store likes JSON blob for a wall post
+ *
+ * @param post_uuid   Post UUID
+ * @param likes_json  JSON array of like info structs
+ * @param count       Number of likes
+ * @return 0 on success, -1 on error
+ */
+int wall_cache_store_likes(const char *post_uuid, const char *likes_json, int count);
+
+/**
+ * Load cached likes for a wall post
+ *
+ * @param post_uuid  Post UUID
+ * @param json_out   Output: heap-allocated JSON string (caller frees)
+ * @param count_out  Output: number of likes
+ * @return 0 on success, -1 on error, -2 if not found
+ */
+int wall_cache_load_likes(const char *post_uuid, char **json_out, int *count_out);
+
+/**
+ * Invalidate cached likes for a wall post
+ *
+ * @param post_uuid  Post UUID
+ * @return 0 on success, -1 on error
+ */
+int wall_cache_invalidate_likes(const char *post_uuid);
+
+/**
+ * Check if likes cache is stale for a post (older than 5 minutes)
+ *
+ * @param post_uuid  Post UUID to check
+ * @return true if stale or not found, false if still fresh
+ */
+bool wall_cache_is_stale_likes(const char *post_uuid);
+
 #ifdef __cplusplus
 }
 #endif

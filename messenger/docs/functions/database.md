@@ -250,7 +250,7 @@ Per-identity SQLite database for channel subscriptions.
 
 **Database:** `~/.dna/wall_cache.db`
 
-**Tables:** wall_posts, wall_cache_meta, wall_comments
+**Tables:** wall_posts, wall_cache_meta, wall_comments, wall_likes
 
 **Constants:** `WALL_CACHE_TTL_SECONDS` (300), `WALL_CACHE_EVICT_SECONDS` (2592000)
 
@@ -282,6 +282,15 @@ Per-identity SQLite database for channel subscriptions.
 | `int wall_cache_load_comments(const char*, char**, int*)` | Load cached wall post comments; returns heap-allocated JSON (caller frees) |
 | `int wall_cache_invalidate_comments(const char*)` | Invalidate comment cache for a post by UUID |
 | `bool wall_cache_is_stale_comments(const char*)` | Check if comment cache is stale for a post (5-min TTL) |
+
+### Likes Cache (v0.9.53+)
+
+| Function | Description |
+|----------|-------------|
+| `int wall_cache_store_likes(const char*, const char*, int)` | Cache wall post likes as JSON blob with like count |
+| `int wall_cache_load_likes(const char*, char**, int*)` | Load cached wall post likes; returns heap-allocated JSON (caller frees) |
+| `int wall_cache_invalidate_likes(const char*)` | Invalidate likes cache for a post by UUID |
+| `bool wall_cache_is_stale_likes(const char*)` | Check if likes cache is stale for a post (5-min TTL) |
 
 ### Meta / Staleness
 
