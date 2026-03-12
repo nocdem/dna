@@ -273,14 +273,16 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
    ```bash
    cd /opt/dna/messenger/build
    ./cli/dna-messenger-cli -d /home/nocdem/.dna-release-identity version publish \
-       --lib 0.9.36 --app 0.101.47 --nodus 0.6.3 \
-       --lib-min 0.9.0 --app-min 0.101.0 --nodus-min 0.6.0
+       --lib 0.9.59 --app 1.0.0-rc27 --nodus 0.6.3 \
+       --lib-min 0.9.0 --app-min 1.0.0-rc10 --nodus-min 0.6.0
    ```
 
-   **MINIMUM VERSION RULE:** Minimums MUST match major.minor of current versions:
-   - Library 0.7.0 → `--lib-min 0.7.0`
-   - App 0.101.0 → `--app-min 0.101.0`
-   - Nodus 0.4.5 → `--nodus-min 0.4.0`
+   **MINIMUM VERSION VALUES (update when breaking changes require forced upgrade):**
+   - `--lib-min 0.9.0` — Minimum C library version
+   - `--app-min 1.0.0-rc10` — Minimum Flutter app version (users below this get forced update screen)
+   - `--nodus-min 0.6.0` — Minimum Nodus version
+
+   **WARNING:** Setting app-min too high (e.g. `1.0.0`) will lock out ALL RC users since no RC version satisfies `>= 1.0.0`. Always use the full RC tag (e.g. `1.0.0-rc10`).
 
 5. **VERIFY** DHT publication:
    ```bash
