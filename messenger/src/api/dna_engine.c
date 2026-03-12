@@ -109,7 +109,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/key/key_encryption.h"
 #include "crypto/sign/qgp_dilithium.h"
-#include "client/nodus_republish.h"
+/* nodus_republish.h removed — migration loop eliminated in v0.9.58 */
 
 /* Blockchain/Wallet includes for send_tokens */
 #include "cellframe_wallet.h"
@@ -323,57 +323,10 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
 
     QGP_LOG_INFO(LOG_TAG, "[RETRY] Stabilization complete, starting retries...");
 
-    /* 0. Nodus migration: republish local data to new DHT on first connect.
-     * Old DHT data expires naturally (7-day TTL for contacts/GEKs, 365-day for profile).
-     * This pushes local cache → Nodus DHT so data is available on the new network. */
-    if (engine->messenger) {
-        const char *data_dir = qgp_platform_app_data_dir();
-        /* One-time fix: previous builds marked migration done even when DHT was
-         * disconnected. Reset flag unconditionally so migration re-runs.
-         * This is safe — republishing existing data is idempotent. */
-        if (data_dir && nodus_republish_check_migrated(data_dir) == 1) {
-            nodus_republish_reset(data_dir);
-            QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Reset migration flag (ensuring republish)");
-        }
-
-        if (data_dir && !nodus_republish_check_migrated(data_dir)) {
-            QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Nodus: republishing local data to new DHT...");
-
-            /* Only mark migration done if DHT is actually connected */
-            if (!nodus_messenger_is_ready()) {
-                QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Nodus not connected, skipping (will retry next launch)");
-            } else {
-                /* Profile: load from local cache and publish */
-                dna_auto_republish_own_profile(engine);
-
-                /* Name lookup alias: republish name→fingerprint so lookup works on v5 */
-                {
-                    dna_unified_identity_t *cached_id = NULL;
-                    uint64_t cached_at = 0;
-                    if (profile_cache_get(engine->fingerprint, &cached_id, &cached_at) == 0 &&
-                        cached_id && cached_id->has_registered_name && cached_id->registered_name[0]) {
-                        int name_rc = dht_keyserver_publish_alias(cached_id->registered_name, engine->fingerprint);
-                        QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Name alias '%s' republish: %s",
-                                     cached_id->registered_name, name_rc == 0 ? "OK" : "failed (non-fatal)");
-                    }
-                    if (cached_id) dna_identity_free(cached_id);
-                }
-
-                /* Contacts: push from local SQLite to DHT */
-                int rc = messenger_sync_contacts_to_dht(engine->messenger);
-                QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Contacts push: %s", rc == 0 ? "OK" : "failed (non-fatal)");
-
-                /* Groups: push from local SQLite to DHT */
-                rc = messenger_sync_groups_to_dht(engine->messenger);
-                QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Groups push: %s", rc == 0 ? "OK" : "failed (non-fatal)");
-
-                /* GEKs: handled by existing bidirectional sync below (step 1c) */
-
-                nodus_republish_mark_done(data_dir);
-                QGP_LOG_WARN(LOG_TAG, "[MIGRATION] Nodus migration complete");
-            }
-        }
-    }
+    /* Nodus migration removed (v0.9.58) — migration was running on EVERY startup
+     * due to reset loop (check_migrated → reset → republish → mark_done → repeat).
+     * All existing users have already migrated. Profile/contacts/groups are kept
+     * fresh by their normal sync paths below (steps 1-1c). */
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 

@@ -133,15 +133,35 @@ int dna_config_load(dna_config_t *config) {
         config->log_max_files = 3;       // Keep 3 rotated files
     }
 
-    // Default bootstrap nodes if none specified in config (all 6 nodus servers)
-    if (config->bootstrap_count == 0) {
-        strcpy(config->bootstrap_nodes[0], "154.38.182.161:4001");
-        strcpy(config->bootstrap_nodes[1], "164.68.105.227:4001");
-        strcpy(config->bootstrap_nodes[2], "164.68.116.180:4001");
-        strcpy(config->bootstrap_nodes[3], "161.97.85.25:4001");
-        strcpy(config->bootstrap_nodes[4], "156.67.24.125:4001");
-        strcpy(config->bootstrap_nodes[5], "156.67.25.251:4001");
-        config->bootstrap_count = 6;
+    // Migrate stale bootstrap nodes: fix port 4000→4001 and ensure all 6 nodes present.
+    // Old config files had 3 nodes on port 4000 (UDP). TCP port is 4001.
+    {
+        bool needs_save = false;
+
+        // Fix wrong ports (4000 → 4001)
+        for (int i = 0; i < config->bootstrap_count; i++) {
+            char *colon = strrchr(config->bootstrap_nodes[i], ':');
+            if (colon && strcmp(colon, ":4000") == 0) {
+                strcpy(colon, ":4001");
+                needs_save = true;
+            }
+        }
+
+        // Replace with full 6-node list if stale (fewer than 6 nodes)
+        if (config->bootstrap_count < 6) {
+            strcpy(config->bootstrap_nodes[0], "154.38.182.161:4001");
+            strcpy(config->bootstrap_nodes[1], "164.68.105.227:4001");
+            strcpy(config->bootstrap_nodes[2], "164.68.116.180:4001");
+            strcpy(config->bootstrap_nodes[3], "161.97.85.25:4001");
+            strcpy(config->bootstrap_nodes[4], "156.67.24.125:4001");
+            strcpy(config->bootstrap_nodes[5], "156.67.25.251:4001");
+            config->bootstrap_count = 6;
+            needs_save = true;
+        }
+
+        if (needs_save) {
+            dna_config_save(config);
+        }
     }
 
     fclose(f);

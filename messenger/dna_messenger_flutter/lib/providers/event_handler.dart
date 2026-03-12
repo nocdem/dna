@@ -316,7 +316,7 @@ class EventHandler {
         break;
 
       case WallNewPostEvent(authorFingerprint: final author, postUuid: final uuid):
-        logPrint('[DART-HANDLER] WallNewPostEvent: author=${author.substring(0, 16)}..., post=$uuid');
+        logPrint('[DART-HANDLER] WallNewPostEvent: author=${author.length >= 16 ? author.substring(0, 16) : author}..., post=$uuid');
         _ref.invalidate(wallTimelineProvider);
         break;
 
