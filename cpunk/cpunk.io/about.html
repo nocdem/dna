@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>About CPUNK – Post-Quantum Privacy Infrastructure | CPUNK.IO</title>
+
+  <!-- Basic meta -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description"
+    content="CPUNK is a community-driven project building post-quantum, privacy-first infrastructure for digital identity, encrypted communication, and multi-chain asset management."
+  />
+  <meta name="keywords"
+    content="CPUNK, CPUNK.IO, about, post-quantum, privacy, digital identity, encrypted messaging, DNA Connect, Kyber1024, Dilithium5, open source, community-driven"
+  />
+  <meta name="author" content="CPUNK Protocol" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://cpunk.io/about.html" />
+
+  <!-- Open Graph / Social -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://cpunk.io/about.html">
+  <meta property="og:title" content="About CPUNK – Post-Quantum Privacy Infrastructure">
+  <meta property="og:description" content="CPUNK is a community-driven project building post-quantum, privacy-first infrastructure for digital identity, encrypted communication, and multi-chain asset management.">
+  <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://cpunk.io/about.html">
+  <meta name="twitter:title" content="About CPUNK – Post-Quantum Privacy Infrastructure">
+  <meta name="twitter:description" content="CPUNK is a community-driven project building post-quantum, privacy-first infrastructure for digital identity, encrypted communication, and multi-chain asset management.">
+  <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
+  <meta name="twitter:site" content="@OfficialCpunk">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <style>
+    :root {
+      --bg: #050712;
+      --bg-alt: #090c1a;
+      --panel: #111426;
+      --panel-alt: #151832;
+      --accent: #00f0ff;
+      --accent-soft: rgba(0, 240, 255, 0.08);
+      --accent-strong: #ff2cd8;
+      --text-main: #f5f7ff;
+      --text-muted: #9aa4d4;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.5);
+      --radius-lg: 20px;
+      --radius-xl: 28px;
+      --radius-pill: 999px;
+      --nav-height: 72px;
+      --max-width: 1120px;
+      --transition-fast: 150ms ease-out;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html,
+    body {
+      height: 100%;
+      scroll-behavior: smooth;
+      max-width: 100%;
+      overflow-x: hidden;
+    }
+
+    body {
+      font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, #1a1d46 0, transparent 55%),
+        radial-gradient(circle at bottom right, #0d1025 0, #050712 55%);
+      color: var(--text-main);
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .wrap {
+      width: 100%;
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 0 1.25rem;
+    }
+
+    /* Header / nav */
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(12px);
+      background: linear-gradient(
+          to bottom,
+          rgba(5, 7, 18, 0.96),
+          rgba(5, 7, 18, 0.88),
+          transparent
+        );
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .nav {
+      height: var(--nav-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.5rem;
+      position: relative;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-icon.q-core {
+      width: 48px;
+      height: 28px;
+      border-radius: 12px;
+      background:
+        linear-gradient(180deg, #111, #050712),
+        repeating-linear-gradient(
+          45deg,
+          rgba(0, 240, 255, 0.15),
+          rgba(0, 240, 255, 0.15) 3px,
+          transparent 6px
+        );
+      box-shadow:
+        inset 0 0 10px rgba(0, 240, 255, 0.4),
+        0 0 16px #00f0ff88;
+      color: #00ffd5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+    }
+
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.1;
+    }
+
+    .brand-name {
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      font-size: 0.95rem;
+      text-transform: uppercase;
+    }
+
+    .brand-tag {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .nav-menu {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      font-size: 0.9rem;
+    }
+
+    .nav-links a {
+      color: var(--text-muted);
+      padding-bottom: 2px;
+      border-bottom: 1px solid transparent;
+      transition: color var(--transition-fast),
+        border-bottom-color var(--transition-fast);
+    }
+
+    .nav-links a:hover {
+      color: var(--text-main);
+      border-bottom-color: rgba(0, 240, 255, 0.6);
+    }
+
+    .nav-links a.active {
+      color: var(--text-main);
+      border-bottom-color: rgba(0, 240, 255, 0.9);
+    }
+
+    .dropdown a.active {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-main);
+    }
+
+    .nav-item {
+      position: relative;
+    }
+
+    .nav-item-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      cursor: pointer;
+      color: var(--text-muted);
+    }
+
+    .nav-item:hover .nav-item-label {
+      color: var(--text-main);
+    }
+
+    .caret {
+      border: 4px solid transparent;
+      border-top-color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .dropdown {
+      position: absolute;
+      top: 110%;
+      left: 0;
+      min-width: 190px;
+      background: rgba(5, 7, 18, 0.98);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.6);
+      padding: 0.4rem 0;
+      display: none;
+      z-index: 30;
+    }
+
+    .dropdown a {
+      display: block;
+      padding: 0.4rem 0.9rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .dropdown a:hover {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-main);
+    }
+
+    .nav-item:hover .dropdown {
+      display: block;
+    }
+
+    .nav-cta {
+      display: flex;
+      align-items: center;
+      gap: 0.8rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      padding: 0.5rem 1.2rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid transparent;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      background: transparent;
+      color: var(--text-main);
+      transition: background var(--transition-fast), border var(--transition-fast),
+        transform var(--transition-fast), box-shadow var(--transition-fast),
+        color var(--transition-fast);
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: linear-gradient(
+        135deg,
+        var(--accent),
+        var(--accent-strong)
+      );
+      border-color: rgba(0, 240, 255, 0.7);
+      box-shadow: 0 10px 28px rgba(0, 240, 255, 0.3);
+      color: #050712;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 16px 38px rgba(0, 240, 255, 0.35);
+    }
+
+    .btn-ghost {
+      border-color: rgba(154, 164, 212, 0.7);
+      background: rgba(10, 12, 30, 0.7);
+    }
+
+    .btn-ghost:hover {
+      background: rgba(20, 24, 60, 0.9);
+      border-color: rgba(0, 240, 255, 0.7);
+    }
+
+    .mobile-menu-toggle {
+      display: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(7, 9, 25, 0.9);
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .mobile-menu-toggle span {
+      display: block;
+      width: 16px;
+      height: 2px;
+      border-radius: 999px;
+      background: #fff;
+      position: relative;
+    }
+
+    .mobile-menu-toggle span::before,
+    .mobile-menu-toggle span::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      width: 16px;
+      height: 2px;
+      border-radius: inherit;
+      background: inherit;
+    }
+
+    .mobile-menu-toggle span::before {
+      top: -5px;
+    }
+
+    .mobile-menu-toggle span::after {
+      top: 5px;
+    }
+
+    /* Hero */
+
+    .hero {
+      padding: 4.5rem 0 3rem;
+      text-align: center;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.18rem 0.6rem 0.18rem 0.25rem;
+      border-radius: var(--radius-pill);
+      background: radial-gradient(
+        circle at left,
+        rgba(0, 240, 255, 0.4),
+        transparent
+      );
+      border: 1px solid rgba(0, 240, 255, 0.35);
+      margin-bottom: 1.2rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .eyebrow-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 10px rgba(0, 240, 255, 0.9);
+    }
+
+    .eyebrow-label {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-weight: 600;
+      color: var(--text-main);
+      font-size: 0.74rem;
+    }
+
+    .hero h1 {
+      font-size: clamp(2.2rem, 4vw, 3.2rem);
+      line-height: 1.1;
+      margin-bottom: 1rem;
+    }
+
+    .hero-gradient {
+      background: linear-gradient(130deg, #ffffff, #80f5ff, #ff9ce9);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .hero-subtitle {
+      font-size: 1.05rem;
+      color: var(--text-muted);
+      max-width: 42rem;
+      margin: 0 auto 1.5rem;
+      line-height: 1.6;
+    }
+
+    /* Sections */
+
+    section {
+      padding: 3.5rem 0;
+    }
+
+    section + section {
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .section-kicker {
+      font-size: 0.78rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 0.5rem;
+      font-weight: 600;
+    }
+
+    .section-title {
+      font-size: 1.6rem;
+      font-weight: 600;
+      margin-bottom: 0.8rem;
+      line-height: 1.2;
+    }
+
+    .section-description {
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      max-width: 40rem;
+      line-height: 1.65;
+    }
+
+    .section-center {
+      text-align: center;
+    }
+
+    .section-center .section-description {
+      margin: 0 auto;
+    }
+
+    /* Cards */
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1.2rem;
+      margin-top: 2rem;
+    }
+
+    .card-grid-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .card {
+      border-radius: var(--radius-lg);
+      background: radial-gradient(
+          circle at top,
+          rgba(0, 240, 255, 0.05),
+          transparent
+        ),
+        var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 1.4rem 1.3rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    }
+
+    .card h3 {
+      font-size: 1.02rem;
+      color: var(--text-main);
+      margin-bottom: 0.15rem;
+    }
+
+    .card p {
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    .card-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      margin-bottom: 0.3rem;
+      background: var(--accent-soft);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      color: var(--accent);
+    }
+
+    /* Staggered card reveal */
+
+    .card {
+      opacity: 0;
+      transform: translateY(20px);
+      animation: cardReveal 0.5s ease forwards;
+    }
+
+    .card:nth-child(1) { animation-delay: 0.1s; }
+    .card:nth-child(2) { animation-delay: 0.2s; }
+    .card:nth-child(3) { animation-delay: 0.3s; }
+    .card:nth-child(4) { animation-delay: 0.4s; }
+
+    @keyframes cardReveal {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* Mission section */
+
+    .mission-content {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+      gap: 2rem;
+      align-items: start;
+    }
+
+    .mission-text {
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      line-height: 1.7;
+    }
+
+    .mission-text p + p {
+      margin-top: 0.8rem;
+    }
+
+    .mission-text strong {
+      color: var(--text-main);
+      font-weight: 500;
+    }
+
+    .mission-panel {
+      border-radius: var(--radius-xl);
+      background: radial-gradient(circle at top, #262b69 0, #080a1a 45%);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: var(--shadow-soft);
+      padding: 1.4rem 1.3rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .mission-panel::before {
+      content: "";
+      position: absolute;
+      inset: -40%;
+      opacity: 0.08;
+      background-image: radial-gradient(
+        circle at top,
+        rgba(0, 240, 255, 1),
+        transparent 60%
+      );
+      mix-blend-mode: screen;
+      pointer-events: none;
+    }
+
+    .mission-panel h3 {
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--accent);
+      margin-bottom: 0.6rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .mission-panel p {
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+      position: relative;
+      z-index: 1;
+    }
+
+    .mission-panel p + p {
+      margin-top: 0.5rem;
+    }
+
+    .mission-panel strong {
+      color: var(--text-main);
+      font-weight: 500;
+    }
+
+    /* Algorithm grid */
+
+    .algo-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+
+    .algo-card {
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 1.2rem 1rem;
+      text-align: center;
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .algo-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    }
+
+    .algo-name {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 0.2rem;
+    }
+
+    .algo-aka {
+      font-size: 0.78rem;
+      color: var(--accent);
+      margin-bottom: 0.4rem;
+    }
+
+    .algo-purpose {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-bottom: 0.3rem;
+    }
+
+    .algo-fips {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      opacity: 0.7;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    /* Community section */
+
+    .community-content {
+      text-align: center;
+      max-width: 38rem;
+      margin: 0 auto;
+    }
+
+    .community-content p {
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      line-height: 1.65;
+      margin-bottom: 1rem;
+    }
+
+    .community-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.8rem;
+      margin-top: 1.5rem;
+    }
+
+    .community-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.35rem 0.9rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid rgba(0, 240, 255, 0.4);
+      font-size: 0.82rem;
+      color: var(--accent);
+      background: rgba(5, 7, 18, 0.85);
+      transition: background var(--transition-fast), border-color var(--transition-fast);
+    }
+
+    .community-link:hover {
+      background: rgba(13, 18, 44, 0.95);
+      border-color: rgba(0, 240, 255, 0.7);
+    }
+
+    /* CTA Section */
+
+    .cta-section {
+      padding: 4rem 0;
+      text-align: center;
+    }
+
+    .cta-panel {
+      border-radius: var(--radius-xl);
+      background: radial-gradient(
+          circle at top,
+          rgba(0, 240, 255, 0.08),
+          transparent 60%
+        ),
+        radial-gradient(
+          circle at bottom right,
+          rgba(255, 44, 216, 0.06),
+          transparent 60%
+        ),
+        var(--panel);
+      border: 1px solid var(--border-subtle);
+      padding: 3rem 2rem;
+    }
+
+    .cta-panel h2 {
+      font-size: 1.6rem;
+      font-weight: 600;
+      margin-bottom: 1.2rem;
+    }
+
+    .cta-actions {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 0.8rem;
+    }
+
+    /* Footer */
+
+    footer {
+      padding: 1.7rem 0 2.2rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: auto;
+    }
+
+    .footer-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: center;
+    }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.9rem;
+    }
+
+    .footer-links a {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+
+    .footer-links a:hover {
+      color: var(--accent);
+    }
+
+    /* Responsive */
+
+    @media (max-width: 900px) {
+      .mission-content {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .card-grid,
+      .card-grid-3 {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .algo-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 768px) {
+      .nav-menu {
+        display: none;
+        position: absolute;
+        top: var(--nav-height);
+        right: 0;
+        left: 0;
+        padding: 0.9rem 1rem 1rem;
+        border-radius: 14px;
+        background: rgba(5, 7, 18, 0.98);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.7rem;
+        z-index: 15;
+      }
+
+      .nav-menu.active {
+        display: flex;
+      }
+
+      .nav {
+        align-items: flex-start;
+      }
+
+      .nav-links {
+        flex-direction: column;
+        align-items: flex-start;
+        width: 100%;
+        gap: 0.75rem;
+      }
+
+      .nav-links a {
+        width: 100%;
+        padding: 0.25rem 0;
+      }
+
+      .nav-cta {
+        width: 100%;
+        justify-content: flex-start;
+        margin-top: 0.4rem;
+      }
+
+      .mobile-menu-toggle {
+        display: inline-flex;
+      }
+
+      .dropdown {
+        position: static;
+        box-shadow: none;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        margin-top: 0.3rem;
+      }
+
+      .nav-item:hover .dropdown {
+        display: none;
+      }
+
+      .nav-item.open .dropdown {
+        display: block;
+      }
+
+      .hero {
+        padding-top: 2.5rem;
+      }
+
+      .hero h1 {
+        font-size: 1.9rem;
+      }
+
+      .algo-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+
+    @media (max-width: 480px) {
+      .hero h1 {
+        font-size: 1.7rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <!-- Header / nav -->
+    <header>
+      <div class="wrap">
+        <div class="nav">
+          <a href="/index.html" class="brand">
+            <div class="brand-icon q-core">DNA</div>
+            <div class="brand-text">
+              <span class="brand-name">CPUNK.IO</span>
+              <span class="brand-tag">Post-Quantum Identity &amp; Messaging</span>
+            </div>
+          </a>
+          <button class="mobile-menu-toggle" aria-label="Toggle navigation"><span></span></button>
+          <div class="nav-menu">
+            <nav class="nav-links">
+              <a href="/index.html">Home</a>
+              <div class="nav-item" data-dropdown="products">
+                <div class="nav-item-label"><span>Products</span><span class="caret"></span></div>
+                <div class="dropdown">
+                  <a href="/services/dna.html">DNA Identity</a>
+                  <a href="/products/dna-messenger.html">DNA Connect</a>
+                  <a href="/products/dht.html">DHT &amp; Bootstrap Nodes</a>
+                </div>
+              </div>
+              <a href="/whitepaper.html">Whitepaper</a>
+              <a href="/roadmap.html">Roadmap</a>
+              <div class="nav-item" data-dropdown="about">
+                <div class="nav-item-label"><span>About</span><span class="caret"></span></div>
+                <div class="dropdown">
+                  <a href="/about.html" class="active">About CPUNK</a>
+                  <a href="/team.html">Team</a>
+                  <a href="/contact.html">Contact</a>
+                  <a href="/legal.html">Legal</a>
+                </div>
+              </div>
+            </nav>
+            <div class="nav-cta">
+              <a href="https://cpunk.club" target="_blank" rel="noreferrer" class="btn btn-primary">Open CPUNK.CLUB</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main id="top">
+      <!-- Hero -->
+      <section class="hero">
+        <div class="wrap">
+          <div class="eyebrow">
+            <span class="eyebrow-dot"></span>
+            <span class="eyebrow-label">About CPUNK</span>
+          </div>
+
+          <h1>
+            <span class="hero-gradient">Privacy Is Not a Feature.<br>It's a Right.</span>
+          </h1>
+
+          <p class="hero-subtitle">
+            CPUNK is building the infrastructure for a post-quantum world &mdash; where your identity,
+            your messages, and your assets belong to you alone.
+          </p>
+        </div>
+      </section>
+
+      <!-- Mission -->
+      <section id="mission">
+        <div class="wrap">
+          <div class="section-kicker">Our Mission</div>
+          <h2 class="section-title">Preparing for the Post-Quantum Era</h2>
+
+          <div class="mission-content">
+            <div class="mission-text">
+              <p>
+                Modern encryption &mdash; RSA, ECC, and the algorithms that protect your bank account,
+                your messages, and your identity &mdash; will be <strong>broken by quantum computers</strong>.
+                This is not speculation. NIST has already published post-quantum cryptographic standards
+                (FIPS 203, 204, 205) because the threat is real and the timeline is accelerating.
+              </p>
+              <p>
+                CPUNK doesn't wait for the quantum era to arrive. We build with these standards
+                <strong>today</strong>. Our mission is simple: provide ordinary people with
+                <strong>military-grade post-quantum privacy tools</strong> that are as easy to use as
+                WhatsApp.
+              </p>
+              <p>
+                No PhD required. No command line. No key management headaches. Just open the app,
+                create your identity, and communicate securely &mdash; knowing that your privacy is
+                protected against both current and future threats.
+              </p>
+            </div>
+
+            <div class="mission-panel">
+              <h3>Why Now?</h3>
+              <p>
+                Intelligence agencies and state actors are already executing
+                <strong>"harvest now, decrypt later"</strong> attacks &mdash; collecting encrypted data
+                today to decrypt it once quantum computers become powerful enough.
+              </p>
+              <p>
+                Every message you send with classical encryption is a message that can be read in the
+                future. CPUNK ensures that your communications are <strong>quantum-safe from day one</strong>.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Values -->
+      <section id="values">
+        <div class="wrap">
+          <div class="section-center">
+            <div class="section-kicker">What We Stand For</div>
+            <h2 class="section-title">Our Core Values</h2>
+          </div>
+
+          <div class="card-grid">
+            <article class="card">
+              <div class="card-icon">&#128274;</div>
+              <h3>Privacy by Default</h3>
+              <p>
+                No phone numbers, no emails, no tracking. Your identity is a cryptographic key pair,
+                not a database entry. There is nothing to leak because we never collect it.
+              </p>
+            </article>
+
+            <article class="card">
+              <div class="card-icon">&#127760;</div>
+              <h3>True Decentralization</h3>
+              <p>
+                No central servers. No company controls your data. The Nodus DHT network is
+                community-operated &mdash; your messages are stored across a distributed hash table
+                that no single entity can shut down.
+              </p>
+            </article>
+
+            <article class="card">
+              <div class="card-icon">&#128736;</div>
+              <h3>Open Source</h3>
+              <p>
+                All code is Apache 2.0 licensed. Audit it, fork it, contribute to it. Trust is
+                verified, not promised. Every cryptographic operation is transparent and auditable.
+              </p>
+            </article>
+
+            <article class="card">
+              <div class="card-icon">&#129309;</div>
+              <h3>Community-Driven</h3>
+              <p>
+                Built by the community, for the community. No VC funding, no data monetization,
+                no hidden agendas. The protocol serves its users, not shareholders.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Technology -->
+      <section id="technology">
+        <div class="wrap">
+          <div class="section-center">
+            <div class="section-kicker">The Technology</div>
+            <h2 class="section-title">One Seed, One Identity, One Ecosystem</h2>
+            <p class="section-description">
+              A single BIP-39 seed phrase derives everything: your post-quantum identity (Dilithium5),
+              your encryption keys (Kyber1024), and your multi-chain wallet addresses (Cellframe,
+              Ethereum, Solana, TRON). One backup protects everything.
+            </p>
+          </div>
+
+          <div class="card-grid card-grid-3">
+            <article class="card">
+              <div class="card-icon">&#128100;</div>
+              <h3>DNA Identity</h3>
+              <p>
+                Self-sovereign, human-readable names tied to ML-DSA-87 key pairs. No phone number,
+                no email address, no central authority. Your identity is yours &mdash; mathematically.
+              </p>
+            </article>
+
+            <article class="card">
+              <div class="card-icon">&#128172;</div>
+              <h3>DNA Connect</h3>
+              <p>
+                End-to-end encrypted messaging with zero metadata. Groups, channels, personal walls
+                &mdash; all quantum-safe. Messages travel through a decentralized DHT, not corporate servers.
+              </p>
+            </article>
+
+            <article class="card">
+              <div class="card-icon">&#128176;</div>
+              <h3>DNA Wallet</h3>
+              <p>
+                Multi-chain wallet with DEX aggregation. Send tokens directly from chat. MEV-protected
+                swaps across Cellframe, Ethereum, Solana, and TRON &mdash; all from one seed.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Why Post-Quantum -->
+      <section id="post-quantum">
+        <div class="wrap">
+          <div class="section-kicker">Why Post-Quantum?</div>
+          <h2 class="section-title">The Clock Is Ticking</h2>
+          <p class="section-description" style="margin-bottom: 1rem;">
+            Quantum computers will break the encryption that protects the internet. Governments
+            know this &mdash; that's why NIST spent 8 years selecting and standardizing post-quantum
+            algorithms. CPUNK uses <strong style="color: var(--text-main);">NIST Category 5</strong>
+            &mdash; the highest security level available &mdash; across every component.
+          </p>
+          <p class="section-description">
+            The <strong style="color: var(--text-main);">"harvest now, decrypt later"</strong> threat
+            is not theoretical. Nation-states are collecting encrypted traffic today, stockpiling it
+            for the day quantum computers can break it open. Every day you wait to switch to
+            post-quantum encryption is another day your data is at risk.
+          </p>
+
+          <div class="algo-grid">
+            <div class="algo-card">
+              <div class="algo-name">ML-KEM-1024</div>
+              <div class="algo-aka">Kyber</div>
+              <div class="algo-purpose">Key Encapsulation</div>
+              <div class="algo-fips">FIPS 203</div>
+            </div>
+
+            <div class="algo-card">
+              <div class="algo-name">ML-DSA-87</div>
+              <div class="algo-aka">Dilithium</div>
+              <div class="algo-purpose">Digital Signatures</div>
+              <div class="algo-fips">FIPS 204</div>
+            </div>
+
+            <div class="algo-card">
+              <div class="algo-name">SHA3-512</div>
+              <div class="algo-aka">Keccak</div>
+              <div class="algo-purpose">Cryptographic Hashing</div>
+              <div class="algo-fips">FIPS 202</div>
+            </div>
+
+            <div class="algo-card">
+              <div class="algo-name">AES-256-GCM</div>
+              <div class="algo-aka">Rijndael</div>
+              <div class="algo-purpose">Symmetric Encryption</div>
+              <div class="algo-fips">FIPS 197</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Community -->
+      <section id="community">
+        <div class="wrap">
+          <div class="section-center">
+            <div class="section-kicker">Join the Movement</div>
+            <h2 class="section-title">Open Source. Open Community.</h2>
+          </div>
+
+          <div class="community-content">
+            <p>
+              CPUNK is Apache 2.0 licensed. Every line of code is public. Contribute code, run a
+              Nodus DHT node, report bugs, translate the app into your language, or simply spread
+              the word. Privacy is a collective effort.
+            </p>
+            <p>
+              We believe that the tools protecting your fundamental rights should never be controlled
+              by a single company, government, or individual. That's why everything we build is open,
+              auditable, and community-governed.
+            </p>
+
+            <div class="community-links">
+              <a href="https://gitlab.cpunk.io" target="_blank" rel="noreferrer" class="community-link">
+                GitLab
+              </a>
+              <a href="https://github.com/nocdem" target="_blank" rel="noreferrer" class="community-link">
+                GitHub
+              </a>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="community-link">
+                Telegram
+              </a>
+              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="community-link">
+                X (Twitter)
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CTA -->
+      <section class="cta-section">
+        <div class="wrap">
+          <div class="cta-panel">
+            <h2>Ready to take back your privacy?</h2>
+            <div class="cta-actions">
+              <a href="/whitepaper.html" class="btn btn-ghost">Read the Whitepaper</a>
+              <a href="https://cpunk.club" target="_blank" rel="noreferrer" class="btn btn-primary">Download DNA</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer>
+      <div class="wrap">
+        <div class="footer-row">
+          <div>&copy; 2026 CPUNK Protocol &ndash; Quantum-safe, Decentralized, Community-driven.</div>
+          <div class="footer-links">
+            <a href="/">Home</a>
+            <a href="/whitepaper.html">Whitepaper</a>
+            <a href="/roadmap.html">Roadmap</a>
+            <a href="/legal.html">Legal &amp; Compliance</a>
+            <a href="/team.html">Team</a>
+            <a href="/contact.html">Contact</a>
+            <a href="https://cpunk.club" target="_blank" rel="noreferrer">CPUNK.CLUB</a>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- JS: mobile nav + dropdowns -->
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const mobileToggle = document.querySelector('.mobile-menu-toggle');
+      const navMenu = document.querySelector('.nav-menu');
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function() { navMenu.classList.toggle('active'); });
+      }
+      document.querySelectorAll('.nav-item').forEach(function(item) {
+        const label = item.querySelector('.nav-item-label');
+        if (!label) return;
+        label.addEventListener('click', function(e) {
+          if (window.innerWidth <= 768) { e.stopPropagation(); item.classList.toggle('open'); }
+        });
+      });
+    });
+  </script>
+</body>
+</html>
