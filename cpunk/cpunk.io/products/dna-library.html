@@ -347,16 +347,20 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
               </span>
-              <h3>Post-Quantum Security</h3>
-              <p>NIST Category 5 algorithms: ML-KEM-1024 for key encapsulation, ML-DSA-87 for signatures, SHA3-512 for hashing. All crypto happens in C &mdash; never in managed code.</p>
+              <h3>Post-Quantum Crypto</h3>
+              <p>
+                <strong style="color:var(--text-main)">ML-KEM-1024</strong> (key encapsulation), <strong style="color:var(--text-main)">ML-DSA-87</strong> (signatures), <strong style="color:var(--text-main)">SHA3-512</strong> (hashing), AES-256-GCM (symmetric). NIST Category 5 &mdash; all crypto runs in C, never in managed code.
+              </p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
               </span>
-              <h3>Modular Architecture</h3>
-              <p>17 domain modules with a task-queue dispatcher. Each module handles one concern: messaging, contacts, groups, channels, wallet, presence, backup.</p>
+              <h3>Modular Engine</h3>
+              <p>
+                Async task queue with domain modules: <strong style="color:var(--text-main)">messaging &amp; social</strong> (chats, groups, channels, wall), <strong style="color:var(--text-main)">identity &amp; security</strong> (keys, signing, wallet), <strong style="color:var(--text-main)">network</strong> (DHT, presence, backup).
+              </p>
             </article>
 
             <article class="token-card reveal">
@@ -364,159 +368,88 @@
                 <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
               </span>
               <h3>Cross-Platform</h3>
-              <p>Compiles natively for Linux, Windows, and Android. Flutter connects via dart:ffi, Android via JNI. Same C code on every platform &mdash; no per-platform forks.</p>
+              <p>
+                Compiles for <strong style="color:var(--text-main)">Linux, Windows, Android</strong>. Flutter connects via dart:ffi, Android via JNI, CLI for automation. Same C code on every platform &mdash; zero per-platform forks.
+              </p>
             </article>
           </div>
         </div>
       </section>
 
-      <!-- Modules -->
+      <!-- Architecture -->
       <section id="modules" class="s-section s-panel">
         <div class="wrap">
-          <div class="section-header reveal">
+          <div class="section-header-center reveal">
             <div class="section-label">Architecture</div>
-            <h2 class="section-title">Modular engine design</h2>
+            <h2 class="section-title">Domain-driven module design</h2>
+            <p class="section-desc" style="max-width: 38rem;">
+              Every operation goes through an async task queue. Modules register handlers for their domain. The thread pool executes concurrently, results arrive via callbacks &mdash; keeping the UI responsive.
+            </p>
+          </div>
+
+          <div class="card-grid-3 stagger">
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              </span>
+              <h3>Communication</h3>
+              <p>
+                E2E encrypted messaging with offline delivery and retry. Group chats with rotating GEK keys. Public channels and personal wall posts. Contact management with request/block flows.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              </span>
+              <h3>Identity &amp; Wallet</h3>
+              <p>
+                BIP-39 seed-based identity creation. Dilithium5 signing for all DHT operations. Multi-chain wallet (Cellframe, Ethereum, Solana, TRON) with DEX integration and in-chat transfers.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="3" r="1.5"/><circle cx="12" cy="21" r="1.5"/><circle cx="3" cy="12" r="1.5"/><circle cx="21" cy="12" r="1.5"/><path d="M12 6v3M12 15v3M6 12h3M15 12h3"/></svg>
+              </span>
+              <h3>Network &amp; Infrastructure</h3>
+              <p>
+                Nodus client SDK for DHT operations with connection pooling. Server-side presence system. DHT backup and sync. Background thread pool and lifecycle management (pause/resume on mobile).
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Crypto & Integration -->
+      <section id="crypto" class="s-section s-gradient">
+        <div class="wrap">
+          <div class="section-header reveal">
+            <div class="section-label">Integration</div>
+            <h2 class="section-title">Crypto stack &amp; platform bindings</h2>
           </div>
 
           <div class="dna-row">
             <div class="dna-text reveal-left">
-              <h3><span class="teal">17 Modules</span>, One Async Task Queue</h3>
-              <p>
-                The DNA Engine dispatches every operation through an async task queue. Each module registers handlers for its task types. The engine thread pool executes tasks concurrently, and results are delivered via callbacks.
-              </p>
-              <p>
-                This design keeps the Flutter UI responsive &mdash; no blocking calls, no thread management in Dart.
-              </p>
-            </div>
-            <div class="reveal-right">
-              <div class="module-grid stagger">
-                <div class="module-item"><div class="module-name">messaging</div><div class="module-desc">Send, receive, retry</div></div>
-                <div class="module-item"><div class="module-name">contacts</div><div class="module-desc">Requests, blocking</div></div>
-                <div class="module-item"><div class="module-name">groups</div><div class="module-desc">GEK encryption</div></div>
-                <div class="module-item"><div class="module-name">channels</div><div class="module-desc">Public broadcasts</div></div>
-                <div class="module-item"><div class="module-name">identity</div><div class="module-desc">Create, load, profiles</div></div>
-                <div class="module-item"><div class="module-name">wallet</div><div class="module-desc">Multi-chain, DEX</div></div>
-                <div class="module-item"><div class="module-name">presence</div><div class="module-desc">Online status</div></div>
-                <div class="module-item"><div class="module-name">backup</div><div class="module-desc">DHT sync</div></div>
-                <div class="module-item"><div class="module-name">listeners</div><div class="module-desc">DHT subscriptions</div></div>
-                <div class="module-item"><div class="module-name">signing</div><div class="module-desc">Data signatures</div></div>
-                <div class="module-item"><div class="module-name">wall</div><div class="module-desc">Personal feed</div></div>
-                <div class="module-item"><div class="module-name">workers</div><div class="module-desc">Thread pool</div></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- Crypto Primitives -->
-      <section id="crypto" class="s-section s-gradient">
-        <div class="wrap">
-          <div class="section-header-center reveal">
-            <div class="section-label">Cryptography</div>
-            <h2 class="section-title">Post-quantum crypto primitives</h2>
-            <p class="section-desc" style="max-width: 38rem;">
-              All cryptographic operations use NIST-standardized post-quantum algorithms. Classical algorithms (secp256k1, Ed25519) are used only for blockchain compatibility.
-            </p>
-          </div>
-
-          <div class="reveal" style="max-width: 720px; margin: 0 auto;">
-            <table class="crypto-table">
-              <thead>
-                <tr>
-                  <th>Algorithm</th>
-                  <th>NIST Standard</th>
-                  <th>Purpose</th>
-                  <th>Key Sizes</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>Kyber1024</td>
-                  <td>ML-KEM-1024 (FIPS 203)</td>
-                  <td>Key encapsulation</td>
-                  <td>pk 1568B, sk 3168B</td>
-                </tr>
-                <tr>
-                  <td>Dilithium5</td>
-                  <td>ML-DSA-87 (FIPS 204)</td>
-                  <td>Digital signatures</td>
-                  <td>pk 2592B, sig 4627B</td>
-                </tr>
-                <tr>
-                  <td>SHA3-512</td>
-                  <td>NIST FIPS 202</td>
-                  <td>Hashing</td>
-                  <td>64-byte digest</td>
-                </tr>
-                <tr>
-                  <td>AES-256-GCM</td>
-                  <td>NIST SP 800-38D</td>
-                  <td>Symmetric encryption</td>
-                  <td>256-bit key</td>
-                </tr>
-                <tr>
-                  <td>BIP-39</td>
-                  <td>Bitcoin Standard</td>
-                  <td>Seed phrase generation</td>
-                  <td>24-word mnemonic</td>
-                </tr>
-                <tr>
-                  <td>secp256k1</td>
-                  <td>SEC 2</td>
-                  <td>Ethereum &amp; TRON signing</td>
-                  <td>65-byte recoverable sig</td>
-                </tr>
-                <tr>
-                  <td>Ed25519</td>
-                  <td>RFC 8032</td>
-                  <td>Solana signing</td>
-                  <td>64-byte sig</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <!-- FFI & Integration -->
-      <section id="integration" class="s-section s-panel">
-        <div class="wrap">
-          <div class="section-header reveal">
-            <div class="section-label">Integration</div>
-            <h2 class="section-title">FFI bindings &amp; platform support</h2>
-          </div>
-
-          <div class="dna-row reverse">
-            <div class="dna-text reveal-right">
-              <h3><span class="teal">One C Library</span>, Multiple Consumers</h3>
-              <p>
-                DNA Library compiles to a shared library (libdna.so / dna.dll) consumed by every platform target. All business logic, cryptography, and networking lives in C &mdash; platform layers are thin wrappers.
-              </p>
+              <h3><span class="teal">Post-Quantum</span> Crypto Stack</h3>
+              <p>All cryptographic operations use NIST-standardized algorithms. Classical algorithms are used only for blockchain compatibility.</p>
               <ul>
-                <li><strong>Flutter (dart:ffi):</strong> Direct function calls into C. Async callbacks bridged to Dart Futures and Streams.</li>
-                <li><strong>Android (JNI):</strong> Native bindings via JNI. Engine runs in a native thread, UI communicates through callbacks.</li>
-                <li><strong>CLI:</strong> Standalone binary for testing and automation. Same library, no GUI dependencies.</li>
-                <li><strong>Nodus Client SDK:</strong> Embedded client for DHT operations. Handles connection pooling, auth, and reconnection.</li>
+                <li><strong>Key encapsulation:</strong> ML-KEM-1024 / Kyber1024 (FIPS 203)</li>
+                <li><strong>Signatures:</strong> ML-DSA-87 / Dilithium5 (FIPS 204)</li>
+                <li><strong>Hashing:</strong> SHA3-512 (FIPS 202)</li>
+                <li><strong>Encryption:</strong> AES-256-GCM + BIP-39 seed management</li>
+                <li><strong>Blockchain:</strong> secp256k1 (ETH/TRON), Ed25519 (Solana)</li>
               </ul>
             </div>
-            <div class="reveal-left">
-              <div class="code-block">
-<span class="comment">// DNA Engine — async task pattern</span>
-<span class="keyword">dna_engine_t</span> *engine = <span class="keyword">dna_engine_create</span>(config);
-
-<span class="comment">// All operations are non-blocking</span>
-<span class="keyword">dna_engine_send_message</span>(engine,
-    recipient, message, len,
-    on_complete, user_data);
-
-<span class="comment">// Results delivered via callback</span>
-<span class="keyword">void</span> on_complete(
-    <span class="keyword">dna_engine_t</span> *engine,
-    <span class="keyword">dna_result_t</span> *result,
-    <span class="keyword">void</span> *user_data) {
-    <span class="comment">// Handle result on any thread</span>
-}
-              </div>
+            <div class="dna-text reveal-right">
+              <h3><span class="teal">Platform</span> Bindings</h3>
+              <p>DNA Library compiles to a shared library (libdna.so / dna.dll). All business logic lives in C &mdash; platform layers are thin wrappers.</p>
+              <ul>
+                <li><strong>Flutter:</strong> dart:ffi &mdash; async callbacks bridged to Futures and Streams</li>
+                <li><strong>Android:</strong> JNI bindings &mdash; engine in native thread, UI via callbacks</li>
+                <li><strong>CLI:</strong> Standalone binary for testing and automation</li>
+                <li><strong>Nodus SDK:</strong> Embedded DHT client with connection pooling and reconnection</li>
+              </ul>
             </div>
           </div>
         </div>
