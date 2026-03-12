@@ -156,7 +156,12 @@ static void epoll_mod(int epoll_fd, int fd, uint32_t events, void *ptr) {
 
 /* ── Frame parsing ───────────────────────────────────────────────── */
 
-static void try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
+/**
+ * Parse complete frames from the read buffer and dispatch them.
+ * Returns true if the connection was freed (bad frame → disconnect),
+ * in which case the caller must NOT touch conn again.
+ */
+static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     while (conn->rlen >= NODUS_FRAME_HEADER_SIZE) {
         nodus_frame_t frame;
         int rc = nodus_frame_decode(conn->rbuf, conn->rlen, &frame);
@@ -167,7 +172,7 @@ static void try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             if (tcp->on_disconnect)
                 tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
-            return;
+            return true;
         }
 
         /* Validate frame size (HIGH-1: TCP path was missing this check) */
@@ -175,7 +180,7 @@ static void try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             if (tcp->on_disconnect)
                 tcp->on_disconnect(conn, tcp->cb_ctx);
             conn_free(tcp, conn);
-            return;
+            return true;
         }
 
         /* Valid frame */
@@ -189,6 +194,7 @@ static void try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             memmove(conn->rbuf, conn->rbuf + consumed, remaining);
         conn->rlen = remaining;
     }
+    return false;
 }
 
 /* ── Event handlers ──────────────────────────────────────────────── */
@@ -211,10 +217,12 @@ static void handle_read(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         }
         if (n == 0) {
             /* Peer closed — process any buffered data before disconnect */
-            try_parse_frames(tcp, conn);
-            if (tcp->on_disconnect)
-                tcp->on_disconnect(conn, tcp->cb_ctx);
-            conn_free(tcp, conn);
+            bool freed = try_parse_frames(tcp, conn);
+            if (!freed) {
+                if (tcp->on_disconnect)
+                    tcp->on_disconnect(conn, tcp->cb_ctx);
+                conn_free(tcp, conn);
+            }
             return;
         }
         /* n < 0 */
