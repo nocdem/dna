@@ -6,10 +6,10 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description"
-    content="DNA Connect: fully decentralized, post-quantum encrypted messenger. NIST Category 5 security (ML-KEM-1024, ML-DSA-87). E2E encrypted chats, groups, public feeds, and in-chat crypto transfers over a serverless DHT network."
+    content="DNA Connect: fully decentralized, post-quantum encrypted messenger. NIST Category 5 security (ML-KEM-1024, ML-DSA-87). E2E encrypted chats, channels, wall posts, and multi-chain wallet over a serverless DHT network."
   />
   <meta name="keywords"
-    content="DNA Connect, CPUNK, CPUNK.IO, post-quantum messenger, decentralized messaging, quantum-safe encryption, DNA identity, secure messaging, privacy, E2E encrypted, DHT transport, Kyber1024, Dilithium5, group chat, public feeds"
+    content="DNA Connect, CPUNK, CPUNK.IO, post-quantum messenger, decentralized messaging, quantum-safe encryption, DNA identity, secure messaging, privacy, E2E encrypted, DHT transport, Kyber1024, Dilithium5, channels, wallet"
   />
   <meta name="author" content="DNA Protocol" />
   <meta name="robots" content="index, follow" />
@@ -19,7 +19,7 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://cpunk.io/products/dna-connect.html">
   <meta property="og:title" content="DNA Connect — Post-Quantum Encrypted Messenger">
-  <meta property="og:description" content="Fully decentralized messenger with NIST Category 5 post-quantum encryption. No servers, no metadata, no phone numbers. E2E encrypted chats, groups, feeds, and in-chat crypto.">
+  <meta property="og:description" content="Fully decentralized messenger with NIST Category 5 post-quantum encryption. No servers, no metadata, no phone numbers. E2E encrypted chats, channels, wall posts, and multi-chain wallet.">
   <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
 
   <!-- Twitter Card -->
@@ -56,9 +56,6 @@
       --orange-soft: rgba(242, 98, 41, 0.08);
       --orange-glow: rgba(242, 98, 41, 0.35);
       --orange-dim: rgba(242, 98, 41, 0.15);
-      --pink: #e040a0;
-      --green: #22c55e;
-      --green-dim: rgba(34, 197, 94, 0.15);
       --text-main: #f0f2ff;
       --text-muted: #8a94c0;
       --border-subtle: rgba(255, 255, 255, 0.06);
@@ -86,15 +83,12 @@
       font-family: var(--font-body);
       background: var(--bg);
       color: var(--text-main);
+      -webkit-font-smoothing: antialiased;
     }
 
     a { color: inherit; text-decoration: none; }
 
-    .page {
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
+    .page { min-height: 100vh; display: flex; flex-direction: column; }
 
     .wrap {
       width: 100%;
@@ -103,63 +97,38 @@
       padding: 0 1.25rem;
     }
 
-    /* ── Animations ── */
+    /* ── Animations ─────────────────────────────── */
 
     @keyframes fadeInUp {
-      from { opacity: 0; transform: translateY(30px); }
-      to   { opacity: 1; transform: translateY(0); }
+      from { opacity: 0; transform: translateY(24px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
     @keyframes fadeInLeft {
-      from { opacity: 0; transform: translateX(-30px); }
-      to   { opacity: 1; transform: translateX(0); }
+      from { opacity: 0; transform: translateX(-24px); }
+      to { opacity: 1; transform: translateX(0); }
     }
 
     @keyframes fadeInRight {
-      from { opacity: 0; transform: translateX(30px); }
-      to   { opacity: 1; transform: translateX(0); }
-    }
-
-    @keyframes scaleIn {
-      from { opacity: 0; transform: scale(0.92); }
-      to   { opacity: 1; transform: scale(1); }
-    }
-
-    @keyframes float {
-      0%, 100% { transform: translateY(0); }
-      50%      { transform: translateY(-12px); }
+      from { opacity: 0; transform: translateX(24px); }
+      to { opacity: 1; transform: translateX(0); }
     }
 
     @keyframes pulseGlow {
       0%, 100% { opacity: 0.4; }
-      50%      { opacity: 0.8; }
+      50% { opacity: 1; }
     }
 
-    @keyframes shimmer {
-      0%   { background-position: -200% center; }
-      100% { background-position: 200% center; }
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
     }
 
-    @keyframes titleGlow {
-      0%, 100% {
-        text-shadow:
-          0 0 40px rgba(6,197,210,0.35),
-          0 0 80px rgba(6,197,210,0.12),
-          0 0 120px rgba(6,197,210,0.08);
-      }
-      50% {
-        text-shadow:
-          0 0 60px rgba(6,197,210,0.5),
-          0 0 110px rgba(6,197,210,0.2),
-          0 0 160px rgba(6,197,210,0.14);
-      }
-    }
-
-    /* Scroll reveal */
     .reveal {
       opacity: 0;
-      transform: translateY(28px);
-      transition: opacity 0.7s ease, transform 0.7s ease;
+      transform: translateY(24px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
     }
 
     .reveal.visible {
@@ -167,33 +136,12 @@
       transform: translateY(0);
     }
 
-    .reveal-left {
-      opacity: 0;
-      transform: translateX(-28px);
-      transition: opacity 0.7s ease, transform 0.7s ease;
-    }
-
-    .reveal-right {
-      opacity: 0;
-      transform: translateX(28px);
-      transition: opacity 0.7s ease, transform 0.7s ease;
-    }
-
-    .reveal-left.visible,
-    .reveal-right.visible {
-      opacity: 1;
-      transform: translateX(0);
-    }
-
-    /* Staggered children */
     .stagger > *:nth-child(1) { transition-delay: 0s; }
-    .stagger > *:nth-child(2) { transition-delay: 0.1s; }
-    .stagger > *:nth-child(3) { transition-delay: 0.2s; }
-    .stagger > *:nth-child(4) { transition-delay: 0.3s; }
-    .stagger > *:nth-child(5) { transition-delay: 0.4s; }
-    .stagger > *:nth-child(6) { transition-delay: 0.5s; }
+    .stagger > *:nth-child(2) { transition-delay: 0.08s; }
+    .stagger > *:nth-child(3) { transition-delay: 0.16s; }
+    .stagger > *:nth-child(4) { transition-delay: 0.24s; }
 
-    /* ── Header / Nav ── */
+    /* ── Header / Nav ───────────────────────────── */
 
     header {
       position: sticky;
@@ -219,13 +167,6 @@
       gap: 0.75rem;
     }
 
-    .brand-logo {
-      width: 38px;
-      height: 38px;
-      object-fit: contain;
-      filter: drop-shadow(0 0 8px rgba(6,197,210,0.5));
-    }
-
     .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
 
     .brand-name {
@@ -238,9 +179,18 @@
 
     .brand-tag { font-size: 0.7rem; color: var(--text-muted); }
 
-    .nav-menu { display: flex; align-items: center; gap: 1.5rem; }
+    .nav-menu {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+    }
 
-    .nav-links { display: flex; align-items: center; gap: 1.5rem; font-size: 0.9rem; }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      font-size: 0.9rem;
+    }
 
     .nav-links a {
       color: var(--text-muted);
@@ -267,8 +217,7 @@
       cursor: pointer;
       background: transparent;
       color: var(--text-main);
-      transition: background var(--transition-fast), border var(--transition-fast),
-        transform var(--transition-fast), box-shadow var(--transition-fast);
+      transition: background var(--transition-fast), border var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
       text-decoration: none;
       white-space: nowrap;
     }
@@ -287,7 +236,7 @@
     }
 
     .btn-ghost {
-      border-color: rgba(138,148,192,0.5);
+      border-color: rgba(138,148,192,0.4);
       background: rgba(10,12,30,0.7);
     }
 
@@ -312,225 +261,238 @@
     }
 
     .mobile-menu-toggle span {
-      display: block; width: 16px; height: 2px;
-      border-radius: 999px; background: #fff; position: relative;
+      display: block;
+      width: 16px;
+      height: 2px;
+      border-radius: 999px;
+      background: #fff;
+      position: relative;
     }
 
     .mobile-menu-toggle span::before,
     .mobile-menu-toggle span::after {
-      content: ""; position: absolute; left: 0;
-      width: 16px; height: 2px; border-radius: inherit; background: inherit;
+      content: "";
+      position: absolute;
+      left: 0;
+      width: 16px;
+      height: 2px;
+      border-radius: inherit;
+      background: inherit;
     }
 
     .mobile-menu-toggle span::before { top: -5px; }
     .mobile-menu-toggle span::after { top: 5px; }
 
-    /* Dropdown */
     .nav-item { position: relative; }
 
     .nav-item-label {
-      display: inline-flex; align-items: center; gap: 0.25rem;
-      cursor: pointer; color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      cursor: pointer;
+      color: var(--text-muted);
     }
 
     .nav-item:hover .nav-item-label { color: var(--text-main); }
-    .nav-item .caret { border: 4px solid transparent; border-top-color: var(--text-muted); margin-top: 2px; }
 
-    .dropdown {
-      position: absolute; top: 110%; left: 0; min-width: 190px;
-      background: rgba(5,7,18,0.98); border-radius: 12px;
-      border: 1px solid rgba(255,255,255,0.08);
-      box-shadow: 0 14px 30px rgba(0,0,0,0.6);
-      padding: 0.4rem 0; display: none; z-index: 30;
+    .nav-item .caret {
+      border: 4px solid transparent;
+      border-top-color: var(--text-muted);
+      margin-top: 2px;
     }
 
-    .dropdown a { display: block; padding: 0.4rem 0.9rem; font-size: 0.85rem; color: var(--text-muted); }
+    .dropdown {
+      position: absolute;
+      top: 110%;
+      left: 0;
+      min-width: 190px;
+      background: rgba(5,7,18,0.98);
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 14px 30px rgba(0,0,0,0.6);
+      padding: 0.4rem 0;
+      display: none;
+      z-index: 30;
+    }
+
+    .dropdown a {
+      display: block;
+      padding: 0.4rem 0.9rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
     .dropdown a:hover { background: rgba(255,255,255,0.04); color: var(--orange); }
     .dropdown a.active { background: rgba(255,255,255,0.06); color: var(--text-main); }
     .nav-item:hover .dropdown { display: block; }
 
-    /* ══════════════════════════════════════════ */
-    /* ── HERO (Split layout)                  ── */
-    /* ══════════════════════════════════════════ */
+    /* ── Hero ────────────────────────────────────── */
 
-    .hero-split {
+    .hero {
       position: relative;
-      padding: 4rem 0 3rem;
+      padding: 5rem 0 4rem;
       overflow: hidden;
     }
 
-    .hero-split-bg {
+    .hero-bg {
       position: absolute;
       inset: 0;
       z-index: 0;
       background:
-        radial-gradient(ellipse at 25% 50%, rgba(6,197,210,0.15) 0%, transparent 55%),
-        radial-gradient(ellipse at 75% 50%, rgba(242,98,41,0.06) 0%, transparent 55%),
+        radial-gradient(ellipse at 20% 40%, rgba(6,197,210,0.12) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 60%, rgba(242,98,41,0.05) 0%, transparent 50%),
         var(--bg);
     }
 
-    .hero-split-grid {
+    .hero-bg::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%2306c5d2' fill-opacity='0.03'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+      opacity: 0.5;
+    }
+
+    .hero-grid {
       position: relative;
       z-index: 1;
       display: grid;
-      grid-template-columns: 1.3fr 1fr;
-      gap: 2.5rem;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 3rem;
       align-items: center;
     }
 
-    .hero-split-text {
-      animation: fadeInLeft 0.9s ease-out;
-    }
+    .hero-text { animation: fadeInLeft 0.8s ease-out; }
 
-    .eyebrow {
+    .hero-badge {
       display: inline-flex;
       align-items: center;
-      gap: 0.55rem;
-      padding: 0.2rem 0.7rem 0.2rem 0.3rem;
+      gap: 0.5rem;
+      padding: 0.25rem 0.75rem 0.25rem 0.35rem;
       border-radius: var(--radius-pill);
-      background: radial-gradient(circle at left, rgba(6,197,210,0.25), transparent);
-      border: 1px solid rgba(6,197,210,0.3);
-      margin-bottom: 1rem;
-      font-size: 0.75rem;
-      color: var(--text-muted);
+      background: rgba(6,197,210,0.08);
+      border: 1px solid rgba(6,197,210,0.2);
+      margin-bottom: 1.2rem;
+      font-size: 0.72rem;
     }
 
-    .eyebrow-dot {
-      width: 8px;
-      height: 8px;
+    .hero-badge-dot {
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
       background: var(--teal);
-      box-shadow: 0 0 10px var(--teal-glow);
+      box-shadow: 0 0 8px var(--teal-glow);
       animation: pulseGlow 2s ease-in-out infinite;
     }
 
-    .eyebrow-label {
+    .hero-badge-label {
       text-transform: uppercase;
-      letter-spacing: 0.12em;
+      letter-spacing: 0.1em;
       font-weight: 600;
       color: var(--teal);
       font-family: var(--font-display);
-      font-size: 0.68rem;
+      font-size: 0.65rem;
     }
 
-    .hero-split-text h1 {
+    .hero h1 {
       font-family: var(--font-display);
-      font-size: clamp(2.2rem, 4vw, 3rem);
+      font-size: clamp(2rem, 3.8vw, 2.8rem);
       font-weight: 800;
-      line-height: 1.1;
-      margin-bottom: 0.8rem;
-      letter-spacing: 0.04em;
+      line-height: 1.12;
+      margin-bottom: 1rem;
+      letter-spacing: 0.03em;
     }
 
-    .gradient-text {
-      background: linear-gradient(130deg, #ffffff, var(--teal), var(--orange));
+    .hero h1 .accent {
+      background: linear-gradient(130deg, var(--teal), #4dd9e0, var(--orange));
+      background-size: 200% 200%;
+      animation: gradientShift 6s ease infinite;
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
     }
 
-    .hero-split-text .subtitle {
-      font-size: 0.95rem;
+    .hero .lead {
+      font-size: 1rem;
       color: var(--text-muted);
-      max-width: 36rem;
+      max-width: 34rem;
       line-height: 1.7;
-      margin-bottom: 1.4rem;
+      margin-bottom: 1.5rem;
     }
 
-    .hero-split-text .subtitle strong {
-      color: var(--text-main);
-      font-weight: 500;
-    }
+    .hero .lead strong { color: var(--text-main); font-weight: 500; }
 
     .hero-actions {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.75rem;
-      margin-bottom: 1rem;
+      gap: 0.65rem;
+      margin-bottom: 1.2rem;
     }
 
-    .hero-meta {
-      font-size: 0.78rem;
-      color: var(--text-muted);
+    .hero-facts {
       display: flex;
       flex-wrap: wrap;
-      gap: 1.2rem;
+      gap: 1.5rem;
+      font-size: 0.78rem;
+      color: var(--text-muted);
     }
 
-    .hero-meta span {
+    .hero-fact {
       display: inline-flex;
       align-items: center;
-      gap: 0.35rem;
+      gap: 0.4rem;
     }
 
-    .hero-meta-dot {
-      width: 6px;
-      height: 6px;
+    .hero-fact::before {
+      content: "";
+      width: 5px;
+      height: 5px;
       border-radius: 50%;
-      background: var(--orange);
-      box-shadow: 0 0 6px var(--orange-glow);
+      background: var(--teal);
+      box-shadow: 0 0 6px var(--teal-glow);
+      flex-shrink: 0;
     }
 
-    .hero-split-media {
-      animation: fadeInRight 0.9s ease-out;
+    .hero-media {
+      animation: fadeInRight 0.8s ease-out;
+      position: relative;
+    }
+
+    .hero-media-frame {
       border-radius: var(--radius-xl);
-      background: radial-gradient(circle at top, var(--panel-alt), var(--bg) 70%);
-      border: 1px solid var(--border-subtle);
-      box-shadow: var(--shadow-soft);
-      padding: 1rem;
-      overflow: hidden;
+      background: linear-gradient(135deg, rgba(6,197,210,0.08), rgba(242,98,41,0.04));
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 0.75rem;
+      box-shadow:
+        0 24px 48px rgba(0,0,0,0.4),
+        0 0 0 1px rgba(6,197,210,0.06),
+        inset 0 1px 0 rgba(255,255,255,0.04);
     }
 
-    .hero-split-media img {
+    .hero-media-frame img {
       width: 100%;
       border-radius: 18px;
-      border: 1px solid rgba(255,255,255,0.1);
       display: block;
     }
 
-    /* ══════════════════════════════════════════ */
-    /* ── SECTIONS                             ── */
-    /* ══════════════════════════════════════════ */
+    /* ── Section Layout ─────────────────────────── */
 
     .s-section {
       padding: 5rem 0;
       position: relative;
-      overflow: hidden;
     }
 
-    .s-dark {
-      background: var(--bg);
-    }
+    .s-dark { background: var(--bg); }
 
-    .s-panel {
-      background:
-        linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 100%);
-      border-top: 1px solid rgba(6,197,210,0.06);
-      border-bottom: 1px solid rgba(6,197,210,0.06);
-    }
-
-    .s-gradient {
-      background:
-        radial-gradient(ellipse at 20% 50%, rgba(6,197,210,0.03) 0%, transparent 50%),
-        radial-gradient(ellipse at 80% 50%, rgba(6,197,210,0.02) 0%, transparent 50%),
-        var(--bg);
-    }
-
-    .s-section::before {
-      content: "";
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 3px;
-      height: 100%;
-      background: linear-gradient(180deg, transparent, var(--teal-dim), var(--teal-dim), transparent);
-      opacity: 0.5;
+    .s-alt {
+      background: linear-gradient(180deg, var(--bg-alt) 0%, var(--bg) 100%);
+      border-top: 1px solid rgba(6,197,210,0.04);
+      border-bottom: 1px solid rgba(6,197,210,0.04);
     }
 
     .section-label {
       font-family: var(--font-display);
-      font-size: 0.72rem;
-      letter-spacing: 0.18em;
+      font-size: 0.68rem;
+      letter-spacing: 0.16em;
       text-transform: uppercase;
       color: var(--teal);
       margin-bottom: 0.5rem;
@@ -548,329 +510,311 @@
     .section-desc {
       font-size: 0.92rem;
       color: var(--text-muted);
-      max-width: 36rem;
-      line-height: 1.6;
+      max-width: 38rem;
+      line-height: 1.65;
     }
+
+    .section-header { margin-bottom: 2.5rem; }
 
     .section-header-center {
       text-align: center;
-      margin-bottom: 2.5rem;
+      margin-bottom: 3rem;
     }
 
-    .section-header-center .section-label,
-    .section-header-center .section-title,
     .section-header-center .section-desc {
       margin-left: auto;
       margin-right: auto;
     }
 
-    .section-header {
-      margin-bottom: 2.5rem;
-    }
+    /* ── Feature Cards ──────────────────────────── */
 
-    /* ── Token Cards Grid ── */
-
-    .card-grid-3 {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 1.2rem;
-    }
-
-    .card-grid-2 {
+    .feature-grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
-      gap: 1.2rem;
+      gap: 1.25rem;
     }
 
-    .card-grid-4 {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 1.2rem;
-    }
-
-    .token-card {
+    .feature-card {
       border-radius: var(--radius-lg);
       background: var(--panel);
       border: 1px solid var(--border-subtle);
-      padding: 1.5rem 1.2rem;
-      transition: border-color 0.4s, transform 0.4s, box-shadow 0.4s;
+      padding: 1.75rem 1.5rem;
+      transition: border-color 0.3s, transform 0.3s, box-shadow 0.3s;
       position: relative;
       overflow: hidden;
     }
 
-    .token-card::after {
+    .feature-card::before {
       content: "";
       position: absolute;
       top: 0;
-      left: -100%;
-      width: 100%;
-      height: 100%;
-      background: linear-gradient(90deg, transparent, rgba(242,98,41,0.06), transparent);
-      transition: left 0.6s ease;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--teal-dim), transparent);
+      opacity: 0;
+      transition: opacity 0.3s;
     }
 
-    .token-card:hover::after {
-      left: 100%;
+    .feature-card:hover::before { opacity: 1; }
+
+    .feature-card:hover {
+      border-color: rgba(6,197,210,0.2);
+      transform: translateY(-3px);
+      box-shadow: 0 12px 32px rgba(0,0,0,0.3);
     }
 
-    .token-card:hover {
-      border-color: rgba(242,98,41,0.4);
-      transform: translateY(-5px);
-      box-shadow: 0 12px 30px rgba(242,98,41,0.12), 0 0 0 1px rgba(242,98,41,0.1);
+    .feature-card-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
     }
 
-    .token-card-icon {
-      margin-bottom: 0.8rem;
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: transform 0.4s ease;
+      flex-shrink: 0;
     }
 
-    .token-card-icon svg {
-      width: 48px;
-      height: 48px;
-      stroke: var(--orange);
-      stroke-width: 1.5;
+    .feature-icon svg {
+      width: 22px;
+      height: 22px;
+      stroke-width: 1.8;
       stroke-linecap: round;
       stroke-linejoin: round;
       fill: none;
-      filter: drop-shadow(0 0 6px rgba(242,98,41,0.5)) drop-shadow(0 0 16px rgba(242,98,41,0.2));
-      transition: filter 0.4s ease;
     }
 
-    .token-card:hover .token-card-icon svg {
-      filter: drop-shadow(0 0 10px rgba(242,98,41,0.7)) drop-shadow(0 0 28px rgba(242,98,41,0.4));
+    .feature-icon-teal {
+      background: rgba(6,197,210,0.1);
+      border: 1px solid rgba(6,197,210,0.15);
     }
 
-    .token-card:hover .token-card-icon {
-      transform: scale(1.15) rotate(5deg);
+    .feature-icon-teal svg { stroke: var(--teal); }
+
+    .feature-icon-orange {
+      background: rgba(242,98,41,0.1);
+      border: 1px solid rgba(242,98,41,0.15);
     }
 
-    .token-card:hover h3 {
-      color: var(--orange);
-    }
+    .feature-icon-orange svg { stroke: var(--orange); }
 
-    .token-card h3 {
+    .feature-card h3 {
       font-family: var(--font-display);
-      font-size: 0.85rem;
-      font-weight: 600;
-      margin-bottom: 0.4rem;
-      letter-spacing: 0.03em;
-      color: var(--teal);
-      position: relative;
-      z-index: 1;
-      text-align: center;
-    }
-
-    .token-card p {
       font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--text-main);
+    }
+
+    .feature-card p {
+      font-size: 0.85rem;
       color: var(--text-muted);
-      line-height: 1.55;
-      position: relative;
-      z-index: 1;
+      line-height: 1.6;
+      margin-bottom: 0.6rem;
     }
 
-    .token-card ul {
+    .feature-list {
       list-style: none;
-      margin-top: 0.5rem;
-      position: relative;
-      z-index: 1;
+      margin: 0;
+      padding: 0;
     }
 
-    .token-card ul li {
-      margin-bottom: 0.3rem;
+    .feature-list li {
       padding-left: 1rem;
       position: relative;
       font-size: 0.82rem;
       color: var(--text-muted);
-      line-height: 1.5;
+      line-height: 1.55;
+      margin-bottom: 0.25rem;
     }
 
-    .token-card ul li::before {
-      content: "\25B9";
+    .feature-list li::before {
+      content: "";
       position: absolute;
       left: 0;
-      top: 0;
-      color: var(--orange);
-      font-size: 0.75rem;
+      top: 0.55em;
+      width: 4px;
+      height: 4px;
+      border-radius: 1px;
+      background: var(--teal);
+      transform: rotate(45deg);
     }
 
-    /* ── DNA Row (split layout) ── */
+    .feature-list li strong {
+      color: var(--text-main);
+      font-weight: 500;
+    }
 
-    .dna-row {
+    /* ── Split Row (text + visual) ──────────────── */
+
+    .split-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 3rem;
       align-items: center;
     }
 
-    .dna-row.reverse { direction: rtl; }
-    .dna-row.reverse > * { direction: ltr; }
+    .split-row.reverse { direction: rtl; }
+    .split-row.reverse > * { direction: ltr; }
 
-    .dna-text h3 {
+    .split-text h3 {
       font-family: var(--font-display);
-      font-size: clamp(1.2rem, 2vw, 1.5rem);
+      font-size: clamp(1.15rem, 2vw, 1.4rem);
       font-weight: 700;
       margin-bottom: 0.8rem;
-      letter-spacing: 0.03em;
+      letter-spacing: 0.02em;
+      line-height: 1.3;
     }
 
-    .dna-text h3 .teal { color: var(--teal); }
-    .dna-text h3 .orange { color: var(--orange); }
+    .split-text h3 .teal { color: var(--teal); }
+    .split-text h3 .orange { color: var(--orange); }
 
-    .dna-text p {
+    .split-text p {
       font-size: 0.92rem;
       color: var(--text-muted);
       line-height: 1.7;
       margin-bottom: 0.8rem;
     }
 
-    .dna-text ul {
-      list-style: none;
-      margin-top: 0.4rem;
-      margin-bottom: 0.8rem;
-    }
-
-    .dna-text ul li {
-      margin-bottom: 0.4rem;
-      padding-left: 1.2rem;
-      position: relative;
-      font-size: 0.9rem;
-      color: var(--text-muted);
-      line-height: 1.6;
-    }
-
-    .dna-text ul li::before {
-      content: "\25B9";
-      position: absolute;
-      left: 0;
-      top: 0;
-      color: var(--teal);
-      font-size: 0.8rem;
-    }
-
-    .dna-text ul li strong {
-      color: var(--text-main);
-      font-weight: 500;
-    }
-
-    .dna-visual {
+    .split-visual {
       display: flex;
       align-items: center;
       justify-content: center;
     }
 
-    .dna-visual a {
+    .split-visual a {
       display: block;
       border-radius: 18px;
       overflow: hidden;
-      transition: transform 0.3s ease, box-shadow 0.3s ease;
+      transition: transform 0.3s, box-shadow 0.3s;
     }
 
-    .dna-visual a:hover {
+    .split-visual a:hover {
       transform: scale(1.02);
-      box-shadow: 0 0 24px var(--teal-glow);
+      box-shadow: 0 0 20px var(--teal-glow);
     }
 
-    .dna-visual img {
+    .split-visual img {
       width: 100%;
       height: auto;
       display: block;
       border-radius: 18px;
-      border: 1px solid rgba(255,255,255,0.12);
-      box-shadow: 0 0 16px rgba(6,197,210,0.2);
+      border: 1px solid rgba(255,255,255,0.1);
     }
 
-    .dna-visual .image-caption {
-      font-size: 0.78rem;
+    .image-caption {
+      font-size: 0.75rem;
       color: var(--text-muted);
       margin-top: 0.5rem;
       text-align: center;
+      opacity: 0.7;
     }
 
-    /* ── Security Table ── */
+    /* ── Phone Screenshots ──────────────────────── */
+
+    .phone-screenshots {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: center;
+      align-items: flex-start;
+    }
+
+    .phone-screenshot {
+      width: 45%;
+      max-width: 200px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+      transition: transform 0.3s;
+    }
+
+    .phone-screenshot:hover {
+      transform: translateY(-3px);
+    }
+
+    .phone-screenshot-single {
+      max-width: 240px;
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+      transition: transform 0.3s;
+    }
+
+    .phone-screenshot-single:hover {
+      transform: translateY(-3px);
+    }
+
+    /* ── Security Table ─────────────────────────── */
+
+    .security-table-wrap {
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      overflow: hidden;
+      margin-top: 1.5rem;
+    }
 
     .security-table {
       width: 100%;
       border-collapse: collapse;
-      margin-top: 1rem;
       font-size: 0.85rem;
     }
 
     .security-table th,
     .security-table td {
-      padding: 0.65rem 1rem;
+      padding: 0.7rem 1.2rem;
       text-align: left;
-      border-bottom: 1px solid var(--border-subtle);
     }
 
     .security-table th {
       font-family: var(--font-display);
-      font-size: 0.72rem;
+      font-size: 0.68rem;
       letter-spacing: 0.1em;
       text-transform: uppercase;
       color: var(--teal);
       font-weight: 600;
       background: rgba(6,197,210,0.04);
+      border-bottom: 1px solid var(--border-subtle);
     }
 
     .security-table td {
       color: var(--text-muted);
+      border-bottom: 1px solid rgba(255,255,255,0.03);
     }
 
-    .security-table td strong {
-      color: var(--text-main);
-      font-weight: 500;
-    }
+    .security-table tr:last-child td { border-bottom: none; }
 
-    .security-table tr:hover td {
-      background: rgba(255,255,255,0.02);
-    }
+    .security-table td strong { color: var(--text-main); font-weight: 500; }
 
-    .security-table .algo-name {
+    .security-table tr:hover td { background: rgba(255,255,255,0.015); }
+
+    .security-table .algo {
       color: var(--orange);
       font-weight: 600;
       font-family: var(--font-display);
       font-size: 0.78rem;
-      letter-spacing: 0.03em;
+      letter-spacing: 0.02em;
     }
 
-    /* ── Architecture Diagram ── */
+    /* ── Privacy Pillars ────────────────────────── */
 
-    .arch-diagram {
-      border-radius: var(--radius-lg);
-      background: var(--panel);
-      border: 1px solid var(--border-subtle);
-      padding: 1.5rem;
-      overflow-x: auto;
-      margin-top: 1.5rem;
-    }
-
-    .arch-diagram pre {
-      font-family: 'Courier New', monospace;
-      font-size: 0.78rem;
-      line-height: 1.5;
-      color: var(--teal);
-      white-space: pre;
-      margin: 0;
-    }
-
-    .arch-diagram .dim { color: var(--text-muted); }
-    .arch-diagram .highlight { color: var(--orange); }
-
-    /* ── Privacy Pillars ── */
-
-    .privacy-pillars {
+    .pillars {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       gap: 1rem;
-      margin-top: 1.5rem;
+      margin-top: 2rem;
     }
 
     .pillar {
       text-align: center;
-      padding: 1.2rem 0.8rem;
+      padding: 1.4rem 0.8rem;
       border-radius: var(--radius-lg);
       background: var(--panel);
       border: 1px solid var(--border-subtle);
@@ -878,43 +822,69 @@
     }
 
     .pillar:hover {
-      border-color: rgba(6,197,210,0.3);
-      transform: translateY(-3px);
+      border-color: rgba(6,197,210,0.2);
+      transform: translateY(-2px);
     }
 
     .pillar-icon {
-      font-size: 1.6rem;
-      margin-bottom: 0.5rem;
-      display: block;
+      width: 36px;
+      height: 36px;
+      margin: 0 auto 0.6rem;
+      border-radius: 8px;
+      background: rgba(6,197,210,0.08);
+      border: 1px solid rgba(6,197,210,0.12);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .pillar-icon svg {
+      width: 18px;
+      height: 18px;
+      stroke: var(--teal);
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
     }
 
     .pillar-title {
       font-family: var(--font-display);
-      font-size: 0.72rem;
+      font-size: 0.68rem;
       font-weight: 600;
       color: var(--teal);
-      letter-spacing: 0.06em;
+      letter-spacing: 0.05em;
       margin-bottom: 0.3rem;
     }
 
     .pillar-desc {
       font-size: 0.78rem;
       color: var(--text-muted);
-      line-height: 1.4;
+      line-height: 1.45;
     }
 
-    /* ── Downloads Widget ── */
+    /* ── Architecture Diagram ───────────────────── */
+
+    .arch-image {
+      margin-top: 2rem;
+      text-align: center;
+    }
+
+    .arch-image img {
+      max-width: 100%;
+      width: 800px;
+      border-radius: var(--radius-lg);
+      border: 1px solid rgba(6,197,210,0.12);
+      box-shadow: 0 20px 48px rgba(0,0,0,0.4), 0 0 0 1px rgba(6,197,210,0.06);
+    }
+
+    /* ── Downloads ───────────────────────────────── */
 
     .downloads-widget {
       border-radius: var(--radius-lg);
       border: 1px solid var(--border-subtle);
-      background: radial-gradient(
-          circle at top left,
-          rgba(6,197,210,0.06),
-          transparent 55%
-        ),
-        var(--panel);
-      padding: 1.2rem;
+      background: radial-gradient(circle at top left, rgba(6,197,210,0.04), transparent 55%), var(--panel);
+      padding: 1.5rem;
     }
 
     .downloads-title {
@@ -935,40 +905,36 @@
 
     .download-grid {
       display: flex;
-      gap: 0.65rem;
+      gap: 0.6rem;
       flex-wrap: wrap;
-      align-items: center;
     }
 
     .download-btn {
       display: inline-flex;
       align-items: center;
-      gap: 0.55rem;
+      gap: 0.5rem;
       padding: 0.5rem 0.9rem;
       border-radius: var(--radius-pill);
-      border: 1px solid rgba(255,255,255,0.18);
+      border: 1px solid rgba(255,255,255,0.15);
       background: rgba(7,9,25,0.9);
       font-size: 0.78rem;
       color: var(--text-main);
-      transition: transform var(--transition-fast), box-shadow var(--transition-fast),
-        border-color var(--transition-fast), background var(--transition-fast);
+      transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
       white-space: nowrap;
     }
 
     .download-btn:hover {
       transform: translateY(-1px);
       border-color: var(--orange);
-      box-shadow: 0 10px 26px rgba(242,98,41,0.18);
-      background: rgba(18,22,50,0.95);
+      box-shadow: 0 8px 20px rgba(242,98,41,0.15);
     }
 
     .dl-badge {
-      font-size: 0.72rem;
-      padding: 0.12rem 0.55rem;
-      border: 1px solid rgba(255,255,255,0.22);
+      font-size: 0.68rem;
+      padding: 0.1rem 0.45rem;
+      border: 1px solid rgba(255,255,255,0.18);
       border-radius: 999px;
       color: var(--text-muted);
-      opacity: 0.95;
     }
 
     .downloads-fallback a {
@@ -976,57 +942,63 @@
       color: var(--orange);
     }
 
-    /* ── Version Info ── */
-
-    .version-grid {
+    .version-chips {
       display: flex;
-      gap: 1rem;
+      gap: 0.75rem;
       flex-wrap: wrap;
-      margin-top: 0.8rem;
+      margin-top: 1rem;
     }
 
     .version-chip {
       display: inline-flex;
       align-items: center;
-      gap: 0.4rem;
-      padding: 0.3rem 0.8rem;
+      gap: 0.35rem;
+      padding: 0.25rem 0.7rem;
       border-radius: var(--radius-pill);
       border: 1px solid var(--border-subtle);
       background: var(--panel);
-      font-size: 0.78rem;
+      font-size: 0.75rem;
       color: var(--text-muted);
     }
 
-    .version-chip strong {
-      color: var(--text-main);
-      font-weight: 500;
+    .version-chip strong { color: var(--text-main); font-weight: 500; }
+
+    .source-links {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 1rem;
     }
 
-    /* ── CTA ── */
+    .source-links a {
+      color: var(--orange);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .source-links a:hover { color: var(--teal); }
+
+    /* ── CTA ─────────────────────────────────────── */
 
     .cta-section { padding: 4rem 0; }
 
     .cta-box {
       border-radius: var(--radius-xl);
       background:
-        radial-gradient(ellipse at 30% 50%, rgba(6,197,210,0.05) 0%, transparent 50%),
-        radial-gradient(ellipse at 70% 50%, rgba(6,197,210,0.05) 0%, transparent 50%),
-        radial-gradient(circle at top, #141840, #050712);
-      border: 1px solid rgba(6,197,210,0.15);
+        radial-gradient(ellipse at 30% 50%, rgba(6,197,210,0.04) 0%, transparent 50%),
+        radial-gradient(ellipse at 70% 50%, rgba(242,98,41,0.03) 0%, transparent 50%),
+        linear-gradient(180deg, var(--panel-alt), var(--bg));
+      border: 1px solid rgba(6,197,210,0.1);
       padding: 2.5rem 2rem;
       text-align: center;
       box-shadow: var(--shadow-soft);
-      transition: border-color 0.4s, box-shadow 0.4s;
+      transition: border-color 0.4s;
     }
 
-    .cta-box:hover {
-      border-color: rgba(242,98,41,0.3);
-      box-shadow: 0 20px 50px rgba(242,98,41,0.1);
-    }
+    .cta-box:hover { border-color: rgba(242,98,41,0.2); }
 
     .cta-title {
       font-family: var(--font-display);
-      font-size: clamp(1.2rem, 2.2vw, 1.6rem);
+      font-size: clamp(1.2rem, 2.2vw, 1.5rem);
       font-weight: 700;
       margin-bottom: 0.6rem;
       letter-spacing: 0.03em;
@@ -1035,16 +1007,19 @@
     .cta-text {
       font-size: 0.9rem;
       color: var(--text-muted);
-      max-width: 32rem;
+      max-width: 30rem;
       margin: 0 auto 1.5rem;
       line-height: 1.6;
     }
 
     .cta-actions {
-      display: flex; flex-wrap: wrap; gap: 0.7rem; justify-content: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      justify-content: center;
     }
 
-    /* ── Footer ── */
+    /* ── Footer ──────────────────────────────────── */
 
     footer {
       padding: 1.8rem 0 2.2rem;
@@ -1053,57 +1028,79 @@
     }
 
     .footer-row {
-      display: flex; flex-wrap: wrap; justify-content: space-between;
-      gap: 1rem; align-items: end;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: end;
     }
 
-    .footer-links { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.9rem;
+    }
+
     .footer-links a { color: var(--text-muted); font-size: 0.8rem; }
     .footer-links a:hover { color: var(--orange); }
 
-    /* ── Responsive ── */
+    /* ── Responsive ──────────────────────────────── */
 
     @media (max-width: 900px) {
-      .hero-split-grid {
-        grid-template-columns: 1fr;
-      }
-      .hero-split-media { order: -1; }
-
-      .card-grid-3,
-      .card-grid-4,
-      .card-grid-2 { grid-template-columns: 1fr 1fr; }
-
-      .privacy-pillars { grid-template-columns: repeat(2, 1fr); }
-
-      .dna-row,
-      .dna-row.reverse {
-        grid-template-columns: 1fr;
-        direction: ltr;
-        text-align: center;
-      }
-      .dna-visual { order: -1; }
-      .dna-text ul li { text-align: left; }
-      .cta-box { padding: 2rem 1.2rem; }
+      .hero-grid { grid-template-columns: 1fr; }
+      .hero-media { order: -1; }
+      .feature-grid { grid-template-columns: 1fr 1fr; }
+      .pillars { grid-template-columns: repeat(2, 1fr); }
+      .split-row,
+      .split-row.reverse { grid-template-columns: 1fr; direction: ltr; }
+      .split-visual { order: -1; }
+      .phone-screenshots { justify-content: center; }
+      .phone-screenshot { max-width: 180px; }
+      .phone-screenshot-single { max-width: 200px; }
     }
 
     @media (max-width: 768px) {
       .nav-menu {
-        display: none; position: absolute; top: var(--nav-height);
-        right: 0; left: 0; padding: 0.9rem 1rem 1rem; border-radius: 14px;
-        background: rgba(5,7,18,0.98); border: 1px solid rgba(255,255,255,0.08);
-        flex-direction: column; align-items: flex-start; gap: 0.7rem; z-index: 15;
+        display: none;
+        position: absolute;
+        top: var(--nav-height);
+        right: 0;
+        left: 0;
+        padding: 0.9rem 1rem 1rem;
+        border-radius: 14px;
+        background: rgba(5,7,18,0.98);
+        border: 1px solid rgba(255,255,255,0.08);
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.7rem;
+        z-index: 15;
       }
 
       .nav-menu.active { display: flex; }
 
-      .nav-links { flex-direction: column; align-items: flex-start; width: 100%; gap: 0.75rem; }
+      .nav-links {
+        flex-direction: column;
+        align-items: flex-start;
+        width: 100%;
+        gap: 0.75rem;
+      }
+
       .nav-links a { width: 100%; padding: 0.25rem 0; }
-      .nav-cta { width: 100%; justify-content: flex-start; margin-top: 0.4rem; }
+
+      .nav-cta {
+        width: 100%;
+        justify-content: flex-start;
+        margin-top: 0.4rem;
+      }
+
       .mobile-menu-toggle { display: inline-flex; }
 
       .dropdown {
-        position: static; box-shadow: none; border-radius: 10px;
-        border: 1px solid rgba(255,255,255,0.06); margin-top: 0.3rem;
+        position: static;
+        box-shadow: none;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.06);
+        margin-top: 0.3rem;
       }
 
       .nav-item:hover .dropdown { display: none; }
@@ -1111,688 +1108,565 @@
     }
 
     @media (max-width: 480px) {
-      .hero-split-text h1 { font-size: 1.9rem; }
-      .card-grid-3,
-      .card-grid-4,
-      .card-grid-2 { grid-template-columns: 1fr; }
-      .privacy-pillars { grid-template-columns: 1fr; }
+      .hero h1 { font-size: 1.8rem; }
+      .feature-grid { grid-template-columns: 1fr; }
+      .pillars { grid-template-columns: 1fr 1fr; }
+      .phone-screenshots { flex-direction: column; align-items: center; }
+      .phone-screenshot { width: 60%; max-width: 200px; }
+      .phone-screenshot-single { max-width: 180px; }
     }
 
-    /* Reduced motion */
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
         transition-duration: 0.01ms !important;
       }
-      .reveal, .reveal-left, .reveal-right { opacity: 1; transform: none; }
+      .reveal { opacity: 1; transform: none; }
     }
   </style>
 </head>
 <body>
-  <div class="page">
+<div class="page">
 
-    <!-- Header / Nav -->
-    <header>
-      <div class="wrap">
-        <div class="nav">
-          <a href="/" class="brand">
-            <div class="brand-text">
-              <span class="brand-name">CPUNK.IO</span>
-              <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
-            </div>
-          </a>
-
-          <button class="mobile-menu-toggle" aria-label="Toggle navigation">
-            <span></span>
-          </button>
-
-          <div class="nav-menu">
-            <nav class="nav-links">
-              <a href="/">Home</a>
-
-              <div class="nav-item" data-dropdown="products">
-                <div class="nav-item-label">
-                  <span>Products</span>
-                  <span class="caret"></span>
-                </div>
-                <div class="dropdown">
-                  <a href="/products/dna-identity.html">DNA Identity</a>
-                  <a href="/products/dna-connect.html" class="active">DNA Connect</a>
-                  <a href="/products/nodus.html">DNA Nodus</a>
-                  <a href="/products/dna-library.html">DNA Library</a>
-                </div>
-              </div>
-
-              <a href="/whitepaper.html">Whitepaper</a>
-              <a href="/roadmap.html">Roadmap</a>
-
-              <div class="nav-item" data-dropdown="about">
-                <div class="nav-item-label">
-                  <span>About</span>
-                  <span class="caret"></span>
-                </div>
-                <div class="dropdown">
-                  <a href="/about.html">About CPUNK</a>
-                  <a href="/team.html">Team</a>
-                  <a href="/contact.html">Contact</a>
-                  <a href="/legal.html">Legal</a>
-                </div>
-              </div>
-            </nav>
-
-            <div class="nav-cta">
-              <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
-                Trade CPUNK
-              </a>
-            </div>
+  <!-- ── Header ──────────────────────────────── -->
+  <header>
+    <div class="wrap">
+      <div class="nav">
+        <a href="/" class="brand">
+          <div class="brand-text">
+            <span class="brand-name">CPUNK.IO</span>
+            <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
           </div>
-        </div>
-      </div>
-    </header>
-
-    <main id="top">
-
-      <!-- ══ Hero ══ -->
-      <section class="hero-split">
-        <div class="hero-split-bg"></div>
-        <div class="wrap">
-          <div class="hero-split-grid">
-            <div class="hero-split-text">
-              <div class="eyebrow">
-                <span class="eyebrow-dot"></span>
-                <span class="eyebrow-label">v1.0.0-rc27</span>
-                <span>Post-Quantum Encrypted Messenger</span>
-              </div>
-
-              <h1 style="color:#ffffff;">
-                DNA Connect
-              </h1>
-
-              <p class="subtitle">
-                A <strong>fully decentralized messenger</strong> with <strong>NIST Category 5 post-quantum encryption</strong>.
-                No central servers, no phone numbers, no metadata collection.
-                Messages travel through a peer-to-peer DHT network &mdash; encrypted end-to-end with
-                <strong>Kyber1024 + AES-256-GCM</strong>.
-              </p>
-
-              <div class="hero-actions">
-                <a href="#messaging" class="btn btn-primary">Messaging</a>
-                <a href="#security" class="btn btn-ghost">Security</a>
-                <a href="#architecture" class="btn btn-ghost">Architecture</a>
-                <a href="#downloads" class="btn btn-ghost">Downloads</a>
-              </div>
-
-              <div class="hero-meta">
-                <span>
-                  <span class="hero-meta-dot"></span>
-                  No servers &middot; No IP leakage &middot; No metadata
-                </span>
-                <span>
-                  Platforms: <strong style="color:var(--text-main);font-weight:500;">Android, Linux, Windows</strong> &middot; iOS planned
-                </span>
-              </div>
-            </div>
-
-            <aside class="hero-split-media" aria-label="DNA Connect chat interface">
-              <img
-                src="../images/chatscreen.png"
-                alt="DNA Connect chat interface screenshot"
-              />
-            </aside>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ Core Messaging ══ -->
-      <section id="messaging" class="s-section s-dark">
-        <div class="wrap">
-          <div class="section-header-center reveal">
-            <div class="section-label">Messaging</div>
-            <h2 class="section-title">Encrypted conversations, zero compromise</h2>
-            <p class="section-desc" style="max-width: 38rem;">
-              Every message is end-to-end encrypted and transported through a distributed hash table.
-              There are no central servers to compromise, subpoena, or shut down.
-            </p>
-          </div>
-
-          <div class="card-grid-3 stagger">
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-              </span>
-              <h3>1:1 Direct Messages</h3>
-              <p>
-                Private conversations encrypted with <strong style="color:var(--text-main)">Kyber1024 + AES-256-GCM</strong>.
-                Address contacts by their DNA name &mdash; no phone numbers or email needed.
-              </p>
-              <ul>
-                <li>Delivery and read receipts</li>
-                <li>Cross-device sync via seed phrase</li>
-                <li>Background push notifications (Android)</li>
-              </ul>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-              </span>
-              <h3>Group Messaging</h3>
-              <p>
-                DHT-based decentralized groups with <strong style="color:var(--text-main)">GEK encryption</strong> &mdash;
-                200x faster than per-recipient encryption. Automatic key rotation on member changes.
-              </p>
-              <ul>
-                <li>Group ownership transfer</li>
-                <li>P2P group invitations</li>
-                <li>GEK versioning for forward security</li>
-              </ul>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-              </span>
-              <h3>Offline Message Queue</h3>
-              <p>
-                Messages are stored in <strong style="color:var(--text-main)">distributed mailboxes</strong> on the DHT with a 7-day TTL.
-                No always-on requirement &mdash; messages wait until the recipient comes online.
-              </p>
-              <ul>
-                <li>Spillway Protocol v2 for efficient retrieval</li>
-                <li>Daily bucket message organization</li>
-                <li>"Never Give Up" retry system</li>
-              </ul>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ Public Feeds & Profiles ══ -->
-      <section id="feeds" class="s-section s-panel">
-        <div class="wrap">
-          <div class="section-header reveal">
-            <div class="section-label">Social</div>
-            <h2 class="section-title">Public feeds &amp; user profiles</h2>
-          </div>
-
-          <div class="dna-row">
-            <div class="dna-text reveal-left">
-              <h3><span class="teal">Public Feeds</span> (DNA Board)</h3>
-              <p>
-                Topic-based public discussion feeds stored entirely on the DHT. Create, subscribe, comment, and vote &mdash;
-                all cryptographically signed with <strong style="color:var(--text-main)">Dilithium5</strong> for author verification.
-              </p>
-              <ul>
-                <li><strong>Categories:</strong> General, Technology, Help, Announcements, Trading</li>
-                <li><strong>Comments:</strong> Threaded replies with newest-first ordering</li>
-                <li><strong>Voting:</strong> Community-driven content curation</li>
-                <li><strong>Community feeds:</strong> Bug Reports, Feature Requests, Official Announcements</li>
-              </ul>
-            </div>
-            <div class="dna-visual reveal-right">
-              <a href="../images/screenshotDNA.png" target="_blank" rel="noopener">
-                <img
-                  src="../images/screenshotDNA.png"
-                  alt="DNA Connect feeds and profile interface"
-                />
-              </a>
-              <div class="image-caption">
-                DNA Connect &mdash; feeds, profiles, and identity
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ Security ══ -->
-      <section id="security" class="s-section s-gradient">
-        <div class="wrap">
-          <div class="section-header-center reveal">
-            <div class="section-label">Security</div>
-            <h2 class="section-title">NIST Category 5 &mdash; maximum quantum resistance</h2>
-            <p class="section-desc" style="max-width: 38rem;">
-              256-bit security level. Protected against both current classical attacks and future quantum computers.
-              Your keys never leave your device.
-            </p>
-          </div>
-
-          <div class="reveal" style="max-width: 700px; margin: 0 auto;">
-            <table class="security-table">
-              <thead>
-                <tr>
-                  <th>Algorithm</th>
-                  <th>Standard</th>
-                  <th>Purpose</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td class="algo-name">Kyber1024</td>
-                  <td><strong>ML-KEM-1024</strong> (FIPS 203)</td>
-                  <td>Key encapsulation</td>
-                </tr>
-                <tr>
-                  <td class="algo-name">Dilithium5</td>
-                  <td><strong>ML-DSA-87</strong> (FIPS 204)</td>
-                  <td>Digital signatures</td>
-                </tr>
-                <tr>
-                  <td class="algo-name">AES-256-GCM</td>
-                  <td><strong>NIST</strong></td>
-                  <td>Symmetric encryption</td>
-                </tr>
-                <tr>
-                  <td class="algo-name">SHA3-512</td>
-                  <td><strong>NIST</strong></td>
-                  <td>Hashing</td>
-                </tr>
-                <tr>
-                  <td class="algo-name">BIP39</td>
-                  <td><strong>Bitcoin Standard</strong></td>
-                  <td>24-word seed phrase recovery</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div class="privacy-pillars reveal" style="margin-top: 3rem;">
-            <div class="pillar">
-              <span class="pillar-icon">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
-              </span>
-              <div class="pillar-title">No Central Servers</div>
-              <div class="pillar-desc">Messages travel peer-to-peer through the DHT. Nothing to compromise or subpoena.</div>
-            </div>
-            <div class="pillar">
-              <span class="pillar-icon">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><line x1="1" y1="1" x2="23" y2="23" stroke="var(--orange)" stroke-width="2"/></svg>
-              </span>
-              <div class="pillar-title">No IP Leakage</div>
-              <div class="pillar-desc">Your real IP is never exposed to contacts or third parties. DHT-only transport.</div>
-            </div>
-            <div class="pillar">
-              <span class="pillar-icon">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-              </span>
-              <div class="pillar-title">No Metadata</div>
-              <div class="pillar-desc">Only 20 bytes of routing header. Cannot track who talks to whom.</div>
-            </div>
-            <div class="pillar">
-              <span class="pillar-icon">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-              </span>
-              <div class="pillar-title">No Phone Number</div>
-              <div class="pillar-desc">Identity via DNA name tied to your cryptographic key pair. No personal data required.</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ Wallet ══ -->
-      <section id="wallet" class="s-section s-dark">
-        <div class="wrap">
-          <div class="section-header-center reveal">
-            <div class="section-label">Wallet</div>
-            <h2 class="section-title">Multi-chain wallet, built into the messenger</h2>
-            <p class="section-desc" style="max-width: 38rem;">
-              A single BIP-39 seed phrase derives wallets across four blockchains. Send and receive tokens without leaving the conversation &mdash; no address copying, no app switching.
-            </p>
-          </div>
-
-          <div class="card-grid-3 stagger">
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"/></svg>
-              </span>
-              <h3>Multi-Chain Architecture</h3>
-              <p>
-                One wallet interface, four blockchains managed from a single unified view. Each chain uses its native signing algorithm.
-              </p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h.01"/><path d="M12 10h.01"/><path d="M16 10h.01"/></svg>
-              </span>
-              <h3>In-Chat Transfers</h3>
-              <p>
-                Send tokens to any DNA contact directly inside a conversation. The recipient's wallet address is resolved automatically from their DNA identity.
-              </p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-              </span>
-              <h3>DEX Integration</h3>
-              <p>
-                Swap tokens directly in the app via <strong style="color:var(--text-main)">Uniswap, PancakeSwap, Jupiter</strong>, and Cellframe DEX. Best-rate routing across multiple pools.
-              </p>
-            </article>
-          </div>
-
-          <div class="card-grid-4 stagger" style="margin-top: 1.5rem;">
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
-              </span>
-              <h3>Cellframe</h3>
-              <p>Post-quantum blockchain with Dilithium signatures. Native CPUNK &amp; CELL tokens.</p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-              </span>
-              <h3>Ethereum</h3>
-              <p>Full mainnet support with ERC-20 tokens, dynamic gas estimation, and DEX swaps.</p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 8h2"/><path d="M15 8h2"/><path d="M7 12h10"/></svg>
-              </span>
-              <h3>Solana</h3>
-              <p>High-throughput chain with Ed25519 signatures, SPL token transfers, and Jupiter swaps.</p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M12 2L2 19.5h20L12 2z"/><path d="M12 8v5"/><circle cx="12" cy="16" r="0.5" fill="var(--orange)" stroke="none"/></svg>
-              </span>
-              <h3>TRON</h3>
-              <p>TRON mainnet with TRC-20 token support. secp256k1 signing with Base58Check addresses.</p>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ Architecture ══ -->
-      <section id="architecture" class="s-section s-panel">
-        <div class="wrap">
-          <div class="section-header-center reveal">
-            <div class="section-label">Architecture</div>
-            <h2 class="section-title">Serverless peer-to-peer network</h2>
-            <p class="section-desc" style="max-width: 38rem;">
-              DNA Connect runs on <strong style="color:var(--text-main)">Nodus</strong> &mdash; a post-quantum Kademlia DHT
-              where RSA-2048 is replaced with Dilithium5 post-quantum signatures. All DHT values are mandatory-signed.
-            </p>
-          </div>
-
-          <div class="arch-diagram reveal">
-            <pre>
-<span class="highlight">  DNA Client (You)</span>                                  <span class="highlight">DNA Client (Contact)</span>
-       <span class="dim">|</span>                                                   <span class="dim">|</span>
-       <span class="dim">|</span>               <span class="highlight">Nodus Network</span>                  <span class="dim">|</span>
-       <span class="dim">|</span>    <span class="dim">+--------------------------------------------+</span>   <span class="dim">|</span>
-       <span class="dim">|</span>    <span class="dim">|</span>       P2P Distributed Hash Table         <span class="dim">|</span>   <span class="dim">|</span>
-       <span class="dim">|</span>    <span class="dim">|</span>                                            <span class="dim">|</span>   <span class="dim">|</span>
-       <span class="dim">+---&gt;|</span>   [peer]&lt;--&gt;[peer]&lt;--&gt;[peer]&lt;--&gt;[peer]   <span class="dim">|&lt;--+</span>
-            <span class="dim">|</span>     <span class="dim">|</span>         <span class="dim">|</span>         <span class="dim">|</span>         <span class="dim">|</span>      <span class="dim">|</span>
-            <span class="dim">|</span>   [peer]&lt;--&gt;[peer]&lt;--&gt;[peer]&lt;--&gt;[peer]   <span class="dim">|</span>
-            <span class="dim">|</span>                                            <span class="dim">|</span>
-            <span class="dim">|</span>    All values signed with <span class="highlight">Dilithium5</span>       <span class="dim">|</span>
-            <span class="dim">+--------------------------------------------+</span>
-            </pre>
-          </div>
-
-          <div class="card-grid-3 stagger" style="margin-top: 2.5rem;">
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
-              </span>
-              <h3>DNA Connect App</h3>
-              <p>
-                Cross-platform UI built with DNA Connect. Runs natively on <strong style="color:var(--text-main)">Android, Linux, and Windows</strong>. iOS and Web planned.
-              </p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-              </span>
-              <h3>C Library (libdna_engine)</h3>
-              <p>
-                Core cryptography, DHT operations, and local database in a native C library. Handles all encryption, signing, and network transport.
-              </p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="3" r="1.5"/><circle cx="12" cy="21" r="1.5"/><circle cx="3" cy="12" r="1.5"/><circle cx="21" cy="12" r="1.5"/><path d="M12 6v3M12 15v3M6 12h3M15 12h3"/></svg>
-              </span>
-              <h3>DNA Nodus (Bootstrap)</h3>
-              <p>
-                Lightweight DHT bootstrap nodes for peer discovery. <strong style="color:var(--text-main)">No message relay</strong> &mdash; they only help peers find each other. No logging, no content access.
-              </p>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ Downloads & Roadmap ══ -->
-      <section id="downloads" class="s-section s-panel">
-        <div class="wrap">
-          <div class="section-header reveal">
-            <div class="section-label">Downloads</div>
-            <h2 class="section-title">Get DNA Connect</h2>
-          </div>
-
-          <div class="dna-row">
-            <div class="dna-text reveal-left">
-              <h3><span class="teal">Current</span> Status &amp; Roadmap</h3>
-              <p>
-                DNA Connect is in <strong style="color:var(--text-main)">Phase 7 (DNA Connect UI)</strong> with beta releases
-                for Android, Linux, and Windows. Open source under GPLv3.
-              </p>
-              <ul>
-                <li><strong>Phase 7 (Current):</strong> DNA Connect cross-platform app with full messaging, groups, feeds, wallet</li>
-                <li><strong>Phase 8:</strong> Voice/video calls with post-quantum key exchange</li>
-                <li><strong>Phase 9+:</strong> iOS native app, Tor integration, forward secrecy, enterprise features</li>
-              </ul>
-
-              <div class="version-grid">
-                <span class="version-chip">C Library <strong>v0.9.59</strong></span>
-                <span class="version-chip">App <strong>v1.0.0-rc27</strong></span>
-                <span class="version-chip">DNA Nodus <strong>v0.6.3</strong></span>
-              </div>
-
-              <p style="margin-top: 1rem;">
-                <strong style="color:var(--text-main)">Source code:</strong>
-                <a href="https://gitlab.cpunk.io/cpunk/dna-messenger" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:underline;">GitLab</a>
-                &middot;
-                <a href="https://github.com/nocdem/dna-messenger" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:underline;">GitHub (Mirror)</a>
-              </p>
-            </div>
-            <div class="dna-visual reveal-right" style="align-items: flex-start;">
-              <div id="dna-downloads" class="downloads-widget" aria-label="DNA Connect downloads" style="width: 100%;">
-                <div class="downloads-title">Downloads</div>
-                <div class="downloads-sub">Loading latest builds&hellip;</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ CTA Section ══ -->
-      <section class="cta-section">
-        <div class="wrap">
-          <div class="cta-box reveal">
-            <h2 class="cta-title">Join the CPUNK movement</h2>
-            <p class="cta-text">
-              Download DNA Connect, join the conversation, and find a piece of the project
-              you want to improve. Every meaningful contributor once started as a community member.
-            </p>
-            <div class="cta-actions">
-              <a href="/products/dna-connect.html" class="btn btn-primary btn-lg">Download DNA Connect</a>
-              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Join Telegram</a>
-              <a href="https://gitlab.cpunk.io/cpunk/" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Explore Code</a>
-              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Follow on X</a>
-            </div>
-          </div>
-        </div>
-      </section>
-
-    </main>
-
-    <!-- Footer -->
-    <footer>
-      <div class="wrap">
-        <div class="footer-row">
-          <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
-          <div class="footer-links">
+        </a>
+        <div class="nav-menu">
+          <div class="nav-links">
             <a href="/">Home</a>
-            <a href="/products/dna-identity.html">DNA Identity</a>
-            <a href="/products/dna-connect.html">DNA Connect</a>
-            <a href="/products/nodus.html">DNA Nodus</a>
-            <a href="/products/dna-library.html">DNA Library</a>
-            <a href="/team.html">Team</a>
-            <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-            <a href="/doc/cpunk-legal.pdf" target="_blank">Legal &amp; Compliance</a>
+            <div class="nav-item">
+              <span class="nav-item-label">Products <span class="caret"></span></span>
+              <div class="dropdown">
+                <a href="/products/dna-identity.html">DNA Identity</a>
+                <a href="/products/dna-connect.html" class="active">DNA Connect</a>
+                <a href="/products/nodus.html">Nodus</a>
+                <a href="/products/dna-library.html">DNA Library</a>
+              </div>
+            </div>
+            <a href="/whitepaper.html">Whitepaper</a>
+            <a href="/roadmap.html">Roadmap</a>
+            <div class="nav-item">
+              <span class="nav-item-label">About <span class="caret"></span></span>
+              <div class="dropdown">
+                <a href="/about.html">About CPUNK</a>
+                <a href="/team.html">Team</a>
+                <a href="/contact.html">Contact</a>
+                <a href="/legal.html">Legal</a>
+              </div>
+            </div>
+          </div>
+          <div class="nav-cta">
+            <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" class="btn btn-primary btn-lg">Trade CPUNK</a>
+          </div>
+        </div>
+        <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+          <span></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ── Hero ────────────────────────────────── -->
+    <section class="hero">
+      <div class="hero-bg"></div>
+      <div class="wrap">
+        <div class="hero-grid">
+          <div class="hero-text">
+            <div class="hero-badge">
+              <span class="hero-badge-dot"></span>
+              <span class="hero-badge-label">v1.0.0-rc30 &middot; Open Beta</span>
+            </div>
+            <h1>Post-Quantum<br><span class="accent">Encrypted Messenger</span></h1>
+            <p class="lead">
+              A <strong>fully decentralized messenger</strong> with <strong>NIST Category 5 post-quantum encryption</strong>.
+              No central servers, no phone numbers, no metadata collection. Messages travel through a peer-to-peer network &mdash;
+              encrypted end-to-end with <strong>Kyber1024 + AES-256-GCM</strong>.
+            </p>
+            <div class="hero-actions">
+              <a href="#features" class="btn btn-primary btn-lg">Features</a>
+              <a href="#security" class="btn btn-ghost btn-lg">Security</a>
+              <a href="#downloads" class="btn btn-ghost btn-lg">Downloads</a>
+            </div>
+            <div class="hero-facts">
+              <span class="hero-fact">No central servers</span>
+              <span class="hero-fact">No IP leakage</span>
+              <span class="hero-fact">No metadata</span>
+              <span class="hero-fact">Android, Linux, Windows</span>
+            </div>
+          </div>
+          <div class="hero-media">
+            <div class="hero-media-frame">
+              <img src="../images/chatscreen.png" alt="DNA Connect chat interface">
+            </div>
           </div>
         </div>
       </div>
-    </footer>
-  </div>
+    </section>
 
-  <!-- JS: Mobile Nav + Scroll Reveal -->
-  <script>
-    document.addEventListener('DOMContentLoaded', function() {
-      var mobileToggle = document.querySelector('.mobile-menu-toggle');
-      var navMenu = document.querySelector('.nav-menu');
+    <!-- ── Features ────────────────────────────── -->
+    <section class="s-section s-dark" id="features">
+      <div class="wrap">
+        <div class="section-header">
+          <div class="section-label">Features</div>
+          <h2 class="section-title">Private messaging. Public channels. Your wallet.</h2>
+          <p class="section-desc">
+            Encrypted direct messages, Telegram-style public channels, personal wall posts, and a built-in multi-chain wallet &mdash; all running on a decentralized network with zero central servers.
+          </p>
+        </div>
 
-      if (mobileToggle && navMenu) {
-        mobileToggle.addEventListener('click', function() {
-          navMenu.classList.toggle('active');
-        });
-      }
+        <div class="feature-grid stagger">
 
-      document.querySelectorAll('.nav-item').forEach(function(item) {
-        var label = item.querySelector('.nav-item-label');
-        if (!label) return;
-        label.addEventListener('click', function(e) {
-          if (window.innerWidth <= 768) {
-            e.stopPropagation();
-            item.classList.toggle('open');
-          }
-        });
-      });
+          <!-- DM -->
+          <div class="feature-card reveal">
+            <div class="feature-card-header">
+              <div class="feature-icon feature-icon-teal">
+                <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              </div>
+              <h3>Encrypted Direct Messages</h3>
+            </div>
+            <p>Private conversations encrypted with <strong>Kyber1024 + AES-256-GCM</strong>. Address contacts by their DNA name &mdash; no phone numbers or email needed.</p>
+            <ul class="feature-list">
+              <li>Delivery and read receipts</li>
+              <li>Offline message queue with 7-day TTL</li>
+              <li>Cross-device sync via recovery phrase</li>
+            </ul>
+          </div>
 
-      /* ── Scroll Reveal (IntersectionObserver) ── */
-      var revealElements = document.querySelectorAll('.reveal, .reveal-left, .reveal-right');
+          <!-- Channels -->
+          <div class="feature-card reveal">
+            <div class="feature-card-header">
+              <div class="feature-icon feature-icon-orange">
+                <svg viewBox="0 0 24 24"><path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1" fill="currentColor" stroke="none"/></svg>
+              </div>
+              <h3>Public Channels</h3>
+            </div>
+            <p>Open chat rooms where people hang out and talk &mdash; like Telegram groups, but decentralized. Every message is signed with <strong>Dilithium5</strong> so you always know who said what.</p>
+            <ul class="feature-list">
+              <li>Real-time group conversations</li>
+              <li>React, reply, copy, and repost</li>
+              <li>Image sharing and media support</li>
+            </ul>
+          </div>
 
-      if ('IntersectionObserver' in window) {
-        var observer = new IntersectionObserver(function(entries) {
-          entries.forEach(function(entry) {
-            if (entry.isIntersecting) {
-              entry.target.classList.add('visible');
-              observer.unobserve(entry.target);
-            }
-          });
-        }, {
-          threshold: 0.12,
-          rootMargin: '0px 0px -40px 0px'
-        });
+          <!-- Wall Posts -->
+          <div class="feature-card reveal">
+            <div class="feature-card-header">
+              <div class="feature-icon feature-icon-teal">
+                <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              </div>
+              <h3>Wall Posts</h3>
+            </div>
+            <p>A personal public feed tied to your DNA identity. Share updates, thoughts, or announcements that anyone can see on your profile.</p>
+            <ul class="feature-list">
+              <li>Signed with your identity key</li>
+              <li>Visible on your public profile</li>
+              <li>Stored on the decentralized network</li>
+            </ul>
+          </div>
 
-        revealElements.forEach(function(el) {
-          observer.observe(el);
-        });
-      } else {
-        revealElements.forEach(function(el) {
-          el.classList.add('visible');
-        });
+          <!-- Groups -->
+          <div class="feature-card reveal">
+            <div class="feature-card-header">
+              <div class="feature-icon feature-icon-orange">
+                <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              </div>
+              <h3>Group Messaging</h3>
+            </div>
+            <p>Decentralized groups with <strong>GEK encryption</strong> &mdash; efficient key distribution for groups of any size. Automatic key rotation on member changes.</p>
+            <ul class="feature-list">
+              <li>Group ownership transfer</li>
+              <li>P2P group invitations</li>
+              <li>Forward security via GEK versioning</li>
+            </ul>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ── App Showcase ─────────────────────────── -->
+    <section class="s-section s-alt">
+      <div class="wrap">
+        <div class="split-row">
+          <div class="split-text">
+            <div class="section-label">Home Feed</div>
+            <h3><span class="teal">Your timeline</span><br>Wall posts, images, and reactions</h3>
+            <p>
+              The home feed shows wall posts from people you follow. Share images, react, reply, repost &mdash; a decentralized social layer built on top of the encrypted network.
+            </p>
+            <ul class="feature-list">
+              <li>Image posts with full media support</li>
+              <li>Reactions, threaded replies, and reposts</li>
+              <li>All content signed and stored on the DHT</li>
+            </ul>
+          </div>
+          <div class="split-visual">
+            <img src="../images/dna-home-feed.jpg" alt="DNA Connect home feed showing wall posts with images, reactions, and replies" class="phone-screenshot-single">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Wallet ──────────────────────────────── -->
+    <section class="s-section s-alt">
+      <div class="wrap">
+        <div class="split-row reverse">
+          <div class="split-text">
+            <div class="section-label">Wallet</div>
+            <h3><span class="orange">Multi-Chain Wallet</span><br>Built into the messenger</h3>
+            <p>
+              A single recovery phrase derives wallets across four blockchains. Send and receive tokens without leaving the conversation.
+            </p>
+            <ul class="feature-list">
+              <li><strong>Cellframe, Ethereum, Solana, TRON</strong> &mdash; one wallet, four chains, native signing per chain</li>
+              <li><strong>In-chat transfers</strong> &mdash; send tokens to any DNA contact directly</li>
+              <li><strong>DEX swaps</strong> &mdash; best price from multiple exchanges (Uniswap, PancakeSwap, Jupiter, Cellframe DEX)</li>
+            </ul>
+          </div>
+          <div class="split-visual">
+            <img src="../images/dna-wallet-swap.jpg" alt="DNA Connect DEX swap — ETH to USDT via PancakeSwap with best price routing" class="phone-screenshot-single">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Security ────────────────────────────── -->
+    <section class="s-section s-dark" id="security">
+      <div class="wrap">
+        <div class="section-header">
+          <div class="section-label">Security</div>
+          <h2 class="section-title">NIST Category 5 &mdash; maximum quantum resistance</h2>
+          <p class="section-desc">
+            256-bit security level. Protected against both current classical attacks and future quantum computers. Your keys never leave your device.
+          </p>
+        </div>
+
+        <div class="security-table-wrap">
+          <table class="security-table">
+            <thead>
+              <tr>
+                <th>Algorithm</th>
+                <th>Standard</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="algo">Kyber1024</td>
+                <td><strong>ML-KEM-1024</strong> (FIPS 203)</td>
+                <td>Key encapsulation &amp; exchange</td>
+              </tr>
+              <tr>
+                <td class="algo">Dilithium5</td>
+                <td><strong>ML-DSA-87</strong> (FIPS 204)</td>
+                <td>Digital signatures</td>
+              </tr>
+              <tr>
+                <td class="algo">AES-256-GCM</td>
+                <td><strong>NIST</strong></td>
+                <td>Symmetric message encryption</td>
+              </tr>
+              <tr>
+                <td class="algo">SHA3-512</td>
+                <td><strong>NIST</strong></td>
+                <td>Cryptographic hashing</td>
+              </tr>
+              <tr>
+                <td class="algo">BIP39</td>
+                <td><strong>Bitcoin Standard</strong></td>
+                <td>24-word recovery phrase</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="pillars stagger">
+          <div class="pillar reveal">
+            <div class="pillar-icon">
+              <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            </div>
+            <h3 class="pillar-title">No Central Servers</h3>
+            <p class="pillar-desc">Messages travel peer-to-peer through the DHT. Nothing to compromise or subpoena.</p>
+          </div>
+          <div class="pillar reveal">
+            <div class="pillar-icon">
+              <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><line x1="2" y1="2" x2="22" y2="22" stroke-width="2"/></svg>
+            </div>
+            <h3 class="pillar-title">No IP Leakage</h3>
+            <p class="pillar-desc">Your real IP is never exposed to contacts or third parties. DHT-only transport.</p>
+          </div>
+          <div class="pillar reveal">
+            <div class="pillar-icon">
+              <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </div>
+            <h3 class="pillar-title">No Metadata</h3>
+            <p class="pillar-desc">Minimal routing header. Cannot track who talks to whom.</p>
+          </div>
+          <div class="pillar reveal">
+            <div class="pillar-icon">
+              <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            </div>
+            <h3 class="pillar-title">No Phone Number</h3>
+            <p class="pillar-desc">Identity via DNA name tied to your cryptographic key pair. No personal data required.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Architecture ────────────────────────── -->
+    <section class="s-section s-alt" id="architecture">
+      <div class="wrap">
+        <div class="section-header-center">
+          <div class="section-label">Architecture</div>
+          <h2 class="section-title">Serverless peer-to-peer stack</h2>
+          <p class="section-desc">
+            DNA Connect runs on <strong>Nodus</strong> &mdash; a post-quantum Kademlia DHT with ML-DSA + ML-KEM support, PBFT consensus, and a 6-node production cluster.
+          </p>
+        </div>
+
+        <div class="arch-image reveal">
+          <img src="../images/nodus-network-diagram.jpg" alt="Nodus Network — P2P Distributed Hash Table connecting DNA clients through interconnected peers">
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Downloads ───────────────────────────── -->
+    <section class="s-section s-dark" id="downloads">
+      <div class="wrap">
+        <div class="section-header">
+          <div class="section-label">Downloads</div>
+          <h2 class="section-title">Get DNA Connect</h2>
+          <p class="section-desc">
+            Open beta &mdash; available for Android, Linux, and Windows. Open source under GPLv3.
+          </p>
+        </div>
+
+        <div class="downloads-widget" id="dna-downloads">
+          <div class="downloads-title">Downloads</div>
+          <div class="downloads-sub">Loading latest builds&hellip;</div>
+        </div>
+
+        <div class="version-chips">
+          <div class="version-chip"><strong>C Library</strong>&nbsp; v0.9.63</div>
+          <div class="version-chip"><strong>App</strong>&nbsp; v1.0.0-rc30</div>
+          <div class="version-chip"><strong>Nodus</strong>&nbsp; v0.6.8</div>
+        </div>
+
+        <p class="source-links">
+          Source code:
+          <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noopener">GitLab</a> &middot;
+          <a href="https://github.com/nocdem/dna" target="_blank" rel="noopener">GitHub (Mirror)</a>
+        </p>
+      </div>
+    </section>
+
+    <!-- ── CTA ─────────────────────────────────── -->
+    <section class="s-section s-dark cta-section">
+      <div class="wrap">
+        <div class="cta-box">
+          <h2 class="cta-title">Join the CPUNK movement</h2>
+          <p class="cta-text">
+            Download DNA Connect, join the conversation, and help build the future of private communication.
+          </p>
+          <div class="cta-actions">
+            <a href="#downloads" class="btn btn-primary btn-lg">Download DNA Connect</a>
+            <a href="https://t.me/chippunk_official" class="btn btn-ghost btn-lg">Join Telegram</a>
+            <a href="https://gitlab.cpunk.io/cpunk/dna" class="btn btn-ghost btn-lg">Explore Code</a>
+            <a href="https://x.com/OfficialCpunk" class="btn btn-ghost btn-lg">Follow on X</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── Footer ──────────────────────────────── -->
+  <footer>
+    <div class="wrap">
+      <div class="footer-row">
+        <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+        <div class="footer-links">
+          <a href="/">Home</a>
+          <a href="/products/dna-identity.html">DNA Identity</a>
+          <a href="/products/dna-connect.html">DNA Connect</a>
+          <a href="/products/nodus.html">Nodus</a>
+          <a href="/products/dna-library.html">DNA Library</a>
+          <a href="/team.html">Team</a>
+          <a href="/doc/cpunk-litepaper.pdf">Litepaper</a>
+          <a href="/doc/cpunk-legal.pdf">Legal</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+</div>
+
+<!-- ── Scripts ──────────────────────────────── -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  /* Mobile menu */
+  var toggle = document.querySelector('.mobile-menu-toggle');
+  var menu = document.querySelector('.nav-menu');
+  if (toggle && menu) {
+    toggle.addEventListener('click', function() { menu.classList.toggle('active'); });
+  }
+
+  /* Mobile dropdowns */
+  document.querySelectorAll('.nav-item').forEach(function(item) {
+    var label = item.querySelector('.nav-item-label');
+    if (!label) return;
+    label.addEventListener('click', function(e) {
+      if (window.innerWidth <= 768) {
+        e.stopPropagation();
+        item.classList.toggle('open');
       }
     });
-  </script>
+  });
 
-  <!-- JS: DNA Connect downloads (auto from artifacts) -->
-  <script>
-    (function () {
-      var URL = "https://artifacts.cpunk.io/dna-messenger/latest.json";
+  /* Scroll reveal */
+  var els = document.querySelectorAll('.reveal');
+  if ('IntersectionObserver' in window) {
+    var obs = new IntersectionObserver(function(entries) {
+      entries.forEach(function(e) {
+        if (e.isIntersecting) { e.target.classList.add('visible'); obs.unobserve(e.target); }
+      });
+    }, { threshold: 0.1, rootMargin: '0px 0px -30px 0px' });
+    els.forEach(function(el) { obs.observe(el); });
+  } else {
+    els.forEach(function(el) { el.classList.add('visible'); });
+  }
+});
 
-      var PLATFORM_ORDER = [
-        { key: "windows",        label: "Windows",        ext: "EXE" },
-        { key: "linux_appimage", label: "Linux AppImage", ext: "AppImage" },
-        { key: "linux_tarball",  label: "Linux Tarball",  ext: "tar.gz" },
-        { key: "android",        label: "Android",        ext: "APK" },
-        { key: "macos",          label: "macOS",          ext: "DMG" }
-      ];
+/* Dynamic downloads — fetches from own artifacts server, content is HTML-escaped */
+(function () {
+  var ARTIFACT_URL = "/api/latest.json";
+  var PLATFORMS = [
+    { key: "windows", label: "Windows", ext: "EXE" },
+    { key: "linux_appimage", label: "Linux AppImage", ext: "AppImage" },
+    { key: "linux_tarball", label: "Linux Tarball", ext: "tar.gz" },
+    { key: "android", label: "Android", ext: "APK" },
+    { key: "macos", label: "macOS", ext: "DMG" }
+  ];
 
-      function escapeHtml(s) {
-        return String(s)
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&#039;");
+  function esc(s) {
+    var d = document.createElement("div");
+    d.textContent = String(s);
+    return d.innerHTML;
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+  }
+
+  function buildDownloadButton(item) {
+    var a = document.createElement("a");
+    a.className = "download-btn";
+    a.href = item.href;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = item.label + " ";
+    var badge = document.createElement("span");
+    badge.className = "dl-badge";
+    badge.textContent = item.ext;
+    a.appendChild(badge);
+    return a;
+  }
+
+  async function load() {
+    var el = document.getElementById("dna-downloads");
+    if (!el) return;
+    try {
+      var res = await fetch(ARTIFACT_URL, { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      var data = await res.json();
+      var dl = (data && data.downloads) || {};
+      var ver = data && data.version ? String(data.version) : "latest";
+      var date = fmtDate(data && data.date);
+      var items = PLATFORMS
+        .filter(function(p) { return dl[p.key]; })
+        .map(function(p) { return { label: p.label, ext: p.ext, href: String(dl[p.key]) }; });
+
+      /* Clear and rebuild with DOM methods */
+      el.replaceChildren();
+
+      var title = document.createElement("div");
+      title.className = "downloads-title";
+      title.textContent = "Downloads";
+      el.appendChild(title);
+
+      var sub = document.createElement("div");
+      sub.className = "downloads-sub";
+
+      if (!items.length) {
+        sub.textContent = "No downloads published yet.";
+        el.appendChild(sub);
+        var fb = document.createElement("div");
+        fb.className = "downloads-fallback";
+        var fbLink = document.createElement("a");
+        fbLink.href = "https://artifacts.cpunk.io/dna-messenger/";
+        fbLink.target = "_blank";
+        fbLink.rel = "noopener";
+        fbLink.textContent = "Browse artifacts";
+        fb.appendChild(fbLink);
+        el.appendChild(fb);
+        return;
       }
 
-      function formatDateISO(iso) {
-        if (!iso) return "";
-        var d = new Date(iso);
-        if (isNaN(d.getTime())) return "";
-        return d.toISOString().slice(0, 10);
-      }
+      var meta = "v" + esc(ver) + (date ? " \u00b7 " + esc(date) : "");
+      sub.textContent = "Latest build: ";
+      var strong = document.createElement("strong");
+      strong.style.cssText = "color:var(--text-main);font-weight:600";
+      strong.textContent = "v" + ver + (date ? " \u00b7 " + date : "");
+      sub.appendChild(strong);
+      el.appendChild(sub);
 
-      async function loadDownloads() {
-        var el = document.getElementById("dna-downloads");
-        if (!el) return;
+      var grid = document.createElement("div");
+      grid.className = "download-grid";
+      items.forEach(function(item) {
+        grid.appendChild(buildDownloadButton(item));
+      });
+      el.appendChild(grid);
+    } catch (err) {
+      var el2 = document.getElementById("dna-downloads");
+      if (!el2) return;
+      el2.replaceChildren();
 
-        try {
-          var res = await fetch(URL, { cache: "no-store" });
-          if (!res.ok) throw new Error("HTTP " + res.status);
-          var data = await res.json();
+      var t = document.createElement("div");
+      t.className = "downloads-title";
+      t.textContent = "Downloads";
+      el2.appendChild(t);
 
-          var downloads = (data && data.downloads) ? data.downloads : {};
-          var version = data && data.version ? String(data.version) : "latest";
-          var dateStr = formatDateISO(data && data.date);
+      var s = document.createElement("div");
+      s.className = "downloads-sub";
+      s.textContent = "Downloads temporarily unavailable.";
+      el2.appendChild(s);
 
-          var items = PLATFORM_ORDER
-            .filter(function(p) { return downloads[p.key]; })
-            .map(function(p) {
-              return {
-                label: p.label,
-                ext: p.ext,
-                href: String(downloads[p.key])
-              };
-            });
+      var f = document.createElement("div");
+      f.className = "downloads-fallback";
+      var link = document.createElement("a");
+      link.href = "https://artifacts.cpunk.io/dna-messenger/";
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "Browse artifacts";
+      f.appendChild(link);
+      el2.appendChild(f);
+    }
+  }
 
-          if (!items.length) {
-            el.innerHTML =
-              '<div class="downloads-title">Downloads</div>' +
-              '<div class="downloads-sub">No downloads published yet.</div>' +
-              '<div class="downloads-fallback">' +
-              '<a href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener">Browse artifacts</a>' +
-              '</div>';
-            return;
-          }
-
-          var meta = escapeHtml(version) + (dateStr ? " \u00b7 " + escapeHtml(dateStr) : "");
-          var buttons = items.map(function(i) {
-            return '<a class="download-btn" href="' + escapeHtml(i.href) + '" target="_blank" rel="noopener">' +
-              'Download ' + escapeHtml(i.label) + ' <span class="dl-badge">' + escapeHtml(i.ext) + '</span>' +
-              '</a>';
-          }).join("");
-
-          el.innerHTML =
-            '<div class="downloads-title">Downloads</div>' +
-            '<div class="downloads-sub">Latest build: <strong style="color: var(--text-main); font-weight: 600;">v' + meta + '</strong></div>' +
-            '<div class="download-grid">' + buttons + '</div>';
-        } catch (err) {
-          var el2 = document.getElementById("dna-downloads");
-          if (!el2) return;
-          el2.innerHTML =
-            '<div class="downloads-title">Downloads</div>' +
-            '<div class="downloads-sub">Downloads temporarily unavailable.</div>' +
-            '<div class="downloads-fallback">' +
-            '<a href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener">Browse artifacts</a>' +
-            '</div>';
-        }
-      }
-
-      document.addEventListener("DOMContentLoaded", loadDownloads);
-    })();
-  </script>
+  document.addEventListener("DOMContentLoaded", load);
+})();
+</script>
 </body>
 </html>
