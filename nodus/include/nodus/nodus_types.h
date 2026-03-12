@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  6
-#define NODUS_VERSION_PATCH  4
-#define NODUS_VERSION_STRING "0.6.4"
+#define NODUS_VERSION_PATCH  5
+#define NODUS_VERSION_STRING "0.6.5"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -210,7 +210,8 @@ typedef enum {
     NODUS_ERR_CHANNEL_NOT_FOUND = 10,
     NODUS_ERR_NOT_RESPONSIBLE   = 11,
     NODUS_ERR_RING_MISMATCH     = 12,
-    NODUS_ERR_DOUBLE_SPEND      = 13
+    NODUS_ERR_DOUBLE_SPEND      = 13,
+    NODUS_ERR_QUOTA_EXCEEDED    = 14
 } nodus_error_t;
 
 /** PBFT phases */

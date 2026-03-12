@@ -18,6 +18,11 @@
 extern "C" {
 #endif
 
+/* ── Storage quotas ──────────────────────────────────────────────── */
+#define NODUS_STORAGE_MAX_VALUES     100000
+#define NODUS_STORAGE_MAX_BYTES      (500ULL * 1024 * 1024)  /* 500 MB */
+#define NODUS_STORAGE_MAX_PER_OWNER  1000
+
 /** DHT hinted handoff entry (failed replication, pending retry) */
 typedef struct {
     int64_t     id;
@@ -42,6 +47,9 @@ typedef struct {
     sqlite3_stmt *stmt_count;
     sqlite3_stmt *stmt_put_if_newer;
     sqlite3_stmt *stmt_fetch_batch;
+    /* Quota checks */
+    sqlite3_stmt *stmt_quota_total_bytes;
+    sqlite3_stmt *stmt_quota_owner_count;
     /* Hinted handoff for DHT replication */
     sqlite3_stmt *stmt_hint_insert;
     sqlite3_stmt *stmt_hint_get;
@@ -152,6 +160,17 @@ int nodus_storage_fetch_batch(nodus_storage_t *store,
                                const nodus_key_t *after_key,
                                nodus_value_t **batch_out,
                                int batch_size);
+
+/**
+ * Check storage quotas before a PUT.
+ * Checks: global count, global bytes, per-owner count.
+ *
+ * @param store     Storage handle
+ * @param owner_fp  Owner fingerprint (for per-owner check)
+ * @return 0 = OK (within quota), -1 = quota exceeded
+ */
+int nodus_storage_check_quota(nodus_storage_t *store,
+                               const nodus_key_t *owner_fp);
 
 /* ── DHT Hinted Handoff ─────────────────────────────────────────── */
 

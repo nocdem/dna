@@ -71,6 +71,12 @@ static const char *FETCH_BATCH_SQL =
 
 /* ── DHT Hinted Handoff SQL ──────────────────────────────────────── */
 
+static const char *QUOTA_TOTAL_BYTES_SQL =
+    "SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nodus_values";
+
+static const char *QUOTA_OWNER_COUNT_SQL =
+    "SELECT COUNT(*) FROM nodus_values WHERE owner_fp = ?";
+
 static const char *HINT_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS dht_hinted_handoff ("
     "  id          INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -218,6 +224,8 @@ int nodus_storage_open(const char *path, nodus_storage_t *store) {
         sqlite3_prepare_v2(store->db, COUNT_SQL, -1, &store->stmt_count, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, PUT_IF_NEWER_SQL, -1, &store->stmt_put_if_newer, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, FETCH_BATCH_SQL, -1, &store->stmt_fetch_batch, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, QUOTA_TOTAL_BYTES_SQL, -1, &store->stmt_quota_total_bytes, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, QUOTA_OWNER_COUNT_SQL, -1, &store->stmt_quota_owner_count, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, HINT_INSERT_SQL, -1, &store->stmt_hint_insert, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, HINT_GET_SQL, -1, &store->stmt_hint_get, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, HINT_DELETE_SQL, -1, &store->stmt_hint_delete, NULL) != SQLITE_OK ||
@@ -240,6 +248,8 @@ void nodus_storage_close(nodus_storage_t *store) {
     if (store->stmt_count) sqlite3_finalize(store->stmt_count);
     if (store->stmt_put_if_newer) sqlite3_finalize(store->stmt_put_if_newer);
     if (store->stmt_fetch_batch) sqlite3_finalize(store->stmt_fetch_batch);
+    if (store->stmt_quota_total_bytes) sqlite3_finalize(store->stmt_quota_total_bytes);
+    if (store->stmt_quota_owner_count) sqlite3_finalize(store->stmt_quota_owner_count);
     if (store->stmt_hint_insert) sqlite3_finalize(store->stmt_hint_insert);
     if (store->stmt_hint_get) sqlite3_finalize(store->stmt_hint_get);
     if (store->stmt_hint_delete) sqlite3_finalize(store->stmt_hint_delete);
@@ -443,6 +453,39 @@ int nodus_storage_fetch_batch(nodus_storage_t *store,
     }
 
     return fetched;
+}
+
+/* ── Storage Quotas ──────────────────────────────────────────────── */
+
+int nodus_storage_check_quota(nodus_storage_t *store,
+                               const nodus_key_t *owner_fp) {
+    if (!store || !store->db || !owner_fp) return -1;
+
+    /* Check 1: global value count */
+    int total_count = nodus_storage_count(store);
+    if (total_count >= (int)NODUS_STORAGE_MAX_VALUES)
+        return -1;
+
+    /* Check 2: global total bytes */
+    sqlite3_stmt *s = store->stmt_quota_total_bytes;
+    sqlite3_reset(s);
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        uint64_t total_bytes = (uint64_t)sqlite3_column_int64(s, 0);
+        if (total_bytes >= NODUS_STORAGE_MAX_BYTES)
+            return -1;
+    }
+
+    /* Check 3: per-owner value count */
+    s = store->stmt_quota_owner_count;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, owner_fp->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        int owner_count = sqlite3_column_int(s, 0);
+        if (owner_count >= (int)NODUS_STORAGE_MAX_PER_OWNER)
+            return -1;
+    }
+
+    return 0;  /* Within quota */
 }
 
 /* ── DHT Hinted Handoff ─────────────────────────────────────────── */
