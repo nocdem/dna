@@ -170,6 +170,17 @@ static nodus_session_t *session_for_conn(nodus_server_t *srv,
     return &srv->sessions[conn->slot];
 }
 
+static nodus_inter_session_t *inter_session_for_conn(nodus_server_t *srv,
+                                                      nodus_tcp_conn_t *conn) {
+    if (!conn || conn->slot < 0 || conn->slot >= NODUS_MAX_INTER_SESSIONS)
+        return NULL;
+    return &srv->inter_sessions[conn->slot];
+}
+
+static void inter_session_clear(nodus_inter_session_t *sess) {
+    memset(sess, 0, sizeof(*sess));
+}
+
 static void session_clear(nodus_session_t *sess) {
     memset(sess, 0, sizeof(*sess));
 }
@@ -1325,7 +1336,7 @@ static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
         if (srv->pbft.peers[i].state != NODUS_NODE_ALIVE) continue;
         memset(&infos[count], 0, sizeof(infos[0]));
         snprintf(infos[count].ip, sizeof(infos[0].ip), "%s", srv->pbft.peers[i].ip);
-        infos[count].tcp_port = srv->pbft.peers[i].tcp_port;
+        infos[count].tcp_port = srv->pbft.peers[i].tcp_port - 1;  /* Client port = peer port - 1 */
         count++;
     }
 
@@ -1577,80 +1588,30 @@ static void eviction_sweep(nodus_server_t *srv) {
     }
 }
 
-/* ── TCP frame dispatch ──────────────────────────────────────────── */
+/* ── Inter-node frame dispatch (peer port) ──────────────────────── */
 
-static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
-                          const uint8_t *payload, size_t len) {
+static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
+                            const uint8_t *payload, size_t len) {
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
 
-    if (nodus_t2_decode(payload, len, &msg) != 0) {
-        nodus_t2_msg_free(&msg);
+    /* Try T2 decode first (p_sync, ch_rep, fv, w_*) */
+    if (nodus_t2_decode(payload, len, &msg) == 0) {
 
-        /* Fallback: try T1 decode for inter-node messages (STORE, etc.) */
-        if (sess->conn) {
-            nodus_tier1_msg_t t1msg;
-            memset(&t1msg, 0, sizeof(t1msg));
-            if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
-                strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
-                if (nodus_value_verify(t1msg.value) == 0) {
-                    if (nodus_storage_put_if_newer(&srv->storage, t1msg.value) == 0)
-                        notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
-                }
-            }
-            nodus_t1_msg_free(&t1msg);
-        }
-        return;
-    }
-
-    /* Pre-auth: hello, auth, w_* (witness BFT), and inter-nodus ch_rep allowed */
-    if (!sess->authenticated) {
-        /* Tier 3: Witness BFT messages (self-authenticated via wsig) */
+        /* Tier 3: Witness BFT messages */
         if (strncmp(msg.method, "w_", 2) == 0 && srv->witness) {
             nodus_witness_dispatch_t3(srv->witness, sess->conn, payload, len);
             nodus_t2_msg_free(&msg);
             return;
         }
 
-        if (strcmp(msg.method, "hello") == 0) {
-            nodus_auth_handle_hello(srv, sess, &msg.pk, &msg.fp, msg.txn_id);
-        } else if (strcmp(msg.method, "auth") == 0) {
-            nodus_auth_handle_auth(srv, sess, &msg.sig, msg.txn_id);
-        } else if (strcmp(msg.method, "sv") == 0) {
-            /* Inter-nodus DHT value replication (rate-limited) */
-            static uint64_t sv_window_start = 0;
-            static int sv_count = 0;
-            uint64_t sv_now = nodus_time_now();
-            if (sv_now != sv_window_start) { sv_window_start = sv_now; sv_count = 0; }
-            if (++sv_count > NODUS_SV_MAX_PER_SEC) {
-                nodus_t2_msg_free(&msg);
-                return;  /* Drop — rate limited */
-            }
-
-            nodus_tier1_msg_t t1msg;
-            memset(&t1msg, 0, sizeof(t1msg));
-            if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
-                t1msg.value && nodus_value_verify(t1msg.value) == 0) {
-                int put_rc = nodus_storage_put_if_newer(&srv->storage, t1msg.value);
-                if (put_rc == 0) {
-                    notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
-                    fprintf(stderr, "REPL-RX: stored replicated value\n");
-                } else if (put_rc == 1) {
-                    fprintf(stderr, "REPL-RX: skipped (existing seq >= incoming)\n");
-                }
-            }
-            nodus_t1_msg_free(&t1msg);
-            nodus_t2_msg_free(&msg);
-            return;
-        } else if (strcmp(msg.method, "fv") == 0) {
-            /* Inter-nodus FIND_VALUE (rate-limited) */
-            static uint64_t fv_window_start = 0;
-            static int fv_count = 0;
+        if (strcmp(msg.method, "fv") == 0) {
+            /* Inter-node FIND_VALUE (per-session rate limit) */
             uint64_t fv_now = nodus_time_now();
-            if (fv_now != fv_window_start) { fv_window_start = fv_now; fv_count = 0; }
-            if (++fv_count > NODUS_FV_MAX_PER_SEC) {
+            if (fv_now != sess->fv_window_start) { sess->fv_window_start = fv_now; sess->fv_count = 0; }
+            if (++sess->fv_count > NODUS_FV_MAX_PER_SEC) {
                 nodus_t2_msg_free(&msg);
-                return;  /* Drop — rate limited */
+                return;
             }
 
             nodus_tier1_msg_t t1msg;
@@ -1677,18 +1638,17 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             nodus_t1_msg_free(&t1msg);
             nodus_t2_msg_free(&msg);
             return;
+
         } else if (strcmp(msg.method, "p_sync") == 0) {
-            /* Inter-nodus presence sync (per-session rate limit, SECURITY: HIGH-5) */
+            /* Inter-node presence sync (per-session rate limit) */
             uint64_t ps_now = nodus_time_now();
             if (ps_now != sess->ps_window_start) { sess->ps_window_start = ps_now; sess->ps_count = 0; }
             if (++sess->ps_count > 10) {
                 nodus_t2_msg_free(&msg);
-                return;  /* Drop — rate limited (10/sec, sync is every 30s) */
+                return;
             }
 
             if (msg.pq_fps && msg.pq_count > 0 && sess->conn) {
-                /* Compute stable peer_index from IP hash.
-                 * peer_index must be non-zero (0 = local). */
                 uint32_t h = 5381;
                 for (const char *c = sess->conn->ip; *c; c++)
                     h = h * 33 + (uint8_t)*c;
@@ -1697,14 +1657,16 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             }
             nodus_t2_msg_free(&msg);
             return;
+
         } else if (strcmp(msg.method, "ch_rep") == 0) {
-            /* Inter-nodus channel replication (per-session rate limit, SECURITY: HIGH-5) */
+            /* Inter-node channel replication (per-session rate limit) */
             uint64_t cr_now = nodus_time_now();
             if (cr_now != sess->cr_window_start) { sess->cr_window_start = cr_now; sess->cr_count = 0; }
             if (++sess->cr_count > NODUS_SV_MAX_PER_SEC) {
                 nodus_t2_msg_free(&msg);
-                return;  /* Drop — rate limited */
+                return;
             }
+
             /* Verify ch_rep carries author public key (SECURITY: CRIT-01) */
             if (!msg.has_author_pk) {
                 fprintf(stderr, "NODUS_SRV: ch_rep rejected — missing author pubkey\n");
@@ -1717,7 +1679,6 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
                 return;
             }
 
-            /* Verify SHA3-512(author_pk) == author_fp */
             nodus_key_t computed_fp;
             nodus_fingerprint(&msg.author_pk, &computed_fp);
             if (nodus_key_cmp(&computed_fp, &msg.fp) != 0) {
@@ -1743,7 +1704,6 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             memcpy(post.signature.bytes, msg.sig.bytes, NODUS_SIG_BYTES);
             post.received_at = nodus_time_now();
 
-            /* Verify Dilithium5 signature on the post (SECURITY: CRIT-01) */
             if (verify_channel_post_sig(&post, &msg.author_pk) != 0) {
                 fprintf(stderr, "NODUS_SRV: ch_rep rejected — invalid post signature\n");
                 post.body = NULL;
@@ -1757,7 +1717,7 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             }
 
             int rc = nodus_replication_receive(&srv->ch_store, &post);
-            post.body = NULL;  /* msg owns data */
+            post.body = NULL;
 
             size_t rlen = 0;
             if (rc >= 0) {
@@ -1768,6 +1728,90 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
                                 resp_buf, sizeof(resp_buf), &rlen);
             }
             nodus_tcp_send(sess->conn, resp_buf, rlen);
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+
+        /* Unknown T2 method on inter-node port — ignore */
+        nodus_t2_msg_free(&msg);
+        return;
+    }
+    nodus_t2_msg_free(&msg);
+
+    /* Try T1 decode for STORE_VALUE replication */
+    nodus_tier1_msg_t t1msg;
+    memset(&t1msg, 0, sizeof(t1msg));
+    if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
+        strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
+
+        /* Per-session rate limit */
+        uint64_t sv_now = nodus_time_now();
+        if (sv_now != sess->sv_window_start) { sess->sv_window_start = sv_now; sess->sv_count = 0; }
+        if (++sess->sv_count > NODUS_SV_MAX_PER_SEC) {
+            nodus_t1_msg_free(&t1msg);
+            return;
+        }
+
+        if (nodus_value_verify(t1msg.value) == 0) {
+            int put_rc = nodus_storage_put_if_newer(&srv->storage, t1msg.value);
+            if (put_rc == 0) {
+                notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
+                fprintf(stderr, "REPL-RX: stored replicated value\n");
+            } else if (put_rc == 1) {
+                fprintf(stderr, "REPL-RX: skipped (existing seq >= incoming)\n");
+            }
+        }
+    }
+    nodus_t1_msg_free(&t1msg);
+}
+
+/* ── Inter-node TCP callbacks ───────────────────────────────────── */
+
+static void on_inter_accept(nodus_tcp_conn_t *conn, void *ctx) {
+    nodus_server_t *srv = (nodus_server_t *)ctx;
+    nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
+    if (sess) {
+        inter_session_clear(sess);
+        sess->conn = conn;
+    }
+    conn->is_nodus = true;  /* All connections on peer port are inter-node */
+}
+
+static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                             size_t len, void *ctx) {
+    nodus_server_t *srv = (nodus_server_t *)ctx;
+    nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
+    if (!sess) return;
+    dispatch_inter(srv, sess, payload, len);
+}
+
+static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
+    nodus_server_t *srv = (nodus_server_t *)ctx;
+    nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
+    if (sess) {
+        inter_session_clear(sess);
+    }
+}
+
+/* ── TCP frame dispatch ──────────────────────────────────────────── */
+
+static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
+                          const uint8_t *payload, size_t len) {
+    nodus_tier2_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+
+    if (nodus_t2_decode(payload, len, &msg) != 0) {
+        nodus_t2_msg_free(&msg);
+        /* No T1 fallback on client port (SECURITY: CRIT-1 fix) */
+        return;
+    }
+
+    /* Pre-auth: ONLY hello and auth allowed on client port */
+    if (!sess->authenticated) {
+        if (strcmp(msg.method, "hello") == 0) {
+            nodus_auth_handle_hello(srv, sess, &msg.pk, &msg.fp, msg.txn_id);
+        } else if (strcmp(msg.method, "auth") == 0) {
+            nodus_auth_handle_auth(srv, sess, &msg.sig, msg.txn_id);
         } else {
             size_t rlen = 0;
             nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
@@ -2100,10 +2144,27 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     srv->udp.on_recv = handle_udp_message;
     srv->udp.cb_ctx = srv;
 
-    /* Bind TCP */
+    /* Init inter-node TCP transport (own epoll — shared epoll not possible
+     * because listen socket uses NULL data.ptr as marker) */
+    uint16_t peer_port = config->peer_port ? config->peer_port : NODUS_DEFAULT_PEER_PORT;
+    if (nodus_tcp_init(&srv->inter_tcp, -1) != 0)
+        return -1;
+    srv->inter_tcp.on_accept     = on_inter_accept;
+    srv->inter_tcp.on_frame      = on_inter_frame;
+    srv->inter_tcp.on_disconnect = on_inter_disconnect;
+    srv->inter_tcp.cb_ctx        = srv;
+
+    /* Bind TCP (client port) */
     if (nodus_tcp_listen(&srv->tcp, config->bind_ip, config->tcp_port) != 0) {
         fprintf(stderr, "Failed to listen on TCP %s:%d\n",
                 config->bind_ip, config->tcp_port);
+        return -1;
+    }
+
+    /* Bind inter-node TCP (peer port) */
+    if (nodus_tcp_listen(&srv->inter_tcp, config->bind_ip, peer_port) != 0) {
+        fprintf(stderr, "Failed to listen on inter-node TCP %s:%d\n",
+                config->bind_ip, peer_port);
         return -1;
     }
 
@@ -2125,7 +2186,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         nodus_pbft_add_peer(&srv->pbft, &seed_id,
                               config->seed_nodes[i],
                               config->seed_ports[i],
-                              config->seed_ports[i] + 1);  /* TCP = UDP + 1 */
+                              config->seed_ports[i] + 2);  /* Peer TCP = UDP + 2 */
     }
 
     /* Initialize witness module if enabled */
@@ -2153,11 +2214,15 @@ int nodus_server_run(nodus_server_t *srv) {
     fprintf(stderr, "Nodus v%s running\n", NODUS_VERSION_STRING);
     fprintf(stderr, "  Identity: %s\n", srv->identity.fingerprint);
     fprintf(stderr, "  TCP port: %d\n", srv->tcp.port);
+    fprintf(stderr, "  Peer port: %d\n", srv->inter_tcp.port);
     fprintf(stderr, "  UDP port: %d\n", srv->udp.port);
 
     while (srv->running) {
-        /* Poll TCP events (which uses the shared epoll) */
-        nodus_tcp_poll(&srv->tcp, 100);
+        /* Poll client TCP events */
+        nodus_tcp_poll(&srv->tcp, 50);
+
+        /* Poll inter-node TCP events */
+        nodus_tcp_poll(&srv->inter_tcp, 50);
 
         /* Process any pending UDP datagrams */
         nodus_udp_poll(&srv->udp);
@@ -2231,6 +2296,7 @@ void nodus_server_close(nodus_server_t *srv) {
     }
 
     nodus_tcp_close(&srv->tcp);
+    nodus_tcp_close(&srv->inter_tcp);
     nodus_udp_close(&srv->udp);
     nodus_storage_close(&srv->storage);
     nodus_channel_store_close(&srv->ch_store);

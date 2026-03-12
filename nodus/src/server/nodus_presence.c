@@ -251,7 +251,7 @@ void nodus_presence_tick(struct nodus_server *srv) {
 
         /* Reuse existing persistent connection */
         nodus_tcp_conn_t *pconn = nodus_tcp_find_by_addr(
-            (nodus_tcp_t *)&srv->tcp, peer->ip, peer->tcp_port);
+            (nodus_tcp_t *)&srv->inter_tcp, peer->ip, peer->tcp_port);
         if (pconn) {
             nodus_tcp_send(pconn, sync_buf, sync_len);
             sent++;
@@ -261,7 +261,7 @@ void nodus_presence_tick(struct nodus_server *srv) {
         /* Open new persistent connection — do NOT disconnect.
          * Event loop flushes buffered data once connect completes. */
         pconn = nodus_tcp_connect(
-            (nodus_tcp_t *)&srv->tcp, peer->ip, peer->tcp_port);
+            (nodus_tcp_t *)&srv->inter_tcp, peer->ip, peer->tcp_port);
         if (!pconn) continue;
         pconn->is_nodus = true;  /* Mark as inter-node connection */
         nodus_tcp_send(pconn, sync_buf, sync_len);
@@ -275,7 +275,7 @@ void nodus_presence_tick(struct nodus_server *srv) {
     /* Clean up stale outgoing p_sync connections: disconnect any is_nodus
      * connection whose IP:port is no longer in the routing table. */
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-        nodus_tcp_conn_t *c = srv->tcp.pool[i];
+        nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
         if (!c || !c->is_nodus) continue;
 
         bool found = false;
@@ -288,7 +288,7 @@ void nodus_presence_tick(struct nodus_server *srv) {
         if (!found) {
             fprintf(stderr, "P_SYNC: closing stale connection to %s:%d\n",
                     c->ip, c->port);
-            nodus_tcp_disconnect((nodus_tcp_t *)&srv->tcp, c);
+            nodus_tcp_disconnect((nodus_tcp_t *)&srv->inter_tcp, c);
         }
     }
 }

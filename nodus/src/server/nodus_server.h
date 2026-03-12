@@ -39,6 +39,7 @@ typedef struct {
     char        external_ip[64];    /* Public IP to advertise to clients (empty = use bind_ip) */
     uint16_t    udp_port;
     uint16_t    tcp_port;
+    uint16_t    peer_port;          /* Inter-node TCP port (default: 4002) */
     char        identity_path[256];
     char        data_path[256];
     char        seed_nodes[NODUS_MAX_SEED_NODES][64];
@@ -48,6 +49,24 @@ typedef struct {
     /* Witness module (optional DNAC BFT consensus) */
     nodus_witness_config_t  witness;
 } nodus_server_config_t;
+
+/* ── Inter-node session (lightweight — rate limiting only, no auth) ── */
+
+typedef struct {
+    nodus_tcp_conn_t   *conn;
+
+    /* Per-session rate limiting */
+    uint64_t            sv_window_start;
+    int                 sv_count;
+    uint64_t            fv_window_start;
+    int                 fv_count;
+    uint64_t            ps_window_start;
+    int                 ps_count;
+    uint64_t            cr_window_start;
+    int                 cr_count;
+} nodus_inter_session_t;
+
+#define NODUS_MAX_INTER_SESSIONS  NODUS_TCP_MAX_CONNS
 
 /* ── Client session ──────────────────────────────────────────────── */
 
@@ -74,12 +93,6 @@ typedef struct {
     /* Rate limiting */
     uint64_t            rate_window_start;
     int                 puts_in_window;
-
-    /* Per-session rate limiting for pre-auth inter-nodus messages (SECURITY: HIGH-5) */
-    uint64_t            ps_window_start;    /* p_sync rate window */
-    int                 ps_count;
-    uint64_t            cr_window_start;    /* ch_rep rate window */
-    int                 cr_count;
 } nodus_session_t;
 
 /* ── FIND_VALUE async state machine ──────────────────────────────── */
@@ -187,6 +200,7 @@ typedef struct nodus_server {
 
     /* Transports */
     nodus_tcp_t             tcp;
+    nodus_tcp_t             inter_tcp;      /* Inter-node TCP transport (port 4002) */
     nodus_udp_t             udp;
 
     /* Storage */
@@ -207,6 +221,7 @@ typedef struct nodus_server {
 
     /* Sessions (indexed by conn->slot) */
     nodus_session_t         sessions[NODUS_MAX_SESSIONS];
+    nodus_inter_session_t   inter_sessions[NODUS_MAX_INTER_SESSIONS];
 
     /* FIND_VALUE async state machine */
     dht_fv_state_t          fv_state;

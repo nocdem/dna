@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  6
-#define NODUS_VERSION_PATCH  8
-#define NODUS_VERSION_STRING "0.6.8"
+#define NODUS_VERSION_PATCH  9
+#define NODUS_VERSION_STRING "0.6.9"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -50,6 +50,7 @@ extern "C" {
 /* Networking */
 #define NODUS_DEFAULT_UDP_PORT  4000
 #define NODUS_DEFAULT_TCP_PORT  4001
+#define NODUS_DEFAULT_PEER_PORT 4002
 #define NODUS_SESSION_TOKEN_LEN 32
 #define NODUS_NONCE_LEN         32
 
