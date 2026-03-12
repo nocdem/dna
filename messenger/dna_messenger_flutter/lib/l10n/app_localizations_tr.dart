@@ -9,7 +9,7 @@ class AppLocalizationsTr extends AppLocalizations {
   AppLocalizationsTr([String locale = 'tr']) : super(locale);
 
   @override
-  String get appTitle => 'DNA Messenger';
+  String get appTitle => 'DNA Connect';
 
   @override
   String get initializing => 'Başlatılıyor...';
@@ -649,7 +649,7 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String settingsAppVersion(String version) {
-    return 'DNA Messenger v$version';
+    return 'DNA Connect v$version';
   }
 
   @override
@@ -658,8 +658,7 @@ class AppLocalizationsTr extends AppLocalizations {
   }
 
   @override
-  String get settingsPostQuantumMessenger =>
-      'Kuantum Sonrası Şifreli Mesajlaşma';
+  String get settingsPostQuantumMessenger => 'Kuantum Sonrası Şifreli İletişim';
 
   @override
   String get settingsCryptoStack => 'KRİPTO ALTYAPISI';
@@ -780,10 +779,10 @@ class AppLocalizationsTr extends AppLocalizations {
   String get contactProfileWebsite => 'Web Sitesi';
 
   @override
-  String get identityTitle => 'DNA Messenger';
+  String get identityTitle => 'DNA Connect';
 
   @override
-  String get identityWelcome => 'DNA Messenger\'a Hoş Geldiniz';
+  String get identityWelcome => 'DNA Connect\'e Hoş Geldiniz';
 
   @override
   String get identityGenerateSeed => 'Yeni Kurtarma İfadesi Oluştur';
@@ -1023,7 +1022,7 @@ class AppLocalizationsTr extends AppLocalizations {
   String get moreAppLock => 'Uygulama Kilidi';
 
   @override
-  String get lockTitle => 'DNA Messenger';
+  String get lockTitle => 'DNA Connect';
 
   @override
   String get lockEnterPIN => 'Kilit açmak için PIN girin';
@@ -1092,7 +1091,7 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get updateMessage =>
-      'DNA Messenger\'ı kullanmaya devam etmek için daha yeni bir sürüm gereklidir.';
+      'DNA Connect\'i kullanmaya devam etmek için daha yeni bir sürüm gereklidir.';
 
   @override
   String get updateDownload => 'Güncellemeyi İndir';
@@ -1102,7 +1101,7 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get updateAvailableMessage =>
-      'DNA Messenger\'ın yeni bir sürümü mevcut. En son özellikler ve iyileştirmeler için şimdi güncelleyin.';
+      'DNA Connect\'in yeni bir sürümü mevcut. En son özellikler ve iyileştirmeler için şimdi güncelleyin.';
 
   @override
   String get updateLater => 'Sonra';

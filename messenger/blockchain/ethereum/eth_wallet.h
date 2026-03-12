@@ -11,7 +11,7 @@
  * - EIP-55 checksummed addresses
  * - ETH mainnet balance queries via JSON-RPC
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-08
  */
 

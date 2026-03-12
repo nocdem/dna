@@ -248,7 +248,7 @@ Tests updated in v0.10.2 to use computed sender fingerprints (via `nodus_fingerp
 
 ### Local Machine
 
-- DNA Messenger identity created (`dna-cli create <name>`)
+- DNA Connect identity created (`dna-cli create <name>`)
 - libdna built at `/opt/dna/messenger/build`
 - DNAC built at `/opt/dna/dnac/build`
 

@@ -1,7 +1,7 @@
 # =============================================================================
-# DNA Messenger CLI Tool
+# DNA Connect CLI Tool
 # =============================================================================
-# Interactive REPL for testing DNA Messenger without GUI.
+# Interactive REPL for testing DNA Connect without GUI.
 # Designed for automated testing by Claude AI.
 
 add_executable(dna-messenger-cli
@@ -16,7 +16,7 @@ target_include_directories(dna-messenger-cli PRIVATE
 )
 
 target_link_libraries(dna-messenger-cli
-    dna_lib
+    dna
 )
 
 # Install target

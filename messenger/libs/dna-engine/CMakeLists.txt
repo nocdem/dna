@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # The DNA Engine is the async API layer that provides thread-safe access to
-# all DNA Messenger functionality. It manages:
+# all DNA Connect functionality. It manages:
 #   - Task queue with worker thread pool
 #   - Event dispatch (DHT status, messages, contacts, etc.)
 #   - Engine lifecycle (create, pause, resume, destroy)

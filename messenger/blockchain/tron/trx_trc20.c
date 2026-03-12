@@ -2,7 +2,7 @@
  * @file trx_trc20.c
  * @brief TRC-20 Token Implementation for TRON
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-14
  */
 

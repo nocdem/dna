@@ -154,7 +154,7 @@ WantedBy=multi-user.target
 
 ## Client SDK
 
-The Nodus client SDK (`include/nodus/nodus.h`) is used by DNA Messenger to connect to the DHT network:
+The Nodus client SDK (`include/nodus/nodus.h`) is used by DNA Connect to connect to the DHT network:
 
 ```c
 #include <nodus/nodus.h>

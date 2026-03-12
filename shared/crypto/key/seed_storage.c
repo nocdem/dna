@@ -4,7 +4,7 @@
  *
  * Uses Kyber1024 KEM + AES-256-GCM for post-quantum secure seed storage.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-11
  */
 

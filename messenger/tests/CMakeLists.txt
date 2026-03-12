@@ -1,5 +1,5 @@
 # =============================================================================
-# DNA Messenger Test Suite
+# DNA Connect Test Suite
 # =============================================================================
 # Standalone CMake build for test executables.
 #
@@ -23,7 +23,7 @@ set(DNA_BUILD "${DNA_ROOT}/build")
 set(SHARED_DIR "${DNA_ROOT}/../shared")
 
 # Verify main project is built (shared lib)
-if(NOT EXISTS "${DNA_BUILD}/libdna_lib.so")
+if(NOT EXISTS "${DNA_BUILD}/libdna.so")
     message(FATAL_ERROR
         "Main project not built. Run:\n"
         "  cd ${DNA_ROOT}/build && cmake .. && make -j$(nproc)\n"
@@ -54,7 +54,7 @@ find_package(OpenSSL REQUIRED)
 # Link against the shared library (carries all internal deps)
 # =============================================================================
 set(TEST_LIBS
-    ${DNA_BUILD}/libdna_lib.so
+    ${DNA_BUILD}/libdna.so
     ${OPENSSL_LIBRARIES}
     pthread
     m
@@ -75,7 +75,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 endif()
 
-# Set RPATH so test binaries find libdna_lib.so at runtime
+# Set RPATH so test binaries find libdna.so at runtime
 set(CMAKE_BUILD_RPATH "${DNA_BUILD}")
 set(CMAKE_INSTALL_RPATH "${DNA_BUILD}")
 
@@ -83,7 +83,7 @@ set(CMAKE_INSTALL_RPATH "${DNA_BUILD}")
 # Build info
 # =============================================================================
 message(STATUS "")
-message(STATUS "DNA Messenger Test Suite")
+message(STATUS "DNA Connect Test Suite")
 message(STATUS "========================")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "")

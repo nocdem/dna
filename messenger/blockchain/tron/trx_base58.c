@@ -2,7 +2,7 @@
  * @file trx_base58.c
  * @brief Base58Check encoding implementation for TRON addresses
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-11
  */
 

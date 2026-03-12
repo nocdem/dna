@@ -4,7 +4,7 @@
  *
  * Provides balance queries via public Ethereum RPC endpoints.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-08
  */
 

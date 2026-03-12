@@ -11,7 +11,7 @@
  * 2. Sign transaction hash with secp256k1
  * 3. Broadcast via TronGrid API (broadcasttransaction)
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-14
  */
 

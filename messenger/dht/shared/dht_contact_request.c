@@ -1,10 +1,10 @@
 /**
  * DHT Contact Request System Implementation
  *
- * ICQ-style contact request system for DNA Messenger.
+ * ICQ-style contact request system for DNA Connect.
  *
  * @file dht_contact_request.c
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-10
  */
 

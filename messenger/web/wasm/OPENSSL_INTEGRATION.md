@@ -1,6 +1,6 @@
 # OpenSSL Integration for WebAssembly
 
-**Issue:** DNA Messenger's C library requires OpenSSL (specifically libcrypto) for AES-256-GCM encryption, but Emscripten doesn't include OpenSSL by default.
+**Issue:** DNA Connect's C library requires OpenSSL (specifically libcrypto) for AES-256-GCM encryption, but Emscripten doesn't include OpenSSL by default.
 
 **Status:** Requires additional configuration
 

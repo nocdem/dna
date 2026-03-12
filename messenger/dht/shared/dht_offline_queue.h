@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 /**
- * DHT Offline Message Queue for DNA Messenger (Phase 9.2 + Spillway Protocol)
+ * DHT Offline Message Queue for DNA Connect (Phase 9.2 + Spillway Protocol)
  *
  * Stores encrypted messages in DHT when recipients are offline.
  * Messages are retrieved when recipient comes online.

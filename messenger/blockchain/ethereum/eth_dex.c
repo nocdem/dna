@@ -15,7 +15,7 @@
  * When both V2 and V3 pools exist for a pair, V3 is tried first
  * (better prices due to concentrated liquidity), V2 as fallback.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2026-03-09
  */
 

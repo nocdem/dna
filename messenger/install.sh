@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# DNA Messenger - Quick Installer
+# DNA Connect - Quick Installer
 #
 # One-line install:
 #   curl -sSL https://raw.githubusercontent.com/nocdem/dna-messenger/main/install.sh | bash
@@ -26,7 +26,7 @@ INSTALL_DIR="${DNA_INSTALL_DIR:-$HOME/dna-messenger}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 
 echo -e "${BLUE}=========================================${NC}"
-echo -e "${BLUE} DNA Messenger - Quick Installer${NC}"
+echo -e "${BLUE} DNA Connect - Quick Installer${NC}"
 echo -e "${BLUE}=========================================${NC}"
 echo ""
 echo -e "Repository: ${REPO_URL}"
@@ -160,7 +160,7 @@ echo ""
 
 # Build
 echo -e "${BLUE}=========================================${NC}"
-echo -e "${BLUE} Building DNA Messenger${NC}"
+echo -e "${BLUE} Building DNA Connect${NC}"
 echo -e "${BLUE}=========================================${NC}"
 echo ""
 
@@ -239,7 +239,7 @@ if [ -d "$HOME/.local/share/applications" ]; then
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=DNA Messenger
+Name=DNA Connect
 Comment=Post-Quantum E2E Encrypted Messenger
 Exec=$BINARY_PATH
 Icon=utilities-terminal

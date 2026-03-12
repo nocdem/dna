@@ -1,5 +1,5 @@
 /*
- * DNA Messenger JNI Bridge
+ * DNA Connect JNI Bridge
  *
  * JNI bindings for Android to access DNA Engine C API.
  * Provides async callbacks via JNI GlobalRef and main thread posting.

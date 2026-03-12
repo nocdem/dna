@@ -20,7 +20,7 @@
  *   We look for orders where sell_token=CPUNK, buy_token=CELL
  *   We pay rate * remain_coins of CELL to get remain_coins of CPUNK
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2026-03-09
  */
 

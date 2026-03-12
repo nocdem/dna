@@ -9,7 +9,7 @@ class AppLocalizationsJa extends AppLocalizations {
   AppLocalizationsJa([String locale = 'ja']) : super(locale);
 
   @override
-  String get appTitle => 'DNA Messenger';
+  String get appTitle => 'DNA Connect';
 
   @override
   String get initializing => '初期化中...';
@@ -636,7 +636,7 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String settingsAppVersion(String version) {
-    return 'DNA Messenger v$version';
+    return 'DNA Connect v$version';
   }
 
   @override
@@ -645,7 +645,7 @@ class AppLocalizationsJa extends AppLocalizations {
   }
 
   @override
-  String get settingsPostQuantumMessenger => 'ポスト量子暗号メッセンジャー';
+  String get settingsPostQuantumMessenger => 'ポスト量子暗号コミュニケーション';
 
   @override
   String get settingsCryptoStack => '暗号スタック';
@@ -763,10 +763,10 @@ class AppLocalizationsJa extends AppLocalizations {
   String get contactProfileWebsite => 'ウェブサイト';
 
   @override
-  String get identityTitle => 'DNA Messenger';
+  String get identityTitle => 'DNA Connect';
 
   @override
-  String get identityWelcome => 'DNA Messengerへようこそ';
+  String get identityWelcome => 'DNA Connectへようこそ';
 
   @override
   String get identityGenerateSeed => '新しいシードを生成';
@@ -1003,7 +1003,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get moreAppLock => 'アプリロック';
 
   @override
-  String get lockTitle => 'DNA Messenger';
+  String get lockTitle => 'DNA Connect';
 
   @override
   String get lockEnterPIN => 'PINを入力してロック解除';
@@ -1071,7 +1071,7 @@ class AppLocalizationsJa extends AppLocalizations {
   String get updateTitle => 'アップデートが必要です';
 
   @override
-  String get updateMessage => 'DNA Messengerを引き続き使用するには、新しいバージョンが必要です。';
+  String get updateMessage => 'DNA Connectを引き続き使用するには、新しいバージョンが必要です。';
 
   @override
   String get updateDownload => 'アップデートをダウンロード';
@@ -1081,7 +1081,7 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get updateAvailableMessage =>
-      'DNA Messengerの新しいバージョンが利用可能です。今すぐアップデートして最新の機能と改善を入手してください。';
+      'DNA Connectの新しいバージョンが利用可能です。今すぐアップデートして最新の機能と改善を入手してください。';
 
   @override
   String get updateLater => '後で';

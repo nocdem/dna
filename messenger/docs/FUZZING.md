@@ -1,15 +1,15 @@
-# Fuzz Testing for DNA Messenger
+# Fuzz Testing for DNA Connect
 
-This document describes the libFuzzer-based fuzz testing infrastructure for finding memory safety bugs in DNA Messenger's parsing and deserialization code.
+This document describes the libFuzzer-based fuzz testing infrastructure for finding memory safety bugs in DNA Connect's parsing and deserialization code.
 
 ## Overview
 
-Fuzz testing (fuzzing) automatically generates random/malformed inputs to find crashes, memory leaks, and security vulnerabilities. DNA Messenger uses [libFuzzer](https://llvm.org/docs/LibFuzzer.html), LLVM's coverage-guided fuzzer, combined with AddressSanitizer (ASAN) for memory error detection.
+Fuzz testing (fuzzing) automatically generates random/malformed inputs to find crashes, memory leaks, and security vulnerabilities. DNA Connect uses [libFuzzer](https://llvm.org/docs/LibFuzzer.html), LLVM's coverage-guided fuzzer, combined with AddressSanitizer (ASAN) for memory error detection.
 
 ## Prerequisites
 
 - **Clang compiler** (libFuzzer is LLVM-specific, GCC not supported)
-- Main project must be built first (`../build/libdna_lib.a`)
+- Main project must be built first (`../build/libdna.a`)
 - Standard build dependencies (cmake, make)
 
 ## Building Fuzz Targets

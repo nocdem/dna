@@ -8,7 +8,7 @@
 
 ## Overview
 
-DNAC is a post-quantum digital cash system that integrates with DNA Messenger:
+DNAC is a post-quantum digital cash system that integrates with DNA Connect:
 - **UTXO model** for transactions
 - **DHT** for transport (payments as messages)
 - **Nodus servers** for nullifier witnessing (2-of-3 consensus)
@@ -378,7 +378,7 @@ CREATE TABLE dnac_pending_spends (
 
 ## Dependencies
 
-- **libdna** - DNA Messenger library (identity, crypto primitives) - built at `messenger/build/`
+- **libdna** - DNA Connect library (identity, crypto primitives) - built at `messenger/build/`
 - **Nodus** - DHT transport via `nodus_ops` API (OpenDHT has been completely removed)
 - **OpenSSL** - SHA3, AES, SHAKE256
 - **SQLite3** - Database

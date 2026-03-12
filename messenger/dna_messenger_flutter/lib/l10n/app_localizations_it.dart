@@ -9,7 +9,7 @@ class AppLocalizationsIt extends AppLocalizations {
   AppLocalizationsIt([String locale = 'it']) : super(locale);
 
   @override
-  String get appTitle => 'DNA Messenger';
+  String get appTitle => 'DNA Connect';
 
   @override
   String get initializing => 'Inizializzazione...';
@@ -649,7 +649,7 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String settingsAppVersion(String version) {
-    return 'DNA Messenger v$version';
+    return 'DNA Connect v$version';
   }
 
   @override
@@ -659,7 +659,7 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get settingsPostQuantumMessenger =>
-      'Messenger con crittografia post-quantistica';
+      'Comunicazione con crittografia post-quantistica';
 
   @override
   String get settingsCryptoStack => 'STACK CRITTOGRAFICO';
@@ -781,10 +781,10 @@ class AppLocalizationsIt extends AppLocalizations {
   String get contactProfileWebsite => 'Sito web';
 
   @override
-  String get identityTitle => 'DNA Messenger';
+  String get identityTitle => 'DNA Connect';
 
   @override
-  String get identityWelcome => 'Benvenuto in DNA Messenger';
+  String get identityWelcome => 'Benvenuto in DNA Connect';
 
   @override
   String get identityGenerateSeed => 'Genera nuovo seed';
@@ -1025,7 +1025,7 @@ class AppLocalizationsIt extends AppLocalizations {
   String get moreAppLock => 'Blocco app';
 
   @override
-  String get lockTitle => 'DNA Messenger';
+  String get lockTitle => 'DNA Connect';
 
   @override
   String get lockEnterPIN => 'Inserisci il PIN per sbloccare';
@@ -1094,7 +1094,7 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get updateMessage =>
-      'È necessaria una versione più recente per continuare a usare DNA Messenger.';
+      'È necessaria una versione più recente per continuare a usare DNA Connect.';
 
   @override
   String get updateDownload => 'Scarica aggiornamento';
@@ -1104,7 +1104,7 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get updateAvailableMessage =>
-      'È disponibile una nuova versione di DNA Messenger. Aggiorna ora per le ultime funzionalità e miglioramenti.';
+      'È disponibile una nuova versione di DNA Connect. Aggiorna ora per le ultime funzionalità e miglioramenti.';
 
   @override
   String get updateLater => 'Più tardi';

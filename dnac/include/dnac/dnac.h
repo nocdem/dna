@@ -236,7 +236,7 @@ typedef void (*dnac_payment_cb_t)(const dnac_utxo_t *utxo, const char *memo, voi
  * @brief Initialize DNAC context
  *
  * Must be called before any other DNAC functions.
- * Uses the DNA Messenger engine for identity and DHT access.
+ * Uses the DNA Connect engine for identity and DHT access.
  *
  * @param dna_engine Pointer to initialized dna_engine_t from libdna
  * @return Context pointer on success, NULL on failure

@@ -91,7 +91,7 @@ Riverpod StateNotifier + SharedPreferences:
 // app_en.arb
 {
   "@@locale": "en",
-  "appTitle": "DNA Messenger",
+  "appTitle": "DNA Connect",
   "navHome": "Home",
   "navChats": "Chats",
   "messageCount": "{count, plural, =0{No messages} =1{1 message} other{{count} messages}}",

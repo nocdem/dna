@@ -415,7 +415,7 @@ Replace the entire `print_usage()` function body with:
 
 ```c
 static void print_usage(const char *prog_name) {
-    printf("DNA Messenger CLI v%s\n\n", DNA_VERSION_STRING);
+    printf("DNA Connect CLI v%s\n\n", DNA_VERSION_STRING);
     printf("Usage: %s [OPTIONS] <group> <command> [args...]\n\n", prog_name);
     printf("Options:\n");
     printf("  -d, --data-dir <path>   Data directory (default: ~/.dna)\n");

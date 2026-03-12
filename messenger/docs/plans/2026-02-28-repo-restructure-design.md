@@ -61,7 +61,7 @@ Three related projects currently live in separate repos with fragile cross-depen
 │   ├── tests/
 │   └── CMakeLists.txt
 │
-├── messenger/                     ← DNA Messenger (from /opt/dna-messenger)
+├── messenger/                     ← DNA Connect (from /opt/dna-messenger)
 │   ├── include/dna/               ← public API headers
 │   ├── src/                       ← engine, api modules
 │   ├── dht/                       ← DHT client layer (uses nodus/client/)

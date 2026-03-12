@@ -94,7 +94,7 @@ IDLE → PROPOSE → PREVOTE → PRECOMMIT → COMMIT → IDLE
 
 Each witness node requires:
 
-1. **libdna** - DNA Messenger library (for identity/crypto)
+1. **libdna** - DNA Connect library (for identity/crypto)
 2. **libdnac** - DNAC library
 3. **dnac-witness** - Witness server binary
 4. **SQLite3** - Nullifier storage

@@ -4,7 +4,7 @@
  *
  * Dispatches to chain-specific implementations.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-08
  */
 

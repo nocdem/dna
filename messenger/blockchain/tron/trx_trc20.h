@@ -5,7 +5,7 @@
  * Provides TRC-20 token operations including balance queries and transfers.
  * Supports USDT and other standard TRC-20 tokens on TRON network.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-14
  */
 

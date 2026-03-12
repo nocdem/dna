@@ -2,7 +2,7 @@
  * @file trx_chain.c
  * @brief TRON blockchain_ops_t implementation
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-14
  */
 

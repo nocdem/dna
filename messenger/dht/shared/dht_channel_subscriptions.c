@@ -3,7 +3,7 @@
  * Multi-device sync for channel subscriptions
  *
  * @file dht_channel_subscriptions.c
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2026-02-26
  */
 

@@ -24,7 +24,7 @@ ANDROID_ABI="arm64-v8a"
 
 cd "$PROJECT_DIR"
 
-echo "==> DNA Messenger Android Build"
+echo "==> DNA Connect Android Build"
 echo "==> Cache dir: $CACHE_DIR"
 echo ""
 
@@ -32,7 +32,7 @@ echo ""
 mkdir -p "$CACHE_DIR"
 
 # Step 1: Build native library
-echo "==> Step 1/2: Building native library (libdna_lib.so)..."
+echo "==> Step 1/2: Building native library (libdna.so)..."
 
 docker run --rm --network=host \
     -v "$PROJECT_DIR:/src:ro" \
@@ -256,7 +256,7 @@ if [ ! -f "${DEPS_DIR}/zstd-arm64/lib/libzstd.a" ]; then
     make -j$JOBS >/dev/null && make install >/dev/null
 fi
 
-echo "Building libdna_lib.so..."
+echo "Building libdna.so..."
 cp -r /src /tmp/dna-messenger
 cd /tmp/dna-messenger
 mkdir -p build-android && cd build-android
@@ -271,15 +271,15 @@ make -j$JOBS dna_lib
 
 # Copy to output
 mkdir -p /output/arm64-v8a
-cp libdna_lib.so /output/arm64-v8a/
-echo "Native library built: /output/arm64-v8a/libdna_lib.so"
+cp libdna.so /output/arm64-v8a/
+echo "Native library built: /output/arm64-v8a/libdna.so"
 '
 
 # Fix permissions (Docker runs as root)
 sudo chown -R "$(id -u):$(id -g)" "$PROJECT_DIR/dna_messenger_flutter/android/app/src/main/jniLibs" 2>/dev/null || true
 
 # Verify native lib
-NATIVE_LIB="dna_messenger_flutter/android/app/src/main/jniLibs/arm64-v8a/libdna_lib.so"
+NATIVE_LIB="dna_messenger_flutter/android/app/src/main/jniLibs/arm64-v8a/libdna.so"
 if [ ! -f "$NATIVE_LIB" ]; then
     echo "ERROR: Native library build failed!"
     exit 1

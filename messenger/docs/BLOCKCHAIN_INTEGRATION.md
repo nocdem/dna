@@ -2,7 +2,7 @@
 
 ## Overview
 
-DNA Messenger uses a modular blockchain architecture. Each blockchain is a self-contained module that implements the `blockchain_ops_t` interface.
+DNA Connect uses a modular blockchain architecture. Each blockchain is a self-contained module that implements the `blockchain_ops_t` interface.
 
 ## Architecture
 
@@ -266,7 +266,7 @@ blockchain/bitcoin/btc_tx.c                 # Bitcoin transaction building
 ```bash
 cd build
 cmake ..
-make -j4 dna_lib
+make -j4 dna
 ```
 
 ## Interface Reference

@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Status Module
+ * DNA Connect - Status Module
  *
  * Message delivery status and read receipt management.
  * Simple database operations for tracking message status.

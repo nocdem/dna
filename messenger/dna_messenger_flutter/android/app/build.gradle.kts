@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "io.cpunk.dna_messenger"
+    namespace = "io.cpunk.dna_connect"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -31,7 +31,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "io.cpunk.dna_messenger"
+        applicationId = "io.cpunk.dna_connect"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

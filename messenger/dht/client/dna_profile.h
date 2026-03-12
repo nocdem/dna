@@ -6,7 +6,7 @@
  * in the DHT-based name system. Profiles contain wallet addresses (Cellframe +
  * external chains), social profiles, bio, and other user metadata.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-11-05
  */
 

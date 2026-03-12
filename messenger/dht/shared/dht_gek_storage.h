@@ -20,7 +20,7 @@
  * [4-byte magic "GEK "][1-byte version][4-byte total_chunks]
  * [4-byte chunk_index][4-byte chunk_size][chunk data...]
  *
- * Part of DNA Messenger - GEK System
+ * Part of DNA Connect - GEK System
  *
  * @date 2026-01-10
  */

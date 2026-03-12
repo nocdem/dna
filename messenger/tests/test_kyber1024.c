@@ -10,7 +10,7 @@
  * - Multiple operations consistency
  * - Key size verification
  *
- * Part of DNA Messenger beta readiness testing (P1-4).
+ * Part of DNA Connect beta readiness testing (P1-4).
  */
 
 #include <stdio.h>

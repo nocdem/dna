@@ -136,7 +136,7 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
       }
 
       return await _localAuth.authenticate(
-        localizedReason: 'Unlock DNA Messenger',
+        localizedReason: 'Unlock DNA Connect',
         options: const AuthenticationOptions(
           stickyAuth: true,
           biometricOnly: false, // Allow device credentials as fallback

@@ -5,7 +5,7 @@
  * Provides SPL token operations including balance queries.
  * Supports USDT and other SPL tokens.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-16
  */
 

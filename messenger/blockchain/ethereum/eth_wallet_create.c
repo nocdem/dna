@@ -4,7 +4,7 @@
  *
  * Creates Ethereum wallets using BIP-44 derivation from BIP39 seeds.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-08
  */
 

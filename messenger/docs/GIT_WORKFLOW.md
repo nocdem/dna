@@ -1,4 +1,4 @@
-# DNA Messenger - Git Workflow
+# DNA Connect - Git Workflow
 
 **Last Updated:** 2025-11-21
 
@@ -6,7 +6,7 @@
 
 ## Team Workflow
 
-DNA Messenger is developed by a **collaborative team**. Our workflow prioritizes:
+DNA Connect is developed by a **collaborative team**. Our workflow prioritizes:
 - **Merge over rebase** - Preserve commit history for team visibility
 - **Clear communication** - Document changes thoroughly
 - **Dual-repo sync** - Always push to both GitLab and GitHub
@@ -73,7 +73,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ## Push to Both Repos (MANDATORY)
 
-DNA Messenger must be pushed to **both** GitLab and GitHub:
+DNA Connect must be pushed to **both** GitLab and GitHub:
 
 ```bash
 git add . && git commit -m "your message"

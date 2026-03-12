@@ -1,4 +1,4 @@
-// DNA Messenger Engine FFI Bindings
+// DNA Connect Engine FFI Bindings
 // Hand-written bindings for dna_engine.h
 // ignore_for_file: non_constant_identifier_names, camel_case_types, constant_identifier_names, unused_field
 

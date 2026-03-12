@@ -27,7 +27,7 @@
 
 ## Overview
 
-The DNA Engine provides a unified async C API for DNA Messenger core functionality. It enables clean separation between the engine (backend) and UI layers (desktop, mobile, web).
+The DNA Engine provides a unified async C API for DNA Connect core functionality. It enables clean separation between the engine (backend) and UI layers (desktop, mobile, web).
 
 ### Key Features
 
@@ -133,7 +133,7 @@ int main() {
 
 ```dart
 // Load native library
-final dylib = DynamicLibrary.open('libdna_lib.so');
+final dylib = DynamicLibrary.open('libdna.so');
 final bindings = DnaBindings(dylib);
 
 // Create engine
@@ -778,7 +778,7 @@ strcpy(profile.alvin, "AlvinAddr...");
 strcpy(profile.eth, "0x1234...");
 strcpy(profile.telegram, "@myusername");
 strcpy(profile.twitter, "@myhandle");
-strcpy(profile.bio, "Hello, I'm using DNA Messenger!");
+strcpy(profile.bio, "Hello, I'm using DNA Connect!");
 strcpy(profile.location, "Earth");
 strcpy(profile.website, "https://example.com");
 

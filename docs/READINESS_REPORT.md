@@ -81,13 +81,13 @@ Total: 8.80s
 
 ---
 
-## DNA Messenger - BETA READY
+## DNA Connect - BETA READY
 
 ### Build Status: PASS
 ```
 cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
 Result: 100% compiled
-Targets: libdna_lib.so (shared), dna-messenger-cli
+Targets: libdna.so (shared), dna-messenger-cli
 ```
 
 ### Test Results: Tests exist but not registered with ctest
@@ -272,14 +272,14 @@ test_real .................. FAIL  62.27s  (witness collection failed at SEND st
 ┌─────────────────┐  ┌──────────────┐  ┌──────────────────┐
 │  messenger/     │  │  nodus/      │  │  dnac/           │
 │  (BETA)         │  │  (PRODUCTION)│  │  (BETA)          │
-│  libdna_lib.so  │  │  nodus_lib.a │  │  libdnac.a       │
+│  libdna.so  │  │  nodus_lib.a │  │  libdnac.a       │
 └────────┬────────┘  └──────┬───────┘  └─────────┬────────┘
          │                  │                     │
          │    ┌─────────────┘                     │
          │    │  (nodus as submodule)              │
          ▼    ▼                                   │
 ┌─────────────────┐        ┌──────────────────────┘
-│  messenger+nodus│        │  (links libdna_lib.so)
+│  messenger+nodus│        │  (links libdna.so)
 │  (integrated)   │        ▼
 └─────────────────┘  ┌──────────────────┐
                      │  dnac+messenger   │

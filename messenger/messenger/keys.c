@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Keys Module Implementation
+ * DNA Connect - Keys Module Implementation
  */
 
 #include "keys.h"

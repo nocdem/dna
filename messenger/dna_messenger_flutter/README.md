@@ -1,6 +1,6 @@
-# DNA Messenger — Flutter App
+# DNA Connect — Flutter App
 
-Cross-platform UI for DNA Messenger built with Flutter and Dart.
+Cross-platform UI for DNA Connect built with Flutter and Dart.
 
 **Current Version:** v1.0.0-rc1
 
@@ -36,7 +36,7 @@ flutter build appbundle  # Android App Bundle (Play Store)
 
 ## Architecture
 
-The Flutter app connects to the DNA Messenger C library via `dart:ffi`:
+The Flutter app connects to the DNA Connect C library via `dart:ffi`:
 
 - **FFI bindings:** `lib/ffi/dna_bindings.dart` — Hand-written C bindings
 - **Dart wrapper:** `lib/ffi/dna_engine.dart` — Converts C callbacks to Futures/Streams

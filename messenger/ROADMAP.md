@@ -1,4 +1,4 @@
-# DNA Messenger - Development Roadmap
+# DNA Connect - Development Roadmap
 
 **Version:** 0.6.x | **Last Updated:** 2026-02-22
 

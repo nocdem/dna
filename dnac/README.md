@@ -2,7 +2,7 @@
 
 **Version:** v0.10.3 | **Protocol:** v1 (Transparent Amounts)
 
-DNAC is a privacy-preserving digital cash system built on top of [DNA Messenger](https://github.com/nocdem/dna-messenger). It lives in the DNA monorepo at `/opt/dna/dnac/`.
+DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](https://github.com/nocdem/dna-messenger). It lives in the DNA monorepo at `/opt/dna/dnac/`.
 
 ## Features
 
@@ -60,7 +60,7 @@ v1 uses transparent amounts for simplicity. v2 will add STARK-based zero-knowled
 
 ### Prerequisites
 
-1. Build DNA Messenger first (DNAC links against `libdna_lib.so`):
+1. Build DNA Connect first (DNAC links against `libdna.so`):
 ```bash
 cd /opt/dna/messenger/build
 cmake .. && make -j$(nproc)
@@ -170,7 +170,7 @@ CREATE INDEX idx_ctx_height ON committed_transactions(block_height);
 
 The wallet address is a **SHA3-512 hash of the Dilithium5 public key**:
 - 64 bytes = 128 hexadecimal characters
-- Same as DNA Messenger identity fingerprint
+- Same as DNA Connect identity fingerprint
 
 ## Transaction Format (v1)
 
@@ -306,5 +306,5 @@ MIT
 
 ## Related Projects
 
-- [DNA Messenger](https://github.com/nocdem/dna-messenger) - Post-quantum encrypted messenger (monorepo: `/opt/dna/messenger/`)
+- [DNA Connect](https://github.com/nocdem/dna-messenger) - Post-quantum encrypted messenger (monorepo: `/opt/dna/messenger/`)
 - [Nodus](../nodus/) - Post-quantum Kademlia DHT with PBFT consensus (monorepo: `/opt/dna/nodus/`)

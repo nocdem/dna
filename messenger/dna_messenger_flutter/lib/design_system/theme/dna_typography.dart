@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Typography scale for DNA Messenger
+/// Typography scale for DNA Connect
 /// Based on Material 3 type scale with custom weights
 class DnaTypography {
   DnaTypography._();

@@ -5,7 +5,7 @@
  * Creates TRON wallets using BIP-44 derivation from BIP39 seeds.
  * Path: m/44'/195'/0'/0/0
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-11
  */
 

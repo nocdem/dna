@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Status Module Implementation
+ * DNA Connect - Status Module Implementation
  */
 
 #include "status.h"

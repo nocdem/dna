@@ -3,7 +3,7 @@ project(dna_dht C)
 
 # Nodus v5 replaces OpenDHT-PQ. The nodus_init module handles lifecycle,
 # nodus_ops handles all DHT operations. No compat shim needed.
-# The nodus_lib target is built by add_subdirectory(../nodus) in root CMakeLists.txt.
+# The nodus target is built by add_subdirectory(../nodus) in root CMakeLists.txt.
 message(STATUS "Using Nodus v5 (post-quantum DHT — pure C, direct integration)")
 set(DHT_COMMON_SOURCES
     # Core modules
@@ -91,18 +91,18 @@ target_include_directories(dht_lib PUBLIC
 )
 
 if(WIN32)
-    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa nodus_lib ${SQLite3_LIBRARIES})
+    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa nodus ${SQLite3_LIBRARIES})
 elseif(ANDROID)
     target_link_libraries(dht_lib
         ${OPENSSL_LIBRARIES}
         dsa
-        nodus_lib
+        nodus
         ${SQLite3_LIBRARIES}
         ${ANDROID_DEPS_DIR}/jsonc-arm64/lib/libjson-c.a
         z
     )
 else()
-    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa nodus_lib ${SQLite3_LIBRARIES} json-c curl z)
+    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa nodus ${SQLite3_LIBRARIES} json-c curl z)
 endif()
 
 # Note: persistent_bootstrap has been moved to bootstrap/CMakeLists.txt

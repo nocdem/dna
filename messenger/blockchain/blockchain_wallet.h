@@ -8,7 +8,7 @@
  *   - ethereum/  : Ethereum and EVM-compatible chains (secp256k1)
  *   - solana/    : Solana blockchain (Ed25519)
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-08
  */
 

@@ -27,7 +27,7 @@
  *   // Destroy queue (waits for pending items)
  *   dht_publish_queue_destroy(queue);
  *
- * Part of DNA Messenger
+ * Part of DNA Connect
  *
  * @date 2026-01-30
  * @version 0.6.80

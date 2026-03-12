@@ -8,10 +8,10 @@
 
 ## Overview
 
-DNA Messenger supports QR-based authentication allowing external services to authenticate users via their DNA identity. The app acts as an authenticator (similar to WebAuthn/FIDO2) where:
+DNA Connect supports QR-based authentication allowing external services to authenticate users via their DNA identity. The app acts as an authenticator (similar to WebAuthn/FIDO2) where:
 
 1. Service displays QR code with auth challenge
-2. User scans QR with DNA Messenger
+2. User scans QR with DNA Connect
 3. App signs challenge with user's Dilithium5 key
 4. App sends signed response to service callback URL
 5. Service verifies signature and authenticates user

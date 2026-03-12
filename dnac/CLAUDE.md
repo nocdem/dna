@@ -84,7 +84,7 @@ These actions are NEVER permitted without explicit request:
 
 ## Project Overview
 
-DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Messenger.
+DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Connect.
 
 **Key Technologies:**
 | Component | Technology |
@@ -257,7 +257,7 @@ make -j$(nproc)
 
 **Check if libdna has ASAN:**
 ```bash
-nm /opt/dna/messenger/build/libdna_lib.so | grep -i asan
+nm /opt/dna/messenger/build/libdna.so | grep -i asan
 # If output shows __asan symbols, use Debug build with ASAN
 ```
 
@@ -268,7 +268,7 @@ ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/dnac-asan" ./dnac-witness -p 4200
 ```
 
 ### Dependencies
-- **libdna** - DNA Messenger library (must be built first at /opt/dna/messenger/build)
+- **libdna** - DNA Connect library (must be built first at /opt/dna/messenger/build)
 - **Nodus** - DHT transport via nodus_ops API (built as part of messenger)
 - **OpenSSL** - Cryptographic operations
 - **SQLite3** - Database storage

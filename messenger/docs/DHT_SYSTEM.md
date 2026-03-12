@@ -4,7 +4,7 @@
 **Phase:** 14 (DHT-Only Messaging)
 **Version:** 0.7.10
 
-Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system. The DHT layer is powered by Nodus, a pure C Kademlia DHT with PBFT consensus. OpenDHT has been completely removed.
+Comprehensive documentation of the DNA Connect DHT (Distributed Hash Table) system. The DHT layer is powered by Nodus, a pure C Kademlia DHT with PBFT consensus. OpenDHT has been completely removed.
 
 **Migration Note:** Many API function signatures in this document still show `dht_context_t *ctx` as the first parameter. As of the Nodus migration, the `dht_context_t` type no longer exists. All DHT functions now use the Nodus singleton internally (via `nodus_ops.c`) and no longer require an explicit context parameter. Consult the header files in `dht/` for current signatures.
 
@@ -27,7 +27,7 @@ Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) sy
 
 ## 1. Overview
 
-### What is DHT in DNA Messenger?
+### What is DHT in DNA Connect?
 
 The DHT is a distributed key-value store powered by Nodus (pure C, Kademlia + PBFT consensus). It provides:
 
@@ -53,7 +53,7 @@ Three production bootstrap servers run `dna-nodus`:
 
 ```
 +-------------------------------------------------------------+
-|                    DNA Messenger Clients                     |
+|                    DNA Connect Clients                     |
 |  (Desktop GUI, future mobile/web)                           |
 +-------------------------------------------------------------+
                               |

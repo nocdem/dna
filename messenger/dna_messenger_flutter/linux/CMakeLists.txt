@@ -4,10 +4,10 @@ project(runner LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-set(BINARY_NAME "dna_messenger")
+set(BINARY_NAME "dna_connect")
 # The unique GTK application identifier for this application. See:
 # https://wiki.gnome.org/HowDoI/ChooseApplicationID
-set(APPLICATION_ID "io.cpunk.dna_messenger")
+set(APPLICATION_ID "io.cpunk.dna_connect")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
@@ -130,7 +130,7 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
 endif()
 
 # =============================================================================
-# DNA native library (libdna_lib.so) bundling
+# DNA native library (libdna.so) bundling
 # =============================================================================
 # Repo root from here: dna_messenger_flutter/linux -> ../..
 get_filename_component(DNA_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
@@ -138,11 +138,11 @@ get_filename_component(DNA_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUT
 # Prefer native build output produced by the repo root build:
 #   cmake -S . -B build ... && cmake --build build
 set(DNA_NATIVE_BUILD_DIR "${DNA_REPO_ROOT}/build")
-set(DNA_NATIVE_SO_CANDIDATE_1 "${DNA_NATIVE_BUILD_DIR}/libdna_lib.so")
-set(DNA_NATIVE_SO_CANDIDATE_2 "${DNA_NATIVE_BUILD_DIR}/lib/libdna_lib.so")
+set(DNA_NATIVE_SO_CANDIDATE_1 "${DNA_NATIVE_BUILD_DIR}/libdna.so")
+set(DNA_NATIVE_SO_CANDIDATE_2 "${DNA_NATIVE_BUILD_DIR}/lib/libdna.so")
 
 # Backward-compatible fallback (optional)
-set(DNA_NATIVE_SO_FALLBACK "${CMAKE_CURRENT_SOURCE_DIR}/libs/libdna_lib.so")
+set(DNA_NATIVE_SO_FALLBACK "${CMAKE_CURRENT_SOURCE_DIR}/libs/libdna.so")
 
 set(DNA_NATIVE_SO "")
 if(EXISTS "${DNA_NATIVE_SO_CANDIDATE_1}")
@@ -159,11 +159,11 @@ if(DNA_NATIVE_SO)
     COMPONENT Runtime)
 else()
   message(WARNING
-    "libdna_lib.so not found; Linux bundle will be built without it.\n"
+    "libdna.so not found; Linux bundle will be built without it.\n"
     "Expected one of:\n"
     "  - ${DNA_NATIVE_SO_CANDIDATE_1}\n"
     "  - ${DNA_NATIVE_SO_CANDIDATE_2}\n"
     "  - ${DNA_NATIVE_SO_FALLBACK}\n"
-    "Build the native project first (repo root) to produce libdna_lib.so."
+    "Build the native project first (repo root) to produce libdna.so."
   )
 endif()

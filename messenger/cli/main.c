@@ -1,7 +1,7 @@
 /*
- * DNA Messenger CLI - Main Entry Point
+ * DNA Connect CLI - Main Entry Point
  *
- * Single-command CLI for testing DNA Messenger without GUI.
+ * Single-command CLI for testing DNA Connect without GUI.
  * Designed for automated testing by Claude AI.
  *
  * Usage:
@@ -57,7 +57,7 @@ static struct option long_options[] = {
 };
 
 static void print_usage(const char *prog_name) {
-    printf("DNA Messenger CLI v%s\n\n", DNA_VERSION_STRING);
+    printf("DNA Connect CLI v%s\n\n", DNA_VERSION_STRING);
     printf("Usage: %s [OPTIONS] <group> <command> [args...]\n\n", prog_name);
     printf("Options:\n");
     printf("  -d, --data-dir <path>   Data directory (default: ~/.dna)\n");

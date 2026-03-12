@@ -5,7 +5,7 @@
  * Generic EIP-712 structured data signing for Ethereum.
  * Used by: Permit2, meta-transactions, off-chain order protocols.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  */
 
 #ifndef ETH_EIP712_H

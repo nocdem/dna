@@ -1,10 +1,10 @@
-# DNA Messenger Function Reference
+# DNA Connect Function Reference
 
 **Version:** 0.3.0
 **Generated:** 2025-12-30
 **Scope:** All functions (public + static/internal)
 
-This directory provides a comprehensive reference for all functions in the DNA Messenger codebase, organized by module.
+This directory provides a comprehensive reference for all functions in the DNA Connect codebase, organized by module.
 
 ---
 
@@ -28,7 +28,7 @@ This directory provides a comprehensive reference for all functions in the DNA M
 ## Module Overview
 
 ### 1. Public API ([public-api.md](public-api.md))
-The main public API for DNA Messenger. All UI/FFI bindings use these functions.
+The main public API for DNA Connect. All UI/FFI bindings use these functions.
 - Lifecycle management
 - Identity management
 - Contacts and contact requests

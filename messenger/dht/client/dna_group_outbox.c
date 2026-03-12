@@ -6,7 +6,7 @@
  * All group members write to the same key with different value_id.
  * nodus_ops_get_all_str() fetches all senders' buckets in one query.
  *
- * Part of DNA Messenger
+ * Part of DNA Connect
  *
  * @date 2025-11-29
  * @updated 2026-01-15 - Single-key architecture

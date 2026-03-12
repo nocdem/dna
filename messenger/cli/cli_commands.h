@@ -1,7 +1,7 @@
 /*
- * DNA Messenger CLI - Command Definitions
+ * DNA Connect CLI - Command Definitions
  *
- * Interactive CLI tool for testing DNA Messenger without GUI.
+ * Interactive CLI tool for testing DNA Connect without GUI.
  */
 
 #ifndef CLI_COMMANDS_H

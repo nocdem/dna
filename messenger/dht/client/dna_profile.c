@@ -2,7 +2,7 @@
  * @file dna_profile.c
  * @brief DNA profile management implementation
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-11-05
  */
 

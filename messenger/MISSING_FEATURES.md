@@ -1,4 +1,4 @@
-# DNA Messenger - Missing Features
+# DNA Connect - Missing Features
 
 Planned features for future implementation.
 
@@ -21,13 +21,13 @@ Planned features for future implementation.
 4. No in-app QR scanner
 
 ### Desired Behavior
-User scans QR code with any scanner app, tapping result opens DNA Messenger with Add Contact dialog pre-filled.
+User scans QR code with any scanner app, tapping result opens DNA Connect with Add Contact dialog pre-filled.
 
 ### Implementation Options
 
 **Option 1: URL Scheme Only (Simpler)**
 - Register `dna://add/<fingerprint>` scheme
-- External QR scanner apps will offer to open DNA Messenger
+- External QR scanner apps will offer to open DNA Connect
 - No camera permissions needed
 
 **Option 2: Full QR Scanner (Better UX)**

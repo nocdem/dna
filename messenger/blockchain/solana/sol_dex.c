@@ -8,7 +8,7 @@
  *
  * Supports platformFeeBps for referral revenue on swap execution.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2026-03-09
  */
 

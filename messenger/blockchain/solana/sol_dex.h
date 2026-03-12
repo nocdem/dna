@@ -6,7 +6,7 @@
  * Jupiter aggregates all major Solana DEXes (Raydium, Orca, Meteora, etc.)
  * and returns the best route. Supports on-chain referral fees via platformFeeBps.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2026-03-09
  */
 

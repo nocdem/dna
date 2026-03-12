@@ -5,7 +5,7 @@
  * TRON uses Base58Check encoding (same as Bitcoin) for addresses.
  * Address format: Base58Check(0x41 || Keccak256(pubkey)[-20:])
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-11
  */
 

@@ -17,7 +17,7 @@
  * );
  *
  * @file profile_cache.h
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-11-12
  * @updated 2025-12-28 (Global cache for prefetching)
  */

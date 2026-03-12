@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// DNA Messenger color system
+/// DNA Connect color system
 /// Supports both dark and light themes with consistent brand identity
 class DnaColors {
   DnaColors._();

@@ -6,7 +6,7 @@
 
 ## 1. Overview & Motivation
 
-Nodus is a complete rewrite of the DNA Messenger's DHT (Distributed Hash Table) layer. It
+Nodus is a complete rewrite of the DNA Connect's DHT (Distributed Hash Table) layer. It
 replaces OpenDHT-PQ — a C++ library with post-quantum patches — with a pure C implementation
 built from the ground up for post-quantum security.
 
@@ -143,7 +143,7 @@ Nodus uses CMake and builds in two modes:
 cd nodus/build && cmake .. && make -j$(nproc)
 ```
 
-**Messenger integration** (linked into `libdna_lib.so`):
+**Messenger integration** (linked into `libdna.so`):
 ```bash
 cd messenger/build && cmake .. && make -j$(nproc)
 ```
@@ -860,7 +860,7 @@ typedef void (*nodus_on_state_change_fn)(nodus_client_state_t old_state,
 
 ### Singleton Pattern
 
-For applications that need a single global client (e.g., the DNA Messenger), the singleton
+For applications that need a single global client (e.g., the DNA Connect), the singleton
 module (`nodus_singleton.c`) provides thread-safe access:
 
 ```c
@@ -900,7 +900,7 @@ startup sync operations (previously 9-31s delay on Android).
 
 ## 12. Messenger Integration
 
-The DNA Messenger integrates Nodus through two convenience layers that bridge the
+The DNA Connect integrates Nodus through two convenience layers that bridge the
 messenger's application-level concepts to the raw client SDK.
 
 ### nodus_ops — Operations Layer

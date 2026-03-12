@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Key Generation Module
+ * DNA Connect - Key Generation Module
  *
  * Key generation, name registration, and identity restoration.
  * Handles BIP39 seed phrases, Dilithium5 + Kyber1024 key derivation,

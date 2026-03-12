@@ -17,7 +17,7 @@
  * - groups_leave(): Clean up GEKs and messages when leaving a group
  * - groups_import_all(): Backward compatibility for old backup restores
  *
- * Part of DNA Messenger - GEK System
+ * Part of DNA Connect - GEK System
  * @date 2026-01-30
  */
 

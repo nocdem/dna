@@ -13,7 +13,7 @@
  * - Full sync: last 8 days (today-6 to today+1)
  * - Clock skew tolerance: +/- 1 day
  *
- * Part of DNA Messenger
+ * Part of DNA Connect
  *
  * @date 2026-01-16
  */

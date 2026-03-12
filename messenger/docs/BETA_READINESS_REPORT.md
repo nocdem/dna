@@ -1,4 +1,4 @@
-# DNA Messenger - Beta Readiness Report
+# DNA Connect - Beta Readiness Report
 
 **Date:** 2026-01-03
 **Versions:** Library v0.3.73 | Flutter v0.99.27 | Nodus v0.4.3
@@ -575,7 +575,7 @@ Main Thread
 
 ### 7.1 Overall Assessment
 
-DNA Messenger is **ready for beta release** with conditions. The security posture is strong:
+DNA Connect is **ready for beta release** with conditions. The security posture is strong:
 
 - All previous high-severity issues fixed
 - Post-quantum cryptography correctly implemented

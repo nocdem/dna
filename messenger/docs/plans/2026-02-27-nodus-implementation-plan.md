@@ -137,7 +137,7 @@ nodus_value_t *nodus_value_clone(const nodus_value_t *val);
 
 `nodus/CMakeLists.txt`:
 ```cmake
-# Nodus — DNA Messenger DHT Library
+# Nodus — DNA Connect DHT Library
 cmake_minimum_required(VERSION 3.10)
 
 set(NODUS_SOURCES
@@ -1061,7 +1061,7 @@ git commit -m "feat(nodus): distributed pub/sub for LISTEN"
 - Create: `nodus/src/client/nodus_client.c`
 - Create: `nodus/include/nodus/nodus.h` (public API)
 
-**Context:** This is what DNA Messenger will use instead of `dht_context_*`. Simple API: connect to Nodus, authenticate, PUT/GET/LISTEN.
+**Context:** This is what DNA Connect will use instead of `dht_context_*`. Simple API: connect to Nodus, authenticate, PUT/GET/LISTEN.
 
 **Step 1: Implement public API**
 
@@ -1125,9 +1125,9 @@ git commit -m "feat(nodus): client SDK with PUT/GET/LISTEN API"
 
 ---
 
-## Phase 6: DNA Messenger Integration
+## Phase 6: DNA Connect Integration
 
-This is the critical phase — replacing OpenDHT with Nodus inside DNA Messenger.
+This is the critical phase — replacing OpenDHT with Nodus inside DNA Connect.
 
 ---
 

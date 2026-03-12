@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Identity Module
+ * DNA Connect - Identity Module
  *
  * Pure utility functions for working with identity fingerprints and display names.
  * No state, no dependencies on other messenger modules.

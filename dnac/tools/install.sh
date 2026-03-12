@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # DNAC Installation Script
-# Installs dependencies, builds DNA Messenger and DNAC
+# Installs dependencies, builds DNA Connect and DNAC
 #
 # Usage: curl -sSL <url> | bash
 #    or: ./install.sh
@@ -33,8 +33,8 @@ elif [ "$PKG_MANAGER" = "yum" ]; then
 fi
 echo "      Done."
 
-# Step 2: Clone and build DNA Messenger (libdna)
-echo "[2/5] Building DNA Messenger (libdna)..."
+# Step 2: Clone and build DNA Connect (libdna)
+echo "[2/5] Building DNA Connect (libdna)..."
 if [ -d /opt/dna-messenger ]; then
     echo "      /opt/dna-messenger exists, pulling latest..."
     cd /opt/dna-messenger
@@ -51,7 +51,7 @@ if [ -d build ]; then
 fi
 mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release .. && make -j$(nproc)
-echo "      Done. libdna built at /opt/dna-messenger/build/libdna_lib.so"
+echo "      Done. libdna built at /opt/dna-messenger/build/libdna.so"
 
 # Step 3: Clone and build DNAC
 echo "[3/5] Building DNAC..."

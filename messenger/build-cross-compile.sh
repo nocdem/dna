@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# DNA Messenger - Cross-Compilation Build Script
+# DNA Connect - Cross-Compilation Build Script
 # Builds binaries for all major platforms
 #
 # Supported targets:
@@ -44,7 +44,7 @@ FULL_VERSION="0.1.${VERSION}-${GIT_HASH}"
 GLFW_VERSION="3.4"
 
 echo -e "${BLUE}=========================================${NC}"
-echo -e "${BLUE} DNA Messenger - Cross-Compilation${NC}"
+echo -e "${BLUE} DNA Connect - Cross-Compilation${NC}"
 echo -e "${BLUE}=========================================${NC}"
 echo -e "Version: ${GREEN}${FULL_VERSION}${NC}"
 echo -e "Build Date: ${GREEN}${BUILD_DATE}${NC}"

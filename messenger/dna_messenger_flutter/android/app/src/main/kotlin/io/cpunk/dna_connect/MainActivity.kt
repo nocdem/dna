@@ -1,4 +1,4 @@
-package io.cpunk.dna_messenger
+package io.cpunk.dna_connect
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -10,7 +10,7 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * DNA Messenger Main Activity
+ * DNA Connect Main Activity
  *
  * Minimal activity: camera permission + CA certificate bundle copy.
  * No background service, no notifications — engine runs while app is open.
@@ -55,12 +55,12 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     /**
-     * Copy cacert.pem from assets to app's dna_messenger data directory.
+     * Copy cacert.pem from assets to app's dna data directory.
      * This is required for curl to verify SSL certificates on Android.
-     * Must match the path that Flutter uses: filesDir/dna_messenger/cacert.pem
+     * Must match the path that Flutter uses: filesDir/dna/cacert.pem
      */
     private fun copyCACertificateBundle() {
-        val dnaDir = File(filesDir, "dna_messenger")
+        val dnaDir = File(filesDir, "dna")
         if (!dnaDir.exists()) {
             dnaDir.mkdirs()
         }

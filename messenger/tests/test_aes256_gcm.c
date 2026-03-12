@@ -10,7 +10,7 @@
  * - Wrong key rejection
  * - Edge cases (empty plaintext, large data)
  *
- * Part of DNA Messenger beta readiness testing.
+ * Part of DNA Connect beta readiness testing.
  */
 
 #include <stdio.h>
@@ -29,7 +29,7 @@
 static int test_round_trip(void) {
     printf("\n1. Testing encrypt/decrypt round-trip...\n");
 
-    const char *plaintext = "DNA Messenger - Post-Quantum E2E Encryption Test";
+    const char *plaintext = "DNA Connect - Post-Quantum E2E Encryption Test";
     size_t plaintext_len = strlen(plaintext);
 
     uint8_t key[32];

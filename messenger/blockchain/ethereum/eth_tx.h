@@ -11,7 +11,7 @@
  * 4. Sign with private key using eth_tx_sign()
  * 5. Broadcast via eth_tx_send()
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-08
  */
 

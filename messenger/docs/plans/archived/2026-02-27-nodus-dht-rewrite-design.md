@@ -1,4 +1,4 @@
-# Nodus — Custom DHT for DNA Messenger
+# Nodus — Custom DHT for DNA Connect
 
 **Date:** 2026-02-27
 **Status:** DESIGN
@@ -50,7 +50,7 @@ Replace OpenDHT (37,968 lines C++, 7 external dependencies) with a DNA-specializ
 - **Identity:** Each Nodus has a Dilithium5 key pair, mutual authentication
 
 ### Tier 2: Clients
-- **Participants:** DNA Messenger users
+- **Participants:** DNA Connect users
 - **Routing:** None — delegates to connected Nodus
 - **Transport:** TCP (persistent connection for push notifications)
 - **Storage:** Local SQLite (dnac.db, unchanged)
@@ -364,7 +364,7 @@ nodus/
 
 ---
 
-## DNA Messenger Integration
+## DNA Connect Integration
 
 ### What Changes
 

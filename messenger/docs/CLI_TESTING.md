@@ -1,14 +1,14 @@
-# DNA Messenger CLI Testing Guide
+# DNA Connect CLI Testing Guide
 
 **Version:** 3.0.0
-**Purpose:** Command-line tool for automated testing and debugging of DNA Messenger without GUI
+**Purpose:** Command-line tool for automated testing and debugging of DNA Connect without GUI
 **Location:** `/opt/dna/messenger/build/cli/dna-messenger-cli`
 
 ---
 
 ## Overview
 
-The `dna-messenger-cli` tool allows Claude (or any automated system) to test DNA Messenger functionality through single-command invocations. Each command initializes the engine, executes the operation, and exits cleanly.
+The `dna-messenger-cli` tool allows Claude (or any automated system) to test DNA Connect functionality through single-command invocations. Each command initializes the engine, executes the operation, and exits cleanly.
 
 **Key Features (v3.0.0):**
 - **Grouped subcommand structure**: All commands use `<group> <subcommand>` format

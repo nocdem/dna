@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 /**
- * Transport Layer for DNA Messenger
+ * Transport Layer for DNA Connect
  *
  * Architecture:
  * - DHT-only messaging (privacy-preserving, no IP leaks)

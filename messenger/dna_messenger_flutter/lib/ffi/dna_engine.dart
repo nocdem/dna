@@ -1,4 +1,4 @@
-// High-level Dart wrapper for DNA Messenger Engine
+// High-level Dart wrapper for DNA Connect Engine
 // Converts C callbacks to Dart Futures/Streams
 
 import 'dart:async';
@@ -1335,23 +1335,23 @@ class DnaEngine {
 
   static DynamicLibrary _loadLibrary() {
     if (Platform.isAndroid) {
-      return DynamicLibrary.open('libdna_lib.so');
+      return DynamicLibrary.open('libdna.so');
     } else if (Platform.isIOS || Platform.isMacOS) {
       return DynamicLibrary.process(); // Statically linked
     } else if (Platform.isLinux) {
       // Try common locations
       try {
-        return DynamicLibrary.open('libdna_lib.so');
+        return DynamicLibrary.open('libdna.so');
       } catch (_) {
         try {
-          return DynamicLibrary.open('./libdna_lib.so');
+          return DynamicLibrary.open('./libdna.so');
         } catch (_) {
           // AppImage: library is in lib/ subdirectory
-          return DynamicLibrary.open('./lib/libdna_lib.so');
+          return DynamicLibrary.open('./lib/libdna.so');
         }
       }
     } else if (Platform.isWindows) {
-      return DynamicLibrary.open('dna_lib.dll');
+      return DynamicLibrary.open('dna.dll');
     }
     throw UnsupportedError('Platform not supported');
   }
@@ -4386,7 +4386,7 @@ class DnaEngine {
   // VERSION
   // ---------------------------------------------------------------------------
 
-  /// Get DNA Messenger version string from native library
+  /// Get DNA Connect version string from native library
   ///
   /// Returns version like "0.2.5" - single source of truth from version.h
   static String getVersion(DnaBindings bindings) {

@@ -5,7 +5,7 @@
  * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
  *
  * @file dht_profile.c
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-11-12
  */
 

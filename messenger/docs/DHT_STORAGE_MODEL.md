@@ -4,7 +4,7 @@
 **Version:** 0.9.44
 **Status:** Verified from source code
 
-This document describes how each data type in DNA Messenger is stored on the Nodus DHT network. It covers key derivation, bucket strategies, serialization formats, TTLs, ownership models, and sync patterns.
+This document describes how each data type in DNA Connect is stored on the Nodus DHT network. It covers key derivation, bucket strategies, serialization formats, TTLs, ownership models, and sync patterns.
 
 **Source of truth:** The actual C source files listed in each section. This document summarizes their behavior.
 
@@ -25,7 +25,7 @@ This document describes how each data type in DNA Messenger is stored on the Nod
 
 ## 1. Overview
 
-All persistent data in DNA Messenger is stored on the Nodus DHT via the `nodus_ops` abstraction layer (`dht/shared/nodus_ops.c`). There is **no chunked storage layer** — each value is stored as a single DHT PUT (up to 1MB, the Nodus native limit).
+All persistent data in DNA Connect is stored on the Nodus DHT via the `nodus_ops` abstraction layer (`dht/shared/nodus_ops.c`). There is **no chunked storage layer** — each value is stored as a single DHT PUT (up to 1MB, the Nodus native limit).
 
 ### Storage Strategies Used
 

@@ -7,7 +7,7 @@
 /**
  * SHA3-512 Hashing Utilities
  *
- * Provides SHA3-512 hash functions for DNA Messenger Category 5 security.
+ * Provides SHA3-512 hash functions for DNA Connect Category 5 security.
  * SHA3-512 provides 256-bit quantum security (Grover's algorithm resistance).
  *
  * Used for:

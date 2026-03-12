@@ -2,7 +2,7 @@
  * @file sol_rpc.h
  * @brief Solana JSON-RPC Client Interface
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-09
  */
 

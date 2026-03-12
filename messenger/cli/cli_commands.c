@@ -1,7 +1,7 @@
 /*
- * DNA Messenger CLI - Command Implementation
+ * DNA Connect CLI - Command Implementation
  *
- * Interactive CLI tool for testing DNA Messenger without GUI.
+ * Interactive CLI tool for testing DNA Connect without GUI.
  */
 
 #include "cli_commands.h"
@@ -294,7 +294,7 @@ static void on_profile(dna_request_id_t request_id, int error,
  * ============================================================================ */
 
 void cmd_help(void) {
-    printf("\nDNA Messenger CLI - Interactive Mode\n\n");
+    printf("\nDNA Connect CLI - Interactive Mode\n\n");
     printf("Command Groups:\n");
     printf("  identity    Identity management (create, restore, load, profile, ...)\n");
     printf("  contact     Contact management (add, remove, request, block, ...)\n");

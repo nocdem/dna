@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Transport Integration Layer
+ * DNA Connect - Transport Integration Layer
  *
  * Phase 14: DHT-Only Messaging
  *

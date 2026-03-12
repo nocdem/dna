@@ -9,7 +9,7 @@
  * - Address = Base58Check(0x41 || Keccak256(pubkey[1:65])[-20:])
  * - Addresses start with 'T' and are 34 characters long
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-11
  */
 

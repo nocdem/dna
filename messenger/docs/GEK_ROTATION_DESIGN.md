@@ -19,7 +19,7 @@ This document describes the design for two GEK (Group Encryption Key) rotation f
 1. **Remove Member API** - Public API to remove group members (triggers GEK rotation for forward secrecy)
 2. **Daily GEK Rotation** - Automatic key rotation every 24 hours by group owners
 
-Both features enhance the security posture of DNA Messenger's group messaging by ensuring cryptographic keys are rotated regularly.
+Both features enhance the security posture of DNA Connect's group messaging by ensuring cryptographic keys are rotated regularly.
 
 ---
 

@@ -3,7 +3,7 @@
  * Smart profile fetching layer (cache + DHT)
  *
  * @file profile_manager.c
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-11-12
  */
 

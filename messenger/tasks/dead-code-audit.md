@@ -1,4 +1,4 @@
-# Dead Code Audit — DNA Messenger C Library
+# Dead Code Audit — DNA Connect C Library
 **Date:** 2026-02-23 | **Status:** DOUBLE-VERIFIED (manually, no agents)
 
 Every claim verified TWICE by grepping all .c, .h, .cpp, .dart files across all source

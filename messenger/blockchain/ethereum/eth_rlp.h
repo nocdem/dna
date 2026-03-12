@@ -11,7 +11,7 @@
  * - List 0-55 bytes: 0xc0 + len, then items
  * - List >55 bytes: 0xf7 + len_of_len, then len (big-endian), then items
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-08
  */
 

@@ -115,9 +115,9 @@ if(NODUS_STANDALONE)
     list(APPEND NODUS_SOURCES src/nodus_log_shim.c)
 endif()
 
-add_library(nodus_lib STATIC ${NODUS_SOURCES})
+add_library(nodus STATIC ${NODUS_SOURCES})
 
-target_include_directories(nodus_lib PUBLIC
+target_include_directories(nodus PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${SHARED_DIR}
@@ -127,26 +127,26 @@ target_include_directories(nodus_lib PUBLIC
 # When standalone, find_package above sets these. When within messenger tree,
 # the parent CMakeLists.txt already called find_package and vars propagate.
 if(OPENSSL_INCLUDE_DIR)
-    target_include_directories(nodus_lib PUBLIC ${OPENSSL_INCLUDE_DIR})
+    target_include_directories(nodus PUBLIC ${OPENSSL_INCLUDE_DIR})
 endif()
 if(SQLite3_INCLUDE_DIRS)
-    target_include_directories(nodus_lib PUBLIC ${SQLite3_INCLUDE_DIRS})
+    target_include_directories(nodus PUBLIC ${SQLite3_INCLUDE_DIRS})
 endif()
 
 if(NODUS_STANDALONE OR NOT DEFINED NODUS_STANDALONE)
-    target_link_libraries(nodus_lib PUBLIC
+    target_link_libraries(nodus PUBLIC
         dsa
         OpenSSL::Crypto
         ${SQLite3_LIBRARIES}
     )
 else()
     # Within messenger tree — messenger handles linking OpenSSL and SQLite3
-    target_link_libraries(nodus_lib PUBLIC dsa)
+    target_link_libraries(nodus PUBLIC dsa)
 endif()
 
 # Security flags
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(nodus_lib PRIVATE
+    target_compile_options(nodus PRIVATE
         -Wall -Wextra -Werror
         -Wno-unused-parameter
         -Wno-unused-but-set-variable
@@ -155,7 +155,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     )
     # -Wno-format-truncation is GCC-only (Clang doesn't recognize it)
     if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
-        target_compile_options(nodus_lib PRIVATE -Wno-format-truncation)
+        target_compile_options(nodus PRIVATE -Wno-format-truncation)
     endif()
 endif()
 
@@ -170,116 +170,116 @@ enable_testing()
 
 # CBOR test
 add_executable(test_cbor tests/test_cbor.c)
-target_link_libraries(test_cbor nodus_lib)
+target_link_libraries(test_cbor nodus)
 add_test(NAME test_cbor COMMAND test_cbor)
 
 # Wire frame test
 add_executable(test_wire tests/test_wire.c)
-target_link_libraries(test_wire nodus_lib)
+target_link_libraries(test_wire nodus)
 add_test(NAME test_wire COMMAND test_wire)
 
-# Value test (needs extra nodus_lib for circular dep: dsa -> qgp_randombytes -> nodus_lib)
+# Value test (needs extra nodus for circular dep: dsa -> qgp_randombytes -> nodus)
 add_executable(test_value tests/test_value.c)
-target_link_libraries(test_value nodus_lib dsa nodus_lib)
+target_link_libraries(test_value nodus dsa nodus)
 add_test(NAME test_value COMMAND test_value)
 
 # Identity test
 add_executable(test_identity tests/test_identity.c)
-target_link_libraries(test_identity nodus_lib dsa nodus_lib)
+target_link_libraries(test_identity nodus dsa nodus)
 add_test(NAME test_identity COMMAND test_identity)
 
 # Routing table test
 add_executable(test_routing tests/test_routing.c)
-target_link_libraries(test_routing nodus_lib dsa nodus_lib)
+target_link_libraries(test_routing nodus dsa nodus)
 add_test(NAME test_routing COMMAND test_routing)
 
 # Storage test
 add_executable(test_storage tests/test_storage.c)
-target_link_libraries(test_storage nodus_lib dsa nodus_lib)
+target_link_libraries(test_storage nodus dsa nodus)
 add_test(NAME test_storage COMMAND test_storage)
 
 # Hash ring test
 add_executable(test_hashring tests/test_hashring.c)
-target_link_libraries(test_hashring nodus_lib dsa nodus_lib)
+target_link_libraries(test_hashring nodus dsa nodus)
 add_test(NAME test_hashring COMMAND test_hashring)
 
 # TCP transport test
 add_executable(test_tcp tests/test_tcp.c)
-target_link_libraries(test_tcp nodus_lib dsa nodus_lib)
+target_link_libraries(test_tcp nodus dsa nodus)
 add_test(NAME test_tcp COMMAND test_tcp)
 
 # Tier 1 protocol test
 add_executable(test_tier1 tests/test_tier1.c)
-target_link_libraries(test_tier1 nodus_lib dsa nodus_lib)
+target_link_libraries(test_tier1 nodus dsa nodus)
 add_test(NAME test_tier1 COMMAND test_tier1)
 
 # Tier 2 protocol test
 add_executable(test_tier2 tests/test_tier2.c)
-target_link_libraries(test_tier2 nodus_lib dsa nodus_lib)
+target_link_libraries(test_tier2 nodus dsa nodus)
 add_test(NAME test_tier2 COMMAND test_tier2)
 
 # Tier 3 protocol test (BFT CBOR)
 add_executable(test_tier3 tests/test_tier3.c)
-target_link_libraries(test_tier3 nodus_lib dsa nodus_lib)
+target_link_libraries(test_tier3 nodus dsa nodus)
 add_test(NAME test_tier3 COMMAND test_tier3)
 
 # Channel storage test
 add_executable(test_channel_store tests/test_channel_store.c)
-target_link_libraries(test_channel_store nodus_lib dsa nodus_lib)
+target_link_libraries(test_channel_store nodus dsa nodus)
 add_test(NAME test_channel_store COMMAND test_channel_store)
 
 # Server integration test
 add_executable(test_server tests/test_server.c)
-target_link_libraries(test_server nodus_lib dsa nodus_lib pthread)
+target_link_libraries(test_server nodus dsa nodus pthread)
 add_test(NAME test_server COMMAND test_server)
 
 # Client SDK test
 add_executable(test_client tests/test_client.c)
-target_link_libraries(test_client nodus_lib dsa nodus_lib pthread)
+target_link_libraries(test_client nodus dsa nodus pthread)
 add_test(NAME test_client COMMAND test_client)
 
 # Presence table + protocol test
 add_executable(test_presence tests/test_presence.c)
-target_link_libraries(test_presence nodus_lib dsa nodus_lib)
+target_link_libraries(test_presence nodus dsa nodus)
 add_test(NAME test_presence COMMAND test_presence)
 
 # Witness transaction verification test
 add_executable(test_witness_verify tests/test_witness_verify.c)
-target_link_libraries(test_witness_verify nodus_lib dsa nodus_lib)
+target_link_libraries(test_witness_verify nodus dsa nodus)
 add_test(NAME test_witness_verify COMMAND test_witness_verify)
 
 # Replication phase tests
 add_executable(test_put_if_newer tests/test_put_if_newer.c)
-target_link_libraries(test_put_if_newer nodus_lib dsa nodus_lib)
+target_link_libraries(test_put_if_newer nodus dsa nodus)
 add_test(NAME test_put_if_newer COMMAND test_put_if_newer)
 
 add_executable(test_routing_stale tests/test_routing_stale.c)
-target_link_libraries(test_routing_stale nodus_lib dsa nodus_lib)
+target_link_libraries(test_routing_stale nodus dsa nodus)
 add_test(NAME test_routing_stale COMMAND test_routing_stale)
 
 add_executable(test_bucket_refresh tests/test_bucket_refresh.c)
-target_link_libraries(test_bucket_refresh nodus_lib dsa nodus_lib)
+target_link_libraries(test_bucket_refresh nodus dsa nodus)
 add_test(NAME test_bucket_refresh COMMAND test_bucket_refresh)
 
 add_executable(test_hinted_handoff tests/test_hinted_handoff.c)
-target_link_libraries(test_hinted_handoff nodus_lib dsa nodus_lib)
+target_link_libraries(test_hinted_handoff nodus dsa nodus)
 add_test(NAME test_hinted_handoff COMMAND test_hinted_handoff)
 
 add_executable(test_fetch_batch tests/test_fetch_batch.c)
-target_link_libraries(test_fetch_batch nodus_lib dsa nodus_lib)
+target_link_libraries(test_fetch_batch nodus dsa nodus)
 add_test(NAME test_fetch_batch COMMAND test_fetch_batch)
 
 add_executable(test_storage_cleanup tests/test_storage_cleanup.c)
-target_link_libraries(test_storage_cleanup nodus_lib dsa nodus_lib)
+target_link_libraries(test_storage_cleanup nodus dsa nodus)
 add_test(NAME test_storage_cleanup COMMAND test_storage_cleanup)
 
 # ── Tools ────────────────────────────────────────────────────────────
 add_executable(nodus-cli tools/nodus-cli.c)
-target_link_libraries(nodus-cli nodus_lib dsa nodus_lib)
+target_link_libraries(nodus-cli nodus dsa nodus)
 target_compile_options(nodus-cli PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 add_executable(nodus-server tools/nodus-server.c)
-target_link_libraries(nodus-server nodus_lib dsa nodus_lib)
+target_link_libraries(nodus-server nodus dsa nodus)
 target_compile_options(nodus-server PRIVATE -Wall -Wextra -Wno-unused-parameter)
 if(JSONC_FOUND)
     target_compile_definitions(nodus-server PRIVATE NODUS_HAS_JSONC)

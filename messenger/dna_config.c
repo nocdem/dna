@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Configuration Management
+ * DNA Connect - Configuration Management
  */
 
 #include "dna_config.h"
@@ -191,7 +191,7 @@ int dna_config_save(const dna_config_t *config) {
         return -1;
     }
 
-    fprintf(f, "# DNA Messenger Configuration\n\n");
+    fprintf(f, "# DNA Connect Configuration\n\n");
 
     fprintf(f, "# Log level: DEBUG, INFO, WARN, ERROR, NONE\n");
     fprintf(f, "log_level=%s\n\n", config->log_level);

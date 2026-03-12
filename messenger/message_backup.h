@@ -7,7 +7,7 @@
  * v0.3.0 flat structure: ~/.dna/db/messages.db
  *
  * @file message_backup.h
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-11-02
  */
 

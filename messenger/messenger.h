@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - CLI Messenger Module
+ * DNA Connect - CLI Messenger Module
  *
  * Storage Architecture (v0.3.0 Flat Structure):
  * - Private keys: ~/.dna/keys/identity.dsa, identity.kem (filesystem)

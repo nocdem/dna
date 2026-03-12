@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Contacts Module Implementation
+ * DNA Connect - Contacts Module Implementation
  */
 
 #include "contacts.h"

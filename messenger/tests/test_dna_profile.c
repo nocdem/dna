@@ -4,7 +4,7 @@
  *
  * Tests profile data structures, validation, and serialization functions.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-11-05
  */
 

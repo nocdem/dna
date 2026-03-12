@@ -19,7 +19,7 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 
 | Project | Description | Status |
 |---------|-------------|--------|
-| [**DNA Messenger**](messenger/) | End-to-end encrypted messenger with multi-chain crypto wallet | RC |
+| [**DNA Connect**](messenger/) | End-to-end encrypted communication with multi-chain crypto wallet | RC |
 | [**Nodus**](nodus/) | Post-quantum Kademlia DHT server with cluster management | RC |
 | [**CPUNK Platform**](cpunk/) | Quantum-safe community platform | Live |
 
@@ -27,7 +27,7 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 
 ## Architecture
 
-### DNA Messenger
+### DNA Connect
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -119,7 +119,7 @@ flutter pub get && flutter build linux
 
 ```
 dna/
-├── messenger/                 # DNA Messenger
+├── messenger/                 # DNA Connect
 │   ├── src/api/               #   DNA Engine (17 modular handlers)
 │   ├── messenger/             #   Messaging core (identity, keys, contacts)
 │   ├── dht/                   #   DHT operations

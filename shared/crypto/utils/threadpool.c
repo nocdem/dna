@@ -2,7 +2,7 @@
  * @file threadpool.c
  * @brief Simple thread pool implementation
  *
- * Part of DNA Messenger
+ * Part of DNA Connect
  */
 
 #include "threadpool.h"

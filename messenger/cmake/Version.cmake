@@ -3,7 +3,7 @@
 # Extracts version info from git and sets build metadata.
 # Sets: DNA_VERSION, BUILD_TS, BUILD_HASH, VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH
 
-# Version (DNA Messenger starts fresh)
+# Version (DNA Connect starts fresh)
 set(VERSION_MAJOR 0)
 set(VERSION_MINOR 1)
 
@@ -45,4 +45,4 @@ add_definitions("-DPQSIGNUM_VERSION=\"${DNA_VERSION}\"")
 add_definitions("-DBUILD_TS=\"${BUILD_TS}\"")
 add_definitions("-DBUILD_HASH=\"${BUILD_HASH}\"")
 
-message(STATUS "DNA Messenger version: ${DNA_VERSION}")
+message(STATUS "DNA Connect version: ${DNA_VERSION}")

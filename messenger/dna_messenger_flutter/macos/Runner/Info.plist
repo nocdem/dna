@@ -29,6 +29,6 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Use Touch ID to unlock DNA Messenger</string>
+	<string>Use Touch ID to unlock DNA Connect</string>
 </dict>
 </plist>

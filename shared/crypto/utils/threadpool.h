@@ -13,7 +13,7 @@
  *   threadpool_wait(pool);  // Wait for all to complete
  *   threadpool_destroy(pool);
  *
- * Part of DNA Messenger
+ * Part of DNA Connect
  */
 
 #ifndef THREADPOOL_H

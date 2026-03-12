@@ -1,4 +1,4 @@
-# DNA Messenger Flutter UI
+# DNA Connect Flutter UI
 
 **Last Updated:** 2026-03-11
 **Status:** Phase 4 — Design System + UI Redesign Complete
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-DNA Messenger uses Flutter for cross-platform UI. Flutter was chosen for:
+DNA Connect uses Flutter for cross-platform UI. Flutter was chosen for:
 - **Mobile-first**: First-class Android/iOS support
 - **Single codebase**: Android, iOS, Linux, Windows, macOS (+ Web)
 - **Dart FFI**: Clean interop with existing C API (`dna_engine.h`)
@@ -339,9 +339,9 @@ removeContact(fingerprint)   // Remove contact from list
 ### Phase 4: Platform Builds (Planned)
 
 **Tasks:**
-1. **Android**: Copy libdna_lib.so to jniLibs/, test on devices
-2. **Linux**: Link libdna_lib.so, test desktop layout
-3. **Windows**: Cross-compile dna_lib.dll, bundle
+1. **Android**: Copy libdna.so to jniLibs/, test on devices
+2. **Linux**: Link libdna.so, test desktop layout
+3. **Windows**: Cross-compile dna.dll, bundle
 4. **macOS**: Build universal binary, sign
 5. **iOS**: Build framework, TestFlight (lower priority)
 
@@ -349,13 +349,13 @@ removeContact(fingerprint)   // Remove contact from list
 ```
 dna_messenger_flutter/
 ├── android/app/src/main/jniLibs/
-│   ├── arm64-v8a/libdna_lib.so
-│   ├── armeabi-v7a/libdna_lib.so
-│   └── x86_64/libdna_lib.so
-├── linux/libs/libdna_lib.so
-├── windows/libs/dna_lib.dll
-├── macos/Frameworks/libdna_lib.a
-└── ios/Frameworks/libdna_lib.a
+│   ├── arm64-v8a/libdna.so
+│   ├── armeabi-v7a/libdna.so
+│   └── x86_64/libdna.so
+├── linux/libs/libdna.so
+├── windows/libs/dna.dll
+├── macos/Frameworks/libdna.a
+└── ios/Frameworks/libdna.a
 ```
 
 ---
@@ -540,7 +540,7 @@ dev_dependencies:
 cd dna_messenger_flutter
 
 # Copy native library
-cp ../build/libdna_lib.so linux/libs/
+cp ../build/libdna.so linux/libs/
 
 # Run
 flutter run -d linux
@@ -552,7 +552,7 @@ flutter run -d linux
 ../build-android.sh arm64-v8a
 
 # Copy to jniLibs
-cp ../build-android-arm64-v8a/libdna_lib.so \
+cp ../build-android-arm64-v8a/libdna.so \
    android/app/src/main/jniLibs/arm64-v8a/
 
 # Build APK

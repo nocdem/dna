@@ -1,12 +1,12 @@
-# DNA Messenger
+# DNA Connect
 
 <p align="center">
   <strong>Decentralized Network Applications</strong><br>
-  Quantum-Proof Encrypted Messenger with Integrated Multi-Chain Wallet
+  Quantum-Proof Encrypted Communication with Integrated Multi-Chain Wallet
 </p>
 
 <p align="center">
-  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc26-blue" alt="RC"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc27-blue" alt="RC"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-green" alt="Apache 2.0"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-orange" alt="Platforms"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Security-NIST%20Category%205-red" alt="NIST Cat 5"></a>
@@ -18,9 +18,9 @@
 
 ---
 
-## What is DNA Messenger?
+## What is DNA Connect?
 
-DNA Messenger is a **fully decentralized** messenger and **multi-chain crypto wallet** built with **NIST-approved post-quantum cryptography**.
+DNA Connect is a **fully decentralized** communication platform and **multi-chain crypto wallet** built with **NIST-approved post-quantum cryptography**.
 
 - **No central servers** — Messages travel through a distributed hash table (DHT)
 - **No IP leakage** — Your real IP is never exposed to contacts or third parties
@@ -84,7 +84,7 @@ Pre-built binaries: **[GitLab Releases](https://gitlab.cpunk.io/cpunk/dna/-/rele
 
 ### Build from Source
 
-DNA Messenger is part of the [DNA monorepo](https://github.com/nocdem/dna).
+DNA Connect is part of the [DNA monorepo](https://github.com/nocdem/dna).
 
 ```bash
 # Dependencies (Debian/Ubuntu)
@@ -142,7 +142,7 @@ cd messenger
 
 **Components:**
 - **Flutter App** — Cross-platform UI (Android, Linux, Windows)
-- **C Library** — Core engine with 17 modular handlers (`libdna_lib.so`)
+- **C Library** — Core engine with 17 modular handlers (`libdna.so`)
 - **Nodus** — Pure C Kademlia DHT with cluster replication ([details](../nodus/README.md))
 
 **Engine Modules** (`src/api/engine/`):
@@ -170,8 +170,8 @@ cd messenger
 
 | Component | Version |
 |-----------|---------|
-| C Library | v0.9.54 |
-| Flutter App | v1.0.0-rc21 |
+| C Library | v0.9.59 |
+| Flutter App | v1.0.0-rc27 |
 | Nodus DHT | v0.6.3 |
 
 ---
@@ -202,7 +202,7 @@ cd messenger
 
 ## License
 
-The DNA Messenger C library is licensed under the [Apache License 2.0](LICENSE).
+The DNA Connect C library is licensed under the [Apache License 2.0](LICENSE).
 
 The Flutter application is [source-available (proprietary)](dna_messenger_flutter/LICENSE).
 

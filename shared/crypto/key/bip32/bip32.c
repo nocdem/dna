@@ -4,7 +4,7 @@
  *
  * Implements BIP-32 HD wallet key derivation for secp256k1 curve.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-08
  */
 

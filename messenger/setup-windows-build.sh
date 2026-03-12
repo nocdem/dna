@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Build all C dependencies for Windows (llvm-mingw cross-compilation)
-# Builds GnuTLS, OpenSSL, curl, SQLite, and other libraries needed by DNA Messenger
+# Builds GnuTLS, OpenSSL, curl, SQLite, and other libraries needed by DNA Connect
 #
 
 set -e

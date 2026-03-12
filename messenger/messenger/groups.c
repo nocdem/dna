@@ -17,7 +17,7 @@
  * - These functions wrote to 'groups' table which was never read by the app
  * - The app uses dht_groups_* functions which operate on dht_group_cache
  *
- * Part of DNA Messenger - GEK System
+ * Part of DNA Connect - GEK System
  * @date 2026-01-30
  */
 

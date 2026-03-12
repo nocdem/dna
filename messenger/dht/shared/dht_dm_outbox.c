@@ -5,7 +5,7 @@
  * Daily bucket messaging for 1-1 direct messages.
  * No watermark pruning - TTL handles cleanup automatically.
  *
- * Part of DNA Messenger
+ * Part of DNA Connect
  *
  * @date 2026-01-16
  */

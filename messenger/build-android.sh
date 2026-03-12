@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# build-android.sh - Build DNA Messenger for Android
+# build-android.sh - Build DNA Connect for Android
 #
 # Prerequisites:
 #   1. Android NDK installed (r21+ recommended)
@@ -47,7 +47,7 @@ if [ -z "$ANDROID_NDK" ] || [ ! -d "$ANDROID_NDK" ]; then
     exit 1
 fi
 
-echo "=== DNA Messenger Android Build ==="
+echo "=== DNA Connect Android Build ==="
 echo "NDK: $ANDROID_NDK"
 echo "ABI: $ABI"
 echo "API: $API_LEVEL"

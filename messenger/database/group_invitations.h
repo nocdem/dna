@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Group Invitations Database
+ * DNA Connect - Group Invitations Database
  *
  * Manages pending group invitations in local SQLite database.
  * Stores invitations until user accepts or rejects them.

@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Keys Module
+ * DNA Connect - Keys Module
  *
  * Public key storage, retrieval, and contact list management.
  * Integrates with DHT keyserver and local SQLite cache.

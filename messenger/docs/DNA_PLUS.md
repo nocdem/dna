@@ -13,7 +13,7 @@
 
 ## Overview
 
-DNA Plus is a premium subscription tier for DNA Messenger that unlocks additional features through a fully decentralized, cryptographically-enforced subscription system. Premium status is verified through CPUNK blockchain payments and enforced via Dilithium5-signed certificates.
+DNA Plus is a premium subscription tier for DNA Connect that unlocks additional features through a fully decentralized, cryptographically-enforced subscription system. Premium status is verified through CPUNK blockchain payments and enforced via Dilithium5-signed certificates.
 
 ---
 

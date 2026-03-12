@@ -6,7 +6,7 @@
  * Uses existing dht_chunked_publish() which has per-key mutex for
  * preventing chunk interleaving.
  *
- * Part of DNA Messenger
+ * Part of DNA Connect
  *
  * @date 2026-01-30
  * @version 0.6.80

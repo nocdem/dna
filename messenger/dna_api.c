@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - API Implementation
+ * DNA Connect - API Implementation
  *
  * Memory-based message encryption/decryption for messenger use
  * Phase 2: Library API (wraps QGP crypto operations)
@@ -1121,4 +1121,4 @@ dna_error_t dna_decrypt_message_gek(
     return DNA_OK;
 }
 
-// NOTE: Legacy keyring stubs removed in v0.3.150 - keyring not used in DNA Messenger
+// NOTE: Legacy keyring stubs removed in v0.3.150 - keyring not used in DNA Connect

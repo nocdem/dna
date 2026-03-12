@@ -1,7 +1,7 @@
 {
   "@@locale": "tr",
 
-  "appTitle": "DNA Messenger",
+  "appTitle": "DNA Connect",
   "initializing": "Başlatılıyor...",
   "failedToInitialize": "Başlatma başarısız",
   "makeSureNativeLibrary": "Yerel kütüphanenin mevcut olduğundan emin olun.",
@@ -219,9 +219,9 @@
   "settingsAbout": "Hakkında",
   "settingsUpdateAvailable": "Güncelleme Mevcut",
   "settingsTapToDownload": "İndirmek için dokunun",
-  "settingsAppVersion": "DNA Messenger v{version}",
+  "settingsAppVersion": "DNA Connect v{version}",
   "settingsLibVersion": "Kütüphane v{version}",
-  "settingsPostQuantumMessenger": "Kuantum Sonrası Şifreli Mesajlaşma",
+  "settingsPostQuantumMessenger": "Kuantum Sonrası Şifreli İletişim",
   "settingsCryptoStack": "KRİPTO ALTYAPISI",
 
   "profileTitle": "Profili Düzenle",
@@ -260,8 +260,8 @@
   "contactProfileInfo": "Bilgi",
   "contactProfileWebsite": "Web Sitesi",
 
-  "identityTitle": "DNA Messenger",
-  "identityWelcome": "DNA Messenger'a Hoş Geldiniz",
+  "identityTitle": "DNA Connect",
+  "identityWelcome": "DNA Connect'e Hoş Geldiniz",
   "identityGenerateSeed": "Yeni Kurtarma İfadesi Oluştur",
   "identityHaveSeed": "Kurtarma İfadem Var",
   "identityYourRecoveryPhrase": "Kurtarma İfadeniz",
@@ -342,7 +342,7 @@
   "moreSettings": "Ayarlar",
   "moreAppLock": "Uygulama Kilidi",
 
-  "lockTitle": "DNA Messenger",
+  "lockTitle": "DNA Connect",
   "lockEnterPIN": "Kilit açmak için PIN girin",
   "lockIncorrectPIN": "Yanlış PIN",
   "lockUseBiometrics": "Kilit açmak için biyometrik kullanın",
@@ -368,10 +368,10 @@
   "blockedUnblockConfirm": "{name} engellensin mi?",
 
   "updateTitle": "Güncelleme Gerekli",
-  "updateMessage": "DNA Messenger'ı kullanmaya devam etmek için daha yeni bir sürüm gereklidir.",
+  "updateMessage": "DNA Connect'i kullanmaya devam etmek için daha yeni bir sürüm gereklidir.",
   "updateDownload": "Güncellemeyi İndir",
   "updateAvailableTitle": "Yeni Sürüm Mevcut",
-  "updateAvailableMessage": "DNA Messenger'ın yeni bir sürümü mevcut. En son özellikler ve iyileştirmeler için şimdi güncelleyin.",
+  "updateAvailableMessage": "DNA Connect'in yeni bir sürümü mevcut. En son özellikler ve iyileştirmeler için şimdi güncelleyin.",
   "updateLater": "Sonra",
 
   "cancel": "İptal",

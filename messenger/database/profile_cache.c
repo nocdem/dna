@@ -6,7 +6,7 @@
  * Global cache allows prefetching before identity is loaded.
  *
  * @file profile_cache.c
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-11-12
  */
 

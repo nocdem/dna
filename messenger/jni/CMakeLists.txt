@@ -1,7 +1,7 @@
 # JNI Bridge for Android
 #
 # Builds libdna_jni.so shared library for Android
-# Links against static dna_lib and all dependencies
+# Links against static dna and all dependencies
 
 cmake_minimum_required(VERSION 3.10)
 project(dna_jni C)
@@ -30,7 +30,7 @@ target_include_directories(dna_jni PRIVATE
 
 # Link against DNA libraries (order matters for static linking)
 target_link_libraries(dna_jni
-    dna_lib
+    dna
     dht_lib
     transport_lib
     cellframe_minimal

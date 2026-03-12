@@ -11,7 +11,7 @@
  *
  * Database path: ~/.dna/db/groups.db
  *
- * Part of DNA Messenger - GEK System
+ * Part of DNA Connect - GEK System
  *
  * @date 2026-01-15
  */

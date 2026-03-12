@@ -9,7 +9,7 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
-  String get appTitle => 'DNA Messenger';
+  String get appTitle => 'DNA Connect';
 
   @override
   String get initializing => '初始化中...';
@@ -632,7 +632,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String settingsAppVersion(String version) {
-    return 'DNA Messenger v$version';
+    return 'DNA Connect v$version';
   }
 
   @override
@@ -641,7 +641,7 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get settingsPostQuantumMessenger => '后量子加密通讯工具';
+  String get settingsPostQuantumMessenger => '后量子加密通信';
 
   @override
   String get settingsCryptoStack => '加密技术栈';
@@ -759,10 +759,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get contactProfileWebsite => '网站';
 
   @override
-  String get identityTitle => 'DNA Messenger';
+  String get identityTitle => 'DNA Connect';
 
   @override
-  String get identityWelcome => '欢迎使用 DNA Messenger';
+  String get identityWelcome => '欢迎使用 DNA Connect';
 
   @override
   String get identityGenerateSeed => '生成新助记词';
@@ -998,7 +998,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get moreAppLock => '应用锁';
 
   @override
-  String get lockTitle => 'DNA Messenger';
+  String get lockTitle => 'DNA Connect';
 
   @override
   String get lockEnterPIN => '输入 PIN 解锁';
@@ -1066,7 +1066,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get updateTitle => '需要更新';
 
   @override
-  String get updateMessage => '需要较新版本才能继续使用 DNA Messenger。';
+  String get updateMessage => '需要较新版本才能继续使用 DNA Connect。';
 
   @override
   String get updateDownload => '下载更新';
@@ -1075,7 +1075,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get updateAvailableTitle => '有新版本可用';
 
   @override
-  String get updateAvailableMessage => 'DNA Messenger 有新版本可用。立即更新以获取最新功能和改进。';
+  String get updateAvailableMessage => 'DNA Connect 有新版本可用。立即更新以获取最新功能和改进。';
 
   @override
   String get updateLater => '稍后';

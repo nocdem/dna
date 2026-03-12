@@ -6,7 +6,7 @@
  * Global cache allows fast channel rendering without DHT round-trips.
  *
  * @file channel_cache.c
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2026-02-26
  */
 

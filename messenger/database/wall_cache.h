@@ -9,7 +9,7 @@
  * - Shared across identities (wall data is public DHT data)
  *
  * @file wall_cache.h
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2026-02-25
  */
 

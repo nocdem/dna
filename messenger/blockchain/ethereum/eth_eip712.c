@@ -5,7 +5,7 @@
  * Generic EIP-712 utilities extracted from CoW Protocol integration.
  * Provides domain separator computation and typed data signing.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  */
 
 #include "eth_eip712.h"

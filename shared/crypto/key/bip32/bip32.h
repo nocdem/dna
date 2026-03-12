@@ -8,7 +8,7 @@
  * BIP-32: https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki
  * BIP-44: https://github.com/bitcoin/bips/blob/master/bip-0044.mediawiki
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-08
  */
 

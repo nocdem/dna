@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Group Invitations Database Implementation
+ * DNA Connect - Group Invitations Database Implementation
  */
 
 #include "group_invitations.h"

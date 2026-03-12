@@ -4,7 +4,7 @@
  *
  * Uses original Keccak padding (0x01), not NIST SHA3 padding (0x06).
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-08
  */
 

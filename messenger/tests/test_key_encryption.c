@@ -10,7 +10,7 @@
  * - Large key data
  * - File save/load operations
  *
- * Part of DNA Messenger beta readiness testing (P1-1).
+ * Part of DNA Connect beta readiness testing (P1-1).
  */
 
 #include <stdio.h>

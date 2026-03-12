@@ -2,7 +2,7 @@
  * @file eth_erc20.c
  * @brief ERC-20 Token Implementation for Ethereum
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-14
  */
 

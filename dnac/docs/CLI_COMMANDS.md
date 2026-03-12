@@ -6,7 +6,7 @@
 
 ## Overview
 
-`dnac-cli` is the command-line interface for DNAC (Post-Quantum Zero-Knowledge Cash). It provides wallet management, identity lookup, and transaction capabilities over the DNA Messenger DHT network.
+`dnac-cli` is the command-line interface for DNAC (Post-Quantum Zero-Knowledge Cash). It provides wallet management, identity lookup, and transaction capabilities over the DNA Connect DHT network.
 
 ### Installation
 
@@ -20,7 +20,7 @@ cmake .. && make -j$(nproc)
 
 ### Prerequisites
 
-- A DNA Messenger identity must exist (created via `dna-cli create <name>`)
+- A DNA Connect identity must exist (created via `dna-cli create <name>`)
 - The identity is loaded from `~/.dna/` by default
 
 ---
@@ -254,7 +254,7 @@ dnac-cli nodus-list
 The wallet address is a **SHA3-512 hash of the Dilithium5 public key**:
 - 64 bytes = 128 hexadecimal characters
 - Obtained via `dna_engine_get_fingerprint()`
-- Same as DNA Messenger identity fingerprint
+- Same as DNA Connect identity fingerprint
 
 ### Name Resolution
 

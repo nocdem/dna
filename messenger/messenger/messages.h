@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Messages Module
+ * DNA Connect - Messages Module
  *
  * Message sending, receiving, listing, and conversation management.
  * Handles E2E encryption (Kyber1024 + AES-256-GCM), SQLite storage,

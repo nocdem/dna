@@ -4,7 +4,7 @@
 
 ## Overview
 
-DNA Messenger uses a DHT-only transport layer built on the Nodus client SDK. All messaging goes through the Nodus DHT network -- there are no direct peer-to-peer TCP connections between clients.
+DNA Connect uses a DHT-only transport layer built on the Nodus client SDK. All messaging goes through the Nodus DHT network -- there are no direct peer-to-peer TCP connections between clients.
 
 **Key properties:**
 - DHT-only messaging via Spillway format (no direct P2P since v0.3.154)

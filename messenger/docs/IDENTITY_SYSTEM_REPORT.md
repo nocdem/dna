@@ -1,4 +1,4 @@
-# DNA Messenger Identity System Technical Report
+# DNA Connect Identity System Technical Report
 
 **Date:** 2026-01-29
 **Status:** Research Complete - Requires Separate Implementation Session
@@ -14,7 +14,7 @@
 
 ## Executive Summary
 
-DNA Messenger has **two separate Dilithium5 identity systems** that both derive from the same BIP39 mnemonic but use different keypairs. This results in **double-signing** for all DHT content, causing significant bandwidth overhead (~12KB per vote instead of ~5KB).
+DNA Connect has **two separate Dilithium5 identity systems** that both derive from the same BIP39 mnemonic but use different keypairs. This results in **double-signing** for all DHT content, causing significant bandwidth overhead (~12KB per vote instead of ~5KB).
 
 **Key Finding:** Every DHT `putSigned()` operation adds a ~7.2KB DHT-level signature ON TOP OF any content-level Messenger signature. This makes the current architecture unsuitable for high-volume reputation voting without modification.
 
@@ -421,7 +421,7 @@ grep -n "sign\(\*val\)" /opt/dna-messenger/vendor/opendht-pq/src/securedht.cpp
 
 ## 9. Conclusion
 
-The DNA Messenger identity system has a **fundamental architectural issue** where two separate Dilithium5 keypairs are derived from the same mnemonic, resulting in double-signing overhead of ~7KB per DHT value.
+The DNA Connect identity system has a **fundamental architectural issue** where two separate Dilithium5 keypairs are derived from the same mnemonic, resulting in double-signing overhead of ~7KB per DHT value.
 
 For Feeds v2 reputation voting to scale, we must either:
 1. **Unify the identities** (long-term, significant work)

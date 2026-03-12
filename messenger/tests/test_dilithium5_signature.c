@@ -16,7 +16,7 @@
 #include "crypto/sign/dsa/api.h"
 #include "crypto/utils/qgp_random.h"
 
-#define TEST_MESSAGE "DNA Messenger - Post-Quantum E2E Encryption"
+#define TEST_MESSAGE "DNA Connect - Post-Quantum E2E Encryption"
 #define EXPECTED_SIG_SIZE 4595  // Dilithium5 signature size
 
 int main(void) {

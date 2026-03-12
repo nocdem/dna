@@ -21,7 +21,7 @@
  * }
  *
  * @file dht_profile.h
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-11-12
  */
 

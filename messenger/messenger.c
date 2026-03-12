@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Core Implementation
+ * DNA Connect - Core Implementation
  *
  * Message handling, encryption, and storage.
  * Uses SQLite for local storage and DHT for offline queue.

@@ -11,7 +11,7 @@
  * - BIP32 path derivation (Ethereum BIP-44)
  * - Known test vectors
  *
- * Part of DNA Messenger beta readiness testing (P1-2).
+ * Part of DNA Connect beta readiness testing (P1-2).
  */
 
 #include <stdio.h>

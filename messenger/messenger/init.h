@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Initialization Module
+ * DNA Connect - Initialization Module
  *
  * Context management and initialization functions.
  * This is the foundation module - all other modules depend on the context created here.

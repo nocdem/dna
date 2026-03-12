@@ -14,7 +14,7 @@
  * - group_messages: Decrypted group message cache
  * - metadata: Schema version tracking
  *
- * Part of DNA Messenger - GEK System
+ * Part of DNA Connect - GEK System
  *
  * @date 2026-01-15
  */

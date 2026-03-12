@@ -1,5 +1,5 @@
 #!/bin/bash
-# DNA Messenger — Full setup script for fresh Linux machines
+# DNA Connect — Full setup script for fresh Linux machines
 # Usage: curl -fsSL https://raw.githubusercontent.com/nocdem/dna/main/setup.sh | bash
 
 set -e
@@ -107,7 +107,7 @@ fi
 # ── Done ──────────────────────────────────────────────────────────
 echo ""
 info "=============================="
-info "  DNA Messenger setup complete"
+info "  DNA Connect setup complete"
 info "=============================="
 echo ""
 echo "  CLI tool:     $INSTALL_DIR/messenger/build/cli/dna-messenger-cli"

@@ -11,7 +11,7 @@
  * Follows the same patterns as dna_feed_topic.c, dna_feed_comments.c,
  * and dna_feed_index.c.
  *
- * Part of DNA Messenger
+ * Part of DNA Connect
  */
 
 #include "dna_channels.h"

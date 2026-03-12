@@ -18,7 +18,7 @@
  * Message ID Format:
  *   <sender_fingerprint>_<group_uuid>_<timestamp_ms>
  *
- * Part of DNA Messenger
+ * Part of DNA Connect
  *
  * @date 2025-11-29
  * @updated 2026-01-15 - Single-key architecture, 1 listener per group

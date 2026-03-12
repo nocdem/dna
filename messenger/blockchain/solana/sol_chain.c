@@ -2,7 +2,7 @@
  * @file sol_chain.c
  * @brief Solana blockchain_ops_t implementation
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-09
  */
 

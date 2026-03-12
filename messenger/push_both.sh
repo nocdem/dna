@@ -1,11 +1,11 @@
 #!/bin/bash
-# DNA Messenger - Dual Repository Push Script
+# DNA Connect - Dual Repository Push Script
 # Pushes commits to both GitLab (primary) and GitHub (mirror)
 
 set -e  # Exit on error
 
 echo "=========================================="
-echo "DNA Messenger - Dual Repository Push"
+echo "DNA Connect - Dual Repository Push"
 echo "=========================================="
 echo ""
 

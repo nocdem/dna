@@ -68,7 +68,7 @@ Nodus is a **two-tier network** that provides both DHT key-value storage (profil
 
 ### Tier 2: Clients
 
-- **Participants:** DNA Messenger users
+- **Participants:** DNA Connect users
 - **Routing:** None — delegates to connected Nodus
 - **Transport:** TCP 4001 (persistent connections for push notifications + channel subscriptions)
 - **Storage:** Local SQLite (dnac.db, unchanged)
@@ -1247,7 +1247,7 @@ Before Nodus-T2 and T3 are ready, Phase 1-4 can run entirely on nehir-01 with 3 
 
 ---
 
-## 13. DNA Messenger Integration
+## 13. DNA Connect Integration
 
 ### What Changes
 

@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Initialization Module Implementation
+ * DNA Connect - Initialization Module Implementation
  */
 
 #include "init.h"

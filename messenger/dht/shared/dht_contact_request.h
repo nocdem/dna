@@ -1,5 +1,5 @@
 /**
- * DHT Contact Request System for DNA Messenger
+ * DHT Contact Request System for DNA Connect
  *
  * ICQ-style contact request system where:
  * - Alice sends a contact request to Bob
@@ -20,7 +20,7 @@
  * [256-byte message][variable signature]
  *
  * @file dht_contact_request.h
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-10
  */
 

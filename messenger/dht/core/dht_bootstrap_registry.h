@@ -1,7 +1,7 @@
 /**
  * DHT Bootstrap Node Registry
  *
- * Distributed discovery system for DNA Messenger bootstrap nodes.
+ * Distributed discovery system for DNA Connect bootstrap nodes.
  * Instead of hardcoding bootstrap IPs, nodes register themselves in DHT
  * and clients discover them dynamically.
  *

@@ -47,11 +47,23 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
       // Android: use getApplicationSupportDirectory() which maps to filesDir
       // This matches where MainActivity.kt copies cacert.pem for SSL
       final appDir = await getApplicationSupportDirectory();
-      dataDir = '${appDir.path}/dna_messenger';
+      dataDir = '${appDir.path}/dna';
+      // Migrate from old directory name if it exists
+      final oldDir = Directory('${appDir.path}/dna_messenger');
+      final newDir = Directory(dataDir);
+      if (await oldDir.exists() && !await newDir.exists()) {
+        await oldDir.rename(dataDir);
+      }
     } else {
       // iOS: use documents directory
       final appDir = await getApplicationDocumentsDirectory();
-      dataDir = '${appDir.path}/dna_messenger';
+      dataDir = '${appDir.path}/dna';
+      // Migrate from old directory name if it exists
+      final oldDir = Directory('${appDir.path}/dna_messenger');
+      final newDir = Directory(dataDir);
+      if (await oldDir.exists() && !await newDir.exists()) {
+        await oldDir.rename(dataDir);
+      }
     }
 
     // Ensure directory exists

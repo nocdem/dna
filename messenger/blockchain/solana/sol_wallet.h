@@ -5,7 +5,7 @@
  * Creates Solana wallets using SLIP-10 Ed25519 derivation from BIP39 seeds.
  * Derivation path: m/44'/501'/0'/0'
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-09
  */
 

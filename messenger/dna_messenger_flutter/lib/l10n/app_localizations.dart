@@ -117,7 +117,7 @@ abstract class AppLocalizations {
   /// No description provided for @appTitle.
   ///
   /// In en, this message translates to:
-  /// **'DNA Messenger'**
+  /// **'DNA Connect'**
   String get appTitle;
 
   /// No description provided for @initializing.
@@ -1305,7 +1305,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsAppVersion.
   ///
   /// In en, this message translates to:
-  /// **'DNA Messenger v{version}'**
+  /// **'DNA Connect v{version}'**
   String settingsAppVersion(String version);
 
   /// No description provided for @settingsLibVersion.
@@ -1317,7 +1317,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsPostQuantumMessenger.
   ///
   /// In en, this message translates to:
-  /// **'Post-Quantum Encrypted Messenger'**
+  /// **'Post-Quantum Encrypted Communication'**
   String get settingsPostQuantumMessenger;
 
   /// No description provided for @settingsCryptoStack.
@@ -1533,13 +1533,13 @@ abstract class AppLocalizations {
   /// No description provided for @identityTitle.
   ///
   /// In en, this message translates to:
-  /// **'DNA Messenger'**
+  /// **'DNA Connect'**
   String get identityTitle;
 
   /// No description provided for @identityWelcome.
   ///
   /// In en, this message translates to:
-  /// **'Welcome to DNA Messenger'**
+  /// **'Welcome to DNA Connect'**
   String get identityWelcome;
 
   /// No description provided for @identityGenerateSeed.
@@ -1995,7 +1995,7 @@ abstract class AppLocalizations {
   /// No description provided for @lockTitle.
   ///
   /// In en, this message translates to:
-  /// **'DNA Messenger'**
+  /// **'DNA Connect'**
   String get lockTitle;
 
   /// No description provided for @lockEnterPIN.
@@ -2127,7 +2127,7 @@ abstract class AppLocalizations {
   /// No description provided for @updateMessage.
   ///
   /// In en, this message translates to:
-  /// **'A newer version is required to continue using DNA Messenger.'**
+  /// **'A newer version is required to continue using DNA Connect.'**
   String get updateMessage;
 
   /// No description provided for @updateDownload.
@@ -2145,7 +2145,7 @@ abstract class AppLocalizations {
   /// No description provided for @updateAvailableMessage.
   ///
   /// In en, this message translates to:
-  /// **'A new version of DNA Messenger is available. Update now for the latest features and improvements.'**
+  /// **'A new version of DNA Connect is available. Update now for the latest features and improvements.'**
   String get updateAvailableMessage;
 
   /// No description provided for @updateLater.

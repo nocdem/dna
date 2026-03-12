@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# DNA Messenger - Dual Client Testing Script
+# DNA Connect - Dual Client Testing Script
 # 
-# This script launches two separate DNA Messenger instances with isolated
+# This script launches two separate DNA Connect instances with isolated
 # home directories in /tmp for testing P2P messaging between clients.
 #
 # Usage:
@@ -43,7 +43,7 @@ DHT_BOOTSTRAP="bootstrap1.cpunk.io:4000,bootstrap2.cpunk.io:4000,bootstrap3.cpun
 
 function print_header() {
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}  DNA Messenger - Dual Client Test${NC}"
+    echo -e "${BLUE}  DNA Connect - Dual Client Test${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
@@ -99,7 +99,7 @@ function launch_client() {
     export DNA_P2P_PORT="$p2p_port"
     
     # Launch client
-    echo -e "${GREEN}Starting DNA Messenger for $name...${NC}"
+    echo -e "${GREEN}Starting DNA Connect for $name...${NC}"
     "$BINARY" &
     
     local pid=$!

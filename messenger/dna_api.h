@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Public API Header
+ * DNA Connect - Public API Header
  *
  * Post-quantum end-to-end encrypted messaging library
  * Memory-based operations (no file I/O in public API)

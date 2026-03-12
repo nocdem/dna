@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Contacts Module
+ * DNA Connect - Contacts Module
  *
  * DHT contact list synchronization.
  * Multi-device sync using Kyber1024 self-encryption + Dilithium5 signatures.

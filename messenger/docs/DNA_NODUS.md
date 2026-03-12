@@ -5,7 +5,7 @@
 
 ## Overview
 
-DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Messenger. It is a pure C implementation (no C++ dependencies) providing:
+DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Connect. It is a pure C implementation (no C++ dependencies) providing:
 
 1. **Kademlia DHT** - Decentralized key-value storage with 512-bit keyspace
 2. **PBFT Consensus** - Byzantine fault-tolerant replication across nodes

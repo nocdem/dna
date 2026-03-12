@@ -13,13 +13,13 @@ const int _bip39MaxMnemonicLength = 512;
 /// Load the DNA native library
 DynamicLibrary _loadLibrary() {
   if (Platform.isAndroid) {
-    return DynamicLibrary.open('libdna_lib.so');
+    return DynamicLibrary.open('libdna.so');
   } else if (Platform.isLinux) {
     // Try common locations
     const paths = [
-      'libdna_lib.so',
-      './libdna_lib.so',
-      '../build/libdna_lib.so',
+      'libdna.so',
+      './libdna.so',
+      '../build/libdna.so',
     ];
     for (final path in paths) {
       try {
@@ -28,9 +28,9 @@ DynamicLibrary _loadLibrary() {
         continue;
       }
     }
-    throw Exception('Failed to load libdna_lib.so');
+    throw Exception('Failed to load libdna.so');
   } else if (Platform.isWindows) {
-    return DynamicLibrary.open('dna_lib.dll');
+    return DynamicLibrary.open('dna.dll');
   } else if (Platform.isMacOS || Platform.isIOS) {
     return DynamicLibrary.process();
   }

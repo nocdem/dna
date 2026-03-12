@@ -1,10 +1,10 @@
-# DNA Messenger - Message System Documentation
+# DNA Connect - Message System Documentation
 
 **Version:** v0.11 (Message Deletion + Cross-Device Sync)
 **Last Updated:** 2026-03-11
 **Security Level:** NIST Category 5 (256-bit quantum)
 
-This document describes how the DNA Messenger message system works, with all facts verified directly from source code.
+This document describes how the DNA Connect message system works, with all facts verified directly from source code.
 
 ---
 
@@ -1475,4 +1475,4 @@ CREATE TABLE IF NOT EXISTS group_messages (
 
 ---
 
-*Document generated from DNA Messenger source code analysis. All line numbers and code references verified against codebase.*
+*Document generated from DNA Connect source code analysis. All line numbers and code references verified against codebase.*

@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Identity Module Implementation
+ * DNA Connect - Identity Module Implementation
  */
 
 #include "identity.h"

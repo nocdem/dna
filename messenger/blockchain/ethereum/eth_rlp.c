@@ -2,7 +2,7 @@
  * @file eth_rlp.c
  * @brief RLP Encoding Implementation
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-08
  */
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "🔨 Building DNA Messenger WebAssembly Module..."
+echo "🔨 Building DNA Connect WebAssembly Module..."
 
 # Source Emscripten environment
 source /opt/emsdk/emsdk_env.sh > /dev/null 2>&1

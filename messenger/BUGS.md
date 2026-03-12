@@ -1,4 +1,4 @@
-# DNA Messenger - Known Bugs
+# DNA Connect - Known Bugs
 
 Bug reports for Claude to fix. Format: `- [ ] Description (priority)`
 

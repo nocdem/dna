@@ -12,14 +12,14 @@ add_executable(${BINARY_NAME}
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
 )
 
-# Stage libdna_lib.so next to the executable for "flutter run".
+# Stage libdna.so next to the executable for "flutter run".
 if(DNA_NATIVE_SO)
   add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${BINARY_NAME}>/lib"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${DNA_NATIVE_SO}"
-            "$<TARGET_FILE_DIR:${BINARY_NAME}>/lib/libdna_lib.so"
-    COMMENT "Staging libdna_lib.so into bundle/lib"
+            "$<TARGET_FILE_DIR:${BINARY_NAME}>/lib/libdna.so"
+    COMMENT "Staging libdna.so into bundle/lib"
   )
 endif()
 

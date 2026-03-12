@@ -6,7 +6,7 @@
  * Handles publishing and fetching of large Initial Key Packets
  * for Group Encryption Key (GEK) distribution via DHT.
  *
- * Part of DNA Messenger - GEK System
+ * Part of DNA Connect - GEK System
  *
  * @date 2026-01-10
  */

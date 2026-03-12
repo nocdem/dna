@@ -7,7 +7,7 @@
  * - V3 (Uniswap/PancakeSwap): QuoterV2.quoteExactInputSingle()
  * No external API dependencies — reads pool data directly from chain.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2026-03-09
  */
 

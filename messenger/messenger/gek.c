@@ -5,7 +5,7 @@
  * Manages AES-256 symmetric keys for group messaging encryption.
  * Consolidates key generation, storage, encryption, and rotation.
  *
- * Part of DNA Messenger - GEK System
+ * Part of DNA Connect - GEK System
  *
  * @date 2026-01-10
  */

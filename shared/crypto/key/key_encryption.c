@@ -4,7 +4,7 @@
  *
  * Uses PBKDF2-SHA256 + AES-256-GCM for secure key encryption.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-15
  */
 

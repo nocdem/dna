@@ -1,7 +1,7 @@
 /*
- * DNA Messenger Engine - Public API
+ * DNA Connect Engine - Public API
  *
- * Unified async C API for DNA Messenger core functionality.
+ * Unified async C API for DNA Connect core functionality.
  * Provides clean separation between engine and UI layers.
  *
  * Features:
@@ -43,7 +43,7 @@ extern "C" {
 #include "version.h"
 
 /**
- * Get DNA Messenger version string
+ * Get DNA Connect version string
  *
  * @return Version string (e.g., "0.2.5") - do not free
  */

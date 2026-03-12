@@ -1,7 +1,7 @@
 /*
  * DNA Engine - Implementation
  *
- * Core engine implementation providing async API for DNA Messenger.
+ * Core engine implementation providing async API for DNA Connect.
  */
 
 #define _XOPEN_SOURCE 700  /* For strptime */

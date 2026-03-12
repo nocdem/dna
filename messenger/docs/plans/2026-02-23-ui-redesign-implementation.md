@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Redesign DNA Messenger's Flutter UI from cpunk-neon drawer navigation to a Trust Wallet-style bottom tab interface with cyan-to-blue gradient, card-based layouts, dark+light themes, and a formal component library.
+**Goal:** Redesign DNA Connect's Flutter UI from cpunk-neon drawer navigation to a Trust Wallet-style bottom tab interface with cyan-to-blue gradient, card-based layouts, dark+light themes, and a formal component library.
 
 **Architecture:** Design System First approach. Build a modular `lib/design_system/` component library with theme tokens, reusable widgets, and barrel exports. Then migrate each screen to use the new components. Navigation changes from drawer to bottom tabs (Chats, Groups, Feed, More). Existing Riverpod providers and FFI bindings remain untouched.
 
@@ -24,7 +24,7 @@
 ```dart
 import 'package:flutter/material.dart';
 
-/// DNA Messenger color system
+/// DNA Connect color system
 /// Supports both dark and light themes with consistent brand identity
 class DnaColors {
   DnaColors._();
@@ -151,7 +151,7 @@ git commit -m "feat(ui): add gradient definitions"
 ```dart
 import 'package:flutter/material.dart';
 
-/// Typography scale for DNA Messenger
+/// Typography scale for DNA Connect
 /// Based on Material 3 type scale with custom weights
 class DnaTypography {
   DnaTypography._();
@@ -513,7 +513,7 @@ import 'design_system/theme/dna_theme.dart';
 Find the MaterialApp in `DnaMessengerApp.build()`:
 ```dart
     return MaterialApp(
-      title: 'DNA Messenger',
+      title: 'DNA Connect',
       debugShowCheckedModeBanner: false,
       theme: DnaTheme.theme,
       navigatorObservers: [routeObserver],
@@ -524,7 +524,7 @@ Replace with:
 ```dart
     final themeMode = ref.watch(themeModeProvider);
     return MaterialApp(
-      title: 'DNA Messenger',
+      title: 'DNA Connect',
       debugShowCheckedModeBanner: false,
       theme: DnaTheme.light(),
       darkTheme: DnaTheme.dark(),

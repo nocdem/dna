@@ -5,7 +5,7 @@
  * Provides ERC-20 token operations including balance queries and transfers.
  * Supports USDT and other standard ERC-20 tokens.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-14
  */
 

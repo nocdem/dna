@@ -2,7 +2,7 @@
 
 ## Context
 
-DNA Messenger currently uses 150+ DHT listeners per client (50 contacts × 3 key types: outbox, presence, ACK). As user count grows, this creates unsustainable load on the DHT network.
+DNA Connect currently uses 150+ DHT listeners per client (50 contacts × 3 key types: outbox, presence, ACK). As user count grows, this creates unsustainable load on the DHT network.
 
 This plan adds a **client-side inbox notification** mechanism: when Alice sends Bob a message, she also writes a tiny notification to Bob's single inbox key. Bob only needs **1 listener** on his own inbox key instead of 50 separate outbox listeners.
 

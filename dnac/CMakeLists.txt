@@ -46,12 +46,12 @@ endif()
 
 # Monorepo paths
 set(SHARED_DIR "${CMAKE_SOURCE_DIR}/../shared")
-set(DNA_MESSENGER_DIR "${CMAKE_SOURCE_DIR}/../messenger" CACHE PATH "Path to DNA Messenger source")
-set(DNA_BUILD_DIR "${DNA_MESSENGER_DIR}/build" CACHE PATH "Path to DNA Messenger build")
+set(DNA_MESSENGER_DIR "${CMAKE_SOURCE_DIR}/../messenger" CACHE PATH "Path to DNA Connect source")
+set(DNA_BUILD_DIR "${DNA_MESSENGER_DIR}/build" CACHE PATH "Path to DNA Connect build")
 
 # Check if libdna exists
-if(NOT EXISTS "${DNA_BUILD_DIR}/libdna_lib.a" AND NOT EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
-    message(FATAL_ERROR "libdna not found at ${DNA_BUILD_DIR}. Build DNA Messenger first.")
+if(NOT EXISTS "${DNA_BUILD_DIR}/libdna.a" AND NOT EXISTS "${DNA_BUILD_DIR}/libdna.so")
+    message(FATAL_ERROR "libdna not found at ${DNA_BUILD_DIR}. Build DNA Connect first.")
 endif()
 
 # Find dependencies
@@ -134,13 +134,13 @@ target_include_directories(dnac PUBLIC
 )
 
 # Link against libdna
-if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
+if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
     target_link_libraries(dnac
-        ${DNA_BUILD_DIR}/libdna_lib.so
+        ${DNA_BUILD_DIR}/libdna.so
     )
 else()
     target_link_libraries(dnac
-        ${DNA_BUILD_DIR}/libdna_lib.a
+        ${DNA_BUILD_DIR}/libdna.a
     )
 endif()
 
@@ -173,10 +173,10 @@ if(DNAC_BUILD_CLI)
     )
 
     # Link libdna directly for dna_engine functions
-    if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
-        target_link_libraries(dnac-cli ${DNA_BUILD_DIR}/libdna_lib.so)
+    if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
+        target_link_libraries(dnac-cli ${DNA_BUILD_DIR}/libdna.so)
     else()
-        target_link_libraries(dnac-cli ${DNA_BUILD_DIR}/libdna_lib.a)
+        target_link_libraries(dnac-cli ${DNA_BUILD_DIR}/libdna.a)
     endif()
 
     target_link_libraries(dnac-cli
@@ -203,10 +203,10 @@ if(DNAC_BUILD_TESTS)
     target_link_libraries(test_real dnac)
 
     # Link libdna directly for dna_engine functions
-    if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
-        target_link_libraries(test_real ${DNA_BUILD_DIR}/libdna_lib.so)
+    if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
+        target_link_libraries(test_real ${DNA_BUILD_DIR}/libdna.so)
     else()
-        target_link_libraries(test_real ${DNA_BUILD_DIR}/libdna_lib.a)
+        target_link_libraries(test_real ${DNA_BUILD_DIR}/libdna.a)
     endif()
 
     target_link_libraries(test_real
@@ -225,10 +225,10 @@ if(DNAC_BUILD_TESTS)
     target_link_libraries(test_remote dnac)
 
     # Link libdna directly for dna_engine functions
-    if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
-        target_link_libraries(test_remote ${DNA_BUILD_DIR}/libdna_lib.so)
+    if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
+        target_link_libraries(test_remote ${DNA_BUILD_DIR}/libdna.so)
     else()
-        target_link_libraries(test_remote ${DNA_BUILD_DIR}/libdna_lib.a)
+        target_link_libraries(test_remote ${DNA_BUILD_DIR}/libdna.a)
     endif()
 
     target_link_libraries(test_remote
@@ -245,10 +245,10 @@ if(DNAC_BUILD_TESTS)
     target_link_libraries(test_gaps dnac)
 
     # Link libdna directly for dna_engine functions
-    if(EXISTS "${DNA_BUILD_DIR}/libdna_lib.so")
-        target_link_libraries(test_gaps ${DNA_BUILD_DIR}/libdna_lib.so)
+    if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
+        target_link_libraries(test_gaps ${DNA_BUILD_DIR}/libdna.so)
     else()
-        target_link_libraries(test_gaps ${DNA_BUILD_DIR}/libdna_lib.a)
+        target_link_libraries(test_gaps ${DNA_BUILD_DIR}/libdna.a)
     endif()
 
     target_link_libraries(test_gaps
@@ -283,7 +283,7 @@ message(STATUS "")
 message(STATUS "DNAC Configuration Summary:")
 message(STATUS "  Version:        ${PROJECT_VERSION}")
 message(STATUS "  Build type:     ${CMAKE_BUILD_TYPE}")
-message(STATUS "  DNA Messenger:  ${DNA_MESSENGER_DIR}")
+message(STATUS "  DNA Connect:  ${DNA_MESSENGER_DIR}")
 message(STATUS "  DNA Build:      ${DNA_BUILD_DIR}")
 message(STATUS "  CLI:            ${DNAC_BUILD_CLI}")
 message(STATUS "  Tests:          ${DNAC_BUILD_TESTS}")

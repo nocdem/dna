@@ -1,4 +1,4 @@
-# DNA Messenger - Code Cleanup Required
+# DNA Connect - Code Cleanup Required
 
 **Generated:** 2025-12-07 | **Updated:** 2025-12-07 | **Status:** Phase 1 Complete | **Priority:** Medium
 

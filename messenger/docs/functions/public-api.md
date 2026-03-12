@@ -2,7 +2,7 @@
 
 **File:** `include/dna/dna_engine.h`
 
-The main public API for DNA Messenger. All UI/FFI bindings use these functions.
+The main public API for DNA Connect. All UI/FFI bindings use these functions.
 
 ---
 
@@ -10,7 +10,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 
 | Function | Description |
 |----------|-------------|
-| `const char* dna_engine_get_version(void)` | Get DNA Messenger version string |
+| `const char* dna_engine_get_version(void)` | Get DNA Connect version string |
 | `const char* dna_engine_error_string(int error)` | Get human-readable error message |
 | `dna_engine_t* dna_engine_create(const char *data_dir)` | Create engine instance and spawn worker threads (blocking) |
 | `void dna_engine_create_async(const char *data_dir, dna_engine_created_cb cb, void *user_data, _Atomic bool *cancelled)` | Create engine asynchronously (non-blocking) |

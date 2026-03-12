@@ -1,8 +1,8 @@
-# DNA Messenger - Development Guidelines for Claude AI
+# DNA Connect - Development Guidelines for Claude AI
 
 **Last Updated:** 2026-03-12 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.9.58 | Flutter v1.0.0-rc26 | Nodus v0.6.3
+**Versions:** Library v0.9.59 | Flutter v1.0.0-rc27 | Nodus v0.6.3
 
 ---
 
@@ -197,8 +197,8 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 **Version Files (INDEPENDENT - do NOT keep in sync):**
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.9.58 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc26+10376 | Flutter/Dart code changes (lib/, assets/) |
+| C Library | `include/dna/version.h` | v0.9.59 | C code changes (src/, dht/, messenger/, transport/, crypto/, include/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc27+10377 | Flutter/Dart code changes (lib/, assets/) |
 | Nodus | `../nodus/include/nodus/nodus_types.h` | v0.6.3 | Nodus code changes (../nodus/) |
 
 **IMPORTANT: Versions are INDEPENDENT**
@@ -633,7 +633,7 @@ For **Flutter app** platform-specific behavior:
 - **FULL BUILD OUTPUT**: When building, NEVER use `tail`, `grep`, `head`, or any other command to suppress or filter build output. Show the FULL output so the user can see all warnings and errors. The only exception is when the output would exceed 30000 characters.
 
 ## CLI FOR DEBUGGING AND TESTING
-The CLI tool (`dna-messenger-cli`) is the primary tool for debugging and testing DNA Messenger features.
+The CLI tool (`dna-messenger-cli`) is the primary tool for debugging and testing DNA Connect features.
 
 **Documentation:** [`docs/CLI_TESTING.md`](docs/CLI_TESTING.md) - Complete CLI reference
 
@@ -734,7 +734,7 @@ cd dna_messenger_flutter && flutter run
 
 ## Development Guidelines
 
-DNA Messenger is developed by a **collaborative team**. When working on this project:
+DNA Connect is developed by a **collaborative team**. When working on this project:
 
 1. **Security First** - Never modify crypto primitives without team review
 2. **Simplicity** - Keep code simple and focused

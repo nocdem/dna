@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Messages Module Implementation
+ * DNA Connect - Messages Module Implementation
  */
 
 #include "messages.h"

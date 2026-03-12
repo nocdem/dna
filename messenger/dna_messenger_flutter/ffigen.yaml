@@ -1,4 +1,4 @@
-# FFI bindings configuration for DNA Messenger Engine
+# FFI bindings configuration for DNA Connect Engine
 # Run: dart run ffigen
 
 llvm-path:
@@ -6,7 +6,7 @@ llvm-path:
   - '/usr/lib/x86_64-linux-gnu'
 
 name: DnaBindings
-description: FFI bindings for DNA Messenger Engine C API
+description: FFI bindings for DNA Connect Engine C API
 output: 'lib/ffi/dna_bindings_generated.dart'
 
 headers:

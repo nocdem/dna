@@ -2,7 +2,7 @@
  * @file sol_spl.c
  * @brief SPL Token Implementation for Solana
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-16
  */
 

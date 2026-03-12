@@ -379,7 +379,7 @@ int qgp_log_export_to_file(const char *filepath) {
     pthread_mutex_lock(&g_ring_mutex);
 
     /* Write header */
-    fprintf(f, "DNA Messenger Log Export\n");
+    fprintf(f, "DNA Connect Log Export\n");
     fprintf(f, "========================\n");
     fprintf(f, "Entries: %d\n\n", g_ring_count);
 
@@ -601,7 +601,7 @@ static void rotate_log_files(void) {
 
     g_log_file = fopen(g_log_file_path, "a");
     if (g_log_file) {
-        fprintf(g_log_file, "\n=== DNA Messenger Log Continued: %s (rotation) ===\n", timestamp);
+        fprintf(g_log_file, "\n=== DNA Connect Log Continued: %s (rotation) ===\n", timestamp);
         fflush(g_log_file);
     }
 }
@@ -660,7 +660,7 @@ static bool init_file_logging(void) {
     } else {
         strncpy(time_buf, "0000-00-00 00:00:00", sizeof(time_buf));
     }
-    fprintf(g_log_file, "\n=== DNA Messenger Log Started: %s (Lib v%s) ===\n", time_buf, DNA_VERSION_STRING);
+    fprintf(g_log_file, "\n=== DNA Connect Log Started: %s (Lib v%s) ===\n", time_buf, DNA_VERSION_STRING);
     fflush(g_log_file);
 
     return true;
@@ -710,7 +710,7 @@ void qgp_log_file_close(void) {
         } else {
             strncpy(time_buf, "0000-00-00 00:00:00", sizeof(time_buf));
         }
-        fprintf(g_log_file, "=== DNA Messenger Log Closed: %s ===\n\n", time_buf);
+        fprintf(g_log_file, "=== DNA Connect Log Closed: %s ===\n\n", time_buf);
 
         fflush(g_log_file);
         fclose(g_log_file);

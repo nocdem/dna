@@ -1,4 +1,4 @@
-// DNA Messenger - Post-Quantum Encrypted P2P Messenger
+// DNA Connect - Post-Quantum Encrypted P2P Communication
 // Phase 14: DHT-only messaging with Android background support
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -65,7 +65,7 @@ class DnaMessengerApp extends ConsumerWidget {
     final themeMode = ref.watch(themeModeProvider);
     final locale = ref.watch(localeProvider);
     return MaterialApp(
-      title: 'DNA Messenger',
+      title: 'DNA Connect',
       debugShowCheckedModeBanner: false,
       theme: DnaTheme.light(),
       darkTheme: DnaTheme.dark(),

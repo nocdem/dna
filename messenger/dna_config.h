@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Configuration Management
+ * DNA Connect - Configuration Management
  */
 
 #ifndef DNA_CONFIG_H

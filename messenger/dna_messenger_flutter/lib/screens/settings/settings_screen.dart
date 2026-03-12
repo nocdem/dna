@@ -848,11 +848,11 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
         // Mobile: Zip log files and share
         // Use getApplicationSupportDirectory() to match engine_provider.dart
         final appDir = await getApplicationSupportDirectory();
-        final logsDir = Directory('${appDir.path}/dna_messenger/logs');
+        final logsDir = Directory('${appDir.path}/dna/logs');
 
         if (!await logsDir.exists()) {
           // Try to list parent directory to see what's there
-          final parentDir = Directory('${appDir.path}/dna_messenger');
+          final parentDir = Directory('${appDir.path}/dna');
           String debugInfo = 'Path: ${logsDir.path}';
           if (await parentDir.exists()) {
             final contents = await parentDir.list().map((e) => e.path.split('/').last).toList();
@@ -931,8 +931,8 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
 
         await Share.shareXFiles(
           [XFile(zipPath)],
-          subject: 'DNA Messenger Logs',
-          text: 'Debug logs from DNA Messenger',
+          subject: 'DNA Connect Logs',
+          text: 'Debug logs from DNA Connect',
         );
       }
     } catch (e) {

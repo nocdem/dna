@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Core Internal Header
+ * DNA Connect - Core Internal Header
  *
  * Shared internal definitions for modular messenger components.
  * This header provides access to the messenger_context_t structure

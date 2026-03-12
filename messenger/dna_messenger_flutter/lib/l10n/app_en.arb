@@ -1,7 +1,7 @@
 {
   "@@locale": "en",
 
-  "appTitle": "DNA Messenger",
+  "appTitle": "DNA Connect",
   "initializing": "Initializing...",
   "failedToInitialize": "Failed to initialize",
   "makeSureNativeLibrary": "Make sure the native library is available.",
@@ -292,7 +292,7 @@
   "settingsAbout": "About",
   "settingsUpdateAvailable": "Update Available",
   "settingsTapToDownload": "Tap to download",
-  "settingsAppVersion": "DNA Messenger v{version}",
+  "settingsAppVersion": "DNA Connect v{version}",
   "@settingsAppVersion": {
     "placeholders": {
       "version": { "type": "String" }
@@ -304,7 +304,7 @@
       "version": { "type": "String" }
     }
   },
-  "settingsPostQuantumMessenger": "Post-Quantum Encrypted Messenger",
+  "settingsPostQuantumMessenger": "Post-Quantum Encrypted Communication",
   "settingsCryptoStack": "CRYPTO STACK",
 
   "profileTitle": "Edit Profile",
@@ -368,8 +368,8 @@
   "contactProfileInfo": "Info",
   "contactProfileWebsite": "Website",
 
-  "identityTitle": "DNA Messenger",
-  "identityWelcome": "Welcome to DNA Messenger",
+  "identityTitle": "DNA Connect",
+  "identityWelcome": "Welcome to DNA Connect",
   "identityGenerateSeed": "Generate New Seed",
   "identityHaveSeed": "I Have a Seed Phrase",
   "identityYourRecoveryPhrase": "Your Recovery Phrase",
@@ -470,7 +470,7 @@
   "moreSettings": "Settings",
   "moreAppLock": "App Lock",
 
-  "lockTitle": "DNA Messenger",
+  "lockTitle": "DNA Connect",
   "lockEnterPIN": "Enter PIN to unlock",
   "lockIncorrectPIN": "Incorrect PIN",
   "lockUseBiometrics": "Use biometrics to unlock",
@@ -501,10 +501,10 @@
   },
 
   "updateTitle": "Update Required",
-  "updateMessage": "A newer version is required to continue using DNA Messenger.",
+  "updateMessage": "A newer version is required to continue using DNA Connect.",
   "updateDownload": "Download Update",
   "updateAvailableTitle": "New Version Available",
-  "updateAvailableMessage": "A new version of DNA Messenger is available. Update now for the latest features and improvements.",
+  "updateAvailableMessage": "A new version of DNA Connect is available. Update now for the latest features and improvements.",
   "updateLater": "Later",
 
   "cancel": "Cancel",

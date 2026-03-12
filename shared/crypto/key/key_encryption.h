@@ -21,7 +21,7 @@
  *   - AES-256-GCM provides authenticated encryption
  *   - Memory wiped after use
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-15
  */
 

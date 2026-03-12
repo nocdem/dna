@@ -13,7 +13,7 @@
  * - Posts use dht_chunked_fetch_mine/publish + dht_chunked_fetch_all (multi-owner)
  * - Index uses multi-owner day-bucket pattern (same as dna_feed_index.c)
  *
- * Part of DNA Messenger
+ * Part of DNA Connect
  */
 
 #ifndef DNA_CHANNELS_H

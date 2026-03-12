@@ -5,7 +5,7 @@
  * Uses TronGrid API for transaction creation and broadcasting.
  * Signs transactions locally with secp256k1.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-14
  */
 

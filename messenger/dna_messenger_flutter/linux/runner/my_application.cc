@@ -35,7 +35,7 @@ static void my_application_activate(GApplication* application) {
 
   // Let GTK handle window decorations natively - this ensures the title bar
   // follows the system theme (light/dark) correctly on GNOME and other DEs
-  gtk_window_set_title(window, "DNA Messenger");
+  gtk_window_set_title(window, "DNA Connect");
 
   // Handle window close button for clean shutdown
   g_signal_connect(window, "delete-event", G_CALLBACK(on_window_delete),

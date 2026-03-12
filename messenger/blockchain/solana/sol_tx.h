@@ -2,7 +2,7 @@
  * @file sol_tx.h
  * @brief Solana Transaction Building Interface
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-09
  */
 

@@ -1,4 +1,4 @@
-# DNA Messenger Mobile Porting Guide
+# DNA Connect Mobile Porting Guide
 
 **Last Updated:** 2026-01-18
 **Status:** Android SDK Complete (Phases 1-6, 14)
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-DNA Messenger has been successfully ported to Android. The Android SDK provides JNI bindings for all core functionality, with a complete Java API and Gradle project structure ready for app development.
+DNA Connect has been successfully ported to Android. The Android SDK provides JNI bindings for all core functionality, with a complete Java API and Gradle project structure ready for app development.
 
 ### Current Status
 
@@ -60,7 +60,7 @@ DNA Messenger has been successfully ported to Android. The Android SDK provides 
 ┌─────────────────────────────────────────────────────────────┐
 │                     Core Libraries (Pure C)                   │
 │  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌──────────────┐│
-│  │ libdna_lib│ │libdht_lib │ │  libkem   │ │   libdsa     ││
+│  │ libdna│ │libdht_lib │ │  libkem   │ │   libdsa     ││
 │  │  (1.4MB)  │ │  (DHT)    │ │ (Kyber)   │ │ (Dilithium)  ││
 │  └───────────┘ └───────────┘ └───────────┘ └──────────────┘│
 │  ┌───────────────────┐ ┌──────────────────┐                 │
@@ -97,7 +97,7 @@ DNA Messenger has been successfully ported to Android. The Android SDK provides 
 |---------|------|---------|---------------|
 | `libkem.a` | ~200 KB | Kyber1024 (ML-KEM-1024) | ✅ Pure C |
 | `libdsa.a` | ~300 KB | Dilithium5 (ML-DSA-87) | ✅ Pure C |
-| `libdna_lib.a` | 1.4 MB | Messenger core | ✅ Pure C |
+| `libdna.a` | 1.4 MB | Messenger core | ✅ Pure C |
 | `libtransport_lib.a` | ~500 KB | P2P + NAT | ✅ POSIX sockets |
 | ~~`libjuice.a`~~ | - | ICE/STUN/TURN | ❌ Removed v0.4.61 |
 
@@ -184,7 +184,7 @@ cd /opt/dna-messenger
 
 ```
 build-android-arm64-v8a/
-├── libdna_lib.a           # Main messenger library
+├── libdna.a           # Main messenger library
 ├── libdht_lib.a           # DHT networking
 ├── libkem.a               # Kyber1024
 ├── libdsa.a               # Dilithium5

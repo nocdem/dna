@@ -67,7 +67,7 @@ This is the master English string file. All keys are camelCase. Grouped by scree
   "@@locale": "en",
 
   "_comment_app": "=== App-level ===",
-  "appTitle": "DNA Messenger",
+  "appTitle": "DNA Connect",
   "initializing": "Initializing...",
   "failedToInitialize": "Failed to initialize",
   "makeSureNativeLibrary": "Make sure the native library is available.",
@@ -314,7 +314,7 @@ This is the master English string file. All keys are camelCase. Grouped by scree
   "settingsAbout": "About",
   "settingsUpdateAvailable": "Update Available",
   "settingsTapToDownload": "Tap to download",
-  "settingsAppVersion": "DNA Messenger v{version}",
+  "settingsAppVersion": "DNA Connect v{version}",
   "@settingsAppVersion": {
     "placeholders": {
       "version": { "type": "String" }
@@ -393,8 +393,8 @@ This is the master English string file. All keys are camelCase. Grouped by scree
   "contactProfileWebsite": "Website",
 
   "_comment_identity": "=== Identity Selection / Onboarding ===",
-  "identityTitle": "DNA Messenger",
-  "identityWelcome": "Welcome to DNA Messenger",
+  "identityTitle": "DNA Connect",
+  "identityWelcome": "Welcome to DNA Connect",
   "identityGenerateSeed": "Generate New Seed",
   "identityHaveSeed": "I Have a Seed Phrase",
   "identityYourRecoveryPhrase": "Your Recovery Phrase",
@@ -500,7 +500,7 @@ This is the master English string file. All keys are camelCase. Grouped by scree
   "moreAppLock": "App Lock",
 
   "_comment_lock": "=== Lock Screen ===",
-  "lockTitle": "DNA Messenger",
+  "lockTitle": "DNA Connect",
   "lockEnterPIN": "Enter PIN to unlock",
   "lockIncorrectPIN": "Incorrect PIN",
   "lockUseBiometrics": "Use biometrics to unlock",
@@ -535,7 +535,7 @@ This is the master English string file. All keys are camelCase. Grouped by scree
 
   "_comment_update": "=== Update Required ===",
   "updateTitle": "Update Required",
-  "updateMessage": "A newer version is required to continue using DNA Messenger.",
+  "updateMessage": "A newer version is required to continue using DNA Connect.",
   "updateDownload": "Download Update",
 
   "_comment_common": "=== Common / Shared ===",
@@ -821,7 +821,7 @@ git commit -m "feat(i18n): add language picker to Settings screen"
 Replace all hardcoded strings in `_LoadingScreen` and `_ErrorScreen` with `AppLocalizations.of(context).xxx` calls.
 
 Key replacements:
-- `'DNA Messenger'` → `AppLocalizations.of(context).appTitle`
+- `'DNA Connect'` → `AppLocalizations.of(context).appTitle`
 - `'Initializing...'` → `AppLocalizations.of(context).initializing`
 - `'Failed to initialize'` → `AppLocalizations.of(context).failedToInitialize`
 - `'Make sure the native library is available.'` → `AppLocalizations.of(context).makeSureNativeLibrary`

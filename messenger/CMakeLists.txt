@@ -6,9 +6,9 @@ project(dna C CXX)  # C for core library, C++ for DHT components
 # =============================================================================
 # Default to SHARED on Linux desktop (needed for Flutter Linux native library loading)
 if(UNIX AND NOT APPLE AND NOT ANDROID)
-    option(BUILD_SHARED_LIB "Build dna_lib as shared library (for Flutter)" ON)
+    option(BUILD_SHARED_LIB "Build dna as shared library (for Flutter)" ON)
 else()
-    option(BUILD_SHARED_LIB "Build dna_lib as shared library (for Flutter)" OFF)
+    option(BUILD_SHARED_LIB "Build dna as shared library (for Flutter)" OFF)
 endif()
 
 
@@ -161,7 +161,7 @@ set(COMMON_SOURCES
 )
 
 # =============================================================================
-# DNA Messenger Library (libdna)
+# DNA Connect Library (libdna)
 # =============================================================================
 
 # Windows DLL export macro
@@ -169,9 +169,9 @@ if(BUILD_SHARED_LIB AND WIN32)
     add_compile_definitions(DNA_LIB_EXPORTS)
 endif()
 
-# Build dna_lib as either SHARED or STATIC based on BUILD_SHARED_LIB
+# Build dna as either SHARED or STATIC based on BUILD_SHARED_LIB
 if(BUILD_SHARED_LIB)
-    add_library(dna_lib SHARED
+    add_library(dna SHARED
         dna_api.c
         # Unified Engine API (Core/GUI separation)
         src/api/dna_engine.c
@@ -255,7 +255,7 @@ if(BUILD_SHARED_LIB)
         ${COMMON_SOURCES}
     )
 else()
-    add_library(dna_lib STATIC
+    add_library(dna STATIC
         dna_api.c
         # Unified Engine API (Core/GUI separation)
         src/api/dna_engine.c
@@ -341,7 +341,7 @@ else()
 endif()
 
 # Core library dependencies
-target_link_libraries(dna_lib
+target_link_libraries(dna
     OpenSSL::Crypto
     kem
     dsa
@@ -356,7 +356,7 @@ target_link_libraries(dna_lib
 )
 
 # secp256k1 include directory for BIP-32 derivation
-target_include_directories(dna_lib PRIVATE ${SECP256K1_INCLUDE_DIR})
+target_include_directories(dna PRIVATE ${SECP256K1_INCLUDE_DIR})
 
 # C++ standard library no longer needed (pure C with Nodus v5)
 
@@ -364,9 +364,9 @@ target_include_directories(dna_lib PRIVATE ${SECP256K1_INCLUDE_DIR})
 if(HAS_CURL)
     if(ANDROID)
         # Android: Use static library path directly
-        target_link_libraries(dna_lib ${CURL_LIBRARIES})
+        target_link_libraries(dna ${CURL_LIBRARIES})
     else()
-        target_link_libraries(dna_lib CURL::libcurl)
+        target_link_libraries(dna CURL::libcurl)
     endif()
 endif()
 
@@ -375,24 +375,24 @@ endif()
 # =============================================================================
 if(WIN32)
     # Windows system libraries (from WindowsBuild.cmake)
-    target_link_libraries(dna_lib ${WINDOWS_SYSTEM_LIBS})
+    target_link_libraries(dna ${WINDOWS_SYSTEM_LIBS})
 elseif(ANDROID)
-    # Android: Include JNI bindings in dna_lib
-    target_sources(dna_lib PRIVATE ${CMAKE_SOURCE_DIR}/jni/dna_jni.c)
-    target_include_directories(dna_lib PRIVATE ${CMAKE_SOURCE_DIR}/jni)
+    # Android: Include JNI bindings in dna
+    target_sources(dna PRIVATE ${CMAKE_SOURCE_DIR}/jni/dna_jni.c)
+    target_include_directories(dna PRIVATE ${CMAKE_SOURCE_DIR}/jni)
     # Android: Link GnuTLS and its dependencies (from AndroidBuild.cmake)
-    target_link_libraries(dna_lib ${ANDROID_GNUTLS_LIBS} m log)
+    target_link_libraries(dna ${ANDROID_GNUTLS_LIBS} m log)
     # C++ STL is handled by ANDROID_STL=c++_static in the toolchain
     # Don't explicitly link stdc++ on Android - it will pull in libc++_shared.so
 else()
     # Linux/Unix
-    target_link_libraries(dna_lib m pthread)
+    target_link_libraries(dna m pthread)
 endif()
 
 # =============================================================================
 # Include Directories
 # =============================================================================
-target_include_directories(dna_lib PUBLIC
+target_include_directories(dna PUBLIC
     ${CMAKE_SOURCE_DIR}
     ${SHARED_DIR}                      # Shared code root (crypto/utils/*.h)
     ${CMAKE_SOURCE_DIR}/include       # Unified Engine API headers
@@ -408,16 +408,16 @@ target_include_directories(dna_lib PUBLIC
 
 # Add json-c include directories if found
 if(JSONC_INCLUDE_DIRS)
-    target_include_directories(dna_lib PUBLIC ${JSONC_INCLUDE_DIRS})
+    target_include_directories(dna PUBLIC ${JSONC_INCLUDE_DIRS})
 endif()
 
 # Add SQLite3 include directories
 if(SQLite3_INCLUDE_DIRS)
-    target_include_directories(dna_lib PUBLIC ${SQLite3_INCLUDE_DIRS})
+    target_include_directories(dna PUBLIC ${SQLite3_INCLUDE_DIRS})
 endif()
 
 if(WIN32)
-    target_include_directories(dna_lib PUBLIC ${CMAKE_SOURCE_DIR}/win32)
+    target_include_directories(dna PUBLIC ${CMAKE_SOURCE_DIR}/win32)
 endif()
 
 # =============================================================================

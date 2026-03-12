@@ -1,5 +1,5 @@
 /*
- * DNA Messenger - Key Generation Module Implementation
+ * DNA Connect - Key Generation Module Implementation
  */
 
 // Windows: winsock2.h must be included before windows.h (pulled in by other headers)

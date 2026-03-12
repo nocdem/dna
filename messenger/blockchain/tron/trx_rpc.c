@@ -2,7 +2,7 @@
  * @file trx_rpc.c
  * @brief TRON RPC Client Implementation (TronGrid API)
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-11
  */
 

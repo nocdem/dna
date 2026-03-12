@@ -1,8 +1,8 @@
-# DNA Messenger - Comprehensive Architecture Documentation
+# DNA Connect - Comprehensive Architecture Documentation
 
 **Version:** 0.1.x | **Last Updated:** 2025-12-15 | **Phase:** 13 (GEK v0.09)
 
-This document provides a complete technical architecture reference for DNA Messenger, derived entirely from source code analysis.
+This document provides a complete technical architecture reference for DNA Connect, derived entirely from source code analysis.
 
 ---
 
@@ -29,7 +29,7 @@ This document provides a complete technical architecture reference for DNA Messe
 
 ### Overview
 
-DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated cryptocurrency wallet functionality. The system achieves **NIST Category 5 security** (256-bit quantum security level) using lattice-based cryptography.
+DNA Connect is a post-quantum end-to-end encrypted messenger with integrated cryptocurrency wallet functionality. The system achieves **NIST Category 5 security** (256-bit quantum security level) using lattice-based cryptography.
 
 ### Technology Stack
 
@@ -215,7 +215,7 @@ cmake/
 
 ```cmake
 # Main library
-dna_lib (STATIC/SHARED)   # Core DNA Messenger library (SHARED for Flutter)
+dna (STATIC/SHARED)       # Core DNA Connect library (SHARED for Flutter)
 
 # Support libraries
 cellframe_minimal (STATIC) # Blockchain transaction building
@@ -229,7 +229,7 @@ transport_lib (STATIC)    # P2P layer
 ### Build Options
 
 ```cmake
--DBUILD_SHARED_LIB=OFF    # Build dna_lib as shared library for Flutter (default: OFF)
+-DBUILD_SHARED_LIB=OFF    # Build dna as shared library for Flutter (default: OFF)
 -DBUILD_DNA_SEND=OFF      # CLI send tool (default: OFF)
 -DCMAKE_BUILD_TYPE=Release # Release/Debug
 ```
@@ -1019,7 +1019,7 @@ int contacts_db_clear_all(void);
 
 **Location:** `blockchain/blockchain_wallet.h`
 
-DNA Messenger supports multiple blockchains through a modular wallet architecture:
+DNA Connect supports multiple blockchains through a modular wallet architecture:
 
 ```c
 typedef enum {
@@ -1065,7 +1065,7 @@ typedef enum {
 **Key Derivation:**
 - 64-byte BIP39 master seed passed directly to Dilithium
 - Matches official Cellframe wallet app derivation
-- Same seed produces same address in both DNA Messenger and Cellframe app
+- Same seed produces same address in both DNA Connect and Cellframe app
 
 **Signature Types:**
 ```c
@@ -1718,16 +1718,16 @@ cd dna_messenger_flutter && flutter run
 
 ### 14.2 Flutter App Distribution
 
-The Flutter app uses a native library (`libdna_lib.so` / `dna_lib.dll`) for cryptographic operations.
+The Flutter app uses a native library (`libdna.so` / `dna.dll`) for cryptographic operations.
 
 **Platform-specific packaging:**
 
 | Platform | Native Lib | Dependencies | Distribution |
 |----------|------------|--------------|--------------|
-| **Android** | `libdna_lib.so` | Statically linked | APK (self-contained) |
-| **Linux AppImage** | `libdna_lib.so` | Bundled `.so` files | AppImage (portable) |
-| **Windows** | `dna_lib.dll` | Bundled `.dll` files | Zip folder |
-| **macOS** | `libdna_lib.dylib` | TBD | .app bundle |
+| **Android** | `libdna.so` | Statically linked | APK (self-contained) |
+| **Linux AppImage** | `libdna.so` | Bundled `.so` files | AppImage (portable) |
+| **Windows** | `dna.dll` | Bundled `.dll` files | Zip folder |
+| **macOS** | `libdna.dylib` | TBD | .app bundle |
 
 **Bundled dependencies (Linux/Windows):**
 - libfmt - Formatting library
@@ -1737,7 +1737,7 @@ The Flutter app uses a native library (`libdna_lib.so` / `dna_lib.dll`) for cryp
 - libtasn1 - ASN.1 parsing
 - libargon2 - Password hashing
 
-**Future improvement:** Statically link all dependencies into `libdna_lib` for single-file distribution (like Android).
+**Future improvement:** Statically link all dependencies into `libdna` for single-file distribution (like Android).
 
 ### 14.3 Bootstrap Server Deployment
 

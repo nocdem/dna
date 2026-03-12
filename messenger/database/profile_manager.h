@@ -19,7 +19,7 @@
  * 4. Startup: profile_manager_refresh_all_expired() (async)
  *
  * @file profile_manager.h
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-11-12
  * @updated 2025-12-28 (Dynamic DHT context for reinit support)
  */

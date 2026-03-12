@@ -6,7 +6,7 @@
  * Global cache allows fast wall/timeline rendering without DHT round-trips.
  *
  * @file wall_cache.c
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2026-02-25
  */
 

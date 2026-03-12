@@ -338,7 +338,7 @@ All C projects use CMake. Build from each project's `build/` directory.
 |---------|-------|-------|
 | Messenger (C lib) | `cd messenger/build && cmake .. && make -j$(nproc)` | Must build first (dnac depends on it) |
 | Nodus | `cd nodus/build && cmake .. && make -j$(nproc)` | Independent build |
-| DNAC | `cd dnac/build && cmake .. && make -j$(nproc)` | Links against `libdna_lib.so` from messenger |
+| DNAC | `cd dnac/build && cmake .. && make -j$(nproc)` | Links against `libdna.so` from messenger |
 | Flutter app | `cd messenger/dna_messenger_flutter && flutter build linux` | Requires messenger C lib built |
 | Windows cross-compile | `cd messenger && ./build-cross-compile.sh windows-x64` | |
 | cpunk | Web project, no C build | |
@@ -402,7 +402,7 @@ git push origin main    # GitHub second (mirror)
 ```
 /opt/dna/
 ├── shared/crypto/     # Post-quantum crypto (sign/, enc/, hash/, key/, utils/)
-├── messenger/         # DNA Messenger - C library + Flutter app
+├── messenger/         # DNA Connect - C library + Flutter app
 ├── nodus/             # Nodus - DHT server + client SDK (pure C)
 ├── dnac/              # DNA Cash - UTXO digital cash over DHT
 ├── cpunk/             # cpunk.io + cpunk.club websites + backend API
@@ -434,7 +434,7 @@ git push origin main    # GitHub second (mirror)
   ┌────▼──────────────────────┐    ┌──────────────────┐
   │  shared/crypto/           │    │  dnac/            │
   │  Kyber1024, Dilithium5,   │◄───│  UTXO cash system │
-  │  SHA3-512, BIP39, AES-256 │    │  Links libdna_lib │
+  │  SHA3-512, BIP39, AES-256 │    │  Links libdna     │
   └───────────────────────────┘    └──────────────────┘
 ```
 

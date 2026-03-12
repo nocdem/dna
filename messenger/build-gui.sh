@@ -1,5 +1,5 @@
 #!/bin/bash
-# DNA Messenger Flutter GUI - Full build script
+# DNA Connect Flutter GUI - Full build script
 # Pulls latest code, builds native library, and runs the Flutter app
 
 set -e
@@ -47,7 +47,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}=== DNA Messenger Flutter GUI - Full Build ($BUILD_TYPE) ===${NC}"
+echo -e "${GREEN}=== DNA Connect Flutter GUI - Full Build ($BUILD_TYPE) ===${NC}"
 
 # Check for required tools
 check_dependencies() {
@@ -106,8 +106,8 @@ build_native_lib() {
     # Build just the dna_lib target
     make -j$(nproc) dna_lib
 
-    if [ ! -f "$BUILD_DIR/libdna_lib.so" ]; then
-        echo -e "${RED}Error: Failed to build libdna_lib.so${NC}"
+    if [ ! -f "$BUILD_DIR/libdna.so" ]; then
+        echo -e "${RED}Error: Failed to build libdna.so${NC}"
         exit 1
     fi
 
@@ -119,11 +119,11 @@ copy_library() {
     echo -e "${YELLOW}Copying library to Flutter project...${NC}"
 
     mkdir -p "$FLUTTER_LIBS_DIR"
-    cp "$BUILD_DIR/libdna_lib.so" "$FLUTTER_LIBS_DIR/"
+    cp "$BUILD_DIR/libdna.so" "$FLUTTER_LIBS_DIR/"
 
     # Also copy to bundle for flutter run
     mkdir -p "$FLUTTER_BUNDLE_LIB"
-    cp "$BUILD_DIR/libdna_lib.so" "$FLUTTER_BUNDLE_LIB/"
+    cp "$BUILD_DIR/libdna.so" "$FLUTTER_BUNDLE_LIB/"
 
     echo -e "${GREEN}Library copied to $FLUTTER_LIBS_DIR and bundle${NC}"
 }

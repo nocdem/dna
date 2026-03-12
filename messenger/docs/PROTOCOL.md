@@ -1,10 +1,10 @@
-# DNA Messenger - Protocol Specifications
+# DNA Connect - Protocol Specifications
 
 **Version:** 1.0
 **Last Updated:** 2025-12-12
 **Security Level:** NIST Category 5 (256-bit quantum)
 
-This document specifies all wire formats and protocols used by DNA Messenger.
+This document specifies all wire formats and protocols used by DNA Connect.
 
 ---
 
@@ -670,5 +670,5 @@ typedef enum {
 
 ---
 
-**Maintained by:** DNA Messenger Team
+**Maintained by:** DNA Connect Team
 **Repository:** https://gitlab.cpunk.io/cpunk/dna-messenger

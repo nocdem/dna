@@ -4,7 +4,7 @@
  *
  * Provides balance queries and transaction history via TronGrid API.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2025-12-11
  */
 

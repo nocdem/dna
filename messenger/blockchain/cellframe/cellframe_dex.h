@@ -7,7 +7,7 @@
  * walking the order book from best rate to worst, filling the user's
  * requested amount across multiple orders.
  *
- * @author DNA Messenger Team
+ * @author DNA Connect Team
  * @date 2026-03-09
  */
 
