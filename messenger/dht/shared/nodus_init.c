@@ -386,7 +386,7 @@ static void start_rtt_probe(void) {
     if (client && nodus_client_is_ready(client)) {
         nodus_server_endpoint_t discovered[NODUS_CLIENT_MAX_SERVERS];
         int disc_count = 0;
-        if (nodus_client_get_servers(client, discovered, NODUS_CLIENT_MAX_SERVERS, &disc_count) == 0) {
+        if (nodus_client_get_servers(client, discovered, NODUS_CLIENT_MAX_SERVERS, &disc_count) == 0 && disc_count > 0) {
             for (int d = 0; d < disc_count && ctx->server_count < NODUS_CLIENT_MAX_SERVERS; d++) {
                 /* Check for duplicates */
                 bool dup = false;
@@ -408,6 +408,9 @@ static void start_rtt_probe(void) {
                 }
             }
         }
+        nodus_singleton_release();
+    } else if (client) {
+        nodus_singleton_release();
     }
 
     pthread_t thread;

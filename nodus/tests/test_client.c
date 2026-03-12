@@ -94,6 +94,46 @@ static void on_state_change(nodus_client_state_t old_state,
 static nodus_client_t client;
 static nodus_identity_t client_id;
 
+/**
+ * Sign a channel post using JSON format matching the messenger client.
+ */
+static int sign_channel_post(const uint8_t post_uuid[16],
+                               const uint8_t ch_uuid[16],
+                               const nodus_key_t *author_fp,
+                               const char *body, uint64_t timestamp,
+                               const nodus_seckey_t *sk,
+                               nodus_sig_t *sig_out) {
+    char pu[37], cu[37], fp_hex[NODUS_KEY_HEX_LEN];
+    snprintf(pu, sizeof(pu),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             post_uuid[0], post_uuid[1], post_uuid[2], post_uuid[3],
+             post_uuid[4], post_uuid[5], post_uuid[6], post_uuid[7],
+             post_uuid[8], post_uuid[9], post_uuid[10], post_uuid[11],
+             post_uuid[12], post_uuid[13], post_uuid[14], post_uuid[15]);
+    snprintf(cu, sizeof(cu),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             ch_uuid[0], ch_uuid[1], ch_uuid[2], ch_uuid[3],
+             ch_uuid[4], ch_uuid[5], ch_uuid[6], ch_uuid[7],
+             ch_uuid[8], ch_uuid[9], ch_uuid[10], ch_uuid[11],
+             ch_uuid[12], ch_uuid[13], ch_uuid[14], ch_uuid[15]);
+    for (int i = 0; i < NODUS_KEY_BYTES; i++)
+        snprintf(fp_hex + i * 2, 3, "%02x", author_fp->bytes[i]);
+
+    size_t cap = 512 + strlen(body);
+    char *json = malloc(cap);
+    if (!json) return -1;
+    int len = snprintf(json, cap,
+        "{\"post_uuid\":\"%s\","
+        "\"channel_uuid\":\"%s\","
+        "\"author\":\"%s\","
+        "\"body\":\"%s\","
+        "\"created_at\":%llu}",
+        pu, cu, fp_hex, body, (unsigned long long)timestamp);
+    int rc = nodus_sign(sig_out, (const uint8_t *)json, (size_t)len, sk);
+    free(json);
+    return rc;
+}
+
 static void test_init(void) {
     TEST("client SDK init");
     nodus_identity_generate(&client_id);
@@ -263,16 +303,9 @@ static void test_ch_post(void) {
     const char *body = "SDK channel message";
     uint64_t ts = nodus_time_now();
 
-    /* Sign: ch_uuid + post_uuid + ts + body */
-    uint8_t sign_buf[16 + 16 + 8 + 64];
-    size_t slen = 0;
-    memcpy(sign_buf + slen, test_ch_uuid, 16); slen += 16;
-    memcpy(sign_buf + slen, post_uuid, 16); slen += 16;
-    for (int i = 0; i < 8; i++) sign_buf[slen++] = (uint8_t)(ts >> (i * 8));
-    memcpy(sign_buf + slen, body, strlen(body)); slen += strlen(body);
-
     nodus_sig_t sig;
-    nodus_sign(&sig, sign_buf, slen, &client_id.sk);
+    sign_channel_post(post_uuid, test_ch_uuid, &client_id.node_id,
+                       body, ts, &client_id.sk, &sig);
 
     uint32_t seq = 0;
     int rc = nodus_client_ch_post(&client, test_ch_uuid, post_uuid,
@@ -322,15 +355,9 @@ static void test_ch_subscribe_notify(void) {
     const char *body = "notify test";
     uint64_t ts = nodus_time_now();
 
-    uint8_t sign_buf[16 + 16 + 8 + 64];
-    size_t slen = 0;
-    memcpy(sign_buf + slen, test_ch_uuid, 16); slen += 16;
-    memcpy(sign_buf + slen, post_uuid, 16); slen += 16;
-    for (int i = 0; i < 8; i++) sign_buf[slen++] = (uint8_t)(ts >> (i * 8));
-    memcpy(sign_buf + slen, body, strlen(body)); slen += strlen(body);
-
     nodus_sig_t sig;
-    nodus_sign(&sig, sign_buf, slen, &id2.sk);
+    sign_channel_post(post_uuid, test_ch_uuid, &id2.node_id,
+                       body, ts, &id2.sk, &sig);
 
     /* Reset flag BEFORE post — read thread may deliver notification instantly */
     got_ch_post_notify = false;

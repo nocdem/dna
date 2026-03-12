@@ -73,10 +73,13 @@ static int do_put(const nodus_key_t *k,
                   nodus_value_type_t type, uint32_t ttl,
                   uint64_t vid) {
     nodus_client_t *c = nodus_singleton_get();
-    if (!c || !nodus_client_is_ready(c)) return -1;
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
 
     const nodus_identity_t *id = nodus_singleton_identity();
-    if (!id) return -1;
+    if (!id) { nodus_singleton_release(); return -1; }
 
     if (vid == 0) vid = nodus_identity_value_id(id);
 
@@ -86,16 +89,20 @@ static int do_put(const nodus_key_t *k,
     uint64_t seq = (uint64_t)time(NULL);
     nodus_value_t *val = NULL;
     if (nodus_value_create(k, data, data_len, type, ttl,
-                            vid, seq, &id->pk, &val) != 0)
+                            vid, seq, &id->pk, &val) != 0) {
+        nodus_singleton_release();
         return -1;
+    }
     if (nodus_value_sign(val, &id->sk) != 0) {
         nodus_value_free(val);
+        nodus_singleton_release();
         return -1;
     }
 
     int rc = nodus_client_put(c, k, data, data_len,
                                type, ttl, vid, seq, &val->signature);
     nodus_value_free(val);
+    nodus_singleton_release();
     return rc;
 }
 
@@ -144,13 +151,17 @@ int nodus_ops_get(const uint8_t *key, size_t key_len,
     *len_out = 0;
 
     nodus_client_t *c = nodus_singleton_get();
-    if (!c || !nodus_client_is_ready(c)) return -1;
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
 
     nodus_key_t k;
     hash_key(key, key_len, &k);
 
     nodus_value_t *val = NULL;
     int rc = nodus_client_get(c, &k, &val);
+    nodus_singleton_release();
     if (rc != 0 || !val) return -1;
 
     *data_out = malloc(val->data_len);
@@ -168,13 +179,17 @@ int nodus_ops_get_str(const char *str_key,
     *len_out = 0;
 
     nodus_client_t *c = nodus_singleton_get();
-    if (!c || !nodus_client_is_ready(c)) return -1;
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
 
     nodus_key_t k;
     hash_str(str_key, &k);
 
     nodus_value_t *val = NULL;
     int rc = nodus_client_get(c, &k, &val);
+    nodus_singleton_release();
     if (rc != 0 || !val) return -1;
 
     *data_out = malloc(val->data_len);
@@ -194,7 +209,10 @@ int nodus_ops_get_all(const uint8_t *key, size_t key_len,
     *count_out = 0;
 
     nodus_client_t *c = nodus_singleton_get();
-    if (!c || !nodus_client_is_ready(c)) return -1;
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
 
     nodus_key_t k;
     hash_key(key, key_len, &k);
@@ -202,6 +220,7 @@ int nodus_ops_get_all(const uint8_t *key, size_t key_len,
     nodus_value_t **vals = NULL;
     size_t count = 0;
     int rc = nodus_client_get_all(c, &k, &vals, &count);
+    nodus_singleton_release();
     if (rc != 0 || count == 0) return (rc == 0) ? 0 : -1;
 
     *values_out = calloc(count, sizeof(uint8_t *));
@@ -237,7 +256,10 @@ int nodus_ops_get_all_with_ids(const uint8_t *key, size_t key_len,
     *count_out = 0;
 
     nodus_client_t *c = nodus_singleton_get();
-    if (!c || !nodus_client_is_ready(c)) return -1;
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
 
     nodus_key_t k;
     hash_key(key, key_len, &k);
@@ -245,6 +267,7 @@ int nodus_ops_get_all_with_ids(const uint8_t *key, size_t key_len,
     nodus_value_t **vals = NULL;
     size_t count = 0;
     int rc = nodus_client_get_all(c, &k, &vals, &count);
+    nodus_singleton_release();
     if (rc != 0 || count == 0) {
         *count_out = 0;
         return (rc == 0) ? 0 : -1;
@@ -351,13 +374,17 @@ size_t nodus_ops_listen(const uint8_t *key, size_t key_len,
                         void *user_data,
                         nodus_ops_listen_cleanup_t cleanup) {
     nodus_client_t *c = nodus_singleton_get();
-    if (!c || !nodus_client_is_ready(c) || !key || !callback) return 0;
+    if (!c || !nodus_client_is_ready(c) || !key || !callback) {
+        if (c) nodus_singleton_release();
+        return 0;
+    }
 
     nodus_key_t k;
     hash_key(key, key_len, &k);
 
     /* Register LISTEN on the server */
     int rc = nodus_client_listen(c, &k);
+    nodus_singleton_release();
     if (rc != 0) return 0;
 
     /* Track locally for callback dispatch */
@@ -400,8 +427,12 @@ void nodus_ops_cancel_listen(size_t token) {
 
     if (found) {
         nodus_client_t *c = nodus_singleton_get();
-        if (c && nodus_client_is_ready(c))
+        if (c && nodus_client_is_ready(c)) {
             nodus_client_unlisten(c, &key);
+            nodus_singleton_release();
+        } else if (c) {
+            nodus_singleton_release();
+        }
         if (cleanup_fn)
             cleanup_fn(cleanup_data);
     }
@@ -437,6 +468,7 @@ void nodus_ops_cancel_all(void) {
         if (entries[i].cleanup)
             entries[i].cleanup(entries[i].user_data);
     }
+    if (c) nodus_singleton_release();
 }
 
 size_t nodus_ops_listen_count(void) {
@@ -475,8 +507,10 @@ int nodus_ops_presence_query(const char **fingerprints, int count,
     }
 
     nodus_client_t *client = nodus_singleton_get();
-    if (!client || !nodus_client_is_ready(client))
+    if (!client || !nodus_client_is_ready(client)) {
+        if (client) nodus_singleton_release();
         return -1;
+    }
 
     /* Cap to max query size */
     if (count > NODUS_PRESENCE_MAX_QUERY)
@@ -504,6 +538,8 @@ int nodus_ops_presence_query(const char **fingerprints, int count,
     /* Query server */
     nodus_presence_result_t result;
     int rc = nodus_client_presence_query(client, fps, count, &result);
+
+    nodus_singleton_release();
 
     if (rc != 0) {
         free(fps);

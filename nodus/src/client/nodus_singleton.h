@@ -34,10 +34,17 @@ int nodus_singleton_init(const nodus_client_config_t *config,
 int nodus_singleton_connect(void);
 
 /**
- * Get the global client instance.
+ * Get the global client instance (increments refcount).
+ * Caller MUST call nodus_singleton_release() when done.
  * @return Pointer to client, or NULL if not initialized
  */
 nodus_client_t *nodus_singleton_get(void);
+
+/**
+ * Release a reference obtained from nodus_singleton_get().
+ * Must be called once for each successful get().
+ */
+void nodus_singleton_release(void);
 
 /**
  * Check if the singleton is initialized and connected.

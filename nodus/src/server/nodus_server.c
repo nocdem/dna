@@ -32,6 +32,135 @@
 #define RESP_BUF_SIZE (NODUS_MAX_VALUE_SIZE + 65536)
 static uint8_t resp_buf[RESP_BUF_SIZE];
 
+/* ── Channel post signature verification (SECURITY: CRIT-01) ────── */
+
+/**
+ * JSON-escape a string for signature payload reconstruction.
+ * Escapes: " → \", \ → \\, control chars → \uXXXX.
+ * Matches json-c JSON_C_TO_STRING_PLAIN output.
+ * Returns bytes written (excluding NUL), or -1 if buffer too small.
+ */
+static int json_escape_string(const char *src, size_t src_len,
+                               char *dst, size_t dst_cap) {
+    size_t w = 0;
+    for (size_t i = 0; i < src_len; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (c == '"' || c == '\\') {
+            if (w + 2 > dst_cap) return -1;
+            dst[w++] = '\\';
+            dst[w++] = (char)c;
+        } else if (c == '\n') {
+            if (w + 2 > dst_cap) return -1;
+            dst[w++] = '\\'; dst[w++] = 'n';
+        } else if (c == '\r') {
+            if (w + 2 > dst_cap) return -1;
+            dst[w++] = '\\'; dst[w++] = 'r';
+        } else if (c == '\t') {
+            if (w + 2 > dst_cap) return -1;
+            dst[w++] = '\\'; dst[w++] = 't';
+        } else if (c == '\b') {
+            if (w + 2 > dst_cap) return -1;
+            dst[w++] = '\\'; dst[w++] = 'b';
+        } else if (c == '\f') {
+            if (w + 2 > dst_cap) return -1;
+            dst[w++] = '\\'; dst[w++] = 'f';
+        } else if (c < 0x20) {
+            /* Control characters: \uXXXX */
+            if (w + 6 > dst_cap) return -1;
+            w += (size_t)snprintf(dst + w, dst_cap - w, "\\u%04x", c);
+        } else {
+            if (w + 1 > dst_cap) return -1;
+            dst[w++] = (char)c;
+        }
+    }
+    if (w >= dst_cap) return -1;
+    dst[w] = '\0';
+    return (int)w;
+}
+
+/**
+ * Convert 16-byte binary UUID to hyphenated string (36 chars + NUL).
+ * Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+ */
+static void uuid_to_string(const uint8_t uuid[NODUS_UUID_BYTES], char out[37]) {
+    snprintf(out, 37,
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             uuid[0], uuid[1], uuid[2], uuid[3],
+             uuid[4], uuid[5], uuid[6], uuid[7],
+             uuid[8], uuid[9], uuid[10], uuid[11],
+             uuid[12], uuid[13], uuid[14], uuid[15]);
+}
+
+/**
+ * Convert nodus_key_t (64 bytes) to hex string (128 chars + NUL).
+ */
+static void fp_to_hex(const nodus_key_t *fp, char out[NODUS_KEY_HEX_LEN]) {
+    for (int i = 0; i < NODUS_KEY_BYTES; i++)
+        snprintf(out + i * 2, 3, "%02x", fp->bytes[i]);
+}
+
+/**
+ * Verify a channel post signature against the author's public key.
+ *
+ * Reconstructs the JSON signing payload that the messenger client signed:
+ *   {"post_uuid":"...","channel_uuid":"...","author":"...","body":"...","created_at":...}
+ *
+ * @param post       Channel post with signature
+ * @param author_pk  Author's Dilithium5 public key
+ * @return 0 if valid, -1 if invalid or error
+ */
+static int verify_channel_post_sig(const nodus_channel_post_t *post,
+                                    const nodus_pubkey_t *author_pk) {
+    /* Convert binary fields to string form */
+    char post_uuid_str[37];
+    char ch_uuid_str[37];
+    char author_hex[NODUS_KEY_HEX_LEN];
+
+    uuid_to_string(post->post_uuid, post_uuid_str);
+    uuid_to_string(post->channel_uuid, ch_uuid_str);
+    fp_to_hex(&post->author_fp, author_hex);
+
+    /* Escape body for JSON (worst case: 6x expansion for \uXXXX) */
+    size_t esc_cap = (post->body_len * 6) + 1;
+    char *esc_body = malloc(esc_cap);
+    if (!esc_body) return -1;
+
+    int esc_len = json_escape_string(post->body ? post->body : "",
+                                      post->body ? post->body_len : 0,
+                                      esc_body, esc_cap);
+    if (esc_len < 0) { free(esc_body); return -1; }
+
+    /* Build the JSON signing payload.
+     * json-c JSON_C_TO_STRING_PLAIN output format (no spaces after : or ,):
+     * {"post_uuid":"...","channel_uuid":"...","author":"...","body":"...","created_at":...} */
+    size_t json_cap = 256 + 37 + 37 + 129 + (size_t)esc_len + 32;
+    char *json_buf = malloc(json_cap);
+    if (!json_buf) { free(esc_body); return -1; }
+
+    int json_len = snprintf(json_buf, json_cap,
+        "{\"post_uuid\":\"%s\","
+        "\"channel_uuid\":\"%s\","
+        "\"author\":\"%s\","
+        "\"body\":\"%s\","
+        "\"created_at\":%llu}",
+        post_uuid_str, ch_uuid_str, author_hex, esc_body,
+        (unsigned long long)post->timestamp);
+
+    free(esc_body);
+
+    if (json_len < 0 || (size_t)json_len >= json_cap) {
+        free(json_buf);
+        return -1;
+    }
+
+    /* Verify Dilithium5 signature */
+    int rc = nodus_verify(&post->signature,
+                           (const uint8_t *)json_buf, (size_t)json_len,
+                           author_pk);
+    free(json_buf);
+    return rc;
+}
+
 /* ── Session management ──────────────────────────────────────────── */
 
 static nodus_session_t *session_for_conn(nodus_server_t *srv,
@@ -600,6 +729,15 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_RATE_LIMITED,
                         "too many puts", resp_buf, sizeof(resp_buf), &len);
+        nodus_tcp_send(sess->conn, resp_buf, len);
+        return;
+    }
+
+    /* Reject oversized values before doing any work (SECURITY: HIGH-7) */
+    if (msg->data_len > NODUS_MAX_VALUE_SIZE) {
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_TOO_LARGE,
+                        "value exceeds max size", resp_buf, sizeof(resp_buf), &len);
         nodus_tcp_send(sess->conn, resp_buf, len);
         return;
     }
@@ -1252,6 +1390,17 @@ static void handle_t2_ch_post(nodus_server_t *srv, nodus_session_t *sess,
     post.body_len = msg->data_len;
     memcpy(post.signature.bytes, msg->sig.bytes, NODUS_SIG_BYTES);
 
+    /* Verify post signature against authenticated client's pubkey (SECURITY: CRIT-01) */
+    if (verify_channel_post_sig(&post, &sess->client_pk) != 0) {
+        post.body = NULL;
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_INVALID_SIGNATURE,
+                        "invalid post signature", resp_buf, sizeof(resp_buf), &len);
+        nodus_tcp_send(sess->conn, resp_buf, len);
+        fprintf(stderr, "NODUS_SRV: ch_post rejected — invalid signature\n");
+        return;
+    }
+
     int rc = nodus_channel_post(&srv->ch_store, &post);
 
     if (rc < 0) {
@@ -1272,7 +1421,8 @@ static void handle_t2_ch_post(nodus_server_t *srv, nodus_session_t *sess,
     /* Notify subscribers and replicate (only for new posts, not duplicates) */
     if (rc == 0) {
         notify_ch_subscribers(srv, msg->channel_uuid, &post);
-        nodus_replication_send(&srv->replication, msg->channel_uuid, &post);
+        nodus_replication_send(&srv->replication, msg->channel_uuid, &post,
+                                &sess->client_pk);
     }
 
     post.body = NULL;  /* msg owns the data — prevent double-free */
@@ -1556,8 +1706,32 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
                 nodus_t2_msg_free(&msg);
                 return;  /* Drop — rate limited */
             }
-            /* TODO: Add signature verification on ch_rep posts when mutual
-             * auth is implemented (CRIT-04). */
+            /* Verify ch_rep carries author public key (SECURITY: CRIT-01) */
+            if (!msg.has_author_pk) {
+                fprintf(stderr, "NODUS_SRV: ch_rep rejected — missing author pubkey\n");
+                size_t rlen = 0;
+                nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
+                                "missing author pubkey",
+                                resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send(sess->conn, resp_buf, rlen);
+                nodus_t2_msg_free(&msg);
+                return;
+            }
+
+            /* Verify SHA3-512(author_pk) == author_fp */
+            nodus_key_t computed_fp;
+            nodus_fingerprint(&msg.author_pk, &computed_fp);
+            if (nodus_key_cmp(&computed_fp, &msg.fp) != 0) {
+                fprintf(stderr, "NODUS_SRV: ch_rep rejected — pubkey/fingerprint mismatch\n");
+                size_t rlen = 0;
+                nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
+                                "pubkey fingerprint mismatch",
+                                resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send(sess->conn, resp_buf, rlen);
+                nodus_t2_msg_free(&msg);
+                return;
+            }
+
             nodus_channel_post_t post;
             memset(&post, 0, sizeof(post));
             memcpy(post.channel_uuid, msg.channel_uuid, NODUS_UUID_BYTES);
@@ -1568,8 +1742,20 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
             post.body = (char *)msg.data;
             post.body_len = msg.data_len;
             memcpy(post.signature.bytes, msg.sig.bytes, NODUS_SIG_BYTES);
-            /* received_at decoded as ch_timestamp if present, or use now */
             post.received_at = nodus_time_now();
+
+            /* Verify Dilithium5 signature on the post (SECURITY: CRIT-01) */
+            if (verify_channel_post_sig(&post, &msg.author_pk) != 0) {
+                fprintf(stderr, "NODUS_SRV: ch_rep rejected — invalid post signature\n");
+                post.body = NULL;
+                size_t rlen = 0;
+                nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
+                                "invalid post signature",
+                                resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send(sess->conn, resp_buf, rlen);
+                nodus_t2_msg_free(&msg);
+                return;
+            }
 
             int rc = nodus_replication_receive(&srv->ch_store, &post);
             post.body = NULL;  /* msg owns data */

@@ -38,13 +38,15 @@ void nodus_replication_init(nodus_replication_t *rep, nodus_server_t *srv);
  * Called after Primary stores the post. Sends to each backup;
  * on failure queues to hinted handoff.
  *
- * @param rep   Replication context
- * @param uuid  Channel UUID (16 bytes)
- * @param post  Post to replicate (body must be valid)
+ * @param rep        Replication context
+ * @param uuid       Channel UUID (16 bytes)
+ * @param post       Post to replicate (body must be valid)
+ * @param author_pk  Author's public key for sig verification (may be NULL)
  */
 void nodus_replication_send(nodus_replication_t *rep,
                              const uint8_t uuid[NODUS_UUID_BYTES],
-                             const nodus_channel_post_t *post);
+                             const nodus_channel_post_t *post,
+                             const nodus_pubkey_t *author_pk);
 
 /**
  * Retry hinted handoff entries. Called periodically from server loop.

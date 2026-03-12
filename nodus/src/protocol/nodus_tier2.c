@@ -621,12 +621,13 @@ int nodus_t2_presence_sync(uint32_t txn, const nodus_key_t *fps, int count,
 int nodus_t2_ch_replicate(uint32_t txn,
                            const uint8_t ch_uuid[NODUS_UUID_BYTES],
                            const nodus_channel_post_t *post,
+                           const nodus_pubkey_t *author_pk,
                            uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 4, txn, "ch_rep");
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 8);
+    cbor_encode_map(&enc, author_pk ? 9 : 8);
     cbor_encode_cstr(&enc, "ch");
     cbor_encode_bstr(&enc, ch_uuid, NODUS_UUID_BYTES);
     cbor_encode_cstr(&enc, "seq");
@@ -643,6 +644,11 @@ int nodus_t2_ch_replicate(uint32_t txn,
     cbor_encode_bstr(&enc, post->signature.bytes, NODUS_SIG_BYTES);
     cbor_encode_cstr(&enc, "ra");
     cbor_encode_uint(&enc, post->received_at);
+    /* Author public key for signature verification (SECURITY: CRIT-01) */
+    if (author_pk) {
+        cbor_encode_cstr(&enc, "apk");
+        cbor_encode_bstr(&enc, author_pk->bytes, NODUS_PK_BYTES);
+    }
     return finish(&enc, out_len);
 }
 
@@ -808,6 +814,14 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
                         memcpy(msg->fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                }
+                /* apk (author public key for ch_rep sig verification, CRIT-01) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "apk", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES) {
+                        memcpy(msg->author_pk.bytes, val.bstr.ptr, NODUS_PK_BYTES);
+                        msg->has_author_pk = true;
+                    }
                 }
                 /* fps (presence query/sync: array of fingerprints) */
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "fps", 3) == 0) {

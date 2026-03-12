@@ -5,11 +5,19 @@
  * (hot path, no mutex) sees close() immediately. The mutex protects
  * init/close against concurrent structural changes.
  *
+ * Reference counting (SECURITY: HIGH-8): get() increments refcount,
+ * release() decrements. close() sets initialized=false then waits for
+ * refcount==0 before destroying, preventing use-after-free.
+ *
  * @file nodus_singleton.c
  */
 
 #include "client/nodus_singleton.h"
 #include <string.h>
+
+#ifndef _WIN32
+#include <unistd.h>  /* usleep */
+#endif
 
 #ifdef _WIN32
   #include <windows.h>
@@ -19,15 +27,23 @@
       if (!g_cs_init) { InitializeCriticalSection(&g_cs); g_cs_init = 1; }
   }
   static volatile LONG g_initialized_win = 0;
+  static volatile LONG g_refcount_win = 0;
   #define ATOMIC_LOAD_INIT()  (InterlockedCompareExchange(&g_initialized_win, 0, 0) != 0)
   #define ATOMIC_STORE_INIT(v) InterlockedExchange(&g_initialized_win, (v) ? 1 : 0)
+  #define ATOMIC_INC_REF()    InterlockedIncrement(&g_refcount_win)
+  #define ATOMIC_DEC_REF()    InterlockedDecrement(&g_refcount_win)
+  #define ATOMIC_LOAD_REF()   InterlockedCompareExchange(&g_refcount_win, 0, 0)
 #else
   #include <pthread.h>
   #include <stdatomic.h>
   static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
   static _Atomic bool g_initialized = false;
+  static _Atomic int g_refcount = 0;
   #define ATOMIC_LOAD_INIT()   atomic_load(&g_initialized)
   #define ATOMIC_STORE_INIT(v) atomic_store(&g_initialized, (v))
+  #define ATOMIC_INC_REF()     atomic_fetch_add(&g_refcount, 1)
+  #define ATOMIC_DEC_REF()     atomic_fetch_sub(&g_refcount, 1)
+  #define ATOMIC_LOAD_REF()    atomic_load(&g_refcount)
 #endif
 
 static nodus_client_t g_client;
@@ -46,7 +62,18 @@ int nodus_singleton_connect(void) {
 }
 
 nodus_client_t *nodus_singleton_get(void) {
-    return ATOMIC_LOAD_INIT() ? &g_client : NULL;
+    if (!ATOMIC_LOAD_INIT()) return NULL;
+    ATOMIC_INC_REF();
+    /* Double-check: close() may have raced between our check and increment */
+    if (!ATOMIC_LOAD_INIT()) {
+        ATOMIC_DEC_REF();
+        return NULL;
+    }
+    return &g_client;
+}
+
+void nodus_singleton_release(void) {
+    ATOMIC_DEC_REF();
 }
 
 bool nodus_singleton_is_ready(void) {
@@ -67,6 +94,17 @@ void nodus_singleton_close(void) {
     /* Set false FIRST so racing get() callers see NULL immediately,
      * rather than getting a pointer to a half-destroyed client. */
     ATOMIC_STORE_INIT(false);
+    /* Wait for all in-flight operations to release their references.
+     * In practice this completes in microseconds. */
+    int spins = 0;
+    while (ATOMIC_LOAD_REF() > 0) {
+#ifdef _WIN32
+        Sleep(1);
+#else
+        usleep(1000);  /* 1ms */
+#endif
+        if (++spins > 5000) break;  /* Safety: 5s max wait */
+    }
     nodus_client_close(&g_client);
 }
 

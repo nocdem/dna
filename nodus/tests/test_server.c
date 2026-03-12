@@ -433,6 +433,54 @@ static void test_ch_create(void) {
     PASS();
 }
 
+/**
+ * Sign a channel post using the same JSON format as the messenger client.
+ * Format: {"post_uuid":"...","channel_uuid":"...","author":"...","body":"...","created_at":...}
+ */
+static int sign_channel_post(const uint8_t post_uuid[16],
+                               const uint8_t ch_uuid[16],
+                               const nodus_key_t *author_fp,
+                               const char *body, uint64_t timestamp,
+                               const nodus_seckey_t *sk,
+                               nodus_sig_t *sig_out) {
+    char pu[37], cu[37], fp_hex[NODUS_KEY_HEX_LEN];
+
+    /* UUID → string */
+    snprintf(pu, sizeof(pu),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             post_uuid[0], post_uuid[1], post_uuid[2], post_uuid[3],
+             post_uuid[4], post_uuid[5], post_uuid[6], post_uuid[7],
+             post_uuid[8], post_uuid[9], post_uuid[10], post_uuid[11],
+             post_uuid[12], post_uuid[13], post_uuid[14], post_uuid[15]);
+    snprintf(cu, sizeof(cu),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             ch_uuid[0], ch_uuid[1], ch_uuid[2], ch_uuid[3],
+             ch_uuid[4], ch_uuid[5], ch_uuid[6], ch_uuid[7],
+             ch_uuid[8], ch_uuid[9], ch_uuid[10], ch_uuid[11],
+             ch_uuid[12], ch_uuid[13], ch_uuid[14], ch_uuid[15]);
+
+    /* FP → hex */
+    for (int i = 0; i < NODUS_KEY_BYTES; i++)
+        snprintf(fp_hex + i * 2, 3, "%02x", author_fp->bytes[i]);
+
+    /* Build JSON */
+    size_t cap = 512 + strlen(body);
+    char *json = malloc(cap);
+    if (!json) return -1;
+
+    int len = snprintf(json, cap,
+        "{\"post_uuid\":\"%s\","
+        "\"channel_uuid\":\"%s\","
+        "\"author\":\"%s\","
+        "\"body\":\"%s\","
+        "\"created_at\":%llu}",
+        pu, cu, fp_hex, body, (unsigned long long)timestamp);
+
+    int rc = nodus_sign(sig_out, (const uint8_t *)json, (size_t)len, sk);
+    free(json);
+    return rc;
+}
+
 static void test_ch_post(void) {
     TEST("ch_post posts to a channel");
 
@@ -441,9 +489,10 @@ static void test_ch_post(void) {
     uint8_t post_uuid[16];
     memset(post_uuid, 0x42, 16);
 
-    /* Create a dummy signature (not verified in current impl) */
+    /* Sign the post properly (SECURITY: CRIT-01 — server now verifies) */
     nodus_sig_t sig;
-    memset(&sig, 0, sizeof(sig));
+    sign_channel_post(post_uuid, test_ch_uuid, &client_id.node_id,
+                       body, 1709000000, &client_id.sk, &sig);
 
     size_t len = 0;
     uint32_t txn = next_txn++;
@@ -481,7 +530,8 @@ static void test_ch_get_posts(void) {
     uint8_t post_uuid2[16];
     memset(post_uuid2, 0x43, 16);
     nodus_sig_t sig;
-    memset(&sig, 0, sizeof(sig));
+    sign_channel_post(post_uuid2, test_ch_uuid, &client_id.node_id,
+                       body2, 1709000001, &client_id.sk, &sig);
 
     size_t len = 0;
     uint32_t txn = next_txn++;
@@ -574,7 +624,8 @@ static void test_ch_subscribe_notify(void) {
     uint8_t post_uuid[16];
     memset(post_uuid, 0x44, 16);
     nodus_sig_t sig;
-    memset(&sig, 0, sizeof(sig));
+    sign_channel_post(post_uuid, test_ch_uuid, &client_id.node_id,
+                       body, 1709000002, &client_id.sk, &sig);
 
     txn = next_txn++;
     nodus_t2_ch_post(txn, session_token, test_ch_uuid, post_uuid,
@@ -609,7 +660,8 @@ static void test_ch_nonexistent(void) {
     uint8_t post_uuid[16];
     memset(post_uuid, 0x50, 16);
     nodus_sig_t sig;
-    memset(&sig, 0, sizeof(sig));
+    sign_channel_post(post_uuid, fake_uuid, &client_id.node_id,
+                       body, 1709000003, &client_id.sk, &sig);
 
     size_t len = 0;
     uint32_t txn = next_txn++;

@@ -100,14 +100,15 @@ static int send_to_peer(const char *ip, uint16_t port,
  */
 static int serialize_ch_rep(const uint8_t uuid[NODUS_UUID_BYTES],
                              const nodus_channel_post_t *post,
+                             const nodus_pubkey_t *author_pk,
                              uint8_t **out, size_t *out_len) {
-    /* Allocate enough for post with Dilithium5 sig */
-    size_t cap = 8192 + post->body_len;
+    /* Allocate enough for post with Dilithium5 sig + optional pk (2592B) */
+    size_t cap = 8192 + post->body_len + NODUS_PK_BYTES + 16;
     uint8_t *buf = malloc(cap);
     if (!buf) return -1;
 
     size_t len = 0;
-    int rc = nodus_t2_ch_replicate(0, uuid, post, buf, cap, &len);
+    int rc = nodus_t2_ch_replicate(0, uuid, post, author_pk, buf, cap, &len);
     if (rc != 0) { free(buf); return -1; }
 
     *out = buf;
@@ -125,7 +126,8 @@ void nodus_replication_init(nodus_replication_t *rep, nodus_server_t *srv) {
 
 void nodus_replication_send(nodus_replication_t *rep,
                              const uint8_t uuid[NODUS_UUID_BYTES],
-                             const nodus_channel_post_t *post) {
+                             const nodus_channel_post_t *post,
+                             const nodus_pubkey_t *author_pk) {
     nodus_server_t *srv = rep->srv;
 
     /* Get responsible set for this channel */
@@ -136,7 +138,7 @@ void nodus_replication_send(nodus_replication_t *rep,
     /* Serialize the post once for all backups */
     uint8_t *cbor = NULL;
     size_t cbor_len = 0;
-    if (serialize_ch_rep(uuid, post, &cbor, &cbor_len) != 0)
+    if (serialize_ch_rep(uuid, post, author_pk, &cbor, &cbor_len) != 0)
         return;
 
     /* Send to each backup (skip self) */

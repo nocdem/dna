@@ -169,10 +169,12 @@ int nodus_t2_presence_sync(uint32_t txn, const nodus_key_t *fps, int count,
 
 /* ── Inter-Nodus replication ──────────────────────────────────────── */
 
-/** Encode a channel replication message (Nodus → Nodus, no auth). */
+/** Encode a channel replication message (Nodus → Nodus, no auth).
+ * @param author_pk  Author's public key for signature verification (may be NULL for legacy) */
 int nodus_t2_ch_replicate(uint32_t txn,
                            const uint8_t ch_uuid[NODUS_UUID_BYTES],
                            const nodus_channel_post_t *post,
+                           const nodus_pubkey_t *author_pk,
                            uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_ch_rep_ok(uint32_t txn,
@@ -209,6 +211,8 @@ typedef struct {
     uint64_t        ch_timestamp;
     int             ch_max_count;
     uint32_t        ch_seq_id;
+    nodus_pubkey_t  author_pk;      /* ch_rep: author public key for sig verification */
+    bool            has_author_pk;  /* true if apk was present in ch_rep */
     nodus_channel_post_t *ch_posts;
     size_t          ch_post_count;
 
