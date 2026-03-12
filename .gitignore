@@ -1,15 +1,29 @@
 # Task tracking (session-local, not committed)
 tasks/
+**/tasks/
 
 # Security audit files (private, never commit)
 *SECURITY_AUDIT*
 *COMPREHENSIVE_AUDIT*
 *security_audit*
+**/*AUDIT*
 
-# Confidential design documents (never commit)
+# IDE/tool caches
+**/.cache/
+
+# Debug keystores
+*.keystore
+*.jks
+
+# Design and plan documents (internal only)
+**/plans/
+**/*DESIGN*.md
 docs/DNAC_CPUNK_DESIGN.md
 docs/CPUNK_WHITEPAPER.md
 docs/CPUNK_TOKENOMICS.md
 docs/CPUNK_TECHNICAL_SPEC.md
 docs/CPUNK_ROADMAP.md
-docs/plans/
+
+# Confidential documents
+docs/CPUNK_COUNCIL_DECISIONS.md
+docs/REPO_SECURITY_ASSESSMENT.md

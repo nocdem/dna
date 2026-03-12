@@ -173,7 +173,7 @@ OUTPUT:
 ### CHECKPOINT 7: MEMORY UPDATE
 **EVERY session MUST update memory files before ending.**
 
-**Memory directory:** `/home/nocdem/.claude/projects/-opt-dnac/memory/`
+**Memory directory:** (see internal docs)
 
 **Procedure:**
 1. Update `MEMORY.md` with current project state, lessons learned, mistakes made
