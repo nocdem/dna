@@ -5,8 +5,16 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart' as intl;
 
+import 'app_localizations_de.dart';
 import 'app_localizations_en.dart';
+import 'app_localizations_es.dart';
+import 'app_localizations_it.dart';
+import 'app_localizations_ja.dart';
+import 'app_localizations_nl.dart';
+import 'app_localizations_pt.dart';
+import 'app_localizations_ru.dart';
 import 'app_localizations_tr.dart';
+import 'app_localizations_zh.dart';
 
 // ignore_for_file: type=lint
 
@@ -94,8 +102,16 @@ abstract class AppLocalizations {
 
   /// A list of this localizations delegate's supported locales.
   static const List<Locale> supportedLocales = <Locale>[
+    Locale('de'),
     Locale('en'),
+    Locale('es'),
+    Locale('it'),
+    Locale('ja'),
+    Locale('nl'),
+    Locale('pt'),
+    Locale('ru'),
     Locale('tr'),
+    Locale('zh'),
   ];
 
   /// No description provided for @appTitle.
@@ -536,6 +552,30 @@ abstract class AppLocalizations {
   /// **'Contact has no wallet for this network'**
   String get chatNoWalletForNetwork;
 
+  /// No description provided for @chatSelectToken.
+  ///
+  /// In en, this message translates to:
+  /// **'Select Token'**
+  String get chatSelectToken;
+
+  /// No description provided for @chatSelectNetwork.
+  ///
+  /// In en, this message translates to:
+  /// **'Select Network'**
+  String get chatSelectNetwork;
+
+  /// No description provided for @chatEnterAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter Amount'**
+  String get chatEnterAmount;
+
+  /// No description provided for @chatStepOf.
+  ///
+  /// In en, this message translates to:
+  /// **'Step {current} of {total}'**
+  String chatStepOf(String current, String total);
+
   /// No description provided for @messageMenuReply.
   ///
   /// In en, this message translates to:
@@ -895,6 +935,54 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Türkçe'**
   String get settingsLanguageTurkish;
+
+  /// No description provided for @settingsLanguageItalian.
+  ///
+  /// In en, this message translates to:
+  /// **'Italiano'**
+  String get settingsLanguageItalian;
+
+  /// No description provided for @settingsLanguageSpanish.
+  ///
+  /// In en, this message translates to:
+  /// **'Español'**
+  String get settingsLanguageSpanish;
+
+  /// No description provided for @settingsLanguageRussian.
+  ///
+  /// In en, this message translates to:
+  /// **'Русский'**
+  String get settingsLanguageRussian;
+
+  /// No description provided for @settingsLanguageDutch.
+  ///
+  /// In en, this message translates to:
+  /// **'Nederlands'**
+  String get settingsLanguageDutch;
+
+  /// No description provided for @settingsLanguageGerman.
+  ///
+  /// In en, this message translates to:
+  /// **'Deutsch'**
+  String get settingsLanguageGerman;
+
+  /// No description provided for @settingsLanguageChinese.
+  ///
+  /// In en, this message translates to:
+  /// **'中文'**
+  String get settingsLanguageChinese;
+
+  /// No description provided for @settingsLanguageJapanese.
+  ///
+  /// In en, this message translates to:
+  /// **'日本語'**
+  String get settingsLanguageJapanese;
+
+  /// No description provided for @settingsLanguagePortuguese.
+  ///
+  /// In en, this message translates to:
+  /// **'Português'**
+  String get settingsLanguagePortuguese;
 
   /// No description provided for @settingsBattery.
   ///
@@ -1651,18 +1739,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Delete'**
   String get wallDelete;
-
-  /// No description provided for @wallLike.
-  ///
-  /// In en, this message translates to:
-  /// **'Like'**
-  String get wallLike;
-
-  /// No description provided for @wallLiked.
-  ///
-  /// In en, this message translates to:
-  /// **'Liked'**
-  String get wallLiked;
 
   /// No description provided for @walletTitle.
   ///
@@ -2563,8 +2639,18 @@ class _AppLocalizationsDelegate
   }
 
   @override
-  bool isSupported(Locale locale) =>
-      <String>['en', 'tr'].contains(locale.languageCode);
+  bool isSupported(Locale locale) => <String>[
+    'de',
+    'en',
+    'es',
+    'it',
+    'ja',
+    'nl',
+    'pt',
+    'ru',
+    'tr',
+    'zh',
+  ].contains(locale.languageCode);
 
   @override
   bool shouldReload(_AppLocalizationsDelegate old) => false;
@@ -2573,10 +2659,26 @@ class _AppLocalizationsDelegate
 AppLocalizations lookupAppLocalizations(Locale locale) {
   // Lookup logic when only language code is specified.
   switch (locale.languageCode) {
+    case 'de':
+      return AppLocalizationsDe();
     case 'en':
       return AppLocalizationsEn();
+    case 'es':
+      return AppLocalizationsEs();
+    case 'it':
+      return AppLocalizationsIt();
+    case 'ja':
+      return AppLocalizationsJa();
+    case 'nl':
+      return AppLocalizationsNl();
+    case 'pt':
+      return AppLocalizationsPt();
+    case 'ru':
+      return AppLocalizationsRu();
     case 'tr':
       return AppLocalizationsTr();
+    case 'zh':
+      return AppLocalizationsZh();
   }
 
   throw FlutterError(

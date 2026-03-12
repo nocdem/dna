@@ -257,14 +257,22 @@ class _LanguageSection extends ConsumerWidget {
     final locale = ref.watch(localeProvider);
 
     final l10n = AppLocalizations.of(context);
-    String currentLabel;
-    if (locale == null) {
-      currentLabel = l10n.settingsLanguageSystem;
-    } else if (locale.languageCode == 'tr') {
-      currentLabel = 'Türkçe';
-    } else {
-      currentLabel = 'English';
-    }
+    final languageLabels = {
+      'en': 'English',
+      'tr': 'Türkçe',
+      'it': 'Italiano',
+      'es': 'Español',
+      'ru': 'Русский',
+      'nl': 'Nederlands',
+      'de': 'Deutsch',
+      'zh': '中文',
+      'ja': '日本語',
+      'pt': 'Português',
+    };
+
+    final currentLabel = locale == null
+        ? l10n.settingsLanguageSystem
+        : languageLabels[locale.languageCode] ?? 'English';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -282,40 +290,43 @@ class _LanguageSection extends ConsumerWidget {
   }
 
   void _showLanguagePicker(BuildContext context, WidgetRef ref, Locale? current) {
+    final languages = [
+      ('system', AppLocalizations.of(context).settingsLanguageSystem),
+      ('en', 'English'),
+      ('tr', 'Türkçe'),
+      ('de', 'Deutsch'),
+      ('es', 'Español'),
+      ('it', 'Italiano'),
+      ('ja', '日本語'),
+      ('nl', 'Nederlands'),
+      ('pt', 'Português'),
+      ('ru', 'Русский'),
+      ('zh', '中文'),
+    ];
+
+    final groupValue = current == null ? 'system' : current.languageCode;
+
     showModalBottomSheet(
       context: context,
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            RadioListTile<String>(
-              title: const Text('System default'),
-              value: 'system',
-              groupValue: current == null ? 'system' : current.languageCode,
-              onChanged: (_) {
-                ref.read(localeProvider.notifier).setLocale(null);
-                Navigator.pop(context);
-              },
-            ),
-            RadioListTile<String>(
-              title: const Text('English'),
-              value: 'en',
-              groupValue: current == null ? 'system' : current.languageCode,
-              onChanged: (_) {
-                ref.read(localeProvider.notifier).setLocale(const Locale('en'));
-                Navigator.pop(context);
-              },
-            ),
-            RadioListTile<String>(
-              title: const Text('Türkçe'),
-              value: 'tr',
-              groupValue: current == null ? 'system' : current.languageCode,
-              onChanged: (_) {
-                ref.read(localeProvider.notifier).setLocale(const Locale('tr'));
-                Navigator.pop(context);
-              },
-            ),
-          ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: languages.map((lang) {
+              final (code, label) = lang;
+              return RadioListTile<String>(
+                title: Text(label),
+                value: code,
+                groupValue: groupValue,
+                onChanged: (_) {
+                  ref.read(localeProvider.notifier).setLocale(
+                    code == 'system' ? null : Locale(code),
+                  );
+                  Navigator.pop(context);
+                },
+              );
+            }).toList(),
+          ),
         ),
       ),
     );

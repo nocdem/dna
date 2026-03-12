@@ -248,6 +248,20 @@ class AppLocalizationsTr extends AppLocalizations {
   String get chatNoWalletForNetwork => 'Kişinin bu ağ için cüzdanı yok';
 
   @override
+  String get chatSelectToken => 'Token Seç';
+
+  @override
+  String get chatSelectNetwork => 'Ağ Seç';
+
+  @override
+  String get chatEnterAmount => 'Miktar Gir';
+
+  @override
+  String chatStepOf(String current, String total) {
+    return 'Adım $current / $total';
+  }
+
+  @override
   String get messageMenuReply => 'Yanıtla';
 
   @override
@@ -431,6 +445,30 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get settingsLanguageTurkish => 'Türkçe';
+
+  @override
+  String get settingsLanguageItalian => 'Italiano';
+
+  @override
+  String get settingsLanguageSpanish => 'Español';
+
+  @override
+  String get settingsLanguageRussian => 'Русский';
+
+  @override
+  String get settingsLanguageDutch => 'Nederlands';
+
+  @override
+  String get settingsLanguageGerman => 'Deutsch';
+
+  @override
+  String get settingsLanguageChinese => '中文';
+
+  @override
+  String get settingsLanguageJapanese => '日本語';
+
+  @override
+  String get settingsLanguagePortuguese => 'Português';
 
   @override
   String get settingsBattery => 'Pil';
@@ -851,12 +889,6 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get wallDelete => 'Sil';
-
-  @override
-  String get wallLike => 'Beğen';
-
-  @override
-  String get wallLiked => 'Beğenildi';
 
   @override
   String get walletTitle => 'Cüzdan';

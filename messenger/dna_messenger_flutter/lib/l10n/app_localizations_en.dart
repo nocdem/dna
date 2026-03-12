@@ -248,6 +248,20 @@ class AppLocalizationsEn extends AppLocalizations {
   String get chatNoWalletForNetwork => 'Contact has no wallet for this network';
 
   @override
+  String get chatSelectToken => 'Select Token';
+
+  @override
+  String get chatSelectNetwork => 'Select Network';
+
+  @override
+  String get chatEnterAmount => 'Enter Amount';
+
+  @override
+  String chatStepOf(String current, String total) {
+    return 'Step $current of $total';
+  }
+
+  @override
   String get messageMenuReply => 'Reply';
 
   @override
@@ -428,6 +442,30 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsLanguageTurkish => 'Türkçe';
+
+  @override
+  String get settingsLanguageItalian => 'Italiano';
+
+  @override
+  String get settingsLanguageSpanish => 'Español';
+
+  @override
+  String get settingsLanguageRussian => 'Русский';
+
+  @override
+  String get settingsLanguageDutch => 'Nederlands';
+
+  @override
+  String get settingsLanguageGerman => 'Deutsch';
+
+  @override
+  String get settingsLanguageChinese => '中文';
+
+  @override
+  String get settingsLanguageJapanese => '日本語';
+
+  @override
+  String get settingsLanguagePortuguese => 'Português';
 
   @override
   String get settingsBattery => 'Battery';
@@ -841,12 +879,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get wallDelete => 'Delete';
-
-  @override
-  String get wallLike => 'Like';
-
-  @override
-  String get wallLiked => 'Liked';
 
   @override
   String get walletTitle => 'Wallet';
