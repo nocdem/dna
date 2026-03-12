@@ -5,25 +5,39 @@ import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
 import 'event_handler.dart';
 
-/// Compare two semantic version strings (e.g., "0.99.100" vs "0.99.104")
+/// Parse RC number from version string: "1.0.0-rc23" → 23, "1.0.0" → null
+int? _parseRc(String version) {
+  final dash = version.indexOf('-rc');
+  if (dash == -1) return null;
+  return int.tryParse(version.substring(dash + 3));
+}
+
+/// Compare two semantic version strings with RC support
+/// "1.0.0-rc23" < "1.0.0-rc24" < "1.0.0" (final > any RC)
 /// Returns: positive if a > b, negative if a < b, 0 if equal
 int _compareVersions(String a, String b) {
-  final aParts = a.split('.').map((s) => int.tryParse(s) ?? 0).toList();
-  final bParts = b.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+  // Strip RC suffix for major.minor.patch parsing
+  final aBase = a.contains('-') ? a.substring(0, a.indexOf('-')) : a;
+  final bBase = b.contains('-') ? b.substring(0, b.indexOf('-')) : b;
 
-  // Pad to same length
-  while (aParts.length < 3) {
-    aParts.add(0);
-  }
-  while (bParts.length < 3) {
-    bParts.add(0);
-  }
+  final aParts = aBase.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+  final bParts = bBase.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+
+  while (aParts.length < 3) aParts.add(0);
+  while (bParts.length < 3) bParts.add(0);
 
   for (int i = 0; i < 3; i++) {
     if (aParts[i] > bParts[i]) return 1;
     if (aParts[i] < bParts[i]) return -1;
   }
-  return 0;
+
+  // Same major.minor.patch — compare RC: final > any RC, rc24 > rc23
+  final aRc = _parseRc(a);
+  final bRc = _parseRc(b);
+  if (aRc == null && bRc == null) return 0; // both final
+  if (aRc == null) return 1;  // a is final, b is RC
+  if (bRc == null) return -1; // a is RC, b is final
+  return aRc.compareTo(bRc);  // both RC, compare numbers
 }
 
 /// Version check result with app version comparison done in Dart

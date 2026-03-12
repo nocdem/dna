@@ -34,15 +34,36 @@ const char* dna_engine_get_version(void) {
 static int compare_versions(const char *a, const char *b) {
     if (!a || !b) return 0;
 
-    int a_major = 0, a_minor = 0, a_patch = 0;
-    int b_major = 0, b_minor = 0, b_patch = 0;
+    int a_major = 0, a_minor = 0, a_patch = 0, a_rc = 0;
+    int b_major = 0, b_minor = 0, b_patch = 0, b_rc = 0;
+    bool a_is_rc = false, b_is_rc = false;
 
     sscanf(a, "%d.%d.%d", &a_major, &a_minor, &a_patch);
     sscanf(b, "%d.%d.%d", &b_major, &b_minor, &b_patch);
 
+    /* Parse -rcNN suffix: "1.0.0-rc23" → rc=23, is_rc=true
+       No suffix = final release, always greater than any RC */
+    const char *a_dash = strchr(a, '-');
+    if (a_dash && strncmp(a_dash, "-rc", 3) == 0) {
+        a_rc = atoi(a_dash + 3);
+        a_is_rc = true;
+    }
+    const char *b_dash = strchr(b, '-');
+    if (b_dash && strncmp(b_dash, "-rc", 3) == 0) {
+        b_rc = atoi(b_dash + 3);
+        b_is_rc = true;
+    }
+
     if (a_major != b_major) return (a_major > b_major) ? 1 : -1;
     if (a_minor != b_minor) return (a_minor > b_minor) ? 1 : -1;
     if (a_patch != b_patch) return (a_patch > b_patch) ? 1 : -1;
+
+    /* Same major.minor.patch — compare RC status:
+       final (no -rc) > any RC, rc24 > rc23 */
+    if (a_is_rc != b_is_rc) return a_is_rc ? -1 : 1;
+    if (a_is_rc && b_is_rc) {
+        if (a_rc != b_rc) return (a_rc > b_rc) ? 1 : -1;
+    }
     return 0;
 }
 
