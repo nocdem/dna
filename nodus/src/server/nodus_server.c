@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/epoll.h>
@@ -1715,6 +1716,63 @@ static int ch_dht_put_signed(const uint8_t *key_hash, size_t key_len,
     return 0;
 }
 
+/* ── Identity publish to DHT ──────────────────────────────────────
+ * Every nodus server publishes its pubkey to a well-known DHT key.
+ * Witness module reads all entries to build the roster.
+ * TTL = 10 min, refreshed every 60s. Dead nodes expire automatically. */
+
+#define NODUS_PK_REGISTRY_TTL  600   /* 10 minutes */
+
+static int nodus_server_publish_identity(nodus_server_t *srv) {
+    /* Derive DHT key: SHA3-512("nodus:pk") */
+    static const char key_str[] = "nodus:pk";
+    nodus_key_t key;
+    nodus_hash((const uint8_t *)key_str, sizeof(key_str) - 1, &key);
+
+    /* Encode payload: CBOR { "id": node_id, "pk": pubkey, "ip": ip, "port": port } */
+    uint8_t payload[4096];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, payload, sizeof(payload));
+    cbor_encode_map(&enc, 4);
+
+    cbor_encode_cstr(&enc, "id");
+    cbor_encode_bstr(&enc, srv->identity.node_id.bytes, NODUS_KEY_BYTES);
+
+    cbor_encode_cstr(&enc, "pk");
+    cbor_encode_bstr(&enc, srv->identity.pk.bytes, NODUS_PK_BYTES);
+
+    cbor_encode_cstr(&enc, "ip");
+    const char *ip = srv->config.external_ip[0]
+                   ? srv->config.external_ip
+                   : srv->config.bind_ip;
+    cbor_encode_cstr(&enc, ip);
+
+    cbor_encode_cstr(&enc, "port");
+    cbor_encode_uint(&enc, srv->config.peer_port);
+
+    size_t payload_len = cbor_encoder_len(&enc);
+    if (payload_len == 0) return -1;
+
+    /* Create DHT value */
+    nodus_value_t *val = NULL;
+    int rc = nodus_value_create(&key, payload, payload_len,
+                                 NODUS_VALUE_EPHEMERAL,
+                                 NODUS_PK_REGISTRY_TTL,
+                                 0, (uint64_t)time(NULL),
+                                 &srv->identity.pk, &val);
+    if (rc != 0 || !val) return -1;
+
+    rc = nodus_value_sign(val, &srv->identity.sk);
+    if (rc != 0) { nodus_value_free(val); return -1; }
+
+    rc = nodus_storage_put(&srv->storage, val);
+    if (rc != 0) { nodus_value_free(val); return -1; }
+
+    nodus_server_replicate_value(srv, val);
+    nodus_value_free(val);
+    return 0;
+}
+
 /* ── Channel startup rejoin ───────────────────────────────────────
  * Called once from the main loop after hashring has ≥2 members.
  * 1. Scan channels.db for existing channel tables
@@ -2025,6 +2083,9 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         fprintf(stderr, "WARNING: running without witness module\n");
     }
 
+    /* Publish identity to DHT for witness discovery */
+    nodus_server_publish_identity(srv);
+
     return 0;
 }
 
@@ -2057,6 +2118,16 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Ping-before-evict: evict LRU peers that didn't respond */
         eviction_sweep(srv);
+
+        /* Refresh identity in DHT (every 60s) */
+        {
+            static uint64_t last_pk_publish = 0;
+            uint64_t pk_now = nodus_time_now();
+            if (pk_now - last_pk_publish >= 60) {
+                last_pk_publish = pk_now;
+                nodus_server_publish_identity(srv);
+            }
+        }
 
         /* Witness BFT: timeout checks, peer reconnection */
         if (srv->witness)

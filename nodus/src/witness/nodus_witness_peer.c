@@ -20,6 +20,9 @@
 #include "server/nodus_server.h"
 #include "transport/nodus_tcp.h"
 #include "crypto/nodus_sign.h"
+#include "protocol/nodus_cbor.h"
+#include "core/nodus_storage.h"
+#include "core/nodus_value.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -97,7 +100,9 @@ static int roster_cmp(const void *a, const void *b) {
     return memcmp(ea->witness_id, eb->witness_id, NODUS_T3_WITNESS_ID_LEN);
 }
 
-/* ── Build roster from TCP 4002 connections ──────────────────────── */
+/* ── Build roster from DHT pubkey registry + TCP peers ────────────── */
+
+static const char NODUS_PK_REGISTRY_KEY[] = "nodus:pk";
 
 int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
                                             nodus_witness_roster_t *out) {
@@ -109,27 +114,118 @@ int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
     nodus_witness_roster_entry_t *self = &out->witnesses[0];
     memcpy(self->witness_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
     memcpy(self->pubkey, w->server->identity.pk.bytes, NODUS_PK_BYTES);
-    /* Address: use server's external_ip (or bind_ip) + peer_port */
-    const char *ip = w->server->config.external_ip[0]
-                   ? w->server->config.external_ip
-                   : w->server->config.bind_ip;
+    const char *my_ip = w->server->config.external_ip[0]
+                      ? w->server->config.external_ip
+                      : w->server->config.bind_ip;
     snprintf(self->address, sizeof(self->address), "%s:%u",
-             ip, w->server->config.peer_port);
+             my_ip, w->server->config.peer_port);
     self->active = true;
     out->n_witnesses = 1;
 
-    /* Add all identified witness peers (w_ident exchanged) */
+    /* ── Primary source: DHT pubkey registry ──────────────────────── */
+    nodus_key_t pk_key;
+    nodus_hash((const uint8_t *)NODUS_PK_REGISTRY_KEY,
+               sizeof(NODUS_PK_REGISTRY_KEY) - 1, &pk_key);
+
+    nodus_value_t **vals = NULL;
+    size_t val_count = 0;
+    if (nodus_storage_get_all(&w->server->storage, &pk_key,
+                                &vals, &val_count) == 0 && vals) {
+        for (size_t vi = 0; vi < val_count && out->n_witnesses < NODUS_T3_MAX_WITNESSES; vi++) {
+            nodus_value_t *val = vals[vi];
+            if (!val || !val->data || val->data_len == 0) continue;
+
+            /* Verify signature */
+            if (nodus_value_verify(val) != 0) continue;
+
+            /* Skip expired */
+            if (nodus_value_is_expired(val, (uint64_t)time(NULL))) continue;
+
+            /* Decode CBOR payload: { "id": node_id, "pk": pubkey, "ip": ip, "port": port } */
+            cbor_decoder_t dec;
+            cbor_decoder_init(&dec, val->data, val->data_len);
+            cbor_item_t top = cbor_decode_next(&dec);
+            if (top.type != CBOR_ITEM_MAP) continue;
+
+            uint8_t node_id[NODUS_KEY_BYTES] = {0};
+            uint8_t pubkey[NODUS_PK_BYTES] = {0};
+            char ip[64] = {0};
+            uint16_t port = 0;
+            bool has_id = false, has_pk = false;
+
+            for (size_t m = 0; m < top.count; m++) {
+                cbor_item_t k = cbor_decode_next(&dec);
+                if (k.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+                if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "id", 2) == 0) {
+                    cbor_item_t v = cbor_decode_next(&dec);
+                    if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_KEY_BYTES) {
+                        memcpy(node_id, v.bstr.ptr, NODUS_KEY_BYTES);
+                        has_id = true;
+                    }
+                } else if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "pk", 2) == 0) {
+                    cbor_item_t v = cbor_decode_next(&dec);
+                    if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_PK_BYTES) {
+                        memcpy(pubkey, v.bstr.ptr, NODUS_PK_BYTES);
+                        has_pk = true;
+                    }
+                } else if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "ip", 2) == 0) {
+                    cbor_item_t v = cbor_decode_next(&dec);
+                    if (v.type == CBOR_ITEM_TSTR && v.tstr.len < sizeof(ip)) {
+                        memcpy(ip, v.tstr.ptr, v.tstr.len);
+                        ip[v.tstr.len] = '\0';
+                    }
+                } else if (k.tstr.len == 4 && memcmp(k.tstr.ptr, "port", 4) == 0) {
+                    cbor_item_t v = cbor_decode_next(&dec);
+                    if (v.type == CBOR_ITEM_UINT)
+                        port = (uint16_t)v.uint_val;
+                } else {
+                    cbor_decode_skip(&dec);
+                }
+            }
+
+            if (!has_id || !has_pk) continue;
+
+            /* Skip self */
+            if (memcmp(node_id, w->my_id, NODUS_T3_WITNESS_ID_LEN) == 0)
+                continue;
+
+            /* Duplicate check */
+            bool dup = false;
+            for (uint32_t j = 0; j < out->n_witnesses; j++) {
+                if (memcmp(out->witnesses[j].witness_id,
+                           node_id, NODUS_T3_WITNESS_ID_LEN) == 0) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) continue;
+
+            nodus_witness_roster_entry_t *entry =
+                &out->witnesses[out->n_witnesses];
+            memcpy(entry->witness_id, node_id, NODUS_T3_WITNESS_ID_LEN);
+            memcpy(entry->pubkey, pubkey, NODUS_PK_BYTES);
+            if (ip[0] && port)
+                snprintf(entry->address, sizeof(entry->address), "%s:%u", ip, port);
+            entry->active = true;
+            out->n_witnesses++;
+        }
+
+        /* Free values */
+        for (size_t vi = 0; vi < val_count; vi++)
+            nodus_value_free(vals[vi]);
+        free(vals);
+    }
+
+    /* ── Fallback: w_ident peers not already in roster ────────────── */
     static const uint8_t zero_id[NODUS_T3_WITNESS_ID_LEN] = {0};
     for (int i = 0; i < w->peer_count && out->n_witnesses < NODUS_T3_MAX_WITNESSES; i++) {
         nodus_witness_peer_t *peer = &w->peers[i];
         if (!peer->identified) continue;
-        if (!peer->conn) continue;
-        if (peer->conn->state != NODUS_CONN_CONNECTED) continue;
-        /* Skip peers with no witness_id yet (IDENT sent but not received back) */
+        if (!peer->conn || peer->conn->state != NODUS_CONN_CONNECTED) continue;
         if (memcmp(peer->witness_id, zero_id, NODUS_T3_WITNESS_ID_LEN) == 0)
             continue;
 
-        /* Duplicate check by witness_id */
         bool dup = false;
         for (uint32_t j = 0; j < out->n_witnesses; j++) {
             if (memcmp(out->witnesses[j].witness_id,
@@ -143,11 +239,9 @@ int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
         nodus_witness_roster_entry_t *entry =
             &out->witnesses[out->n_witnesses];
         memcpy(entry->witness_id, peer->witness_id, NODUS_T3_WITNESS_ID_LEN);
-        /* Get pubkey from roster if available (populated by w_ident handler) */
         int ri = nodus_witness_roster_find(&w->roster, peer->witness_id);
-        if (ri >= 0) {
+        if (ri >= 0)
             memcpy(entry->pubkey, w->roster.witnesses[ri].pubkey, NODUS_PK_BYTES);
-        }
         snprintf(entry->address, sizeof(entry->address), "%s", peer->address);
         entry->active = true;
         out->n_witnesses++;
