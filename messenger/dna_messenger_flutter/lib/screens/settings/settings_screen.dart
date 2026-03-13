@@ -1291,7 +1291,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
 class _AboutSection extends ConsumerWidget {
   const _AboutSection();
 
-  static const _downloadUrl = 'https://cpunk.io/products/dna-messenger.html';
+  static const _downloadUrl = 'https://cpunk.io/products/dna-connect.html';
 
   Future<void> _openDownloadPage() async {
     final uri = Uri.parse(_downloadUrl);

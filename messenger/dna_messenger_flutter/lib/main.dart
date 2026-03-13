@@ -366,7 +366,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
                     onPressed: () {
                       Navigator.of(ctx).pop();
                       launchUrl(
-                        Uri.parse('https://cpunk.io/products/dna-messenger.html'),
+                        Uri.parse('https://cpunk.io/products/dna-connect.html'),
                         mode: LaunchMode.externalApplication,
                       );
                     },

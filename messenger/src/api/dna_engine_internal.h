@@ -393,6 +393,7 @@ typedef union {
         char post_uuid[37];             /* Post UUID to comment on */
         char parent_comment_uuid[37];   /* Parent comment for replies (empty = top-level) */
         char *body;                     /* Heap allocated, task owns */
+        uint32_t comment_type;          /* 0=text, 1=tip */
     } wall_add_comment;
 
     /* Wall: Get comments (v0.7.0+) */

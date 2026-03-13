@@ -8,6 +8,7 @@ import '../../providers/wall_provider.dart';
 import '../../widgets/wall_post_tile.dart';
 import '../../l10n/app_localizations.dart';
 import '../../widgets/wall_comment_tile.dart';
+import 'wall_tip_dialog.dart';
 
 /// Detail screen for a wall post with threaded comments
 class WallPostDetailScreen extends ConsumerStatefulWidget {
@@ -69,6 +70,13 @@ class _WallPostDetailScreenState extends ConsumerState<WallPostDetailScreen> {
                     onLike: () {
                       ref.read(wallLikesProvider(widget.post.uuid).notifier).like();
                     },
+                    onTip: !widget.post.isOwn(fingerprint)
+                        ? () => showWallTipDialog(
+                              context: context,
+                              ref: ref,
+                              post: widget.post,
+                            )
+                        : null,
                   ),
                 ),
                 // Comments header

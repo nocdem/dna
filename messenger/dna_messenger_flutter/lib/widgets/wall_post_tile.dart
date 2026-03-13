@@ -1,6 +1,6 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../design_system/design_system.dart';
@@ -18,6 +18,7 @@ class WallPostTile extends ConsumerWidget {
   final VoidCallback? onAuthorTap;
   final VoidCallback? onShare;
   final VoidCallback? onReply;
+  final VoidCallback? onTip;
   final List<WallComment>? comments;
   final VoidCallback? onViewAllComments;
   final int likeCount;
@@ -32,6 +33,7 @@ class WallPostTile extends ConsumerWidget {
     this.onAuthorTap,
     this.onShare,
     this.onReply,
+    this.onTip,
     this.comments,
     this.onViewAllComments,
     this.likeCount = 0,
@@ -156,19 +158,12 @@ class WallPostTile extends ConsumerWidget {
                         ? const Color(0xFFFF8C42)
                         : null,
               ),
-              _ActionButton(
-                icon: FontAwesomeIcons.copy,
-                label: AppLocalizations.of(context).wallCopy,
-                onTap: () {
-                  Clipboard.setData(ClipboardData(text: post.text));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Copied to clipboard'),
-                      duration: Duration(seconds: 1),
-                    ),
-                  );
-                },
-              ),
+              if (!isOwn)
+                _ActionButton(
+                  icon: FontAwesomeIcons.coins,
+                  label: AppLocalizations.of(context).wallTip,
+                  onTap: onTip,
+                ),
               _ActionButton(
                 icon: FontAwesomeIcons.comment,
                 label: comments != null && comments!.isNotEmpty
@@ -181,13 +176,6 @@ class WallPostTile extends ConsumerWidget {
                   icon: FontAwesomeIcons.retweet,
                   label: AppLocalizations.of(context).wallRepost,
                   onTap: onShare,
-                ),
-              if (isOwn)
-                _ActionButton(
-                  icon: FontAwesomeIcons.trash,
-                  label: AppLocalizations.of(context).wallDelete,
-                  onTap: onDelete,
-                  color: DnaColors.error,
                 ),
             ],
           ),

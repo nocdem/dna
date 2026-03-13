@@ -1134,6 +1134,7 @@ class WallComment {
   final String body;
   final DateTime createdAt;
   final bool verified;
+  final int commentType; // 0=text, 1=tip
 
   WallComment({
     required this.uuid,
@@ -1144,6 +1145,7 @@ class WallComment {
     required this.body,
     required this.createdAt,
     required this.verified,
+    this.commentType = 0,
   });
 
   bool get isReply =>
@@ -1161,8 +1163,11 @@ class WallComment {
       createdAt:
           DateTime.fromMillisecondsSinceEpoch(native.created_at * 1000),
       verified: native.verified,
+      commentType: native.comment_type,
     );
   }
+
+  bool get isTip => commentType == 1;
 }
 
 /// Wall like (v0.9.52+)
@@ -6025,6 +6030,50 @@ class DnaEngine {
       calloc.free(parentPtr);
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit wall comment');
+    }
+
+    return completer.future;
+  }
+
+  /// Add a tip comment to a wall post (comment_type=1)
+  Future<WallComment> wallAddTipComment(String postUuid, String bodyJson) async {
+    final completer = Completer<WallComment>();
+    final localId = _nextLocalId++;
+    final postUuidPtr = postUuid.toNativeUtf8();
+    final bodyPtr = bodyJson.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_comment_info_t> comment, Pointer<Void> userData) {
+      calloc.free(postUuidPtr);
+      calloc.free(bodyPtr);
+      if (error == 0 && comment != nullptr) {
+        final result = WallComment.fromNative(comment.ref);
+        _bindings.dna_free_wall_comments(comment, 1);
+        completer.complete(result);
+      } else {
+        if (comment != nullptr) _bindings.dna_free_wall_comments(comment, 1);
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallCommentCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_add_tip_comment(
+      _engine,
+      postUuidPtr.cast(),
+      bodyPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(postUuidPtr);
+      calloc.free(bodyPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit tip comment');
     }
 
     return completer.future;

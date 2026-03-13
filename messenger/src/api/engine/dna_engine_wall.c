@@ -488,6 +488,9 @@ static int wall_comment_infos_to_json(const dna_wall_comment_info_t *infos, int 
         json_object_object_add(obj, "body", json_object_new_string(infos[i].body));
         json_object_object_add(obj, "created_at", json_object_new_int64(infos[i].created_at));
         json_object_object_add(obj, "verified", json_object_new_boolean(infos[i].verified));
+        if (infos[i].comment_type > 0) {
+            json_object_object_add(obj, "comment_type", json_object_new_int(infos[i].comment_type));
+        }
 
         json_object_array_add(arr, obj);
     }
@@ -543,6 +546,9 @@ static int wall_comment_infos_from_json(const char *json, dna_wall_comment_info_
             infos[i].created_at = json_object_get_int64(j_val);
         if (json_object_object_get_ex(obj, "verified", &j_val))
             infos[i].verified = json_object_get_boolean(j_val);
+        if (json_object_object_get_ex(obj, "comment_type", &j_val))
+            infos[i].comment_type = json_object_get_int(j_val);
+        /* else: defaults to 0 (text) from calloc */
     }
 
     json_object_put(arr);
@@ -648,6 +654,7 @@ void dna_handle_wall_add_comment(dna_engine_t *engine, dna_task_t *task) {
         task->params.wall_add_comment.body,
         engine->fingerprint,
         key->private_key,
+        task->params.wall_add_comment.comment_type,
         uuid_out
     );
     qgp_key_free(key);
@@ -676,6 +683,7 @@ void dna_handle_wall_add_comment(dna_engine_t *engine, dna_task_t *task) {
     strncpy(info->body, task->params.wall_add_comment.body, 2000);
     info->created_at = (uint64_t)time(NULL);
     info->verified = true;
+    info->comment_type = task->params.wall_add_comment.comment_type;
 
     /* Resolve own name */
     resolve_author_name(engine->fingerprint, info->author_name, sizeof(info->author_name));
@@ -749,6 +757,7 @@ void dna_handle_wall_get_comments(dna_engine_t *engine, dna_task_t *task) {
         strncpy(info[i].body, comments[i].body, 2000);
         info[i].created_at = comments[i].created_at;
         info[i].verified = (comments[i].signature_len > 0);
+        info[i].comment_type = comments[i].comment_type;
 
         /* Resolve author name */
         resolve_author_name(comments[i].author_fingerprint,
@@ -896,6 +905,27 @@ dna_request_id_t dna_engine_wall_add_comment(
     }
     params.wall_add_comment.body = strdup(body);
     if (!params.wall_add_comment.body) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = {0};
+    cb.wall_comment = callback;
+    return dna_submit_task(engine, TASK_WALL_ADD_COMMENT, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_wall_add_tip_comment(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    const char *body,
+    dna_wall_comment_cb callback,
+    void *user_data
+) {
+    if (!engine || !post_uuid || !body || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.wall_add_comment.post_uuid, post_uuid, 36);
+    /* Tips are always top-level comments (no parent) */
+    params.wall_add_comment.body = strdup(body);
+    if (!params.wall_add_comment.body) return DNA_REQUEST_ID_INVALID;
+    params.wall_add_comment.comment_type = 1;  /* tip */
 
     dna_task_callback_t cb = {0};
     cb.wall_comment = callback;

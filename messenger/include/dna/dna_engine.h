@@ -254,6 +254,7 @@ typedef struct {
     char body[2001];                /* Comment content */
     uint64_t created_at;            /* Unix timestamp */
     bool verified;                  /* Signature verified */
+    uint32_t comment_type;          /* 0=text, 1=tip */
 } dna_wall_comment_info_t;
 
 /**
@@ -3357,6 +3358,24 @@ DNA_API dna_request_id_t dna_engine_wall_add_comment(
     dna_engine_t *engine,
     const char *post_uuid,
     const char *parent_comment_uuid,
+    const char *body,
+    dna_wall_comment_cb callback,
+    void *user_data
+);
+
+/**
+ * Add a tip comment to a wall post (comment_type=1)
+ *
+ * @param engine     Engine instance
+ * @param post_uuid  UUID of the wall post to tip on
+ * @param body       JSON body: {"amount":N,"token":"CPUNK","txHash":"...","chain":"cellframe"}
+ * @param callback   Called with created comment info
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_wall_add_tip_comment(
+    dna_engine_t *engine,
+    const char *post_uuid,
     const char *body,
     dna_wall_comment_cb callback,
     void *user_data

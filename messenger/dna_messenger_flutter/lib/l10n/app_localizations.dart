@@ -1740,6 +1740,90 @@ abstract class AppLocalizations {
   /// **'Delete'**
   String get wallDelete;
 
+  /// No description provided for @wallTip.
+  ///
+  /// In en, this message translates to:
+  /// **'Tip'**
+  String get wallTip;
+
+  /// No description provided for @wallTipTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Tip this post'**
+  String get wallTipTitle;
+
+  /// No description provided for @wallTipAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'{amount} CPUNK'**
+  String wallTipAmount(String amount);
+
+  /// No description provided for @wallTipConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Send Tip'**
+  String get wallTipConfirm;
+
+  /// No description provided for @wallTipCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel'**
+  String get wallTipCancel;
+
+  /// No description provided for @wallTipSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Tip sent!'**
+  String get wallTipSuccess;
+
+  /// No description provided for @wallTipFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Tip failed: {error}'**
+  String wallTipFailed(String error);
+
+  /// No description provided for @wallTipNoWallet.
+  ///
+  /// In en, this message translates to:
+  /// **'This user has no wallet address in their profile'**
+  String get wallTipNoWallet;
+
+  /// No description provided for @wallTipInsufficientBalance.
+  ///
+  /// In en, this message translates to:
+  /// **'Insufficient CPUNK balance'**
+  String get wallTipInsufficientBalance;
+
+  /// No description provided for @wallTipSending.
+  ///
+  /// In en, this message translates to:
+  /// **'Sending tip...'**
+  String get wallTipSending;
+
+  /// No description provided for @wallTippedAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Tipped {amount} CPUNK'**
+  String wallTippedAmount(String amount);
+
+  /// No description provided for @wallTipPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending'**
+  String get wallTipPending;
+
+  /// No description provided for @wallTipVerified.
+  ///
+  /// In en, this message translates to:
+  /// **'Verified'**
+  String get wallTipVerified;
+
+  /// No description provided for @wallTipFailedStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get wallTipFailedStatus;
+
   /// No description provided for @walletTitle.
   ///
   /// In en, this message translates to:

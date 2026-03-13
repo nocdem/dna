@@ -92,6 +92,10 @@ static int comment_to_json(const dna_wall_comment_t *comment, bool include_signa
     json_object_object_add(root, "body", json_object_new_string(comment->body));
     json_object_object_add(root, "created_at", json_object_new_int64(comment->created_at));
 
+    if (comment->comment_type > 0) {
+        json_object_object_add(root, "comment_type", json_object_new_int(comment->comment_type));
+    }
+
     if (include_signature && comment->signature_len > 0) {
         char *sig_b64 = qgp_base64_encode(comment->signature, comment->signature_len, NULL);
         if (sig_b64) {
@@ -129,6 +133,10 @@ static int comment_from_json(const char *json_str, dna_wall_comment_t *comment_o
         strncpy(comment_out->body, json_object_get_string(j_val), DNA_WALL_COMMENT_MAX_BODY);
     if (json_object_object_get_ex(root, "created_at", &j_val))
         comment_out->created_at = json_object_get_int64(j_val);
+
+    if (json_object_object_get_ex(root, "comment_type", &j_val))
+        comment_out->comment_type = json_object_get_int(j_val);
+    /* else: defaults to 0 (text) from memset */
 
     if (json_object_object_get_ex(root, "signature", &j_val)) {
         const char *sig_b64 = json_object_get_string(j_val);
@@ -263,6 +271,7 @@ int dna_wall_comment_add(const char *post_uuid,
                           const char *body,
                           const char *author_fingerprint,
                           const uint8_t *private_key,
+                          uint32_t comment_type,
                           char *uuid_out) {
     if (!post_uuid || !body || !author_fingerprint || !private_key) {
         return -1;
@@ -286,6 +295,7 @@ int dna_wall_comment_add(const char *post_uuid,
     strncpy(new_comment.body, body, DNA_WALL_COMMENT_MAX_BODY);
     new_comment.created_at = (uint64_t)time(NULL);
     new_comment.version = DNA_WALL_COMMENT_VERSION;
+    new_comment.comment_type = comment_type;
 
     /* Sign comment: JSON without signature */
     char *json_to_sign = NULL;

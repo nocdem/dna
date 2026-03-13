@@ -882,6 +882,55 @@ class AppLocalizationsEn extends AppLocalizations {
   String get wallDelete => 'Delete';
 
   @override
+  String get wallTip => 'Tip';
+
+  @override
+  String get wallTipTitle => 'Tip this post';
+
+  @override
+  String wallTipAmount(String amount) {
+    return '$amount CPUNK';
+  }
+
+  @override
+  String get wallTipConfirm => 'Send Tip';
+
+  @override
+  String get wallTipCancel => 'Cancel';
+
+  @override
+  String get wallTipSuccess => 'Tip sent!';
+
+  @override
+  String wallTipFailed(String error) {
+    return 'Tip failed: $error';
+  }
+
+  @override
+  String get wallTipNoWallet =>
+      'This user has no wallet address in their profile';
+
+  @override
+  String get wallTipInsufficientBalance => 'Insufficient CPUNK balance';
+
+  @override
+  String get wallTipSending => 'Sending tip...';
+
+  @override
+  String wallTippedAmount(String amount) {
+    return 'Tipped $amount CPUNK';
+  }
+
+  @override
+  String get wallTipPending => 'Pending';
+
+  @override
+  String get wallTipVerified => 'Verified';
+
+  @override
+  String get wallTipFailedStatus => 'Failed';
+
+  @override
   String get walletTitle => 'Wallet';
 
   @override

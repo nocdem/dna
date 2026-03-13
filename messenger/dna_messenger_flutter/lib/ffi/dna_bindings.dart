@@ -621,6 +621,9 @@ final class dna_wall_comment_info_t extends Struct {
 
   @Bool()
   external bool verified;
+
+  @Uint32()
+  external int comment_type;
 }
 
 /// Wall like information (v0.9.52+)
@@ -3871,6 +3874,27 @@ class DnaBindings {
   ) {
     return _dna_engine_wall_add_comment(
         engine, postUuid, parentCommentUuid, body, callback, userData);
+  }
+
+  late final _dna_engine_wall_add_tip_comment = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<Utf8>, Pointer<DnaWallCommentCb>, Pointer<Void>),
+      int Function(
+          Pointer<dna_engine_t>,
+          Pointer<Utf8>,
+          Pointer<Utf8>,
+          Pointer<DnaWallCommentCb>,
+          Pointer<Void>)>('dna_engine_wall_add_tip_comment');
+
+  int dna_engine_wall_add_tip_comment(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> postUuid,
+    Pointer<Utf8> body,
+    Pointer<DnaWallCommentCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_add_tip_comment(
+        engine, postUuid, body, callback, userData);
   }
 
   late final _dna_engine_wall_get_comments = _lib.lookupFunction<

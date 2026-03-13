@@ -172,6 +172,7 @@ typedef struct {
     char body[DNA_WALL_COMMENT_MAX_BODY + 1];   /* Comment text */
     uint64_t created_at;                        /* Unix epoch seconds */
     uint32_t version;                           /* Format version */
+    uint32_t comment_type;                      /* 0=text, 1=tip */
     uint8_t signature[4627];                    /* Dilithium5 signature */
     size_t signature_len;
 } dna_wall_comment_t;
@@ -184,6 +185,7 @@ typedef struct {
  * @param body                 Comment text (max DNA_WALL_COMMENT_MAX_BODY chars)
  * @param author_fingerprint   Commenter's SHA3-512 fingerprint
  * @param private_key          Commenter's Dilithium5 private key
+ * @param comment_type         0=text, 1=tip
  * @param uuid_out             Output: created comment UUID (37 bytes)
  * @return 0 on success, negative on error
  */
@@ -192,6 +194,7 @@ int dna_wall_comment_add(const char *post_uuid,
                           const char *body,
                           const char *author_fingerprint,
                           const uint8_t *private_key,
+                          uint32_t comment_type,
                           char *uuid_out);
 
 /**

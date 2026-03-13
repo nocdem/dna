@@ -14,6 +14,7 @@ import '../../services/image_attachment_service.dart';
 import '../../l10n/app_localizations.dart';
 import '../../widgets/wall_post_tile.dart';
 import 'wall_post_detail_screen.dart';
+import 'wall_tip_dialog.dart';
 
 class WallTimelineScreen extends ConsumerStatefulWidget {
   const WallTimelineScreen({super.key});
@@ -99,6 +100,13 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                           : null,
                       onShare: !post.isOwn(myFp)
                           ? () => _showRepostDialog(context, ref, post)
+                          : null,
+                      onTip: !post.isOwn(myFp)
+                          ? () => showWallTipDialog(
+                                context: context,
+                                ref: ref,
+                                post: post,
+                              )
                           : null,
                     );
                   },
@@ -349,6 +357,7 @@ class _WallPostWithComments extends ConsumerWidget {
   final VoidCallback? onReply;
   final VoidCallback? onDelete;
   final VoidCallback? onShare;
+  final VoidCallback? onTip;
 
   const _WallPostWithComments({
     required this.post,
@@ -356,6 +365,7 @@ class _WallPostWithComments extends ConsumerWidget {
     this.onReply,
     this.onDelete,
     this.onShare,
+    this.onTip,
   });
 
   @override
@@ -377,6 +387,7 @@ class _WallPostWithComments extends ConsumerWidget {
       onViewAllComments: onReply,
       onDelete: onDelete,
       onShare: onShare,
+      onTip: onTip,
       likeCount: likes.length,
       isLikedByMe: isLiked,
       onLike: () {

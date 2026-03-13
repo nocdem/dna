@@ -890,6 +890,54 @@ class AppLocalizationsTr extends AppLocalizations {
   String get wallDelete => 'Sil';
 
   @override
+  String get wallTip => 'Bahşiş';
+
+  @override
+  String get wallTipTitle => 'Bu gönderiye bahşiş ver';
+
+  @override
+  String wallTipAmount(String amount) {
+    return '$amount CPUNK';
+  }
+
+  @override
+  String get wallTipConfirm => 'Bahşiş Gönder';
+
+  @override
+  String get wallTipCancel => 'İptal';
+
+  @override
+  String get wallTipSuccess => 'Bahşiş gönderildi!';
+
+  @override
+  String wallTipFailed(String error) {
+    return 'Bahşiş başarısız: $error';
+  }
+
+  @override
+  String get wallTipNoWallet => 'Bu kullanıcının profilinde cüzdan adresi yok';
+
+  @override
+  String get wallTipInsufficientBalance => 'Yetersiz CPUNK bakiyesi';
+
+  @override
+  String get wallTipSending => 'Bahşiş gönderiliyor...';
+
+  @override
+  String wallTippedAmount(String amount) {
+    return '$amount CPUNK bahşiş verildi';
+  }
+
+  @override
+  String get wallTipPending => 'Beklemede';
+
+  @override
+  String get wallTipVerified => 'Doğrulandı';
+
+  @override
+  String get wallTipFailedStatus => 'Başarısız';
+
+  @override
   String get walletTitle => 'Cüzdan';
 
   @override

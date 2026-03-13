@@ -409,6 +409,35 @@
   "wallCopy": "Copy",
   "wallReply": "Reply",
   "wallDelete": "Delete",
+  "wallTip": "Tip",
+  "wallTipTitle": "Tip this post",
+  "wallTipAmount": "{amount} CPUNK",
+  "@wallTipAmount": {
+    "placeholders": {
+      "amount": {"type": "String"}
+    }
+  },
+  "wallTipConfirm": "Send Tip",
+  "wallTipCancel": "Cancel",
+  "wallTipSuccess": "Tip sent!",
+  "wallTipFailed": "Tip failed: {error}",
+  "@wallTipFailed": {
+    "placeholders": {
+      "error": {"type": "String"}
+    }
+  },
+  "wallTipNoWallet": "This user has no wallet address in their profile",
+  "wallTipInsufficientBalance": "Insufficient CPUNK balance",
+  "wallTipSending": "Sending tip...",
+  "wallTippedAmount": "Tipped {amount} CPUNK",
+  "@wallTippedAmount": {
+    "placeholders": {
+      "amount": {"type": "String"}
+    }
+  },
+  "wallTipPending": "Pending",
+  "wallTipVerified": "Verified",
+  "wallTipFailedStatus": "Failed",
 
   "walletTitle": "Wallet",
   "walletTotalBalance": "Total Balance",
