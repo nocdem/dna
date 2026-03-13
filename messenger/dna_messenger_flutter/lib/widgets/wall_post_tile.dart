@@ -373,30 +373,80 @@ class _InlineComments extends StatelessWidget {
           for (final comment in preview)
             Padding(
               padding: const EdgeInsets.only(bottom: 2),
-              child: Text.rich(
-                TextSpan(
-                  children: [
-                    TextSpan(
-                      text: comment.authorName.isNotEmpty
-                          ? comment.authorName
-                          : comment.authorFingerprint.substring(0, 12),
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w600,
+              child: comment.isTip
+                  ? _buildTipPreview(context, theme, comment)
+                  : Text.rich(
+                      TextSpan(
+                        children: [
+                          TextSpan(
+                            text: comment.authorName.isNotEmpty
+                                ? comment.authorName
+                                : comment.authorFingerprint.substring(0, 12),
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const TextSpan(text: '  '),
+                          TextSpan(
+                            text: comment.body,
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ],
                       ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    const TextSpan(text: '  '),
-                    TextSpan(
-                      text: comment.body,
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
             ),
         ],
       ),
+    );
+  }
+
+  Widget _buildTipPreview(
+      BuildContext context, ThemeData theme, WallComment comment) {
+    String amount = '?';
+    try {
+      final data = jsonDecode(comment.body) as Map<String, dynamic>;
+      amount = data['amount'] as String? ?? '?';
+    } catch (_) {}
+
+    final authorName = comment.authorName.isNotEmpty
+        ? comment.authorName
+        : comment.authorFingerprint.substring(0, 12);
+
+    return Row(
+      children: [
+        const FaIcon(
+          FontAwesomeIcons.coins,
+          size: 11,
+          color: Color(0xFFFFD700),
+        ),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(
+                  text: authorName,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const TextSpan(text: '  '),
+                TextSpan(
+                  text: AppLocalizations.of(context).wallTippedAmount(amount),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFFFFD700),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
     );
   }
 }

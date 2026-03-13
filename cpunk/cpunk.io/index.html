@@ -619,6 +619,36 @@
       z-index: 1;
     }
 
+    .token-card ul {
+      list-style: none;
+      margin: 0.6rem 0 0;
+      padding: 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    .token-card ul li {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+      padding-left: 1rem;
+      margin-bottom: 0.25rem;
+      position: relative;
+    }
+
+    .token-card ul li::before {
+      content: "\25B9";
+      position: absolute;
+      left: 0;
+      color: var(--teal);
+      font-size: 0.75rem;
+    }
+
+    .token-card ul li strong {
+      color: var(--text-main);
+      font-weight: 500;
+    }
+
     /* ── Token Feature Row (horizontal cards) ── */
 
     .feature-grid {
@@ -1313,44 +1343,23 @@
                 <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               </span>
               <h3>Messaging</h3>
-              <p>
-                Post-quantum encrypted conversations over a <strong style="color:var(--text-main)">fully decentralized DHT network</strong>. No central servers, no metadata collection &mdash; only 20 bytes of routing header. Offline messages are held in distributed mailboxes with 7-day TTL until the recipient comes online.
-              </p>
-              <ul>
-                <li>E2E encrypted with <strong>Kyber1024 + AES-256-GCM</strong></li>
-                <li>1-to-1 chats, group channels, and feeds</li>
-                <li>Offline delivery &mdash; no always-on requirement</li>
-              </ul>
+              <p>Post-quantum encrypted conversations over a fully decentralized network. No central servers, no metadata. Offline messages wait in distributed mailboxes until you come back online.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 10h20"/><path d="M12 14h4"/><circle cx="7" cy="14" r="1.5"/></svg>
               </span>
-              <h3>Multi-Wallet &amp; In-Chat Transfers</h3>
-              <p>
-                Manage <strong style="color:var(--text-main)">multiple Cellframe wallets</strong> directly inside the messenger. Send and receive tokens within any conversation &mdash; no need to switch apps or copy-paste addresses.
-              </p>
-              <ul>
-                <li>Multi-chain wallet built into the client</li>
-                <li>Transfer funds to any DNA contact in-chat</li>
-                <li>Transaction signing secured by post-quantum keys</li>
-              </ul>
+              <h3>Multi-Chain Wallet</h3>
+              <p>Manage multiple wallets directly inside the app. Send and receive tokens within any conversation &mdash; no need to switch apps or copy-paste addresses.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
               </span>
-              <h3>Identity Without Personal Data</h3>
-              <p>
-                Your <strong style="color:var(--text-main)">DNA name is your identity</strong> &mdash; tied to a cryptographic key pair, not to a phone number, email, or any personal information. Register once on-chain and you are reachable across the entire network.
-              </p>
-              <ul>
-                <li>No phone number, email, or account required</li>
-                <li>Identity anchored to your wallet public key</li>
-                <li>Portable across all DNA-compatible services</li>
-              </ul>
+              <h3>Decentralized Identity</h3>
+              <p>Your DNA name is your identity &mdash; tied to a cryptographic key pair, not to a phone number or email. Register once and be reachable across the entire network.</p>
             </article>
           </div>
         </div>
