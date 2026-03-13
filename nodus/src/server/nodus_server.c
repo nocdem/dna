@@ -1373,9 +1373,6 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             int put_rc = nodus_storage_put_if_newer(&srv->storage, t1msg.value);
             if (put_rc == 0) {
                 notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
-                fprintf(stderr, "REPL-RX: stored replicated value\n");
-            } else if (put_rc == 1) {
-                fprintf(stderr, "REPL-RX: skipped (existing seq >= incoming)\n");
             }
         }
     }

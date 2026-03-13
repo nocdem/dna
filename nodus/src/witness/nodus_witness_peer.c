@@ -70,25 +70,7 @@ static int find_peer_by_id(const nodus_witness_t *w,
     return -1;
 }
 
-/** Find peer by address string. Returns index or -1. */
-static int find_peer_by_addr(const nodus_witness_t *w,
-                              const char *address) {
-    for (int i = 0; i < w->peer_count; i++) {
-        if (strcmp(w->peers[i].address, address) == 0)
-            return i;
-    }
-    return -1;
-}
-
-/** Find peer by TCP connection pointer. Returns index or -1. */
-static int find_peer_by_conn(const nodus_witness_t *w,
-                              const struct nodus_tcp_conn *conn) {
-    for (int i = 0; i < w->peer_count; i++) {
-        if (w->peers[i].conn == conn)
-            return i;
-    }
-    return -1;
-}
+/* find_peer_by_addr and find_peer_by_conn removed — DHT is primary discovery */
 
 /* (connect_to_entry removed — reconnection handled in peer_tick) */
 
@@ -313,9 +295,6 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
         return -1;
     }
 
-    /* Check if this is an inbound connection (no existing peer for this conn) */
-    bool is_inbound = (find_peer_by_conn(w, conn) < 0);
-
     /* Try to find in roster by witness_id */
     int roster_idx = nodus_witness_roster_find(&w->roster,
                                                  ident->witness_id);
@@ -356,11 +335,8 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
         }
     }
 
-    /* Update or create peer record.
-     * Search by real ID first, then by address (placeholder entries). */
+    /* Update or create peer record (dedup by witness_id only) */
     int pi = find_peer_by_id(w, ident->witness_id);
-    if (pi < 0 && ident->address[0])
-        pi = find_peer_by_addr(w, ident->address);
     if (pi < 0 && w->peer_count < NODUS_T3_MAX_WITNESSES) {
         pi = w->peer_count++;
         memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
@@ -374,16 +350,6 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
         w->peers[pi].conn = conn;
         w->peers[pi].identified = true;
         w->peers[pi].connect_failures = 0;
-    }
-
-    fprintf(stderr, "%s: w_ident from roster %d at %s "
-            "(peers=%d, connected=%d)\n",
-            LOG_TAG, roster_idx, ident->address,
-            w->peer_count, nodus_witness_peer_connected_count(w));
-
-    /* Send our own IDENT back for inbound connections */
-    if (is_inbound) {
-        nodus_witness_peer_send_ident(w, conn);
     }
 
     return 0;
@@ -687,46 +653,7 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
     if (!w || !w->running) return;
 
     uint64_t now = nodus_time_now();
-
-    /* Scan inter_tcp for connected peers that need IDENT exchange */
     nodus_tcp_t *itcp = &w->server->inter_tcp;
-    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-        nodus_tcp_conn_t *conn = itcp->pool[i];
-        if (!conn) continue;
-        if (conn->state != NODUS_CONN_CONNECTED) continue;
-
-        /* Check if we already track this connection as a peer */
-        int pi = find_peer_by_conn(w, conn);
-        if (pi >= 0) {
-            /* Already tracked — send IDENT if not yet done.
-             * Note: identified is set by handle_ident (when we RECEIVE w_ident),
-             * not here. We use last_attempt as "ident sent" marker. */
-            if (w->peers[pi].last_attempt == 0) {
-                nodus_witness_peer_send_ident(w, conn);
-                w->peers[pi].last_attempt = now;
-            }
-            continue;
-        }
-
-        /* New connection — check if we already track a peer to the same IP:port
-         * (prevents duplicates from inbound+outbound connections to same node) */
-        char addr[80];
-        snprintf(addr, sizeof(addr), "%s:%u", conn->ip, conn->port);
-        if (find_peer_by_addr(w, addr) >= 0)
-            continue;
-
-        /* Add peer and send IDENT */
-        if (w->peer_count < NODUS_T3_MAX_WITNESSES) {
-            pi = w->peer_count++;
-            memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
-            w->peers[pi].conn = conn;
-            snprintf(w->peers[pi].address, sizeof(w->peers[pi].address),
-                     "%s", addr);
-
-            nodus_witness_peer_send_ident(w, conn);
-            w->peers[pi].last_attempt = now;
-        }
-    }
 
     /* Clean up peers with dead connections */
     for (int i = 0; i < w->peer_count; i++) {
