@@ -116,9 +116,9 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
                       .resolveNames(fingerprints);
                 });
 
-                // Sort newest first
+                // Sort oldest first (ListView reverse:true puts newest at bottom)
                 final sorted = List<ChannelPost>.from(posts)
-                  ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+                  ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
 
                 final notifier = ref.read(
                     channelPostsProvider(widget.channelUuid).notifier);
