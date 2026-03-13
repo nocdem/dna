@@ -103,6 +103,15 @@ int nodus_channel_cleanup(nodus_channel_store_t *store,
 int nodus_channel_drop(nodus_channel_store_t *store,
                         const uint8_t uuid[NODUS_UUID_BYTES]);
 
+/**
+ * List all channel UUIDs in the store (queries sqlite_master for channel_* tables).
+ * @param uuids_out  Output: flat array of NODUS_UUID_BYTES-sized UUIDs. Caller frees with free().
+ * @param count_out  Number of UUIDs returned
+ * @return 0 on success, -1 on error
+ */
+int nodus_channel_store_list_all(nodus_channel_store_t *store,
+                                  uint8_t **uuids_out, size_t *count_out);
+
 /* ── Hinted handoff ─────────────────────────────────────────────── */
 
 /**

@@ -322,6 +322,61 @@ int nodus_channel_cleanup(nodus_channel_store_t *store,
     return sqlite3_changes(store->db);
 }
 
+int nodus_channel_store_list_all(nodus_channel_store_t *store,
+                                  uint8_t **uuids_out, size_t *count_out) {
+    if (!store || !store->db || !uuids_out || !count_out) return -1;
+    *uuids_out = NULL;
+    *count_out = 0;
+
+    const char *sql =
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'channel_%'";
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(store->db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return -1;
+
+    size_t cap = 16;
+    size_t count = 0;
+    uint8_t *uuids = malloc(cap * NODUS_UUID_BYTES);
+    if (!uuids) { sqlite3_finalize(stmt); return -1; }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *name = (const char *)sqlite3_column_text(stmt, 0);
+        if (!name || strlen(name) != 40)  /* "channel_" (8) + hex (32) = 40 */
+            continue;
+        const char *hex = name + 8;  /* Skip "channel_" prefix */
+
+        /* Parse 32-char hex to 16-byte binary UUID */
+        uint8_t uuid[NODUS_UUID_BYTES];
+        bool valid = true;
+        for (int i = 0; i < NODUS_UUID_BYTES; i++) {
+            unsigned int byte;
+            if (sscanf(hex + i * 2, "%2x", &byte) != 1) { valid = false; break; }
+            uuid[i] = (uint8_t)byte;
+        }
+        if (!valid) continue;
+
+        if (count >= cap) {
+            cap *= 2;
+            uint8_t *p = realloc(uuids, cap * NODUS_UUID_BYTES);
+            if (!p) break;
+            uuids = p;
+        }
+        memcpy(uuids + count * NODUS_UUID_BYTES, uuid, NODUS_UUID_BYTES);
+        count++;
+    }
+
+    sqlite3_finalize(stmt);
+
+    if (count == 0) {
+        free(uuids);
+        return 0;
+    }
+
+    *uuids_out = uuids;
+    *count_out = count;
+    return 0;
+}
+
 int nodus_channel_drop(nodus_channel_store_t *store,
                         const uint8_t uuid[NODUS_UUID_BYTES]) {
     if (!store || !store->db || !uuid) return -1;

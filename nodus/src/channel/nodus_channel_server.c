@@ -754,20 +754,14 @@ void nodus_channel_server_poll(nodus_channel_server_t *cs, int timeout_ms) {
 }
 
 void nodus_channel_server_tick(nodus_channel_server_t *cs, uint64_t now_ms) {
-    /* Send heartbeats to all authenticated node sessions */
+    /* Send heartbeats to all authenticated node sessions.
+     * NOTE: Dead detection (heartbeat timeout -> eviction) is handled
+     * entirely by nodus_ch_ring_tick(). Do NOT disconnect/clear here —
+     * ring_tick needs the session to identify which node died. */
     for (int i = 0; i < NODUS_CH_MAX_NODE_SESSIONS; i++) {
         nodus_ch_node_session_t *ns = &cs->nodes[i];
         if (!ns->conn || !ns->authenticated)
             continue;
-
-        /* Check for heartbeat timeout */
-        if (ns->last_heartbeat_recv > 0 &&
-            (now_ms - ns->last_heartbeat_recv) >= NODUS_CH_HEARTBEAT_TIMEOUT_MS) {
-            QGP_LOG_WARN(LOG_TAG, "Node heartbeat timeout, disconnecting");
-            nodus_tcp_disconnect(&cs->tcp, ns->conn);
-            node_session_clear(ns);
-            continue;
-        }
 
         /* Send heartbeat at interval */
         if ((now_ms - ns->last_heartbeat_sent) >= NODUS_CH_HEARTBEAT_INTERVAL_MS) {

@@ -126,7 +126,7 @@ static void evict_and_announce(nodus_ch_ring_t *rm,
     /* Notify connected clients */
     nodus_ch_notify_ring_changed(cs, ch->channel_uuid, cs->ring->version);
 
-    /* Best-effort ring_evict to dead node (probably disconnected) */
+    /* Best-effort ring_evict to dead node, then disconnect + clear session */
     nodus_ch_node_session_t *dead_ns = find_node_session(cs, dead_id);
     if (dead_ns) {
         uint8_t buf[256];
@@ -135,6 +135,10 @@ static void evict_and_announce(nodus_ch_ring_t *rm,
                                 buf, sizeof(buf), &len) == 0) {
             nodus_tcp_send(dead_ns->conn, buf, len);
         }
+        /* Clean up the dead node session — ring_tick owns dead detection,
+         * so we disconnect here after eviction is complete */
+        nodus_tcp_disconnect(&cs->tcp, dead_ns->conn);
+        memset(dead_ns, 0, sizeof(*dead_ns));
     }
 }
 
@@ -165,6 +169,15 @@ void nodus_ch_ring_tick(nodus_ch_ring_t *rm, uint64_t now_ms)
         /* This node is suspected dead */
         QGP_LOG_WARN(LOG_TAG, "Node heartbeat timeout, suspected dead");
 
+        /* If no channels are tracked, just disconnect the stale session */
+        if (rm->channel_count == 0) {
+            QGP_LOG_INFO(LOG_TAG, "No tracked channels, disconnecting stale node");
+            nodus_tcp_disconnect(&cs->tcp, ns->conn);
+            memset(ns, 0, sizeof(*ns));
+            continue;
+        }
+
+        bool any_responsible = false;
         for (int c = 0; c < rm->channel_count; c++) {
             nodus_ch_ring_channel_t *ch = &rm->channels[c];
             if (!ch->active || ch->check_pending)
@@ -186,6 +199,8 @@ void nodus_ch_ring_tick(nodus_ch_ring_t *rm, uint64_t now_ms)
             }
             if (!dead_is_responsible)
                 continue;
+
+            any_responsible = true;
 
             /* Find the OTHER responsible node (not self, not dead) */
             bool sent = false;
@@ -216,6 +231,13 @@ void nodus_ch_ring_tick(nodus_ch_ring_t *rm, uint64_t now_ms)
                     sent = true;
                 }
             }
+        }
+
+        /* Dead node not responsible for any tracked channel — just disconnect */
+        if (!any_responsible) {
+            QGP_LOG_INFO(LOG_TAG, "Dead node not responsible for any channel, disconnecting");
+            nodus_tcp_disconnect(&cs->tcp, ns->conn);
+            memset(ns, 0, sizeof(*ns));
         }
     }
 

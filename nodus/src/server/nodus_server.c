@@ -1711,6 +1711,126 @@ static int ch_dht_put_signed(const uint8_t *key_hash, size_t key_len,
     return 0;
 }
 
+/* ── Channel startup rejoin ───────────────────────────────────────
+ * Called once from the main loop after hashring has ≥2 members.
+ * 1. Scan channels.db for existing channel tables
+ * 2. Re-track channels this node is responsible for
+ * 3. Send ring_rejoin to authenticated peer sessions
+ * 4. Send ch_sync_request to PRIMARY for each tracked channel
+ */
+static void ch_startup_rejoin(nodus_server_t *srv)
+{
+    /* 1. List all channels in local store */
+    uint8_t *uuids = NULL;
+    size_t count = 0;
+    if (nodus_channel_store_list_all(&srv->ch_store, &uuids, &count) != 0 || count == 0) {
+        fprintf(stderr, "CH_STARTUP: No existing channels in store, skipping rejoin\n");
+        free(uuids);
+        return;
+    }
+
+    fprintf(stderr, "CH_STARTUP: Found %zu channel(s) in store, checking responsibility\n", count);
+
+    /* 2. Re-track channels this node is responsible for */
+    int tracked = 0;
+    for (size_t i = 0; i < count; i++) {
+        const uint8_t *uuid = uuids + i * NODUS_UUID_BYTES;
+        nodus_responsible_set_t rset;
+        if (nodus_hashring_responsible(&srv->ring, uuid, &rset) != 0)
+            continue;
+
+        bool self_responsible = false;
+        for (int r = 0; r < rset.count; r++) {
+            if (nodus_key_cmp(&rset.nodes[r].node_id,
+                               &srv->identity.node_id) == 0) {
+                self_responsible = true;
+                break;
+            }
+        }
+        if (!self_responsible)
+            continue;
+
+        /* Re-track this channel */
+        nodus_ch_ring_track(&srv->ch_ring, uuid, srv->ring.version);
+
+        /* Ensure table exists (idempotent) */
+        nodus_channel_create(&srv->ch_store, uuid);
+
+        tracked++;
+    }
+
+    fprintf(stderr, "CH_STARTUP: Re-tracked %d/%zu channel(s)\n", tracked, count);
+
+    /* 3. Send ring_rejoin to all authenticated node sessions */
+    for (int i = 0; i < NODUS_CH_MAX_NODE_SESSIONS; i++) {
+        nodus_ch_node_session_t *ns = &srv->ch_server.nodes[i];
+        if (!ns->conn || !ns->authenticated)
+            continue;
+
+        uint8_t buf[256];
+        size_t len = 0;
+        if (nodus_t2_ch_ring_rejoin(0, &srv->identity.node_id,
+                                     srv->ring.version,
+                                     buf, sizeof(buf), &len) == 0) {
+            nodus_tcp_send(ns->conn, buf, len);
+            fprintf(stderr, "CH_STARTUP: Sent ring_rejoin to %s:%u\n",
+                    ns->conn->ip, (unsigned)ns->conn->port);
+        }
+    }
+
+    /* 4. Send ch_sync_request to PRIMARY for each tracked channel */
+    for (size_t i = 0; i < count; i++) {
+        const uint8_t *uuid = uuids + i * NODUS_UUID_BYTES;
+
+        /* Only sync channels we're tracking */
+        if (!nodus_ch_ring_is_tracked(&srv->ch_ring, uuid))
+            continue;
+
+        nodus_responsible_set_t rset;
+        if (nodus_hashring_responsible(&srv->ring, uuid, &rset) != 0)
+            continue;
+
+        /* Find PRIMARY (first in responsible set that isn't us) */
+        for (int r = 0; r < rset.count; r++) {
+            if (nodus_key_cmp(&rset.nodes[r].node_id,
+                               &srv->identity.node_id) == 0)
+                continue;
+
+            /* Find authenticated session for this node */
+            nodus_ch_node_session_t *ns = NULL;
+            for (int j = 0; j < NODUS_CH_MAX_NODE_SESSIONS; j++) {
+                nodus_ch_node_session_t *c = &srv->ch_server.nodes[j];
+                if (c->conn && c->authenticated &&
+                    nodus_key_cmp(&c->node_id, &rset.nodes[r].node_id) == 0) {
+                    ns = c;
+                    break;
+                }
+            }
+            if (!ns) {
+                /* Connect to PRIMARY for sync */
+                nodus_ch_server_connect_to_peer(&srv->ch_server,
+                                                  rset.nodes[r].ip,
+                                                  srv->ch_server.port,
+                                                  &rset.nodes[r].node_id);
+                break;  /* Connection is async; hinted handoff retry will handle sync later */
+            }
+
+            /* Send sync request (since=0 to get all posts) */
+            uint8_t buf[256];
+            size_t len = 0;
+            if (nodus_t2_ch_sync_request(0, uuid, 0,
+                                          buf, sizeof(buf), &len) == 0) {
+                nodus_tcp_send(ns->conn, buf, len);
+                fprintf(stderr, "CH_STARTUP: Sent ch_sync_request to %s:%u\n",
+                        ns->conn->ip, (unsigned)ns->conn->port);
+            }
+            break;  /* Only need one sync source */
+        }
+    }
+
+    free(uuids);
+}
+
 /* ── Public API ──────────────────────────────────────────────────── */
 
 int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) {
@@ -1949,6 +2069,13 @@ int nodus_server_run(nodus_server_t *srv) {
 
             /* Channel ring management: check heartbeat timeouts (every 5s) */
             nodus_ch_ring_tick(&srv->ch_ring, now_ms);
+
+            /* One-shot channel startup rejoin: scan channels.db, re-track,
+             * send ring_rejoin to peers once hashring has ≥2 members */
+            if (!srv->ch_startup_done && srv->ring.count >= 2) {
+                srv->ch_startup_done = true;
+                ch_startup_rejoin(srv);
+            }
         }
 
         /* Presence: expire stale entries + broadcast local list to peers */

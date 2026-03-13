@@ -54,6 +54,12 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
     return 0;
 }
 
+/* nodus_tcp_disconnect: stub */
+void nodus_tcp_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn)
+{
+    (void)tcp; (void)conn;
+}
+
 /* nodus_time_now_ms: stub returning fixed value */
 uint64_t nodus_time_now_ms(void)
 {

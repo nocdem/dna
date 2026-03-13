@@ -222,6 +222,7 @@ typedef struct nodus_server {
     nodus_channel_server_t      ch_server;
     nodus_ch_replication_t      ch_replication;
     nodus_ch_ring_t             ch_ring;
+    bool                        ch_startup_done;  /* One-shot: rejoin sent */
 
     /* Sessions (indexed by conn->slot) */
     nodus_session_t         sessions[NODUS_MAX_SESSIONS];
