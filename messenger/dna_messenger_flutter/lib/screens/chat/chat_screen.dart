@@ -3374,6 +3374,9 @@ class _TransferBubbleState extends State<_TransferBubble> {
     final chain = widget.transferData['chain'] as String? ?? 'cellframe';
     if (txHash == null || txHash.isEmpty) return;
 
+    // Already in a final state — no need to re-check
+    if (_verificationStatus == 1 || _verificationStatus == 2) return;
+
     if (_isVerifying) return;
     setState(() { _isVerifying = true; });
 
