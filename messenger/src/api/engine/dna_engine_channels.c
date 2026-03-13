@@ -18,6 +18,7 @@
 #include "database/channel_cache.h"
 #include "database/channel_subscriptions_db.h"
 #include "dht/shared/dht_channel_subscriptions.h"
+#include "dht/shared/nodus_ops.h"
 #include "crypto/utils/qgp_random.h"
 #include <json-c/json.h>
 
@@ -1153,12 +1154,27 @@ dna_request_id_t dna_engine_channel_get_posts(
 
 int dna_engine_channel_subscribe(dna_engine_t *engine, const char *channel_uuid) {
     if (!engine || !channel_uuid) return -1;
-    return channel_subscriptions_db_subscribe(channel_uuid);
+    int rc = channel_subscriptions_db_subscribe(channel_uuid);
+    if (rc == 0) {
+        /* Also subscribe on TCP 4003 so server sends push notifications */
+        uint8_t uuid_bin[16];
+        if (uuid_str_to_bin(channel_uuid, uuid_bin) == 0) {
+            nodus_ops_ch_subscribe(uuid_bin);
+        }
+    }
+    return rc;
 }
 
 int dna_engine_channel_unsubscribe(dna_engine_t *engine, const char *channel_uuid) {
     if (!engine || !channel_uuid) return -1;
-    return channel_subscriptions_db_unsubscribe(channel_uuid);
+    int rc = channel_subscriptions_db_unsubscribe(channel_uuid);
+    if (rc == 0) {
+        uint8_t uuid_bin[16];
+        if (uuid_str_to_bin(channel_uuid, uuid_bin) == 0) {
+            nodus_ops_ch_unsubscribe(uuid_bin);
+        }
+    }
+    return rc;
 }
 
 bool dna_engine_channel_is_subscribed(dna_engine_t *engine, const char *channel_uuid) {

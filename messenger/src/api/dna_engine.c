@@ -85,6 +85,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "messenger/status.h"
 #include "dht/shared/nodus_init.h"
 #include "dht/shared/nodus_ops.h"
+#include "database/channel_subscriptions_db.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/client/dht_contactlist.h"
 #include "dht/client/dht_message_backup.h"
@@ -523,6 +524,34 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
 
         /* Register channel push callback so TCP 4003 notifications fire events */
         nodus_ops_ch_set_post_callback(dna_channel_push_callback, NULL);
+
+        /* Subscribe all locally-tracked channels on TCP 4003 for push notifications */
+        {
+            channel_subscription_t *subs = NULL;
+            int sub_count = 0;
+            if (channel_subscriptions_db_get_all(&subs, &sub_count) == 0 && sub_count > 0) {
+                for (int s = 0; s < sub_count; s++) {
+                    uint8_t uuid_bin[16];
+                    const char *u = subs[s].channel_uuid;
+                    int ci = 0;
+                    char clean[33];
+                    for (int k = 0; u[k] && ci < 32; k++) {
+                        if (u[k] != '-') clean[ci++] = u[k];
+                    }
+                    clean[ci] = '\0';
+                    if (ci == 32) {
+                        for (int k = 0; k < 16; k++) {
+                            unsigned int byte;
+                            if (sscanf(clean + k * 2, "%2x", &byte) == 1)
+                                uuid_bin[k] = (uint8_t)byte;
+                        }
+                        nodus_ops_ch_subscribe(uuid_bin);
+                    }
+                }
+                free(subs);
+                QGP_LOG_INFO(LOG_TAG, "Subscribed %d channel(s) on TCP 4003 for push", sub_count);
+            }
+        }
 
         /* Prefetch profiles for local identities (for identity selection screen) */
         if (engine->data_dir) {
