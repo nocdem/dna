@@ -299,7 +299,7 @@ typedef struct {
     struct {
         char        ip[64];
         uint16_t    tcp_port;
-    } servers[17];  /* NODUS_PBFT_MAX_PEERS(16) + 1 for self */
+    } servers[17];  /* NODUS_CLUSTER_MAX_PEERS(16) + 1 for self */
     int             server_count;
 
     /* Presence query/sync */

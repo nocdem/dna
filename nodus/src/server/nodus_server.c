@@ -9,7 +9,7 @@
 #include "channel/nodus_channel_server.h"
 #include "channel/nodus_channel_replication.h"
 #include "channel/nodus_channel_ring.h"
-#include "consensus/nodus_pbft.h"
+#include "consensus/nodus_cluster.h"
 #include "protocol/nodus_tier1.h"
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_wire.h"
@@ -236,7 +236,7 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
 
 /**
  * Retry DHT hinted handoff entries every NODUS_HINTED_RETRY_SEC seconds.
- * For each ALIVE PBFT peer, query pending hints, attempt send, delete on success.
+ * For each ALIVE cluster peer, query pending hints, attempt send, delete on success.
  */
 static void dht_hinted_retry(nodus_server_t *srv) {
     static uint64_t last_retry = 0;
@@ -635,7 +635,7 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
     /* Notify listeners */
     notify_listeners(srv, &msg->key, val);
 
-    /* Replicate to alive PBFT peers via TCP STORE */
+    /* Replicate to alive cluster peers via TCP STORE */
     nodus_server_replicate_value(srv, val);
 
     /* Respond OK */
@@ -1146,8 +1146,8 @@ static void handle_t2_ping(nodus_server_t *srv, nodus_session_t *sess,
 
 static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
                                 nodus_tier2_msg_t *msg) {
-    /* Build server info list: self + alive PBFT peers */
-    nodus_t2_server_info_t infos[NODUS_PBFT_MAX_PEERS + 1];
+    /* Build server info list: self + alive cluster peers */
+    nodus_t2_server_info_t infos[NODUS_CLUSTER_MAX_PEERS + 1];
     int count = 0;
 
     /* Self first — use external_ip if configured, otherwise bind_ip.
@@ -1163,13 +1163,13 @@ static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
     }
 
     /* Alive peers */
-    for (int i = 0; i < srv->pbft.peer_count && count < NODUS_PBFT_MAX_PEERS + 1; i++) {
-        if (srv->pbft.peers[i].state != NODUS_NODE_ALIVE) continue;
+    for (int i = 0; i < srv->cluster.peer_count && count < NODUS_CLUSTER_MAX_PEERS + 1; i++) {
+        if (srv->cluster.peers[i].state != NODUS_NODE_ALIVE) continue;
         memset(&infos[count], 0, sizeof(infos[0]));
-        snprintf(infos[count].ip, sizeof(infos[0].ip), "%s", srv->pbft.peers[i].ip);
+        snprintf(infos[count].ip, sizeof(infos[0].ip), "%s", srv->cluster.peers[i].ip);
         /* Client port = peer port - 1 (convention: UDP, UDP+1=client, UDP+2=peer).
          * NOTE: breaks if non-standard port gaps are configured. */
-        infos[count].tcp_port = srv->pbft.peers[i].tcp_port - 1;
+        infos[count].tcp_port = srv->cluster.peers[i].tcp_port - 1;
         count++;
     }
 
@@ -1565,12 +1565,12 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         /* A received PING proves the peer is alive (same as PONG).
          * Cancel any pending eviction for this peer. */
         eviction_on_pong(srv, &msg.node_id);
-        nodus_pbft_on_pong(&srv->pbft, &msg.node_id, from_ip, from_port);
+        nodus_cluster_on_pong(&srv->cluster, &msg.node_id, from_ip, from_port);
 
     } else if (strcmp(msg.method, "pong") == 0) {
-        /* Update routing table + PBFT health (IP-aware for seed discovery) */
+        /* Update routing table + cluster health (IP-aware for seed discovery) */
         nodus_routing_touch(&srv->routing, &msg.node_id);
-        nodus_pbft_on_pong(&srv->pbft, &msg.node_id, from_ip, from_port);
+        nodus_cluster_on_pong(&srv->cluster, &msg.node_id, from_ip, from_port);
 
         /* Cancel pending evictions for this peer (it responded) */
         eviction_on_pong(srv, &msg.node_id);
@@ -1895,7 +1895,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     /* Init routing table */
     nodus_routing_init(&srv->routing, &srv->identity.node_id);
 
-    /* Init hash ring (populated by Kademlia routing, NOT PBFT) */
+    /* Init hash ring (populated by Kademlia routing, NOT cluster peers) */
     nodus_hashring_init(&srv->ring);
 
     /* Add self to hash ring */
@@ -1904,8 +1904,8 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     nodus_hashring_add(&srv->ring, &srv->identity.node_id,
                         self_ip, self_peer_port);
 
-    /* Init PBFT consensus (witness/DNAC only, does NOT touch hashring) */
-    nodus_pbft_init(&srv->pbft, srv);
+    /* Init cluster membership (heartbeat, leader election) */
+    nodus_cluster_init(&srv->cluster, srv);
 
     /* Init TCP transport (own epoll) */
     if (nodus_tcp_init(&srv->tcp, -1) != 0)
@@ -1997,7 +1997,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         return -1;
     }
 
-    /* Add seed nodes to PBFT cluster.
+    /* Add seed nodes to cluster.
      * Seeds don't have node_ids yet — they'll be discovered via PING/PONG.
      * For now, create placeholder node_ids from IP hash. The real node_id
      * will be learned when the seed responds to our PING. */
@@ -2005,7 +2005,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         nodus_key_t seed_id;
         nodus_hash((const uint8_t *)config->seed_nodes[i],
                     strlen(config->seed_nodes[i]), &seed_id);
-        nodus_pbft_add_peer(&srv->pbft, &seed_id,
+        nodus_cluster_add_peer(&srv->cluster, &seed_id,
                               config->seed_nodes[i],
                               config->seed_ports[i],
                               config->seed_ports[i] + 2);  /* Peer TCP = UDP + 2 */
@@ -2052,8 +2052,8 @@ int nodus_server_run(nodus_server_t *srv) {
         /* Process any pending UDP datagrams */
         nodus_udp_poll(&srv->udp);
 
-        /* PBFT: send heartbeats, check peer health */
-        nodus_pbft_tick(&srv->pbft);
+        /* Cluster: send heartbeats, check peer health */
+        nodus_cluster_tick(&srv->cluster);
 
         /* Ping-before-evict: evict LRU peers that didn't respond */
         eviction_sweep(srv);

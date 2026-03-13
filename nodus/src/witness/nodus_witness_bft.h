@@ -1,7 +1,7 @@
 /**
  * Nodus — Witness BFT Consensus Engine
  *
- * PBFT-style consensus for DNAC transaction witnessing.
+ * BFT consensus for DNAC transaction witnessing.
  * Ported from dnac/src/bft/consensus.c — single-threaded, CBOR protocol.
  *
  * Key differences from DNAC:

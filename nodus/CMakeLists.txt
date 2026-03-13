@@ -100,7 +100,7 @@ if(NOT WIN32)
         src/channel/nodus_channel_primary.c
         src/channel/nodus_channel_replication.c
         src/channel/nodus_channel_ring.c
-        src/consensus/nodus_pbft.c
+        src/consensus/nodus_cluster.c
         src/server/nodus_server.c
         src/server/nodus_auth.c
         src/server/nodus_presence.c

@@ -25,7 +25,7 @@ extern "C" {
 
 typedef struct {
     nodus_key_t  client_fp;       /* 64-byte fingerprint */
-    uint8_t      peer_index;      /* 0 = local, 1..N = PBFT peer index + 1 */
+    uint8_t      peer_index;      /* 0 = local, 1..N = cluster peer index + 1 */
     uint64_t     last_seen;       /* Unix timestamp */
     bool         active;
 } nodus_presence_entry_t;

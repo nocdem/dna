@@ -75,9 +75,9 @@ extern "C" {
 #define NODUS_RATE_MAX_LISTENERS 100
 #define NODUS_RATE_MAX_CONNS     1000
 
-/* PBFT */
-#define NODUS_PBFT_HEARTBEAT_SEC 10
-#define NODUS_PBFT_SUSPECT_SEC   30
+/* Cluster heartbeat */
+#define NODUS_CLUSTER_HEARTBEAT_SEC 10
+#define NODUS_CLUSTER_SUSPECT_SEC   30
 
 /* DHT replication */
 #define NODUS_ROUTING_STALE_SEC    3600    /* 1 hour — filter stale entries in find_closest */
@@ -217,13 +217,13 @@ typedef enum {
     NODUS_ERR_QUOTA_EXCEEDED    = 14
 } nodus_error_t;
 
-/** PBFT phases */
+/** Cluster phases */
 typedef enum {
-    NODUS_PBFT_PRE_PREPARE = 1,
-    NODUS_PBFT_PREPARE     = 2,
-    NODUS_PBFT_COMMIT      = 3,
-    NODUS_PBFT_VIEW_CHANGE = 4
-} nodus_pbft_phase_t;
+    NODUS_CLUSTER_PRE_PREPARE = 1,
+    NODUS_CLUSTER_PREPARE     = 2,
+    NODUS_CLUSTER_COMMIT      = 3,
+    NODUS_CLUSTER_VIEW_CHANGE = 4
+} nodus_cluster_phase_t;
 
 /** Ring membership change type */
 typedef enum {

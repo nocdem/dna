@@ -252,7 +252,7 @@ int nodus_client_unlisten(nodus_client_t *client,
 
 /**
  * Request list of cluster servers from the connected server.
- * Returns endpoints of all alive PBFT peers + self.
+ * Returns endpoints of all alive cluster peers + self.
  *
  * @param endpoints_out  Output array (caller provides, up to max_count)
  * @param max_count      Max entries in endpoints_out

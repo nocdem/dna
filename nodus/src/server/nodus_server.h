@@ -20,7 +20,7 @@
 #include "channel/nodus_channel_server.h"
 #include "channel/nodus_channel_replication.h"
 #include "channel/nodus_channel_ring.h"
-#include "consensus/nodus_pbft.h"
+#include "consensus/nodus_cluster.h"
 #include "crypto/nodus_identity.h"
 #include "witness/nodus_witness.h"
 #include "server/nodus_presence.h"
@@ -210,7 +210,7 @@ typedef struct nodus_server {
     nodus_hashring_t        ring;
 
     /* Consensus */
-    nodus_pbft_t            pbft;
+    nodus_cluster_t         cluster;
 
     /* Witness module (NULL when disabled) */
     nodus_witness_t        *witness;
