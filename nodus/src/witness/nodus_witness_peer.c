@@ -28,7 +28,31 @@
 
 #define LOG_TAG "WITNESS-PEER"
 
-/* (Reconnect constants removed — Kademlia manages inter-node connections) */
+/* Reconnect timing */
+#define RECONNECT_BASE_SEC   5
+#define RECONNECT_MAX_SHIFT  5      /* Max exponential backoff: 2^5 = 32x */
+
+/* ── Address parsing ─────────────────────────────────────────────── */
+
+static int parse_address(const char *addr, char *ip_out, size_t ip_cap,
+                          uint16_t *port_out) {
+    if (!addr || !addr[0]) return -1;
+
+    const char *colon = strrchr(addr, ':');
+    if (!colon || colon == addr) return -1;
+
+    size_t ip_len = (size_t)(colon - addr);
+    if (ip_len >= ip_cap) return -1;
+
+    memcpy(ip_out, addr, ip_len);
+    ip_out[ip_len] = '\0';
+
+    int port = atoi(colon + 1);
+    if (port <= 0 || port > 65535) return -1;
+
+    *port_out = (uint16_t)port;
+    return 0;
+}
 
 /* ── Peer lookup helpers ─────────────────────────────────────────── */
 
@@ -63,7 +87,7 @@ static int find_peer_by_conn(const nodus_witness_t *w,
     return -1;
 }
 
-/* (connect_to_entry removed — Kademlia manages inter-node connections) */
+/* (connect_to_entry removed — reconnection handled in peer_tick) */
 
 /* ── Roster sort helper ──────────────────────────────────────────── */
 
@@ -526,6 +550,8 @@ int nodus_witness_peer_init(nodus_witness_t *w) {
 void nodus_witness_peer_tick(nodus_witness_t *w) {
     if (!w || !w->running) return;
 
+    uint64_t now = nodus_time_now();
+
     /* Scan inter_tcp for connected peers that need IDENT exchange */
     nodus_tcp_t *itcp = &w->server->inter_tcp;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
@@ -549,7 +575,7 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
             pi = w->peer_count++;
             memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
             w->peers[pi].conn = conn;
-            w->peers[pi].last_attempt = nodus_time_now();
+            w->peers[pi].last_attempt = now;
 
             nodus_witness_peer_send_ident(w, conn);
             w->peers[pi].identified = true;
@@ -562,6 +588,83 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
             w->peers[i].conn->state == NODUS_CONN_CLOSED) {
             w->peers[i].conn = NULL;
             w->peers[i].identified = false;
+        }
+    }
+
+    /* Reconnect to roster peers that have no active connection.
+     * TCP 4002 connections are NOT managed by Kademlia (which uses UDP 4000),
+     * so the witness module must actively connect to discovered peers. */
+    for (uint32_t i = 0; i < w->roster.n_witnesses; i++) {
+        if ((int)i == w->my_index) continue;
+        if (!w->roster.witnesses[i].active) continue;
+        if (!w->roster.witnesses[i].address[0]) continue;
+
+        /* Check if we already have a connected peer for this roster entry */
+        int pi = find_peer_by_id(w, w->roster.witnesses[i].witness_id);
+        if (pi >= 0 && w->peers[pi].conn &&
+            w->peers[pi].conn->state == NODUS_CONN_CONNECTED)
+            continue;
+
+        /* Apply exponential backoff */
+        if (pi >= 0) {
+            uint64_t backoff = RECONNECT_BASE_SEC;
+            if (w->peers[pi].connect_failures > 0) {
+                int shift = w->peers[pi].connect_failures > RECONNECT_MAX_SHIFT
+                            ? RECONNECT_MAX_SHIFT
+                            : w->peers[pi].connect_failures;
+                backoff <<= shift;
+            }
+            if (now - w->peers[pi].last_attempt < backoff) continue;
+        }
+
+        char ip[64];
+        uint16_t port;
+        if (parse_address(w->roster.witnesses[i].address,
+                          ip, sizeof(ip), &port) != 0)
+            continue;
+
+        /* Check if already connected via inter_tcp */
+        nodus_tcp_conn_t *existing = nodus_tcp_find_by_addr(itcp, ip, port);
+        if (existing && existing->state == NODUS_CONN_CONNECTED) {
+            if (pi >= 0) {
+                w->peers[pi].conn = existing;
+                w->peers[pi].connect_failures = 0;
+            }
+            continue;
+        }
+
+        /* Initiate TCP 4002 connection */
+        nodus_tcp_conn_t *conn = nodus_tcp_connect(itcp, ip, port);
+        if (!conn) {
+            if (pi >= 0) {
+                w->peers[pi].connect_failures++;
+                w->peers[pi].last_attempt = now;
+            }
+            continue;
+        }
+
+        /* Set up inter-node session for dispatch */
+        if (conn->slot >= 0 && conn->slot < NODUS_MAX_INTER_SESSIONS) {
+            nodus_inter_session_t *sess = &w->server->inter_sessions[conn->slot];
+            if (!sess->conn)
+                sess->conn = conn;
+        }
+
+        if (pi < 0 && w->peer_count < NODUS_T3_MAX_WITNESSES) {
+            pi = w->peer_count++;
+            memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
+            memcpy(w->peers[pi].witness_id,
+                   w->roster.witnesses[i].witness_id,
+                   NODUS_T3_WITNESS_ID_LEN);
+            snprintf(w->peers[pi].address, sizeof(w->peers[pi].address),
+                     "%s", w->roster.witnesses[i].address);
+        }
+
+        if (pi >= 0) {
+            w->peers[pi].conn = conn;
+            w->peers[pi].identified = false;
+            w->peers[pi].connect_failures = 0;
+            w->peers[pi].last_attempt = now;
         }
     }
 }
