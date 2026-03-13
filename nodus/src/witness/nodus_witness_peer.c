@@ -540,8 +540,46 @@ int nodus_witness_peer_init(nodus_witness_t *w) {
         }
     }
 
-    fprintf(stderr, "%s: peer mesh init (roster=%u witnesses, my_index=%d)\n",
-            LOG_TAG, w->roster.n_witnesses, w->my_index);
+    /* Bootstrap: connect to all seed nodes on TCP 4002 (peer_port).
+     * Seed nodes are configured as IP:UDP_port, peer_port = UDP + 2.
+     * This establishes the initial mesh; w_ident exchange populates the roster. */
+    nodus_tcp_t *itcp = &w->server->inter_tcp;
+    for (int i = 0; i < w->server->config.seed_count; i++) {
+        uint16_t peer_port = w->server->config.seed_ports[i] + 2;
+        const char *seed_ip = w->server->config.seed_nodes[i];
+
+        /* Skip if already connected */
+        nodus_tcp_conn_t *existing = nodus_tcp_find_by_addr(
+            itcp, seed_ip, peer_port);
+        if (existing && existing->state == NODUS_CONN_CONNECTED)
+            continue;
+
+        nodus_tcp_conn_t *conn = nodus_tcp_connect(itcp, seed_ip, peer_port);
+        if (conn) {
+            /* Set up inter-node session for dispatch */
+            if (conn->slot >= 0 && conn->slot < NODUS_MAX_INTER_SESSIONS) {
+                nodus_inter_session_t *sess =
+                    &w->server->inter_sessions[conn->slot];
+                if (!sess->conn)
+                    sess->conn = conn;
+            }
+
+            /* Create peer record (witness_id unknown until w_ident) */
+            if (w->peer_count < NODUS_T3_MAX_WITNESSES) {
+                int pi = w->peer_count++;
+                memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
+                w->peers[pi].conn = conn;
+                w->peers[pi].last_attempt = nodus_time_now();
+                snprintf(w->peers[pi].address, sizeof(w->peers[pi].address),
+                         "%s:%u", seed_ip, peer_port);
+            }
+        }
+    }
+
+    fprintf(stderr, "%s: peer mesh init (roster=%u witnesses, seeds=%d, "
+            "peers=%d)\n",
+            LOG_TAG, w->roster.n_witnesses,
+            w->server->config.seed_count, w->peer_count);
     return 0;
 }
 
