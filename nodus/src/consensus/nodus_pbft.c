@@ -9,7 +9,7 @@
 #include "consensus/nodus_pbft.h"
 #include "server/nodus_server.h"
 #include "protocol/nodus_tier1.h"
-#include "channel/nodus_hashring.h"
+/* hashring is now managed by Kademlia routing in nodus_server.c */
 #include "core/nodus_routing.h"
 
 #include <stdio.h>
@@ -56,22 +56,16 @@ static void elect_leader(nodus_pbft_t *pbft) {
 }
 
 /**
- * Update hash ring membership based on peer state.
+ * Log peer state transitions (hashring is now managed by Kademlia routing).
  */
 static void sync_ring(nodus_pbft_t *pbft, nodus_cluster_peer_t *peer,
                         nodus_node_state_t old_state) {
-    nodus_server_t *srv = (nodus_server_t *)pbft->srv;
-
+    (void)pbft;
     if (old_state == NODUS_NODE_ALIVE && peer->state != NODUS_NODE_ALIVE) {
-        /* Remove from ring */
-        nodus_hashring_remove(&srv->ring, &peer->node_id);
-        fprintf(stderr, "PBFT: removed %s:%d from ring (state=%d)\n",
+        fprintf(stderr, "PBFT: peer %s:%d state changed to %d\n",
                 peer->ip, peer->tcp_port, peer->state);
     } else if (old_state != NODUS_NODE_ALIVE && peer->state == NODUS_NODE_ALIVE) {
-        /* Add to ring */
-        nodus_hashring_add(&srv->ring, &peer->node_id,
-                            peer->ip, peer->tcp_port);
-        fprintf(stderr, "PBFT: added %s:%d to ring\n",
+        fprintf(stderr, "PBFT: peer %s:%d now ALIVE\n",
                 peer->ip, peer->tcp_port);
     }
 }
@@ -84,11 +78,6 @@ void nodus_pbft_init(nodus_pbft_t *pbft, struct nodus_server *srv) {
     pbft->last_tick = nodus_time_now();
 
     nodus_server_t *s = (nodus_server_t *)srv;
-
-    /* Add self to the hash ring */
-    uint16_t self_peer_port = s->config.peer_port ? s->config.peer_port : NODUS_DEFAULT_PEER_PORT;
-    nodus_hashring_add(&s->ring, &s->identity.node_id,
-                        s->config.bind_ip, self_peer_port);
 
     /* Self is initial leader */
     pbft->leader_id = s->identity.node_id;
@@ -120,9 +109,6 @@ void nodus_pbft_add_peer(nodus_pbft_t *pbft,
     peer->tcp_port = tcp_port;
     peer->last_seen = 0;  /* Not yet seen — will be set to alive on first pong */
     peer->state = NODUS_NODE_SUSPECT;  /* Unknown until first heartbeat */
-
-    /* Add to hash ring (optimistic — will be removed if no heartbeat) */
-    nodus_hashring_add(&srv->ring, node_id, ip, tcp_port);
 
     /* Re-elect leader */
     elect_leader(pbft);
@@ -215,14 +201,7 @@ void nodus_pbft_on_pong(nodus_pbft_t *pbft,
                 peer = &pbft->peers[i];
 
                 /* Update placeholder node_id to real one */
-                nodus_server_t *srv = (nodus_server_t *)pbft->srv;
-                nodus_key_t old_id = peer->node_id;
                 peer->node_id = *real_node_id;
-
-                /* Update hash ring: remove old placeholder, add real */
-                nodus_hashring_remove(&srv->ring, &old_id);
-                nodus_hashring_add(&srv->ring, real_node_id,
-                                    peer->ip, peer->tcp_port);
 
                 fprintf(stderr, "PBFT: discovered real node_id for %s:%d\n",
                         from_ip, from_port);

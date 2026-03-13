@@ -1365,6 +1365,12 @@ static void routing_insert_or_ping(nodus_server_t *srv, const nodus_peer_t *peer
     memset(&lru, 0, sizeof(lru));
     int rc = nodus_routing_try_insert(&srv->routing, peer, &lru);
 
+    /* Sync hashring with routing table on insert/update */
+    if (rc == 0 || rc == 1) {
+        nodus_hashring_add(&srv->ring, &peer->node_id,
+                           peer->ip, peer->tcp_port);
+    }
+
     if (rc != 2) return;  /* 0=inserted, 1=updated, -1=error — all done */
 
     /* Bucket full — check if we already have a pending eviction for this LRU */
@@ -1426,8 +1432,14 @@ static void eviction_sweep(nodus_server_t *srv) {
         /* Timeout — evict LRU and insert new peer */
         nodus_routing_remove(&srv->routing,
                               &srv->pending_evictions[i].lru_peer.node_id);
+        nodus_hashring_remove(&srv->ring,
+                               &srv->pending_evictions[i].lru_peer.node_id);
         nodus_routing_insert(&srv->routing,
                               &srv->pending_evictions[i].new_peer);
+        nodus_hashring_add(&srv->ring,
+                           &srv->pending_evictions[i].new_peer.node_id,
+                           srv->pending_evictions[i].new_peer.ip,
+                           srv->pending_evictions[i].new_peer.tcp_port);
         srv->pending_evictions[i].active = false;
     }
 }
@@ -2331,10 +2343,16 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     /* Init replication */
     nodus_replication_init(&srv->replication, srv);
 
-    /* Init hash ring */
+    /* Init hash ring (populated by Kademlia routing, NOT PBFT) */
     nodus_hashring_init(&srv->ring);
 
-    /* Init PBFT consensus (adds self to ring) */
+    /* Add self to hash ring */
+    uint16_t self_peer_port = config->peer_port ? config->peer_port : NODUS_DEFAULT_PEER_PORT;
+    const char *self_ip = config->external_ip[0] ? config->external_ip : config->bind_ip;
+    nodus_hashring_add(&srv->ring, &srv->identity.node_id,
+                        self_ip, self_peer_port);
+
+    /* Init PBFT consensus (witness/DNAC only, does NOT touch hashring) */
     nodus_pbft_init(&srv->pbft, srv);
 
     /* Init ring management (channel responsibility tracking) */
