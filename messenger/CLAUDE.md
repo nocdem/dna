@@ -240,7 +240,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 |-----------|-----------|-------------|-------------|--------|
 | `push` | `[BUILD]` only | No | — | CI builds. No version on website. No DHT update. |
 | `release` | `[BUILD] [RELEASE]` | Yes | Minimums = PREVIOUS version | CI builds + website deploy. Users see dismissible "Update Available". |
-| `release enforced` | `[BUILD] [RELEASE]` | Yes | Minimums = CURRENT version | CI builds + website deploy. Users MUST update (app blocked). |
+| `release enforced` | `[BUILD] [RELEASE] [ENFORCED]` | Yes | Minimums = CURRENT version | CI builds + website deploy. Users MUST update (app blocked). |
 
 **SKIP this checkpoint for regular commits** (no push/release keyword). State "CHECKPOINT 9 SKIPPED"
 
@@ -278,7 +278,7 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 ---
 
 #### When user says `release enforced`:
-1-3. **Same as `release`** (READMEs, commit with `[BUILD] [RELEASE]`, push)
+1-3. **Same as `release`** (READMEs, commit with `[BUILD] [RELEASE] [ENFORCED]`, push)
 4. **PUBLISH** version to DHT — minimums set to CURRENT version:
    ```bash
    version publish --lib <NEW> --app <NEW> --nodus <NODUS> \
