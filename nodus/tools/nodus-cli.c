@@ -26,6 +26,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <time.h>
 
 /* ── Globals ─────────────────────────────────────────────────────── */
 
@@ -355,6 +356,181 @@ static int cmd_presence(int argc, char **argv, int optind_cmd) {
     return 0;
 }
 
+/* ── Channel listen: connect TCP 4003, subscribe, log incoming posts ── */
+
+static int parse_uuid(const char *str, uint8_t out[NODUS_UUID_BYTES]) {
+    /* Accept 32 hex chars or hyphenated UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx) */
+    char clean[33];
+    int ci = 0;
+    for (int i = 0; str[i] && ci < 32; i++) {
+        if (str[i] == '-') continue;
+        clean[ci++] = str[i];
+    }
+    clean[ci] = '\0';
+    if (ci != 32) return -1;
+    for (int i = 0; i < NODUS_UUID_BYTES; i++) {
+        unsigned int byte;
+        if (sscanf(clean + i * 2, "%2x", &byte) != 1) return -1;
+        out[i] = (uint8_t)byte;
+    }
+    return 0;
+}
+
+static void uuid_to_str(const uint8_t uuid[NODUS_UUID_BYTES], char out[37]) {
+    snprintf(out, 37,
+        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        uuid[0], uuid[1], uuid[2], uuid[3],
+        uuid[4], uuid[5], uuid[6], uuid[7],
+        uuid[8], uuid[9], uuid[10], uuid[11],
+        uuid[12], uuid[13], uuid[14], uuid[15]);
+}
+
+static int cmd_ch_listen(const char *server_ip, uint16_t ch_port,
+                          const char *uuid_str, const char *log_path) {
+    uint8_t ch_uuid[NODUS_UUID_BYTES];
+    if (parse_uuid(uuid_str, ch_uuid) != 0) {
+        fprintf(stderr, "Invalid UUID: %s\n", uuid_str);
+        return 1;
+    }
+
+    /* Open log file (append) */
+    FILE *logf = NULL;
+    if (log_path) {
+        logf = fopen(log_path, "a");
+        if (!logf) {
+            fprintf(stderr, "Cannot open log file: %s\n", log_path);
+            return 1;
+        }
+    }
+
+    /* Connect to TCP 4003 using global transport */
+    nodus_tcp_init(&transport, -1);
+    transport.on_frame = on_frame;
+    transport.on_disconnect = on_disconnect;
+    transport.on_connect = on_connect;
+
+    printf("Connecting to %s:%u (channel port)...\n", server_ip, ch_port);
+    fflush(stdout);
+
+    nodus_tcp_conn_t *conn = nodus_tcp_connect(&transport, server_ip, ch_port);
+    if (!conn) {
+        fprintf(stderr, "Failed to connect to channel port\n");
+        if (logf) fclose(logf);
+        return 1;
+    }
+
+    /* Wait for connection */
+    for (int i = 0; i < 100 && conn->state == NODUS_CONN_CONNECTING; i++)
+        nodus_tcp_poll(&transport, 50);
+    if (conn->state != NODUS_CONN_CONNECTED) {
+        fprintf(stderr, "Connection failed\n");
+        nodus_tcp_close(&transport);
+        if (logf) fclose(logf);
+        return 1;
+    }
+    printf("Connected to channel port.\n");
+
+    /* Auth: hello → challenge → auth → auth_ok */
+    server_conn = conn;
+
+    size_t len = 0;
+    uint32_t txn = next_txn++;
+    nodus_t2_hello(txn, &identity.pk, &identity.node_id,
+                    proto_buf, sizeof(proto_buf), &len);
+    nodus_tcp_send(conn, proto_buf, len);
+
+    if (!wait_response(5000) || strcmp(last_response.method, "challenge") != 0) {
+        fprintf(stderr, "Auth failed: no challenge\n");
+        nodus_tcp_close(&transport);
+        if (logf) fclose(logf);
+        return 1;
+    }
+
+    nodus_sig_t sig;
+    nodus_sign(&sig, last_response.nonce, NODUS_NONCE_LEN, &identity.sk);
+    txn = next_txn++;
+    nodus_t2_auth(txn, &sig, proto_buf, sizeof(proto_buf), &len);
+    nodus_tcp_send(conn, proto_buf, len);
+
+    if (!wait_response(5000) || strcmp(last_response.method, "auth_ok") != 0) {
+        fprintf(stderr, "Auth failed: %s\n",
+                last_response.type == 'e' ? last_response.error_msg : last_response.method);
+        nodus_tcp_close(&transport);
+        if (logf) fclose(logf);
+        return 1;
+    }
+    uint8_t ch_token[NODUS_SESSION_TOKEN_LEN];
+    memcpy(ch_token, last_response.token, NODUS_SESSION_TOKEN_LEN);
+    printf("Authenticated on channel port.\n");
+
+    /* Subscribe */
+    txn = next_txn++;
+    nodus_t2_ch_subscribe(txn, ch_token, ch_uuid,
+                            proto_buf, sizeof(proto_buf), &len);
+    nodus_tcp_send(conn, proto_buf, len);
+
+    if (!wait_response(5000)) {
+        fprintf(stderr, "No response to ch_sub\n");
+        nodus_tcp_close(&transport);
+        if (logf) fclose(logf);
+        return 1;
+    }
+
+    char uuid_pretty[37];
+    uuid_to_str(ch_uuid, uuid_pretty);
+    printf("Subscribed to channel %s\n", uuid_pretty);
+    printf("Listening for posts... (Ctrl+C to stop)\n");
+    if (logf) {
+        fprintf(logf, "--- ch_listen started: %s ---\n", uuid_pretty);
+        fflush(logf);
+    }
+    fflush(stdout);
+
+    /* Main loop: stay connected, print incoming ch_post_notify */
+    while (running) {
+        response_ready = false;
+        nodus_tcp_poll(&transport, 500);
+
+        if (response_ready) {
+            if (strcmp(last_response.method, "ch_ntf") == 0) {
+                char post_uuid[37], author_hex[NODUS_KEY_HEX_LEN];
+                uuid_to_str(last_response.post_uuid_ch, post_uuid);
+                for (int i = 0; i < NODUS_KEY_BYTES; i++)
+                    snprintf(author_hex + i * 2, 3, "%02x", last_response.fp.bytes[i]);
+
+                /* ch_timestamp is Unix seconds (not ms) */
+                time_t ts = (time_t)last_response.ch_timestamp;
+                struct tm tm_buf;
+                struct tm *tm = localtime_r(&ts, &tm_buf);
+                char timebuf[32];
+                strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", tm);
+
+                printf("[%s] %.16s...: %.*s\n",
+                       timebuf, author_hex,
+                       (int)last_response.data_len,
+                       last_response.data ? (char *)last_response.data : "");
+                fflush(stdout);
+
+                if (logf) {
+                    fprintf(logf, "[%s] post=%s author=%.16s... body=%.*s\n",
+                            timebuf, post_uuid, author_hex,
+                            (int)last_response.data_len,
+                            last_response.data ? (char *)last_response.data : "");
+                    fflush(logf);
+                }
+            }
+        }
+    }
+
+    printf("Disconnected.\n");
+    nodus_tcp_close(&transport);
+    if (logf) {
+        fprintf(logf, "--- ch_listen stopped ---\n");
+        fclose(logf);
+    }
+    return 0;
+}
+
 /* Keep connected and print fingerprint, wait for Ctrl+C */
 static int cmd_presence_hold(void) {
     printf("Identity online: %s\n", identity.fingerprint);
@@ -394,6 +570,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  servers          List cluster servers\n");
     fprintf(stderr, "  presence [fp..]  Query presence (self + optional fps)\n");
     fprintf(stderr, "  hold             Stay connected (test presence visibility)\n");
+    fprintf(stderr, "  ch_listen <uuid> [logfile]  Subscribe to channel on TCP 4003, log posts\n");
 }
 
 /* ── Main ────────────────────────────────────────────────────────── */
@@ -474,6 +651,21 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Using random identity: %s\n", identity.fingerprint);
     }
 
+    /* ch_listen: connects to TCP 4003 directly, bypasses TCP 4001 */
+    if (strcmp(command, "ch_listen") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Usage: ch_listen <uuid> [logfile]\n");
+            nodus_identity_clear(&identity);
+            return 1;
+        }
+        uint16_t ch_port = server_port + 2;  /* 4001 → 4003 */
+        const char *lf = (optind + 2 < argc) ? argv[optind + 2] : NULL;
+        int rc = cmd_ch_listen(server_ip, ch_port, argv[optind + 1], lf);
+        nodus_identity_clear(&identity);
+        return rc;
+    }
+
+    /* Remaining commands: connect to TCP 4001, authenticate */
     int rc = 1;
 
     /* Connect */
