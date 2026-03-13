@@ -756,11 +756,14 @@ static void test_ch_subscribe_notify(void) {
 }
 
 static void test_ch_nonexistent(void) {
-    TEST("ch_post to nonexistent channel returns error");
+    TEST("ch_post to unknown channel auto-creates if responsible");
 
+    /* In single-node mode, the server is always in the hashring responsible
+       set, so posting to an unknown channel UUID should auto-create the table
+       (lazy replication) and succeed rather than returning CHANNEL_NOT_FOUND. */
     uint8_t fake_uuid[16];
     memset(fake_uuid, 0xFF, 16);
-    const char *body = "nope";
+    const char *body = "auto-created";
     uint8_t post_uuid[16];
     memset(post_uuid, 0x50, 16);
     nodus_sig_t sig;
@@ -776,12 +779,7 @@ static void test_ch_nonexistent(void) {
     nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
 
     if (!ch_wait_response(5000)) { FAIL("no response"); return; }
-    if (ch_last_resp.type != 'e') { FAIL("expected error response"); return; }
-    if (ch_last_resp.error_code != NODUS_ERR_CHANNEL_NOT_FOUND) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "expected error 10, got %d", ch_last_resp.error_code);
-        FAIL(buf); return;
-    }
+    if (ch_last_resp.type == 'e') { FAIL("expected success, got error"); return; }
     PASS();
 }
 

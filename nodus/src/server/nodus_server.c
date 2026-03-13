@@ -368,7 +368,7 @@ static int send_frame_to_peer(const char *peer_ip, uint16_t peer_tcp_port,
     return 0;
 }
 
-static void replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
+void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
     /* Encode T1 STORE_VALUE once for all peers */
     uint8_t *cbor_buf = malloc(RESP_BUF_SIZE);
     if (!cbor_buf) return;
@@ -810,7 +810,7 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
     notify_listeners(srv, &msg->key, val);
 
     /* Replicate to alive PBFT peers via TCP STORE */
-    replicate_value(srv, val);
+    nodus_server_replicate_value(srv, val);
 
     /* Respond OK */
     size_t len = 0;
@@ -1991,6 +1991,39 @@ static void handle_ch_auth(nodus_server_t *srv, nodus_ch_session_t *sess,
 
 /* ── Channel port (4003) message handlers ───────────────────── */
 
+/**
+ * Ensure channel table exists on this node.  If the table is missing but this
+ * node is in the hashring responsible set, auto-create it (lazy replication).
+ * Returns true if channel is ready, false if not found / not responsible.
+ */
+static bool ch_ensure_channel(nodus_server_t *srv, const uint8_t uuid[NODUS_UUID_BYTES]) {
+    if (nodus_channel_exists(&srv->ch_store, uuid))
+        return true;
+
+    /* Table missing — check if we're supposed to be responsible */
+    nodus_responsible_set_t rset;
+    if (nodus_hashring_responsible(&srv->ring, uuid, &rset) != 0)
+        return false;
+
+    bool responsible = false;
+    for (int i = 0; i < rset.count; i++) {
+        if (memcmp(rset.nodes[i].node_id.bytes, srv->identity.node_id.bytes, NODUS_KEY_BYTES) == 0) {
+            responsible = true;
+            break;
+        }
+    }
+    if (!responsible)
+        return false;
+
+    /* We're responsible — create the table and track it */
+    if (nodus_channel_create(&srv->ch_store, uuid) != 0)
+        return false;
+
+    nodus_ring_mgmt_track(&srv->ring_mgmt, uuid);
+    fprintf(stderr, "RING_MGMT: auto-created channel table (lazy replication)\n");
+    return true;
+}
+
 static void handle_ch_t2_ch_create(nodus_server_t *srv, nodus_ch_session_t *sess,
                                      nodus_tier2_msg_t *msg) {
     int rc = nodus_channel_create(&srv->ch_store, msg->channel_uuid);
@@ -2028,8 +2061,8 @@ static void handle_ch_t2_ch_post(nodus_server_t *srv, nodus_ch_session_t *sess,
     }
     sess->posts_this_minute++;
 
-    /* Verify channel exists */
-    if (!nodus_channel_exists(&srv->ch_store, msg->channel_uuid)) {
+    /* Verify channel exists (auto-create if we're responsible) */
+    if (!ch_ensure_channel(srv, msg->channel_uuid)) {
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_CHANNEL_NOT_FOUND,
                         "channel not found", resp_buf, sizeof(resp_buf), &len);
@@ -2093,7 +2126,7 @@ static void handle_ch_t2_ch_post(nodus_server_t *srv, nodus_ch_session_t *sess,
 
 static void handle_ch_t2_ch_get_posts(nodus_server_t *srv, nodus_ch_session_t *sess,
                                         nodus_tier2_msg_t *msg) {
-    if (!nodus_channel_exists(&srv->ch_store, msg->channel_uuid)) {
+    if (!ch_ensure_channel(srv, msg->channel_uuid)) {
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_CHANNEL_NOT_FOUND,
                         "channel not found", resp_buf, sizeof(resp_buf), &len);
@@ -2125,7 +2158,7 @@ static void handle_ch_t2_ch_get_posts(nodus_server_t *srv, nodus_ch_session_t *s
 
 static void handle_ch_t2_ch_subscribe(nodus_server_t *srv, nodus_ch_session_t *sess,
                                         nodus_tier2_msg_t *msg) {
-    if (!nodus_channel_exists(&srv->ch_store, msg->channel_uuid)) {
+    if (!ch_ensure_channel(srv, msg->channel_uuid)) {
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_CHANNEL_NOT_FOUND,
                         "channel not found", resp_buf, sizeof(resp_buf), &len);

@@ -519,6 +519,9 @@ int nodus_ring_announce_to_dht(nodus_ring_mgmt_t *mgmt,
         return -1;
     }
 
+    /* Replicate to K-closest Kademlia peers so clients can discover nodes */
+    nodus_server_replicate_value(srv, val);
+
     nodus_value_free(val);
     fprintf(stderr, "%s: announced channel to DHT (version=%u, nodes=%d)\n",
             LOG_TAG, version, rset.count);

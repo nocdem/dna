@@ -968,9 +968,10 @@ int nodus_ops_ch_post(const uint8_t channel_uuid[16],
     nodus_ch_conn_t *conn = ch_pool_get_or_connect(channel_uuid);
     if (!conn) return -1;
 
-    return nodus_ch_conn_post(conn, channel_uuid, post_uuid,
+    int rc = nodus_ch_conn_post(conn, channel_uuid, post_uuid,
                                body, body_len, timestamp, sig,
                                received_at_out);
+    return rc;
 }
 
 int nodus_ops_ch_get_posts(const uint8_t channel_uuid[16],

@@ -287,6 +287,12 @@ void nodus_server_stop(nodus_server_t *srv);
  */
 void nodus_server_close(nodus_server_t *srv);
 
+/**
+ * Replicate a DHT value to K-closest Kademlia peers.
+ * Used for channel node announcements and client PUT replication.
+ */
+void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val);
+
 /* ── Auth helpers (used by server) ───────────────────────────────── */
 
 /**
