@@ -1,6 +1,6 @@
 # DNA Nodus - Post-Quantum DHT Network
 
-**Current Version:** Nodus (v0.5.6)
+**Current Version:** Nodus (v0.8.1)
 **Security:** FIPS 204 / ML-DSA-87 (Dilithium5) - NIST Category 5
 
 ## Overview
@@ -10,7 +10,8 @@ DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Connect. It
 1. **Kademlia DHT** - Decentralized key-value storage with 512-bit keyspace
 2. **PBFT Consensus** - Byzantine fault-tolerant replication across nodes
 3. **Client SDK** - TCP-based client protocol for messenger integration
-4. **SQLite Persistence** - Durable storage for DHT values
+4. **Channel System** - PRIMARY/BACKUP architecture over dedicated TCP 4003
+5. **SQLite Persistence** - Durable storage for DHT values and channel posts
 
 **Architecture:** Nodus replaced the former OpenDHT-PQ (C++) backend entirely. The `vendor/opendht-pq/` directory has been deleted. All messenger DHT operations now go through the Nodus client SDK directly via `nodus_ops.c` / `nodus_init.c`.
 
@@ -30,11 +31,18 @@ DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Connect. It
 |  +-----------------------------------------------------------+ |
 |                                                                 |
 |  +-----------------------------------------------------------+ |
-|  |         TCP Layer (port 4001) - Client + Replication       | |
+|  |         TCP Layer (port 4001) - Client DHT                 | |
 |  |  - Client auth (Dilithium5 challenge/response)             | |
 |  |  - Client DHT operations (dht_put, dht_get, listen)        | |
-|  |  - PBFT consensus + cross-node replication                 | |
-|  |  - Channel subscriptions                                   | |
+|  |  - TCP 4002: PBFT consensus + cross-node DHT replication   | |
+|  +-----------------------------------------------------------+ |
+|                                                                 |
+|  +-----------------------------------------------------------+ |
+|  |      Channel Layer (port 4003) - PRIMARY/BACKUP            | |
+|  |  - Dedicated TCP port for all channel traffic              | |
+|  |  - Client: create, post, get, subscribe                    | |
+|  |  - Inter-node: replication, sync, ring management          | |
+|  |  - Hashring-deterministic: 3 nodes per channel             | |
 |  +-----------------------------------------------------------+ |
 |                                                                 |
 |  +-----------------------------------------------------------+ |
@@ -48,9 +56,10 @@ DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Connect. It
 ### Protocol
 
 - **Wire format:** CBOR over wire frames with 7-byte header (magic `0x4E44` + version + length)
-- **Two tiers:**
-  - **Tier 1 (Kademlia):** ping, find_node, put, get (UDP, inter-node)
-  - **Tier 2 (Client):** auth, dht_put, dht_get, listen, channels (TCP, client-facing)
+- **Three transport layers:**
+  - **Tier 1 (Kademlia):** ping, find_node, put, get (UDP 4000, inter-node)
+  - **Tier 2 (Client DHT):** auth, dht_put, dht_get, listen (TCP 4001, client-facing)
+  - **Channel (TCP 4003):** ch_create, ch_post, ch_get, ch_sub, ch_rep (dedicated port)
 
 ### Messenger Integration
 
@@ -73,19 +82,24 @@ The messenger integrates directly with Nodus -- no compatibility layer, no OpenD
 - `nodus/include/nodus/nodus.h` - Client SDK public API
 - `nodus/include/nodus/nodus_types.h` - Constants, version, crypto sizes
 
-**Internal Read Thread (v0.5.6+):** The Nodus client SDK runs an internal read thread after `nodus_client_connect()` that continuously reads TCP via blocking `epoll_wait`. Push notifications (value_changed, ch_ntf, offline messages) are delivered instantly via callbacks. `nodus_client_poll()` is a no-op when the read thread is running. This replaces the old model where the heartbeat thread polled every 60s. Zero battery impact (kernel wait queue, no CPU spin).
+**Internal Read Thread:** The Nodus client SDK runs an internal read thread after `nodus_client_connect()` that continuously reads TCP via blocking `epoll_wait`. Push notifications (value_changed, ch_ntf, offline messages) are delivered instantly via callbacks. `nodus_client_poll()` is a no-op when the read thread is running. Zero battery impact (kernel wait queue, no CPU spin).
 
-## Nodus Test Cluster
+**Channel Connection Pool (v0.8.0+):** The messenger maintains a pool of TCP 4003 connections in `nodus_ops.c` — one per active channel. On subscribe, the client connects to the PRIMARY node (discovered via DHT lookup) and auto-subscribes. Ring changes trigger automatic disconnect and reconnect to the new PRIMARY, with catch-up for missed posts via `ch_get(since=last_received_at)`.
 
-Three nodes running v0.5.6 with PBFT ring formed and cross-node replication verified.
+## Nodus Production Cluster
 
-| Node | IP | UDP Port | TCP Port |
-|------|-----|----------|----------|
-| nodus-01 | 161.97.85.25 | 4000 | 4001 |
-| nodus-02 | 156.67.24.125 | 4000 | 4001 |
-| nodus-03 | 156.67.25.251 | 4000 | 4001 |
+Six nodes running v0.8.1 with PBFT ring formed and cross-node replication verified.
 
-**Configuration:** `/etc/nodus.conf` (per-machine, each seeds the other 2)
+| Node | IP | UDP | TCP (DHT) | TCP (Channel) |
+|------|-----|-----|-----------|---------------|
+| US-1 | 154.38.182.161 | 4000 | 4001 | 4003 |
+| EU-1 | 164.68.105.227 | 4000 | 4001 | 4003 |
+| EU-2 | 164.68.116.180 | 4000 | 4001 | 4003 |
+| EU-3 | 161.97.85.25 | 4000 | 4001 | 4003 |
+| EU-4 | 156.67.24.125 | 4000 | 4001 | 4003 |
+| EU-5 | 156.67.25.251 | 4000 | 4001 | 4003 |
+
+**Configuration:** `/etc/nodus.conf` (per-machine, each seeds the others)
 **Data directory:** `/var/lib/nodus/` (identity + SQLite storage)
 **Systemd service:** `nodus.service` (enabled, auto-start)
 
@@ -99,34 +113,36 @@ cd /opt/dna/nodus/build && cmake .. && make -j$(nproc)
 ssh root@<IP> 'bash /tmp/nodus-redeploy.sh'
 ```
 
-### Configuration (v5)
+### Configuration (v0.8+)
 
 Nodus uses `/etc/nodus.conf`:
 
 ```json
 {
-    "listen_port": 4001,
+    "bind_ip": "0.0.0.0",
+    "tcp_port": 4001,
     "udp_port": 4000,
+    "ch_port": 4003,
     "seed_nodes": [
-        "161.97.85.25:4000",
-        "156.67.24.125:4000"
+        "154.38.182.161:4000",
+        "164.68.105.227:4000",
+        "164.68.116.180:4000"
     ],
     "data_dir": "/var/lib/nodus",
-    "identity": "nodus-01"
+    "identity_path": "/var/lib/nodus"
 }
 ```
 
-## Production Servers (Legacy v0.4.5)
+**Ports:**
+- **UDP 4000** — Kademlia peer discovery
+- **TCP 4001** — Client DHT operations
+- **TCP 4002** — Inter-node PBFT + DHT replication (auto = tcp_port + 1)
+- **TCP 4003** — Channel system (PRIMARY/BACKUP + client channel connections)
 
-These servers still run the legacy dna-nodus v0.4.5 (OpenDHT-based) for production clients. They will be migrated to Nodus during production cutover.
+## Legacy Servers (REMOVED)
 
-| Server | IP | DHT Port | Location |
-|--------|-----|----------|----------|
-| US-1 | 154.38.182.161 | 4000 | United States |
-| EU-1 | 164.68.105.227 | 4000 | Europe |
-| EU-2 | 164.68.116.180 | 4000 | Europe |
-
-**Note:** The legacy v0.4 codebase was in `vendor/opendht-pq/` which has been deleted from the monorepo. The production servers still run the old binary from `/opt/dna-messenger/` on each server.
+The legacy dna-nodus v0.4.5 (OpenDHT-based) has been completely removed. All 6 production
+nodes now run Nodus v0.8.1+ (pure C). The `vendor/opendht-pq/` directory was deleted.
 
 ## Building
 
@@ -157,18 +173,27 @@ The messenger CMake configuration links against the Nodus client library. No sep
 │   └── nodus_types.h         # Constants, version (NODUS_VERSION_*)
 ├── src/
 │   ├── server/
-│   │   └── nodus_server.c    # Server event loop (epoll)
+│   │   ├── nodus_server.c    # Server event loop (epoll, all 4 ports)
+│   │   ├── nodus_auth.c      # Dilithium5 challenge-response auth
+│   │   └── nodus_presence.c  # Native presence tracking
 │   ├── client/
-│   │   └── nodus_client.c    # Client SDK implementation
+│   │   └── nodus_client.c    # Client SDK (DHT + channel connections)
+│   ├── channel/
+│   │   ├── nodus_channel_server.c    # TCP 4003 listener + sessions
+│   │   ├── nodus_channel_primary.c   # PRIMARY role: posts, broadcast, DHT announce
+│   │   ├── nodus_channel_replication.c # BACKUP replication + hinted handoff
+│   │   ├── nodus_channel_ring.c      # Ring management via heartbeat
+│   │   ├── nodus_channel_store.c     # SQLite channel + post storage
+│   │   └── nodus_hashring.c          # Consistent hash ring
 │   ├── protocol/
-│   │   └── nodus_tier2.c     # Client protocol message dispatch
+│   │   └── nodus_tier2.c     # Protocol message encode/decode
 │   └── ...
 └── tests/
-    ├── integration_test.sh   # SSH to 3-node cluster
-    └── test_*.c              # Unit tests (13 tests via ctest)
+    ├── test_channel_*.c      # Channel system tests (5 test files)
+    └── test_*.c              # Unit tests (27 tests total via ctest)
 
 /opt/dna/messenger/dht/shared/
-├── nodus_ops.c               # Convenience wrappers for nodus singleton
+├── nodus_ops.c               # Convenience wrappers (DHT + channel pool)
 ├── nodus_ops.h
 ├── nodus_init.c              # Lifecycle management
 └── nodus_init.h
@@ -195,31 +220,23 @@ ssh root@<IP> 'systemctl status nodus'
 ssh root@<IP> 'journalctl -u nodus -f'
 ```
 
-### Legacy v0.4 Status
-
-```bash
-ssh root@<IP> 'systemctl status dna-nodus'
-```
 
 ## Version History
 
 ### Nodus (Pure C rewrite)
+- **v0.8.1** - Wire dht_put_signed callback for channel DHT announcements
+- **v0.8.0** - Channel system rewrite: modular PRIMARY/BACKUP architecture
+  - 4 new modules: channel_server, channel_primary, channel_replication, channel_ring
+  - Dedicated TCP 4003 for all channel traffic (no DHT PUT/GET for posts)
+  - Hashring-deterministic role assignment (3 nodes per channel)
+  - Hinted handoff for failed replication (SQLite, 24h TTL, 30s retry)
+  - Ring management via TCP 4003 heartbeat (not PBFT)
+  - Client auto-reconnect on ring change with catch-up
+  - 27 unit tests, cross-node replication verified on 6-node cluster
 - **v0.5.6** - Internal read thread for instant push notification delivery
-  - Client SDK spawns read thread after connect (blocking epoll_wait, zero CPU)
-  - Push notifications (value_changed, ch_ntf) delivered instantly via callbacks
-  - `nodus_client_poll()` is no-op when read thread is running
-  - `nodus_pending_t.ready` changed to `_Atomic bool` for cross-thread visibility
-  - Thread safety: poll_mutex (reads), send_mutex (writes), pending_mutex (slots)
 - **v0.5.0** - Production-ready Nodus: Kademlia DHT + PBFT consensus + TCP client SDK
-  - Pure C implementation (no C++ dependencies)
-  - CBOR wire protocol with 7-byte frame header
-  - Two-tier protocol (Kademlia + Client)
-  - 3-node test cluster deployed and verified
-  - Direct messenger integration via nodus_ops.c (OpenDHT removed)
 
-### Legacy (OpenDHT-based, now removed from codebase)
+### Legacy (OpenDHT-based, removed from codebase)
 - **v0.4.5** - Removed STUN/TURN for privacy (DHT-only mode)
 - **v0.3.1** - Added direct UDP credential server (port 3479)
-- **v0.3** - Added TURN server and credential management
-- **v0.2** - Added bootstrap registry and peer discovery
 - **v0.1** - Initial DHT bootstrap with SQLite persistence

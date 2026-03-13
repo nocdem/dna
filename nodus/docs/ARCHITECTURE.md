@@ -1,6 +1,6 @@
 # Nodus — Architecture Documentation
 
-**Version:** 0.5.0 | **Language:** C (pure) | **License:** Proprietary
+**Version:** 0.8.1 | **Language:** C (pure) | **License:** Proprietary
 
 ---
 
@@ -50,16 +50,17 @@ Nodus uses a two-tier protocol architecture:
 │   │ Android │  │  Linux  │  │ Windows │                      │
 │   │   App   │  │   App   │  │   App   │                      │
 │   └────┬────┘  └────┬────┘  └────┬────┘                      │
-│        │            │            │     Tier 2 (TCP)           │
+│        │            │            │     Tier 2 (TCP 4001)      │
 │        │    Dilithium5 Auth      │     PUT/GET/LISTEN         │
-│        ▼            ▼            ▼     Channels               │
+│        ▼            ▼            ▼                            │
 ├──────────────────────────────────────────────────────────────┤
 │                     NODUS CLUSTER                            │
-│   ┌──────────┐  ┌──────────┐  ┌──────────┐                  │
+│   ┌──────────┐  ┌──────────┐  ┌──────────┐  ... (6 nodes)   │
 │   │ nodus-01 │◄─┤ nodus-02 │◄─┤ nodus-03 │                  │
 │   │  (US-1)  │─►│  (EU-1)  │─►│  (EU-2)  │                  │
 │   └──────────┘  └──────────┘  └──────────┘                   │
-│        Tier 1: UDP (Kademlia) + TCP (replication)            │
+│        Tier 1: UDP 4000 (Kademlia) + TCP 4002 (replication)  │
+│        TCP 4003: Channel system (PRIMARY/BACKUP per channel) │
 │        PBFT consensus + hash ring + value replication        │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -95,9 +96,12 @@ nodus/
 │   │   ├── nodus_sign.c       # Dilithium5 sign/verify/hash wrappers
 │   │   └── nodus_identity.c   # Identity generation, save/load, seed derivation
 │   ├── channel/
-│   │   ├── nodus_channel_store.c  # SQLite channel + post storage
-│   │   ├── nodus_hashring.c       # Consistent hash ring
-│   │   └── nodus_replication.c    # Cross-node channel replication + hinted handoff
+│   │   ├── nodus_channel_store.c       # SQLite channel + post storage
+│   │   ├── nodus_hashring.c            # Consistent hash ring
+│   │   ├── nodus_channel_server.c/h    # TCP 4003 session management + auth
+│   │   ├── nodus_channel_primary.c/h   # PRIMARY role: post handling + broadcast
+│   │   ├── nodus_channel_replication.c/h # BACKUP replication + hinted handoff + sync
+│   │   └── nodus_channel_ring.c/h      # Heartbeat-based ring management (no PBFT)
 │   ├── consensus/
 │   │   └── nodus_pbft.c       # PBFT cluster membership + leader election
 │   ├── server/
@@ -124,8 +128,13 @@ nodus/
 │   ├── test_storage.c         # SQLite storage tests
 │   ├── test_identity.c        # Identity generation tests
 │   ├── test_hashring.c        # Hash ring tests
-│   ├── test_channel_store.c   # Channel storage tests
-│   ├── test_tcp.c             # TCP transport tests
+│   ├── test_channel_store.c      # Channel storage tests
+│   ├── test_channel_server.c    # TCP 4003 session tests
+│   ├── test_channel_primary.c   # PRIMARY role handler tests
+│   ├── test_channel_replication.c # Replication + hinted handoff tests
+│   ├── test_channel_ring.c      # Ring management tests
+│   ├── test_channel_protocol.c  # Channel protocol message tests
+│   ├── test_tcp.c               # TCP transport tests
 │   ├── test_client.c          # Client SDK tests
 │   ├── test_server.c          # Server integration tests
 │   └── integration_test.sh    # E2E integration test suite
@@ -663,17 +672,51 @@ PONG, the PBFT module:
 
 ---
 
-## 9. Channels & Replication
+## 9. Channels & Replication (v0.8.0+)
 
 ### Channel Model
 
-Channels provide ordered, multi-writer messaging with server-assigned sequence numbers.
+Channels provide ordered, multi-writer messaging over a dedicated TCP 4003 port.
+All post traffic uses TCP 4003 — no DHT PUT/GET for posts. Channel metadata (name,
+description, creator) remains on DHT.
 
 **Operations:**
-- **Create** — register a UUID v4 channel on the server
-- **Post** — submit a signed message (max 4,000 UTF-8 chars), server assigns `seq_id`
-- **Get Posts** — paginated retrieval (`since_seq`, `max_count`)
+- **Create** — register a UUID v4 channel on the server, announce nodes to DHT
+- **Post** — submit a signed message (max 4,000 UTF-8 chars), server assigns `received_at`
+- **Get Posts** — paginated retrieval (`since_received_at`, `max_count`)
 - **Subscribe** — real-time push notifications for new posts
+
+### Architecture: PRIMARY/BACKUP
+
+Each channel has exactly 3 responsible nodes determined by the consistent hash ring:
+
+```
+Client → TCP 4003 → PRIMARY node (ring position [0])
+                        ├→ push to subscribed clients (ch_post_notify)
+                        ├→ replicate to BACKUP-1 (TCP 4003: ch_rep)
+                        └→ replicate to BACKUP-2 (TCP 4003: ch_rep)
+```
+
+- **PRIMARY** — accepts client posts, verifies signatures, stores, broadcasts, replicates
+- **BACKUPs** — store replicated posts, serve reads if PRIMARY is down
+- **Role assignment** — deterministic via `SHA3-512(channel_uuid)` clockwise in hashring
+
+Node discovery: clients GET `SHA3-512("dna:channel:nodes:" + raw_uuid)` from DHT to find
+the ordered list of responsible nodes. Fallback: connect to current DHT server on port 4003.
+
+### Modular Implementation
+
+The channel system is split into 4 modules in `nodus/src/channel/`:
+
+| Module | File | Responsibility |
+|--------|------|---------------|
+| **Channel Server** | `nodus_channel_server.c/h` | TCP 4003 listener, session management, client/node auth, message dispatch |
+| **PRIMARY** | `nodus_channel_primary.c/h` | Post handling, signature verification, DHT announcement, subscriber broadcast |
+| **Replication** | `nodus_channel_replication.c/h` | BACKUP replication, hinted handoff (SQLite, 24h TTL, 30s retry), incremental sync |
+| **Ring Management** | `nodus_channel_ring.c/h` | Heartbeat-based dead detection (15s interval, 45s timeout), ring version tracking |
+
+**Key design principle:** PBFT has NOTHING to do with channels. Ring management uses
+TCP 4003 heartbeats only. The hashring is populated from Kademlia routing, not PBFT peers.
 
 ### Storage
 
@@ -694,7 +737,7 @@ Channel-to-node assignment uses consistent hashing:
 1. `ring_position = SHA3-512(channel_uuid)`
 2. Binary search the sorted ring for the first member with `node_id >= ring_position`
 3. Collect R (=3) consecutive members clockwise (wrapping around)
-4. These R nodes are the **responsible set** for the channel
+4. These R nodes are the **responsible set**: [0]=PRIMARY, [1]=BACKUP-1, [2]=BACKUP-2
 
 ```c
 int nodus_hashring_responsible(const nodus_hashring_t *ring,
@@ -704,13 +747,22 @@ int nodus_hashring_responsible(const nodus_hashring_t *ring,
 
 ### Cross-Node Replication
 
-When a node receives a channel post:
+When the PRIMARY node receives a channel post:
 
-1. Stores it locally and assigns a `seq_id`
-2. Notifies all locally subscribed clients (`ch_ntf`)
-3. Serializes the post as a `ch_rep` message
-4. Sends it via short-lived TCP connections to each node in the responsible set (except self)
-5. If a send fails, the post is queued in **hinted handoff** (SQLite, 7-day TTL, keyed by node_id)
+1. Verifies author signature (Dilithium5)
+2. Stores it locally (SQLite, assigns `received_at` timestamp)
+3. Pushes `ch_post_notify` to ALL subscribed clients (user experience first)
+4. Sends `ch_rep` to each BACKUP node via their TCP 4003 channel connection
+5. If a BACKUP is unreachable, queues in **hinted handoff** (SQLite, 24h TTL)
+
+### Ring Change Handling
+
+When a node joins/leaves the cluster, the hashring changes:
+
+1. Ring management detects dead node (45s timeout) or new node (heartbeat received)
+2. Server pushes `ch_ring_changed` to all subscribed clients with new ring version
+3. Client disconnects from old PRIMARY and reconnects to new PRIMARY
+4. On reconnect, client issues `ch_get(since=last_received_at)` to catch up missed posts
 
 **Hinted handoff retry** runs every 30 seconds (`NODUS_HINTED_RETRY_SEC`), querying distinct
 node_ids and looking up current IP:port via the routing table. Successfully delivered entries
@@ -727,30 +779,37 @@ The server uses a single-threaded, event-driven architecture based on Linux `epo
 
 ```c
 while (srv->running) {
-    nodus_tcp_poll(&srv->tcp, 100);     // TCP events (100ms timeout)
-    nodus_udp_poll(&srv->udp);          // UDP datagrams (non-blocking)
-    nodus_pbft_tick(&srv->pbft);        // Heartbeats + health checks
-    nodus_replication_retry(&srv->replication);  // Hinted handoff retry
-    dht_find_value_tick(srv);           // Async FIND_VALUE state machines
-    dht_republish(srv);                 // Periodic value republish (batch)
-    dht_republish_tick(srv);            // Republish connection timeouts
-    dht_storage_cleanup(srv);           // Expired value removal (hourly)
-    dht_bucket_refresh(srv);            // Routing table refresh (15 min)
-    dht_hinted_retry(srv);             // DHT hinted handoff retry
+    nodus_tcp_poll(&srv->tcp, 100);              // TCP 4001 events (100ms timeout)
+    nodus_udp_poll(&srv->udp);                   // UDP 4000 datagrams (non-blocking)
+    nodus_channel_server_poll(&srv->ch_server, 50); // TCP 4003 channel events
+    nodus_pbft_tick(&srv->pbft);                 // Heartbeats + health checks
+    dht_find_value_tick(srv);                    // Async FIND_VALUE state machines
+    dht_republish(srv);                          // Periodic value republish (batch)
+    dht_republish_tick(srv);                     // Republish connection timeouts
+    dht_storage_cleanup(srv);                    // Expired value removal (hourly)
+    dht_bucket_refresh(srv);                     // Routing table refresh (15 min)
+    dht_hinted_retry(srv);                       // DHT hinted handoff retry
+    nodus_channel_server_tick(&srv->ch_server, now_ms); // Channel session timeouts
+    nodus_ch_replication_retry(&srv->ch_replication, now_ms); // Channel hinted handoff
+    nodus_ch_ring_tick(&srv->ch_ring, now_ms);   // Ring heartbeat + dead detection
 }
 ```
 
 ### Session Management
 
-Each TCP connection is assigned a **session** (`nodus_session_t`) with:
+Each TCP 4001 connection is assigned a **session** (`nodus_session_t`) with:
 
 - Authentication state (nonce, public key, fingerprint, token)
 - Active DHT LISTEN subscriptions (up to 128 keys per session)
-- Active channel subscriptions (up to 32 channels per session)
 - Rate limiting state (60 puts per minute window)
 
 Sessions are cleared on disconnect. The server supports up to `NODUS_MAX_SESSIONS`
 concurrent clients.
+
+**Channel sessions** (TCP 4003) are managed separately by `nodus_channel_server_t`:
+- Client sessions (`nodus_ch_client_session_t`): auth state, channel subscriptions, rate limiting
+- Node sessions (`nodus_ch_node_session_t`): inter-node replication connections
+- Both use Dilithium5 challenge-response auth on TCP 4003
 
 ### Message Dispatch
 
@@ -758,8 +817,8 @@ TCP frames are dispatched through `dispatch_t2()`:
 
 1. **Decode** the CBOR payload as a T2 message
 2. **Pre-auth check**: if session is not authenticated, only `hello`, `auth`, `sv`
-   (inter-node store, rate-limited: 200/s), `fv` (inter-node FIND_VALUE, rate-limited: 100/s),
-   and `ch_rep` (channel replication) are allowed
+   (inter-node store, rate-limited: 200/s), and `fv` (inter-node FIND_VALUE, rate-limited: 100/s)
+   are allowed. Channel operations (`ch_rep`, `ch_post`, etc.) go through TCP 4003, not 4001.
 3. **Token verification**: authenticated requests must carry a valid session token
 4. **Handler dispatch**: method name → handler function (`handle_t2_put`, `handle_t2_get`, etc.)
 
@@ -775,12 +834,19 @@ Server configuration via JSON file (default: `/etc/nodus.conf`):
     "bind_ip": "0.0.0.0",
     "udp_port": 4000,
     "tcp_port": 4001,
+    "ch_port": 4003,
     "identity_path": "/var/lib/nodus",
     "data_path": "/var/lib/nodus",
     "seed_nodes": ["161.97.85.25", "156.67.24.125", "156.67.25.251"],
     "seed_ports": [4000, 4000, 4000]
 }
 ```
+
+**Ports:**
+- **UDP 4000** — Kademlia peer discovery (Tier 1)
+- **TCP 4001** — Client DHT operations + auth (Tier 2)
+- **TCP 4002** — Inter-node replication + PBFT (Tier 1 TCP)
+- **TCP 4003** — Channel system: client posts + inter-node replication (dedicated)
 
 Data is stored in:
 - `<data_path>/nodus.db` — DHT value storage (SQLite)
