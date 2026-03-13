@@ -2147,3 +2147,574 @@ void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *resul
     result->blocks = NULL;
     result->count = 0;
 }
+
+/* ── Channel Connection (TCP 4003) Implementation ──────────────── */
+
+#define LOG_TAG_CH  "NODUS_CH_CONN"
+#define CH_CONN_BUF_SIZE  (256 * 1024)
+#define CH_CONN_CONNECT_TIMEOUT  5000
+#define CH_CONN_REQUEST_TIMEOUT  10000
+
+/* ── ch_conn helpers ───────────────────────────────────────────── */
+
+static nodus_ch_pending_t *ch_conn_alloc_pending(nodus_ch_conn_t *ch, uint32_t txn) {
+    const int max_retries = 5;
+    int backoff_ms = 10;
+
+    for (int attempt = 0; attempt <= max_retries; attempt++) {
+        pthread_mutex_lock(&ch->pending_mutex);
+        for (int i = 0; i < NODUS_CH_MAX_PENDING; i++) {
+            if (!ch->pending[i].in_use) {
+                nodus_ch_pending_t *p = &ch->pending[i];
+                memset(p, 0, sizeof(*p));
+                p->txn = txn;
+                p->response = calloc(1, sizeof(nodus_tier2_msg_t));
+                p->in_use = true;
+                pthread_mutex_unlock(&ch->pending_mutex);
+                return p;
+            }
+        }
+        pthread_mutex_unlock(&ch->pending_mutex);
+
+        if (attempt < max_retries) {
+            QGP_LOG_WARN(LOG_TAG_CH, "All %d pending slots busy, retry %d/%d in %dms",
+                         NODUS_CH_MAX_PENDING, attempt + 1, max_retries, backoff_ms);
+            struct timespec ts = { .tv_sec = 0, .tv_nsec = backoff_ms * 1000000L };
+            nanosleep(&ts, NULL);
+            backoff_ms *= 2;
+        }
+    }
+
+    QGP_LOG_ERROR(LOG_TAG_CH, "No pending slots available (max %d)", NODUS_CH_MAX_PENDING);
+    return NULL;
+}
+
+static void ch_conn_free_pending(nodus_ch_conn_t *ch, nodus_ch_pending_t *p) {
+    if (!p) return;
+    pthread_mutex_lock(&ch->pending_mutex);
+    if (p->response) {
+        nodus_t2_msg_free((nodus_tier2_msg_t *)p->response);
+        free(p->response);
+        p->response = NULL;
+    }
+    p->in_use = false;
+    pthread_mutex_unlock(&ch->pending_mutex);
+}
+
+static int ch_conn_send(nodus_ch_conn_t *ch, const uint8_t *payload, size_t len) {
+    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)ch->conn;
+    if (!conn) return -1;
+    pthread_mutex_lock(&ch->send_mutex);
+    int rc = nodus_tcp_send(conn, payload, len);
+    pthread_mutex_unlock(&ch->send_mutex);
+    return rc;
+}
+
+static bool ch_conn_wait_response(nodus_ch_conn_t *ch, nodus_ch_pending_t *req, int timeout_ms) {
+    int elapsed = 0;
+
+    while (!atomic_load(&req->ready) && elapsed < timeout_ms) {
+        if (!ch->conn)
+            return false;
+
+        if (atomic_load(&ch->read_thread_running) &&
+            !pthread_equal(pthread_self(), ch->read_thread)) {
+            /* Read thread handles TCP — just wait for ready flag */
+            sleep_ms(10);
+            elapsed += 10;
+        } else {
+            /* We ARE the read thread (auth path), or no thread — poll directly */
+            nodus_tcp_t *tcp = (nodus_tcp_t *)ch->tcp;
+            if (tcp) nodus_tcp_poll(tcp, 50);
+            elapsed += 50;
+        }
+    }
+    return atomic_load(&req->ready);
+}
+
+/* ── ch_conn TCP callbacks ─────────────────────────────────────── */
+
+static void ch_conn_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                              size_t len, void *ctx) {
+    (void)conn;
+    nodus_ch_conn_t *ch = (nodus_ch_conn_t *)ctx;
+
+    nodus_tier2_msg_t tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    if (nodus_t2_decode(payload, len, &tmp) != 0)
+        return;
+
+    /* Push notification: channel post notify */
+    if (strcmp(tmp.method, "ch_ntf") == 0) {
+        if (ch->on_ch_post) {
+            nodus_channel_post_t post;
+            memset(&post, 0, sizeof(post));
+            memcpy(post.channel_uuid, tmp.channel_uuid, NODUS_UUID_BYTES);
+            memcpy(post.post_uuid, tmp.post_uuid_ch, NODUS_UUID_BYTES);
+            post.author_fp = tmp.fp;
+            post.timestamp = tmp.ch_timestamp;
+            post.received_at = tmp.ch_received_at;
+            post.signature = tmp.sig;
+            post.body = (char *)tmp.data;
+            post.body_len = tmp.data_len;
+            ch->on_ch_post(tmp.channel_uuid, &post, ch->cb_data);
+        }
+        nodus_t2_msg_free(&tmp);
+        return;
+    }
+
+    /* Find pending slot by txn ID */
+    pthread_mutex_lock(&ch->pending_mutex);
+    nodus_ch_pending_t *slot = NULL;
+    for (int i = 0; i < NODUS_CH_MAX_PENDING; i++) {
+        if (ch->pending[i].in_use && ch->pending[i].txn == tmp.txn_id) {
+            slot = &ch->pending[i];
+            break;
+        }
+    }
+    if (!slot) {
+        pthread_mutex_unlock(&ch->pending_mutex);
+        QGP_LOG_WARN(LOG_TAG_CH, "Response for unknown txn %u", tmp.txn_id);
+        nodus_t2_msg_free(&tmp);
+        return;
+    }
+
+    /* Move decoded response into slot */
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)slot->response;
+    nodus_t2_msg_free(resp);
+    *resp = tmp;
+    atomic_store(&slot->ready, true);
+    pthread_mutex_unlock(&ch->pending_mutex);
+}
+
+static void ch_conn_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
+    (void)conn;
+    nodus_ch_conn_t *ch = (nodus_ch_conn_t *)ctx;
+    ch->conn = NULL;
+    ch->state = NODUS_CH_DISCONNECTED;
+    QGP_LOG_WARN(LOG_TAG_CH, "Disconnected from %s:%d", ch->host, ch->port);
+}
+
+static void ch_conn_on_connect(nodus_tcp_conn_t *conn, void *ctx) {
+    (void)conn; (void)ctx;
+}
+
+/* ── ch_conn read thread ───────────────────────────────────────── */
+
+static void *ch_conn_read_thread_fn(void *arg) {
+    nodus_ch_conn_t *ch = (nodus_ch_conn_t *)arg;
+    QGP_LOG_INFO(LOG_TAG_CH, "Read thread started for %s:%d", ch->host, ch->port);
+
+    while (!atomic_load(&ch->read_thread_stop)) {
+        if (!ch->conn || !ch->tcp) {
+            sleep_ms(100);
+            continue;
+        }
+
+        nodus_tcp_t *tcp = (nodus_tcp_t *)ch->tcp;
+        int rc = nodus_tcp_poll(tcp, 100);
+
+        if (rc < 0 && atomic_load(&ch->read_thread_stop))
+            break;
+        if (ch->state == NODUS_CH_DISCONNECTED)
+            sleep_ms(100);
+    }
+
+    QGP_LOG_INFO(LOG_TAG_CH, "Read thread stopped for %s:%d", ch->host, ch->port);
+    return NULL;
+}
+
+static void ch_conn_start_read_thread(nodus_ch_conn_t *ch) {
+    if (atomic_load(&ch->read_thread_running)) return;
+    atomic_store(&ch->read_thread_stop, false);
+    if (pthread_create(&ch->read_thread, NULL, ch_conn_read_thread_fn, ch) == 0) {
+        atomic_store(&ch->read_thread_running, true);
+        QGP_LOG_INFO(LOG_TAG_CH, "Read thread launched for %s:%d", ch->host, ch->port);
+    } else {
+        QGP_LOG_ERROR(LOG_TAG_CH, "Failed to create read thread");
+    }
+}
+
+static void ch_conn_stop_read_thread(nodus_ch_conn_t *ch) {
+    if (!atomic_load(&ch->read_thread_running)) return;
+    atomic_store(&ch->read_thread_stop, true);
+    pthread_join(ch->read_thread, NULL);
+    atomic_store(&ch->read_thread_running, false);
+    QGP_LOG_INFO(LOG_TAG_CH, "Read thread joined for %s:%d", ch->host, ch->port);
+}
+
+/* ── ch_conn auth ──────────────────────────────────────────────── */
+
+static int ch_conn_do_auth(nodus_ch_conn_t *ch) {
+    uint8_t *buf = malloc(CH_CONN_BUF_SIZE);
+    if (!buf) return -1;
+
+    /* Step 1: HELLO */
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&ch->next_txn, 1);
+    nodus_ch_pending_t *req = ch_conn_alloc_pending(ch, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_hello(txn, &ch->identity.pk, &ch->identity.node_id,
+                    buf, CH_CONN_BUF_SIZE, &len);
+    if (ch_conn_send(ch, buf, len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_CH, "Auth: HELLO send failed");
+        ch_conn_free_pending(ch, req);
+        free(buf);
+        return -1;
+    }
+
+    if (!ch_conn_wait_response(ch, req, CH_CONN_CONNECT_TIMEOUT)) {
+        QGP_LOG_ERROR(LOG_TAG_CH, "Auth: no response to HELLO");
+        ch_conn_free_pending(ch, req);
+        free(buf);
+        return -1;
+    }
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (strcmp(resp->method, "challenge") != 0) {
+        QGP_LOG_ERROR(LOG_TAG_CH, "Auth: expected 'challenge', got '%s'", resp->method);
+        ch_conn_free_pending(ch, req);
+        free(buf);
+        return -1;
+    }
+
+    /* Step 2: Sign nonce and send AUTH */
+    nodus_sig_t sig;
+    nodus_sign(&sig, resp->nonce, NODUS_NONCE_LEN, &ch->identity.sk);
+    ch_conn_free_pending(ch, req);
+
+    len = 0;
+    txn = atomic_fetch_add(&ch->next_txn, 1);
+    req = ch_conn_alloc_pending(ch, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_auth(txn, &sig, buf, CH_CONN_BUF_SIZE, &len);
+    if (ch_conn_send(ch, buf, len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_CH, "Auth: AUTH send failed");
+        ch_conn_free_pending(ch, req);
+        free(buf);
+        return -1;
+    }
+
+    if (!ch_conn_wait_response(ch, req, CH_CONN_CONNECT_TIMEOUT)) {
+        QGP_LOG_ERROR(LOG_TAG_CH, "Auth: no response to AUTH");
+        ch_conn_free_pending(ch, req);
+        free(buf);
+        return -1;
+    }
+
+    resp = (nodus_tier2_msg_t *)req->response;
+    if (strcmp(resp->method, "auth_ok") != 0) {
+        QGP_LOG_ERROR(LOG_TAG_CH, "Auth: expected 'auth_ok', got '%s'", resp->method);
+        ch_conn_free_pending(ch, req);
+        free(buf);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG_CH, "Auth: success on %s:%d", ch->host, ch->port);
+    memcpy(ch->token, resp->token, NODUS_SESSION_TOKEN_LEN);
+
+    ch_conn_free_pending(ch, req);
+    free(buf);
+    return 0;
+}
+
+/* ── Public API: Channel Connection ────────────────────────────── */
+
+int nodus_channel_init(nodus_ch_conn_t *ch,
+                       const char *host, uint16_t port,
+                       const nodus_identity_t *identity,
+                       nodus_on_ch_post_fn on_post, void *cb_data) {
+    if (!ch || !host || !identity) return -1;
+
+    memset(ch, 0, sizeof(*ch));
+    strncpy(ch->host, host, sizeof(ch->host) - 1);
+    ch->port = port;
+    ch->state = NODUS_CH_DISCONNECTED;
+    ch->identity = *identity;
+    ch->on_ch_post = on_post;
+    ch->cb_data = cb_data;
+    atomic_store(&ch->next_txn, 1);
+
+    pthread_mutex_init(&ch->pending_mutex, NULL);
+    pthread_mutex_init(&ch->send_mutex, NULL);
+    atomic_store(&ch->read_thread_running, false);
+    atomic_store(&ch->read_thread_stop, false);
+
+    /* Initialize TCP transport */
+    nodus_tcp_t *tcp = calloc(1, sizeof(nodus_tcp_t));
+    if (!tcp) {
+        pthread_mutex_destroy(&ch->pending_mutex);
+        pthread_mutex_destroy(&ch->send_mutex);
+        return -1;
+    }
+    nodus_tcp_init(tcp, -1);
+    tcp->on_frame = ch_conn_on_frame;
+    tcp->on_disconnect = ch_conn_on_disconnect;
+    tcp->on_connect = ch_conn_on_connect;
+    tcp->cb_ctx = ch;
+    ch->tcp = tcp;
+
+    return 0;
+}
+
+int nodus_channel_connect(nodus_ch_conn_t *ch) {
+    if (!ch || !ch->tcp) return -1;
+
+    nodus_tcp_t *tcp = (nodus_tcp_t *)ch->tcp;
+
+    QGP_LOG_INFO(LOG_TAG_CH, "Connecting to %s:%d ...", ch->host, ch->port);
+    ch->state = NODUS_CH_CONNECTING;
+
+    nodus_tcp_conn_t *conn = nodus_tcp_connect(tcp, ch->host, ch->port);
+    if (!conn) {
+        QGP_LOG_ERROR(LOG_TAG_CH, "TCP connect failed to %s:%d", ch->host, ch->port);
+        ch->state = NODUS_CH_DISCONNECTED;
+        return -1;
+    }
+    ch->conn = conn;
+
+    /* Wait for TCP connection to establish */
+    int elapsed = 0;
+    while (ch->conn && conn->state == NODUS_CONN_CONNECTING &&
+           elapsed < CH_CONN_CONNECT_TIMEOUT) {
+        nodus_tcp_poll(tcp, 50);
+        elapsed += 50;
+        conn = (nodus_tcp_conn_t *)ch->conn;
+        if (!conn) break;
+    }
+
+    if (!ch->conn || conn == NULL || conn->state != NODUS_CONN_CONNECTED) {
+        QGP_LOG_ERROR(LOG_TAG_CH, "TCP connect to %s:%d failed after %dms",
+                      ch->host, ch->port, elapsed);
+        if (ch->conn) {
+            nodus_tcp_disconnect(tcp, (nodus_tcp_conn_t *)ch->conn);
+            ch->conn = NULL;
+        }
+        ch->state = NODUS_CH_DISCONNECTED;
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG_CH, "TCP connected to %s:%d, authenticating...", ch->host, ch->port);
+
+    /* Authenticate */
+    ch->state = NODUS_CH_AUTHENTICATING;
+    if (ch_conn_do_auth(ch) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_CH, "Auth failed to %s:%d", ch->host, ch->port);
+        if (ch->conn) {
+            nodus_tcp_disconnect(tcp, (nodus_tcp_conn_t *)ch->conn);
+            ch->conn = NULL;
+        }
+        ch->state = NODUS_CH_DISCONNECTED;
+        return -1;
+    }
+
+    ch->state = NODUS_CH_READY;
+
+    /* Start read thread for push notifications */
+    ch_conn_start_read_thread(ch);
+    return 0;
+}
+
+bool nodus_channel_is_ready(const nodus_ch_conn_t *ch) {
+    return ch && ch->state == NODUS_CH_READY;
+}
+
+void nodus_channel_close(nodus_ch_conn_t *ch) {
+    if (!ch) return;
+
+    /* Stop read thread before tearing down TCP */
+    ch_conn_stop_read_thread(ch);
+
+    if (ch->conn && ch->tcp) {
+        nodus_tcp_disconnect((nodus_tcp_t *)ch->tcp,
+                              (nodus_tcp_conn_t *)ch->conn);
+        ch->conn = NULL;
+    }
+
+    if (ch->tcp) {
+        nodus_tcp_close((nodus_tcp_t *)ch->tcp);
+        free(ch->tcp);
+        ch->tcp = NULL;
+    }
+
+    /* Free all pending slots */
+    for (int i = 0; i < NODUS_CH_MAX_PENDING; i++) {
+        nodus_ch_pending_t *p = &ch->pending[i];
+        if (p->in_use) {
+            if (p->response) {
+                nodus_t2_msg_free((nodus_tier2_msg_t *)p->response);
+                free(p->response);
+            }
+            p->in_use = false;
+        }
+    }
+
+    pthread_mutex_destroy(&ch->pending_mutex);
+    pthread_mutex_destroy(&ch->send_mutex);
+
+    ch->state = NODUS_CH_DISCONNECTED;
+    ch->ch_sub_count = 0;
+
+    nodus_identity_clear(&ch->identity);
+}
+
+int nodus_ch_conn_create(nodus_ch_conn_t *ch,
+                         const uint8_t uuid[NODUS_UUID_BYTES]) {
+    if (!nodus_channel_is_ready(ch) || !uuid) return -1;
+
+    uint8_t *buf = malloc(CH_CONN_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&ch->next_txn, 1);
+    nodus_ch_pending_t *req = ch_conn_alloc_pending(ch, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_ch_create(txn, ch->token, uuid,
+                        buf, CH_CONN_BUF_SIZE, &len);
+    if (ch_conn_send(ch, buf, len) != 0) { ch_conn_free_pending(ch, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!ch_conn_wait_response(ch, req, CH_CONN_REQUEST_TIMEOUT)) { ch_conn_free_pending(ch, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; ch_conn_free_pending(ch, req); return rc; }
+    ch_conn_free_pending(ch, req);
+    return 0;
+}
+
+int nodus_ch_conn_post(nodus_ch_conn_t *ch,
+                       const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                       const uint8_t post_uuid[NODUS_UUID_BYTES],
+                       const uint8_t *body, size_t body_len,
+                       uint64_t timestamp, const nodus_sig_t *sig,
+                       uint64_t *received_at_out) {
+    if (!nodus_channel_is_ready(ch) || !ch_uuid || !body) return -1;
+
+    uint8_t *buf = malloc(CH_CONN_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&ch->next_txn, 1);
+    nodus_ch_pending_t *req = ch_conn_alloc_pending(ch, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_ch_post(txn, ch->token, ch_uuid, post_uuid,
+                      body, body_len, timestamp, sig,
+                      buf, CH_CONN_BUF_SIZE, &len);
+    if (ch_conn_send(ch, buf, len) != 0) { ch_conn_free_pending(ch, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!ch_conn_wait_response(ch, req, CH_CONN_REQUEST_TIMEOUT)) { ch_conn_free_pending(ch, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; ch_conn_free_pending(ch, req); return rc; }
+
+    if (received_at_out) *received_at_out = resp->ch_received_at;
+    ch_conn_free_pending(ch, req);
+    return 0;
+}
+
+int nodus_ch_conn_get_posts(nodus_ch_conn_t *ch,
+                            const uint8_t uuid[NODUS_UUID_BYTES],
+                            uint64_t since_received_at, int max_count,
+                            nodus_channel_post_t **posts_out,
+                            size_t *count_out) {
+    if (!nodus_channel_is_ready(ch) || !uuid || !posts_out || !count_out)
+        return -1;
+    *posts_out = NULL;
+    *count_out = 0;
+
+    uint8_t *buf = malloc(CH_CONN_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&ch->next_txn, 1);
+    nodus_ch_pending_t *req = ch_conn_alloc_pending(ch, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_ch_get_posts(txn, ch->token, uuid, since_received_at, max_count,
+                           buf, CH_CONN_BUF_SIZE, &len);
+    if (ch_conn_send(ch, buf, len) != 0) { ch_conn_free_pending(ch, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!ch_conn_wait_response(ch, req, CH_CONN_REQUEST_TIMEOUT)) { ch_conn_free_pending(ch, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; ch_conn_free_pending(ch, req); return rc; }
+
+    if (resp->ch_posts && resp->ch_post_count > 0) {
+        *posts_out = resp->ch_posts;
+        *count_out = resp->ch_post_count;
+        resp->ch_posts = NULL;
+        resp->ch_post_count = 0;
+    }
+    ch_conn_free_pending(ch, req);
+    return 0;
+}
+
+int nodus_ch_conn_subscribe(nodus_ch_conn_t *ch,
+                            const uint8_t uuid[NODUS_UUID_BYTES]) {
+    if (!nodus_channel_is_ready(ch) || !uuid) return -1;
+
+    uint8_t *buf = malloc(CH_CONN_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&ch->next_txn, 1);
+    nodus_ch_pending_t *req = ch_conn_alloc_pending(ch, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_ch_subscribe(txn, ch->token, uuid,
+                           buf, CH_CONN_BUF_SIZE, &len);
+    if (ch_conn_send(ch, buf, len) != 0) { ch_conn_free_pending(ch, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!ch_conn_wait_response(ch, req, CH_CONN_REQUEST_TIMEOUT)) { ch_conn_free_pending(ch, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; ch_conn_free_pending(ch, req); return rc; }
+
+    /* Track for potential re-subscribe */
+    if (ch->ch_sub_count < NODUS_CH_CONN_MAX_SUBS) {
+        bool found = false;
+        for (int i = 0; i < ch->ch_sub_count; i++) {
+            if (memcmp(ch->ch_subs[i], uuid, NODUS_UUID_BYTES) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            memcpy(ch->ch_subs[ch->ch_sub_count], uuid, NODUS_UUID_BYTES);
+            ch->ch_sub_count++;
+        }
+    }
+    ch_conn_free_pending(ch, req);
+    return 0;
+}
+
+int nodus_ch_conn_unsubscribe(nodus_ch_conn_t *ch,
+                              const uint8_t uuid[NODUS_UUID_BYTES]) {
+    if (!nodus_channel_is_ready(ch) || !uuid) return -1;
+
+    uint8_t *buf = malloc(CH_CONN_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&ch->next_txn, 1);
+    nodus_ch_pending_t *req = ch_conn_alloc_pending(ch, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_ch_unsubscribe(txn, ch->token, uuid,
+                              buf, CH_CONN_BUF_SIZE, &len);
+    if (ch_conn_send(ch, buf, len) != 0) { ch_conn_free_pending(ch, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!ch_conn_wait_response(ch, req, CH_CONN_REQUEST_TIMEOUT)) { ch_conn_free_pending(ch, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; ch_conn_free_pending(ch, req); return rc; }
+
+    /* Remove from tracking */
+    for (int i = 0; i < ch->ch_sub_count; i++) {
+        if (memcmp(ch->ch_subs[i], uuid, NODUS_UUID_BYTES) == 0) {
+            memcpy(ch->ch_subs[i], ch->ch_subs[--ch->ch_sub_count],
+                   NODUS_UUID_BYTES);
+            break;
+        }
+    }
+    ch_conn_free_pending(ch, req);
+    return 0;
+}

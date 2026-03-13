@@ -18,10 +18,66 @@
 #include "database/channel_cache.h"
 #include "database/channel_subscriptions_db.h"
 #include "dht/shared/dht_channel_subscriptions.h"
+#include "crypto/utils/qgp_random.h"
 #include <json-c/json.h>
+
+/* Dilithium5 signature function (from shared/crypto) */
+extern int pqcrystals_dilithium5_ref_signature(uint8_t *sig, size_t *siglen,
+    const uint8_t *m, size_t mlen,
+    const uint8_t *ctx, size_t ctxlen,
+    const uint8_t *sk);
 
 #undef LOG_TAG
 #define LOG_TAG "ENGINE_CHANNELS"
+
+/* ============================================================================
+ * UUID / FINGERPRINT CONVERSION HELPERS (static)
+ * ============================================================================ */
+
+/** Convert UUID string "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" to 16 binary bytes */
+static int uuid_str_to_bin(const char *uuid_str, uint8_t out[16]) {
+    if (!uuid_str || strlen(uuid_str) != 36) return -1;
+    int bi = 0;
+    for (int i = 0; i < 36 && bi < 16; i++) {
+        if (uuid_str[i] == '-') continue;
+        unsigned int byte;
+        if (sscanf(uuid_str + i, "%02x", &byte) != 1) return -1;
+        out[bi++] = (uint8_t)byte;
+        i++;  /* skip second hex char */
+    }
+    return (bi == 16) ? 0 : -1;
+}
+
+/** Convert 16 binary bytes to UUID string */
+static void uuid_bin_to_str(const uint8_t uuid[16], char out[37]) {
+    snprintf(out, 37,
+        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        uuid[0], uuid[1], uuid[2], uuid[3],
+        uuid[4], uuid[5], uuid[6], uuid[7],
+        uuid[8], uuid[9], uuid[10], uuid[11],
+        uuid[12], uuid[13], uuid[14], uuid[15]);
+}
+
+/** Convert nodus_key_t (64-byte fingerprint) to hex string */
+static void fp_key_to_hex(const nodus_key_t *fp, char out[129]) {
+    for (int i = 0; i < 64; i++)
+        snprintf(out + i * 2, 3, "%02x", fp->bytes[i]);
+    out[128] = '\0';
+}
+
+/** Generate a UUID v4 string */
+static void generate_uuid_v4(char *uuid_out) {
+    uint8_t bytes[16];
+    qgp_randombytes(bytes, 16);
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;  /* version 4 */
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;  /* variant */
+    snprintf(uuid_out, 37,
+        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11],
+        bytes[12], bytes[13], bytes[14], bytes[15]);
+}
 
 /* ============================================================================
  * DEFAULT CHANNEL CONSTANTS
@@ -357,6 +413,18 @@ void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
+    /* Also register channel on nodus server (TCP 4003) */
+    {
+        uint8_t ch_uuid_bin[16];
+        if (uuid_str_to_bin(uuid_out, ch_uuid_bin) == 0) {
+            int ch_rc = nodus_ops_ch_create(ch_uuid_bin);
+            if (ch_rc != 0) {
+                QGP_LOG_WARN(LOG_TAG, "Failed to register channel on nodus server: %d", ch_rc);
+                /* Non-fatal — channel metadata is in DHT, server creation can retry */
+            }
+        }
+    }
+
     /* If public, register in the discovery index */
     if (task->params.channel_create.is_public) {
         int idx_ret = dna_channel_index_register(
@@ -606,18 +674,77 @@ void dna_handle_channel_post(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    char post_uuid_out[37] = {0};
-    int ret = dna_channel_post_create(
-        task->params.channel_post.channel_uuid,
-        task->params.channel_post.body,
-        engine->fingerprint,
-        key->private_key,
-        post_uuid_out
-    );
+    const char *channel_uuid = task->params.channel_post.channel_uuid;
+    const char *body = task->params.channel_post.body;
+
+    /* Generate post UUID */
+    char post_uuid_str[37] = {0};
+    generate_uuid_v4(post_uuid_str);
+
+    uint64_t timestamp = (uint64_t)time(NULL);
+
+    /* Build the JSON signing payload matching server's verify_channel_post_sig() format:
+     * {"post_uuid":"...","channel_uuid":"...","author":"...","body":"...","created_at":N} */
+    struct json_object *sign_obj = json_object_new_object();
+    if (!sign_obj) {
+        qgp_key_free(key);
+        task->callback.channel_post_cb(task->request_id, DNA_ERROR_INTERNAL,
+                                       NULL, task->user_data);
+        return;
+    }
+    json_object_object_add(sign_obj, "post_uuid", json_object_new_string(post_uuid_str));
+    json_object_object_add(sign_obj, "channel_uuid", json_object_new_string(channel_uuid));
+    json_object_object_add(sign_obj, "author", json_object_new_string(engine->fingerprint));
+    json_object_object_add(sign_obj, "body", json_object_new_string(body));
+    json_object_object_add(sign_obj, "created_at", json_object_new_int64((int64_t)timestamp));
+
+    const char *json_to_sign = json_object_to_json_string_ext(sign_obj, JSON_C_TO_STRING_PLAIN);
+    if (!json_to_sign) {
+        json_object_put(sign_obj);
+        qgp_key_free(key);
+        task->callback.channel_post_cb(task->request_id, DNA_ERROR_INTERNAL,
+                                       NULL, task->user_data);
+        return;
+    }
+
+    /* Sign with Dilithium5 */
+    nodus_sig_t sig;
+    memset(&sig, 0, sizeof(sig));
+    size_t sig_len = 0;
+    int sign_rc = pqcrystals_dilithium5_ref_signature(
+        sig.bytes, &sig_len,
+        (const uint8_t *)json_to_sign, strlen(json_to_sign),
+        NULL, 0, key->private_key);
+
+    json_object_put(sign_obj);
     qgp_key_free(key);
 
+    if (sign_rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign channel post: %d", sign_rc);
+        task->callback.channel_post_cb(task->request_id, DNA_ERROR_INTERNAL,
+                                       NULL, task->user_data);
+        return;
+    }
+
+    /* Convert UUIDs to binary */
+    uint8_t ch_uuid_bin[16];
+    uint8_t post_uuid_bin[16];
+    if (uuid_str_to_bin(channel_uuid, ch_uuid_bin) != 0 ||
+        uuid_str_to_bin(post_uuid_str, post_uuid_bin) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse UUIDs for post");
+        task->callback.channel_post_cb(task->request_id, DNA_ERROR_INTERNAL,
+                                       NULL, task->user_data);
+        return;
+    }
+
+    /* Send post via TCP 4003 */
+    uint64_t received_at = 0;
+    int ret = nodus_ops_ch_post(ch_uuid_bin, post_uuid_bin,
+                                 (const uint8_t *)body, strlen(body),
+                                 timestamp, &sig, &received_at);
+
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create post: %d", ret);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to post to channel via TCP 4003: %d", ret);
         task->callback.channel_post_cb(task->request_id, DNA_ERROR_INTERNAL,
                                        NULL, task->user_data);
         return;
@@ -631,11 +758,11 @@ void dna_handle_channel_post(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    strncpy(info->post_uuid, post_uuid_out, 36);
-    strncpy(info->channel_uuid, task->params.channel_post.channel_uuid, 36);
+    strncpy(info->post_uuid, post_uuid_str, 36);
+    strncpy(info->channel_uuid, channel_uuid, 36);
     strncpy(info->author_fingerprint, engine->fingerprint, 128);
-    info->body = strdup(task->params.channel_post.body);
-    info->created_at = (uint64_t)time(NULL);
+    info->body = strdup(body);
+    info->created_at = timestamp;
     info->verified = true;  /* We just signed it */
 
     if (!info->body) {
@@ -645,18 +772,18 @@ void dna_handle_channel_post(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    /* Invalidate posts cache for this channel so next fetch goes to DHT */
+    /* Invalidate posts cache for this channel */
     char cache_key[64];
-    snprintf(cache_key, sizeof(cache_key), "posts:%s",
-             task->params.channel_post.channel_uuid);
+    snprintf(cache_key, sizeof(cache_key), "posts:%s", channel_uuid);
     channel_cache_invalidate(cache_key);
 
-    QGP_LOG_INFO(LOG_TAG, "Created post %s in channel %.8s...",
-                 post_uuid_out, task->params.channel_post.channel_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Created post %s in channel %.8s... (received_at=%llu)",
+                 post_uuid_str, channel_uuid, (unsigned long long)received_at);
     task->callback.channel_post_cb(task->request_id, DNA_OK, info, task->user_data);
 }
 
 void dna_handle_channel_get_posts(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
     const char *channel_uuid = task->params.channel_get_posts.uuid;
     int days_back = task->params.channel_get_posts.days_back;
 
@@ -678,47 +805,69 @@ void dna_handle_channel_get_posts(dna_engine_t *engine, dna_task_t *task) {
                                              infos, parsed_count, task->user_data);
                 return;
             }
-            /* Parse failed - fall through to DHT fetch */
+            /* Parse failed - fall through to server fetch */
         }
         free(cached_json);
     }
 
-    /* Fetch from DHT */
-    dna_channel_post_internal_t *posts = NULL;
-    size_t count = 0;
-    int ret = dna_channel_posts_get(channel_uuid, days_back, &posts, &count);
-
-    if (ret != 0 && ret != -2) {
+    /* Convert channel UUID to binary */
+    uint8_t ch_uuid_bin[16];
+    if (uuid_str_to_bin(channel_uuid, ch_uuid_bin) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid channel UUID: %s", channel_uuid);
         task->callback.channel_posts(task->request_id, DNA_ERROR_INTERNAL,
                                      NULL, 0, task->user_data);
         return;
     }
 
-    if (ret == -2 || count == 0) {
-        task->callback.channel_posts(task->request_id, DNA_OK,
+    /* Calculate since_received_at from days_back (milliseconds) */
+    uint64_t since_received_at = 0;
+    if (days_back > 0) {
+        uint64_t now_ms = (uint64_t)time(NULL) * 1000;
+        uint64_t offset_ms = (uint64_t)days_back * 86400ULL * 1000ULL;
+        if (now_ms > offset_ms) {
+            since_received_at = now_ms - offset_ms;
+        }
+    }
+
+    /* Fetch from nodus server via TCP 4003 */
+    nodus_channel_post_t *posts = NULL;
+    size_t count = 0;
+    int ret = nodus_ops_ch_get_posts(ch_uuid_bin, since_received_at, 0,
+                                      &posts, &count);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch posts via TCP 4003: %d", ret);
+        task->callback.channel_posts(task->request_id, DNA_ERROR_INTERNAL,
                                      NULL, 0, task->user_data);
-        if (posts) dna_channel_posts_free(posts, count);
         return;
     }
 
-    /* Convert to public API format */
+    if (count == 0) {
+        task->callback.channel_posts(task->request_id, DNA_OK,
+                                     NULL, 0, task->user_data);
+        if (posts) nodus_client_free_posts(posts, count);
+        return;
+    }
+
+    /* Convert nodus_channel_post_t array to dna_channel_post_info_t array */
     dna_channel_post_info_t *info = calloc(count, sizeof(dna_channel_post_info_t));
     if (!info) {
-        dna_channel_posts_free(posts, count);
+        nodus_client_free_posts(posts, count);
         task->callback.channel_posts(task->request_id, DNA_ERROR_INTERNAL,
                                      NULL, 0, task->user_data);
         return;
     }
 
     for (size_t i = 0; i < count; i++) {
-        strncpy(info[i].post_uuid, posts[i].post_uuid, 36);
-        strncpy(info[i].channel_uuid, posts[i].channel_uuid, 36);
-        strncpy(info[i].author_fingerprint, posts[i].author_fingerprint, 128);
+        uuid_bin_to_str(posts[i].post_uuid, info[i].post_uuid);
+        uuid_bin_to_str(posts[i].channel_uuid, info[i].channel_uuid);
+        fp_key_to_hex(&posts[i].author_fp, info[i].author_fingerprint);
         if (posts[i].body) {
-            info[i].body = strdup(posts[i].body);
+            info[i].body = strndup(posts[i].body, posts[i].body_len);
         }
-        info[i].created_at = posts[i].created_at;
-        info[i].verified = (posts[i].signature_len > 0);
+        info[i].created_at = posts[i].timestamp;
+        /* Posts from nodus server are signature-verified on ingest */
+        info[i].verified = true;
 
         if (posts[i].body && !info[i].body) {
             /* Cleanup on strdup failure */
@@ -726,14 +875,14 @@ void dna_handle_channel_get_posts(dna_engine_t *engine, dna_task_t *task) {
                 free(info[k].body);
             }
             free(info);
-            dna_channel_posts_free(posts, count);
+            nodus_client_free_posts(posts, count);
             task->callback.channel_posts(task->request_id, DNA_ERROR_INTERNAL,
                                          NULL, 0, task->user_data);
             return;
         }
     }
 
-    dna_channel_posts_free(posts, count);
+    nodus_client_free_posts(posts, count);
 
     /* Cache the fetched result */
     {

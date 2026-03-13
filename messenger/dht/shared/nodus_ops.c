@@ -15,6 +15,7 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #include "core/nodus_value.h"
+#include "crypto/utils/qgp_log.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -592,4 +593,435 @@ const char *nodus_ops_fingerprint(void) {
     const nodus_identity_t *id = nodus_singleton_identity();
     if (!id) return NULL;
     return id->fingerprint;
+}
+
+/* ── Channel connection pool (TCP 4003) ────────────────────────── */
+
+#include "protocol/nodus_cbor.h"
+#include "crypto/hash/qgp_sha3.h"
+
+#define LOG_TAG_CH "NODUS_OPS_CH"
+#define NODUS_OPS_CH_MAX_CONNS   32
+#define NODUS_OPS_CH_KEY_PREFIX  "dna:channel:nodes:"
+
+typedef struct {
+    uint8_t           channel_uuid[NODUS_UUID_BYTES];
+    nodus_ch_conn_t  *conn;
+    bool              active;
+} nodus_ops_ch_entry_t;
+
+static nodus_ops_ch_entry_t g_ch_pool[NODUS_OPS_CH_MAX_CONNS];
+static nodus_ops_ch_post_cb_t g_ch_post_cb = NULL;
+static void *g_ch_post_cb_data = NULL;
+static bool g_ch_pool_initialized = false;
+
+#ifdef _WIN32
+  static CRITICAL_SECTION g_ch_pool_cs;
+  static int g_ch_pool_cs_init = 0;
+  static void ch_pool_lock(void) {
+      if (!g_ch_pool_cs_init) { InitializeCriticalSection(&g_ch_pool_cs); g_ch_pool_cs_init = 1; }
+      EnterCriticalSection(&g_ch_pool_cs);
+  }
+  static void ch_pool_unlock(void) { LeaveCriticalSection(&g_ch_pool_cs); }
+#else
+  static pthread_mutex_t g_ch_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
+  static void ch_pool_lock(void)   { pthread_mutex_lock(&g_ch_pool_mutex); }
+  static void ch_pool_unlock(void) { pthread_mutex_unlock(&g_ch_pool_mutex); }
+#endif
+
+/** Route push post notifications from individual connections to global callback */
+static void ch_pool_on_post(const uint8_t channel_uuid[NODUS_UUID_BYTES],
+                              const nodus_channel_post_t *post, void *user_data) {
+    (void)user_data;
+    if (g_ch_post_cb)
+        g_ch_post_cb(channel_uuid, post, g_ch_post_cb_data);
+}
+
+/** Find pool entry for a channel (caller must hold lock). Returns index or -1. */
+static int ch_pool_find_locked(const uint8_t channel_uuid[NODUS_UUID_BYTES]) {
+    for (int i = 0; i < NODUS_OPS_CH_MAX_CONNS; i++) {
+        if (g_ch_pool[i].active &&
+            memcmp(g_ch_pool[i].channel_uuid, channel_uuid, NODUS_UUID_BYTES) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/** Find empty slot (caller must hold lock). Returns index or -1. */
+static int ch_pool_find_empty_locked(void) {
+    for (int i = 0; i < NODUS_OPS_CH_MAX_CONNS; i++) {
+        if (!g_ch_pool[i].active) return i;
+    }
+    return -1;
+}
+
+/**
+ * Parse DHT announcement CBOR to extract node list.
+ * Format: {"version": N, "nodes": [{"ip": "...", "port": N, "nid": <key>}, ...]}
+ * Returns number of nodes parsed, or -1 on error.
+ */
+typedef struct {
+    char     ip[64];
+    uint16_t port;
+} ch_node_info_t;
+
+static int ch_parse_dht_nodes(const uint8_t *data, size_t data_len,
+                                ch_node_info_t *nodes, int max_nodes) {
+    if (!data || data_len == 0 || !nodes || max_nodes <= 0) return -1;
+
+    cbor_decoder_t dec;
+    cbor_decoder_init(&dec, data, data_len);
+
+    /* Expect top-level map */
+    cbor_item_t item = cbor_decode_next(&dec);
+    if (item.type != CBOR_ITEM_MAP) return -1;
+    size_t map_count = item.count;
+
+    /* Find "nodes" key */
+    size_t nodes_array_len = 0;
+    bool found_nodes = false;
+    for (size_t i = 0; i < map_count; i++) {
+        cbor_item_t key_item = cbor_decode_next(&dec);
+        if (key_item.type == CBOR_ITEM_TSTR &&
+            key_item.tstr.len == 5 &&
+            memcmp(key_item.tstr.ptr, "nodes", 5) == 0) {
+            cbor_item_t arr = cbor_decode_next(&dec);
+            if (arr.type != CBOR_ITEM_ARRAY) return -1;
+            nodes_array_len = arr.count;
+            found_nodes = true;
+            break;
+        } else {
+            /* Skip value */
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    if (!found_nodes) return -1;
+
+    int count = 0;
+    for (size_t n = 0; n < nodes_array_len && count < max_nodes; n++) {
+        cbor_item_t map_item = cbor_decode_next(&dec);
+        if (map_item.type != CBOR_ITEM_MAP) { cbor_decode_skip(&dec); continue; }
+        size_t node_map_count = map_item.count;
+
+        char ip[64] = {0};
+        uint16_t port = 0;
+
+        for (size_t m = 0; m < node_map_count; m++) {
+            cbor_item_t k = cbor_decode_next(&dec);
+            if (k.type == CBOR_ITEM_TSTR && k.tstr.len == 2 &&
+                memcmp(k.tstr.ptr, "ip", 2) == 0) {
+                cbor_item_t v = cbor_decode_next(&dec);
+                if (v.type == CBOR_ITEM_TSTR && v.tstr.len < sizeof(ip)) {
+                    memcpy(ip, v.tstr.ptr, v.tstr.len);
+                    ip[v.tstr.len] = '\0';
+                }
+            } else if (k.type == CBOR_ITEM_TSTR && k.tstr.len == 4 &&
+                       memcmp(k.tstr.ptr, "port", 4) == 0) {
+                cbor_item_t v = cbor_decode_next(&dec);
+                if (v.type == CBOR_ITEM_UINT)
+                    port = (uint16_t)v.uint_val;
+            } else {
+                cbor_decode_skip(&dec);
+            }
+        }
+
+        if (ip[0] && port > 0) {
+            memcpy(nodes[count].ip, ip, sizeof(ip));
+            nodes[count].port = port;
+            count++;
+        }
+    }
+
+    return count;
+}
+
+/**
+ * Discover responsible nodes via DHT and connect to the first available.
+ * Returns a connected nodus_ch_conn_t* or NULL.
+ * Caller must NOT hold pool lock.
+ */
+static nodus_ch_conn_t *ch_pool_connect(const uint8_t channel_uuid[NODUS_UUID_BYTES]) {
+    const nodus_identity_t *id = nodus_singleton_identity();
+    if (!id) return NULL;
+
+    /* Build DHT key: "dna:channel:nodes:" + raw channel_uuid bytes
+     * (matches nodus_ring_announce_to_dht which hashes prefix + raw UUID) */
+    uint8_t key_input[256];
+    const char *prefix = NODUS_OPS_CH_KEY_PREFIX;
+    size_t prefix_len = strlen(prefix);
+    memcpy(key_input, prefix, prefix_len);
+    memcpy(key_input + prefix_len, channel_uuid, NODUS_UUID_BYTES);
+
+    /* Hash to get the DHT key (SHA3-512) */
+    nodus_key_t dht_key;
+    nodus_hash(key_input, prefix_len + NODUS_UUID_BYTES, &dht_key);
+
+    /* GET from DHT */
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return NULL;
+    }
+
+    nodus_value_t *val = NULL;
+    int rc = nodus_client_get(c, &dht_key, &val);
+
+    ch_node_info_t nodes[8];
+    int node_count = 0;
+
+    if (rc == 0 && val && val->data && val->data_len > 0) {
+        node_count = ch_parse_dht_nodes(val->data, val->data_len, nodes, 8);
+        nodus_value_free(val);
+    }
+
+    /* Fallback: use current server IP with port 4003 */
+    if (node_count <= 0) {
+        QGP_LOG_INFO(LOG_TAG_CH, "No DHT nodes found, using fallback server");
+        node_count = 1;
+        /* Access current connected server from client config */
+        int idx = c->server_idx;
+        if (idx >= 0 && idx < c->config.server_count) {
+            memcpy(nodes[0].ip, c->config.servers[idx].ip, sizeof(nodes[0].ip));
+        } else {
+            memcpy(nodes[0].ip, c->config.servers[0].ip, sizeof(nodes[0].ip));
+        }
+        nodes[0].port = NODUS_DEFAULT_CH_PORT;
+    }
+
+    nodus_singleton_release();
+
+    /* Try each node until one connects */
+    for (int i = 0; i < node_count; i++) {
+        nodus_ch_conn_t *conn = calloc(1, sizeof(nodus_ch_conn_t));
+        if (!conn) continue;
+
+        rc = nodus_channel_init(conn, nodes[i].ip, nodes[i].port,
+                                  id, ch_pool_on_post, NULL);
+        if (rc != 0) {
+            free(conn);
+            continue;
+        }
+
+        rc = nodus_channel_connect(conn);
+        if (rc != 0) {
+            nodus_channel_close(conn);
+            free(conn);
+            QGP_LOG_WARN(LOG_TAG_CH, "Failed to connect to %s:%u",
+                          nodes[i].ip, (unsigned)nodes[i].port);
+            continue;
+        }
+
+        QGP_LOG_INFO(LOG_TAG_CH, "Connected to channel node %s:%u",
+                      nodes[i].ip, (unsigned)nodes[i].port);
+        return conn;
+    }
+
+    QGP_LOG_ERROR(LOG_TAG_CH, "Failed to connect to any channel node");
+    return NULL;
+}
+
+/**
+ * Get or create a connection for a channel.
+ * Thread-safe. Returns the connection or NULL.
+ */
+static nodus_ch_conn_t *ch_pool_get_or_connect(const uint8_t channel_uuid[NODUS_UUID_BYTES]) {
+    /* Check existing */
+    ch_pool_lock();
+    int idx = ch_pool_find_locked(channel_uuid);
+    if (idx >= 0 && g_ch_pool[idx].conn && nodus_channel_is_ready(g_ch_pool[idx].conn)) {
+        nodus_ch_conn_t *conn = g_ch_pool[idx].conn;
+        ch_pool_unlock();
+        return conn;
+    }
+
+    /* If entry exists but connection is dead, clean it up */
+    if (idx >= 0) {
+        if (g_ch_pool[idx].conn) {
+            nodus_channel_close(g_ch_pool[idx].conn);
+            free(g_ch_pool[idx].conn);
+        }
+        g_ch_pool[idx].active = false;
+        g_ch_pool[idx].conn = NULL;
+    }
+    ch_pool_unlock();
+
+    /* Connect outside lock (may take time) */
+    nodus_ch_conn_t *conn = ch_pool_connect(channel_uuid);
+    if (!conn) return NULL;
+
+    /* Store in pool */
+    ch_pool_lock();
+    int slot = ch_pool_find_empty_locked();
+    if (slot < 0) {
+        ch_pool_unlock();
+        QGP_LOG_ERROR(LOG_TAG_CH, "Channel pool full (%d connections)", NODUS_OPS_CH_MAX_CONNS);
+        nodus_channel_close(conn);
+        free(conn);
+        return NULL;
+    }
+    memcpy(g_ch_pool[slot].channel_uuid, channel_uuid, NODUS_UUID_BYTES);
+    g_ch_pool[slot].conn = conn;
+    g_ch_pool[slot].active = true;
+    ch_pool_unlock();
+
+    return conn;
+}
+
+int nodus_ops_ch_init(nodus_ops_ch_post_cb_t on_post, void *user_data) {
+    ch_pool_lock();
+    memset(g_ch_pool, 0, sizeof(g_ch_pool));
+    g_ch_post_cb = on_post;
+    g_ch_post_cb_data = user_data;
+    g_ch_pool_initialized = true;
+    ch_pool_unlock();
+    QGP_LOG_INFO(LOG_TAG_CH, "Channel connection pool initialized");
+    return 0;
+}
+
+void nodus_ops_ch_shutdown(void) {
+    ch_pool_lock();
+    for (int i = 0; i < NODUS_OPS_CH_MAX_CONNS; i++) {
+        if (g_ch_pool[i].active && g_ch_pool[i].conn) {
+            nodus_channel_close(g_ch_pool[i].conn);
+            free(g_ch_pool[i].conn);
+            g_ch_pool[i].conn = NULL;
+        }
+        g_ch_pool[i].active = false;
+    }
+    g_ch_post_cb = NULL;
+    g_ch_post_cb_data = NULL;
+    g_ch_pool_initialized = false;
+    ch_pool_unlock();
+    QGP_LOG_INFO(LOG_TAG_CH, "Channel connection pool shut down");
+}
+
+int nodus_ops_ch_create(const uint8_t channel_uuid[16]) {
+    if (!g_ch_pool_initialized) return -1;
+
+    /* For channel creation, connect to any available server on 4003 */
+    const nodus_identity_t *id = nodus_singleton_identity();
+    if (!id) return -1;
+
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
+
+    /* Use current connected server with ch_port */
+    char ip[64];
+    int idx = c->server_idx;
+    if (idx >= 0 && idx < c->config.server_count) {
+        memcpy(ip, c->config.servers[idx].ip, sizeof(ip));
+    } else {
+        memcpy(ip, c->config.servers[0].ip, sizeof(ip));
+    }
+    nodus_singleton_release();
+
+    /* Create a temporary connection for channel creation */
+    nodus_ch_conn_t *conn = calloc(1, sizeof(nodus_ch_conn_t));
+    if (!conn) return -1;
+
+    int rc = nodus_channel_init(conn, ip, NODUS_DEFAULT_CH_PORT,
+                                  id, ch_pool_on_post, NULL);
+    if (rc != 0) { free(conn); return -1; }
+
+    rc = nodus_channel_connect(conn);
+    if (rc != 0) {
+        nodus_channel_close(conn);
+        free(conn);
+        QGP_LOG_ERROR(LOG_TAG_CH, "Failed to connect for channel create");
+        return -1;
+    }
+
+    rc = nodus_ch_conn_create(conn, channel_uuid);
+
+    /* Store connection in pool for future use */
+    if (rc == 0) {
+        ch_pool_lock();
+        int slot = ch_pool_find_empty_locked();
+        if (slot >= 0) {
+            memcpy(g_ch_pool[slot].channel_uuid, channel_uuid, NODUS_UUID_BYTES);
+            g_ch_pool[slot].conn = conn;
+            g_ch_pool[slot].active = true;
+            conn = NULL;  /* Ownership transferred to pool */
+        }
+        ch_pool_unlock();
+    }
+
+    if (conn) {
+        nodus_channel_close(conn);
+        free(conn);
+    }
+
+    return rc;
+}
+
+int nodus_ops_ch_post(const uint8_t channel_uuid[16],
+                      const uint8_t post_uuid[16],
+                      const uint8_t *body, size_t body_len,
+                      uint64_t timestamp, const nodus_sig_t *sig,
+                      uint64_t *received_at_out) {
+    if (!g_ch_pool_initialized) return -1;
+
+    nodus_ch_conn_t *conn = ch_pool_get_or_connect(channel_uuid);
+    if (!conn) return -1;
+
+    return nodus_ch_conn_post(conn, channel_uuid, post_uuid,
+                               body, body_len, timestamp, sig,
+                               received_at_out);
+}
+
+int nodus_ops_ch_get_posts(const uint8_t channel_uuid[16],
+                            uint64_t since_received_at, int max_count,
+                            nodus_channel_post_t **posts_out,
+                            size_t *count_out) {
+    if (!g_ch_pool_initialized) return -1;
+
+    nodus_ch_conn_t *conn = ch_pool_get_or_connect(channel_uuid);
+    if (!conn) return -1;
+
+    return nodus_ch_conn_get_posts(conn, channel_uuid,
+                                    since_received_at, max_count,
+                                    posts_out, count_out);
+}
+
+int nodus_ops_ch_subscribe(const uint8_t channel_uuid[16]) {
+    if (!g_ch_pool_initialized) return -1;
+
+    nodus_ch_conn_t *conn = ch_pool_get_or_connect(channel_uuid);
+    if (!conn) return -1;
+
+    return nodus_ch_conn_subscribe(conn, channel_uuid);
+}
+
+int nodus_ops_ch_unsubscribe(const uint8_t channel_uuid[16]) {
+    if (!g_ch_pool_initialized) return -1;
+
+    ch_pool_lock();
+    int idx = ch_pool_find_locked(channel_uuid);
+    if (idx < 0 || !g_ch_pool[idx].conn) {
+        ch_pool_unlock();
+        return -1;
+    }
+    nodus_ch_conn_t *conn = g_ch_pool[idx].conn;
+    ch_pool_unlock();
+
+    return nodus_ch_conn_unsubscribe(conn, channel_uuid);
+}
+
+void nodus_ops_ch_disconnect(const uint8_t channel_uuid[16]) {
+    ch_pool_lock();
+    int idx = ch_pool_find_locked(channel_uuid);
+    if (idx >= 0) {
+        if (g_ch_pool[idx].conn) {
+            nodus_channel_close(g_ch_pool[idx].conn);
+            free(g_ch_pool[idx].conn);
+            g_ch_pool[idx].conn = NULL;
+        }
+        g_ch_pool[idx].active = false;
+        QGP_LOG_INFO(LOG_TAG_CH, "Disconnected channel connection");
+    }
+    ch_pool_unlock();
 }

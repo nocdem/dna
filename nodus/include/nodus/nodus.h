@@ -313,6 +313,123 @@ int nodus_client_ch_subscribe(nodus_client_t *client,
 int nodus_client_ch_unsubscribe(nodus_client_t *client,
                                  const uint8_t uuid[NODUS_UUID_BYTES]);
 
+/* ── Channel Connection (TCP 4003) ─────────────────────────────── */
+
+#define NODUS_CH_CONN_MAX_SUBS  32
+#define NODUS_CH_MAX_PENDING    32
+
+/** Channel connection state */
+typedef enum {
+    NODUS_CH_DISCONNECTED = 0,
+    NODUS_CH_CONNECTING,
+    NODUS_CH_AUTHENTICATING,
+    NODUS_CH_READY
+} nodus_ch_state_t;
+
+/** Pending request slot for channel connection */
+typedef struct {
+    uint32_t    txn;
+    void       *response;       /* nodus_tier2_msg_t* */
+    _Atomic bool ready;
+    bool        in_use;
+} nodus_ch_pending_t;
+
+/** Dedicated channel connection to a node's TCP 4003 port */
+typedef struct {
+    char                    host[64];
+    uint16_t                port;
+    nodus_ch_state_t        state;
+    nodus_identity_t        identity;
+
+    /* TCP transport */
+    void                   *tcp;        /* nodus_tcp_t* */
+    void                   *conn;       /* nodus_tcp_conn_t* */
+
+    /* Session */
+    uint8_t                 token[NODUS_SESSION_TOKEN_LEN];
+    _Atomic uint32_t        next_txn;
+
+    /* Subscriptions tracked for push notifications */
+    uint8_t                 ch_subs[NODUS_CH_CONN_MAX_SUBS][NODUS_UUID_BYTES];
+    int                     ch_sub_count;
+
+    /* Callback for push post notifications */
+    nodus_on_ch_post_fn     on_ch_post;
+    void                   *cb_data;
+
+    /* Concurrent request handling */
+    nodus_ch_pending_t      pending[NODUS_CH_MAX_PENDING];
+    pthread_mutex_t         pending_mutex;
+    pthread_mutex_t         send_mutex;
+
+    /* Internal read thread */
+    pthread_t               read_thread;
+    _Atomic bool            read_thread_running;
+    _Atomic bool            read_thread_stop;
+} nodus_ch_conn_t;
+
+/**
+ * Initialize a channel connection.
+ * Does NOT connect — call nodus_channel_connect() after.
+ */
+int nodus_channel_init(nodus_ch_conn_t *ch,
+                       const char *host, uint16_t port,
+                       const nodus_identity_t *identity,
+                       nodus_on_ch_post_fn on_post, void *cb_data);
+
+/**
+ * Connect to the node's TCP 4003 port and authenticate.
+ * @return 0 on success, -1 on failure
+ */
+int nodus_channel_connect(nodus_ch_conn_t *ch);
+
+/**
+ * Check if channel connection is ready.
+ */
+bool nodus_channel_is_ready(const nodus_ch_conn_t *ch);
+
+/**
+ * Disconnect and clean up. Does NOT free the struct.
+ */
+void nodus_channel_close(nodus_ch_conn_t *ch);
+
+/**
+ * Create a channel via TCP 4003.
+ */
+int nodus_ch_conn_create(nodus_ch_conn_t *ch,
+                         const uint8_t uuid[NODUS_UUID_BYTES]);
+
+/**
+ * Post to a channel via TCP 4003.
+ */
+int nodus_ch_conn_post(nodus_ch_conn_t *ch,
+                       const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                       const uint8_t post_uuid[NODUS_UUID_BYTES],
+                       const uint8_t *body, size_t body_len,
+                       uint64_t timestamp, const nodus_sig_t *sig,
+                       uint64_t *received_at_out);
+
+/**
+ * Get posts from a channel via TCP 4003.
+ */
+int nodus_ch_conn_get_posts(nodus_ch_conn_t *ch,
+                            const uint8_t uuid[NODUS_UUID_BYTES],
+                            uint64_t since_received_at, int max_count,
+                            nodus_channel_post_t **posts_out,
+                            size_t *count_out);
+
+/**
+ * Subscribe to channel post notifications via TCP 4003.
+ */
+int nodus_ch_conn_subscribe(nodus_ch_conn_t *ch,
+                            const uint8_t uuid[NODUS_UUID_BYTES]);
+
+/**
+ * Unsubscribe from channel notifications via TCP 4003.
+ */
+int nodus_ch_conn_unsubscribe(nodus_ch_conn_t *ch,
+                              const uint8_t uuid[NODUS_UUID_BYTES]);
+
 /* ── Presence Operations ─────────────────────────────────────────── */
 
 #define NODUS_PRESENCE_MAX_QUERY  128

@@ -193,6 +193,98 @@ void nodus_ops_dispatch(const nodus_key_t *key,
                         const nodus_value_t *val,
                         void *user_data);
 
+/* ── Channel operations (TCP 4003) ─────────────────────────────── */
+
+/** Callback for channel post push notifications */
+typedef void (*nodus_ops_ch_post_cb_t)(const uint8_t channel_uuid[16],
+                                        const nodus_channel_post_t *post,
+                                        void *user_data);
+
+/**
+ * Initialize the channel connection pool.
+ * Must be called once after nodus singleton is ready.
+ *
+ * @param on_post   Global callback for push post notifications (may be NULL)
+ * @param user_data Passed to on_post callback
+ * @return 0 on success
+ */
+int nodus_ops_ch_init(nodus_ops_ch_post_cb_t on_post, void *user_data);
+
+/**
+ * Shut down the channel connection pool.
+ * Disconnects all channel connections.
+ */
+void nodus_ops_ch_shutdown(void);
+
+/**
+ * Create a channel on a connected nodus server.
+ * Connects to any available server (no specific responsible node needed yet).
+ *
+ * @param channel_uuid  16-byte UUID for the new channel
+ * @return 0 on success
+ */
+int nodus_ops_ch_create(const uint8_t channel_uuid[16]);
+
+/**
+ * Post to a channel.
+ * Auto-connects to a responsible node if not already connected.
+ *
+ * @param channel_uuid  16-byte channel UUID
+ * @param post_uuid     16-byte post UUID (caller generates)
+ * @param body          Post body bytes
+ * @param body_len      Body length
+ * @param timestamp     Post creation timestamp (Unix seconds)
+ * @param sig           Dilithium5 signature over post content
+ * @param received_at_out  If non-NULL, receives server-assigned received_at (ms)
+ * @return 0 on success
+ */
+int nodus_ops_ch_post(const uint8_t channel_uuid[16],
+                      const uint8_t post_uuid[16],
+                      const uint8_t *body, size_t body_len,
+                      uint64_t timestamp, const nodus_sig_t *sig,
+                      uint64_t *received_at_out);
+
+/**
+ * Get posts from a channel.
+ * Auto-connects to a responsible node if not already connected.
+ *
+ * @param channel_uuid      16-byte channel UUID
+ * @param since_received_at Get posts after this timestamp (0 = from start)
+ * @param max_count         Maximum posts to return (0 = server default)
+ * @param posts_out         Output: array of posts (caller frees with nodus_client_free_posts)
+ * @param count_out         Output: number of posts
+ * @return 0 on success
+ */
+int nodus_ops_ch_get_posts(const uint8_t channel_uuid[16],
+                            uint64_t since_received_at, int max_count,
+                            nodus_channel_post_t **posts_out,
+                            size_t *count_out);
+
+/**
+ * Subscribe to push notifications for a channel.
+ * Auto-connects to a responsible node if not already connected.
+ *
+ * @param channel_uuid  16-byte channel UUID
+ * @return 0 on success
+ */
+int nodus_ops_ch_subscribe(const uint8_t channel_uuid[16]);
+
+/**
+ * Unsubscribe from channel notifications.
+ *
+ * @param channel_uuid  16-byte channel UUID
+ * @return 0 on success
+ */
+int nodus_ops_ch_unsubscribe(const uint8_t channel_uuid[16]);
+
+/**
+ * Disconnect a specific channel connection.
+ * Useful when a channel is no longer needed.
+ *
+ * @param channel_uuid  16-byte channel UUID
+ */
+void nodus_ops_ch_disconnect(const uint8_t channel_uuid[16]);
+
 #ifdef __cplusplus
 }
 #endif
