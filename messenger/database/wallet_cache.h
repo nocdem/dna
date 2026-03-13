@@ -75,6 +75,18 @@ int wallet_cache_save_balances(int wallet_index,
 int wallet_cache_get_balances(int wallet_index,
                               dna_balance_t **balances_out, int *count_out);
 
+/* ── Balance age query ────────────────────────────────────────────── */
+
+/**
+ * Get the oldest cached_at timestamp for a wallet's balances
+ * Used for TTL freshness check — if oldest entry is fresh, all are fresh
+ *
+ * @param wallet_index Wallet index (0-based)
+ * @param oldest_out   Output: oldest cached_at (unix timestamp)
+ * @return 0 on success, -1 on error or no cached data
+ */
+int wallet_cache_get_oldest_cached_at(int wallet_index, int64_t *oldest_out);
+
 /* ── Transaction operations ────────────────────────────────────────── */
 
 /**

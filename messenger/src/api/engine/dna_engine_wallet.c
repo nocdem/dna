@@ -144,6 +144,24 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     /* Pre-load cached balances so we can fall back per-token on RPC failure */
     wallet_cache_get_balances(idx, &cached, &cached_count);
 
+    /* TTL check: if ALL cached balances are less than 60 seconds old,
+     * return cached data immediately without making any RPC calls.
+     * This prevents excessive polling (was ~10 RPC calls every 7-10s). */
+    if (cached_count > 0) {
+        int64_t oldest_cached_at = 0;
+        if (wallet_cache_get_oldest_cached_at(idx, &oldest_cached_at) == 0) {
+            int64_t age = (int64_t)time(NULL) - oldest_cached_at;
+            if (age >= 0 && age < 60) {
+                QGP_LOG_DEBUG(LOG_TAG, "Cache fresh (%llds old) for wallet %d, skipping RPC",
+                              (long long)age, idx);
+                balances = cached;
+                count = cached_count;
+                cached = NULL;  /* prevent double-free in done: */
+                goto done;
+            }
+        }
+    }
+
     /* Handle non-Cellframe blockchains via modular interface */
     if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
         /* Ethereum: ETH + USDT + USDC (ERC-20) */
@@ -1223,13 +1241,22 @@ void dna_handle_get_tx_status(dna_engine_t *engine, dna_task_t *task) {
     int ret = blockchain_query_tx_status(chain, tx_hash, &bc_status);
 
     int status;
-    if (ret != 0) {
-        /* Chain not found or query failed */
-        QGP_LOG_ERROR(LOG_TAG, "get_tx_status failed for chain=%s tx=%s", chain, tx_hash);
+    if (ret == -2) {
+        /* Chain not found / unsupported */
+        QGP_LOG_ERROR(LOG_TAG, "get_tx_status: unsupported chain=%s tx=%s", chain, tx_hash);
         wallet_cache_save_tx_status(tx_hash, chain, TX_STATUS_DENIED);
         if (task->callback.tx_status) {
             task->callback.tx_status(task->request_id, "unsupported chain",
                                      tx_hash, TX_STATUS_DENIED, task->user_data);
+        }
+        return;
+    }
+    if (ret != 0) {
+        /* Network/query error (e.g. CURL timeout) — do NOT cache as denied */
+        QGP_LOG_ERROR(LOG_TAG, "get_tx_status: network error for chain=%s tx=%s", chain, tx_hash);
+        if (task->callback.tx_status) {
+            task->callback.tx_status(task->request_id, "network error",
+                                     tx_hash, TX_STATUS_PENDING, task->user_data);
         }
         return;
     }

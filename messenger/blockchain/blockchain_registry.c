@@ -94,17 +94,17 @@ void blockchain_cleanup_all(void) {
 }
 
 int blockchain_query_tx_status(const char *chain, const char *txhash, int *status_out) {
-    if (!chain || !txhash || !status_out) return -1;
+    if (!chain || !txhash || !status_out) return -2;
 
     const blockchain_ops_t *ops = blockchain_get(chain);
     if (!ops || !ops->get_tx_status) {
         QGP_LOG_ERROR(LOG_TAG, "No get_tx_status for chain: %s", chain);
-        return -1;
+        return -2;  /* chain not found / unsupported */
     }
 
     blockchain_tx_status_t bc_status = BLOCKCHAIN_TX_PENDING;
     int ret = ops->get_tx_status(txhash, &bc_status);
     *status_out = (int)bc_status;
-    return ret;
+    return ret;  /* -1 = network/query error, 0 = success */
 }
 

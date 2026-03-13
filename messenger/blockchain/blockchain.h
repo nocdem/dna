@@ -179,7 +179,7 @@ void blockchain_cleanup_all(void);
  * @param chain      Chain name (e.g. "ethereum", "solana")
  * @param txhash     Transaction hash string
  * @param status_out Output status (int representation of blockchain_tx_status_t)
- * @return           0 on success, -1 on error
+ * @return           0 on success, -1 on network/query error, -2 on unsupported chain
  */
 int blockchain_query_tx_status(const char *chain, const char *txhash, int *status_out);
 

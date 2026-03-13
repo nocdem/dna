@@ -257,6 +257,30 @@ int wallet_cache_get_balances(int wallet_index,
     return 0;
 }
 
+/* ── Balance age query ─────────────────────────────────────────────── */
+
+int wallet_cache_get_oldest_cached_at(int wallet_index, int64_t *oldest_out) {
+    if (!g_db || !oldest_out) return -1;
+
+    const char *sql =
+        "SELECT MIN(cached_at) FROM wallet_balances WHERE wallet_index = ?;";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int(stmt, 1, wallet_index);
+
+    rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
+        *oldest_out = sqlite3_column_int64(stmt, 0);
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+
+    sqlite3_finalize(stmt);
+    return -1;  /* No cached data */
+}
+
 /* ── Transaction operations ─────────────────────────────────────────── */
 
 int wallet_cache_save_transactions(int wallet_index, const char *network,

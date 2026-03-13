@@ -805,7 +805,7 @@ int sol_spl_send(
         uint8_t system_program[32];
         uint8_t assoc_token_program[32];
 
-        if (sol_address_to_pubkey("11111111111111111111111111111112", system_program) != 0) {
+        if (sol_address_to_pubkey("11111111111111111111111111111111", system_program) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to decode System Program ID");
             return -1;
         }

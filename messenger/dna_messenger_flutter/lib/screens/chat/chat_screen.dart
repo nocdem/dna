@@ -3330,6 +3330,10 @@ class _TransferBubble extends StatefulWidget {
 }
 
 class _TransferBubbleState extends State<_TransferBubble> {
+  // Static cache: once verified(1) or denied(2), never re-check via FFI.
+  // Survives widget rebuilds and navigation within the same app session.
+  static final Map<String, int> _verifiedCache = {};
+
   /// 0=pending, 1=verified, 2=denied
   int _verificationStatus = 0;
   bool _isVerifying = false;
@@ -3342,6 +3346,14 @@ class _TransferBubbleState extends State<_TransferBubble> {
   @override
   void initState() {
     super.initState();
+
+    // Check in-memory cache first — skip FFI for already-verified TXs
+    final txHash = widget.transferData['txHash'] as String?;
+    if (txHash != null && _verifiedCache.containsKey(txHash)) {
+      _verificationStatus = _verifiedCache[txHash]!;
+      return;  // No FFI call needed
+    }
+
     // Outgoing transfers: delay first check to give blockchain time to process
     // Incoming transfers: verify immediately
     if (widget.message.isOutgoing) {
@@ -3380,6 +3392,11 @@ class _TransferBubbleState extends State<_TransferBubble> {
           _verificationStatus = status;
           _isVerifying = false;
         });
+
+        // Cache final states — no need to re-check on future widget rebuilds
+        if (status == 1 || status == 2) {
+          _verifiedCache[txHash] = status;
+        }
 
         // Auto-retry if still pending
         if (status == 0 && _retryCount < _maxRetries) {

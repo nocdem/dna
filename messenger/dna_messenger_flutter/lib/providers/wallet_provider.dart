@@ -66,7 +66,7 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
 
     // Refresh balances and transactions after send (silent background refresh)
     ref.invalidate(balancesProvider(walletIndex));
-    ref.read(allBalancesProvider.notifier).refresh();
+    ref.read(allBalancesProvider.notifier).refresh(force: true);
     ref.invalidate(transactionsProvider((walletIndex: walletIndex, network: network)));
 
     return txHash;
@@ -133,6 +133,8 @@ final allBalancesProvider = AsyncNotifierProvider<AllBalancesNotifier, List<Wall
 
 class AllBalancesNotifier extends AsyncNotifier<List<WalletBalance>> {
   static const _cacheKey = 'wallet_balances_cache';
+  DateTime? _lastLiveRefresh;
+  static const _refreshCooldown = Duration(seconds: 30);
 
   @override
   Future<List<WalletBalance>> build() async {
@@ -157,7 +159,16 @@ class AllBalancesNotifier extends AsyncNotifier<List<WalletBalance>> {
 
   /// Refresh balances from live blockchain APIs in the background
   /// Old data stays visible during fetch (stale-while-revalidate)
-  Future<void> refresh() async {
+  /// [force]: bypass cooldown (use for manual refresh, post-send, post-swap)
+  Future<void> refresh({bool force = false}) async {
+    // Cooldown: skip if last refresh was recent (unless forced)
+    if (!force && _lastLiveRefresh != null) {
+      final elapsed = DateTime.now().difference(_lastLiveRefresh!);
+      if (elapsed < _refreshCooldown) {
+        return;
+      }
+    }
+
     final walletsAsync = ref.read(walletsProvider);
     final wallets = walletsAsync.valueOrNull ?? [];
     if (wallets.isEmpty) return;
@@ -170,6 +181,7 @@ class AllBalancesNotifier extends AsyncNotifier<List<WalletBalance>> {
       return;
     }
 
+    _lastLiveRefresh = DateTime.now();
     state = newState;
 
     // Persist to Dart cache for next cold start

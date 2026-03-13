@@ -323,6 +323,7 @@ Per-identity SQLite database for channel subscriptions.
 |----------|-------------|
 | `int wallet_cache_save_balances(int, const dna_balance_t*, int)` | Save balances to cache (upsert) |
 | `int wallet_cache_get_balances(int, dna_balance_t**, int*)` | Get cached balances (caller frees) |
+| `int wallet_cache_get_oldest_cached_at(int, int64_t*)` | Get oldest cached_at timestamp for TTL freshness check |
 
 ### Transaction Operations
 

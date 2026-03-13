@@ -162,7 +162,7 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
             icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
             onPressed: () {
               ref.read(walletsProvider.notifier).refresh();
-              ref.read(allBalancesProvider.notifier).refresh();
+              ref.read(allBalancesProvider.notifier).refresh(force: true);
             },
             tooltip: 'Refresh',
           ),
@@ -218,7 +218,7 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
     return RefreshIndicator(
       onRefresh: () async {
         await ref.read(walletsProvider.notifier).refresh();
-        await ref.read(allBalancesProvider.notifier).refresh();
+        await ref.read(allBalancesProvider.notifier).refresh(force: true);
       },
       child: ListView(
         children: [
@@ -2971,7 +2971,7 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
       if (mounted) {
         setState(() => _isSwapping = false);
         // Refresh balances
-        ref.read(allBalancesProvider.notifier).refresh();
+        ref.read(allBalancesProvider.notifier).refresh(force: true);
         Navigator.of(context).pop();
         final l10n = AppLocalizations.of(context);
         ScaffoldMessenger.of(context).showSnackBar(
