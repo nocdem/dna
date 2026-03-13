@@ -170,7 +170,7 @@ cd messenger
 
 | Component | Version |
 |-----------|---------|
-| C Library | v0.9.67 |
+| C Library | v0.9.68 |
 | Flutter App | v1.0.0-rc33 |
 | Nodus DHT | v0.6.6 |
 
