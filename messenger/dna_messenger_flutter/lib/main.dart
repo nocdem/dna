@@ -213,6 +213,14 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
       engine.debugLog('STARTUP', 'v0.3.0: Auto-load failed: $e');
     }
 
+    // Pre-warm wallet balances from cache + live RPC in background
+    // so DM send sheet and wallet screen have data immediately
+    Future.microtask(() {
+      if (mounted) {
+        ref.read(allBalancesProvider.notifier).refresh();
+      }
+    });
+
     // Trigger rebuild after check completes (even on error - prevents stuck loading screen)
     if (mounted) {
       setState(() {
