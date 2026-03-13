@@ -111,56 +111,12 @@ static void witness_setup_identity(nodus_witness_t *witness) {
 
 /* ── Roster initialization ───────────────────────────────────────── */
 
-static int roster_cmp(const void *a, const void *b) {
-    const nodus_witness_roster_entry_t *ea = (const nodus_witness_roster_entry_t *)a;
-    const nodus_witness_roster_entry_t *eb = (const nodus_witness_roster_entry_t *)b;
-    return strcmp(ea->address, eb->address);
-}
-
 static void witness_init_roster(nodus_witness_t *witness) {
     memset(&witness->roster, 0, sizeof(witness->roster));
     witness->roster.version = 1;
     witness->my_index = -1;
-
-    /* Add self to roster if address is configured */
-    if (witness->config.address[0]) {
-        nodus_witness_roster_entry_t *self =
-            &witness->roster.witnesses[0];
-        memcpy(self->witness_id, witness->my_id, NODUS_T3_WITNESS_ID_LEN);
-        memcpy(self->pubkey, witness->server->identity.pk.bytes, NODUS_PK_BYTES);
-        snprintf(self->address, sizeof(self->address), "%s",
-                 witness->config.address);
-        self->active = true;
-        witness->roster.n_witnesses = 1;
-        witness->my_index = 0;
-    }
-
-    /* BFT config recalculated after roster file is loaded */
-}
-
-/**
- * Sort roster by address for deterministic ordering across all nodes.
- * Must be called after roster file is loaded.
- */
-static void witness_sort_roster(nodus_witness_t *witness) {
-    uint32_t n = witness->roster.n_witnesses;
-    if (n < 2) return;
-
-    qsort(witness->roster.witnesses, n,
-          sizeof(nodus_witness_roster_entry_t), roster_cmp);
-
-    /* Recalculate my_index after sort */
-    witness->my_index = -1;
-    for (uint32_t i = 0; i < n; i++) {
-        if (memcmp(witness->roster.witnesses[i].witness_id,
-                   witness->my_id, NODUS_T3_WITNESS_ID_LEN) == 0) {
-            witness->my_index = (int)i;
-            break;
-        }
-    }
-
-    /* Recalculate BFT config with final roster size */
-    nodus_witness_bft_config_init(&witness->bft_config, n);
+    witness->last_epoch = 0;
+    witness->pending_roster_ready = false;
 }
 
 /* ── Public API ──────────────────────────────────────────────────── */
@@ -186,15 +142,11 @@ int nodus_witness_init(nodus_witness_t *witness,
     /* Initialize roster */
     witness_init_roster(witness);
 
-    /* Initialize peer mesh (loads roster file, connects to peers) */
+    /* Initialize peer mesh (builds roster from inter_tcp connections) */
     nodus_witness_peer_init(witness);
 
-    /* Sort roster for deterministic leader election across all nodes */
-    witness_sort_roster(witness);
-
-    fprintf(stderr, "%s: initialized (address=%s, roster=%d witnesses, my_index=%d)\n",
-            LOG_TAG, config->address, witness->roster.n_witnesses,
-            witness->my_index);
+    fprintf(stderr, "%s: initialized (roster=%d witnesses, my_index=%d)\n",
+            LOG_TAG, witness->roster.n_witnesses, witness->my_index);
 
     return 0;
 }
@@ -206,6 +158,8 @@ void nodus_witness_set_chain_id(nodus_witness_t *witness,
     fprintf(stderr, "%s: chain_id set\n", LOG_TAG);
 }
 
+#define WITNESS_EPOCH_SECS  60
+
 void nodus_witness_tick(nodus_witness_t *witness) {
     if (!witness || !witness->running) return;
 
@@ -214,6 +168,81 @@ void nodus_witness_tick(nodus_witness_t *witness) {
 
     /* Peer mesh: reconnection, IDENT exchange */
     nodus_witness_peer_tick(witness);
+
+    /* Epoch tick: rebuild roster every 60s */
+    uint64_t now = nodus_time_now();
+    if (now - witness->last_epoch >= WITNESS_EPOCH_SECS) {
+        witness->last_epoch = now;
+
+        /* Build new roster from current TCP 4002 connections */
+        nodus_witness_rebuild_roster_from_peers(witness, &witness->pending_roster);
+        nodus_witness_bft_config_init(&witness->pending_bft_config,
+                                       witness->pending_roster.n_witnesses);
+
+        /* Check if roster actually changed */
+        bool changed = (witness->pending_roster.n_witnesses != witness->roster.n_witnesses);
+        if (!changed) {
+            for (uint32_t i = 0; i < witness->roster.n_witnesses; i++) {
+                if (memcmp(witness->roster.witnesses[i].witness_id,
+                           witness->pending_roster.witnesses[i].witness_id,
+                           NODUS_T3_WITNESS_ID_LEN) != 0) {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        if (!changed) {
+            /* No change — skip swap */
+            return;
+        }
+
+        /* Try to swap immediately if IDLE */
+        if (witness->round_state.phase == NODUS_W_PHASE_IDLE) {
+            /* Swap roster */
+            memcpy(&witness->roster, &witness->pending_roster,
+                   sizeof(nodus_witness_roster_t));
+            memcpy(&witness->bft_config, &witness->pending_bft_config,
+                   sizeof(nodus_witness_bft_config_t));
+            witness->pending_roster_ready = false;
+
+            /* Recalculate my_index */
+            witness->my_index = nodus_witness_roster_find(&witness->roster,
+                                                            witness->my_id);
+
+            fprintf(stderr, "WITNESS: epoch roster swap: %u witnesses, "
+                    "quorum=%u, my_index=%d\n",
+                    witness->roster.n_witnesses,
+                    witness->bft_config.quorum,
+                    witness->my_index);
+        } else {
+            /* Round active — defer swap to next IDLE */
+            witness->pending_roster_ready = true;
+            fprintf(stderr, "WITNESS: epoch roster pending (round active, "
+                    "phase=%d, pending=%u witnesses)\n",
+                    witness->round_state.phase,
+                    witness->pending_roster.n_witnesses);
+        }
+    }
+
+    /* Check if deferred roster swap can happen now */
+    if (witness->pending_roster_ready &&
+        witness->round_state.phase == NODUS_W_PHASE_IDLE) {
+        memcpy(&witness->roster, &witness->pending_roster,
+               sizeof(nodus_witness_roster_t));
+        memcpy(&witness->bft_config, &witness->pending_bft_config,
+               sizeof(nodus_witness_bft_config_t));
+        witness->pending_roster_ready = false;
+
+        witness->my_index = nodus_witness_roster_find(&witness->roster,
+                                                        witness->my_id);
+
+        fprintf(stderr, "WITNESS: deferred roster swap: %u witnesses, "
+                "quorum=%u, my_index=%d\n",
+                witness->roster.n_witnesses,
+                witness->bft_config.quorum,
+                witness->my_index);
+    }
 }
 
 /* ── Tier 3 dispatch (BFT message routing) ───────────────────────── */

@@ -21,9 +21,9 @@ extern "C" {
 /* ── Protocol constants ──────────────────────────────────────────── */
 
 #define NODUS_VERSION_MAJOR  0
-#define NODUS_VERSION_MINOR  8
-#define NODUS_VERSION_PATCH  5
-#define NODUS_VERSION_STRING "0.8.5"
+#define NODUS_VERSION_MINOR  9
+#define NODUS_VERSION_PATCH  0
+#define NODUS_VERSION_STRING "0.9.0"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -99,7 +99,8 @@ extern "C" {
 #define NODUS_MAX_WIRE_POSTS       10000   /* Max channel posts per message */
 
 /* Tier 3: Witness/BFT consensus (DNAC) */
-#define NODUS_T3_MAX_WITNESSES      16
+#define NODUS_T3_MAX_WITNESSES      128
+#define NODUS_T3_MIN_WITNESSES      5
 #define NODUS_T3_WITNESS_ID_LEN     32
 #define NODUS_T3_NULLIFIER_LEN      64      /* SHA3-512 */
 #define NODUS_T3_TX_HASH_LEN        64      /* SHA3-512 */

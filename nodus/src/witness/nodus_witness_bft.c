@@ -152,21 +152,28 @@ void nodus_witness_bft_config_init(nodus_witness_bft_config_t *cfg,
 
     cfg->n_witnesses = n;
 
-    /* n = 3f + 1 → f = (n-1)/3 */
-    if (n >= 4) {
-        cfg->f_tolerance = (n - 1) / 3;
-    } else {
+    /* Below minimum — consensus disabled */
+    if (n < NODUS_T3_MIN_WITNESSES) {
         cfg->f_tolerance = 0;
+        cfg->quorum = 0;
+        cfg->round_timeout_ms = 0;
+        cfg->viewchg_timeout_ms = 0;
+        cfg->max_view_changes = 0;
+        return;
     }
+
+    /* n = 3f + 1 → f = (n-1)/3 */
+    cfg->f_tolerance = (n - 1) / 3;
     cfg->quorum = 2 * cfg->f_tolerance + 1;
 
-    /* Minimum quorum of 2 for small (n=3) testing clusters */
-    if (cfg->quorum < 2 && n >= 2)
-        cfg->quorum = 2;
-
+    /* Timeouts */
     cfg->round_timeout_ms = NODUS_T3_ROUND_TIMEOUT_MS;
     cfg->viewchg_timeout_ms = NODUS_T3_VIEWCHG_TIMEOUT_MS;
     cfg->max_view_changes = NODUS_T3_MAX_VIEW_CHANGES;
+}
+
+bool nodus_witness_bft_consensus_active(const nodus_witness_t *w) {
+    return w && w->bft_config.quorum > 0;
 }
 
 /* ── Leader election ─────────────────────────────────────────────── */
@@ -523,6 +530,12 @@ int nodus_witness_bft_start_round(nodus_witness_t *w,
                                     const uint8_t *client_sig,
                                     uint64_t fee) {
     if (!w || !tx_hash) return -1;
+
+    if (!nodus_witness_bft_consensus_active(w)) {
+        fprintf(stderr, "%s: consensus disabled (n=%u < %d)\n",
+                LOG_TAG, w->bft_config.n_witnesses, NODUS_T3_MIN_WITNESSES);
+        return -1;
+    }
 
     if (!tx_data || tx_len == 0 || tx_len > NODUS_T3_MAX_TX_SIZE) {
         fprintf(stderr, "%s: invalid tx_data: ptr=%p len=%u\n",

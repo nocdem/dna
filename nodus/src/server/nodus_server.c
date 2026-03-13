@@ -1407,6 +1407,10 @@ static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     if (sess) {
         inter_session_clear(sess);
     }
+
+    /* Notify witness module so it can clear peer references */
+    if (srv->witness)
+        nodus_witness_peer_conn_closed(srv->witness, conn);
 }
 
 /* ── TCP frame dispatch ──────────────────────────────────────────── */
@@ -2007,19 +2011,18 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
                               config->seed_ports[i] + 2);  /* Peer TCP = UDP + 2 */
     }
 
-    /* Initialize witness module if enabled */
-    if (config->witness.enabled) {
-        srv->witness = calloc(1, sizeof(nodus_witness_t));
-        if (!srv->witness) {
-            fprintf(stderr, "Failed to allocate witness context\n");
-            return -1;
-        }
-        if (nodus_witness_init(srv->witness, srv, &config->witness) != 0) {
-            fprintf(stderr, "Witness module init failed\n");
-            free(srv->witness);
-            srv->witness = NULL;
-            return -1;
-        }
+    /* Initialize witness module (all nodes are automatic witnesses) */
+    srv->witness = calloc(1, sizeof(nodus_witness_t));
+    if (!srv->witness) {
+        fprintf(stderr, "Failed to allocate witness context\n");
+        return -1;
+    }
+    if (nodus_witness_init(srv->witness, srv, &config->witness) != 0) {
+        fprintf(stderr, "Witness module init failed\n");
+        free(srv->witness);
+        srv->witness = NULL;
+        /* Non-fatal — server can run without witness */
+        fprintf(stderr, "WARNING: running without witness module\n");
     }
 
     return 0;

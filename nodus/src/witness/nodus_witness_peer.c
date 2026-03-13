@@ -28,31 +28,7 @@
 
 #define LOG_TAG "WITNESS-PEER"
 
-/* Reconnect timing */
-#define RECONNECT_BASE_SEC   5      /* Base reconnect interval */
-#define RECONNECT_MAX_SHIFT  5      /* Max exponential backoff: 2^5 = 32x */
-
-/* ── Address parsing ─────────────────────────────────────────────── */
-
-static int parse_address(const char *addr, char *ip_out, size_t ip_cap,
-                          uint16_t *port_out) {
-    if (!addr || !addr[0]) return -1;
-
-    const char *colon = strrchr(addr, ':');
-    if (!colon || colon == addr) return -1;
-
-    size_t ip_len = (size_t)(colon - addr);
-    if (ip_len >= ip_cap) return -1;
-
-    memcpy(ip_out, addr, ip_len);
-    ip_out[ip_len] = '\0';
-
-    int port = atoi(colon + 1);
-    if (port <= 0 || port > 65535) return -1;
-
-    *port_out = (uint16_t)port;
-    return 0;
-}
+/* (Reconnect constants removed — Kademlia manages inter-node connections) */
 
 /* ── Peer lookup helpers ─────────────────────────────────────────── */
 
@@ -87,163 +63,74 @@ static int find_peer_by_conn(const nodus_witness_t *w,
     return -1;
 }
 
-/* ── Connect to a roster entry ───────────────────────────────────── */
+/* (connect_to_entry removed — Kademlia manages inter-node connections) */
 
-static int connect_to_entry(nodus_witness_t *w, int roster_idx) {
-    /* Copy address locally — entry is w->roster.witnesses[idx].address
-     * and dest is w->peers[].address; GCC -Wrestrict false-positives
-     * if we pass both through the same struct pointer. */
-    char entry_addr[256];
-    uint8_t entry_wid[NODUS_T3_WITNESS_ID_LEN];
-    snprintf(entry_addr, sizeof(entry_addr), "%s",
-             w->roster.witnesses[roster_idx].address);
-    memcpy(entry_wid, w->roster.witnesses[roster_idx].witness_id,
-           NODUS_T3_WITNESS_ID_LEN);
+/* ── Roster sort helper ──────────────────────────────────────────── */
 
-    char ip[64];
-    uint16_t port;
-    if (parse_address(entry_addr, ip, sizeof(ip), &port) != 0) {
-        fprintf(stderr, "%s: invalid address for roster %d: %s\n",
-                LOG_TAG, roster_idx, entry_addr);
-        return -1;
-    }
-
-    /* Check if already have a connection to this address */
-    nodus_tcp_conn_t *existing = nodus_tcp_find_by_addr(
-        &w->server->inter_tcp, ip, port);
-    if (existing && existing->state == NODUS_CONN_CONNECTED) {
-        /* Already connected — update peer record */
-        int pi = find_peer_by_id(w, entry_wid);
-        if (pi >= 0) {
-            w->peers[pi].conn = existing;
-        }
-        return 0;
-    }
-
-    /* Initiate connection via inter-node TCP pool (w_* dispatched on peer port) */
-    nodus_tcp_conn_t *conn = nodus_tcp_connect(&w->server->inter_tcp, ip, port);
-    if (!conn) {
-        return -1;
-    }
-
-    /* Set up inter-node session so dispatch_inter works for this outbound conn */
-    if (conn->slot >= 0 && conn->slot < NODUS_MAX_INTER_SESSIONS) {
-        nodus_inter_session_t *sess = &w->server->inter_sessions[conn->slot];
-        if (!sess->conn)
-            sess->conn = conn;
-    }
-
-    /* Create or update peer record */
-    int pi = find_peer_by_id(w, entry_wid);
-    if (pi < 0)
-        pi = find_peer_by_addr(w, entry_addr);
-
-    if (pi < 0 && w->peer_count < NODUS_T3_MAX_WITNESSES) {
-        pi = w->peer_count++;
-        memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
-        memcpy(w->peers[pi].witness_id, entry_wid,
-               NODUS_T3_WITNESS_ID_LEN);
-        snprintf(w->peers[pi].address, sizeof(w->peers[pi].address),
-                 "%s", entry_addr);
-    }
-
-    if (pi >= 0) {
-        w->peers[pi].conn = conn;
-        w->peers[pi].identified = false;
-        w->peers[pi].last_attempt = nodus_time_now();
-        w->peers[pi].connect_failures = 0;
-    }
-
-    fprintf(stderr, "%s: connecting to roster %d at %s\n",
-            LOG_TAG, roster_idx, entry_addr);
-    return 0;
+static int roster_cmp(const void *a, const void *b) {
+    const nodus_witness_roster_entry_t *ea = (const nodus_witness_roster_entry_t *)a;
+    const nodus_witness_roster_entry_t *eb = (const nodus_witness_roster_entry_t *)b;
+    return memcmp(ea->witness_id, eb->witness_id, NODUS_T3_WITNESS_ID_LEN);
 }
 
-/* ── Roster file loading ─────────────────────────────────────────── */
+/* ── Build roster from TCP 4002 connections ──────────────────────── */
 
-int nodus_witness_roster_load_file(nodus_witness_t *w,
-                                   const char *filename) {
-    if (!w || !filename || !filename[0]) return -1;
+int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
+                                            nodus_witness_roster_t *out) {
+    if (!w || !out) return -1;
 
-    FILE *f = fopen(filename, "r");
-    if (!f) {
-        fprintf(stderr, "%s: cannot open roster file: %s\n",
-                LOG_TAG, filename);
-        return -1;
-    }
+    memset(out, 0, sizeof(*out));
 
-    char line[256];
-    int added = 0;
+    /* Add self first */
+    nodus_witness_roster_entry_t *self = &out->witnesses[0];
+    memcpy(self->witness_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
+    memcpy(self->pubkey, w->server->identity.pk.bytes, NODUS_PK_BYTES);
+    /* Address: use server's external_ip (or bind_ip) + peer_port */
+    const char *ip = w->server->config.external_ip[0]
+                   ? w->server->config.external_ip
+                   : w->server->config.bind_ip;
+    snprintf(self->address, sizeof(self->address), "%s:%u",
+             ip, w->server->config.peer_port);
+    self->active = true;
+    out->n_witnesses = 1;
 
-    while (fgets(line, sizeof(line), f) &&
-           w->roster.n_witnesses < NODUS_T3_MAX_WITNESSES) {
+    /* Add all connected+identified inter_tcp peers */
+    nodus_tcp_t *itcp = &w->server->inter_tcp;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS && out->n_witnesses < NODUS_T3_MAX_WITNESSES; i++) {
+        nodus_tcp_conn_t *conn = itcp->pool[i];
+        if (!conn) continue;
+        if (conn->state != NODUS_CONN_CONNECTED) continue;
+        if (!conn->peer_id_set) continue;
 
-        /* Strip newline/CR */
-        char *nl = strchr(line, '\n');
-        if (nl) *nl = '\0';
-        char *cr = strchr(line, '\r');
-        if (cr) *cr = '\0';
-
-        /* Skip empty lines and comments */
-        char *addr = line;
-        while (*addr == ' ' || *addr == '\t') addr++;
-        if (*addr == '\0' || *addr == '#') continue;
-
-        /* Validate address format */
-        char ip[64];
-        uint16_t port;
-        if (parse_address(addr, ip, sizeof(ip), &port) != 0) {
-            fprintf(stderr, "%s: invalid address in roster file: %s\n",
-                    LOG_TAG, addr);
-            continue;
-        }
-
-        /* Skip if this is our own address */
-        if (w->config.address[0] &&
-            strcmp(addr, w->config.address) == 0)
-            continue;
-
-        /* Check if address already in roster */
-        bool found = false;
-        for (uint32_t i = 0; i < w->roster.n_witnesses; i++) {
-            if (strcmp(w->roster.witnesses[i].address, addr) == 0) {
-                found = true;
+        /* Duplicate check by peer_id (first 32 bytes = witness_id) */
+        bool dup = false;
+        for (uint32_t j = 0; j < out->n_witnesses; j++) {
+            if (memcmp(out->witnesses[j].witness_id,
+                       conn->peer_id.bytes, NODUS_T3_WITNESS_ID_LEN) == 0) {
+                dup = true;
                 break;
             }
         }
-        if (found) continue;
+        if (dup) continue;
 
-        /* Add entry with placeholder ID (real ID comes from w_ident) */
         nodus_witness_roster_entry_t *entry =
-            &w->roster.witnesses[w->roster.n_witnesses];
-        memset(entry, 0, sizeof(*entry));
-
-        /* Placeholder witness_id: first 32 bytes of SHA3-512(address) */
-        nodus_key_t full_hash;
-        nodus_hash((const uint8_t *)addr, strlen(addr), &full_hash);
-        memcpy(entry->witness_id, full_hash.bytes,
-               NODUS_T3_WITNESS_ID_LEN);
-
-        snprintf(entry->address, sizeof(entry->address), "%s", addr);
+            &out->witnesses[out->n_witnesses];
+        memcpy(entry->witness_id, conn->peer_id.bytes, NODUS_T3_WITNESS_ID_LEN);
+        memcpy(entry->pubkey, conn->peer_pk.bytes, NODUS_PK_BYTES);
+        snprintf(entry->address, sizeof(entry->address), "%s:%u",
+                 conn->ip, conn->port);
         entry->active = true;
-
-        w->roster.n_witnesses++;
-        added++;
+        out->n_witnesses++;
     }
 
-    fclose(f);
-
-    if (added > 0) {
-        /* Recalculate BFT config with new roster size */
-        nodus_witness_bft_config_init(&w->bft_config,
-                                        w->roster.n_witnesses);
-        fprintf(stderr, "%s: loaded %d entries from %s "
-                "(roster now %u witnesses, quorum=%u)\n",
-                LOG_TAG, added, filename,
-                w->roster.n_witnesses, w->bft_config.quorum);
+    /* Sort deterministically by witness_id for consistent leader election */
+    if (out->n_witnesses > 1) {
+        qsort(out->witnesses, out->n_witnesses,
+              sizeof(nodus_witness_roster_entry_t), roster_cmp);
     }
 
-    return added;
+    out->version = w->roster.version + 1;
+    return (int)out->n_witnesses;
 }
 
 /* ── Send IDENT ──────────────────────────────────────────────────── */
@@ -261,8 +148,11 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
     /* Fill identity fields */
     msg.ident.witness_id = w->my_id;
     msg.ident.pubkey = w->server->identity.pk.bytes;
+    const char *ident_ip = w->server->config.external_ip[0]
+                         ? w->server->config.external_ip
+                         : w->server->config.bind_ip;
     snprintf(msg.ident.address, sizeof(msg.ident.address),
-             "%s", w->config.address);
+             "%s:%u", ident_ip, w->server->config.peer_port);
 
     /* Fill header */
     msg.header.version = NODUS_T3_BFT_PROTOCOL_VER;
@@ -608,23 +498,24 @@ int nodus_witness_peer_handle_rost_r(nodus_witness_t *w,
 int nodus_witness_peer_init(nodus_witness_t *w) {
     if (!w) return -1;
 
-    /* Load roster from file if configured */
-    if (w->config.roster_file[0]) {
-        nodus_witness_roster_load_file(w, w->config.roster_file);
-    }
+    /* Dynamic roster — initial build from current inter_tcp connections.
+     * At init time, inter_tcp connections may not be established yet.
+     * Full roster will be built on first epoch tick (60s). */
+    nodus_witness_rebuild_roster_from_peers(w, &w->roster);
+    nodus_witness_bft_config_init(&w->bft_config, w->roster.n_witnesses);
 
-    /* Connect to all roster peers (except self) */
+    /* Update my_index in roster */
+    w->my_index = -1;
     for (uint32_t i = 0; i < w->roster.n_witnesses; i++) {
-        if ((int)i == w->my_index) continue;
-        if (!w->roster.witnesses[i].active) continue;
-        if (!w->roster.witnesses[i].address[0]) continue;
-
-        connect_to_entry(w, (int)i);
+        if (memcmp(w->roster.witnesses[i].witness_id,
+                   w->my_id, NODUS_T3_WITNESS_ID_LEN) == 0) {
+            w->my_index = (int)i;
+            break;
+        }
     }
 
-    fprintf(stderr, "%s: peer mesh init (%d peers, %d connected)\n",
-            LOG_TAG, w->peer_count,
-            nodus_witness_peer_connected_count(w));
+    fprintf(stderr, "%s: peer mesh init (roster=%u witnesses, my_index=%d)\n",
+            LOG_TAG, w->roster.n_witnesses, w->my_index);
     return 0;
 }
 
@@ -633,83 +524,42 @@ int nodus_witness_peer_init(nodus_witness_t *w) {
 void nodus_witness_peer_tick(nodus_witness_t *w) {
     if (!w || !w->running) return;
 
-    uint64_t now = nodus_time_now();
+    /* Scan inter_tcp for connected peers that need IDENT exchange */
+    nodus_tcp_t *itcp = &w->server->inter_tcp;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *conn = itcp->pool[i];
+        if (!conn) continue;
+        if (conn->state != NODUS_CONN_CONNECTED) continue;
 
-    /* Check each peer for connection state */
-    for (int i = 0; i < w->peer_count; i++) {
-        nodus_witness_peer_t *peer = &w->peers[i];
-
-        /* Check if connection is alive and connected */
-        if (peer->conn) {
-            if (peer->conn->state == NODUS_CONN_CONNECTED) {
-                /* Connected — send IDENT if not yet identified */
-                if (!peer->identified) {
-                    nodus_witness_peer_send_ident(w, peer->conn);
-                    peer->identified = true;
-                }
-                continue;
+        /* Check if we already track this connection as a peer */
+        int pi = find_peer_by_conn(w, conn);
+        if (pi >= 0) {
+            /* Already tracked — send IDENT if not yet identified */
+            if (!w->peers[pi].identified) {
+                nodus_witness_peer_send_ident(w, conn);
+                w->peers[pi].identified = true;
             }
-
-            if (peer->conn->state == NODUS_CONN_CLOSED) {
-                /* Connection died */
-                peer->conn = NULL;
-                peer->identified = false;
-            }
-
-            /* CONNECTING — still in progress, skip */
-            if (peer->conn) continue;
-        }
-
-        /* No connection — attempt reconnect with exponential backoff */
-        if (!peer->address[0]) continue;
-
-        uint64_t backoff = RECONNECT_BASE_SEC;
-        if (peer->connect_failures > 0) {
-            int shift = peer->connect_failures > RECONNECT_MAX_SHIFT
-                        ? RECONNECT_MAX_SHIFT
-                        : peer->connect_failures;
-            backoff <<= shift;
-        }
-
-        if (now - peer->last_attempt < backoff) continue;
-
-        char ip[64];
-        uint16_t port;
-        if (parse_address(peer->address, ip, sizeof(ip), &port) != 0)
             continue;
+        }
 
-        peer->last_attempt = now;
+        /* New connection — add to peers and send IDENT */
+        if (w->peer_count < NODUS_T3_MAX_WITNESSES) {
+            pi = w->peer_count++;
+            memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
+            w->peers[pi].conn = conn;
+            w->peers[pi].last_attempt = nodus_time_now();
 
-        nodus_tcp_conn_t *conn = nodus_tcp_connect(&w->server->inter_tcp,
-                                                     ip, port);
-        if (conn) {
-            peer->conn = conn;
-            peer->identified = false;
-            peer->connect_failures = 0;
-
-            /* Set up inter-node session for outbound connection dispatch */
-            if (conn->slot >= 0 && conn->slot < NODUS_MAX_INTER_SESSIONS) {
-                nodus_inter_session_t *sess = &w->server->inter_sessions[conn->slot];
-                if (!sess->conn)
-                    sess->conn = conn;
-            }
-        } else {
-            peer->connect_failures++;
+            nodus_witness_peer_send_ident(w, conn);
+            w->peers[pi].identified = true;
         }
     }
 
-    /* Check for roster entries that don't have peer records yet */
-    for (uint32_t i = 0; i < w->roster.n_witnesses; i++) {
-        if ((int)i == w->my_index) continue;
-        if (!w->roster.witnesses[i].active) continue;
-        if (!w->roster.witnesses[i].address[0]) continue;
-
-        int pi = find_peer_by_id(w, w->roster.witnesses[i].witness_id);
-        if (pi < 0)
-            pi = find_peer_by_addr(w, w->roster.witnesses[i].address);
-
-        if (pi < 0) {
-            connect_to_entry(w, (int)i);
+    /* Clean up peers with dead connections */
+    for (int i = 0; i < w->peer_count; i++) {
+        if (w->peers[i].conn &&
+            w->peers[i].conn->state == NODUS_CONN_CLOSED) {
+            w->peers[i].conn = NULL;
+            w->peers[i].identified = false;
         }
     }
 }

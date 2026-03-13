@@ -29,6 +29,9 @@ extern "C" {
 void nodus_witness_bft_config_init(nodus_witness_bft_config_t *cfg,
                                      uint32_t n_witnesses);
 
+/** Returns true if consensus is active (enough witnesses for quorum). */
+bool nodus_witness_bft_consensus_active(const nodus_witness_t *w);
+
 /* ── Leader election ─────────────────────────────────────────────── */
 
 /** Get leader index for given epoch and view. */

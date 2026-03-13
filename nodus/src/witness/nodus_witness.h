@@ -1,12 +1,14 @@
 /**
  * Nodus — Witness Module (DNAC BFT Consensus)
  *
- * Optional module that embeds DNAC witness functionality into nodus-server.
- * When enabled via config ("witness_enabled": true), provides:
+ * All nodus nodes are automatic witnesses. Provides:
  *   - BFT consensus for DNAC transaction witnessing
  *   - Nullifier/ledger/UTXO/block SQLite storage
  *   - Witness peer mesh over nodus TCP connections
  *   - DNAC client query handlers (dnac_* Tier 2 methods)
+ *
+ * Roster is dynamically built from TCP 4002 inter-node connections
+ * and refreshed every 60 seconds (epoch tick).
  *
  * All BFT messages use Tier 3 protocol ("w_" prefixed CBOR methods).
  * Single-threaded: all state transitions in the epoll event loop.
@@ -32,9 +34,9 @@ struct nodus_tcp_conn;
 /* ── Witness configuration ───────────────────────────────────────── */
 
 typedef struct {
-    bool        enabled;                        /* Master switch */
-    char        address[256];                   /* My address for roster (IP:port) */
-    char        roster_file[256];               /* Initial roster file (optional) */
+    /* No config needed — all nodes are automatic witnesses.
+     * Struct kept for future extensibility (e.g. stake threshold). */
+    uint8_t  _reserved;
 } nodus_witness_config_t;
 
 /* ── Roster entry ────────────────────────────────────────────────── */
@@ -193,6 +195,12 @@ typedef struct nodus_witness {
     /* BFT config (computed from roster) */
     nodus_witness_bft_config_t  bft_config;
 
+    /* Dynamic roster — epoch-based refresh */
+    uint64_t    last_epoch;                     /* Timestamp of last roster rebuild */
+    nodus_witness_roster_t  pending_roster;     /* Built each epoch from inter_tcp */
+    nodus_witness_bft_config_t pending_bft_config;
+    bool        pending_roster_ready;           /* Pending roster waiting to swap */
+
     /* Zone chain ID */
     uint8_t     chain_id[32];
 
@@ -220,12 +228,12 @@ typedef struct nodus_witness {
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 
 /**
- * Initialize witness module. Opens witness.db, loads roster.
- * Called from nodus_server_init() when witness_enabled=true.
+ * Initialize witness module. Opens witness.db, builds initial roster.
+ * Called from nodus_server_init() — all nodes are automatic witnesses.
  *
  * @param witness  Allocated witness context (caller owns)
  * @param server   Parent server
- * @param config   Witness configuration
+ * @param config   Witness configuration (reserved for future use)
  * @return 0 on success, -1 on failure
  */
 int nodus_witness_init(nodus_witness_t *witness,

@@ -27,7 +27,7 @@ extern "C" {
 
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 
-/** Initialize peer mesh: load roster file, connect to all entries. */
+/** Initialize peer mesh: build initial roster from inter_tcp. */
 int  nodus_witness_peer_init(nodus_witness_t *w);
 
 /** Periodic tick: reconnect peers, send pending IDENTs. */
@@ -66,9 +66,9 @@ int nodus_witness_peer_handle_rost_r(nodus_witness_t *w,
 int nodus_witness_peer_send_ident(nodus_witness_t *w,
                                   struct nodus_tcp_conn *conn);
 
-/** Load roster entries from file (one IP:port per line). */
-int nodus_witness_roster_load_file(nodus_witness_t *w,
-                                   const char *filename);
+/** Rebuild roster from TCP 4002 connected+identified peers + self. */
+int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
+                                            nodus_witness_roster_t *out_roster);
 
 /** Get number of connected, identified witness peers. */
 int nodus_witness_peer_connected_count(const nodus_witness_t *w);
