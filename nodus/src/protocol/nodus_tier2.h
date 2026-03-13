@@ -14,6 +14,7 @@
 
 #include "nodus/nodus_types.h"
 #include "core/nodus_value.h"
+#include "channel/nodus_hashring.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -216,6 +217,39 @@ int nodus_t2_ch_ring_changed(uint32_t txn,
                                uint32_t version,
                                uint8_t *buf, size_t cap, size_t *out_len);
 
+/* ── Channel rewrite: node-to-node protocol (TCP 4003) ────────── */
+
+int nodus_t2_ch_node_hello(uint32_t txn, const nodus_pubkey_t *pk,
+                            const nodus_key_t *fp, uint32_t ring_version,
+                            uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ch_node_auth_ok(uint32_t txn,
+                              const uint8_t *token, size_t token_len,
+                              uint32_t current_ring_version,
+                              const nodus_ring_member_t *ring_members, int ring_count,
+                              uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ch_heartbeat(uint32_t txn,
+                           uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ch_heartbeat_ack(uint32_t txn,
+                               uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ch_sync_request(uint32_t txn,
+                              const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                              uint64_t since_ms,
+                              uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ch_sync_response(uint32_t txn,
+                               const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                               const nodus_channel_post_t *posts, size_t count,
+                               uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ch_ring_rejoin(uint32_t txn,
+                             const nodus_key_t *node_id,
+                             uint32_t my_ring_version,
+                             uint8_t *buf, size_t cap, size_t *out_len);
+
 /* ── Decoded message ─────────────────────────────────────────────── */
 
 typedef struct {
@@ -253,10 +287,13 @@ typedef struct {
     size_t          ch_post_count;
 
     /* Ring management fields */
-    nodus_key_t     ring_node_id;       /* ring_check: target node */
+    nodus_key_t     ring_node_id;       /* ring_check/ring_rejoin: target node */
     char            ring_status[8];     /* ring_check: "dead" or "alive" */
     bool            ring_agree;         /* ring_ack: agree/disagree */
-    uint32_t        ring_version;       /* ring_evict/ch_ring_changed: version */
+    uint32_t        ring_version;       /* ring_evict/ch_ring_changed/node_hello/ring_rejoin: version */
+
+    /* Channel rewrite: sync fields */
+    uint64_t        ch_since_ms;        /* ch_sync_req: since timestamp */
 
     /* Server list (servers response) */
     struct {

@@ -727,6 +727,137 @@ int nodus_t2_ch_ring_changed(uint32_t txn,
     return finish(&enc, out_len);
 }
 
+/* ── Channel rewrite: node-to-node protocol (TCP 4003) ────────── */
+
+int nodus_t2_ch_node_hello(uint32_t txn, const nodus_pubkey_t *pk,
+                            const nodus_key_t *fp, uint32_t ring_version,
+                            uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "node_hello");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 3);
+    cbor_encode_cstr(&enc, "pk");
+    cbor_encode_bstr(&enc, pk->bytes, NODUS_PK_BYTES);
+    cbor_encode_cstr(&enc, "fp");
+    cbor_encode_bstr(&enc, fp->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "rv");
+    cbor_encode_uint(&enc, ring_version);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_node_auth_ok(uint32_t txn,
+                              const uint8_t *token, size_t token_len,
+                              uint32_t current_ring_version,
+                              const nodus_ring_member_t *ring_members, int ring_count,
+                              uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "node_auth_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 3);
+    cbor_encode_cstr(&enc, "tok");
+    cbor_encode_bstr(&enc, token, token_len);
+    cbor_encode_cstr(&enc, "rv");
+    cbor_encode_uint(&enc, current_ring_version);
+    cbor_encode_cstr(&enc, "ring");
+    cbor_encode_array(&enc, (size_t)ring_count);
+    for (int i = 0; i < ring_count; i++) {
+        cbor_encode_map(&enc, 3);
+        cbor_encode_cstr(&enc, "ip");
+        cbor_encode_cstr(&enc, ring_members[i].ip);
+        cbor_encode_cstr(&enc, "port");
+        cbor_encode_uint(&enc, ring_members[i].tcp_port);
+        cbor_encode_cstr(&enc, "nid");
+        cbor_encode_bstr(&enc, ring_members[i].node_id.bytes, NODUS_KEY_BYTES);
+    }
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_heartbeat(uint32_t txn,
+                           uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ch_hb");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_heartbeat_ack(uint32_t txn,
+                               uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ch_hb_ack");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_sync_request(uint32_t txn,
+                              const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                              uint64_t since_ms,
+                              uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ch_sync_req");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, ch_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "since");
+    cbor_encode_uint(&enc, since_ms);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_sync_response(uint32_t txn,
+                               const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                               const nodus_channel_post_t *posts, size_t count,
+                               uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ch_sync_res");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, ch_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "posts");
+    cbor_encode_array(&enc, count);
+    for (size_t i = 0; i < count; i++) {
+        const nodus_channel_post_t *p = &posts[i];
+        cbor_encode_map(&enc, 6);
+        cbor_encode_cstr(&enc, "ra");
+        cbor_encode_uint(&enc, p->received_at);
+        cbor_encode_cstr(&enc, "pid");
+        cbor_encode_bstr(&enc, p->post_uuid, NODUS_UUID_BYTES);
+        cbor_encode_cstr(&enc, "afp");
+        cbor_encode_bstr(&enc, p->author_fp.bytes, NODUS_KEY_BYTES);
+        cbor_encode_cstr(&enc, "ts");
+        cbor_encode_uint(&enc, p->timestamp);
+        cbor_encode_cstr(&enc, "d");
+        cbor_encode_bstr(&enc, (const uint8_t *)p->body, p->body_len);
+        cbor_encode_cstr(&enc, "sig");
+        cbor_encode_bstr(&enc, p->signature.bytes, NODUS_SIG_BYTES);
+    }
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_ring_rejoin(uint32_t txn,
+                             const nodus_key_t *node_id,
+                             uint32_t my_ring_version,
+                             uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ring_rejoin");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "nid");
+    cbor_encode_bstr(&enc, node_id->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "rv");
+    cbor_encode_uint(&enc, my_ring_version);
+    return finish(&enc, out_len);
+}
+
 /* ── Decode ──────────────────────────────────────────────────────── */
 
 int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
@@ -913,6 +1044,18 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_UINT)
                         msg->ring_version = (uint32_t)val.uint_val;
+                }
+                /* rv (node_hello/ring_rejoin: ring version) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "rv", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->ring_version = (uint32_t)val.uint_val;
+                }
+                /* since (ch_sync_req: since timestamp ms) */
+                else if (akey.tstr.len == 5 && memcmp(akey.tstr.ptr, "since", 5) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->ch_since_ms = val.uint_val;
                 }
                 /* fps (presence query/sync: array of fingerprints) */
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "fps", 3) == 0) {
@@ -1184,6 +1327,51 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                                     cbor_item_t sv = cbor_decode_next(&dec);
                                     if (sv.type == CBOR_ITEM_UINT)
                                         msg->servers[idx].tcp_port = (uint16_t)sv.uint_val;
+                                } else {
+                                    cbor_decode_skip(&dec);
+                                }
+                            }
+                            msg->server_count++;
+                        }
+                    }
+                }
+                /* rv (node_auth_ok: ring version) */
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "rv", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->ring_version = (uint32_t)val.uint_val;
+                }
+                /* ring (node_auth_ok: ring member array → servers[]) */
+                else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "ring", 4) == 0) {
+                    cbor_item_t arr = cbor_decode_next(&dec);
+                    if (arr.type == CBOR_ITEM_ARRAY) {
+                        msg->server_count = 0;
+                        for (size_t k = 0; k < arr.count && msg->server_count < 17; k++) {
+                            cbor_item_t rmap = cbor_decode_next(&dec);
+                            if (rmap.type != CBOR_ITEM_MAP) continue;
+                            int idx = msg->server_count;
+                            memset(&msg->servers[idx], 0, sizeof(msg->servers[idx]));
+                            for (size_t m = 0; m < rmap.count; m++) {
+                                cbor_item_t rk = cbor_decode_next(&dec);
+                                if (rk.type != CBOR_ITEM_TSTR) {
+                                    cbor_decode_skip(&dec); continue;
+                                }
+                                if (rk.tstr.len == 2 && memcmp(rk.tstr.ptr, "ip", 2) == 0) {
+                                    cbor_item_t rv = cbor_decode_next(&dec);
+                                    if (rv.type == CBOR_ITEM_TSTR) {
+                                        size_t cl = rv.tstr.len < sizeof(msg->servers[0].ip) - 1 ?
+                                                    rv.tstr.len : sizeof(msg->servers[0].ip) - 1;
+                                        memcpy(msg->servers[idx].ip, rv.tstr.ptr, cl);
+                                        msg->servers[idx].ip[cl] = '\0';
+                                    }
+                                } else if (rk.tstr.len == 4 && memcmp(rk.tstr.ptr, "port", 4) == 0) {
+                                    cbor_item_t rv = cbor_decode_next(&dec);
+                                    if (rv.type == CBOR_ITEM_UINT)
+                                        msg->servers[idx].tcp_port = (uint16_t)rv.uint_val;
+                                } else if (rk.tstr.len == 3 && memcmp(rk.tstr.ptr, "nid", 3) == 0) {
+                                    cbor_item_t rv = cbor_decode_next(&dec);
+                                    if (rv.type == CBOR_ITEM_BSTR && rv.bstr.len == NODUS_KEY_BYTES)
+                                        memcpy(msg->ring_node_id.bytes, rv.bstr.ptr, NODUS_KEY_BYTES);
                                 } else {
                                     cbor_decode_skip(&dec);
                                 }

@@ -270,6 +270,11 @@ add_executable(test_fetch_batch tests/test_fetch_batch.c)
 target_link_libraries(test_fetch_batch nodus dsa nodus)
 add_test(NAME test_fetch_batch COMMAND test_fetch_batch)
 
+# Channel rewrite protocol test
+add_executable(test_channel_protocol tests/test_channel_protocol.c)
+target_link_libraries(test_channel_protocol nodus dsa nodus)
+add_test(NAME test_channel_protocol COMMAND test_channel_protocol)
+
 add_executable(test_storage_cleanup tests/test_storage_cleanup.c)
 target_link_libraries(test_storage_cleanup nodus dsa nodus)
 add_test(NAME test_storage_cleanup COMMAND test_storage_cleanup)
