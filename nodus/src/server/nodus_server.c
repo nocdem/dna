@@ -251,52 +251,6 @@ static void notify_listeners(nodus_server_t *srv, const nodus_key_t *key,
     }
 }
 
-/* ── Channel subscription management ─────────────────────────────── */
-
-static int ch_session_add_sub(nodus_session_t *sess,
-                               const uint8_t uuid[NODUS_UUID_BYTES]) {
-    for (int i = 0; i < sess->ch_sub_count; i++) {
-        if (memcmp(sess->ch_subs[i], uuid, NODUS_UUID_BYTES) == 0)
-            return 0;  /* Already subscribed */
-    }
-    if (sess->ch_sub_count >= NODUS_MAX_CH_SUBS)
-        return -1;
-    memcpy(sess->ch_subs[sess->ch_sub_count++], uuid, NODUS_UUID_BYTES);
-    return 0;
-}
-
-static void ch_session_remove_sub(nodus_session_t *sess,
-                                    const uint8_t uuid[NODUS_UUID_BYTES]) {
-    for (int i = 0; i < sess->ch_sub_count; i++) {
-        if (memcmp(sess->ch_subs[i], uuid, NODUS_UUID_BYTES) == 0) {
-            memcpy(sess->ch_subs[i],
-                   sess->ch_subs[--sess->ch_sub_count], NODUS_UUID_BYTES);
-            return;
-        }
-    }
-}
-
-/** Notify all sessions subscribed to a channel about a new post */
-static void notify_ch_subscribers(nodus_server_t *srv,
-                                    const uint8_t uuid[NODUS_UUID_BYTES],
-                                    const nodus_channel_post_t *post) {
-    for (int i = 0; i < NODUS_MAX_SESSIONS; i++) {
-        nodus_session_t *s = &srv->sessions[i];
-        if (!s->conn || !s->authenticated) continue;
-
-        for (int j = 0; j < s->ch_sub_count; j++) {
-            if (memcmp(s->ch_subs[j], uuid, NODUS_UUID_BYTES) == 0) {
-                size_t len = 0;
-                if (nodus_t2_ch_post_notify(0, uuid, post,
-                        resp_buf, sizeof(resp_buf), &len) == 0) {
-                    nodus_tcp_send(s->conn, resp_buf, len);
-                }
-                break;
-            }
-        }
-    }
-}
-
 /* ── Channel session helpers (TCP 4003) ─────────────────────── */
 
 static nodus_ch_session_t *ch_session_find_4003(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
@@ -1399,174 +1353,6 @@ static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
     nodus_tcp_send(sess->conn, resp_buf, len);
 }
 
-/* ── Channel handlers ────────────────────────────────────────────── */
-
-static void handle_t2_ch_create(nodus_server_t *srv, nodus_session_t *sess,
-                                  nodus_tier2_msg_t *msg) {
-    int rc = nodus_channel_create(&srv->ch_store, msg->channel_uuid);
-    if (rc != 0) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "channel create failed", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    /* Track channel and announce to DHT */
-    nodus_ring_mgmt_track(&srv->ring_mgmt, msg->channel_uuid);
-    nodus_ring_announce_to_dht(&srv->ring_mgmt, msg->channel_uuid, 1);
-
-    size_t len = 0;
-    nodus_t2_ch_create_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
-}
-
-static void handle_t2_ch_post(nodus_server_t *srv, nodus_session_t *sess,
-                                nodus_tier2_msg_t *msg) {
-    /* Rate limit channel posts (same window as DHT puts) */
-    if (!rate_check_put(sess)) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_RATE_LIMITED,
-                        "too many posts", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    /* Verify channel exists */
-    if (!nodus_channel_exists(&srv->ch_store, msg->channel_uuid)) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_CHANNEL_NOT_FOUND,
-                        "channel not found", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    /* Check body size */
-    if (msg->data_len > NODUS_MAX_POST_BODY) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_TOO_LARGE,
-                        "post body too large", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    /* Build post */
-    nodus_channel_post_t post;
-    memset(&post, 0, sizeof(post));
-    memcpy(post.channel_uuid, msg->channel_uuid, NODUS_UUID_BYTES);
-    memcpy(post.post_uuid, msg->post_uuid_ch, NODUS_UUID_BYTES);
-    post.author_fp = sess->client_fp;
-    post.timestamp = msg->ch_timestamp;
-    post.body = (char *)msg->data;  /* Borrowed, not freed here */
-    post.body_len = msg->data_len;
-    memcpy(post.signature.bytes, msg->sig.bytes, NODUS_SIG_BYTES);
-
-    /* Verify post signature against authenticated client's pubkey (SECURITY: CRIT-01) */
-    if (verify_channel_post_sig(&post, &sess->client_pk) != 0) {
-        post.body = NULL;
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                        "invalid post signature", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        fprintf(stderr, "NODUS_SRV: ch_post rejected — invalid signature\n");
-        return;
-    }
-
-    int rc = nodus_channel_post(&srv->ch_store, &post);
-
-    if (rc < 0) {
-        post.body = NULL;  /* msg owns the data */
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "post failed", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    /* rc=1 means duplicate — still respond with OK (idempotent) */
-    size_t len = 0;
-    nodus_t2_ch_post_ok(msg->txn_id, post.received_at,
-                          resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
-
-    /* Notify subscribers and replicate (only for new posts, not duplicates) */
-    if (rc == 0) {
-        notify_ch_subscribers(srv, msg->channel_uuid, &post);
-        notify_ch_subscribers_4003(srv, msg->channel_uuid, &post);
-        nodus_replication_send(&srv->replication, msg->channel_uuid, &post,
-                                &sess->client_pk);
-    }
-
-    post.body = NULL;  /* msg owns the data — prevent double-free */
-}
-
-static void handle_t2_ch_get_posts(nodus_server_t *srv, nodus_session_t *sess,
-                                     nodus_tier2_msg_t *msg) {
-    if (!nodus_channel_exists(&srv->ch_store, msg->channel_uuid)) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_CHANNEL_NOT_FOUND,
-                        "channel not found", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    nodus_channel_post_t *posts = NULL;
-    size_t count = 0;
-    uint64_t since = msg->ch_received_at;
-    int max = msg->ch_max_count > 0 ? msg->ch_max_count : 100;
-
-    int rc = nodus_channel_get_posts(&srv->ch_store, msg->channel_uuid,
-                                       since, max, &posts, &count);
-    if (rc != 0) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "get posts failed", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    size_t len = 0;
-    nodus_t2_ch_posts(msg->txn_id, posts, count,
-                       resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
-    nodus_channel_posts_free(posts, count);
-}
-
-static void handle_t2_ch_subscribe(nodus_server_t *srv, nodus_session_t *sess,
-                                     nodus_tier2_msg_t *msg) {
-    if (!nodus_channel_exists(&srv->ch_store, msg->channel_uuid)) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_CHANNEL_NOT_FOUND,
-                        "channel not found", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    if (ch_session_add_sub(sess, msg->channel_uuid) != 0) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_RATE_LIMITED,
-                        "too many channel subscriptions",
-                        resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    size_t len = 0;
-    nodus_t2_ch_sub_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
-}
-
-static void handle_t2_ch_unsubscribe(nodus_server_t *srv, nodus_session_t *sess,
-                                       nodus_tier2_msg_t *msg) {
-    (void)srv;
-    ch_session_remove_sub(sess, msg->channel_uuid);
-
-    uint8_t resp_buf[256];
-    size_t len = 0;
-    nodus_t2_ch_sub_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
-}
-
 /* ── Ping-before-evict helpers ───────────────────────────────────── */
 
 /**
@@ -1981,16 +1767,6 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         handle_t2_ping(srv, sess, &msg);
     else if (strcmp(msg.method, "servers") == 0)
         handle_t2_servers(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_create") == 0)
-        handle_t2_ch_create(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_post") == 0)
-        handle_t2_ch_post(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_get") == 0)
-        handle_t2_ch_get_posts(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_sub") == 0)
-        handle_t2_ch_subscribe(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_unsub") == 0)
-        handle_t2_ch_unsubscribe(srv, sess, &msg);
     else {
         size_t rlen = 0;
         nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
@@ -2307,7 +2083,6 @@ static void handle_ch_t2_ch_post(nodus_server_t *srv, nodus_ch_session_t *sess,
     nodus_tcp_send(sess->conn, resp_buf, len);
 
     if (rc == 0) {
-        notify_ch_subscribers(srv, msg->channel_uuid, &post);
         notify_ch_subscribers_4003(srv, msg->channel_uuid, &post);
         nodus_replication_send(&srv->replication, msg->channel_uuid, &post,
                                 &sess->client_pk);

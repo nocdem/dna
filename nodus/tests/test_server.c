@@ -42,6 +42,7 @@ static void *server_thread(void *arg) {
     snprintf(config.bind_ip, sizeof(config.bind_ip), "127.0.0.1");
     config.udp_port = 14000;
     config.tcp_port = 14001;
+    config.ch_port  = 14003;
     snprintf(config.data_path, sizeof(config.data_path), "/tmp/nodus_test_%d", getpid());
 
     /* Create data dir */
@@ -72,6 +73,49 @@ static nodus_tcp_t client_tcp;
 static nodus_tcp_conn_t *client_conn = NULL;
 static uint8_t session_token[NODUS_SESSION_TOKEN_LEN];
 static bool authenticated = false;
+
+/* Track channel notification (declared early — used by ch_on_frame) */
+static volatile bool seen_ch_ntf = false;
+
+/* ── Channel client (TCP 14003) ────────────────────────────────── */
+
+static nodus_tcp_t ch_client_tcp;
+static nodus_tcp_conn_t *ch_client_conn = NULL;
+static uint8_t ch_session_token[NODUS_SESSION_TOKEN_LEN];
+static bool ch_authenticated = false;
+
+static nodus_tier2_msg_t ch_last_resp;
+static volatile bool ch_resp_ready = false;
+static uint32_t ch_next_txn = 1;
+static uint8_t ch_proto_buf[32768];
+
+static void ch_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                         size_t len, void *ctx) {
+    (void)conn; (void)ctx;
+    nodus_t2_msg_free(&ch_last_resp);
+    memset(&ch_last_resp, 0, sizeof(ch_last_resp));
+    if (nodus_t2_decode(payload, len, &ch_last_resp) == 0) {
+        ch_resp_ready = true;
+        if (strcmp(ch_last_resp.method, "ch_ntf") == 0) seen_ch_ntf = true;
+    }
+}
+
+static void ch_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
+    (void)conn; (void)ctx;
+    ch_client_conn = NULL;
+}
+
+static bool ch_wait_response(int timeout_ms) {
+    ch_resp_ready = false;
+    int elapsed = 0;
+    while (!ch_resp_ready && elapsed < timeout_ms) {
+        nodus_tcp_poll(&ch_client_tcp, 10);
+        elapsed += 10;
+    }
+    return ch_resp_ready;
+}
+
+/* ── Main client state ─────────────────────────────────────────── */
 
 static nodus_tier2_msg_t last_resp;
 static volatile bool resp_ready = false;
@@ -402,6 +446,60 @@ static void test_get_all(void) {
     PASS();
 }
 
+/* ── Channel connect + auth (TCP 14003) ────────────────────────── */
+
+static void test_ch_connect(void) {
+    TEST("ch_client connects to channel port");
+
+    nodus_tcp_init(&ch_client_tcp, -1);
+    ch_client_tcp.on_frame = ch_on_frame;
+    ch_client_tcp.on_disconnect = ch_on_disconnect;
+
+    ch_client_conn = nodus_tcp_connect(&ch_client_tcp, "127.0.0.1", 14003);
+    if (!ch_client_conn) { FAIL("connect returned NULL"); return; }
+
+    for (int i = 0; i < 100 && ch_client_conn->state == NODUS_CONN_CONNECTING; i++)
+        nodus_tcp_poll(&ch_client_tcp, 10);
+
+    if (ch_client_conn->state != NODUS_CONN_CONNECTED) { FAIL("not connected"); return; }
+    PASS();
+}
+
+static void test_ch_auth(void) {
+    TEST("ch_client 3-way auth on channel port");
+
+    /* Step 1: HELLO */
+    size_t len = 0;
+    uint32_t txn = ch_next_txn++;
+    nodus_t2_hello(txn, &client_id.pk, &client_id.node_id,
+                    ch_proto_buf, sizeof(ch_proto_buf), &len);
+    nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
+
+    if (!ch_wait_response(5000)) { FAIL("no CHALLENGE response"); return; }
+    if (strcmp(ch_last_resp.method, "challenge") != 0) {
+        FAIL("expected challenge"); return;
+    }
+
+    /* Step 2: Sign nonce, send AUTH */
+    nodus_sig_t sig;
+    nodus_sign(&sig, ch_last_resp.nonce, NODUS_NONCE_LEN, &client_id.sk);
+
+    txn = ch_next_txn++;
+    nodus_t2_auth(txn, &sig, ch_proto_buf, sizeof(ch_proto_buf), &len);
+    nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
+
+    if (!ch_wait_response(5000)) { FAIL("no AUTH_OK response"); return; }
+    if (strcmp(ch_last_resp.method, "auth_ok") != 0) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "expected auth_ok, got %s", ch_last_resp.method);
+        FAIL(buf); return;
+    }
+
+    memcpy(ch_session_token, ch_last_resp.token, NODUS_SESSION_TOKEN_LEN);
+    ch_authenticated = true;
+    PASS();
+}
+
 /* ── Channel tests ──────────────────────────────────────────────── */
 
 static const uint8_t test_ch_uuid[16] = {
@@ -413,21 +511,21 @@ static void test_ch_create(void) {
     TEST("ch_create creates a channel");
 
     size_t len = 0;
-    uint32_t txn = next_txn++;
-    nodus_t2_ch_create(txn, session_token, test_ch_uuid,
-                        proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
+    uint32_t txn = ch_next_txn++;
+    nodus_t2_ch_create(txn, ch_session_token, test_ch_uuid,
+                        ch_proto_buf, sizeof(ch_proto_buf), &len);
+    nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
 
-    if (!wait_response(5000)) { FAIL("no response"); return; }
-    if (last_resp.type == 'e') {
+    if (!ch_wait_response(5000)) { FAIL("no response"); return; }
+    if (ch_last_resp.type == 'e') {
         char buf[256];
         snprintf(buf, sizeof(buf), "error: [%d] %s",
-                 last_resp.error_code, last_resp.error_msg);
+                 ch_last_resp.error_code, ch_last_resp.error_msg);
         FAIL(buf); return;
     }
-    if (strcmp(last_resp.method, "ch_create_ok") != 0) {
+    if (strcmp(ch_last_resp.method, "ch_create_ok") != 0) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "expected ch_create_ok, got %s", last_resp.method);
+        snprintf(buf, sizeof(buf), "expected ch_create_ok, got %s", ch_last_resp.method);
         FAIL(buf); return;
     }
     PASS();
@@ -495,26 +593,26 @@ static void test_ch_post(void) {
                        body, 1709000000, &client_id.sk, &sig);
 
     size_t len = 0;
-    uint32_t txn = next_txn++;
-    nodus_t2_ch_post(txn, session_token, test_ch_uuid, post_uuid,
+    uint32_t txn = ch_next_txn++;
+    nodus_t2_ch_post(txn, ch_session_token, test_ch_uuid, post_uuid,
                       (const uint8_t *)body, body_len,
                       1709000000, &sig,
-                      proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
+                      ch_proto_buf, sizeof(ch_proto_buf), &len);
+    nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
 
-    if (!wait_response(5000)) { FAIL("no response"); return; }
-    if (last_resp.type == 'e') {
+    if (!ch_wait_response(5000)) { FAIL("no response"); return; }
+    if (ch_last_resp.type == 'e') {
         char buf[256];
         snprintf(buf, sizeof(buf), "error: [%d] %s",
-                 last_resp.error_code, last_resp.error_msg);
+                 ch_last_resp.error_code, ch_last_resp.error_msg);
         FAIL(buf); return;
     }
-    if (strcmp(last_resp.method, "ch_post_ok") != 0) {
+    if (strcmp(ch_last_resp.method, "ch_post_ok") != 0) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "expected ch_post_ok, got %s", last_resp.method);
+        snprintf(buf, sizeof(buf), "expected ch_post_ok, got %s", ch_last_resp.method);
         FAIL(buf); return;
     }
-    if (last_resp.ch_received_at == 0) {
+    if (ch_last_resp.ch_received_at == 0) {
         FAIL("expected non-zero received_at"); return;
     }
     PASS();
@@ -532,47 +630,47 @@ static void test_ch_get_posts(void) {
                        body2, 1709000001, &client_id.sk, &sig);
 
     size_t len = 0;
-    uint32_t txn = next_txn++;
-    nodus_t2_ch_post(txn, session_token, test_ch_uuid, post_uuid2,
+    uint32_t txn = ch_next_txn++;
+    nodus_t2_ch_post(txn, ch_session_token, test_ch_uuid, post_uuid2,
                       (const uint8_t *)body2, strlen(body2),
                       1709000001, &sig,
-                      proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
-    if (!wait_response(5000)) { FAIL("no ch_post_ok"); return; }
+                      ch_proto_buf, sizeof(ch_proto_buf), &len);
+    nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
+    if (!ch_wait_response(5000)) { FAIL("no ch_post_ok"); return; }
 
     /* GET all posts (since_received_at=0) */
-    txn = next_txn++;
-    nodus_t2_ch_get_posts(txn, session_token, test_ch_uuid,
-                           0, 100, proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
+    txn = ch_next_txn++;
+    nodus_t2_ch_get_posts(txn, ch_session_token, test_ch_uuid,
+                           0, 100, ch_proto_buf, sizeof(ch_proto_buf), &len);
+    nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
 
-    if (!wait_response(5000)) { FAIL("no response"); return; }
-    if (last_resp.type == 'e') {
+    if (!ch_wait_response(5000)) { FAIL("no response"); return; }
+    if (ch_last_resp.type == 'e') {
         char buf[256];
         snprintf(buf, sizeof(buf), "error: [%d] %s",
-                 last_resp.error_code, last_resp.error_msg);
+                 ch_last_resp.error_code, ch_last_resp.error_msg);
         FAIL(buf); return;
     }
-    if (strcmp(last_resp.method, "ch_posts") != 0) {
+    if (strcmp(ch_last_resp.method, "ch_posts") != 0) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "expected ch_posts, got %s", last_resp.method);
+        snprintf(buf, sizeof(buf), "expected ch_posts, got %s", ch_last_resp.method);
         FAIL(buf); return;
     }
-    if (last_resp.ch_post_count != 2) {
+    if (ch_last_resp.ch_post_count != 2) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "expected 2 posts, got %zu", last_resp.ch_post_count);
+        snprintf(buf, sizeof(buf), "expected 2 posts, got %zu", ch_last_resp.ch_post_count);
         FAIL(buf); return;
     }
-    if (last_resp.ch_posts[0].received_at == 0 || last_resp.ch_posts[1].received_at == 0) {
+    if (ch_last_resp.ch_posts[0].received_at == 0 || ch_last_resp.ch_posts[1].received_at == 0) {
         FAIL("missing received_at"); return;
     }
-    if (last_resp.ch_posts[0].received_at > last_resp.ch_posts[1].received_at) {
+    if (ch_last_resp.ch_posts[0].received_at > ch_last_resp.ch_posts[1].received_at) {
         FAIL("posts not ordered by received_at"); return;
     }
-    if (strcmp(last_resp.ch_posts[0].body, "Hello from test!") != 0) {
+    if (strcmp(ch_last_resp.ch_posts[0].body, "Hello from test!") != 0) {
         FAIL("first post body mismatch"); return;
     }
-    if (strcmp(last_resp.ch_posts[1].body, "Second post") != 0) {
+    if (strcmp(ch_last_resp.ch_posts[1].body, "Second post") != 0) {
         FAIL("second post body mismatch"); return;
     }
     PASS();
@@ -583,48 +681,45 @@ static void test_ch_get_since_received_at(void) {
 
     /* First, get all posts to find the received_at of the first post */
     size_t len = 0;
-    uint32_t txn = next_txn++;
-    nodus_t2_ch_get_posts(txn, session_token, test_ch_uuid,
-                           0, 100, proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
+    uint32_t txn = ch_next_txn++;
+    nodus_t2_ch_get_posts(txn, ch_session_token, test_ch_uuid,
+                           0, 100, ch_proto_buf, sizeof(ch_proto_buf), &len);
+    nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
 
-    if (!wait_response(5000)) { FAIL("no response"); return; }
-    if (last_resp.ch_post_count < 2) { FAIL("need at least 2 posts"); return; }
-    uint64_t first_ra = last_resp.ch_posts[0].received_at;
+    if (!ch_wait_response(5000)) { FAIL("no response"); return; }
+    if (ch_last_resp.ch_post_count < 2) { FAIL("need at least 2 posts"); return; }
+    uint64_t first_ra = ch_last_resp.ch_posts[0].received_at;
 
     /* Now get posts since first_ra — should get only the second post */
-    txn = next_txn++;
-    nodus_t2_ch_get_posts(txn, session_token, test_ch_uuid,
-                           first_ra, 100, proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
+    txn = ch_next_txn++;
+    nodus_t2_ch_get_posts(txn, ch_session_token, test_ch_uuid,
+                           first_ra, 100, ch_proto_buf, sizeof(ch_proto_buf), &len);
+    nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
 
-    if (!wait_response(5000)) { FAIL("no response"); return; }
-    if (last_resp.ch_post_count != 1) {
+    if (!ch_wait_response(5000)) { FAIL("no response"); return; }
+    if (ch_last_resp.ch_post_count != 1) {
         char buf[64];
         snprintf(buf, sizeof(buf), "expected 1 post after first_ra, got %zu",
-                 last_resp.ch_post_count);
+                 ch_last_resp.ch_post_count);
         FAIL(buf); return;
     }
     PASS();
 }
-
-/* Track channel notification */
-static volatile bool seen_ch_ntf = false;
 
 static void test_ch_subscribe_notify(void) {
     TEST("ch_sub + ch_post → ch_ntf notification");
 
     /* Subscribe to channel */
     size_t len = 0;
-    uint32_t txn = next_txn++;
-    nodus_t2_ch_subscribe(txn, session_token, test_ch_uuid,
-                           proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
+    uint32_t txn = ch_next_txn++;
+    nodus_t2_ch_subscribe(txn, ch_session_token, test_ch_uuid,
+                           ch_proto_buf, sizeof(ch_proto_buf), &len);
+    nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
 
-    if (!wait_response(5000)) { FAIL("no ch_sub_ok"); return; }
-    if (strcmp(last_resp.method, "ch_sub_ok") != 0) {
+    if (!ch_wait_response(5000)) { FAIL("no ch_sub_ok"); return; }
+    if (strcmp(ch_last_resp.method, "ch_sub_ok") != 0) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "expected ch_sub_ok, got %s", last_resp.method);
+        snprintf(buf, sizeof(buf), "expected ch_sub_ok, got %s", ch_last_resp.method);
         FAIL(buf); return;
     }
 
@@ -636,23 +731,23 @@ static void test_ch_subscribe_notify(void) {
     sign_channel_post(post_uuid, test_ch_uuid, &client_id.node_id,
                        body, 1709000002, &client_id.sk, &sig);
 
-    txn = next_txn++;
-    nodus_t2_ch_post(txn, session_token, test_ch_uuid, post_uuid,
+    txn = ch_next_txn++;
+    nodus_t2_ch_post(txn, ch_session_token, test_ch_uuid, post_uuid,
                       (const uint8_t *)body, strlen(body),
                       1709000002, &sig,
-                      proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
+                      ch_proto_buf, sizeof(ch_proto_buf), &len);
+    nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
 
-    /* Wait for both ch_post_ok and ch_ntf */
+    /* Wait for both ch_post_ok and ch_ntf on the channel connection */
     seen_ch_ntf = false;
     bool seen_post_ok_ch = false;
 
     for (int attempts = 0; attempts < 50 && (!seen_ch_ntf || !seen_post_ok_ch); attempts++) {
-        resp_ready = false;
-        nodus_tcp_poll(&client_tcp, 100);
-        if (resp_ready) {
-            if (strcmp(last_resp.method, "ch_post_ok") == 0) seen_post_ok_ch = true;
-            if (strcmp(last_resp.method, "ch_ntf") == 0) seen_ch_ntf = true;
+        ch_resp_ready = false;
+        nodus_tcp_poll(&ch_client_tcp, 100);
+        if (ch_resp_ready) {
+            if (strcmp(ch_last_resp.method, "ch_post_ok") == 0) seen_post_ok_ch = true;
+            /* ch_ntf is tracked by ch_on_frame via seen_ch_ntf flag */
         }
     }
 
@@ -673,18 +768,18 @@ static void test_ch_nonexistent(void) {
                        body, 1709000003, &client_id.sk, &sig);
 
     size_t len = 0;
-    uint32_t txn = next_txn++;
-    nodus_t2_ch_post(txn, session_token, fake_uuid, post_uuid,
+    uint32_t txn = ch_next_txn++;
+    nodus_t2_ch_post(txn, ch_session_token, fake_uuid, post_uuid,
                       (const uint8_t *)body, strlen(body),
                       1709000003, &sig,
-                      proto_buf, sizeof(proto_buf), &len);
-    nodus_tcp_send(client_conn, proto_buf, len);
+                      ch_proto_buf, sizeof(ch_proto_buf), &len);
+    nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
 
-    if (!wait_response(5000)) { FAIL("no response"); return; }
-    if (last_resp.type != 'e') { FAIL("expected error response"); return; }
-    if (last_resp.error_code != NODUS_ERR_CHANNEL_NOT_FOUND) {
+    if (!ch_wait_response(5000)) { FAIL("no response"); return; }
+    if (ch_last_resp.type != 'e') { FAIL("expected error response"); return; }
+    if (ch_last_resp.error_code != NODUS_ERR_CHANNEL_NOT_FOUND) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "expected error 10, got %d", last_resp.error_code);
+        snprintf(buf, sizeof(buf), "expected error 10, got %d", ch_last_resp.error_code);
         FAIL(buf); return;
     }
     PASS();
@@ -814,20 +909,28 @@ int main(void) {
         test_unauth_rejected();
         test_rate_limit();
         test_get_all();
+        test_presence_query();
+        test_presence_query_unknown();
+        test_presence_query_mixed();
+    }
+
+    /* Channel tests require separate TCP 14003 connection */
+    test_ch_connect();
+    if (ch_client_conn) test_ch_auth();
+    if (ch_authenticated) {
         test_ch_create();
         test_ch_post();
         test_ch_get_posts();
         test_ch_get_since_received_at();
         test_ch_subscribe_notify();
         test_ch_nonexistent();
-        test_presence_query();
-        test_presence_query_unknown();
-        test_presence_query_mixed();
     }
 
     /* Cleanup */
     nodus_t2_msg_free(&last_resp);
+    nodus_t2_msg_free(&ch_last_resp);
     nodus_tcp_close(&client_tcp);
+    nodus_tcp_close(&ch_client_tcp);
     nodus_server_stop(&server);
     pthread_join(tid, NULL);
     nodus_identity_clear(&client_id);

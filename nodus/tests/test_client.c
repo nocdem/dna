@@ -41,6 +41,7 @@ static void *server_thread(void *arg) {
     snprintf(config.bind_ip, sizeof(config.bind_ip), "127.0.0.1");
     config.udp_port = 15000;
     config.tcp_port = 15001;
+    config.ch_port  = 15003;
     snprintf(config.data_path, sizeof(config.data_path),
              "/tmp/nodus_client_test_%d", getpid());
 
@@ -283,20 +284,39 @@ static void test_unlisten(void) {
     else FAIL("unlisten failed");
 }
 
-/* ── Channel tests ──────────────────────────────────────────────── */
+/* ── Channel tests (via nodus_ch_conn_t on TCP 15003) ──────────── */
 
 static uint8_t test_ch_uuid[NODUS_UUID_BYTES];
+static nodus_ch_conn_t ch_conn;
+static volatile bool got_ch_conn_notify = false;
+
+static void on_ch_conn_post(const uint8_t channel_uuid[NODUS_UUID_BYTES],
+                              const nodus_channel_post_t *post,
+                              void *user_data) {
+    (void)channel_uuid; (void)post; (void)user_data;
+    got_ch_conn_notify = true;
+}
+
+static void test_ch_connect(void) {
+    TEST("ch_conn connects to channel port");
+    int rc = nodus_channel_init(&ch_conn, "127.0.0.1", 15003,
+                                 &client_id, on_ch_conn_post, NULL);
+    if (rc != 0) { FAIL("ch_conn init failed"); return; }
+    rc = nodus_channel_connect(&ch_conn);
+    if (rc == 0 && nodus_channel_is_ready(&ch_conn)) PASS();
+    else FAIL("ch_conn connect/auth failed");
+}
 
 static void test_ch_create(void) {
-    TEST("client create channel");
+    TEST("ch_conn create channel");
     nodus_random(test_ch_uuid, NODUS_UUID_BYTES);
-    int rc = nodus_client_ch_create(&client, test_ch_uuid);
+    int rc = nodus_ch_conn_create(&ch_conn, test_ch_uuid);
     if (rc == 0) PASS();
     else FAIL("ch_create failed");
 }
 
 static void test_ch_post(void) {
-    TEST("client post to channel");
+    TEST("ch_conn post to channel");
     uint8_t post_uuid[NODUS_UUID_BYTES];
     nodus_random(post_uuid, NODUS_UUID_BYTES);
 
@@ -308,20 +328,20 @@ static void test_ch_post(void) {
                        body, ts, &client_id.sk, &sig);
 
     uint64_t ra = 0;
-    int rc = nodus_client_ch_post(&client, test_ch_uuid, post_uuid,
-                                   (const uint8_t *)body, strlen(body),
-                                   ts, &sig, &ra);
+    int rc = nodus_ch_conn_post(&ch_conn, test_ch_uuid, post_uuid,
+                                 (const uint8_t *)body, strlen(body),
+                                 ts, &sig, &ra);
     if (rc == 0 && ra > 0) PASS();
     else FAIL("ch_post failed or bad received_at");
 }
 
 static void test_ch_get_posts(void) {
-    TEST("client get channel posts");
+    TEST("ch_conn get channel posts");
 
     nodus_channel_post_t *posts = NULL;
     size_t count = 0;
-    int rc = nodus_client_ch_get_posts(&client, test_ch_uuid, 0, 100,
-                                        &posts, &count);
+    int rc = nodus_ch_conn_get_posts(&ch_conn, test_ch_uuid, 0, 100,
+                                      &posts, &count);
     if (rc == 0 && count == 1 && posts &&
         memcmp(posts[0].body, "SDK channel message", 19) == 0) {
         PASS();
@@ -332,23 +352,19 @@ static void test_ch_get_posts(void) {
 }
 
 static void test_ch_subscribe_notify(void) {
-    TEST("client channel subscribe + notification");
+    TEST("ch_conn subscribe + notification");
 
-    int rc = nodus_client_ch_subscribe(&client, test_ch_uuid);
+    int rc = nodus_ch_conn_subscribe(&ch_conn, test_ch_uuid);
     if (rc != 0) { FAIL("subscribe failed"); return; }
 
-    /* Post with a second client */
-    nodus_client_t client2;
+    /* Post with a second channel connection (different identity) */
+    nodus_ch_conn_t ch2;
     nodus_identity_t id2;
     nodus_identity_generate(&id2);
 
-    nodus_client_config_t cfg2;
-    memset(&cfg2, 0, sizeof(cfg2));
-    snprintf(cfg2.servers[0].ip, sizeof(cfg2.servers[0].ip), "127.0.0.1");
-    cfg2.servers[0].port = 15001;
-    cfg2.server_count = 1;
-    nodus_client_init(&client2, &cfg2, &id2);
-    nodus_client_connect(&client2);
+    nodus_channel_init(&ch2, "127.0.0.1", 15003, &id2, NULL, NULL);
+    rc = nodus_channel_connect(&ch2);
+    if (rc != 0) { FAIL("ch2 connect failed"); nodus_identity_clear(&id2); return; }
 
     uint8_t post_uuid[NODUS_UUID_BYTES];
     nodus_random(post_uuid, NODUS_UUID_BYTES);
@@ -360,27 +376,27 @@ static void test_ch_subscribe_notify(void) {
                        body, ts, &id2.sk, &sig);
 
     /* Reset flag BEFORE post — read thread may deliver notification instantly */
-    got_ch_post_notify = false;
-    nodus_client_ch_post(&client2, test_ch_uuid, post_uuid,
-                          (const uint8_t *)body, strlen(body), ts, &sig, NULL);
+    got_ch_conn_notify = false;
+    nodus_ch_conn_post(&ch2, test_ch_uuid, post_uuid,
+                        (const uint8_t *)body, strlen(body), ts, &sig, NULL);
 
     /* Wait for the read thread to deliver the notification */
-    for (int i = 0; i < 500 && !got_ch_post_notify; i++) {
-        struct timespec ts = { 0, 10000000L }; /* 10ms */
-        nanosleep(&ts, NULL);
+    for (int i = 0; i < 500 && !got_ch_conn_notify; i++) {
+        struct timespec ts_sleep = { 0, 10000000L }; /* 10ms */
+        nanosleep(&ts_sleep, NULL);
     }
 
-    if (got_ch_post_notify) PASS();
+    if (got_ch_conn_notify) PASS();
     else FAIL("no ch_post notification");
 
-    nodus_client_close(&client2);
+    nodus_channel_close(&ch2);
     nodus_identity_clear(&id2);
 }
 
 static void test_ch_unsubscribe(void) {
-    TEST("client channel unsubscribe");
-    int rc = nodus_client_ch_unsubscribe(&client, test_ch_uuid);
-    if (rc == 0 && client.ch_sub_count == 0) PASS();
+    TEST("ch_conn unsubscribe");
+    int rc = nodus_ch_conn_unsubscribe(&ch_conn, test_ch_uuid);
+    if (rc == 0 && ch_conn.ch_sub_count == 0) PASS();
     else FAIL("unsubscribe failed");
 }
 
@@ -446,14 +462,18 @@ int main(void) {
     test_get_not_found();
     test_listen();
     test_unlisten();
-    test_ch_create();
-    test_ch_post();
-    test_ch_get_posts();
-    test_ch_subscribe_notify();
-    test_ch_unsubscribe();
+    test_ch_connect();
+    if (nodus_channel_is_ready(&ch_conn)) {
+        test_ch_create();
+        test_ch_post();
+        test_ch_get_posts();
+        test_ch_subscribe_notify();
+        test_ch_unsubscribe();
+    }
     test_failover_bad_server();
 
     /* Cleanup */
+    nodus_channel_close(&ch_conn);
     nodus_client_close(&client);
     nodus_server_stop(&server);
     pthread_join(srv_tid, NULL);

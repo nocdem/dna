@@ -112,10 +112,6 @@ typedef struct {
     nodus_key_t         listen_keys[NODUS_MAX_LISTEN_KEYS];
     int                 listen_count;
 
-    /* Channel subscriptions */
-    uint8_t             ch_subs[NODUS_MAX_CH_SUBS][NODUS_UUID_BYTES];
-    int                 ch_sub_count;
-
     /* Rate limiting */
     uint64_t            rate_window_start;
     int                 puts_in_window;
