@@ -2263,6 +2263,15 @@ static void ch_conn_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         return;
     }
 
+    /* Push notification: ring changed — client should reconnect */
+    if (strcmp(tmp.method, "ch_ring") == 0) {
+        if (ch->on_ring_changed) {
+            ch->on_ring_changed(tmp.channel_uuid, tmp.ring_version, ch->ring_changed_data);
+        }
+        nodus_t2_msg_free(&tmp);
+        return;
+    }
+
     /* Find pending slot by txn ID */
     pthread_mutex_lock(&ch->pending_mutex);
     nodus_ch_pending_t *slot = NULL;
@@ -2435,6 +2444,8 @@ int nodus_channel_init(nodus_ch_conn_t *ch,
     ch->identity = *identity;
     ch->on_ch_post = on_post;
     ch->cb_data = cb_data;
+    ch->on_ring_changed = NULL;
+    ch->ring_changed_data = NULL;
     atomic_store(&ch->next_txn, 1);
 
     pthread_mutex_init(&ch->pending_mutex, NULL);

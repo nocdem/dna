@@ -6,7 +6,9 @@
  */
 
 #include "server/nodus_server.h"
-#include "channel/nodus_replication.h"
+#include "channel/nodus_channel_server.h"
+#include "channel/nodus_channel_replication.h"
+#include "channel/nodus_channel_ring.h"
 #include "consensus/nodus_pbft.h"
 #include "protocol/nodus_tier1.h"
 #include "protocol/nodus_tier2.h"
@@ -32,134 +34,7 @@
 #define RESP_BUF_SIZE (NODUS_MAX_VALUE_SIZE + 65536)
 static uint8_t resp_buf[RESP_BUF_SIZE];
 
-/* ── Channel post signature verification (SECURITY: CRIT-01) ────── */
-
-/**
- * JSON-escape a string for signature payload reconstruction.
- * Escapes: " → \", \ → \\, control chars → \uXXXX.
- * Matches json-c JSON_C_TO_STRING_PLAIN output.
- * Returns bytes written (excluding NUL), or -1 if buffer too small.
- */
-static int json_escape_string(const char *src, size_t src_len,
-                               char *dst, size_t dst_cap) {
-    size_t w = 0;
-    for (size_t i = 0; i < src_len; i++) {
-        unsigned char c = (unsigned char)src[i];
-        if (c == '"' || c == '\\') {
-            if (w + 2 > dst_cap) return -1;
-            dst[w++] = '\\';
-            dst[w++] = (char)c;
-        } else if (c == '\n') {
-            if (w + 2 > dst_cap) return -1;
-            dst[w++] = '\\'; dst[w++] = 'n';
-        } else if (c == '\r') {
-            if (w + 2 > dst_cap) return -1;
-            dst[w++] = '\\'; dst[w++] = 'r';
-        } else if (c == '\t') {
-            if (w + 2 > dst_cap) return -1;
-            dst[w++] = '\\'; dst[w++] = 't';
-        } else if (c == '\b') {
-            if (w + 2 > dst_cap) return -1;
-            dst[w++] = '\\'; dst[w++] = 'b';
-        } else if (c == '\f') {
-            if (w + 2 > dst_cap) return -1;
-            dst[w++] = '\\'; dst[w++] = 'f';
-        } else if (c < 0x20) {
-            /* Control characters: \uXXXX */
-            if (w + 6 > dst_cap) return -1;
-            w += (size_t)snprintf(dst + w, dst_cap - w, "\\u%04x", c);
-        } else {
-            if (w + 1 > dst_cap) return -1;
-            dst[w++] = (char)c;
-        }
-    }
-    if (w >= dst_cap) return -1;
-    dst[w] = '\0';
-    return (int)w;
-}
-
-/**
- * Convert 16-byte binary UUID to hyphenated string (36 chars + NUL).
- * Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
- */
-static void uuid_to_string(const uint8_t uuid[NODUS_UUID_BYTES], char out[37]) {
-    snprintf(out, 37,
-             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-             uuid[0], uuid[1], uuid[2], uuid[3],
-             uuid[4], uuid[5], uuid[6], uuid[7],
-             uuid[8], uuid[9], uuid[10], uuid[11],
-             uuid[12], uuid[13], uuid[14], uuid[15]);
-}
-
-/**
- * Convert nodus_key_t (64 bytes) to hex string (128 chars + NUL).
- */
-static void fp_to_hex(const nodus_key_t *fp, char out[NODUS_KEY_HEX_LEN]) {
-    for (int i = 0; i < NODUS_KEY_BYTES; i++)
-        snprintf(out + i * 2, 3, "%02x", fp->bytes[i]);
-}
-
-/**
- * Verify a channel post signature against the author's public key.
- *
- * Reconstructs the JSON signing payload that the messenger client signed:
- *   {"post_uuid":"...","channel_uuid":"...","author":"...","body":"...","created_at":...}
- *
- * @param post       Channel post with signature
- * @param author_pk  Author's Dilithium5 public key
- * @return 0 if valid, -1 if invalid or error
- */
-static int verify_channel_post_sig(const nodus_channel_post_t *post,
-                                    const nodus_pubkey_t *author_pk) {
-    /* Convert binary fields to string form */
-    char post_uuid_str[37];
-    char ch_uuid_str[37];
-    char author_hex[NODUS_KEY_HEX_LEN];
-
-    uuid_to_string(post->post_uuid, post_uuid_str);
-    uuid_to_string(post->channel_uuid, ch_uuid_str);
-    fp_to_hex(&post->author_fp, author_hex);
-
-    /* Escape body for JSON (worst case: 6x expansion for \uXXXX) */
-    size_t esc_cap = (post->body_len * 6) + 1;
-    char *esc_body = malloc(esc_cap);
-    if (!esc_body) return -1;
-
-    int esc_len = json_escape_string(post->body ? post->body : "",
-                                      post->body ? post->body_len : 0,
-                                      esc_body, esc_cap);
-    if (esc_len < 0) { free(esc_body); return -1; }
-
-    /* Build the JSON signing payload.
-     * json-c JSON_C_TO_STRING_PLAIN output format (no spaces after : or ,):
-     * {"post_uuid":"...","channel_uuid":"...","author":"...","body":"...","created_at":...} */
-    size_t json_cap = 256 + 37 + 37 + 129 + (size_t)esc_len + 32;
-    char *json_buf = malloc(json_cap);
-    if (!json_buf) { free(esc_body); return -1; }
-
-    int json_len = snprintf(json_buf, json_cap,
-        "{\"post_uuid\":\"%s\","
-        "\"channel_uuid\":\"%s\","
-        "\"author\":\"%s\","
-        "\"body\":\"%s\","
-        "\"created_at\":%llu}",
-        post_uuid_str, ch_uuid_str, author_hex, esc_body,
-        (unsigned long long)post->timestamp);
-
-    free(esc_body);
-
-    if (json_len < 0 || (size_t)json_len >= json_cap) {
-        free(json_buf);
-        return -1;
-    }
-
-    /* Verify Dilithium5 signature */
-    int rc = nodus_verify(&post->signature,
-                           (const uint8_t *)json_buf, (size_t)json_len,
-                           author_pk);
-    free(json_buf);
-    return rc;
-}
+/* Channel post signature verification is now in nodus_channel_primary.c */
 
 /* ── Session management ──────────────────────────────────────────── */
 
@@ -251,61 +126,7 @@ static void notify_listeners(nodus_server_t *srv, const nodus_key_t *key,
     }
 }
 
-/* ── Channel session helpers (TCP 4003) ─────────────────────── */
-
-static nodus_ch_session_t *ch_session_find_4003(nodus_server_t *srv, nodus_tcp_conn_t *conn) {
-    if (!conn || conn->slot < 0 || conn->slot >= NODUS_MAX_CH_SESSIONS)
-        return NULL;
-    nodus_ch_session_t *s = &srv->ch_sessions[conn->slot];
-    return (s->conn == conn) ? s : NULL;
-}
-
-static int ch_session_add_sub_4003(nodus_ch_session_t *sess, const uint8_t *uuid) {
-    if (sess->ch_sub_count >= NODUS_MAX_CH_SUBS) return -1;
-    for (int i = 0; i < sess->ch_sub_count; i++) {
-        if (memcmp(sess->ch_subs[i], uuid, NODUS_UUID_BYTES) == 0)
-            return 0;
-    }
-    memcpy(sess->ch_subs[sess->ch_sub_count], uuid, NODUS_UUID_BYTES);
-    sess->ch_sub_count++;
-    return 0;
-}
-
-static void ch_session_remove_sub_4003(nodus_ch_session_t *sess, const uint8_t *uuid) {
-    for (int i = 0; i < sess->ch_sub_count; i++) {
-        if (memcmp(sess->ch_subs[i], uuid, NODUS_UUID_BYTES) == 0) {
-            memcpy(sess->ch_subs[i],
-                   sess->ch_subs[--sess->ch_sub_count], NODUS_UUID_BYTES);
-            return;
-        }
-    }
-}
-
-/** Notify channel subscribers on TCP 4003 connections */
-static void notify_ch_subscribers_4003(nodus_server_t *srv,
-                                         const uint8_t uuid[NODUS_UUID_BYTES],
-                                         const nodus_channel_post_t *post) {
-    int notified = 0;
-    int auth_count = 0;
-    for (int i = 0; i < NODUS_MAX_CH_SESSIONS; i++) {
-        nodus_ch_session_t *s = &srv->ch_sessions[i];
-        if (!s->conn || !s->authenticated) continue;
-        auth_count++;
-
-        for (int j = 0; j < s->ch_sub_count; j++) {
-            if (memcmp(s->ch_subs[j], uuid, NODUS_UUID_BYTES) == 0) {
-                size_t len = 0;
-                if (nodus_t2_ch_post_notify(0, uuid, post,
-                        resp_buf, sizeof(resp_buf), &len) == 0) {
-                    nodus_tcp_send(s->conn, resp_buf, len);
-                    notified++;
-                }
-                break;
-            }
-        }
-    }
-    fprintf(stderr, "CH_NOTIFY: auth_clients=%d notified=%d\n", auth_count, notified);
-}
+/* Channel session helpers are now in nodus_channel_server.c */
 
 /* ── Server-to-server TCP STORE (with hinted handoff on failure) ── */
 
@@ -1456,7 +1277,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
 
-    /* Try T2 decode first (p_sync, ch_rep, fv, w_*) */
+    /* Try T2 decode first (p_sync, fv, w_*) */
     if (nodus_t2_decode(payload, len, &msg) == 0) {
 
         /* Tier 3: Witness BFT messages (per-session rate limit: 100/sec) */
@@ -1525,101 +1346,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
 
-        } else if (strcmp(msg.method, "ch_rep") == 0) {
-            /* Inter-node channel replication (per-session rate limit) */
-            uint64_t cr_now = nodus_time_now();
-            if (cr_now != sess->cr_window_start) { sess->cr_window_start = cr_now; sess->cr_count = 0; }
-            if (++sess->cr_count > NODUS_SV_MAX_PER_SEC) {
-                nodus_t2_msg_free(&msg);
-                return;
-            }
-
-            /* Verify ch_rep carries author public key (SECURITY: CRIT-01) */
-            if (!msg.has_author_pk) {
-                fprintf(stderr, "NODUS_SRV: ch_rep rejected — missing author pubkey\n");
-                size_t rlen = 0;
-                nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                                "missing author pubkey",
-                                resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send(sess->conn, resp_buf, rlen);
-                nodus_t2_msg_free(&msg);
-                return;
-            }
-
-            nodus_key_t computed_fp;
-            nodus_fingerprint(&msg.author_pk, &computed_fp);
-            if (nodus_key_cmp(&computed_fp, &msg.fp) != 0) {
-                fprintf(stderr, "NODUS_SRV: ch_rep rejected — pubkey/fingerprint mismatch\n");
-                size_t rlen = 0;
-                nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                                "pubkey fingerprint mismatch",
-                                resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send(sess->conn, resp_buf, rlen);
-                nodus_t2_msg_free(&msg);
-                return;
-            }
-
-            nodus_channel_post_t post;
-            memset(&post, 0, sizeof(post));
-            memcpy(post.channel_uuid, msg.channel_uuid, NODUS_UUID_BYTES);
-            memcpy(post.post_uuid, msg.post_uuid_ch, NODUS_UUID_BYTES);
-            memcpy(post.author_fp.bytes, msg.fp.bytes, NODUS_KEY_BYTES);
-            post.timestamp = msg.ch_timestamp;
-            post.body = (char *)msg.data;
-            post.body_len = msg.data_len;
-            memcpy(post.signature.bytes, msg.sig.bytes, NODUS_SIG_BYTES);
-            /* Preserve received_at from primary (via ch_received_at wire field) */
-            post.received_at = msg.ch_received_at;
-
-            if (verify_channel_post_sig(&post, &msg.author_pk) != 0) {
-                fprintf(stderr, "NODUS_SRV: ch_rep rejected — invalid post signature\n");
-                post.body = NULL;
-                size_t rlen = 0;
-                nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                                "invalid post signature",
-                                resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send(sess->conn, resp_buf, rlen);
-                nodus_t2_msg_free(&msg);
-                return;
-            }
-
-            int rc = nodus_replication_receive(&srv->ch_store, &post);
-
-            /* Notify local 4003 subscribers of new replicated post */
-            if (rc == 0)
-                notify_ch_subscribers_4003(srv, post.channel_uuid, &post);
-
-            post.body = NULL;
-
-            size_t rlen = 0;
-            if (rc >= 0) {
-                nodus_t2_ch_rep_ok(msg.txn_id, resp_buf, sizeof(resp_buf), &rlen);
-            } else {
-                nodus_t2_error(msg.txn_id, NODUS_ERR_INTERNAL_ERROR,
-                                "replication store failed",
-                                resp_buf, sizeof(resp_buf), &rlen);
-            }
-            nodus_tcp_send(sess->conn, resp_buf, rlen);
-            nodus_t2_msg_free(&msg);
-            return;
-
-        } else if (strcmp(msg.method, "ring_check") == 0) {
-            nodus_ring_mgmt_handle_check(&srv->ring_mgmt, sess->conn,
-                                           &msg.ring_node_id, msg.channel_uuid,
-                                           msg.ring_status, msg.txn_id);
-            nodus_t2_msg_free(&msg);
-            return;
-        } else if (strcmp(msg.method, "ring_ack") == 0) {
-            nodus_ring_mgmt_handle_ack(&srv->ring_mgmt, msg.channel_uuid,
-                                         msg.ring_agree, msg.txn_id);
-            nodus_t2_msg_free(&msg);
-            return;
-        } else if (strcmp(msg.method, "ring_evict") == 0) {
-            nodus_ring_mgmt_handle_evict(&srv->ring_mgmt, msg.channel_uuid,
-                                           msg.ring_version, msg.txn_id, sess->conn);
-            nodus_t2_msg_free(&msg);
-            return;
         }
+        /* ch_rep, ring_check, ring_ack, ring_evict now go via TCP 4003 (channel server) */
 
         /* T2 decode succeeded but method is not a known T2 inter-node method.
          * Fall through to T1 decode — sv payloads can parse as valid T2 CBOR. */
@@ -1939,361 +1667,15 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
         nodus_witness_peer_conn_closed(srv->witness, conn);
 }
 
-/* ── Channel port (4003) auth handlers ──────────────────────── */
+/* ── Channel post replication callback ────────────────────────── */
 
-static void handle_ch_hello(nodus_server_t *srv, nodus_ch_session_t *sess,
-                              nodus_tier2_msg_t *msg) {
-    (void)srv;
-    uint8_t buf[8192];
-
-    /* Verify fingerprint matches pubkey */
-    nodus_key_t expected_fp;
-    nodus_fingerprint(&msg->pk, &expected_fp);
-    if (nodus_key_cmp(&expected_fp, &msg->fp) != 0) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                        "fingerprint mismatch", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
-        return;
-    }
-
-    sess->client_pk = msg->pk;
-    sess->client_fp = msg->fp;
-
-    /* Generate challenge nonce */
-    nodus_random(sess->nonce, NODUS_NONCE_LEN);
-    sess->nonce_pending = true;
-
-    size_t len = 0;
-    nodus_t2_challenge(msg->txn_id, sess->nonce, buf, sizeof(buf), &len);
-    nodus_tcp_send(sess->conn, buf, len);
-}
-
-static void handle_ch_auth(nodus_server_t *srv, nodus_ch_session_t *sess,
-                              nodus_tier2_msg_t *msg) {
-    uint8_t buf[8192];
-
-    if (!sess->nonce_pending) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "no pending challenge", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
-        return;
-    }
-
-    /* Verify signature over nonce */
-    if (nodus_verify(&msg->sig, sess->nonce, NODUS_NONCE_LEN,
-                      &sess->client_pk) != 0) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                        "invalid signature", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
-        return;
-    }
-
-    sess->authenticated = true;
-    sess->nonce_pending = false;
-    nodus_random(sess->token, NODUS_SESSION_TOKEN_LEN);
-
-    /* Register in presence table */
-    nodus_presence_add_local(srv, &sess->client_fp);
-
-    {
-        char fp_hex[33];
-        for (int k = 0; k < 16; k++)
-            sprintf(fp_hex + k*2, "%02x", sess->client_fp.bytes[k]);
-        fp_hex[32] = '\0';
-        fprintf(stderr, "AUTH_OK(4003): client %s... authenticated (presence added)\n", fp_hex);
-    }
-
-    size_t len = 0;
-    nodus_t2_auth_ok(msg->txn_id, sess->token, buf, sizeof(buf), &len);
-    nodus_tcp_send(sess->conn, buf, len);
-}
-
-/* ── Channel port (4003) message handlers ───────────────────── */
-
-/**
- * Ensure channel table exists on this node.  If the table is missing but this
- * node is in the hashring responsible set, auto-create it (lazy replication).
- * Returns true if channel is ready, false if not found / not responsible.
- */
-static bool ch_ensure_channel(nodus_server_t *srv, const uint8_t uuid[NODUS_UUID_BYTES]) {
-    if (nodus_channel_exists(&srv->ch_store, uuid))
-        return true;
-
-    /* Table missing — check if we're supposed to be responsible */
-    nodus_responsible_set_t rset;
-    if (nodus_hashring_responsible(&srv->ring, uuid, &rset) != 0)
-        return false;
-
-    bool responsible = false;
-    for (int i = 0; i < rset.count; i++) {
-        if (memcmp(rset.nodes[i].node_id.bytes, srv->identity.node_id.bytes, NODUS_KEY_BYTES) == 0) {
-            responsible = true;
-            break;
-        }
-    }
-    if (!responsible)
-        return false;
-
-    /* We're responsible — create the table and track it */
-    if (nodus_channel_create(&srv->ch_store, uuid) != 0)
-        return false;
-
-    nodus_ring_mgmt_track(&srv->ring_mgmt, uuid);
-    fprintf(stderr, "RING_MGMT: auto-created channel table (lazy replication)\n");
-    return true;
-}
-
-static void handle_ch_t2_ch_create(nodus_server_t *srv, nodus_ch_session_t *sess,
-                                     nodus_tier2_msg_t *msg) {
-    int rc = nodus_channel_create(&srv->ch_store, msg->channel_uuid);
-    if (rc != 0) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "channel create failed", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    /* Track channel and announce to DHT */
-    nodus_ring_mgmt_track(&srv->ring_mgmt, msg->channel_uuid);
-    nodus_ring_announce_to_dht(&srv->ring_mgmt, msg->channel_uuid, 1);
-
-    size_t len = 0;
-    nodus_t2_ch_create_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
-}
-
-static void handle_ch_t2_ch_post(nodus_server_t *srv, nodus_ch_session_t *sess,
-                                    nodus_tier2_msg_t *msg) {
-    /* Rate limit */
-    uint64_t now = nodus_time_now();
-    if (now - sess->rate_window_start >= 60) {
-        sess->posts_this_minute = 0;
-        sess->rate_window_start = now;
-    }
-    if (sess->posts_this_minute >= NODUS_RATE_PUTS_PER_MIN) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_RATE_LIMITED,
-                        "too many posts", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-    sess->posts_this_minute++;
-
-    /* Verify channel exists (auto-create if we're responsible) */
-    if (!ch_ensure_channel(srv, msg->channel_uuid)) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_CHANNEL_NOT_FOUND,
-                        "channel not found", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    if (msg->data_len > NODUS_MAX_POST_BODY) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_TOO_LARGE,
-                        "post body too large", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    /* Build post */
-    nodus_channel_post_t post;
-    memset(&post, 0, sizeof(post));
-    memcpy(post.channel_uuid, msg->channel_uuid, NODUS_UUID_BYTES);
-    memcpy(post.post_uuid, msg->post_uuid_ch, NODUS_UUID_BYTES);
-    post.author_fp = sess->client_fp;
-    post.timestamp = msg->ch_timestamp;
-    post.body = (char *)msg->data;
-    post.body_len = msg->data_len;
-    memcpy(post.signature.bytes, msg->sig.bytes, NODUS_SIG_BYTES);
-
-    /* Verify post signature (SECURITY: CRIT-01) */
-    if (verify_channel_post_sig(&post, &sess->client_pk) != 0) {
-        post.body = NULL;
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                        "invalid post signature", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        fprintf(stderr, "NODUS_SRV: ch_post rejected (4003) — invalid signature\n");
-        return;
-    }
-
-    int rc = nodus_channel_post(&srv->ch_store, &post);
-    if (rc < 0) {
-        post.body = NULL;
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "post failed", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    size_t len = 0;
-    nodus_t2_ch_post_ok(msg->txn_id, post.received_at,
-                          resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
-
-    if (rc == 0) {
-        notify_ch_subscribers_4003(srv, msg->channel_uuid, &post);
-        nodus_replication_send(&srv->replication, msg->channel_uuid, &post,
-                                &sess->client_pk);
-    }
-
-    post.body = NULL;
-}
-
-static void handle_ch_t2_ch_get_posts(nodus_server_t *srv, nodus_ch_session_t *sess,
-                                        nodus_tier2_msg_t *msg) {
-    if (!ch_ensure_channel(srv, msg->channel_uuid)) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_CHANNEL_NOT_FOUND,
-                        "channel not found", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    nodus_channel_post_t *posts = NULL;
-    size_t count = 0;
-    uint64_t since = msg->ch_received_at;
-    int max = msg->ch_max_count > 0 ? msg->ch_max_count : 100;
-
-    int rc = nodus_channel_get_posts(&srv->ch_store, msg->channel_uuid,
-                                       since, max, &posts, &count);
-    if (rc != 0) {
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "get posts failed", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    size_t len = 0;
-    nodus_t2_ch_posts(msg->txn_id, posts, count,
-                       resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
-    nodus_channel_posts_free(posts, count);
-}
-
-static void handle_ch_t2_ch_subscribe(nodus_server_t *srv, nodus_ch_session_t *sess,
-                                        nodus_tier2_msg_t *msg) {
-    if (!ch_ensure_channel(srv, msg->channel_uuid)) {
-        fprintf(stderr, "CH_SUB: REJECTED (channel not found on this node)\n");
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_CHANNEL_NOT_FOUND,
-                        "channel not found", resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    if (ch_session_add_sub_4003(sess, msg->channel_uuid) != 0) {
-        fprintf(stderr, "CH_SUB: REJECTED (too many subs) client %.16s\n",
-                sess->client_fp.bytes);
-        size_t len = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_RATE_LIMITED,
-                        "too many channel subscriptions",
-                        resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
-        return;
-    }
-
-    fprintf(stderr, "CH_SUB: OK client %.16s... (subs=%d)\n",
-            sess->client_fp.bytes, sess->ch_sub_count);
-
-    size_t len = 0;
-    nodus_t2_ch_sub_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
-    nodus_tcp_send(sess->conn, resp_buf, len);
-}
-
-static void handle_ch_t2_ch_unsubscribe(nodus_server_t *srv, nodus_ch_session_t *sess,
-                                          nodus_tier2_msg_t *msg) {
-    (void)srv;
-    ch_session_remove_sub_4003(sess, msg->channel_uuid);
-
-    uint8_t unsub_buf[256];
-    size_t len = 0;
-    nodus_t2_ch_sub_ok(msg->txn_id, unsub_buf, sizeof(unsub_buf), &len);
-    nodus_tcp_send(sess->conn, unsub_buf, len);
-}
-
-/* ── TCP 4003 channel callbacks ─────────────────────────────── */
-
-static void on_ch_accept(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
-    if (conn->slot >= 0 && conn->slot < NODUS_MAX_CH_SESSIONS) {
-        memset(&srv->ch_sessions[conn->slot], 0, sizeof(nodus_ch_session_t));
-        srv->ch_sessions[conn->slot].conn = conn;
-    }
-}
-
-static void on_ch_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
-    if (conn->slot >= 0 && conn->slot < NODUS_MAX_CH_SESSIONS) {
-        nodus_ch_session_t *sess = &srv->ch_sessions[conn->slot];
-        /* Unregister from presence if authenticated */
-        if (sess->authenticated)
-            nodus_presence_remove_local(srv, &sess->client_fp);
-        memset(sess, 0, sizeof(nodus_ch_session_t));
-    }
-}
-
-static void on_ch_frame(nodus_tcp_conn_t *conn,
-                          const uint8_t *payload, size_t len, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
-    nodus_ch_session_t *sess = ch_session_find_4003(srv, conn);
-    if (!sess) return;
-
-    nodus_tier2_msg_t msg;
-    memset(&msg, 0, sizeof(msg));
-    if (nodus_t2_decode(payload, len, &msg) != 0) {
-        nodus_t2_msg_free(&msg);
-        return;
-    }
-
-    /* Auth flow */
-    if (strcmp(msg.method, "hello") == 0) {
-        handle_ch_hello(srv, sess, &msg);
-        nodus_t2_msg_free(&msg);
-        return;
-    }
-    if (strcmp(msg.method, "auth") == 0) {
-        handle_ch_auth(srv, sess, &msg);
-        nodus_t2_msg_free(&msg);
-        return;
-    }
-
-    /* All other ops require auth */
-    if (!sess->authenticated) {
-        size_t rlen = 0;
-        nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
-                        "not authenticated", resp_buf, sizeof(resp_buf), &rlen);
-        nodus_tcp_send(sess->conn, resp_buf, rlen);
-        nodus_t2_msg_free(&msg);
-        return;
-    }
-
-    /* Channel-only dispatch */
-    if (strcmp(msg.method, "ch_create") == 0)
-        handle_ch_t2_ch_create(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_post") == 0)
-        handle_ch_t2_ch_post(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_get") == 0)
-        handle_ch_t2_ch_get_posts(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_sub") == 0)
-        handle_ch_t2_ch_subscribe(srv, sess, &msg);
-    else if (strcmp(msg.method, "ch_unsub") == 0)
-        handle_ch_t2_ch_unsubscribe(srv, sess, &msg);
-    else {
-        size_t rlen = 0;
-        nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "unknown channel method", resp_buf, sizeof(resp_buf), &rlen);
-        nodus_tcp_send(sess->conn, resp_buf, rlen);
-    }
-
-    nodus_t2_msg_free(&msg);
+/** Callback: PRIMARY stored a post, replicate to BACKUPs */
+static void ch_on_post_callback(nodus_channel_server_t *cs,
+                                  const uint8_t channel_uuid[NODUS_UUID_BYTES],
+                                  const nodus_channel_post_t *post,
+                                  const nodus_pubkey_t *author_pk) {
+    nodus_server_t *srv = (nodus_server_t *)cs->cb_ctx;
+    nodus_ch_replication_send(&srv->ch_replication, channel_uuid, post, author_pk);
 }
 
 /* ── Public API ──────────────────────────────────────────────────── */
@@ -2356,9 +1738,6 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     /* Init routing table */
     nodus_routing_init(&srv->routing, &srv->identity.node_id);
 
-    /* Init replication */
-    nodus_replication_init(&srv->replication, srv);
-
     /* Init hash ring (populated by Kademlia routing, NOT PBFT) */
     nodus_hashring_init(&srv->ring);
 
@@ -2370,9 +1749,6 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
 
     /* Init PBFT consensus (witness/DNAC only, does NOT touch hashring) */
     nodus_pbft_init(&srv->pbft, srv);
-
-    /* Init ring management (channel responsibility tracking) */
-    nodus_ring_mgmt_init(&srv->ring_mgmt, srv);
 
     /* Init TCP transport (own epoll) */
     if (nodus_tcp_init(&srv->tcp, -1) != 0)
@@ -2417,25 +1793,37 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         return -1;
     }
 
-    /* Init channel TCP transport (TCP 4003 — own epoll) */
+    /* Init new channel server (TCP 4003) */
+    if (nodus_channel_server_init(&srv->ch_server) != 0)
+        return -1;
+
+    srv->ch_server.ch_store = &srv->ch_store;
+    srv->ch_server.ring = &srv->ring;
+    srv->ch_server.identity = &srv->identity;
+    const char *ch_self_ip = config->external_ip[0] ? config->external_ip : config->bind_ip;
+    snprintf(srv->ch_server.self_ip, sizeof(srv->ch_server.self_ip), "%s", ch_self_ip);
+
     uint16_t ch_port = config->ch_port ? config->ch_port : NODUS_DEFAULT_CH_PORT;
     if (ch_port == config->tcp_port || ch_port == peer_port) {
         fprintf(stderr, "ERROR: ch_port (%d) must differ from tcp_port (%d) and peer_port (%d)\n",
                 ch_port, config->tcp_port, peer_port);
         return -1;
     }
-    if (nodus_tcp_init(&srv->ch_tcp, -1) != 0)
-        return -1;
-    srv->ch_tcp.on_accept     = on_ch_accept;
-    srv->ch_tcp.on_frame      = on_ch_frame;
-    srv->ch_tcp.on_disconnect = on_ch_disconnect;
-    srv->ch_tcp.cb_ctx        = srv;
-
-    if (nodus_tcp_listen(&srv->ch_tcp, config->bind_ip, ch_port) != 0) {
+    if (nodus_channel_server_listen(&srv->ch_server, config->bind_ip, ch_port) != 0) {
         fprintf(stderr, "Failed to listen on channel TCP %s:%d\n",
                 config->bind_ip, ch_port);
         return -1;
     }
+
+    /* Init channel replication */
+    nodus_ch_replication_init(&srv->ch_replication, &srv->ch_server);
+
+    /* Init channel ring management */
+    nodus_ch_ring_init(&srv->ch_ring, &srv->ch_server);
+
+    /* Wire replication callback: PRIMARY -> after post stored, trigger replicate to BACKUPs */
+    srv->ch_server.on_post = ch_on_post_callback;
+    srv->ch_server.cb_ctx = srv;
 
     /* Bind UDP */
     if (nodus_udp_bind(&srv->udp, config->bind_ip, config->udp_port) != 0) {
@@ -2484,7 +1872,7 @@ int nodus_server_run(nodus_server_t *srv) {
     fprintf(stderr, "  Identity: %s\n", srv->identity.fingerprint);
     fprintf(stderr, "  TCP port: %d\n", srv->tcp.port);
     fprintf(stderr, "  Peer port: %d\n", srv->inter_tcp.port);
-    fprintf(stderr, "  Channel port: %d\n", srv->ch_tcp.port);
+    fprintf(stderr, "  Channel port: %d\n", srv->ch_server.port);
     fprintf(stderr, "  UDP port: %d\n", srv->udp.port);
 
     while (srv->running) {
@@ -2494,8 +1882,8 @@ int nodus_server_run(nodus_server_t *srv) {
         /* Poll inter-node TCP events */
         nodus_tcp_poll(&srv->inter_tcp, 50);
 
-        /* Poll channel TCP events (4003) */
-        nodus_tcp_poll(&srv->ch_tcp, 50);
+        /* Poll new channel server (TCP 4003) */
+        nodus_channel_server_poll(&srv->ch_server, 50);
 
         /* Process any pending UDP datagrams */
         nodus_udp_poll(&srv->udp);
@@ -2510,14 +1898,20 @@ int nodus_server_run(nodus_server_t *srv) {
         if (srv->witness)
             nodus_witness_tick(srv->witness);
 
-        /* Retry hinted handoff (runs at most every NODUS_HINTED_RETRY_SEC) */
-        nodus_replication_retry(&srv->replication);
+        /* Channel server tick: heartbeat send/check */
+        {
+            uint64_t now_ms = nodus_time_now_ms();
+            nodus_channel_server_tick(&srv->ch_server, now_ms);
+
+            /* Channel replication: retry hinted handoff (every 30s) */
+            nodus_ch_replication_retry(&srv->ch_replication, now_ms);
+
+            /* Channel ring management: check heartbeat timeouts (every 5s) */
+            nodus_ch_ring_tick(&srv->ch_ring, now_ms);
+        }
 
         /* Presence: expire stale entries + broadcast local list to peers */
         nodus_presence_tick(srv);
-
-        /* Ring management: check for dead peers, initiate ring_check (every 5s) */
-        nodus_ring_mgmt_tick(&srv->ring_mgmt);
 
         /* Retry DHT hinted handoff (failed replication, every 30s) */
         dht_hinted_retry(srv);
@@ -2571,7 +1965,7 @@ void nodus_server_close(nodus_server_t *srv) {
         srv->witness = NULL;
     }
 
-    nodus_tcp_close(&srv->ch_tcp);
+    nodus_channel_server_close(&srv->ch_server);
     nodus_tcp_close(&srv->tcp);
     nodus_tcp_close(&srv->inter_tcp);
     nodus_udp_close(&srv->udp);

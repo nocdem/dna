@@ -96,8 +96,10 @@ if(NOT WIN32)
         src/transport/nodus_udp.c
         src/channel/nodus_hashring.c
         src/channel/nodus_channel_store.c
-        src/channel/nodus_replication.c
-        src/channel/nodus_ring_mgmt.c
+        src/channel/nodus_channel_server.c
+        src/channel/nodus_channel_primary.c
+        src/channel/nodus_channel_replication.c
+        src/channel/nodus_channel_ring.c
         src/consensus/nodus_pbft.c
         src/server/nodus_server.c
         src/server/nodus_auth.c
@@ -278,6 +280,26 @@ add_test(NAME test_channel_protocol COMMAND test_channel_protocol)
 add_executable(test_storage_cleanup tests/test_storage_cleanup.c)
 target_link_libraries(test_storage_cleanup nodus dsa nodus)
 add_test(NAME test_storage_cleanup COMMAND test_storage_cleanup)
+
+# Channel server session management test
+add_executable(test_channel_server tests/test_channel_server.c)
+target_link_libraries(test_channel_server nodus dsa nodus)
+add_test(NAME test_channel_server COMMAND test_channel_server)
+
+# Channel primary role test
+add_executable(test_channel_primary tests/test_channel_primary.c)
+target_link_libraries(test_channel_primary nodus dsa nodus)
+add_test(NAME test_channel_primary COMMAND test_channel_primary)
+
+# Channel replication test
+add_executable(test_channel_replication tests/test_channel_replication.c)
+target_link_libraries(test_channel_replication nodus dsa nodus)
+add_test(NAME test_channel_replication COMMAND test_channel_replication)
+
+# Channel ring management test
+add_executable(test_channel_ring tests/test_channel_ring.c)
+target_link_libraries(test_channel_ring nodus dsa nodus)
+add_test(NAME test_channel_ring COMMAND test_channel_ring)
 
 # ── Tools ────────────────────────────────────────────────────────────
 add_executable(nodus-cli tools/nodus-cli.c)

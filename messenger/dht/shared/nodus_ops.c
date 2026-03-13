@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <inttypes.h>
 
 /* ── Listener tracking ─────────────────────────────────────────── */
 
@@ -608,12 +609,15 @@ typedef struct {
     uint8_t           channel_uuid[NODUS_UUID_BYTES];
     nodus_ch_conn_t  *conn;
     bool              active;
+    uint64_t          last_received_at;  /* For catch-up on reconnect */
 } nodus_ops_ch_entry_t;
 
 static nodus_ops_ch_entry_t g_ch_pool[NODUS_OPS_CH_MAX_CONNS];
 static nodus_ops_ch_post_cb_t g_ch_post_cb = NULL;
 static void *g_ch_post_cb_data = NULL;
 static bool g_ch_pool_initialized = false;
+
+
 
 #ifdef _WIN32
   static CRITICAL_SECTION g_ch_pool_cs;
@@ -629,14 +633,6 @@ static bool g_ch_pool_initialized = false;
   static void ch_pool_unlock(void) { pthread_mutex_unlock(&g_ch_pool_mutex); }
 #endif
 
-/** Route push post notifications from individual connections to global callback */
-static void ch_pool_on_post(const uint8_t channel_uuid[NODUS_UUID_BYTES],
-                              const nodus_channel_post_t *post, void *user_data) {
-    (void)user_data;
-    if (g_ch_post_cb)
-        g_ch_post_cb(channel_uuid, post, g_ch_post_cb_data);
-}
-
 /** Find pool entry for a channel (caller must hold lock). Returns index or -1. */
 static int ch_pool_find_locked(const uint8_t channel_uuid[NODUS_UUID_BYTES]) {
     for (int i = 0; i < NODUS_OPS_CH_MAX_CONNS; i++) {
@@ -645,6 +641,40 @@ static int ch_pool_find_locked(const uint8_t channel_uuid[NODUS_UUID_BYTES]) {
             return i;
     }
     return -1;
+}
+
+/** Route push post notifications from individual connections to global callback */
+static void ch_pool_on_post(const uint8_t channel_uuid[NODUS_UUID_BYTES],
+                              const nodus_channel_post_t *post, void *user_data) {
+    (void)user_data;
+
+    /* Track received_at for catch-up on reconnect */
+    ch_pool_lock();
+    int idx = ch_pool_find_locked(channel_uuid);
+    if (idx >= 0 && post->received_at > g_ch_pool[idx].last_received_at)
+        g_ch_pool[idx].last_received_at = post->received_at;
+    ch_pool_unlock();
+
+    if (g_ch_post_cb)
+        g_ch_post_cb(channel_uuid, post, g_ch_post_cb_data);
+}
+
+/** Handle ch_ring_changed push from server. Disconnect — next op will reconnect to new PRIMARY. */
+static void ch_pool_on_ring_changed(const uint8_t channel_uuid[NODUS_UUID_BYTES],
+                                      uint32_t new_version, void *user_data) {
+    (void)user_data;
+    (void)new_version;
+    ch_pool_lock();
+    int idx = ch_pool_find_locked(channel_uuid);
+    if (idx >= 0 && g_ch_pool[idx].active && g_ch_pool[idx].conn) {
+        QGP_LOG_INFO(LOG_TAG_CH, "Ring changed for channel — disconnecting (new version %u)", new_version);
+        nodus_channel_close(g_ch_pool[idx].conn);
+        free(g_ch_pool[idx].conn);
+        g_ch_pool[idx].conn = NULL;
+        g_ch_pool[idx].active = false;
+        /* Keep last_received_at — will be used for catch-up on reconnect */
+    }
+    ch_pool_unlock();
 }
 
 /** Find empty slot (caller must hold lock). Returns index or -1. */
@@ -803,6 +833,10 @@ static nodus_ch_conn_t *ch_pool_connect(const uint8_t channel_uuid[NODUS_UUID_BY
             continue;
         }
 
+        /* Wire ring-changed callback so we auto-disconnect on ring change */
+        conn->on_ring_changed = ch_pool_on_ring_changed;
+        conn->ring_changed_data = NULL;
+
         rc = nodus_channel_connect(conn);
         if (rc != 0) {
             nodus_channel_close(conn);
@@ -838,8 +872,11 @@ static nodus_ch_conn_t *ch_pool_get_or_connect(const uint8_t channel_uuid[NODUS_
         return conn;
     }
 
-    /* If entry exists but connection is dead, clean it up */
+    /* If entry exists but connection is dead, clean it up.
+     * Preserve last_received_at for catch-up after reconnect. */
+    uint64_t last_received_at = 0;
     if (idx >= 0) {
+        last_received_at = g_ch_pool[idx].last_received_at;
         if (g_ch_pool[idx].conn) {
             nodus_channel_close(g_ch_pool[idx].conn);
             free(g_ch_pool[idx].conn);
@@ -866,7 +903,24 @@ static nodus_ch_conn_t *ch_pool_get_or_connect(const uint8_t channel_uuid[NODUS_
     memcpy(g_ch_pool[slot].channel_uuid, channel_uuid, NODUS_UUID_BYTES);
     g_ch_pool[slot].conn = conn;
     g_ch_pool[slot].active = true;
+    g_ch_pool[slot].last_received_at = last_received_at;
     ch_pool_unlock();
+
+    /* Catch-up: if this is a reconnect, get missed posts */
+    if (last_received_at > 0) {
+        QGP_LOG_INFO(LOG_TAG_CH, "Reconnect catch-up: getting posts since %" PRIu64, last_received_at);
+        nodus_channel_post_t *posts = NULL;
+        size_t count = 0;
+        int rc = nodus_ch_conn_get_posts(conn, channel_uuid, last_received_at, 100, &posts, &count);
+        if (rc == 0 && count > 0) {
+            QGP_LOG_INFO(LOG_TAG_CH, "Catch-up: got %zu missed posts", count);
+            for (size_t i = 0; i < count; i++) {
+                if (g_ch_post_cb)
+                    g_ch_post_cb(channel_uuid, &posts[i], g_ch_post_cb_data);
+            }
+            nodus_client_free_posts(posts, count);
+        }
+    }
 
     return conn;
 }
@@ -938,6 +992,9 @@ int nodus_ops_ch_create(const uint8_t channel_uuid[16]) {
     int rc = nodus_channel_init(conn, ip, NODUS_DEFAULT_CH_PORT,
                                   id, ch_pool_on_post, NULL);
     if (rc != 0) { free(conn); return -1; }
+
+    conn->on_ring_changed = ch_pool_on_ring_changed;
+    conn->ring_changed_data = NULL;
 
     rc = nodus_channel_connect(conn);
     if (rc != 0) {

@@ -60,6 +60,10 @@ typedef void (*nodus_on_ch_post_fn)(const uint8_t channel_uuid[NODUS_UUID_BYTES]
                                      const nodus_channel_post_t *post,
                                      void *user_data);
 
+/** Called when server sends ch_ring_changed (client should disconnect + reconnect) */
+typedef void (*nodus_on_ch_ring_changed_fn)(const uint8_t channel_uuid[NODUS_UUID_BYTES],
+                                              uint32_t new_version, void *user_data);
+
 /** Called when connection state changes. */
 typedef void (*nodus_on_state_change_fn)(nodus_client_state_t old_state,
                                           nodus_client_state_t new_state,
@@ -356,6 +360,10 @@ typedef struct {
     /* Callback for push post notifications */
     nodus_on_ch_post_fn     on_ch_post;
     void                   *cb_data;
+
+    /* Callback for ring change notifications */
+    nodus_on_ch_ring_changed_fn on_ring_changed;
+    void                       *ring_changed_data;
 
     /* Concurrent request handling */
     nodus_ch_pending_t      pending[NODUS_CH_MAX_PENDING];

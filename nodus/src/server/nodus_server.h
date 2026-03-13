@@ -17,12 +17,13 @@
 #include "core/nodus_storage.h"
 #include "channel/nodus_hashring.h"
 #include "channel/nodus_channel_store.h"
-#include "channel/nodus_replication.h"
+#include "channel/nodus_channel_server.h"
+#include "channel/nodus_channel_replication.h"
+#include "channel/nodus_channel_ring.h"
 #include "consensus/nodus_pbft.h"
 #include "crypto/nodus_identity.h"
 #include "witness/nodus_witness.h"
 #include "server/nodus_presence.h"
-#include "channel/nodus_ring_mgmt.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,7 +31,6 @@ extern "C" {
 
 #define NODUS_MAX_SESSIONS     NODUS_TCP_MAX_CONNS
 #define NODUS_MAX_LISTEN_KEYS  128    /* Per session */
-#define NODUS_MAX_CH_SUBS      32     /* Per session channel subscriptions */
 #define NODUS_MAX_SEED_NODES   16
 
 /* ── Configuration ───────────────────────────────────────────────── */
@@ -71,28 +71,6 @@ typedef struct {
 } nodus_inter_session_t;
 
 #define NODUS_MAX_INTER_SESSIONS  NODUS_TCP_MAX_CONNS
-
-/* ── Channel session (TCP 4003 connections) ──────────────────── */
-
-typedef struct {
-    nodus_tcp_conn_t   *conn;
-    nodus_key_t         client_fp;
-    nodus_pubkey_t      client_pk;
-    uint8_t             token[NODUS_SESSION_TOKEN_LEN];
-    bool                authenticated;
-
-    /* Pending auth challenge */
-    uint8_t             nonce[NODUS_NONCE_LEN];
-    bool                nonce_pending;
-
-    /* Channel subscriptions */
-    uint8_t             ch_subs[NODUS_MAX_CH_SUBS][NODUS_UUID_BYTES];
-    int                 ch_sub_count;
-
-    /* Rate limiting */
-    uint32_t            posts_this_minute;
-    uint64_t            rate_window_start;
-} nodus_ch_session_t;
 
 /* ── Client session ──────────────────────────────────────────────── */
 
@@ -231,8 +209,7 @@ typedef struct nodus_server {
     nodus_routing_t         routing;
     nodus_hashring_t        ring;
 
-    /* Replication + consensus */
-    nodus_replication_t     replication;
+    /* Consensus */
     nodus_pbft_t            pbft;
 
     /* Witness module (NULL when disabled) */
@@ -241,16 +218,14 @@ typedef struct nodus_server {
     /* Presence tracking (connected clients, cluster-wide) */
     nodus_presence_table_t  presence;
 
-    /* Ring management (channel responsibility tracking) */
-    nodus_ring_mgmt_t       ring_mgmt;
+    /* New channel system (TCP 4003) */
+    nodus_channel_server_t      ch_server;
+    nodus_ch_replication_t      ch_replication;
+    nodus_ch_ring_t             ch_ring;
 
     /* Sessions (indexed by conn->slot) */
     nodus_session_t         sessions[NODUS_MAX_SESSIONS];
     nodus_inter_session_t   inter_sessions[NODUS_MAX_INTER_SESSIONS];
-
-    /* Channel transport (TCP 4003) */
-    nodus_tcp_t             ch_tcp;
-    nodus_ch_session_t      ch_sessions[NODUS_MAX_CH_SESSIONS];
 
     /* FIND_VALUE async state machine */
     dht_fv_state_t          fv_state;
