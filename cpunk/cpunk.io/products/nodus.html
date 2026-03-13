@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Nodus Network – Decentralized Routing & Discovery | CPUNK.IO</title>
+  <title>DNA Nodus – Decentralized Routing, Discovery & Storage | CPUNK.IO</title>
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description"
-    content="The Nodus Network is CPUNK's decentralized routing and discovery layer. Peer discovery, offline delivery, and identity resolution — without central servers."
+    content="The Nodus Network is the decentralized networking layer of the DNA protocol. Peer discovery, message routing, identity resolution, and distributed storage — without central servers."
   />
   <meta name="keywords"
-    content="CPUNK, Nodus, Nodus Network, DHT, decentralized routing, peer discovery, offline delivery, DNA-Messenger, post-quantum, decentralized networking"
+    content="CPUNK, Nodus, Nodus Network, DHT, decentralized routing, peer discovery, offline delivery, DNA Connect, post-quantum, decentralized networking"
   />
   <meta name="author" content="DNA Protocol" />
   <meta name="robots" content="index, follow" />
@@ -18,15 +18,15 @@
   <!-- Open Graph / Social -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://cpunk.io/products/nodus.html">
-  <meta property="og:title" content="Nodus Network — Decentralized DHT Routing & Discovery | CPUNK">
-  <meta property="og:description" content="Nodus is a pure-C Kademlia DHT with 512-bit keyspace and PBFT consensus. Peer discovery, offline message delivery, and identity resolution — no central servers.">
+  <meta property="og:title" content="DNA Nodus — Decentralized Routing, Discovery & Storage | CPUNK">
+  <meta property="og:description" content="DNA Nodus is the decentralized networking layer of the DNA protocol. Peer discovery, message routing, identity resolution, and distributed storage — without central servers.">
   <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="https://cpunk.io/products/nodus.html">
-  <meta name="twitter:title" content="Nodus Network — Decentralized DHT Routing & Discovery">
-  <meta name="twitter:description" content="Pure-C Kademlia DHT with 512-bit keyspace and PBFT consensus. Peer discovery, offline delivery, identity resolution — no central servers.">
+  <meta name="twitter:title" content="DNA Nodus — Decentralized Routing, Discovery & Storage">
+  <meta name="twitter:description" content="DNA Nodus is the decentralized networking layer of the DNA protocol. Peer discovery, message routing, identity resolution, and distributed storage — without central servers.">
   <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
   <meta name="twitter:site" content="@OfficialCpunk">
 
@@ -875,7 +875,7 @@
                 <div class="dropdown">
                   <a href="/products/dna-identity.html">DNA Identity</a>
                   <a href="/products/dna-connect.html">DNA Connect</a>
-                  <a href="/products/nodus.html" class="active">Nodus</a>
+                  <a href="/products/nodus.html" class="active">DNA Nodus</a>
                   <a href="/products/dna-library.html">DNA Library</a>
                 </div>
               </div>
@@ -918,22 +918,29 @@
               <div class="eyebrow">
                 <span class="eyebrow-dot"></span>
                 <span class="eyebrow-label">Infrastructure</span>
-                <span>Decentralized routing &amp; discovery</span>
+                <span>Decentralized routing, discovery &amp; storage</span>
               </div>
 
               <h1 style="color:#ffffff;">
-                Nodus Network<br>
-                The Backbone of CPUNK
+                DNA Nodus
               </h1>
 
               <p class="subtitle">
-                The Nodus Network is CPUNK's <strong>decentralized routing and discovery layer</strong>. It connects peers, delivers offline messages, and resolves DNA identities &mdash; all without central servers.
+                The Nodus Network is the <strong>decentralized networking layer</strong> of the DNA protocol.
+                It provides peer discovery, routing, identity resolution, and distributed storage without relying on centralized servers.
+              </p>
+              <p class="subtitle">
+                Nodus is built as a post-quantum secure distributed hash table (DHT) network where nodes cooperate to locate peers, route encrypted messages, and store temporary data across the network. All operations are cryptographically signed (ML-DSA-87), with built-in support for key encapsulation (ML-KEM-1024) and AES-256-GCM encryption.
+              </p>
+              <p class="subtitle">
+                Instead of relying on a central infrastructure, the Nodus network forms a self-organizing mesh of nodes that collectively maintain the routing and discovery layer used by DNA services such as DNA Connect and DNA Identity.
               </p>
 
               <div class="hero-actions">
-                <a href="#what" class="btn btn-primary">What Nodus does</a>
-                <a href="#messaging" class="btn btn-ghost">Message delivery</a>
-                <a href="#run" class="btn btn-ghost">Run a node</a>
+                <a href="#architecture" class="btn btn-primary">Two-Tier Architecture</a>
+                <a href="#dht" class="btn btn-ghost">DHT</a>
+                <a href="#identity" class="btn btn-ghost">Identity Resolution</a>
+                <a href="#offline" class="btn btn-ghost">Offline Messaging</a>
               </div>
 
               <div class="hero-meta">
@@ -942,81 +949,131 @@
                   No central servers. No single point of failure.
                 </span>
                 <span>
-                  Community-operated &middot; <strong style="color:var(--text-main);font-weight:500;">Post-quantum ready</strong>
+                  Community-operated &middot; <strong style="color:var(--text-main);font-weight:500;">Post-quantum secure</strong>
                 </span>
               </div>
             </div>
 
             <aside class="hero-split-media" aria-label="Nodus Network architecture">
-              <a href="../images/kademlia.png" target="_blank" rel="noopener">
-                <img
-                  src="../images/kademlia_small.png"
-                  alt="Nodus Network DHT Architecture Diagram"
-                />
-              </a>
-              <div class="image-caption">
-                Nodus DHT &mdash; post-quantum decentralized discovery / XOR distance
-              </div>
+              <img
+                src="../images/distributed-network-nodes.png"
+                alt="Nodus distributed network with post-quantum security"
+              />
             </aside>
           </div>
         </div>
       </section>
 
-      <!-- ══ What Nodus Does ══ -->
-      <section id="what" class="s-section s-dark">
+      <!-- ══ Two-Tier Architecture ══ -->
+      <section id="architecture" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">The Network</div>
-            <h2 class="section-title">What Nodus nodes do</h2>
+            <div class="section-label">Architecture</div>
+            <h2 class="section-title">Two-Tier Architecture</h2>
             <p class="section-desc" style="max-width: 38rem;">
-              Every Nodus node contributes to a distributed hash table that keeps the CPUNK ecosystem reachable, resilient, and private.
+              The Nodus network operates using a two-tier architecture designed to separate core network operations from client access.
             </p>
           </div>
 
-          <div class="token-grid stagger">
+          <div class="token-grid stagger" style="grid-template-columns: repeat(2, 1fr);">
             <article class="token-card reveal">
-              <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="4" r="2"/><circle cx="4" cy="13" r="2"/><circle cx="20" cy="13" r="2"/><circle cx="7" cy="21" r="2"/><circle cx="17" cy="21" r="2"/><line x1="12" y1="6" x2="4" y2="11"/><line x1="12" y1="6" x2="20" y2="11"/><line x1="4" y1="15" x2="7" y2="19"/><line x1="20" y1="15" x2="17" y2="19"/><line x1="7" y1="21" x2="17" y2="21"/></svg></span>
-              <h3>Peer Discovery</h3>
-              <p>Nodus nodes help peers find each other and establish direct connections. No central directory &mdash; the DHT is the directory.</p>
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><line x1="8" y1="12" x2="16" y2="12"/><circle cx="12" cy="5" r="3"/><circle cx="12" cy="19" r="3"/><line x1="12" y1="8" x2="12" y2="16"/></svg></span>
+              <h3>Tier 1 &mdash; Nodus to Nodus</h3>
+              <p>
+                The node backbone of the network. Nodus nodes communicate directly with each other using <strong style="color:var(--text-main)">TCP</strong> and <strong style="color:var(--text-main)">UDP</strong>.
+              </p>
+              <p style="margin-top: 0.6rem;">
+                This layer maintains the distributed hash table, performs peer discovery, and handles message routing across the global network. Tier 1 nodes form the core mesh infrastructure that keeps the network decentralized and resilient.
+              </p>
             </article>
 
             <article class="token-card reveal">
-              <span class="token-card-icon"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="7" height="10" rx="1.5"/><rect x="14" y="7" width="7" height="10" rx="1.5"/><path d="M10 12h4"/><path d="M12 10v4"/></svg></span>
-              <h3>Offline Delivery</h3>
-              <p>When a recipient is offline, encrypted messages are stored in distributed mailboxes replicated across the 8 closest Nodus nodes. 7-day TTL.</p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><path d="M2 12h2"/><path d="M20 12h2"/></svg></span>
-              <h3>Identity Resolution</h3>
-              <p>Resolves DNA names to public keys and routing hints. Look up any identity on the network without a central registrar.</p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 2L4 6v5c0 5.25 3.4 10.2 8 11.6 4.6-1.4 8-6.35 8-11.6V6L12 2z"/><path d="M9 12l2 2 4-4"/></svg></span>
-              <h3>Zero Knowledge</h3>
-              <p>Nodus nodes only store and forward encrypted blobs. They cannot read message contents, identities, or metadata. Privacy by architecture.</p>
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="6" rx="1.5"/><path d="M6 6h.01"/><path d="M12 9v3"/><path d="M8 15h8v5H8z"/><path d="M12 15v5"/></svg></span>
+              <h3>Tier 2 &mdash; Client to Nodus</h3>
+              <p>
+                The client access layer. Applications such as DNA Connect connect to Nodus nodes over <strong style="color:var(--text-main)">TCP</strong>.
+              </p>
+              <p style="margin-top: 0.6rem;">
+                Through this connection, clients can resolve DNA identities, send encrypted messages, retrieve offline messages, publish or fetch distributed data, and communicate with other peers through the network. Clients do not communicate directly with each other &mdash; they interact with the Nodus network through connected nodes.
+              </p>
             </article>
           </div>
         </div>
       </section>
 
-      <!-- ══ How Messaging Works ══ -->
-      <section id="messaging" class="s-section s-panel">
+      <!-- ══ Distributed Hash Table ══ -->
+      <section id="dht" class="s-section s-panel">
         <div class="wrap">
           <div class="dna-row">
             <div class="dna-text reveal-left">
-              <h3><span class="teal">Real-Time</span> &amp; Offline Delivery</h3>
+              <h3><span class="teal">Distributed</span> Hash Table</h3>
               <p>
-                DNA-Messenger uses the Nodus Network for all message routing. The delivery path depends on whether the recipient is currently online.
+                At its core, Nodus operates as a distributed hash table. The DHT allows nodes to locate information and peers without centralized coordination.
+              </p>
+              <p>
+                Each node is responsible for a portion of the keyspace and can store or route data associated with those keys. This mechanism allows the network to:
               </p>
               <ul>
-                <li><strong>Both online:</strong> Messages arrive instantly via direct TCP connection. Each client listens to their contacts' DHT keys.</li>
-                <li><strong>Recipient offline:</strong> The ciphertext is written into distributed mailboxes replicated across the 8 closest Nodus nodes.</li>
-                <li><strong>Recipient comes back:</strong> Their client queries the DHT, pulls pending messages, and decrypts locally.</li>
+                <li><strong>Locate identities</strong> across the network</li>
+                <li><strong>Route messages</strong> between peers</li>
+                <li><strong>Distribute temporary storage</strong> across nodes</li>
+                <li><strong>Maintain peer discovery</strong> without central directories</li>
               </ul>
               <p>
-                All messages are <strong style="color:var(--text-main)">E2E encrypted</strong> (Kyber1024 + AES-256-GCM) with only 20 bytes of header metadata. The sender can go offline after sending &mdash; Nodus handles the rest.
+                All operations are performed collectively by the network nodes.
+              </p>
+            </div>
+            <div class="dna-visual reveal-right">
+              <div class="dna-icon glow-teal">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="4" r="2"/><circle cx="4" cy="13" r="2"/><circle cx="20" cy="13" r="2"/><circle cx="7" cy="21" r="2"/><circle cx="17" cy="21" r="2"/><line x1="12" y1="6" x2="4" y2="11"/><line x1="12" y1="6" x2="20" y2="11"/><line x1="4" y1="15" x2="7" y2="19"/><line x1="20" y1="15" x2="17" y2="19"/><line x1="7" y1="21" x2="17" y2="21"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ Identity Resolution ══ -->
+      <section id="identity" class="s-section s-gradient">
+        <div class="wrap">
+          <div class="dna-row reverse">
+            <div class="dna-text reveal-right">
+              <h3><span class="teal">Identity</span> Resolution</h3>
+              <p>
+                DNA identities are resolved through the Nodus network.
+              </p>
+              <p>
+                When a client attempts to locate a DNA identity, the request is routed through the DHT until it reaches the nodes responsible for that identity's record.
+              </p>
+              <p>
+                This process allows identity lookups to occur without centralized registries or servers.
+              </p>
+            </div>
+            <div class="dna-visual reveal-left">
+              <div class="dna-icon glow-orange">
+                <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/><path d="M2 12h2"/><path d="M20 12h2"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ Offline Message Delivery ══ -->
+      <section id="offline" class="s-section s-panel">
+        <div class="wrap">
+          <div class="dna-row">
+            <div class="dna-text reveal-left">
+              <h3><span class="teal">Offline</span> Message Delivery</h3>
+              <p>
+                The Nodus network supports offline message delivery.
+              </p>
+              <p>
+                When a recipient is offline, encrypted messages can be temporarily stored within the network using distributed storage nodes.
+              </p>
+              <p>
+                When the recipient reconnects, their client retrieves the stored messages from the network.
+              </p>
+              <p>
+                This allows asynchronous communication while maintaining decentralization.
               </p>
             </div>
             <div class="dna-visual reveal-right">
@@ -1028,30 +1085,64 @@
         </div>
       </section>
 
-      <!-- ══ Run a Node ══ -->
-      <section id="run" class="s-section s-gradient">
+      <!-- ══ Decentralized by Design ══ -->
+      <section id="design" class="s-section s-gradient">
         <div class="wrap">
           <div class="dna-row reverse">
             <div class="dna-text reveal-right">
-              <h3>Run a <span class="teal">Nodus Node</span></h3>
+              <h3><span class="teal">Decentralized</span> by Design</h3>
               <p>
-                Nodus nodes are operated by <strong style="color:var(--text-main)">community members, validators, and infrastructure partners</strong> who want to strengthen the network. The node software is lightweight and designed for unattended operation.
+                Nodus removes the need for centralized messaging servers. Instead of relying on a single infrastructure provider, the network operates as a global peer-to-peer mesh where nodes collectively maintain routing, discovery, and temporary storage.
               </p>
+              <p>This design improves:</p>
               <ul>
-                <li><strong>Deploy</strong> on any Linux server (bare metal or VPS)</li>
-                <li><strong>Expose</strong> only the required TCP ports for discovery</li>
-                <li><strong>No access</strong> to message contents &mdash; only encrypted blobs and routing metadata</li>
-                <li><strong>Stable uptime</strong> and bandwidth are the main requirements</li>
+                <li><strong>Resilience</strong> &mdash; no single point of failure</li>
+                <li><strong>Censorship resistance</strong> &mdash; no central authority to block</li>
+                <li><strong>Availability</strong> &mdash; the network is always on</li>
+                <li><strong>Privacy</strong> &mdash; nodes only see encrypted blobs</li>
               </ul>
               <p>
-                Operator guides, systemd service files, and monitoring tooling will be published as the network matures.
+                The network continues to function as long as nodes remain connected.
               </p>
             </div>
             <div class="dna-visual reveal-left">
               <div class="dna-icon glow-orange">
-                <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="6" rx="1.5"/><rect x="2" y="15" width="20" height="6" rx="1.5"/><path d="M6 6h.01"/><path d="M6 18h.01"/><path d="M12 9v6"/><path d="M9 12h6"/></svg>
+                <svg viewBox="0 0 24 24"><path d="M12 2L4 6v5c0 5.25 3.4 10.2 8 11.6 4.6-1.4 8-6.35 8-11.6V6L12 2z"/><path d="M9 12l2 2 4-4"/></svg>
               </div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ Role in DNA Ecosystem ══ -->
+      <section id="ecosystem" class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label">Ecosystem</div>
+            <h2 class="section-title">Role in the DNA Ecosystem</h2>
+            <p class="section-desc" style="max-width: 38rem;">
+              Nodus is the infrastructure layer of the DNA ecosystem. While DNA applications provide user-facing functionality, Nodus provides the underlying decentralized networking system that connects identities and peers.
+            </p>
+          </div>
+
+          <div class="token-grid stagger" style="grid-template-columns: repeat(3, 1fr);">
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+              <h3>DNA Identity</h3>
+              <p>Decentralized identity resolution &mdash; human-readable names tied to cryptographic key pairs, resolved through the Nodus DHT.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h8"/><path d="M8 13h5"/></svg></span>
+              <h3>DNA Connect</h3>
+              <p>Post-quantum encrypted communication &mdash; messages routed and delivered through the Nodus network with offline support.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg></span>
+              <h3>Future Applications</h3>
+              <p>Any decentralized application can build on Nodus &mdash; forming a post-quantum capable decentralized communication stack.</p>
+            </article>
           </div>
         </div>
       </section>
@@ -1060,7 +1151,7 @@
       <section class="cta-section">
         <div class="wrap">
           <div class="cta-box reveal">
-            <h2 class="cta-title">Join the CPUNK movement</h2>
+            <h2 class="cta-title">Join the movement</h2>
             <p class="cta-text">
               Download DNA Connect, join the conversation, and find a piece of the project
               you want to improve. Every meaningful contributor once started as a community member.
