@@ -1862,6 +1862,10 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     srv->ch_server.dht_put_signed = ch_dht_put_signed;
     srv->ch_server.dht_ctx = srv;
 
+    /* Wire cross-module pointers so dispatch handlers can call real implementations */
+    srv->ch_server.ch_ring_ptr = &srv->ch_ring;
+    srv->ch_server.ch_replication_ptr = &srv->ch_replication;
+
     /* Bind UDP */
     if (nodus_udp_bind(&srv->udp, config->bind_ip, config->udp_port) != 0) {
         fprintf(stderr, "Failed to bind UDP %s:%d\n",

@@ -72,6 +72,17 @@ typedef struct {
     uint64_t                last_heartbeat_sent;
 } nodus_ch_node_session_t;
 
+/* ---- Pending outbound connections -------------------------------------- */
+
+#define NODUS_CH_MAX_PENDING_OUTBOUND 16
+
+typedef struct {
+    char          ip[64];
+    uint16_t      port;
+    nodus_key_t   node_id;
+    bool          active;
+} nodus_ch_pending_outbound_t;
+
 /* ---- Forward declarations ---------------------------------------------- */
 
 struct nodus_channel_server;
@@ -107,6 +118,13 @@ typedef struct nodus_channel_server {
     nodus_ch_on_replicate_fn on_replicate;  /* BACKUP: received replication */
     void                   *cb_ctx;         /* Opaque context for callbacks */
 
+    /* Pending outbound connections (waiting for TCP connect + auth) */
+    nodus_ch_pending_outbound_t pending_outbound[NODUS_CH_MAX_PENDING_OUTBOUND];
+
+    /* Cross-module pointers (set by caller, avoids circular headers) */
+    void                   *ch_ring_ptr;       /* nodus_ch_ring_t * */
+    void                   *ch_replication_ptr; /* nodus_ch_replication_t * */
+
     /* DHT access (for announce) -- function pointer set by parent */
     int (*dht_put_signed)(const uint8_t *key_hash, size_t key_len,
                           const uint8_t *val, size_t val_len,
@@ -136,6 +154,11 @@ void nodus_ch_notify_subscribers(nodus_channel_server_t *cs,
 void nodus_ch_notify_ring_changed(nodus_channel_server_t *cs,
                                    const uint8_t channel_uuid[NODUS_UUID_BYTES],
                                    uint32_t new_version);
+
+/* Outbound node connections */
+int nodus_ch_server_connect_to_peer(nodus_channel_server_t *cs,
+                                      const char *ip, uint16_t port,
+                                      const nodus_key_t *node_id);
 
 /* Subscription management */
 int  nodus_ch_client_add_sub(nodus_ch_client_session_t *sess,

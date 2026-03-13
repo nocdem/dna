@@ -9,6 +9,8 @@
 
 #include "channel/nodus_channel_server.h"
 #include "channel/nodus_channel_primary.h"
+#include "channel/nodus_channel_replication.h"
+#include "channel/nodus_channel_ring.h"
 #include "protocol/nodus_tier2.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/utils/qgp_log.h"
@@ -330,8 +332,12 @@ static void handle_ch_unsubscribe(nodus_channel_server_t *cs,
 static void handle_ch_replicate(nodus_channel_server_t *cs,
                                  nodus_ch_node_session_t *sess,
                                  nodus_tier2_msg_t *msg) {
-    (void)sess;
-    QGP_LOG_INFO(LOG_TAG, "ch_rep (stub)");
+    if (msg->ch_post_count > 0 && cs->ch_replication_ptr) {
+        nodus_ch_replication_t *rep = (nodus_ch_replication_t *)cs->ch_replication_ptr;
+        nodus_ch_replication_receive(rep, msg->channel_uuid, &msg->ch_posts[0]);
+        QGP_LOG_INFO(LOG_TAG, "ch_rep: stored replicated post");
+    }
+    /* Also fire callback if set (for additional processing) */
     if (cs->on_replicate && msg->ch_post_count > 0) {
         cs->on_replicate(cs, msg->channel_uuid, &msg->ch_posts[0]);
     }
@@ -363,51 +369,59 @@ static void handle_heartbeat_ack(nodus_channel_server_t *cs,
 static void handle_sync_request(nodus_channel_server_t *cs,
                                  nodus_ch_node_session_t *sess,
                                  nodus_tier2_msg_t *msg) {
-    (void)cs;
-    QGP_LOG_INFO(LOG_TAG, "ch_sync_req (stub)");
-    /* Respond with empty sync response */
-    uint8_t buf[256];
-    size_t len = 0;
-    nodus_t2_ch_sync_response(msg->txn_id, msg->channel_uuid,
-                               NULL, 0, buf, sizeof(buf), &len);
-    nodus_tcp_send(sess->conn, buf, len);
+    if (cs->ch_replication_ptr) {
+        nodus_ch_replication_t *rep = (nodus_ch_replication_t *)cs->ch_replication_ptr;
+        nodus_ch_replication_handle_sync_request(rep, sess,
+                                                  msg->channel_uuid,
+                                                  msg->ch_received_at);
+    } else {
+        /* Fallback: empty response */
+        uint8_t buf[256];
+        size_t len = 0;
+        nodus_t2_ch_sync_response(msg->txn_id, msg->channel_uuid,
+                                   NULL, 0, buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+    }
 }
 
 static void handle_ring_check(nodus_channel_server_t *cs,
                                nodus_ch_node_session_t *sess,
                                nodus_tier2_msg_t *msg) {
-    (void)cs;
-    QGP_LOG_INFO(LOG_TAG, "ring_check (stub)");
-    uint8_t buf[256];
-    size_t len = 0;
-    nodus_t2_ring_ack(msg->txn_id, msg->channel_uuid, true,
-                       buf, sizeof(buf), &len);
-    nodus_tcp_send(sess->conn, buf, len);
+    if (cs->ch_ring_ptr) {
+        nodus_ch_ring_t *rm = (nodus_ch_ring_t *)cs->ch_ring_ptr;
+        nodus_ch_ring_handle_check(rm, sess, &msg->ring_node_id,
+                                    msg->channel_uuid);
+    }
 }
 
 static void handle_ring_ack(nodus_channel_server_t *cs,
                              nodus_ch_node_session_t *sess,
                              nodus_tier2_msg_t *msg) {
-    (void)cs;
     (void)sess;
-    (void)msg;
-    QGP_LOG_DEBUG(LOG_TAG, "ring_ack (stub)");
+    if (cs->ch_ring_ptr) {
+        nodus_ch_ring_t *rm = (nodus_ch_ring_t *)cs->ch_ring_ptr;
+        nodus_ch_ring_handle_ack(rm, msg->channel_uuid, msg->ring_agree);
+    }
 }
 
 static void handle_ring_evict(nodus_channel_server_t *cs,
                                nodus_ch_node_session_t *sess,
                                nodus_tier2_msg_t *msg) {
-    (void)cs;
     (void)sess;
-    QGP_LOG_INFO(LOG_TAG, "ring_evict (stub): version=%u", msg->ring_version);
+    if (cs->ch_ring_ptr) {
+        nodus_ch_ring_t *rm = (nodus_ch_ring_t *)cs->ch_ring_ptr;
+        nodus_ch_ring_handle_evict(rm, msg->channel_uuid, msg->ring_version);
+    }
 }
 
 static void handle_ring_rejoin(nodus_channel_server_t *cs,
                                 nodus_ch_node_session_t *sess,
                                 nodus_tier2_msg_t *msg) {
-    (void)cs;
-    (void)sess;
-    QGP_LOG_INFO(LOG_TAG, "ring_rejoin (stub): version=%u", msg->ring_version);
+    if (cs->ch_ring_ptr) {
+        nodus_ch_ring_t *rm = (nodus_ch_ring_t *)cs->ch_ring_ptr;
+        nodus_ch_ring_handle_rejoin(rm, sess, &msg->ring_node_id,
+                                     msg->ring_version);
+    }
 }
 
 /* ---- Message dispatch -------------------------------------------------- */
@@ -459,6 +473,57 @@ static void dispatch_node_msg(nodus_channel_server_t *cs,
 }
 
 /* ---- TCP callbacks ----------------------------------------------------- */
+
+/**
+ * Outbound connection completed (connect to peer on TCP 4003).
+ * Allocate into a node slot and start node_hello handshake.
+ */
+static void on_ch_connect(nodus_tcp_conn_t *conn, void *ctx) {
+    nodus_channel_server_t *cs = (nodus_channel_server_t *)ctx;
+
+    /* Find pending outbound info for this IP:port */
+    nodus_ch_pending_outbound_t *po = NULL;
+    for (int i = 0; i < NODUS_CH_MAX_PENDING_OUTBOUND; i++) {
+        if (cs->pending_outbound[i].active &&
+            strcmp(cs->pending_outbound[i].ip, conn->ip) == 0 &&
+            cs->pending_outbound[i].port == conn->port) {
+            po = &cs->pending_outbound[i];
+            break;
+        }
+    }
+    if (!po) {
+        QGP_LOG_WARN(LOG_TAG, "No pending info for outbound %s:%u",
+                     conn->ip, (unsigned)conn->port);
+        nodus_tcp_disconnect(&cs->tcp, conn);
+        return;
+    }
+
+    int slot = find_empty_node_slot(cs);
+    if (slot < 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Node pool full, dropping outbound connection");
+        po->active = false;
+        nodus_tcp_disconnect(&cs->tcp, conn);
+        return;
+    }
+
+    nodus_ch_node_session_t *ns = &cs->nodes[slot];
+    node_session_clear(ns);
+    ns->conn = conn;
+    ns->node_id = po->node_id;
+    po->active = false;  /* Consumed */
+
+    /* Send node_hello with our identity */
+    uint8_t buf[8192];
+    size_t len = 0;
+    uint32_t ring_ver = cs->ring ? cs->ring->version : 0;
+    nodus_t2_ch_node_hello(0, &cs->identity->pk,
+                            &cs->identity->node_id,
+                            ring_ver, buf, sizeof(buf), &len);
+    nodus_tcp_send(conn, buf, len);
+
+    QGP_LOG_INFO(LOG_TAG, "Outbound node connection: sent node_hello to %s:%u",
+                 conn->ip, (unsigned)conn->port);
+}
 
 static void on_ch_accept(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_channel_server_t *cs = (nodus_channel_server_t *)ctx;
@@ -522,7 +587,30 @@ static void on_ch_frame(nodus_tcp_conn_t *conn,
     nodus_ch_node_session_t *ns = nodus_ch_find_node(cs, conn);
     if (ns) {
         if (strcmp(msg.method, "auth") == 0 && !ns->authenticated) {
+            /* Inbound node completing auth (they connected to us) */
             handle_node_auth(cs, ns, &msg);
+        } else if (strcmp(msg.method, "challenge") == 0 && !ns->authenticated) {
+            /* Outbound: peer sent challenge in response to our node_hello.
+             * Sign the nonce and send auth response. */
+            nodus_sig_t sig;
+            if (nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN,
+                            &cs->identity->sk) == 0) {
+                uint8_t buf[8192];
+                size_t out_len = 0;
+                nodus_t2_auth(msg.txn_id, &sig,
+                               buf, sizeof(buf), &out_len);
+                nodus_tcp_send(conn, buf, out_len);
+            }
+        } else if ((strcmp(msg.method, "auth_ok") == 0 ||
+                     strcmp(msg.method, "node_auth_ok") == 0) &&
+                    !ns->authenticated) {
+            /* Outbound: peer accepted our auth. Session is now live. */
+            ns->authenticated = true;
+            ns->last_heartbeat_recv = nodus_time_now_ms();
+            if (msg.has_token)
+                memcpy(ns->token, msg.token, NODUS_SESSION_TOKEN_LEN);
+            QGP_LOG_INFO(LOG_TAG, "Outbound node authenticated to %s:%u",
+                         conn->ip, (unsigned)conn->port);
         } else if (ns->authenticated) {
             dispatch_node_msg(cs, ns, &msg);
         } else {
@@ -618,6 +706,7 @@ int nodus_channel_server_listen(nodus_channel_server_t *cs,
     }
 
     cs->tcp.on_accept     = on_ch_accept;
+    cs->tcp.on_connect     = on_ch_connect;
     cs->tcp.on_disconnect  = on_ch_disconnect;
     cs->tcp.on_frame       = on_ch_frame;
     cs->tcp.cb_ctx         = cs;
@@ -663,6 +752,51 @@ void nodus_channel_server_tick(nodus_channel_server_t *cs, uint64_t now_ms) {
             ns->last_heartbeat_sent = now_ms;
         }
     }
+}
+
+int nodus_ch_server_connect_to_peer(nodus_channel_server_t *cs,
+                                      const char *ip, uint16_t port,
+                                      const nodus_key_t *node_id) {
+    if (!cs || !ip || !cs->identity || !node_id) return -1;
+
+    /* Check if we already have a node session for this node_id */
+    for (int i = 0; i < NODUS_CH_MAX_NODE_SESSIONS; i++) {
+        nodus_ch_node_session_t *ns = &cs->nodes[i];
+        if (ns->conn && nodus_key_cmp(&ns->node_id, node_id) == 0)
+            return 0;  /* Already connected or connecting */
+    }
+
+    /* Check if already pending */
+    for (int i = 0; i < NODUS_CH_MAX_PENDING_OUTBOUND; i++) {
+        if (cs->pending_outbound[i].active &&
+            nodus_key_cmp(&cs->pending_outbound[i].node_id, node_id) == 0)
+            return 0;  /* Already connecting */
+    }
+
+    /* Find empty pending slot */
+    int slot = -1;
+    for (int i = 0; i < NODUS_CH_MAX_PENDING_OUTBOUND; i++) {
+        if (!cs->pending_outbound[i].active) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+
+    /* Store pending info */
+    nodus_ch_pending_outbound_t *po = &cs->pending_outbound[slot];
+    strncpy(po->ip, ip, sizeof(po->ip) - 1);
+    po->port = port;
+    po->node_id = *node_id;
+    po->active = true;
+
+    /* Initiate non-blocking connect. on_ch_connect will handle handshake. */
+    nodus_tcp_conn_t *conn = nodus_tcp_connect(&cs->tcp, ip, port);
+    if (!conn) {
+        po->active = false;
+        QGP_LOG_WARN(LOG_TAG, "Failed to initiate connect to %s:%u", ip, port);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Connecting to peer %s:%u (TCP 4003)", ip, port);
+    return 0;
 }
 
 void nodus_channel_server_close(nodus_channel_server_t *cs) {

@@ -11,6 +11,7 @@
 
 #include "channel/nodus_channel_primary.h"
 #include "channel/nodus_channel_store.h"
+#include "channel/nodus_channel_ring.h"
 #include "channel/nodus_hashring.h"
 #include "protocol/nodus_tier2.h"
 #include "protocol/nodus_cbor.h"
@@ -166,6 +167,12 @@ bool nodus_ch_primary_ensure_channel(nodus_channel_server_t *cs,
                    cs->identity->node_id.bytes, NODUS_KEY_BYTES) == 0) {
             /* We're responsible -- create the table */
             nodus_channel_create(cs->ch_store, channel_uuid);
+            /* Track for ring management */
+            if (cs->ch_ring_ptr) {
+                nodus_ch_ring_t *rm = (nodus_ch_ring_t *)cs->ch_ring_ptr;
+                nodus_ch_ring_track(rm, channel_uuid,
+                                     cs->ring ? cs->ring->version : 0);
+            }
             return true;
         }
     }
@@ -240,7 +247,14 @@ int nodus_ch_primary_handle_create(nodus_channel_server_t *cs,
     /* 1. Create channel table (idempotent) */
     nodus_channel_create(cs->ch_store, msg->channel_uuid);
 
-    /* 2. Announce to DHT (ordered node list) */
+    /* 2. Track in ring management for heartbeat monitoring */
+    if (cs->ch_ring_ptr) {
+        nodus_ch_ring_t *rm = (nodus_ch_ring_t *)cs->ch_ring_ptr;
+        nodus_ch_ring_track(rm, msg->channel_uuid,
+                             cs->ring ? cs->ring->version : 0);
+    }
+
+    /* 3. Announce to DHT (ordered node list) */
     nodus_ch_primary_announce_to_dht(cs, msg->channel_uuid);
 
     /* 3. Send ch_create_ok */

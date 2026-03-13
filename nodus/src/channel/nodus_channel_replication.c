@@ -90,9 +90,13 @@ int nodus_ch_replication_send(nodus_ch_replication_t *rep,
                                      channel_uuid, buf, len);
             }
         } else {
-            /* No active session for this backup -- queue hinted handoff */
-            QGP_LOG_WARN(LOG_TAG,
-                "No session for backup node, queuing hinted handoff");
+            /* No active session -- initiate connection and queue to hinted handoff.
+             * The connection completes async; hinted handoff retry will deliver. */
+            nodus_ch_server_connect_to_peer(cs, rset.nodes[i].ip, cs->port,
+                                                &rset.nodes[i].node_id);
+            QGP_LOG_INFO(LOG_TAG,
+                "No session for backup %s:%u, connecting + queuing hinted handoff",
+                rset.nodes[i].ip, (unsigned)cs->port);
             nodus_hinted_insert(cs->ch_store, &rset.nodes[i].node_id,
                                  channel_uuid, buf, len);
         }
