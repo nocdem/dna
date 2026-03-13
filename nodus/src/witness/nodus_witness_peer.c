@@ -119,11 +119,15 @@ int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
     out->n_witnesses = 1;
 
     /* Add all identified witness peers (w_ident exchanged) */
+    static const uint8_t zero_id[NODUS_T3_WITNESS_ID_LEN] = {0};
     for (int i = 0; i < w->peer_count && out->n_witnesses < NODUS_T3_MAX_WITNESSES; i++) {
         nodus_witness_peer_t *peer = &w->peers[i];
         if (!peer->identified) continue;
         if (!peer->conn) continue;
         if (peer->conn->state != NODUS_CONN_CONNECTED) continue;
+        /* Skip peers with no witness_id yet (IDENT sent but not received back) */
+        if (memcmp(peer->witness_id, zero_id, NODUS_T3_WITNESS_ID_LEN) == 0)
+            continue;
 
         /* Duplicate check by witness_id */
         bool dup = false;
@@ -600,23 +604,33 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
         /* Check if we already track this connection as a peer */
         int pi = find_peer_by_conn(w, conn);
         if (pi >= 0) {
-            /* Already tracked — send IDENT if not yet identified */
-            if (!w->peers[pi].identified) {
+            /* Already tracked — send IDENT if not yet done.
+             * Note: identified is set by handle_ident (when we RECEIVE w_ident),
+             * not here. We use last_attempt as "ident sent" marker. */
+            if (w->peers[pi].last_attempt == 0) {
                 nodus_witness_peer_send_ident(w, conn);
-                w->peers[pi].identified = true;
+                w->peers[pi].last_attempt = now;
             }
             continue;
         }
 
-        /* New connection — add to peers and send IDENT */
+        /* New connection — check if we already track a peer to the same IP:port
+         * (prevents duplicates from inbound+outbound connections to same node) */
+        char addr[80];
+        snprintf(addr, sizeof(addr), "%s:%u", conn->ip, conn->port);
+        if (find_peer_by_addr(w, addr) >= 0)
+            continue;
+
+        /* Add peer and send IDENT */
         if (w->peer_count < NODUS_T3_MAX_WITNESSES) {
             pi = w->peer_count++;
             memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
             w->peers[pi].conn = conn;
-            w->peers[pi].last_attempt = now;
+            snprintf(w->peers[pi].address, sizeof(w->peers[pi].address),
+                     "%s", addr);
 
             nodus_witness_peer_send_ident(w, conn);
-            w->peers[pi].identified = true;
+            w->peers[pi].last_attempt = now;
         }
     }
 
