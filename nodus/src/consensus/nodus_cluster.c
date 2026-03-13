@@ -130,7 +130,7 @@ void nodus_cluster_tick(nodus_cluster_t *cluster) {
                 continue;  /* Don't ping dead nodes (save bandwidth) */
 
             len = 0;
-            nodus_t1_ping(0, &srv->identity.node_id, &srv->identity.pk, buf, sizeof(buf), &len);
+            nodus_t1_ping(0, &srv->identity.node_id, buf, sizeof(buf), &len);
             nodus_udp_send(&srv->udp, buf, len, peer->ip, peer->udp_port);
         }
     }

@@ -50,36 +50,26 @@ static int finish(cbor_encoder_t *enc, size_t *out_len) {
 /* ── Encode functions ────────────────────────────────────────────── */
 
 int nodus_t1_ping(uint32_t txn, const nodus_key_t *node_id,
-                   const nodus_pubkey_t *pubkey,
                    uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     encode_envelope(&enc, 4, txn, 'q', "ping");
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, pubkey ? 2 : 1);
+    cbor_encode_map(&enc, 1);
     cbor_encode_cstr(&enc, "id");
     cbor_encode_bstr(&enc, node_id->bytes, NODUS_KEY_BYTES);
-    if (pubkey) {
-        cbor_encode_cstr(&enc, "pk");
-        cbor_encode_bstr(&enc, pubkey->bytes, NODUS_PK_BYTES);
-    }
     return finish(&enc, out_len);
 }
 
 int nodus_t1_pong(uint32_t txn, const nodus_key_t *node_id,
-                   const nodus_pubkey_t *pubkey,
                    uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     encode_envelope(&enc, 4, txn, 'r', "pong");
     cbor_encode_cstr(&enc, "r");
-    cbor_encode_map(&enc, pubkey ? 2 : 1);
+    cbor_encode_map(&enc, 1);
     cbor_encode_cstr(&enc, "id");
     cbor_encode_bstr(&enc, node_id->bytes, NODUS_KEY_BYTES);
-    if (pubkey) {
-        cbor_encode_cstr(&enc, "pk");
-        cbor_encode_bstr(&enc, pubkey->bytes, NODUS_PK_BYTES);
-    }
     return finish(&enc, out_len);
 }
 
@@ -331,12 +321,6 @@ int nodus_t1_decode(const uint8_t *buf, size_t len, nodus_tier1_msg_t *msg) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
                         memcpy(msg->node_id.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
-                } else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "pk", 2) == 0) {
-                    cbor_item_t val = cbor_decode_next(&dec);
-                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES) {
-                        memcpy(msg->pubkey.bytes, val.bstr.ptr, NODUS_PK_BYTES);
-                        msg->has_pubkey = true;
-                    }
                 } else if ((akey.tstr.len == 6 && memcmp(akey.tstr.ptr, "target", 6) == 0) ||
                            (akey.tstr.len == 1 && akey.tstr.ptr[0] == 'k')) {
                     cbor_item_t val = cbor_decode_next(&dec);
@@ -368,12 +352,6 @@ int nodus_t1_decode(const uint8_t *buf, size_t len, nodus_tier1_msg_t *msg) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
                         memcpy(msg->node_id.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
-                } else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "pk", 2) == 0) {
-                    cbor_item_t val = cbor_decode_next(&dec);
-                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES) {
-                        memcpy(msg->pubkey.bytes, val.bstr.ptr, NODUS_PK_BYTES);
-                        msg->has_pubkey = true;
-                    }
                 } else if (rkey.tstr.len == 5 && memcmp(rkey.tstr.ptr, "nodes", 5) == 0) {
                     decode_peers(&dec, msg->peers, NODUS_T1_MAX_PEERS, &msg->peer_count);
                 } else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "val", 3) == 0) {

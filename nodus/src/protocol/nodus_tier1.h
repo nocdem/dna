@@ -22,11 +22,9 @@ extern "C" {
 /* ── Encode (message → CBOR buffer) ─────────────────────────────── */
 
 int nodus_t1_ping(uint32_t txn, const nodus_key_t *node_id,
-                   const nodus_pubkey_t *pubkey,
                    uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t1_pong(uint32_t txn, const nodus_key_t *node_id,
-                   const nodus_pubkey_t *pubkey,
                    uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t1_find_node(uint32_t txn, const nodus_key_t *target,
@@ -73,8 +71,6 @@ typedef struct {
 
     /* Parsed fields (method-dependent) */
     nodus_key_t     node_id;        /* ping/pong sender */
-    nodus_pubkey_t  pubkey;         /* ping/pong sender pubkey */
-    bool            has_pubkey;     /* true if pubkey was present */
     nodus_key_t     target;         /* find_node target / find_value key */
     nodus_peer_t    peers[NODUS_T1_MAX_PEERS];
     int             peer_count;

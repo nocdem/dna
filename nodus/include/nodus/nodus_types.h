@@ -185,13 +185,11 @@ typedef struct {
 
 /** Peer info (for routing table and discovery) */
 typedef struct {
-    nodus_key_t    node_id;
-    nodus_pubkey_t pubkey;              /* Dilithium5 public key (from PING/PONG) */
-    char           ip[64];
-    uint16_t       udp_port;
-    uint16_t       tcp_port;
-    uint64_t       last_seen;           /* Unix timestamp */
-    bool           has_pubkey;          /* true if pubkey was received */
+    nodus_key_t node_id;
+    char        ip[64];
+    uint16_t    udp_port;
+    uint16_t    tcp_port;
+    uint64_t    last_seen;          /* Unix timestamp */
 } nodus_peer_t;
 
 /** Message type (query / response / error) */

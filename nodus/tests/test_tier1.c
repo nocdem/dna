@@ -31,7 +31,7 @@ static void test_ping_roundtrip(void) {
     TEST("ping encode/decode");
     nodus_key_t node_id = make_key(0x42);
     size_t len = 0;
-    int rc = nodus_t1_ping(1, &node_id, NULL, msgbuf, sizeof(msgbuf), &len);
+    int rc = nodus_t1_ping(1, &node_id, msgbuf, sizeof(msgbuf), &len);
     if (rc != 0) { FAIL("encode"); return; }
 
     nodus_tier1_msg_t msg;
@@ -50,7 +50,7 @@ static void test_pong_roundtrip(void) {
     TEST("pong encode/decode");
     nodus_key_t node_id = make_key(0xAA);
     size_t len = 0;
-    nodus_t1_pong(99, &node_id, NULL, msgbuf, sizeof(msgbuf), &len);
+    nodus_t1_pong(99, &node_id, msgbuf, sizeof(msgbuf), &len);
 
     nodus_tier1_msg_t msg;
     nodus_t1_decode(msgbuf, len, &msg);
