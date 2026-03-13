@@ -1678,6 +1678,39 @@ static void ch_on_post_callback(nodus_channel_server_t *cs,
     nodus_ch_replication_send(&srv->ch_replication, channel_uuid, post, author_pk);
 }
 
+/** Callback: channel server needs to PUT a signed value into DHT (e.g. node announcements) */
+static int ch_dht_put_signed(const uint8_t *key_hash, size_t key_len,
+                              const uint8_t *val_data, size_t val_len,
+                              uint32_t ttl, void *ctx) {
+    nodus_server_t *srv = (nodus_server_t *)ctx;
+    if (!srv || key_len != NODUS_KEY_BYTES) return -1;
+
+    nodus_key_t key;
+    memcpy(key.bytes, key_hash, NODUS_KEY_BYTES);
+
+    /* Create a value owned by this server's identity */
+    nodus_value_t *val = NULL;
+    int rc = nodus_value_create(&key, val_data, val_len,
+                                 NODUS_VALUE_EPHEMERAL,
+                                 ttl ? ttl : NODUS_DEFAULT_TTL,
+                                 0, 1,
+                                 &srv->identity.pk, &val);
+    if (rc != 0 || !val) return -1;
+
+    /* Sign with server's secret key */
+    rc = nodus_value_sign(val, &srv->identity.sk);
+    if (rc != 0) { nodus_value_free(val); return -1; }
+
+    /* Store locally */
+    rc = nodus_storage_put(&srv->storage, val);
+    if (rc != 0) { nodus_value_free(val); return -1; }
+
+    /* Replicate to K-closest peers */
+    nodus_server_replicate_value(srv, val);
+    nodus_value_free(val);
+    return 0;
+}
+
 /* ── Public API ──────────────────────────────────────────────────── */
 
 int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) {
@@ -1824,6 +1857,10 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     /* Wire replication callback: PRIMARY -> after post stored, trigger replicate to BACKUPs */
     srv->ch_server.on_post = ch_on_post_callback;
     srv->ch_server.cb_ctx = srv;
+
+    /* Wire DHT put callback: channel server announces node list to DHT */
+    srv->ch_server.dht_put_signed = ch_dht_put_signed;
+    srv->ch_server.dht_ctx = srv;
 
     /* Bind UDP */
     if (nodus_udp_bind(&srv->udp, config->bind_ip, config->udp_port) != 0) {
