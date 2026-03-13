@@ -1,7 +1,7 @@
 /**
  * Nodus — Channel Storage
  *
- * Per-channel SQLite tables with seq_id assignment,
+ * Per-channel SQLite tables with received_at ordering,
  * hinted handoff queue, and 7-day retention cleanup.
  *
  * @file nodus_channel_store.h
@@ -69,31 +69,26 @@ bool nodus_channel_exists(nodus_channel_store_t *store,
                            const uint8_t uuid[NODUS_UUID_BYTES]);
 
 /**
- * Insert a post. Assigns next seq_id. Deduplicates by post_uuid.
- * @param post  Post to insert (seq_id will be set on return)
+ * Insert a post. Deduplicates by post_uuid (INSERT OR IGNORE).
+ * If post->received_at is 0, assigns current time in ms.
+ * @param post  Post to insert (received_at may be set on return)
  * @return 0 on success, 1 if duplicate post_uuid, -1 on error
  */
 int nodus_channel_post(nodus_channel_store_t *store,
                         nodus_channel_post_t *post);
 
 /**
- * Get posts after a given seq_id (for client sync).
- * @param since_seq  Return posts with seq_id > since_seq (0 = all)
+ * Get posts after a given received_at timestamp (for client sync).
+ * @param since_received_at  Return posts with received_at > this (0 = all)
  * @param max_count  Maximum number of posts to return
  * @param posts_out  Caller frees with nodus_channel_posts_free()
  * @param count_out  Number of posts returned
  */
 int nodus_channel_get_posts(nodus_channel_store_t *store,
                              const uint8_t uuid[NODUS_UUID_BYTES],
-                             uint32_t since_seq, int max_count,
+                             uint64_t since_received_at, int max_count,
                              nodus_channel_post_t **posts_out,
                              size_t *count_out);
-
-/**
- * Get the current max seq_id for a channel.
- */
-uint32_t nodus_channel_max_seq(nodus_channel_store_t *store,
-                                const uint8_t uuid[NODUS_UUID_BYTES]);
 
 /**
  * Run 7-day retention cleanup on a channel.

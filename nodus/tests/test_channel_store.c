@@ -78,14 +78,14 @@ static void test_post_and_get(void) {
     int rc = nodus_channel_post(&store, &post);
     free(post.body);
     if (rc != 0) { FAIL("post failed"); return; }
-    if (post.seq_id != 1) { FAIL("expected seq_id=1"); return; }
+    if (post.received_at == 0) { FAIL("expected received_at to be assigned"); return; }
 
     /* Get posts */
     nodus_channel_post_t *posts = NULL;
     size_t count = 0;
     rc = nodus_channel_get_posts(&store, test_uuid, 0, 100, &posts, &count);
     if (rc != 0 || count != 1) { FAIL("get failed"); nodus_channel_posts_free(posts, count); return; }
-    if (posts[0].seq_id != 1) { FAIL("seq_id mismatch"); nodus_channel_posts_free(posts, count); return; }
+    if (posts[0].received_at == 0) { FAIL("received_at not returned"); nodus_channel_posts_free(posts, count); return; }
     if (strcmp(posts[0].body, "Hello channel!") != 0) {
         FAIL("body mismatch"); nodus_channel_posts_free(posts, count); return;
     }
@@ -109,58 +109,67 @@ static void test_duplicate_post(void) {
     PASS();
 }
 
-static void test_sequential_seq_id(void) {
-    TEST("sequential seq_id assignment");
+static void test_ordering_by_received_at(void) {
+    TEST("ordering by received_at");
 
-    for (int i = 2; i <= 5; i++) {
+    /* Drop and recreate to start clean */
+    nodus_channel_drop(&store, test_uuid);
+    nodus_channel_create(&store, test_uuid);
+
+    /* Insert posts with explicit received_at values in non-sequential order */
+    uint64_t ra_values[] = { 5000, 3000, 7000, 1000 };
+    for (int i = 0; i < 4; i++) {
         nodus_channel_post_t post;
         memset(&post, 0, sizeof(post));
         memcpy(post.channel_uuid, test_uuid, NODUS_UUID_BYTES);
-        memset(post.post_uuid, (uint8_t)i, NODUS_UUID_BYTES);
+        memset(post.post_uuid, (uint8_t)(0x10 + i), NODUS_UUID_BYTES);
         char body[32];
-        snprintf(body, sizeof(body), "Post %d", i);
+        snprintf(body, sizeof(body), "Post ra=%llu", (unsigned long long)ra_values[i]);
         post.body = body;
         post.body_len = strlen(body);
+        post.received_at = ra_values[i];
 
         int rc = nodus_channel_post(&store, &post);
         if (rc != 0) { FAIL("post failed"); return; }
-        if ((int)post.seq_id != i) {
-            char msg[64];
-            snprintf(msg, sizeof(msg), "expected seq=%d, got %u", i, post.seq_id);
-            FAIL(msg); return;
-        }
     }
-    PASS();
-}
 
-static void test_get_since_seq(void) {
-    TEST("get posts since seq_id");
-
+    /* Get all posts — should be ordered by received_at ascending */
     nodus_channel_post_t *posts = NULL;
     size_t count = 0;
-    int rc = nodus_channel_get_posts(&store, test_uuid, 3, 100, &posts, &count);
-    if (rc != 0) { FAIL("get failed"); return; }
-    if (count != 2) {
+    int rc = nodus_channel_get_posts(&store, test_uuid, 0, 100, &posts, &count);
+    if (rc != 0 || count != 4) {
         char msg[64];
-        snprintf(msg, sizeof(msg), "expected 2 posts after seq 3, got %zu", count);
+        snprintf(msg, sizeof(msg), "expected 4 posts, got %zu", count);
         FAIL(msg); nodus_channel_posts_free(posts, count); return;
     }
-    if (posts[0].seq_id != 4 || posts[1].seq_id != 5) {
-        FAIL("wrong seq_ids"); nodus_channel_posts_free(posts, count); return;
+    /* Verify ordering: received_at should be monotonically non-decreasing */
+    for (size_t i = 1; i < count; i++) {
+        if (posts[i].received_at < posts[i-1].received_at) {
+            FAIL("posts not ordered by received_at"); nodus_channel_posts_free(posts, count); return;
+        }
     }
     nodus_channel_posts_free(posts, count);
     PASS();
 }
 
-static void test_max_seq(void) {
-    TEST("max_seq returns highest seq_id");
+static void test_get_since_received_at(void) {
+    TEST("get posts since received_at");
 
-    uint32_t max = nodus_channel_max_seq(&store, test_uuid);
-    if (max != 5) {
+    nodus_channel_post_t *posts = NULL;
+    size_t count = 0;
+    /* Get posts with received_at > 3000 (should be 5000 and 7000) */
+    int rc = nodus_channel_get_posts(&store, test_uuid, 3000, 100, &posts, &count);
+    if (rc != 0) { FAIL("get failed"); return; }
+    if (count != 2) {
         char msg[64];
-        snprintf(msg, sizeof(msg), "expected 5, got %u", max);
-        FAIL(msg); return;
+        snprintf(msg, sizeof(msg), "expected 2 posts after ra=3000, got %zu", count);
+        FAIL(msg); nodus_channel_posts_free(posts, count); return;
     }
+    /* Should be ra=5000 and ra=7000 */
+    if (posts[0].received_at != 5000 || posts[1].received_at != 7000) {
+        FAIL("wrong received_at values"); nodus_channel_posts_free(posts, count); return;
+    }
+    nodus_channel_posts_free(posts, count);
     PASS();
 }
 
@@ -219,6 +228,54 @@ static void test_nonexistent_channel(void) {
     PASS();
 }
 
+static void test_migration_from_old_schema(void) {
+    TEST("migration from old seq_id schema");
+
+    /* Create a channel table with the OLD schema (seq_id based) */
+    uint8_t mig_uuid[16];
+    int i;
+    for (i = 0; i < 16; i++) mig_uuid[i] = (i % 2 == 0) ? 0xff : 0x00;
+    /* This gives ff00ff00ff00ff00ff00ff00ff00ff00 */
+
+    char sql[384];
+    snprintf(sql, sizeof(sql),
+        "CREATE TABLE channel_ff00ff00ff00ff00ff00ff00ff00ff00 ("
+        "seq_id INTEGER NOT NULL,"
+        "post_uuid BLOB NOT NULL,"
+        "author_fp BLOB NOT NULL,"
+        "timestamp INTEGER NOT NULL,"
+        "body BLOB NOT NULL,"
+        "signature BLOB NOT NULL,"
+        "received_at INTEGER NOT NULL,"
+        "PRIMARY KEY(seq_id))");
+    char *err = NULL;
+    sqlite3_exec(store.db, sql, NULL, NULL, &err);
+    sqlite3_free(err);
+
+    /* Now call nodus_channel_create — should detect old schema and migrate */
+    int rc = nodus_channel_create(&store, mig_uuid);
+    if (rc != 0) { FAIL("create after migration failed"); return; }
+    if (!nodus_channel_exists(&store, mig_uuid)) {
+        FAIL("channel not found after migration"); return;
+    }
+
+    /* Verify new schema works — post should succeed without seq_id */
+    nodus_channel_post_t post;
+    memset(&post, 0, sizeof(post));
+    memcpy(post.channel_uuid, mig_uuid, NODUS_UUID_BYTES);
+    memset(post.post_uuid, 0xAB, NODUS_UUID_BYTES);
+    post.body = strdup("After migration");
+    post.body_len = strlen(post.body);
+
+    rc = nodus_channel_post(&store, &post);
+    free(post.body);
+    if (rc != 0) { FAIL("post after migration failed"); return; }
+
+    /* Cleanup */
+    nodus_channel_drop(&store, mig_uuid);
+    PASS();
+}
+
 int main(void) {
     printf("test_channel_store: Channel storage tests\n");
 
@@ -227,12 +284,12 @@ int main(void) {
     test_create_idempotent();
     test_post_and_get();
     test_duplicate_post();
-    test_sequential_seq_id();
-    test_get_since_seq();
-    test_max_seq();
+    test_ordering_by_received_at();
+    test_get_since_received_at();
     test_hinted_handoff();
     test_channel_drop();
     test_nonexistent_channel();
+    test_migration_from_old_schema();
 
     /* Cleanup */
     nodus_channel_store_close(&store);

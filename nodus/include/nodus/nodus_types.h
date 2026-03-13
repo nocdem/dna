@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  6
-#define NODUS_VERSION_PATCH  12
-#define NODUS_VERSION_STRING "0.6.12"
+#define NODUS_VERSION_PATCH  13
+#define NODUS_VERSION_STRING "0.6.13"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -51,6 +51,7 @@ extern "C" {
 #define NODUS_DEFAULT_UDP_PORT  4000
 #define NODUS_DEFAULT_TCP_PORT  4001
 #define NODUS_DEFAULT_PEER_PORT 4002
+#define NODUS_DEFAULT_CH_PORT   4003        /* Channel client TCP port */
 #define NODUS_SESSION_TOKEN_LEN 32
 #define NODUS_NONCE_LEN         32
 
@@ -67,6 +68,7 @@ extern "C" {
 #define NODUS_MAX_HINTED_POSTS  1000
 #define NODUS_HINTED_RETRY_SEC  30
 #define NODUS_HINTED_TTL_SEC    86400       /* 24h */
+#define NODUS_MAX_CH_SESSIONS   1024        /* Max channel TCP 4003 connections (must match NODUS_TCP_MAX_CONNS) */
 
 /* Rate limiting defaults */
 #define NODUS_RATE_PUTS_PER_MIN  60
@@ -168,14 +170,13 @@ typedef struct {
     nodus_sig_t     signature;      /* SIGN(key + data + type + ttl + vid + seq) */
 } nodus_value_t;
 
-/** Channel post (stored per-channel, assigned seq_id by primary) */
+/** Channel post (stored per-channel, ordered by received_at) */
 typedef struct {
     uint8_t     channel_uuid[NODUS_UUID_BYTES];
-    uint32_t    seq_id;         /* Assigned by primary */
     uint8_t     post_uuid[NODUS_UUID_BYTES];
     nodus_key_t author_fp;      /* SHA3-512(author_pk) */
     uint64_t    timestamp;      /* Author's claimed time */
-    uint64_t    received_at;    /* Nodus receive time */
+    uint64_t    received_at;    /* Nodus receive time (ms) */
     char       *body;           /* UTF-8, max 4000 chars */
     size_t      body_len;
     nodus_sig_t signature;      /* SIGN(ch + id + ts + body) */

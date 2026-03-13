@@ -5,7 +5,7 @@
  */
 
 #include "channel/nodus_channel_store.h"
-#include "transport/nodus_tcp.h"  /* nodus_time_now() */
+#include "transport/nodus_tcp.h"  /* nodus_time_now(), nodus_time_now_ms() */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -106,6 +106,22 @@ void nodus_channel_store_close(nodus_channel_store_t *store) {
     memset(store, 0, sizeof(*store));
 }
 
+/** Check if an existing channel table uses the old seq_id schema */
+static bool has_seq_id_column(sqlite3 *db, const char hex[33]) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(channel_%s)", hex);
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return false;
+    bool found = false;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *col = (const char *)sqlite3_column_text(stmt, 1);
+        if (col && strcmp(col, "seq_id") == 0) { found = true; break; }
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
 int nodus_channel_create(nodus_channel_store_t *store,
                           const uint8_t uuid[NODUS_UUID_BYTES]) {
     if (!store || !store->db || !uuid) return -1;
@@ -116,21 +132,30 @@ int nodus_channel_create(nodus_channel_store_t *store,
 
     char sql[384];
 
+    /* Migrate old schema: if table exists with seq_id column, drop and recreate */
+    snprintf(sql, sizeof(sql),
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='channel_%s'", hex);
+    sqlite3_stmt *chk;
+    bool table_exists = false;
+    if (sqlite3_prepare_v2(store->db, sql, -1, &chk, NULL) == SQLITE_OK) {
+        table_exists = (sqlite3_step(chk) == SQLITE_ROW);
+        sqlite3_finalize(chk);
+    }
+    if (table_exists && has_seq_id_column(store->db, hex)) {
+        fprintf(stderr, "NODUS_CH: migrating channel_%s from seq_id to received_at schema\n", hex);
+        snprintf(sql, sizeof(sql), "DROP TABLE channel_%s", hex);
+        exec_sql(store->db, sql);
+    }
+
     snprintf(sql, sizeof(sql),
         "CREATE TABLE IF NOT EXISTS channel_%s ("
-        "seq_id INTEGER NOT NULL,"
         "post_uuid BLOB NOT NULL,"
         "author_fp BLOB NOT NULL,"
         "timestamp INTEGER NOT NULL,"
-        "body BLOB NOT NULL,"
-        "signature BLOB NOT NULL,"
         "received_at INTEGER NOT NULL,"
-        "PRIMARY KEY(seq_id))", hex);
-    if (exec_sql(store->db, sql) != 0) return -1;
-
-    snprintf(sql, sizeof(sql),
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_%s_uuid ON channel_%s(post_uuid)",
-        hex, hex);
+        "body BLOB,"
+        "signature BLOB,"
+        "PRIMARY KEY(post_uuid))", hex);
     if (exec_sql(store->db, sql) != 0) return -1;
 
     snprintf(sql, sizeof(sql),
@@ -168,57 +193,39 @@ int nodus_channel_post(nodus_channel_store_t *store,
     uuid_to_hex(post->channel_uuid, hex);
     if (!uuid_hex_valid(hex)) return -1;
 
-    /* Get next seq_id */
+    /* Assign received_at if not provided (replication preserves original) */
+    if (post->received_at == 0)
+        post->received_at = nodus_time_now_ms();
+
+    /* INSERT OR IGNORE for dedup by post_uuid (PK) */
     char sql[256];
     snprintf(sql, sizeof(sql),
-        "SELECT COALESCE(MAX(seq_id), 0) FROM channel_%s", hex);
+        "INSERT OR IGNORE INTO channel_%s (post_uuid, author_fp, timestamp, received_at, body, signature) "
+        "VALUES (?, ?, ?, ?, ?, ?)", hex);
 
     sqlite3_stmt *stmt;
     if (sqlite3_prepare_v2(store->db, sql, -1, &stmt, NULL) != SQLITE_OK)
         return -1;
 
-    uint32_t next_seq = 1;
-    if (sqlite3_step(stmt) == SQLITE_ROW)
-        next_seq = (uint32_t)sqlite3_column_int(stmt, 0) + 1;
-    sqlite3_finalize(stmt);
-
-    post->seq_id = next_seq;
-    post->received_at = nodus_time_now();
-
-    /* Check duplicate post_uuid */
-    snprintf(sql, sizeof(sql),
-        "SELECT 1 FROM channel_%s WHERE post_uuid = ?", hex);
-    if (sqlite3_prepare_v2(store->db, sql, -1, &stmt, NULL) != SQLITE_OK)
-        return -1;
     sqlite3_bind_blob(stmt, 1, post->post_uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
-    bool duplicate = (sqlite3_step(stmt) == SQLITE_ROW);
-    sqlite3_finalize(stmt);
-    if (duplicate) return 1;  /* Duplicate — not an error */
-
-    /* Insert */
-    snprintf(sql, sizeof(sql),
-        "INSERT INTO channel_%s (seq_id, post_uuid, author_fp, timestamp, body, signature, received_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)", hex);
-
-    if (sqlite3_prepare_v2(store->db, sql, -1, &stmt, NULL) != SQLITE_OK)
-        return -1;
-
-    sqlite3_bind_int(stmt, 1, (int)post->seq_id);
-    sqlite3_bind_blob(stmt, 2, post->post_uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
-    sqlite3_bind_blob(stmt, 3, post->author_fp.bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
-    sqlite3_bind_int64(stmt, 4, (int64_t)post->timestamp);
+    sqlite3_bind_blob(stmt, 2, post->author_fp.bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, (int64_t)post->timestamp);
+    sqlite3_bind_int64(stmt, 4, (int64_t)post->received_at);
     sqlite3_bind_blob(stmt, 5, post->body, (int)post->body_len, SQLITE_STATIC);
     sqlite3_bind_blob(stmt, 6, post->signature.bytes, NODUS_SIG_BYTES, SQLITE_STATIC);
-    sqlite3_bind_int64(stmt, 7, (int64_t)post->received_at);
 
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    return (rc == SQLITE_DONE) ? 0 : -1;
+    if (rc != SQLITE_DONE) return -1;
+
+    /* INSERT OR IGNORE returns SQLITE_DONE even for duplicates.
+     * Check changes() to distinguish insert vs ignored duplicate. */
+    return (sqlite3_changes(store->db) > 0) ? 0 : 1;
 }
 
 int nodus_channel_get_posts(nodus_channel_store_t *store,
                              const uint8_t uuid[NODUS_UUID_BYTES],
-                             uint32_t since_seq, int max_count,
+                             uint64_t since_received_at, int max_count,
                              nodus_channel_post_t **posts_out,
                              size_t *count_out) {
     if (!store || !store->db || !uuid || !posts_out || !count_out) return -1;
@@ -231,14 +238,14 @@ int nodus_channel_get_posts(nodus_channel_store_t *store,
 
     char sql[256];
     snprintf(sql, sizeof(sql),
-        "SELECT seq_id, post_uuid, author_fp, timestamp, body, signature, received_at "
-        "FROM channel_%s WHERE seq_id > ? ORDER BY seq_id LIMIT ?", hex);
+        "SELECT post_uuid, author_fp, timestamp, received_at, body, signature "
+        "FROM channel_%s WHERE received_at > ? ORDER BY received_at ASC LIMIT ?", hex);
 
     sqlite3_stmt *stmt;
     if (sqlite3_prepare_v2(store->db, sql, -1, &stmt, NULL) != SQLITE_OK)
         return -1;
 
-    sqlite3_bind_int(stmt, 1, (int)since_seq);
+    sqlite3_bind_int64(stmt, 1, (int64_t)since_received_at);
     sqlite3_bind_int(stmt, 2, max_count > 0 ? max_count : 1000);
 
     size_t cap = 64;
@@ -257,15 +264,15 @@ int nodus_channel_get_posts(nodus_channel_store_t *store,
         nodus_channel_post_t *p = &posts[count];
         memset(p, 0, sizeof(*p));
         memcpy(p->channel_uuid, uuid, NODUS_UUID_BYTES);
-        p->seq_id = (uint32_t)sqlite3_column_int(stmt, 0);
 
-        const void *blob = sqlite3_column_blob(stmt, 1);
+        const void *blob = sqlite3_column_blob(stmt, 0);
         if (blob) memcpy(p->post_uuid, blob, NODUS_UUID_BYTES);
 
-        blob = sqlite3_column_blob(stmt, 2);
+        blob = sqlite3_column_blob(stmt, 1);
         if (blob) memcpy(p->author_fp.bytes, blob, NODUS_KEY_BYTES);
 
-        p->timestamp = (uint64_t)sqlite3_column_int64(stmt, 3);
+        p->timestamp = (uint64_t)sqlite3_column_int64(stmt, 2);
+        p->received_at = (uint64_t)sqlite3_column_int64(stmt, 3);
 
         blob = sqlite3_column_blob(stmt, 4);
         int blen = sqlite3_column_bytes(stmt, 4);
@@ -281,7 +288,6 @@ int nodus_channel_get_posts(nodus_channel_store_t *store,
         blob = sqlite3_column_blob(stmt, 5);
         if (blob) memcpy(p->signature.bytes, blob, NODUS_SIG_BYTES);
 
-        p->received_at = (uint64_t)sqlite3_column_int64(stmt, 6);
         count++;
     }
 
@@ -295,29 +301,6 @@ int nodus_channel_get_posts(nodus_channel_store_t *store,
     *posts_out = posts;
     *count_out = count;
     return 0;
-}
-
-uint32_t nodus_channel_max_seq(nodus_channel_store_t *store,
-                                const uint8_t uuid[NODUS_UUID_BYTES]) {
-    if (!store || !store->db || !uuid) return 0;
-
-    char hex[33];
-    uuid_to_hex(uuid, hex);
-    if (!uuid_hex_valid(hex)) return 0;
-
-    char sql[128];
-    snprintf(sql, sizeof(sql),
-        "SELECT COALESCE(MAX(seq_id), 0) FROM channel_%s", hex);
-
-    sqlite3_stmt *stmt;
-    if (sqlite3_prepare_v2(store->db, sql, -1, &stmt, NULL) != SQLITE_OK)
-        return 0;
-
-    uint32_t max_seq = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW)
-        max_seq = (uint32_t)sqlite3_column_int(stmt, 0);
-    sqlite3_finalize(stmt);
-    return max_seq;
 }
 
 int nodus_channel_cleanup(nodus_channel_store_t *store,

@@ -274,7 +274,7 @@ int nodus_client_ch_create(nodus_client_t *client,
  * Post a message to a channel.
  * The post must be signed by the caller.
  *
- * @param seq_out  If non-NULL, receives the assigned sequence ID
+ * @param received_at_out  If non-NULL, receives the assigned received_at (ms)
  * @return 0 on success
  */
 int nodus_client_ch_post(nodus_client_t *client,
@@ -282,19 +282,19 @@ int nodus_client_ch_post(nodus_client_t *client,
                           const uint8_t post_uuid[NODUS_UUID_BYTES],
                           const uint8_t *body, size_t body_len,
                           uint64_t timestamp, const nodus_sig_t *sig,
-                          uint32_t *seq_out);
+                          uint64_t *received_at_out);
 
 /**
  * Get posts from a channel.
  * Caller must free each post's body and the array.
  *
- * @param since_seq  Get posts after this seq_id (0 = from start)
+ * @param since_received_at  Get posts after this received_at (0 = from start)
  * @param max_count  Maximum posts to return (0 = server default)
  * @return 0 on success
  */
 int nodus_client_ch_get_posts(nodus_client_t *client,
                                const uint8_t uuid[NODUS_UUID_BYTES],
-                               uint32_t since_seq, int max_count,
+                               uint64_t since_received_at, int max_count,
                                nodus_channel_post_t **posts_out,
                                size_t *count_out);
 

@@ -514,10 +514,8 @@ static void test_ch_post(void) {
         snprintf(buf, sizeof(buf), "expected ch_post_ok, got %s", last_resp.method);
         FAIL(buf); return;
     }
-    if (last_resp.ch_seq_id != 1) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "expected seq_id=1, got %u", last_resp.ch_seq_id);
-        FAIL(buf); return;
+    if (last_resp.ch_received_at == 0) {
+        FAIL("expected non-zero received_at"); return;
     }
     PASS();
 }
@@ -542,7 +540,7 @@ static void test_ch_get_posts(void) {
     nodus_tcp_send(client_conn, proto_buf, len);
     if (!wait_response(5000)) { FAIL("no ch_post_ok"); return; }
 
-    /* GET all posts (since_seq=0) */
+    /* GET all posts (since_received_at=0) */
     txn = next_txn++;
     nodus_t2_ch_get_posts(txn, session_token, test_ch_uuid,
                            0, 100, proto_buf, sizeof(proto_buf), &len);
@@ -565,8 +563,11 @@ static void test_ch_get_posts(void) {
         snprintf(buf, sizeof(buf), "expected 2 posts, got %zu", last_resp.ch_post_count);
         FAIL(buf); return;
     }
-    if (last_resp.ch_posts[0].seq_id != 1 || last_resp.ch_posts[1].seq_id != 2) {
-        FAIL("wrong seq_ids"); return;
+    if (last_resp.ch_posts[0].received_at == 0 || last_resp.ch_posts[1].received_at == 0) {
+        FAIL("missing received_at"); return;
+    }
+    if (last_resp.ch_posts[0].received_at > last_resp.ch_posts[1].received_at) {
+        FAIL("posts not ordered by received_at"); return;
     }
     if (strcmp(last_resp.ch_posts[0].body, "Hello from test!") != 0) {
         FAIL("first post body mismatch"); return;
@@ -577,24 +578,32 @@ static void test_ch_get_posts(void) {
     PASS();
 }
 
-static void test_ch_get_since_seq(void) {
-    TEST("ch_get with since_seq filters correctly");
+static void test_ch_get_since_received_at(void) {
+    TEST("ch_get with since_received_at filters correctly");
 
+    /* First, get all posts to find the received_at of the first post */
     size_t len = 0;
     uint32_t txn = next_txn++;
     nodus_t2_ch_get_posts(txn, session_token, test_ch_uuid,
-                           1, 100, proto_buf, sizeof(proto_buf), &len);
+                           0, 100, proto_buf, sizeof(proto_buf), &len);
+    nodus_tcp_send(client_conn, proto_buf, len);
+
+    if (!wait_response(5000)) { FAIL("no response"); return; }
+    if (last_resp.ch_post_count < 2) { FAIL("need at least 2 posts"); return; }
+    uint64_t first_ra = last_resp.ch_posts[0].received_at;
+
+    /* Now get posts since first_ra — should get only the second post */
+    txn = next_txn++;
+    nodus_t2_ch_get_posts(txn, session_token, test_ch_uuid,
+                           first_ra, 100, proto_buf, sizeof(proto_buf), &len);
     nodus_tcp_send(client_conn, proto_buf, len);
 
     if (!wait_response(5000)) { FAIL("no response"); return; }
     if (last_resp.ch_post_count != 1) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "expected 1 post after seq 1, got %zu",
+        snprintf(buf, sizeof(buf), "expected 1 post after first_ra, got %zu",
                  last_resp.ch_post_count);
         FAIL(buf); return;
-    }
-    if (last_resp.ch_posts[0].seq_id != 2) {
-        FAIL("expected seq_id=2"); return;
     }
     PASS();
 }
@@ -808,7 +817,7 @@ int main(void) {
         test_ch_create();
         test_ch_post();
         test_ch_get_posts();
-        test_ch_get_since_seq();
+        test_ch_get_since_received_at();
         test_ch_subscribe_notify();
         test_ch_nonexistent();
         test_presence_query();

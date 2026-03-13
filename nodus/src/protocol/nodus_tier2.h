@@ -72,7 +72,7 @@ int nodus_t2_ch_post(uint32_t txn, const uint8_t *token,
 
 int nodus_t2_ch_get_posts(uint32_t txn, const uint8_t *token,
                            const uint8_t uuid[NODUS_UUID_BYTES],
-                           uint32_t since_seq, int max_count,
+                           uint64_t since_received_at, int max_count,
                            uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_ch_subscribe(uint32_t txn, const uint8_t *token,
@@ -121,7 +121,7 @@ int nodus_t2_listen_ok(uint32_t txn,
 int nodus_t2_ch_create_ok(uint32_t txn,
                            uint8_t *buf, size_t cap, size_t *out_len);
 
-int nodus_t2_ch_post_ok(uint32_t txn, uint32_t seq_id,
+int nodus_t2_ch_post_ok(uint32_t txn, uint64_t received_at,
                          uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_ch_posts(uint32_t txn, const nodus_channel_post_t *posts,
@@ -210,7 +210,7 @@ typedef struct {
     uint8_t         post_uuid_ch[NODUS_UUID_BYTES];
     uint64_t        ch_timestamp;
     int             ch_max_count;
-    uint32_t        ch_seq_id;
+    uint64_t        ch_received_at;
     nodus_pubkey_t  author_pk;      /* ch_rep: author public key for sig verification */
     bool            has_author_pk;  /* true if apk was present in ch_rep */
     nodus_channel_post_t *ch_posts;

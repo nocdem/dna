@@ -257,7 +257,7 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
             memcpy(post.post_uuid, tmp.post_uuid_ch, NODUS_UUID_BYTES);
             post.author_fp = tmp.fp;
             post.timestamp = tmp.ch_timestamp;
-            post.seq_id = (uint32_t)tmp.seq;  /* "seq" in args → msg->seq */
+            post.received_at = tmp.ch_received_at;
             post.signature = tmp.sig;
             post.body = (char *)tmp.data;
             post.body_len = tmp.data_len;
@@ -931,7 +931,7 @@ int nodus_client_ch_post(nodus_client_t *client,
                           const uint8_t post_uuid[NODUS_UUID_BYTES],
                           const uint8_t *body, size_t body_len,
                           uint64_t timestamp, const nodus_sig_t *sig,
-                          uint32_t *seq_out) {
+                          uint64_t *received_at_out) {
     if (!nodus_client_is_ready(client) || !ch_uuid || !body) return -1;
 
     uint8_t *buf = malloc(CLIENT_BUF_SIZE);
@@ -951,14 +951,14 @@ int nodus_client_ch_post(nodus_client_t *client,
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
-    if (seq_out) *seq_out = resp->ch_seq_id;
+    if (received_at_out) *received_at_out = resp->ch_received_at;
     free_pending(client, req);
     return 0;
 }
 
 int nodus_client_ch_get_posts(nodus_client_t *client,
                                const uint8_t uuid[NODUS_UUID_BYTES],
-                               uint32_t since_seq, int max_count,
+                               uint64_t since_received_at, int max_count,
                                nodus_channel_post_t **posts_out,
                                size_t *count_out) {
     if (!nodus_client_is_ready(client) || !uuid || !posts_out || !count_out)
@@ -973,7 +973,7 @@ int nodus_client_ch_get_posts(nodus_client_t *client,
     nodus_pending_t *req = alloc_pending(client, txn);
     if (!req) { free(buf); return -1; }
 
-    nodus_t2_ch_get_posts(txn, client->token, uuid, since_seq, max_count,
+    nodus_t2_ch_get_posts(txn, client->token, uuid, since_received_at, max_count,
                            buf, CLIENT_BUF_SIZE, &len);
     if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
     free(buf);

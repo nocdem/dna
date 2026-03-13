@@ -38,6 +38,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  -u <udp_port>     UDP port (default: %d)\n", NODUS_DEFAULT_UDP_PORT);
     fprintf(stderr, "  -t <tcp_port>     TCP port (default: %d)\n", NODUS_DEFAULT_TCP_PORT);
     fprintf(stderr, "  -p <peer_port>    Inter-node TCP port (default: %d)\n", NODUS_DEFAULT_PEER_PORT);
+    fprintf(stderr, "  -C <ch_port>      Channel TCP port (default: %d)\n", NODUS_DEFAULT_CH_PORT);
     fprintf(stderr, "  -i <identity_dir> Identity directory\n");
     fprintf(stderr, "  -d <data_dir>     Data directory (default: /var/lib/nodus)\n");
     fprintf(stderr, "  -s <ip:port>      Add seed node (repeatable)\n");
@@ -80,6 +81,8 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
         cfg->tcp_port = (uint16_t)json_object_get_int(val);
     if (json_object_object_get_ex(root, "peer_port", &val))
         cfg->peer_port = (uint16_t)json_object_get_int(val);
+    if (json_object_object_get_ex(root, "ch_port", &val))
+        cfg->ch_port = (uint16_t)json_object_get_int(val);
     if (json_object_object_get_ex(root, "identity_path", &val))
         snprintf(cfg->identity_path, sizeof(cfg->identity_path), "%s",
                  json_object_get_string(val));
@@ -126,18 +129,20 @@ int main(int argc, char **argv) {
     config.udp_port = NODUS_DEFAULT_UDP_PORT;
     config.tcp_port = NODUS_DEFAULT_TCP_PORT;
     config.peer_port = NODUS_DEFAULT_PEER_PORT;
+    config.ch_port = NODUS_DEFAULT_CH_PORT;
     snprintf(config.data_path, sizeof(config.data_path), "/var/lib/nodus");
 
     const char *config_file = NULL;
     int opt;
 
-    while ((opt = getopt(argc, argv, "c:b:u:t:p:i:d:s:h")) != -1) {
+    while ((opt = getopt(argc, argv, "c:b:u:t:p:C:i:d:s:h")) != -1) {
         switch (opt) {
         case 'c': config_file = optarg; break;
         case 'b': snprintf(config.bind_ip, sizeof(config.bind_ip), "%s", optarg); break;
         case 'u': config.udp_port = (uint16_t)atoi(optarg); break;
         case 't': config.tcp_port = (uint16_t)atoi(optarg); break;
         case 'p': config.peer_port = (uint16_t)atoi(optarg); break;
+        case 'C': config.ch_port = (uint16_t)atoi(optarg); break;
         case 'i': snprintf(config.identity_path, sizeof(config.identity_path), "%s", optarg); break;
         case 'd': snprintf(config.data_path, sizeof(config.data_path), "%s", optarg); break;
         case 's':
@@ -165,6 +170,7 @@ int main(int argc, char **argv) {
         file_cfg.udp_port = NODUS_DEFAULT_UDP_PORT;
         file_cfg.tcp_port = NODUS_DEFAULT_TCP_PORT;
         file_cfg.peer_port = NODUS_DEFAULT_PEER_PORT;
+        file_cfg.ch_port = NODUS_DEFAULT_CH_PORT;
         snprintf(file_cfg.data_path, sizeof(file_cfg.data_path), "/var/lib/nodus");
 
         if (load_config_json(config_file, &file_cfg) != 0)
@@ -176,12 +182,13 @@ int main(int argc, char **argv) {
 
         /* Re-parse CLI args to override file config */
         optind = 1;
-        while ((opt = getopt(argc, argv, "c:b:u:t:p:i:d:s:h")) != -1) {
+        while ((opt = getopt(argc, argv, "c:b:u:t:p:C:i:d:s:h")) != -1) {
             switch (opt) {
             case 'b': snprintf(config.bind_ip, sizeof(config.bind_ip), "%s", optarg); break;
             case 'u': config.udp_port = (uint16_t)atoi(optarg); break;
             case 't': config.tcp_port = (uint16_t)atoi(optarg); break;
             case 'p': config.peer_port = (uint16_t)atoi(optarg); break;
+            case 'C': config.ch_port = (uint16_t)atoi(optarg); break;
             case 'i': snprintf(config.identity_path, sizeof(config.identity_path), "%s", optarg); break;
             case 'd': snprintf(config.data_path, sizeof(config.data_path), "%s", optarg); break;
             case 's':

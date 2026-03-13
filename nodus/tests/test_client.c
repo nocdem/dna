@@ -307,12 +307,12 @@ static void test_ch_post(void) {
     sign_channel_post(post_uuid, test_ch_uuid, &client_id.node_id,
                        body, ts, &client_id.sk, &sig);
 
-    uint32_t seq = 0;
+    uint64_t ra = 0;
     int rc = nodus_client_ch_post(&client, test_ch_uuid, post_uuid,
                                    (const uint8_t *)body, strlen(body),
-                                   ts, &sig, &seq);
-    if (rc == 0 && seq == 1) PASS();
-    else FAIL("ch_post failed or bad seq");
+                                   ts, &sig, &ra);
+    if (rc == 0 && ra > 0) PASS();
+    else FAIL("ch_post failed or bad received_at");
 }
 
 static void test_ch_get_posts(void) {
