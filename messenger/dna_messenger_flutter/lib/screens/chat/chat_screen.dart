@@ -3354,9 +3354,10 @@ class _TransferBubbleState extends State<_TransferBubble> {
       return;  // No FFI call needed
     }
 
-    // Outgoing transfers: delay first check to give blockchain time to process
-    // Incoming transfers: verify immediately
-    if (widget.message.isOutgoing) {
+    // Outgoing transfers sent in the last 30s: delay to let blockchain process
+    // Everything else (incoming + old outgoing): verify immediately
+    final isRecent = DateTime.now().difference(widget.message.timestamp).inSeconds < 30;
+    if (widget.message.isOutgoing && isRecent) {
       _retryTimer = Timer(_initialDelay, _verifyTransaction);
     } else {
       _verifyTransaction();

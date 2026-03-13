@@ -1219,6 +1219,7 @@ void dna_handle_get_cached_transactions(dna_engine_t *engine, dna_task_t *task) 
 
 void dna_handle_get_tx_status(dna_engine_t *engine, dna_task_t *task) {
     (void)engine;
+    ensure_wallet_cache();
     const char *tx_hash = task->params.get_tx_status.tx_hash;
     const char *chain = task->params.get_tx_status.chain;
 
