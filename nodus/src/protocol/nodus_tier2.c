@@ -658,6 +658,75 @@ int nodus_t2_ch_rep_ok(uint32_t txn,
     return finish(&enc, out_len);
 }
 
+/* ── Ring management (Nodus ↔ Nodus, TCP 4002) ─────────────────── */
+
+int nodus_t2_ring_check(uint32_t txn,
+                          const nodus_key_t *node_id,
+                          const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                          const char *status,
+                          uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ring_check");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 3);
+    cbor_encode_cstr(&enc, "nid");
+    cbor_encode_bstr(&enc, node_id->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, ch_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "st");
+    cbor_encode_cstr(&enc, status);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ring_ack(uint32_t txn,
+                        const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                        bool agree,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ring_ack");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, ch_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "ag");
+    cbor_encode_bool(&enc, agree);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ring_evict(uint32_t txn,
+                          const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                          uint32_t version,
+                          uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ring_evict");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, ch_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "v");
+    cbor_encode_uint(&enc, version);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_ring_changed(uint32_t txn,
+                               const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                               uint32_t version,
+                               uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ch_ring");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, ch_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "v");
+    cbor_encode_uint(&enc, version);
+    return finish(&enc, out_len);
+}
+
 /* ── Decode ──────────────────────────────────────────────────────── */
 
 int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
@@ -824,6 +893,26 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                         memcpy(msg->author_pk.bytes, val.bstr.ptr, NODUS_PK_BYTES);
                         msg->has_author_pk = true;
                     }
+                }
+                /* nid (ring_check: node_id) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "nid", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
+                        memcpy(msg->ring_node_id.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                }
+                /* st (ring_check: status "dead"/"alive") */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "st", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_TSTR && val.tstr.len < sizeof(msg->ring_status)) {
+                        memcpy(msg->ring_status, val.tstr.ptr, val.tstr.len);
+                        msg->ring_status[val.tstr.len] = '\0';
+                    }
+                }
+                /* v (ring_evict/ch_ring_changed: version) */
+                else if (akey.tstr.len == 1 && akey.tstr.ptr[0] == 'v') {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->ring_version = (uint32_t)val.uint_val;
                 }
                 /* fps (presence query/sync: array of fingerprints) */
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "fps", 3) == 0) {
@@ -1102,6 +1191,18 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                             msg->server_count++;
                         }
                     }
+                }
+                /* ch (ring_ack: channel UUID) */
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "ch", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_UUID_BYTES)
+                        memcpy(msg->channel_uuid, val.bstr.ptr, NODUS_UUID_BYTES);
+                }
+                /* ag (ring_ack: agree) */
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "ag", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BOOL)
+                        msg->ring_agree = val.bool_val;
                 }
                 /* code (error) */
                 else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "code", 4) == 0) {

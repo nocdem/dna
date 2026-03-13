@@ -180,6 +180,42 @@ int nodus_t2_ch_replicate(uint32_t txn,
 int nodus_t2_ch_rep_ok(uint32_t txn,
                         uint8_t *buf, size_t cap, size_t *out_len);
 
+/* ── Ring management (Nodus ↔ Nodus, TCP 4002) ─────────────────── */
+
+/** ring_check: ask peer to confirm a node's status for a channel.
+ * @param node_id   The node being checked
+ * @param ch_uuid   Channel UUID
+ * @param status    "dead" or "alive" */
+int nodus_t2_ring_check(uint32_t txn,
+                          const nodus_key_t *node_id,
+                          const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                          const char *status,
+                          uint8_t *buf, size_t cap, size_t *out_len);
+
+/** ring_ack: response to ring_check.
+ * @param ch_uuid   Channel UUID
+ * @param agree     true if confirming the status change */
+int nodus_t2_ring_ack(uint32_t txn,
+                        const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                        bool agree,
+                        uint8_t *buf, size_t cap, size_t *out_len);
+
+/** ring_evict: notify a node it's no longer responsible for a channel.
+ * @param ch_uuid   Channel UUID
+ * @param version   New ring version */
+int nodus_t2_ring_evict(uint32_t txn,
+                          const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                          uint32_t version,
+                          uint8_t *buf, size_t cap, size_t *out_len);
+
+/** ch_ring_changed: notify connected 4003 client that ring changed for a channel.
+ * @param ch_uuid   Channel UUID
+ * @param version   New ring version */
+int nodus_t2_ch_ring_changed(uint32_t txn,
+                               const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                               uint32_t version,
+                               uint8_t *buf, size_t cap, size_t *out_len);
+
 /* ── Decoded message ─────────────────────────────────────────────── */
 
 typedef struct {
@@ -215,6 +251,12 @@ typedef struct {
     bool            has_author_pk;  /* true if apk was present in ch_rep */
     nodus_channel_post_t *ch_posts;
     size_t          ch_post_count;
+
+    /* Ring management fields */
+    nodus_key_t     ring_node_id;       /* ring_check: target node */
+    char            ring_status[8];     /* ring_check: "dead" or "alive" */
+    bool            ring_agree;         /* ring_ack: agree/disagree */
+    uint32_t        ring_version;       /* ring_evict/ch_ring_changed: version */
 
     /* Server list (servers response) */
     struct {

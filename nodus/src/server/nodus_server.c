@@ -1412,6 +1412,10 @@ static void handle_t2_ch_create(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
+    /* Track channel and announce to DHT */
+    nodus_ring_mgmt_track(&srv->ring_mgmt, msg->channel_uuid);
+    nodus_ring_announce_to_dht(&srv->ring_mgmt, msg->channel_uuid, 1);
+
     size_t len = 0;
     nodus_t2_ch_create_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
     nodus_tcp_send(sess->conn, resp_buf, len);
@@ -1788,6 +1792,23 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                                 resp_buf, sizeof(resp_buf), &rlen);
             }
             nodus_tcp_send(sess->conn, resp_buf, rlen);
+            nodus_t2_msg_free(&msg);
+            return;
+
+        } else if (strcmp(msg.method, "ring_check") == 0) {
+            nodus_ring_mgmt_handle_check(&srv->ring_mgmt, sess->conn,
+                                           &msg.ring_node_id, msg.channel_uuid,
+                                           msg.ring_status, msg.txn_id);
+            nodus_t2_msg_free(&msg);
+            return;
+        } else if (strcmp(msg.method, "ring_ack") == 0) {
+            nodus_ring_mgmt_handle_ack(&srv->ring_mgmt, msg.channel_uuid,
+                                         msg.ring_agree, msg.txn_id);
+            nodus_t2_msg_free(&msg);
+            return;
+        } else if (strcmp(msg.method, "ring_evict") == 0) {
+            nodus_ring_mgmt_handle_evict(&srv->ring_mgmt, msg.channel_uuid,
+                                           msg.ring_version, msg.txn_id, sess->conn);
             nodus_t2_msg_free(&msg);
             return;
         }
@@ -2204,6 +2225,11 @@ static void handle_ch_t2_ch_create(nodus_server_t *srv, nodus_ch_session_t *sess
         nodus_tcp_send(sess->conn, resp_buf, len);
         return;
     }
+
+    /* Track channel and announce to DHT */
+    nodus_ring_mgmt_track(&srv->ring_mgmt, msg->channel_uuid);
+    nodus_ring_announce_to_dht(&srv->ring_mgmt, msg->channel_uuid, 1);
+
     size_t len = 0;
     nodus_t2_ch_create_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
     nodus_tcp_send(sess->conn, resp_buf, len);
@@ -2503,6 +2529,9 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     /* Init PBFT consensus (adds self to ring) */
     nodus_pbft_init(&srv->pbft, srv);
 
+    /* Init ring management (channel responsibility tracking) */
+    nodus_ring_mgmt_init(&srv->ring_mgmt, srv);
+
     /* Init TCP transport (own epoll) */
     if (nodus_tcp_init(&srv->tcp, -1) != 0)
         return -1;
@@ -2644,6 +2673,9 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Presence: expire stale entries + broadcast local list to peers */
         nodus_presence_tick(srv);
+
+        /* Ring management: check for dead peers, initiate ring_check (every 5s) */
+        nodus_ring_mgmt_tick(&srv->ring_mgmt);
 
         /* Retry DHT hinted handoff (failed replication, every 30s) */
         dht_hinted_retry(srv);

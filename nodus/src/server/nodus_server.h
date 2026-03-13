@@ -22,6 +22,7 @@
 #include "crypto/nodus_identity.h"
 #include "witness/nodus_witness.h"
 #include "server/nodus_presence.h"
+#include "channel/nodus_ring_mgmt.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -243,6 +244,9 @@ typedef struct nodus_server {
 
     /* Presence tracking (connected clients, cluster-wide) */
     nodus_presence_table_t  presence;
+
+    /* Ring management (channel responsibility tracking) */
+    nodus_ring_mgmt_t       ring_mgmt;
 
     /* Sessions (indexed by conn->slot) */
     nodus_session_t         sessions[NODUS_MAX_SESSIONS];

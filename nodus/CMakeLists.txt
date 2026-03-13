@@ -97,6 +97,7 @@ if(NOT WIN32)
         src/channel/nodus_hashring.c
         src/channel/nodus_channel_store.c
         src/channel/nodus_replication.c
+        src/channel/nodus_ring_mgmt.c
         src/consensus/nodus_pbft.c
         src/server/nodus_server.c
         src/server/nodus_auth.c
