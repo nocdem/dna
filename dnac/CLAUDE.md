@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines for Claude AI
 
-**Last Updated:** 2026-03-03 | **Status:** DESIGN | **Version:** v0.11.0
+**Last Updated:** 2026-03-14 | **Status:** DESIGN | **Version:** v0.11.1
 
 ---
 
@@ -92,7 +92,7 @@ DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Connec
 | Token Model | UTXO |
 | Signatures | Dilithium5 (Post-Quantum) |
 | Transport | DHT via Nodus (nodus_ops API) |
-| Double-Spend Prevention | Nodus 2-of-3 Witnessing |
+| Double-Spend Prevention | Nodus PBFT Witnessing (dynamic roster) |
 | Database | SQLite |
 | ZK (v2 future) | STARKs (Post-Quantum) |
 
@@ -193,7 +193,7 @@ OUTPUT:
 **EVERY successful build that will be pushed MUST increment the version.**
 
 **Version File:** `include/dnac/version.h`
-**Current:** v0.11.0
+**Current:** v0.11.1
 
 **Which Number to Bump:**
 - **PATCH** (0.1.X): Bug fixes, small features
@@ -287,16 +287,12 @@ ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/dnac-asan" ./dnac-witness -p 4200
 │   ├── wallet.h           # Wallet internals
 │   ├── transaction.h      # Transaction types
 │   ├── nodus.h            # Nodus client + witness announcements
-│   └── bft.h              # BFT types, serialization, roster
+│   └── bft.h              # BFT types
 ├── src/
 │   ├── wallet/            # Wallet operations
 │   ├── transaction/       # TX building/verification
-│   ├── nodus/             # Nodus client
+│   ├── nodus/             # Nodus client + witness discovery
 │   ├── db/                # SQLite operations
-│   ├── bft/               # BFT support (serialization, roster, replay)
-│   │   ├── serialize.c    # Message serialization
-│   │   ├── roster.c       # Witness roster + config/leader election
-│   │   └── replay.c       # Nonce-based replay prevention
 │   └── cli/               # CLI tool
 ├── tests/                 # Unit tests
 └── docs/                  # Documentation
@@ -355,7 +351,7 @@ git push origin main
 
 ## Witness System (Embedded in Nodus)
 
-The old standalone `dnac-witness` binary was removed in v0.10.3. Witness logic now runs inside `nodus-server` via the embedded witness module (`nodus/src/witness/`).
+The old standalone `dnac-witness` binary was removed in v0.10.3. Witness logic now runs inside `nodus-server` via the embedded witness module (`nodus/src/witness/`). The witness roster is dynamic -- nodus-server nodes with witness capability announce themselves and are discovered at runtime via `dnac_discover_witnesses()`.
 
 ### BFT Consensus
 
@@ -368,19 +364,12 @@ The old standalone `dnac-witness` binary was removed in v0.10.3. Witness logic n
 
 **Consensus Phases:** PROPOSE → PREVOTE → PRECOMMIT → COMMIT
 
-### DNAC BFT Source (in dnac/)
-
-Only serialization, roster, and replay prevention remain in `dnac/src/bft/`:
-- `serialize.c` — Message type serialization/deserialization
-- `roster.c` — Witness roster management, config init, leader election
-- `replay.c` — Nonce-based replay prevention (is_replay())
-
 ---
 
 ## Security Considerations
 
 1. **Nullifiers** - SHA3-512(secret || UTXO data) to prevent linking
-2. **Nodus Witnessing** - Require 2-of-3 attestations for double-spend prevention
+2. **Nodus Witnessing** - Require PBFT quorum (2f+1) attestations for double-spend prevention
 3. **Key Storage** - Rely on libdna's secure key storage
 4. **Dilithium5** - Post-quantum secure signatures
 5. **UTXO Ownership** - Sender fingerprint verified against UTXO owner before PREVOTE (v0.10.2)
@@ -390,8 +379,9 @@ Only serialization, roster, and replay prevention remain in `dnac/src/bft/`:
 9. **Overflow Protection** - safe_add_u64 for genesis supply and balance calculations (v0.10.2)
 10. **COMMIT Signatures** - All COMMIT messages require valid Dilithium5 signature (v0.10.2)
 11. **COMMIT TX Integrity** - tx_hash recomputed from tx_data before DB commit (v0.11.0)
-12. **Nonce Hash Table** - O(1) replay prevention with TTL eviction, resistant to cache flooding (v0.11.0)
+12. **Nonce Hash Table** - O(1) replay prevention with TTL eviction, resistant to cache flooding (server-side in nodus, v0.11.0)
 13. **Structured Logging** - All fprintf(stderr) replaced with QGP_LOG macros (v0.11.0)
+14. **BFT Code Removal** - Client-side BFT code (serialize/roster/replay) removed; all BFT logic lives server-side in nodus (v0.11.1)
 
 ---
 

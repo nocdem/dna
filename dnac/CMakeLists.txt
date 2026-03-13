@@ -103,17 +103,11 @@ set(DNAC_SOURCES
 
     # Nodus
     src/nodus/client.c
-    src/nodus/attestation.c
     src/nodus/discovery.c
     src/nodus/tcp_client.c
 
     # Database
     src/db/db.c
-
-    # BFT (serialization, roster, replay detection)
-    src/bft/serialize.c
-    src/bft/roster.c
-    src/bft/replay.c
 
     # Utils
     src/utils/crypto_helpers.c

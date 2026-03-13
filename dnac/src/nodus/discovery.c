@@ -1,22 +1,30 @@
 /**
  * @file discovery.c
- * @brief Witness server discovery via DHT roster
+ * @brief Witness server discovery via Nodus SDK roster query
  *
- * Discovers witness servers by querying the BFT roster from DHT.
- * Results are cached for performance.
- *
- * v0.10.3: Removed hardcoded LAN bootstrap servers (192.168.0.x).
- * Discovery now relies solely on the BFT roster from DHT.
+ * Discovers witness servers by querying the BFT roster through the
+ * Nodus client SDK. Results are cached for performance.
  */
 
 #include "dnac/nodus.h"
 #include "dnac/wallet.h"
-#include "dnac/bft.h"
-#include <dna/dna_engine.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <openssl/evp.h>
+
+/* Shared crypto */
+#include "crypto/hash/qgp_sha3.h"
+#include "crypto/utils/qgp_log.h"
+
+/* Nodus client SDK */
+#include "nodus/nodus.h"
+
+/* Nodus singleton access */
+extern nodus_client_t *nodus_singleton_get(void);
+extern void nodus_singleton_lock(void);
+extern void nodus_singleton_unlock(void);
+
+#define LOG_TAG "DNAC_DISC"
 
 /* Cache configuration */
 #define WITNESS_CACHE_TTL_SEC 300  /* 5 minute cache */
@@ -35,37 +43,6 @@ extern uint64_t g_witness_cache_time;
  */
 static uint64_t get_time_sec(void) {
     return (uint64_t)time(NULL);
-}
-
-/**
- * Derive fingerprint from Dilithium5 public key
- * Fingerprint = hex(SHA3-512(pubkey))
- */
-static void derive_fingerprint(const uint8_t *pubkey, char *fingerprint_out) {
-    uint8_t hash[64];
-
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) {
-        fingerprint_out[0] = '\0';
-        return;
-    }
-
-    if (EVP_DigestInit_ex(ctx, EVP_sha3_512(), NULL) != 1 ||
-        EVP_DigestUpdate(ctx, pubkey, DNAC_PUBKEY_SIZE) != 1 ||
-        EVP_DigestFinal_ex(ctx, hash, NULL) != 1) {
-        EVP_MD_CTX_free(ctx);
-        fingerprint_out[0] = '\0';
-        return;
-    }
-    EVP_MD_CTX_free(ctx);
-
-    /* Convert to hex string */
-    static const char hex[] = "0123456789abcdef";
-    for (int i = 0; i < 64; i++) {
-        fingerprint_out[i * 2] = hex[(hash[i] >> 4) & 0xF];
-        fingerprint_out[i * 2 + 1] = hex[hash[i] & 0xF];
-    }
-    fingerprint_out[128] = '\0';
 }
 
 /* ============================================================================
@@ -96,51 +73,76 @@ int dnac_witness_discover(dnac_context_t *ctx,
         }
     }
 
-    /* Get DNA engine */
-    dna_engine_t *engine = dnac_get_engine(ctx);
+    /* Query roster via Nodus SDK */
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        QGP_LOG_ERROR(LOG_TAG, "Nodus singleton not initialized");
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
 
-    /* Discover roster from DHT */
-    dnac_roster_t roster;
-    int rc = dnac_bft_client_discover_roster(engine, &roster);
-    if (rc == DNAC_BFT_SUCCESS && roster.n_witnesses > 0) {
-        /* Convert roster to witness info array */
-        dnac_witness_info_t *servers = calloc(roster.n_witnesses, sizeof(dnac_witness_info_t));
-        if (servers) {
-            for (uint32_t i = 0; i < roster.n_witnesses; i++) {
-                dnac_roster_entry_t *entry = &roster.witnesses[i];
-                dnac_witness_info_t *info = &servers[i];
+    nodus_singleton_lock();
 
-                /* Convert ID to hex string */
-                for (int j = 0; j < 32; j++) {
-                    snprintf(info->id + j*2, 3, "%02x", entry->witness_id[j]);
-                }
+    nodus_dnac_roster_result_t roster;
+    int rc = nodus_client_dnac_roster(client, &roster);
 
-                strncpy(info->address, entry->address, sizeof(info->address) - 1);
-                memcpy(info->pubkey, entry->pubkey, DNAC_PUBKEY_SIZE);
-                info->is_available = entry->active;
-                info->last_seen = entry->joined_epoch * DNAC_EPOCH_DURATION_SEC;
+    nodus_singleton_unlock();
 
-                /* Derive fingerprint from public key */
-                derive_fingerprint(entry->pubkey, info->fingerprint);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Roster discovery failed: %d", rc);
+        return DNAC_ERROR_NETWORK;
+    }
+
+    if (roster.count <= 0) {
+        return DNAC_ERROR_NOT_FOUND;
+    }
+
+    /* Convert roster entries to witness info array */
+    dnac_witness_info_t *servers = calloc(roster.count, sizeof(dnac_witness_info_t));
+    if (!servers) {
+        return DNAC_ERROR_OUT_OF_MEMORY;
+    }
+
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < roster.count; i++) {
+        nodus_dnac_roster_entry_t *entry = &roster.entries[i];
+        dnac_witness_info_t *info = &servers[i];
+
+        /* Convert witness_id to hex string */
+        for (int j = 0; j < NODUS_T3_WITNESS_ID_LEN; j++) {
+            info->id[j * 2] = hex[(entry->witness_id[j] >> 4) & 0xF];
+            info->id[j * 2 + 1] = hex[entry->witness_id[j] & 0xF];
+        }
+        info->id[NODUS_T3_WITNESS_ID_LEN * 2] = '\0';
+
+        strncpy(info->address, entry->address, sizeof(info->address) - 1);
+        memcpy(info->pubkey, entry->pubkey, NODUS_PK_BYTES);
+        info->is_available = entry->active;
+
+        /* Derive fingerprint from public key: hex(SHA3-512(pubkey)) */
+        uint8_t fp_hash[64];
+        if (qgp_sha3_512(entry->pubkey, NODUS_PK_BYTES, fp_hash) == 0) {
+            for (int j = 0; j < 64; j++) {
+                info->fingerprint[j * 2] = hex[(fp_hash[j] >> 4) & 0xF];
+                info->fingerprint[j * 2 + 1] = hex[fp_hash[j] & 0xF];
             }
-
-            /* Update cache */
-            if (g_witness_servers) free(g_witness_servers);
-            g_witness_servers = calloc(roster.n_witnesses, sizeof(dnac_witness_info_t));
-            if (g_witness_servers) {
-                memcpy(g_witness_servers, servers, roster.n_witnesses * sizeof(dnac_witness_info_t));
-                g_witness_count = roster.n_witnesses;
-                g_witness_cache_time = now;
-            }
-
-            *servers_out = servers;
-            *count_out = roster.n_witnesses;
-            return DNAC_SUCCESS;
+            info->fingerprint[128] = '\0';
         }
     }
 
-    /* No roster found */
-    return DNAC_ERROR_NETWORK;
+    /* Update cache */
+    if (g_witness_servers) free(g_witness_servers);
+    g_witness_servers = calloc(roster.count, sizeof(dnac_witness_info_t));
+    if (g_witness_servers) {
+        memcpy(g_witness_servers, servers, roster.count * sizeof(dnac_witness_info_t));
+        g_witness_count = roster.count;
+        g_witness_cache_time = now;
+    }
+
+    *servers_out = servers;
+    *count_out = roster.count;
+
+    QGP_LOG_INFO(LOG_TAG, "Discovered %d witnesses via Nodus SDK", roster.count);
+    return DNAC_SUCCESS;
 }
 
 int dnac_get_witness_list(dnac_context_t *ctx,
