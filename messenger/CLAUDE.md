@@ -232,68 +232,62 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
-### CHECKPOINT 9: RELEASE BUILD (When user says "release" or "release enforced")
-**Only execute when user explicitly says "release" or "release enforced".**
+### CHECKPOINT 9: PUSH / RELEASE / RELEASE ENFORCED
 
-**SKIP this checkpoint for regular commits.** State "CHECKPOINT 9 SKIPPED - Not a release"
+**Three user commands determine what happens after build verification:**
 
-**TWO RELEASE MODES:**
+| User says | Commit tag | DHT publish | DHT minimums | Effect |
+|-----------|-----------|-------------|-------------|--------|
+| `push` | `[BUILD]` only | No | — | CI builds. No version on website. No DHT update. |
+| `release` | `[BUILD] [RELEASE]` | Yes | Minimums = PREVIOUS version | CI builds + website deploy. Users see dismissible "Update Available". |
+| `release enforced` | `[BUILD] [RELEASE]` | Yes | Minimums = CURRENT version | CI builds + website deploy. Users MUST update (app blocked). |
 
-| User says | Mode | DHT minimums | User experience |
-|-----------|------|-------------|-----------------|
-| `release` | Optional update | Minimums stay at PREVIOUS version | Users see "Update Available" (dismissible) |
-| `release enforced` | Forced update | Minimums set to CURRENT version | Users see "Update Required" (blocks app) |
+**SKIP this checkpoint for regular commits** (no push/release keyword). State "CHECKPOINT 9 SKIPPED"
 
-**COMMIT MESSAGE FORMAT FOR RELEASE:**
-```
-Release v<LIB_VERSION> / v<APP_VERSION> [BUILD] [RELEASE]
-```
-Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
+---
 
-**RELEASE PROCEDURE:**
+#### When user says `push`:
+1. **COMMIT** with `[BUILD]` tag:
+   ```bash
+   git commit -m "feat: description (vX.Y.Z) [BUILD]"
+   ```
+2. **PUSH** to both repos: `git push gitlab main && git push origin main`
+3. **NO** DHT publish, **NO** README/version badge updates
+4. **STATE**: "CHECKPOINT 9 COMPLETE - Build push"
 
+---
+
+#### When user says `release`:
 1. **UPDATE READMEs and CLAUDE.md** - Update all version references:
    - `README.md` (messenger) — version badge
-   - `../README.md` (root) — version table (Messenger C Library, Flutter App, Nodus DHT)
+   - `../README.md` (root) — version table
    - `CLAUDE.md` (messenger) — header line versions + Checkpoint 8 "Current" column
-   ```markdown
-   <a href="#status"><img src="https://img.shields.io/badge/Status-Beta%20vX.Y.Z-blue" alt="Beta"></a>
-   ```
-
-2. **COMMIT** with BOTH tags:
+2. **COMMIT** with BOTH `[BUILD]` AND `[RELEASE]` tags:
    ```bash
-   git add README.md
-   git commit -m "Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]"
+   git commit -m "Release v<LIB> / v<APP> [BUILD] [RELEASE]"
    ```
-   **CRITICAL:** BOTH `[BUILD]` AND `[RELEASE]` tags are REQUIRED!
-   - `[BUILD]` = triggers CI pipeline (builds Android/Linux/Windows)
-   - `[RELEASE]` = triggers website deployment
-   - **Without `[BUILD]`, CI pipeline does NOT run!**
-
-3. **PUSH** to both repos:
+3. **PUSH** to both repos: `git push gitlab main && git push origin main`
+4. **PUBLISH** version to DHT — minimums stay at PREVIOUS version:
    ```bash
-   git push gitlab main && git push origin main
-   ```
-
-4. **PUBLISH** version to DHT using the release identity:
-
-   **For `release` (optional update):**
-   ```bash
-   # Minimums stay at PREVIOUS version — users get soft "Update Available" prompt
-   version publish --lib <NEW> --app <NEW> --nodus <CURRENT_NODUS> \
+   version publish --lib <NEW> --app <NEW> --nodus <NODUS> \
      --lib-min <PREVIOUS_LIB> --app-min <PREVIOUS_APP> --nodus-min <PREVIOUS_NODUS>
    ```
+5. **VERIFY** with `version check`
+6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published (optional update)"
 
-   **For `release enforced` (forced update):**
+---
+
+#### When user says `release enforced`:
+1-3. **Same as `release`** (READMEs, commit with `[BUILD] [RELEASE]`, push)
+4. **PUBLISH** version to DHT — minimums set to CURRENT version:
    ```bash
-   # Minimums set to CURRENT version — users MUST update, app is blocked
-   version publish --lib <NEW> --app <NEW> --nodus <CURRENT_NODUS> \
-     --lib-min <NEW> --app-min <NEW> --nodus-min <CURRENT_NODUS>
+   version publish --lib <NEW> --app <NEW> --nodus <NODUS> \
+     --lib-min <NEW> --app-min <NEW> --nodus-min <NODUS>
    ```
+5. **VERIFY** with `version check`
+6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published (ENFORCED update)"
 
-5. **VERIFY** DHT publication with `version check`
-
-6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published (mode: optional|enforced)"
+---
 
 **DHT Notes:**
 - **ALWAYS use the release identity** for DHT publishing (see internal docs for path)
