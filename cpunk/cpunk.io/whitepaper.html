@@ -111,6 +111,12 @@
       50%      { opacity: 0.8; }
     }
 
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+
     @keyframes titleGlow {
       0%, 100% {
         text-shadow:
@@ -343,10 +349,18 @@
       font-size: clamp(2rem, 5vw, 3.2rem);
       font-weight: 900;
       letter-spacing: 0.10em;
-      color: #ffffff;
-      animation: titleGlow 4s ease-in-out infinite;
       margin-bottom: 1rem;
       line-height: 1.1;
+      color: #ffffff;
+    }
+
+    .hero-title .accent {
+      background: linear-gradient(130deg, var(--teal), #4dd9e0, var(--orange));
+      background-size: 200% 200%;
+      animation: gradientShift 6s ease infinite;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
     }
 
     .hero-divider {
@@ -916,7 +930,7 @@
       <section class="hero">
         <div class="hero-bg"></div>
         <div class="hero-content">
-          <h1 class="hero-title">CPUNK Whitepaper</h1>
+          <h1 class="hero-title">CPUNK <span class="accent">Whitepaper</span></h1>
           <div class="hero-divider"></div>
           <p class="hero-subtitle">
             A technical overview of the <span class="hl-teal">post-quantum infrastructure</span> powering privacy-first identity, messaging, and finance &mdash; built for the <span class="hl-orange">quantum era</span>.

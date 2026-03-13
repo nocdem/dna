@@ -131,6 +131,12 @@
       50%      { opacity: 0.8; }
     }
 
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+
     @keyframes driftOrb {
       0%   { transform: translate(0, 0) scale(1); }
       25%  { transform: translate(30px, -20px) scale(1.05); }
@@ -403,8 +409,12 @@
       font-size: clamp(4rem, 10vw, 7rem);
       font-weight: 900;
       letter-spacing: 0.18em;
-      color: #ffffff;
-      animation: titleGlow 4s ease-in-out infinite;
+      background: linear-gradient(130deg, var(--teal), #4dd9e0, var(--orange));
+      background-size: 200% 200%;
+      animation: gradientShift 6s ease infinite;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
       margin-bottom: 1.5rem;
       line-height: 1;
     }

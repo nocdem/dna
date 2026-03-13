@@ -111,6 +111,12 @@
       50%      { opacity: 0.8; }
     }
 
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+
     @keyframes titleGlow {
       0%, 100% {
         text-shadow:
@@ -345,10 +351,18 @@
       font-size: clamp(2rem, 5vw, 3rem);
       font-weight: 900;
       letter-spacing: 0.1em;
-      color: #ffffff;
-      animation: titleGlow 4s ease-in-out infinite;
       margin-bottom: 1.5rem;
       line-height: 1.2;
+      color: #ffffff;
+    }
+
+    .hero-title .accent {
+      background: linear-gradient(130deg, var(--teal), #4dd9e0, var(--orange));
+      background-size: 200% 200%;
+      animation: gradientShift 6s ease infinite;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
     }
 
     .hero-divider {
@@ -973,7 +987,7 @@
       <section class="hero">
         <div class="hero-bg"></div>
         <div class="hero-content">
-          <h1 class="hero-title">About CPUNK</h1>
+          <h1 class="hero-title">About <span class="accent">CPUNK</span></h1>
           <div class="hero-divider"></div>
           <p class="hero-subtitle">
             A community focused on <strong style="color:var(--teal)">privacy</strong>,

@@ -130,6 +130,12 @@
       50%      { opacity: 0.8; }
     }
 
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+
     /* Scroll reveal */
     .reveal {
       opacity: 0;
@@ -390,7 +396,12 @@
     }
 
     .gradient-text {
-      color: #ffffff;
+      background: linear-gradient(130deg, var(--teal), #4dd9e0, var(--orange));
+      background-size: 200% 200%;
+      animation: gradientShift 6s ease infinite;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
     }
 
     .hero-split-text .subtitle {

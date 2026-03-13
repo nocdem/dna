@@ -110,6 +110,12 @@
       to   { opacity: 1; transform: translateY(0); }
     }
 
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+
     /* Scroll reveal */
     .reveal {
       opacity: 0;
@@ -339,7 +345,9 @@
       font-weight: 700;
       line-height: 1.15;
       margin-bottom: 1rem;
-      background: linear-gradient(130deg, #ffffff, var(--teal), var(--orange));
+      background: linear-gradient(130deg, var(--teal), #4dd9e0, var(--orange));
+      background-size: 200% 200%;
+      animation: gradientShift 6s ease infinite;
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;

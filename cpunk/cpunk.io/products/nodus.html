@@ -122,6 +122,12 @@
       50%      { opacity: 0.8; }
     }
 
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+
     /* Scroll reveal */
     .reveal {
       opacity: 0;
@@ -378,6 +384,16 @@
       line-height: 1.1;
       margin-bottom: 0.8rem;
       letter-spacing: 0.04em;
+      color: #ffffff;
+    }
+
+    .hero-split-text h1 .accent {
+      background: linear-gradient(130deg, var(--teal), #4dd9e0, var(--orange));
+      background-size: 200% 200%;
+      animation: gradientShift 6s ease infinite;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
     }
 
     .hero-split-text .subtitle {
@@ -921,8 +937,8 @@
                 <span>Decentralized routing, discovery &amp; storage</span>
               </div>
 
-              <h1 style="color:#ffffff;">
-                DNA Nodus
+              <h1>
+                DNA <span class="accent">Nodus</span>
               </h1>
 
               <p class="subtitle">

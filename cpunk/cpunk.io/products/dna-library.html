@@ -86,6 +86,7 @@
     @keyframes fadeInLeft { from { opacity: 0; transform: translateX(-30px); } to { opacity: 1; transform: translateX(0); } }
     @keyframes fadeInRight { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: translateX(0); } }
     @keyframes pulseGlow { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.8; } }
+    @keyframes gradientShift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
 
     .reveal { opacity: 0; transform: translateY(28px); transition: opacity 0.7s ease, transform 0.7s ease; }
     .reveal.visible { opacity: 1; transform: translateY(0); }
@@ -142,7 +143,7 @@
     .hero-eyebrow-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 10px var(--teal-glow); animation: pulseGlow 2s ease-in-out infinite; }
     .hero-eyebrow-label { text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; color: var(--teal); font-family: var(--font-display); font-size: 0.68rem; }
     .hero h1 { font-family: var(--font-display); font-size: clamp(2rem, 4vw, 3rem); font-weight: 800; line-height: 1.15; margin-bottom: 1rem; color: #ffffff; }
-    .hero h1 span { background: linear-gradient(130deg, var(--teal), var(--orange)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .hero h1 span { background: linear-gradient(130deg, var(--teal), #4dd9e0, var(--orange)); background-size: 200% 200%; animation: gradientShift 6s ease infinite; -webkit-background-clip: text; background-clip: text; color: transparent; }
     .hero-subtitle { font-size: 1rem; color: var(--text-muted); max-width: 34rem; margin: 0 auto 1.5rem; line-height: 1.65; }
     .hero-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 0.75rem; }
 
