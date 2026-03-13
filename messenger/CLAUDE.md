@@ -232,10 +232,17 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 
 **IMPORTANT:** Only bump versions for actual code changes to that component. Build scripts, CI configs, and documentation do NOT require version bumps.
 
-### CHECKPOINT 9: RELEASE BUILD (When user says "release")
-**Only execute when user explicitly says "release" or asks for a release build.**
+### CHECKPOINT 9: RELEASE BUILD (When user says "release" or "release enforced")
+**Only execute when user explicitly says "release" or "release enforced".**
 
 **SKIP this checkpoint for regular commits.** State "CHECKPOINT 9 SKIPPED - Not a release"
+
+**TWO RELEASE MODES:**
+
+| User says | Mode | DHT minimums | User experience |
+|-----------|------|-------------|-----------------|
+| `release` | Optional update | Minimums stay at PREVIOUS version | Users see "Update Available" (dismissible) |
+| `release enforced` | Forced update | Minimums set to CURRENT version | Users see "Update Required" (blocks app) |
 
 **COMMIT MESSAGE FORMAT FOR RELEASE:**
 ```
@@ -268,17 +275,34 @@ Example: `Release v0.6.76 / v0.100.67 [BUILD] [RELEASE]`
    git push gitlab main && git push origin main
    ```
 
-4. **PUBLISH** version to DHT using the release identity (see internal docs for path and commands)
+4. **PUBLISH** version to DHT using the release identity:
+
+   **For `release` (optional update):**
+   ```bash
+   # Minimums stay at PREVIOUS version — users get soft "Update Available" prompt
+   version publish --lib <NEW> --app <NEW> --nodus <CURRENT_NODUS> \
+     --lib-min <PREVIOUS_LIB> --app-min <PREVIOUS_APP> --nodus-min <PREVIOUS_NODUS>
+   ```
+
+   **For `release enforced` (forced update):**
+   ```bash
+   # Minimums set to CURRENT version — users MUST update, app is blocked
+   version publish --lib <NEW> --app <NEW> --nodus <CURRENT_NODUS> \
+     --lib-min <NEW> --app-min <NEW> --nodus-min <CURRENT_NODUS>
+   ```
 
 5. **VERIFY** DHT publication with `version check`
 
-6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
+6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published (mode: optional|enforced)"
 
 **DHT Notes:**
 - **ALWAYS use the release identity** for DHT publishing (see internal docs for path)
 - The default identity on this machine is a DIFFERENT identity and cannot publish to version DHT keys
-- Minimum versions define compatibility - apps below minimum show warnings
+- Minimum versions define compatibility:
+  - Apps **below minimum** → "Update Required" screen (blocks app entirely)
+  - Apps **below current but above minimum** → "Update Available" dialog (dismissible)
 - Minimum versions must preserve pre-release suffix (e.g., `1.0.0-rc10` not `1.0.0` — semver treats `1.0.0 > 1.0.0-rcN`)
+- **`release enforced` is destructive** — all users on older versions will be locked out until they update
 
 **ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
 

@@ -227,10 +227,17 @@ Before pushing ANY code changes, you MUST verify the build succeeds:
 3. **COMMIT** with version in commit message (e.g., "fix: Something (v0.3.39)")
 4. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
-### CHECKPOINT 9: RELEASE BUILD (When user says "release")
-**Only execute when user explicitly says "release" or asks for a release build.**
+### CHECKPOINT 9: RELEASE BUILD (When user says "release" or "release enforced")
+**Only execute when user explicitly says "release" or "release enforced".**
 
 **SKIP this checkpoint for regular commits.** State "CHECKPOINT 9 SKIPPED - Not a release"
+
+**TWO RELEASE MODES:**
+
+| User says | Mode | DHT minimums | User experience |
+|-----------|------|-------------|-----------------|
+| `release` | Optional update | Minimums stay at PREVIOUS version | Users see "Update Available" (dismissible) |
+| `release enforced` | Forced update | Minimums set to CURRENT version | Users see "Update Required" (blocks app) |
 
 **COMMIT MESSAGE FORMAT FOR RELEASE:**
 ```
@@ -244,9 +251,11 @@ Release v<LIB_VERSION> / v<APP_VERSION> [BUILD] [RELEASE]
    - `messenger/CLAUDE.md` — header line versions + Checkpoint 8 "Current" column
 2. **COMMIT** with BOTH `[BUILD]` AND `[RELEASE]` tags (both required for CI)
 3. **PUSH** to both repos: `git push gitlab main && git push origin main`
-4. **PUBLISH** version to DHT using the release identity (see internal docs for path)
+4. **PUBLISH** version to DHT using the release identity:
+   - **`release`**: `--lib-min <PREVIOUS> --app-min <PREVIOUS>` (soft update prompt)
+   - **`release enforced`**: `--lib-min <CURRENT> --app-min <CURRENT>` (blocks old versions)
 5. **VERIFY** DHT publication with `version check`
-6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published"
+6. **STATE**: "CHECKPOINT 9 COMPLETE - Release vX.Y.Z published (mode: optional|enforced)"
 
 **DHT Notes:**
 - **ALWAYS use the release identity** for DHT publishing (see internal docs for path)
