@@ -530,6 +530,9 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
 
     g_initialized = true;
 
+    /* Initialize channel connection pool (TCP 4003) */
+    nodus_ops_ch_init(NULL, NULL);
+
     /* Wait briefly for connection */
     int elapsed = 0;
     while (!nodus_singleton_is_ready() && elapsed < 500) {
@@ -555,6 +558,9 @@ void nodus_messenger_close(void) {
     if (!g_initialized) return;
 
     QGP_LOG_INFO(LOG_TAG, "Closing");
+
+    /* Shut down channel connection pool (TCP 4003) before closing singleton */
+    nodus_ops_ch_shutdown();
 
     /* Cancel all nodus_ops listeners first */
     nodus_ops_cancel_all();
@@ -582,6 +588,7 @@ int nodus_messenger_reinit(void) {
     nodus_identity_t saved = g_stored_identity;
 
     /* Close current connection */
+    nodus_ops_ch_shutdown();
     nodus_ops_cancel_all();
     nodus_singleton_close();
     g_initialized = false;
