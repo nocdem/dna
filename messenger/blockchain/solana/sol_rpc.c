@@ -499,9 +499,12 @@ int sol_rpc_get_transaction_status(
         return -1;
     }
 
-    /* Build params */
+    /* Build params: [["sig1"], {commitment}]
+     * getSignatureStatuses expects signatures as a nested array */
     json_object *params = json_object_new_array();
-    json_object_array_add(params, json_object_new_string(signature));
+    json_object *sigs = json_object_new_array();
+    json_object_array_add(sigs, json_object_new_string(signature));
+    json_object_array_add(params, sigs);
 
     json_object *opts = json_object_new_object();
     json_object_object_add(opts, "commitment", json_object_new_string("confirmed"));
