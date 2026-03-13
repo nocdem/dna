@@ -149,6 +149,9 @@ class _TipCommentTile extends ConsumerStatefulWidget {
 }
 
 class _TipCommentTileState extends ConsumerState<_TipCommentTile> {
+  // Static cache: once verified(1) or denied(2), never re-check via FFI.
+  static final Map<String, int> _verifiedCache = {};
+
   /// 0=pending, 1=verified, 2=denied
   int _verificationStatus = 0;
   bool _isVerifying = false;
@@ -163,6 +166,14 @@ class _TipCommentTileState extends ConsumerState<_TipCommentTile> {
   void initState() {
     super.initState();
     _parseTipData();
+
+    // Check in-memory cache first — skip FFI for already-verified TXs
+    final txHash = _tipData?['txHash'] as String?;
+    if (txHash != null && _verifiedCache.containsKey(txHash)) {
+      _verificationStatus = _verifiedCache[txHash]!;
+      return;
+    }
+
     _verifyTransaction();
   }
 
@@ -185,6 +196,9 @@ class _TipCommentTileState extends ConsumerState<_TipCommentTile> {
     final chain = _tipData?['chain'] as String? ?? 'cellframe';
     if (txHash == null || txHash.isEmpty) return;
 
+    // Already in a final state — no need to re-check
+    if (_verificationStatus == 1 || _verificationStatus == 2) return;
+
     if (_isVerifying) return;
     setState(() => _isVerifying = true);
 
@@ -196,6 +210,11 @@ class _TipCommentTileState extends ConsumerState<_TipCommentTile> {
           _verificationStatus = status;
           _isVerifying = false;
         });
+
+        // Cache final states — no need to re-check on future widget rebuilds
+        if (status == 1 || status == 2) {
+          _verifiedCache[txHash] = status;
+        }
 
         if (status == 0 && _retryCount < _maxRetries) {
           _retryCount++;
