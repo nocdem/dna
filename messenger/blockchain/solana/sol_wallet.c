@@ -30,8 +30,7 @@
 /* RPC endpoints with fallbacks (accessed from sol_rpc.c) */
 const char *g_sol_rpc_endpoints[] = {
     SOL_RPC_MAINNET,
-    SOL_RPC_MAINNET_FALLBACK1,
-    SOL_RPC_MAINNET_FALLBACK2
+    SOL_RPC_MAINNET_FALLBACK1
 };
 
 /* RPC endpoint (configurable) - can be overridden or auto-selected */

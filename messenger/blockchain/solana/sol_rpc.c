@@ -152,11 +152,15 @@ static int sol_rpc_call_single(
     /* Check for RPC error */
     json_object *error_obj;
     if (json_object_object_get_ex(resp, "error", &error_obj) && error_obj) {
-        /* Check if this is a 429 rate limit — retriable on another endpoint */
         json_object *code_obj;
-        if (json_object_object_get_ex(error_obj, "code", &code_obj) &&
-            json_object_get_int(code_obj) == 429) {
-            QGP_LOG_WARN(LOG_TAG, "Rate limited (429) for %s", method);
+        int err_code = 0;
+        if (json_object_object_get_ex(error_obj, "code", &code_obj))
+            err_code = json_object_get_int(code_obj);
+
+        /* Rate limit or access-denied — retriable on another endpoint */
+        if (err_code == 429 || err_code == -32052 || err_code == -32053 ||
+            err_code == 403) {
+            QGP_LOG_WARN(LOG_TAG, "Endpoint unavailable (%d) for %s", err_code, method);
             json_object_put(resp);
             return -1;  /* Retriable - try next endpoint */
         }
