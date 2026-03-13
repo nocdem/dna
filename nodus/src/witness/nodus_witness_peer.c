@@ -94,19 +94,18 @@ int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
     self->active = true;
     out->n_witnesses = 1;
 
-    /* Add all connected+identified inter_tcp peers */
-    nodus_tcp_t *itcp = &w->server->inter_tcp;
-    for (int i = 0; i < NODUS_TCP_MAX_CONNS && out->n_witnesses < NODUS_T3_MAX_WITNESSES; i++) {
-        nodus_tcp_conn_t *conn = itcp->pool[i];
-        if (!conn) continue;
-        if (conn->state != NODUS_CONN_CONNECTED) continue;
-        if (!conn->peer_id_set) continue;
+    /* Add all identified witness peers (w_ident exchanged) */
+    for (int i = 0; i < w->peer_count && out->n_witnesses < NODUS_T3_MAX_WITNESSES; i++) {
+        nodus_witness_peer_t *peer = &w->peers[i];
+        if (!peer->identified) continue;
+        if (!peer->conn) continue;
+        if (peer->conn->state != NODUS_CONN_CONNECTED) continue;
 
-        /* Duplicate check by peer_id (first 32 bytes = witness_id) */
+        /* Duplicate check by witness_id */
         bool dup = false;
         for (uint32_t j = 0; j < out->n_witnesses; j++) {
             if (memcmp(out->witnesses[j].witness_id,
-                       conn->peer_id.bytes, NODUS_T3_WITNESS_ID_LEN) == 0) {
+                       peer->witness_id, NODUS_T3_WITNESS_ID_LEN) == 0) {
                 dup = true;
                 break;
             }
@@ -115,10 +114,13 @@ int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
 
         nodus_witness_roster_entry_t *entry =
             &out->witnesses[out->n_witnesses];
-        memcpy(entry->witness_id, conn->peer_id.bytes, NODUS_T3_WITNESS_ID_LEN);
-        memcpy(entry->pubkey, conn->peer_pk.bytes, NODUS_PK_BYTES);
-        snprintf(entry->address, sizeof(entry->address), "%s:%u",
-                 conn->ip, conn->port);
+        memcpy(entry->witness_id, peer->witness_id, NODUS_T3_WITNESS_ID_LEN);
+        /* Get pubkey from roster if available (populated by w_ident handler) */
+        int ri = nodus_witness_roster_find(&w->roster, peer->witness_id);
+        if (ri >= 0) {
+            memcpy(entry->pubkey, w->roster.witnesses[ri].pubkey, NODUS_PK_BYTES);
+        }
+        snprintf(entry->address, sizeof(entry->address), "%s", peer->address);
         entry->active = true;
         out->n_witnesses++;
     }
