@@ -211,6 +211,15 @@ typedef void (*nodus_ops_ch_post_cb_t)(const uint8_t channel_uuid[16],
 int nodus_ops_ch_init(nodus_ops_ch_post_cb_t on_post, void *user_data);
 
 /**
+ * Update the channel push post callback after initialization.
+ * Use this to register a callback from the engine layer after nodus init.
+ *
+ * @param on_post   Callback for push post notifications (may be NULL to disable)
+ * @param user_data Passed to on_post callback
+ */
+void nodus_ops_ch_set_post_callback(nodus_ops_ch_post_cb_t on_post, void *user_data);
+
+/**
  * Shut down the channel connection pool.
  * Disconnects all channel connections.
  */

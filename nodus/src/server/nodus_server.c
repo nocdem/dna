@@ -285,9 +285,12 @@ static void ch_session_remove_sub_4003(nodus_ch_session_t *sess, const uint8_t *
 static void notify_ch_subscribers_4003(nodus_server_t *srv,
                                          const uint8_t uuid[NODUS_UUID_BYTES],
                                          const nodus_channel_post_t *post) {
+    int notified = 0;
+    int auth_count = 0;
     for (int i = 0; i < NODUS_MAX_CH_SESSIONS; i++) {
         nodus_ch_session_t *s = &srv->ch_sessions[i];
         if (!s->conn || !s->authenticated) continue;
+        auth_count++;
 
         for (int j = 0; j < s->ch_sub_count; j++) {
             if (memcmp(s->ch_subs[j], uuid, NODUS_UUID_BYTES) == 0) {
@@ -295,11 +298,13 @@ static void notify_ch_subscribers_4003(nodus_server_t *srv,
                 if (nodus_t2_ch_post_notify(0, uuid, post,
                         resp_buf, sizeof(resp_buf), &len) == 0) {
                     nodus_tcp_send(s->conn, resp_buf, len);
+                    notified++;
                 }
                 break;
             }
         }
     }
+    fprintf(stderr, "CH_NOTIFY: auth_clients=%d notified=%d\n", auth_count, notified);
 }
 
 /* ── Server-to-server TCP STORE (with hinted handoff on failure) ── */
@@ -2176,6 +2181,7 @@ static void handle_ch_t2_ch_get_posts(nodus_server_t *srv, nodus_ch_session_t *s
 static void handle_ch_t2_ch_subscribe(nodus_server_t *srv, nodus_ch_session_t *sess,
                                         nodus_tier2_msg_t *msg) {
     if (!ch_ensure_channel(srv, msg->channel_uuid)) {
+        fprintf(stderr, "CH_SUB: REJECTED (channel not found on this node)\n");
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_CHANNEL_NOT_FOUND,
                         "channel not found", resp_buf, sizeof(resp_buf), &len);
@@ -2184,6 +2190,8 @@ static void handle_ch_t2_ch_subscribe(nodus_server_t *srv, nodus_ch_session_t *s
     }
 
     if (ch_session_add_sub_4003(sess, msg->channel_uuid) != 0) {
+        fprintf(stderr, "CH_SUB: REJECTED (too many subs) client %.16s\n",
+                sess->client_fp.bytes);
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_RATE_LIMITED,
                         "too many channel subscriptions",
@@ -2191,6 +2199,9 @@ static void handle_ch_t2_ch_subscribe(nodus_server_t *srv, nodus_ch_session_t *s
         nodus_tcp_send(sess->conn, resp_buf, len);
         return;
     }
+
+    fprintf(stderr, "CH_SUB: OK client %.16s... (subs=%d)\n",
+            sess->client_fp.bytes, sess->ch_sub_count);
 
     size_t len = 0;
     nodus_t2_ch_sub_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);

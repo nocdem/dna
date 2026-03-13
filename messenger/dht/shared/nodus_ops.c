@@ -882,6 +882,15 @@ int nodus_ops_ch_init(nodus_ops_ch_post_cb_t on_post, void *user_data) {
     return 0;
 }
 
+void nodus_ops_ch_set_post_callback(nodus_ops_ch_post_cb_t on_post, void *user_data) {
+    ch_pool_lock();
+    g_ch_post_cb = on_post;
+    g_ch_post_cb_data = user_data;
+    ch_pool_unlock();
+    QGP_LOG_INFO(LOG_TAG_CH, "Channel push callback %s",
+                  on_post ? "registered" : "cleared");
+}
+
 void nodus_ops_ch_shutdown(void) {
     ch_pool_lock();
     for (int i = 0; i < NODUS_OPS_CH_MAX_CONNS; i++) {

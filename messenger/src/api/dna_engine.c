@@ -446,6 +446,55 @@ cleanup:
 }
 
 /**
+ * Channel push post callback - fires DNA_EVENT_CHANNEL_NEW_POST when a post
+ * arrives via TCP 4003 push notification.
+ * Called from the nodus read thread (ch_conn_read_thread_fn).
+ */
+static void dna_channel_push_callback(const uint8_t channel_uuid[16],
+                                       const nodus_channel_post_t *post,
+                                       void *user_data) {
+    (void)user_data;
+
+    pthread_mutex_lock(&g_engine_global_mutex);
+    dna_engine_t *engine = g_dht_callback_engine;
+    if (!engine || engine->shutdown_requested) {
+        pthread_mutex_unlock(&g_engine_global_mutex);
+        return;
+    }
+    pthread_mutex_unlock(&g_engine_global_mutex);
+
+    /* Convert binary UUIDs and fingerprint to strings for the event */
+    dna_event_t event = {0};
+    event.type = DNA_EVENT_CHANNEL_NEW_POST;
+
+    snprintf(event.data.channel_new_post.channel_uuid,
+             sizeof(event.data.channel_new_post.channel_uuid),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             channel_uuid[0], channel_uuid[1], channel_uuid[2], channel_uuid[3],
+             channel_uuid[4], channel_uuid[5], channel_uuid[6], channel_uuid[7],
+             channel_uuid[8], channel_uuid[9], channel_uuid[10], channel_uuid[11],
+             channel_uuid[12], channel_uuid[13], channel_uuid[14], channel_uuid[15]);
+
+    snprintf(event.data.channel_new_post.post_uuid,
+             sizeof(event.data.channel_new_post.post_uuid),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             post->post_uuid[0], post->post_uuid[1], post->post_uuid[2], post->post_uuid[3],
+             post->post_uuid[4], post->post_uuid[5], post->post_uuid[6], post->post_uuid[7],
+             post->post_uuid[8], post->post_uuid[9], post->post_uuid[10], post->post_uuid[11],
+             post->post_uuid[12], post->post_uuid[13], post->post_uuid[14], post->post_uuid[15]);
+
+    for (int i = 0; i < 64; i++)
+        snprintf(event.data.channel_new_post.author_fingerprint + i * 2, 3,
+                 "%02x", post->author_fp.bytes[i]);
+
+    QGP_LOG_INFO(LOG_TAG, "Channel push: post in %.8s... by %.16s...",
+                 event.data.channel_new_post.channel_uuid,
+                 event.data.channel_new_post.author_fingerprint);
+
+    dna_dispatch_event(engine, &event);
+}
+
+/**
  * DHT status change callback - dispatches DHT_CONNECTED/DHT_DISCONNECTED events
  * Called from the Nodus callback thread when connection status changes.
  */
@@ -471,6 +520,9 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
     if (is_connected) {
         QGP_LOG_WARN(LOG_TAG, "DHT connected (bootstrap complete, ready for operations)");
         event.type = DNA_EVENT_DHT_CONNECTED;
+
+        /* Register channel push callback so TCP 4003 notifications fire events */
+        nodus_ops_ch_set_post_callback(dna_channel_push_callback, NULL);
 
         /* Prefetch profiles for local identities (for identity selection screen) */
         if (engine->data_dir) {
