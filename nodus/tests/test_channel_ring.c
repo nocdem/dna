@@ -60,6 +60,15 @@ void nodus_tcp_disconnect(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn)
     (void)tcp; (void)conn;
 }
 
+/* nodus_ch_server_connect_to_peer: stub */
+int nodus_ch_server_connect_to_peer(nodus_channel_server_t *cs,
+                                      const char *ip, uint16_t port,
+                                      const nodus_key_t *node_id)
+{
+    (void)cs; (void)ip; (void)port; (void)node_id;
+    return 0;
+}
+
 /* nodus_time_now_ms: stub returning fixed value */
 uint64_t nodus_time_now_ms(void)
 {

@@ -213,8 +213,13 @@ void nodus_ch_ring_tick(nodus_ch_ring_t *rm, uint64_t now_ms)
 
                 nodus_ch_node_session_t *other =
                     find_node_session(cs, &rset.nodes[r].node_id);
-                if (!other)
+                if (!other) {
+                    /* No session to peer — try connecting (async) */
+                    nodus_ch_server_connect_to_peer(cs, rset.nodes[r].ip,
+                                                    cs->port,
+                                                    &rset.nodes[r].node_id);
                     continue;
+                }
 
                 /* Send ring_check */
                 uint8_t buf[256];
@@ -230,6 +235,19 @@ void nodus_ch_ring_tick(nodus_ch_ring_t *rm, uint64_t now_ms)
                     ch->check_sent_at_ms = now_ms;
                     sent = true;
                 }
+            }
+
+            /* No peer session available to confirm — start unilateral
+             * eviction timer. Uses check_pending with timeout. */
+            if (!sent) {
+                ch->check_pending = true;
+                memcpy(&ch->check_node_id, &ns->node_id,
+                       sizeof(nodus_key_t));
+                ch->check_sent_at_ms = now_ms;
+                QGP_LOG_WARN(LOG_TAG,
+                    "No peer session for ring_check, "
+                    "will evict unilaterally in %ds",
+                    NODUS_CH_RING_CHECK_TIMEOUT_MS / 1000);
             }
         }
 
