@@ -3851,6 +3851,56 @@ class DnaBindings {
         engine, text, imageJson, callback, userData);
   }
 
+  // ── Wall Boost (v0.9.71+) ──
+
+  late final _dna_engine_wall_boost_post = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaWallPostCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaWallPostCb>, Pointer<Void>)>(
+      'dna_engine_wall_boost_post');
+
+  int dna_engine_wall_boost_post(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> text,
+    Pointer<DnaWallPostCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_boost_post(engine, text, callback, userData);
+  }
+
+  late final _dna_engine_wall_boost_post_with_image = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaWallPostCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaWallPostCb>, Pointer<Void>)>(
+      'dna_engine_wall_boost_post_with_image');
+
+  int dna_engine_wall_boost_post_with_image(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> text,
+    Pointer<Utf8> imageJson,
+    Pointer<DnaWallPostCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_boost_post_with_image(
+        engine, text, imageJson, callback, userData);
+  }
+
+  late final _dna_engine_wall_boost_timeline = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaWallPostsCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaWallPostsCb>,
+          Pointer<Void>)>('dna_engine_wall_boost_timeline');
+
+  int dna_engine_wall_boost_timeline(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaWallPostsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_boost_timeline(engine, callback, userData);
+  }
+
   // ── Wall Comments (v0.7.0+) ──
 
   late final _dna_engine_wall_add_comment = _lib.lookupFunction<

@@ -915,6 +915,33 @@ class AppLocalizationsZh extends AppLocalizations {
   String get wallTipFailedStatus => 'Failed';
 
   @override
+  String get wallWhatsOnYourMind => '你在想什么？';
+
+  @override
+  String get wallPost => '发布';
+
+  @override
+  String get wallPosting => '发布中...';
+
+  @override
+  String get wallBoost => '推广';
+
+  @override
+  String get wallBoostDescription => '分享给所有人';
+
+  @override
+  String get wallBoosted => '已推广';
+
+  @override
+  String get wallBoostLimitReached => '已达每日推广上限';
+
+  @override
+  String get wallAddComment => '添加评论（可选）';
+
+  @override
+  String get wallCreatePostTitle => '创建帖子';
+
+  @override
   String get walletTitle => '钱包';
 
   @override

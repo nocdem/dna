@@ -940,6 +940,33 @@ class AppLocalizationsRu extends AppLocalizations {
   String get wallTipFailedStatus => 'Failed';
 
   @override
+  String get wallWhatsOnYourMind => 'О чём вы думаете?';
+
+  @override
+  String get wallPost => 'Опубликовать';
+
+  @override
+  String get wallPosting => 'Публикация...';
+
+  @override
+  String get wallBoost => 'Boost';
+
+  @override
+  String get wallBoostDescription => 'Поделиться со всеми';
+
+  @override
+  String get wallBoosted => 'Продвинуто';
+
+  @override
+  String get wallBoostLimitReached => 'Дневной лимит boost исчерпан';
+
+  @override
+  String get wallAddComment => 'Добавить комментарий (необязательно)';
+
+  @override
+  String get wallCreatePostTitle => 'Создать запись';
+
+  @override
   String get walletTitle => 'Кошелёк';
 
   @override

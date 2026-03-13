@@ -920,6 +920,33 @@ class AppLocalizationsJa extends AppLocalizations {
   String get wallTipFailedStatus => 'Failed';
 
   @override
+  String get wallWhatsOnYourMind => '今何を考えていますか？';
+
+  @override
+  String get wallPost => '投稿';
+
+  @override
+  String get wallPosting => '投稿中...';
+
+  @override
+  String get wallBoost => 'ブースト';
+
+  @override
+  String get wallBoostDescription => 'みんなに共有';
+
+  @override
+  String get wallBoosted => 'ブースト済み';
+
+  @override
+  String get wallBoostLimitReached => '1日のブースト上限に達しました';
+
+  @override
+  String get wallAddComment => 'コメントを追加（任意）';
+
+  @override
+  String get wallCreatePostTitle => '投稿を作成';
+
+  @override
   String get walletTitle => 'ウォレット';
 
   @override

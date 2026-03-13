@@ -943,6 +943,33 @@ class AppLocalizationsPt extends AppLocalizations {
   String get wallTipFailedStatus => 'Failed';
 
   @override
+  String get wallWhatsOnYourMind => 'No que você está pensando?';
+
+  @override
+  String get wallPost => 'Publicar';
+
+  @override
+  String get wallPosting => 'Publicando...';
+
+  @override
+  String get wallBoost => 'Boost';
+
+  @override
+  String get wallBoostDescription => 'Compartilhar com todos';
+
+  @override
+  String get wallBoosted => 'Boosted';
+
+  @override
+  String get wallBoostLimitReached => 'Limite diário de boost atingido';
+
+  @override
+  String get wallAddComment => 'Adicionar um comentário (opcional)';
+
+  @override
+  String get wallCreatePostTitle => 'Criar Publicação';
+
+  @override
   String get walletTitle => 'Carteira';
 
   @override

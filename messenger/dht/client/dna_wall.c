@@ -668,3 +668,402 @@ int dna_wall_post_verify(const dna_wall_post_t *post,
 
     return (ret == 0) ? 0 : -1;
 }
+
+/* ============================================================================
+ * Boost Operations (v0.9.71+)
+ * ========================================================================== */
+
+/**
+ * Build the DHT base key string for a daily boost feed.
+ */
+static void boost_base_key(const char *date_str, char *base_key, size_t base_key_size) {
+    snprintf(base_key, base_key_size, "%s%s", DNA_WALL_BOOST_KEY_PREFIX, date_str);
+}
+
+/**
+ * Get today's date as "YYYY-MM-DD".
+ */
+static void boost_today_str(char *buf, size_t buf_size) {
+    time_t now = time(NULL);
+    struct tm tm_now;
+#ifdef _WIN32
+    gmtime_s(&tm_now, &now);
+#else
+    gmtime_r(&now, &tm_now);
+#endif
+    strftime(buf, buf_size, "%Y-%m-%d", &tm_now);
+}
+
+/**
+ * Serialize boost pointer array to JSON string.
+ */
+static char *boost_ptrs_to_json(const dna_wall_boost_ptr_t *ptrs, size_t count) {
+    json_object *arr = json_object_new_array();
+    if (!arr) return NULL;
+
+    for (size_t i = 0; i < count; i++) {
+        json_object *obj = json_object_new_object();
+        if (!obj) continue;
+        json_object_object_add(obj, "uuid", json_object_new_string(ptrs[i].uuid));
+        json_object_object_add(obj, "author", json_object_new_string(ptrs[i].author_fingerprint));
+        json_object_object_add(obj, "ts", json_object_new_int64((int64_t)ptrs[i].timestamp));
+        json_object_array_add(arr, obj);
+    }
+
+    const char *str = json_object_to_json_string_ext(arr, JSON_C_TO_STRING_PLAIN);
+    char *result = str ? strdup(str) : NULL;
+    json_object_put(arr);
+    return result;
+}
+
+/**
+ * Deserialize boost pointers from JSON string.
+ * Caller must free *ptrs_out.
+ */
+static int boost_ptrs_from_json(const char *json_str,
+                                 dna_wall_boost_ptr_t **ptrs_out,
+                                 size_t *count_out) {
+    *ptrs_out = NULL;
+    *count_out = 0;
+
+    json_object *arr = json_tokener_parse(json_str);
+    if (!arr) return -1;
+
+    if (!json_object_is_type(arr, json_type_array)) {
+        json_object_put(arr);
+        return -1;
+    }
+
+    int arr_len = json_object_array_length(arr);
+    if (arr_len == 0) {
+        json_object_put(arr);
+        return 0;
+    }
+
+    dna_wall_boost_ptr_t *ptrs = calloc((size_t)arr_len, sizeof(dna_wall_boost_ptr_t));
+    if (!ptrs) {
+        json_object_put(arr);
+        return -1;
+    }
+
+    size_t parsed = 0;
+    for (int i = 0; i < arr_len; i++) {
+        json_object *obj = json_object_array_get_idx(arr, i);
+        if (!obj) continue;
+
+        json_object *j_val;
+        dna_wall_boost_ptr_t *p = &ptrs[parsed];
+
+        if (json_object_object_get_ex(obj, "uuid", &j_val)) {
+            const char *s = json_object_get_string(j_val);
+            if (s) strncpy(p->uuid, s, 36);
+        }
+        p->uuid[36] = '\0';
+
+        if (json_object_object_get_ex(obj, "author", &j_val)) {
+            const char *s = json_object_get_string(j_val);
+            if (s) strncpy(p->author_fingerprint, s, 128);
+        }
+        p->author_fingerprint[128] = '\0';
+
+        if (json_object_object_get_ex(obj, "ts", &j_val))
+            p->timestamp = (uint64_t)json_object_get_int64(j_val);
+
+        if (p->uuid[0] != '\0' && p->author_fingerprint[0] != '\0')
+            parsed++;
+    }
+
+    json_object_put(arr);
+
+    if (parsed == 0) {
+        free(ptrs);
+        return -1;
+    }
+
+    *ptrs_out = ptrs;
+    *count_out = parsed;
+    return 0;
+}
+
+int dna_wall_boost_post(const char *post_uuid,
+                         const char *author_fingerprint,
+                         uint64_t post_timestamp) {
+    if (!post_uuid || !author_fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for boost post");
+        return -1;
+    }
+
+    /* Build today's boost key */
+    char today[16];
+    boost_today_str(today, sizeof(today));
+
+    char base_key[256];
+    boost_base_key(today, base_key, sizeof(base_key));
+
+    uint64_t my_vid = nodus_ops_value_id();
+
+    /* Fetch my existing boost pointers for today (multi-owner: filter by my vid) */
+    dna_wall_boost_ptr_t *existing = NULL;
+    size_t existing_count = 0;
+
+    uint8_t **all_values = NULL;
+    size_t *all_lens = NULL;
+    uint64_t *all_vids = NULL;
+    size_t all_count = 0;
+
+    int ret = nodus_ops_get_all_str_with_ids(base_key, &all_values, &all_lens,
+                                              &all_vids, &all_count);
+
+    if (ret == 0 && all_count > 0) {
+        for (size_t i = 0; i < all_count; i++) {
+            if (all_vids[i] == my_vid && all_values[i] && all_lens[i] > 0) {
+                char *json_str = malloc(all_lens[i] + 1);
+                if (json_str) {
+                    memcpy(json_str, all_values[i], all_lens[i]);
+                    json_str[all_lens[i]] = '\0';
+                    boost_ptrs_from_json(json_str, &existing, &existing_count);
+                    free(json_str);
+                }
+                break;
+            }
+        }
+        for (size_t i = 0; i < all_count; i++)
+            free(all_values[i]);
+        free(all_values);
+        free(all_lens);
+        free(all_vids);
+    }
+
+    /* Check daily limit */
+    if (existing_count >= DNA_WALL_BOOST_MAX_PER_DAY) {
+        QGP_LOG_WARN(LOG_TAG, "Daily boost limit reached (%d)", DNA_WALL_BOOST_MAX_PER_DAY);
+        free(existing);
+        return -4;
+    }
+
+    /* Check for duplicate (same UUID already boosted) */
+    for (size_t i = 0; i < existing_count; i++) {
+        if (strncmp(existing[i].uuid, post_uuid, 36) == 0) {
+            QGP_LOG_INFO(LOG_TAG, "Post %s already boosted today", post_uuid);
+            free(existing);
+            return -3;
+        }
+    }
+
+    /* Build new pointer array: existing + new */
+    size_t new_count = existing_count + 1;
+    dna_wall_boost_ptr_t *all_ptrs = calloc(new_count, sizeof(dna_wall_boost_ptr_t));
+    if (!all_ptrs) {
+        free(existing);
+        return -1;
+    }
+
+    for (size_t i = 0; i < existing_count; i++) {
+        all_ptrs[i] = existing[i];
+    }
+    free(existing);
+
+    /* Add new pointer */
+    strncpy(all_ptrs[existing_count].uuid, post_uuid, 36);
+    all_ptrs[existing_count].uuid[36] = '\0';
+    strncpy(all_ptrs[existing_count].author_fingerprint, author_fingerprint, 128);
+    all_ptrs[existing_count].author_fingerprint[128] = '\0';
+    all_ptrs[existing_count].timestamp = post_timestamp;
+
+    /* Serialize and PUT */
+    char *json = boost_ptrs_to_json(all_ptrs, new_count);
+    free(all_ptrs);
+
+    if (!json) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize boost pointers");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Publishing boost pointer for post %s to key %s (%zu total)",
+                 post_uuid, base_key, new_count);
+
+    ret = nodus_ops_put_str(base_key,
+                             (const uint8_t *)json, strlen(json),
+                             DNA_WALL_BOOST_TTL_SECONDS, my_vid);
+    free(json);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish boost pointer (ret=%d)", ret);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Boost pointer for post %s published successfully", post_uuid);
+    return 0;
+}
+
+int dna_wall_boost_load(const char *date_str,
+                         dna_wall_boost_ptr_t **ptrs_out,
+                         size_t *count_out) {
+    if (!date_str || !ptrs_out || !count_out) return -1;
+
+    *ptrs_out = NULL;
+    *count_out = 0;
+
+    char base_key[256];
+    boost_base_key(date_str, base_key, sizeof(base_key));
+
+    /* Fetch all authors' boost pointers using get_all */
+    uint8_t **values = NULL;
+    size_t *lens = NULL;
+    size_t value_count = 0;
+
+    int ret = nodus_ops_get_all_str(base_key, &values, &lens, &value_count);
+
+    if (ret != 0 || value_count == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "No boost pointers found for %s", date_str);
+        return -2;
+    }
+
+    /* Merge all pointers from all authors, deduplicate by UUID */
+    dna_wall_boost_ptr_t *all_ptrs = NULL;
+    size_t total = 0;
+    size_t allocated = 0;
+
+    for (size_t i = 0; i < value_count; i++) {
+        if (!values[i] || lens[i] == 0) continue;
+
+        char *json_str = malloc(lens[i] + 1);
+        if (!json_str) {
+            free(values[i]);
+            continue;
+        }
+        memcpy(json_str, values[i], lens[i]);
+        json_str[lens[i]] = '\0';
+        free(values[i]);
+
+        dna_wall_boost_ptr_t *bucket = NULL;
+        size_t bucket_count = 0;
+
+        if (boost_ptrs_from_json(json_str, &bucket, &bucket_count) == 0 && bucket) {
+            if (total + bucket_count > allocated) {
+                size_t new_alloc = allocated == 0 ? 64 : allocated * 2;
+                while (new_alloc < total + bucket_count) new_alloc *= 2;
+
+                dna_wall_boost_ptr_t *new_arr = realloc(all_ptrs,
+                    new_alloc * sizeof(dna_wall_boost_ptr_t));
+                if (!new_arr) {
+                    free(bucket);
+                    free(json_str);
+                    continue;
+                }
+                all_ptrs = new_arr;
+                allocated = new_alloc;
+            }
+
+            for (size_t j = 0; j < bucket_count; j++) {
+                /* Deduplicate by UUID */
+                bool dup = false;
+                for (size_t k = 0; k < total; k++) {
+                    if (strncmp(all_ptrs[k].uuid, bucket[j].uuid, 36) == 0) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup) {
+                    all_ptrs[total++] = bucket[j];
+                }
+            }
+            free(bucket);
+        }
+        free(json_str);
+    }
+
+    free(values);
+    free(lens);
+
+    if (total == 0) {
+        free(all_ptrs);
+        return -2;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Loaded %zu boost pointers for %s from %zu authors",
+                 total, date_str, value_count);
+
+    *ptrs_out = all_ptrs;
+    *count_out = total;
+    return 0;
+}
+
+int dna_wall_boost_load_recent(int days,
+                                dna_wall_boost_ptr_t **ptrs_out,
+                                size_t *count_out) {
+    if (!ptrs_out || !count_out) return -1;
+    if (days <= 0) days = 7;
+    if (days > 7) days = 7;
+
+    *ptrs_out = NULL;
+    *count_out = 0;
+
+    dna_wall_boost_ptr_t *all_ptrs = NULL;
+    size_t total = 0;
+    size_t allocated = 0;
+
+    time_t now = time(NULL);
+
+    for (int d = 0; d < days; d++) {
+        time_t day = now - (d * 86400);
+        struct tm tm_day;
+#ifdef _WIN32
+        gmtime_s(&tm_day, &day);
+#else
+        gmtime_r(&day, &tm_day);
+#endif
+        char date_str[16];
+        strftime(date_str, sizeof(date_str), "%Y-%m-%d", &tm_day);
+
+        dna_wall_boost_ptr_t *day_ptrs = NULL;
+        size_t day_count = 0;
+
+        if (dna_wall_boost_load(date_str, &day_ptrs, &day_count) == 0 && day_ptrs) {
+            if (total + day_count > allocated) {
+                size_t new_alloc = allocated == 0 ? 64 : allocated * 2;
+                while (new_alloc < total + day_count) new_alloc *= 2;
+
+                dna_wall_boost_ptr_t *new_arr = realloc(all_ptrs,
+                    new_alloc * sizeof(dna_wall_boost_ptr_t));
+                if (!new_arr) {
+                    free(day_ptrs);
+                    continue;
+                }
+                all_ptrs = new_arr;
+                allocated = new_alloc;
+            }
+
+            /* Deduplicate across days (same post boosted on different days) */
+            for (size_t j = 0; j < day_count; j++) {
+                bool dup = false;
+                for (size_t k = 0; k < total; k++) {
+                    if (strncmp(all_ptrs[k].uuid, day_ptrs[j].uuid, 36) == 0) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup) {
+                    all_ptrs[total++] = day_ptrs[j];
+                }
+            }
+            free(day_ptrs);
+        }
+    }
+
+    if (total == 0) {
+        free(all_ptrs);
+        return -2;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Loaded %zu boost pointers from last %d days", total, days);
+
+    *ptrs_out = all_ptrs;
+    *count_out = total;
+    return 0;
+}
+
+void dna_wall_boost_free(dna_wall_boost_ptr_t *ptrs, size_t count) {
+    (void)count;
+    free(ptrs);
+}

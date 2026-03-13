@@ -931,6 +931,33 @@ class AppLocalizationsEn extends AppLocalizations {
   String get wallTipFailedStatus => 'Failed';
 
   @override
+  String get wallWhatsOnYourMind => 'What\'s on your mind?';
+
+  @override
+  String get wallPost => 'Post';
+
+  @override
+  String get wallPosting => 'Posting...';
+
+  @override
+  String get wallBoost => 'Boost';
+
+  @override
+  String get wallBoostDescription => 'Share with everyone';
+
+  @override
+  String get wallBoosted => 'Boosted';
+
+  @override
+  String get wallBoostLimitReached => 'Daily boost limit reached';
+
+  @override
+  String get wallAddComment => 'Add a comment (optional)';
+
+  @override
+  String get wallCreatePostTitle => 'Create Post';
+
+  @override
   String get walletTitle => 'Wallet';
 
   @override

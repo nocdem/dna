@@ -938,6 +938,33 @@ class AppLocalizationsTr extends AppLocalizations {
   String get wallTipFailedStatus => 'Başarısız';
 
   @override
+  String get wallWhatsOnYourMind => 'Aklından ne geçiyor?';
+
+  @override
+  String get wallPost => 'Paylaş';
+
+  @override
+  String get wallPosting => 'Paylaşılıyor...';
+
+  @override
+  String get wallBoost => 'Boost';
+
+  @override
+  String get wallBoostDescription => 'Herkesle paylaş';
+
+  @override
+  String get wallBoosted => 'Boost yapıldı';
+
+  @override
+  String get wallBoostLimitReached => 'Günlük boost limiti doldu';
+
+  @override
+  String get wallAddComment => 'Yorum ekle (isteğe bağlı)';
+
+  @override
+  String get wallCreatePostTitle => 'Gönderi Oluştur';
+
+  @override
   String get walletTitle => 'Cüzdan';
 
   @override

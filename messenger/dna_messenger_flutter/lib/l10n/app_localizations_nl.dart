@@ -938,6 +938,33 @@ class AppLocalizationsNl extends AppLocalizations {
   String get wallTipFailedStatus => 'Failed';
 
   @override
+  String get wallWhatsOnYourMind => 'Waar denk je aan?';
+
+  @override
+  String get wallPost => 'Plaatsen';
+
+  @override
+  String get wallPosting => 'Plaatsen...';
+
+  @override
+  String get wallBoost => 'Boost';
+
+  @override
+  String get wallBoostDescription => 'Deel met iedereen';
+
+  @override
+  String get wallBoosted => 'Geboost';
+
+  @override
+  String get wallBoostLimitReached => 'Dagelijkse boost-limiet bereikt';
+
+  @override
+  String get wallAddComment => 'Voeg een opmerking toe (optioneel)';
+
+  @override
+  String get wallCreatePostTitle => 'Bericht maken';
+
+  @override
   String get walletTitle => 'Wallet';
 
   @override

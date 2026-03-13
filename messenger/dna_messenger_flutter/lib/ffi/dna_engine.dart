@@ -5983,6 +5983,134 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // WALL BOOST (v0.9.71+)
+  // ---------------------------------------------------------------------------
+
+  /// Post to own wall AND boost (publish to global daily key)
+  Future<WallPost> wallBoostPost(String text) async {
+    final completer = Completer<WallPost>();
+    final localId = _nextLocalId++;
+    final textPtr = text.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_post_info_t> post, Pointer<Void> userData) {
+      calloc.free(textPtr);
+      if (error == 0 && post != nullptr) {
+        final result = WallPost.fromNative(post.ref);
+        _bindings.dna_free_wall_posts(post, 1);
+        completer.complete(result);
+      } else {
+        if (post != nullptr) _bindings.dna_free_wall_posts(post, 1);
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallPostCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_boost_post(
+      _engine,
+      textPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(textPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit boost post request');
+    }
+
+    return completer.future;
+  }
+
+  /// Post with image to own wall AND boost
+  Future<WallPost> wallBoostPostWithImage(String text, String imageJson) async {
+    final completer = Completer<WallPost>();
+    final localId = _nextLocalId++;
+    final textPtr = text.toNativeUtf8();
+    final imgPtr = imageJson.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_post_info_t> post, Pointer<Void> userData) {
+      calloc.free(textPtr);
+      calloc.free(imgPtr);
+      if (error == 0 && post != nullptr) {
+        final result = WallPost.fromNative(post.ref);
+        _bindings.dna_free_wall_posts(post, 1);
+        completer.complete(result);
+      } else {
+        if (post != nullptr) _bindings.dna_free_wall_posts(post, 1);
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallPostCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_boost_post_with_image(
+      _engine,
+      textPtr.cast(),
+      imgPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(textPtr);
+      calloc.free(imgPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit boost post with image');
+    }
+
+    return completer.future;
+  }
+
+  /// Fetch all boosted posts from the last 7 days
+  Future<List<WallPost>> wallBoostTimeline() async {
+    final completer = Completer<List<WallPost>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_post_info_t> posts, int count,
+        Pointer<Void> userData) {
+      if (error == 0) {
+        final list = <WallPost>[];
+        for (int i = 0; i < count; i++) {
+          list.add(WallPost.fromNative(posts[i]));
+        }
+        if (count > 0) _bindings.dna_free_wall_posts(posts, count);
+        completer.complete(list);
+      } else {
+        if (count > 0) _bindings.dna_free_wall_posts(posts, count);
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallPostsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_boost_timeline(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit boost timeline request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
   // WALL COMMENTS (v0.7.0+)
   // ---------------------------------------------------------------------------
 

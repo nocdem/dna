@@ -1148,3 +1148,204 @@ void dna_free_wall_likes(dna_wall_like_info_t *likes, int count) {
     (void)count;  /* dna_wall_like_info_t has no heap members */
     if (likes) free(likes);
 }
+
+/* ============================================================================
+ * WALL BOOST - Task Handlers (v0.9.71+)
+ * ============================================================================ */
+
+void dna_handle_wall_boost_post(dna_engine_t *engine, dna_task_t *task) {
+    qgp_key_t *key = dna_load_private_key(engine);
+
+    if (!key) {
+        task->callback.wall_post(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
+                                  NULL, task->user_data);
+        return;
+    }
+
+    /* Step 1: Create normal wall post */
+    dna_wall_post_t out_post = {0};
+    int ret;
+    if (task->params.wall_boost_post.image_json) {
+        ret = dna_wall_post_with_image(engine->fingerprint, key->private_key,
+                                        task->params.wall_boost_post.text,
+                                        task->params.wall_boost_post.image_json, &out_post);
+    } else {
+        ret = dna_wall_post(engine->fingerprint, key->private_key,
+                            task->params.wall_boost_post.text, &out_post);
+    }
+    qgp_key_free(key);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to post to wall for boost: %d", ret);
+        task->callback.wall_post(task->request_id, DNA_ERROR_INTERNAL,
+                                  NULL, task->user_data);
+        return;
+    }
+
+    /* Insert into cache */
+    wall_cache_insert_post(&out_post);
+    wall_cache_update_meta(engine->fingerprint);
+
+    /* Step 2: Write boost pointer to daily key */
+    ret = dna_wall_boost_post(out_post.uuid, engine->fingerprint, out_post.timestamp);
+    if (ret != 0 && ret != -3) {
+        /* Boost pointer failed but wall post succeeded — log but don't fail */
+        QGP_LOG_WARN(LOG_TAG, "Wall post created but boost pointer failed (ret=%d)", ret);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Boost post created: %s", out_post.uuid);
+    }
+
+    /* Convert to public API format */
+    dna_wall_post_info_t *info = calloc(1, sizeof(dna_wall_post_info_t));
+    if (!info) {
+        free(out_post.image_json);
+        task->callback.wall_post(task->request_id, DNA_ERROR_INTERNAL,
+                                  NULL, task->user_data);
+        return;
+    }
+
+    wall_post_to_info(&out_post, info);
+    free(out_post.image_json);
+
+    task->callback.wall_post(task->request_id, DNA_OK, info, task->user_data);
+}
+
+void dna_handle_wall_boost_timeline(dna_engine_t *engine, dna_task_t *task) {
+    if (!engine->identity_loaded) {
+        task->callback.wall_posts(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
+                                  NULL, 0, task->user_data);
+        return;
+    }
+
+    /* Fetch boost pointers from last 7 days */
+    dna_wall_boost_ptr_t *ptrs = NULL;
+    size_t ptr_count = 0;
+    int ret = dna_wall_boost_load_recent(7, &ptrs, &ptr_count);
+
+    if (ret != 0 || ptr_count == 0) {
+        QGP_LOG_INFO(LOG_TAG, "Boost timeline: no boosted posts found");
+        task->callback.wall_posts(task->request_id, DNA_OK, NULL, 0, task->user_data);
+        if (ptrs) dna_wall_boost_free(ptrs, ptr_count);
+        return;
+    }
+
+    /* For each pointer, try to resolve the actual post.
+     * First check wall cache, then fetch from DHT if needed. */
+    dna_wall_post_info_t *results = calloc(ptr_count, sizeof(dna_wall_post_info_t));
+    if (!results) {
+        dna_wall_boost_free(ptrs, ptr_count);
+        task->callback.wall_posts(task->request_id, DNA_ERROR_INTERNAL,
+                                  NULL, 0, task->user_data);
+        return;
+    }
+
+    int result_count = 0;
+
+    for (size_t i = 0; i < ptr_count; i++) {
+        const char *fp = ptrs[i].author_fingerprint;
+        const char *target_uuid = ptrs[i].uuid;
+
+        /* Try cache first */
+        dna_wall_post_t *cached_posts = NULL;
+        size_t cached_count = 0;
+        bool found = false;
+
+        if (wall_cache_load(fp, &cached_posts, &cached_count) == 0 && cached_posts) {
+            for (size_t j = 0; j < cached_count; j++) {
+                if (strncmp(cached_posts[j].uuid, target_uuid, 36) == 0) {
+                    wall_post_to_info(&cached_posts[j], &results[result_count++]);
+                    found = true;
+                    break;
+                }
+            }
+            wall_cache_free_posts(cached_posts, cached_count);
+        }
+
+        if (found) continue;
+
+        /* Cache miss — fetch wall from DHT */
+        dna_wall_t wall = {0};
+        if (dna_wall_load(fp, &wall) == 0) {
+            wall_cache_store(fp, wall.posts, wall.post_count);
+            wall_cache_update_meta(fp);
+
+            for (size_t j = 0; j < wall.post_count; j++) {
+                if (strncmp(wall.posts[j].uuid, target_uuid, 36) == 0) {
+                    wall_post_to_info(&wall.posts[j], &results[result_count++]);
+                    found = true;
+                    break;
+                }
+            }
+            dna_wall_free(&wall);
+        }
+
+        if (!found) {
+            QGP_LOG_DEBUG(LOG_TAG, "Boost: could not resolve post %s from %s",
+                          target_uuid, fp);
+        }
+    }
+
+    dna_wall_boost_free(ptrs, ptr_count);
+
+    QGP_LOG_INFO(LOG_TAG, "Boost timeline: resolved %d/%zu posts", result_count, ptr_count);
+    task->callback.wall_posts(task->request_id, DNA_OK, results, result_count, task->user_data);
+}
+
+/* ── Wall Boost Public API ── */
+
+dna_request_id_t dna_engine_wall_boost_post(
+    dna_engine_t *engine,
+    const char *text,
+    dna_wall_post_cb callback,
+    void *user_data
+) {
+    if (!engine || !text || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.wall_boost_post.text = strdup(text);
+    if (!params.wall_boost_post.text) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = {0};
+    cb.wall_post = callback;
+    return dna_submit_task(engine, TASK_WALL_BOOST_POST, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_wall_boost_post_with_image(
+    dna_engine_t *engine,
+    const char *text,
+    const char *image_json,
+    dna_wall_post_cb callback,
+    void *user_data
+) {
+    if (!engine || !text || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.wall_boost_post.text = strdup(text);
+    if (!params.wall_boost_post.text) return DNA_REQUEST_ID_INVALID;
+
+    if (image_json) {
+        params.wall_boost_post.image_json = strdup(image_json);
+        if (!params.wall_boost_post.image_json) {
+            free(params.wall_boost_post.text);
+            return DNA_REQUEST_ID_INVALID;
+        }
+    }
+
+    dna_task_callback_t cb = {0};
+    cb.wall_post = callback;
+    return dna_submit_task(engine, TASK_WALL_BOOST_POST, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_wall_boost_timeline(
+    dna_engine_t *engine,
+    dna_wall_posts_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+
+    dna_task_callback_t cb = {0};
+    cb.wall_posts = callback;
+    return dna_submit_task(engine, TASK_WALL_BOOST_TIMELINE, &params, cb, user_data);
+}

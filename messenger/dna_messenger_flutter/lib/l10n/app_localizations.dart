@@ -1824,6 +1824,60 @@ abstract class AppLocalizations {
   /// **'Failed'**
   String get wallTipFailedStatus;
 
+  /// No description provided for @wallWhatsOnYourMind.
+  ///
+  /// In en, this message translates to:
+  /// **'What\'s on your mind?'**
+  String get wallWhatsOnYourMind;
+
+  /// No description provided for @wallPost.
+  ///
+  /// In en, this message translates to:
+  /// **'Post'**
+  String get wallPost;
+
+  /// No description provided for @wallPosting.
+  ///
+  /// In en, this message translates to:
+  /// **'Posting...'**
+  String get wallPosting;
+
+  /// No description provided for @wallBoost.
+  ///
+  /// In en, this message translates to:
+  /// **'Boost'**
+  String get wallBoost;
+
+  /// No description provided for @wallBoostDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Share with everyone'**
+  String get wallBoostDescription;
+
+  /// No description provided for @wallBoosted.
+  ///
+  /// In en, this message translates to:
+  /// **'Boosted'**
+  String get wallBoosted;
+
+  /// No description provided for @wallBoostLimitReached.
+  ///
+  /// In en, this message translates to:
+  /// **'Daily boost limit reached'**
+  String get wallBoostLimitReached;
+
+  /// No description provided for @wallAddComment.
+  ///
+  /// In en, this message translates to:
+  /// **'Add a comment (optional)'**
+  String get wallAddComment;
+
+  /// No description provided for @wallCreatePostTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Create Post'**
+  String get wallCreatePostTitle;
+
   /// No description provided for @walletTitle.
   ///
   /// In en, this message translates to:

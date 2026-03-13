@@ -291,6 +291,79 @@ int dna_wall_like_verify(const dna_wall_like_t *like,
  */
 void dna_wall_likes_free(dna_wall_like_t *likes, size_t count);
 
+/* ============================================================================
+ * WALL BOOST (v0.9.71+)
+ * ============================================================================
+ *
+ * Boosted posts appear on a global daily DHT key visible to all users.
+ * Each user writes lightweight pointers (uuid + author_fp + timestamp) to
+ * the daily boost key using the multi-owner pattern (same as comments/likes).
+ *
+ * DHT Key:   SHA3-512("dna:boost:YYYY-MM-DD")
+ * TTL:       7 days
+ * Value:     JSON array of pointer objects per author (multi-owner)
+ *
+ * To display a boosted post the client resolves the real post data from
+ * the author's wall key: SHA3-512("dna:wall:<author_fp>").
+ */
+
+/* Boost Constants */
+#define DNA_WALL_BOOST_KEY_PREFIX     "dna:boost:"
+#define DNA_WALL_BOOST_TTL_SECONDS    604800    /* 7 days */
+#define DNA_WALL_BOOST_MAX_PER_DAY    10        /* Max boost posts per user per day */
+
+/**
+ * Boost pointer — lightweight reference stored on the daily boost key.
+ */
+typedef struct {
+    char uuid[37];                      /* Post UUID */
+    char author_fingerprint[129];       /* Post author's fingerprint */
+    uint64_t timestamp;                 /* Post creation timestamp */
+} dna_wall_boost_ptr_t;
+
+/**
+ * Register a wall post as boosted on today's boost key.
+ * Writes a pointer to the multi-owner DHT key "dna:boost:YYYY-MM-DD".
+ *
+ * @param post_uuid           UUID of the wall post to boost
+ * @param author_fingerprint  Post author's fingerprint
+ * @param post_timestamp      Post creation timestamp
+ * @return 0 on success, -1 on error, -3 if already boosted, -4 if daily limit reached
+ */
+int dna_wall_boost_post(const char *post_uuid,
+                         const char *author_fingerprint,
+                         uint64_t post_timestamp);
+
+/**
+ * Fetch all boost pointers for a specific date.
+ * Uses nodus_ops_get_all_str() to collect from all authors.
+ *
+ * @param date_str     Date string "YYYY-MM-DD"
+ * @param ptrs_out     Output: heap-allocated array (caller frees)
+ * @param count_out    Output: number of pointers
+ * @return 0 on success, -1 on error, -2 if none found
+ */
+int dna_wall_boost_load(const char *date_str,
+                         dna_wall_boost_ptr_t **ptrs_out,
+                         size_t *count_out);
+
+/**
+ * Fetch all boost pointers for the last N days (convenience).
+ *
+ * @param days         Number of days to look back (max 7)
+ * @param ptrs_out     Output: heap-allocated array (caller frees)
+ * @param count_out    Output: number of pointers
+ * @return 0 on success, -1 on error, -2 if none found
+ */
+int dna_wall_boost_load_recent(int days,
+                                dna_wall_boost_ptr_t **ptrs_out,
+                                size_t *count_out);
+
+/**
+ * Free a boost pointers array
+ */
+void dna_wall_boost_free(dna_wall_boost_ptr_t *ptrs, size_t count);
+
 #ifdef __cplusplus
 }
 #endif

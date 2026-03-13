@@ -18,29 +18,68 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallPost>> {
     }
 
     final engine = await ref.watch(engineProvider.future);
-    return engine.wallTimeline();
+    return _fetchMergedTimeline(engine);
+  }
+
+  /// Fetch wall timeline + boost timeline, merge and deduplicate by UUID
+  Future<List<WallPost>> _fetchMergedTimeline(DnaEngine engine) async {
+    // Fetch both in parallel
+    final results = await Future.wait([
+      engine.wallTimeline(),
+      engine.wallBoostTimeline().catchError((_) => <WallPost>[]),
+    ]);
+
+    final wallPosts = results[0];
+    final boostPosts = results[1];
+
+    if (boostPosts.isEmpty) return wallPosts;
+
+    // Merge: add boost posts that aren't already in wall timeline (UUID dedup)
+    final seenUuids = <String>{};
+    final merged = <WallPost>[];
+
+    for (final post in wallPosts) {
+      seenUuids.add(post.uuid);
+      merged.add(post);
+    }
+
+    for (final post in boostPosts) {
+      if (!seenUuids.contains(post.uuid)) {
+        seenUuids.add(post.uuid);
+        merged.add(post);
+      }
+    }
+
+    // Sort by timestamp descending (newest first)
+    merged.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    return merged;
   }
 
   Future<void> refresh() async {
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
-      return engine.wallTimeline();
+      return _fetchMergedTimeline(engine);
     });
   }
 
   /// Create a text-only wall post
-  Future<WallPost> createPost(String text) async {
+  Future<WallPost> createPost(String text, {bool boost = false}) async {
     final engine = await ref.read(engineProvider.future);
-    final post = await engine.wallPost(text);
+    final post = boost
+        ? await engine.wallBoostPost(text)
+        : await engine.wallPost(text);
     final current = state.valueOrNull ?? [];
     state = AsyncData([post, ...current]);
     return post;
   }
 
   /// Create a wall post with image (v0.7.0+)
-  Future<WallPost> createPostWithImage(String text, String imageJson) async {
+  Future<WallPost> createPostWithImage(String text, String imageJson,
+      {bool boost = false}) async {
     final engine = await ref.read(engineProvider.future);
-    final post = await engine.wallPostWithImage(text, imageJson);
+    final post = boost
+        ? await engine.wallBoostPostWithImage(text, imageJson)
+        : await engine.wallPostWithImage(text, imageJson);
     final current = state.valueOrNull ?? [];
     state = AsyncData([post, ...current]);
     return post;

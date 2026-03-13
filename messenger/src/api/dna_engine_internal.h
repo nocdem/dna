@@ -149,6 +149,10 @@ typedef enum {
     TASK_WALL_LIKE,
     TASK_WALL_GET_LIKES,
 
+    /* Wall Boost (v0.9.71+) */
+    TASK_WALL_BOOST_POST,
+    TASK_WALL_BOOST_TIMELINE,
+
     /* Channel system (RSS-like channels) */
     TASK_CHANNEL_CREATE,
     TASK_CHANNEL_GET,
@@ -410,6 +414,14 @@ typedef union {
     struct {
         char post_uuid[37];             /* Post UUID */
     } wall_get_likes;
+
+    /* Wall: Boost post (v0.9.71+) */
+    struct {
+        char *text;                     /* Heap allocated, task owns */
+        char *image_json;              /* Heap allocated, task owns; NULL = text-only */
+    } wall_boost_post;
+
+    /* Wall: Boost timeline has no extra params */
 
     /* Channel: create */
     struct {
@@ -895,6 +907,10 @@ void dna_handle_wall_get_comments(dna_engine_t *engine, dna_task_t *task);
 /* Wall Likes (v0.9.52+) */
 void dna_handle_wall_like(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_get_likes(dna_engine_t *engine, dna_task_t *task);
+
+/* Wall Boost (v0.9.71+) */
+void dna_handle_wall_boost_post(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_wall_boost_timeline(dna_engine_t *engine, dna_task_t *task);
 
 /* Channel handlers (dna_engine_channels.c) */
 void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task);

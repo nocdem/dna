@@ -13,6 +13,7 @@ import '../../providers/contact_profile_cache_provider.dart';
 import '../../services/image_attachment_service.dart';
 import '../../l10n/app_localizations.dart';
 import '../../widgets/wall_post_tile.dart';
+import 'create_post_screen.dart';
 import 'wall_post_detail_screen.dart';
 import 'wall_tip_dialog.dart';
 
@@ -186,16 +187,19 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
   void _showCreatePostDialog({
     ImageAttachment? initialAttachment,
     Uint8List? initialPreview,
-  }) {
-    showDialog(
-      context: context,
-      builder: (dialogContext) => _CreatePostDialog(
-        ref: ref,
-        parentContext: context,
-        initialAttachment: initialAttachment,
-        initialPreview: initialPreview,
+  }) async {
+    final result = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CreatePostScreen(
+          initialAttachment: initialAttachment,
+          initialPreview: initialPreview,
+        ),
       ),
     );
+    if (result == true) {
+      // Post was created — timeline provider already updated optimistically
+    }
   }
 
   void _confirmDelete(BuildContext context, WidgetRef ref, String postUuid) {
@@ -397,183 +401,3 @@ class _WallPostWithComments extends ConsumerWidget {
   }
 }
 
-/// Create post dialog with optional image attachment
-class _CreatePostDialog extends StatefulWidget {
-  final WidgetRef ref;
-  final BuildContext parentContext;
-  final ImageAttachment? initialAttachment;
-  final Uint8List? initialPreview;
-
-  const _CreatePostDialog({
-    required this.ref,
-    required this.parentContext,
-    this.initialAttachment,
-    this.initialPreview,
-  });
-
-  @override
-  State<_CreatePostDialog> createState() => _CreatePostDialogState();
-}
-
-class _CreatePostDialogState extends State<_CreatePostDialog> {
-  final _controller = TextEditingController();
-  final _imageService = ImageAttachmentService();
-  ImageAttachment? _attachment;
-  Uint8List? _previewBytes;
-  bool _posting = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _attachment = widget.initialAttachment;
-    _previewBytes = widget.initialPreview;
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  Future<void> _pickImage(ImageSource source) async {
-    try {
-      final bytes = await _imageService.pickImage(source);
-      if (bytes == null) return;
-      final attachment = await _imageService.processImage(bytes);
-      setState(() {
-        _attachment = attachment;
-        _previewBytes = base64Decode(attachment.base64Data);
-      });
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e')),
-        );
-      }
-    }
-  }
-
-  Future<void> _submit() async {
-    final text = _controller.text.trim();
-    if (text.isEmpty || _posting) return;
-
-    setState(() => _posting = true);
-    Navigator.pop(context);
-
-    try {
-      final notifier = widget.ref.read(wallTimelineProvider.notifier);
-      if (_attachment != null) {
-        final imageJson = _attachment!.toMessageJson();
-        await notifier.createPostWithImage(text, imageJson);
-      } else {
-        await notifier.createPost(text);
-      }
-    } catch (e) {
-      if (widget.parentContext.mounted) {
-        ScaffoldMessenger.of(widget.parentContext).showSnackBar(
-          SnackBar(content: Text('Failed to post: $e')),
-        );
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return AlertDialog(
-      title: Row(
-        children: [
-          FaIcon(FontAwesomeIcons.pen,
-              size: 18, color: theme.colorScheme.primary),
-          const SizedBox(width: DnaSpacing.sm),
-          Text(AppLocalizations.of(context).wallNewPost),
-        ],
-      ),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: _controller,
-                maxLines: 5,
-                maxLength: 2000,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  hintText: "What's on your mind?",
-                ),
-              ),
-              // Image preview
-              if (_previewBytes != null) ...[
-                const SizedBox(height: DnaSpacing.sm),
-                Stack(
-                  alignment: Alignment.topRight,
-                  children: [
-                    ClipRRect(
-                      borderRadius:
-                          BorderRadius.circular(DnaSpacing.radiusSm),
-                      child: Image.memory(
-                        _previewBytes!,
-                        height: 150,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                    IconButton(
-                      icon: const FaIcon(FontAwesomeIcons.circleXmark,
-                          size: 20),
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.black54,
-                        foregroundColor: Colors.white,
-                      ),
-                      onPressed: () => setState(() {
-                        _attachment = null;
-                        _previewBytes = null;
-                      }),
-                    ),
-                  ],
-                ),
-              ],
-              // Image picker buttons
-              if (_previewBytes == null) ...[
-                const SizedBox(height: DnaSpacing.sm),
-                Row(
-                  children: [
-                    IconButton(
-                      icon: FaIcon(FontAwesomeIcons.image,
-                          size: 18,
-                          color: theme.colorScheme.onSurfaceVariant),
-                      tooltip: 'Gallery',
-                      onPressed: () => _pickImage(ImageSource.gallery),
-                    ),
-                    IconButton(
-                      icon: FaIcon(FontAwesomeIcons.camera,
-                          size: 18,
-                          color: theme.colorScheme.onSurfaceVariant),
-                      tooltip: 'Camera',
-                      onPressed: () => _pickImage(ImageSource.camera),
-                    ),
-                  ],
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        DnaButton(
-          label: AppLocalizations.of(context).cancel,
-          variant: DnaButtonVariant.ghost,
-          onPressed: () => Navigator.pop(context),
-        ),
-        DnaButton(
-          label: _posting ? 'Posting...' : 'Post',
-          icon: FontAwesomeIcons.paperPlane,
-          onPressed: _posting ? null : _submit,
-        ),
-      ],
-    );
-  }
-}

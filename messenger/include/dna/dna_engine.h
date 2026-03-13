@@ -3445,6 +3445,49 @@ DNA_API dna_request_id_t dna_engine_wall_get_likes(
 DNA_API void dna_free_wall_likes(dna_wall_like_info_t *likes, int count);
 
 /* ============================================================================
+ * WALL BOOST (v0.9.71+ — Global boosted posts)
+ *
+ * Boosted posts are published to a daily multi-owner DHT key visible to all
+ * users. The boost key contains lightweight pointers; actual post data is
+ * resolved from the author's wall.
+ *
+ * DHT Key: SHA3-512("dna:boost:YYYY-MM-DD"), TTL 7 days
+ * ============================================================================ */
+
+/**
+ * Create a wall post AND boost it (publish pointer to daily boost key).
+ * Returns the created post via the callback (same as dna_engine_wall_post).
+ */
+DNA_API dna_request_id_t dna_engine_wall_boost_post(
+    dna_engine_t *engine,
+    const char *text,
+    dna_wall_post_cb callback,
+    void *user_data
+);
+
+/**
+ * Create a wall post with image AND boost it.
+ */
+DNA_API dna_request_id_t dna_engine_wall_boost_post_with_image(
+    dna_engine_t *engine,
+    const char *text,
+    const char *image_json,
+    dna_wall_post_cb callback,
+    void *user_data
+);
+
+/**
+ * Fetch all boosted posts from the last 7 days.
+ * Resolves post data from each author's wall (cache-first).
+ * Returns via wall_posts callback (same as dna_engine_wall_timeline).
+ */
+DNA_API dna_request_id_t dna_engine_wall_boost_timeline(
+    dna_engine_t *engine,
+    dna_wall_posts_cb callback,
+    void *user_data
+);
+
+/* ============================================================================
  * CHANNELS (RSS-like public channels via DHT)
  * ============================================================================ */
 

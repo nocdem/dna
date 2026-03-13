@@ -682,6 +682,10 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_WALL_ADD_COMMENT:
             free(task->params.wall_add_comment.body);
             break;
+        case TASK_WALL_BOOST_POST:
+            free(task->params.wall_boost_post.text);
+            free(task->params.wall_boost_post.image_json);
+            break;
         case TASK_CHANNEL_CREATE:
             free(task->params.channel_create.description);
             break;
@@ -1040,6 +1044,14 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_WALL_GET_LIKES:
             dna_handle_wall_get_likes(engine, task);
+            break;
+
+        /* Wall Boost (v0.9.71+) */
+        case TASK_WALL_BOOST_POST:
+            dna_handle_wall_boost_post(engine, task);
+            break;
+        case TASK_WALL_BOOST_TIMELINE:
+            dna_handle_wall_boost_timeline(engine, task);
             break;
 
         /* Channel system (RSS-like channels) */
