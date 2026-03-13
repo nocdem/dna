@@ -1218,7 +1218,7 @@ static void routing_insert_or_ping(nodus_server_t *srv, const nodus_peer_t *peer
             /* Send UDP PING to the LRU candidate */
             uint8_t ping_buf[256];
             size_t plen = 0;
-            nodus_t1_ping(0, &srv->identity.node_id,
+            nodus_t1_ping(0, &srv->identity.node_id, &srv->identity.pk,
                            ping_buf, sizeof(ping_buf), &plen);
             nodus_udp_send(&srv->udp, ping_buf, plen,
                             lru.ip, lru.udp_port);
@@ -1548,7 +1548,7 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
     if (strcmp(msg.method, "ping") == 0) {
         /* Respond with PONG */
         size_t rlen = 0;
-        nodus_t1_pong(msg.txn_id, &srv->identity.node_id,
+        nodus_t1_pong(msg.txn_id, &srv->identity.node_id, &srv->identity.pk,
                        resp_buf, sizeof(resp_buf), &rlen);
         nodus_udp_send(&srv->udp, resp_buf, rlen, from_ip, from_port);
 
@@ -1556,6 +1556,10 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         nodus_peer_t peer;
         memset(&peer, 0, sizeof(peer));
         peer.node_id = msg.node_id;
+        if (msg.has_pubkey) {
+            peer.pubkey = msg.pubkey;
+            peer.has_pubkey = true;
+        }
         strncpy(peer.ip, from_ip, sizeof(peer.ip) - 1);
         peer.udp_port = from_port;
         peer.tcp_port = from_port + 2;  /* Peer TCP = UDP + 2 */
@@ -1579,6 +1583,10 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         nodus_peer_t rpeer;
         memset(&rpeer, 0, sizeof(rpeer));
         rpeer.node_id = msg.node_id;
+        if (msg.has_pubkey) {
+            rpeer.pubkey = msg.pubkey;
+            rpeer.has_pubkey = true;
+        }
         strncpy(rpeer.ip, from_ip, sizeof(rpeer.ip) - 1);
         rpeer.udp_port = from_port;
         rpeer.tcp_port = from_port + 2;  /* Peer TCP = UDP + 2 */
