@@ -812,6 +812,9 @@ static nodus_ch_conn_t *ch_pool_connect(const uint8_t channel_uuid[NODUS_UUID_BY
             continue;
         }
 
+        /* Auto-subscribe so server pushes new posts to us */
+        nodus_ch_conn_subscribe(conn, channel_uuid);
+
         QGP_LOG_INFO(LOG_TAG_CH, "Connected to channel node %s:%u",
                       nodes[i].ip, (unsigned)nodes[i].port);
         return conn;
