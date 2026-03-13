@@ -1579,6 +1579,11 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             }
 
             int rc = nodus_replication_receive(&srv->ch_store, &post);
+
+            /* Notify local 4003 subscribers of new replicated post */
+            if (rc == 0)
+                notify_ch_subscribers_4003(srv, post.channel_uuid, &post);
+
             post.body = NULL;
 
             size_t rlen = 0;
