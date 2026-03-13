@@ -87,9 +87,12 @@ static void dna_presence_batch_query(dna_engine_t *engine) {
         } else {
             /* Server has no data — mark offline, preserve existing timestamp */
             time_t existing = presence_cache_last_seen(fps[i]);
-            if (existing > 0)
+            if (existing > 0) {
                 presence_cache_update(fps[i], false, existing);
-            /* No cached data either: leave unknown (no cache entry created) */
+            } else if (contacts->contacts[i].last_seen > 0) {
+                /* Fall back to DB-stored last_seen (fixes "Syncing..." after server restart) */
+                presence_cache_update(fps[i], false, (time_t)contacts->contacts[i].last_seen);
+            }
         }
     }
 
