@@ -332,14 +332,27 @@ static void handle_ch_unsubscribe(nodus_channel_server_t *cs,
 static void handle_ch_replicate(nodus_channel_server_t *cs,
                                  nodus_ch_node_session_t *sess,
                                  nodus_tier2_msg_t *msg) {
-    if (msg->ch_post_count > 0 && cs->ch_replication_ptr) {
+    /* Build post from flat msg fields (ch_rep encodes post as individual fields,
+     * NOT as a "posts" array — so msg->ch_posts is empty) */
+    nodus_channel_post_t post;
+    memset(&post, 0, sizeof(post));
+    memcpy(post.channel_uuid, msg->channel_uuid, NODUS_UUID_BYTES);
+    memcpy(post.post_uuid, msg->post_uuid_ch, NODUS_UUID_BYTES);
+    post.author_fp = msg->fp;
+    post.timestamp = msg->ch_timestamp;
+    post.received_at = msg->ch_received_at;
+    post.body = (char *)msg->data;
+    post.body_len = msg->data_len;
+    memcpy(post.signature.bytes, msg->sig.bytes, NODUS_SIG_BYTES);
+
+    if (cs->ch_replication_ptr) {
         nodus_ch_replication_t *rep = (nodus_ch_replication_t *)cs->ch_replication_ptr;
-        nodus_ch_replication_receive(rep, msg->channel_uuid, &msg->ch_posts[0]);
-        QGP_LOG_INFO(LOG_TAG, "ch_rep: stored replicated post");
+        nodus_ch_replication_receive(rep, msg->channel_uuid, &post);
+        QGP_LOG_INFO(LOG_TAG, "ch_rep: stored replicated post from %s:%u",
+                     sess->conn->ip, (unsigned)sess->conn->port);
     }
-    /* Also fire callback if set (for additional processing) */
-    if (cs->on_replicate && msg->ch_post_count > 0) {
-        cs->on_replicate(cs, msg->channel_uuid, &msg->ch_posts[0]);
+    if (cs->on_replicate) {
+        cs->on_replicate(cs, msg->channel_uuid, &post);
     }
     uint8_t buf[256];
     size_t len = 0;
@@ -468,6 +481,15 @@ static void dispatch_node_msg(nodus_channel_server_t *cs,
         handle_ring_evict(cs, sess, msg);
     else if (strcmp(msg->method, "ring_rejoin") == 0)
         handle_ring_rejoin(cs, sess, msg);
+    else if (strcmp(msg->method, "ch_rep_ok") == 0)
+        { /* Replication ack — fire-and-forget, ignore */ }
+    else if (strcmp(msg->method, "ch_sync_resp") == 0) {
+        if (cs->ch_replication_ptr) {
+            nodus_ch_replication_t *rep = (nodus_ch_replication_t *)cs->ch_replication_ptr;
+            nodus_ch_replication_handle_sync_response(rep, msg->channel_uuid,
+                                                       msg->ch_posts, msg->ch_post_count);
+        }
+    }
     else
         QGP_LOG_WARN(LOG_TAG, "Unknown node method: %s", msg->method);
 }
@@ -592,6 +614,8 @@ static void on_ch_frame(nodus_tcp_conn_t *conn,
         } else if (strcmp(msg.method, "challenge") == 0 && !ns->authenticated) {
             /* Outbound: peer sent challenge in response to our node_hello.
              * Sign the nonce and send auth response. */
+            QGP_LOG_DEBUG(LOG_TAG, "Outbound: received challenge from %s:%u",
+                         conn->ip, (unsigned)conn->port);
             nodus_sig_t sig;
             if (nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN,
                             &cs->identity->sk) == 0) {
@@ -600,6 +624,8 @@ static void on_ch_frame(nodus_tcp_conn_t *conn,
                 nodus_t2_auth(msg.txn_id, &sig,
                                buf, sizeof(buf), &out_len);
                 nodus_tcp_send(conn, buf, out_len);
+                QGP_LOG_DEBUG(LOG_TAG, "Outbound: sent auth to %s:%u",
+                             conn->ip, (unsigned)conn->port);
             }
         } else if ((strcmp(msg.method, "auth_ok") == 0 ||
                      strcmp(msg.method, "node_auth_ok") == 0) &&

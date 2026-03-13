@@ -44,7 +44,8 @@ int nodus_ch_replication_send(nodus_ch_replication_t *rep,
     /* 1. Get responsible set for this channel */
     nodus_responsible_set_t rset;
     if (nodus_hashring_responsible(cs->ring, channel_uuid, &rset) != 0) {
-        QGP_LOG_WARN(LOG_TAG, "Cannot get responsible set for replication");
+        QGP_LOG_WARN(LOG_TAG, "Cannot get responsible set for replication (ring=%p, count=%d)",
+                     (void*)cs->ring, cs->ring ? cs->ring->count : -1);
         return -1;
     }
 
@@ -82,6 +83,8 @@ int nodus_ch_replication_send(nodus_ch_replication_t *rep,
 
         if (ns) {
             /* Send replication directly */
+            QGP_LOG_DEBUG(LOG_TAG, "Sending ch_rep to %s:%u (session exists)",
+                         ns->conn->ip, (unsigned)ns->conn->port);
             int send_rc = nodus_tcp_send(ns->conn, buf, len);
             if (send_rc != 0) {
                 QGP_LOG_WARN(LOG_TAG,
