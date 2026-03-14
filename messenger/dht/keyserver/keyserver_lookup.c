@@ -11,6 +11,7 @@
 #include "../core/dht_keyserver.h"
 #include "../client/dna_profile.h"
 #include "dht/shared/nodus_ops.h"
+#include "database/keyserver_cache.h"
 #include <pthread.h>
 #include <ctype.h>
 #include "crypto/utils/qgp_log.h"
@@ -168,6 +169,15 @@ int dht_keyserver_reverse_lookup(
 
     QGP_LOG_INFO(LOG_TAG, "Reverse lookup for fingerprint: %.16s...\n", fingerprint);
 
+    // Check name cache first (avoids DHT roundtrip for repeated lookups)
+    char cached_name[64] = {0};
+    if (keyserver_cache_get_name(fingerprint, cached_name, sizeof(cached_name)) == 0 &&
+        cached_name[0] != '\0') {
+        *identity_out = strdup(cached_name);
+        QGP_LOG_INFO(LOG_TAG, "✓ Reverse lookup (cached): %s\n", cached_name);
+        return 0;
+    }
+
     // Use dht_keyserver_lookup to fetch the full identity
     dna_unified_identity_t *identity = NULL;
     int ret = dht_keyserver_lookup(fingerprint, &identity);
@@ -181,6 +191,8 @@ int dht_keyserver_reverse_lookup(
     if (identity->has_registered_name && identity->registered_name[0] != '\0') {
         *identity_out = strdup(identity->registered_name);
         QGP_LOG_INFO(LOG_TAG, "✓ Reverse lookup successful: %s\n", identity->registered_name);
+        // Cache for future lookups
+        keyserver_cache_put_name(fingerprint, identity->registered_name, 0);
     } else {
         // No registered name - return shortened fingerprint
         char short_fp[32];
