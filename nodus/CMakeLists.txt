@@ -301,6 +301,11 @@ add_executable(test_channel_ring tests/test_channel_ring.c)
 target_link_libraries(test_channel_ring nodus dsa nodus)
 add_test(NAME test_channel_ring COMMAND test_channel_ring)
 
+# Encrypted channel test
+add_executable(test_channel_encrypted tests/test_channel_encrypted.c)
+target_link_libraries(test_channel_encrypted nodus dsa nodus)
+add_test(NAME test_channel_encrypted COMMAND test_channel_encrypted)
+
 # ── Tools ────────────────────────────────────────────────────────────
 add_executable(nodus-cli tools/nodus-cli.c)
 target_link_libraries(nodus-cli nodus dsa nodus)
