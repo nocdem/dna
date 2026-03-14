@@ -415,7 +415,13 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
                NODUS_T3_WITNESS_ID_LEN);
         snprintf(w->peers[pi].address, sizeof(w->peers[pi].address),
                  "%s", ident->address);
-        w->peers[pi].conn = conn;
+        /* Only update conn if existing one is dead — prefer outbound.
+         * handle_ident runs on inbound conns; blindly overwriting would
+         * replace a working outbound conn with an inbound one, breaking
+         * bidirectional broadcast for nodes behind high-latency links. */
+        if (!w->peers[pi].conn ||
+            w->peers[pi].conn->state != NODUS_CONN_CONNECTED)
+            w->peers[pi].conn = conn;
         w->peers[pi].identified = true;
         w->peers[pi].connect_failures = 0;
     }
