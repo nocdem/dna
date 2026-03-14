@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  9
-#define NODUS_VERSION_PATCH  5
-#define NODUS_VERSION_STRING "0.9.5"
+#define NODUS_VERSION_PATCH  6
+#define NODUS_VERSION_STRING "0.9.6"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -52,6 +52,7 @@ extern "C" {
 #define NODUS_DEFAULT_TCP_PORT  4001
 #define NODUS_DEFAULT_PEER_PORT 4002
 #define NODUS_DEFAULT_CH_PORT   4003        /* Channel client TCP port */
+#define NODUS_DEFAULT_WITNESS_PORT 4004     /* Witness BFT TCP port */
 #define NODUS_SESSION_TOKEN_LEN 32
 #define NODUS_NONCE_LEN         32
 

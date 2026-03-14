@@ -42,6 +42,7 @@ typedef struct {
     uint16_t    tcp_port;
     uint16_t    peer_port;          /* Inter-node TCP port (default: 4002) */
     uint16_t    ch_port;            /* Channel client TCP port (default: 4003) */
+    uint16_t    witness_port;       /* Witness BFT TCP port (default: 4004) */
     char        identity_path[256];
     char        data_path[256];
     char        seed_nodes[NODUS_MAX_SEED_NODES][64];
@@ -201,6 +202,7 @@ typedef struct nodus_server {
     /* Transports */
     nodus_tcp_t             tcp;
     nodus_tcp_t             inter_tcp;      /* Inter-node TCP transport (port 4002) */
+    nodus_tcp_t             witness_tcp;    /* Witness BFT TCP transport (port 4004) */
     nodus_udp_t             udp;
 
     /* Storage */

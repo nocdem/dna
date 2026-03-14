@@ -7,10 +7,11 @@
  *   - Witness peer mesh over nodus TCP connections
  *   - DNAC client query handlers (dnac_* Tier 2 methods)
  *
- * Roster is dynamically built from TCP 4002 inter-node connections
+ * Roster is dynamically built from DHT pubkey registry + witness peer mesh
  * and refreshed every 60 seconds (epoch tick).
  *
- * All BFT messages use Tier 3 protocol ("w_" prefixed CBOR methods).
+ * All BFT messages use Tier 3 protocol ("w_" prefixed CBOR methods)
+ * over dedicated witness TCP port 4004.
  * Single-threaded: all state transitions in the epoll event loop.
  *
  * @file nodus_witness.h
@@ -30,6 +31,10 @@ extern "C" {
 /* Forward declarations */
 struct nodus_server;
 struct nodus_tcp_conn;
+
+/* nodus_tcp_t is an anonymous struct typedef in transport/nodus_tcp.h.
+ * We cannot forward-declare it, so we use void* for the witness TCP pointer
+ * and cast in implementation files where the full type is available. */
 
 /* ── Witness configuration ───────────────────────────────────────── */
 
@@ -170,6 +175,9 @@ typedef struct nodus_witness {
     /* Parent server (non-owning) */
     struct nodus_server     *server;
 
+    /* Dedicated witness TCP transport (port 4004, non-owning — owned by server) */
+    void                    *tcp;       /* nodus_tcp_t* — cast in .c files */
+
     /* Configuration */
     nodus_witness_config_t  config;
 
@@ -197,7 +205,7 @@ typedef struct nodus_witness {
 
     /* Dynamic roster — epoch-based refresh */
     uint64_t    last_epoch;                     /* Timestamp of last roster rebuild */
-    nodus_witness_roster_t  pending_roster;     /* Built each epoch from inter_tcp */
+    nodus_witness_roster_t  pending_roster;     /* Built each epoch from DHT + peers */
     nodus_witness_bft_config_t pending_bft_config;
     bool        pending_roster_ready;           /* Pending roster waiting to swap */
 

@@ -7,7 +7,7 @@
  * Key adaptations from DNAC:
  *   - No pthreads (reconnection via tick function in epoll loop)
  *   - No global state (all state in nodus_witness_t)
- *   - Connections via nodus_tcp_connect() (reuses server inter-node TCP pool)
+ *   - Connections via nodus_tcp_connect() (dedicated witness TCP port 4004)
  *   - IDENT exchange via Tier 3 CBOR (not custom binary protocol)
  *   - Roster file loading only (DHT persistence not needed — we ARE the DHT)
  */
@@ -157,8 +157,11 @@ int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
     const char *my_ip = w->server->config.external_ip[0]
                       ? w->server->config.external_ip
                       : w->server->config.bind_ip;
+    uint16_t my_wport = w->server->config.witness_port
+                      ? w->server->config.witness_port
+                      : NODUS_DEFAULT_WITNESS_PORT;
     snprintf(self->address, sizeof(self->address), "%s:%u",
-             my_ip, w->server->config.peer_port);
+             my_ip, my_wport);
     self->active = true;
     out->n_witnesses = 1;
 
@@ -315,8 +318,11 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
     const char *ident_ip = w->server->config.external_ip[0]
                          ? w->server->config.external_ip
                          : w->server->config.bind_ip;
+    uint16_t ident_wport = w->server->config.witness_port
+                         ? w->server->config.witness_port
+                         : NODUS_DEFAULT_WITNESS_PORT;
     snprintf(msg.ident.address, sizeof(msg.ident.address),
-             "%s:%u", ident_ip, w->server->config.peer_port);
+             "%s:%u", ident_ip, ident_wport);
 
     /* Fill header */
     msg.header.version = NODUS_T3_BFT_PROTOCOL_VER;
@@ -662,8 +668,8 @@ int nodus_witness_peer_handle_rost_r(nodus_witness_t *w,
 int nodus_witness_peer_init(nodus_witness_t *w) {
     if (!w) return -1;
 
-    /* Dynamic roster — initial build from current inter_tcp connections.
-     * At init time, inter_tcp connections may not be established yet.
+    /* Dynamic roster — initial build from DHT registry + witness peers.
+     * At init time, witness TCP connections may not be established yet.
      * Full roster will be built on first epoch tick (60s). */
     nodus_witness_rebuild_roster_from_peers(w, &w->roster);
     nodus_witness_bft_config_init(&w->bft_config, w->roster.n_witnesses);
@@ -678,30 +684,22 @@ int nodus_witness_peer_init(nodus_witness_t *w) {
         }
     }
 
-    /* Bootstrap: connect to all seed nodes on TCP 4002 (peer_port).
-     * Seed nodes are configured as IP:UDP_port, peer_port = UDP + 2.
+    /* Bootstrap: connect to all seed nodes on witness TCP port (4004).
+     * Seed nodes are configured as IP:UDP_port, witness_port = UDP + 4.
      * This establishes the initial mesh; w_ident exchange populates the roster. */
-    nodus_tcp_t *itcp = &w->server->inter_tcp;
+    nodus_tcp_t *wtcp = (nodus_tcp_t *)w->tcp;
     for (int i = 0; i < w->server->config.seed_count; i++) {
-        uint16_t peer_port = w->server->config.seed_ports[i] + 2;
+        uint16_t seed_witness_port = w->server->config.seed_ports[i] + 4;
         const char *seed_ip = w->server->config.seed_nodes[i];
 
         /* Skip if already connected */
         nodus_tcp_conn_t *existing = nodus_tcp_find_by_addr(
-            itcp, seed_ip, peer_port);
+            wtcp, seed_ip, seed_witness_port);
         if (existing && existing->state == NODUS_CONN_CONNECTED)
             continue;
 
-        nodus_tcp_conn_t *conn = nodus_tcp_connect(itcp, seed_ip, peer_port);
+        nodus_tcp_conn_t *conn = nodus_tcp_connect(wtcp, seed_ip, seed_witness_port);
         if (conn) {
-            /* Set up inter-node session for dispatch */
-            if (conn->slot >= 0 && conn->slot < NODUS_MAX_INTER_SESSIONS) {
-                nodus_inter_session_t *sess =
-                    &w->server->inter_sessions[conn->slot];
-                if (!sess->conn)
-                    sess->conn = conn;
-            }
-
             /* Create peer record (witness_id unknown until w_ident) */
             if (w->peer_count < NODUS_T3_MAX_WITNESSES) {
                 int pi = w->peer_count++;
@@ -709,7 +707,7 @@ int nodus_witness_peer_init(nodus_witness_t *w) {
                 w->peers[pi].conn = conn;
                 w->peers[pi].last_attempt = nodus_time_now();
                 snprintf(w->peers[pi].address, sizeof(w->peers[pi].address),
-                         "%s:%u", seed_ip, peer_port);
+                         "%s:%u", seed_ip, seed_witness_port);
             }
         }
     }
@@ -727,7 +725,7 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
     if (!w || !w->running) return;
 
     uint64_t now = nodus_time_now();
-    nodus_tcp_t *itcp = &w->server->inter_tcp;
+    nodus_tcp_t *wtcp = (nodus_tcp_t *)w->tcp;
 
     /* Clean up peers with dead connections */
     for (int i = 0; i < w->peer_count; i++) {
@@ -739,7 +737,7 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
     }
 
     /* Reconnect to roster peers that have no active connection.
-     * TCP 4002 connections are NOT managed by Kademlia (which uses UDP 4000),
+     * Witness TCP 4004 connections are NOT managed by Kademlia (which uses UDP 4000),
      * so the witness module must actively connect to discovered peers. */
     for (uint32_t i = 0; i < w->roster.n_witnesses; i++) {
         if ((int)i == w->my_index) continue;
@@ -770,8 +768,8 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
                           ip, sizeof(ip), &port) != 0)
             continue;
 
-        /* Check if already connected via inter_tcp */
-        nodus_tcp_conn_t *existing = nodus_tcp_find_by_addr(itcp, ip, port);
+        /* Check if already connected via witness TCP */
+        nodus_tcp_conn_t *existing = nodus_tcp_find_by_addr(wtcp, ip, port);
         if (existing && existing->state == NODUS_CONN_CONNECTED) {
             if (pi >= 0) {
                 w->peers[pi].conn = existing;
@@ -781,21 +779,14 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
             continue;
         }
 
-        /* Initiate TCP 4002 connection */
-        nodus_tcp_conn_t *conn = nodus_tcp_connect(itcp, ip, port);
+        /* Initiate witness TCP connection (port 4004) */
+        nodus_tcp_conn_t *conn = nodus_tcp_connect(wtcp, ip, port);
         if (!conn) {
             if (pi >= 0) {
                 w->peers[pi].connect_failures++;
                 w->peers[pi].last_attempt = now;
             }
             continue;
-        }
-
-        /* Set up inter-node session for dispatch */
-        if (conn->slot >= 0 && conn->slot < NODUS_MAX_INTER_SESSIONS) {
-            nodus_inter_session_t *sess = &w->server->inter_sessions[conn->slot];
-            if (!sess->conn)
-                sess->conn = conn;
         }
 
         /* Before creating a new peer, check if an existing peer matches

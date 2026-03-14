@@ -63,10 +63,9 @@ WAIT: For checkpoint 2 conditions to be met.
 - Use plan mode for verification steps, not just building
 - Write detailed specs upfront to reduce ambiguity
 
-**2. Subagent Strategy**
-- Use subagents liberally to keep main context window clean
-- Offload research, exploration, and parallel analysis to subagents
-- For complex problems, throw more compute at it via subagents
+**2. Research Strategy**
+- Use Grep/Glob/Read directly for codebase exploration
+- Use subagents only for truly independent parallel tasks (NOT for research/exploration)
 - One task per subagent for focused execution
 
 **3. Self-Improvement Loop**
@@ -381,7 +380,6 @@ All C projects use CMake. Build from each project's `build/` directory.
 | DNAC | `cd dnac/build && cmake .. && make -j$(nproc)` | Links against `libdna.so` from messenger |
 | Flutter app | `cd messenger/dna_messenger_flutter && flutter build linux` | Requires messenger C lib built |
 | Windows cross-compile | `cd messenger && ./build-cross-compile.sh windows-x64` | |
-| cpunk | Web project, no C build | |
 
 **Build order matters:** Messenger first, then dnac. Nodus is independent.
 
@@ -389,12 +387,11 @@ All C projects use CMake. Build from each project's `build/` directory.
 
 | Project | Unit Tests | Integration Tests |
 |---------|-----------|-------------------|
-| Nodus | `cd nodus/build && ctest` (16 tests) | `bash nodus/tests/integration_test.sh` (SSH to 3-node cluster) |
+| Nodus | `cd nodus/build && ctest` | `bash nodus/tests/integration_test.sh` (SSH to cluster) |
 | Messenger | `cd messenger/build && ctest` | CLI tool: `messenger/build/cli/dna-messenger-cli` |
-| DNAC | `cd dnac/build && ./test_real`, `./test_gaps` (18 cases) | `./test_remote` (cross-machine) |
+| DNAC | `cd dnac/build && ./test_real`, `./test_gaps` | `./test_remote` (cross-machine) |
 
-Run a single nodus test: `cd nodus/build && ./test_cbor` (or any `test_*` binary).
-Run a single messenger test: `cd messenger/build && ./tests/test_kyber1024` (or any `test_*` binary).
+Run a single test: `cd <project>/build && ./test_<name>` (or `./tests/test_<name>` for messenger).
 
 ### TEST REQUIREMENTS (MANDATORY)
 
@@ -408,13 +405,6 @@ Run a single messenger test: `cd messenger/build && ./tests/test_kyber1024` (or 
 - Fix the root cause, do NOT skip or disable tests
 - If a test needs updating due to intentional behavior change, update the test
 - Run the full test suite, not just the test you changed
-
-**Test commands (run before every commit):**
-```bash
-cd nodus/build && ctest --output-on-failure    # Nodus (16 tests)
-cd messenger/build && ctest --output-on-failure # Messenger
-cd dnac/build && ctest --output-on-failure      # DNAC (if changed)
-```
 
 ## Git Identity
 
@@ -466,9 +456,9 @@ git push origin main    # GitHub second (mirror)
 └──────┬───────┬───────────────────────────────────────┘
        │       │ nodus_ops.c / nodus_init.c
        │  ┌────▼─────────────────────────────────┐
-       │  │  Nodus Client SDK (nodus/)        │
-       │  │  Kademlia DHT + cluster heartbeat      │
-       │  │  TCP client ←→ Nodus server cluster  │
+       │  │  Nodus Client SDK (nodus/)            │
+       │  │  Kademlia DHT + cluster heartbeat     │
+       │  │  TCP client ←→ Nodus server cluster   │
        │  └──────────────────────────────────────┘
        │
   ┌────▼──────────────────────┐    ┌──────────────────┐
@@ -480,88 +470,19 @@ git push origin main    # GitHub second (mirror)
 
 ### Messenger C Library Architecture
 
-The DNA Engine (`messenger/src/api/dna_engine.c`) is a modular async C library with 17 domain modules in `messenger/src/api/engine/`:
-
-| Module | Domain |
-|--------|--------|
-| `dna_engine_addressbook.c` | Address book management |
-| `dna_engine_backup.c` | DHT sync for all data types |
-| `dna_engine_channels.c` | Channel CRUD, posts, subscriptions |
-| `dna_engine_contacts.c` | Contact requests, blocking |
-| `dna_engine_groups.c` | Group CRUD, GEK encryption, invitations |
-| `dna_engine_helpers.c` | Shared utility functions |
-| `dna_engine_identity.c` | Identity create/load, profiles |
-| `dna_engine_lifecycle.c` | Engine pause/resume (mobile) |
-| `dna_engine_listeners.c` | DHT key subscriptions |
-| `dna_engine_logging.c` | Debug log control |
-| `dna_engine_messaging.c` | Send/receive, conversations, retry |
-| `dna_engine_presence.c` | Heartbeat, presence lookup |
-| `dna_engine_signing.c` | Data signing operations |
-| `dna_engine_version.c` | Version info and checking |
-| `dna_engine_wall.c` | Personal wall posts |
-| `dna_engine_wallet.c` | Multi-chain wallet (Cellframe, ETH, SOL, TRON) |
-| `dna_engine_workers.c` | Background thread pool |
+The DNA Engine (`messenger/src/api/dna_engine.c`) is a modular async C library with 17 domain modules in `messenger/src/api/engine/`. See `messenger/CLAUDE.md` for module list and details.
 
 Public API: `messenger/include/dna/dna_engine.h` (async callbacks, opaque `dna_engine_t`).
 
-**Messenger directory layout:**
-- `messenger/src/api/` — DNA Engine core + `engine/` modules
-- `messenger/messenger/` — Messaging core (identity, keys, contacts)
-- `messenger/dht/` — DHT operations (`core/`, `client/`, `shared/`, `keyserver/`)
-- `messenger/transport/` — P2P transport layer
-- `messenger/database/` — SQLite persistence and caching
-- `messenger/blockchain/` — Multi-chain wallet (`cellframe/`, `ethereum/`, `solana/`, `tron/`)
-- `messenger/cli/` — CLI tool (`dna-messenger-cli`)
-- `messenger/jni/` — Android JNI bindings
-- `messenger/dna_messenger_flutter/` — Flutter app (Dart)
-- `messenger/include/` — Public C headers
-- `messenger/tests/` — Unit tests
-- `messenger/web/` — WebAssembly target (planned)
-
 New features follow the module pattern: add task type in `dna_engine_internal.h`, implement handler in module, add dispatch case in `dna_engine.c`, declare in `dna_engine.h`. See `messenger/src/api/engine/README.md`.
-
-### MODULAR ARCHITECTURE (MANDATORY)
-
-**NEVER add monolithic code.** All new features MUST follow the modular pattern.
-
-**Module Pattern:**
-```c
-// 1. Define implementation flag
-#define DNA_ENGINE_XXX_IMPL
-#include "engine_includes.h"
-
-// 2. Task handlers (internal)
-void dna_handle_xxx(dna_engine_t *engine, dna_task_t *task) { }
-
-// 3. Public API wrappers
-dna_request_id_t dna_engine_xxx(dna_engine_t *engine, ...) {
-    return dna_submit_task(engine, TASK_XXX, &params, cb, user_data);
-}
-```
-
-**Adding New Features:**
-1. Identify the appropriate module (or create new one if domain doesn't exist)
-2. Add task type to `dna_engine_internal.h`
-3. Implement handler in module file
-4. Add dispatch case in `dna_engine.c`
-5. Declare public API in `include/dna/dna_engine.h`
-
-**Detailed Guide:** See `messenger/src/api/engine/README.md`
-
-### Flutter FFI Pattern
-
-Flutter connects to the C library via `dart:ffi`:
-- **Binding generator config:** `messenger/dna_messenger_flutter/ffigen.yaml`
-- **FFI bindings:** `lib/ffi/dna_bindings.dart` (hand-written FFI bindings)
-- **Dart wrapper:** `lib/ffi/dna_engine.dart` (converts C callbacks to Dart Futures/Streams)
-- **State management:** Riverpod providers in `lib/providers/`
 
 ### Nodus Architecture
 
 Nodus is a post-quantum Kademlia DHT with BFT witness consensus. Pure C, no C++ dependencies.
 
-**Server layers:** UDP (Kademlia peer discovery) + TCP (client connections, replication)
+**Server layers:** UDP (Kademlia peer discovery) + TCP (client connections, replication, channels, witness BFT)
 **Protocol:** CBOR over wire frames (7-byte header: magic `0x4E44` + version + length)
+**Ports:** UDP 4000 (Kademlia), TCP 4001 (clients), TCP 4002 (inter-node), TCP 4003 (channels), TCP 4004 (witness BFT)
 **Two protocol tiers:** Tier 1 (Kademlia: ping/find_node/put/get) and Tier 2 (Client: auth/dht_put/dht_get/listen/channels)
 
 **Source layout:**
@@ -581,10 +502,10 @@ Nodus is a post-quantum Kademlia DHT with BFT witness consensus. Pure C, no C++ 
 
 ### DNAC Architecture
 
-UTXO-based digital cash with BFT witness consensus:
+UTXO-based digital cash with BFT witness consensus. See `dnac/CLAUDE.md` for details.
+
 - `dnac/src/wallet/` — UTXO management, coin selection, balance
 - `dnac/src/transaction/` — TX building, verification, nullifiers, genesis
-- `dnac/src/bft/` — BFT serialization, roster management, replay prevention
 - `dnac/src/nodus/` — Witness client (Nodus SDK), discovery, attestation
 - `dnac/src/cli/` — CLI tool for wallet operations
 - `dnac/src/db/` — Database layer
@@ -602,51 +523,14 @@ All post-quantum crypto lives here. Used by messenger, nodus, and dnac.
 ```
 shared/crypto/
 ├── sign/                    # Signing (Dilithium5, secp256k1, Ed25519)
-│   ├── dsa/                 # ML-DSA-87 reference impl
-│   ├── cellframe_dilithium/ # Cellframe Dilithium fork
-│   ├── qgp_dilithium.c/h   # Dilithium5 wrapper
-│   ├── qgp_signature.c     # Signature utilities
-│   ├── secp256k1_sign.c/h  # secp256k1 ECDSA (ETH/TRON/EIP-712)
-│   └── ed25519_sign.c/h    # Ed25519 (Solana)
 ├── enc/                     # Encryption (Kyber1024, AES-256-GCM)
-│   ├── kem/                 # ML-KEM-1024 reference impl
-│   ├── qgp_kyber.c/h       # Kyber wrapper
-│   ├── qgp_aes.c/h         # AES-256-GCM
-│   ├── aes_keywrap.c/h     # AES Key Wrap
-│   └── kyber_deterministic.c/h
 ├── hash/                    # Hashing (SHA3-512, Keccak-256)
-│   ├── qgp_sha3.c/h        # SHA3-512
-│   └── keccak256.c/h       # Keccak-256 (Ethereum)
 ├── key/                     # Key management (BIP32, BIP39, PBKDF2)
-│   ├── bip32/               # HD key derivation
-│   ├── bip39/               # Mnemonic seed
-│   ├── qgp_key.c           # Key load/save
-│   ├── key_encryption.c/h  # PBKDF2 + AES key encryption
-│   └── seed_storage.c/h    # Kyber KEM seed storage
 └── utils/                   # Infra / platform / encoding
-    ├── qgp_log.c/h          # Logging
-    ├── qgp_random.c/h       # CSPRNG
-    ├── qgp_platform*.c/h   # Platform abstraction
-    ├── qgp_types.h          # Type definitions
-    ├── base58.c/h           # Base58 encoding
-    └── threadpool.c/h       # Thread pool
 ```
 
-**Include pattern in C source files:**
-```c
-#include "crypto/hash/qgp_sha3.h"        // Resolved via -I /opt/dna/shared
-#include "crypto/sign/qgp_dilithium.h"
-#include "crypto/enc/qgp_kyber.h"
-#include "crypto/key/bip39/bip39.h"
-#include "crypto/utils/qgp_log.h"
-```
-
-**CMake pattern in each project:**
-```cmake
-set(SHARED_DIR "${CMAKE_SOURCE_DIR}/../shared")
-target_include_directories(my_target PUBLIC ${SHARED_DIR})
-```
-
+**Include pattern:** `#include "crypto/hash/qgp_sha3.h"` (resolved via `-I /opt/dna/shared`)
+**CMake pattern:** `set(SHARED_DIR "${CMAKE_SOURCE_DIR}/../shared")` then `target_include_directories`
 **NEVER use relative includes** like `../crypto/`. Always use `crypto/...` resolved through include search paths.
 
 **Key algorithms:**

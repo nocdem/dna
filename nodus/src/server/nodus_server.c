@@ -1278,21 +1278,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
 
-    /* Try T2 decode first (p_sync, fv, w_*) */
+    /* Try T2 decode first (p_sync, fv) — witness "w_*" moved to dedicated port 4004 */
     if (nodus_t2_decode(payload, len, &msg) == 0) {
-
-        /* Tier 3: Witness BFT messages (per-session rate limit: 100/sec) */
-        if (strncmp(msg.method, "w_", 2) == 0 && srv->witness) {
-            uint64_t w_now = nodus_time_now();
-            if (w_now != sess->w_window_start) { sess->w_window_start = w_now; sess->w_count = 0; }
-            if (++sess->w_count > 100) {
-                nodus_t2_msg_free(&msg);
-                return;
-            }
-            nodus_witness_dispatch_t3(srv->witness, sess->conn, payload, len);
-            nodus_t2_msg_free(&msg);
-            return;
-        }
 
         if (strcmp(msg.method, "fv") == 0) {
             /* Inter-node FIND_VALUE (per-session rate limit) */
@@ -1405,6 +1392,30 @@ static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     if (sess) {
         inter_session_clear(sess);
     }
+
+    /* Notify witness module so it can clear peer references */
+    if (srv->witness)
+        nodus_witness_peer_conn_closed(srv->witness, conn);
+}
+
+/* ── Witness TCP callbacks (dedicated port 4004) ─────────────────── */
+
+static void on_witness_accept(nodus_tcp_conn_t *conn, void *ctx) {
+    (void)ctx;
+    conn->is_nodus = true;  /* All witness port connections are inter-node */
+}
+
+static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
+                              size_t len, void *ctx) {
+    nodus_server_t *srv = (nodus_server_t *)ctx;
+    if (!srv->witness) return;
+
+    /* All frames on witness port are T3 BFT messages — dispatch directly */
+    nodus_witness_dispatch_t3(srv->witness, conn, payload, len);
+}
+
+static void on_witness_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
+    nodus_server_t *srv = (nodus_server_t *)ctx;
 
     /* Notify witness module so it can clear peer references */
     if (srv->witness)
@@ -1745,7 +1756,10 @@ static int nodus_server_publish_identity(nodus_server_t *srv) {
     cbor_encode_cstr(&enc, ip);
 
     cbor_encode_cstr(&enc, "port");
-    cbor_encode_uint(&enc, srv->config.peer_port);
+    uint16_t pub_wport = srv->config.witness_port
+                       ? srv->config.witness_port
+                       : NODUS_DEFAULT_WITNESS_PORT;
+    cbor_encode_uint(&enc, pub_wport);
 
     size_t payload_len = cbor_encoder_len(&enc);
     if (payload_len == 0) return -1;
@@ -2045,6 +2059,27 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     srv->ch_server.ch_ring_ptr = &srv->ch_ring;
     srv->ch_server.ch_replication_ptr = &srv->ch_replication;
 
+    /* Init witness BFT TCP transport (dedicated port 4004) */
+    uint16_t witness_port = config->witness_port ? config->witness_port : NODUS_DEFAULT_WITNESS_PORT;
+    if (witness_port == config->tcp_port || witness_port == peer_port || witness_port == ch_port) {
+        fprintf(stderr, "ERROR: witness_port (%d) must differ from tcp_port (%d), "
+                "peer_port (%d), and ch_port (%d)\n",
+                witness_port, config->tcp_port, peer_port, ch_port);
+        return -1;
+    }
+    if (nodus_tcp_init(&srv->witness_tcp, -1) != 0)
+        return -1;
+    srv->witness_tcp.on_accept     = on_witness_accept;
+    srv->witness_tcp.on_frame      = on_witness_frame;
+    srv->witness_tcp.on_disconnect = on_witness_disconnect;
+    srv->witness_tcp.cb_ctx        = srv;
+
+    if (nodus_tcp_listen(&srv->witness_tcp, config->bind_ip, witness_port) != 0) {
+        fprintf(stderr, "Failed to listen on witness TCP %s:%d\n",
+                config->bind_ip, witness_port);
+        return -1;
+    }
+
     /* Bind UDP */
     if (nodus_udp_bind(&srv->udp, config->bind_ip, config->udp_port) != 0) {
         fprintf(stderr, "Failed to bind UDP %s:%d\n",
@@ -2072,6 +2107,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         fprintf(stderr, "Failed to allocate witness context\n");
         return -1;
     }
+    srv->witness->tcp = &srv->witness_tcp;  /* Set before init (preserved across memset) */
     if (nodus_witness_init(srv->witness, srv, &config->witness) != 0) {
         fprintf(stderr, "Witness module init failed\n");
         free(srv->witness);
@@ -2094,6 +2130,7 @@ int nodus_server_run(nodus_server_t *srv) {
     fprintf(stderr, "  Identity: %s\n", srv->identity.fingerprint);
     fprintf(stderr, "  TCP port: %d\n", srv->tcp.port);
     fprintf(stderr, "  Peer port: %d\n", srv->inter_tcp.port);
+    fprintf(stderr, "  Witness port: %d\n", srv->witness_tcp.port);
     fprintf(stderr, "  Channel port: %d\n", srv->ch_server.port);
     fprintf(stderr, "  UDP port: %d\n", srv->udp.port);
 
@@ -2103,6 +2140,8 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Poll inter-node TCP events */
         nodus_tcp_poll(&srv->inter_tcp, 50);
+
+        /* Witness BFT TCP (port 4004) is polled inside nodus_witness_tick() */
 
         /* Poll new channel server (TCP 4003) */
         nodus_channel_server_poll(&srv->ch_server, 50);
@@ -2207,6 +2246,7 @@ void nodus_server_close(nodus_server_t *srv) {
     nodus_channel_server_close(&srv->ch_server);
     nodus_tcp_close(&srv->tcp);
     nodus_tcp_close(&srv->inter_tcp);
+    nodus_tcp_close(&srv->witness_tcp);
     nodus_udp_close(&srv->udp);
     nodus_storage_close(&srv->storage);
     nodus_channel_store_close(&srv->ch_store);

@@ -216,8 +216,11 @@ int nodus_witness_init(nodus_witness_t *witness,
                        const nodus_witness_config_t *config) {
     if (!witness || !server || !config) return -1;
 
+    /* Preserve tcp pointer (set by server before init) */
+    void *saved_tcp = witness->tcp;
     memset(witness, 0, sizeof(*witness));
     witness->server = server;
+    witness->tcp = saved_tcp;  /* Restore dedicated witness TCP transport */
     witness->config = *config;
     witness->my_index = -1;
     witness->running = true;
@@ -239,7 +242,7 @@ int nodus_witness_init(nodus_witness_t *witness,
     /* Initialize roster */
     witness_init_roster(witness);
 
-    /* Initialize peer mesh (builds roster from inter_tcp connections) */
+    /* Initialize peer mesh (builds roster, connects seeds on witness port) */
     nodus_witness_peer_init(witness);
 
     fprintf(stderr, "%s: initialized (roster=%d witnesses, my_index=%d, "
@@ -255,6 +258,10 @@ int nodus_witness_init(nodus_witness_t *witness,
 void nodus_witness_tick(nodus_witness_t *witness) {
     if (!witness || !witness->running) return;
 
+    /* Poll dedicated witness TCP transport (port 4004) */
+    if (witness->tcp)
+        nodus_tcp_poll((nodus_tcp_t *)witness->tcp, 50);
+
     /* BFT timeout checks */
     nodus_witness_bft_check_timeout(witness);
 
@@ -266,7 +273,7 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     if (now - witness->last_epoch >= WITNESS_EPOCH_SECS) {
         witness->last_epoch = now;
 
-        /* Build new roster from current TCP 4002 connections */
+        /* Build new roster from DHT registry + witness peer connections */
         nodus_witness_rebuild_roster_from_peers(witness, &witness->pending_roster);
         nodus_witness_bft_config_init(&witness->pending_bft_config,
                                        witness->pending_roster.n_witnesses);

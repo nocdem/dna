@@ -9,7 +9,7 @@
  * Key differences from DNAC:
  *   - No pthreads (reconnection in tick, not separate thread)
  *   - No global state (all in nodus_witness_t)
- *   - Connections via nodus_tcp_connect() (reuses server inter-node TCP pool)
+ *   - Connections via nodus_tcp_connect() (dedicated witness TCP port 4004)
  *   - IDENT exchange via T3 CBOR protocol
  *
  * @file nodus_witness_peer.h
@@ -27,7 +27,7 @@ extern "C" {
 
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 
-/** Initialize peer mesh: build initial roster from inter_tcp. */
+/** Initialize peer mesh: build initial roster, connect seeds on witness port. */
 int  nodus_witness_peer_init(nodus_witness_t *w);
 
 /** Periodic tick: reconnect peers, send pending IDENTs. */
@@ -71,7 +71,7 @@ void nodus_witness_peer_ensure(nodus_witness_t *w,
 int nodus_witness_peer_send_ident(nodus_witness_t *w,
                                   struct nodus_tcp_conn *conn);
 
-/** Rebuild roster from TCP 4002 connected+identified peers + self. */
+/** Rebuild roster from connected+identified witness peers + DHT registry + self. */
 int nodus_witness_rebuild_roster_from_peers(nodus_witness_t *w,
                                             nodus_witness_roster_t *out_roster);
 
