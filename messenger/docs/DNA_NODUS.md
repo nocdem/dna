@@ -8,7 +8,7 @@
 DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Connect. It is a pure C implementation (no C++ dependencies) providing:
 
 1. **Kademlia DHT** - Decentralized key-value storage with 512-bit keyspace
-2. **PBFT Consensus** - Byzantine fault-tolerant replication across nodes
+2. **Cluster Membership** - Node discovery and replication across cluster
 3. **Client SDK** - TCP-based client protocol for messenger integration
 4. **Channel System** - PRIMARY/BACKUP architecture over dedicated TCP 4003
 5. **SQLite Persistence** - Durable storage for DHT values and channel posts
@@ -34,7 +34,7 @@ DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Connect. It
 |  |         TCP Layer (port 4001) - Client DHT                 | |
 |  |  - Client auth (Dilithium5 challenge/response)             | |
 |  |  - Client DHT operations (dht_put, dht_get, listen)        | |
-|  |  - TCP 4002: PBFT consensus + cross-node DHT replication   | |
+|  |  - TCP 4002: Inter-node replication                        | |
 |  +-----------------------------------------------------------+ |
 |                                                                 |
 |  +-----------------------------------------------------------+ |
@@ -88,7 +88,7 @@ The messenger integrates directly with Nodus -- no compatibility layer, no OpenD
 
 ## Nodus Production Cluster
 
-Six nodes running v0.8.1 with PBFT ring formed and cross-node replication verified.
+Six nodes running v0.8.1 with cluster membership formed and cross-node replication verified.
 
 | Node | IP | UDP | TCP (DHT) | TCP (Channel) |
 |------|-----|-----|-----------|---------------|
@@ -136,7 +136,7 @@ Nodus uses `/etc/nodus.conf`:
 **Ports:**
 - **UDP 4000** — Kademlia peer discovery
 - **TCP 4001** — Client DHT operations
-- **TCP 4002** — Inter-node PBFT + DHT replication (auto = tcp_port + 1)
+- **TCP 4002** — Inter-node replication (auto = tcp_port + 1)
 - **TCP 4003** — Channel system (PRIMARY/BACKUP + client channel connections)
 
 ## Legacy Servers (REMOVED)
@@ -205,7 +205,7 @@ The messenger CMake configuration links against the Nodus client library. No sep
 2. **Client Authentication** - Dilithium5 challenge/response on TCP connect
 3. **No IP Leakage** - DHT-only mode prevents IP disclosure to third parties
 4. **Distributed Architecture** - No central servers for message relay
-5. **PBFT Consensus** - Byzantine fault tolerance for data replication
+5. **Cluster Membership** - Node discovery and data replication
 6. **Timestamp-Only Presence** - Online status without IP disclosure
 
 ## Monitoring

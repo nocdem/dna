@@ -27,7 +27,7 @@ built from the ground up for post-quantum security.
 - Kademlia DHT with 512-bit key space (SHA3-512)
 - Dilithium5 (ML-DSA-87) authentication and value signing throughout
 - CBOR wire protocol with custom encoder/decoder (no external CBOR library)
-- PBFT-inspired cluster consensus for channel placement
+- Heartbeat-based cluster membership
 - Consistent hash ring for channel-to-node assignment
 - Client SDK with auto-reconnect, multi-server failover, and real-time push
 - SQLite persistent storage with TTL-based expiry
@@ -61,12 +61,12 @@ Nodus uses a two-tier protocol architecture:
 │   └──────────┘  └──────────┘  └──────────┘                   │
 │        Tier 1: UDP 4000 (Kademlia) + TCP 4002 (replication)  │
 │        TCP 4003: Channel system (PRIMARY/BACKUP per channel) │
-│        PBFT consensus + hash ring + value replication        │
+│        Cluster heartbeat + hash ring + value replication        │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 - **Tier 1 (T1)** — Server-to-server: Kademlia routing (UDP), value replication (TCP),
-  PBFT heartbeats (UDP)
+  Cluster heartbeats (UDP)
 - **Tier 2 (T2)** — Client-to-server: authentication, DHT operations, channel messaging,
   real-time push notifications (all TCP)
 - **Tier 3 (T3)** — DNAC witness: BFT consensus for double-spend prevention, UTXO
@@ -103,7 +103,7 @@ nodus/
 │   │   ├── nodus_channel_replication.c/h # BACKUP replication + hinted handoff + sync
 │   │   └── nodus_channel_ring.c/h      # Heartbeat-based ring management (no PBFT)
 │   ├── consensus/
-│   │   └── nodus_pbft.c       # PBFT cluster membership + leader election
+│   │   └── nodus_cluster.c       # Cluster membership + leader election
 │   ├── server/
 │   │   ├── nodus_server.c     # Server event loop + message dispatch
 │   │   └── nodus_auth.c       # Dilithium5 challenge-response auth
@@ -303,7 +303,7 @@ The `val` field contains a CBOR-serialized `NodusValue` (see Section 6).
 **Bucket index** = count of leading zero bits in `XOR(self_id, peer_id)`. Peers with a
 longer common prefix (closer in key space) go into higher-numbered buckets.
 
-**Dead peer removal:** When PBFT marks a peer DEAD (60s timeout), `nodus_routing_remove()` is called. Dead peers can recover via the PING handler calling `nodus_pbft_on_pong()`.
+**Dead peer removal:** When the cluster module marks a peer DEAD (60s timeout), `nodus_routing_remove()` is called. Dead peers can recover via the PING handler calling `nodus_cluster_on_pong()`.
 
 **Eviction policy:** LRU — when a bucket is full, the least-recently-seen entry is replaced
 by the new peer.
@@ -623,9 +623,9 @@ Identity files on disk:
 
 ---
 
-## 8. Consensus — PBFT
+## 8. Cluster Membership
 
-Nodus uses a simplified PBFT (Practical Byzantine Fault Tolerance) implementation for
+Nodus uses heartbeat-based cluster membership for
 cluster membership management and leader election.
 
 ### Purpose
@@ -646,7 +646,7 @@ typedef enum {
 
 ### Heartbeat Protocol
 
-1. Every **10 seconds** (`NODUS_PBFT_HEARTBEAT_SEC`), each node sends UDP PING to all
+1. Every **10 seconds** (`NODUS_CLUSTER_HEARTBEAT_SEC`), each node sends UDP PING to all
    non-dead peers
 2. On PONG, the peer's `last_seen` timestamp is updated
 3. On each tick, peer health is evaluated:
@@ -664,7 +664,7 @@ on each leadership change.
 
 Seed nodes are configured by IP:port. On startup, their node_ids are unknown — a placeholder
 `SHA3-512(ip_string)` is used. When the seed responds to PING with its real node_id in the
-PONG, the PBFT module:
+PONG, the cluster module:
 
 1. Finds the peer by IP + port match
 2. Replaces the placeholder node_id with the real one
@@ -715,8 +715,8 @@ The channel system is split into 4 modules in `nodus/src/channel/`:
 | **Replication** | `nodus_channel_replication.c/h` | BACKUP replication, hinted handoff (SQLite, 24h TTL, 30s retry), incremental sync |
 | **Ring Management** | `nodus_channel_ring.c/h` | Heartbeat-based dead detection (15s interval, 45s timeout), ring version tracking |
 
-**Key design principle:** PBFT has NOTHING to do with channels. Ring management uses
-TCP 4003 heartbeats only. The hashring is populated from Kademlia routing, not PBFT peers.
+**Key design principle:** The cluster module has NOTHING to do with channels. Ring management uses
+TCP 4003 heartbeats only. The hashring is populated from Kademlia routing, not cluster peers.
 
 ### Storage
 
@@ -782,7 +782,7 @@ while (srv->running) {
     nodus_tcp_poll(&srv->tcp, 100);              // TCP 4001 events (100ms timeout)
     nodus_udp_poll(&srv->udp);                   // UDP 4000 datagrams (non-blocking)
     nodus_channel_server_poll(&srv->ch_server, 50); // TCP 4003 channel events
-    nodus_pbft_tick(&srv->pbft);                 // Heartbeats + health checks
+    nodus_cluster_tick(&srv->cluster);                 // Heartbeats + health checks
     dht_find_value_tick(srv);                    // Async FIND_VALUE state machines
     dht_republish(srv);                          // Periodic value republish (batch)
     dht_republish_tick(srv);                     // Republish connection timeouts
@@ -845,7 +845,7 @@ Server configuration via JSON file (default: `/etc/nodus.conf`):
 **Ports:**
 - **UDP 4000** — Kademlia peer discovery (Tier 1)
 - **TCP 4001** — Client DHT operations + auth (Tier 2)
-- **TCP 4002** — Inter-node replication + PBFT (Tier 1 TCP)
+- **TCP 4002** — Inter-node replication (Tier 1 TCP)
 - **TCP 4003** — Channel system: client posts + inter-node replication (dedicated)
 
 Data is stored in:

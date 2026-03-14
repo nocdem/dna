@@ -467,7 +467,7 @@ git push origin main    # GitHub second (mirror)
        │       │ nodus_ops.c / nodus_init.c
        │  ┌────▼─────────────────────────────────┐
        │  │  Nodus Client SDK (nodus/)        │
-       │  │  Kademlia DHT + PBFT consensus       │
+       │  │  Kademlia DHT + cluster heartbeat      │
        │  │  TCP client ←→ Nodus server cluster  │
        │  └──────────────────────────────────────┘
        │
@@ -558,7 +558,7 @@ Flutter connects to the C library via `dart:ffi`:
 
 ### Nodus Architecture
 
-Nodus is a post-quantum Kademlia DHT with PBFT consensus. Pure C, no C++ dependencies.
+Nodus is a post-quantum Kademlia DHT with BFT witness consensus. Pure C, no C++ dependencies.
 
 **Server layers:** UDP (Kademlia peer discovery) + TCP (client connections, replication)
 **Protocol:** CBOR over wire frames (7-byte header: magic `0x4E44` + version + length)
@@ -571,7 +571,7 @@ Nodus is a post-quantum Kademlia DHT with PBFT consensus. Pure C, no C++ depende
 - `nodus/src/core/` — Kademlia routing, storage
 - `nodus/src/transport/` — UDP/TCP transport
 - `nodus/src/channel/` — Channel/subscription system
-- `nodus/src/consensus/` — PBFT consensus
+- `nodus/src/consensus/` — Cluster membership + heartbeat
 - `nodus/src/crypto/` — Nodus-specific crypto helpers
 - `nodus/src/witness/` — DNAC witness server (embedded in nodus-server)
 - `nodus/include/nodus/nodus.h` — Client SDK public API
