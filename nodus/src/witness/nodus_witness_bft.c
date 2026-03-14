@@ -25,6 +25,8 @@
 #include "transport/nodus_tcp.h"
 #include "crypto/nodus_sign.h"
 
+#include "crypto/hash/qgp_sha3.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -297,6 +299,58 @@ int nodus_witness_bft_broadcast(nodus_witness_t *w, nodus_t3_msg_t *msg) {
  *   Inputs: count(1) + [nullifier(64) + amount(8)] * N
  *   Outputs: count(1) + [version(1) + fingerprint(129) + amount(8) + seed(32) + memo_len(1) + memo(n)] * M
  */
+
+/* ── Derive chain_id = SHA3-256(fp_bytes || tx_hash) ─────────────── */
+
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/**
+ * Derive chain_id from genesis fingerprint and tx_hash.
+ * chain_id = SHA3-256( fp_bytes(64) || tx_hash(64) )
+ *
+ * @param genesis_fp  128-char hex fingerprint string
+ * @param tx_hash     64-byte transaction hash
+ * @param chain_id_out 32-byte output buffer
+ * @return 0 on success, -1 on error
+ */
+static int nodus_derive_chain_id(const char *genesis_fp,
+                                  const uint8_t *tx_hash,
+                                  uint8_t *chain_id_out) {
+    if (!genesis_fp || !tx_hash || !chain_id_out) return -1;
+
+    size_t fp_len = strnlen(genesis_fp, 129);
+    if (fp_len != 128) {
+        fprintf(stderr, "%s: derive_chain_id: bad fingerprint len %zu\n",
+                LOG_TAG, fp_len);
+        return -1;
+    }
+
+    /* Convert hex fingerprint to 64 binary bytes */
+    uint8_t fp_bytes[64];
+    for (size_t i = 0; i < 64; i++) {
+        int hi = hex_nibble(genesis_fp[i * 2]);
+        int lo = hex_nibble(genesis_fp[i * 2 + 1]);
+        if (hi < 0 || lo < 0) {
+            fprintf(stderr, "%s: derive_chain_id: invalid hex at pos %zu\n",
+                    LOG_TAG, i * 2);
+            return -1;
+        }
+        fp_bytes[i] = (uint8_t)((hi << 4) | lo);
+    }
+
+    /* Concatenate: fp_bytes(64) || tx_hash(64) = 128 bytes */
+    uint8_t data[64 + NODUS_T3_TX_HASH_LEN];
+    memcpy(data, fp_bytes, 64);
+    memcpy(data + 64, tx_hash, NODUS_T3_TX_HASH_LEN);
+
+    return qgp_sha3_256(data, sizeof(data), chain_id_out);
+}
+
 static int update_utxo_set(nodus_witness_t *w,
                               const uint8_t *tx_hash,
                               uint8_t tx_type,
@@ -424,10 +478,41 @@ static int do_commit_db(nodus_witness_t *w,
                           const uint8_t *proposer_id,
                           const uint8_t *tx_data,
                           uint32_t tx_len) {
-    /* For genesis: create chain DB before starting transaction
+    /* For genesis: derive chain_id from fingerprint + tx_hash, then create DB
      * (db_begin requires w->db to be open) */
     if (tx_type == NODUS_W_TX_GENESIS && !w->db) {
-        if (nodus_witness_create_chain_db(w, tx_hash) != 0) {
+        /* Parse genesis fingerprint from first output in tx_data:
+         * Header(74) + input_count(1) + output_count(1) + out_version(1) = 77
+         * Then fingerprint is 129 bytes (128 hex + null) */
+        if (!tx_data || tx_len < 77 + 129) {
+            fprintf(stderr, "%s: genesis tx_data too short for fingerprint (len=%u)\n",
+                    LOG_TAG, tx_len);
+            return -1;
+        }
+
+        size_t fp_offset = 74;                         /* end of header */
+        uint8_t in_count = tx_data[fp_offset++];       /* input_count (should be 0) */
+        fp_offset += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8);  /* skip inputs */
+        if (fp_offset >= tx_len) {
+            fprintf(stderr, "%s: genesis tx_data truncated at outputs\n", LOG_TAG);
+            return -1;
+        }
+        uint8_t out_count = tx_data[fp_offset++];      /* output_count */
+        if (out_count == 0 || fp_offset + 1 + 129 > tx_len) {
+            fprintf(stderr, "%s: genesis has no outputs or truncated\n", LOG_TAG);
+            return -1;
+        }
+        fp_offset += 1;                                /* output version byte */
+        const char *genesis_fp = (const char *)(tx_data + fp_offset);
+
+        /* Derive chain_id = SHA3-256(fp_bytes || tx_hash) */
+        uint8_t derived_chain_id[32];
+        if (nodus_derive_chain_id(genesis_fp, tx_hash, derived_chain_id) != 0) {
+            fprintf(stderr, "%s: failed to derive chain_id from genesis\n", LOG_TAG);
+            return -1;
+        }
+
+        if (nodus_witness_create_chain_db(w, derived_chain_id) != 0) {
             fprintf(stderr, "%s: failed to create chain DB\n", LOG_TAG);
             return -1;
         }
