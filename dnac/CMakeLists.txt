@@ -182,6 +182,27 @@ if(DNAC_BUILD_CLI)
     )
 
     install(TARGETS dnac-cli RUNTIME DESTINATION bin)
+
+    # Genesis standalone tool
+    add_executable(dnac-genesis src/cli/genesis_main.c)
+
+    target_link_libraries(dnac-genesis dnac)
+
+    if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
+        target_link_libraries(dnac-genesis ${DNA_BUILD_DIR}/libdna.so)
+    else()
+        target_link_libraries(dnac-genesis ${DNA_BUILD_DIR}/libdna.a)
+    endif()
+
+    target_link_libraries(dnac-genesis
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        ${SQLITE3_LIBRARIES}
+        pthread
+        m
+    )
+
+    install(TARGETS dnac-genesis RUNTIME DESTINATION bin)
 endif()
 
 # ============================================================================

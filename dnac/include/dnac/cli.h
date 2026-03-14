@@ -82,15 +82,6 @@ int dnac_cli_nodus_list(dnac_context_t *ctx);
 int dnac_cli_recover(dnac_context_t *ctx);
 
 /**
- * @brief Mint new coins (genesis transaction)
- * @param ctx DNAC context
- * @param recipient Recipient fingerprint
- * @param amount Amount to mint
- * @return 0 on success, non-zero on failure
- */
-int dnac_cli_mint(dnac_context_t *ctx, const char *recipient, uint64_t amount);
-
-/**
  * @brief Show wallet info and status
  * @param ctx DNAC context
  * @return 0 on success, non-zero on failure

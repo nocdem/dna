@@ -250,17 +250,6 @@ int main(int argc, char **argv) {
     else if (strcmp(command, "recover") == 0) {
         result = dnac_cli_recover(ctx);
     }
-    else if (strcmp(command, "genesis") == 0 || strcmp(command, "mint") == 0) {
-        /* v0.5.0: "genesis" is the new command, "mint" kept for backward compat */
-        if (cmd_start + 2 >= argc) {
-            fprintf(stderr, "Usage: dnac-cli genesis <fingerprint> <amount>\n");
-            result = 1;
-        } else {
-            const char *recipient = argv[cmd_start + 1];
-            uint64_t amount = strtoull(argv[cmd_start + 2], NULL, 10);
-            result = dnac_cli_mint(ctx, recipient, amount);
-        }
-    }
     else {
         fprintf(stderr, "Error: Unknown command '%s'\n\n", command);
         dnac_cli_print_help();
