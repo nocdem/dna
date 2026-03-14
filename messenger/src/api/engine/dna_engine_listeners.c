@@ -500,49 +500,9 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Failed to start contact request listener");
     }
 
-    /* v0.9.0: Initial pull of contact requests from DHT
-     * The listener only catches NEW puts after registration.
-     * This fetch picks up requests that were sent while the app was closed. */
-    {
-        dht_contact_request_t *dht_requests = NULL;
-        size_t dht_count = 0;
-        if (dht_fetch_contact_requests(engine->fingerprint, &dht_requests, &dht_count) == 0
-            && dht_count > 0) {
-            QGP_LOG_INFO(LOG_TAG, "[LISTEN] Initial pull: found %zu contact requests in DHT", dht_count);
-            bool has_new = false;
-            contacts_db_init(engine->fingerprint);
-            for (size_t i = 0; i < dht_count; i++) {
-                /* Skip already-known senders */
-                if (contacts_db_is_blocked(dht_requests[i].sender_fingerprint)) continue;
-                if (contacts_db_exists(dht_requests[i].sender_fingerprint)) continue;
-                if (contacts_db_request_exists(dht_requests[i].sender_fingerprint)) continue;
-
-                /* Store new request in local DB */
-                contacts_db_add_incoming_request(
-                    dht_requests[i].sender_fingerprint,
-                    dht_requests[i].sender_name,
-                    dht_requests[i].message,
-                    dht_requests[i].timestamp
-                );
-                if (dht_requests[i].has_dht_salt) {
-                    contacts_db_set_request_salt(dht_requests[i].sender_fingerprint,
-                                                 dht_requests[i].dht_salt);
-                }
-                has_new = true;
-                QGP_LOG_INFO(LOG_TAG, "[LISTEN] New contact request from: %.20s... (%s)",
-                             dht_requests[i].sender_fingerprint,
-                             dht_requests[i].sender_name[0] ? dht_requests[i].sender_name : "unknown");
-            }
-            dht_contact_requests_free(dht_requests, dht_count);
-            if (has_new) {
-                dna_event_t event = {0};
-                event.type = DNA_EVENT_CONTACT_REQUEST_RECEIVED;
-                dna_dispatch_event(engine, &event);
-            }
-        } else {
-            QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Initial pull: no contact requests found");
-        }
-    }
+    /* v0.9.0: Initial pull removed — Flutter calls get_contact_requests on startup
+     * which does DHT fetch + auto-approve + DB write. The listener only handles
+     * real-time pushes after registration. No duplicate DHT roundtrip needed. */
 
     pthread_mutex_lock(&engine->background_threads_mutex);
     engine->listeners_starting = false;
