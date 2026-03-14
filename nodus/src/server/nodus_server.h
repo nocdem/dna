@@ -242,6 +242,9 @@ typedef struct nodus_server {
     /* Ping-before-evict pending entries */
     nodus_pending_eviction_t pending_evictions[NODUS_MAX_PENDING_EVICTIONS];
 
+    /* CRIT-4: TCP idle connection sweep (every 30s) */
+    uint64_t                last_idle_sweep;
+
     bool                    running;
 } nodus_server_t;
 

@@ -13,6 +13,7 @@
 #include "core/nodus_routing.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 
 /* ── Internal helpers ─────────────────────────────────────────────── */
@@ -229,8 +230,9 @@ void nodus_presence_tick(struct nodus_server *srv) {
                                  sync_buf, sizeof(sync_buf), &sync_len) != 0)
         return;
 
-    /* Collect all peers from routing table */
-    nodus_peer_t peers[PRESENCE_MAX_PEERS];
+    /* HIGH-4: Heap-allocate peer array to avoid ~576KB stack allocation */
+    nodus_peer_t *peers = malloc(sizeof(nodus_peer_t) * PRESENCE_MAX_PEERS);
+    if (!peers) return;
     int peer_count = 0;
     for (int b = 0; b < NODUS_BUCKETS && peer_count < PRESENCE_MAX_PEERS; b++) {
         const nodus_bucket_t *bkt = &srv->routing.buckets[b];
@@ -294,4 +296,6 @@ void nodus_presence_tick(struct nodus_server *srv) {
             nodus_tcp_disconnect((nodus_tcp_t *)&srv->inter_tcp, c);
         }
     }
+
+    free(peers);
 }

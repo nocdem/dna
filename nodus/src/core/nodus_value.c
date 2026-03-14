@@ -265,7 +265,8 @@ int nodus_value_deserialize(const uint8_t *buf, size_t len,
             if (v.type == CBOR_ITEM_UINT)
                 val->value_id = v.uint_val;
         } else if (k.tstr.len == 4 && memcmp(k.tstr.ptr, "data", 4) == 0) {
-            if (v.type == CBOR_ITEM_BSTR && v.bstr.len > 0) {
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len > 0 &&
+                v.bstr.len <= NODUS_MAX_VALUE_SIZE) {  /* HIGH-6: bound allocation */
                 val->data = malloc(v.bstr.len);
                 if (val->data) {
                     memcpy(val->data, v.bstr.ptr, v.bstr.len);

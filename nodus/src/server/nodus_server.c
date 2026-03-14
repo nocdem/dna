@@ -1271,6 +1271,38 @@ static void eviction_sweep(nodus_server_t *srv) {
     }
 }
 
+/* ── CRIT-4: TCP idle timeout sweep ──────────────────────────────── */
+
+#define IDLE_SWEEP_INTERVAL   30   /* seconds between sweeps */
+#define IDLE_TIMEOUT_AUTH     60   /* seconds for authenticated connections */
+#define IDLE_TIMEOUT_UNAUTH   15   /* seconds for unauthenticated connections */
+
+static void idle_timeout_sweep(nodus_server_t *srv) {
+    uint64_t now = nodus_time_now();
+    if (now - srv->last_idle_sweep < IDLE_SWEEP_INTERVAL)
+        return;
+    srv->last_idle_sweep = now;
+
+    /* Sweep client TCP pool */
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = srv->tcp.pool[i];
+        if (!c || c->state != NODUS_CONN_CONNECTED) continue;
+        uint64_t idle = now - c->last_activity;
+        bool authed = srv->sessions[c->slot].authenticated;
+        uint64_t timeout = authed ? IDLE_TIMEOUT_AUTH : IDLE_TIMEOUT_UNAUTH;
+        if (idle > timeout)
+            nodus_tcp_disconnect(&srv->tcp, c);
+    }
+
+    /* Sweep inter-node TCP pool */
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
+        if (!c || c->state != NODUS_CONN_CONNECTED) continue;
+        if (now - c->last_activity > IDLE_TIMEOUT_AUTH)
+            nodus_tcp_disconnect(&srv->inter_tcp, c);
+    }
+}
+
 /* ── Inter-node frame dispatch (peer port) ──────────────────────── */
 
 static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
@@ -2154,6 +2186,9 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Ping-before-evict: evict LRU peers that didn't respond */
         eviction_sweep(srv);
+
+        /* CRIT-4: Disconnect idle TCP connections */
+        idle_timeout_sweep(srv);
 
         /* Refresh identity in DHT (every 60s) */
         {

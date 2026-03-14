@@ -50,6 +50,7 @@
 #endif
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <time.h>
 
 #define MAX_EVENTS 64
@@ -296,6 +297,8 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 #ifndef _WIN32
 static void handle_read_fwd(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
 
+#define NODUS_MAX_CONNS_PER_IP  20   /* CRIT-5: Per-IP connection limit */
+
 static void handle_accept(nodus_tcp_t *tcp) {
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
@@ -303,6 +306,19 @@ static void handle_accept(nodus_tcp_t *tcp) {
     if (fd < 0) return;
 
     if (tcp->count >= NODUS_TCP_MAX_CONNS) {
+        close(fd);
+        return;
+    }
+
+    /* CRIT-5: Per-IP connection limit */
+    char new_ip[64];
+    inet_ntop(AF_INET, &addr.sin_addr, new_ip, sizeof(new_ip));
+    int ip_count = 0;
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        if (tcp->pool[i] && strcmp(tcp->pool[i]->ip, new_ip) == 0)
+            ip_count++;
+    }
+    if (ip_count >= NODUS_MAX_CONNS_PER_IP) {
         close(fd);
         return;
     }
@@ -317,7 +333,7 @@ static void handle_accept(nodus_tcp_t *tcp) {
     conn->fd = fd;
     conn->state = NODUS_CONN_CONNECTED;
     conn->port = ntohs(addr.sin_port);
-    inet_ntop(AF_INET, &addr.sin_addr, conn->ip, sizeof(conn->ip));
+    snprintf(conn->ip, sizeof(conn->ip), "%s", new_ip);
     conn->connected_at = nodus_time_now();
     conn->last_activity = conn->connected_at;
 

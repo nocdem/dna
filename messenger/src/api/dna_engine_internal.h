@@ -731,6 +731,12 @@ struct dna_engine {
     pthread_mutex_t background_threads_mutex;  /* Protects running flags */
     pthread_cond_t background_thread_exit_cond;  /* v0.6.113: Signaled when background thread exits */
 
+    /* HIGH-8: Track backup/restore threads for clean shutdown */
+    pthread_t backup_thread;
+    bool backup_thread_running;
+    pthread_t restore_thread;
+    bool restore_thread_running;
+
     /* v0.6.107+: State synchronization */
     pthread_mutex_t state_mutex;           /* Protects engine state transitions */
 

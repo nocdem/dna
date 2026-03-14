@@ -1560,6 +1560,18 @@ void dna_engine_destroy(dna_engine_t *engine) {
     pthread_cond_destroy(&engine->background_thread_exit_cond);
     pthread_mutex_destroy(&engine->background_threads_mutex);
 
+    /* HIGH-8: Join backup/restore threads to prevent use-after-free */
+    if (engine->backup_thread_running) {
+        QGP_LOG_INFO(LOG_TAG, "Joining backup thread...");
+        pthread_join(engine->backup_thread, NULL);
+        engine->backup_thread_running = false;
+    }
+    if (engine->restore_thread_running) {
+        QGP_LOG_INFO(LOG_TAG, "Joining restore thread...");
+        pthread_join(engine->restore_thread, NULL);
+        engine->restore_thread_running = false;
+    }
+
     /* Stop presence heartbeat thread */
     dna_stop_presence_heartbeat(engine);
 

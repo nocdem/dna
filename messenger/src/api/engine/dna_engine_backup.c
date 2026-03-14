@@ -63,6 +63,8 @@ static void *backup_thread_func(void *arg) {
         }
         qgp_key_free(ctx->kyber_key);
         qgp_key_free(ctx->dilithium_key);
+        /* HIGH-8: Mark thread as done */
+        if (engine) engine->backup_thread_running = false;
         free(ctx);
         return NULL;
     }
@@ -109,6 +111,8 @@ static void *backup_thread_func(void *arg) {
         }
     }
 
+    /* HIGH-8: Mark thread as done before exit */
+    engine->backup_thread_running = false;
     free(ctx);
     return NULL;
 }
@@ -128,6 +132,8 @@ static void *restore_thread_func(void *arg) {
         }
         qgp_key_free(ctx->kyber_key);
         qgp_key_free(ctx->dilithium_key);
+        /* HIGH-8: Mark thread as done */
+        if (engine) engine->restore_thread_running = false;
         free(ctx);
         return NULL;
     }
@@ -141,6 +147,7 @@ static void *restore_thread_func(void *arg) {
         }
         qgp_key_free(ctx->kyber_key);
         qgp_key_free(ctx->dilithium_key);
+        engine->restore_thread_running = false;
         free(ctx);
         return NULL;
     }
@@ -180,6 +187,8 @@ static void *restore_thread_func(void *arg) {
         }
     }
 
+    /* HIGH-8: Mark thread as done before exit */
+    engine->restore_thread_running = false;
     free(ctx);
     return NULL;
 }
@@ -267,9 +276,14 @@ dna_request_id_t dna_engine_backup_messages(
     ctx->kyber_key = kyber_key;
     ctx->dilithium_key = dilithium_key;
 
-    /* Spawn detached thread for async backup (never blocks UI) */
-    pthread_t backup_thread;
-    if (pthread_create(&backup_thread, NULL, backup_thread_func, ctx) != 0) {
+    /* HIGH-8: Join any previous backup thread before spawning new one */
+    if (engine->backup_thread_running) {
+        pthread_join(engine->backup_thread, NULL);
+        engine->backup_thread_running = false;
+    }
+
+    /* Spawn tracked thread for async backup (never blocks UI) */
+    if (pthread_create(&engine->backup_thread, NULL, backup_thread_func, ctx) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to spawn backup thread");
         qgp_key_free(kyber_key);
         qgp_key_free(dilithium_key);
@@ -277,7 +291,7 @@ dna_request_id_t dna_engine_backup_messages(
         callback(request_id, -1, 0, 0, user_data);
         return request_id;
     }
-    pthread_detach(backup_thread);
+    engine->backup_thread_running = true;
 
     QGP_LOG_INFO(LOG_TAG, "Backup thread spawned (request_id=%llu)", (unsigned long long)request_id);
     return request_id;
@@ -366,9 +380,14 @@ dna_request_id_t dna_engine_restore_messages(
     ctx->kyber_key = kyber_key;
     ctx->dilithium_key = dilithium_key;
 
-    /* Spawn detached thread for async restore (never blocks UI) */
-    pthread_t restore_thread;
-    if (pthread_create(&restore_thread, NULL, restore_thread_func, ctx) != 0) {
+    /* HIGH-8: Join any previous restore thread before spawning new one */
+    if (engine->restore_thread_running) {
+        pthread_join(engine->restore_thread, NULL);
+        engine->restore_thread_running = false;
+    }
+
+    /* Spawn tracked thread for async restore (never blocks UI) */
+    if (pthread_create(&engine->restore_thread, NULL, restore_thread_func, ctx) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to spawn restore thread");
         qgp_key_free(kyber_key);
         qgp_key_free(dilithium_key);
@@ -376,7 +395,7 @@ dna_request_id_t dna_engine_restore_messages(
         callback(request_id, -1, 0, 0, user_data);
         return request_id;
     }
-    pthread_detach(restore_thread);
+    engine->restore_thread_running = true;
 
     QGP_LOG_INFO(LOG_TAG, "Restore thread spawned (request_id=%llu)", (unsigned long long)request_id);
     return request_id;
