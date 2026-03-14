@@ -112,6 +112,9 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
 }
 
 /* ── Scan data dir for existing witness_*.db → load chain_id ─────── */
+/* TODO: Legacy migration — if DB was created with old naming (raw tx_hash as chain_id),
+ * derive new chain_id from genesis TX data in DB and rename file.
+ * Not needed yet — all current deployments are pre-genesis. */
 
 static int witness_scan_chain_db(nodus_witness_t *witness) {
     const char *data_path = witness->data_path;
