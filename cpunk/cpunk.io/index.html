@@ -1102,6 +1102,105 @@
       }
       .reveal, .reveal-left, .reveal-right { opacity: 1; transform: none; }
     }
+
+    /* ── Downloads ───────────────────────────────── */
+
+    .downloads-widget {
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border-subtle);
+      background: radial-gradient(circle at top left, rgba(6,197,210,0.04), transparent 55%), var(--panel);
+      padding: 1.5rem;
+    }
+
+    .downloads-title {
+      font-family: var(--font-display);
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--teal);
+      margin-bottom: 0.3rem;
+      letter-spacing: 0.04em;
+    }
+
+    .downloads-sub {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-bottom: 0.75rem;
+      line-height: 1.4;
+    }
+
+    .download-grid {
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+    }
+
+    .download-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 0.9rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(7,9,25,0.9);
+      font-size: 0.78rem;
+      color: var(--text-main);
+      transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
+      white-space: nowrap;
+    }
+
+    .download-btn:hover {
+      transform: translateY(-1px);
+      border-color: var(--orange);
+      box-shadow: 0 8px 20px rgba(242,98,41,0.15);
+    }
+
+    .dl-badge {
+      font-size: 0.68rem;
+      padding: 0.1rem 0.45rem;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 999px;
+      color: var(--text-muted);
+    }
+
+    .downloads-fallback a {
+      text-decoration: underline;
+      color: var(--orange);
+    }
+
+    .version-chips {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-top: 1rem;
+    }
+
+    .version-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.25rem 0.7rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-subtle);
+      background: var(--panel);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .version-chip strong { color: var(--text-main); font-weight: 500; }
+
+    .source-links {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 1rem;
+    }
+
+    .source-links a {
+      color: var(--orange);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .source-links a:hover { color: var(--teal); }
   </style>
 </head>
 <body>
@@ -1335,12 +1434,12 @@
         </div>
       </section>
 
-      <!-- ══ Section 4: The DNA Suite ══ -->
+      <!-- ══ Section 4: DNA Connect ══ -->
       <section id="dna-suite" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
             <img src="images/logo.svg" alt="CPUNK Logo" style="width:140px;height:140px;display:block;margin:0 auto 1.5rem;">
-            <div class="section-label">The DNA Suite</div>
+            <div class="section-label">DNA Connect</div>
             <h2 class="section-title">Three utilities, one app</h2>
             <p class="section-desc" style="max-width: 38rem;">
               DNA Connect combines post-quantum messaging, a multi-chain wallet, and decentralized identity into a single client &mdash; no phone numbers, no central servers, no compromises.
@@ -1372,6 +1471,36 @@
               <p>Your DNA name is your identity &mdash; tied to a cryptographic key pair, not to a phone number or email. Register once and be reachable across the entire network.</p>
             </article>
           </div>
+        </div>
+      </section>
+
+      <!-- ══ Downloads ══ -->
+      <section id="downloads" class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label">Downloads</div>
+            <h2 class="section-title">Get DNA Connect</h2>
+            <p class="section-desc">
+              Open beta &mdash; available for Android, Linux, and Windows. Open source under GPLv3.
+            </p>
+          </div>
+
+          <div class="downloads-widget" id="dna-downloads">
+            <div class="downloads-title">Downloads</div>
+            <div class="downloads-sub">Loading latest builds&hellip;</div>
+          </div>
+
+          <div class="version-chips">
+            <div class="version-chip"><strong>C Library</strong>&nbsp; v0.9.63</div>
+            <div class="version-chip"><strong>App</strong>&nbsp; v1.0.0-rc30</div>
+            <div class="version-chip"><strong>Nodus</strong>&nbsp; v0.6.8</div>
+          </div>
+
+          <p class="source-links">
+            Source code:
+            <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noopener">GitLab</a> &middot;
+            <a href="https://github.com/nocdem/dna" target="_blank" rel="noopener">GitHub (Mirror)</a>
+          </p>
         </div>
       </section>
 
@@ -1687,6 +1816,127 @@
       setInterval(fetchTokenPrice, PRICE_REFRESH_INTERVAL);
       setInterval(updateRefreshTime, 60000);
     }
+  </script>
+
+  <!-- Dynamic downloads -->
+  <script>
+  (function () {
+    var ARTIFACT_URL = "/api/latest.json";
+    var PLATFORMS = [
+      { key: "windows", label: "Windows", ext: "EXE" },
+      { key: "linux_appimage", label: "Linux AppImage", ext: "AppImage" },
+      { key: "linux_tarball", label: "Linux Tarball", ext: "tar.gz" },
+      { key: "android", label: "Android", ext: "APK" },
+      { key: "macos", label: "macOS", ext: "DMG" }
+    ];
+
+    function esc(s) {
+      var d = document.createElement("div");
+      d.textContent = String(s);
+      return d.innerHTML;
+    }
+
+    function fmtDate(iso) {
+      if (!iso) return "";
+      var d = new Date(iso);
+      return isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+    }
+
+    function buildDownloadButton(item) {
+      var a = document.createElement("a");
+      a.className = "download-btn";
+      a.href = item.href;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = item.label + " ";
+      var badge = document.createElement("span");
+      badge.className = "dl-badge";
+      badge.textContent = item.ext;
+      a.appendChild(badge);
+      return a;
+    }
+
+    async function load() {
+      var el = document.getElementById("dna-downloads");
+      if (!el) return;
+      try {
+        var res = await fetch(ARTIFACT_URL, { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        var data = await res.json();
+        var dl = (data && data.downloads) || {};
+        var ver = data && data.version ? String(data.version) : "latest";
+        var date = fmtDate(data && data.date);
+        var items = PLATFORMS
+          .filter(function(p) { return dl[p.key]; })
+          .map(function(p) { return { label: p.label, ext: p.ext, href: String(dl[p.key]) }; });
+
+        el.replaceChildren();
+
+        var title = document.createElement("div");
+        title.className = "downloads-title";
+        title.textContent = "Downloads";
+        el.appendChild(title);
+
+        var sub = document.createElement("div");
+        sub.className = "downloads-sub";
+
+        if (!items.length) {
+          sub.textContent = "No downloads published yet.";
+          el.appendChild(sub);
+          var fb = document.createElement("div");
+          fb.className = "downloads-fallback";
+          var fbLink = document.createElement("a");
+          fbLink.href = "https://artifacts.cpunk.io/dna-messenger/";
+          fbLink.target = "_blank";
+          fbLink.rel = "noopener";
+          fbLink.textContent = "Browse artifacts";
+          fb.appendChild(fbLink);
+          el.appendChild(fb);
+          return;
+        }
+
+        sub.textContent = "Latest build: ";
+        var strong = document.createElement("strong");
+        strong.style.cssText = "color:var(--text-main);font-weight:600";
+        strong.textContent = "v" + ver + (date ? " \u00b7 " + date : "");
+        sub.appendChild(strong);
+        el.appendChild(sub);
+
+        var grid = document.createElement("div");
+        grid.className = "download-grid";
+        items.forEach(function(item) {
+          grid.appendChild(buildDownloadButton(item));
+        });
+        el.appendChild(grid);
+      } catch (err) {
+        var el2 = document.getElementById("dna-downloads");
+        if (!el2) return;
+        el2.replaceChildren();
+
+        var t = document.createElement("div");
+        t.className = "downloads-title";
+        t.textContent = "Downloads";
+        el2.appendChild(t);
+
+        var s = document.createElement("div");
+        s.className = "downloads-sub";
+        s.textContent = "Downloads temporarily unavailable.";
+        el2.appendChild(s);
+
+        var f = document.createElement("div");
+        f.className = "downloads-fallback";
+        var link = document.createElement("a");
+        link.href = "https://artifacts.cpunk.io/dna-messenger/";
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = "Browse artifacts";
+        f.appendChild(link);
+        el2.appendChild(f);
+      }
+    }
+
+    load();
+  })();
   </script>
 </body>
 </html>

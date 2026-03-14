@@ -419,7 +419,7 @@
       margin-bottom: 1.5rem;
     }
 
-    .hero .lead strong { color: var(--text-main); font-weight: 500; }
+    .hero .lead strong { color: var(--teal); font-weight: 500; }
 
     .hero-actions {
       display: flex;
@@ -1139,11 +1139,20 @@
             <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
           </div>
         </a>
+
+        <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+          <span></span>
+        </button>
+
         <div class="nav-menu">
-          <div class="nav-links">
+          <nav class="nav-links">
             <a href="/">Home</a>
-            <div class="nav-item">
-              <span class="nav-item-label">Products <span class="caret"></span></span>
+
+            <div class="nav-item" data-dropdown="products">
+              <div class="nav-item-label">
+                <span>Products</span>
+                <span class="caret"></span>
+              </div>
               <div class="dropdown">
                 <a href="/products/dna-identity.html">DNA Identity</a>
                 <a href="/products/dna-connect.html" class="active">DNA Connect</a>
@@ -1151,10 +1160,15 @@
                 <a href="/products/dna-library.html">DNA Library</a>
               </div>
             </div>
+
             <a href="/whitepaper.html">Whitepaper</a>
             <a href="/roadmap.html">Roadmap</a>
-            <div class="nav-item">
-              <span class="nav-item-label">About <span class="caret"></span></span>
+
+            <div class="nav-item" data-dropdown="about">
+              <div class="nav-item-label">
+                <span>About</span>
+                <span class="caret"></span>
+              </div>
               <div class="dropdown">
                 <a href="/about.html">About CPUNK</a>
                 <a href="/team.html">Team</a>
@@ -1162,14 +1176,14 @@
                 <a href="/legal.html">Legal</a>
               </div>
             </div>
-          </div>
+          </nav>
+
           <div class="nav-cta">
-            <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" class="btn btn-primary" target="_blank" rel="noreferrer">Trade CPUNK</a>
+            <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
+              Trade CPUNK
+            </a>
           </div>
         </div>
-        <button class="mobile-menu-toggle" aria-label="Toggle navigation">
-          <span></span>
-        </button>
       </div>
     </div>
   </header>
