@@ -914,7 +914,7 @@ int nodus_client_ch_create(nodus_client_t *client,
     nodus_pending_t *req = alloc_pending(client, txn);
     if (!req) { free(buf); return -1; }
 
-    nodus_t2_ch_create(txn, client->token, uuid,
+    nodus_t2_ch_create(txn, client->token, uuid, false,
                         buf, CLIENT_BUF_SIZE, &len);
     if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
     free(buf);
@@ -2586,7 +2586,7 @@ int nodus_ch_conn_create(nodus_ch_conn_t *ch,
     nodus_ch_pending_t *req = ch_conn_alloc_pending(ch, txn);
     if (!req) { free(buf); return -1; }
 
-    nodus_t2_ch_create(txn, ch->token, uuid,
+    nodus_t2_ch_create(txn, ch->token, uuid, false,
                         buf, CH_CONN_BUF_SIZE, &len);
     if (ch_conn_send(ch, buf, len) != 0) { ch_conn_free_pending(ch, req); free(buf); return -1; }
     free(buf);

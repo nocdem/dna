@@ -180,15 +180,20 @@ int nodus_t2_servers(uint32_t txn, const uint8_t *token,
 
 int nodus_t2_ch_create(uint32_t txn, const uint8_t *token,
                         const uint8_t uuid[NODUS_UUID_BYTES],
+                        bool encrypted,
                         uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 5, txn, "ch_create");
     enc_token(&enc, token);
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 1);
+    cbor_encode_map(&enc, encrypted ? 2 : 1);
     cbor_encode_cstr(&enc, "ch");
     cbor_encode_bstr(&enc, uuid, NODUS_UUID_BYTES);
+    if (encrypted) {
+        cbor_encode_cstr(&enc, "enc");
+        cbor_encode_bool(&enc, true);
+    }
     return finish(&enc, out_len);
 }
 
@@ -261,6 +266,29 @@ int nodus_t2_ch_unsubscribe(uint32_t txn, const uint8_t *token,
     cbor_encode_map(&enc, 1);
     cbor_encode_cstr(&enc, "ch");
     cbor_encode_bstr(&enc, uuid, NODUS_UUID_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_member_update(uint32_t txn, const uint8_t *token,
+                              const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                              uint8_t action,
+                              const nodus_key_t *target_fp,
+                              const nodus_sig_t *sig,
+                              uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "ch_mu");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, ch_uuid, NODUS_UUID_BYTES);
+    cbor_encode_cstr(&enc, "act");
+    cbor_encode_uint(&enc, action);
+    cbor_encode_cstr(&enc, "tfp");
+    cbor_encode_bstr(&enc, target_fp->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "sig");
+    cbor_encode_bstr(&enc, sig->bytes, NODUS_SIG_BYTES);
     return finish(&enc, out_len);
 }
 

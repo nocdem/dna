@@ -32,6 +32,22 @@ typedef struct {
     uint64_t    expires_at;
 } nodus_hinted_entry_t;
 
+/* ── Channel metadata ───────────────────────────────────────────── */
+
+typedef struct {
+    uint8_t     uuid[NODUS_UUID_BYTES];
+    bool        encrypted;          /* true for encrypted group channels */
+    uint64_t    created_at;
+} nodus_channel_meta_t;
+
+/* ── Push target (encrypted channels only) ──────────────────────── */
+
+typedef struct {
+    uint8_t     channel_uuid[NODUS_UUID_BYTES];
+    nodus_key_t target_fp;
+    uint64_t    added_at;
+} nodus_push_target_t;
+
 /* ── Channel store ──────────────────────────────────────────────── */
 
 typedef struct {
@@ -42,6 +58,11 @@ typedef struct {
     sqlite3_stmt *stmt_hint_delete;
     sqlite3_stmt *stmt_hint_cleanup;
     sqlite3_stmt *stmt_hint_update_retry;
+    /* Push target prepared statements */
+    sqlite3_stmt *stmt_pt_insert;
+    sqlite3_stmt *stmt_pt_delete;
+    sqlite3_stmt *stmt_pt_get;
+    sqlite3_stmt *stmt_pt_has;
 } nodus_channel_store_t;
 
 /**
@@ -57,10 +78,12 @@ void nodus_channel_store_close(nodus_channel_store_t *store);
 
 /**
  * Create a channel table. Idempotent — does nothing if already exists.
- * @param uuid  16-byte UUID (validated and converted to hex internally)
+ * @param uuid       16-byte UUID (validated and converted to hex internally)
+ * @param encrypted  true for encrypted group channels (skips sig verify, uses push targets)
  */
 int nodus_channel_create(nodus_channel_store_t *store,
-                          const uint8_t uuid[NODUS_UUID_BYTES]);
+                          const uint8_t uuid[NODUS_UUID_BYTES],
+                          bool encrypted);
 
 /**
  * Check if a channel table exists.
@@ -148,6 +171,57 @@ int nodus_hinted_retry(nodus_channel_store_t *store, int64_t id);
  * @return Number of entries deleted
  */
 int nodus_hinted_cleanup(nodus_channel_store_t *store);
+
+/* ── Channel metadata ───────────────────────────────────────────── */
+
+/**
+ * Check if a channel is encrypted.
+ * @return true if channel exists and has encrypted flag set
+ */
+bool nodus_channel_is_encrypted(nodus_channel_store_t *store,
+                                 const uint8_t uuid[NODUS_UUID_BYTES]);
+
+/**
+ * Load channel metadata.
+ * @return 0 on success, -1 on error or not found
+ */
+int nodus_channel_load_meta(nodus_channel_store_t *store,
+                             const uint8_t uuid[NODUS_UUID_BYTES],
+                             nodus_channel_meta_t *meta_out);
+
+/* ── Push targets (encrypted channels) ─────────────────────────── */
+
+/**
+ * Add a push target fingerprint for an encrypted channel.
+ * Idempotent — ignores duplicate (fp already exists for channel).
+ */
+int nodus_push_target_add(nodus_channel_store_t *store,
+                           const uint8_t uuid[NODUS_UUID_BYTES],
+                           const nodus_key_t *target_fp);
+
+/**
+ * Remove a push target fingerprint from an encrypted channel.
+ */
+int nodus_push_target_remove(nodus_channel_store_t *store,
+                              const uint8_t uuid[NODUS_UUID_BYTES],
+                              const nodus_key_t *target_fp);
+
+/**
+ * Get all push targets for an encrypted channel.
+ * @param targets_out  Caller frees with free()
+ * @param count_out    Number of targets returned
+ */
+int nodus_push_target_get(nodus_channel_store_t *store,
+                           const uint8_t uuid[NODUS_UUID_BYTES],
+                           nodus_push_target_t **targets_out,
+                           size_t *count_out);
+
+/**
+ * Check if a fingerprint is a push target for an encrypted channel.
+ */
+bool nodus_push_target_has(nodus_channel_store_t *store,
+                            const uint8_t uuid[NODUS_UUID_BYTES],
+                            const nodus_key_t *target_fp);
 
 /* ── Cleanup helpers ────────────────────────────────────────────── */
 

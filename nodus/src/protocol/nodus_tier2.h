@@ -62,6 +62,7 @@ int nodus_t2_servers(uint32_t txn, const uint8_t *token,
 
 int nodus_t2_ch_create(uint32_t txn, const uint8_t *token,
                         const uint8_t uuid[NODUS_UUID_BYTES],
+                        bool encrypted,
                         uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_ch_post(uint32_t txn, const uint8_t *token,
@@ -83,6 +84,16 @@ int nodus_t2_ch_subscribe(uint32_t txn, const uint8_t *token,
 int nodus_t2_ch_unsubscribe(uint32_t txn, const uint8_t *token,
                               const uint8_t uuid[NODUS_UUID_BYTES],
                               uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ch_member_update(uint32_t txn, const uint8_t *token,
+                              const uint8_t ch_uuid[NODUS_UUID_BYTES],
+                              uint8_t action,
+                              const nodus_key_t *target_fp,
+                              const nodus_sig_t *sig,
+                              uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ch_member_update_ok(uint32_t txn,
+                                  uint8_t *buf, size_t cap, size_t *out_len);
 
 /* ── Nodus → Client encode ───────────────────────────────────────── */
 
@@ -294,6 +305,12 @@ typedef struct {
 
     /* Channel rewrite: sync fields */
     uint64_t        ch_since_ms;        /* ch_sync_req: since timestamp */
+    bool            ch_encrypted;       /* ch_create: encrypted channel flag */
+
+    /* ch_member_update fields */
+    uint8_t         ch_mu_action;       /* 1=add, 2=remove */
+    nodus_key_t     ch_mu_target_fp;    /* target fingerprint */
+    bool            has_ch_mu;          /* true if ch_member_update fields present */
 
     /* Server list (servers response) */
     struct {

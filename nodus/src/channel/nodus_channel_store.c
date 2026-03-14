@@ -69,6 +69,25 @@ int nodus_channel_store_open(const char *db_path, nodus_channel_store_t *store) 
         "CREATE INDEX IF NOT EXISTS idx_hinted_expires ON hinted_handoff(expires_at);");
     if (rc != 0) { sqlite3_close(store->db); store->db = NULL; return -1; }
 
+    /* Create channel metadata table (encrypted flag, etc.) */
+    rc = exec_sql(store->db,
+        "CREATE TABLE IF NOT EXISTS channel_meta ("
+        "  channel_uuid BLOB NOT NULL PRIMARY KEY,"
+        "  encrypted    INTEGER NOT NULL DEFAULT 0,"
+        "  created_at   INTEGER NOT NULL"
+        ");");
+    if (rc != 0) { sqlite3_close(store->db); store->db = NULL; return -1; }
+
+    /* Create push targets table (encrypted channels only) */
+    rc = exec_sql(store->db,
+        "CREATE TABLE IF NOT EXISTS channel_push_targets ("
+        "  channel_uuid BLOB NOT NULL,"
+        "  target_fp    BLOB NOT NULL,"
+        "  added_at     INTEGER NOT NULL,"
+        "  PRIMARY KEY(channel_uuid, target_fp)"
+        ");");
+    if (rc != 0) { sqlite3_close(store->db); store->db = NULL; return -1; }
+
     /* Prepare hinted handoff statements */
     sqlite3_prepare_v2(store->db,
         "INSERT INTO hinted_handoff (target_fp, channel_uuid, post_data, created_at, expires_at) "
@@ -92,6 +111,24 @@ int nodus_channel_store_open(const char *db_path, nodus_channel_store_t *store) 
         "UPDATE hinted_handoff SET retry_count = retry_count + 1 WHERE id = ?",
         -1, &store->stmt_hint_update_retry, NULL);
 
+    /* Push target prepared statements */
+    sqlite3_prepare_v2(store->db,
+        "INSERT OR IGNORE INTO channel_push_targets (channel_uuid, target_fp, added_at) "
+        "VALUES (?, ?, ?)",
+        -1, &store->stmt_pt_insert, NULL);
+
+    sqlite3_prepare_v2(store->db,
+        "DELETE FROM channel_push_targets WHERE channel_uuid = ? AND target_fp = ?",
+        -1, &store->stmt_pt_delete, NULL);
+
+    sqlite3_prepare_v2(store->db,
+        "SELECT target_fp, added_at FROM channel_push_targets WHERE channel_uuid = ?",
+        -1, &store->stmt_pt_get, NULL);
+
+    sqlite3_prepare_v2(store->db,
+        "SELECT 1 FROM channel_push_targets WHERE channel_uuid = ? AND target_fp = ?",
+        -1, &store->stmt_pt_has, NULL);
+
     return 0;
 }
 
@@ -102,6 +139,10 @@ void nodus_channel_store_close(nodus_channel_store_t *store) {
     if (store->stmt_hint_delete)       sqlite3_finalize(store->stmt_hint_delete);
     if (store->stmt_hint_cleanup)      sqlite3_finalize(store->stmt_hint_cleanup);
     if (store->stmt_hint_update_retry) sqlite3_finalize(store->stmt_hint_update_retry);
+    if (store->stmt_pt_insert)         sqlite3_finalize(store->stmt_pt_insert);
+    if (store->stmt_pt_delete)         sqlite3_finalize(store->stmt_pt_delete);
+    if (store->stmt_pt_get)            sqlite3_finalize(store->stmt_pt_get);
+    if (store->stmt_pt_has)            sqlite3_finalize(store->stmt_pt_has);
     if (store->db) sqlite3_close(store->db);
     memset(store, 0, sizeof(*store));
 }
@@ -123,7 +164,8 @@ static bool has_seq_id_column(sqlite3 *db, const char hex[33]) {
 }
 
 int nodus_channel_create(nodus_channel_store_t *store,
-                          const uint8_t uuid[NODUS_UUID_BYTES]) {
+                          const uint8_t uuid[NODUS_UUID_BYTES],
+                          bool encrypted) {
     if (!store || !store->db || !uuid) return -1;
 
     char hex[33];
@@ -161,7 +203,21 @@ int nodus_channel_create(nodus_channel_store_t *store,
     snprintf(sql, sizeof(sql),
         "CREATE INDEX IF NOT EXISTS idx_%s_recv ON channel_%s(received_at)",
         hex, hex);
-    return exec_sql(store->db, sql);
+    if (exec_sql(store->db, sql) != 0) return -1;
+
+    /* Insert channel metadata (idempotent — INSERT OR IGNORE) */
+    sqlite3_stmt *meta_stmt;
+    if (sqlite3_prepare_v2(store->db,
+            "INSERT OR IGNORE INTO channel_meta (channel_uuid, encrypted, created_at) "
+            "VALUES (?, ?, ?)", -1, &meta_stmt, NULL) != SQLITE_OK)
+        return -1;
+
+    sqlite3_bind_blob(meta_stmt, 1, uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
+    sqlite3_bind_int(meta_stmt, 2, encrypted ? 1 : 0);
+    sqlite3_bind_int64(meta_stmt, 3, (int64_t)nodus_time_now());
+    int rc2 = sqlite3_step(meta_stmt);
+    sqlite3_finalize(meta_stmt);
+    return (rc2 == SQLITE_DONE) ? 0 : -1;
 }
 
 bool nodus_channel_exists(nodus_channel_store_t *store,
@@ -496,6 +552,140 @@ int nodus_hinted_cleanup(nodus_channel_store_t *store) {
     sqlite3_bind_int64(s, 1, (int64_t)nodus_time_now());
     if (sqlite3_step(s) != SQLITE_DONE) return -1;
     return sqlite3_changes(store->db);
+}
+
+/* ── Channel metadata ───────────────────────────────────────────── */
+
+bool nodus_channel_is_encrypted(nodus_channel_store_t *store,
+                                 const uint8_t uuid[NODUS_UUID_BYTES]) {
+    if (!store || !store->db || !uuid) return false;
+
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(store->db,
+            "SELECT encrypted FROM channel_meta WHERE channel_uuid = ?",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_blob(stmt, 1, uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
+    bool encrypted = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        encrypted = (sqlite3_column_int(stmt, 0) != 0);
+    sqlite3_finalize(stmt);
+    return encrypted;
+}
+
+int nodus_channel_load_meta(nodus_channel_store_t *store,
+                             const uint8_t uuid[NODUS_UUID_BYTES],
+                             nodus_channel_meta_t *meta_out) {
+    if (!store || !store->db || !uuid || !meta_out) return -1;
+    memset(meta_out, 0, sizeof(*meta_out));
+
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(store->db,
+            "SELECT channel_uuid, encrypted, created_at FROM channel_meta "
+            "WHERE channel_uuid = ?", -1, &stmt, NULL) != SQLITE_OK)
+        return -1;
+
+    sqlite3_bind_blob(stmt, 1, uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    const void *blob = sqlite3_column_blob(stmt, 0);
+    if (blob) memcpy(meta_out->uuid, blob, NODUS_UUID_BYTES);
+    meta_out->encrypted = (sqlite3_column_int(stmt, 1) != 0);
+    meta_out->created_at = (uint64_t)sqlite3_column_int64(stmt, 2);
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
+/* ── Push targets (encrypted channels) ─────────────────────────── */
+
+int nodus_push_target_add(nodus_channel_store_t *store,
+                           const uint8_t uuid[NODUS_UUID_BYTES],
+                           const nodus_key_t *target_fp) {
+    if (!store || !uuid || !target_fp) return -1;
+
+    sqlite3_stmt *s = store->stmt_pt_insert;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 2, target_fp->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 3, (int64_t)nodus_time_now());
+    return (sqlite3_step(s) == SQLITE_DONE) ? 0 : -1;
+}
+
+int nodus_push_target_remove(nodus_channel_store_t *store,
+                              const uint8_t uuid[NODUS_UUID_BYTES],
+                              const nodus_key_t *target_fp) {
+    if (!store || !uuid || !target_fp) return -1;
+
+    sqlite3_stmt *s = store->stmt_pt_delete;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 2, target_fp->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    return (sqlite3_step(s) == SQLITE_DONE) ? 0 : -1;
+}
+
+int nodus_push_target_get(nodus_channel_store_t *store,
+                           const uint8_t uuid[NODUS_UUID_BYTES],
+                           nodus_push_target_t **targets_out,
+                           size_t *count_out) {
+    if (!store || !uuid || !targets_out || !count_out) return -1;
+    *targets_out = NULL;
+    *count_out = 0;
+
+    sqlite3_stmt *s = store->stmt_pt_get;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
+
+    size_t cap = 32;
+    size_t count = 0;
+    nodus_push_target_t *targets = calloc(cap, sizeof(*targets));
+    if (!targets) return -1;
+
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        if (count >= cap) {
+            cap *= 2;
+            nodus_push_target_t *t = realloc(targets, cap * sizeof(*t));
+            if (!t) break;
+            targets = t;
+        }
+
+        nodus_push_target_t *t = &targets[count];
+        memset(t, 0, sizeof(*t));
+        memcpy(t->channel_uuid, uuid, NODUS_UUID_BYTES);
+
+        const void *blob = sqlite3_column_blob(s, 0);
+        if (blob) memcpy(t->target_fp.bytes, blob, NODUS_KEY_BYTES);
+
+        t->added_at = (uint64_t)sqlite3_column_int64(s, 1);
+        count++;
+    }
+
+    if (count == 0) {
+        free(targets);
+        return 0;
+    }
+
+    *targets_out = targets;
+    *count_out = count;
+    return 0;
+}
+
+bool nodus_push_target_has(nodus_channel_store_t *store,
+                            const uint8_t uuid[NODUS_UUID_BYTES],
+                            const nodus_key_t *target_fp) {
+    if (!store || !uuid || !target_fp) return false;
+
+    sqlite3_stmt *s = store->stmt_pt_has;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 2, target_fp->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+
+    bool found = (sqlite3_step(s) == SQLITE_ROW);
+    sqlite3_reset(s);
+    return found;
 }
 
 /* ── Free helpers ───────────────────────────────────────────────── */

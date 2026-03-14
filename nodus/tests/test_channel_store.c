@@ -44,7 +44,7 @@ static void test_open_close(void) {
 static void test_create_channel(void) {
     TEST("create channel table");
 
-    if (nodus_channel_create(&store, test_uuid) != 0) {
+    if (nodus_channel_create(&store, test_uuid, false) != 0) {
         FAIL("create failed"); return;
     }
     if (!nodus_channel_exists(&store, test_uuid)) {
@@ -57,7 +57,7 @@ static void test_create_idempotent(void) {
     TEST("create channel is idempotent");
 
     /* Should succeed even though channel already exists */
-    if (nodus_channel_create(&store, test_uuid) != 0) {
+    if (nodus_channel_create(&store, test_uuid, false) != 0) {
         FAIL("second create failed"); return;
     }
     PASS();
@@ -114,7 +114,7 @@ static void test_ordering_by_received_at(void) {
 
     /* Drop and recreate to start clean */
     nodus_channel_drop(&store, test_uuid);
-    nodus_channel_create(&store, test_uuid);
+    nodus_channel_create(&store, test_uuid, false);
 
     /* Insert posts with explicit received_at values in non-sequential order */
     uint64_t ra_values[] = { 5000, 3000, 7000, 1000 };
@@ -253,7 +253,7 @@ static void test_migration_from_old_schema(void) {
     sqlite3_free(err);
 
     /* Now call nodus_channel_create — should detect old schema and migrate */
-    int rc = nodus_channel_create(&store, mig_uuid);
+    int rc = nodus_channel_create(&store, mig_uuid, false);
     if (rc != 0) { FAIL("create after migration failed"); return; }
     if (!nodus_channel_exists(&store, mig_uuid)) {
         FAIL("channel not found after migration"); return;

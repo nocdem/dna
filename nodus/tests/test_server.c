@@ -512,7 +512,7 @@ static void test_ch_create(void) {
 
     size_t len = 0;
     uint32_t txn = ch_next_txn++;
-    nodus_t2_ch_create(txn, ch_session_token, test_ch_uuid,
+    nodus_t2_ch_create(txn, ch_session_token, test_ch_uuid, false,
                         ch_proto_buf, sizeof(ch_proto_buf), &len);
     nodus_tcp_send(ch_client_conn, ch_proto_buf, len);
 

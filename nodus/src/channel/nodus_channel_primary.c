@@ -166,7 +166,7 @@ bool nodus_ch_primary_ensure_channel(nodus_channel_server_t *cs,
         if (memcmp(rset.nodes[i].node_id.bytes,
                    cs->identity->node_id.bytes, NODUS_KEY_BYTES) == 0) {
             /* We're responsible -- create the table */
-            nodus_channel_create(cs->ch_store, channel_uuid);
+            nodus_channel_create(cs->ch_store, channel_uuid, false);
             /* Track for ring management */
             if (cs->ch_ring_ptr) {
                 nodus_ch_ring_t *rm = (nodus_ch_ring_t *)cs->ch_ring_ptr;
@@ -245,7 +245,7 @@ int nodus_ch_primary_handle_create(nodus_channel_server_t *cs,
     }
 
     /* 1. Create channel table (idempotent) */
-    nodus_channel_create(cs->ch_store, msg->channel_uuid);
+    nodus_channel_create(cs->ch_store, msg->channel_uuid, msg->ch_encrypted);
 
     /* 2. Track in ring management for heartbeat monitoring */
     if (cs->ch_ring_ptr) {
