@@ -1,13 +1,37 @@
 // Channel Detail Screen - shows the post stream for a single channel
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../design_system/design_system.dart';
+import '../../ffi/dna_engine.dart' as ffi show UserProfile;
 import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart';
 import '../../models/channel.dart';
 import '../../utils/time_format.dart';
+
+/// 8-color Telegram-style palette for channel members
+const _memberColors = [
+  Color(0xFFE57373), // red
+  Color(0xFF81C784), // green
+  Color(0xFF64B5F6), // blue
+  Color(0xFFFFB74D), // orange
+  Color(0xFFBA68C8), // purple
+  Color(0xFF4DB6AC), // teal
+  Color(0xFFFF8A65), // deep orange
+  Color(0xFFA1887F), // brown
+];
+
+/// Get a stable color for a fingerprint
+Color _memberColor(String fingerprint) {
+  var hash = 0;
+  for (var i = 0; i < fingerprint.length; i++) {
+    hash = fingerprint.codeUnitAt(i) + ((hash << 5) - hash);
+  }
+  return _memberColors[hash.abs() % _memberColors.length];
+}
 
 class ChannelDetailScreen extends ConsumerStatefulWidget {
   final String channelUuid;
@@ -57,6 +81,8 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
     final theme = Theme.of(context);
     final postsAsync = ref.watch(channelPostsProvider(widget.channelUuid));
     final nameCache = ref.watch(nameResolverProvider);
+    final profileCache = ref.watch(contactProfileCacheProvider);
+    final currentFp = ref.watch(currentFingerprintProvider);
 
     return Scaffold(
       appBar: DnaAppBar(
@@ -107,13 +133,16 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
                   );
                 }
 
-                // Trigger name resolution for all authors
+                // Trigger name + profile resolution for all authors
                 final fingerprints =
                     posts.map((p) => p.authorFingerprint).toSet().toList();
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   ref
                       .read(nameResolverProvider.notifier)
                       .resolveNames(fingerprints);
+                  ref
+                      .read(contactProfileCacheProvider.notifier)
+                      .prefetchProfiles(fingerprints);
                 });
 
                 // Sort oldest first (ListView reverse:true puts newest at bottom)
@@ -159,9 +188,13 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
                       }
                       // Reverse index since list is reversed
                       final post = sorted[sorted.length - 1 - index];
-                      return _PostCard(
+                      final isOutgoing =
+                          currentFp != null && post.authorFingerprint == currentFp;
+                      return _PostBubble(
                         post: post,
                         nameCache: nameCache,
+                        profileCache: profileCache,
+                        isOutgoing: isOutgoing,
                         onReply: () => _replyToPost(post),
                       );
                     },
@@ -413,15 +446,19 @@ class _ChannelDetailScreenState extends ConsumerState<ChannelDetailScreen> {
   }
 }
 
-/// Card widget for displaying a single channel post
-class _PostCard extends StatelessWidget {
+/// Telegram-style chat bubble for channel posts
+class _PostBubble extends StatelessWidget {
   final ChannelPost post;
   final Map<String, String> nameCache;
+  final Map<String, ffi.UserProfile> profileCache;
+  final bool isOutgoing;
   final VoidCallback onReply;
 
-  const _PostCard({
+  const _PostBubble({
     required this.post,
     required this.nameCache,
+    required this.profileCache,
+    required this.isOutgoing,
     required this.onReply,
   });
 
@@ -432,61 +469,143 @@ class _PostCard extends StatelessWidget {
     final displayAuthor = authorName != null && authorName.isNotEmpty
         ? authorName
         : '${post.authorFingerprint.substring(0, 16)}...';
+    final color = _memberColor(post.authorFingerprint);
 
     return GestureDetector(
       onLongPress: () => _showBottomSheet(context),
       onSecondaryTapUp: (details) =>
           _showContextMenu(context, details.globalPosition),
-      child: Card(
-        margin: const EdgeInsets.only(bottom: DnaSpacing.sm),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(DnaSpacing.md),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Author + time row
-              Row(
-                children: [
-                  FaIcon(
-                    FontAwesomeIcons.solidUser,
-                    size: 14,
-                    color: theme.colorScheme.primary,
-                  ),
-                  const SizedBox(width: DnaSpacing.sm),
-                  Expanded(
-                    child: Text(
-                      displayAuthor,
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  if (post.verified)
-                    Padding(
-                      padding: const EdgeInsets.only(right: DnaSpacing.xs),
-                      child: FaIcon(
-                        FontAwesomeIcons.solidCircleCheck,
-                        size: 14,
-                        color: theme.colorScheme.primary,
-                      ),
-                    ),
-                  Text(
-                    formatRelativeTime(post.createdAt),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: DnaSpacing.sm),
-              // Post body (with reply rendering)
-              _buildBody(context, theme),
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 2),
+        child: Row(
+          mainAxisAlignment:
+              isOutgoing ? MainAxisAlignment.end : MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            // Avatar for incoming messages
+            if (!isOutgoing) ...[
+              _buildAvatar(displayAuthor, color),
+              const SizedBox(width: DnaSpacing.sm),
             ],
-          ),
+            // Bubble
+            Flexible(
+              child: Container(
+                constraints: BoxConstraints(
+                  maxWidth: MediaQuery.of(context).size.width * 0.75,
+                ),
+                margin: EdgeInsets.only(
+                  left: isOutgoing ? 48 : 0,
+                  right: isOutgoing ? 0 : 48,
+                ),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isOutgoing
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.surface,
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(16),
+                    topRight: const Radius.circular(16),
+                    bottomLeft: Radius.circular(isOutgoing ? 16 : 4),
+                    bottomRight: Radius.circular(isOutgoing ? 4 : 16),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: isOutgoing
+                      ? CrossAxisAlignment.end
+                      : CrossAxisAlignment.start,
+                  children: [
+                    // Author name (incoming only)
+                    if (!isOutgoing) ...[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              displayAuthor,
+                              style: theme.textTheme.labelMedium?.copyWith(
+                                color: color,
+                                fontWeight: FontWeight.w700,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (post.verified) ...[
+                            const SizedBox(width: 4),
+                            FaIcon(
+                              FontAwesomeIcons.solidCircleCheck,
+                              size: 12,
+                              color: color,
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                    ],
+                    // Post body (with reply rendering)
+                    _buildBody(context, theme),
+                    const SizedBox(height: 3),
+                    // Timestamp row
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (post.verified && isOutgoing) ...[
+                          FaIcon(
+                            FontAwesomeIcons.solidCircleCheck,
+                            size: 10,
+                            color: isOutgoing
+                                ? theme.colorScheme.onPrimary.withAlpha(179)
+                                : theme.colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 4),
+                        ],
+                        Text(
+                          formatRelativeTime(post.createdAt),
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontSize: 10,
+                            color: isOutgoing
+                                ? theme.colorScheme.onPrimary.withAlpha(179)
+                                : theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Build avatar: real photo from DHT profile, or colored initial fallback
+  Widget _buildAvatar(String displayAuthor, Color color) {
+    final profile = profileCache[post.authorFingerprint];
+    Uint8List? avatarBytes;
+    if (profile != null) {
+      avatarBytes = profile.decodeAvatar();
+    }
+
+    if (avatarBytes != null && avatarBytes.isNotEmpty) {
+      return CircleAvatar(
+        radius: 16,
+        backgroundImage: MemoryImage(avatarBytes),
+      );
+    }
+
+    // Colored initial fallback
+    final initial = displayAuthor.isNotEmpty ? displayAuthor[0].toUpperCase() : '?';
+    return CircleAvatar(
+      radius: 16,
+      backgroundColor: color,
+      child: Text(
+        initial,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );
@@ -495,10 +614,16 @@ class _PostCard extends StatelessWidget {
   /// Renders post body — parses reply format if present.
   Widget _buildBody(BuildContext context, ThemeData theme) {
     final body = post.body;
+    final textColor = isOutgoing
+        ? theme.colorScheme.onPrimary
+        : theme.colorScheme.onSurface;
 
     // Check for reply format: "↩ Re: author\n> quoted\nreply"
     if (!body.startsWith('↩ Re: ')) {
-      return SelectableText(body, style: theme.textTheme.bodyMedium);
+      return SelectableText(
+        body,
+        style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+      );
     }
 
     final lines = body.split('\n');
@@ -518,6 +643,9 @@ class _PostCard extends StatelessWidget {
 
     final quotedText = quotedLines.join('\n');
     final replyText = lines.sublist(replyStartIndex).join('\n');
+    final quoteColor = isOutgoing
+        ? theme.colorScheme.onPrimary
+        : _memberColor(post.authorFingerprint);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -527,10 +655,14 @@ class _PostCard extends StatelessWidget {
           width: double.infinity,
           padding: const EdgeInsets.all(DnaSpacing.sm),
           decoration: BoxDecoration(
-            color: theme.colorScheme.primary.withAlpha(15),
+            color: isOutgoing
+                ? theme.colorScheme.onPrimary.withAlpha(20)
+                : quoteColor.withAlpha(15),
             border: Border(
               left: BorderSide(
-                color: theme.colorScheme.primary.withAlpha(150),
+                color: isOutgoing
+                    ? theme.colorScheme.onPrimary.withAlpha(128)
+                    : quoteColor.withAlpha(150),
                 width: 3,
               ),
             ),
@@ -545,7 +677,9 @@ class _PostCard extends StatelessWidget {
               Text(
                 replyAuthor,
                 style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.primary,
+                  color: isOutgoing
+                      ? theme.colorScheme.onPrimary.withAlpha(220)
+                      : quoteColor,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -554,8 +688,12 @@ class _PostCard extends StatelessWidget {
                 Text(
                   quotedText,
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
+                    color: isOutgoing
+                        ? theme.colorScheme.onPrimary.withAlpha(153)
+                        : theme.colorScheme.onSurfaceVariant,
                   ),
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ],
@@ -563,7 +701,10 @@ class _PostCard extends StatelessWidget {
         ),
         if (replyText.isNotEmpty) ...[
           const SizedBox(height: DnaSpacing.sm),
-          SelectableText(replyText, style: theme.textTheme.bodyMedium),
+          SelectableText(
+            replyText,
+            style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+          ),
         ],
       ],
     );
