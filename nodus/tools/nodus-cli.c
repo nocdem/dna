@@ -20,6 +20,7 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #include "nodus/nodus_types.h"
+#include "protocol/nodus_cbor.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -215,6 +216,128 @@ static int cmd_get(const char *key_str) {
     } else {
         printf("(empty result)\n");
     }
+    return 0;
+}
+
+static int cmd_witness(const char *connected_ip) {
+    /* Get all entries from "nodus:pk" DHT key */
+    nodus_key_t key;
+    nodus_hash((const uint8_t *)"nodus:pk", 8, &key);
+
+    size_t len = 0;
+    uint32_t txn = next_txn++;
+    nodus_t2_get_all(txn, session_token, &key,
+                      proto_buf, sizeof(proto_buf), &len);
+    nodus_tcp_send(server_conn, proto_buf, len);
+
+    if (!wait_response(5000)) {
+        fprintf(stderr, "No response to GET_ALL\n");
+        return 1;
+    }
+
+    if (last_response.type == 'e') {
+        fprintf(stderr, "GET_ALL error: [%d] %s\n",
+                last_response.error_code, last_response.error_msg);
+        return 1;
+    }
+
+    if (!last_response.values || last_response.value_count == 0) {
+        printf("No witnesses registered in DHT.\n");
+        return 0;
+    }
+
+    /* connected_ip is the server we're talking to */
+
+    printf("Witness Roster (from DHT \"nodus:pk\")\n");
+    printf("=====================================\n");
+    printf("Total entries: %zu\n\n", last_response.value_count);
+
+    int my_index = -1;
+    int valid_count = 0;
+
+    for (size_t i = 0; i < last_response.value_count; i++) {
+        nodus_value_t *val = last_response.values[i];
+        if (!val || !val->data || val->data_len == 0) continue;
+
+        /* Verify signature */
+        bool sig_ok = (nodus_value_verify(val) == 0);
+
+        /* Check expiry */
+        bool expired = nodus_value_is_expired(val, (uint64_t)time(NULL));
+
+        /* Decode CBOR payload */
+        cbor_decoder_t dec;
+        cbor_decoder_init(&dec, val->data, val->data_len);
+        cbor_item_t top = cbor_decode_next(&dec);
+        if (top.type != CBOR_ITEM_MAP) continue;
+
+        char node_id_hex[NODUS_KEY_BYTES * 2 + 1] = {0};
+        char ip[64] = {0};
+        uint16_t port = 0;
+        bool has_id = false;
+
+        for (size_t m = 0; m < top.count; m++) {
+            cbor_item_t k = cbor_decode_next(&dec);
+            if (k.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+            if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "id", 2) == 0) {
+                cbor_item_t v = cbor_decode_next(&dec);
+                if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_KEY_BYTES) {
+                    for (int b = 0; b < NODUS_KEY_BYTES; b++)
+                        sprintf(node_id_hex + b * 2, "%02x", v.bstr.ptr[b]);
+                    has_id = true;
+                }
+            } else if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "ip", 2) == 0) {
+                cbor_item_t v = cbor_decode_next(&dec);
+                if (v.type == CBOR_ITEM_TSTR && v.tstr.len < sizeof(ip)) {
+                    memcpy(ip, v.tstr.ptr, v.tstr.len);
+                    ip[v.tstr.len] = '\0';
+                }
+            } else if (k.tstr.len == 4 && memcmp(k.tstr.ptr, "port", 4) == 0) {
+                cbor_item_t v = cbor_decode_next(&dec);
+                if (v.type == CBOR_ITEM_UINT)
+                    port = (uint16_t)v.uint_val;
+            } else {
+                cbor_decode_skip(&dec);
+            }
+        }
+
+        if (!has_id) continue;
+        valid_count++;
+
+        /* Check if this is the server we're connected to (match by IP) */
+        bool is_connected = (connected_ip && ip[0] &&
+                             strcmp(ip, connected_ip) == 0);
+        if (is_connected) my_index = valid_count - 1;
+
+        printf("[%d] %s%s\n", valid_count - 1,
+               is_connected ? "(CONNECTED) " : "",
+               expired ? "(EXPIRED) " : "");
+        printf("    node_id:  %.32s...\n", node_id_hex);
+        printf("    address:  %s:%u\n", ip, port);
+        printf("    sig:      %s\n", sig_ok ? "VALID" : "INVALID");
+        printf("    seq:      %lu\n", (unsigned long)val->seq);
+        printf("    expires:  %lds from now\n",
+               (long)(val->expires_at - (uint64_t)time(NULL)));
+        printf("\n");
+    }
+
+    printf("─────────────────────────────────\n");
+    printf("Valid witnesses: %d\n", valid_count);
+    printf("Server index:    %d\n", my_index);
+
+    /* BFT config */
+    if (valid_count >= NODUS_T3_MIN_WITNESSES) {
+        uint32_t f = (valid_count - 1) / 3;
+        uint32_t quorum = 2 * f + 1;
+        printf("Consensus:       ACTIVE\n");
+        printf("f_tolerance:     %u\n", f);
+        printf("Quorum:          %u\n", quorum);
+    } else {
+        printf("Consensus:       DISABLED (need %d, have %d)\n",
+               NODUS_T3_MIN_WITNESSES, valid_count);
+    }
+
     return 0;
 }
 
@@ -570,6 +693,7 @@ static void usage(const char *prog) {
     fprintf(stderr, "  servers          List cluster servers\n");
     fprintf(stderr, "  presence [fp..]  Query presence (self + optional fps)\n");
     fprintf(stderr, "  hold             Stay connected (test presence visibility)\n");
+    fprintf(stderr, "  witness          Show witness roster + BFT status\n");
     fprintf(stderr, "  ch_listen <uuid> [logfile]  Subscribe to channel on TCP 4003, log posts\n");
 }
 
@@ -723,6 +847,8 @@ int main(int argc, char **argv) {
         } else {
             rc = cmd_get(argv[optind + 1]);
         }
+    } else if (strcmp(command, "witness") == 0) {
+        rc = cmd_witness(server_ip);
     } else if (strcmp(command, "presence") == 0) {
         rc = cmd_presence(argc, argv, optind);
     } else if (strcmp(command, "hold") == 0) {
