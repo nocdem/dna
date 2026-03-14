@@ -670,6 +670,12 @@ PONG, the cluster module:
 2. Replaces the placeholder node_id with the real one
 3. Updates the hash ring (remove old, add new)
 
+### DHT Pubkey Registry
+
+Every nodus server publishes its identity to the DHT key `"nodus:pk"` with a 10-minute TTL.
+This allows any node or client to discover all active servers via `GET_ALL("nodus:pk")`.
+The witness roster for DNAC BFT consensus is built from this registry.
+
 ---
 
 ## 9. Channels & Replication (v0.8.0+)
@@ -1269,3 +1275,71 @@ INSERT OR IGNORE INTO committed_transactions
 
 This ensures every committed transaction is queryable by hash, enabling clients to
 retrieve full transaction details without maintaining a local copy of the blockchain.
+
+---
+
+## 17. DHT Pubkey Registry
+
+Every nodus server publishes its identity to the DHT key `"nodus:pk"` with a 10-minute TTL.
+This allows any client to discover all active nodus servers by calling `GET_ALL` on that key.
+
+The witness roster is built from this registry — witness nodes query `"nodus:pk"` to discover
+peers and form the BFT consensus group for DNAC transaction processing.
+
+---
+
+## 18. CLI Commands (`nodus-cli`)
+
+### `witness`
+
+Shows the current witness roster and BFT consensus status by querying the DHT `"nodus:pk"` registry.
+
+```bash
+nodus-cli -s <server_ip> witness
+```
+
+**Output for each witness:**
+- `node_id` — first 32 bytes of SHA3-512(pubkey), hex
+- `address` — IP:port (TCP 4002 inter-node)
+- `sig` — VALID/INVALID (Dilithium5 signature on DHT value)
+- `seq` — sequence number (monotonic, used for value replacement)
+- `expires` — seconds until DHT entry expires (re-published every 10 minutes)
+
+**BFT summary:**
+- `Valid witnesses` — total nodes with valid, non-expired DHT entries
+- `Server index` — index of the connected server in the sorted roster
+- `Consensus` — ACTIVE (>= 5 witnesses) or DISABLED
+- `f_tolerance` — max faulty nodes tolerated: (n-1)/3
+- `Quorum` — votes needed: 2f+1
+
+**Example:**
+```
+Witness Roster (from DHT "nodus:pk")
+=====================================
+Total entries: 6
+
+[0] (CONNECTED)
+    node_id:  03499d1fae35f9e9...
+    address:  154.38.182.161:4002
+    sig:      VALID
+    seq:      1773464845
+    expires:  553s from now
+...
+─────────────────────────────────
+Valid witnesses: 6
+Server index:    0
+Consensus:       ACTIVE
+f_tolerance:     1
+Quorum:          3
+```
+
+### Planned witness subcommands
+
+These will be added as the DNAC consensus system matures:
+
+| Command | Description |
+|---------|-------------|
+| `witness status` | Current block height, last committed round, current leader |
+| `witness leader` | Current epoch's leader node |
+| `witness blocks [n]` | Last n committed blocks with TX hashes |
+| `witness supply` | Total supply, burned fees, circulating |
