@@ -1748,10 +1748,7 @@ static int nodus_server_publish_identity(nodus_server_t *srv) {
     cbor_encode_uint(&enc, srv->config.peer_port);
 
     size_t payload_len = cbor_encoder_len(&enc);
-    if (payload_len == 0) {
-        fprintf(stderr, "PK-REG: CBOR encode failed\n");
-        return -1;
-    }
+    if (payload_len == 0) return -1;
 
     /* Create DHT value */
     nodus_value_t *val = NULL;
@@ -1760,22 +1757,13 @@ static int nodus_server_publish_identity(nodus_server_t *srv) {
                                  NODUS_PK_REGISTRY_TTL,
                                  0, (uint64_t)time(NULL),
                                  &srv->identity.pk, &val);
-    if (rc != 0 || !val) {
-        fprintf(stderr, "PK-REG: value_create failed rc=%d\n", rc);
-        return -1;
-    }
+    if (rc != 0 || !val) return -1;
 
     rc = nodus_value_sign(val, &srv->identity.sk);
-    if (rc != 0) {
-        fprintf(stderr, "PK-REG: sign failed rc=%d\n", rc);
-        nodus_value_free(val); return -1;
-    }
+    if (rc != 0) { nodus_value_free(val); return -1; }
 
     rc = nodus_storage_put(&srv->storage, val);
-    if (rc != 0) {
-        fprintf(stderr, "PK-REG: storage_put failed rc=%d\n", rc);
-        nodus_value_free(val); return -1;
-    }
+    if (rc != 0) { nodus_value_free(val); return -1; }
 
     nodus_server_replicate_value(srv, val);
     nodus_value_free(val);
@@ -2134,9 +2122,7 @@ int nodus_server_run(nodus_server_t *srv) {
             uint64_t pk_now = nodus_time_now();
             if (pk_now - last_pk_publish >= 60) {
                 last_pk_publish = pk_now;
-                int pk_rc = nodus_server_publish_identity(srv);
-                if (pk_rc != 0)
-                    fprintf(stderr, "PK-REG: refresh failed rc=%d\n", pk_rc);
+                nodus_server_publish_identity(srv);
             }
         }
 
