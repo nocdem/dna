@@ -1289,29 +1289,33 @@ int messenger_restore_groups_from_dht(messenger_context_t *ctx) {
 
     QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] dht_grouplist_fetch returned %d, count=%zu\n", ret, group_count);
 
-    qgp_key_free(kyber_key);
-    qgp_key_free(dilithium_key);
-
     if (ret == -2) {
         // Not found in DHT - user has no groups yet
         QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] NOT FOUND in DHT (ret=-2) - is group list published?\n");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
         return 0;
     }
 
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "[GROUPLIST_FETCH] FAILED - dht_grouplist_fetch returned %d\n", ret);
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
         return -1;
     }
 
     if (group_count == 0) {
         QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] Group list exists but is EMPTY in DHT\n");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
         return 0;
     }
 
     QGP_LOG_WARN(LOG_TAG, "[GROUPLIST_FETCH] SUCCESS - found %zu groups in DHT, syncing...\n", group_count);
 
-    // Sync each group to local cache
+    // Sync each group to local cache — track which ones succeed
     int restored = 0;
+    bool *synced = calloc(group_count, sizeof(bool));
     for (size_t i = 0; i < group_count; i++) {
         if (!group_uuids[i]) continue;
 
@@ -1319,12 +1323,57 @@ int messenger_restore_groups_from_dht(messenger_context_t *ctx) {
 
         ret = dht_groups_sync_from_dht(group_uuids[i]);
         if (ret == 0) {
+            synced[i] = true;
             restored++;
             QGP_LOG_INFO(LOG_TAG, "[RESTORE] Synced group: %s\n", group_uuids[i]);
         } else {
             QGP_LOG_WARN(LOG_TAG, "[RESTORE] Failed to sync group %s (may not exist in DHT)\n", group_uuids[i]);
         }
     }
+
+    // Auto-prune: if some groups were not found in DHT, republish the list without them
+    if (synced && restored >= 0 && (size_t)restored < group_count) {
+        size_t dead = group_count - (size_t)restored;
+        QGP_LOG_WARN(LOG_TAG, "[RESTORE] Pruning %zu dead groups from DHT group list\n", dead);
+
+        const char **surviving = NULL;
+        if (restored > 0) {
+            surviving = malloc((size_t)restored * sizeof(char*));
+            if (surviving) {
+                size_t idx = 0;
+                for (size_t i = 0; i < group_count; i++) {
+                    if (synced[i]) {
+                        surviving[idx++] = group_uuids[i];
+                    }
+                }
+            }
+        }
+
+        int pub_ret = dht_grouplist_publish(
+            ctx->identity,
+            surviving,
+            (size_t)restored,
+            kyber_key->public_key,
+            kyber_key->private_key,
+            dilithium_key->public_key,
+            dilithium_key->private_key,
+            0  // Default TTL
+        );
+
+        if (pub_ret == 0) {
+            QGP_LOG_WARN(LOG_TAG, "[RESTORE] Republished group list with %d groups (pruned %zu dead)\n",
+                    restored, dead);
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "[RESTORE] Failed to republish pruned group list (ret=%d)\n", pub_ret);
+        }
+
+        free(surviving);
+    }
+
+    free(synced);
+
+    qgp_key_free(kyber_key);
+    qgp_key_free(dilithium_key);
 
     // Free group UUIDs array
     dht_grouplist_free_groups(group_uuids, group_count);

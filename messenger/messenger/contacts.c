@@ -274,72 +274,70 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         return messenger_sync_contacts_to_dht(ctx);
     }
 
-    // DHT-AUTHORITATIVE: Always REPLACE local with DHT (deletions propagate)
-    QGP_LOG_INFO(LOG_TAG, "REPLACE sync: DHT has %zu contacts (local had %d)\n", count, local_count);
+    // DHT-AUTHORITATIVE DIFF SYNC: Only add/remove what changed
+    // Preserves all local metadata (nicknames, dm_sync_timestamps) automatically
+    QGP_LOG_INFO(LOG_TAG, "DIFF sync: DHT has %zu contacts (local had %d)\n", count, local_count);
 
-    // PRESERVE NICKNAMES: Save local nicknames before clearing (nicknames are local-only)
+    // Snapshot local contacts for diff
     contact_list_t *local_list = NULL;
     contacts_db_list(&local_list);
 
-    if (contacts_db_clear_all() != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to clear local contacts\n");
-        dht_contactlist_free_contacts(contacts, count);
-        dht_contactlist_free_salts(salts, count);
-        if (local_list) contacts_db_free_list(local_list);
-        return -1;
+    // Phase 1: Remove contacts that are in local but NOT in DHT
+    size_t removed = 0;
+    if (local_list && local_list->count > 0) {
+        for (size_t i = 0; i < local_list->count; i++) {
+            const char *local_id = local_list->contacts[i].identity;
+            bool found_in_dht = false;
+            for (size_t j = 0; j < count; j++) {
+                if (contacts[j] && strcmp(local_id, contacts[j]) == 0) {
+                    found_in_dht = true;
+                    break;
+                }
+            }
+            if (!found_in_dht) {
+                contacts_db_remove(local_id);
+                removed++;
+            }
+        }
     }
 
-    // Add contacts from DHT and restore salts
+    // Phase 2: Add new contacts from DHT, update salts for existing
     size_t added = 0;
-    size_t salts_restored = 0;
+    size_t salts_updated = 0;
     for (size_t i = 0; i < count; i++) {
         if (!is_valid_fingerprint(contacts[i])) {
-            QGP_LOG_WARN(LOG_TAG, "REPLACE: Skipping invalid fingerprint from DHT (len=%zu)\n",
+            QGP_LOG_WARN(LOG_TAG, "DIFF: Skipping invalid fingerprint from DHT (len=%zu)\n",
                          contacts[i] ? strlen(contacts[i]) : 0);
             continue;
         }
-        if (contacts_db_add(contacts[i], NULL) == 0) {
-            added++;
-            /* Restore DHT salt from backup if present */
+
+        if (contacts_db_exists(contacts[i])) {
+            // Already exists — just update salt if DHT has one
             if (salts && salts[i]) {
                 if (contacts_db_set_salt(contacts[i], salts[i]) == 0) {
-                    salts_restored++;
+                    salts_updated++;
                 }
             }
         } else {
-            QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to add contact '%s'\n", contacts[i]);
-        }
-    }
-    if (salts_restored > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Restored %zu DHT salts from backup\n", salts_restored);
-    }
-
-    // RESTORE NICKNAMES: Re-apply saved nicknames to re-added contacts
-    if (local_list && local_list->count > 0) {
-        size_t restored = 0;
-        for (size_t i = 0; i < local_list->count; i++) {
-            if (local_list->contacts[i].nickname[0] != '\0') {
-                // Only restore if contact still exists (was in DHT list)
-                if (contacts_db_exists(local_list->contacts[i].identity)) {
-                    contacts_db_update_nickname(
-                        local_list->contacts[i].identity,
-                        local_list->contacts[i].nickname
-                    );
-                    restored++;
+            // New contact from DHT — add it
+            if (contacts_db_add(contacts[i], NULL) == 0) {
+                added++;
+                if (salts && salts[i]) {
+                    contacts_db_set_salt(contacts[i], salts[i]);
                 }
+            } else {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to add contact '%s'\n", contacts[i]);
             }
         }
-        if (restored > 0) {
-            QGP_LOG_INFO(LOG_TAG, "Restored %zu local nicknames after DHT sync\n", restored);
-        }
     }
+
     if (local_list) contacts_db_free_list(local_list);
 
     dht_contactlist_free_contacts(contacts, count);
     dht_contactlist_free_salts(salts, count);
 
-    QGP_LOG_INFO(LOG_TAG, "REPLACE sync complete: %zu contacts from DHT (was %d local, %zu salts restored)\n",
-           added, local_count, salts_restored);
+    QGP_LOG_INFO(LOG_TAG, "DIFF sync complete: +%zu added, -%zu removed, %zu salt updates (DHT=%zu, local was %d)\n",
+           added, removed, salts_updated, count, local_count);
     return 0;
 }
 

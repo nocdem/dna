@@ -434,7 +434,7 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
             engine->messenger,
             NULL,           /* All contacts */
             false,          /* Don't publish ACKs yet - user hasn't read */
-            true,           /* Force FULL sync (8 days) */
+            false,          /* Smart sync decides: RECENT if <3 days, FULL otherwise */
             &dm_sync_count
         );
         if (sync_result == 0) {
