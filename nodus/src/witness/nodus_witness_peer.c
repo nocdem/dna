@@ -335,8 +335,18 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
         }
     }
 
-    /* Update or create peer record (dedup by witness_id only) */
+    /* Update or create peer record (dedup by witness_id, then conn) */
     int pi = find_peer_by_id(w, ident->witness_id);
+    if (pi < 0) {
+        /* Check if existing peer uses this connection (e.g., seed peer
+         * with zero witness_id). Reuse slot instead of creating duplicate. */
+        for (int j = 0; j < w->peer_count; j++) {
+            if (w->peers[j].conn == conn) {
+                pi = j;
+                break;
+            }
+        }
+    }
     if (pi < 0 && w->peer_count < NODUS_T3_MAX_WITNESSES) {
         pi = w->peer_count++;
         memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
@@ -724,6 +734,22 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
                 sess->conn = conn;
         }
 
+        /* Before creating a new peer, check if an existing peer matches
+         * by address (e.g., seed peer created with zero witness_id).
+         * Merge by updating witness_id instead of creating a duplicate. */
+        if (pi < 0) {
+            for (int j = 0; j < w->peer_count; j++) {
+                if (strcmp(w->peers[j].address,
+                           w->roster.witnesses[i].address) == 0) {
+                    pi = j;
+                    memcpy(w->peers[j].witness_id,
+                           w->roster.witnesses[i].witness_id,
+                           NODUS_T3_WITNESS_ID_LEN);
+                    break;
+                }
+            }
+        }
+
         if (pi < 0 && w->peer_count < NODUS_T3_MAX_WITNESSES) {
             pi = w->peer_count++;
             memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
@@ -743,11 +769,16 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
 
     /* Mark peers as identified when their TCP connection is established.
      * No w_ident exchange needed — roster already has witness_id and pubkey
-     * from DHT registry. We match by IP address from the roster entry. */
+     * from DHT registry. We match by IP address from the roster entry.
+     * Skip peers with zero witness_id (seed peers not yet matched to roster). */
+    static const uint8_t zero_id2[NODUS_T3_WITNESS_ID_LEN] = {0};
     for (int i = 0; i < w->peer_count; i++) {
         if (w->peers[i].identified) continue;
         if (!w->peers[i].conn) continue;
         if (w->peers[i].conn->state != NODUS_CONN_CONNECTED) continue;
+        if (memcmp(w->peers[i].witness_id, zero_id2,
+                   NODUS_T3_WITNESS_ID_LEN) == 0)
+            continue;
 
         /* Connection established — peer is identified via roster */
         w->peers[i].identified = true;
