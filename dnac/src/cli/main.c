@@ -247,9 +247,6 @@ int main(int argc, char **argv) {
     else if (strcmp(command, "nodus-list") == 0) {
         result = dnac_cli_nodus_list(ctx);
     }
-    else if (strcmp(command, "recover") == 0) {
-        result = dnac_cli_recover(ctx);
-    }
     else {
         fprintf(stderr, "Error: Unknown command '%s'\n\n", command);
         dnac_cli_print_help();

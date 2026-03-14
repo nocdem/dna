@@ -424,6 +424,15 @@ static int do_commit_db(nodus_witness_t *w,
                           const uint8_t *proposer_id,
                           const uint8_t *tx_data,
                           uint32_t tx_len) {
+    /* For genesis: create chain DB before starting transaction
+     * (db_begin requires w->db to be open) */
+    if (tx_type == NODUS_W_TX_GENESIS && !w->db) {
+        if (nodus_witness_create_chain_db(w, tx_hash) != 0) {
+            fprintf(stderr, "%s: failed to create chain DB\n", LOG_TAG);
+            return -1;
+        }
+    }
+
     /* Begin atomic transaction */
     if (nodus_witness_db_begin(w) != 0) {
         fprintf(stderr, "%s: db begin failed\n", LOG_TAG);
@@ -433,13 +442,6 @@ static int do_commit_db(nodus_witness_t *w,
     bool failed = false;
 
     if (tx_type == NODUS_W_TX_GENESIS) {
-        /* Create chain DB: chain_id = first 32 bytes of genesis tx_hash */
-        if (!w->db) {
-            if (nodus_witness_create_chain_db(w, tx_hash) != 0) {
-                fprintf(stderr, "%s: failed to create chain DB\n", LOG_TAG);
-                return -1;
-            }
-        }
 
         /* Derive genesis supply from tx outputs if not provided */
         uint64_t supply = total_supply;

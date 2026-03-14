@@ -329,28 +329,32 @@ static bool utxo_exists(sqlite3 *db, const uint8_t *tx_hash, uint32_t output_ind
 int dnac_sync_wallet(dnac_context_t *ctx) {
     if (!ctx || !ctx->initialized) return DNAC_ERROR_INVALID_PARAM;
 
-    /* Step 1: Build inbox key */
+    /* Step 1: Clear existing UTXOs (fresh start from authoritative sources) */
+    int rc = dnac_db_clear_utxos(ctx->db, ctx->owner_fingerprint);
+    if (rc != DNAC_SUCCESS) {
+        QGP_LOG_ERROR(LOG_TAG, "sync: failed to clear local UTXOs: %d", rc);
+        return rc;
+    }
+
+    /* Step 2: Recover authoritative UTXO state from witnesses */
+    int witness_recovered = 0;
+    uint64_t witness_total = 0;
+    rc = dnac_wallet_recover_from_witnesses(ctx, &witness_recovered, &witness_total);
+    if (rc == DNAC_SUCCESS && witness_recovered > 0) {
+        QGP_LOG_INFO(LOG_TAG, "sync: recovered %d UTXOs from witnesses (total: %llu)",
+                     witness_recovered, (unsigned long long)witness_total);
+    }
+
+    /* Step 3: Build inbox key */
     uint8_t inbox_key[64];
     if (dnac_build_inbox_key(ctx->owner_fingerprint, dnac_get_chain_id(ctx), inbox_key) != 0) {
         return DNAC_ERROR_CRYPTO;
     }
 
-    /* Step 2: Query DHT for all payments in our inbox */
+    /* Step 4: Query DHT for all payments in our inbox */
     uint8_t **values = NULL;
     size_t *values_len = NULL;
     size_t count = 0;
-
-    /* Step 1b: Sync authoritative UTXO state from witnesses.
-     * This recovers change outputs from transactions that committed on the
-     * witness side but whose responses were lost, and marks locally-stale
-     * UTXOs as spent. */
-    int witness_recovered = 0;
-    uint64_t witness_total = 0;
-    int rc = dnac_wallet_recover_from_witnesses(ctx, &witness_recovered, &witness_total);
-    if (rc == DNAC_SUCCESS && witness_recovered > 0) {
-        QGP_LOG_INFO(LOG_TAG, "sync: recovered %d UTXOs from witnesses (total: %llu)",
-                     witness_recovered, (unsigned long long)witness_total);
-    }
 
     int rc2 = nodus_ops_get_all(inbox_key, 64, &values, &values_len, &count);
     if (rc2 != 0 || count == 0) {
@@ -502,105 +506,10 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
 int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
     if (!ctx || !ctx->initialized) return DNAC_ERROR_INVALID_PARAM;
 
-    /* Step 1: Clear existing UTXOs (fresh start) */
-    int rc = dnac_db_clear_utxos(ctx->db, ctx->owner_fingerprint);
-    if (rc != DNAC_SUCCESS) {
-        return rc;
-    }
-
-    /* Step 1b: Recover authoritative UTXO state from witnesses */
-    int witness_recovered = 0;
-    uint64_t witness_total = 0;
-    rc = dnac_wallet_recover_from_witnesses(ctx, &witness_recovered, &witness_total);
-    if (rc == DNAC_SUCCESS && witness_recovered > 0) {
-        QGP_LOG_INFO(LOG_TAG, "recover: recovered %d UTXOs from witnesses (total: %llu)",
-                     witness_recovered, (unsigned long long)witness_total);
-    }
-
-    /* Step 2: Build inbox key */
-    uint8_t inbox_key[64];
-    if (dnac_build_inbox_key(ctx->owner_fingerprint, dnac_get_chain_id(ctx), inbox_key) != 0) {
-        return DNAC_ERROR_CRYPTO;
-    }
-
-    /* Step 3: Query DHT for all payments in our inbox */
-    uint8_t **values = NULL;
-    size_t *values_len = NULL;
-    size_t count = 0;
-
-    rc = nodus_ops_get_all(inbox_key, 64, &values, &values_len, &count);
-    if (rc != 0 || count == 0) {
-        /* No payments or error - wallet is empty */
-        if (recovered_count) *recovered_count = 0;
-        return DNAC_SUCCESS;
-    }
-
-    int total_recovered = 0;
-
-    /* Step 4: Process each payment */
-    for (size_t i = 0; i < count; i++) {
-        if (!values[i] || values_len[i] == 0) continue;
-
-        /* Deserialize transaction */
-        dnac_transaction_t *tx = NULL;
-        rc = dnac_tx_deserialize(values[i], values_len[i], &tx);
-        if (rc != DNAC_SUCCESS || !tx) {
-            continue;
-        }
-
-        /* Verify transaction (optional - trust witnessed transactions) */
-        rc = dnac_tx_verify(tx);
-        if (rc != DNAC_SUCCESS) {
-            dnac_free_transaction(tx);
-            continue;
-        }
-
-        /* Step 5: Extract outputs addressed to us */
-        for (int j = 0; j < tx->output_count; j++) {
-            /* Check if output is for us */
-            if (strcmp(tx->outputs[j].owner_fingerprint, ctx->owner_fingerprint) != 0) {
-                continue;
-            }
-
-            /* Create UTXO from output */
-            dnac_utxo_t utxo = {0};
-            utxo.version = tx->outputs[j].version;
-            memcpy(utxo.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
-            utxo.output_index = (uint32_t)j;
-            utxo.amount = tx->outputs[j].amount;
-            snprintf(utxo.owner_fingerprint, sizeof(utxo.owner_fingerprint),
-                     "%s", ctx->owner_fingerprint);
-            utxo.status = DNAC_UTXO_UNSPENT;
-            utxo.received_at = (uint64_t)time(NULL);
-
-            /* Derive nullifier from seed */
-            if (derive_nullifier(ctx->owner_fingerprint,
-                                 tx->outputs[j].nullifier_seed,
-                                 utxo.nullifier) != 0) {
-                continue;
-            }
-
-            /* Step 6: Store UTXO in database */
-            rc = dnac_db_store_utxo(ctx->db, &utxo);
-            if (rc != DNAC_SUCCESS) {
-                continue;
-            }
-
-            total_recovered++;
-        }
-
-        dnac_free_transaction(tx);
-    }
-
-    /* Free DHT results */
-    for (size_t i = 0; i < count; i++) {
-        free(values[i]);
-    }
-    free(values);
-    free(values_len);
-
-    if (recovered_count) *recovered_count = total_recovered;
-    return DNAC_SUCCESS;
+    /* recover is now just sync (which clears + rebuilds from authoritative sources) */
+    int rc = dnac_sync_wallet(ctx);
+    if (recovered_count) *recovered_count = 0;
+    return rc;
 }
 
 /* ============================================================================

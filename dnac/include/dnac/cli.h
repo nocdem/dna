@@ -75,13 +75,6 @@ int dnac_cli_tx_details(dnac_context_t *ctx, const char *tx_hash_hex);
 int dnac_cli_nodus_list(dnac_context_t *ctx);
 
 /**
- * @brief Recover wallet from DHT
- * @param ctx DNAC context
- * @return 0 on success, non-zero on failure
- */
-int dnac_cli_recover(dnac_context_t *ctx);
-
-/**
  * @brief Show wallet info and status
  * @param ctx DNAC context
  * @return 0 on success, non-zero on failure

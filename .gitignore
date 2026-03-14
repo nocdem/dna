@@ -8,6 +8,12 @@ tasks/
 *security_audit*
 **/*AUDIT*
 
+# Build artifacts
+*.o
+*.so
+*.a
+*.dylib
+
 # IDE/tool caches
 **/.cache/
 

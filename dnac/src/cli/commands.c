@@ -373,31 +373,6 @@ int dnac_cli_nodus_list(dnac_context_t *ctx) {
     return 0;
 }
 
-int dnac_cli_recover(dnac_context_t *ctx) {
-    printf("Recovering wallet from DHT...\n");
-    printf("WARNING: This will clear existing UTXOs and re-scan from network.\n");
-
-    int recovered_count = 0;
-    int rc = dnac_wallet_recover(ctx, &recovered_count);
-
-    if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
-        return 1;
-    }
-
-    printf("Recovery complete. %d UTXO(s) recovered.\n", recovered_count);
-
-    /* Show balance after recovery */
-    dnac_balance_t balance;
-    rc = dnac_get_balance(ctx, &balance);
-    if (rc == DNAC_SUCCESS) {
-        char confirmed_str[64];
-        format_amount(balance.confirmed, confirmed_str, sizeof(confirmed_str));
-        printf("Current balance: %s\n", confirmed_str);
-    }
-
-    return 0;
-}
 
 int dnac_cli_info(dnac_context_t *ctx) {
     dna_engine_t *engine = dnac_get_engine(ctx);
@@ -564,15 +539,14 @@ void dnac_cli_print_help(void) {
     printf("  balance          Show wallet balance\n");
     printf("  utxos            List unspent transaction outputs\n");
     printf("  send <fp> <amt>  Send payment to fingerprint\n");
-    printf("  sync             Sync wallet from DHT network\n");
-    printf("  recover          Recover wallet from seed (re-scan DHT)\n");
+    printf("  sync             Sync wallet from network (clears + rebuilds)\n");
     printf("  history [n]      Show transaction history (last n entries)\n");
     printf("  tx <hash>        Show transaction details\n");
     printf("  nodus-list       List Nodus servers\n\n");
     printf("Examples:\n");
     printf("  dnac-cli balance\n");
     printf("  dnac-cli send abc123...def 1000000\n");
-    printf("  dnac-cli recover\n");
+    printf("  dnac-cli sync\n");
     printf("  dnac-cli history 10\n");
 }
 

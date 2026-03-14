@@ -235,15 +235,22 @@ int main(int argc, char **argv) {
     }
 
     printf("\nGENESIS SUCCESS!\n");
-    printf("TX hash: ");
+    printf("TX hash:    ");
     for (int i = 0; i < 64; i++) printf("%02x", tx->tx_hash[i]);
     printf("\n");
 
+    /* Chain ID = first 32 bytes of tx_hash (same derivation as witness server) */
+    printf("Chain ID:   ");
+    for (int i = 0; i < 32; i++) printf("%02x", tx->tx_hash[i]);
+    printf("\n");
+
     if (frac == 0) {
-        printf("Supply:  %" PRIu64 " tokens\n", whole);
+        printf("Supply:     %" PRIu64 " tokens\n", whole);
     } else {
-        printf("Supply:  %" PRIu64 ".%08" PRIu64 " tokens\n", whole, frac);
+        printf("Supply:     %" PRIu64 ".%08" PRIu64 " tokens\n", whole, frac);
     }
+
+    printf("Witnesses:  %d\n", tx->witness_count);
 
     dnac_free_transaction(tx);
     dnac_shutdown(ctx);
