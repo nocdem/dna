@@ -288,7 +288,7 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
 
         /* Build inbox DHT key for recipient */
         uint8_t inbox_key[64];
-        if (dnac_build_inbox_key(tx->outputs[i].owner_fingerprint, NULL, inbox_key) != 0) {
+        if (dnac_build_inbox_key(tx->outputs[i].owner_fingerprint, dnac_get_chain_id(ctx), inbox_key) != 0) {
             continue;
         }
 

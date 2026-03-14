@@ -433,6 +433,14 @@ static int do_commit_db(nodus_witness_t *w,
     bool failed = false;
 
     if (tx_type == NODUS_W_TX_GENESIS) {
+        /* Create chain DB: chain_id = first 32 bytes of genesis tx_hash */
+        if (!w->db) {
+            if (nodus_witness_create_chain_db(w, tx_hash) != 0) {
+                fprintf(stderr, "%s: failed to create chain DB\n", LOG_TAG);
+                return -1;
+            }
+        }
+
         /* Derive genesis supply from tx outputs if not provided */
         uint64_t supply = total_supply;
         if (supply == 0 && tx_data && tx_len > 75) {

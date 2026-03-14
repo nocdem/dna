@@ -277,6 +277,7 @@ typedef struct {
     uint64_t total_burned;
     uint64_t current_supply;
     uint64_t last_sequence;
+    uint8_t  chain_id[32];
 } nodus_dnac_supply_result_t;
 
 /** UTXO entry in query response */

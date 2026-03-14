@@ -34,6 +34,8 @@ struct dnac_context {
     dnac_payment_cb_t payment_cb;
     void *payment_cb_data;
     size_t inbox_listen_token;           /* DHT listener token for inbox */
+    uint8_t chain_id[32];               /* Chain ID from witness (for inbox keys) */
+    bool chain_id_loaded;               /* Whether chain_id has been fetched */
     int initialized;
 };
 
@@ -114,6 +116,34 @@ void dnac_set_payment_callback(dnac_context_t *ctx,
     if (!ctx) return;
     ctx->payment_cb = callback;
     ctx->payment_cb_data = user_data;
+}
+
+/* ============================================================================
+ * Chain ID (fetched from witness on first use)
+ * ========================================================================== */
+
+void dnac_set_chain_id(dnac_context_t *ctx, const uint8_t *chain_id) {
+    if (!ctx || !chain_id) return;
+    memcpy(ctx->chain_id, chain_id, 32);
+    ctx->chain_id_loaded = true;
+}
+
+const uint8_t *dnac_get_chain_id(dnac_context_t *ctx) {
+    if (!ctx) return NULL;
+
+    if (!ctx->chain_id_loaded) {
+        /* Fetch chain_id from witness via dnac_supply */
+        uint64_t genesis_supply = 0;
+        int rc = dnac_ledger_get_supply(ctx, &genesis_supply, NULL, NULL);
+        (void)rc;
+    }
+
+    /* Return NULL if chain_id is all-zero (pre-genesis) */
+    static const uint8_t zero[32] = {0};
+    if (memcmp(ctx->chain_id, zero, 32) == 0)
+        return NULL;
+
+    return ctx->chain_id;
 }
 
 /* ============================================================================
@@ -202,7 +232,7 @@ int dnac_start_listening(dnac_context_t *ctx) {
 
     /* Build inbox key */
     uint8_t inbox_key[64];
-    if (dnac_build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
+    if (dnac_build_inbox_key(ctx->owner_fingerprint, dnac_get_chain_id(ctx), inbox_key) != 0) {
         return DNAC_ERROR_CRYPTO;
     }
 
@@ -301,7 +331,7 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
 
     /* Step 1: Build inbox key */
     uint8_t inbox_key[64];
-    if (dnac_build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
+    if (dnac_build_inbox_key(ctx->owner_fingerprint, dnac_get_chain_id(ctx), inbox_key) != 0) {
         return DNAC_ERROR_CRYPTO;
     }
 
@@ -489,7 +519,7 @@ int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
 
     /* Step 2: Build inbox key */
     uint8_t inbox_key[64];
-    if (dnac_build_inbox_key(ctx->owner_fingerprint, NULL, inbox_key) != 0) {
+    if (dnac_build_inbox_key(ctx->owner_fingerprint, dnac_get_chain_id(ctx), inbox_key) != 0) {
         return DNAC_ERROR_CRYPTO;
     }
 

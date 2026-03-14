@@ -1467,6 +1467,10 @@ int nodus_client_dnac_supply(nodus_client_t *client,
             cbor_item_t v = cbor_decode_next(&dec);
             if (v.type == CBOR_ITEM_UINT)
                 result_out->last_sequence = v.uint_val;
+        } else if (key.tstr.len == 8 && memcmp(key.tstr.ptr, "chain_id", 8) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == 32)
+                memcpy(result_out->chain_id, v.bstr.ptr, 32);
         } else {
             cbor_decode_skip(&dec);
         }

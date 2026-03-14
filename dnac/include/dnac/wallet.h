@@ -117,6 +117,12 @@ const char* dnac_get_owner_fingerprint(dnac_context_t *ctx);
  */
 dna_engine_t* dnac_get_engine(dnac_context_t *ctx);
 
+/** Set chain_id (called when supply query returns chain_id from witness). */
+void dnac_set_chain_id(dnac_context_t *ctx, const uint8_t *chain_id);
+
+/** Get chain_id (fetches from witness on first call). NULL if pre-genesis. */
+const uint8_t *dnac_get_chain_id(dnac_context_t *ctx);
+
 #ifdef __cplusplus
 }
 #endif

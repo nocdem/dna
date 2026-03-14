@@ -251,7 +251,7 @@ static void handle_dnac_ledger(nodus_witness_t *w,
  * dnac_supply — Query supply state
  *
  * Request:  "a": {}
- * Response: "r": {"genesis":N, "burned":N, "current":N, "last_seq":N}
+ * Response: "r": {"genesis":N, "burned":N, "current":N, "last_seq":N, "chain_id":bstr}
  * ════════════════════════════════════════════════════════════════════ */
 
 static void handle_dnac_supply(nodus_witness_t *w,
@@ -260,12 +260,12 @@ static void handle_dnac_supply(nodus_witness_t *w,
     nodus_witness_supply_t supply;
     int rc = nodus_witness_supply_get(w, &supply);
 
-    uint8_t buf[256];
+    uint8_t buf[512];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
 
     if (rc != 0) {
-        enc_dnac_response(&enc, txn_id, "dnac_supply", 4);
+        enc_dnac_response(&enc, txn_id, "dnac_supply", 5);
         cbor_encode_cstr(&enc, "genesis");
         cbor_encode_uint(&enc, 0);
         cbor_encode_cstr(&enc, "burned");
@@ -274,8 +274,10 @@ static void handle_dnac_supply(nodus_witness_t *w,
         cbor_encode_uint(&enc, 0);
         cbor_encode_cstr(&enc, "last_seq");
         cbor_encode_uint(&enc, 0);
+        cbor_encode_cstr(&enc, "chain_id");
+        cbor_encode_bstr(&enc, w->chain_id, 32);
     } else {
-        enc_dnac_response(&enc, txn_id, "dnac_supply", 4);
+        enc_dnac_response(&enc, txn_id, "dnac_supply", 5);
         cbor_encode_cstr(&enc, "genesis");
         cbor_encode_uint(&enc, supply.genesis_supply);
         cbor_encode_cstr(&enc, "burned");
@@ -284,6 +286,8 @@ static void handle_dnac_supply(nodus_witness_t *w,
         cbor_encode_uint(&enc, supply.current_supply);
         cbor_encode_cstr(&enc, "last_seq");
         cbor_encode_uint(&enc, supply.last_sequence);
+        cbor_encode_cstr(&enc, "chain_id");
+        cbor_encode_bstr(&enc, w->chain_id, 32);
     }
 
     size_t rlen = cbor_encoder_len(&enc);

@@ -302,6 +302,9 @@ int dnac_ledger_get_supply(dnac_context_t *ctx,
     if (burned_out) *burned_out = result.total_burned;
     if (current_out) *current_out = result.current_supply;
 
+    /* Store chain_id in context for inbox key scoping */
+    dnac_set_chain_id(ctx, result.chain_id);
+
     QGP_LOG_INFO(LOG_TAG, "Supply query: genesis=%llu, burned=%llu, "
                  "current=%llu",
                  (unsigned long long)result.genesis_supply,

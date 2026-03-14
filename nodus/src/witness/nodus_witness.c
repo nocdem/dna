@@ -16,16 +16,79 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <dirent.h>
 
 #define LOG_TAG "WITNESS"
 
-/* ── Database initialization ─────────────────────────────────────── */
+/* ── Database schema ─────────────────────────────────────────────── */
 
-static int witness_db_open(nodus_witness_t *witness, const char *data_path) {
-    char db_path[512];
-    snprintf(db_path, sizeof(db_path), "%s/witness.db",
-             data_path[0] ? data_path : "/tmp");
+static const char *WITNESS_DB_SCHEMA =
+    "CREATE TABLE IF NOT EXISTS nullifiers ("
+    "  nullifier BLOB PRIMARY KEY,"
+    "  tx_hash BLOB NOT NULL,"
+    "  added_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
+    ");"
+    "CREATE TABLE IF NOT EXISTS ledger_entries ("
+    "  sequence INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  tx_hash BLOB NOT NULL,"
+    "  tx_type INTEGER NOT NULL,"
+    "  epoch INTEGER NOT NULL,"
+    "  timestamp INTEGER NOT NULL,"
+    "  nullifier_count INTEGER NOT NULL DEFAULT 0"
+    ");"
+    "CREATE TABLE IF NOT EXISTS utxo_set ("
+    "  nullifier BLOB PRIMARY KEY,"
+    "  owner TEXT NOT NULL,"
+    "  amount INTEGER NOT NULL,"
+    "  tx_hash BLOB NOT NULL,"
+    "  output_index INTEGER NOT NULL,"
+    "  block_height INTEGER NOT NULL DEFAULT 0,"
+    "  created_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
+    ");"
+    "CREATE TABLE IF NOT EXISTS blocks ("
+    "  height INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  tx_hash BLOB NOT NULL,"
+    "  tx_type INTEGER NOT NULL,"
+    "  timestamp INTEGER NOT NULL,"
+    "  proposer_id BLOB,"
+    "  created_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
+    ");"
+    "CREATE TABLE IF NOT EXISTS genesis_state ("
+    "  id INTEGER PRIMARY KEY CHECK(id = 1),"
+    "  tx_hash BLOB NOT NULL,"
+    "  total_supply INTEGER NOT NULL,"
+    "  commitment BLOB,"
+    "  created_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
+    ");"
+    "CREATE TABLE IF NOT EXISTS committed_transactions ("
+    "  tx_hash BLOB PRIMARY KEY,"
+    "  tx_type INTEGER NOT NULL,"
+    "  tx_data BLOB NOT NULL,"
+    "  tx_len  INTEGER NOT NULL,"
+    "  block_height INTEGER NOT NULL DEFAULT 0,"
+    "  timestamp INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
+    ");"
+    "CREATE INDEX IF NOT EXISTS idx_utxo_owner ON utxo_set(owner);"
+    "CREATE INDEX IF NOT EXISTS idx_ledger_epoch ON ledger_entries(epoch);"
+    "CREATE INDEX IF NOT EXISTS idx_ledger_tx ON ledger_entries(tx_hash);"
+    "CREATE INDEX IF NOT EXISTS idx_ctx_height ON committed_transactions(block_height);";
 
+/* ── Set chain ID ────────────────────────────────────────────────── */
+
+void nodus_witness_set_chain_id(nodus_witness_t *witness,
+                                const uint8_t *chain_id) {
+    if (!witness || !chain_id) return;
+    memcpy(witness->chain_id, chain_id, 32);
+
+    char hex[17];
+    for (int i = 0; i < 8; i++)
+        snprintf(hex + i * 2, 3, "%02x", chain_id[i]);
+    fprintf(stderr, "%s: chain_id set: %s...\n", LOG_TAG, hex);
+}
+
+/* ── Open a witness chain DB by full path ────────────────────────── */
+
+static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
     int rc = sqlite3_open(db_path, &witness->db);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: failed to open %s: %s\n",
@@ -33,64 +96,11 @@ static int witness_db_open(nodus_witness_t *witness, const char *data_path) {
         return -1;
     }
 
-    /* WAL mode for better concurrent read performance */
     sqlite3_exec(witness->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
     sqlite3_exec(witness->db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
 
-    /* Create tables (Phase 2 will populate these) */
-    const char *schema =
-        "CREATE TABLE IF NOT EXISTS nullifiers ("
-        "  nullifier BLOB PRIMARY KEY,"
-        "  tx_hash BLOB NOT NULL,"
-        "  added_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
-        ");"
-        "CREATE TABLE IF NOT EXISTS ledger_entries ("
-        "  sequence INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "  tx_hash BLOB NOT NULL,"
-        "  tx_type INTEGER NOT NULL,"
-        "  epoch INTEGER NOT NULL,"
-        "  timestamp INTEGER NOT NULL,"
-        "  nullifier_count INTEGER NOT NULL DEFAULT 0"
-        ");"
-        "CREATE TABLE IF NOT EXISTS utxo_set ("
-        "  nullifier BLOB PRIMARY KEY,"
-        "  owner TEXT NOT NULL,"
-        "  amount INTEGER NOT NULL,"
-        "  tx_hash BLOB NOT NULL,"
-        "  output_index INTEGER NOT NULL,"
-        "  block_height INTEGER NOT NULL DEFAULT 0,"
-        "  created_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
-        ");"
-        "CREATE TABLE IF NOT EXISTS blocks ("
-        "  height INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "  tx_hash BLOB NOT NULL,"
-        "  tx_type INTEGER NOT NULL,"
-        "  timestamp INTEGER NOT NULL,"
-        "  proposer_id BLOB,"
-        "  created_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
-        ");"
-        "CREATE TABLE IF NOT EXISTS genesis_state ("
-        "  id INTEGER PRIMARY KEY CHECK(id = 1),"
-        "  tx_hash BLOB NOT NULL,"
-        "  total_supply INTEGER NOT NULL,"
-        "  commitment BLOB,"
-        "  created_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
-        ");"
-        "CREATE TABLE IF NOT EXISTS committed_transactions ("
-        "  tx_hash BLOB PRIMARY KEY,"
-        "  tx_type INTEGER NOT NULL,"
-        "  tx_data BLOB NOT NULL,"
-        "  tx_len  INTEGER NOT NULL,"
-        "  block_height INTEGER NOT NULL DEFAULT 0,"
-        "  timestamp INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
-        ");"
-        "CREATE INDEX IF NOT EXISTS idx_utxo_owner ON utxo_set(owner);"
-        "CREATE INDEX IF NOT EXISTS idx_ledger_epoch ON ledger_entries(epoch);"
-        "CREATE INDEX IF NOT EXISTS idx_ledger_tx ON ledger_entries(tx_hash);"
-        "CREATE INDEX IF NOT EXISTS idx_ctx_height ON committed_transactions(block_height);";
-
     char *err_msg = NULL;
-    rc = sqlite3_exec(witness->db, schema, NULL, NULL, &err_msg);
+    rc = sqlite3_exec(witness->db, WITNESS_DB_SCHEMA, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: schema creation failed: %s\n", LOG_TAG, err_msg);
         sqlite3_free(err_msg);
@@ -98,6 +108,86 @@ static int witness_db_open(nodus_witness_t *witness, const char *data_path) {
     }
 
     fprintf(stderr, "%s: opened database %s\n", LOG_TAG, db_path);
+    return 0;
+}
+
+/* ── Scan data dir for existing witness_*.db → load chain_id ─────── */
+
+static int witness_scan_chain_db(nodus_witness_t *witness) {
+    const char *data_path = witness->data_path;
+    DIR *dir = opendir(data_path);
+    if (!dir) return -1;
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        /* Match witness_<hex>.db */
+        if (strncmp(entry->d_name, "witness_", 8) != 0) continue;
+        const char *hex_start = entry->d_name + 8;
+        const char *dot = strstr(hex_start, ".db");
+        if (!dot || dot == hex_start) continue;
+
+        size_t hex_len = (size_t)(dot - hex_start);
+        if (hex_len < 2 || hex_len > 64) continue;
+
+        /* Parse chain_id from hex prefix in filename */
+        uint8_t chain_id[32] = {0};
+        size_t bytes = hex_len / 2;
+        if (bytes > 32) bytes = 32;
+        for (size_t i = 0; i < bytes; i++) {
+            unsigned int byte;
+            if (sscanf(hex_start + i * 2, "%2x", &byte) != 1) break;
+            chain_id[i] = (uint8_t)byte;
+        }
+
+        /* Open this chain DB */
+        char db_path[512];
+        snprintf(db_path, sizeof(db_path), "%s/%s", data_path, entry->d_name);
+
+        if (witness_db_open_path(witness, db_path) == 0) {
+            nodus_witness_set_chain_id(witness, chain_id);
+
+            char hex[17];
+            for (int i = 0; i < 8; i++)
+                snprintf(hex + i * 2, 3, "%02x", chain_id[i]);
+            fprintf(stderr, "%s: loaded chain %s from %s\n",
+                    LOG_TAG, hex, entry->d_name);
+
+            closedir(dir);
+            return 0;
+        }
+    }
+
+    closedir(dir);
+    return -1;  /* No chain DB found — pre-genesis */
+}
+
+/* ── Create chain DB on genesis commit (called from BFT) ────────── */
+
+int nodus_witness_create_chain_db(nodus_witness_t *witness,
+                                    const uint8_t *chain_id) {
+    if (!witness || !chain_id) return -1;
+
+    /* Close old DB if any */
+    if (witness->db) {
+        sqlite3_close(witness->db);
+        witness->db = NULL;
+    }
+
+    /* Build filename: witness_<first16bytes_hex>.db */
+    char hex[33];
+    for (int i = 0; i < 16; i++)
+        snprintf(hex + i * 2, 3, "%02x", chain_id[i]);
+
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/witness_%s.db",
+             witness->data_path, hex);
+
+    if (witness_db_open_path(witness, db_path) != 0)
+        return -1;
+
+    nodus_witness_set_chain_id(witness, chain_id);
+
+    fprintf(stderr, "%s: created chain DB %s\n", LOG_TAG, db_path);
     return 0;
 }
 
@@ -135,9 +225,16 @@ int nodus_witness_init(nodus_witness_t *witness,
     /* Setup identity from server keys */
     witness_setup_identity(witness);
 
-    /* Open witness database */
-    if (witness_db_open(witness, server->config.data_path) != 0)
-        return -1;
+    /* Save data path for chain DB creation on genesis */
+    snprintf(witness->data_path, sizeof(witness->data_path), "%s",
+             server->config.data_path);
+
+    /* Scan for existing chain DB (witness_<chain_id>.db).
+     * If found: opens DB + sets chain_id.
+     * If not found: db = NULL (pre-genesis state, waiting for genesis TX). */
+    if (witness_scan_chain_db(witness) != 0) {
+        fprintf(stderr, "%s: no chain DB found — pre-genesis state\n", LOG_TAG);
+    }
 
     /* Initialize roster */
     witness_init_roster(witness);
@@ -145,17 +242,12 @@ int nodus_witness_init(nodus_witness_t *witness,
     /* Initialize peer mesh (builds roster from inter_tcp connections) */
     nodus_witness_peer_init(witness);
 
-    fprintf(stderr, "%s: initialized (roster=%d witnesses, my_index=%d)\n",
-            LOG_TAG, witness->roster.n_witnesses, witness->my_index);
+    fprintf(stderr, "%s: initialized (roster=%d witnesses, my_index=%d, "
+            "chain_db=%s)\n",
+            LOG_TAG, witness->roster.n_witnesses, witness->my_index,
+            witness->db ? "active" : "pre-genesis");
 
     return 0;
-}
-
-void nodus_witness_set_chain_id(nodus_witness_t *witness,
-                                const uint8_t *chain_id) {
-    if (!witness || !chain_id) return;
-    memcpy(witness->chain_id, chain_id, 32);
-    fprintf(stderr, "%s: chain_id set\n", LOG_TAG);
 }
 
 #define WITNESS_EPOCH_SECS  60

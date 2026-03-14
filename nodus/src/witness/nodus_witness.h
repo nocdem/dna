@@ -221,6 +221,7 @@ typedef struct nodus_witness {
 
     /* Witness database (separate from DHT storage) */
     sqlite3     *db;
+    char        data_path[256];             /* For creating chain DB on genesis */
 
     bool        running;
 } nodus_witness_t;
@@ -278,6 +279,14 @@ void nodus_witness_dispatch_dnac(nodus_witness_t *witness,
  */
 void nodus_witness_peer_conn_closed(nodus_witness_t *witness,
                                      struct nodus_tcp_conn *conn);
+
+/**
+ * Create chain-specific witness DB on genesis commit.
+ * Filename: witness_<chain_id_hex>.db in data directory.
+ * Sets chain_id and opens the new database.
+ */
+int nodus_witness_create_chain_db(nodus_witness_t *witness,
+                                    const uint8_t *chain_id);
 
 #ifdef __cplusplus
 }
