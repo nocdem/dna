@@ -38,3 +38,11 @@ docs/REPO_SECURITY_ASSESSMENT.md
 # Claude Code instructions (contain infra details, IPs, deploy commands)
 CLAUDE.md
 **/CLAUDE.md
+
+# Internal docs (bugs, missing features, infra details)
+BUGS.md
+**/BUGS.md
+**/MISSING_FEATURES.md
+dnac/docs/WITNESS_NODES.md
+dnac/tools/check_witness_announce.c
+nodus/deploy/nodus.conf.example
