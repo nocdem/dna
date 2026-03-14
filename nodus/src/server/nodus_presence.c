@@ -273,14 +273,17 @@ void nodus_presence_tick(struct nodus_server *srv) {
                 local_count, sent, peer_count);
 
     /* Clean up stale outgoing p_sync connections: disconnect any is_nodus
-     * connection whose IP:port is no longer in the routing table. */
+     * connection whose IP is no longer in the routing table.
+     * Match by IP only — inbound connections use ephemeral ports that
+     * won't match the routing table's port 4002, so port comparison
+     * would incorrectly close all inbound inter-node connections. */
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
         if (!c || !c->is_nodus) continue;
 
         bool found = false;
         for (int p = 0; p < peer_count; p++) {
-            if (strcmp(peers[p].ip, c->ip) == 0 && peers[p].tcp_port == c->port) {
+            if (strcmp(peers[p].ip, c->ip) == 0) {
                 found = true;
                 break;
             }

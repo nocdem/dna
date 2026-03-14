@@ -1215,6 +1215,7 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
     w->view_change_in_progress = true;
     w->view_change_target = w->current_view + 1;
     w->view_change_count = 0;
+    w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
 
     /* Record our own view change vote */
     memcpy(w->view_changes[0].voter_id, w->my_id,
@@ -1369,7 +1370,8 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     if (!w) return;
 
-    if (w->round_state.phase == NODUS_W_PHASE_IDLE)
+    if (w->round_state.phase == NODUS_W_PHASE_IDLE ||
+        w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE)
         return;
 
     uint64_t elapsed = time_ms() - w->round_state.phase_start_time;
