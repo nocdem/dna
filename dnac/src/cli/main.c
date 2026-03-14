@@ -247,6 +247,25 @@ int main(int argc, char **argv) {
     else if (strcmp(command, "nodus-list") == 0) {
         result = dnac_cli_nodus_list(ctx);
     }
+    else if (strcmp(command, "genesis-create") == 0) {
+        if (cmd_start + 2 >= argc) {
+            fprintf(stderr, "Usage: dnac-cli genesis-create <fingerprint> <amount>\n");
+            result = 1;
+        } else {
+            const char *fingerprint = argv[cmd_start + 1];
+            uint64_t amount = strtoull(argv[cmd_start + 2], NULL, 10);
+            if (amount == 0) {
+                fprintf(stderr, "Error: Amount must be > 0\n");
+                result = 1;
+            } else {
+                result = dnac_cli_genesis_create(ctx, fingerprint, amount);
+            }
+        }
+    }
+    else if (strcmp(command, "genesis-submit") == 0) {
+        const char *tx_file = (cmd_start + 1 < argc) ? argv[cmd_start + 1] : NULL;
+        result = dnac_cli_genesis_submit(ctx, tx_file);
+    }
     else {
         fprintf(stderr, "Error: Unknown command '%s'\n\n", command);
         dnac_cli_print_help();

@@ -7,6 +7,8 @@
 #include "dnac/dnac.h"
 #include "dnac/wallet.h"
 #include "dnac/transaction.h"
+#include "dnac/genesis.h"
+#include "dnac/crypto_helpers.h"
 #include "dnac/version.h"
 #include <dna/dna_engine.h>
 #include "nodus_ops.h"
@@ -18,6 +20,8 @@
 #include <time.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 /* ============================================================================
  * Helper Functions
@@ -525,6 +529,343 @@ int dnac_cli_query(dnac_context_t *ctx, const char *query) {
     return 0;
 }
 
+/* ============================================================================
+ * Genesis TX File Format
+ *
+ * Magic:    "DNAC_GEN\0"  (9 bytes)
+ * Version:  uint8_t = 1
+ * TX len:   uint32_t (little-endian)
+ * TX data:  raw serialized bytes
+ * Chain ID: 32 bytes (for verification on load)
+ * ========================================================================== */
+
+#define GENESIS_FILE_MAGIC     "DNAC_GEN"
+#define GENESIS_FILE_MAGIC_LEN 9   /* includes NUL terminator */
+#define GENESIS_FILE_VERSION   1
+#define DNAC_CHAIN_ID_SIZE     32
+
+/**
+ * @brief Get default genesis TX file path (~/.dna/genesis_tx.bin)
+ */
+static int genesis_default_path(char *buf, size_t buf_len) {
+    const char *home = getenv("HOME");
+    if (!home) home = ".";
+    int n = snprintf(buf, buf_len, "%s/.dna/genesis_tx.bin", home);
+    return (n > 0 && (size_t)n < buf_len) ? 0 : -1;
+}
+
+/**
+ * @brief Save genesis TX + chain_id to file
+ */
+static int genesis_file_save(const char *path,
+                             const dnac_transaction_t *tx,
+                             const uint8_t *chain_id) {
+    /* Serialize TX */
+    uint8_t *tx_buf = malloc(65536);
+    if (!tx_buf) return -1;
+    size_t tx_len = 0;
+    int rc = dnac_tx_serialize(tx, tx_buf, 65536, &tx_len);
+    if (rc != DNAC_SUCCESS) {
+        free(tx_buf);
+        return -1;
+    }
+
+    /* Ensure parent directory exists */
+    char dir[512];
+    strncpy(dir, path, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = '\0';
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        *slash = '\0';
+        mkdir(dir, 0700);  /* best-effort */
+    }
+
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        free(tx_buf);
+        return -1;
+    }
+
+    /* Write magic (9 bytes including NUL) */
+    if (fwrite(GENESIS_FILE_MAGIC, 1, GENESIS_FILE_MAGIC_LEN, f) != GENESIS_FILE_MAGIC_LEN)
+        goto fail;
+
+    /* Write version */
+    uint8_t ver = GENESIS_FILE_VERSION;
+    if (fwrite(&ver, 1, 1, f) != 1) goto fail;
+
+    /* Write TX length (little-endian u32) */
+    uint32_t len_le = (uint32_t)tx_len;
+    uint8_t len_bytes[4] = {
+        (uint8_t)(len_le & 0xFF),
+        (uint8_t)((len_le >> 8) & 0xFF),
+        (uint8_t)((len_le >> 16) & 0xFF),
+        (uint8_t)((len_le >> 24) & 0xFF)
+    };
+    if (fwrite(len_bytes, 1, 4, f) != 4) goto fail;
+
+    /* Write TX data */
+    if (fwrite(tx_buf, 1, tx_len, f) != tx_len) goto fail;
+
+    /* Write chain_id (32 bytes) */
+    if (fwrite(chain_id, 1, DNAC_CHAIN_ID_SIZE, f) != DNAC_CHAIN_ID_SIZE) goto fail;
+
+    fclose(f);
+    free(tx_buf);
+    return 0;
+
+fail:
+    fclose(f);
+    free(tx_buf);
+    return -1;
+}
+
+/**
+ * @brief Load genesis TX + chain_id from file
+ *
+ * Caller must free *tx_out with dnac_free_transaction().
+ */
+static int genesis_file_load(const char *path,
+                             dnac_transaction_t **tx_out,
+                             uint8_t *chain_id_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+
+    /* Read + verify magic */
+    char magic[GENESIS_FILE_MAGIC_LEN];
+    if (fread(magic, 1, GENESIS_FILE_MAGIC_LEN, f) != GENESIS_FILE_MAGIC_LEN) goto fail;
+    if (memcmp(magic, GENESIS_FILE_MAGIC, GENESIS_FILE_MAGIC_LEN) != 0) {
+        fprintf(stderr, "Error: Invalid genesis file (bad magic)\n");
+        goto fail;
+    }
+
+    /* Read version */
+    uint8_t ver;
+    if (fread(&ver, 1, 1, f) != 1) goto fail;
+    if (ver != GENESIS_FILE_VERSION) {
+        fprintf(stderr, "Error: Unsupported genesis file version %u\n", ver);
+        goto fail;
+    }
+
+    /* Read TX length (little-endian u32) */
+    uint8_t len_bytes[4];
+    if (fread(len_bytes, 1, 4, f) != 4) goto fail;
+    uint32_t tx_len = (uint32_t)len_bytes[0]
+                    | ((uint32_t)len_bytes[1] << 8)
+                    | ((uint32_t)len_bytes[2] << 16)
+                    | ((uint32_t)len_bytes[3] << 24);
+
+    if (tx_len == 0 || tx_len > 65536) {
+        fprintf(stderr, "Error: Invalid TX length in genesis file: %u\n", tx_len);
+        goto fail;
+    }
+
+    /* Read TX data */
+    uint8_t *tx_buf = malloc(tx_len);
+    if (!tx_buf) goto fail;
+    if (fread(tx_buf, 1, tx_len, f) != tx_len) {
+        free(tx_buf);
+        goto fail;
+    }
+
+    /* Read chain_id */
+    if (fread(chain_id_out, 1, DNAC_CHAIN_ID_SIZE, f) != DNAC_CHAIN_ID_SIZE) {
+        free(tx_buf);
+        goto fail;
+    }
+
+    /* Deserialize TX */
+    int rc = dnac_tx_deserialize(tx_buf, tx_len, tx_out);
+    free(tx_buf);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: Failed to deserialize genesis TX: %s\n",
+                dnac_error_string(rc));
+        goto fail;
+    }
+
+    fclose(f);
+    return 0;
+
+fail:
+    fclose(f);
+    return -1;
+}
+
+/* ============================================================================
+ * Genesis CLI Commands
+ * ========================================================================== */
+
+int dnac_cli_genesis_create(dnac_context_t *ctx, const char *fingerprint,
+                            uint64_t amount) {
+    /* Build recipient */
+    dnac_genesis_recipient_t recipients[1];
+    strncpy(recipients[0].fingerprint, fingerprint,
+            sizeof(recipients[0].fingerprint) - 1);
+    recipients[0].fingerprint[sizeof(recipients[0].fingerprint) - 1] = '\0';
+    recipients[0].amount = amount;
+
+    /* Phase 1: create TX + derive chain_id (no network) */
+    dnac_transaction_t *tx = NULL;
+    uint8_t chain_id[DNAC_CHAIN_ID_SIZE];
+
+    int rc = dnac_genesis_phase1_create(ctx, recipients, 1, &tx, chain_id);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error creating genesis TX: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+
+    /* Save to file */
+    char filepath[512];
+    if (genesis_default_path(filepath, sizeof(filepath)) != 0) {
+        fprintf(stderr, "Error: Could not determine genesis file path\n");
+        dnac_free_transaction(tx);
+        return 1;
+    }
+
+    if (genesis_file_save(filepath, tx, chain_id) != 0) {
+        fprintf(stderr, "Error: Failed to save genesis TX to %s\n", filepath);
+        dnac_free_transaction(tx);
+        return 1;
+    }
+
+    /* Format amount for display */
+    uint64_t whole = amount / 100000000;
+    uint64_t frac  = amount % 100000000;
+
+    /* Print results */
+    printf("\nGenesis TX created (Phase 1 — local only)\n");
+    printf("──────────────────────────────────────────\n");
+
+    printf("TX Hash:   ");
+    for (int i = 0; i < DNAC_TX_HASH_SIZE; i++) printf("%02x", tx->tx_hash[i]);
+    printf("\n");
+
+    printf("Chain ID:  ");
+    for (int i = 0; i < DNAC_CHAIN_ID_SIZE; i++) printf("%02x", chain_id[i]);
+    printf("\n");
+
+    printf("Recipient: %s\n", fingerprint);
+
+    if (frac == 0) {
+        printf("Amount:    %" PRIu64 "\n", whole);
+    } else {
+        printf("Amount:    %" PRIu64 ".%08" PRIu64 "\n", whole, frac);
+    }
+
+    printf("\nGenesis TX saved to: %s\n", filepath);
+
+    printf("\nNext steps:\n");
+    printf("  1. Configure witnesses with chain_id: ");
+    for (int i = 0; i < DNAC_CHAIN_ID_SIZE; i++) printf("%02x", chain_id[i]);
+    printf("\n");
+    printf("  2. Run: dnac-cli genesis-submit\n");
+
+    dnac_free_transaction(tx);
+    return 0;
+}
+
+int dnac_cli_genesis_submit(dnac_context_t *ctx, const char *tx_file) {
+    /* Determine file path */
+    char filepath[512];
+    if (tx_file) {
+        strncpy(filepath, tx_file, sizeof(filepath) - 1);
+        filepath[sizeof(filepath) - 1] = '\0';
+    } else {
+        if (genesis_default_path(filepath, sizeof(filepath)) != 0) {
+            fprintf(stderr, "Error: Could not determine genesis file path\n");
+            return 1;
+        }
+    }
+
+    /* Load genesis TX from file */
+    dnac_transaction_t *tx = NULL;
+    uint8_t stored_chain_id[DNAC_CHAIN_ID_SIZE];
+
+    printf("Loading genesis TX from: %s\n", filepath);
+
+    if (genesis_file_load(filepath, &tx, stored_chain_id) != 0) {
+        fprintf(stderr, "Error: Failed to load genesis TX from %s\n", filepath);
+        return 1;
+    }
+
+    /* Recompute chain_id from TX data for verification */
+    if (tx->output_count < 1) {
+        fprintf(stderr, "Error: Genesis TX has no outputs\n");
+        dnac_free_transaction(tx);
+        return 1;
+    }
+
+    uint8_t recomputed_chain_id[DNAC_CHAIN_ID_SIZE];
+    int rc = dnac_derive_chain_id(tx->outputs[0].owner_fingerprint,
+                                   tx->tx_hash, recomputed_chain_id);
+    if (rc != 0) {
+        fprintf(stderr, "Error: Failed to recompute chain_id\n");
+        dnac_free_transaction(tx);
+        return 1;
+    }
+
+    /* Verify chain_id matches what was stored */
+    if (memcmp(stored_chain_id, recomputed_chain_id, DNAC_CHAIN_ID_SIZE) != 0) {
+        fprintf(stderr, "Error: Chain ID mismatch — file may be corrupted\n");
+        fprintf(stderr, "  Stored:     ");
+        for (int i = 0; i < DNAC_CHAIN_ID_SIZE; i++)
+            fprintf(stderr, "%02x", stored_chain_id[i]);
+        fprintf(stderr, "\n  Recomputed: ");
+        for (int i = 0; i < DNAC_CHAIN_ID_SIZE; i++)
+            fprintf(stderr, "%02x", recomputed_chain_id[i]);
+        fprintf(stderr, "\n");
+        dnac_free_transaction(tx);
+        return 1;
+    }
+
+    printf("Chain ID verified: ");
+    for (int i = 0; i < DNAC_CHAIN_ID_SIZE; i++) printf("%02x", recomputed_chain_id[i]);
+    printf("\n");
+
+    /* Phase 2: submit to witnesses + broadcast */
+    printf("Submitting genesis to witnesses...\n");
+
+    rc = dnac_genesis_phase2_submit(ctx, tx, recomputed_chain_id);
+    if (rc == DNAC_ERROR_GENESIS_EXISTS) {
+        fprintf(stderr, "Error: Genesis already exists on this chain.\n");
+        dnac_free_transaction(tx);
+        return 1;
+    }
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: Genesis submission failed: %s\n", dnac_error_string(rc));
+        dnac_free_transaction(tx);
+        return 1;
+    }
+
+    /* Success */
+    printf("\nGENESIS SUBMITTED SUCCESSFULLY!\n");
+    printf("───────────────────────────────\n");
+
+    printf("TX Hash:    ");
+    for (int i = 0; i < DNAC_TX_HASH_SIZE; i++) printf("%02x", tx->tx_hash[i]);
+    printf("\n");
+
+    printf("Chain ID:   ");
+    for (int i = 0; i < DNAC_CHAIN_ID_SIZE; i++) printf("%02x", recomputed_chain_id[i]);
+    printf("\n");
+
+    printf("Witnesses:  %d\n", tx->witness_count);
+
+    uint64_t total = 0;
+    for (int i = 0; i < tx->output_count; i++)
+        total += tx->outputs[i].amount;
+    uint64_t whole = total / 100000000;
+    uint64_t frac  = total % 100000000;
+    if (frac == 0) {
+        printf("Supply:     %" PRIu64 " tokens\n", whole);
+    } else {
+        printf("Supply:     %" PRIu64 ".%08" PRIu64 " tokens\n", whole, frac);
+    }
+
+    dnac_free_transaction(tx);
+    return 0;
+}
+
 void dnac_cli_print_help(void) {
     printf("dnac-cli - DNAC Wallet Command Line Interface\n\n");
     printf("Usage: dnac-cli [options] <command> [arguments]\n\n");
@@ -542,7 +883,9 @@ void dnac_cli_print_help(void) {
     printf("  sync             Sync wallet from network (clears + rebuilds)\n");
     printf("  history [n]      Show transaction history (last n entries)\n");
     printf("  tx <hash>        Show transaction details\n");
-    printf("  nodus-list       List Nodus servers\n\n");
+    printf("  nodus-list       List Nodus servers\n");
+    printf("  genesis-create <fp> <amount>   Create genesis TX locally (Phase 1)\n");
+    printf("  genesis-submit [tx_file]       Submit genesis TX to network (Phase 2)\n\n");
     printf("Examples:\n");
     printf("  dnac-cli balance\n");
     printf("  dnac-cli send abc123...def 1000000\n");

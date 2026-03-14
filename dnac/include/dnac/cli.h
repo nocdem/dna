@@ -97,6 +97,30 @@ int dnac_cli_address(dnac_context_t *ctx);
 int dnac_cli_query(dnac_context_t *ctx, const char *query);
 
 /**
+ * @brief Create genesis TX locally (Phase 1 — no network)
+ *
+ * Builds genesis TX, derives chain_id, saves to file.
+ *
+ * @param ctx DNAC context
+ * @param fingerprint Recipient identity fingerprint
+ * @param amount Amount to allocate
+ * @return 0 on success, non-zero on failure
+ */
+int dnac_cli_genesis_create(dnac_context_t *ctx, const char *fingerprint,
+                            uint64_t amount);
+
+/**
+ * @brief Submit genesis TX to network (Phase 2 — requires witnesses)
+ *
+ * Loads genesis TX from file, recomputes chain_id, submits to witnesses.
+ *
+ * @param ctx DNAC context
+ * @param tx_file Path to genesis TX file (NULL for default ~/.dna/genesis_tx.bin)
+ * @return 0 on success, non-zero on failure
+ */
+int dnac_cli_genesis_submit(dnac_context_t *ctx, const char *tx_file);
+
+/**
  * @brief Print CLI help
  */
 void dnac_cli_print_help(void);
