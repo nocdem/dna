@@ -185,6 +185,48 @@ int witness_genesis_set(const uint8_t *tx_hash,
  */
 int witness_genesis_get(dnac_genesis_state_t *state_out, void *user_data);
 
+/* ============================================================================
+ * Two-Phase Genesis Flow (v0.11.0 - Chain ID)
+ * ========================================================================== */
+
+/**
+ * @brief Phase 1: Create and sign genesis TX locally
+ *
+ * Creates the genesis transaction, signs it with sender's key, and derives
+ * the chain_id from the first recipient's fingerprint + tx_hash.
+ * Does NOT contact witnesses — call dnac_genesis_phase2_submit() for that.
+ *
+ * Design: The chain_id is derived deterministically so witnesses can
+ * independently verify it from the genesis TX data.
+ *
+ * @param ctx             DNAC context (for signing key)
+ * @param recipients      Array of recipients with amounts
+ * @param recipient_count Number of recipients
+ * @param tx_out          Output: created genesis TX (caller frees with dnac_free_transaction)
+ * @param chain_id_out    Output: derived chain_id (32 bytes, caller provides buffer)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_genesis_phase1_create(dnac_context_t *ctx,
+                                const dnac_genesis_recipient_t *recipients,
+                                int recipient_count,
+                                dnac_transaction_t **tx_out,
+                                uint8_t *chain_id_out);
+
+/**
+ * @brief Phase 2: Submit pre-created genesis TX to witnesses
+ *
+ * Sets the chain_id on the context, submits the genesis TX for unanimous
+ * BFT witness approval, then broadcasts to recipient DHT inboxes.
+ *
+ * @param ctx      DNAC context
+ * @param tx       Genesis TX from phase 1
+ * @param chain_id Chain ID from phase 1 (32 bytes)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_genesis_phase2_submit(dnac_context_t *ctx,
+                                dnac_transaction_t *tx,
+                                const uint8_t *chain_id);
+
 #ifdef __cplusplus
 }
 #endif

@@ -402,3 +402,88 @@ int dnac_genesis_get_total_supply(dnac_context_t *ctx, uint64_t *supply_out) {
     *supply_out = state.total_supply;
     return DNAC_SUCCESS;
 }
+
+/* ============================================================================
+ * Two-Phase Genesis Flow (v0.11.0 - Chain ID)
+ * ========================================================================== */
+
+int dnac_genesis_phase1_create(dnac_context_t *ctx,
+                                const dnac_genesis_recipient_t *recipients,
+                                int recipient_count,
+                                dnac_transaction_t **tx_out,
+                                uint8_t *chain_id_out) {
+    if (!ctx || !recipients || recipient_count <= 0 || !tx_out || !chain_id_out) {
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) return DNAC_ERROR_NOT_INITIALIZED;
+
+    /* Phase 1a: Create genesis TX (builds outputs, computes tx_hash) */
+    dnac_transaction_t *tx = NULL;
+    int rc = dnac_tx_create_genesis(recipients, recipient_count, &tx);
+    if (rc != DNAC_SUCCESS) {
+        return rc;
+    }
+
+    /* Phase 1b: Sign tx_hash with sender's Dilithium5 key */
+    rc = dna_engine_get_signing_public_key(engine, tx->sender_pubkey,
+                                           DNAC_PUBKEY_SIZE);
+    if (rc < 0) {
+        dnac_free_transaction(tx);
+        return DNAC_ERROR_CRYPTO;
+    }
+
+    size_t sig_len = DNAC_SIGNATURE_SIZE;
+    rc = dna_engine_sign_data(engine, tx->tx_hash, DNAC_TX_HASH_SIZE,
+                               tx->sender_signature, &sig_len);
+    if (rc < 0) {
+        dnac_free_transaction(tx);
+        return DNAC_ERROR_SIGN_FAILED;
+    }
+
+    /* Phase 1c: Derive chain_id from first recipient's fingerprint + tx_hash */
+    rc = dnac_derive_chain_id(recipients[0].fingerprint, tx->tx_hash, chain_id_out);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to derive chain_id from genesis");
+        dnac_free_transaction(tx);
+        return DNAC_ERROR_CRYPTO;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Phase 1 complete: genesis TX created + signed, chain_id derived");
+
+    *tx_out = tx;
+    return DNAC_SUCCESS;
+}
+
+int dnac_genesis_phase2_submit(dnac_context_t *ctx,
+                                dnac_transaction_t *tx,
+                                const uint8_t *chain_id) {
+    if (!ctx || !tx || !chain_id) {
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    if (tx->type != DNAC_TX_GENESIS) {
+        return DNAC_ERROR_INVALID_TX_TYPE;
+    }
+
+    /* Phase 2a: Set chain_id on context so witness requests + inbox keys use it */
+    dnac_set_chain_id(ctx, chain_id);
+
+    /* Phase 2b: Submit to witnesses for unanimous BFT authorization */
+    int rc = dnac_tx_authorize_genesis(ctx, tx);
+    if (rc != DNAC_SUCCESS) {
+        QGP_LOG_ERROR(LOG_TAG, "Phase 2 authorization failed: %d", rc);
+        return rc;
+    }
+
+    /* Phase 2c: Broadcast genesis TX to recipient DHT inboxes */
+    rc = dnac_tx_broadcast_genesis(ctx, tx);
+    if (rc != DNAC_SUCCESS) {
+        QGP_LOG_ERROR(LOG_TAG, "Phase 2 broadcast failed: %d", rc);
+        return rc;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Phase 2 complete: genesis authorized + broadcast");
+    return DNAC_SUCCESS;
+}
