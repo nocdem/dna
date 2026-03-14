@@ -37,6 +37,11 @@ static uint8_t resp_buf[RESP_BUF_SIZE];
 
 /* Channel post signature verification is now in nodus_channel_primary.c */
 
+/* Forward declaration for async send (used in replicate_value and hinted_retry) */
+static void dht_republish_send_async(nodus_server_t *srv, const char *ip,
+                                       uint16_t port, const uint8_t *frame,
+                                       size_t flen);
+
 /* ── Session management ──────────────────────────────────────────── */
 
 static nodus_session_t *session_for_conn(nodus_server_t *srv,
@@ -110,6 +115,11 @@ static void session_remove_listen(nodus_session_t *sess, const nodus_key_t *key)
 /** Notify all sessions listening on this key */
 static void notify_listeners(nodus_server_t *srv, const nodus_key_t *key,
                               const nodus_value_t *val) {
+    /* HIGH-5 fix: use per-operation heap buffer instead of shared static resp_buf
+     * to avoid reentrancy risk when iterating sessions */
+    uint8_t *notify_buf = malloc(RESP_BUF_SIZE);
+    if (!notify_buf) return;
+
     for (int i = 0; i < NODUS_MAX_SESSIONS; i++) {
         nodus_session_t *s = &srv->sessions[i];
         if (!s->conn || !s->authenticated) continue;
@@ -118,23 +128,32 @@ static void notify_listeners(nodus_server_t *srv, const nodus_key_t *key,
             if (nodus_key_cmp(&s->listen_keys[j], key) == 0) {
                 size_t len = 0;
                 if (nodus_t2_value_changed(0, key, val,
-                        resp_buf, sizeof(resp_buf), &len) == 0) {
-                    nodus_tcp_send(s->conn, resp_buf, len);
+                        notify_buf, RESP_BUF_SIZE, &len) == 0) {
+                    nodus_tcp_send(s->conn, notify_buf, len);
                 }
                 break;
             }
         }
     }
+
+    free(notify_buf);
 }
 
 /* Channel session helpers are now in nodus_channel_server.c */
+
+/* Forward declaration for async replication */
+static void dht_republish_send_async(nodus_server_t *srv, const char *ip,
+                                      uint16_t port, const uint8_t *frame,
+                                      size_t flen);
 
 /* ── Server-to-server TCP STORE (with hinted handoff on failure) ── */
 
 /**
  * Send a pre-encoded wire frame to a peer. Returns 0 on success, -1 on failure.
  */
-static int send_frame_to_peer(const char *peer_ip, uint16_t peer_tcp_port,
+/* HIGH-13: Blocking send replaced by dht_republish_send_async() in all callers.
+ * Kept for potential future use (e.g., synchronous fallback paths). */
+static int __attribute__((unused)) send_frame_to_peer(const char *peer_ip, uint16_t peer_tcp_port,
                                const uint8_t *frame, size_t flen) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (fd < 0) {
@@ -222,9 +241,12 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
         if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0)
             continue;
 
-        int rc = send_frame_to_peer(closest[i].ip, closest[i].tcp_port, frame, flen);
-        if (rc != 0) {
-            /* Queue to hinted handoff for retry (keyed by node_id) */
+        /* HIGH-13 fix: use non-blocking async send instead of blocking TCP.
+         * Falls back to hinted handoff if all async slots are full. */
+        if (srv->republish.pending_fds < NODUS_REPUBLISH_MAX_FDS) {
+            dht_republish_send_async(srv, closest[i].ip, closest[i].tcp_port, frame, flen);
+        } else {
+            /* All async slots full — queue for later retry */
             nodus_storage_hinted_insert(&srv->storage,
                                          &closest[i].node_id,
                                          closest[i].ip, closest[i].tcp_port,
@@ -286,12 +308,15 @@ static void dht_hinted_retry(nodus_server_t *srv) {
             continue;
 
         for (size_t j = 0; j < count; j++) {
-            int rc = send_frame_to_peer(ip, tcp_port,
-                                         entries[j].frame_data,
-                                         entries[j].frame_len);
-            if (rc == 0) {
-                nodus_storage_hinted_delete(&srv->storage, entries[j].id);
-            }
+            /* HIGH-13 fix: use async send for hinted handoff retry too */
+            if (srv->republish.pending_fds >= NODUS_REPUBLISH_MAX_FDS)
+                break;  /* Async slots full — try remaining next cycle */
+            dht_republish_send_async(srv, ip, tcp_port,
+                                      entries[j].frame_data,
+                                      entries[j].frame_len);
+            /* Delete hint optimistically — async send will either succeed
+             * or the value will be re-queued on next replication cycle */
+            nodus_storage_hinted_delete(&srv->storage, entries[j].id);
         }
 
         nodus_storage_hinted_free(entries, count);
@@ -966,8 +991,8 @@ static void dht_find_value_handle_event(nodus_server_t *srv, int fd, uint32_t ev
                                 lookup->result_buf = NULL;
                             }
                         }
-                        /* Cache locally */
-                        if (t1msg.value)
+                        /* Cache locally — HIGH-12 fix: verify before caching */
+                        if (t1msg.value && nodus_value_verify(t1msg.value) == 0)
                             nodus_storage_put_if_newer(&srv->storage, t1msg.value);
                     } else {
                         /* No value — add returned closer nodes to candidates */
@@ -1572,6 +1597,81 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
     nodus_t2_msg_free(&msg);
 }
 
+/* ── Per-IP UDP rate limiter (HIGH-9 amplification mitigation) ──── */
+
+#define UDP_RATE_MAX_ENTRIES  64   /* Fixed-size table — plenty for 6 nodes */
+#define UDP_RATE_MAX_PER_SEC  10   /* Max fn/fv responses per IP per second */
+#define UDP_RATE_WINDOW_SEC    1   /* 1-second sliding window */
+#define UDP_RATE_EXPIRE_SEC   10   /* Evict stale entries after 10s */
+
+typedef struct {
+    char     ip[46];    /* IPv4 or IPv6 string */
+    uint64_t window;    /* Window start (epoch seconds) */
+    int      count;     /* Requests in current window */
+} udp_rate_entry_t;
+
+static udp_rate_entry_t udp_rate_table[UDP_RATE_MAX_ENTRIES];
+static int              udp_rate_count = 0;
+
+/**
+ * Check if an IP is within rate limit for fn/fv.
+ * Returns 0 if allowed, -1 if rate exceeded (drop).
+ */
+static int udp_rate_check(const char *ip) {
+    uint64_t now = (uint64_t)time(NULL);
+
+    /* Search for existing entry */
+    for (int i = 0; i < udp_rate_count; i++) {
+        if (strcmp(udp_rate_table[i].ip, ip) == 0) {
+            if (now - udp_rate_table[i].window >= UDP_RATE_WINDOW_SEC) {
+                /* New window — reset */
+                udp_rate_table[i].window = now;
+                udp_rate_table[i].count = 1;
+                return 0;
+            }
+            udp_rate_table[i].count++;
+            if (udp_rate_table[i].count > UDP_RATE_MAX_PER_SEC)
+                return -1;  /* Rate exceeded */
+            return 0;
+        }
+    }
+
+    /* New IP — evict stale entries first if table is full */
+    if (udp_rate_count >= UDP_RATE_MAX_ENTRIES) {
+        int j = 0;
+        for (int i = 0; i < udp_rate_count; i++) {
+            if (now - udp_rate_table[i].window < UDP_RATE_EXPIRE_SEC) {
+                if (j != i)
+                    udp_rate_table[j] = udp_rate_table[i];
+                j++;
+            }
+        }
+        udp_rate_count = j;
+
+        /* Still full — overwrite oldest */
+        if (udp_rate_count >= UDP_RATE_MAX_ENTRIES) {
+            int oldest = 0;
+            for (int i = 1; i < udp_rate_count; i++) {
+                if (udp_rate_table[i].window < udp_rate_table[oldest].window)
+                    oldest = i;
+            }
+            strncpy(udp_rate_table[oldest].ip, ip, sizeof(udp_rate_table[oldest].ip) - 1);
+            udp_rate_table[oldest].ip[sizeof(udp_rate_table[oldest].ip) - 1] = '\0';
+            udp_rate_table[oldest].window = now;
+            udp_rate_table[oldest].count = 1;
+            return 0;
+        }
+    }
+
+    /* Insert new entry */
+    strncpy(udp_rate_table[udp_rate_count].ip, ip, sizeof(udp_rate_table[udp_rate_count].ip) - 1);
+    udp_rate_table[udp_rate_count].ip[sizeof(udp_rate_table[udp_rate_count].ip) - 1] = '\0';
+    udp_rate_table[udp_rate_count].window = now;
+    udp_rate_table[udp_rate_count].count = 1;
+    udp_rate_count++;
+    return 0;
+}
+
 /* ── Tier 1 UDP handler (Kademlia routing) ───────────────────────── */
 
 static void handle_udp_message(const uint8_t *payload, size_t len,
@@ -1627,6 +1727,11 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         routing_insert_or_ping(srv, &rpeer);
 
     } else if (strcmp(msg.method, "fn") == 0) {
+        /* FIND_NODE: rate-limit to mitigate UDP amplification (HIGH-9) */
+        if (udp_rate_check(from_ip) != 0) {
+            nodus_t1_msg_free(&msg);
+            return;
+        }
         /* FIND_NODE: return k closest nodes */
         nodus_peer_t results[NODUS_K];
         int found = nodus_routing_find_closest(&srv->routing, &msg.target,
@@ -1657,6 +1762,11 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         }
 
     } else if (strcmp(msg.method, "fv") == 0) {
+        /* FIND_VALUE: rate-limit to mitigate UDP amplification (HIGH-9) */
+        if (udp_rate_check(from_ip) != 0) {
+            nodus_t1_msg_free(&msg);
+            return;
+        }
         /* FIND_VALUE: respond with value or closest nodes */
         nodus_value_t *val = NULL;
         int rc = nodus_storage_get(&srv->storage, &msg.target, &val);

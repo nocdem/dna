@@ -465,7 +465,7 @@ endif()
 # =============================================================================
 # CLI Testing Tool
 # =============================================================================
-option(BUILD_CLI_TOOL "Build dna-messenger-cli tool for testing" ON)
+option(BUILD_CLI_TOOL "Build dna-connect-cli tool for testing" ON)
 if(BUILD_CLI_TOOL AND NOT ANDROID)
     add_subdirectory(cli)
 endif()

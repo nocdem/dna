@@ -1407,7 +1407,7 @@ class _AboutSection extends ConsumerWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                'GNU GPLv3',
+                'Apache License 2.0',
                 style: theme.textTheme.labelSmall,
               ),
             ],

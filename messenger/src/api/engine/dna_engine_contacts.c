@@ -405,9 +405,14 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                     }
                 }
 
-                /* Auto-approve reciprocal requests (they accepted our request) */
+                /* Auto-approve reciprocal requests (they accepted our request).
+                 * HIGH-7 fix: only auto-approve if WE have a pending outgoing
+                 * request to this fingerprint. Otherwise an attacker can send
+                 * a request with message "Contact request accepted" to bypass
+                 * the approval flow. */
                 if (dht_requests[i].message[0] &&
-                    strcmp(dht_requests[i].message, CONTACT_ACCEPTED_MSG) == 0) {
+                    strcmp(dht_requests[i].message, CONTACT_ACCEPTED_MSG) == 0 &&
+                    contacts_db_has_pending_outgoing(dht_requests[i].sender_fingerprint)) {
                     QGP_LOG_INFO(LOG_TAG, "Auto-approving reciprocal request from %.20s...",
                                  dht_requests[i].sender_fingerprint);
                     /* Add directly as contact (notes = display name) */

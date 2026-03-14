@@ -5,7 +5,7 @@
  * Designed for automated testing by Claude AI.
  *
  * Usage:
- *   dna-messenger-cli [OPTIONS] <command> [args...]
+ *   dna-connect-cli [OPTIONS] <command> [args...]
  */
 
 #include <stdio.h>
@@ -174,7 +174,7 @@ int main(int argc, char *argv[]) {
                 print_usage(argv[0]);
                 return 0;
             case 'v':
-                printf("dna-messenger-cli v%s (build %s %s)\n",
+                printf("dna-connect-cli v%s (build %s %s)\n",
                        DNA_VERSION_STRING, BUILD_HASH, BUILD_TS);
                 return 0;
             default:

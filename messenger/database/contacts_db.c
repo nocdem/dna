@@ -475,6 +475,26 @@ bool contacts_db_exists(const char *identity) {
     return exists;
 }
 
+/* HIGH-7 fix: check if we have a pending outgoing request to this identity */
+bool contacts_db_has_pending_outgoing(const char *identity) {
+    if (!g_db || !identity) return false;
+
+    const char *sql = "SELECT COUNT(*) FROM contacts WHERE identity = ? AND status = ?;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_text(stmt, 1, identity, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, CONTACT_STATUS_PENDING_OUTGOING);
+
+    bool has_outgoing = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        has_outgoing = (sqlite3_column_int(stmt, 0) > 0);
+
+    sqlite3_finalize(stmt);
+    return has_outgoing;
+}
+
 // List all contacts
 int contacts_db_list(contact_list_t **list_out) {
     if (!g_db) {

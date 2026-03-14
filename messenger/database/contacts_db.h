@@ -157,6 +157,15 @@ int contacts_db_update_notes(const char *identity, const char *notes);
 bool contacts_db_exists(const char *identity);
 
 /**
+ * Check if we have a pending outgoing contact request to this identity.
+ * HIGH-7 fix: used to verify reciprocal requests before auto-approving.
+ *
+ * @param identity: Fingerprint to check
+ * @return: true if a pending_outgoing contact exists
+ */
+bool contacts_db_has_pending_outgoing(const char *identity);
+
+/**
  * Get all contacts
  *
  * @param list_out: Output contact list (caller must free with contacts_db_free_list)
