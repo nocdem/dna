@@ -433,6 +433,36 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
+    /* 5. Subscribe all channels on TCP 4003 for push notifications.
+     * Previously in dna_dht_status_callback but moved here because DHT connects
+     * before channel_subscriptions DB is initialized (race condition). */
+    {
+        channel_subscription_t *subs = NULL;
+        int sub_count = 0;
+        if (channel_subscriptions_db_get_all(&subs, &sub_count) == 0 && sub_count > 0) {
+            for (int s = 0; s < sub_count; s++) {
+                uint8_t uuid_bin[16];
+                const char *u = subs[s].channel_uuid;
+                int ci = 0;
+                char clean[33];
+                for (int k = 0; u[k] && ci < 32; k++) {
+                    if (u[k] != '-') clean[ci++] = u[k];
+                }
+                clean[ci] = '\0';
+                if (ci == 32) {
+                    for (int k = 0; k < 16; k++) {
+                        unsigned int byte;
+                        if (sscanf(clean + k * 2, "%2x", &byte) == 1)
+                            uuid_bin[k] = (uint8_t)byte;
+                    }
+                    nodus_ops_ch_subscribe(uuid_bin);
+                }
+            }
+            free(subs);
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Subscribed %d channel(s) on TCP 4003 for push", sub_count);
+        }
+    }
+
     /* v0.9.17: Wallet file creation removed — seed-based derivation only */
 
     QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD COMPLETE <<<");
@@ -525,33 +555,9 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
         /* Register channel push callback so TCP 4003 notifications fire events */
         nodus_ops_ch_set_post_callback(dna_channel_push_callback, NULL);
 
-        /* Subscribe all locally-tracked channels on TCP 4003 for push notifications */
-        {
-            channel_subscription_t *subs = NULL;
-            int sub_count = 0;
-            if (channel_subscriptions_db_get_all(&subs, &sub_count) == 0 && sub_count > 0) {
-                for (int s = 0; s < sub_count; s++) {
-                    uint8_t uuid_bin[16];
-                    const char *u = subs[s].channel_uuid;
-                    int ci = 0;
-                    char clean[33];
-                    for (int k = 0; u[k] && ci < 32; k++) {
-                        if (u[k] != '-') clean[ci++] = u[k];
-                    }
-                    clean[ci] = '\0';
-                    if (ci == 32) {
-                        for (int k = 0; k < 16; k++) {
-                            unsigned int byte;
-                            if (sscanf(clean + k * 2, "%2x", &byte) == 1)
-                                uuid_bin[k] = (uint8_t)byte;
-                        }
-                        nodus_ops_ch_subscribe(uuid_bin);
-                    }
-                }
-                free(subs);
-                QGP_LOG_INFO(LOG_TAG, "Subscribed %d channel(s) on TCP 4003 for push", sub_count);
-            }
-        }
+        /* Channel TCP 4003 subscribe moved to stabilization_retry_thread (step 5)
+         * to avoid race condition: DHT connects before channel_subscriptions DB
+         * is initialized, so channel_subscriptions_db_get_all() returns 0 subs. */
 
         /* Prefetch profiles for local identities (for identity selection screen) */
         if (engine->data_dir) {
