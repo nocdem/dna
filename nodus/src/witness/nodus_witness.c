@@ -342,7 +342,6 @@ void nodus_witness_tick(nodus_witness_t *witness) {
 void nodus_witness_dispatch_t3(nodus_witness_t *witness,
                                struct nodus_tcp_conn *conn,
                                const uint8_t *payload, size_t len) {
-    (void)conn;
     if (!witness || !payload || len == 0) return;
 
     /* Decode T3 message */
@@ -378,6 +377,10 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
             return;
         }
     }
+
+    /* Register inbound conn as peer so broadcasts reach this sender */
+    if (sender_idx >= 0 && conn)
+        nodus_witness_peer_ensure(witness, msg.header.sender_id, conn);
 
     /* Route to appropriate handler */
     switch (msg.type) {

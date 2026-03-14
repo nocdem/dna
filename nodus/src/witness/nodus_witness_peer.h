@@ -62,6 +62,11 @@ int nodus_witness_peer_handle_rost_r(nodus_witness_t *w,
 
 /* ── Utilities ─────────────────────────────────────────────────── */
 
+/** Ensure peer entry for a roster-verified sender on an inbound conn. */
+void nodus_witness_peer_ensure(nodus_witness_t *w,
+                                const uint8_t *witness_id,
+                                struct nodus_tcp_conn *conn);
+
 /** Send w_ident to a specific connection. */
 int nodus_witness_peer_send_ident(nodus_witness_t *w,
                                   struct nodus_tcp_conn *conn);

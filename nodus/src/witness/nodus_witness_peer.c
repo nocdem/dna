@@ -70,6 +70,64 @@ static int find_peer_by_id(const nodus_witness_t *w,
     return -1;
 }
 
+/* ── Ensure peer entry for inbound connection ────────────────────── */
+
+/**
+ * Create or update a peer entry for a roster-verified sender arriving
+ * on an inbound TCP connection.  This makes the mesh bidirectional:
+ * nodes that connected TO us can now also be reached for broadcasts.
+ *
+ * Rules:
+ *  - Skip self
+ *  - If peer exists with an active outbound conn, keep it (prefer outbound)
+ *  - If peer exists with a dead/null conn, update conn + mark identified
+ *  - If peer not found and space available, create new entry from roster
+ */
+void nodus_witness_peer_ensure(nodus_witness_t *w,
+                                const uint8_t *witness_id,
+                                struct nodus_tcp_conn *conn) {
+    if (!w || !witness_id || !conn) return;
+
+    /* Skip self */
+    if (memcmp(witness_id, w->my_id, NODUS_T3_WITNESS_ID_LEN) == 0)
+        return;
+
+    int pi = find_peer_by_id(w, witness_id);
+
+    if (pi >= 0) {
+        /* Peer exists — keep active outbound conn, update dead one */
+        if (w->peers[pi].conn &&
+            w->peers[pi].conn->state == NODUS_CONN_CONNECTED)
+            return;  /* Already has a live connection — prefer outbound */
+
+        /* Dead or null conn — adopt this inbound connection */
+        w->peers[pi].conn = conn;
+        w->peers[pi].identified = true;
+        w->peers[pi].connect_failures = 0;
+        return;
+    }
+
+    /* Not found — create new peer entry if space available */
+    if (w->peer_count >= NODUS_T3_MAX_WITNESSES) return;
+
+    int ri = nodus_witness_roster_find(&w->roster, witness_id);
+    pi = w->peer_count++;
+    memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
+    memcpy(w->peers[pi].witness_id, witness_id, NODUS_T3_WITNESS_ID_LEN);
+    w->peers[pi].conn = conn;
+    w->peers[pi].identified = true;
+
+    /* Copy address from roster if available (use memcpy to avoid
+     * restrict-overlap warning — both src and dst live inside *w) */
+    if (ri >= 0 && w->roster.witnesses[ri].address[0]) {
+        size_t alen = strlen(w->roster.witnesses[ri].address);
+        if (alen >= sizeof(w->peers[pi].address))
+            alen = sizeof(w->peers[pi].address) - 1;
+        memcpy(w->peers[pi].address, w->roster.witnesses[ri].address, alen);
+        w->peers[pi].address[alen] = '\0';
+    }
+}
+
 /* find_peer_by_addr and find_peer_by_conn removed — DHT is primary discovery */
 
 /* (connect_to_entry removed — reconnection handled in peer_tick) */
@@ -782,6 +840,9 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
 
         /* Connection established — peer is identified via roster */
         w->peers[i].identified = true;
+
+        /* Announce ourselves so the remote side can register us as a peer */
+        nodus_witness_peer_send_ident(w, w->peers[i].conn);
     }
 }
 
