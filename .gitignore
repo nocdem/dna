@@ -34,3 +34,7 @@ docs/CPUNK_ROADMAP.md
 # Confidential documents
 docs/CPUNK_COUNCIL_DECISIONS.md
 docs/REPO_SECURITY_ASSESSMENT.md
+
+# Claude Code instructions (contain infra details, IPs, deploy commands)
+CLAUDE.md
+**/CLAUDE.md
