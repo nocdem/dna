@@ -1385,6 +1385,12 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     uint64_t elapsed = time_ms() - w->round_state.phase_start_time;
 
     if (elapsed > w->bft_config.round_timeout_ms) {
+        /* Transition to VIEW_CHANGE immediately to stop further timeout checks.
+         * Must happen here, not inside initiate_view_change, because a remote
+         * VIEW_CHANGE message may have set view_change_in_progress=true without
+         * changing the phase — causing initiate to return early. */
+        w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
+
         fprintf(stderr, "%s: round timeout (%lu ms), initiating view change\n",
                 LOG_TAG, (unsigned long)elapsed);
         nodus_witness_bft_initiate_view_change(w);
