@@ -295,6 +295,84 @@ static void handle_node_auth(nodus_channel_server_t *cs,
     nodus_tcp_send(sess->conn, buf, len);
 }
 
+/* ---- Encrypted channel handlers ---------------------------------------- */
+
+/**
+ * Handle ch_member_update: add/remove push targets for encrypted channels.
+ * Only the channel creator (who also created the channel) can update members.
+ * For now we accept any authenticated client — admin checks will be done
+ * when we store the channel creator fingerprint in channel_meta.
+ *
+ * Protocol: ch_mu { ch: uuid, act: 1|2, tfp: fingerprint, sig: signature }
+ * Action 1 = ADD, 2 = REMOVE
+ */
+static void handle_ch_member_update(nodus_channel_server_t *cs,
+                                     nodus_ch_client_session_t *sess,
+                                     nodus_tier2_msg_t *msg) {
+    uint8_t buf[256];
+    size_t len = 0;
+
+    if (!cs->ch_store) {
+        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "store unavailable", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return;
+    }
+
+    /* Verify channel exists and is encrypted */
+    if (!nodus_channel_exists(cs->ch_store, msg->channel_uuid)) {
+        nodus_t2_error(msg->txn_id, NODUS_ERR_CHANNEL_NOT_FOUND,
+                        "channel not found", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return;
+    }
+
+    if (!nodus_channel_is_encrypted(cs->ch_store, msg->channel_uuid)) {
+        nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "not an encrypted channel", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return;
+    }
+
+    /* Validate the member update message has required fields */
+    if (!msg->has_ch_mu) {
+        nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "missing member update fields", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return;
+    }
+
+    int rc;
+    switch (msg->ch_mu_action) {
+    case 1:  /* ADD */
+        rc = nodus_push_target_add(cs->ch_store, msg->channel_uuid,
+                                    &msg->ch_mu_target_fp);
+        break;
+    case 2:  /* REMOVE */
+        rc = nodus_push_target_remove(cs->ch_store, msg->channel_uuid,
+                                       &msg->ch_mu_target_fp);
+        break;
+    default:
+        nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "invalid action", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return;
+    }
+
+    if (rc != 0) {
+        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "member update failed", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return;
+    }
+
+    nodus_t2_ch_member_update_ok(msg->txn_id, buf, sizeof(buf), &len);
+    nodus_tcp_send(sess->conn, buf, len);
+
+    QGP_LOG_INFO(LOG_TAG, "ch_member_update: action=%d slot=%d",
+                 msg->ch_mu_action, sess->conn->slot);
+}
+
 /* ---- Stub handlers (client channel operations) ------------------------- */
 
 static void handle_ch_create(nodus_channel_server_t *cs,
@@ -455,6 +533,8 @@ static void dispatch_client_msg(nodus_channel_server_t *cs,
         handle_ch_subscribe(cs, sess, msg);
     else if (strcmp(msg->method, "ch_unsub") == 0)
         handle_ch_unsubscribe(cs, sess, msg);
+    else if (strcmp(msg->method, "ch_mu") == 0)
+        handle_ch_member_update(cs, sess, msg);
     else
         QGP_LOG_WARN(LOG_TAG, "Unknown client method: %s", msg->method);
 }

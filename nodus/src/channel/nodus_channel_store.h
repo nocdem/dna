@@ -48,6 +48,18 @@ typedef struct {
     uint64_t    added_at;
 } nodus_push_target_t;
 
+/* ── Pending push entry (store-and-forward for encrypted channels) ── */
+
+typedef struct {
+    int64_t     id;
+    uint8_t     channel_uuid[NODUS_UUID_BYTES];
+    nodus_key_t target_fp;
+    uint8_t    *post_data;      /* Serialized post */
+    size_t      post_data_len;
+    uint64_t    created_at;
+    uint64_t    expires_at;
+} nodus_pending_push_t;
+
 /* ── Channel store ──────────────────────────────────────────────── */
 
 typedef struct {
@@ -63,6 +75,11 @@ typedef struct {
     sqlite3_stmt *stmt_pt_delete;
     sqlite3_stmt *stmt_pt_get;
     sqlite3_stmt *stmt_pt_has;
+    /* Pending push prepared statements (store-and-forward) */
+    sqlite3_stmt *stmt_pp_insert;
+    sqlite3_stmt *stmt_pp_get;
+    sqlite3_stmt *stmt_pp_delete;
+    sqlite3_stmt *stmt_pp_cleanup;
 } nodus_channel_store_t;
 
 /**
@@ -222,6 +239,46 @@ int nodus_push_target_get(nodus_channel_store_t *store,
 bool nodus_push_target_has(nodus_channel_store_t *store,
                             const uint8_t uuid[NODUS_UUID_BYTES],
                             const nodus_key_t *target_fp);
+
+/* ── Pending push (store-and-forward for encrypted channels) ────── */
+
+/**
+ * Queue an encrypted post for a push target that's currently offline.
+ * Idempotent — dedup by (channel_uuid, target_fp, post_data).
+ * @param expires_at  Expiry timestamp (seconds since epoch)
+ */
+int nodus_pending_push_add(nodus_channel_store_t *store,
+                            const uint8_t uuid[NODUS_UUID_BYTES],
+                            const nodus_key_t *target_fp,
+                            const uint8_t *post_data, size_t post_data_len,
+                            uint64_t expires_at);
+
+/**
+ * Get pending push entries for a target fingerprint on a specific channel.
+ * @param max_count   Maximum entries to return
+ * @param entries_out Caller frees with nodus_pending_push_free()
+ * @param count_out   Number of entries returned
+ */
+int nodus_pending_push_get(nodus_channel_store_t *store,
+                            const uint8_t uuid[NODUS_UUID_BYTES],
+                            const nodus_key_t *target_fp,
+                            int max_count,
+                            nodus_pending_push_t **entries_out,
+                            size_t *count_out);
+
+/**
+ * Delete a pending push entry after successful delivery.
+ */
+int nodus_pending_push_delete(nodus_channel_store_t *store, int64_t id);
+
+/**
+ * Cleanup expired pending push entries.
+ * @return Number of entries deleted, or -1 on error
+ */
+int nodus_pending_push_cleanup(nodus_channel_store_t *store);
+
+/** Free an array of pending push entries. */
+void nodus_pending_push_free(nodus_pending_push_t *entries, size_t count);
 
 /* ── Cleanup helpers ────────────────────────────────────────────── */
 

@@ -1969,7 +1969,7 @@ static void ch_startup_rejoin(nodus_server_t *srv)
         nodus_ch_ring_track(&srv->ch_ring, uuid, srv->ring.version);
 
         /* Ensure table exists (idempotent) */
-        nodus_channel_create(&srv->ch_store, uuid);
+        nodus_channel_create(&srv->ch_store, uuid, false);
 
         tracked++;
     }

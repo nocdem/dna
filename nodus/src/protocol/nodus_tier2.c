@@ -292,6 +292,16 @@ int nodus_t2_ch_member_update(uint32_t txn, const uint8_t *token,
     return finish(&enc, out_len);
 }
 
+int nodus_t2_ch_member_update_ok(uint32_t txn,
+                                  uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ch_mu_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
 /* ── Nodus → Client encode ───────────────────────────────────────── */
 
 int nodus_t2_challenge(uint32_t txn, const uint8_t *nonce,
@@ -1105,6 +1115,26 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                             }
                         }
                     }
+                }
+                /* enc (ch_create: encrypted flag) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "enc", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BOOL)
+                        msg->ch_encrypted = val.bool_val;
+                }
+                /* act (ch_member_update: action 1=add, 2=remove) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "act", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->ch_mu_action = (uint8_t)val.uint_val;
+                        msg->has_ch_mu = true;
+                    }
+                }
+                /* tfp (ch_member_update: target fingerprint) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "tfp", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
+                        memcpy(msg->ch_mu_target_fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                 }
                 else {
                     cbor_decode_skip(&dec);

@@ -311,15 +311,19 @@ int nodus_ch_primary_handle_post(nodus_channel_server_t *cs,
     post.body_len = msg->data_len;
     memcpy(post.signature.bytes, msg->sig.bytes, NODUS_SIG_BYTES);
 
-    /* 5. VERIFY SIGNATURE (SECURITY: CRIT-01) */
-    if (verify_channel_post_sig(&post, &sess->client_pk) != 0) {
-        post.body = NULL;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INVALID_SIGNATURE,
-                        "invalid post signature", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
-        QGP_LOG_WARN(LOG_TAG, "ch_post rejected: invalid signature, slot=%d",
-                     sess->conn->slot);
-        return -1;
+    /* 5. VERIFY SIGNATURE (SECURITY: CRIT-01)
+     * Skip for encrypted channels — signature is inside the encrypted blob,
+     * only group members with GEK can verify. Nodus has zero knowledge. */
+    if (!nodus_channel_is_encrypted(cs->ch_store, msg->channel_uuid)) {
+        if (verify_channel_post_sig(&post, &sess->client_pk) != 0) {
+            post.body = NULL;
+            nodus_t2_error(msg->txn_id, NODUS_ERR_INVALID_SIGNATURE,
+                            "invalid post signature", buf, sizeof(buf), &len);
+            nodus_tcp_send(sess->conn, buf, len);
+            QGP_LOG_WARN(LOG_TAG, "ch_post rejected: invalid signature, slot=%d",
+                         sess->conn->slot);
+            return -1;
+        }
     }
 
     /* 6. Store in SQLite */
@@ -340,6 +344,55 @@ int nodus_ch_primary_handle_post(nodus_channel_server_t *cs,
     /* 8. Push to ALL subscribed clients FIRST (user experience before replication) */
     if (rc == 0) {  /* rc==0 means new post (not duplicate) */
         nodus_ch_notify_subscribers(cs, msg->channel_uuid, &post);
+
+        /* Step 1.6: For encrypted channels, queue for offline push targets.
+         * For each push target NOT currently subscribed, add to pending_push. */
+        if (nodus_channel_is_encrypted(cs->ch_store, msg->channel_uuid)) {
+            nodus_push_target_t *targets = NULL;
+            size_t target_count = 0;
+            if (nodus_push_target_get(cs->ch_store, msg->channel_uuid,
+                                       &targets, &target_count) == 0 && target_count > 0) {
+                /* Build the notification frame to queue for offline targets */
+                size_t ntf_cap = 256 + post.body_len + NODUS_SIG_BYTES + NODUS_KEY_BYTES;
+                uint8_t *ntf_buf = malloc(ntf_cap);
+                size_t ntf_len = 0;
+                bool ntf_ok = false;
+                if (ntf_buf) {
+                    ntf_ok = (nodus_t2_ch_post_notify(0, msg->channel_uuid, &post,
+                                                       ntf_buf, ntf_cap, &ntf_len) == 0);
+                }
+
+                uint64_t expires = nodus_time_now() + NODUS_CHANNEL_RETENTION;
+
+                for (size_t t = 0; t < target_count; t++) {
+                    /* Check if this target is currently subscribed */
+                    bool subscribed = false;
+                    for (int i = 0; i < NODUS_CH_MAX_CLIENT_SESSIONS; i++) {
+                        nodus_ch_client_session_t *cl = &cs->clients[i];
+                        if (!cl->conn || !cl->authenticated) continue;
+                        if (nodus_key_cmp(&cl->client_fp, &targets[t].target_fp) != 0)
+                            continue;
+                        for (int j = 0; j < cl->ch_sub_count; j++) {
+                            if (memcmp(cl->ch_subs[j], msg->channel_uuid,
+                                       NODUS_UUID_BYTES) == 0) {
+                                subscribed = true;
+                                break;
+                            }
+                        }
+                        if (subscribed) break;
+                    }
+
+                    if (!subscribed && ntf_ok) {
+                        nodus_pending_push_add(cs->ch_store, msg->channel_uuid,
+                                                &targets[t].target_fp,
+                                                ntf_buf, ntf_len, expires);
+                    }
+                }
+
+                free(ntf_buf);
+                free(targets);
+            }
+        }
     }
 
     /* 9. Trigger replication to BACKUPs (via callback) */
@@ -397,7 +450,6 @@ int nodus_ch_primary_handle_get(nodus_channel_server_t *cs,
 int nodus_ch_primary_handle_subscribe(nodus_channel_server_t *cs,
                                        nodus_ch_client_session_t *sess,
                                        const nodus_tier2_msg_t *msg) {
-    (void)cs;
     nodus_ch_client_add_sub(sess, msg->channel_uuid);
 
     uint8_t buf[128];
@@ -407,6 +459,32 @@ int nodus_ch_primary_handle_subscribe(nodus_channel_server_t *cs,
 
     QGP_LOG_DEBUG(LOG_TAG, "Subscribed: slot=%d subs=%d",
                   sess->conn->slot, sess->ch_sub_count);
+
+    /* Step 1.7: For encrypted channels, drain pending push queue.
+     * Check if subscriber is a push target, then send queued posts. */
+    if (cs->ch_store &&
+        nodus_channel_is_encrypted(cs->ch_store, msg->channel_uuid) &&
+        nodus_push_target_has(cs->ch_store, msg->channel_uuid, &sess->client_fp)) {
+
+        nodus_pending_push_t *entries = NULL;
+        size_t count = 0;
+        if (nodus_pending_push_get(cs->ch_store, msg->channel_uuid,
+                                    &sess->client_fp, 1000,
+                                    &entries, &count) == 0 && count > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Draining %zu pending push entries for subscriber",
+                         count);
+            for (size_t i = 0; i < count; i++) {
+                nodus_tcp_send(sess->conn, entries[i].post_data,
+                               entries[i].post_data_len);
+                nodus_pending_push_delete(cs->ch_store, entries[i].id);
+            }
+            nodus_pending_push_free(entries, count);
+        }
+
+        /* Also cleanup expired entries while we're at it */
+        nodus_pending_push_cleanup(cs->ch_store);
+    }
+
     return 0;
 }
 

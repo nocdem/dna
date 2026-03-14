@@ -88,6 +88,22 @@ int nodus_channel_store_open(const char *db_path, nodus_channel_store_t *store) 
         ");");
     if (rc != 0) { sqlite3_close(store->db); store->db = NULL; return -1; }
 
+    /* Create pending push table (store-and-forward for encrypted channels) */
+    rc = exec_sql(store->db,
+        "CREATE TABLE IF NOT EXISTS channel_pending_push ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  channel_uuid BLOB NOT NULL,"
+        "  target_fp    BLOB NOT NULL,"
+        "  post_data    BLOB NOT NULL,"
+        "  created_at   INTEGER NOT NULL,"
+        "  expires_at   INTEGER NOT NULL"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_pending_push_target "
+        "ON channel_pending_push(channel_uuid, target_fp);"
+        "CREATE INDEX IF NOT EXISTS idx_pending_push_expires "
+        "ON channel_pending_push(expires_at);");
+    if (rc != 0) { sqlite3_close(store->db); store->db = NULL; return -1; }
+
     /* Prepare hinted handoff statements */
     sqlite3_prepare_v2(store->db,
         "INSERT INTO hinted_handoff (target_fp, channel_uuid, post_data, created_at, expires_at) "
@@ -129,6 +145,26 @@ int nodus_channel_store_open(const char *db_path, nodus_channel_store_t *store) 
         "SELECT 1 FROM channel_push_targets WHERE channel_uuid = ? AND target_fp = ?",
         -1, &store->stmt_pt_has, NULL);
 
+    /* Pending push prepared statements */
+    sqlite3_prepare_v2(store->db,
+        "INSERT INTO channel_pending_push (channel_uuid, target_fp, post_data, created_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        -1, &store->stmt_pp_insert, NULL);
+
+    sqlite3_prepare_v2(store->db,
+        "SELECT id, channel_uuid, target_fp, post_data, created_at, expires_at "
+        "FROM channel_pending_push WHERE channel_uuid = ? AND target_fp = ? "
+        "ORDER BY id LIMIT ?",
+        -1, &store->stmt_pp_get, NULL);
+
+    sqlite3_prepare_v2(store->db,
+        "DELETE FROM channel_pending_push WHERE id = ?",
+        -1, &store->stmt_pp_delete, NULL);
+
+    sqlite3_prepare_v2(store->db,
+        "DELETE FROM channel_pending_push WHERE expires_at < ?",
+        -1, &store->stmt_pp_cleanup, NULL);
+
     return 0;
 }
 
@@ -143,6 +179,10 @@ void nodus_channel_store_close(nodus_channel_store_t *store) {
     if (store->stmt_pt_delete)         sqlite3_finalize(store->stmt_pt_delete);
     if (store->stmt_pt_get)            sqlite3_finalize(store->stmt_pt_get);
     if (store->stmt_pt_has)            sqlite3_finalize(store->stmt_pt_has);
+    if (store->stmt_pp_insert)         sqlite3_finalize(store->stmt_pp_insert);
+    if (store->stmt_pp_get)            sqlite3_finalize(store->stmt_pp_get);
+    if (store->stmt_pp_delete)         sqlite3_finalize(store->stmt_pp_delete);
+    if (store->stmt_pp_cleanup)        sqlite3_finalize(store->stmt_pp_cleanup);
     if (store->db) sqlite3_close(store->db);
     memset(store, 0, sizeof(*store));
 }
@@ -686,6 +726,113 @@ bool nodus_push_target_has(nodus_channel_store_t *store,
     bool found = (sqlite3_step(s) == SQLITE_ROW);
     sqlite3_reset(s);
     return found;
+}
+
+/* ── Pending push (store-and-forward) ───────────────────────────── */
+
+int nodus_pending_push_add(nodus_channel_store_t *store,
+                            const uint8_t uuid[NODUS_UUID_BYTES],
+                            const nodus_key_t *target_fp,
+                            const uint8_t *post_data, size_t post_data_len,
+                            uint64_t expires_at) {
+    if (!store || !uuid || !target_fp || !post_data) return -1;
+
+    sqlite3_stmt *s = store->stmt_pp_insert;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 2, target_fp->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 3, post_data, (int)post_data_len, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 4, (int64_t)nodus_time_now());
+    sqlite3_bind_int64(s, 5, (int64_t)expires_at);
+    return (sqlite3_step(s) == SQLITE_DONE) ? 0 : -1;
+}
+
+int nodus_pending_push_get(nodus_channel_store_t *store,
+                            const uint8_t uuid[NODUS_UUID_BYTES],
+                            const nodus_key_t *target_fp,
+                            int max_count,
+                            nodus_pending_push_t **entries_out,
+                            size_t *count_out) {
+    if (!store || !uuid || !target_fp || !entries_out || !count_out) return -1;
+    *entries_out = NULL;
+    *count_out = 0;
+
+    sqlite3_stmt *s = store->stmt_pp_get;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 2, target_fp->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    sqlite3_bind_int(s, 3, max_count > 0 ? max_count : 1000);
+
+    size_t cap = 64;
+    size_t count = 0;
+    nodus_pending_push_t *entries = calloc(cap, sizeof(*entries));
+    if (!entries) return -1;
+
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        if (count >= cap) {
+            cap *= 2;
+            nodus_pending_push_t *e = realloc(entries, cap * sizeof(*e));
+            if (!e) break;
+            entries = e;
+        }
+
+        nodus_pending_push_t *e = &entries[count];
+        memset(e, 0, sizeof(*e));
+        e->id = sqlite3_column_int64(s, 0);
+
+        const void *blob = sqlite3_column_blob(s, 1);
+        if (blob) memcpy(e->channel_uuid, blob, NODUS_UUID_BYTES);
+
+        blob = sqlite3_column_blob(s, 2);
+        if (blob) memcpy(e->target_fp.bytes, blob, NODUS_KEY_BYTES);
+
+        blob = sqlite3_column_blob(s, 3);
+        int blen = sqlite3_column_bytes(s, 3);
+        if (blob && blen > 0) {
+            e->post_data = malloc((size_t)blen);
+            if (e->post_data) {
+                memcpy(e->post_data, blob, (size_t)blen);
+                e->post_data_len = (size_t)blen;
+            }
+        }
+
+        e->created_at = (uint64_t)sqlite3_column_int64(s, 4);
+        e->expires_at = (uint64_t)sqlite3_column_int64(s, 5);
+        count++;
+    }
+
+    if (count == 0) {
+        free(entries);
+        return 0;
+    }
+
+    *entries_out = entries;
+    *count_out = count;
+    return 0;
+}
+
+int nodus_pending_push_delete(nodus_channel_store_t *store, int64_t id) {
+    if (!store) return -1;
+    sqlite3_stmt *s = store->stmt_pp_delete;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, id);
+    return (sqlite3_step(s) == SQLITE_DONE) ? 0 : -1;
+}
+
+int nodus_pending_push_cleanup(nodus_channel_store_t *store) {
+    if (!store) return -1;
+    sqlite3_stmt *s = store->stmt_pp_cleanup;
+    sqlite3_reset(s);
+    sqlite3_bind_int64(s, 1, (int64_t)nodus_time_now());
+    if (sqlite3_step(s) != SQLITE_DONE) return -1;
+    return sqlite3_changes(store->db);
+}
+
+void nodus_pending_push_free(nodus_pending_push_t *entries, size_t count) {
+    if (!entries) return;
+    for (size_t i = 0; i < count; i++)
+        free(entries[i].post_data);
+    free(entries);
 }
 
 /* ── Free helpers ───────────────────────────────────────────────── */
