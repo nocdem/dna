@@ -1157,7 +1157,7 @@
                 <a href="/products/dna-identity.html">DNA Identity</a>
                 <a href="/products/dna-connect.html" class="active">DNA Connect</a>
                 <a href="/products/nodus.html">DNA Nodus</a>
-                <a href="/products/dna-library.html">DNA Library</a>
+
               </div>
             </div>
 
@@ -1454,8 +1454,52 @@
       </div>
     </section>
 
+    <!-- ── Technology ──────────────────────────── -->
+    <section class="s-section s-dark" id="technology">
+      <div class="wrap">
+        <div class="section-header-center">
+          <div class="section-label">Technology</div>
+          <h2 class="section-title">Post-quantum C engine under the hood</h2>
+          <p class="section-desc">
+            All cryptography, messaging, and DHT operations run in a native C library (libdna). Flutter, Android, and CLI connect through thin FFI bindings &mdash; zero crypto in managed code.
+          </p>
+        </div>
+
+        <div class="pillars stagger">
+          <div class="pillar reveal">
+            <div class="pillar-icon">
+              <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            </div>
+            <h3 class="pillar-title">Modular Engine</h3>
+            <p class="pillar-desc">Async task queue with domain modules: messaging, identity, wallet, contacts, DHT, backup. Thread pool for concurrent execution.</p>
+          </div>
+          <div class="pillar reveal">
+            <div class="pillar-icon">
+              <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+            </div>
+            <h3 class="pillar-title">Cross-Platform</h3>
+            <p class="pillar-desc">Same C code compiles for Linux, Windows, and Android. Flutter via dart:ffi, Android via JNI, CLI for automation.</p>
+          </div>
+          <div class="pillar reveal">
+            <div class="pillar-icon">
+              <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+            </div>
+            <h3 class="pillar-title">Open Source</h3>
+            <p class="pillar-desc">C library, Nodus server, and shared crypto are Apache 2.0 licensed. DNA Connect app is source-available for auditing.</p>
+          </div>
+          <div class="pillar reveal">
+            <div class="pillar-icon">
+              <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(-30 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(30 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(90 12 12)"/><circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"/></svg>
+            </div>
+            <h3 class="pillar-title">NIST Category 5</h3>
+            <p class="pillar-desc">ML-KEM-1024 key exchange, ML-DSA-87 signatures, SHA3-512 hashing, AES-256-GCM encryption. Maximum quantum resistance.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ── Downloads ───────────────────────────── -->
-    <section class="s-section s-dark" id="downloads">
+    <section class="s-section s-alt" id="downloads">
       <div class="wrap">
         <div class="section-header">
           <div class="section-label">Downloads</div>
@@ -1514,7 +1558,7 @@
           <a href="/products/dna-identity.html">DNA Identity</a>
           <a href="/products/dna-connect.html">DNA Connect</a>
           <a href="/products/nodus.html">DNA Nodus</a>
-          <a href="/products/dna-library.html">DNA Library</a>
+
           <a href="/team.html">Team</a>
           <a href="/doc/cpunk-litepaper.pdf">Litepaper</a>
           <a href="/doc/cpunk-legal.pdf">Legal</a>
