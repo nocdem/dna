@@ -234,6 +234,27 @@ if(DNAC_BUILD_TESTS)
 
     add_test(NAME real COMMAND test_real)
 
+    # Chain ID derivation and phase 1 genesis tests (offline, no network)
+    add_executable(test_chain_id tests/test_chain_id.c)
+
+    target_link_libraries(test_chain_id dnac)
+
+    if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
+        target_link_libraries(test_chain_id ${DNA_BUILD_DIR}/libdna.so)
+    else()
+        target_link_libraries(test_chain_id ${DNA_BUILD_DIR}/libdna.a)
+    endif()
+
+    target_link_libraries(test_chain_id
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        ${SQLITE3_LIBRARIES}
+        pthread
+        m
+    )
+
+    add_test(NAME chain_id COMMAND test_chain_id)
+
     # Remote send test (sends to different machine)
     add_executable(test_remote tests/test_remote.c)
 
