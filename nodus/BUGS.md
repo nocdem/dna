@@ -1,5 +1,14 @@
 # Nodus — Known Issues & Deferred Fixes
 
+## FIXED: Channel Ring Heartbeat Spam
+
+### MED: CH_RING "Node heartbeat timeout" Infinite Log Spam (FIXED)
+- **Location**: `nodus/src/channel/nodus_channel_ring.c` — `nodus_ch_ring_handle_ack()`
+- **Issue**: When `ring_ack` returns `agree=false`, `check_pending` was cleared but `last_heartbeat_recv` was not reset. Every 5s `ring_tick` re-detected the same stale timestamp → infinite log spam.
+- **Fix**: On `disagree`, reset `last_heartbeat_recv = nodus_time_now_ms()` to give the node a fresh 45s grace period.
+
+---
+
 ## Deferred: BFT/DNAC Witness (Lowest Priority)
 
 These are real vulnerabilities but BFT consensus is **test-only** with **no real tokens**.

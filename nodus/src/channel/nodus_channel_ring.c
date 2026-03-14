@@ -342,8 +342,16 @@ int nodus_ch_ring_handle_ack(nodus_ch_ring_t *rm,
         QGP_LOG_INFO(LOG_TAG, "Dead node evicted (confirmed), ring_version=%u",
                      rm->cs->ring->version);
     } else {
+        /* Disagree: peer says node is alive. Reset heartbeat timer
+         * to give it a fresh 45s grace period. Without this reset,
+         * ring_tick would re-detect the same stale timestamp every
+         * 5s and loop forever (log spam). */
+        nodus_ch_node_session_t *ns = find_node_session(rm->cs, &ch->check_node_id);
+        if (ns) {
+            ns->last_heartbeat_recv = nodus_time_now_ms();
+        }
         QGP_LOG_INFO(LOG_TAG,
-                     "ring_ack disagree -- node not confirmed dead");
+                     "ring_ack disagree -- node not confirmed dead, heartbeat reset");
     }
 
     return 0;
