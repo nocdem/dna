@@ -701,6 +701,7 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
         if (existing && existing->state == NODUS_CONN_CONNECTED) {
             if (pi >= 0) {
                 w->peers[pi].conn = existing;
+                w->peers[pi].identified = true;
                 w->peers[pi].connect_failures = 0;
             }
             continue;
@@ -735,10 +736,21 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
 
         if (pi >= 0) {
             w->peers[pi].conn = conn;
-            w->peers[pi].identified = false;
             w->peers[pi].connect_failures = 0;
             w->peers[pi].last_attempt = now;
         }
+    }
+
+    /* Mark peers as identified when their TCP connection is established.
+     * No w_ident exchange needed — roster already has witness_id and pubkey
+     * from DHT registry. We match by IP address from the roster entry. */
+    for (int i = 0; i < w->peer_count; i++) {
+        if (w->peers[i].identified) continue;
+        if (!w->peers[i].conn) continue;
+        if (w->peers[i].conn->state != NODUS_CONN_CONNECTED) continue;
+
+        /* Connection established — peer is identified via roster */
+        w->peers[i].identified = true;
     }
 }
 
