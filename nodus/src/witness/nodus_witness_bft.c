@@ -48,6 +48,7 @@ static uint64_t time_ms(void) {
 
 #define NONCE_BUCKET_COUNT  256
 #define NONCE_TTL_SECS      300  /* 5 minutes */
+#define NONCE_MAX_TOTAL     10000  /* M-35: Max entries to prevent memory exhaustion */
 
 typedef struct nonce_node {
     uint8_t  sender_id[NODUS_T3_WITNESS_ID_LEN];
@@ -57,6 +58,7 @@ typedef struct nonce_node {
 } nonce_node_t;
 
 static nonce_node_t *nonce_buckets[NONCE_BUCKET_COUNT];
+static uint32_t nonce_total_count = 0;  /* M-35: Track total entries */
 
 static uint32_t nonce_hash_fn(const uint8_t *sender_id, uint64_t nonce) {
     uint32_t h = 0x811c9dc5;
@@ -78,9 +80,36 @@ static void nonce_evict_bucket(uint32_t bucket, uint64_t now) {
             nonce_node_t *expired = *pp;
             *pp = expired->next;
             free(expired);
+            if (nonce_total_count > 0) nonce_total_count--;
         } else {
             pp = &(*pp)->next;
         }
+    }
+}
+
+/* M-35: Evict oldest entries across all buckets when table is full */
+static void nonce_evict_oldest(void) {
+    uint64_t oldest_ts = UINT64_MAX;
+    uint32_t oldest_bucket = 0;
+
+    /* Find bucket containing the oldest entry */
+    for (uint32_t b = 0; b < NONCE_BUCKET_COUNT; b++) {
+        for (nonce_node_t *n = nonce_buckets[b]; n; n = n->next) {
+            if (n->timestamp < oldest_ts) {
+                oldest_ts = n->timestamp;
+                oldest_bucket = b;
+            }
+        }
+    }
+
+    /* Remove all entries from that bucket (batch eviction) */
+    nonce_node_t *head = nonce_buckets[oldest_bucket];
+    nonce_buckets[oldest_bucket] = NULL;
+    while (head) {
+        nonce_node_t *next = head->next;
+        free(head);
+        if (nonce_total_count > 0) nonce_total_count--;
+        head = next;
     }
 }
 
@@ -104,6 +133,11 @@ static bool is_replay(const uint8_t *sender_id, uint64_t nonce,
             return true;
     }
 
+    /* M-35: Evict oldest bucket if at capacity */
+    if (nonce_total_count >= NONCE_MAX_TOTAL) {
+        nonce_evict_oldest();
+    }
+
     /* Insert new entry at head (no mutex needed — single-threaded epoll) */
     nonce_node_t *node = malloc(sizeof(nonce_node_t));
     if (node) {
@@ -112,6 +146,7 @@ static bool is_replay(const uint8_t *sender_id, uint64_t nonce,
         node->timestamp = timestamp;
         node->next = nonce_buckets[bucket];
         nonce_buckets[bucket] = node;
+        nonce_total_count++;
     }
 
     return false;

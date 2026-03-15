@@ -268,6 +268,16 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     /* BFT timeout checks */
     nodus_witness_bft_check_timeout(witness);
 
+    /* H-15: Pending forward timeout (30s) */
+    if (witness->pending_forward.active) {
+        uint64_t now_s = nodus_time_now();
+        if (now_s - witness->pending_forward.started_at > 30) {
+            fprintf(stderr, "WITNESS: pending_forward timed out after 30s\n");
+            witness->pending_forward.active = false;
+            witness->pending_forward.client_conn = NULL;
+        }
+    }
+
     /* Peer mesh: reconnection, IDENT exchange */
     nodus_witness_peer_tick(witness);
 

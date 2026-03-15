@@ -40,10 +40,13 @@ int nodus_ch_replication_send(nodus_ch_replication_t *rep,
 /**
  * Handle incoming ch_replicate on BACKUP node.
  * Store post locally (dedup by post_uuid via INSERT OR IGNORE).
+ * H-08: author_pk used to verify Dilithium5 sig on non-encrypted channels.
+ *        Pass NULL if author_pk is unavailable (sig verify skipped).
  */
 int nodus_ch_replication_receive(nodus_ch_replication_t *rep,
                                   const uint8_t channel_uuid[NODUS_UUID_BYTES],
-                                  const nodus_channel_post_t *post);
+                                  const nodus_channel_post_t *post,
+                                  const nodus_pubkey_t *author_pk);
 
 /**
  * Retry hinted handoff entries. Call periodically (every 30s).

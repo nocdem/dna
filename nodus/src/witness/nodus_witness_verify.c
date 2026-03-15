@@ -341,8 +341,8 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
 
     /* ── Check 5: Fee ──────────────────────────────────────────── */
     uint64_t actual_fee = total_input - total_output;
-    /* Use total_output/1000 instead of (total_output*10)/10000 to avoid overflow */
-    uint64_t min_fee = total_output / 1000;
+    /* H-17: Fee = total_input / 1000 (0.1%), min 1 — aligned with client builder */
+    uint64_t min_fee = total_input / 1000;
     if (min_fee == 0) min_fee = 1;
 
     if (actual_fee < min_fee) {

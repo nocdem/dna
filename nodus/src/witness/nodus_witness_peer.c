@@ -874,6 +874,12 @@ void nodus_witness_peer_conn_closed(nodus_witness_t *w,
     /* Also clear any BFT round state referencing this conn */
     if (w->round_state.client_conn == conn)
         w->round_state.client_conn = NULL;
+
+    /* H-15: Clear pending forward if it references this connection */
+    if (w->pending_forward.active && w->pending_forward.client_conn == conn) {
+        w->pending_forward.active = false;
+        w->pending_forward.client_conn = NULL;
+    }
 }
 
 /* ── Close ───────────────────────────────────────────────────────── */

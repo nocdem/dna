@@ -107,11 +107,7 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
     if (rc != DNAC_SUCCESS) return rc;
 
     /* Recalculate fee based on total_input.
-     * Witness checks: actual_fee >= total_output / 1000
-     * where total_output = total_input - fee.
-     * Solving: fee >= (total_input - fee) / 1000
-     *        → 1001 * fee >= total_input
-     *        → fee = ceil(total_input / 1001)
+     * H-17: Aligned with witness — both use total_input / 1000 (0.1%), min 1.
      */
     uint64_t total_input = 0;
     for (int i = 0; i < selected_count; i++) {
@@ -120,7 +116,7 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
             return DNAC_ERROR_OVERFLOW;
         }
     }
-    fee = (total_input + 1000) / 1001;
+    fee = total_input / 1000;
     if (fee < 1) fee = 1;
 
     if (builder->total_output_amount + fee > total_input) {

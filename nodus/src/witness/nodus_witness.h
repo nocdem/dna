@@ -225,6 +225,7 @@ typedef struct nodus_witness {
         uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
         struct nodus_tcp_conn *client_conn;
         uint32_t    client_txn_id;
+        uint64_t    started_at;     /* H-15: timestamp for timeout (seconds) */
     } pending_forward;
 
     /* Witness database (separate from DHT storage) */

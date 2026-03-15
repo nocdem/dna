@@ -360,18 +360,29 @@ void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task) {
     }
 
     int group_id = -1;
+    const char *group_creator = NULL;
     for (int i = 0; i < entry_count; i++) {
         if (strcmp(entries[i].group_uuid, task->params.add_group_member.group_uuid) == 0) {
             group_id = entries[i].local_id;
+            group_creator = entries[i].creator;
             break;
         }
     }
-    dht_groups_free_cache_entries(entries, entry_count);
 
     if (group_id < 0) {
+        dht_groups_free_cache_entries(entries, entry_count);
         error = DNA_ENGINE_ERROR_NOT_FOUND;
         goto done;
     }
+
+    /* M-20: Only group owner/creator can add members */
+    if (!group_creator || strcmp(engine->fingerprint, group_creator) != 0) {
+        dht_groups_free_cache_entries(entries, entry_count);
+        error = DNA_ENGINE_ERROR_PERMISSION;
+        goto done;
+    }
+
+    dht_groups_free_cache_entries(entries, entry_count);
 
     /* Add member using messenger API */
     int rc = messenger_add_group_member(

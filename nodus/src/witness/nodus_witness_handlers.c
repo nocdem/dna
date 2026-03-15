@@ -1019,6 +1019,7 @@ static void handle_dnac_spend(nodus_witness_t *w,
         memcpy(w->pending_forward.tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
         w->pending_forward.client_conn = conn;
         w->pending_forward.client_txn_id = txn_id;
+        w->pending_forward.started_at = (uint64_t)time(NULL);  /* H-15 */
 
         /* Find leader peer */
         uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;

@@ -143,6 +143,11 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     /* Header */
     READ_U8(ptr, tx->version);
     READ_U8(ptr, tx->type);
+    /* M-32: Validate tx_type is within known range */
+    if (tx->type > DNAC_TX_BURN) {
+        free(tx);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
     READ_U64(ptr, tx->timestamp);
     READ_BLOB(ptr, tx->tx_hash, DNAC_TX_HASH_SIZE);
 

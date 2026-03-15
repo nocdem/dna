@@ -12,15 +12,96 @@
 #include "channel/nodus_hashring.h"
 #include "protocol/nodus_tier2.h"
 #include "transport/nodus_tcp.h"
+#include "crypto/nodus_sign.h"
 #include "crypto/utils/qgp_log.h"
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #define LOG_TAG "CH_REPL"
 
 /* Max encoded replication message size (post + Dilithium5 sig ~10KB) */
 #define REPL_BUF_SIZE 16384
+
+/* ---- H-08: Post signature verification helpers (shared with primary.c) -- */
+
+static void repl_uuid_to_string(const uint8_t uuid[NODUS_UUID_BYTES], char out[37]) {
+    snprintf(out, 37,
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             uuid[0], uuid[1], uuid[2], uuid[3],
+             uuid[4], uuid[5], uuid[6], uuid[7],
+             uuid[8], uuid[9], uuid[10], uuid[11],
+             uuid[12], uuid[13], uuid[14], uuid[15]);
+}
+
+static void repl_fp_to_hex(const nodus_key_t *fp, char out[NODUS_KEY_HEX_LEN]) {
+    for (int i = 0; i < NODUS_KEY_BYTES; i++)
+        snprintf(out + i * 2, 3, "%02x", fp->bytes[i]);
+}
+
+static int repl_json_escape(const char *src, size_t src_len,
+                             char *dst, size_t dst_cap) {
+    size_t w = 0;
+    for (size_t i = 0; i < src_len; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (c == '"' || c == '\\') {
+            if (w + 2 > dst_cap) return -1;
+            dst[w++] = '\\'; dst[w++] = (char)c;
+        } else if (c == '\n') { if (w+2>dst_cap) return -1; dst[w++]='\\'; dst[w++]='n';
+        } else if (c == '\r') { if (w+2>dst_cap) return -1; dst[w++]='\\'; dst[w++]='r';
+        } else if (c == '\t') { if (w+2>dst_cap) return -1; dst[w++]='\\'; dst[w++]='t';
+        } else if (c < 0x20) {
+            if (w + 6 > dst_cap) return -1;
+            w += (size_t)snprintf(dst + w, dst_cap - w, "\\u%04x", c);
+        } else {
+            if (w + 1 > dst_cap) return -1;
+            dst[w++] = (char)c;
+        }
+    }
+    if (w >= dst_cap) return -1;
+    dst[w] = '\0';
+    return (int)w;
+}
+
+static int repl_verify_post_sig(const nodus_channel_post_t *post,
+                                 const nodus_pubkey_t *author_pk) {
+    char post_uuid_str[37], ch_uuid_str[37], author_hex[NODUS_KEY_HEX_LEN];
+    repl_uuid_to_string(post->post_uuid, post_uuid_str);
+    repl_uuid_to_string(post->channel_uuid, ch_uuid_str);
+    repl_fp_to_hex(&post->author_fp, author_hex);
+
+    size_t esc_cap = (post->body_len * 6) + 1;
+    char *esc_body = malloc(esc_cap);
+    if (!esc_body) return -1;
+
+    int esc_len = repl_json_escape(post->body ? post->body : "",
+                                    post->body ? post->body_len : 0,
+                                    esc_body, esc_cap);
+    if (esc_len < 0) { free(esc_body); return -1; }
+
+    size_t json_cap = 256 + 37 + 37 + 129 + (size_t)esc_len + 32;
+    char *json_buf = malloc(json_cap);
+    if (!json_buf) { free(esc_body); return -1; }
+
+    int json_len = snprintf(json_buf, json_cap,
+        "{\"post_uuid\":\"%s\","
+        "\"channel_uuid\":\"%s\","
+        "\"author\":\"%s\","
+        "\"body\":\"%s\","
+        "\"created_at\":%llu}",
+        post_uuid_str, ch_uuid_str, author_hex, esc_body,
+        (unsigned long long)post->timestamp);
+    free(esc_body);
+
+    if (json_len < 0 || (size_t)json_len >= json_cap) { free(json_buf); return -1; }
+
+    int rc = nodus_verify(&post->signature,
+                           (const uint8_t *)json_buf, (size_t)json_len,
+                           author_pk);
+    free(json_buf);
+    return rc;
+}
 
 /* ---- Init --------------------------------------------------------------- */
 
@@ -113,9 +194,19 @@ int nodus_ch_replication_send(nodus_ch_replication_t *rep,
 
 int nodus_ch_replication_receive(nodus_ch_replication_t *rep,
                                   const uint8_t channel_uuid[NODUS_UUID_BYTES],
-                                  const nodus_channel_post_t *post)
+                                  const nodus_channel_post_t *post,
+                                  const nodus_pubkey_t *author_pk)
 {
     nodus_channel_server_t *cs = rep->cs;
+
+    /* H-08: Verify post signature on BACKUP for non-encrypted channels.
+     * Encrypted channels: sig is inside the encrypted blob, skip verify. */
+    if (author_pk && !nodus_channel_is_encrypted(cs->ch_store, channel_uuid)) {
+        if (repl_verify_post_sig(post, author_pk) != 0) {
+            QGP_LOG_WARN(LOG_TAG, "Replicated post rejected: invalid signature");
+            return -1;
+        }
+    }
 
     /* Ensure channel table exists */
     nodus_channel_create(cs->ch_store, channel_uuid, false);

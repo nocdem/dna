@@ -97,7 +97,7 @@ static void test_receive_stores_post(void) {
     post.body = body;
     post.body_len = strlen(body);
 
-    int rc = nodus_ch_replication_receive(&rep, test_uuid, &post);
+    int rc = nodus_ch_replication_receive(&rep, test_uuid, &post, NULL);
     if (rc != 0) { FAIL("receive returned error"); return; }
 
     /* Verify post is stored */
@@ -131,7 +131,7 @@ static void test_receive_dedup(void) {
     post.body = body;
     post.body_len = strlen(body);
 
-    int rc = nodus_ch_replication_receive(&rep, test_uuid, &post);
+    int rc = nodus_ch_replication_receive(&rep, test_uuid, &post, NULL);
     if (rc != 0) { FAIL("receive returned error"); return; }
 
     /* Should still be only 1 post */
@@ -163,7 +163,7 @@ static void test_receive_creates_channel(void) {
     post.body = body;
     post.body_len = strlen(body);
 
-    int rc = nodus_ch_replication_receive(&rep, new_uuid, &post);
+    int rc = nodus_ch_replication_receive(&rep, new_uuid, &post, NULL);
     if (rc != 0) { FAIL("receive returned error"); return; }
 
     /* Channel should now exist */

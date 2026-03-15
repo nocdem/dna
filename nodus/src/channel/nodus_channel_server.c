@@ -446,7 +446,9 @@ static void handle_ch_replicate(nodus_channel_server_t *cs,
 
     if (cs->ch_replication_ptr) {
         nodus_ch_replication_t *rep = (nodus_ch_replication_t *)cs->ch_replication_ptr;
-        nodus_ch_replication_receive(rep, msg->channel_uuid, &post);
+        /* H-08: Pass author_pk for signature verification on BACKUP */
+        nodus_ch_replication_receive(rep, msg->channel_uuid, &post,
+                                      msg->has_author_pk ? &msg->author_pk : NULL);
         QGP_LOG_INFO(LOG_TAG, "ch_rep: stored replicated post from %s:%u",
                      sess->conn->ip, (unsigned)sess->conn->port);
     }
