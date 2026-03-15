@@ -491,6 +491,18 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
     sqlite3_reset(stmt);
 
     if (n == 0) {
+        /* Debug: check total rows in wall_posts table */
+        sqlite3_stmt *dbg_stmt = NULL;
+        if (sqlite3_prepare_v2(g_db, "SELECT count(*) FROM wall_posts", -1, &dbg_stmt, NULL) == SQLITE_OK) {
+            if (sqlite3_step(dbg_stmt) == SQLITE_ROW) {
+                int total = sqlite3_column_int(dbg_stmt, 0);
+                QGP_LOG_WARN(LOG_TAG, "load_timeline: 0 matches but %d total rows in wall_posts (fp_count=%zu)", total, fp_count);
+                if (total > 0 && fp_count > 0) {
+                    QGP_LOG_WARN(LOG_TAG, "load_timeline: first fp queried: %.32s...", fingerprints[0]);
+                }
+            }
+            sqlite3_finalize(dbg_stmt);
+        }
         sqlite3_finalize(stmt);
         return 0; /* Empty timeline is not an error */
     }
