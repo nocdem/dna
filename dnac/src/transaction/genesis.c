@@ -186,8 +186,9 @@ int dnac_tx_authorize_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
      * NOTE: For full 3-of-3 client verification, protocol would need to return
      * all 3 attestations. Currently we verify the signatures we receive.
      */
-    if (witness_count < 1) {
-        QGP_LOG_ERROR(LOG_TAG, "Genesis requires witness attestation, got %d", witness_count);
+    if (witness_count < DNAC_GENESIS_WITNESSES_REQUIRED) {
+        QGP_LOG_ERROR(LOG_TAG, "Genesis requires %d witness attestations (unanimous), got %d",
+                      DNAC_GENESIS_WITNESSES_REQUIRED, witness_count);
         return DNAC_ERROR_WITNESS_FAILED;
     }
 
@@ -248,10 +249,11 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
         return DNAC_ERROR_INVALID_PARAM;
     }
 
-    /* Verify we have witness signatures */
-    if (tx->witness_count < 1) {
-        QGP_LOG_ERROR(LOG_TAG, "Genesis not authorized - no witness signatures");
-        return DNAC_ERROR_INVALID_PARAM;
+    /* Verify we have unanimous witness signatures (H-14: reject partial genesis) */
+    if (tx->witness_count < DNAC_GENESIS_WITNESSES_REQUIRED) {
+        QGP_LOG_ERROR(LOG_TAG, "Genesis not authorized - need %d witnesses, have %d",
+                      DNAC_GENESIS_WITNESSES_REQUIRED, tx->witness_count);
+        return DNAC_ERROR_WITNESS_FAILED;
     }
 
     int rc;

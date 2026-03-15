@@ -110,6 +110,9 @@ typedef struct {
 /** Maximum nesting depth for CBOR containers (CRIT-1: prevents stack exhaustion) */
 #define CBOR_MAX_DEPTH  32
 
+/** Maximum array/map element count (M-01: prevents CPU DoS from crafted counts) */
+#define NODUS_CBOR_MAX_ITEMS  4096
+
 /** CBOR decoder state */
 typedef struct {
     const uint8_t *buf;     /* Input buffer */

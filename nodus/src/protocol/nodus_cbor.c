@@ -213,13 +213,25 @@ cbor_item_t cbor_decode_next(cbor_decoder_t *dec) {
         break;
     }
     case CBOR_ARRAY: {
+        uint64_t n = dec_arg(dec, ai);
+        if (n > NODUS_CBOR_MAX_ITEMS) {
+            dec->error = true;
+            item.type = CBOR_ITEM_ERROR;
+            break;
+        }
         item.type = CBOR_ITEM_ARRAY;
-        item.count = (size_t)dec_arg(dec, ai);
+        item.count = (size_t)n;
         break;
     }
     case CBOR_MAP: {
+        uint64_t n = dec_arg(dec, ai);
+        if (n > NODUS_CBOR_MAX_ITEMS) {
+            dec->error = true;
+            item.type = CBOR_ITEM_ERROR;
+            break;
+        }
         item.type = CBOR_ITEM_MAP;
-        item.count = (size_t)dec_arg(dec, ai);
+        item.count = (size_t)n;
         break;
     }
     case CBOR_SIMPLE: {
