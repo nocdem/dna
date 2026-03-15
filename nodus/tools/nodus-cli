@@ -1,0 +1,22 @@
+#!/bin/bash
+# nodus-cli — Nodus management CLI
+case "${1:-help}" in
+    update)
+        shift
+        exec /opt/dna/nodus/tools/nodus-update.sh "$@"
+        ;;
+    version)
+        /usr/local/bin/nodus-server --version 2>&1 | head -1
+        ;;
+    status)
+        systemctl status nodus --no-pager | head -5
+        ;;
+    *)
+        echo "nodus-cli — Nodus management"
+        echo ""
+        echo "Commands:"
+        echo "  update [-s]    Check for updates and apply"
+        echo "  version        Show current version"
+        echo "  status         Show service status"
+        ;;
+esac
