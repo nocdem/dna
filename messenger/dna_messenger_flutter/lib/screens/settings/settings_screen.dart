@@ -1,5 +1,6 @@
 // Settings Screen - App settings and profile management
 import 'dart:io';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -23,6 +24,19 @@ import 'app_lock_settings_screen.dart';
 final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
   return await PackageInfo.fromPlatform();
 });
+
+/// Background isolate function for zipping log files (avoids UI freeze)
+List<int>? _zipLogFiles(List<String> filePaths) {
+  final archive = Archive();
+  for (final path in filePaths) {
+    final file = File(path);
+    if (!file.existsSync()) continue;
+    final bytes = file.readAsBytesSync();
+    final filename = path.split('/').last;
+    archive.addFile(ArchiveFile(filename, bytes.length, bytes));
+  }
+  return ZipEncoder().encode(archive);
+}
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -1019,16 +1033,9 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           return;
         }
 
-        // Create zip archive
-        final archive = Archive();
-        for (final file in logFiles) {
-          final bytes = await file.readAsBytes();
-          final filename = file.path.split('/').last;
-          archive.addFile(ArchiveFile(filename, bytes.length, bytes));
-        }
-
-        // Encode zip
-        final zipData = ZipEncoder().encode(archive);
+        // Create zip archive in background isolate to avoid UI freeze
+        final filePaths = logFiles.map((f) => f.path).toList();
+        final zipData = await compute(_zipLogFiles, filePaths);
         if (zipData == null) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
