@@ -262,30 +262,12 @@ int wall_cache_store(const char *fingerprint,
         return -1;
     }
 
-    /* Delete all existing posts by this author */
-    const char *sql_delete = "DELETE FROM wall_posts WHERE author_fingerprint = ?;";
-    sqlite3_stmt *del_stmt = NULL;
-    rc = sqlite3_prepare_v2(g_db, sql_delete, -1, &del_stmt, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "store: delete prepare: %s\n", sqlite3_errmsg(g_db));
-        sqlite3_exec(g_db, "ROLLBACK;", NULL, NULL, NULL);
-        return -1;
-    }
-
-    sqlite3_bind_text(del_stmt, 1, fingerprint, -1, SQLITE_STATIC);
-    rc = sqlite3_step(del_stmt);
-    sqlite3_finalize(del_stmt);
-
-    if (rc != SQLITE_DONE) {
-        QGP_LOG_ERROR(LOG_TAG, "store: delete step: %s\n", sqlite3_errmsg(g_db));
-        sqlite3_exec(g_db, "ROLLBACK;", NULL, NULL, NULL);
-        return -1;
-    }
-
-    /* Insert each post */
+    /* Upsert posts — INSERT OR REPLACE avoids DELETE+INSERT race condition
+     * where concurrent reads see 0 rows between DELETE and INSERT.
+     * Old posts not in the new set are cleaned up AFTER insert. */
     if (posts && count > 0) {
         const char *sql_insert =
-            "INSERT INTO wall_posts "
+            "INSERT OR REPLACE INTO wall_posts "
             "(uuid, author_fingerprint, text, image_json, timestamp, signature, signature_len, verified, cached_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);";
 
@@ -353,6 +335,19 @@ int wall_cache_store(const char *fingerprint,
         QGP_LOG_ERROR(LOG_TAG, "store: meta step: %s\n", sqlite3_errmsg(g_db));
         sqlite3_exec(g_db, "ROLLBACK;", NULL, NULL, NULL);
         return -1;
+    }
+
+    /* Clean up stale posts by this author that weren't in the new set */
+    {
+        const char *sql_cleanup =
+            "DELETE FROM wall_posts WHERE author_fingerprint = ? AND cached_at < ?;";
+        sqlite3_stmt *cleanup_stmt = NULL;
+        if (sqlite3_prepare_v2(g_db, sql_cleanup, -1, &cleanup_stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(cleanup_stmt, 1, fingerprint, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(cleanup_stmt, 2, (int64_t)time(NULL) - 1);
+            sqlite3_step(cleanup_stmt);
+            sqlite3_finalize(cleanup_stmt);
+        }
     }
 
     /* Commit transaction */
