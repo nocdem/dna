@@ -130,6 +130,13 @@ target_link_libraries(test_gek_ratchet ${TEST_LIBS})
 add_test(NAME test_gek_ratchet COMMAND test_gek_ratchet)
 
 # =============================================================================
+# Test: Group Channel (Phase 2) — UUID mapping, crypto, connector lifecycle
+# =============================================================================
+add_executable(test_group_channel test_group_channel.c)
+target_link_libraries(test_group_channel ${TEST_LIBS})
+add_test(NAME test_group_channel COMMAND test_group_channel)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()

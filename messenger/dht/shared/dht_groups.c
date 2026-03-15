@@ -163,6 +163,7 @@ static char* serialize_metadata(const dht_group_metadata_t *meta) {
     ptr += sprintf(ptr, "\"version\":%u,", meta->version);
     ptr += sprintf(ptr, "\"gek_version\":%u,", meta->gek_version);
     ptr += sprintf(ptr, "\"member_count\":%u,", meta->member_count);
+    ptr += sprintf(ptr, "\"channel_enabled\":%s,", meta->channel_enabled ? "true" : "false");
     ptr += sprintf(ptr, "\"members\":[");
 
     for (uint32_t i = 0; i < meta->member_count; i++) {
@@ -226,6 +227,17 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
         sscanf(gek_p + 14, "%u", &meta->gek_version);
     } else {
         meta->gek_version = 1;  // Default to v1 for old groups
+    }
+
+    // Parse channel_enabled (optional for backward compatibility — Phase 2)
+    const char *ch_p = strstr(p, "\"channel_enabled\":");
+    if (ch_p) {
+        ch_p += 18;
+        // Skip whitespace
+        while (*ch_p == ' ' || *ch_p == '\t') ch_p++;
+        meta->channel_enabled = (strncmp(ch_p, "true", 4) == 0);
+    } else {
+        meta->channel_enabled = false;  // Old groups default to DHT-only
     }
 
     p = strstr(p, "\"member_count\":");

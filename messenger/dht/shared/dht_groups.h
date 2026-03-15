@@ -34,6 +34,7 @@ typedef struct {
     uint32_t gek_version;           // Current GEK (Group Encryption Key) version
     uint32_t member_count;          // Number of members
     char **members;                 // Array of member identities
+    bool channel_enabled;           // True if nodus channel transport is active (Phase 2)
 } dht_group_metadata_t;
 
 /**
