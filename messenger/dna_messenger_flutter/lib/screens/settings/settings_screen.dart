@@ -986,20 +986,25 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           return;
         }
 
-        // Find log files, keep only 10 most recent
+        // Find log files, keep only 3 most recent
         var logFiles = await logsDir
             .list()
             .where((f) => f is File && f.path.contains('dna') && f.path.endsWith('.log'))
             .cast<File>()
             .toList();
 
-        // Sort by modification time (newest first), keep last 10
+        // Sort by modification time (newest first), keep last 3
         if (logFiles.length > 1) {
           final stats = await Future.wait(
             logFiles.map((f) async => MapEntry(f, await f.stat())),
           );
           stats.sort((a, b) => b.value.modified.compareTo(a.value.modified));
-          logFiles = stats.take(10).map((e) => e.key).toList();
+          logFiles = stats.take(3).map((e) => e.key).toList();
+
+          // Delete old logs beyond the 3 most recent
+          for (final old in stats.skip(3)) {
+            try { await old.key.delete(); } catch (_) {}
+          }
         }
 
         if (logFiles.isEmpty) {
