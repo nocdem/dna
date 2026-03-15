@@ -9,7 +9,8 @@
 
 #include "dna_dm_channel.h"
 #include "../shared/nodus_ops.h"
-#include "dna/dna_engine.h"
+/* Forward declaration — avoids DLL import issues on Windows */
+extern const char* dna_engine_get_fingerprint(void *engine);
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/utils/qgp_log.h"
@@ -190,7 +191,7 @@ int dna_dm_channel_connect(void *dna_engine, const char *peer_fp) {
     if (!dna_engine || !peer_fp) return DNA_DM_CH_ERR_PARAM;
 
     /* Get own fingerprint */
-    const char *my_fp = dna_engine_get_fingerprint((dna_engine_t *)dna_engine);
+    const char *my_fp = dna_engine_get_fingerprint((void *)dna_engine);
     if (!my_fp) {
         QGP_LOG_ERROR(LOG_TAG, "No identity loaded");
         return DNA_DM_CH_ERR_PARAM;
@@ -348,8 +349,8 @@ int dna_dm_channel_disconnect(void *dna_engine, const char *peer_fp) {
 int dna_dm_channel_subscribe_all_contacts(void *dna_engine) {
     if (!dna_engine) return -1;
 
-    dna_engine_t *engine = (dna_engine_t *)dna_engine;
-    const char *my_fp = dna_engine_get_fingerprint(engine);
+    void *engine = dna_engine;
+    const char *my_fp = dna_engine_get_fingerprint((void *)engine);
     if (!my_fp) {
         QGP_LOG_WARN(LOG_TAG, "Cannot subscribe DM channels — no identity loaded");
         return -1;
