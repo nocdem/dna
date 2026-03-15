@@ -436,7 +436,7 @@ int qgp_log_export_to_file(const char *filepath) {
  * ============================================================================ */
 
 #define QGP_LOG_FILE_DEFAULT_MAX_SIZE_KB 51200  /* 50 MB default */
-#define QGP_LOG_FILE_DEFAULT_MAX_FILES 3       /* Keep 3 most recent log files */
+#define QGP_LOG_FILE_DEFAULT_MAX_FILES 1       /* Keep only the current log file */
 #define QGP_LOG_FILE_PATH_MAX 512
 
 static FILE *g_log_file = NULL;
