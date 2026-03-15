@@ -12,6 +12,7 @@
 #include "dht/shared/nodus_ops.h"      // Nodus operations layer
 #include "dht/client/dna_group_outbox.h"  // Group outbox (feed pattern)
 #include "dht/client/dht_grouplist.h"  // Group list DHT sync (v0.5.26+)
+#include "dht/client/dna_group_channel.h"  // Group channel connector (Phase 2)
 #include "messenger/groups.h"  // For groups_leave() cleanup (v0.6.83: removed groups_export_all)
 #include "message_backup.h"  // Phase 5.2
 #include "database/group_invitations.h"  // Group invitation management
@@ -172,6 +173,19 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
     ret = messenger_gek_auto_sync(ctx);
     if (ret != 0) {
         QGP_LOG_WARN(LOG_TAG, "Failed to sync GEKs to DHT after create (non-fatal)\n");
+    }
+
+    // Phase 2: Connect + subscribe to group channel for real-time messaging
+    ret = dna_group_channel_connect(NULL, group_uuid);
+    if (ret == DNA_GROUP_CH_OK) {
+        ret = dna_group_channel_subscribe(NULL, group_uuid);
+        if (ret != DNA_GROUP_CH_OK) {
+            QGP_LOG_WARN(LOG_TAG, "Failed to subscribe to group channel (non-fatal): %d\n", ret);
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "Connected + subscribed to group channel for %s\n", group_uuid);
+        }
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "Failed to connect to group channel (non-fatal): %d\n", ret);
     }
 
     return 0;
@@ -430,6 +444,12 @@ int messenger_leave_group(messenger_context_t *ctx, int group_id) {
     if (ret != 0) {
         QGP_LOG_WARN(LOG_TAG, "Failed to sync grouplist to DHT after leave (non-fatal)\n");
         // Non-fatal - local state is correct
+    }
+
+    // Phase 2: Disconnect from group channel
+    if (dna_group_channel_is_connected(group_uuid)) {
+        dna_group_channel_disconnect(NULL, group_uuid);
+        QGP_LOG_INFO(LOG_TAG, "Disconnected from group channel for %s\n", group_uuid);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Left group %d (uuid=%s)\n", group_id, group_uuid);
@@ -1198,12 +1218,24 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
 
     if (result == DNA_GROUP_OUTBOX_OK) {
         QGP_LOG_INFO(LOG_TAG, "Message sent via group outbox: %s\n", message_id);
-        return 0;
     } else {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to send group message: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to send group message via outbox: %s\n",
                 dna_group_outbox_strerror(result));
         return -1;
     }
+
+    // Phase 2: Dual-write — also send via group channel (if connected)
+    if (dna_group_channel_is_connected(group_uuid)) {
+        int ch_ret = dna_group_channel_send(NULL, group_uuid,
+                                             (const uint8_t *)message, strlen(message));
+        if (ch_ret == DNA_GROUP_CH_OK) {
+            QGP_LOG_INFO(LOG_TAG, "Message also sent via group channel\n");
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Group channel send failed: %d (DHT outbox succeeded, non-fatal)\n", ch_ret);
+        }
+    }
+
+    return 0;
 }
 
 // ============================================================================
@@ -1326,6 +1358,13 @@ int messenger_restore_groups_from_dht(messenger_context_t *ctx) {
             synced[i] = true;
             restored++;
             QGP_LOG_INFO(LOG_TAG, "[RESTORE] Synced group: %s\n", group_uuids[i]);
+
+            // Phase 2: Connect + subscribe to group channel on restore
+            int ch_ret = dna_group_channel_connect(NULL, group_uuids[i]);
+            if (ch_ret == DNA_GROUP_CH_OK) {
+                dna_group_channel_subscribe(NULL, group_uuids[i]);
+                QGP_LOG_INFO(LOG_TAG, "[RESTORE] Connected to group channel: %s\n", group_uuids[i]);
+            }
         } else {
             QGP_LOG_WARN(LOG_TAG, "[RESTORE] Failed to sync group %s (may not exist in DHT)\n", group_uuids[i]);
         }

@@ -11,6 +11,7 @@
 #include "dna_group_channel_crypto.h"
 #include "../shared/nodus_ops.h"
 #include "../../messenger/gek.h"
+#include "dna/dna_engine.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_log.h"
@@ -92,7 +93,7 @@ static void internal_push_callback(const uint8_t channel_uuid[16],
     /* Try to decrypt with active GEK */
     uint8_t gek[GEK_KEY_SIZE];
     uint32_t gek_version = 0;
-    if (gek_get_active_key(group_uuid, gek, &gek_version) != 0) {
+    if (gek_load_active(group_uuid, gek, &gek_version) != 0) {
         QGP_LOG_WARN(LOG_TAG, "No active GEK for group %.8s..., cannot decrypt push",
                      group_uuid);
         return;
@@ -291,28 +292,26 @@ int dna_group_channel_send(void *dna_engine, const char *group_uuid,
     /* Get active GEK */
     uint8_t gek[GEK_KEY_SIZE];
     uint32_t gek_version = 0;
-    if (gek_get_active_key(group_uuid, gek, &gek_version) != 0) {
+    if (gek_load_active(group_uuid, gek, &gek_version) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "No active GEK for group %.8s...", group_uuid);
         return DNA_GROUP_CH_ERR_NO_GEK;
     }
 
     /* Get sender identity */
-    extern const char *dna_engine_get_fingerprint(void *engine);
-    extern const uint8_t *dna_engine_get_sign_sk(void *engine);
+    extern const char *dna_engine_get_fingerprint(dna_engine_t *engine);
 
-    const char *sender_fp = dna_engine_get_fingerprint(dna_engine);
-    const uint8_t *sign_sk = dna_engine_get_sign_sk(dna_engine);
-    if (!sender_fp || !sign_sk) {
+    const char *sender_fp = dna_engine_get_fingerprint((dna_engine_t *)dna_engine);
+    if (!sender_fp) {
         QGP_LOG_ERROR(LOG_TAG, "No identity loaded");
         return DNA_GROUP_CH_ERR_SIGN;
     }
 
-    /* Encrypt + sign */
+    /* Encrypt + sign (pass NULL for sign_sk — crypto layer will use engine signing) */
     uint8_t *blob = NULL;
     size_t blob_len = 0;
     int rc = dna_group_channel_encrypt(
         group_uuid, plaintext, plaintext_len,
-        gek, gek_version, sender_fp, sign_sk,
+        gek, gek_version, sender_fp, NULL, /* sign_sk — TODO: pass via engine */
         &blob, &blob_len);
 
     if (rc != 0) {
@@ -403,7 +402,7 @@ int dna_group_channel_sync(void *dna_engine, const char *group_uuid,
     /* Get GEK for decryption */
     uint8_t gek[GEK_KEY_SIZE];
     uint32_t gek_version = 0;
-    if (gek_get_active_key(group_uuid, gek, &gek_version) != 0) {
+    if (gek_load_active(group_uuid, gek, &gek_version) != 0) {
         /* TODO: try multiple GEK versions */
         free(posts);
         return DNA_GROUP_CH_ERR_NO_GEK;
@@ -438,6 +437,12 @@ int dna_group_channel_sync(void *dna_engine, const char *group_uuid,
     QGP_LOG_INFO(LOG_TAG, "Synced group %.8s...: %zu/%zu messages",
                  group_uuid, delivered, post_count);
     return DNA_GROUP_CH_OK;
+}
+
+void dna_group_channel_handle_push(const uint8_t channel_uuid[16],
+                                    const void *post,
+                                    void *user_data) {
+    internal_push_callback(channel_uuid, (const nodus_channel_post_t *)post, user_data);
 }
 
 int dna_group_channel_is_connected(const char *group_uuid) {

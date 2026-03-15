@@ -94,6 +94,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/shared/dht_contact_request.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/client/dna_group_outbox.h"
+#include "dht/client/dna_group_channel.h"  /* Group channel connector (Phase 2) */
 #include "transport/transport.h"
 /* TURN credentials removed in v0.4.61 for privacy */
 #include "database/presence_cache.h"
@@ -523,6 +524,9 @@ static void dna_channel_push_callback(const uint8_t channel_uuid[16],
                  event.data.channel_new_post.author_fingerprint);
 
     dna_dispatch_event(engine, &event);
+
+    /* Phase 2: Forward to group channel subsystem for decryption + delivery */
+    dna_group_channel_handle_push(channel_uuid, post, user_data);
 }
 
 /**
