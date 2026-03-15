@@ -1007,16 +1007,16 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
             .cast<File>()
             .toList();
 
-        // Sort by modification time (newest first), keep last 3
+        // Sort by modification time (newest first), keep last 1 for sharing
         if (logFiles.length > 1) {
           final stats = await Future.wait(
             logFiles.map((f) async => MapEntry(f, await f.stat())),
           );
           stats.sort((a, b) => b.value.modified.compareTo(a.value.modified));
-          logFiles = stats.take(3).map((e) => e.key).toList();
+          logFiles = stats.take(1).map((e) => e.key).toList();
 
-          // Delete old logs beyond the 3 most recent
-          for (final old in stats.skip(3)) {
+          // Delete old logs beyond the most recent
+          for (final old in stats.skip(1)) {
             try { await old.key.delete(); } catch (_) {}
           }
         }
