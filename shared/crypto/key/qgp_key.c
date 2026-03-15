@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
@@ -144,6 +145,10 @@ int qgp_key_save(const qgp_key_t *key, const char *path) {
     }
 
     fclose(fp);
+
+    /* Restrict key file permissions to owner-only (M-14 security fix) */
+    chmod(path, 0600);
+
     return 0;
 }
 

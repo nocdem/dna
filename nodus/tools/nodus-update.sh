@@ -32,7 +32,7 @@ for arg in "$@"; do
 done
 
 # Get current version (from running binary)
-CURRENT=$($BINARY --version 2>&1 | grep -oP 'v[0-9.]+' | head -1 || echo "unknown")
+CURRENT=$($BINARY -h 2>&1 | grep -oP 'v[0-9.]+' | head -1 || echo "unknown")
 CURRENT_COMMIT=$(cd "$NODUS_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 echo "Current: $CURRENT (commit $CURRENT_COMMIT)"

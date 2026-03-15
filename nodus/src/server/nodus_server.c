@@ -1749,6 +1749,11 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
         }
 
     } else if (strcmp(msg.method, "sv") == 0) {
+        /* STORE_VALUE: rate-limit to mitigate UDP abuse (H-05) */
+        if (udp_rate_check(from_ip) != 0) {
+            nodus_t1_msg_free(&msg);
+            return;
+        }
         /* STORE_VALUE: inter-node replication */
         if (msg.value) {
             if (nodus_value_verify(msg.value) == 0) {

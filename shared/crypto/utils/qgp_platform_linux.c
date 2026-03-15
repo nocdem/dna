@@ -30,16 +30,24 @@ int qgp_platform_random(uint8_t *buf, size_t len) {
 
 #ifdef __linux__
     /* Try getrandom() syscall first (Linux 3.17+) */
-    ssize_t ret = getrandom(buf, len, 0);
-    if (ret >= 0 && (size_t)ret == len) {
-        return 0;  /* Success */
-    }
-
-    /* If getrandom() failed (older kernel), fall through to /dev/urandom */
-    if (ret < 0 && errno != ENOSYS) {
-        /* Real error, not just "syscall not available" */
-        QGP_LOG_ERROR(LOG_TAG, "getrandom() failed: %s", strerror(errno));
-        /* Continue to fallback */
+    /* M-09: Loop until full len bytes read (partial reads are possible) */
+    {
+        size_t done = 0;
+        while (done < len) {
+            ssize_t ret = getrandom(buf + done, len - done, 0);
+            if (ret > 0) {
+                done += (size_t)ret;
+            } else if (ret < 0) {
+                if (errno == EINTR)
+                    continue;  /* Interrupted — retry */
+                if (errno == ENOSYS)
+                    break;     /* Syscall unavailable — fall through */
+                QGP_LOG_ERROR(LOG_TAG, "getrandom() failed: %s", strerror(errno));
+                break;         /* Fall through to /dev/urandom */
+            }
+        }
+        if (done == len)
+            return 0;  /* Success */
     }
 #endif
 

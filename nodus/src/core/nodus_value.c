@@ -10,6 +10,7 @@
 #include "protocol/nodus_cbor.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <time.h>
 
 /* ── Signing payload ─────────────────────────────────────────────── */
@@ -28,7 +29,10 @@ int nodus_value_sign_payload(const nodus_value_t *val,
      *   value_id  (8 bytes, LE)
      *   seq       (8 bytes, LE)
      */
-    size_t total = NODUS_KEY_BYTES + val->data_len + 1 + 4 + 8 + 8;
+    const size_t overhead = NODUS_KEY_BYTES + 1 + 4 + 8 + 8;
+    if (val->data_len > SIZE_MAX - overhead)
+        return -1;  /* H-13: overflow guard */
+    size_t total = overhead + val->data_len;
     uint8_t *buf = malloc(total);
     if (!buf)
         return -1;

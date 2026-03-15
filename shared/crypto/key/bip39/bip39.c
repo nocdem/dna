@@ -13,6 +13,7 @@
 #include "bip39.h"
 #include "bip39_wordlist.h"
 #include "crypto/utils/qgp_random.h"
+#include "crypto/utils/qgp_platform.h"  /* qgp_secure_memzero */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -87,6 +88,7 @@ int bip39_mnemonic_from_entropy(
 
         // Validate word index
         if (word_index >= 2048) {
+            qgp_secure_memzero(hash, sizeof(hash));  /* M-11 */
             return -1;
         }
 
@@ -96,6 +98,7 @@ int bip39_mnemonic_from_entropy(
 
         // Check buffer space
         if (mnemonic_len + word_len + 2 > mnemonic_size) {
+            qgp_secure_memzero(hash, sizeof(hash));  /* M-11 */
             return -1;
         }
 
@@ -106,6 +109,9 @@ int bip39_mnemonic_from_entropy(
         strcpy(mnemonic + mnemonic_len, word);
         mnemonic_len += word_len;
     }
+
+    /* M-11: Wipe SHA-256 hash after use */
+    qgp_secure_memzero(hash, sizeof(hash));
 
     return 0;
 }
@@ -137,7 +143,12 @@ int bip39_generate_mnemonic(
     }
 
     // Convert entropy to mnemonic
-    return bip39_mnemonic_from_entropy(entropy, entropy_len, mnemonic, mnemonic_size);
+    int rc = bip39_mnemonic_from_entropy(entropy, entropy_len, mnemonic, mnemonic_size);
+
+    /* M-10: Wipe entropy from stack after use */
+    qgp_secure_memzero(entropy, sizeof(entropy));
+
+    return rc;
 }
 
 /**
@@ -250,6 +261,9 @@ bool bip39_validate_mnemonic(const char *mnemonic) {
 
     // Expected checksum: top checksum_bits of SHA256 hash
     uint8_t expected_checksum = hash[0] >> (8 - checksum_bits);
+
+    /* M-11: Wipe SHA-256 hash after use */
+    qgp_secure_memzero(hash, sizeof(hash));
 
     return actual_checksum == expected_checksum;
 }

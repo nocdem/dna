@@ -147,7 +147,8 @@ static char* serialize_metadata(const dht_group_metadata_t *meta) {
     }
     members_size += 16;  // Extra margin for array brackets and final member
 
-    char *json = malloc(base_size + members_size);
+    size_t buf_size = base_size + members_size;
+    char *json = malloc(buf_size);
     if (!json) {
         free(escaped_name);
         free(escaped_desc);
@@ -155,22 +156,33 @@ static char* serialize_metadata(const dht_group_metadata_t *meta) {
     }
 
     char *ptr = json;
-    ptr += sprintf(ptr, "{\"group_uuid\":\"%s\",", meta->group_uuid);
-    ptr += sprintf(ptr, "\"name\":\"%s\",", escaped_name);
-    ptr += sprintf(ptr, "\"description\":\"%s\",", escaped_desc);
-    ptr += sprintf(ptr, "\"creator\":\"%s\",", meta->creator);
-    ptr += sprintf(ptr, "\"created_at\":%lu,", (unsigned long)meta->created_at);
-    ptr += sprintf(ptr, "\"version\":%u,", meta->version);
-    ptr += sprintf(ptr, "\"gek_version\":%u,", meta->gek_version);
-    ptr += sprintf(ptr, "\"member_count\":%u,", meta->member_count);
-    ptr += sprintf(ptr, "\"channel_enabled\":%s,", meta->channel_enabled ? "true" : "false");
-    ptr += sprintf(ptr, "\"members\":[");
+    size_t rem = buf_size;
+    int n;
+
+#define SNAP(fmt, ...) do { \
+    n = snprintf(ptr, rem, fmt, ##__VA_ARGS__); \
+    if (n < 0 || (size_t)n >= rem) { free(json); free(escaped_name); free(escaped_desc); return NULL; } \
+    ptr += n; rem -= (size_t)n; \
+} while(0)
+
+    SNAP("{\"group_uuid\":\"%s\",", meta->group_uuid);
+    SNAP("\"name\":\"%s\",", escaped_name);
+    SNAP("\"description\":\"%s\",", escaped_desc);
+    SNAP("\"creator\":\"%s\",", meta->creator);
+    SNAP("\"created_at\":%lu,", (unsigned long)meta->created_at);
+    SNAP("\"version\":%u,", meta->version);
+    SNAP("\"gek_version\":%u,", meta->gek_version);
+    SNAP("\"member_count\":%u,", meta->member_count);
+    SNAP("\"channel_enabled\":%s,", meta->channel_enabled ? "true" : "false");
+    SNAP("\"members\":[");
 
     for (uint32_t i = 0; i < meta->member_count; i++) {
-        if (i > 0) ptr += sprintf(ptr, ",");
-        ptr += sprintf(ptr, "\"%s\"", meta->members[i]);
+        if (i > 0) SNAP(",");
+        SNAP("\"%s\"", meta->members[i]);
     }
-    ptr += sprintf(ptr, "]}");
+    SNAP("]}");
+
+#undef SNAP
 
     free(escaped_name);
     free(escaped_desc);

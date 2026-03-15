@@ -9,7 +9,10 @@
 
 size_t nodus_frame_encode(uint8_t *buf, size_t buf_cap,
                           const uint8_t *payload, uint32_t payload_len) {
-    size_t total = NODUS_FRAME_HEADER_SIZE + payload_len;
+    /* M-02: sanity-check payload_len against max wire frame sizes */
+    if (payload_len > NODUS_MAX_FRAME_TCP)
+        return 0;
+    size_t total = NODUS_FRAME_HEADER_SIZE + (size_t)payload_len;
     if (!buf || buf_cap < total)
         return 0;
 

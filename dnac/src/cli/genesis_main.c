@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <unistd.h>
@@ -111,10 +112,12 @@ int main(int argc, char **argv) {
     }
 
     const char *fingerprint = argv[optind];
-    uint64_t amount = strtoull(argv[optind + 1], NULL, 10);
+    char *gm_endptr = NULL;
+    errno = 0;
+    uint64_t amount = strtoull(argv[optind + 1], &gm_endptr, 10);
 
-    if (amount == 0) {
-        fprintf(stderr, "Error: Amount must be > 0\n");
+    if (errno == ERANGE || !gm_endptr || *gm_endptr != '\0' || amount == 0) {
+        fprintf(stderr, "Error: Invalid amount '%s' (must be > 0)\n", argv[optind + 1]);
         return 1;
     }
 

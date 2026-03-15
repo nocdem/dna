@@ -3,10 +3,12 @@
 case "${1:-help}" in
     update)
         shift
-        exec /opt/dna/nodus/tools/nodus-update.sh "$@"
+        exec /opt/dna/nodus/tools/nodus-update.sh "$@" 2>/dev/null || exec /usr/local/bin/nodus-update.sh "$@"
         ;;
     version)
-        /usr/local/bin/nodus-server --version 2>&1 | head -1
+        V=$(/usr/local/bin/nodus-server -h 2>&1 | grep -oP 'v[0-9.]+' | head -1)
+        C=$(cd /opt/dna 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo "?")
+        echo "nodus $V (commit $C)"
         ;;
     status)
         systemctl status nodus --no-pager | head -5
@@ -15,7 +17,7 @@ case "${1:-help}" in
         echo "nodus-cli — Nodus management"
         echo ""
         echo "Commands:"
-        echo "  update [-s]    Check for updates and apply"
+        echo "  update [-s]    Check for updates and apply (-s = silent)"
         echo "  version        Show current version"
         echo "  status         Show service status"
         ;;

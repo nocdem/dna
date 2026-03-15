@@ -20,6 +20,7 @@
 #define access _access
 #else
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 int nodus_identity_from_seed(const uint8_t *seed, nodus_identity_t *id_out) {
@@ -96,6 +97,9 @@ int nodus_identity_save(const nodus_identity_t *id, const char *path) {
         return -1;
     }
     fclose(f);
+#ifndef _WIN32
+    chmod(filepath, 0600);  /* M-12: restrict secret key to owner-only */
+#endif
 
     /* Write fingerprint */
     snprintf(filepath, sizeof(filepath), "%s/nodus.fp", path);
@@ -191,8 +195,6 @@ int nodus_identity_import(const uint8_t *buf, size_t len, nodus_identity_t *id_o
 
 void nodus_identity_clear(nodus_identity_t *id) {
     if (!id) return;
-    /* Use volatile to prevent optimizer from removing the memset */
-    volatile uint8_t *p = (volatile uint8_t *)id;
-    for (size_t i = 0; i < sizeof(*id); i++)
-        p[i] = 0;
+    /* M-13: Use platform secure memzero instead of hand-rolled volatile loop */
+    qgp_secure_memzero(id, sizeof(*id));
 }

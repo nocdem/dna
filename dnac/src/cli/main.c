@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <errno.h>
 
 /* Global options */
 static char g_data_dir[512] = "";
@@ -221,9 +222,16 @@ int main(int argc, char **argv) {
             result = 1;
         } else {
             const char *recipient = argv[cmd_start + 1];
-            uint64_t amount = strtoull(argv[cmd_start + 2], NULL, 10);
+            char *endptr = NULL;
+            errno = 0;
+            uint64_t amount = strtoull(argv[cmd_start + 2], &endptr, 10);
+            if (errno == ERANGE || !endptr || *endptr != '\0' || amount == 0) {
+                fprintf(stderr, "Error: Invalid amount '%s'\n", argv[cmd_start + 2]);
+                result = 1;
+            } else {
             const char *memo = (cmd_start + 3 < argc) ? argv[cmd_start + 3] : NULL;
             result = dnac_cli_send(ctx, recipient, amount, memo);
+            }
         }
     }
     else if (strcmp(command, "sync") == 0) {
@@ -253,9 +261,11 @@ int main(int argc, char **argv) {
             result = 1;
         } else {
             const char *fingerprint = argv[cmd_start + 1];
-            uint64_t amount = strtoull(argv[cmd_start + 2], NULL, 10);
-            if (amount == 0) {
-                fprintf(stderr, "Error: Amount must be > 0\n");
+            char *gc_endptr = NULL;
+            errno = 0;
+            uint64_t amount = strtoull(argv[cmd_start + 2], &gc_endptr, 10);
+            if (errno == ERANGE || !gc_endptr || *gc_endptr != '\0' || amount == 0) {
+                fprintf(stderr, "Error: Invalid amount '%s' (must be > 0)\n", argv[cmd_start + 2]);
                 result = 1;
             } else {
                 result = dnac_cli_genesis_create(ctx, fingerprint, amount);

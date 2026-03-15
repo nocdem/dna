@@ -10,6 +10,7 @@
 
 #include "crypto/hash/keccak256.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"  /* qgp_secure_memzero */
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -165,9 +166,9 @@ static void keccak_sponge(
         }
     }
 
-    /* Clear sensitive data */
-    memset(state, 0, sizeof(state));
-    memset(block, 0, sizeof(block));
+    /* L-07: Clear sensitive data with secure wipe */
+    qgp_secure_memzero(state, sizeof(state));
+    qgp_secure_memzero(block, sizeof(block));
 }
 
 /* ============================================================================

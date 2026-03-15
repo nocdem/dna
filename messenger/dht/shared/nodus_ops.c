@@ -447,7 +447,9 @@ void nodus_ops_cancel_all(void) {
         nodus_ops_listen_cleanup_t  cleanup;
         void                       *user_data;
     } entry_t;
-    entry_t entries[MAX_OPS_LISTENERS];
+    /* M-28: heap-allocate to avoid large stack frame (MAX_OPS_LISTENERS=1024) */
+    entry_t *entries = malloc(MAX_OPS_LISTENERS * sizeof(entry_t));
+    if (!entries) return;
     int count = 0;
 
     listener_lock();
@@ -471,6 +473,7 @@ void nodus_ops_cancel_all(void) {
             entries[i].cleanup(entries[i].user_data);
     }
     if (c) nodus_singleton_release();
+    free(entries);
 }
 
 size_t nodus_ops_listen_count(void) {
