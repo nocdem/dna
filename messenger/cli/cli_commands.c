@@ -1400,6 +1400,68 @@ static void listen_signal_handler(int sig) {
     printf("\nStopping listener...\n");
 }
 
+/* Event callback for listen mode — prints messages in real-time */
+static void listen_event_handler(const dna_event_t *event, void *user_data) {
+    (void)user_data;
+    if (!event) return;
+
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    char timestr[16];
+    strftime(timestr, sizeof(timestr), "%H:%M:%S", tm);
+
+    switch (event->type) {
+        case DNA_EVENT_MESSAGE_RECEIVED: {
+            const dna_message_t *msg = &event->data.message_received.message;
+            if (msg->is_outgoing) break; /* skip our own messages */
+            printf("\n[%s] 💬 %.16s...:\n  %s\n\n> ",
+                   timestr,
+                   msg->sender,
+                   msg->plaintext ? msg->plaintext : "(empty)");
+            fflush(stdout);
+            break;
+        }
+        case DNA_EVENT_CHANNEL_NEW_POST: {
+            printf("\n[%s] 📢 Channel %.8s... post by %.16s...\n> ",
+                   timestr,
+                   event->data.channel_new_post.channel_uuid,
+                   event->data.channel_new_post.author_fingerprint);
+            fflush(stdout);
+            break;
+        }
+        case DNA_EVENT_GROUP_MESSAGE_RECEIVED: {
+            printf("\n[%s] 👥 Group message received\n> ",
+                   timestr);
+            fflush(stdout);
+            break;
+        }
+        case DNA_EVENT_CONTACT_REQUEST_RECEIVED: {
+            printf("\n[%s] 🤝 Contact request from %.16s...\n> ",
+                   timestr,
+                   event->data.contact_request_received.request.fingerprint);
+            fflush(stdout);
+            break;
+        }
+        case DNA_EVENT_CONTACT_ONLINE: {
+            printf("\n[%s] 🟢 %.16s... online\n> ",
+                   timestr,
+                   event->data.contact_status.fingerprint);
+            fflush(stdout);
+            break;
+        }
+        case DNA_EVENT_DHT_CONNECTED:
+            printf("\n[%s] ✅ DHT connected\n> ", timestr);
+            fflush(stdout);
+            break;
+        case DNA_EVENT_DHT_DISCONNECTED:
+            printf("\n[%s] ❌ DHT disconnected\n> ", timestr);
+            fflush(stdout);
+            break;
+        default:
+            break;
+    }
+}
+
 int cmd_listen(dna_engine_t *engine) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
@@ -1412,6 +1474,9 @@ int cmd_listen(dna_engine_t *engine) {
         return -1;
     }
 
+    /* Register event callback for real-time display */
+    dna_engine_set_event_callback(engine, listen_event_handler, NULL);
+
     printf("Subscribing to contacts' outboxes for push notifications...\n");
 
     /* Start listeners for all contacts */
@@ -1422,7 +1487,8 @@ int cmd_listen(dna_engine_t *engine) {
     }
 
     printf("Listening to %d contact(s). Press Ctrl+C to stop.\n", count);
-    printf("Incoming messages will be displayed in real-time.\n\n");
+    printf("Incoming messages will be displayed in real-time.\n\n> ");
+    fflush(stdout);
 
     /* Set up signal handler */
     g_listening = true;
@@ -1437,6 +1503,7 @@ int cmd_listen(dna_engine_t *engine) {
 
     /* Cancel all listeners */
     dna_engine_cancel_all_outbox_listeners(engine);
+    dna_engine_set_event_callback(engine, NULL, NULL);
     printf("Listeners cancelled.\n");
 
     return 0;
