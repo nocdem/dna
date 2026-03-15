@@ -74,9 +74,13 @@ int nodus_channel_store_open(const char *db_path, nodus_channel_store_t *store) 
         "CREATE TABLE IF NOT EXISTS channel_meta ("
         "  channel_uuid BLOB NOT NULL PRIMARY KEY,"
         "  encrypted    INTEGER NOT NULL DEFAULT 0,"
-        "  created_at   INTEGER NOT NULL"
+        "  created_at   INTEGER NOT NULL,"
+        "  creator_fp   BLOB"
         ");");
     if (rc != 0) { sqlite3_close(store->db); store->db = NULL; return -1; }
+
+    /* H-07: Migrate existing schema — add creator_fp column if missing */
+    exec_sql(store->db, "ALTER TABLE channel_meta ADD COLUMN creator_fp BLOB");
 
     /* Create push targets table (encrypted channels only) */
     rc = exec_sql(store->db,
@@ -258,6 +262,24 @@ int nodus_channel_create(nodus_channel_store_t *store,
     int rc2 = sqlite3_step(meta_stmt);
     sqlite3_finalize(meta_stmt);
     return (rc2 == SQLITE_DONE) ? 0 : -1;
+}
+
+int nodus_channel_set_creator(nodus_channel_store_t *store,
+                               const uint8_t uuid[NODUS_UUID_BYTES],
+                               const nodus_key_t *creator_fp) {
+    if (!store || !store->db || !uuid || !creator_fp) return -1;
+
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(store->db,
+            "UPDATE channel_meta SET creator_fp = ? WHERE channel_uuid = ? AND creator_fp IS NULL",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return -1;
+
+    sqlite3_bind_blob(stmt, 1, creator_fp->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 2, uuid, NODUS_UUID_BYTES, SQLITE_STATIC);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
 bool nodus_channel_exists(nodus_channel_store_t *store,
@@ -622,7 +644,7 @@ int nodus_channel_load_meta(nodus_channel_store_t *store,
 
     sqlite3_stmt *stmt;
     if (sqlite3_prepare_v2(store->db,
-            "SELECT channel_uuid, encrypted, created_at FROM channel_meta "
+            "SELECT channel_uuid, encrypted, created_at, creator_fp FROM channel_meta "
             "WHERE channel_uuid = ?", -1, &stmt, NULL) != SQLITE_OK)
         return -1;
 
@@ -636,6 +658,14 @@ int nodus_channel_load_meta(nodus_channel_store_t *store,
     if (blob) memcpy(meta_out->uuid, blob, NODUS_UUID_BYTES);
     meta_out->encrypted = (sqlite3_column_int(stmt, 1) != 0);
     meta_out->created_at = (uint64_t)sqlite3_column_int64(stmt, 2);
+    /* H-07: Load creator fingerprint if present */
+    const void *cfp = sqlite3_column_blob(stmt, 3);
+    if (cfp && sqlite3_column_bytes(stmt, 3) == NODUS_KEY_BYTES) {
+        memcpy(meta_out->creator_fp.bytes, cfp, NODUS_KEY_BYTES);
+        meta_out->has_creator_fp = true;
+    } else {
+        meta_out->has_creator_fp = false;
+    }
     sqlite3_finalize(stmt);
     return 0;
 }

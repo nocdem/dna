@@ -262,6 +262,12 @@ void nodus_storage_close(nodus_storage_t *store) {
 int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val) {
     if (!store || !store->db || !val) return -1;
 
+    /* C-04: Verify Dilithium5 signature before storing */
+    if (nodus_value_verify(val) != 0) {
+        fprintf(stderr, "NODUS_STORE: PUT rejected — value signature verification failed\n");
+        return -1;
+    }
+
     sqlite3_stmt *s = store->stmt_put;
     sqlite3_reset(s);
 

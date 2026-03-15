@@ -585,14 +585,14 @@ static int do_commit_db(nodus_witness_t *w,
         return -1;
     }
 
+    /* H-16: Ledger entry INSIDE atomic transaction (before COMMIT) */
+    nodus_witness_ledger_add(w, tx_hash, tx_type, nullifier_count);
+
     if (nodus_witness_db_commit(w) != 0) {
         fprintf(stderr, "%s: db commit failed\n", LOG_TAG);
         nodus_witness_db_rollback(w);
         return -1;
     }
-
-    /* Ledger entry — outside atomic tx, failure is non-fatal */
-    nodus_witness_ledger_add(w, tx_hash, tx_type, nullifier_count);
 
     /* Block creation */
     if (proposer_id) {

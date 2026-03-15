@@ -38,6 +38,8 @@ typedef struct {
     uint8_t     uuid[NODUS_UUID_BYTES];
     bool        encrypted;          /* true for encrypted group channels */
     uint64_t    created_at;
+    nodus_key_t creator_fp;         /* H-07: fingerprint of the channel creator */
+    bool        has_creator_fp;     /* true if creator_fp was stored */
 } nodus_channel_meta_t;
 
 /* ── Push target (encrypted channels only) ──────────────────────── */
@@ -197,6 +199,14 @@ int nodus_hinted_cleanup(nodus_channel_store_t *store);
  */
 bool nodus_channel_is_encrypted(nodus_channel_store_t *store,
                                  const uint8_t uuid[NODUS_UUID_BYTES]);
+
+/**
+ * Set the creator fingerprint for a channel (only if not already set).
+ * @return 0 on success
+ */
+int nodus_channel_set_creator(nodus_channel_store_t *store,
+                               const uint8_t uuid[NODUS_UUID_BYTES],
+                               const nodus_key_t *creator_fp);
 
 /**
  * Load channel metadata.

@@ -145,6 +145,13 @@ int nodus_value_verify(const nodus_value_t *val) {
     if (!val)
         return -1;
 
+    /* H-11: Verify owner_fp == SHA3-512(owner_pk) */
+    nodus_key_t computed_fp;
+    if (nodus_fingerprint(&val->owner_pk, &computed_fp) != 0)
+        return -1;
+    if (memcmp(computed_fp.bytes, val->owner_fp.bytes, NODUS_KEY_BYTES) != 0)
+        return -1;
+
     uint8_t *payload = NULL;
     size_t payload_len = 0;
 

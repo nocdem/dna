@@ -247,6 +247,9 @@ int nodus_ch_primary_handle_create(nodus_channel_server_t *cs,
     /* 1. Create channel table (idempotent) */
     nodus_channel_create(cs->ch_store, msg->channel_uuid, msg->ch_encrypted);
 
+    /* H-07: Store the creator's fingerprint (only sets if not already set) */
+    nodus_channel_set_creator(cs->ch_store, msg->channel_uuid, &sess->client_fp);
+
     /* 2. Track in ring management for heartbeat monitoring */
     if (cs->ch_ring_ptr) {
         nodus_ch_ring_t *rm = (nodus_ch_ring_t *)cs->ch_ring_ptr;
@@ -321,6 +324,21 @@ int nodus_ch_primary_handle_post(nodus_channel_server_t *cs,
                             "invalid post signature", buf, sizeof(buf), &len);
             nodus_tcp_send(sess->conn, buf, len);
             QGP_LOG_WARN(LOG_TAG, "ch_post rejected: invalid signature, slot=%d",
+                         sess->conn->slot);
+            return -1;
+        }
+    } else {
+        /* C-05: For encrypted channels, verify the session's fingerprint is a
+         * registered push target (channel member). Can't verify Dilithium5 sig
+         * (it's inside the encrypted blob), but we can verify membership. */
+        if (!nodus_push_target_has(cs->ch_store, msg->channel_uuid,
+                                    &sess->client_fp)) {
+            post.body = NULL;
+            nodus_t2_error(msg->txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                            "not a member of this encrypted channel",
+                            buf, sizeof(buf), &len);
+            nodus_tcp_send(sess->conn, buf, len);
+            QGP_LOG_WARN(LOG_TAG, "ch_post rejected: non-member on encrypted channel, slot=%d",
                          sess->conn->slot);
             return -1;
         }

@@ -334,6 +334,27 @@ static void handle_ch_member_update(nodus_channel_server_t *cs,
         return;
     }
 
+    /* H-07: Verify the sender is the channel owner/creator */
+    {
+        nodus_channel_meta_t meta;
+        if (nodus_channel_load_meta(cs->ch_store, msg->channel_uuid, &meta) != 0) {
+            nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "failed to load channel metadata", buf, sizeof(buf), &len);
+            nodus_tcp_send(sess->conn, buf, len);
+            return;
+        }
+        if (meta.has_creator_fp &&
+            memcmp(meta.creator_fp.bytes, sess->client_fp.bytes, NODUS_KEY_BYTES) != 0) {
+            nodus_t2_error(msg->txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                            "only channel owner can update members",
+                            buf, sizeof(buf), &len);
+            nodus_tcp_send(sess->conn, buf, len);
+            QGP_LOG_WARN(LOG_TAG, "ch_member_update rejected: non-owner, slot=%d",
+                         sess->conn->slot);
+            return;
+        }
+    }
+
     /* Validate the member update message has required fields */
     if (!msg->has_ch_mu) {
         nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
