@@ -123,6 +123,13 @@ target_link_libraries(test_bip39_bip32 ${TEST_LIBS})
 add_test(NAME test_bip39_bip32 COMMAND test_bip39_bip32)
 
 # =============================================================================
+# Test: GEK v2 HKDF Ratchet Chain
+# =============================================================================
+add_executable(test_gek_ratchet test_gek_ratchet.c)
+target_link_libraries(test_gek_ratchet ${TEST_LIBS})
+add_test(NAME test_gek_ratchet COMMAND test_gek_ratchet)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()

@@ -36,6 +36,9 @@
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
+#include <openssl/evp.h>
+#include <openssl/core_names.h>
+#include <openssl/params.h>
 
 #define LOG_TAG "MSG_GEK"
 
@@ -593,6 +596,165 @@ void gek_clear_kem_keys(void) {
 }
 
 /* ============================================================================
+ * HKDF RATCHET (GEK v2)
+ * ============================================================================ */
+
+/**
+ * HMAC-SHA3-256 using OpenSSL 3.x EVP_MAC API
+ *
+ * @param key       HMAC key
+ * @param key_len   Key length
+ * @param data      Data to authenticate
+ * @param data_len  Data length
+ * @param mac_out   Output buffer (must be at least 32 bytes)
+ * @param mac_len   Output: actual MAC length
+ * @return          0 on success, -1 on error
+ */
+static int hmac_sha3_256(
+    const uint8_t *key, size_t key_len,
+    const uint8_t *data, size_t data_len,
+    uint8_t *mac_out, size_t *mac_len)
+{
+    EVP_MAC *mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+    if (!mac) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch HMAC implementation");
+        return -1;
+    }
+
+    EVP_MAC_CTX *ctx = EVP_MAC_CTX_new(mac);
+    if (!ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create HMAC context");
+        EVP_MAC_free(mac);
+        return -1;
+    }
+
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, "SHA3-256", 0),
+        OSSL_PARAM_construct_end()
+    };
+
+    if (EVP_MAC_init(ctx, key, key_len, params) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "HMAC-SHA3-256 init failed");
+        EVP_MAC_CTX_free(ctx);
+        EVP_MAC_free(mac);
+        return -1;
+    }
+
+    if (EVP_MAC_update(ctx, data, data_len) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "HMAC-SHA3-256 update failed");
+        EVP_MAC_CTX_free(ctx);
+        EVP_MAC_free(mac);
+        return -1;
+    }
+
+    if (EVP_MAC_final(ctx, mac_out, mac_len, QGP_SHA3_256_DIGEST_LENGTH) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "HMAC-SHA3-256 final failed");
+        EVP_MAC_CTX_free(ctx);
+        EVP_MAC_free(mac);
+        return -1;
+    }
+
+    EVP_MAC_CTX_free(ctx);
+    EVP_MAC_free(mac);
+    return 0;
+}
+
+int gek_hkdf_sha3_256(
+    const uint8_t *salt, size_t salt_len,
+    const uint8_t *ikm, size_t ikm_len,
+    const uint8_t *info, size_t info_len,
+    uint8_t *okm, size_t okm_len)
+{
+    if (!salt || !ikm || !info || !okm) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_hkdf_sha3_256: NULL parameter");
+        return -1;
+    }
+
+    if (okm_len > QGP_SHA3_256_DIGEST_LENGTH) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_hkdf_sha3_256: okm_len %zu exceeds SHA3-256 output (32)",
+                      okm_len);
+        return -1;
+    }
+
+    /* HKDF-Extract: PRK = HMAC-SHA3-256(salt, IKM) */
+    uint8_t prk[QGP_SHA3_256_DIGEST_LENGTH];
+    size_t prk_len = 0;
+
+    if (hmac_sha3_256(salt, salt_len, ikm, ikm_len, prk, &prk_len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "HKDF-Extract failed");
+        return -1;
+    }
+
+    /* HKDF-Expand: OKM = HMAC-SHA3-256(PRK, info || 0x01)
+     * Since we only need 32 bytes (= hash output), one iteration suffices */
+    uint8_t expand_input[256];  /* info || 0x01 — info is short (14 bytes) */
+    if (info_len + 1 > sizeof(expand_input)) {
+        QGP_LOG_ERROR(LOG_TAG, "HKDF info too long");
+        qgp_secure_memzero(prk, sizeof(prk));
+        return -1;
+    }
+
+    memcpy(expand_input, info, info_len);
+    expand_input[info_len] = 0x01;
+
+    uint8_t okm_full[QGP_SHA3_256_DIGEST_LENGTH];
+    size_t okm_full_len = 0;
+
+    if (hmac_sha3_256(prk, prk_len, expand_input, info_len + 1,
+                      okm_full, &okm_full_len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "HKDF-Expand failed");
+        qgp_secure_memzero(prk, sizeof(prk));
+        return -1;
+    }
+
+    /* Copy requested output length */
+    memcpy(okm, okm_full, okm_len);
+
+    /* Secure wipe intermediates */
+    qgp_secure_memzero(prk, sizeof(prk));
+    qgp_secure_memzero(okm_full, sizeof(okm_full));
+    qgp_secure_memzero(expand_input, sizeof(expand_input));
+
+    QGP_LOG_DEBUG(LOG_TAG, "HKDF-SHA3-256 derivation complete (%zu bytes)", okm_len);
+    return 0;
+}
+
+int gek_generate_ratcheted(const uint8_t old_gek[GEK_KEY_SIZE],
+                           uint8_t new_gek_out[GEK_KEY_SIZE])
+{
+    if (!old_gek || !new_gek_out) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_generate_ratcheted: NULL parameter");
+        return -1;
+    }
+
+    /* Generate fresh random entropy (salt) */
+    uint8_t entropy[GEK_KEY_SIZE];
+    if (qgp_randombytes(entropy, GEK_KEY_SIZE) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate random entropy for ratchet");
+        return -1;
+    }
+
+    /* Derive new GEK: HKDF-SHA3-256(salt=entropy, ikm=old_gek, info="gek-ratchet-v2") */
+    int rc = gek_hkdf_sha3_256(
+        entropy, GEK_KEY_SIZE,
+        old_gek, GEK_KEY_SIZE,
+        (const uint8_t *)GEK_HKDF_INFO, GEK_HKDF_INFO_LEN,
+        new_gek_out, GEK_KEY_SIZE
+    );
+
+    /* Secure wipe entropy */
+    qgp_secure_memzero(entropy, sizeof(entropy));
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "HKDF ratchet derivation failed");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Generated ratcheted GEK (HKDF-SHA3-256, v2)");
+    return 0;
+}
+
+/* ============================================================================
  * MEMBER CHANGE HANDLERS
  * ============================================================================ */
 
@@ -781,8 +943,198 @@ int gek_rotate_on_member_add(const char *group_uuid, const char *owner_identity)
 }
 
 int gek_rotate_on_member_remove(const char *group_uuid, const char *owner_identity) {
-    QGP_LOG_INFO(LOG_TAG, "Member removed from group %s, rotating GEK...\n", group_uuid);
-    return gek_rotate_and_publish(group_uuid, owner_identity);
+    if (!group_uuid || !owner_identity) {
+        QGP_LOG_ERROR(LOG_TAG, "gek_rotate_on_member_remove: NULL parameter\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Member removed from group %s, rotating GEK with HKDF ratchet (v2)...\n",
+                 group_uuid);
+
+    /* Step 1: Load current GEK for ratchet derivation */
+    uint8_t old_gek[GEK_KEY_SIZE];
+    uint32_t current_version = 0;
+
+    if (gek_load_active(group_uuid, old_gek, &current_version) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "No active GEK found, falling back to random generation\n");
+        /* Fallback: no old GEK to ratchet from, use standard rotation */
+        return gek_rotate_and_publish(group_uuid, owner_identity);
+    }
+
+    /* Step 2: Generate new version (timestamp-based, same as gek_rotate) */
+    uint32_t new_version = (uint32_t)time(NULL);
+    if (new_version <= current_version) {
+        new_version = current_version + 1;
+    }
+
+    /* Step 3: Generate ratcheted GEK using HKDF-SHA3-256 */
+    uint8_t new_gek[GEK_KEY_SIZE];
+    if (gek_generate_ratcheted(old_gek, new_gek) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "HKDF ratchet failed, aborting rotation\n");
+        qgp_secure_memzero(old_gek, sizeof(old_gek));
+        return -1;
+    }
+
+    /* Wipe old GEK from memory */
+    qgp_secure_memzero(old_gek, sizeof(old_gek));
+
+    QGP_LOG_INFO(LOG_TAG, "Ratcheted GEK for group %s: v%u -> v%u (HKDF-SHA3-256)\n",
+                 group_uuid, current_version, new_version);
+
+    /* Step 4: Store new GEK locally */
+    if (gek_store(group_uuid, new_version, new_gek) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store ratcheted GEK\n");
+        qgp_secure_memzero(new_gek, sizeof(new_gek));
+        return -1;
+    }
+
+    /* Step 5: Get group metadata (members list — excludes removed member) */
+    dht_group_metadata_t *meta = NULL;
+    if (dht_groups_get(group_uuid, &meta) != 0 || !meta) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata\n");
+        qgp_secure_memzero(new_gek, sizeof(new_gek));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Building Initial Key Packet for %u remaining members\n",
+                 meta->member_count);
+
+    /* Step 6: Fetch Kyber pubkeys for remaining members */
+    gek_member_entry_t *member_entries = (gek_member_entry_t *)calloc(
+        meta->member_count, sizeof(gek_member_entry_t));
+    if (!member_entries) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate member entries\n");
+        dht_groups_free_metadata(meta);
+        qgp_secure_memzero(new_gek, sizeof(new_gek));
+        return -1;
+    }
+
+    uint8_t **kyber_pubkeys = (uint8_t **)calloc(meta->member_count, sizeof(uint8_t *));
+    if (!kyber_pubkeys) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate kyber pubkey array\n");
+        free(member_entries);
+        dht_groups_free_metadata(meta);
+        qgp_secure_memzero(new_gek, sizeof(new_gek));
+        return -1;
+    }
+
+    size_t valid_members = 0;
+    for (uint32_t i = 0; i < meta->member_count; i++) {
+        const char *member_identity = meta->members[i];
+
+        dna_unified_identity_t *member_id = NULL;
+        if (dht_keyserver_lookup(member_identity, &member_id) != 0 || !member_id) {
+            QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to lookup keys for %s (skipping)\n",
+                          member_identity);
+            continue;
+        }
+
+        uint8_t fingerprint[64];
+        if (qgp_sha3_512(member_id->dilithium_pubkey, 2592, fingerprint) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to calculate fingerprint for %s\n", member_identity);
+            dna_identity_free(member_id);
+            continue;
+        }
+
+        kyber_pubkeys[valid_members] = (uint8_t *)malloc(1568);
+        if (!kyber_pubkeys[valid_members]) {
+            QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
+            dna_identity_free(member_id);
+            continue;
+        }
+
+        memcpy(kyber_pubkeys[valid_members], member_id->kyber_pubkey, 1568);
+        memcpy(member_entries[valid_members].fingerprint, fingerprint, 64);
+        member_entries[valid_members].kyber_pubkey = kyber_pubkeys[valid_members];
+        valid_members++;
+
+        dna_identity_free(member_id);
+    }
+
+    if (valid_members == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "No valid members found, aborting rotation\n");
+        free(member_entries);
+        free(kyber_pubkeys);
+        dht_groups_free_metadata(meta);
+        qgp_secure_memzero(new_gek, sizeof(new_gek));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Found Kyber pubkeys for %zu/%u members\n",
+                 valid_members, meta->member_count);
+
+    /* Step 7: Load owner's Dilithium5 private key for signing */
+    const char *gek_data_dir = qgp_platform_app_data_dir();
+    char privkey_path[512];
+    snprintf(privkey_path, sizeof(privkey_path), "%s/keys/identity.dsa",
+             gek_data_dir ? gek_data_dir : ".");
+
+    FILE *fp = fopen(privkey_path, "rb");
+    if (!fp) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open owner private key: %s\n", privkey_path);
+        for (size_t i = 0; i < valid_members; i++) free(kyber_pubkeys[i]);
+        free(kyber_pubkeys);
+        free(member_entries);
+        dht_groups_free_metadata(meta);
+        qgp_secure_memzero(new_gek, sizeof(new_gek));
+        return -1;
+    }
+
+    uint8_t owner_privkey[4896];
+    if (fread(owner_privkey, 1, 4896, fp) != 4896) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to read owner private key\n");
+        fclose(fp);
+        for (size_t i = 0; i < valid_members; i++) free(kyber_pubkeys[i]);
+        free(kyber_pubkeys);
+        free(member_entries);
+        dht_groups_free_metadata(meta);
+        qgp_secure_memzero(new_gek, sizeof(new_gek));
+        return -1;
+    }
+    fclose(fp);
+
+    /* Step 8: Build Initial Key Packet */
+    uint8_t *packet = NULL;
+    size_t packet_size = 0;
+    if (ikp_build(group_uuid, new_version, new_gek,
+                  (const gek_member_entry_t *)member_entries, valid_members,
+                  owner_privkey, &packet, &packet_size) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build Initial Key Packet\n");
+        for (size_t i = 0; i < valid_members; i++) free(kyber_pubkeys[i]);
+        free(kyber_pubkeys);
+        free(member_entries);
+        dht_groups_free_metadata(meta);
+        qgp_secure_memzero(new_gek, sizeof(new_gek));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Built ratcheted Initial Key Packet: %zu bytes\n", packet_size);
+
+    /* Cleanup */
+    for (size_t i = 0; i < valid_members; i++) free(kyber_pubkeys[i]);
+    free(kyber_pubkeys);
+    free(member_entries);
+    dht_groups_free_metadata(meta);
+    qgp_secure_memzero(new_gek, sizeof(new_gek));
+
+    /* Step 9: Publish to DHT */
+    if (dht_gek_publish(group_uuid, new_version, packet, packet_size) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish ratcheted IKP to DHT\n");
+        free(packet);
+        return -1;
+    }
+
+    free(packet);
+
+    /* Step 10: Update group metadata with new GEK version */
+    if (dht_groups_update_gek_version(group_uuid, new_version) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to update GEK version in metadata (IKP still published)\n");
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "GEK ratchet rotation complete for group %s (v%u, HKDF-SHA3-256)\n",
+                 group_uuid, new_version);
+
+    return 0;
 }
 
 /* ============================================================================

@@ -30,6 +30,19 @@ extern "C" {
 #define GEK_KEY_SIZE 32
 
 /**
+ * GEK format version for HKDF ratchet (v2)
+ * v1 = pure random GEK generation
+ * v2 = HKDF-SHA3-256 ratchet on member removal
+ */
+#define GEK_FORMAT_VERSION 2
+
+/**
+ * HKDF ratchet info string
+ */
+#define GEK_HKDF_INFO "gek-ratchet-v2"
+#define GEK_HKDF_INFO_LEN 14
+
+/**
  * Default GEK expiration (7 days in seconds)
  */
 #define GEK_DEFAULT_EXPIRY (7 * 24 * 3600)
@@ -265,6 +278,49 @@ int gek_decrypt(
     const uint8_t kem_privkey[3168],
     uint8_t gek_out[32]
 );
+
+/* ============================================================================
+ * HKDF RATCHET (GEK v2)
+ * ============================================================================ */
+
+/**
+ * HKDF-SHA3-256 Extract-then-Expand
+ *
+ * Derives a new 32-byte key using HKDF with SHA3-256 as the underlying hash.
+ * Used for GEK ratchet on member removal to break the derivation chain.
+ *
+ * Extract: PRK = HMAC-SHA3-256(salt, IKM)
+ * Expand:  OKM = HMAC-SHA3-256(PRK, info || 0x01)
+ *
+ * @param salt      Salt value (random entropy, 32 bytes)
+ * @param salt_len  Salt length
+ * @param ikm       Input keying material (old GEK, 32 bytes)
+ * @param ikm_len   IKM length
+ * @param info      Context/application-specific info string
+ * @param info_len  Info length
+ * @param okm       Output keying material (new GEK, 32 bytes)
+ * @param okm_len   Desired output length (must be <= 32)
+ * @return          0 on success, -1 on error
+ */
+int gek_hkdf_sha3_256(
+    const uint8_t *salt, size_t salt_len,
+    const uint8_t *ikm, size_t ikm_len,
+    const uint8_t *info, size_t info_len,
+    uint8_t *okm, size_t okm_len
+);
+
+/**
+ * Generate a ratcheted GEK for member removal
+ *
+ * Uses HKDF-SHA3-256 to derive a new GEK from the old one plus fresh entropy.
+ * The removed member cannot derive the new GEK without the random entropy.
+ *
+ * @param old_gek       Previous GEK (32 bytes)
+ * @param new_gek_out   Output buffer for new GEK (32 bytes)
+ * @return              0 on success, -1 on error
+ */
+int gek_generate_ratcheted(const uint8_t old_gek[GEK_KEY_SIZE],
+                           uint8_t new_gek_out[GEK_KEY_SIZE]);
 
 /* ============================================================================
  * MEMBER CHANGE HANDLERS
