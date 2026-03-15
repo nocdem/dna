@@ -95,6 +95,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/shared/dht_groups.h"
 #include "dht/client/dna_group_outbox.h"
 #include "dht/client/dna_group_channel.h"  /* Group channel connector (Phase 2) */
+#include "dht/client/dna_dm_channel.h"     /* DM channel connector (push-based 1-to-1) */
 #include "transport/transport.h"
 /* TURN credentials removed in v0.4.61 for privacy */
 #include "database/presence_cache.h"
@@ -434,6 +435,21 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
+    /* 4b. Subscribe DM channels for all contacts (push-based 1-to-1 delivery)
+     * After contacts are synced, connect and subscribe to a deterministic
+     * nodus channel per contact pair for real-time DM push. */
+    if (!atomic_load(&engine->shutdown_requested)) {
+        dna_dm_channel_init();
+        int dm_ch_count = dna_dm_channel_subscribe_all_contacts(engine);
+        if (dm_ch_count > 0) {
+            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: subscribed %d DM channel(s)", dm_ch_count);
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Post-stabilization: no DM channels to subscribe");
+        }
+    }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
     /* 5. Subscribe all channels on TCP 4003 for push notifications.
      * Previously in dna_dht_status_callback but moved here because DHT connects
      * before channel_subscriptions DB is initialized (race condition). */
@@ -527,6 +543,9 @@ static void dna_channel_push_callback(const uint8_t channel_uuid[16],
 
     /* Phase 2: Forward to group channel subsystem for decryption + delivery */
     dna_group_channel_handle_push(channel_uuid, post, user_data);
+
+    /* DM channel: Forward to DM channel subsystem for push delivery */
+    dna_dm_channel_handle_push(channel_uuid, post, user_data);
 }
 
 /**
@@ -1605,6 +1624,9 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Cancel all channel listeners */
     dna_engine_cancel_all_channel_listeners(engine);
     pthread_mutex_destroy(&engine->channel_listeners_mutex);
+
+    /* Shut down DM channel subsystem */
+    dna_dm_channel_shutdown();
 
     /* Unsubscribe from all groups */
     dna_engine_unsubscribe_all_groups(engine);

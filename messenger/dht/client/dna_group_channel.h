@@ -205,6 +205,22 @@ int dna_group_channel_uuid(const char *group_uuid, uint8_t ch_uuid_out[16]);
  */
 int dna_group_channel_is_connected(const char *group_uuid);
 
+/**
+ * Handle a push post for group channels.
+ *
+ * Called by the engine's global push callback to forward channel posts
+ * to the group channel subsystem. If the channel_uuid matches a known
+ * group channel, the post is decrypted and delivered to the registered
+ * callback.
+ *
+ * @param channel_uuid  16-byte channel UUID
+ * @param post          Post data from nodus push
+ * @param user_data     Unused (for callback signature compatibility)
+ */
+void dna_group_channel_handle_push(const uint8_t channel_uuid[16],
+                                    const void *post,
+                                    void *user_data);
+
 #ifdef __cplusplus
 }
 #endif
