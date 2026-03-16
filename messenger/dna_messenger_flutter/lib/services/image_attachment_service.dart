@@ -49,8 +49,7 @@ class ImageAttachmentException implements Exception {
 
 /// Service for picking and processing images for chat attachments
 class ImageAttachmentService {
-  // Max raw file size before processing
-  static const int maxFileSizeBytes = 10 * 1024 * 1024; // 10MB raw input
+  // No raw file size limit — compression handles any size input
 
   // Target compressed size for DHT transport
   // DHT max value is 4MB, but base64 expands ~33% and encryption adds overhead
@@ -81,12 +80,6 @@ class ImageAttachmentService {
   /// Process raw image bytes: validate, compress, and encode to base64
   /// Throws ImageAttachmentException on failure
   Future<ImageAttachment> processImage(Uint8List bytes) async {
-    // Validate file size
-    if (bytes.length > maxFileSizeBytes) {
-      throw ImageAttachmentException(
-          'Image exceeds 10MB limit (${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB)');
-    }
-
     // Detect format
     final mimeType = _detectMimeType(bytes);
     if (mimeType == null) {
