@@ -23,36 +23,31 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallPost>> {
 
   /// Fetch wall timeline + boost timeline, merge and deduplicate by UUID
   Future<List<WallPost>> _fetchMergedTimeline(DnaEngine engine) async {
-    // Fetch both in parallel
-    final results = await Future.wait([
-      engine.wallTimeline(),
-      engine.wallBoostTimeline().catchError((_) => <WallPost>[]),
-    ]);
+    // Return wall posts immediately — don't wait for boost timeline.
+    // Boost posts are fetched in background and merged when ready.
+    final wallPosts = await engine.wallTimeline();
 
-    final wallPosts = results[0];
-    final boostPosts = results[1];
-
-    if (boostPosts.isEmpty) return wallPosts;
-
-    // Merge: add boost posts that aren't already in wall timeline (UUID dedup)
-    final seenUuids = <String>{};
-    final merged = <WallPost>[];
-
-    for (final post in wallPosts) {
-      seenUuids.add(post.uuid);
-      merged.add(post);
-    }
-
-    for (final post in boostPosts) {
-      if (!seenUuids.contains(post.uuid)) {
+    // Fire-and-forget: fetch boosts in background, update state when done
+    engine.wallBoostTimeline().then((boostPosts) {
+      if (boostPosts.isEmpty) return;
+      final current = state.valueOrNull ?? wallPosts;
+      final seenUuids = <String>{};
+      final merged = <WallPost>[];
+      for (final post in current) {
         seenUuids.add(post.uuid);
         merged.add(post);
       }
-    }
+      for (final post in boostPosts) {
+        if (!seenUuids.contains(post.uuid)) {
+          seenUuids.add(post.uuid);
+          merged.add(post);
+        }
+      }
+      merged.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      state = AsyncData(merged);
+    }).catchError((_) {});
 
-    // Sort by timestamp descending (newest first)
-    merged.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-    return merged;
+    return wallPosts;
   }
 
   Future<void> refresh() async {
