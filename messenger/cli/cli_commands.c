@@ -808,9 +808,62 @@ int cmd_profile(dna_engine_t *engine, const char *field, const char *value) {
             strncpy(profile->twitter, value, sizeof(profile->twitter) - 1);
         } else if (strcmp(field, "github") == 0) {
             strncpy(profile->github, value, sizeof(profile->github) - 1);
+        } else if (strcmp(field, "avatar") == 0) {
+            /* Value is a file path — read, base64-encode, and set */
+            FILE *avatar_file = fopen(value, "rb");
+            if (!avatar_file) {
+                printf("Error: Cannot open avatar file: %s\n", value);
+                free(wait.profile);
+                cli_wait_destroy(&wait);
+                return -1;
+            }
+            fseek(avatar_file, 0, SEEK_END);
+            long fsize = ftell(avatar_file);
+            fseek(avatar_file, 0, SEEK_SET);
+            if (fsize <= 0 || fsize > 15000) {
+                printf("Error: Avatar file too large (%ld bytes, max ~15KB). Resize to 64x64 first.\n", fsize);
+                fclose(avatar_file);
+                free(wait.profile);
+                cli_wait_destroy(&wait);
+                return -1;
+            }
+            uint8_t *raw = malloc((size_t)fsize);
+            if (!raw || fread(raw, 1, (size_t)fsize, avatar_file) != (size_t)fsize) {
+                printf("Error: Failed to read avatar file\n");
+                free(raw);
+                fclose(avatar_file);
+                free(wait.profile);
+                cli_wait_destroy(&wait);
+                return -1;
+            }
+            fclose(avatar_file);
+            /* Base64 encode */
+            static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            size_t b64len = 4 * (((size_t)fsize + 2) / 3);
+            if (b64len >= sizeof(profile->avatar_base64)) {
+                printf("Error: Base64 too large for avatar field\n");
+                free(raw);
+                free(wait.profile);
+                cli_wait_destroy(&wait);
+                return -1;
+            }
+            char *out = profile->avatar_base64;
+            size_t j = 0;
+            for (size_t bi = 0; bi < (size_t)fsize; bi += 3) {
+                uint32_t n24 = ((uint32_t)raw[bi]) << 16;
+                if (bi + 1 < (size_t)fsize) n24 |= ((uint32_t)raw[bi + 1]) << 8;
+                if (bi + 2 < (size_t)fsize) n24 |= (uint32_t)raw[bi + 2];
+                out[j++] = b64chars[(n24 >> 18) & 0x3F];
+                out[j++] = b64chars[(n24 >> 12) & 0x3F];
+                out[j++] = (bi + 1 < (size_t)fsize) ? b64chars[(n24 >> 6) & 0x3F] : '=';
+                out[j++] = (bi + 2 < (size_t)fsize) ? b64chars[n24 & 0x3F] : '=';
+            }
+            out[j] = '\0';
+            free(raw);
+            printf("Avatar loaded: %ld bytes -> %zu base64 chars\n", fsize, j);
         } else {
             printf("Unknown field: %s\n", field);
-            printf("Valid fields: bio, location, website, telegram, twitter, github\n");
+            printf("Valid fields: bio, location, website, telegram, twitter, github, avatar\n");
             free(wait.profile);
             cli_wait_destroy(&wait);
             return -1;
