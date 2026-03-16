@@ -508,6 +508,7 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
 int nodus_tcp_send(nodus_tcp_conn_t *conn,
                     const uint8_t *payload, size_t len) {
     if (!conn || !payload || conn->state == NODUS_CONN_CLOSED) return -1;
+    if (len > NODUS_MAX_FRAME_TCP) return -1;  /* M-02: prevent uint32_t truncation */
 
     size_t frame_size = NODUS_FRAME_HEADER_SIZE + len;
     size_t needed = conn->wlen + frame_size;
