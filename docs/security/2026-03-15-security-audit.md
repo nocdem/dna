@@ -13,9 +13,9 @@
 
 | Severity | Total | Resolved | In Progress | Open |
 |----------|-------|----------|-------------|------|
-| CRITICAL | 6 | 2 | 2 | 2 |
+| CRITICAL | 6 | 3 | 2 | 1 |
 | HIGH | 17 | 10 | 0 | 7 |
-| MEDIUM | 35 | 10 | 0 | 25 |
+| MEDIUM | 35 | 14 | 0 | 21 |
 | LOW | 24 | 0 | 0 | 24 |
 
 **Top 3 systemic risks:**
@@ -40,7 +40,7 @@
 
 ## Resolution Status (Updated 2026-03-16)
 
-**22 findings RESOLVED** | **2 IN PROGRESS** | **58 remaining**
+**27 findings RESOLVED** | **2 IN PROGRESS** | **53 remaining**
 
 ### Resolved Items
 | ID | Severity | Resolution |
@@ -67,13 +67,18 @@
 | M-14 | MEDIUM | RESOLVED (chmod 0600 in qgp_key_save) |
 | M-32 | MEDIUM | RESOLVED (tx_type range validation in deserialize) |
 | M-35 | MEDIUM | RESOLVED (NONCE_MAX_TOTAL 10000 cap + eviction) |
+| C-03 | CRITICAL | RESOLVED (ping-before-evict: routing_insert_or_ping + pending evictions + UDP PING + PONG cancel) |
+| M-20 | MEDIUM | RESOLVED (group member add ownership check) |
+| M-25 | MEDIUM | RESOLVED (CLOCK_MONOTONIC in nodus_time_now) |
+| M-28 | MEDIUM | RESOLVED (heap-allocate in nodus_ops_cancel_all) |
+| M-30 | MEDIUM | RESOLVED (pthread_mutex on witness discovery cache) |
 | C-01 | CRITICAL | IN PROGRESS (server-side auth code written, needs config flag + client-side connect) |
 | C-02 | CRITICAL | IN PROGRESS (server-side auth code written, needs config flag + client-side connect) |
 
 ### Remaining Open (by priority)
 | Severity | Count | Key Items |
 |----------|-------|-----------|
-| CRITICAL | 2 | C-03 (routing Eclipse), C-06 (witness pubkey pinning) |
+| CRITICAL | 1 | C-06 (witness pubkey pinning) |
 | HIGH | 8 | H-01 (TLS), H-02 (UDP amplification), H-03 (static resp_buf), H-04 (inter-node quota), H-06 (presence inject), H-09 (ring eviction), H-10 (heartbeat spoof) |
 | MEDIUM | 24 | See detailed findings below |
 | LOW | 24 | See detailed findings below |
