@@ -29,7 +29,7 @@ extern "C" {
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
 #define NODUS_FRAME_VERSION     0x01
 #define NODUS_FRAME_HEADER_SIZE 7           /* magic(2) + ver(1) + len(4) */
-#define NODUS_MAX_FRAME_TCP     (4 * 1024 * 1024)  /* 4 MB */
+#define NODUS_MAX_FRAME_TCP     (5 * 1024 * 1024)  /* 5 MB (value + overhead) */
 #define NODUS_MAX_FRAME_UDP     1400        /* Safe MTU */
 
 /* Kademlia */
@@ -59,7 +59,7 @@ extern "C" {
 /* DHT value limits */
 #define NODUS_DEFAULT_TTL       604800      /* 7 days in seconds */
 #define NODUS_PERMANENT_TTL     0           /* 0 = never expires */
-#define NODUS_MAX_VALUE_SIZE    (1 * 1024 * 1024)   /* 1 MB value payload */
+#define NODUS_MAX_VALUE_SIZE    (4 * 1024 * 1024)   /* 4 MB value payload */
 #define NODUS_MAX_VALUES_PER_OWNER 10000
 
 /* Channel limits */
