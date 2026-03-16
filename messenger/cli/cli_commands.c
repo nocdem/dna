@@ -1045,7 +1045,7 @@ int cmd_contacts(dna_engine_t *engine) {
     }
 
     if (wait.contact_count == 0) {
-        printf("No contacts. Use 'add-contact <name|fingerprint>' to add one.\n");
+        printf("No contacts. Use 'contact request <fp>' to send a contact request.\n");
     } else {
         printf("\nContacts (%d):\n", wait.contact_count);
         for (int i = 0; i < wait.contact_count; i++) {
@@ -6189,15 +6189,15 @@ int cmd_wall_likes(dna_engine_t *engine, const char *post_uuid) {
 
 int dispatch_wall(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: wall <subcommand>\n");
-        fprintf(stderr, "  wall post <text...>           Post to your wall\n");
-        fprintf(stderr, "  wall list [fingerprint]       List wall posts (own or other's)\n");
-        fprintf(stderr, "  wall timeline                 Show merged timeline\n");
-        fprintf(stderr, "  wall delete <uuid>            Delete a post\n");
-        fprintf(stderr, "  wall comment <post_uuid> <text...>  Comment on a post\n");
-        fprintf(stderr, "  wall comments <post_uuid>     List comments\n");
-        fprintf(stderr, "  wall like <post_uuid>         Like/unlike a post\n");
-        fprintf(stderr, "  wall likes <post_uuid>        List likes\n");
+        fprintf(stderr, "Wall — Social posts, timeline, comments & likes\n\n");
+        fprintf(stderr, "  post <text...>               Post to your wall\n");
+        fprintf(stderr, "  list [fingerprint]           List wall posts (own or other's)\n");
+        fprintf(stderr, "  timeline                     Show merged timeline from all contacts\n");
+        fprintf(stderr, "  delete <uuid>                Delete a post\n");
+        fprintf(stderr, "  comment <post_uuid> <text>   Comment on a post\n");
+        fprintf(stderr, "  comments <post_uuid>         List comments\n");
+        fprintf(stderr, "  like <post_uuid>             Like/unlike a post\n");
+        fprintf(stderr, "  likes <post_uuid>            List likes\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -6244,10 +6244,8 @@ int dispatch_wall(dna_engine_t *engine, int argc, char **argv, int sub) {
 
 int dispatch_wall_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: wall <subcommand>\n");
-        fprintf(stderr, "  post <text...> | list [fp] | timeline | delete <uuid>\n");
-        fprintf(stderr, "  comment <post_uuid> <text...> | comments <post_uuid>\n");
-        fprintf(stderr, "  like <post_uuid> | likes <post_uuid>\n");
+        fprintf(stderr, "Wall — post | list [fp] | timeline | delete <uuid>\n");
+        fprintf(stderr, "  comment <uuid> <text> | comments <uuid> | like <uuid> | likes <uuid>\n");
         return 1;
     }
     if (strcmp(subcmd, "post") == 0) {
