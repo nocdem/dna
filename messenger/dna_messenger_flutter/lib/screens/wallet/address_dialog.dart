@@ -101,8 +101,8 @@ class _AddressDialogState extends State<AddressDialog> {
                     child: Text(n.$2),
                   );
                 }).toList(),
-                onChanged: (_isEditing || _isPrefilled)
-                    ? null // Can't change network when editing or prefilled
+                onChanged: _isPrefilled
+                    ? null // Can't change network when prefilled (e.g., from send flow)
                     : (value) {
                         if (value != null) {
                           setState(() => _selectedNetwork = value);
@@ -114,12 +114,12 @@ class _AddressDialogState extends State<AddressDialog> {
               // Address input
               TextFormField(
                 controller: _addressController,
-                enabled: !_isEditing && !_isPrefilled, // Can't change address when editing or prefilled
+                enabled: !_isPrefilled, // Editable in edit mode, locked only when prefilled from send flow
                 decoration: InputDecoration(
                   labelText: AppLocalizations.of(context).walletAddress,
                   hintText: _getAddressHint(_selectedNetwork),
                   prefixIcon: const Icon(Icons.account_balance_wallet),
-                  suffixIcon: !_isEditing && !_isPrefilled
+                  suffixIcon: !_isPrefilled
                       ? IconButton(
                           icon: const FaIcon(FontAwesomeIcons.paste, size: 16),
                           onPressed: _pasteAddress,

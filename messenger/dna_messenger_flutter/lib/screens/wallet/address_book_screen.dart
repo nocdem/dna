@@ -292,11 +292,22 @@ class AddressBookScreen extends ConsumerWidget {
 
     if (result != null && context.mounted) {
       try {
-        await ref.read(addressBookProvider.notifier).updateAddress(
-              id: entry.id,
-              label: result.label,
-              notes: result.notes,
-            );
+        // If address or network changed, delete + re-add (C API only updates label/notes)
+        if (result.address != entry.address || result.network != entry.network) {
+          await ref.read(addressBookProvider.notifier).removeAddress(entry.id);
+          await ref.read(addressBookProvider.notifier).addAddress(
+                address: result.address,
+                label: result.label,
+                network: result.network,
+                notes: result.notes,
+              );
+        } else {
+          await ref.read(addressBookProvider.notifier).updateAddress(
+                id: entry.id,
+                label: result.label,
+                notes: result.notes,
+              );
+        }
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Updated "${result.label}"')),
