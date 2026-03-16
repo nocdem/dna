@@ -154,7 +154,12 @@ class AllBalancesNotifier extends AsyncNotifier<List<WalletBalance>> {
     }
 
     // v0.100.104: Load from SQLite cache first (instant, no network calls)
-    return _fetchCachedBalances(wallets);
+    // Then schedule background live refresh (stale-while-revalidate)
+    final cached = await _fetchCachedBalances(wallets);
+    if (cached.isNotEmpty) {
+      Future.microtask(() => refresh());
+    }
+    return cached.isNotEmpty ? cached : _fetchLiveBalances(wallets);
   }
 
   /// Refresh balances from live blockchain APIs in the background
@@ -222,28 +227,28 @@ class AllBalancesNotifier extends AsyncNotifier<List<WalletBalance>> {
     return allBalances;
   }
 
-  /// Fetch live balances from blockchain APIs (network calls)
+  /// Fetch live balances from blockchain APIs (parallel, all chains at once)
   /// Also writes to SQLite cache via C-side write-through
   Future<List<WalletBalance>> _fetchLiveBalances(List<Wallet> wallets) async {
     final engine = await ref.read(engineProvider.future);
-    final allBalances = <WalletBalance>[];
 
+    // Fetch all wallets in parallel instead of sequential
+    final futures = <Future<List<WalletBalance>>>[];
     for (int i = 0; i < wallets.length; i++) {
-      try {
-        final balances = await engine.getBalances(i);
-        for (final balance in balances) {
-          allBalances.add(WalletBalance(
-            walletIndex: i,
-            wallet: wallets[i],
-            balance: balance,
-          ));
-        }
-      } catch (_) {
-        // Skip wallet if balance fetch fails
-      }
+      final idx = i;
+      futures.add(
+        engine.getBalances(idx).then((balances) =>
+          balances.map((b) => WalletBalance(
+            walletIndex: idx,
+            wallet: wallets[idx],
+            balance: b,
+          )).toList()
+        ).catchError((_) => <WalletBalance>[]),
+      );
     }
 
-    return allBalances;
+    final results = await Future.wait(futures);
+    return results.expand((list) => list).toList();
   }
 
   /// Load from Dart-side cache (SharedPreferences) — no engine needed
