@@ -9,7 +9,6 @@ import 'package:image_picker/image_picker.dart';
 import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
-import '../../providers/contact_profile_cache_provider.dart';
 import '../../services/image_attachment_service.dart';
 import '../../l10n/app_localizations.dart';
 import '../../widgets/wall_post_tile.dart';
@@ -397,6 +396,98 @@ class _WallPostWithComments extends ConsumerWidget {
       onLike: () {
         ref.read(wallLikesProvider(post.uuid).notifier).like();
       },
+      onAuthorTap: () => _showAuthorProfile(context, ref, post.authorFingerprint),
+    );
+  }
+
+  void _showAuthorProfile(BuildContext context, WidgetRef ref, String fingerprint) {
+    final profile = ref.read(contactProfileCacheProvider)[fingerprint];
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.5,
+        maxChildSize: 0.8,
+        minChildSize: 0.3,
+        expand: false,
+        builder: (context, scrollController) {
+          final theme = Theme.of(context);
+          final avatarBytes = profile?.decodeAvatar();
+          final name = post.authorName.isNotEmpty
+              ? post.authorName
+              : fingerprint.substring(0, 16);
+          final bio = profile?.bio ?? '';
+
+          return Container(
+            padding: const EdgeInsets.all(DnaSpacing.lg),
+            child: ListView(
+              controller: scrollController,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40, height: 4,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(2)),
+                  ),
+                ),
+                const SizedBox(height: DnaSpacing.lg),
+                Center(
+                  child: DnaAvatar(
+                    imageBytes: avatarBytes,
+                    name: name,
+                    size: DnaAvatarSize.xl,
+                  ),
+                ),
+                const SizedBox(height: DnaSpacing.md),
+                Center(
+                  child: Text(name,
+                    style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+                ),
+                if (bio.isNotEmpty) ...[
+                  const SizedBox(height: DnaSpacing.sm),
+                  Center(
+                    child: Text(bio,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(alpha: 0.6)),
+                      textAlign: TextAlign.center),
+                  ),
+                ],
+                const SizedBox(height: DnaSpacing.md),
+                // Fingerprint
+                ListTile(
+                  leading: const FaIcon(FontAwesomeIcons.fingerprint, size: 16),
+                  title: Text(fingerprint,
+                    style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+                    maxLines: 2, overflow: TextOverflow.ellipsis),
+                ),
+                // Social links
+                if (profile?.website.isNotEmpty == true)
+                  ListTile(
+                    leading: const FaIcon(FontAwesomeIcons.globe, size: 16),
+                    title: Text(profile!.website),
+                  ),
+                if (profile?.telegram.isNotEmpty == true)
+                  ListTile(
+                    leading: const FaIcon(FontAwesomeIcons.telegram, size: 16),
+                    title: Text(profile!.telegram),
+                  ),
+                if (profile?.twitter.isNotEmpty == true)
+                  ListTile(
+                    leading: const FaIcon(FontAwesomeIcons.xTwitter, size: 16),
+                    title: Text(profile!.twitter),
+                  ),
+                if (profile?.github.isNotEmpty == true)
+                  ListTile(
+                    leading: const FaIcon(FontAwesomeIcons.github, size: 16),
+                    title: Text(profile!.github),
+                  ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 }

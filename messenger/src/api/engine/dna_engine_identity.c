@@ -677,9 +677,9 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
                 /* Return network error to trigger retry on next lookup */
                 error = DNA_ENGINE_ERROR_NETWORK;
             } else {
-                /* Not our profile - auto-remove this contact */
-                QGP_LOG_WARN(LOG_TAG, "Invalid signature for %.16s... - auto-removing from contacts", fingerprint);
-                contacts_db_remove(fingerprint);
+                /* Not our profile — signature invalid, return error.
+                 * Don't auto-remove: could be non-contact lookup from timeline. */
+                QGP_LOG_WARN(LOG_TAG, "Invalid signature for %.16s... profile", fingerprint);
                 error = DNA_ENGINE_ERROR_INVALID_SIGNATURE;
             }
         } else {
