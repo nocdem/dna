@@ -68,6 +68,9 @@ class ImageAttachmentService {
       final XFile? image = await _picker.pickImage(
         source: source,
         preferredCameraDevice: CameraDevice.rear,
+        maxWidth: 4096,   // Pre-resize at OS level (saves RAM)
+        maxHeight: 4096,
+        imageQuality: 95, // Slight pre-compress before our pipeline
       );
 
       if (image == null) return null;
