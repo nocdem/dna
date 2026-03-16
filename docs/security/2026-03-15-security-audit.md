@@ -13,7 +13,7 @@
 
 | Severity | Total | Resolved | In Progress | Open |
 |----------|-------|----------|-------------|------|
-| CRITICAL | 6 | 3 | 2 | 1 |
+| CRITICAL | 6 | 4 | 2 | 0 |
 | HIGH | 17 | 10 | 0 | 7 |
 | MEDIUM | 35 | 14 | 0 | 21 |
 | LOW | 24 | 0 | 0 | 24 |
@@ -40,7 +40,7 @@
 
 ## Resolution Status (Updated 2026-03-16)
 
-**27 findings RESOLVED** | **2 IN PROGRESS** | **53 remaining**
+**28 findings RESOLVED** | **2 IN PROGRESS** | **52 remaining**
 
 ### Resolved Items
 | ID | Severity | Resolution |
@@ -72,13 +72,14 @@
 | M-25 | MEDIUM | RESOLVED (CLOCK_MONOTONIC in nodus_time_now) |
 | M-28 | MEDIUM | RESOLVED (heap-allocate in nodus_ops_cancel_all) |
 | M-30 | MEDIUM | RESOLVED (pthread_mutex on witness discovery cache) |
+| C-06 | CRITICAL | RESOLVED (verify_witnesses pins pubkey against DHT roster cache) |
 | C-01 | CRITICAL | IN PROGRESS (server-side auth code written, needs config flag + client-side connect) |
 | C-02 | CRITICAL | IN PROGRESS (server-side auth code written, needs config flag + client-side connect) |
 
 ### Remaining Open (by priority)
 | Severity | Count | Key Items |
 |----------|-------|-----------|
-| CRITICAL | 1 | C-06 (witness pubkey pinning) |
+| CRITICAL | 0 | — all resolved or in progress |
 | HIGH | 8 | H-01 (TLS), H-02 (UDP amplification), H-03 (static resp_buf), H-04 (inter-node quota), H-06 (presence inject), H-09 (ring eviction), H-10 (heartbeat spoof) |
 | MEDIUM | 24 | See detailed findings below |
 | LOW | 24 | See detailed findings below |
