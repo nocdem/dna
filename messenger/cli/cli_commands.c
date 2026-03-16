@@ -4728,7 +4728,7 @@ int dispatch_contact(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
         fprintf(stderr, "Usage: contact <subcommand>\n");
         fprintf(stderr, "  contact list\n");
-        fprintf(stderr, "  contact add <name|fp>\n");
+        /* contact add removed — use request flow instead */
         fprintf(stderr, "  contact remove <fp>\n");
         fprintf(stderr, "  contact request <fp> [message]\n");
         fprintf(stderr, "  contact requests\n");
@@ -4748,8 +4748,8 @@ int dispatch_contact(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (strcmp(subcmd, "list") == 0) {
         return cmd_contacts(engine);
     } else if (strcmp(subcmd, "add") == 0) {
-        if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact add <name|fp>\n"); return 1; }
-        return cmd_add_contact(engine, argv[sub + 1]);
+        fprintf(stderr, "Direct add disabled — use 'contact request <fp> [message]' instead.\n");
+        return 1;
     } else if (strcmp(subcmd, "remove") == 0) {
         if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact remove <fp>\n"); return 1; }
         return cmd_remove_contact(engine, argv[sub + 1]);
@@ -5378,9 +5378,8 @@ int dispatch_contact_repl(dna_engine_t *engine, const char *subcmd) {
     if (strcmp(subcmd, "list") == 0) {
         return cmd_contacts(engine);
     } else if (strcmp(subcmd, "add") == 0) {
-        char *id = strtok(NULL, " \t");
-        if (!id) { fprintf(stderr, "Usage: contact add <name|fp>\n"); return 1; }
-        return cmd_add_contact(engine, id);
+        fprintf(stderr, "Direct add disabled — use 'contact request <fp> [message]' instead.\n");
+        return 1;
     } else if (strcmp(subcmd, "remove") == 0) {
         char *fp = strtok(NULL, " \t");
         if (!fp) { fprintf(stderr, "Usage: contact remove <fp>\n"); return 1; }
