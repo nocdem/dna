@@ -74,8 +74,9 @@ static const char *g_fallback_nodes[] = {
     "161.97.85.25:4001",
     "156.67.24.125:4001",
     "156.67.25.251:4001",
+    "75.119.141.51:4001",
 };
-static const int g_fallback_count = 6;
+static const int g_fallback_count = 7;
 
 /**
  * Parse "ip:port" node list into nconfig server entries.
