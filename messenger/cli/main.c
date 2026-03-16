@@ -77,6 +77,7 @@ static void print_usage(const char *prog_name) {
     printf("  network     Network & presence (online, dht-status, ...)\n");
     printf("  version     Version management (publish, check)\n");
     printf("  sign        Signing (data, pubkey)\n");
+    printf("  wall        Wall posts (post, list, timeline, comments, likes, ...)\n");
     printf("  debug       Debug & logging (log-level, entries, export, ...)\n");
     printf("\n");
     printf("Run '%s <group>' for subcommand details.\n", prog_name);
@@ -203,7 +204,7 @@ int main(int argc, char *argv[]) {
     int bare_group = (optind + 1 >= argc) ||
                      (optind + 1 < argc && strcmp(argv[optind + 1], "help") == 0);
     const char *known_groups[] = {"identity", "contact", "message", "group", "channel",
-                                  "wallet", "dex", "network", "version", "sign", "debug", NULL};
+                                  "wallet", "dex", "network", "version", "sign", "debug", "wall", NULL};
     if (bare_group) {
         for (int i = 0; known_groups[i]; i++) {
             if (strcmp(command, known_groups[i]) == 0) {
@@ -219,6 +220,7 @@ int main(int argc, char *argv[]) {
                 else if (strcmp(command, "version") == 0) dispatch_version(NULL, argc, argv, optind + 1);
                 else if (strcmp(command, "sign") == 0) dispatch_sign(NULL, argc, argv, optind + 1);
                 else if (strcmp(command, "debug") == 0) dispatch_debug(NULL, argc, argv, optind + 1);
+                else if (strcmp(command, "wall") == 0) dispatch_wall(NULL, argc, argv, optind + 1);
                 return 1;
             }
         }
@@ -326,6 +328,9 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "debug") == 0) {
         result = dispatch_debug(g_engine, argc, argv, optind + 1);
+    }
+    else if (strcmp(command, "wall") == 0) {
+        result = dispatch_wall(g_engine, argc, argv, optind + 1);
     }
     else {
         fprintf(stderr, "Unknown command group: '%s'\n", command);

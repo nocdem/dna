@@ -76,6 +76,12 @@ void cli_wait_init(cli_wait_t *wait) {
     wait->balances = NULL;
     wait->balance_count = 0;
     wait->profile = NULL;
+    wait->wall_posts = NULL;
+    wait->wall_post_count = 0;
+    wait->wall_comments = NULL;
+    wait->wall_comment_count = 0;
+    wait->wall_likes = NULL;
+    wait->wall_like_count = 0;
 }
 
 void cli_wait_destroy(cli_wait_t *wait) {
@@ -306,9 +312,10 @@ void cmd_help(void) {
     printf("  network     Network & presence (online, dht-status, ...)\n");
     printf("  version     Version management (publish, check)\n");
     printf("  sign        Signing (data, pubkey)\n");
+    printf("  wall        Wall posts (post, list, timeline, comments, likes, ...)\n");
     printf("  debug       Debug & logging (log-level, entries, export, ...)\n");
     printf("\n");
-    printf("Type '<group>' to see subcommands (e.g., 'identity' or 'wallet').\n");
+    printf("Type '<group>' to see subcommands (e.g., 'identity' or 'wall').\n");
     printf("Type 'quit' to exit.\n\n");
 }
 
@@ -5844,6 +5851,391 @@ int dispatch_debug_repl(dna_engine_t *engine, const char *subcmd) {
 }
 
 /* ============================================================================
+ * WALL COMMANDS (v0.9.80)
+ * ============================================================================ */
+
+static void on_wall_post_created(dna_request_id_t req, int error,
+                                  dna_wall_post_info_t *post, void *user_data) {
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+    if (error == 0 && post) {
+        wait->wall_posts = malloc(sizeof(dna_wall_post_info_t));
+        if (wait->wall_posts) {
+            memcpy(wait->wall_posts, post, sizeof(dna_wall_post_info_t));
+            if (post->image_json) wait->wall_posts[0].image_json = strdup(post->image_json);
+            wait->wall_post_count = 1;
+        }
+    }
+    if (post) dna_free_wall_posts(post, 1);
+    cli_wait_signal(wait, error);
+}
+
+static void on_wall_posts_loaded(dna_request_id_t req, int error,
+                                  dna_wall_post_info_t *posts, int count, void *user_data) {
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+    if (error == 0 && posts && count > 0) {
+        wait->wall_posts = calloc((size_t)count, sizeof(dna_wall_post_info_t));
+        if (wait->wall_posts) {
+            for (int i = 0; i < count; i++) {
+                memcpy(&wait->wall_posts[i], &posts[i], sizeof(dna_wall_post_info_t));
+                if (posts[i].image_json) wait->wall_posts[i].image_json = strdup(posts[i].image_json);
+            }
+            wait->wall_post_count = count;
+        }
+    }
+    if (posts) dna_free_wall_posts(posts, count);
+    cli_wait_signal(wait, error);
+}
+
+static void on_wall_deleted(dna_request_id_t req, int error, void *user_data) {
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+    cli_wait_signal(wait, error);
+}
+
+static void on_wall_comment_added(dna_request_id_t req, int error,
+                                   dna_wall_comment_info_t *comment, void *user_data) {
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+    if (error == 0 && comment) {
+        wait->wall_comments = malloc(sizeof(dna_wall_comment_info_t));
+        if (wait->wall_comments) {
+            memcpy(wait->wall_comments, comment, sizeof(dna_wall_comment_info_t));
+            wait->wall_comment_count = 1;
+        }
+    }
+    cli_wait_signal(wait, error);
+}
+
+static void on_wall_comments_loaded(dna_request_id_t req, int error,
+                                     dna_wall_comment_info_t *comments, int count, void *user_data) {
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+    if (error == 0 && comments && count > 0) {
+        wait->wall_comments = calloc((size_t)count, sizeof(dna_wall_comment_info_t));
+        if (wait->wall_comments) {
+            memcpy(wait->wall_comments, comments, (size_t)count * sizeof(dna_wall_comment_info_t));
+            wait->wall_comment_count = count;
+        }
+    }
+    if (comments) dna_free_wall_comments(comments, count);
+    cli_wait_signal(wait, error);
+}
+
+static void on_wall_likes_loaded(dna_request_id_t req, int error,
+                                  dna_wall_like_info_t *likes, int count, void *user_data) {
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+    if (error == 0 && likes && count > 0) {
+        wait->wall_likes = calloc((size_t)count, sizeof(dna_wall_like_info_t));
+        if (wait->wall_likes) {
+            memcpy(wait->wall_likes, likes, (size_t)count * sizeof(dna_wall_like_info_t));
+            wait->wall_like_count = count;
+        }
+    }
+    if (likes) dna_free_wall_likes(likes, count);
+    cli_wait_signal(wait, error);
+}
+
+static void print_wall_posts(dna_wall_post_info_t *posts, int count) {
+    if (!posts || count == 0) {
+        printf("No posts.\n");
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        time_t ts = (time_t)posts[i].timestamp;
+        struct tm tm_buf;
+        struct tm *tm = safe_localtime(&ts, &tm_buf);
+        char time_str[20] = "unknown";
+        if (tm) strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", tm);
+        const char *name = posts[i].author_name[0] ? posts[i].author_name : "unknown";
+        printf("[%s] %s%s\n", time_str, name,
+               posts[i].verified ? " (verified \xe2\x9c\x93)" : "");
+        printf("  uuid: %s\n", posts[i].uuid);
+        if (posts[i].text[0]) printf("  %s\n", posts[i].text);
+        if (posts[i].image_json) printf("  [has image]\n");
+        printf("---\n");
+    }
+}
+
+int cmd_wall_post(dna_engine_t *engine, const char *text) {
+    if (!engine || !text || !text[0]) {
+        fprintf(stderr, "Usage: wall post <text>\n");
+        return 1;
+    }
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    dna_engine_wall_post(engine, text, on_wall_post_created, &wait);
+    int rc = cli_wait_for(&wait);
+    if (rc == 0 && wait.wall_posts) {
+        printf("Posted!\n");
+        print_wall_posts(wait.wall_posts, wait.wall_post_count);
+        for (int i = 0; i < wait.wall_post_count; i++) free(wait.wall_posts[i].image_json);
+        free(wait.wall_posts);
+    } else {
+        fprintf(stderr, "Failed to post (error=%d)\n", rc);
+    }
+    cli_wait_destroy(&wait);
+    return rc;
+}
+
+int cmd_wall_list(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine) return 1;
+    const char *fp = fingerprint;
+    if (!fp || !fp[0]) fp = dna_engine_get_fingerprint(engine);
+    if (!fp) { fprintf(stderr, "No identity loaded\n"); return 1; }
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    dna_engine_wall_load(engine, fp, on_wall_posts_loaded, &wait);
+    int rc = cli_wait_for(&wait);
+    if (rc == 0) {
+        print_wall_posts(wait.wall_posts, wait.wall_post_count);
+        for (int i = 0; i < wait.wall_post_count; i++) free(wait.wall_posts[i].image_json);
+        free(wait.wall_posts);
+    } else {
+        fprintf(stderr, "Failed to load wall (error=%d)\n", rc);
+    }
+    cli_wait_destroy(&wait);
+    return rc;
+}
+
+int cmd_wall_timeline(dna_engine_t *engine) {
+    if (!engine) return 1;
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    dna_engine_wall_timeline(engine, on_wall_posts_loaded, &wait);
+    int rc = cli_wait_for(&wait);
+    if (rc == 0) {
+        printf("=== Timeline (%d posts) ===\n", wait.wall_post_count);
+        print_wall_posts(wait.wall_posts, wait.wall_post_count);
+        for (int i = 0; i < wait.wall_post_count; i++) free(wait.wall_posts[i].image_json);
+        free(wait.wall_posts);
+    } else {
+        fprintf(stderr, "Failed to load timeline (error=%d)\n", rc);
+    }
+    cli_wait_destroy(&wait);
+    return rc;
+}
+
+int cmd_wall_delete(dna_engine_t *engine, const char *uuid) {
+    if (!engine || !uuid || !uuid[0]) {
+        fprintf(stderr, "Usage: wall delete <uuid>\n");
+        return 1;
+    }
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    dna_engine_wall_delete(engine, uuid, on_wall_deleted, &wait);
+    int rc = cli_wait_for(&wait);
+    if (rc == 0) printf("Deleted: %s\n", uuid);
+    else fprintf(stderr, "Failed to delete (error=%d)\n", rc);
+    cli_wait_destroy(&wait);
+    return rc;
+}
+
+int cmd_wall_comment(dna_engine_t *engine, const char *post_uuid, const char *text) {
+    if (!engine || !post_uuid || !text || !text[0]) {
+        fprintf(stderr, "Usage: wall comment <post_uuid> <text>\n");
+        return 1;
+    }
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    dna_engine_wall_add_comment(engine, post_uuid, NULL, text, on_wall_comment_added, &wait);
+    int rc = cli_wait_for(&wait);
+    if (rc == 0) {
+        printf("Comment added.\n");
+        if (wait.wall_comments) {
+            free(wait.wall_comments);
+        }
+    } else {
+        fprintf(stderr, "Failed to add comment (error=%d)\n", rc);
+    }
+    cli_wait_destroy(&wait);
+    return rc;
+}
+
+int cmd_wall_comments(dna_engine_t *engine, const char *post_uuid) {
+    if (!engine || !post_uuid) {
+        fprintf(stderr, "Usage: wall comments <post_uuid>\n");
+        return 1;
+    }
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    dna_engine_wall_get_comments(engine, post_uuid, on_wall_comments_loaded, &wait);
+    int rc = cli_wait_for(&wait);
+    if (rc == 0) {
+        if (!wait.wall_comments || wait.wall_comment_count == 0) {
+            printf("No comments.\n");
+        } else {
+            printf("=== Comments (%d) ===\n", wait.wall_comment_count);
+            for (int i = 0; i < wait.wall_comment_count; i++) {
+                dna_wall_comment_info_t *c = &wait.wall_comments[i];
+                time_t ts = (time_t)c->created_at;
+                struct tm tm_buf;
+                struct tm *tm = safe_localtime(&ts, &tm_buf);
+                char time_str[20] = "unknown";
+                if (tm) strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", tm);
+                const char *name = c->author_name[0] ? c->author_name : "unknown";
+                printf("[%s] %s%s\n", time_str, name,
+                       c->comment_type == 1 ? " (tip)" : "");
+                printf("  %s\n", c->body);
+            }
+            free(wait.wall_comments);
+        }
+    } else {
+        fprintf(stderr, "Failed to load comments (error=%d)\n", rc);
+    }
+    cli_wait_destroy(&wait);
+    return rc;
+}
+
+int cmd_wall_like(dna_engine_t *engine, const char *post_uuid) {
+    if (!engine || !post_uuid) {
+        fprintf(stderr, "Usage: wall like <post_uuid>\n");
+        return 1;
+    }
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    dna_engine_wall_like(engine, post_uuid, on_wall_likes_loaded, &wait);
+    int rc = cli_wait_for(&wait);
+    if (rc == 0) {
+        printf("Like toggled.\n");
+        if (wait.wall_likes) free(wait.wall_likes);
+    } else {
+        fprintf(stderr, "Failed to like (error=%d)\n", rc);
+    }
+    cli_wait_destroy(&wait);
+    return rc;
+}
+
+int cmd_wall_likes(dna_engine_t *engine, const char *post_uuid) {
+    if (!engine || !post_uuid) {
+        fprintf(stderr, "Usage: wall likes <post_uuid>\n");
+        return 1;
+    }
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    dna_engine_wall_get_likes(engine, post_uuid, on_wall_likes_loaded, &wait);
+    int rc = cli_wait_for(&wait);
+    if (rc == 0) {
+        if (!wait.wall_likes || wait.wall_like_count == 0) {
+            printf("No likes.\n");
+        } else {
+            printf("=== Likes (%d) ===\n", wait.wall_like_count);
+            for (int i = 0; i < wait.wall_like_count; i++) {
+                dna_wall_like_info_t *l = &wait.wall_likes[i];
+                time_t ts = (time_t)l->timestamp;
+                struct tm tm_buf;
+                struct tm *tm = safe_localtime(&ts, &tm_buf);
+                char time_str[20] = "unknown";
+                if (tm) strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", tm);
+                const char *name = l->author_name[0] ? l->author_name : l->author_fingerprint;
+                printf("\xe2\x99\xa5 %s (%s)\n", name, time_str);
+            }
+            free(wait.wall_likes);
+        }
+    } else {
+        fprintf(stderr, "Failed to load likes (error=%d)\n", rc);
+    }
+    cli_wait_destroy(&wait);
+    return rc;
+}
+
+int dispatch_wall(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Usage: wall <subcommand>\n");
+        fprintf(stderr, "  wall post <text...>           Post to your wall\n");
+        fprintf(stderr, "  wall list [fingerprint]       List wall posts (own or other's)\n");
+        fprintf(stderr, "  wall timeline                 Show merged timeline\n");
+        fprintf(stderr, "  wall delete <uuid>            Delete a post\n");
+        fprintf(stderr, "  wall comment <post_uuid> <text...>  Comment on a post\n");
+        fprintf(stderr, "  wall comments <post_uuid>     List comments\n");
+        fprintf(stderr, "  wall like <post_uuid>         Like/unlike a post\n");
+        fprintf(stderr, "  wall likes <post_uuid>        List likes\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "post") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wall post <text...>\n"); return 1; }
+        static char post_buf[4096];
+        post_buf[0] = '\0';
+        for (int i = sub + 1; i < argc; i++) {
+            if (i > sub + 1) strncat(post_buf, " ", sizeof(post_buf) - strlen(post_buf) - 1);
+            strncat(post_buf, argv[i], sizeof(post_buf) - strlen(post_buf) - 1);
+        }
+        return cmd_wall_post(engine, post_buf);
+    } else if (strcmp(subcmd, "list") == 0) {
+        const char *fp = (sub + 1 < argc) ? argv[sub + 1] : NULL;
+        return cmd_wall_list(engine, fp);
+    } else if (strcmp(subcmd, "timeline") == 0) {
+        return cmd_wall_timeline(engine);
+    } else if (strcmp(subcmd, "delete") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wall delete <uuid>\n"); return 1; }
+        return cmd_wall_delete(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "comment") == 0) {
+        if (sub + 2 >= argc) { fprintf(stderr, "Usage: wall comment <post_uuid> <text...>\n"); return 1; }
+        static char comment_buf[2048];
+        comment_buf[0] = '\0';
+        for (int i = sub + 2; i < argc; i++) {
+            if (i > sub + 2) strncat(comment_buf, " ", sizeof(comment_buf) - strlen(comment_buf) - 1);
+            strncat(comment_buf, argv[i], sizeof(comment_buf) - strlen(comment_buf) - 1);
+        }
+        return cmd_wall_comment(engine, argv[sub + 1], comment_buf);
+    } else if (strcmp(subcmd, "comments") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wall comments <post_uuid>\n"); return 1; }
+        return cmd_wall_comments(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "like") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wall like <post_uuid>\n"); return 1; }
+        return cmd_wall_like(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "likes") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wall likes <post_uuid>\n"); return 1; }
+        return cmd_wall_likes(engine, argv[sub + 1]);
+    } else {
+        fprintf(stderr, "Unknown wall subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+int dispatch_wall_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Usage: wall <subcommand>\n");
+        fprintf(stderr, "  post <text...> | list [fp] | timeline | delete <uuid>\n");
+        fprintf(stderr, "  comment <post_uuid> <text...> | comments <post_uuid>\n");
+        fprintf(stderr, "  like <post_uuid> | likes <post_uuid>\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "post") == 0) {
+        char *text = strtok(NULL, "");
+        if (!text) { fprintf(stderr, "Usage: wall post <text...>\n"); return 1; }
+        return cmd_wall_post(engine, text);
+    } else if (strcmp(subcmd, "list") == 0) {
+        char *fp = strtok(NULL, " \t");
+        return cmd_wall_list(engine, fp);
+    } else if (strcmp(subcmd, "timeline") == 0) {
+        return cmd_wall_timeline(engine);
+    } else if (strcmp(subcmd, "delete") == 0) {
+        char *uuid = strtok(NULL, " \t");
+        if (!uuid) { fprintf(stderr, "Usage: wall delete <uuid>\n"); return 1; }
+        return cmd_wall_delete(engine, uuid);
+    } else if (strcmp(subcmd, "comment") == 0) {
+        char *post_uuid = strtok(NULL, " \t");
+        char *text = strtok(NULL, "");
+        if (!post_uuid || !text) { fprintf(stderr, "Usage: wall comment <post_uuid> <text...>\n"); return 1; }
+        return cmd_wall_comment(engine, post_uuid, text);
+    } else if (strcmp(subcmd, "comments") == 0) {
+        char *post_uuid = strtok(NULL, " \t");
+        if (!post_uuid) { fprintf(stderr, "Usage: wall comments <post_uuid>\n"); return 1; }
+        return cmd_wall_comments(engine, post_uuid);
+    } else if (strcmp(subcmd, "like") == 0) {
+        char *post_uuid = strtok(NULL, " \t");
+        if (!post_uuid) { fprintf(stderr, "Usage: wall like <post_uuid>\n"); return 1; }
+        return cmd_wall_like(engine, post_uuid);
+    } else if (strcmp(subcmd, "likes") == 0) {
+        char *post_uuid = strtok(NULL, " \t");
+        if (!post_uuid) { fprintf(stderr, "Usage: wall likes <post_uuid>\n"); return 1; }
+        return cmd_wall_likes(engine, post_uuid);
+    } else {
+        fprintf(stderr, "Unknown wall subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 
@@ -5931,6 +6323,10 @@ bool execute_command(dna_engine_t *engine, const char *line) {
     else if (strcmp(cmd, "debug") == 0) {
         char *subcmd = strtok(NULL, " \t");
         dispatch_debug_repl(engine, subcmd);
+    }
+    else if (strcmp(cmd, "wall") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_wall_repl(engine, subcmd);
     }
     else {
         printf("Unknown command group: %s\n", cmd);

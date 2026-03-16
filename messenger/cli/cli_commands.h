@@ -49,6 +49,13 @@ typedef struct {
     int balance_count;
     /* Profile storage */
     dna_profile_t *profile;
+    /* Wall storage */
+    dna_wall_post_info_t *wall_posts;
+    int wall_post_count;
+    dna_wall_comment_info_t *wall_comments;
+    int wall_comment_count;
+    dna_wall_like_info_t *wall_likes;
+    int wall_like_count;
 } cli_wait_t;
 
 /**
@@ -520,6 +527,7 @@ int dispatch_network(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_version(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_sign(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_debug(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_wall(dna_engine_t *engine, int argc, char **argv, int sub);
 
 int dispatch_identity_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_contact_repl(dna_engine_t *engine, const char *subcmd);
@@ -532,6 +540,7 @@ int dispatch_network_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_version_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_sign_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_debug_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_wall_repl(dna_engine_t *engine, const char *subcmd);
 
 /* ============================================================================
  * COMMAND PARSER
