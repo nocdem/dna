@@ -493,19 +493,15 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
                 int total = sqlite3_column_int(dbg_stmt, 0);
                 QGP_LOG_WARN(LOG_TAG, "load_timeline: 0 matches but %d total rows in wall_posts (fp_count=%zu)", total, fp_count);
                 if (total > 0 && fp_count > 0) {
-                    QGP_LOG_WARN(LOG_TAG, "load_timeline: first fp queried: %.32s... (len=%zu)", fingerprints[0], strlen(fingerprints[0]));
-                    /* Dump first stored fp for comparison */
+                    /* Print FULL fingerprints for exact comparison */
+                    QGP_LOG_WARN(LOG_TAG, "load_timeline: QUERIED[0]: %s", fingerprints[0]);
                     sqlite3_stmt *fp_stmt = NULL;
-                    if (sqlite3_prepare_v2(g_db, "SELECT author_fingerprint FROM wall_posts LIMIT 1", -1, &fp_stmt, NULL) == SQLITE_OK) {
-                        if (sqlite3_step(fp_stmt) == SQLITE_ROW) {
+                    if (sqlite3_prepare_v2(g_db, "SELECT DISTINCT author_fingerprint FROM wall_posts LIMIT 3", -1, &fp_stmt, NULL) == SQLITE_OK) {
+                        int row = 0;
+                        while (sqlite3_step(fp_stmt) == SQLITE_ROW) {
                             const char *stored = (const char *)sqlite3_column_text(fp_stmt, 0);
-                            int stored_len = stored ? (int)strlen(stored) : 0;
-                            QGP_LOG_WARN(LOG_TAG, "load_timeline: first fp stored:  %.32s... (len=%d)", stored ? stored : "NULL", stored_len);
-                            /* Check if it's a substring match issue */
-                            if (stored && fp_count > 0) {
-                                int match = (strcmp(stored, fingerprints[0]) == 0);
-                                QGP_LOG_WARN(LOG_TAG, "load_timeline: strcmp(stored, queried[0]) = %d", match);
-                            }
+                            QGP_LOG_WARN(LOG_TAG, "load_timeline: STORED[%d]:  %s", row, stored ? stored : "NULL");
+                            row++;
                         }
                         sqlite3_finalize(fp_stmt);
                     }
