@@ -5305,10 +5305,9 @@ int dispatch_debug(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- identity (REPL) ---------- */
 int dispatch_identity_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: identity <subcommand>\n");
-        fprintf(stderr, "  create | restore | delete | list | load | whoami | change-password\n");
-        fprintf(stderr, "  register | name | lookup | lookup-profile | profile\n");
-        fprintf(stderr, "  set-nickname | get-avatar | get-mnemonic | refresh-profile\n");
+        fprintf(stderr, "Identity — create | restore | delete | list | load | whoami\n");
+        fprintf(stderr, "  get-mnemonic | change-password | register | name | profile\n");
+        fprintf(stderr, "  lookup | lookup-profile | set-nickname | get-avatar | refresh-profile\n");
         return 1;
     }
     if (strcmp(subcmd, "create") == 0) {
@@ -5380,8 +5379,7 @@ int dispatch_identity_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- contact (REPL) ---------- */
 int dispatch_contact_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: contact <subcommand>\n");
-        fprintf(stderr, "  list | add | remove | request | requests | request-count\n");
+        fprintf(stderr, "Contacts — list | remove | request | requests | request-count\n");
         fprintf(stderr, "  approve | deny | block | unblock | blocked | is-blocked\n");
         fprintf(stderr, "  check-inbox | sync-up | sync-down\n");
         return 1;
@@ -5443,8 +5441,7 @@ int dispatch_contact_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- message (REPL) ---------- */
 int dispatch_message_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: message <subcommand>\n");
-        fprintf(stderr, "  send | list | page | delete | mark-read | unread\n");
+        fprintf(stderr, "Messages — send | list | page | delete | mark-read | unread\n");
         fprintf(stderr, "  check-offline | listen | queue-status | queue-send\n");
         fprintf(stderr, "  queue-capacity | retry-pending | retry-message | backup | restore\n");
         return 1;
@@ -5512,8 +5509,7 @@ int dispatch_message_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- group (REPL) ---------- */
 int dispatch_group_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: group <subcommand>\n");
-        fprintf(stderr, "  list | create | send | info | members | invite | messages\n");
+        fprintf(stderr, "Groups — list | create | send | info | members | invite | messages\n");
         fprintf(stderr, "  sync | sync-all | sync-up | sync-down | publish-gek | gek-fetch\n");
         fprintf(stderr, "  invitations | invite-accept | invite-reject\n");
         return 1;
@@ -5584,8 +5580,7 @@ int dispatch_group_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- channel (REPL) ---------- */
 int dispatch_channel_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: channel <subcommand>\n");
-        fprintf(stderr, "  create | get | delete | discover | post | posts\n");
+        fprintf(stderr, "Channels — create | get | delete | discover | post | posts\n");
         fprintf(stderr, "  subscribe | unsubscribe | subscriptions | sync\n");
         return 1;
     }
@@ -5653,8 +5648,7 @@ int dispatch_channel_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- wallet (REPL) ---------- */
 int dispatch_wallet_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: wallet <subcommand>\n");
-        fprintf(stderr, "  list | balance | send | transactions | estimate-gas\n");
+        fprintf(stderr, "Wallet — list | balance | send | transactions | estimate-gas\n");
         return 1;
     }
     if (strcmp(subcmd, "list") == 0) {
@@ -5692,8 +5686,7 @@ int dispatch_wallet_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- dex (REPL) ---------- */
 int dispatch_dex_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: dex <subcommand>\n");
-        fprintf(stderr, "  quote | swap | pairs\n");
+        fprintf(stderr, "DEX — quote | swap | pairs | weth\n");
         return 1;
     }
     if (strcmp(subcmd, "quote") == 0) {
@@ -5788,8 +5781,7 @@ int dispatch_dex_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- network (REPL) ---------- */
 int dispatch_network_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: network <subcommand>\n");
-        fprintf(stderr, "  online | dht-status | pause-presence | resume-presence\n");
+        fprintf(stderr, "Network — online | dht-status | pause-presence | resume-presence\n");
         fprintf(stderr, "  refresh-presence | changed | bootstrap-registry\n");
         return 1;
     }
@@ -5818,9 +5810,7 @@ int dispatch_network_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- version (REPL) ---------- */
 int dispatch_version_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: version <subcommand>\n");
-        fprintf(stderr, "  publish --lib <ver> --app <ver> --nodus <ver> [--lib-min ...] [--app-min ...] [--nodus-min ...]\n");
-        fprintf(stderr, "  check\n");
+        fprintf(stderr, "Version — publish | check\n");
         return 1;
     }
     if (strcmp(subcmd, "publish") == 0) {
@@ -5861,8 +5851,7 @@ int dispatch_version_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- sign (REPL) ---------- */
 int dispatch_sign_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: sign <subcommand>\n");
-        fprintf(stderr, "  data <data...> | pubkey\n");
+        fprintf(stderr, "Sign — data <text...> | pubkey\n");
         return 1;
     }
     if (strcmp(subcmd, "data") == 0) {
@@ -5880,8 +5869,7 @@ int dispatch_sign_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- debug (REPL) ---------- */
 int dispatch_debug_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Usage: debug <subcommand>\n");
-        fprintf(stderr, "  log-level | log-tags | log | entries | count | clear | export\n");
+        fprintf(stderr, "Debug — log-level | log-tags | log | entries | count | clear | export\n");
         return 1;
     }
     if (strcmp(subcmd, "log-level") == 0) {
