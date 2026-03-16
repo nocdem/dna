@@ -21,6 +21,8 @@
 #define DNA_ENGINE_CONTACTS_IMPL
 #include "engine_includes.h"
 #include "crypto/utils/qgp_random.h"
+#include "database/wall_cache.h"
+#include "dht/client/dna_dm_channel.h"
 
 /* Message used for reciprocal contact request auto-approval */
 #define CONTACT_ACCEPTED_MSG "Contact request accepted"
@@ -225,8 +227,32 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
     } else {
         QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Successfully removed %.16s... from local DB\n", fp);
 
+        /* Cancel outbox listener for this contact */
+        dna_engine_cancel_outbox_listener(engine, fp);
+
         /* Cancel ACK listener for this contact (v15) */
         dna_engine_cancel_ack_listener(engine, fp);
+
+        /* Disconnect DM channel for this contact */
+        dna_dm_channel_disconnect(engine, fp);
+
+        /* Delete all messages with this contact */
+        if (engine->messenger) {
+            int del_rc = messenger_delete_conversation_full(engine->messenger, fp);
+            if (del_rc == 0) {
+                QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Deleted conversation with %.16s...\n", fp);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "REMOVE_CONTACT: Failed to delete conversation (rc=%d)\n", del_rc);
+            }
+        }
+
+        /* Delete cached wall posts from this contact */
+        wall_cache_delete_by_author(fp);
+
+        /* Remove keyserver cache entry */
+        keyserver_cache_delete(fp);
+
+        QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Full cleanup done for %.16s...\n", fp);
     }
 
     /* Sync to DHT */
