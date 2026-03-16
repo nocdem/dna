@@ -58,6 +58,13 @@ typedef struct {
 typedef struct {
     nodus_tcp_conn_t   *conn;
 
+    /* C-01/C-02: Dilithium5 authentication (same as client sessions) */
+    nodus_key_t         client_fp;
+    nodus_pubkey_t      client_pk;
+    uint8_t             nonce[NODUS_NONCE_LEN];
+    bool                nonce_pending;
+    bool                authenticated;
+
     /* Per-session rate limiting */
     uint64_t            sv_window_start;
     int                 sv_count;

@@ -1335,8 +1335,64 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
 
-    /* Try T2 decode first (p_sync, fv) — witness "w_*" moved to dedicated port 4004 */
+    /* C-01: Require Dilithium5 authentication on inter-node port.
+     * Pre-auth: only hello and auth messages allowed. */
     if (nodus_t2_decode(payload, len, &msg) == 0) {
+        if (!sess->authenticated) {
+            if (strcmp(msg.method, "hello") == 0) {
+                /* Reuse client auth handler — same Dilithium5 challenge-response.
+                 * We cast to nodus_session_t-compatible struct for auth fields. */
+                nodus_key_t computed_fp;
+                nodus_fingerprint(&msg.pk, &computed_fp);
+                if (nodus_key_cmp(&computed_fp, &msg.fp) != 0) {
+                    size_t rlen = 0;
+                    nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
+                                    "fingerprint mismatch", resp_buf, sizeof(resp_buf), &rlen);
+                    nodus_tcp_send(sess->conn, resp_buf, rlen);
+                } else {
+                    sess->client_pk = msg.pk;
+                    sess->client_fp = msg.fp;
+                    nodus_random(sess->nonce, NODUS_NONCE_LEN);
+                    sess->nonce_pending = true;
+                    size_t rlen = 0;
+                    nodus_t2_challenge(msg.txn_id, sess->nonce,
+                                        resp_buf, sizeof(resp_buf), &rlen);
+                    nodus_tcp_send(sess->conn, resp_buf, rlen);
+                }
+            } else if (strcmp(msg.method, "auth") == 0 && sess->nonce_pending) {
+                int rc = nodus_verify(&msg.sig, sess->nonce, NODUS_NONCE_LEN, &sess->client_pk);
+                if (rc != 0) {
+                    size_t rlen = 0;
+                    nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
+                                    "auth failed", resp_buf, sizeof(resp_buf), &rlen);
+                    nodus_tcp_send(sess->conn, resp_buf, rlen);
+                } else {
+                    sess->authenticated = true;
+                    sess->nonce_pending = false;
+                    sess->conn->peer_id = sess->client_fp;
+                    sess->conn->peer_pk = sess->client_pk;
+                    sess->conn->peer_id_set = true;
+                    uint8_t token[NODUS_SESSION_TOKEN_LEN];
+                    nodus_random(token, NODUS_SESSION_TOKEN_LEN);
+                    size_t rlen = 0;
+                    nodus_t2_auth_ok(msg.txn_id, token,
+                                      resp_buf, sizeof(resp_buf), &rlen);
+                    nodus_tcp_send(sess->conn, resp_buf, rlen);
+                    char fp_hex[33];
+                    for (int k = 0; k < 16; k++)
+                        sprintf(fp_hex + k*2, "%02x", sess->client_fp.bytes[k]);
+                    fp_hex[32] = '\0';
+                    fprintf(stderr, "INTER_AUTH_OK: node %s... authenticated on port 4002\n", fp_hex);
+                }
+            } else {
+                size_t rlen = 0;
+                nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                                "authenticate first", resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send(sess->conn, resp_buf, rlen);
+            }
+            nodus_t2_msg_free(&msg);
+            return;
+        }
 
         if (strcmp(msg.method, "fv") == 0) {
             /* Inter-node FIND_VALUE (per-session rate limit) */
@@ -1466,6 +1522,62 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                               size_t len, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     if (!srv->witness) return;
+
+    /* C-02: Require Dilithium5 authentication on witness port.
+     * Pre-auth: only hello and auth messages allowed. */
+    if (!conn->authenticated) {
+        nodus_tier2_msg_t msg;
+        memset(&msg, 0, sizeof(msg));
+        if (nodus_t2_decode(payload, len, &msg) != 0) {
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+        if (strcmp(msg.method, "hello") == 0) {
+            nodus_key_t computed_fp;
+            nodus_fingerprint(&msg.pk, &computed_fp);
+            if (nodus_key_cmp(&computed_fp, &msg.fp) != 0) {
+                size_t rlen = 0;
+                nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
+                                "fingerprint mismatch", resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send(conn, resp_buf, rlen);
+            } else {
+                conn->peer_pk = msg.pk;
+                conn->peer_id = msg.fp;
+                nodus_random(conn->auth_nonce, NODUS_NONCE_LEN);
+                conn->auth_nonce_pending = true;
+                size_t rlen = 0;
+                nodus_t2_challenge(msg.txn_id, conn->auth_nonce,
+                                    resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send(conn, resp_buf, rlen);
+            }
+        } else if (strcmp(msg.method, "auth") == 0 && conn->auth_nonce_pending) {
+            int rc = nodus_verify(&msg.sig, conn->auth_nonce, NODUS_NONCE_LEN, &conn->peer_pk);
+            if (rc != 0) {
+                size_t rlen = 0;
+                nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
+                                "auth failed", resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send(conn, resp_buf, rlen);
+            } else {
+                conn->authenticated = true;
+                conn->auth_nonce_pending = false;
+                conn->peer_id_set = true;
+                uint8_t token[NODUS_SESSION_TOKEN_LEN];
+                nodus_random(token, NODUS_SESSION_TOKEN_LEN);
+                size_t rlen = 0;
+                nodus_t2_auth_ok(msg.txn_id, token,
+                                  resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send(conn, resp_buf, rlen);
+                fprintf(stderr, "WITNESS_AUTH_OK: peer authenticated on port 4004\n");
+            }
+        } else {
+            size_t rlen = 0;
+            nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                            "authenticate first", resp_buf, sizeof(resp_buf), &rlen);
+            nodus_tcp_send(conn, resp_buf, rlen);
+        }
+        nodus_t2_msg_free(&msg);
+        return;
+    }
 
     /* All frames on witness port are T3 BFT messages — dispatch directly */
     nodus_witness_dispatch_t3(srv->witness, conn, payload, len);

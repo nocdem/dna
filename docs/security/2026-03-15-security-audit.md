@@ -36,8 +36,48 @@
 - **DHT values are Dilithium5-signed** with owner verification (when verification is called)
 - **Channel UUID SQL injection mitigated**: hex-only validation on table names
 
----
 
+## Resolution Status (Updated 2026-03-16)
+
+**22 findings RESOLVED** | **2 IN PROGRESS** | **58 remaining**
+
+### Resolved Items
+| ID | Severity | Resolution |
+|----|----------|------------|
+| C-04 | CRITICAL | RESOLVED (commit 49397352 — nodus_value_verify in storage PUT) |
+| C-05 | CRITICAL | RESOLVED (commit 49397352 — encrypted channel member check) |
+| H-05 | HIGH | RESOLVED (udp_rate_check before STORE_VALUE) |
+| H-07 | HIGH | RESOLVED (commit 49397352 — channel member update owner auth) |
+| H-08 | HIGH | RESOLVED (repl_verify_post_sig on BACKUP nodes) |
+| H-11 | HIGH | RESOLVED (commit 49397352 — owner_fp == SHA3-512(owner_pk)) |
+| H-12 | HIGH | RESOLVED (all sprintf replaced with snprintf) |
+| H-13 | HIGH | RESOLVED (SIZE_MAX overflow guard in sign_payload) |
+| H-14 | HIGH | RESOLVED (DNAC_GENESIS_WITNESSES_REQUIRED check) |
+| H-15 | HIGH | RESOLVED (started_at + 30s timeout + disconnect cleanup) |
+| H-16 | HIGH | RESOLVED (ledger entry inside atomic transaction) |
+| H-17 | HIGH | RESOLVED (fee = total_input/1000 aligned client/witness) |
+| M-01 | MEDIUM | RESOLVED (NODUS_CBOR_MAX_ITEMS bound) |
+| M-02 | MEDIUM | RESOLVED (NODUS_MAX_FRAME_TCP guard in tcp_send + frame_encode) |
+| M-09 | MEDIUM | RESOLVED (getrandom loop until full len) |
+| M-10 | MEDIUM | RESOLVED (qgp_secure_memzero on entropy) |
+| M-11 | MEDIUM | RESOLVED (qgp_secure_memzero on SHA-256 hash) |
+| M-12 | MEDIUM | RESOLVED (chmod 0600 on nodus.sk) |
+| M-13 | MEDIUM | RESOLVED (qgp_secure_memzero replaces volatile loop) |
+| M-14 | MEDIUM | RESOLVED (chmod 0600 in qgp_key_save) |
+| M-32 | MEDIUM | RESOLVED (tx_type range validation in deserialize) |
+| M-35 | MEDIUM | RESOLVED (NONCE_MAX_TOTAL 10000 cap + eviction) |
+| C-01 | CRITICAL | IN PROGRESS (server-side auth code written, needs config flag + client-side connect) |
+| C-02 | CRITICAL | IN PROGRESS (server-side auth code written, needs config flag + client-side connect) |
+
+### Remaining Open (by priority)
+| Severity | Count | Key Items |
+|----------|-------|-----------|
+| CRITICAL | 2 | C-03 (routing Eclipse), C-06 (witness pubkey pinning) |
+| HIGH | 8 | H-01 (TLS), H-02 (UDP amplification), H-03 (static resp_buf), H-04 (inter-node quota), H-06 (presence inject), H-09 (ring eviction), H-10 (heartbeat spoof) |
+| MEDIUM | 24 | See detailed findings below |
+| LOW | 24 | See detailed findings below |
+
+---
 ## Attack Chains
 
 ### CHAIN 1: "Witness Takeover via Unauthenticated BFT Port"

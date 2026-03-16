@@ -52,6 +52,11 @@ typedef struct nodus_tcp_conn {
     bool                peer_id_set;
     bool                is_nodus;    /* true = Nodus peer, false = client */
 
+    /* C-01/C-02: Auth state for inter-node and witness ports */
+    uint8_t             auth_nonce[NODUS_NONCE_LEN];
+    bool                auth_nonce_pending;
+    bool                authenticated;   /* Dilithium5 challenge-response completed */
+
     void               *user_data;
     uint64_t            connected_at;
     uint64_t            last_activity;
