@@ -729,6 +729,7 @@ class _AllBalancesSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final allBalances = ref.watch(allBalancesProvider);
+    final grouped = ref.watch(groupedBalancesProvider);
     final walletSettings = ref.watch(walletSettingsProvider);
     final networkFilter = ref.watch(walletNetworkFilterProvider);
     final theme = Theme.of(context);
@@ -737,12 +738,10 @@ class _AllBalancesSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         allBalances.when(
-          data: (list) => _buildBalanceList(list, networkFilter, walletSettings, theme),
+          data: (_) => _buildGroupedList(grouped, networkFilter, walletSettings, theme),
           loading: () {
-            // v0.100.104: Show cached data during loading (stale-while-revalidate)
-            final cached = allBalances.valueOrNull;
-            if (cached != null && cached.isNotEmpty) {
-              return _buildBalanceList(cached, networkFilter, walletSettings, theme);
+            if (grouped.isNotEmpty) {
+              return _buildGroupedList(grouped, networkFilter, walletSettings, theme);
             }
             return const Padding(
               padding: EdgeInsets.all(16),
@@ -761,21 +760,23 @@ class _AllBalancesSection extends ConsumerWidget {
     );
   }
 
-  Widget _buildBalanceList(List<WalletBalance> list, String? networkFilter,
+  Widget _buildGroupedList(List<GroupedToken> groups, String? networkFilter,
       WalletSettingsState walletSettings, ThemeData theme) {
+    var filteredGroups = groups.toList();
+
     // Filter by network if active
-    var filteredList = networkFilter != null
-        ? list.where((wb) =>
-            wb.balance.network.toLowerCase() == networkFilter ||
-            (networkFilter == 'cellframe' && wb.balance.network.toLowerCase() == 'cellframe')).toList()
-        : list.toList();
+    if (networkFilter != null) {
+      filteredGroups = filteredGroups.where((g) =>
+        g.chains.any((wb) =>
+          wb.balance.network.toLowerCase() == networkFilter)).toList();
+    }
 
     // Filter zero balances if setting enabled
     if (walletSettings.hideZeroBalances) {
-      filteredList = filteredList.where((wb) => _isNonZeroBalance(wb.balance.balance)).toList();
+      filteredGroups = filteredGroups.where((g) => g.totalBalance > 0).toList();
     }
 
-    return filteredList.isEmpty
+    return filteredGroups.isEmpty
         ? Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Text(
@@ -797,23 +798,141 @@ class _AllBalancesSection extends ConsumerWidget {
                       style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(width: 8),
-                    DnaChip(label: '${filteredList.length}'),
+                    DnaChip(label: '${filteredGroups.length}'),
                   ],
                 ),
               ),
-              ...filteredList.map((wb) => _BalanceTile(
-                walletBalance: wb,
-              )),
+              ...filteredGroups.map((group) {
+                if (group.isMultiChain) {
+                  return _GroupedTokenTile(groupedToken: group);
+                } else {
+                  return _BalanceTile(walletBalance: group.chains.first);
+                }
+              }),
             ],
           );
   }
+}
 
-  /// Check if balance string represents a non-zero value
-  bool _isNonZeroBalance(String balanceStr) {
-    if (balanceStr.isEmpty) return false;
-    final balance = double.tryParse(balanceStr);
-    if (balance == null) return true; // Show if can't parse
-    return balance > 0;
+/// Tile for a token that exists on multiple chains (e.g., USDT on ETH+SOL+TRX)
+class _GroupedTokenTile extends ConsumerWidget {
+  final GroupedToken groupedToken;
+
+  const _GroupedTokenTile({required this.groupedToken});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final token = groupedToken.token;
+    final iconPath = getTokenIconPath(token);
+    final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
+
+    return DnaCard(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      onTap: () => _showChainBreakdown(context, ref),
+      child: Row(
+        children: [
+          // Token icon
+          iconPath != null
+              ? SizedBox(width: 40, height: 40, child: buildCryptoIcon(iconPath))
+              : CircleAvatar(
+                  backgroundColor: Colors.blue.withValues(alpha: 0.2),
+                  radius: 20,
+                  child: Text(token.isNotEmpty ? token[0].toUpperCase() : '?',
+                    style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
+                ),
+          const SizedBox(width: 12),
+          // Token name + chain count
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(token,
+                  style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+                Text('${groupedToken.chains.length} chains',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.45))),
+              ],
+            ),
+          ),
+          // Total balance
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                hideBalances ? '*****' : _truncateBalance(groupedToken.totalBalance.toStringAsFixed(6)),
+                style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              if (!hideBalances) Builder(builder: (context) {
+                // Sum USD values across chains
+                double totalUsd = 0;
+                for (final wb in groupedToken.chains) {
+                  final usd = ref.watch(tokenUsdValueProvider(
+                    (token: wb.balance.token, balance: wb.balance.balance)));
+                  if (usd != null) totalUsd += usd;
+                }
+                if (totalUsd > 0) {
+                  return Text('\$${_formatUsdValue(totalUsd)}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.5)));
+                }
+                return const SizedBox.shrink();
+              }),
+            ],
+          ),
+          const SizedBox(width: 8),
+          FaIcon(FontAwesomeIcons.chevronRight, size: 14,
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.3)),
+        ],
+      ),
+    );
+  }
+
+  void _showChainBreakdown(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.5,
+        maxChildSize: 0.8,
+        minChildSize: 0.3,
+        expand: false,
+        builder: (context, scrollController) {
+          final theme = Theme.of(context);
+          return Container(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40, height: 4,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(2)),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text('${groupedToken.token} — ${_truncateBalance(groupedToken.totalBalance.toStringAsFixed(6))} total',
+                  style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 16),
+                Expanded(
+                  child: ListView.builder(
+                    controller: scrollController,
+                    itemCount: groupedToken.chains.length,
+                    itemBuilder: (context, index) {
+                      final wb = groupedToken.chains[index];
+                      return _BalanceTile(walletBalance: wb);
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
   }
 }
 

@@ -383,3 +383,65 @@ class TransactionsNotifier
     }
   }
 }
+
+/// Grouped token — aggregates same token across multiple chains
+class GroupedToken {
+  final String token;
+  final double totalBalance;
+  final List<WalletBalance> chains;
+
+  GroupedToken({
+    required this.token,
+    required this.totalBalance,
+    required this.chains,
+  });
+
+  /// Whether this token exists on multiple chains
+  bool get isMultiChain => chains.length > 1;
+
+  /// Single chain name (for non-grouped tokens)
+  String get networkLabel => chains.length == 1
+      ? chains.first.balance.network
+      : '${chains.length} chains';
+}
+
+/// Tokens that should be grouped across chains (stablecoins)
+const _groupableTokens = {'USDT', 'USDC'};
+
+/// Group wallet balances by token symbol
+/// Native tokens (ETH, SOL, TRX, CPUNK, CELL) stay separate.
+/// Stablecoins (USDT, USDC) are merged into single entries.
+final groupedBalancesProvider = Provider<List<GroupedToken>>((ref) {
+  final allBalances = ref.watch(allBalancesProvider).valueOrNull ?? [];
+  if (allBalances.isEmpty) return [];
+
+  final groups = <String, List<WalletBalance>>{};
+
+  for (final wb in allBalances) {
+    final token = wb.balance.token.toUpperCase();
+    final key = _groupableTokens.contains(token) ? token : '$token:${wb.balance.network}';
+    groups.putIfAbsent(key, () => []).add(wb);
+  }
+
+  final result = <GroupedToken>[];
+  for (final entry in groups.entries) {
+    double total = 0.0;
+    for (final wb in entry.value) {
+      total += double.tryParse(wb.balance.balance) ?? 0.0;
+    }
+    result.add(GroupedToken(
+      token: entry.value.first.balance.token,
+      totalBalance: total,
+      chains: entry.value,
+    ));
+  }
+
+  // Sort: non-zero first, then by token name
+  result.sort((a, b) {
+    if (a.totalBalance > 0 && b.totalBalance <= 0) return -1;
+    if (a.totalBalance <= 0 && b.totalBalance > 0) return 1;
+    return a.token.compareTo(b.token);
+  });
+
+  return result;
+});
