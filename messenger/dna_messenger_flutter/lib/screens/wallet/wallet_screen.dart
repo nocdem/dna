@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import '../../ffi/dna_engine.dart' show Contact, DexQuote, DexSwapResult, Transaction, UserProfile, Wallet;
+import '../../ffi/dna_engine.dart' show Contact, DexQuote, Transaction, UserProfile, Wallet;
 import '../../providers/addressbook_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
@@ -2927,7 +2927,6 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
       builder: (context) {
         final theme = Theme.of(context);
         final l10n = AppLocalizations.of(context);
-        final subtitleColor = theme.colorScheme.onSurface.withAlpha(150);
         return Container(
           decoration: BoxDecoration(
             color: theme.colorScheme.surface,
