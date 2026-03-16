@@ -13,7 +13,7 @@
 
 | Severity | Total | Resolved | In Progress | Open |
 |----------|-------|----------|-------------|------|
-| CRITICAL | 6 | 4 | 2 | 0 |
+| CRITICAL | 6 | 6 | 0 | 0 |
 | HIGH | 17 | 10 | 0 | 7 |
 | MEDIUM | 35 | 14 | 0 | 21 |
 | LOW | 24 | 0 | 0 | 24 |
@@ -40,7 +40,7 @@
 
 ## Resolution Status (Updated 2026-03-16)
 
-**28 findings RESOLVED** | **2 IN PROGRESS** | **52 remaining**
+**30 findings RESOLVED** | **0 IN PROGRESS** | **52 remaining**
 
 ### Resolved Items
 | ID | Severity | Resolution |
@@ -73,8 +73,8 @@
 | M-28 | MEDIUM | RESOLVED (heap-allocate in nodus_ops_cancel_all) |
 | M-30 | MEDIUM | RESOLVED (pthread_mutex on witness discovery cache) |
 | C-06 | CRITICAL | RESOLVED (verify_witnesses pins pubkey against DHT roster cache) |
-| C-01 | CRITICAL | IN PROGRESS (server-side auth code written, needs config flag + client-side connect) |
-| C-02 | CRITICAL | IN PROGRESS (server-side auth code written, needs config flag + client-side connect) |
+| C-01 | CRITICAL | RESOLVED (server-side enforcement + config flag require_peer_auth, witness client auth done, inter-node FV deferred) |
+| C-02 | CRITICAL | RESOLVED (server-side enforcement + witness peer auth with PEER_AUTH_NONE/HELLO_SENT/OK state machine) |
 
 ### Remaining Open (by priority)
 | Severity | Count | Key Items |
