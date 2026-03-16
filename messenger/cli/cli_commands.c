@@ -302,18 +302,18 @@ static void on_profile(dna_request_id_t request_id, int error,
 void cmd_help(void) {
     printf("\nDNA Connect CLI - Interactive Mode\n\n");
     printf("Command Groups:\n");
-    printf("  identity    Identity management (create, restore, load, profile, ...)\n");
-    printf("  contact     Contact management (add, remove, request, block, ...)\n");
-    printf("  message     Messaging (send, list, queue, backup, ...)\n");
-    printf("  group       Group chat (create, invite, send, sync, ...)\n");
-    printf("  channel     Channels (create, post, subscribe, ...)\n");
-    printf("  wallet      Wallet operations (balance, send, transactions, ...)\n");
-    printf("  dex         DEX trading (quote, pairs)\n");
-    printf("  network     Network & presence (online, dht-status, ...)\n");
-    printf("  version     Version management (publish, check)\n");
-    printf("  sign        Signing (data, pubkey)\n");
-    printf("  wall        Wall posts (post, list, timeline, comments, likes, ...)\n");
-    printf("  debug       Debug & logging (log-level, entries, export, ...)\n");
+    printf("  identity    Create, restore, manage your PQ identity & profile\n");
+    printf("  contact     Send/approve contact requests, block, sync contacts\n");
+    printf("  message     Send & receive encrypted DMs, manage queue\n");
+    printf("  group       Encrypted group chats with GEK key rotation\n");
+    printf("  channel     Public broadcast channels (create, post, subscribe)\n");
+    printf("  wall        Social wall — posts, timeline, comments, likes\n");
+    printf("  wallet      Multi-chain wallet (Backbone, ETH, SOL, TRX)\n");
+    printf("  dex         Decentralized exchange (quotes, swaps, pairs)\n");
+    printf("  network     DHT status, presence, bootstrap registry\n");
+    printf("  sign        Sign data with your Dilithium5 key\n");
+    printf("  version     Publish/check app version on DHT\n");
+    printf("  debug       Log levels, export logs, diagnostics\n");
     printf("\n");
     printf("Type '<group>' to see subcommands (e.g., 'identity' or 'wall').\n");
     printf("Type 'quit' to exit.\n\n");
@@ -4641,23 +4641,27 @@ int cmd_channel_sync(dna_engine_t *engine) {
 /* ---------- identity ---------- */
 int dispatch_identity(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: identity <subcommand>\n");
-        fprintf(stderr, "  identity create <name>\n");
-        fprintf(stderr, "  identity restore <mnemonic...>\n");
-        fprintf(stderr, "  identity delete <fingerprint>\n");
-        fprintf(stderr, "  identity list\n");
-        fprintf(stderr, "  identity load <fingerprint>\n");
-        fprintf(stderr, "  identity whoami\n");
-        fprintf(stderr, "  identity change-password\n");
-        fprintf(stderr, "  identity register <name>\n");
-        fprintf(stderr, "  identity name\n");
-        fprintf(stderr, "  identity lookup <name>\n");
-        fprintf(stderr, "  identity lookup-profile <name|fp>\n");
-        fprintf(stderr, "  identity profile [field=value]\n");
-        fprintf(stderr, "  identity set-nickname <fp> <nickname>\n");
-        fprintf(stderr, "  identity get-avatar <fp>\n");
-        fprintf(stderr, "  identity get-mnemonic\n");
-        fprintf(stderr, "  identity refresh-profile <fp>\n");
+        fprintf(stderr, "Identity — Manage your post-quantum identity\n\n");
+        fprintf(stderr, "  create <name>              Generate new Dilithium5 + Kyber1024 identity\n");
+        fprintf(stderr, "  restore <24 words...>      Restore identity from BIP39 seed phrase\n");
+        fprintf(stderr, "  delete <fingerprint>       Permanently delete an identity\n");
+        fprintf(stderr, "  list                       List all local identities\n");
+        fprintf(stderr, "  load <fingerprint>         Switch to a specific identity\n");
+        fprintf(stderr, "  whoami                     Show current identity info\n");
+        fprintf(stderr, "  get-mnemonic               Display your 24-word recovery phrase\n");
+        fprintf(stderr, "  change-password            Change identity password\n");
+        fprintf(stderr, "\n  Profile:\n");
+        fprintf(stderr, "  register <name>            Register a human-readable name on DHT\n");
+        fprintf(stderr, "  name                       Show your registered name\n");
+        fprintf(stderr, "  profile                    Show your full profile\n");
+        fprintf(stderr, "  profile <field>=<value>    Update profile (bio, location, website,\n");
+        fprintf(stderr, "                             telegram, twitter, github, avatar)\n");
+        fprintf(stderr, "  set-nickname <fp> <nick>   Set local nickname for a contact\n");
+        fprintf(stderr, "\n  Lookup:\n");
+        fprintf(stderr, "  lookup <name>              Find someone by registered name\n");
+        fprintf(stderr, "  lookup-profile <name|fp>   View someone's full profile\n");
+        fprintf(stderr, "  get-avatar <fp>            Fetch someone's avatar\n");
+        fprintf(stderr, "  refresh-profile <fp>       Force-refresh a contact's profile from DHT\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -4726,22 +4730,24 @@ int dispatch_identity(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- contact ---------- */
 int dispatch_contact(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: contact <subcommand>\n");
-        fprintf(stderr, "  contact list\n");
-        /* contact add removed — use request flow instead */
-        fprintf(stderr, "  contact remove <fp>\n");
-        fprintf(stderr, "  contact request <fp> [message]\n");
-        fprintf(stderr, "  contact requests\n");
-        fprintf(stderr, "  contact request-count\n");
-        fprintf(stderr, "  contact approve <fp>\n");
-        fprintf(stderr, "  contact deny <fp>\n");
-        fprintf(stderr, "  contact block <name|fp>\n");
-        fprintf(stderr, "  contact unblock <fp>\n");
-        fprintf(stderr, "  contact blocked\n");
-        fprintf(stderr, "  contact is-blocked <fp>\n");
-        fprintf(stderr, "  contact check-inbox <name|fp>\n");
-        fprintf(stderr, "  contact sync-up\n");
-        fprintf(stderr, "  contact sync-down\n");
+        fprintf(stderr, "Contacts — Manage your contact list with salt-based key exchange\n\n");
+        fprintf(stderr, "  list                       Show all contacts with status\n");
+        fprintf(stderr, "  remove <fp>                Remove contact (deletes messages, keys, cache)\n");
+        fprintf(stderr, "\n  Requests (required for messaging — establishes shared DHT salt):\n");
+        fprintf(stderr, "  request <fp> [message]     Send a contact request\n");
+        fprintf(stderr, "  requests                   List pending incoming requests\n");
+        fprintf(stderr, "  request-count              Count pending requests\n");
+        fprintf(stderr, "  approve <fp>               Accept a contact request\n");
+        fprintf(stderr, "  deny <fp>                  Reject a contact request\n");
+        fprintf(stderr, "\n  Blocking:\n");
+        fprintf(stderr, "  block <name|fp>            Block a user\n");
+        fprintf(stderr, "  unblock <fp>               Unblock a user\n");
+        fprintf(stderr, "  blocked                    List blocked users\n");
+        fprintf(stderr, "  is-blocked <fp>            Check if a user is blocked\n");
+        fprintf(stderr, "\n  Sync:\n");
+        fprintf(stderr, "  check-inbox <name|fp>      Check for offline messages from contact\n");
+        fprintf(stderr, "  sync-up                    Push local contacts to DHT\n");
+        fprintf(stderr, "  sync-down                  Pull contacts from DHT (restores salts)\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -4804,22 +4810,24 @@ int dispatch_contact(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- message ---------- */
 int dispatch_message(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: message <subcommand>\n");
-        fprintf(stderr, "  message send <recipient> <message...>\n");
-        fprintf(stderr, "  message list <fp>\n");
-        fprintf(stderr, "  message page <fp> <limit> <offset>\n");
-        fprintf(stderr, "  message delete <message_id>\n");
-        fprintf(stderr, "  message mark-read <name|fp>\n");
-        fprintf(stderr, "  message unread <name|fp>\n");
-        fprintf(stderr, "  message check-offline\n");
-        fprintf(stderr, "  message listen\n");
-        fprintf(stderr, "  message queue-status\n");
-        fprintf(stderr, "  message queue-send <recipient> <message...>\n");
-        fprintf(stderr, "  message queue-capacity <n>\n");
-        fprintf(stderr, "  message retry-pending\n");
-        fprintf(stderr, "  message retry-message <message_id>\n");
-        fprintf(stderr, "  message backup\n");
-        fprintf(stderr, "  message restore\n");
+        fprintf(stderr, "Messages — Kyber1024 encrypted direct messages via DHT\n\n");
+        fprintf(stderr, "  send <name|fp> <text...>   Send encrypted message (requires contact)\n");
+        fprintf(stderr, "  list <name|fp>             Show conversation with a contact\n");
+        fprintf(stderr, "  page <fp> <limit> <offset> Paginated message history\n");
+        fprintf(stderr, "  delete <message_id>        Delete a message locally\n");
+        fprintf(stderr, "  mark-read <name|fp>        Mark conversation as read\n");
+        fprintf(stderr, "  unread <name|fp>           Show unread message count\n");
+        fprintf(stderr, "\n  Offline & Queue:\n");
+        fprintf(stderr, "  check-offline              Fetch any pending offline messages\n");
+        fprintf(stderr, "  listen                     Listen for incoming messages (blocks)\n");
+        fprintf(stderr, "  queue-status               Show outgoing message queue\n");
+        fprintf(stderr, "  queue-send <name|fp> <msg> Queue message for later delivery\n");
+        fprintf(stderr, "  queue-capacity <n>         Set max queue size\n");
+        fprintf(stderr, "  retry-pending              Retry all pending messages\n");
+        fprintf(stderr, "  retry-message <id>         Retry a specific message\n");
+        fprintf(stderr, "\n  Backup:\n");
+        fprintf(stderr, "  backup                     Export messages to backup\n");
+        fprintf(stderr, "  restore                    Import messages from backup\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -4884,23 +4892,25 @@ int dispatch_message(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- group ---------- */
 int dispatch_group(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: group <subcommand>\n");
-        fprintf(stderr, "  group list\n");
-        fprintf(stderr, "  group create <name>\n");
-        fprintf(stderr, "  group send <uuid> <message...>\n");
-        fprintf(stderr, "  group info <uuid>\n");
-        fprintf(stderr, "  group members <uuid>\n");
-        fprintf(stderr, "  group invite <uuid> <fp>\n");
-        fprintf(stderr, "  group messages <name|uuid>\n");
-        fprintf(stderr, "  group sync <uuid>\n");
-        fprintf(stderr, "  group sync-all\n");
-        fprintf(stderr, "  group sync-up\n");
-        fprintf(stderr, "  group sync-down\n");
-        fprintf(stderr, "  group publish-gek <name|uuid>\n");
-        fprintf(stderr, "  group gek-fetch <uuid>\n");
-        fprintf(stderr, "  group invitations\n");
-        fprintf(stderr, "  group invite-accept <uuid>\n");
-        fprintf(stderr, "  group invite-reject <uuid>\n");
+        fprintf(stderr, "Groups — Encrypted group chats with GEK key rotation\n\n");
+        fprintf(stderr, "  list                       List your groups\n");
+        fprintf(stderr, "  create <name>              Create a new group\n");
+        fprintf(stderr, "  send <uuid> <text...>      Send message to group\n");
+        fprintf(stderr, "  info <uuid>                Show group details\n");
+        fprintf(stderr, "  members <uuid>             List group members\n");
+        fprintf(stderr, "  invite <uuid> <fp>         Invite someone to group\n");
+        fprintf(stderr, "  messages <name|uuid>       Show group message history\n");
+        fprintf(stderr, "\n  Invitations:\n");
+        fprintf(stderr, "  invitations                List pending group invitations\n");
+        fprintf(stderr, "  invite-accept <uuid>       Accept a group invitation\n");
+        fprintf(stderr, "  invite-reject <uuid>       Reject a group invitation\n");
+        fprintf(stderr, "\n  Sync & Keys:\n");
+        fprintf(stderr, "  sync <uuid>                Sync specific group from DHT\n");
+        fprintf(stderr, "  sync-all                   Sync all groups\n");
+        fprintf(stderr, "  sync-up                    Push local groups to DHT\n");
+        fprintf(stderr, "  sync-down                  Pull groups from DHT\n");
+        fprintf(stderr, "  publish-gek <name|uuid>    Publish Group Encryption Key\n");
+        fprintf(stderr, "  gek-fetch <uuid>           Fetch GEK from DHT\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -4962,17 +4972,17 @@ int dispatch_group(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- channel ---------- */
 int dispatch_channel(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: channel <subcommand>\n");
-        fprintf(stderr, "  channel create <name> [description]\n");
-        fprintf(stderr, "  channel get <uuid>\n");
-        fprintf(stderr, "  channel delete <uuid>\n");
-        fprintf(stderr, "  channel discover [--days N]\n");
-        fprintf(stderr, "  channel post <uuid> <body>\n");
-        fprintf(stderr, "  channel posts <uuid> [--days N]\n");
-        fprintf(stderr, "  channel subscribe <uuid>\n");
-        fprintf(stderr, "  channel unsubscribe <uuid>\n");
-        fprintf(stderr, "  channel subscriptions\n");
-        fprintf(stderr, "  channel sync\n");
+        fprintf(stderr, "Channels — Public broadcast channels on DHT\n\n");
+        fprintf(stderr, "  create <name> [description]  Create a new channel\n");
+        fprintf(stderr, "  get <uuid>                 Show channel info\n");
+        fprintf(stderr, "  delete <uuid>              Delete your channel\n");
+        fprintf(stderr, "  discover [--days N]        Browse recent channels (default 7 days)\n");
+        fprintf(stderr, "  post <uuid> <body>         Post to a channel\n");
+        fprintf(stderr, "  posts <uuid> [--days N]    Read channel posts\n");
+        fprintf(stderr, "  subscribe <uuid>           Subscribe to a channel\n");
+        fprintf(stderr, "  unsubscribe <uuid>         Unsubscribe from a channel\n");
+        fprintf(stderr, "  subscriptions              List your subscriptions\n");
+        fprintf(stderr, "  sync                       Sync all channel subscriptions\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -5032,12 +5042,12 @@ int dispatch_channel(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- wallet ---------- */
 int dispatch_wallet(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: wallet <subcommand>\n");
-        fprintf(stderr, "  wallet list\n");
-        fprintf(stderr, "  wallet balance <wallet_index>\n");
-        fprintf(stderr, "  wallet send <wallet_idx> <network> <token> <to_address> <amount>\n");
-        fprintf(stderr, "  wallet transactions <wallet_index> [network]  (Backbone|Solana|Ethereum|Tron)\n");
-        fprintf(stderr, "  wallet estimate-gas <network_id>\n");
+        fprintf(stderr, "Wallet — Multi-chain wallet (Backbone, Ethereum, Solana, Tron)\n\n");
+        fprintf(stderr, "  list                       List all wallets with addresses\n");
+        fprintf(stderr, "  balance <index>            Show balances (0=ETH, 1=SOL, 2=TRX, 3=Backbone)\n");
+        fprintf(stderr, "  send <idx> <net> <token> <to> <amount>  Send tokens\n");
+        fprintf(stderr, "  transactions <idx> [net]   Transaction history (Backbone|Solana|Ethereum|Tron)\n");
+        fprintf(stderr, "  estimate-gas <network>     Estimate gas fees for a network\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -5065,12 +5075,12 @@ int dispatch_wallet(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- dex ---------- */
 int dispatch_dex(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: dex <subcommand>\n");
-        fprintf(stderr, "  dex quote <from_token> <to_token> <amount> [dex_filter]\n");
-        fprintf(stderr, "  dex swap <wallet_idx> <from_token> <to_token> <amount>\n");
-        fprintf(stderr, "  dex pairs\n");
-        fprintf(stderr, "  dex weth balance\n");
-        fprintf(stderr, "  dex weth unwrap <amount>\n");
+        fprintf(stderr, "DEX — Decentralized exchange trading\n\n");
+        fprintf(stderr, "  quote <from> <to> <amount> [filter]  Get price quote\n");
+        fprintf(stderr, "  swap <idx> <from> <to> <amount>      Execute swap from wallet\n");
+        fprintf(stderr, "  pairs                                List available trading pairs\n");
+        fprintf(stderr, "  weth balance                         Check wrapped ETH balance\n");
+        fprintf(stderr, "  weth unwrap <amount>                 Unwrap WETH to ETH\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -5145,14 +5155,14 @@ int dispatch_dex(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- network ---------- */
 int dispatch_network(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: network <subcommand>\n");
-        fprintf(stderr, "  network online <fp>\n");
-        fprintf(stderr, "  network dht-status\n");
-        fprintf(stderr, "  network pause-presence\n");
-        fprintf(stderr, "  network resume-presence\n");
-        fprintf(stderr, "  network refresh-presence\n");
-        fprintf(stderr, "  network changed\n");
-        fprintf(stderr, "  network bootstrap-registry\n");
+        fprintf(stderr, "Network — DHT connection, presence, diagnostics\n\n");
+        fprintf(stderr, "  online <fp>                Check if a contact is online\n");
+        fprintf(stderr, "  dht-status                 Show DHT connection status\n");
+        fprintf(stderr, "  pause-presence             Stop broadcasting online status\n");
+        fprintf(stderr, "  resume-presence            Resume online status broadcasting\n");
+        fprintf(stderr, "  refresh-presence           Force re-broadcast presence\n");
+        fprintf(stderr, "  changed                    Notify network change (WiFi/mobile switch)\n");
+        fprintf(stderr, "  bootstrap-registry         Show bootstrap node registry\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -5180,10 +5190,11 @@ int dispatch_network(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- version ---------- */
 int dispatch_version(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: version <subcommand>\n");
-        fprintf(stderr, "  version publish --lib <ver> --app <ver> --nodus <ver>\n");
-        fprintf(stderr, "                  [--lib-min <ver>] [--app-min <ver>] [--nodus-min <ver>]\n");
-        fprintf(stderr, "  version check\n");
+        fprintf(stderr, "Version — Publish and check app versions on DHT\n\n");
+        fprintf(stderr, "  publish --lib <v> --app <v> --nodus <v>  Publish version info to DHT\n");
+        fprintf(stderr, "          [--lib-min <v>] [--app-min <v>]  Set minimum required versions\n");
+        fprintf(stderr, "          [--nodus-min <v>]\n");
+        fprintf(stderr, "  check                      Check latest published version\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -5223,9 +5234,9 @@ int dispatch_version(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- sign ---------- */
 int dispatch_sign(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: sign <subcommand>\n");
-        fprintf(stderr, "  sign data <data...>\n");
-        fprintf(stderr, "  sign pubkey\n");
+        fprintf(stderr, "Sign — Dilithium5 digital signatures\n\n");
+        fprintf(stderr, "  data <text...>             Sign data with your private key\n");
+        fprintf(stderr, "  pubkey                     Export your public signing key\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -5250,14 +5261,14 @@ int dispatch_sign(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- debug ---------- */
 int dispatch_debug(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Usage: debug <subcommand>\n");
-        fprintf(stderr, "  debug log-level [level]\n");
-        fprintf(stderr, "  debug log-tags [tags]\n");
-        fprintf(stderr, "  debug log <on|off>\n");
-        fprintf(stderr, "  debug entries [max_entries]\n");
-        fprintf(stderr, "  debug count\n");
-        fprintf(stderr, "  debug clear\n");
-        fprintf(stderr, "  debug export <filepath>\n");
+        fprintf(stderr, "Debug — Logging and diagnostics\n\n");
+        fprintf(stderr, "  log-level [level]          Get/set log level (DEBUG, INFO, WARN, ERROR)\n");
+        fprintf(stderr, "  log-tags [tags]            Filter logs by tag\n");
+        fprintf(stderr, "  log <on|off>               Enable/disable logging\n");
+        fprintf(stderr, "  entries [max]              Show recent log entries\n");
+        fprintf(stderr, "  count                      Count total log entries\n");
+        fprintf(stderr, "  clear                      Clear all log entries\n");
+        fprintf(stderr, "  export <filepath>          Export logs to file\n");
         return 1;
     }
     const char *subcmd = argv[sub];

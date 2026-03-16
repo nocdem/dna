@@ -57,37 +57,37 @@ static struct option long_options[] = {
 };
 
 static void print_usage(const char *prog_name) {
-    printf("DNA Connect CLI v%s\n\n", DNA_VERSION_STRING);
+    printf("DNA Connect CLI v%s — Post-quantum encrypted messenger\n\n", DNA_VERSION_STRING);
     printf("Usage: %s [OPTIONS] <group> <command> [args...]\n\n", prog_name);
     printf("Options:\n");
     printf("  -d, --data-dir <path>   Data directory (default: ~/.dna)\n");
-    printf("  -i, --identity <fp>     Use specific identity\n");
-    printf("  -q, --quiet             Suppress banner/status messages\n");
+    printf("  -i, --identity <fp>     Use specific identity fingerprint\n");
+    printf("  -q, --quiet             Suppress connection/init messages\n");
     printf("  -h, --help              Show this help\n");
     printf("  -v, --version           Show version\n");
     printf("\n");
     printf("Command Groups:\n");
-    printf("  identity    Identity management (create, restore, load, profile, ...)\n");
-    printf("  contact     Contact management (add, remove, request, block, ...)\n");
-    printf("  message     Messaging (send, list, queue, backup, ...)\n");
-    printf("  group       Group chat (create, invite, send, sync, ...)\n");
-    printf("  channel     Channels (create, post, subscribe, ...)\n");
-    printf("  wallet      Wallet operations (balance, send, transactions, ...)\n");
-    printf("  dex         DEX trading (quote, pairs)\n");
-    printf("  network     Network & presence (online, dht-status, ...)\n");
-    printf("  version     Version management (publish, check)\n");
-    printf("  sign        Signing (data, pubkey)\n");
-    printf("  wall        Wall posts (post, list, timeline, comments, likes, ...)\n");
-    printf("  debug       Debug & logging (log-level, entries, export, ...)\n");
+    printf("  identity    Create, restore, manage your PQ identity & profile\n");
+    printf("  contact     Send/approve contact requests, block, sync contacts\n");
+    printf("  message     Send & receive encrypted DMs, manage message queue\n");
+    printf("  group       Encrypted group chats with GEK key rotation\n");
+    printf("  channel     Public broadcast channels (create, post, subscribe)\n");
+    printf("  wall        Social wall — posts, timeline, comments, likes\n");
+    printf("  wallet      Multi-chain wallet (Backbone, ETH, SOL, TRX)\n");
+    printf("  dex         Decentralized exchange (quotes, swaps, pairs)\n");
+    printf("  network     DHT status, presence, bootstrap registry\n");
+    printf("  sign        Sign data with your Dilithium5 key\n");
+    printf("  version     Publish/check app version on DHT\n");
+    printf("  debug       Log levels, export logs, diagnostics\n");
     printf("\n");
-    printf("Run '%s <group>' for subcommand details.\n", prog_name);
-    printf("\n");
-    printf("Examples:\n");
-    printf("  %s identity create alice\n", prog_name);
-    printf("  %s contact add bob\n", prog_name);
-    printf("  %s message send nox \"Hello!\"\n", prog_name);
-    printf("  %s wallet balance 0\n", prog_name);
-    printf("  %s dex quote ETH USDC 1.0\n", prog_name);
+    printf("Quick Start:\n");
+    printf("  %s identity create alice           Create new identity\n", prog_name);
+    printf("  %s identity restore <24 words>     Restore from seed phrase\n", prog_name);
+    printf("  %s contact request <fp> \"hey!\"     Send contact request\n", prog_name);
+    printf("  %s message send alice \"hello\"      Send encrypted message\n", prog_name);
+    printf("  %s wall post \"my first post\"       Post to your wall\n", prog_name);
+    printf("  %s wall timeline                   View your feed\n", prog_name);
+    printf("  %s wallet balance 0                Check wallet balance\n", prog_name);
 }
 
 /* ============================================================================
