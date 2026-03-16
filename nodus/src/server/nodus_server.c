@@ -1335,10 +1335,11 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
 
-    /* C-01: Require Dilithium5 authentication on inter-node port.
-     * Pre-auth: only hello and auth messages allowed. */
+    /* C-01: Dilithium5 authentication on inter-node port.
+     * Pre-auth: only hello and auth messages allowed.
+     * Enforcement controlled by require_peer_auth config flag. */
     if (nodus_t2_decode(payload, len, &msg) == 0) {
-        if (!sess->authenticated) {
+        if (srv->config.require_peer_auth && !sess->authenticated) {
             if (strcmp(msg.method, "hello") == 0) {
                 /* Reuse client auth handler — same Dilithium5 challenge-response.
                  * We cast to nodus_session_t-compatible struct for auth fields. */
@@ -1523,9 +1524,10 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     nodus_server_t *srv = (nodus_server_t *)ctx;
     if (!srv->witness) return;
 
-    /* C-02: Require Dilithium5 authentication on witness port.
-     * Pre-auth: only hello and auth messages allowed. */
-    if (!conn->authenticated) {
+    /* C-02: Dilithium5 authentication on witness port.
+     * Pre-auth: only hello and auth messages allowed.
+     * Enforcement controlled by require_peer_auth config flag. */
+    if (srv->config.require_peer_auth && !conn->authenticated) {
         nodus_tier2_msg_t msg;
         memset(&msg, 0, sizeof(msg));
         if (nodus_t2_decode(payload, len, &msg) != 0) {
@@ -1579,7 +1581,48 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         return;
     }
 
-    /* All frames on witness port are T3 BFT messages — dispatch directly */
+    /* C-02: Handle auth responses for OUTGOING connections (client-side auth).
+     * When we connect to another witness, we send hello and receive challenge/auth_ok.
+     * These are T2 messages that arrive on the witness port. */
+    {
+        nodus_tier2_msg_t msg;
+        memset(&msg, 0, sizeof(msg));
+        if (nodus_t2_decode(payload, len, &msg) == 0) {
+            if (strcmp(msg.method, "challenge") == 0) {
+                /* Sign the nonce and send auth response */
+                nodus_sig_t sig;
+                nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN, &srv->identity.sk);
+                uint8_t buf[8192];
+                size_t rlen = 0;
+                nodus_t2_auth(msg.txn_id, &sig, buf, sizeof(buf), &rlen);
+                nodus_tcp_send(conn, buf, rlen);
+                nodus_t2_msg_free(&msg);
+                return;
+            } else if (strcmp(msg.method, "auth_ok") == 0) {
+                /* Auth succeeded — mark peer as authenticated */
+                conn->authenticated = true;
+                conn->peer_id_set = true;
+                /* Find and update peer auth_state */
+                if (srv->witness) {
+                    for (int i = 0; i < srv->witness->peer_count; i++) {
+                        if (srv->witness->peers[i].conn == conn) {
+                            srv->witness->peers[i].auth_state = PEER_AUTH_OK;
+                            break;
+                        }
+                    }
+                }
+                nodus_t2_msg_free(&msg);
+                return;
+            } else if (strcmp(msg.method, "error") == 0) {
+                /* Auth or other error from peer */
+                nodus_t2_msg_free(&msg);
+                return;
+            }
+            nodus_t2_msg_free(&msg);
+        }
+    }
+
+    /* All other frames on witness port are T3 BFT messages — dispatch directly */
     nodus_witness_dispatch_t3(srv->witness, conn, payload, len);
 }
 

@@ -167,6 +167,9 @@ typedef struct {
     bool        identified;                 /* w_ident exchanged */
     uint64_t    last_attempt;               /* Last reconnect attempt */
     int         connect_failures;           /* Exponential backoff counter */
+
+    /* C-02: Outgoing auth state (client-side hello/auth on port 4004) */
+    enum { PEER_AUTH_NONE, PEER_AUTH_HELLO_SENT, PEER_AUTH_OK } auth_state;
 } nodus_witness_peer_t;
 
 /* ── Main witness context ────────────────────────────────────────── */

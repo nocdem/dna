@@ -835,7 +835,24 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
                    NODUS_T3_WITNESS_ID_LEN) == 0)
             continue;
 
-        /* Connection established — peer is identified via roster */
+        /* C-02: Send hello for Dilithium5 auth before w_ident.
+         * If auth_state is NONE, start auth. If AUTH_OK, send w_ident. */
+        if (w->peers[i].auth_state == PEER_AUTH_NONE) {
+            /* Send hello with our identity */
+            nodus_server_t *srv = (nodus_server_t *)w->server;
+            uint8_t buf[8192];
+            size_t len = 0;
+            nodus_t2_hello(0, &srv->identity.pk, &srv->identity.node_id,
+                           buf, sizeof(buf), &len);
+            nodus_tcp_send(w->peers[i].conn, buf, len);
+            w->peers[i].auth_state = PEER_AUTH_HELLO_SENT;
+            continue;  /* Wait for challenge response */
+        }
+
+        if (w->peers[i].auth_state != PEER_AUTH_OK)
+            continue;  /* Still authenticating */
+
+        /* Connection established + authenticated — peer is identified via roster */
         w->peers[i].identified = true;
 
         /* Announce ourselves so the remote side can register us as a peer */

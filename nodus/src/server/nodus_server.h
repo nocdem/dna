@@ -51,6 +51,10 @@ typedef struct {
 
     /* Witness module (optional DNAC BFT consensus) */
     nodus_witness_config_t  witness;
+
+    /* C-01/C-02: Require Dilithium5 auth on inter-node (4002) and witness (4004) ports.
+     * Default false for backward compat. Set true once all nodes are updated. */
+    bool        require_peer_auth;
 } nodus_server_config_t;
 
 /* ── Inter-node session (lightweight — rate limiting only, no auth) ── */

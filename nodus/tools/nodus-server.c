@@ -110,6 +110,10 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
         }
     }
 
+    /* C-01/C-02: Optional peer authentication enforcement */
+    if (json_object_object_get_ex(root, "require_peer_auth", &val))
+        cfg->require_peer_auth = json_object_get_boolean(val);
+
     json_object_put(root);
     return 0;
 }
