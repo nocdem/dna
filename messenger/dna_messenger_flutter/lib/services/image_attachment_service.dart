@@ -49,16 +49,16 @@ class ImageAttachmentException implements Exception {
 
 /// Service for picking and processing images for chat attachments
 class ImageAttachmentService {
-  // Max raw file size (user requirement)
-  static const int maxFileSizeBytes = 2 * 1024 * 1024; // 2MB
+  // Max raw file size before processing
+  static const int maxFileSizeBytes = 10 * 1024 * 1024; // 10MB raw input
 
   // Target compressed size for DHT transport
-  // DHT values can be up to ~64KB, but encrypted messages have overhead
-  // Target 500KB compressed which becomes ~667KB base64
-  static const int maxCompressedSizeBytes = 500 * 1024; // 500KB
+  // DHT max value is 4MB, but base64 expands ~33% and encryption adds overhead
+  // Target 2MB compressed → ~2.7MB base64 → fits in 4MB value with room
+  static const int maxCompressedSizeBytes = 2 * 1024 * 1024; // 2MB
 
   // Max dimensions for resize (preserving aspect ratio)
-  static const int maxDimension = 1920;
+  static const int maxDimension = 2560;
 
   final ImagePicker _picker = ImagePicker();
 
@@ -84,7 +84,7 @@ class ImageAttachmentService {
     // Validate file size
     if (bytes.length > maxFileSizeBytes) {
       throw ImageAttachmentException(
-          'Image exceeds 2MB limit (${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB)');
+          'Image exceeds 10MB limit (${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB)');
     }
 
     // Detect format
@@ -143,13 +143,13 @@ class ImageAttachmentService {
         quality = 80; // Reset quality for smaller image
       } else {
         throw ImageAttachmentException(
-            'Image cannot be compressed under 500KB limit');
+            'Image cannot be compressed under 2MB limit');
       }
     } while (attempts < maxAttempts);
 
     if (compressed.length > maxCompressedSizeBytes) {
       throw ImageAttachmentException(
-          'Image cannot be compressed under 500KB limit');
+          'Image cannot be compressed under 2MB limit');
     }
 
     return ImageAttachment(
