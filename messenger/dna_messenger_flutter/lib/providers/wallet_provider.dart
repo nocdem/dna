@@ -436,10 +436,17 @@ final groupedBalancesProvider = Provider<List<GroupedToken>>((ref) {
     ));
   }
 
-  // Sort: non-zero first, then by token name
+  // Sort: non-zero first, then priority tokens (USDC > USDT), then alphabetical
+  const priorityOrder = {'USDC': 0, 'USDT': 1};
   result.sort((a, b) {
+    // Non-zero balances first
     if (a.totalBalance > 0 && b.totalBalance <= 0) return -1;
     if (a.totalBalance <= 0 && b.totalBalance > 0) return 1;
+    // Priority tokens first
+    final pa = priorityOrder[a.token.toUpperCase()] ?? 99;
+    final pb = priorityOrder[b.token.toUpperCase()] ?? 99;
+    if (pa != pb) return pa.compareTo(pb);
+    // Then alphabetical
     return a.token.compareTo(b.token);
   });
 
