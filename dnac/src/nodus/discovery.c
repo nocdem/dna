@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 
 /* Shared crypto */
 #include "crypto/hash/qgp_sha3.h"
@@ -33,6 +34,7 @@ extern void nodus_singleton_unlock(void);
 extern dnac_witness_info_t *g_witness_servers;
 extern int g_witness_count;
 extern uint64_t g_witness_cache_time;
+extern pthread_mutex_t g_witness_cache_mutex;  /* M-30 */
 
 /* ============================================================================
  * Helper Functions
@@ -59,8 +61,9 @@ int dnac_witness_discover(dnac_context_t *ctx,
     *servers_out = NULL;
     *count_out = 0;
 
-    /* Check cache first */
+    /* M-30: Thread-safe cache check */
     uint64_t now = get_time_sec();
+    pthread_mutex_lock(&g_witness_cache_mutex);
     if (g_witness_servers && g_witness_count > 0 &&
         (now - g_witness_cache_time) < WITNESS_CACHE_TTL_SEC) {
         /* Return cached copy */
@@ -69,9 +72,11 @@ int dnac_witness_discover(dnac_context_t *ctx,
             memcpy(cached, g_witness_servers, g_witness_count * sizeof(dnac_witness_info_t));
             *servers_out = cached;
             *count_out = g_witness_count;
+            pthread_mutex_unlock(&g_witness_cache_mutex);
             return DNAC_SUCCESS;
         }
     }
+    pthread_mutex_unlock(&g_witness_cache_mutex);
 
     /* Query roster via Nodus SDK */
     nodus_client_t *client = nodus_singleton_get();
@@ -129,7 +134,8 @@ int dnac_witness_discover(dnac_context_t *ctx,
         }
     }
 
-    /* Update cache */
+    /* Update cache (M-30: thread-safe) */
+    pthread_mutex_lock(&g_witness_cache_mutex);
     if (g_witness_servers) free(g_witness_servers);
     g_witness_servers = calloc(roster.count, sizeof(dnac_witness_info_t));
     if (g_witness_servers) {
@@ -137,6 +143,7 @@ int dnac_witness_discover(dnac_context_t *ctx,
         g_witness_count = roster.count;
         g_witness_cache_time = now;
     }
+    pthread_mutex_unlock(&g_witness_cache_mutex);
 
     *servers_out = servers;
     *count_out = roster.count;

@@ -11,6 +11,7 @@
 #include "dnac/wallet.h"
 #include <string.h>
 #include <stdlib.h>
+#include <pthread.h>
 
 /* libdna crypto utilities */
 #include "crypto/sign/qgp_dilithium.h"
@@ -34,6 +35,7 @@ extern void nodus_singleton_unlock(void);
 dnac_witness_info_t *g_witness_servers = NULL;
 int g_witness_count = 0;
 uint64_t g_witness_cache_time = 0;
+pthread_mutex_t g_witness_cache_mutex = PTHREAD_MUTEX_INITIALIZER;  /* M-30 */
 #define WITNESS_CACHE_TTL_SEC 300  /* 5 minute cache */
 
 /* ============================================================================
@@ -44,12 +46,14 @@ int dnac_witness_init(dnac_context_t *ctx) {
     if (!ctx) return -1;
 
     /* Clear cached server list */
+    pthread_mutex_lock(&g_witness_cache_mutex);
     if (g_witness_servers) {
         dnac_free_witness_list(g_witness_servers, g_witness_count);
         g_witness_servers = NULL;
         g_witness_count = 0;
     }
     g_witness_cache_time = 0;
+    pthread_mutex_unlock(&g_witness_cache_mutex);
 
     return 0;
 }
@@ -58,11 +62,13 @@ void dnac_witness_shutdown(dnac_context_t *ctx) {
     (void)ctx;
 
     /* Free cached server list */
+    pthread_mutex_lock(&g_witness_cache_mutex);
     if (g_witness_servers) {
         dnac_free_witness_list(g_witness_servers, g_witness_count);
         g_witness_servers = NULL;
         g_witness_count = 0;
     }
+    pthread_mutex_unlock(&g_witness_cache_mutex);
 }
 
 int dnac_witness_request(dnac_context_t *ctx,

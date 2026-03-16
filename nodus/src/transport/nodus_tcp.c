@@ -360,7 +360,11 @@ uint64_t nodus_time_now(void) {
     return (uint64_t)time(NULL);
 #else
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    /* M-25: Use CLOCK_MONOTONIC for relative timing (dead node detection,
+     * heartbeats, timeouts). Immune to wall clock jumps (NTP, DST, manual).
+     * Falls back to CLOCK_REALTIME if MONOTONIC unavailable. */
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        clock_gettime(CLOCK_REALTIME, &ts);
     return (uint64_t)ts.tv_sec;
 #endif
 }
@@ -370,7 +374,8 @@ uint64_t nodus_time_now_ms(void) {
     return (uint64_t)time(NULL) * 1000ULL;
 #else
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        clock_gettime(CLOCK_REALTIME, &ts);
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 #endif
 }
