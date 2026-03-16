@@ -440,98 +440,80 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
     *posts = NULL;
     *count = 0;
 
-    /* Build SQL with IN clause: SELECT ... WHERE author_fingerprint IN (?, ?, ...) */
-    /* Base query + placeholders + ORDER + LIMIT + NUL */
-    size_t sql_size = 256 + fp_count * 3;
-    char *sql = malloc(sql_size);
-    if (!sql) {
-        QGP_LOG_ERROR(LOG_TAG, "load_timeline: malloc failed\n");
+    /* v0.9.80: Per-fingerprint approach replaces unreliable IN clause.
+     * The IN (?,?,...) query was returning 0 rows on Android despite
+     * matching data existing — likely a SQLite WAL/ARM64 edge case.
+     * Individual WHERE = ? queries work reliably. Merge + sort here. */
+
+    /* Phase 1: Collect all posts from individual fingerprint queries */
+    size_t capacity = 64;
+    size_t total = 0;
+    dna_wall_post_t *merged = calloc(capacity, sizeof(dna_wall_post_t));
+    if (!merged) {
+        QGP_LOG_ERROR(LOG_TAG, "load_timeline: calloc failed\n");
         return -1;
     }
 
-    int written = snprintf(sql, sql_size,
+    const char *sql_single =
         "SELECT uuid, author_fingerprint, text, image_json, timestamp, "
         "signature, signature_len, verified "
-        "FROM wall_posts WHERE author_fingerprint IN (");
-
-    for (size_t i = 0; i < fp_count; i++) {
-        if (i > 0) {
-            written += snprintf(sql + written, sql_size - (size_t)written, ",");
-        }
-        written += snprintf(sql + written, sql_size - (size_t)written, "?");
-    }
-
-    snprintf(sql + written, sql_size - (size_t)written,
-        ") ORDER BY timestamp DESC LIMIT 200;");
+        "FROM wall_posts WHERE author_fingerprint = ? "
+        "ORDER BY timestamp DESC;";
 
     sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
-    free(sql);
-
+    int rc = sqlite3_prepare_v2(g_db, sql_single, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "load_timeline: prepare: %s\n", sqlite3_errmsg(g_db));
+        free(merged);
         return -1;
     }
 
-    /* Bind fingerprints */
-    for (size_t i = 0; i < fp_count; i++) {
-        sqlite3_bind_text(stmt, (int)(i + 1), fingerprints[i], -1, SQLITE_STATIC);
-    }
+    for (size_t f = 0; f < fp_count; f++) {
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+        sqlite3_bind_text(stmt, 1, fingerprints[f], -1, SQLITE_STATIC);
 
-    /* First pass: count rows */
-    size_t n = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        n++;
-    }
-    sqlite3_reset(stmt);
-
-    if (n == 0) {
-        /* Debug: check total rows in wall_posts table */
-        sqlite3_stmt *dbg_stmt = NULL;
-        if (sqlite3_prepare_v2(g_db, "SELECT count(*) FROM wall_posts", -1, &dbg_stmt, NULL) == SQLITE_OK) {
-            if (sqlite3_step(dbg_stmt) == SQLITE_ROW) {
-                int total = sqlite3_column_int(dbg_stmt, 0);
-                QGP_LOG_WARN(LOG_TAG, "load_timeline: 0 matches but %d total rows in wall_posts (fp_count=%zu)", total, fp_count);
-                if (total > 0 && fp_count > 0) {
-                    /* Print FULL fingerprints for exact comparison */
-                    QGP_LOG_WARN(LOG_TAG, "load_timeline: QUERIED[0]: %s", fingerprints[0]);
-                    sqlite3_stmt *fp_stmt = NULL;
-                    if (sqlite3_prepare_v2(g_db, "SELECT DISTINCT author_fingerprint FROM wall_posts LIMIT 3", -1, &fp_stmt, NULL) == SQLITE_OK) {
-                        int row = 0;
-                        while (sqlite3_step(fp_stmt) == SQLITE_ROW) {
-                            const char *stored = (const char *)sqlite3_column_text(fp_stmt, 0);
-                            QGP_LOG_WARN(LOG_TAG, "load_timeline: STORED[%d]:  %s", row, stored ? stored : "NULL");
-                            row++;
-                        }
-                        sqlite3_finalize(fp_stmt);
-                    }
-                }
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            /* Grow array if needed */
+            if (total >= capacity) {
+                size_t new_cap = capacity * 2;
+                if (new_cap > 200) new_cap = 200;
+                if (total >= new_cap) break;  /* Hit 200 limit */
+                dna_wall_post_t *tmp = realloc(merged, new_cap * sizeof(dna_wall_post_t));
+                if (!tmp) break;
+                memset(tmp + capacity, 0, (new_cap - capacity) * sizeof(dna_wall_post_t));
+                merged = tmp;
+                capacity = new_cap;
             }
-            sqlite3_finalize(dbg_stmt);
+            fill_post_from_row(stmt, &merged[total]);
+            total++;
+            if (total >= 200) break;
         }
-        sqlite3_finalize(stmt);
-        return 0; /* Empty timeline is not an error */
-    }
-
-    /* Allocate array */
-    dna_wall_post_t *result = calloc(n, sizeof(dna_wall_post_t));
-    if (!result) {
-        QGP_LOG_ERROR(LOG_TAG, "load_timeline: calloc failed\n");
-        sqlite3_finalize(stmt);
-        return -1;
-    }
-
-    /* Second pass: collect posts */
-    size_t i = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW && i < n) {
-        fill_post_from_row(stmt, &result[i]);
-        i++;
+        if (total >= 200) break;
     }
 
     sqlite3_finalize(stmt);
 
-    *posts = result;
-    *count = i;
+    if (total == 0) {
+        free(merged);
+        QGP_LOG_DEBUG(LOG_TAG, "load_timeline: 0 posts from %zu fingerprints\n", fp_count);
+        return 0;
+    }
+
+    /* Phase 2: Sort by timestamp descending (simple insertion sort, max 200 items) */
+    for (size_t i = 1; i < total; i++) {
+        dna_wall_post_t tmp = merged[i];
+        size_t j = i;
+        while (j > 0 && merged[j - 1].timestamp < tmp.timestamp) {
+            merged[j] = merged[j - 1];
+            j--;
+        }
+        merged[j] = tmp;
+    }
+
+    *posts = merged;
+    *count = total;
+    QGP_LOG_DEBUG(LOG_TAG, "load_timeline: %zu posts from %zu fingerprints\n", total, fp_count);
     return 0;
 }
 
