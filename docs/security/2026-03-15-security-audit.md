@@ -8,14 +8,15 @@
 
 ## Executive Summary
 
-**82 unique findings** (after deduplication) across 6 domains, forming **6 cross-domain attack chains:**
+**82 unique findings** (after deduplication) across 6 domains, forming **6 cross-domain attack chains.**
+**As of 2026-03-16: 22 RESOLVED, 2 IN PROGRESS, 58 remaining.**
 
-| Severity | Count |
-|----------|-------|
-| CRITICAL | 6 |
-| HIGH | 17 |
-| MEDIUM | 35 |
-| LOW | 24 |
+| Severity | Total | Resolved | In Progress | Open |
+|----------|-------|----------|-------------|------|
+| CRITICAL | 6 | 2 | 2 | 2 |
+| HIGH | 17 | 10 | 0 | 7 |
+| MEDIUM | 35 | 10 | 0 | 25 |
+| LOW | 24 | 0 | 0 | 24 |
 
 **Top 3 systemic risks:**
 1. **No transport-level authentication on inter-node and witness ports** — TCP 4002 (inter-node) and TCP 4004 (witness BFT) accept connections from any source. Combined with DHT routing table poisoning, this enables full consensus hijack (Chain 1) and DHT data corruption (Chain 3).
