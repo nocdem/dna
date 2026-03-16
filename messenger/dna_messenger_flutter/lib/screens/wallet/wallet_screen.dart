@@ -2919,6 +2919,22 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
     final quote = _selectedQuote;
     if (quote == null) return;
 
+    // Check slippage against settings
+    final slippage = double.tryParse(quote.priceImpact) ?? 0.0;
+    final walletSettings = ref.read(walletSettingsProvider);
+    if (slippage > walletSettings.maxSlippage) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Slippage ${quote.priceImpact}% exceeds ${walletSettings.maxSlippage.toInt()}% limit. '
+            '${walletSettings.slippageOverride ? "Even override limit exceeded." : "Enable high slippage override in Settings."}',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     // Confirmation bottom sheet
     final confirmed = await showModalBottomSheet<bool>(
       context: context,
@@ -3055,13 +3071,39 @@ class _SwapSheetState extends ConsumerState<_SwapSheet>
                       ),
                       const SizedBox(width: DnaSpacing.md),
                       Expanded(
-                        child: DnaButton(
-                          label: l10n.walletSwap,
-                          variant: DnaButtonVariant.primary,
-                          icon: FontAwesomeIcons.arrowRightArrowLeft,
-                          expand: true,
-                          onPressed: () => Navigator.of(context).pop(true),
-                        ),
+                        child: Builder(builder: (context) {
+                          final impact = double.tryParse(quote.priceImpact) ?? 0.0;
+                          final isHighSlippage = impact > kDefaultMaxSlippage;
+                          return Column(
+                            children: [
+                              if (isHighSlippage)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: DnaSpacing.sm),
+                                  child: Row(
+                                    children: [
+                                      const FaIcon(FontAwesomeIcons.triangleExclamation,
+                                          size: 14, color: Colors.orange),
+                                      const SizedBox(width: 4),
+                                      Expanded(
+                                        child: Text(
+                                          'High slippage: ${quote.priceImpact}%',
+                                          style: theme.textTheme.bodySmall?.copyWith(
+                                              color: Colors.orange),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              DnaButton(
+                                label: l10n.walletSwap,
+                                variant: DnaButtonVariant.primary,
+                                icon: FontAwesomeIcons.arrowRightArrowLeft,
+                                expand: true,
+                                onPressed: () => Navigator.of(context).pop(true),
+                              ),
+                            ],
+                          );
+                        }),
                       ),
                     ],
                   ),
