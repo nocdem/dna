@@ -38,11 +38,13 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
-        create("release") {
-            storeFile = file(keystoreProperties.getProperty("storeFile", ""))
-            storePassword = keystoreProperties.getProperty("storePassword", "")
-            keyAlias = keystoreProperties.getProperty("keyAlias", "")
-            keyPassword = keystoreProperties.getProperty("keyPassword", "")
+        if (keystorePropertiesFile.exists()) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile", ""))
+                storePassword = keystoreProperties.getProperty("storePassword", "")
+                keyAlias = keystoreProperties.getProperty("keyAlias", "")
+                keyPassword = keystoreProperties.getProperty("keyPassword", "")
+            }
         }
     }
 
@@ -59,7 +61,10 @@ android {
             signingConfig = signingConfigs.getByName("shared")
         }
         release {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (keystorePropertiesFile.exists())
+                signingConfigs.getByName("release")
+            else
+                signingConfigs.getByName("shared")  // CI fallback: debug keystore
             // Enable R8 minification with ProGuard rules
             isMinifyEnabled = true
             isShrinkResources = true
