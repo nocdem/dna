@@ -699,9 +699,12 @@ int messenger_flush_recipient_outbox(messenger_context_t *ctx, const char *recip
     char base_key[512];
 
     uint8_t salt_buf[32];
-    dht_dm_outbox_compute_salt(ctx->identity, recipient_fp, salt_buf);
+    const uint8_t *salt_ptr = NULL;
+    if (contacts_db_get_salt(recipient_fp, salt_buf) == 0) {
+        salt_ptr = salt_buf;
+    }
 
-    if (dht_dm_outbox_make_key(ctx->identity, recipient_fp, today, salt_buf,
+    if (dht_dm_outbox_make_key(ctx->identity, recipient_fp, today, salt_ptr,
                                 base_key, sizeof(base_key)) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "[FLUSH] Failed to generate bucket key");
         free(serialized);

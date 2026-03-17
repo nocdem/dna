@@ -72,9 +72,12 @@ int transport_queue_offline_message(
     QGP_LOG_DEBUG(LOG_TAG, "Calling dht_queue_message (seq=%lu, ttl=%u)\n",
                   (unsigned long)seq_num, ctx->config.offline_ttl_seconds);
 
-    /* Compute deterministic per-contact-pair salt */
+    /* Look up per-contact DHT salt */
     uint8_t salt_buf[32];
-    dht_dm_outbox_compute_salt(sender, recipient, salt_buf);
+    const uint8_t *salt_ptr = NULL;
+    if (contacts_db_get_salt(recipient, salt_buf) == 0) {
+        salt_ptr = salt_buf;
+    }
 
     int result = dht_queue_message(
         sender,
@@ -83,7 +86,7 @@ int transport_queue_offline_message(
         message_len,
         seq_num,
         ctx->config.offline_ttl_seconds,
-        salt_buf
+        salt_ptr
     );
 
     if (result == 0) {
@@ -147,13 +150,14 @@ int transport_check_offline_messages(
             return -1;
         }
         sender_fps_array[0] = sender_fp;
-        /* Compute deterministic salt for this contact pair */
+        /* Look up salt for single contact */
         salt_storage = (uint8_t*)malloc(32);
-        if (salt_storage) {
-            dht_dm_outbox_compute_salt(ctx->config.identity, sender_fp, salt_storage);
+        if (salt_storage && contacts_db_get_salt(sender_fp, salt_storage) == 0) {
             salt_array[0] = salt_storage;
         } else {
             salt_array[0] = NULL;
+            free(salt_storage);
+            salt_storage = NULL;
         }
         sender_count = 1;
         QGP_LOG_DEBUG(LOG_TAG, "Single contact fetch: %.20s...\n", sender_fp);
@@ -184,10 +188,12 @@ int transport_check_offline_messages(
 
         for (size_t i = 0; i < contacts->count; i++) {
             sender_fps_array[i] = contacts->contacts[i].identity;
-            /* Compute deterministic salt for each contact pair */
-            dht_dm_outbox_compute_salt(ctx->config.identity, contacts->contacts[i].identity,
-                                       salt_storage + (i * 32));
-            salt_array[i] = salt_storage + (i * 32);
+            if (contacts->contacts[i].has_dht_salt) {
+                memcpy(salt_storage + (i * 32), contacts->contacts[i].dht_salt, 32);
+                salt_array[i] = salt_storage + (i * 32);
+            } else {
+                salt_array[i] = NULL;
+            }
         }
         sender_count = contacts->count;
     }
@@ -339,9 +345,10 @@ int transport_check_offline_messages(
             for (size_t i = 0; i < ack_count; i++) {
                 strncpy(tasks[i].my_identity, ctx->config.identity, sizeof(tasks[i].my_identity) - 1);
                 strncpy(tasks[i].sender, acks[i].sender, sizeof(tasks[i].sender) - 1);
-                /* Compute deterministic salt for ACK key derivation */
-                dht_dm_outbox_compute_salt(ctx->config.identity, acks[i].sender, tasks[i].salt);
-                tasks[i].has_salt = true;
+                /* Look up per-contact salt for ACK key derivation */
+                if (contacts_db_get_salt(acks[i].sender, tasks[i].salt) == 0) {
+                    tasks[i].has_salt = true;
+                }
                 task_args[i] = &tasks[i];
             }
 

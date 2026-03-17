@@ -217,32 +217,6 @@ static void dm_cache_store(const char *base_key, dht_offline_message_t *messages
  * Key Generation
  *============================================================================*/
 
-void dht_dm_outbox_compute_salt(const char *fp_a, const char *fp_b, uint8_t salt_out[32]) {
-    if (!fp_a || !fp_b || !salt_out) {
-        memset(salt_out, 0, 32);
-        return;
-    }
-
-    /* Deterministic ordering: lexicographic compare ensures both sides
-     * produce the same salt regardless of who is sender/receiver */
-    const char *first = (strcmp(fp_a, fp_b) < 0) ? fp_a : fp_b;
-    const char *second = (first == fp_a) ? fp_b : fp_a;
-
-    /* salt = SHA3-256(min(fpA, fpB) || max(fpA, fpB)) */
-    size_t len_a = strlen(first);
-    size_t len_b = strlen(second);
-    uint8_t *input = (uint8_t *)malloc(len_a + len_b);
-    if (!input) {
-        memset(salt_out, 0, 32);
-        return;
-    }
-
-    memcpy(input, first, len_a);
-    memcpy(input + len_a, second, len_b);
-    qgp_sha3_256(input, len_a + len_b, salt_out);
-    free(input);
-}
-
 uint64_t dht_dm_outbox_get_day_bucket(void) {
     return (uint64_t)time(NULL) / DNA_DM_OUTBOX_SECONDS_PER_DAY;
 }

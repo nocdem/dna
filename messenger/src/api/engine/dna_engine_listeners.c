@@ -33,7 +33,6 @@
 #include "database/channel_cache.h"  /* For cache invalidation on new posts */
 #include "database/wall_cache.h"
 #include "dht/shared/dht_contact_request.h"  /* For initial contact request pull */
-#include "dht/shared/dht_dm_outbox.h"        /* For deterministic salt computation */
 
 /* ============================================================================
  * PARALLEL LISTENER SETUP (Mobile Performance Optimization)
@@ -198,15 +197,18 @@ size_t dna_engine_listen_outbox(
      */
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Calling dht_dm_outbox_subscribe() for daily bucket...");
 
-    /* Compute deterministic per-contact-pair salt */
+    /* Look up per-contact DHT salt */
     uint8_t salt_buf[32];
-    dht_dm_outbox_compute_salt(engine->fingerprint, contact_fingerprint, salt_buf);
+    const uint8_t *salt_ptr = NULL;
+    if (contacts_db_get_salt(contact_fingerprint, salt_buf) == 0) {
+        salt_ptr = salt_buf;
+    }
 
     dht_dm_listen_ctx_t *dm_listen_ctx = NULL;
     int result = dht_dm_outbox_subscribe(
                                           engine->fingerprint,      /* my_fp (recipient) */
                                           contact_fingerprint,      /* contact_fp (sender) */
-                                          salt_buf,                 /* deterministic salt */
+                                          salt_ptr,                 /* per-contact DHT salt */
                                           outbox_listen_callback,
                                           ctx,
                                           &dm_listen_ctx);
