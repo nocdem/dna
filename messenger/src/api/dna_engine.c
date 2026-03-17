@@ -95,6 +95,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/shared/dht_groups.h"
 #include "dht/client/dna_group_outbox.h"
 #include "dht/client/dna_group_channel.h"  /* Group channel connector (Phase 2) */
+#include "dht/client/dna_wall.h"           /* Wall republish on startup */
 #include "dht/client/dna_dm_channel.h"     /* DM channel connector (push-based 1-to-1) */
 #include "transport/transport.h"
 /* TURN credentials removed in v0.4.61 for privacy */
@@ -330,6 +331,48 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
      * due to reset loop (check_migrated → reset → republish → mark_done → repeat).
      * All existing users have already migrated. Profile/contacts/groups are kept
      * fresh by their normal sync paths below (steps 1-1c). */
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
+    /* 0. Republish own identity profile + name alias + wall posts to DHT.
+     * Profile publish only happens on keygen/name-register/profile-edit.
+     * If the initial publish failed (e.g., DHT not ready), the identity
+     * would be lost. This ensures it's always in DHT after stabilization.
+     * Wall posts have a 30-day TTL but are only published once — republish
+     * from local cache to keep them alive across app restarts. */
+    if (engine->identity_loaded) {
+        QGP_LOG_INFO(LOG_TAG, "[RETRY] Step 0: republishing own profile + wall to DHT");
+
+        /* 0a. Republish identity profile + name alias */
+        dna_auto_republish_own_profile(engine);
+
+        /* 0b. Republish wall posts from local cache */
+        {
+            dna_wall_post_t *posts = NULL;
+            size_t post_count = 0;
+            if (wall_cache_load(engine->fingerprint, &posts, &post_count) == 0 && post_count > 0) {
+                /* Reconstruct wall and publish to DHT */
+                dna_wall_t wall = { .posts = posts, .post_count = post_count };
+                char *json_str = dna_wall_to_json(&wall);
+                if (json_str) {
+                    char base_key[256];
+                    snprintf(base_key, sizeof(base_key), "dna:wall:%s", engine->fingerprint);
+                    int rc = nodus_ops_put_str(base_key,
+                                               (const uint8_t *)json_str, strlen(json_str),
+                                               (30*24*3600), nodus_ops_value_id());
+                    free(json_str);
+                    if (rc == 0) {
+                        QGP_LOG_INFO(LOG_TAG, "[RETRY] Republished %zu wall posts to DHT", post_count);
+                    } else {
+                        QGP_LOG_WARN(LOG_TAG, "[RETRY] Failed to republish wall posts: %d", rc);
+                    }
+                }
+                wall_cache_free_posts(posts, post_count);
+            } else {
+                QGP_LOG_INFO(LOG_TAG, "[RETRY] No wall posts to republish");
+            }
+        }
+    }
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
