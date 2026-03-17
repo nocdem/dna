@@ -1,8 +1,18 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Load release keystore properties (not committed to git)
+val keystorePropertiesFile = file(System.getProperty("user.home") + "/keys/keystore.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
 android {
@@ -28,6 +38,12 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        create("release") {
+            storeFile = file(keystoreProperties.getProperty("storeFile", ""))
+            storePassword = keystoreProperties.getProperty("storePassword", "")
+            keyAlias = keystoreProperties.getProperty("keyAlias", "")
+            keyPassword = keystoreProperties.getProperty("keyPassword", "")
+        }
     }
 
     defaultConfig {
@@ -43,7 +59,7 @@ android {
             signingConfig = signingConfigs.getByName("shared")
         }
         release {
-            signingConfig = signingConfigs.getByName("shared")
+            signingConfig = signingConfigs.getByName("release")
             // Enable R8 minification with ProGuard rules
             isMinifyEnabled = true
             isShrinkResources = true

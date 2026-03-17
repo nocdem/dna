@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Privacy Policy – DNA Connect | CPUNK.IO</title>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description"
+    content="Privacy Policy for DNA Connect — post-quantum encrypted messaging application. No data collection, no tracking, end-to-end encryption by default."
+  />
+  <meta name="keywords"
+    content="CPUNK, DNA Connect, privacy policy, encryption, post-quantum, no tracking, decentralized, P2P"
+  />
+  <meta name="author" content="DNA Protocol" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://cpunk.io/privacy.html" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://cpunk.io/privacy.html">
+  <meta property="og:title" content="Privacy Policy – DNA Connect">
+  <meta property="og:description" content="Privacy Policy for DNA Connect — no data collection, no tracking, end-to-end post-quantum encryption.">
+  <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://cpunk.io/privacy.html">
+  <meta name="twitter:title" content="Privacy Policy – DNA Connect">
+  <meta name="twitter:description" content="Privacy Policy for DNA Connect — no data collection, no tracking, end-to-end post-quantum encryption.">
+  <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
+  <meta name="twitter:site" content="@OfficialCpunk">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <!-- Favicons -->
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="manifest" href="/site.webmanifest">
+
+  <style>
+    :root {
+      --bg: #050712;
+      --bg-alt: #080c1a;
+      --panel: #0e1225;
+      --panel-alt: #131733;
+      --teal: #06c5d2;
+      --teal-soft: rgba(6, 197, 210, 0.08);
+      --teal-glow: rgba(6, 197, 210, 0.35);
+      --teal-dim: rgba(6, 197, 210, 0.15);
+      --orange: #f26229;
+      --orange-soft: rgba(242, 98, 41, 0.08);
+      --orange-glow: rgba(242, 98, 41, 0.35);
+      --orange-dim: rgba(242, 98, 41, 0.15);
+      --text: #e4e7ef;
+      --text-muted: #8891a8;
+      --text-dim: #5a6380;
+    }
+
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--teal); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: var(--orange); }
+
+    .wrap { max-width: 900px; margin: 0 auto; padding: 0 1.5rem; }
+
+    /* Header */
+    header {
+      padding: 1.2rem 0;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .nav { display: flex; align-items: center; justify-content: space-between; }
+    .brand { display: flex; align-items: center; gap: 0.8rem; }
+    .brand-name { font-family: 'Orbitron', monospace; font-weight: 700; font-size: 1.3rem; color: var(--teal); }
+    .brand-tag { font-size: 0.65rem; color: var(--text-dim); letter-spacing: 0.08em; text-transform: uppercase; display: block; }
+    .back-link { font-size: 0.85rem; color: var(--text-muted); }
+    .back-link:hover { color: var(--teal); }
+
+    /* Hero */
+    .hero {
+      padding: 3rem 0 2rem;
+      text-align: center;
+    }
+    .hero h1 {
+      font-family: 'Orbitron', monospace;
+      font-size: clamp(1.6rem, 4vw, 2.2rem);
+      font-weight: 700;
+      color: var(--teal);
+      margin-bottom: 0.5rem;
+    }
+    .hero .subtitle {
+      font-size: 1rem;
+      color: var(--text-muted);
+    }
+    .hero .effective-date {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      margin-top: 0.5rem;
+    }
+
+    /* Content */
+    .content {
+      padding: 2rem 0 4rem;
+    }
+    .section {
+      background: var(--panel);
+      border: 1px solid rgba(255,255,255,0.05);
+      border-radius: 12px;
+      padding: 2rem;
+      margin-bottom: 1.5rem;
+    }
+    .section h2 {
+      font-family: 'Orbitron', monospace;
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--orange);
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--orange-dim);
+    }
+    .section h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--teal);
+      margin: 1.2rem 0 0.5rem;
+    }
+    .section p, .section li {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      line-height: 1.8;
+    }
+    .section ul {
+      list-style: none;
+      padding-left: 0;
+    }
+    .section ul li {
+      padding: 0.3rem 0;
+      padding-left: 1.2rem;
+      position: relative;
+    }
+    .section ul li::before {
+      content: '›';
+      position: absolute;
+      left: 0;
+      color: var(--teal);
+      font-weight: 700;
+    }
+    .highlight {
+      background: var(--teal-soft);
+      border: 1px solid var(--teal-dim);
+      border-radius: 8px;
+      padding: 1rem 1.2rem;
+      margin: 1rem 0;
+    }
+    .highlight p {
+      color: var(--text);
+      font-weight: 500;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+    }
+    th, td {
+      padding: 0.6rem 0.8rem;
+      text-align: left;
+      font-size: 0.85rem;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    th {
+      color: var(--teal);
+      font-weight: 600;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    td { color: var(--text-muted); }
+
+    /* Footer */
+    footer {
+      padding: 2rem 0;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+    footer a { color: var(--text-muted); margin: 0 0.5rem; }
+    footer a:hover { color: var(--orange); }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="wrap">
+      <div class="nav">
+        <a href="/" class="brand">
+          <div class="brand-text">
+            <span class="brand-name">CPUNK.IO</span>
+            <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+          </div>
+        </a>
+        <a href="/legal.html" class="back-link">&larr; Legal &amp; Compliance</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="wrap">
+
+    <div class="hero">
+      <h1>Privacy Policy</h1>
+      <p class="subtitle">DNA Connect — Post-Quantum Encrypted Messenger</p>
+      <p class="effective-date">Effective Date: March 17, 2026 &middot; Last Updated: March 17, 2026</p>
+    </div>
+
+    <div class="content">
+
+      <!-- Overview -->
+      <div class="section">
+        <h2>1. Overview</h2>
+        <p>
+          DNA Connect is a decentralized, peer-to-peer messaging application built on post-quantum cryptography.
+          This privacy policy explains what data the application accesses, how it is used, and your rights as a user.
+        </p>
+        <div class="highlight">
+          <p>
+            DNA Connect does not collect, store, or transmit any personal data to centralized servers.
+            All communication is end-to-end encrypted using NIST-approved post-quantum algorithms
+            (Kyber1024 for key exchange, Dilithium5 for signatures).
+          </p>
+        </div>
+      </div>
+
+      <!-- Data We Do NOT Collect -->
+      <div class="section">
+        <h2>2. Data We Do NOT Collect</h2>
+        <p>DNA Connect is designed with privacy as its core principle. We do not collect:</p>
+        <ul>
+          <li>Personal information (name, email, phone number)</li>
+          <li>Message content — all messages are end-to-end encrypted and only readable by the intended recipient</li>
+          <li>Contact lists or address books from your device</li>
+          <li>Location data</li>
+          <li>Usage analytics or telemetry</li>
+          <li>Advertising identifiers</li>
+          <li>Device fingerprints for tracking purposes</li>
+          <li>Browsing history or app usage patterns</li>
+        </ul>
+      </div>
+
+      <!-- Data Stored Locally -->
+      <div class="section">
+        <h2>3. Data Stored Locally on Your Device</h2>
+        <p>The following data is stored exclusively on your device and never transmitted to us:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Purpose</th>
+              <th>Storage</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Cryptographic keys</td>
+              <td>Identity and message encryption</td>
+              <td>Encrypted local storage</td>
+            </tr>
+            <tr>
+              <td>Seed phrase (24 words)</td>
+              <td>Account recovery</td>
+              <td>Generated once, shown to user, not stored by app after creation</td>
+            </tr>
+            <tr>
+              <td>Message history</td>
+              <td>Conversation display</td>
+              <td>Encrypted SQLite database on device</td>
+            </tr>
+            <tr>
+              <td>Contact list</td>
+              <td>Managing trusted contacts</td>
+              <td>Local SQLite database, synced to DHT (encrypted)</td>
+            </tr>
+            <tr>
+              <td>Profile information</td>
+              <td>Display name, avatar</td>
+              <td>Published to decentralized DHT network (public)</td>
+            </tr>
+            <tr>
+              <td>Wallet addresses</td>
+              <td>Cryptocurrency transactions</td>
+              <td>Derived from seed, stored locally</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Decentralized Network -->
+      <div class="section">
+        <h2>4. Decentralized Network (DHT)</h2>
+        <p>
+          DNA Connect uses a decentralized hash table (DHT) network called Nodus for message delivery and
+          profile discovery. The following data is published to this distributed network:
+        </p>
+        <ul>
+          <li><strong>Public identity:</strong> Your public cryptographic keys and registered display name. This is
+            intentionally public to allow others to find and communicate with you.</li>
+          <li><strong>Encrypted messages:</strong> Messages in transit are encrypted with Kyber1024 (NIST ML-KEM)
+            and can only be decrypted by the intended recipient's private key.</li>
+          <li><strong>Wall posts:</strong> Public posts you choose to publish are visible to anyone on the network.</li>
+        </ul>
+        <p>
+          No centralized server stores or has access to your private keys or unencrypted messages.
+          DHT nodes only relay encrypted data — they cannot read message contents.
+        </p>
+      </div>
+
+      <!-- Permissions -->
+      <div class="section">
+        <h2>5. Device Permissions</h2>
+        <p>DNA Connect requests the following Android permissions:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Permission</th>
+              <th>Purpose</th>
+              <th>Required?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Internet</td>
+              <td>Connect to the decentralized DHT network for messaging</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td>Network State</td>
+              <td>Detect online/offline status for message delivery</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td>Camera</td>
+              <td>Take photos for profile avatar and scan QR codes for adding contacts</td>
+              <td>No — optional</td>
+            </tr>
+            <tr>
+              <td>Biometric</td>
+              <td>App lock feature — authenticate with fingerprint or face recognition</td>
+              <td>No — optional</td>
+            </tr>
+            <tr>
+              <td>Notifications</td>
+              <td>Receive alerts for new messages</td>
+              <td>No — optional (Android 13+)</td>
+            </tr>
+            <tr>
+              <td>Vibrate</td>
+              <td>Haptic feedback for notifications</td>
+              <td>No — optional</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          No permission is used for advertising, tracking, or data collection.
+          Camera and biometric access are only activated when you explicitly use those features.
+        </p>
+      </div>
+
+      <!-- Third-Party Services -->
+      <div class="section">
+        <h2>6. Third-Party Services</h2>
+        <p>DNA Connect does not integrate any third-party analytics, advertising, or tracking services. Specifically:</p>
+        <ul>
+          <li>No Google Analytics or Firebase Analytics</li>
+          <li>No Facebook SDK</li>
+          <li>No advertising networks</li>
+          <li>No crash reporting services that transmit data externally</li>
+        </ul>
+        <p>
+          The application may connect to third-party blockchain RPC endpoints (Cellframe, Ethereum, Solana, TRON)
+          solely for wallet balance queries and transaction broadcasting when you use the built-in wallet feature.
+          These connections transmit only your public wallet address — never private keys.
+        </p>
+      </div>
+
+      <!-- Encryption -->
+      <div class="section">
+        <h2>7. Encryption &amp; Security</h2>
+        <p>All cryptographic operations use NIST-approved post-quantum algorithms:</p>
+        <ul>
+          <li><strong>Key Exchange:</strong> ML-KEM (Kyber1024) — NIST Category 5</li>
+          <li><strong>Digital Signatures:</strong> ML-DSA (Dilithium5) — NIST Category 5</li>
+          <li><strong>Symmetric Encryption:</strong> AES-256-GCM for message content</li>
+          <li><strong>Hashing:</strong> SHA3-512 for identity fingerprints</li>
+        </ul>
+        <p>
+          These algorithms are designed to resist attacks from both classical and quantum computers.
+          Your private keys never leave your device.
+        </p>
+      </div>
+
+      <!-- Data Retention -->
+      <div class="section">
+        <h2>8. Data Retention &amp; Deletion</h2>
+        <ul>
+          <li>All data is stored on your device. Uninstalling the app deletes all local data.</li>
+          <li>Public profile data on the DHT network expires automatically if not refreshed by your device.</li>
+          <li>Wall posts have a 30-day TTL (time-to-live) on the network and expire automatically.</li>
+          <li>You can delete your account at any time by uninstalling the app. There is no server-side account to delete.</li>
+        </ul>
+      </div>
+
+      <!-- Children -->
+      <div class="section">
+        <h2>9. Children's Privacy</h2>
+        <p>
+          DNA Connect does not knowingly collect any information from children under the age of 13.
+          The application does not require any personal information to create an account —
+          only a locally-generated cryptographic key pair.
+        </p>
+      </div>
+
+      <!-- Changes -->
+      <div class="section">
+        <h2>10. Changes to This Policy</h2>
+        <p>
+          We may update this privacy policy from time to time. Any changes will be reflected on this page
+          with an updated "Last Updated" date. Continued use of DNA Connect after changes constitutes
+          acceptance of the revised policy.
+        </p>
+      </div>
+
+      <!-- Contact -->
+      <div class="section">
+        <h2>11. Contact</h2>
+        <p>
+          If you have questions about this privacy policy or DNA Connect's data practices:
+        </p>
+        <ul>
+          <li><strong>Email:</strong> <a href="mailto:privacy@cpunk.io">privacy@cpunk.io</a></li>
+          <li><strong>Website:</strong> <a href="https://cpunk.io">cpunk.io</a></li>
+          <li><strong>GitHub:</strong> <a href="https://github.com/nocdem/dna-messenger">github.com/nocdem/dna-messenger</a></li>
+        </ul>
+      </div>
+
+    </div>
+
+    <footer>
+      <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+      <div style="margin-top: 0.5rem;">
+        <a href="/">Home</a>
+        <a href="/products/dna-connect.html">DNA Connect</a>
+        <a href="/legal.html">Legal</a>
+        <a href="/contact.html">Contact</a>
+      </div>
+    </footer>
+
+  </div>
+
+</body>
+</html>
