@@ -80,6 +80,13 @@ typedef struct {
  *
  * @return Current unix timestamp / 86400 (days since epoch)
  */
+/**
+ * Compute deterministic per-contact-pair salt.
+ * salt = SHA3-256(min(fpA, fpB) || max(fpA, fpB))
+ * Both sides compute the same salt without any exchange protocol.
+ */
+void dht_dm_outbox_compute_salt(const char *fp_a, const char *fp_b, uint8_t salt_out[32]);
+
 uint64_t dht_dm_outbox_get_day_bucket(void);
 
 /**
