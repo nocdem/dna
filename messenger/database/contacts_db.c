@@ -323,38 +323,6 @@ int contacts_db_init(const char *owner_identity) {
         sqlite3_free(err_msg);
     }
 
-    /* One-time migration v0.9.81: Clear all DHT salts.
-     * Bug: contact list DIFF sync (d68d6c27, Mar 14 2026) overwrote per-contact
-     * salts with the publisher's own salts, causing sender/receiver key mismatch.
-     * All users fall back to legacy unsalted outbox keys until salt exchange
-     * is re-established via new contact requests.
-     * Uses a pragma to track whether this migration has run. */
-    {
-        const char *sql_check = "PRAGMA user_version;";
-        sqlite3_stmt *stmt_check = NULL;
-        int user_version = 0;
-        if (sqlite3_prepare_v2(g_db, sql_check, -1, &stmt_check, NULL) == SQLITE_OK) {
-            if (sqlite3_step(stmt_check) == SQLITE_ROW) {
-                user_version = sqlite3_column_int(stmt_check, 0);
-            }
-            sqlite3_finalize(stmt_check);
-        }
-
-        if (user_version < 1) {
-            const char *sql_clear = "UPDATE contacts SET dht_salt = NULL;";
-            rc = sqlite3_exec(g_db, sql_clear, NULL, NULL, &err_msg);
-            if (rc == SQLITE_OK) {
-                QGP_LOG_WARN(LOG_TAG, "Migration v0.9.81: cleared all DHT salts (legacy fallback)\n");
-            } else {
-                QGP_LOG_ERROR(LOG_TAG, "Migration v0.9.81 failed: %s\n", err_msg);
-                sqlite3_free(err_msg);
-            }
-            /* Also clear salts in contact_requests */
-            sqlite3_exec(g_db, "UPDATE contact_requests SET dht_salt = NULL;", NULL, NULL, NULL);
-            /* Mark migration done */
-            sqlite3_exec(g_db, "PRAGMA user_version = 1;", NULL, NULL, NULL);
-        }
-    }
 
     QGP_LOG_INFO(LOG_TAG, "Initialized for identity '%s': %s\n", owner_identity, db_path);
     pthread_mutex_unlock(&g_db_mutex);
