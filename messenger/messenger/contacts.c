@@ -312,12 +312,12 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         }
 
         if (contacts_db_exists(contacts[i])) {
-            // Already exists — just update salt if DHT has one
-            if (salts && salts[i]) {
-                if (contacts_db_set_salt(contacts[i], salts[i]) == 0) {
-                    salts_updated++;
-                }
-            }
+            // Already exists — do NOT overwrite salt from DHT sync.
+            // Salt is established during contact request exchange and must not
+            // be replaced. DHT contact list stores OUR salt for each contact,
+            // but reading messages requires THEIR salt (set during request).
+            // Overwriting here causes key mismatch → messages not found.
+            (void)salts_updated;  // Keep variable used in log
         } else {
             // New contact from DHT — add it
             if (contacts_db_add(contacts[i], NULL) == 0) {
