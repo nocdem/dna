@@ -324,32 +324,6 @@ int contacts_db_init(const char *owner_identity) {
     }
 
 
-    /* Fix: One-time migration to clear corrupted DHT salts.
-     * The diff sync (d68d6c27, Mar 14) overwrote per-contact salts on every
-     * startup, causing sender/receiver outbox key mismatch → messages not found.
-     * Clear all salts to fall back to legacy unsalted outbox keys.
-     * Uses PRAGMA user_version to ensure migration runs exactly once. */
-    {
-        int user_version = 0;
-        sqlite3_stmt *stmt_ver = NULL;
-        if (sqlite3_prepare_v2(g_db, "PRAGMA user_version;", -1, &stmt_ver, NULL) == SQLITE_OK) {
-            if (sqlite3_step(stmt_ver) == SQLITE_ROW)
-                user_version = sqlite3_column_int(stmt_ver, 0);
-            sqlite3_finalize(stmt_ver);
-        }
-        if (user_version < 1) {
-            rc = sqlite3_exec(g_db, "UPDATE contacts SET dht_salt = NULL;", NULL, NULL, &err_msg);
-            if (rc == SQLITE_OK) {
-                QGP_LOG_WARN(LOG_TAG, "Migration v0.9.82: cleared corrupted DHT salts (unsalted fallback)\n");
-            } else {
-                QGP_LOG_ERROR(LOG_TAG, "Migration v0.9.82 salt clear failed: %s\n", err_msg);
-                sqlite3_free(err_msg);
-            }
-            sqlite3_exec(g_db, "UPDATE contact_requests SET dht_salt = NULL;", NULL, NULL, NULL);
-            sqlite3_exec(g_db, "PRAGMA user_version = 1;", NULL, NULL, NULL);
-        }
-    }
-
     QGP_LOG_INFO(LOG_TAG, "Initialized for identity '%s': %s\n", owner_identity, db_path);
     pthread_mutex_unlock(&g_db_mutex);
     return 0;
