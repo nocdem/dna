@@ -839,6 +839,7 @@ int contacts_db_get_salt(const char *identity, uint8_t *salt_out) {
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "get_salt: prepare failed: %s", sqlite3_errmsg(g_db));
         return -1;
     }
 
@@ -851,7 +852,13 @@ int contacts_db_get_salt(const char *identity, uint8_t *salt_out) {
         if (blob && blob_len == DHT_CONTACT_SALT_SIZE) {
             memcpy(salt_out, blob, DHT_CONTACT_SALT_SIZE);
             result = 0;
+            QGP_LOG_DEBUG(LOG_TAG, "get_salt: found for %.20s...", identity);
+        } else {
+            /* Contact exists but has no salt — normal for pre-salt contacts */
+            QGP_LOG_DEBUG(LOG_TAG, "get_salt: no salt for %.20s... (len=%d)", identity, blob_len);
         }
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "get_salt: no row found for %.20s...", identity);
     }
 
     sqlite3_finalize(stmt);

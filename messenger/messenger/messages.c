@@ -714,7 +714,9 @@ int messenger_flush_recipient_outbox(messenger_context_t *ctx, const char *recip
     }
 
     /* 8. PUT to DHT */
-    QGP_LOG_INFO(LOG_TAG, "[FLUSH] PUT %d msgs, blob=%zu bytes", built_count, serialized_len);
+    QGP_LOG_INFO(LOG_TAG, "[FLUSH] PUT %d msgs, blob=%zu bytes, day=%lu, salt=%s",
+                 built_count, serialized_len, (unsigned long)today,
+                 salt_ptr ? "YES" : "NO");
     int put_rc = nodus_ops_put_str(base_key, serialized, serialized_len,
                                     DNA_DM_OUTBOX_TTL, nodus_ops_value_id());
 

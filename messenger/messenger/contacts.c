@@ -274,16 +274,23 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         return messenger_sync_contacts_to_dht(ctx);
     }
 
-    // DHT-AUTHORITATIVE DIFF SYNC: Only add/remove what changed
-    // Preserves all local metadata (nicknames, dm_sync_timestamps) automatically
+    // MERGE SYNC: DHT is primary, but contacts with established salts are protected.
+    // A contact with a dht_salt was added via the contact request flow (cryptographic
+    // handshake) and must NEVER be removed by a stale DHT contactlist snapshot.
+    // The DHT contactlist can lag behind due to publish timing — removing salted
+    // contacts causes a destructive cycle: remove → re-add without salt → key mismatch.
     QGP_LOG_INFO(LOG_TAG, "DIFF sync: DHT has %zu contacts (local had %d)\n", count, local_count);
 
     // Snapshot local contacts for diff
     contact_list_t *local_list = NULL;
     contacts_db_list(&local_list);
 
-    // Phase 1: Remove contacts that are in local but NOT in DHT
+    // Phase 1: Remove contacts that are in local but NOT in DHT.
+    // PROTECT contacts that have a dht_salt — they were established via contact
+    // request exchange and the DHT contactlist may simply not have been republished yet.
     size_t removed = 0;
+    size_t protected = 0;
+    bool need_republish = false;
     if (local_list && local_list->count > 0) {
         for (size_t i = 0; i < local_list->count; i++) {
             const char *local_id = local_list->contacts[i].identity;
@@ -295,8 +302,16 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
                 }
             }
             if (!found_in_dht) {
-                contacts_db_remove(local_id);
-                removed++;
+                if (local_list->contacts[i].has_dht_salt) {
+                    // Contact has established salt from contact request flow — keep it
+                    QGP_LOG_WARN(LOG_TAG, "DIFF: Protecting salted contact %.20s... (not in DHT contactlist)\n",
+                                 local_id);
+                    protected++;
+                    need_republish = true;  // DHT contactlist is stale, republish
+                } else {
+                    contacts_db_remove(local_id);
+                    removed++;
+                }
             }
         }
     }
@@ -322,6 +337,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
             // New contact from DHT — add it
             if (contacts_db_add(contacts[i], NULL) == 0) {
                 added++;
+                need_republish = true;  // Local changed, keep DHT in sync
                 if (salts && salts[i]) {
                     contacts_db_set_salt(contacts[i], salts[i]);
                 }
@@ -336,8 +352,16 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     dht_contactlist_free_contacts(contacts, count);
     dht_contactlist_free_salts(salts, count);
 
-    QGP_LOG_INFO(LOG_TAG, "DIFF sync complete: +%zu added, -%zu removed, %zu salt updates (DHT=%zu, local was %d)\n",
-           added, removed, salts_updated, count, local_count);
+    QGP_LOG_INFO(LOG_TAG, "DIFF sync complete: +%zu added, -%zu removed, %zu protected, %zu salt updates (DHT=%zu, local was %d)\n",
+           added, removed, protected, salts_updated, count, local_count);
+
+    // Phase 3: Republish contactlist if local state diverged from DHT.
+    // This ensures the DHT contactlist stays in sync with local after adds/protections.
+    if (need_republish) {
+        QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] DIFF sync: local diverged from DHT, republishing\n");
+        messenger_sync_contacts_to_dht(ctx);
+    }
+
     return 0;
 }
 
