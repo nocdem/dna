@@ -236,6 +236,9 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
         /* Cancel ACK listener for this contact (v15) */
         dna_engine_cancel_ack_listener(engine, fp);
 
+        /* Cancel wall listener for this contact */
+        dna_engine_cancel_wall_listener(engine, fp);
+
         /* Disconnect DM channel for this contact */
         dna_dm_channel_disconnect(engine, fp);
 
@@ -249,8 +252,9 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
             }
         }
 
-        /* Delete cached wall posts from this contact */
+        /* Delete cached wall posts and meta from this contact */
         wall_cache_delete_by_author(fp);
+        wall_cache_delete_meta(fp);
 
         /* Remove keyserver cache entry */
         keyserver_cache_delete(fp);
