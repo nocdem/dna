@@ -227,6 +227,9 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
     } else {
         QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Successfully removed %.16s... from local DB\n", fp);
 
+        /* Clean up any stale contact_requests entry (so re-request works after removal) */
+        contacts_db_remove_request(fp);
+
         /* Cancel outbox listener for this contact */
         dna_engine_cancel_outbox_listener(engine, fp);
 
@@ -439,8 +442,14 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                 }
 
                 /* Skip if already a contact or already pending (avoids DHT lookups for old requests) */
-                if (contacts_db_exists(dht_requests[i].sender_fingerprint) ||
-                    contacts_db_request_exists(dht_requests[i].sender_fingerprint)) {
+                if (contacts_db_exists(dht_requests[i].sender_fingerprint)) {
+                    QGP_LOG_DEBUG(LOG_TAG, "Skipping request from %.20s... (already a contact)",
+                                 dht_requests[i].sender_fingerprint);
+                    continue;
+                }
+                if (contacts_db_request_exists(dht_requests[i].sender_fingerprint)) {
+                    QGP_LOG_DEBUG(LOG_TAG, "Skipping request from %.20s... (already pending)",
+                                 dht_requests[i].sender_fingerprint);
                     continue;
                 }
 
