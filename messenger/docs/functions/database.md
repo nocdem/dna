@@ -37,6 +37,7 @@ Local SQLite databases for contacts, caching, and profiles.
 | `bool contacts_db_request_exists(const char*)` | Check if request exists |
 | `void contacts_db_free_requests(incoming_request_t*, int)` | Free requests array |
 | `int contacts_db_update_request_name(const char*, const char*)` | Update display name for request |
+| `int contacts_db_cleanup_old_denied(void)` | Remove denied requests older than 7 days (returns count deleted) |
 | `int contacts_db_update_last_seen(const char*, uint64_t)` | Update last_seen timestamp for contact |
 | `int contacts_db_update_nickname(const char*, const char*)` | Update local nickname for contact |
 

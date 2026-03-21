@@ -490,6 +490,11 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                         QGP_LOG_INFO(LOG_TAG, "Stored DHT salt from reciprocal request");
                     }
                     contacts_changed = true;  /* Mark for sync AFTER loop */
+
+                    /* Cancel our outgoing request from recipient's DHT inbox.
+                     * We are the original publisher so we can overwrite it. */
+                    dht_cancel_contact_request(engine->fingerprint,
+                                               dht_requests[i].sender_fingerprint);
                 } else {
                     /* Regular request - add to pending */
                     contacts_db_add_incoming_request(
@@ -623,6 +628,9 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
         goto done;
     }
 
+    /* Approved request moved to contacts table — remove from contact_requests */
+    contacts_db_remove_request(task->params.contact_request.fingerprint);
+
     /* Start listeners for new contact (outbox, ACK) */
     dna_engine_listen_outbox(engine, task->params.contact_request.fingerprint);
     dna_engine_start_ack_listener(engine, task->params.contact_request.fingerprint);
@@ -689,6 +697,9 @@ void dna_handle_deny_contact_request(dna_engine_t *engine, dna_task_t *task) {
     if (contacts_db_deny_request(task->params.contact_request.fingerprint) != 0) {
         error = DNA_ERROR_NOT_FOUND;
     }
+
+    /* Opportunistic cleanup: remove denied requests older than 7 days */
+    contacts_db_cleanup_old_denied();
 
 done:
     if (task->callback.completion) {

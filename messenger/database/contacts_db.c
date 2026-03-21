@@ -1487,6 +1487,39 @@ int contacts_db_update_request_name(const char *fingerprint, const char *display
     return 0;
 }
 
+// Remove denied (status=2) requests older than 7 days
+int contacts_db_cleanup_old_denied(void) {
+    if (!g_db) {
+        return -1;
+    }
+
+    uint64_t cutoff = (uint64_t)time(NULL) - 604800;  /* 7 days */
+
+    const char *sql = "DELETE FROM contact_requests WHERE status = 2 AND requested_at < ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare cleanup statement: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_int64(stmt, 1, (int64_t)cutoff);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to cleanup old denied requests: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    int deleted = sqlite3_changes(g_db);
+    if (deleted > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Cleaned up %d old denied contact requests\n", deleted);
+    }
+    return deleted;
+}
+
 /* ============================================================================
  * BLOCKED USER FUNCTIONS
  * ============================================================================ */

@@ -369,6 +369,13 @@ void contacts_db_free_requests(incoming_request_t *requests, int count);
  */
 int contacts_db_update_request_name(const char *fingerprint, const char *display_name);
 
+/**
+ * Remove denied requests older than 7 days (DHT TTL expiry cleanup)
+ *
+ * @return: number of rows deleted, -1 on error
+ */
+int contacts_db_cleanup_old_denied(void);
+
 /* ============================================================================
  * BLOCKED USER FUNCTIONS
  * ============================================================================ */
