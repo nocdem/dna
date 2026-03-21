@@ -1425,7 +1425,7 @@ bool contacts_db_request_exists(const char *fingerprint) {
         return false;
     }
 
-    const char *sql = "SELECT COUNT(*) FROM contact_requests WHERE fingerprint = ?;";
+    const char *sql = "SELECT COUNT(*) FROM contact_requests WHERE fingerprint = ? AND status = 0;";
     sqlite3_stmt *stmt = NULL;
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
