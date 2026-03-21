@@ -1138,7 +1138,7 @@ int contacts_db_add_incoming_request(
         return -3;
     }
 
-    const char *sql = "INSERT INTO contact_requests (fingerprint, display_name, message, requested_at, status) "
+    const char *sql = "INSERT OR REPLACE INTO contact_requests (fingerprint, display_name, message, requested_at, status) "
                       "VALUES (?, ?, ?, ?, 0);";
     sqlite3_stmt *stmt = NULL;
 
