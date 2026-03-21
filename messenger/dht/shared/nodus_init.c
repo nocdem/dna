@@ -126,12 +126,20 @@ static void load_fallback_nodes(nodus_client_config_t *nconfig) {
 static void on_state_change(nodus_client_state_t old_state,
                             nodus_client_state_t new_state,
                             void *user_data) {
-    (void)old_state;
     (void)user_data;
-    bool connected = (new_state == NODUS_CLIENT_READY);
-    if (g_status_cb) {
-        g_status_cb(connected, g_status_cb_data);
+
+    if (!g_status_cb) return;
+
+    if (new_state == NODUS_CLIENT_READY) {
+        /* Actual connection established */
+        g_status_cb(true, g_status_cb_data);
+    } else if (old_state == NODUS_CLIENT_READY) {
+        /* Actual disconnect — was connected, now lost connection */
+        g_status_cb(false, g_status_cb_data);
     }
+    /* Ignore non-READY → non-READY transitions (DISCONNECTED→CONNECTING,
+     * CONNECTING→AUTHENTICATING, etc.) to avoid false "DHT disconnected"
+     * warnings during initial connection sequence. */
 }
 
 /* ── Preferred Node Cache (flat file) ───────────────────────────── */
@@ -543,9 +551,10 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
 
     if (nodus_singleton_is_ready()) {
         QGP_LOG_INFO(LOG_TAG, "Connected");
-        if (g_status_cb) {
-            g_status_cb(true, g_status_cb_data);
-        }
+        /* NOTE: Do NOT fire g_status_cb(true) here — on_state_change() already
+         * fires it when nodus client transitions to NODUS_CLIENT_READY.
+         * Firing it again causes duplicate DHT_CONNECTED events (double channel
+         * push cb registration, double profile prefetch, double listen check). */
         /* Start background RTT probe to find fastest node for next startup */
         start_rtt_probe();
     } else {

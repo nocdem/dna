@@ -340,6 +340,9 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
     if (rc == 0) {
         QGP_LOG_INFO("DNA_ENGINE", "[OFFLINE] Direct messages check complete: %zu new (acks=%s)",
                      offline_count, publish_acks ? "yes" : "no");
+        /* Mark DM sync as done so stabilization thread's listener setup
+         * (dna_engine_listeners.c) skips its redundant DM sync */
+        engine->dm_full_sync_done = true;
     } else {
         QGP_LOG_WARN("DNA_ENGINE", "[OFFLINE] Direct messages check failed with rc=%d", rc);
     }
