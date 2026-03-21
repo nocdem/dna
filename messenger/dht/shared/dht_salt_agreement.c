@@ -20,7 +20,12 @@
 
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <winsock2.h>   /* htons/ntohs */
+#else
 #include <arpa/inet.h>  /* htons/ntohs */
+#endif
 
 #define LOG_TAG "SALT_AGREE"
 
