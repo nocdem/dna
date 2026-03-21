@@ -577,7 +577,33 @@ done:
 void dna_auto_republish_own_profile(dna_engine_t *engine) {
     if (!engine || !engine->identity_loaded) return;
 
-    QGP_LOG_WARN(LOG_TAG, "[AUTO-REPUBLISH] Own profile signature invalid, republishing...");
+    /* Verify current DHT profile signature before republishing.
+     * Only republish if signature is invalid (-3) or profile not found (-2).
+     * This avoids unnecessary Dilithium5 sign + DHT PUT on every startup. */
+    QGP_LOG_INFO(LOG_TAG, "[AUTO-REPUBLISH] Checking own profile signature in DHT...");
+
+    dna_unified_identity_t *dht_identity = NULL;
+    int verify_rc = dna_load_identity(engine->fingerprint, &dht_identity);
+
+    if (verify_rc == 0 && dht_identity) {
+        /* Profile exists in DHT with valid signature — no republish needed */
+        QGP_LOG_INFO(LOG_TAG, "[AUTO-REPUBLISH] Profile signature valid (version=%u), skipping republish",
+                     dht_identity->version);
+        dna_identity_free(dht_identity);
+        return;
+    }
+    if (dht_identity) {
+        dna_identity_free(dht_identity);
+        dht_identity = NULL;
+    }
+
+    if (verify_rc == -3) {
+        QGP_LOG_WARN(LOG_TAG, "[AUTO-REPUBLISH] Own profile signature invalid, republishing...");
+    } else if (verify_rc == -2) {
+        QGP_LOG_WARN(LOG_TAG, "[AUTO-REPUBLISH] Own profile not found in DHT, republishing...");
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[AUTO-REPUBLISH] DHT check failed (rc=%d), republishing as precaution...", verify_rc);
+    }
 
     /* Load profile from local cache */
     dna_unified_identity_t *cached = NULL;
