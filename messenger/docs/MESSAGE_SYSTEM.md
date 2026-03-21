@@ -18,9 +18,10 @@ This document describes how the DNA Connect message system works, with all facts
 6. [Transport Layer](#6-transport-layer)
 7. [GEK System](#7-gek-system-group-encryption-key)
 8. [Key Management](#8-key-management)
-9. [Database Schema](#9-database-schema)
-10. [Security Properties](#10-security-properties)
-11. [Source Code Reference](#11-source-code-reference)
+9. [Salt Agreement Protocol](#9-salt-agreement-protocol)
+10. [Database Schema](#10-database-schema)
+11. [Security Properties](#11-security-properties)
+12. [Source Code Reference](#12-source-code-reference)
 
 ---
 
@@ -1190,13 +1191,69 @@ if (qgp_sha3_512(sender_sign_key->public_key,
 
 ---
 
-## 9. Database Schema
+## 9. Salt Agreement Protocol
+
+### 9.1 Problem
+
+The per-contact DHT salt (32 bytes) is used to derive message DHT keys. If one side loses its salt (DB wipe, DIFF sync, multi-device), messages are written to one DHT key but read from another — silent delivery failure.
+
+### 9.2 Agreement Key
+
+Each contact pair gets a deterministic DHT key where the agreed-upon salt is stored:
+
+```
+agreement_key = SHA3-512(min(fp_a, fp_b) + ":" + max(fp_a, fp_b) + ":salt_agreement")
+```
+
+### 9.3 Packet Format (Dual-Encrypted)
+
+```
+[2 bytes: version = 0x0001 (network byte order)]
+[64 bytes: lower_fingerprint (binary)]
+[1628 bytes: salt encrypted with lower party's Kyber1024 pubkey (GEK pattern)]
+[64 bytes: higher_fingerprint (binary)]
+[1628 bytes: salt encrypted with higher party's Kyber1024 pubkey (GEK pattern)]
+[4627 bytes: Dilithium5 signature over above data]
+Total: ~8013 bytes
+```
+
+Fingerprints are sorted lexicographically. Encryption uses the same GEK pattern (Kyber1024 KEM + AES-256-GCM) for the 32-byte salt payload.
+
+### 9.4 Security
+
+- **Authentication:** All fetched values are verified against both parties' Dilithium5 signing pubkeys. Third-party values (invalid signature) are discarded.
+- **Fetch:** Uses `nodus_ops_get_all_str` to retrieve all values on the key. Each is signature-verified independently.
+- **Diverged salt resolution:** If multiple authenticated values exist with different salts, a deterministic tiebreaker is applied: `SHA3-512(salt)` — lower hash wins. Both parties compute the same result, guaranteeing convergence. The winner is re-published to DHT.
+
+### 9.5 Reconciliation (Engine Startup)
+
+On every engine startup, before listener setup, each contact's salt is verified:
+
+| Local | DHT | Action |
+|-------|-----|--------|
+| Exists | Exists, match | No action |
+| Exists | Exists, differ | Tiebreaker (lower SHA3 hash wins), update local + re-publish |
+| Empty | Exists | Recovery: store DHT salt locally |
+| Exists | Empty | Migration: publish local salt to DHT |
+| Empty | Empty | Pre-salt contact, no action |
+
+### 9.6 Integration Points
+
+- **Contact request send** (`dna_engine_contacts.c`): generates salt → publishes to agreement key
+- **Engine startup** (`dna_engine_listeners.c`): verifies all contacts before listener setup
+- **Sync fallback** (`dht_dm_outbox.c`): if salted key has no messages, tries unsalted key (backward compat)
+
+**Source:** `dht/shared/dht_salt_agreement.h`, `dht/shared/dht_salt_agreement.c`
+
+---
+
+## 10. Database Schema
 
 **v0.4.63+ Architecture:** Two separate databases for clean separation:
 - **messages.db**: Direct user-to-user messages (`message_backup.c`)
 - **groups.db**: All group data (`messenger/group_database.c`)
 
-### 9.1 Messages Table (messages.db)
+### 10.1 Messages Table (messages.db)
 
 ```sql
 -- Source: message_backup.c - Schema v17
@@ -1229,7 +1286,7 @@ CREATE TABLE IF NOT EXISTS messages (
 - Migration: Old messages table dropped, fresh start required
 - Transport encryption (DHT) remains unchanged - only storage changed
 
-### 9.2 Indexes
+### 10.2 Indexes
 
 ```sql
 -- Source: message_backup.c:58-61
@@ -1240,7 +1297,7 @@ CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint);
 ```
 
-### 9.3 Message Types
+### 10.3 Message Types
 
 | Type | Value | Description |
 |------|-------|-------------|
@@ -1250,7 +1307,7 @@ CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint
 
 **Source:** `message_backup.h:32-36`
 
-### 9.3a Message Deletion
+### 10.3a Message Deletion
 
 Messages can be deleted locally with cross-device sync and sender notification via DELETE notices.
 
@@ -1284,7 +1341,7 @@ Messages can be deleted locally with cross-device sync and sender notification v
 
 **Source:** `messenger/messages.h`, `messenger/messages.c`, `messenger_transport.c`
 
-### 9.4 Invitation Status
+### 10.4 Invitation Status
 
 | Status | Value | Description |
 |--------|-------|-------------|
@@ -1294,7 +1351,7 @@ Messages can be deleted locally with cross-device sync and sender notification v
 
 **Source:** `message_backup.h:40-42`
 
-### 9.5 Groups Database Schema (groups.db)
+### 10.5 Groups Database Schema (groups.db)
 
 **Added in v0.4.63** - All group data moved to separate database.
 
@@ -1354,9 +1411,9 @@ CREATE TABLE IF NOT EXISTS group_messages (
 
 ---
 
-## 10. Security Properties
+## 11. Security Properties
 
-### 10.1 Summary Table
+### 11.1 Summary Table
 
 | Property | Implementation | Source |
 |----------|----------------|--------|
@@ -1369,21 +1426,21 @@ CREATE TABLE IF NOT EXISTS group_messages (
 | **Post-Quantum** | NIST Level 5 (256-bit quantum) | All crypto |
 | **Data Sovereignty** | Local SQLite storage | `message_backup.c` |
 
-### 10.2 What is Protected
+### 11.2 What is Protected
 
 1. **Message Content:** AES-256-GCM encrypted, only recipients can decrypt
 2. **Sender Identity:** SHA3-512 fingerprint encrypted in payload (not visible in headers)
 3. **Timestamp:** Encrypted in payload (v0.08), prevents replay attacks
 4. **Header Integrity:** Used as AAD, authenticated but not encrypted
 
-### 10.3 What is NOT Protected
+### 11.3 What is NOT Protected
 
 1. **Recipient Count:** Visible in header (recipient_count field)
 2. **Message Size:** Approximate plaintext length can be inferred
 3. **Traffic Analysis:** Timing and frequency of messages
 4. **Metadata:** Message exists in database (even if encrypted)
 
-### 10.4 Threat Model
+### 11.4 Threat Model
 
 | Threat | Mitigation |
 |--------|------------|
@@ -1397,9 +1454,9 @@ CREATE TABLE IF NOT EXISTS group_messages (
 
 ---
 
-## 11. Source Code Reference
+## 12. Source Code Reference
 
-### 11.1 Core Message Files
+### 12.1 Core Message Files
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -1408,7 +1465,7 @@ CREATE TABLE IF NOT EXISTS group_messages (
 | `messenger/messages.c` | 592-747 | Read/decrypt message |
 | `messenger/messages.h` | 34-90 | Message API definitions |
 
-### 11.2 Data Structures
+### 12.2 Data Structures
 
 | File | Lines | Structure |
 |------|-------|-----------|
@@ -1418,7 +1475,7 @@ CREATE TABLE IF NOT EXISTS group_messages (
 | `message_backup.h` | 48-61 | `backup_message_t` |
 | `dna_messenger_flutter/lib/models/` | - | Flutter message models |
 
-### 11.3 Cryptographic Functions
+### 12.3 Cryptographic Functions
 
 | File | Function | Purpose |
 |------|----------|---------|
@@ -1431,7 +1488,7 @@ CREATE TABLE IF NOT EXISTS group_messages (
 | `crypto/utils/qgp_sha3.c` | `qgp_sha3_512()` | SHA3-512 hashing |
 | `crypto/utils/aes_keywrap.c` | `aes256_wrap_key()` | RFC 3394 key wrapping |
 
-### 11.4 Transport Layer
+### 12.4 Transport Layer
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -1440,7 +1497,7 @@ CREATE TABLE IF NOT EXISTS group_messages (
 | `dht/shared/dht_offline_queue.h` | 1-237 | Offline queue API |
 | `transport/internal/transport_offline.c` | 64-170 | Offline message polling |
 
-### 11.5 GEK System
+### 12.5 GEK System
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -1449,7 +1506,7 @@ CREATE TABLE IF NOT EXISTS group_messages (
 | `messenger/groups.h` | 1-266 | Group management API |
 | `messenger/groups.c` | - | Group implementation |
 
-### 11.6 Database
+### 12.6 Database
 
 | File | Lines | Purpose |
 |------|-------|---------|

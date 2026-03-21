@@ -479,14 +479,29 @@ int dht_dm_outbox_sync_day(
         return -1;
     }
 
-    QGP_LOG_DEBUG(LOG_TAG, "Syncing day=%lu from %.16s...", (unsigned long)day_bucket, contact_fp);
+    QGP_LOG_DEBUG(LOG_TAG, "Syncing day=%lu from %.16s..., salt=%s",
+                 (unsigned long)day_bucket, contact_fp, salt ? "YES" : "NO");
 
     /* Fetch from DHT */
     uint8_t *data = NULL;
     size_t data_len = 0;
 
     int fetch_result = nodus_ops_get_str(base_key, &data, &data_len);
+    if ((fetch_result != 0 || !data || data_len == 0) && salt) {
+        /* Salted key empty — try unsalted fallback for backward compatibility.
+         * This handles messages sent before salt agreement was established. */
+        free(data);
+        data = NULL;
+        data_len = 0;
+        char fallback_key[512];
+        if (dht_dm_outbox_make_key(contact_fp, my_fp, day_bucket, NULL,
+                                    fallback_key, sizeof(fallback_key)) == 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "Trying unsalted fallback for day=%lu", (unsigned long)day_bucket);
+            fetch_result = nodus_ops_get_str(fallback_key, &data, &data_len);
+        }
+    }
     if (fetch_result != 0 || !data || data_len == 0) {
+        free(data);
         QGP_LOG_DEBUG(LOG_TAG, "No messages found for day=%lu", (unsigned long)day_bucket);
         return 0;  /* No messages is not an error */
     }

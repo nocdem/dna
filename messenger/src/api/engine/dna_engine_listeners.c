@@ -424,6 +424,62 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
 
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] Found %zu contacts in database", list->count);
 
+    /* Verify salt agreement for each contact before setting up listeners.
+     * This ensures listeners subscribe to the correct (salted) DHT key.
+     * Cost: 1 DHT GET per contact (one-time at startup). */
+    {
+        qgp_key_t *my_kyber = dna_load_encryption_key(engine);
+        qgp_key_t *my_dilithium = dna_load_private_key(engine);
+
+        if (my_kyber && my_dilithium) {
+            size_t verified = 0, no_salt = 0, errors = 0;
+            for (size_t i = 0; i < list->count; i++) {
+                const char *contact_id = list->contacts[i].identity;
+                if (!contact_id) continue;
+
+                /* Load contact's Kyber pubkey for potential publish */
+                uint8_t *contact_epk = NULL;
+                size_t contact_elen = 0;
+                uint8_t *contact_spk = NULL;
+                size_t contact_slen = 0;
+                if (engine->messenger) {
+                    messenger_load_pubkey(engine->messenger, contact_id,
+                                          &contact_spk, &contact_slen,
+                                          &contact_epk, &contact_elen, NULL);
+                }
+
+                if (!contact_spk) {
+                    /* Can't verify without contact's signing key */
+                    no_salt++;
+                    free(contact_epk);
+                    free(contact_spk);
+                    continue;
+                }
+
+                int vrc = salt_agreement_verify(
+                    engine->fingerprint, contact_id,
+                    my_kyber->public_key, my_kyber->private_key,
+                    contact_epk,
+                    my_dilithium->public_key,
+                    my_dilithium->private_key,
+                    contact_spk
+                );
+
+                if (vrc == 0) verified++;
+                else if (vrc == 1) no_salt++;
+                else errors++;
+
+                free(contact_epk);
+                free(contact_spk);
+            }
+            QGP_LOG_INFO(LOG_TAG, "[SALT] Verified %zu contacts: %zu ok, %zu pre-salt, %zu errors",
+                         list->count, verified, no_salt, errors);
+        }
+
+        if (my_kyber) qgp_key_free(my_kyber);
+        if (my_dilithium) qgp_key_free(my_dilithium);
+    }
+
     /* Sync DM messages from all contacts BEFORE setting up listeners.
      * Use FULL sync (8 days) to catch all messages received by other devices.
      * Skip if stabilization thread already did a full sync (prevents double sync). */

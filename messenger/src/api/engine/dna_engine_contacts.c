@@ -369,6 +369,34 @@ void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
          * fingerprint in the contacts table as a pending_outgoing contact. */
         contacts_db_init(engine->fingerprint);
         contacts_db_set_salt(task->params.send_contact_request.recipient, dht_salt);
+
+        /* Publish salt to DHT agreement key (Kyber dual-encrypted).
+         * This allows both parties to recover the salt from DHT if lost. */
+        qgp_key_t *enc_key = dna_load_encryption_key(engine);
+        if (enc_key) {
+            uint8_t *contact_epk = NULL;
+            size_t contact_elen = 0;
+            uint8_t *contact_spk = NULL;
+            size_t contact_slen = 0;
+            if (engine->messenger &&
+                messenger_load_pubkey(engine->messenger,
+                                      task->params.send_contact_request.recipient,
+                                      &contact_spk, &contact_slen,
+                                      &contact_epk, &contact_elen, NULL) == 0 &&
+                contact_epk) {
+                salt_agreement_publish(
+                    engine->fingerprint,
+                    task->params.send_contact_request.recipient,
+                    dht_salt,
+                    enc_key->public_key,
+                    contact_epk,
+                    privkey->private_key
+                );
+                free(contact_epk);
+                free(contact_spk);
+            }
+            qgp_key_free(enc_key);
+        }
     }
 
 done:

@@ -130,6 +130,13 @@ target_link_libraries(test_gek_ratchet ${TEST_LIBS})
 add_test(NAME test_gek_ratchet COMMAND test_gek_ratchet)
 
 # =============================================================================
+# Test: Salt Agreement Protocol (Kyber dual-encrypted, authenticated)
+# =============================================================================
+add_executable(test_salt_agreement test_salt_agreement.c)
+target_link_libraries(test_salt_agreement ${TEST_LIBS})
+add_test(NAME test_salt_agreement COMMAND test_salt_agreement)
+
+# =============================================================================
 # Test: Group Channel (Phase 2) — UUID mapping, crypto, connector lifecycle
 # =============================================================================
 add_executable(test_group_channel test_group_channel.c)

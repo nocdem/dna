@@ -123,6 +123,7 @@ static inline char* win_strptime(const char* s, const char* format, struct tm* t
 #include "dht/shared/dht_contact_request.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/shared/dht_dm_outbox.h"
+#include "dht/shared/dht_salt_agreement.h"
 
 /* Transport */
 #include "transport/transport.h"

@@ -20,6 +20,7 @@ set(DHT_COMMON_SOURCES
     shared/dht_channel_subscriptions.c  # Channel subscription DHT sync
     shared/nodus_ops.c                  # Nodus v5 direct operations layer
     shared/nodus_init.c                 # Nodus v5 messenger init/lifecycle
+    shared/dht_salt_agreement.c         # Per-contact salt agreement (Kyber dual-encrypted)
     # Client modules
     client/bootstrap_cache.c          # Bootstrap node SQLite cache
     client/dht_contactlist.c
