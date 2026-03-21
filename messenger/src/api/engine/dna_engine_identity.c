@@ -88,7 +88,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             error = DNA_ENGINE_ERROR_IDENTITY_LOCKED;
             goto done;
         }
-        QGP_LOG_INFO(LOG_TAG, "v0.6.0+: Identity lock acquired (fd=%d)", engine->identity_lock_fd);
+        QGP_LOG_INFO(LOG_TAG, "v0.6.0+: Identity lock acquired (fd=%td)", engine->identity_lock_fd);
     }
 
     /* Free existing session password if any */

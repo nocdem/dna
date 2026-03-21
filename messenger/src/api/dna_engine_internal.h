@@ -645,7 +645,7 @@ struct dna_engine {
     /* DHT: engine uses nodus singleton (no engine-owned context) */
 
     /* Identity lock (prevents multiple engines from loading same identity) */
-    int identity_lock_fd;        /* File lock descriptor (-1 if not held) */
+    intptr_t identity_lock_fd;   /* File lock descriptor (-1 if not held) */
 
     /* Messenger backend */
     messenger_context_t *messenger;  /* Core messenger context */

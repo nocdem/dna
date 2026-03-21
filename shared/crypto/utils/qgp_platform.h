@@ -338,7 +338,7 @@ int qgp_platform_cpu_count(void);
  * @param data_dir Data directory containing identity
  * @return Lock file descriptor on success (>= 0), -1 if lock already held by another process
  */
-int qgp_platform_acquire_identity_lock(const char *data_dir);
+intptr_t qgp_platform_acquire_identity_lock(const char *data_dir);
 
 /**
  * Release identity lock
@@ -348,7 +348,7 @@ int qgp_platform_acquire_identity_lock(const char *data_dir);
  *
  * @param lock_fd Lock file descriptor from acquire_identity_lock()
  */
-void qgp_platform_release_identity_lock(int lock_fd);
+void qgp_platform_release_identity_lock(intptr_t lock_fd);
 
 /**
  * Check if identity lock is held (non-blocking probe)

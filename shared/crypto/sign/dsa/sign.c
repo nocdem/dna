@@ -411,9 +411,12 @@ int crypto_sign_verify_internal(const uint8_t *sig,
   shake256_absorb(&state, buf, K*POLYW1_PACKEDBYTES);
   shake256_finalize(&state);
   shake256_squeeze(c2, CTILDEBYTES, &state);
+  /* Constant-time comparison to prevent timing side-channel */
+  uint8_t r = 0;
   for(i = 0; i < CTILDEBYTES; ++i)
-    if(c[i] != c2[i])
-      return -1;
+    r |= c[i] ^ c2[i];
+  if(r != 0)
+    return -1;
 
   return 0;
 }

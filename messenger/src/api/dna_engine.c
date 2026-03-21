@@ -1558,7 +1558,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* v0.6.110: Release identity lock (all platforms).
      * Now safe: shutdown flag set, callbacks cleared, barrier waited. */
     if (engine->identity_lock_fd >= 0) {
-        QGP_LOG_INFO(LOG_TAG, "Releasing identity lock (fd=%d)",
+        QGP_LOG_INFO(LOG_TAG, "Releasing identity lock (fd=%td)",
                      engine->identity_lock_fd);
         qgp_platform_release_identity_lock(engine->identity_lock_fd);
         engine->identity_lock_fd = -1;
@@ -1715,7 +1715,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
 
     /* v0.6.0+: Release identity lock */
     if (engine->identity_lock_fd >= 0) {
-        QGP_LOG_INFO(LOG_TAG, "Releasing identity lock (fd=%d)", engine->identity_lock_fd);
+        QGP_LOG_INFO(LOG_TAG, "Releasing identity lock (fd=%td)", engine->identity_lock_fd);
         qgp_platform_release_identity_lock(engine->identity_lock_fd);
         engine->identity_lock_fd = -1;
     }

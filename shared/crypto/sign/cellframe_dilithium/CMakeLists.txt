@@ -15,4 +15,7 @@ set(CELLFRAME_DILITHIUM_SOURCES
 
 add_library(cellframe_dilithium STATIC ${CELLFRAME_DILITHIUM_SOURCES})
 
-target_include_directories(cellframe_dilithium PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(cellframe_dilithium PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../..  # shared/ root for crypto/utils includes
+)

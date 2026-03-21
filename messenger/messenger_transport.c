@@ -404,12 +404,14 @@ int messenger_transport_init(messenger_context_t *ctx, bool minimal)
 
     if (load_my_dilithium_pubkey(ctx, &dilithium_pubkey, &dilithium_pubkey_len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium public key");
+        qgp_secure_memzero(dilithium_privkey, dilithium_privkey_len);
         free(dilithium_privkey);
         return -1;
     }
 
     if (load_my_kyber_key(ctx, &kyber_key, &kyber_key_len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to load KEM-1024 key");
+        qgp_secure_memzero(dilithium_privkey, dilithium_privkey_len);
         free(dilithium_privkey);
         free(dilithium_pubkey);
         return -1;
@@ -440,8 +442,10 @@ int messenger_transport_init(messenger_context_t *ctx, bool minimal)
         ctx
     );
 
+    qgp_secure_memzero(dilithium_privkey, dilithium_privkey_len);
     free(dilithium_privkey);
     free(dilithium_pubkey);
+    qgp_secure_memzero(kyber_key, kyber_key_len);
     free(kyber_key);
 
     if (!ctx->transport_ctx) {

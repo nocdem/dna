@@ -1,5 +1,7 @@
 #include "dna_crypto_common.h"
 #include <openssl/evp.h>
+#include <stdlib.h>
+#include "crypto/utils/qgp_random.h"
 
 // SHA3-256 implementation using OpenSSL
 void SHA3_256(unsigned char *output, const unsigned char *input, size_t len) {
@@ -10,18 +12,10 @@ void SHA3_256(unsigned char *output, const unsigned char *input, size_t len) {
     EVP_MD_CTX_free(mdctx);
 }
 
-// Randombytes implementation - use /dev/urandom
+// Randombytes - delegates to qgp_randombytes (getrandom/BCryptGenRandom).
+// WARNING: Aborts on RNG failure rather than using zero entropy.
 void randombytes(unsigned char *out, size_t len) {
-    FILE *fp = fopen("/dev/urandom", "rb");
-    if (fp) {
-        size_t read = fread(out, 1, len, fp);
-        fclose(fp);
-        // Zero remaining buffer if partial read (shouldn't happen with urandom)
-        if (read < len) {
-            memset(out + read, 0, len - read);
-        }
-    } else {
-        // Fallback: zero the buffer if urandom unavailable
-        memset(out, 0, len);
+    if (qgp_randombytes(out, len) != 0) {
+        abort();
     }
 }

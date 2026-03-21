@@ -113,9 +113,21 @@ int qgp_platform_random(uint8_t *buf, size_t len) {
     }
 
     /* Try getrandom() syscall first (Android 7.0+ / API 24+) */
-    ssize_t ret = getrandom(buf, len, 0);
-    if (ret >= 0 && (size_t)ret == len) {
-        return 0;
+    /* Loop until full len bytes read (partial reads are possible) */
+    {
+        size_t done = 0;
+        while (done < len) {
+            ssize_t ret = getrandom(buf + done, len - done, 0);
+            if (ret > 0) {
+                done += (size_t)ret;
+            } else if (ret < 0) {
+                if (errno == EINTR)
+                    continue;
+                break;
+            }
+        }
+        if (done == len)
+            return 0;
     }
 
     /* Fallback: /dev/urandom */
@@ -514,7 +526,7 @@ int qgp_platform_cpu_count(void) {
  * Uses flock() for file-based locking across processes (Flutter FFI vs JNI Service)
  * ============================================================================ */
 
-int qgp_platform_acquire_identity_lock(const char *data_dir) {
+intptr_t qgp_platform_acquire_identity_lock(const char *data_dir) {
     if (!data_dir) {
         QGP_LOG_ERROR(LOG_TAG, "acquire_identity_lock: NULL data_dir");
         return -1;
@@ -546,8 +558,8 @@ int qgp_platform_acquire_identity_lock(const char *data_dir) {
     for (int attempt = 0; attempt < max_retries; attempt++) {
         if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
             /* Lock acquired successfully */
-            QGP_LOG_INFO(LOG_TAG, "acquire_identity_lock: lock acquired (fd=%d, attempt=%d)",
-                         fd, attempt + 1);
+            QGP_LOG_INFO(LOG_TAG, "acquire_identity_lock: lock acquired (fd=%td, attempt=%d)",
+                         (intptr_t)fd, attempt + 1);
             return fd;
         }
 
@@ -568,7 +580,7 @@ int qgp_platform_acquire_identity_lock(const char *data_dir) {
     return -1;
 }
 
-void qgp_platform_release_identity_lock(int lock_fd) {
+void qgp_platform_release_identity_lock(intptr_t lock_fd) {
     if (lock_fd < 0) {
         return;  /* No lock to release */
     }
@@ -576,7 +588,7 @@ void qgp_platform_release_identity_lock(int lock_fd) {
     /* Release the lock and close the file descriptor */
     flock(lock_fd, LOCK_UN);
     close(lock_fd);
-    QGP_LOG_INFO(LOG_TAG, "release_identity_lock: lock released (fd=%d)", lock_fd);
+    QGP_LOG_INFO(LOG_TAG, "release_identity_lock: lock released (fd=%td)", lock_fd);
 }
 
 int qgp_platform_is_identity_locked(const char *data_dir) {

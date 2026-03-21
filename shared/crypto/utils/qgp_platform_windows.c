@@ -504,10 +504,10 @@ int qgp_platform_cpu_count(void) {
 /* ============================================================================
  * Identity Lock (v0.6.0+ - Single-Owner Engine Model)
  * Uses LockFileEx for file-based locking across processes
- * Returns HANDLE cast to int (Windows HANDLE is pointer-sized)
+ * Returns HANDLE cast to intptr_t (safe on both 32-bit and 64-bit Windows)
  * ============================================================================ */
 
-int qgp_platform_acquire_identity_lock(const char *data_dir) {
+intptr_t qgp_platform_acquire_identity_lock(const char *data_dir) {
     if (!data_dir) {
         QGP_LOG_ERROR(LOG_TAG, "acquire_identity_lock: NULL data_dir");
         return -1;
@@ -558,7 +558,7 @@ int qgp_platform_acquire_identity_lock(const char *data_dir) {
             /* Lock acquired successfully */
             QGP_LOG_INFO(LOG_TAG, "acquire_identity_lock: lock acquired (handle=%p, attempt=%d)",
                          (void*)h, attempt + 1);
-            return (int)(intptr_t)h;
+            return (intptr_t)h;
         }
 
         /* Lock failed - check if we should retry */
@@ -579,12 +579,12 @@ int qgp_platform_acquire_identity_lock(const char *data_dir) {
     return -1;
 }
 
-void qgp_platform_release_identity_lock(int lock_fd) {
+void qgp_platform_release_identity_lock(intptr_t lock_fd) {
     if (lock_fd < 0) {
         return;  /* No lock to release */
     }
 
-    HANDLE h = (HANDLE)(intptr_t)lock_fd;
+    HANDLE h = (HANDLE)lock_fd;
 
     /* Unlock the file */
     OVERLAPPED overlapped = {0};
