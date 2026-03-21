@@ -466,6 +466,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get settingsLanguagePortuguese => 'Português';
 
   @override
+  String get settingsLanguageArabic => 'العربية';
+
+  @override
   String get settingsBattery => 'バッテリー';
 
   @override
@@ -871,10 +874,10 @@ class AppLocalizationsJa extends AppLocalizations {
   String get wallDelete => '削除';
 
   @override
-  String get wallTip => 'Tip';
+  String get wallTip => 'チップ';
 
   @override
-  String get wallTipTitle => 'Tip this post';
+  String get wallTipTitle => 'この投稿にチップを送る';
 
   @override
   String wallTipAmount(String amount) {
@@ -882,42 +885,41 @@ class AppLocalizationsJa extends AppLocalizations {
   }
 
   @override
-  String get wallTipConfirm => 'Send Tip';
+  String get wallTipConfirm => 'チップを送る';
 
   @override
-  String get wallTipCancel => 'Cancel';
+  String get wallTipCancel => 'キャンセル';
 
   @override
-  String get wallTipSuccess => 'Tip sent!';
+  String get wallTipSuccess => 'チップを送りました！';
 
   @override
   String wallTipFailed(String error) {
-    return 'Tip failed: $error';
+    return 'チップ失敗: $error';
   }
 
   @override
-  String get wallTipNoWallet =>
-      'This user has no wallet address in their profile';
+  String get wallTipNoWallet => 'このユーザーはプロフィールにウォレットアドレスがありません';
 
   @override
-  String get wallTipInsufficientBalance => 'Insufficient CPUNK balance';
+  String get wallTipInsufficientBalance => 'CPUNK残高不足';
 
   @override
-  String get wallTipSending => 'Sending tip...';
+  String get wallTipSending => 'チップを送信中...';
 
   @override
   String wallTippedAmount(String amount) {
-    return 'Tipped $amount CPUNK';
+    return '$amount CPUNKチップ';
   }
 
   @override
-  String get wallTipPending => 'Pending';
+  String get wallTipPending => '保留中';
 
   @override
-  String get wallTipVerified => 'Verified';
+  String get wallTipVerified => '確認済み';
 
   @override
-  String get wallTipFailedStatus => 'Failed';
+  String get wallTipFailedStatus => '失敗';
 
   @override
   String get wallWhatsOnYourMind => '今何を考えていますか？';
@@ -1077,6 +1079,14 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get moreAppLock => 'アプリロック';
+
+  @override
+  String get moreInviteFriends => '友達を招待';
+
+  @override
+  String inviteFriendsMessage(String username) {
+    return 'DNA Connectを試してみて — 量子安全な暗号化メッセンジャー。追加してね: $username — ダウンロード: https://cpunk.io/download';
+  }
 
   @override
   String get lockTitle => 'DNA Connect';

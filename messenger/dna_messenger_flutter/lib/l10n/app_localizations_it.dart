@@ -471,6 +471,9 @@ class AppLocalizationsIt extends AppLocalizations {
   String get settingsLanguagePortuguese => 'Portoghese';
 
   @override
+  String get settingsLanguageArabic => 'العربية';
+
+  @override
   String get settingsBattery => 'Batteria';
 
   @override
@@ -893,10 +896,10 @@ class AppLocalizationsIt extends AppLocalizations {
   String get wallDelete => 'Elimina';
 
   @override
-  String get wallTip => 'Tip';
+  String get wallTip => 'Mancia';
 
   @override
-  String get wallTipTitle => 'Tip this post';
+  String get wallTipTitle => 'Dai una mancia a questo post';
 
   @override
   String wallTipAmount(String amount) {
@@ -904,42 +907,42 @@ class AppLocalizationsIt extends AppLocalizations {
   }
 
   @override
-  String get wallTipConfirm => 'Send Tip';
+  String get wallTipConfirm => 'Invia mancia';
 
   @override
-  String get wallTipCancel => 'Cancel';
+  String get wallTipCancel => 'Annulla';
 
   @override
-  String get wallTipSuccess => 'Tip sent!';
+  String get wallTipSuccess => 'Mancia inviata!';
 
   @override
   String wallTipFailed(String error) {
-    return 'Tip failed: $error';
+    return 'Mancia fallita: $error';
   }
 
   @override
   String get wallTipNoWallet =>
-      'This user has no wallet address in their profile';
+      'Questo utente non ha un indirizzo wallet nel profilo';
 
   @override
-  String get wallTipInsufficientBalance => 'Insufficient CPUNK balance';
+  String get wallTipInsufficientBalance => 'Saldo CPUNK insufficiente';
 
   @override
-  String get wallTipSending => 'Sending tip...';
+  String get wallTipSending => 'Invio mancia...';
 
   @override
   String wallTippedAmount(String amount) {
-    return 'Tipped $amount CPUNK';
+    return '$amount CPUNK di mancia';
   }
 
   @override
-  String get wallTipPending => 'Pending';
+  String get wallTipPending => 'In attesa';
 
   @override
-  String get wallTipVerified => 'Verified';
+  String get wallTipVerified => 'Verificato';
 
   @override
-  String get wallTipFailedStatus => 'Failed';
+  String get wallTipFailedStatus => 'Fallito';
 
   @override
   String get wallWhatsOnYourMind => 'A cosa stai pensando?';
@@ -1099,6 +1102,14 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get moreAppLock => 'Blocco app';
+
+  @override
+  String get moreInviteFriends => 'Invita amici';
+
+  @override
+  String inviteFriendsMessage(String username) {
+    return 'Ciao! Prova DNA Connect — un messenger crittografato a prova di quantum. Aggiungimi: $username — Scarica: https://cpunk.io/download';
+  }
 
   @override
   String get lockTitle => 'DNA Connect';

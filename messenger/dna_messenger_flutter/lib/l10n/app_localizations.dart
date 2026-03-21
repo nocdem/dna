@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart' as intl;
 
+import 'app_localizations_ar.dart';
 import 'app_localizations_de.dart';
 import 'app_localizations_en.dart';
 import 'app_localizations_es.dart';
@@ -102,6 +103,7 @@ abstract class AppLocalizations {
 
   /// A list of this localizations delegate's supported locales.
   static const List<Locale> supportedLocales = <Locale>[
+    Locale('ar'),
     Locale('de'),
     Locale('en'),
     Locale('es'),
@@ -983,6 +985,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Português'**
   String get settingsLanguagePortuguese;
+
+  /// No description provided for @settingsLanguageArabic.
+  ///
+  /// In en, this message translates to:
+  /// **'العربية'**
+  String get settingsLanguageArabic;
 
   /// No description provided for @settingsBattery.
   ///
@@ -2130,6 +2138,18 @@ abstract class AppLocalizations {
   /// **'App Lock'**
   String get moreAppLock;
 
+  /// No description provided for @moreInviteFriends.
+  ///
+  /// In en, this message translates to:
+  /// **'Invite Friends'**
+  String get moreInviteFriends;
+
+  /// No description provided for @inviteFriendsMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Hey! Try DNA Connect — a quantum-safe encrypted messenger. Add me: {username} — Download: https://cpunk.io/download'**
+  String inviteFriendsMessage(String username);
+
   /// No description provided for @lockTitle.
   ///
   /// In en, this message translates to:
@@ -2778,6 +2798,7 @@ class _AppLocalizationsDelegate
 
   @override
   bool isSupported(Locale locale) => <String>[
+    'ar',
     'de',
     'en',
     'es',
@@ -2797,6 +2818,8 @@ class _AppLocalizationsDelegate
 AppLocalizations lookupAppLocalizations(Locale locale) {
   // Lookup logic when only language code is specified.
   switch (locale.languageCode) {
+    case 'ar':
+      return AppLocalizationsAr();
     case 'de':
       return AppLocalizationsDe();
     case 'en':

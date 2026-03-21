@@ -159,6 +159,7 @@
   "settingsLanguageChinese": "中文",
   "settingsLanguageJapanese": "日本語",
   "settingsLanguagePortuguese": "Português",
+  "settingsLanguageArabic": "العربية",
 
   "settingsBattery": "Pil",
   "settingsDisableBatteryOpt": "Pil Optimizasyonunu Kapat",
@@ -364,6 +365,8 @@
   "moreContacts": "Kişiler",
   "moreSettings": "Ayarlar",
   "moreAppLock": "Uygulama Kilidi",
+  "moreInviteFriends": "Arkadaşlarını Davet Et",
+  "inviteFriendsMessage": "Selam! DNA Connect'i dene — kuantum güvenli şifreli mesajlaşma. Beni ekle: {username} — İndir: https://cpunk.io/download",
 
   "lockTitle": "DNA Connect",
   "lockEnterPIN": "Kilit açmak için PIN girin",

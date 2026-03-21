@@ -470,6 +470,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get settingsLanguagePortuguese => 'Португальский';
 
   @override
+  String get settingsLanguageArabic => 'العربية';
+
+  @override
   String get settingsBattery => 'Батарея';
 
   @override
@@ -891,10 +894,10 @@ class AppLocalizationsRu extends AppLocalizations {
   String get wallDelete => 'Удалить';
 
   @override
-  String get wallTip => 'Tip';
+  String get wallTip => 'Чаевые';
 
   @override
-  String get wallTipTitle => 'Tip this post';
+  String get wallTipTitle => 'Оставить чаевые за этот пост';
 
   @override
   String wallTipAmount(String amount) {
@@ -902,42 +905,42 @@ class AppLocalizationsRu extends AppLocalizations {
   }
 
   @override
-  String get wallTipConfirm => 'Send Tip';
+  String get wallTipConfirm => 'Отправить чаевые';
 
   @override
-  String get wallTipCancel => 'Cancel';
+  String get wallTipCancel => 'Отмена';
 
   @override
-  String get wallTipSuccess => 'Tip sent!';
+  String get wallTipSuccess => 'Чаевые отправлены!';
 
   @override
   String wallTipFailed(String error) {
-    return 'Tip failed: $error';
+    return 'Ошибка чаевых: $error';
   }
 
   @override
   String get wallTipNoWallet =>
-      'This user has no wallet address in their profile';
+      'У этого пользователя нет адреса кошелька в профиле';
 
   @override
-  String get wallTipInsufficientBalance => 'Insufficient CPUNK balance';
+  String get wallTipInsufficientBalance => 'Недостаточный баланс CPUNK';
 
   @override
-  String get wallTipSending => 'Sending tip...';
+  String get wallTipSending => 'Отправка чаевых...';
 
   @override
   String wallTippedAmount(String amount) {
-    return 'Tipped $amount CPUNK';
+    return '$amount CPUNK чаевых';
   }
 
   @override
-  String get wallTipPending => 'Pending';
+  String get wallTipPending => 'В ожидании';
 
   @override
-  String get wallTipVerified => 'Verified';
+  String get wallTipVerified => 'Подтверждено';
 
   @override
-  String get wallTipFailedStatus => 'Failed';
+  String get wallTipFailedStatus => 'Ошибка';
 
   @override
   String get wallWhatsOnYourMind => 'О чём вы думаете?';
@@ -1097,6 +1100,14 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get moreAppLock => 'Блокировка приложения';
+
+  @override
+  String get moreInviteFriends => 'Пригласить друзей';
+
+  @override
+  String inviteFriendsMessage(String username) {
+    return 'Привет! Попробуй DNA Connect — квантово-безопасный зашифрованный мессенджер. Добавь меня: $username — Скачать: https://cpunk.io/download';
+  }
 
   @override
   String get lockTitle => 'DNA Connect';

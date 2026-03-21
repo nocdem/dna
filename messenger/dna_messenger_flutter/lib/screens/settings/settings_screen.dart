@@ -282,6 +282,7 @@ class _LanguageSection extends ConsumerWidget {
       'zh': '中文',
       'ja': '日本語',
       'pt': 'Português',
+      'ar': 'العربية',
     };
 
     final currentLabel = locale == null
@@ -316,6 +317,7 @@ class _LanguageSection extends ConsumerWidget {
       ('pt', 'Português'),
       ('ru', 'Русский'),
       ('zh', '中文'),
+      ('ar', 'العربية'),
     ];
 
     final groupValue = current == null ? 'system' : current.languageCode;

@@ -1,0 +1,1452 @@
+// ignore: unused_import
+import 'package:intl/intl.dart' as intl;
+import 'app_localizations.dart';
+
+// ignore_for_file: type=lint
+
+/// The translations for Arabic (`ar`).
+class AppLocalizationsAr extends AppLocalizations {
+  AppLocalizationsAr([String locale = 'ar']) : super(locale);
+
+  @override
+  String get appTitle => 'DNA Connect';
+
+  @override
+  String get initializing => 'جارٍ التهيئة...';
+
+  @override
+  String get failedToInitialize => 'فشل في التهيئة';
+
+  @override
+  String get makeSureNativeLibrary => 'تأكد من توفر المكتبة الأصلية.';
+
+  @override
+  String get navHome => 'الرئيسية';
+
+  @override
+  String get navChats => 'المحادثات';
+
+  @override
+  String get navChannels => 'القنوات';
+
+  @override
+  String get navMore => 'المزيد';
+
+  @override
+  String get messagesAll => 'الكل';
+
+  @override
+  String get messagesUnread => 'غير مقروء';
+
+  @override
+  String get messagesAllCaughtUp => 'لا جديد!';
+
+  @override
+  String get messagesNoUnread => 'لا توجد رسائل غير مقروءة';
+
+  @override
+  String get messagesSearchHint => 'بحث في المحادثات...';
+
+  @override
+  String get contactsTitle => 'جهات الاتصال';
+
+  @override
+  String get contactsEmpty => 'لا توجد جهات اتصال بعد';
+
+  @override
+  String get contactsTapToAdd => 'اضغط + لإضافة جهة اتصال';
+
+  @override
+  String get contactsOnline => 'متصل';
+
+  @override
+  String contactsLastSeen(String time) {
+    return 'آخر ظهور $time';
+  }
+
+  @override
+  String get contactsOffline => 'غير متصل';
+
+  @override
+  String get contactsSyncing => 'جارٍ المزامنة...';
+
+  @override
+  String get contactsFailedToLoad => 'فشل في تحميل جهات الاتصال';
+
+  @override
+  String get contactsRetry => 'إعادة المحاولة';
+
+  @override
+  String get contactsHubContacts => 'جهات الاتصال';
+
+  @override
+  String get contactsHubRequests => 'الطلبات';
+
+  @override
+  String get contactsHubBlocked => 'المحظورون';
+
+  @override
+  String get contactsHubRemoveTitle => 'إزالة جهة الاتصال؟';
+
+  @override
+  String contactsHubRemoveMessage(String name) {
+    return 'هل أنت متأكد أنك تريد إزالة $name من جهات اتصالك؟';
+  }
+
+  @override
+  String get contactsHubRemove => 'إزالة';
+
+  @override
+  String get contactsHubFingerprintCopied => 'تم نسخ البصمة';
+
+  @override
+  String get contactRequestsTitle => 'طلبات الاتصال';
+
+  @override
+  String get contactRequestsEmpty => 'لا توجد طلبات معلقة';
+
+  @override
+  String get contactRequestsAccept => 'قبول';
+
+  @override
+  String get contactRequestsDeny => 'رفض';
+
+  @override
+  String get contactRequestsBlock => 'حظر المستخدم';
+
+  @override
+  String get contactRequestsSent => 'مرسل';
+
+  @override
+  String get contactRequestsReceived => 'مستلم';
+
+  @override
+  String get addContactTitle => 'إضافة جهة اتصال';
+
+  @override
+  String get addContactHint => 'أدخل اسمًا أو معرّفًا';
+
+  @override
+  String get addContactSearching => 'جارٍ البحث...';
+
+  @override
+  String get addContactFoundOnNetwork => 'تم العثور عليه في الشبكة';
+
+  @override
+  String get addContactNotFound => 'غير موجود';
+
+  @override
+  String get addContactSendRequest => 'إرسال طلب';
+
+  @override
+  String get addContactRequestSent => 'تم إرسال طلب الاتصال';
+
+  @override
+  String get addContactAlreadyContact => 'موجود بالفعل في جهات اتصالك';
+
+  @override
+  String get addContactCannotAddSelf => 'لا يمكنك إضافة نفسك';
+
+  @override
+  String get chatSearchMessages => 'بحث في الرسائل';
+
+  @override
+  String get chatOnline => 'متصل';
+
+  @override
+  String get chatOffline => 'غير متصل';
+
+  @override
+  String get chatConnecting => 'جارٍ الاتصال...';
+
+  @override
+  String get chatTypeMessage => 'اكتب رسالة';
+
+  @override
+  String get chatNoMessages => 'لا توجد رسائل بعد';
+
+  @override
+  String get chatSendFirstMessage => 'أرسل رسالة لبدء المحادثة';
+
+  @override
+  String get chatPhotoLibrary => 'مكتبة الصور';
+
+  @override
+  String get chatCamera => 'الكاميرا';
+
+  @override
+  String get chatAddCaption => 'أضف تعليقًا...';
+
+  @override
+  String get chatSendPhoto => 'إرسال';
+
+  @override
+  String chatImageTooLarge(String maxSize) {
+    return 'الصورة كبيرة جدًا (الحد الأقصى $maxSize)';
+  }
+
+  @override
+  String get chatMessageDeleted => 'تم حذف الرسالة';
+
+  @override
+  String get chatLoadEarlier => 'تحميل رسائل أقدم';
+
+  @override
+  String chatLastSeen(String time) {
+    return 'آخر ظهور $time';
+  }
+
+  @override
+  String get chatSendTokens => 'إرسال رموز';
+
+  @override
+  String chatSendTokensTo(String name) {
+    return 'إلى $name';
+  }
+
+  @override
+  String get chatLookingUpWallets => 'جارٍ البحث عن عناوين المحفظة...';
+
+  @override
+  String get chatNoWalletAddresses => 'لا توجد عناوين محفظة لدى جهة الاتصال';
+
+  @override
+  String get chatTokenLabel => 'الرمز';
+
+  @override
+  String get chatSendAmount => 'المبلغ';
+
+  @override
+  String chatSendAvailable(String balance, String token) {
+    return 'المتاح: $balance $token';
+  }
+
+  @override
+  String get chatSendMax => 'الأقصى';
+
+  @override
+  String chatSendButton(String token) {
+    return 'إرسال $token';
+  }
+
+  @override
+  String chatSentSuccess(String amount, String token) {
+    return 'تم إرسال $amount $token';
+  }
+
+  @override
+  String get chatInvalidAmount => 'يرجى إدخال مبلغ صالح';
+
+  @override
+  String chatInsufficientBalance(String token) {
+    return 'رصيد $token غير كافٍ';
+  }
+
+  @override
+  String get chatNoWalletForNetwork =>
+      'لا توجد محفظة لدى جهة الاتصال لهذه الشبكة';
+
+  @override
+  String get chatSelectToken => 'اختر الرمز';
+
+  @override
+  String get chatSelectNetwork => 'اختر الشبكة';
+
+  @override
+  String get chatEnterAmount => 'أدخل المبلغ';
+
+  @override
+  String chatStepOf(String current, String total) {
+    return 'الخطوة $current من $total';
+  }
+
+  @override
+  String get messageMenuReply => 'رد';
+
+  @override
+  String get messageMenuCopy => 'نسخ';
+
+  @override
+  String get messageMenuForward => 'إعادة توجيه';
+
+  @override
+  String get messageMenuStar => 'تمييز';
+
+  @override
+  String get messageMenuUnstar => 'إلغاء التمييز';
+
+  @override
+  String get messageMenuRetry => 'إعادة المحاولة';
+
+  @override
+  String get messageMenuDelete => 'حذف';
+
+  @override
+  String get channelsTitle => 'القنوات';
+
+  @override
+  String get channelsEmpty => 'لا توجد قنوات بعد';
+
+  @override
+  String get channelsCreateOrDiscover => 'أنشئ أو اكتشف قنوات';
+
+  @override
+  String get channelsCreate => 'إنشاء قناة';
+
+  @override
+  String get channelsDiscover => 'اكتشاف القنوات';
+
+  @override
+  String get channelName => 'اسم القناة';
+
+  @override
+  String get channelDescription => 'الوصف';
+
+  @override
+  String get channelListPublicly => 'إدراج علنيًا';
+
+  @override
+  String get channelListPubliclyHint => 'السماح للآخرين باكتشاف هذه القناة';
+
+  @override
+  String get channelSubscribe => 'اشتراك';
+
+  @override
+  String get channelSubscribed => 'مشترك';
+
+  @override
+  String get channelUnsubscribe => 'إلغاء الاشتراك';
+
+  @override
+  String get channelWritePost => 'اكتب منشورًا...';
+
+  @override
+  String get channelNoPosts => 'لا توجد منشورات بعد';
+
+  @override
+  String get channelLoadOlderPosts => 'تحميل منشورات أقدم';
+
+  @override
+  String get channelSearchChannels => 'بحث في القنوات...';
+
+  @override
+  String get channelNoPublicChannels => 'لم يتم العثور على قنوات عامة';
+
+  @override
+  String get channelCreated => 'تم إنشاء القناة';
+
+  @override
+  String get channelReply => 'رد';
+
+  @override
+  String get channelCopy => 'نسخ';
+
+  @override
+  String get groupsTitle => 'المجموعات';
+
+  @override
+  String get groupsCreate => 'إنشاء مجموعة';
+
+  @override
+  String get groupsEmpty => 'لا توجد مجموعات بعد';
+
+  @override
+  String get groupsCreateOrJoin => 'أنشئ مجموعة أو اقبل دعوة';
+
+  @override
+  String get groupsPendingInvitations => 'الدعوات المعلقة';
+
+  @override
+  String get groupsYourGroups => 'مجموعاتك';
+
+  @override
+  String get groupsInfo => 'معلومات المجموعة';
+
+  @override
+  String get groupsMembers => 'الأعضاء';
+
+  @override
+  String get groupsLeave => 'مغادرة المجموعة';
+
+  @override
+  String get groupsDelete => 'حذف المجموعة';
+
+  @override
+  String get groupsInvite => 'دعوة';
+
+  @override
+  String get groupsAccept => 'قبول';
+
+  @override
+  String get groupsDecline => 'رفض';
+
+  @override
+  String get groupsName => 'اسم المجموعة';
+
+  @override
+  String get groupsDescription => 'الوصف';
+
+  @override
+  String get groupsCreated => 'تم إنشاء المجموعة';
+
+  @override
+  String get groupsOwner => 'المالك';
+
+  @override
+  String get groupsMember => 'عضو';
+
+  @override
+  String get groupsAdmin => 'مشرف';
+
+  @override
+  String get groupsRemoveMember => 'إزالة العضو';
+
+  @override
+  String groupsKickConfirm(String name) {
+    return 'إزالة $name من المجموعة؟';
+  }
+
+  @override
+  String get settingsTitle => 'الإعدادات';
+
+  @override
+  String get settingsAnonymous => 'مجهول';
+
+  @override
+  String get settingsNotLoaded => 'لم يتم التحميل';
+
+  @override
+  String get settingsTapToEditProfile => 'اضغط لتعديل الملف الشخصي';
+
+  @override
+  String get settingsAppearance => 'المظهر';
+
+  @override
+  String get settingsDarkMode => 'الوضع الداكن';
+
+  @override
+  String get settingsDarkModeSubtitle => 'التبديل بين المظهر الداكن والفاتح';
+
+  @override
+  String get settingsLanguage => 'اللغة';
+
+  @override
+  String get settingsLanguageSubtitle => 'اختر لغة التطبيق';
+
+  @override
+  String get settingsLanguageSystem => 'الافتراضي للنظام';
+
+  @override
+  String get settingsLanguageEnglish => 'English';
+
+  @override
+  String get settingsLanguageTurkish => 'Türkçe';
+
+  @override
+  String get settingsLanguageItalian => 'Italiano';
+
+  @override
+  String get settingsLanguageSpanish => 'Español';
+
+  @override
+  String get settingsLanguageRussian => 'Русский';
+
+  @override
+  String get settingsLanguageDutch => 'Nederlands';
+
+  @override
+  String get settingsLanguageGerman => 'Deutsch';
+
+  @override
+  String get settingsLanguageChinese => '中文';
+
+  @override
+  String get settingsLanguageJapanese => '日本語';
+
+  @override
+  String get settingsLanguagePortuguese => 'Português';
+
+  @override
+  String get settingsLanguageArabic => 'العربية';
+
+  @override
+  String get settingsBattery => 'البطارية';
+
+  @override
+  String get settingsDisableBatteryOpt => 'تعطيل تحسين البطارية';
+
+  @override
+  String get settingsBatteryChecking => 'جارٍ الفحص...';
+
+  @override
+  String get settingsBatteryDisabled => 'معطل — يمكن للتطبيق العمل في الخلفية';
+
+  @override
+  String get settingsBatteryTapToKeep => 'اضغط لإبقاء التطبيق نشطًا في الخلفية';
+
+  @override
+  String get settingsSecurity => 'الأمان';
+
+  @override
+  String get settingsExportSeedPhrase => 'تصدير عبارة الاسترداد';
+
+  @override
+  String get settingsExportSeedSubtitle => 'نسخ احتياطي لعبارة الاسترداد';
+
+  @override
+  String get settingsAppLock => 'قفل التطبيق';
+
+  @override
+  String get settingsAppLockSubtitle => 'طلب المصادقة';
+
+  @override
+  String get settingsExportSeedWarning =>
+      'عبارة الاسترداد تمنح وصولاً كاملاً لهويتك. لا تشاركها مع أي شخص.';
+
+  @override
+  String get settingsShowSeed => 'إظهار العبارة';
+
+  @override
+  String get settingsYourSeedPhrase => 'عبارة الاسترداد الخاصة بك';
+
+  @override
+  String get settingsSeedPhraseWarning =>
+      'اكتب هذه الكلمات بالترتيب واحفظها بأمان. أي شخص يملك هذه العبارة يمكنه الوصول لهويتك.';
+
+  @override
+  String get settingsSeedCopied => 'تم نسخ عبارة الاسترداد إلى الحافظة';
+
+  @override
+  String get settingsSeedNotAvailable =>
+      'عبارة الاسترداد غير متوفرة لهذه الهوية. تم إنشاؤها قبل إضافة هذه الميزة.';
+
+  @override
+  String get settingsSeedError => 'تعذر استرجاع عبارة الاسترداد';
+
+  @override
+  String get settingsWallet => 'المحفظة';
+
+  @override
+  String get settingsHideZeroBalance => 'إخفاء الرصيد الصفري';
+
+  @override
+  String get settingsHideZeroBalanceSubtitle =>
+      'إخفاء العملات ذات الرصيد الصفري';
+
+  @override
+  String get settingsData => 'البيانات';
+
+  @override
+  String get settingsAutoSync => 'المزامنة التلقائية';
+
+  @override
+  String get settingsAutoSyncSubtitle => 'مزامنة الرسائل تلقائيًا كل 15 دقيقة';
+
+  @override
+  String settingsLastSync(String time) {
+    return 'آخر مزامنة: $time';
+  }
+
+  @override
+  String get settingsSyncNow => 'مزامنة الآن';
+
+  @override
+  String get settingsSyncNowSubtitle => 'فرض مزامنة فورية';
+
+  @override
+  String get settingsLogs => 'السجلات';
+
+  @override
+  String get settingsOpenLogsFolder => 'فتح مجلد السجلات';
+
+  @override
+  String get settingsOpenLogsFolderSubtitle =>
+      'فتح مدير الملفات في مجلد السجلات';
+
+  @override
+  String get settingsShareLogs => 'مشاركة السجلات';
+
+  @override
+  String get settingsShareLogsSubtitle => 'ضغط ومشاركة ملفات السجلات';
+
+  @override
+  String get settingsLogsFolderNotExist => 'مجلد السجلات غير موجود بعد';
+
+  @override
+  String get settingsNoLogFiles => 'لم يتم العثور على ملفات سجلات';
+
+  @override
+  String get settingsFailedCreateZip => 'فشل في إنشاء أرشيف مضغوط';
+
+  @override
+  String settingsNoLogsYet(String debugInfo) {
+    return 'لا توجد سجلات بعد. $debugInfo';
+  }
+
+  @override
+  String get settingsIdentity => 'الهوية';
+
+  @override
+  String get settingsFingerprint => 'البصمة';
+
+  @override
+  String get settingsFingerprintCopied => 'تم نسخ البصمة';
+
+  @override
+  String get settingsDeleteAccount => 'حذف الحساب';
+
+  @override
+  String get settingsDeleteAccountSubtitle =>
+      'حذف جميع البيانات نهائيًا من الجهاز';
+
+  @override
+  String get settingsDeleteAccountConfirm => 'حذف الحساب؟';
+
+  @override
+  String get settingsDeleteAccountWarning =>
+      'سيتم حذف جميع البيانات المحلية نهائيًا:';
+
+  @override
+  String get settingsDeletePrivateKeys => 'المفاتيح الخاصة';
+
+  @override
+  String get settingsDeleteWallets => 'المحافظ';
+
+  @override
+  String get settingsDeleteMessages => 'الرسائل';
+
+  @override
+  String get settingsDeleteContacts => 'جهات الاتصال';
+
+  @override
+  String get settingsDeleteGroups => 'المجموعات';
+
+  @override
+  String get settingsDeleteSeedWarning =>
+      'تأكد من نسخ عبارة الاسترداد احتياطيًا قبل الحذف!';
+
+  @override
+  String get settingsDeleteSuccess => 'تم حذف الحساب بنجاح';
+
+  @override
+  String settingsDeleteFailed(String error) {
+    return 'فشل في حذف الحساب: $error';
+  }
+
+  @override
+  String get settingsAbout => 'حول';
+
+  @override
+  String get settingsUpdateAvailable => 'تحديث متوفر';
+
+  @override
+  String get settingsTapToDownload => 'اضغط للتنزيل';
+
+  @override
+  String settingsAppVersion(String version) {
+    return 'DNA Connect الإصدار $version';
+  }
+
+  @override
+  String settingsLibVersion(String version) {
+    return 'المكتبة الإصدار $version';
+  }
+
+  @override
+  String get settingsPostQuantumMessenger => 'اتصال مشفر ما بعد الكم';
+
+  @override
+  String get settingsCryptoStack => 'حزمة التشفير';
+
+  @override
+  String get profileTitle => 'تعديل الملف الشخصي';
+
+  @override
+  String get profileInfo => 'معلومات الملف الشخصي';
+
+  @override
+  String get profileBio => 'السيرة الذاتية';
+
+  @override
+  String get profileLocation => 'الموقع';
+
+  @override
+  String get profileWebsite => 'الموقع الإلكتروني';
+
+  @override
+  String get profileWalletAddresses => 'عناوين المحفظة';
+
+  @override
+  String get profileSave => 'حفظ الملف الشخصي';
+
+  @override
+  String get profileShareQR => 'مشاركة رمز QR';
+
+  @override
+  String get profileAvatar => 'الصورة الرمزية';
+
+  @override
+  String get profileTakeSelfie => 'التقاط صورة شخصية';
+
+  @override
+  String get profileChooseFromGallery => 'اختيار من المعرض';
+
+  @override
+  String get profileSaved => 'تم حفظ الملف الشخصي';
+
+  @override
+  String profileSaveFailed(String error) {
+    return 'فشل في حفظ الملف الشخصي: $error';
+  }
+
+  @override
+  String get profileCropTitle => 'قص الصورة الرمزية';
+
+  @override
+  String get profileCropSave => 'حفظ';
+
+  @override
+  String get contactProfileFailed => 'فشل في تحميل الملف الشخصي';
+
+  @override
+  String get contactProfileUnknownError => 'خطأ غير معروف';
+
+  @override
+  String get contactProfileNickname => 'الاسم المستعار';
+
+  @override
+  String get contactProfileNicknameNotSet => 'غير محدد (اضغط للإضافة)';
+
+  @override
+  String contactProfileOriginal(String name) {
+    return 'الأصلي: $name';
+  }
+
+  @override
+  String get contactProfileSetNickname => 'تعيين الاسم المستعار';
+
+  @override
+  String contactProfileOriginalName(String name) {
+    return 'الاسم الأصلي: $name';
+  }
+
+  @override
+  String get contactProfileNicknameLabel => 'الاسم المستعار';
+
+  @override
+  String get contactProfileNicknameHint => 'أدخل اسمًا مستعارًا';
+
+  @override
+  String get contactProfileNicknameHelper =>
+      'اتركه فارغًا لاستخدام الاسم الأصلي';
+
+  @override
+  String get contactProfileNicknameCleared => 'تم مسح الاسم المستعار';
+
+  @override
+  String contactProfileNicknameSet(String name) {
+    return 'تم تعيين الاسم المستعار إلى \"$name\"';
+  }
+
+  @override
+  String contactProfileNicknameFailed(String error) {
+    return 'فشل في تعيين الاسم المستعار: $error';
+  }
+
+  @override
+  String get contactProfileCopyFingerprint => 'نسخ البصمة';
+
+  @override
+  String get contactProfileNoProfile => 'لم يتم نشر ملف شخصي';
+
+  @override
+  String get contactProfileNoProfileSubtitle =>
+      'لم ينشر هذا المستخدم ملفه الشخصي بعد.';
+
+  @override
+  String get contactProfileBio => 'السيرة الذاتية';
+
+  @override
+  String get contactProfileInfo => 'المعلومات';
+
+  @override
+  String get contactProfileWebsite => 'الموقع الإلكتروني';
+
+  @override
+  String get identityTitle => 'DNA Connect';
+
+  @override
+  String get identityWelcome => 'مرحبًا بك في DNA Connect';
+
+  @override
+  String get identityGenerateSeed => 'إنشاء عبارة جديدة';
+
+  @override
+  String get identityHaveSeed => 'لدي عبارة استرداد';
+
+  @override
+  String get identityYourRecoveryPhrase => 'عبارة الاسترداد الخاصة بك';
+
+  @override
+  String get identityRecoveryPhraseWarning =>
+      'اكتب هذه الكلمات واحفظها بأمان. إنها الطريقة الوحيدة لاسترداد حسابك.';
+
+  @override
+  String get identityConfirmSaved => 'لقد حفظت عبارة الاسترداد';
+
+  @override
+  String get identityEnterRecoveryPhrase => 'أدخل عبارة الاسترداد';
+
+  @override
+  String get identityEnterRecoveryPhraseHint =>
+      'أدخل عبارة الاسترداد المكونة من 12 أو 24 كلمة';
+
+  @override
+  String get identityChooseName => 'اختر اسمك';
+
+  @override
+  String get identityChooseNameHint => 'أدخل اسم العرض';
+
+  @override
+  String get identityRegisterContinue => 'تسجيل ومتابعة';
+
+  @override
+  String get identityRegistering => 'جارٍ التسجيل...';
+
+  @override
+  String get identityNameTaken => 'هذا الاسم مستخدم بالفعل';
+
+  @override
+  String get identityNameInvalid => 'يجب أن يكون الاسم من 3 إلى 20 حرفًا';
+
+  @override
+  String get identityCreating => 'جارٍ إنشاء هويتك...';
+
+  @override
+  String get identityRestoring => 'جارٍ استعادة هويتك...';
+
+  @override
+  String get wallTitle => 'الرئيسية';
+
+  @override
+  String get wallWelcome => 'مرحبًا بك في خطك الزمني!';
+
+  @override
+  String get wallWelcomeSubtitle =>
+      'تابع الأشخاص والقنوات لرؤية منشوراتهم هنا.';
+
+  @override
+  String get wallNewPost => 'منشور جديد';
+
+  @override
+  String get wallDeletePost => 'حذف المنشور';
+
+  @override
+  String get wallDeletePostConfirm => 'هل أنت متأكد أنك تريد حذف هذا المنشور؟';
+
+  @override
+  String get wallRepost => 'إعادة نشر';
+
+  @override
+  String get wallReposted => 'أعيد نشره';
+
+  @override
+  String get wallComments => 'التعليقات';
+
+  @override
+  String get wallNoComments => 'لا توجد تعليقات بعد';
+
+  @override
+  String get wallLoadingComments => 'جارٍ تحميل التعليقات...';
+
+  @override
+  String get wallWriteComment => 'اكتب تعليقًا...';
+
+  @override
+  String get wallWriteReply => 'اكتب ردًا...';
+
+  @override
+  String wallViewAllComments(int count) {
+    return 'عرض جميع التعليقات ($count)';
+  }
+
+  @override
+  String get wallPostDetail => 'المنشور';
+
+  @override
+  String get wallCopy => 'نسخ';
+
+  @override
+  String get wallReply => 'رد';
+
+  @override
+  String get wallDelete => 'حذف';
+
+  @override
+  String get wallTip => 'إكرامية';
+
+  @override
+  String get wallTipTitle => 'إكرامية لهذا المنشور';
+
+  @override
+  String wallTipAmount(String amount) {
+    return '$amount CPUNK';
+  }
+
+  @override
+  String get wallTipConfirm => 'إرسال إكرامية';
+
+  @override
+  String get wallTipCancel => 'إلغاء';
+
+  @override
+  String get wallTipSuccess => 'تم إرسال الإكرامية!';
+
+  @override
+  String wallTipFailed(String error) {
+    return 'فشل الإكرامية: $error';
+  }
+
+  @override
+  String get wallTipNoWallet =>
+      'لا يوجد عنوان محفظة لدى هذا المستخدم في ملفه الشخصي';
+
+  @override
+  String get wallTipInsufficientBalance => 'رصيد CPUNK غير كافٍ';
+
+  @override
+  String get wallTipSending => 'جارٍ إرسال الإكرامية...';
+
+  @override
+  String wallTippedAmount(String amount) {
+    return 'إكرامية $amount CPUNK';
+  }
+
+  @override
+  String get wallTipPending => 'قيد الانتظار';
+
+  @override
+  String get wallTipVerified => 'تم التحقق';
+
+  @override
+  String get wallTipFailedStatus => 'فشل';
+
+  @override
+  String get wallWhatsOnYourMind => 'بماذا تفكر؟';
+
+  @override
+  String get wallPost => 'نشر';
+
+  @override
+  String get wallPosting => 'جارٍ النشر...';
+
+  @override
+  String get wallBoost => 'تعزيز';
+
+  @override
+  String get wallBoostDescription => 'مشاركة مع الجميع';
+
+  @override
+  String get wallBoosted => 'تم التعزيز';
+
+  @override
+  String get wallBoostLimitReached => 'تم الوصول لحد التعزيز اليومي';
+
+  @override
+  String get wallAddComment => 'أضف تعليقًا (اختياري)';
+
+  @override
+  String get wallCreatePostTitle => 'إنشاء منشور';
+
+  @override
+  String get walletTitle => 'المحفظة';
+
+  @override
+  String get walletTotalBalance => 'الرصيد الإجمالي';
+
+  @override
+  String get walletSend => 'إرسال';
+
+  @override
+  String get walletReceive => 'استلام';
+
+  @override
+  String get walletSwap => 'تبديل';
+
+  @override
+  String get walletHistory => 'السجل';
+
+  @override
+  String get walletNoTransactions => 'لا توجد معاملات بعد';
+
+  @override
+  String get walletCopyAddress => 'نسخ العنوان';
+
+  @override
+  String get walletAddressCopied => 'تم نسخ العنوان';
+
+  @override
+  String walletSendTitle(String coin) {
+    return 'إرسال $coin';
+  }
+
+  @override
+  String get walletRecipientAddress => 'عنوان المستلم';
+
+  @override
+  String get walletAmount => 'المبلغ';
+
+  @override
+  String get walletMax => 'الأقصى';
+
+  @override
+  String get walletSendConfirm => 'تأكيد الإرسال';
+
+  @override
+  String get walletSending => 'جارٍ الإرسال...';
+
+  @override
+  String get walletSendSuccess => 'تم إرسال المعاملة';
+
+  @override
+  String walletSendFailed(String error) {
+    return 'فشلت المعاملة: $error';
+  }
+
+  @override
+  String walletReceiveTitle(String coin) {
+    return 'استلام $coin';
+  }
+
+  @override
+  String get walletAddressBook => 'دفتر العناوين';
+
+  @override
+  String get walletAddAddress => 'إضافة عنوان';
+
+  @override
+  String get walletEditAddress => 'تعديل العنوان';
+
+  @override
+  String get walletDeleteAddress => 'حذف العنوان';
+
+  @override
+  String get walletLabel => 'التسمية';
+
+  @override
+  String get walletAddress => 'العنوان';
+
+  @override
+  String get walletNetwork => 'الشبكة';
+
+  @override
+  String get qrScannerTitle => 'ماسح QR';
+
+  @override
+  String get qrAddContact => 'إضافة جهة اتصال';
+
+  @override
+  String get qrAuthRequest => 'طلب تفويض';
+
+  @override
+  String get qrContent => 'محتوى QR';
+
+  @override
+  String get qrSendContactRequest => 'إرسال طلب اتصال';
+
+  @override
+  String get qrScanAnother => 'مسح آخر';
+
+  @override
+  String get qrCopyFingerprint => 'نسخ';
+
+  @override
+  String get qrRequestSent => 'تم إرسال طلب الاتصال';
+
+  @override
+  String get qrInvalidCode => 'رمز QR غير صالح';
+
+  @override
+  String get moreTitle => 'المزيد';
+
+  @override
+  String get moreWallet => 'المحفظة';
+
+  @override
+  String get moreQRScanner => 'ماسح QR';
+
+  @override
+  String get moreAddresses => 'العناوين';
+
+  @override
+  String get moreStarred => 'المميز بنجمة';
+
+  @override
+  String get moreContacts => 'جهات الاتصال';
+
+  @override
+  String get moreSettings => 'الإعدادات';
+
+  @override
+  String get moreAppLock => 'قفل التطبيق';
+
+  @override
+  String get moreInviteFriends => 'دعوة الأصدقاء';
+
+  @override
+  String inviteFriendsMessage(String username) {
+    return 'مرحبًا! جرّب DNA Connect — تطبيق مراسلة مشفر بتقنية ما بعد الكم. أضفني: $username — تحميل: https://cpunk.io/download';
+  }
+
+  @override
+  String get lockTitle => 'DNA Connect';
+
+  @override
+  String get lockEnterPIN => 'أدخل رمز PIN للفتح';
+
+  @override
+  String get lockIncorrectPIN => 'رمز PIN غير صحيح';
+
+  @override
+  String get lockUseBiometrics => 'استخدم البصمة للفتح';
+
+  @override
+  String get appLockTitle => 'قفل التطبيق';
+
+  @override
+  String get appLockEnable => 'تفعيل قفل التطبيق';
+
+  @override
+  String get appLockUseBiometrics => 'استخدام البصمة';
+
+  @override
+  String get appLockChangePIN => 'تغيير رمز PIN';
+
+  @override
+  String get appLockSetPIN => 'تعيين رمز PIN';
+
+  @override
+  String get appLockConfirmPIN => 'تأكيد رمز PIN';
+
+  @override
+  String get appLockPINMismatch => 'رموز PIN غير متطابقة';
+
+  @override
+  String get appLockPINSet => 'تم تعيين رمز PIN بنجاح';
+
+  @override
+  String get appLockPINChanged => 'تم تغيير رمز PIN';
+
+  @override
+  String get appLockEnterCurrentPIN => 'أدخل رمز PIN الحالي';
+
+  @override
+  String get appLockEnterNewPIN => 'أدخل رمز PIN الجديد';
+
+  @override
+  String get starredTitle => 'الرسائل المميزة';
+
+  @override
+  String get starredEmpty => 'لا توجد رسائل مميزة';
+
+  @override
+  String get blockedTitle => 'المستخدمون المحظورون';
+
+  @override
+  String get blockedEmpty => 'لا يوجد مستخدمون محظورون';
+
+  @override
+  String get blockedUnblock => 'إلغاء الحظر';
+
+  @override
+  String blockedUnblockConfirm(String name) {
+    return 'إلغاء حظر $name؟';
+  }
+
+  @override
+  String get updateTitle => 'تحديث مطلوب';
+
+  @override
+  String get updateMessage => 'يلزم إصدار أحدث لمتابعة استخدام DNA Connect.';
+
+  @override
+  String get updateDownload => 'تنزيل التحديث';
+
+  @override
+  String get updateAvailableTitle => 'إصدار جديد متوفر';
+
+  @override
+  String get updateAvailableMessage =>
+      'يتوفر إصدار جديد من DNA Connect. حدّث الآن للحصول على أحدث الميزات والتحسينات.';
+
+  @override
+  String get updateLater => 'لاحقًا';
+
+  @override
+  String get cancel => 'إلغاء';
+
+  @override
+  String get save => 'حفظ';
+
+  @override
+  String get delete => 'حذف';
+
+  @override
+  String get done => 'تم';
+
+  @override
+  String get copy => 'نسخ';
+
+  @override
+  String get ok => 'حسنًا';
+
+  @override
+  String get yes => 'نعم';
+
+  @override
+  String get no => 'لا';
+
+  @override
+  String get error => 'خطأ';
+
+  @override
+  String get success => 'نجاح';
+
+  @override
+  String get loading => 'جارٍ التحميل...';
+
+  @override
+  String get pleaseWait => 'يرجى الانتظار...';
+
+  @override
+  String get copied => 'تم النسخ';
+
+  @override
+  String failed(String error) {
+    return 'فشل: $error';
+  }
+
+  @override
+  String get retry => 'إعادة المحاولة';
+
+  @override
+  String get continueButton => 'متابعة';
+
+  @override
+  String get approve => 'موافقة';
+
+  @override
+  String get deny => 'رفض';
+
+  @override
+  String get verify => 'تحقق';
+
+  @override
+  String get copyToClipboard => 'نسخ إلى الحافظة';
+
+  @override
+  String get copiedToClipboard => 'تم النسخ إلى الحافظة';
+
+  @override
+  String get pasteFromClipboard => 'لصق من الحافظة';
+
+  @override
+  String get biometricsSubtitle => 'البصمة أو معرف الوجه';
+
+  @override
+  String get changePINSubtitle => 'تحديث رمز PIN للفتح';
+
+  @override
+  String get biometricFailed => 'فشل المصادقة البيومترية';
+
+  @override
+  String get contactRequestsWillAppear => 'ستظهر طلبات الاتصال هنا';
+
+  @override
+  String get blockedUsersWillAppear => 'سيظهر المستخدمون المحظورون هنا';
+
+  @override
+  String get failedToLoadTimeline => 'فشل في تحميل الخط الزمني';
+
+  @override
+  String get userUnblocked => 'تم إلغاء حظر المستخدم';
+
+  @override
+  String get backupFound => 'تم العثور على نسخة احتياطية';
+
+  @override
+  String approvedContact(String name) {
+    return 'تمت الموافقة على $name';
+  }
+
+  @override
+  String deniedContact(String name) {
+    return 'تم رفض $name';
+  }
+
+  @override
+  String blockedContact(String name) {
+    return 'تم حظر $name';
+  }
+
+  @override
+  String unsubscribeFrom(String name) {
+    return 'إلغاء الاشتراك من $name';
+  }
+
+  @override
+  String get chatSenderDeletedThis => 'قام المرسل بحذف هذا';
+
+  @override
+  String get chatDeleteMessageTitle => 'حذف الرسالة';
+
+  @override
+  String get chatDeleteMessageConfirm =>
+      'حذف هذه الرسالة من جميع أجهزتك وإخطار الطرف الآخر؟';
+
+  @override
+  String get chatDeleteConversation => 'حذف المحادثة';
+
+  @override
+  String get chatDeleteConversationTitle => 'حذف المحادثة';
+
+  @override
+  String get chatDeleteConversationConfirm =>
+      'حذف جميع الرسائل في هذه المحادثة؟ سيتم الحذف من جميع أجهزتك.';
+
+  @override
+  String get chatConversationDeleted => 'تم حذف المحادثة';
+
+  @override
+  String get chatDeleteConversationFailed => 'فشل في حذف المحادثة';
+
+  @override
+  String get settingsDeleteAllMessages => 'حذف جميع الرسائل';
+
+  @override
+  String get settingsDeleteAllMessagesSubtitle =>
+      'إزالة جميع الرسائل من جميع الأجهزة';
+
+  @override
+  String get settingsDeleteAllMessagesTitle => 'حذف جميع الرسائل؟';
+
+  @override
+  String get settingsDeleteAllMessagesWarning =>
+      'سيتم حذف جميع الرسائل من جميع المحادثات عبر جميع أجهزتك نهائيًا. لا يمكن التراجع عن هذا.';
+
+  @override
+  String get settingsAllMessagesDeleted => 'تم حذف جميع الرسائل';
+
+  @override
+  String get settingsDeleteAllMessagesFailed => 'فشل في حذف الرسائل';
+
+  @override
+  String get settingsDeleteEverything => 'حذف كل شيء';
+
+  @override
+  String get txDetailSent => 'مرسل';
+
+  @override
+  String get txDetailReceived => 'مستلم';
+
+  @override
+  String get txDetailDenied => 'تم رفض المعاملة';
+
+  @override
+  String get txDetailFrom => 'من';
+
+  @override
+  String get txDetailTo => 'إلى';
+
+  @override
+  String get txDetailTransactionHash => 'هاش المعاملة';
+
+  @override
+  String get txDetailTime => 'الوقت';
+
+  @override
+  String get txDetailNetwork => 'الشبكة';
+
+  @override
+  String get txDetailAddressCopied => 'تم نسخ العنوان';
+
+  @override
+  String get txDetailHashCopied => 'تم نسخ الهاش';
+
+  @override
+  String get txDetailAddToAddressBook => 'إضافة إلى دفتر العناوين';
+
+  @override
+  String get txDetailClose => 'إغلاق';
+
+  @override
+  String txDetailAddedToAddressBook(String label) {
+    return 'تمت إضافة \"$label\" إلى دفتر العناوين';
+  }
+
+  @override
+  String txDetailFailedToAdd(String error) {
+    return 'فشل في الإضافة: $error';
+  }
+
+  @override
+  String get swapTitle => 'تبديل';
+
+  @override
+  String get swapConfirm => 'تأكيد التبديل';
+
+  @override
+  String get swapYouPay => 'تدفع';
+
+  @override
+  String get swapYouReceive => 'تستلم';
+
+  @override
+  String get swapGetQuote => 'الحصول على عرض سعر';
+
+  @override
+  String get swapNoQuotes => 'لا تتوفر عروض أسعار';
+
+  @override
+  String get swapRate => 'السعر';
+
+  @override
+  String get swapSlippage => 'الانزلاق';
+
+  @override
+  String get swapFee => 'الرسوم';
+
+  @override
+  String get swapDex => 'DEX';
+
+  @override
+  String swapImpact(String value) {
+    return 'التأثير: $value%';
+  }
+
+  @override
+  String swapFeeValue(String value) {
+    return 'الرسوم: $value';
+  }
+
+  @override
+  String swapBestPrice(int count) {
+    return 'أفضل سعر من $count بورصات';
+  }
+
+  @override
+  String swapSuccess(
+    String amountIn,
+    String fromToken,
+    String amountOut,
+    String toToken,
+    String dex,
+  ) {
+    return 'تم تبديل $amountIn $fromToken → $amountOut $toToken عبر $dex';
+  }
+
+  @override
+  String swapFailed(String error) {
+    return 'فشل التبديل: $error';
+  }
+}

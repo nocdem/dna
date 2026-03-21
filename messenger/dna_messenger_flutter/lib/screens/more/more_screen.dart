@@ -16,6 +16,7 @@ import '../contacts/contacts_hub_screen.dart';
 import '../settings/settings_screen.dart';
 import '../settings/app_lock_settings_screen.dart';
 import '../profile/profile_editor_screen.dart';
+import 'package:share_plus/share_plus.dart' show Share;
 import '../../l10n/app_localizations.dart';
 
 class MoreScreen extends ConsumerWidget {
@@ -75,6 +76,16 @@ class MoreScreen extends ConsumerWidget {
           context,
           MaterialPageRoute(builder: (_) => const ContactsHubScreen()),
         ),
+      ),
+      DnaMoreGridItem(
+        icon: FontAwesomeIcons.userPlus,
+        label: AppLocalizations.of(context).moreInviteFriends,
+        onTap: () {
+          final nickname = ref.read(userProfileProvider).valueOrNull?.nickname as String?;
+          final username = (nickname != null && nickname.isNotEmpty) ? nickname : 'me';
+          final message = AppLocalizations.of(context).inviteFriendsMessage(username);
+          Share.share(message);
+        },
       ),
     ];
 

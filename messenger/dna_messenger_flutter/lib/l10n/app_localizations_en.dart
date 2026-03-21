@@ -468,6 +468,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsLanguagePortuguese => 'Português';
 
   @override
+  String get settingsLanguageArabic => 'العربية';
+
+  @override
   String get settingsBattery => 'Battery';
 
   @override
@@ -1088,6 +1091,14 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get moreAppLock => 'App Lock';
+
+  @override
+  String get moreInviteFriends => 'Invite Friends';
+
+  @override
+  String inviteFriendsMessage(String username) {
+    return 'Hey! Try DNA Connect — a quantum-safe encrypted messenger. Add me: $username — Download: https://cpunk.io/download';
+  }
 
   @override
   String get lockTitle => 'DNA Connect';

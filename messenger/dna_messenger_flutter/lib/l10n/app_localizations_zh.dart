@@ -466,6 +466,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsLanguagePortuguese => 'Português';
 
   @override
+  String get settingsLanguageArabic => 'العربية';
+
+  @override
   String get settingsBattery => '电池';
 
   @override
@@ -866,10 +869,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get wallDelete => '删除';
 
   @override
-  String get wallTip => 'Tip';
+  String get wallTip => '打赏';
 
   @override
-  String get wallTipTitle => 'Tip this post';
+  String get wallTipTitle => '打赏这篇帖子';
 
   @override
   String wallTipAmount(String amount) {
@@ -877,42 +880,41 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get wallTipConfirm => 'Send Tip';
+  String get wallTipConfirm => '发送打赏';
 
   @override
-  String get wallTipCancel => 'Cancel';
+  String get wallTipCancel => '取消';
 
   @override
-  String get wallTipSuccess => 'Tip sent!';
+  String get wallTipSuccess => '打赏已发送！';
 
   @override
   String wallTipFailed(String error) {
-    return 'Tip failed: $error';
+    return '打赏失败：$error';
   }
 
   @override
-  String get wallTipNoWallet =>
-      'This user has no wallet address in their profile';
+  String get wallTipNoWallet => '该用户的个人资料中没有钱包地址';
 
   @override
-  String get wallTipInsufficientBalance => 'Insufficient CPUNK balance';
+  String get wallTipInsufficientBalance => 'CPUNK余额不足';
 
   @override
-  String get wallTipSending => 'Sending tip...';
+  String get wallTipSending => '正在发送打赏...';
 
   @override
   String wallTippedAmount(String amount) {
-    return 'Tipped $amount CPUNK';
+    return '已打赏 $amount CPUNK';
   }
 
   @override
-  String get wallTipPending => 'Pending';
+  String get wallTipPending => '待处理';
 
   @override
-  String get wallTipVerified => 'Verified';
+  String get wallTipVerified => '已验证';
 
   @override
-  String get wallTipFailedStatus => 'Failed';
+  String get wallTipFailedStatus => '失败';
 
   @override
   String get wallWhatsOnYourMind => '你在想什么？';
@@ -1072,6 +1074,14 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get moreAppLock => '应用锁';
+
+  @override
+  String get moreInviteFriends => '邀请好友';
+
+  @override
+  String inviteFriendsMessage(String username) {
+    return '嗨！试试 DNA Connect — 量子安全加密通讯工具。添加我：$username — 下载：https://cpunk.io/download';
+  }
 
   @override
   String get lockTitle => 'DNA Connect';

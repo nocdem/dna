@@ -217,6 +217,7 @@
   "settingsLanguageChinese": "中文",
   "settingsLanguageJapanese": "日本語",
   "settingsLanguagePortuguese": "Português",
+  "settingsLanguageArabic": "العربية",
 
   "settingsBattery": "Battery",
   "settingsDisableBatteryOpt": "Disable Battery Optimization",
@@ -507,6 +508,15 @@
   "moreContacts": "Contacts",
   "moreSettings": "Settings",
   "moreAppLock": "App Lock",
+  "moreInviteFriends": "Invite Friends",
+  "inviteFriendsMessage": "Hey! Try DNA Connect — a quantum-safe encrypted messenger. Add me: {username} — Download: https://cpunk.io/download",
+  "@inviteFriendsMessage": {
+    "placeholders": {
+      "username": {
+        "type": "String"
+      }
+    }
+  },
 
   "lockTitle": "DNA Connect",
   "lockEnterPIN": "Enter PIN to unlock",
