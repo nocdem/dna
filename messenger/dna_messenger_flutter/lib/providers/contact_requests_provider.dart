@@ -20,6 +20,11 @@ class ContactRequestsNotifier extends AsyncNotifier<List<ContactRequest>> {
       return state.valueOrNull ?? [];
     }
 
+    // Debounce: if we already have data, delay 500ms to coalesce rapid rebuilds
+    if (state.valueOrNull != null) {
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+
     final engine = await ref.watch(engineProvider.future);
     final requests = await engine.getContactRequests();
 

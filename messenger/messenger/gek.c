@@ -2020,8 +2020,6 @@ int messenger_gek_auto_sync(void *ctx_ptr) {
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Auto-syncing GEKs for %.16s...\n", ctx->fingerprint);
-
     // Get data directory
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
