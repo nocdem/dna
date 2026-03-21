@@ -135,18 +135,18 @@ static void test_validate_tcp(void) {
     TEST("validate TCP frame size limit");
     nodus_frame_t frame = {
         .version = NODUS_FRAME_VERSION,
-        .payload_len = 4 * 1024 * 1024,  /* 4MB exactly */
+        .payload_len = 5 * 1024 * 1024,  /* 5MB exactly (NODUS_MAX_FRAME_TCP) */
         .payload = NULL
     };
 
     if (nodus_frame_validate(&frame, false)) {
-        frame.payload_len = 4 * 1024 * 1024 + 1;
+        frame.payload_len = 5 * 1024 * 1024 + 1;
         if (!nodus_frame_validate(&frame, false))
             PASS();
         else
-            FAIL("should reject >4MB for TCP");
+            FAIL("should reject >5MB for TCP");
     } else {
-        FAIL("should accept 4MB for TCP");
+        FAIL("should accept 5MB for TCP");
     }
 }
 

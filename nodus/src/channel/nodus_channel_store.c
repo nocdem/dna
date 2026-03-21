@@ -79,8 +79,10 @@ int nodus_channel_store_open(const char *db_path, nodus_channel_store_t *store) 
         ");");
     if (rc != 0) { sqlite3_close(store->db); store->db = NULL; return -1; }
 
-    /* H-07: Migrate existing schema — add creator_fp column if missing */
-    exec_sql(store->db, "ALTER TABLE channel_meta ADD COLUMN creator_fp BLOB");
+    /* H-07: Migrate existing schema — add creator_fp column if missing.
+     * Silently ignore "duplicate column" error for new DBs that already have it. */
+    sqlite3_exec(store->db, "ALTER TABLE channel_meta ADD COLUMN creator_fp BLOB",
+                 NULL, NULL, NULL);
 
     /* Create push targets table (encrypted channels only) */
     rc = exec_sql(store->db,

@@ -638,6 +638,14 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
 
     /* Verify signature */
     if (nodus_value_verify(val) != 0) {
+        char kh[17], fp_hex[17];
+        for (int i = 0; i < 8; i++) {
+            sprintf(kh + i*2, "%02x", val->key_hash.bytes[i]);
+            sprintf(fp_hex + i*2, "%02x", sess->client_fp.bytes[i]);
+        }
+        kh[16] = '\0'; fp_hex[16] = '\0';
+        fprintf(stderr, "T2_PUT: verify FAILED key=%s... client=%s... vid=%llu seq=%llu\n",
+                kh, fp_hex, (unsigned long long)val->value_id, (unsigned long long)val->seq);
         nodus_value_free(val);
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INVALID_SIGNATURE,
@@ -992,8 +1000,17 @@ static void dht_find_value_handle_event(nodus_server_t *srv, int fd, uint32_t ev
                             }
                         }
                         /* Cache locally — HIGH-12 fix: verify before caching */
-                        if (t1msg.value && nodus_value_verify(t1msg.value) == 0)
-                            nodus_storage_put_if_newer(&srv->storage, t1msg.value);
+                        if (t1msg.value) {
+                            if (nodus_value_verify(t1msg.value) == 0) {
+                                nodus_storage_put_if_newer(&srv->storage, t1msg.value);
+                            } else {
+                                char kh[17];
+                                for (int i = 0; i < 8; i++)
+                                    sprintf(kh + i*2, "%02x", t1msg.value->key_hash.bytes[i]);
+                                kh[16] = '\0';
+                                fprintf(stderr, "FV_CACHE: verify FAILED for key=%s... — not cached\n", kh);
+                            }
+                        }
                     } else {
                         /* No value — add returned closer nodes to candidates */
                         for (int p = 0; p < t1msg.peer_count; p++) {
@@ -1466,6 +1483,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         uint64_t sv_now = nodus_time_now();
         if (sv_now != sess->sv_window_start) { sess->sv_window_start = sv_now; sess->sv_count = 0; }
         if (++sess->sv_count > NODUS_SV_MAX_PER_SEC) {
+            fprintf(stderr, "REPL_TCP: sv rate limit hit (%d/s), slot=%d\n",
+                    sess->sv_count, sess->conn ? sess->conn->slot : -1);
             nodus_t1_msg_free(&t1msg);
             return;
         }
@@ -1475,7 +1494,19 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             if (put_rc == 0) {
                 notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
             }
+        } else {
+            char kh[17];
+            for (int i = 0; i < 8; i++)
+                sprintf(kh + i*2, "%02x", t1msg.value->key_hash.bytes[i]);
+            kh[16] = '\0';
+            fprintf(stderr, "REPL_TCP: verify FAILED for key=%s... vid=%llu seq=%llu — value DROPPED\n",
+                    kh, (unsigned long long)t1msg.value->value_id,
+                    (unsigned long long)t1msg.value->seq);
         }
+    } else if (nodus_t1_decode(payload, len, &t1msg) != 0) {
+        /* T1 decode also failed — unknown frame on inter-node port */
+        fprintf(stderr, "REPL_TCP: T1 decode failed (len=%zu), slot=%d\n",
+                len, sess->conn ? sess->conn->slot : -1);
     }
     nodus_t1_msg_free(&t1msg);
 }
@@ -1906,6 +1937,7 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
     } else if (strcmp(msg.method, "sv") == 0) {
         /* STORE_VALUE: rate-limit to mitigate UDP abuse (H-05) */
         if (udp_rate_check(from_ip) != 0) {
+            fprintf(stderr, "REPL_UDP: sv rate limited from %s:%d\n", from_ip, from_port);
             nodus_t1_msg_free(&msg);
             return;
         }
@@ -1914,6 +1946,13 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
             if (nodus_value_verify(msg.value) == 0) {
                 if (nodus_storage_put_if_newer(&srv->storage, msg.value) == 0)
                     notify_listeners(srv, &msg.value->key_hash, msg.value);
+            } else {
+                char kh[17];
+                for (int i = 0; i < 8; i++)
+                    sprintf(kh + i*2, "%02x", msg.value->key_hash.bytes[i]);
+                kh[16] = '\0';
+                fprintf(stderr, "REPL_UDP: verify FAILED for key=%s... from %s:%d — value DROPPED\n",
+                        kh, from_ip, from_port);
             }
             /* Send ACK */
             size_t rlen = 0;

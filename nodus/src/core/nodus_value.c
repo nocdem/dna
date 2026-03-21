@@ -8,6 +8,7 @@
 #include "core/nodus_value.h"
 #include "crypto/nodus_sign.h"
 #include "protocol/nodus_cbor.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -145,20 +146,49 @@ int nodus_value_verify(const nodus_value_t *val) {
     if (!val)
         return -1;
 
+    /* Key hex prefix for log correlation */
+    char key_hex[17];
+    for (int i = 0; i < 8; i++)
+        sprintf(key_hex + i*2, "%02x", val->key_hash.bytes[i]);
+    key_hex[16] = '\0';
+
     /* H-11: Verify owner_fp == SHA3-512(owner_pk) */
     nodus_key_t computed_fp;
-    if (nodus_fingerprint(&val->owner_pk, &computed_fp) != 0)
+    if (nodus_fingerprint(&val->owner_pk, &computed_fp) != 0) {
+        fprintf(stderr, "VERIFY_FAIL [%s]: fingerprint computation failed (vid=%llu seq=%llu)\n",
+                key_hex, (unsigned long long)val->value_id, (unsigned long long)val->seq);
         return -1;
-    if (memcmp(computed_fp.bytes, val->owner_fp.bytes, NODUS_KEY_BYTES) != 0)
+    }
+    if (memcmp(computed_fp.bytes, val->owner_fp.bytes, NODUS_KEY_BYTES) != 0) {
+        char comp_hex[17], stored_hex[17];
+        for (int i = 0; i < 8; i++) {
+            sprintf(comp_hex + i*2, "%02x", computed_fp.bytes[i]);
+            sprintf(stored_hex + i*2, "%02x", val->owner_fp.bytes[i]);
+        }
+        fprintf(stderr, "VERIFY_FAIL [%s]: owner_fp mismatch — computed=%s... stored=%s... (vid=%llu seq=%llu)\n",
+                key_hex, comp_hex, stored_hex,
+                (unsigned long long)val->value_id, (unsigned long long)val->seq);
         return -1;
+    }
 
     uint8_t *payload = NULL;
     size_t payload_len = 0;
 
-    if (nodus_value_sign_payload(val, &payload, &payload_len) != 0)
+    if (nodus_value_sign_payload(val, &payload, &payload_len) != 0) {
+        fprintf(stderr, "VERIFY_FAIL [%s]: sign_payload creation failed (vid=%llu seq=%llu)\n",
+                key_hex, (unsigned long long)val->value_id, (unsigned long long)val->seq);
         return -1;
+    }
 
     int rc = nodus_verify(&val->signature, payload, payload_len, &val->owner_pk);
+    if (rc != 0) {
+        char owner_hex[17];
+        for (int i = 0; i < 8; i++)
+            sprintf(owner_hex + i*2, "%02x", val->owner_fp.bytes[i]);
+        fprintf(stderr, "VERIFY_FAIL [%s]: Dilithium5 signature invalid — owner=%s... (vid=%llu seq=%llu data_len=%zu)\n",
+                key_hex, owner_hex,
+                (unsigned long long)val->value_id, (unsigned long long)val->seq, val->data_len);
+    }
     free(payload);
     return rc;
 }
