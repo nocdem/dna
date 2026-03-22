@@ -152,8 +152,8 @@ dna/
 
 | Component | Version |
 |-----------|---------|
-| Messenger C Library | v0.9.88 |
-| Flutter App | v1.0.0-rc55 |
+| Messenger C Library | v0.9.89 |
+| Flutter App | v1.0.0-rc57 |
 | Nodus DHT | v0.9.15 |
 
 ---

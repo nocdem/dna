@@ -30,17 +30,23 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallPost>> {
     // Fire-and-forget: fetch boosts in background, update state when done
     engine.wallBoostTimeline().then((boostPosts) {
       if (boostPosts.isEmpty) return;
+      final boostedUuids = <String>{};
+      for (final post in boostPosts) {
+        boostedUuids.add(post.uuid);
+      }
       final current = state.valueOrNull ?? wallPosts;
       final seenUuids = <String>{};
       final merged = <WallPost>[];
       for (final post in current) {
         seenUuids.add(post.uuid);
-        merged.add(post);
+        merged.add(boostedUuids.contains(post.uuid)
+            ? post.copyWith(isBoosted: true)
+            : post);
       }
       for (final post in boostPosts) {
         if (!seenUuids.contains(post.uuid)) {
           seenUuids.add(post.uuid);
-          merged.add(post);
+          merged.add(post.copyWith(isBoosted: true));
         }
       }
       merged.sort((a, b) => b.timestamp.compareTo(a.timestamp));
@@ -63,9 +69,10 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallPost>> {
     final post = boost
         ? await engine.wallBoostPost(text)
         : await engine.wallPost(text);
+    final result = boost ? post.copyWith(isBoosted: true) : post;
     final current = state.valueOrNull ?? [];
-    state = AsyncData([post, ...current]);
-    return post;
+    state = AsyncData([result, ...current]);
+    return result;
   }
 
   /// Create a wall post with image (v0.7.0+)
@@ -75,9 +82,10 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallPost>> {
     final post = boost
         ? await engine.wallBoostPostWithImage(text, imageJson)
         : await engine.wallPostWithImage(text, imageJson);
+    final result = boost ? post.copyWith(isBoosted: true) : post;
     final current = state.valueOrNull ?? [];
-    state = AsyncData([post, ...current]);
-    return post;
+    state = AsyncData([result, ...current]);
+    return result;
   }
 
   Future<void> deletePost(String postUuid) async {

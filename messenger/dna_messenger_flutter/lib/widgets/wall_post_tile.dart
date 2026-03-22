@@ -24,6 +24,7 @@ class WallPostTile extends ConsumerWidget {
   final int likeCount;
   final bool isLikedByMe;
   final VoidCallback? onLike;
+  final bool isBoosted;
 
   const WallPostTile({
     super.key,
@@ -39,6 +40,7 @@ class WallPostTile extends ConsumerWidget {
     this.likeCount = 0,
     this.isLikedByMe = false,
     this.onLike,
+    this.isBoosted = false,
   });
 
   @override
@@ -187,6 +189,10 @@ class WallPostTile extends ConsumerWidget {
       card = _FireGlow(level: fireLevel, child: card);
     }
 
+    if (isBoosted) {
+      card = _BoostGlow(child: card);
+    }
+
     return card;
   }
 
@@ -267,6 +273,35 @@ class _FireGlow extends StatelessWidget {
         ],
       ),
       child: child,
+    );
+  }
+}
+
+/// Wraps a card with a boost glow effect (blue-purple gradient border)
+class _BoostGlow extends StatelessWidget {
+  final Widget child;
+
+  const _BoostGlow({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
+        gradient: const LinearGradient(
+          colors: [Color(0xFF6C63FF), Color(0xFFAB47BC)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: Container(
+        margin: const EdgeInsets.all(1.5),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(DnaSpacing.radiusMd - 1),
+          color: Theme.of(context).colorScheme.surface,
+        ),
+        child: child,
+      ),
     );
   }
 }

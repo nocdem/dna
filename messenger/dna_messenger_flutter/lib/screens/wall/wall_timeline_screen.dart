@@ -393,6 +393,7 @@ class _WallPostWithComments extends ConsumerWidget {
       onTip: onTip,
       likeCount: likes.length,
       isLikedByMe: isLiked,
+      isBoosted: post.isBoosted,
       onLike: () {
         ref.read(wallLikesProvider(post.uuid).notifier).like();
       },

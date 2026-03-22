@@ -1092,6 +1092,7 @@ class WallPost {
   final String? imageJson;
   final DateTime timestamp;
   final bool verified;
+  final bool isBoosted;
 
   WallPost({
     required this.uuid,
@@ -1101,10 +1102,22 @@ class WallPost {
     this.imageJson,
     required this.timestamp,
     required this.verified,
+    this.isBoosted = false,
   });
 
   bool isOwn(String myFingerprint) => authorFingerprint == myFingerprint;
   bool get hasImage => imageJson != null && imageJson!.isNotEmpty;
+
+  WallPost copyWith({bool? isBoosted}) => WallPost(
+    uuid: uuid,
+    authorFingerprint: authorFingerprint,
+    authorName: authorName,
+    text: text,
+    imageJson: imageJson,
+    timestamp: timestamp,
+    verified: verified,
+    isBoosted: isBoosted ?? this.isBoosted,
+  );
 
   factory WallPost.fromNative(dna_wall_post_info_t native) {
     String? imgJson;
