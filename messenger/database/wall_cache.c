@@ -196,6 +196,12 @@ void wall_cache_close(void) {
     }
 }
 
+void wall_cache_wal_checkpoint(void) {
+    if (g_db) {
+        sqlite3_wal_checkpoint_v2(g_db, NULL, SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
+    }
+}
+
 int wall_cache_evict_expired(void) {
     if (wall_cache_init() != 0) {
         return -1;
@@ -339,19 +345,6 @@ int wall_cache_store(const char *fingerprint,
         return -1;
     }
 
-    /* Clean up stale posts by this author that weren't in the new set */
-    {
-        const char *sql_cleanup =
-            "DELETE FROM wall_posts WHERE author_fingerprint = ? AND cached_at < ?;";
-        sqlite3_stmt *cleanup_stmt = NULL;
-        if (sqlite3_prepare_v2(g_db, sql_cleanup, -1, &cleanup_stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(cleanup_stmt, 1, fingerprint, -1, SQLITE_STATIC);
-            sqlite3_bind_int64(cleanup_stmt, 2, (int64_t)time(NULL) - 1);
-            sqlite3_step(cleanup_stmt);
-            sqlite3_finalize(cleanup_stmt);
-        }
-    }
-
     /* Commit transaction */
     rc = sqlite3_exec(g_db, "COMMIT;", NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
@@ -366,6 +359,20 @@ int wall_cache_store(const char *fingerprint,
     if (posts && count > 0 && strcmp(fingerprint, posts[0].author_fingerprint) != 0) {
         QGP_LOG_WARN(LOG_TAG, "MISMATCH: store fp=%.32s... vs post[0].author=%.32s...\n",
                      fingerprint, posts[0].author_fingerprint);
+    }
+    /* DEBUG: Verify rows actually persisted after COMMIT */
+    {
+        const char *sql_verify = "SELECT COUNT(*) FROM wall_posts WHERE author_fingerprint = ?;";
+        sqlite3_stmt *v_stmt = NULL;
+        if (sqlite3_prepare_v2(g_db, sql_verify, -1, &v_stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(v_stmt, 1, fingerprint, -1, SQLITE_STATIC);
+            if (sqlite3_step(v_stmt) == SQLITE_ROW) {
+                int db_count = sqlite3_column_int(v_stmt, 0);
+                QGP_LOG_INFO(LOG_TAG, "store: verify fp=%.16s... inserted=%zu db_count=%d\n",
+                             fingerprint, count, db_count);
+            }
+            sqlite3_finalize(v_stmt);
+        }
     }
     return 0;
 }

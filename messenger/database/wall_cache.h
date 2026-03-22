@@ -49,6 +49,12 @@ void wall_cache_close(void);
  *
  * @return number of rows deleted, or -1 on error
  */
+/**
+ * Force WAL checkpoint (flush WAL to main DB)
+ * Call after bg writes to ensure visibility for subsequent reads
+ */
+void wall_cache_wal_checkpoint(void);
+
 int wall_cache_evict_expired(void);
 
 /* ── Post operations ──────────────────────────────────────────────── */
