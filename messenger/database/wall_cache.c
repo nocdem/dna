@@ -324,9 +324,9 @@ int wall_cache_store(const char *fingerprint,
             sqlite3_clear_bindings(ins_stmt);
 
             QGP_LOG_DEBUG(LOG_TAG, "store: INSERT [%zu] fp=%.32s... uuid=%s\n",
-                         i, fingerprint, posts[i].uuid);
+                         i, posts[i].author_fingerprint, posts[i].uuid);
             sqlite3_bind_text(ins_stmt, 1, posts[i].uuid, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(ins_stmt, 2, fingerprint, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(ins_stmt, 2, posts[i].author_fingerprint, -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(ins_stmt, 3, posts[i].text, -1, SQLITE_TRANSIENT);
             if (posts[i].image_json) {
                 sqlite3_bind_text(ins_stmt, 4, posts[i].image_json, -1, SQLITE_TRANSIENT);

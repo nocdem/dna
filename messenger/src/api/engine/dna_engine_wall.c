@@ -339,11 +339,6 @@ static void *wall_bg_refresh_thread(void *arg) {
 
         /* Only notify Flutter if at least one wall had new data */
         if (updated > 0 && !atomic_load(&engine->shutdown_requested)) {
-            /* Flush WAL to main DB so the main thread's timeline
-             * re-query sees the freshly stored posts (Android ARM64
-             * WAL visibility issue) */
-            wall_cache_wal_checkpoint();
-
             dna_event_t event = {0};
             event.type = DNA_EVENT_WALL_NEW_POST;
             dna_dispatch_event(engine, &event);
