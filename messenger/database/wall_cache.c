@@ -212,11 +212,6 @@ int wall_cache_init(void) {
         }
     }
 
-    /* Invalidate all staleness meta on every startup so bg-refresh
-     * pulls every contact's wall from DHT.  Post data stays in cache
-     * for instant UI; meta reset just forces a DHT re-check. */
-    sqlite3_exec(g_db, "DELETE FROM wall_cache_meta;", NULL, NULL, NULL);
-
     QGP_LOG_INFO(LOG_TAG, "Wall cache initialized\n");
     return 0;
 }
@@ -231,7 +226,11 @@ void wall_cache_close(void) {
 
 void wall_cache_wal_checkpoint(void) {
     if (g_db) {
-        sqlite3_wal_checkpoint_v2(g_db, NULL, SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
+        /* TRUNCATE mode: blocks until all readers finish, then copies
+         * WAL content to main DB and truncates WAL file.  Fixes Android
+         * ARM64 visibility issue where PASSIVE checkpoint left frames
+         * in WAL that subsequent readers couldn't see. */
+        sqlite3_wal_checkpoint_v2(g_db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
     }
 }
 
@@ -782,6 +781,26 @@ bool wall_cache_is_stale(const char *fingerprint) {
     }
 
     sqlite3_finalize(stmt);
+
+    /* Meta says fresh but cache has 0 posts → treat as stale so
+     * bg-refresh fetches from DHT.  Covers the case where a previous
+     * NOT_FOUND or empty fetch marked the meta fresh but the contact
+     * has since published wall posts. */
+    if (!stale) {
+        const char *cnt_sql =
+            "SELECT COUNT(*) FROM wall_posts WHERE author_fingerprint = ?;";
+        sqlite3_stmt *cnt_stmt = NULL;
+        if (sqlite3_prepare_v2(g_db, cnt_sql, -1, &cnt_stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(cnt_stmt, 1, fingerprint, -1, SQLITE_STATIC);
+            if (sqlite3_step(cnt_stmt) == SQLITE_ROW) {
+                if (sqlite3_column_int(cnt_stmt, 0) == 0) {
+                    stale = true;
+                }
+            }
+            sqlite3_finalize(cnt_stmt);
+        }
+    }
+
     return stale;
 }
 
