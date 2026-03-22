@@ -265,6 +265,10 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     }
 }
 
+#ifndef _WIN32
+static void handle_read_fwd(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
+#endif
+
 static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     int err = 0;
     socklen_t len = sizeof(err);
@@ -292,10 +296,17 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 
     if (tcp->on_connect)
         tcp->on_connect(conn, tcp->cb_ctx);
+
+#ifndef _WIN32
+    /* Edge-triggered: on_connect callback may have sent data (e.g. node_hello)
+     * and the peer may have already responded before we return to epoll_wait.
+     * Do an immediate read to avoid missing the initial EPOLLIN edge —
+     * same pattern as handle_accept(). */
+    handle_read_fwd(tcp, conn);
+#endif
 }
 
 #ifndef _WIN32
-static void handle_read_fwd(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn);
 
 #define NODUS_MAX_CONNS_PER_IP  20   /* CRIT-5: Per-IP connection limit */
 

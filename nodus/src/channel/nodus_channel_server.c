@@ -857,16 +857,32 @@ void nodus_channel_server_poll(nodus_channel_server_t *cs, int timeout_ms) {
 }
 
 void nodus_channel_server_tick(nodus_channel_server_t *cs, uint64_t now_ms) {
-    /* Send heartbeats to all authenticated node sessions.
-     * NOTE: Dead detection (heartbeat timeout -> eviction) is handled
-     * entirely by nodus_ch_ring_tick(). Do NOT disconnect/clear here —
-     * ring_tick needs the session to identify which node died. */
     for (int i = 0; i < NODUS_CH_MAX_NODE_SESSIONS; i++) {
         nodus_ch_node_session_t *ns = &cs->nodes[i];
-        if (!ns->conn || !ns->authenticated)
+        if (!ns->conn)
             continue;
 
-        /* Send heartbeat at interval */
+        /* Stale auth timeout: disconnect node sessions that haven't
+         * completed authentication within 30 seconds of connecting.
+         * Prevents leaked sessions from stuck outbound handshakes. */
+        if (!ns->authenticated) {
+            uint64_t connected_ms = ns->conn->connected_at * 1000;
+            if (now_ms > connected_ms && (now_ms - connected_ms) > 30000) {
+                uint64_t age_ms = now_ms - connected_ms;
+                QGP_LOG_WARN(LOG_TAG,
+                    "Stale unauthenticated node session to %s:%u (%llu ms), disconnecting",
+                    ns->conn->ip, (unsigned)ns->conn->port,
+                    (unsigned long long)age_ms);
+                nodus_tcp_disconnect(&cs->tcp, ns->conn);
+                node_session_clear(ns);
+            }
+            continue;
+        }
+
+        /* Send heartbeat at interval.
+         * NOTE: Dead detection (heartbeat timeout -> eviction) is handled
+         * entirely by nodus_ch_ring_tick(). Do NOT disconnect/clear here —
+         * ring_tick needs the session to identify which node died. */
         if ((now_ms - ns->last_heartbeat_sent) >= NODUS_CH_HEARTBEAT_INTERVAL_MS) {
             uint8_t buf[64];
             size_t len = 0;

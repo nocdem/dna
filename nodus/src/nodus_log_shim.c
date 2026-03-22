@@ -12,8 +12,8 @@
 
 bool qgp_log_should_log(qgp_log_level_t level, const char *tag) {
     (void)tag;
-    /* For nodus standalone, log WARN and above */
-    return level >= QGP_LOG_LEVEL_WARN;
+    /* For nodus standalone, log INFO and above */
+    return level >= QGP_LOG_LEVEL_INFO;
 }
 
 void qgp_log_ring_add(qgp_log_level_t level, const char *tag, const char *fmt, ...) {
