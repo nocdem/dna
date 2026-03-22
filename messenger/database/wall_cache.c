@@ -87,6 +87,14 @@ static int create_schema(void) {
         "    likes_json TEXT NOT NULL,"
         "    like_count INTEGER DEFAULT 0,"
         "    cached_at INTEGER NOT NULL"
+        ");"
+
+        /* ── wall_boost_pointers (v0.9.98+) ─────────────────── */
+        "CREATE TABLE IF NOT EXISTS wall_boost_pointers ("
+        "    uuid TEXT PRIMARY KEY,"
+        "    author_fingerprint TEXT NOT NULL,"
+        "    timestamp INTEGER NOT NULL,"
+        "    cached_at INTEGER NOT NULL"
         ");";
 
     char *err_msg = NULL;
@@ -1023,4 +1031,105 @@ bool wall_cache_is_stale_likes(const char *post_uuid) {
 
     sqlite3_finalize(stmt);
     return stale;
+}
+
+/* ── Boost pointer cache (v0.9.98+) ──────────────────────────────── */
+
+int wall_cache_store_boosts(const dna_wall_boost_ptr_t *ptrs, size_t count) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -3;
+    }
+    if (!ptrs || count == 0) return 0;
+
+    const char *sql =
+        "INSERT OR REPLACE INTO wall_boost_pointers "
+        "(uuid, author_fingerprint, timestamp, cached_at) VALUES (?, ?, ?, ?);";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "store_boosts prepare: %s", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    uint64_t now = (uint64_t)time(NULL);
+    for (size_t i = 0; i < count; i++) {
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+        sqlite3_bind_text(stmt, 1, ptrs[i].uuid, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, ptrs[i].author_fingerprint, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(stmt, 3, (int64_t)ptrs[i].timestamp);
+        sqlite3_bind_int64(stmt, 4, (int64_t)now);
+        sqlite3_step(stmt);
+    }
+
+    sqlite3_finalize(stmt);
+    QGP_LOG_DEBUG(LOG_TAG, "Stored %zu boost pointers in cache", count);
+    return 0;
+}
+
+int wall_cache_load_boosts(dna_wall_boost_ptr_t **ptrs_out, size_t *count_out) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -3;
+    }
+    if (!ptrs_out || !count_out) return -1;
+
+    *ptrs_out = NULL;
+    *count_out = 0;
+
+    /* Only load boosts cached in the last 7 days */
+    uint64_t cutoff = (uint64_t)time(NULL) - 604800;
+
+    const char *sql =
+        "SELECT uuid, author_fingerprint, timestamp FROM wall_boost_pointers "
+        "WHERE cached_at > ? ORDER BY timestamp DESC LIMIT 50;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "load_boosts prepare: %s", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_int64(stmt, 1, (int64_t)cutoff);
+
+    size_t capacity = 16;
+    size_t total = 0;
+    dna_wall_boost_ptr_t *ptrs = calloc(capacity, sizeof(dna_wall_boost_ptr_t));
+    if (!ptrs) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (total >= capacity) {
+            size_t new_cap = capacity * 2;
+            if (new_cap > 50) new_cap = 50;
+            if (total >= new_cap) break;
+            dna_wall_boost_ptr_t *tmp = realloc(ptrs, new_cap * sizeof(dna_wall_boost_ptr_t));
+            if (!tmp) break;
+            ptrs = tmp;
+            capacity = new_cap;
+        }
+
+        const char *uuid_str = (const char *)sqlite3_column_text(stmt, 0);
+        const char *fp_str = (const char *)sqlite3_column_text(stmt, 1);
+        if (uuid_str) strncpy(ptrs[total].uuid, uuid_str, 36);
+        ptrs[total].uuid[36] = '\0';
+        if (fp_str) strncpy(ptrs[total].author_fingerprint, fp_str, 128);
+        ptrs[total].author_fingerprint[128] = '\0';
+        ptrs[total].timestamp = (uint64_t)sqlite3_column_int64(stmt, 2);
+        total++;
+    }
+
+    sqlite3_finalize(stmt);
+
+    if (total == 0) {
+        free(ptrs);
+        return -2;
+    }
+
+    *ptrs_out = ptrs;
+    *count_out = total;
+    return 0;
 }

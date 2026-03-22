@@ -240,6 +240,7 @@ typedef struct {
     char *image_json;                   /* Heap-allocated image JSON, NULL if no image (v0.7.0+) */
     uint64_t timestamp;                 /* Unix timestamp (seconds) */
     bool verified;                      /* Signature verified */
+    bool is_boosted;                    /* Post is boosted (v0.9.98+) */
 } dna_wall_post_info_t;
 
 /**

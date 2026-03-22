@@ -548,6 +548,52 @@ void dna_handle_wall_timeline_cached(dna_engine_t *engine, dna_task_t *task) {
 
     wall_cache_free_posts(cached_posts, cached_count);
 
+    /* Merge cached boost pointers — resolve against wall cache */
+    dna_wall_boost_ptr_t *boost_ptrs = NULL;
+    size_t boost_count = 0;
+    if (wall_cache_load_boosts(&boost_ptrs, &boost_count) == 0 && boost_ptrs) {
+        /* Mark existing posts as boosted + add new boost posts */
+        size_t new_total = cached_count;
+        size_t new_cap = cached_count + boost_count;
+        dna_wall_post_info_t *merged = realloc(info, new_cap * sizeof(dna_wall_post_info_t));
+        if (merged) {
+            info = merged;
+            for (size_t b = 0; b < boost_count; b++) {
+                /* Check if already in timeline */
+                bool found = false;
+                for (size_t e = 0; e < new_total; e++) {
+                    if (strncmp(info[e].uuid, boost_ptrs[b].uuid, 36) == 0) {
+                        info[e].is_boosted = true;
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) continue;
+
+                /* Resolve from wall cache */
+                dna_wall_post_t *bp = NULL;
+                size_t bp_count = 0;
+                if (wall_cache_load(boost_ptrs[b].author_fingerprint, &bp, &bp_count) == 0 && bp) {
+                    for (size_t j = 0; j < bp_count; j++) {
+                        if (strncmp(bp[j].uuid, boost_ptrs[b].uuid, 36) == 0) {
+                            if (new_total < new_cap) {
+                                wall_post_to_info(&bp[j], &info[new_total]);
+                                info[new_total].is_boosted = true;
+                                new_total++;
+                            }
+                            break;
+                        }
+                    }
+                    wall_cache_free_posts(bp, bp_count);
+                }
+            }
+            cached_count = new_total;
+        }
+        free(boost_ptrs);
+
+        QGP_LOG_INFO(LOG_TAG, "Timeline cached: merged %zu boost pointers", boost_count);
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Timeline cached: %zu posts (cache-only, no DHT)", cached_count);
     task->callback.wall_posts(task->request_id, DNA_OK, info, (int)cached_count, task->user_data);
 }
@@ -1392,6 +1438,9 @@ void dna_handle_wall_boost_timeline(dna_engine_t *engine, dna_task_t *task) {
                           target_uuid, fp);
         }
     }
+
+    /* Cache boost pointers for cache-first startup */
+    wall_cache_store_boosts(ptrs, ptr_count);
 
     dna_wall_boost_free(ptrs, ptr_count);
 

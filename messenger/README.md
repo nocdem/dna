@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc59-blue" alt="RC"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc60-blue" alt="RC"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-green" alt="Apache 2.0"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-orange" alt="Platforms"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Security-NIST%20Category%205-red" alt="NIST Cat 5"></a>
@@ -170,8 +170,8 @@ cd messenger
 
 | Component | Version |
 |-----------|---------|
-| C Library | v0.9.98 |
-| Flutter App | v1.0.0-rc59 |
+| C Library | v0.9.99 |
+| Flutter App | v1.0.0-rc60 |
 | Nodus DHT | v0.9.13 |
 
 ---

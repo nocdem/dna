@@ -1133,6 +1133,7 @@ class WallPost {
       imageJson: imgJson,
       timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp * 1000),
       verified: native.verified,
+      isBoosted: native.is_boosted,
     );
   }
 }

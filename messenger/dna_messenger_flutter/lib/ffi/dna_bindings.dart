@@ -593,6 +593,9 @@ final class dna_wall_post_info_t extends Struct {
 
   @Bool()
   external bool verified;
+
+  @Bool()
+  external bool is_boosted;
 }
 
 /// Wall comment information (v0.7.0+)

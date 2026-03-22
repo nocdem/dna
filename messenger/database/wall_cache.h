@@ -230,6 +230,26 @@ int wall_cache_invalidate_likes(const char *post_uuid);
  */
 bool wall_cache_is_stale_likes(const char *post_uuid);
 
+/* ── Boost pointer cache (v0.9.98+) ──────────────────────────────── */
+
+/**
+ * Store boost pointers in local cache
+ *
+ * @param ptrs   Array of boost pointers
+ * @param count  Number of pointers
+ * @return 0 on success, -1 on error, -3 if uninitialized
+ */
+int wall_cache_store_boosts(const dna_wall_boost_ptr_t *ptrs, size_t count);
+
+/**
+ * Load cached boost pointers (last 7 days)
+ *
+ * @param ptrs_out   Output: heap-allocated array (caller frees)
+ * @param count_out  Output: number of pointers
+ * @return 0 on success, -1 on error, -2 if none found, -3 if uninitialized
+ */
+int wall_cache_load_boosts(dna_wall_boost_ptr_t **ptrs_out, size_t *count_out);
+
 #ifdef __cplusplus
 }
 #endif
