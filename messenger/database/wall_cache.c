@@ -360,6 +360,11 @@ int wall_cache_store(const char *fingerprint,
     }
 
     QGP_LOG_DEBUG(LOG_TAG, "Stored %zu wall posts for %.16s...\n", count, fingerprint);
+    /* DEBUG: Log mismatch between store fingerprint and post author */
+    if (posts && count > 0 && strcmp(fingerprint, posts[0].author_fingerprint) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "MISMATCH: store fp=%.32s... vs post[0].author=%.32s...\n",
+                     fingerprint, posts[0].author_fingerprint);
+    }
     return 0;
 }
 
@@ -473,6 +478,7 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
         sqlite3_clear_bindings(stmt);
         sqlite3_bind_text(stmt, 1, fingerprints[f], -1, SQLITE_STATIC);
 
+        size_t count_before = total;
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             /* Grow array if needed */
             if (total >= capacity) {
@@ -489,6 +495,8 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
             total++;
             if (total >= 200) break;
         }
+        QGP_LOG_DEBUG(LOG_TAG, "load_timeline: fp[%zu]=%.32s... → %zu rows\n",
+                      f, fingerprints[f], total - count_before);
         if (total >= 200) break;
     }
 
