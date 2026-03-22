@@ -184,6 +184,10 @@ int wall_cache_init(void) {
         return -1;
     }
 
+    /* Rebuild indexes — fixes corrupt idx_wall_author on Android ARM64
+     * which causes WHERE author_fingerprint=? to miss existing rows */
+    sqlite3_exec(g_db, "REINDEX idx_wall_author;", NULL, NULL, NULL);
+
     /* Clean orphaned meta: if meta says "fresh" but no posts cached,
      * force re-fetch (fixes stale meta left by v0.9.91 cleanup bug) */
     sqlite3_exec(g_db,
