@@ -184,41 +184,23 @@ int wall_cache_init(void) {
         return -1;
     }
 
-    /* Rebuild indexes — fixes corrupt idx_wall_author on Android ARM64
-     * which causes WHERE author_fingerprint=? to miss existing rows */
-    sqlite3_exec(g_db, "REINDEX idx_wall_author;", NULL, NULL, NULL);
-
-    /* Clean orphaned meta: if meta says "fresh" but no posts cached,
-     * force re-fetch (fixes stale meta left by v0.9.91 cleanup bug) */
-    sqlite3_exec(g_db,
-        "DELETE FROM wall_cache_meta "
-        "WHERE cache_key NOT IN "
-        "(SELECT DISTINCT author_fingerprint FROM wall_posts);",
-        NULL, NULL, NULL);
-
-    /* DEBUG: dump wall_posts fingerprints and meta state */
+    /* One-time cache reset: v0.9.91 stored posts with DHT fingerprint
+     * instead of contact-list fingerprint, causing permanent query miss.
+     * Nuke all cached data — DHT re-fetch will repopulate correctly.
+     * Uses PRAGMA user_version to run only once. */
     {
-        sqlite3_stmt *d_stmt = NULL;
-        if (sqlite3_prepare_v2(g_db,
-                "SELECT author_fingerprint, COUNT(*) FROM wall_posts "
-                "GROUP BY author_fingerprint;", -1, &d_stmt, NULL) == SQLITE_OK) {
-            while (sqlite3_step(d_stmt) == SQLITE_ROW) {
-                const char *fp = (const char *)sqlite3_column_text(d_stmt, 0);
-                int cnt = sqlite3_column_int(d_stmt, 1);
-                QGP_LOG_INFO(LOG_TAG, "init: wall_posts fp=%.32s... (len=%zu) count=%d\n",
-                             fp ? fp : "(null)", fp ? strlen(fp) : 0, cnt);
-            }
-            sqlite3_finalize(d_stmt);
+        int uv = 0;
+        sqlite3_stmt *uv_stmt = NULL;
+        if (sqlite3_prepare_v2(g_db, "PRAGMA user_version;", -1, &uv_stmt, NULL) == SQLITE_OK) {
+            if (sqlite3_step(uv_stmt) == SQLITE_ROW)
+                uv = sqlite3_column_int(uv_stmt, 0);
+            sqlite3_finalize(uv_stmt);
         }
-        d_stmt = NULL;
-        if (sqlite3_prepare_v2(g_db,
-                "SELECT cache_key FROM wall_cache_meta;", -1, &d_stmt, NULL) == SQLITE_OK) {
-            while (sqlite3_step(d_stmt) == SQLITE_ROW) {
-                const char *ck = (const char *)sqlite3_column_text(d_stmt, 0);
-                QGP_LOG_INFO(LOG_TAG, "init: meta cache_key=%.32s... (len=%zu)\n",
-                             ck ? ck : "(null)", ck ? strlen(ck) : 0);
-            }
-            sqlite3_finalize(d_stmt);
+        if (uv < 2) {
+            sqlite3_exec(g_db, "DELETE FROM wall_posts;", NULL, NULL, NULL);
+            sqlite3_exec(g_db, "DELETE FROM wall_cache_meta;", NULL, NULL, NULL);
+            sqlite3_exec(g_db, "PRAGMA user_version = 2;", NULL, NULL, NULL);
+            QGP_LOG_INFO(LOG_TAG, "Cache reset (v2): cleared stale data from fingerprint mismatch bug\n");
         }
     }
 
@@ -330,9 +312,9 @@ int wall_cache_store(const char *fingerprint,
             sqlite3_clear_bindings(ins_stmt);
 
             QGP_LOG_DEBUG(LOG_TAG, "store: INSERT [%zu] fp=%.32s... uuid=%s\n",
-                         i, posts[i].author_fingerprint, posts[i].uuid);
+                         i, fingerprint, posts[i].uuid);
             sqlite3_bind_text(ins_stmt, 1, posts[i].uuid, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(ins_stmt, 2, posts[i].author_fingerprint, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(ins_stmt, 2, fingerprint, -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(ins_stmt, 3, posts[i].text, -1, SQLITE_TRANSIENT);
             if (posts[i].image_json) {
                 sqlite3_bind_text(ins_stmt, 4, posts[i].image_json, -1, SQLITE_TRANSIENT);
