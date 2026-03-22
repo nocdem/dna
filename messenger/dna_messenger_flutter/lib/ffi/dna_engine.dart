@@ -5947,6 +5947,55 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Load timeline from local cache only (no identity/DHT required).
+  /// Use at startup to show content instantly before identity is fully loaded.
+  Future<List<WallPost>> wallTimelineCached(String fingerprint) async {
+    final completer = Completer<List<WallPost>>();
+    final localId = _nextLocalId++;
+    final fpPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_post_info_t> posts, int count,
+        Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <WallPost>[];
+        for (var i = 0; i < count; i++) {
+          result.add(WallPost.fromNative(posts[i]));
+        }
+        if (posts != nullptr && count > 0) {
+          _bindings.dna_free_wall_posts(posts, count);
+        }
+        completer.complete(result);
+      } else {
+        if (posts != nullptr && count > 0) {
+          _bindings.dna_free_wall_posts(posts, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallPostsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_timeline_cached(
+      _engine,
+      fpPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall timeline cached request');
+    }
+
+    return completer.future;
+  }
+
   // ---------------------------------------------------------------------------
   // WALL: Post with image (v0.7.0+)
   // ---------------------------------------------------------------------------

@@ -473,6 +473,83 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
 }
 
 /* ============================================================================
+ * WALL TIMELINE CACHED - Cache-only, no identity/DHT required
+ * ============================================================================ */
+
+/**
+ * Return wall timeline from local cache only.
+ * Does NOT require identity_loaded — just needs fingerprint to look up contacts.
+ * No DHT access, no background refresh. Pure SQLite read.
+ */
+void dna_handle_wall_timeline_cached(dna_engine_t *engine, dna_task_t *task) {
+    const char *fingerprint = task->params.wall_timeline_cached.fingerprint;
+    if (!fingerprint || strlen(fingerprint) != 128) {
+        QGP_LOG_WARN(LOG_TAG, "Timeline cached: invalid fingerprint");
+        task->callback.wall_posts(task->request_id, DNA_ERROR_INVALID_ARG,
+                                  NULL, 0, task->user_data);
+        return;
+    }
+
+    /* Open contacts DB for this fingerprint (idempotent if already open) */
+    if (contacts_db_init(fingerprint) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Timeline cached: contacts_db_init failed, using own wall only");
+    }
+
+    contact_list_t *list = NULL;
+    contacts_db_list(&list);
+
+    size_t fp_count = 1 + (list ? list->count : 0);
+    const char **fingerprints = calloc(fp_count, sizeof(const char *));
+    if (!fingerprints) {
+        if (list) contacts_db_free_list(list);
+        task->callback.wall_posts(task->request_id, DNA_ERROR_INTERNAL,
+                                  NULL, 0, task->user_data);
+        return;
+    }
+
+    fingerprints[0] = fingerprint;
+    if (list) {
+        for (size_t i = 0; i < list->count; i++) {
+            fingerprints[1 + i] = list->contacts[i].identity;
+        }
+    }
+
+    /* Read from cache only — no staleness check, no DHT refresh */
+    dna_wall_post_t *cached_posts = NULL;
+    size_t cached_count = 0;
+    int cache_ret = wall_cache_load_timeline(fingerprints, fp_count,
+                                             &cached_posts, &cached_count);
+
+    free(fingerprints);
+    if (list) contacts_db_free_list(list);
+
+    if (cache_ret != 0 || !cached_posts || cached_count == 0) {
+        if (cached_posts) wall_cache_free_posts(cached_posts, cached_count);
+        QGP_LOG_INFO(LOG_TAG, "Timeline cached: empty (cache_ret=%d)", cache_ret);
+        task->callback.wall_posts(task->request_id, DNA_OK, NULL, 0, task->user_data);
+        return;
+    }
+
+    /* Convert to public API format */
+    dna_wall_post_info_t *info = calloc(cached_count, sizeof(dna_wall_post_info_t));
+    if (!info) {
+        wall_cache_free_posts(cached_posts, cached_count);
+        task->callback.wall_posts(task->request_id, DNA_ERROR_INTERNAL,
+                                  NULL, 0, task->user_data);
+        return;
+    }
+
+    for (size_t i = 0; i < cached_count; i++) {
+        wall_post_to_info(&cached_posts[i], &info[i]);
+    }
+
+    wall_cache_free_posts(cached_posts, cached_count);
+
+    QGP_LOG_INFO(LOG_TAG, "Timeline cached: %zu posts (cache-only, no DHT)", cached_count);
+    task->callback.wall_posts(task->request_id, DNA_OK, info, (int)cached_count, task->user_data);
+}
+
+/* ============================================================================
  * WALL COMMENTS - JSON Helpers for Cache
  * ============================================================================ */
 
@@ -883,6 +960,22 @@ dna_request_id_t dna_engine_wall_timeline(
     dna_task_callback_t cb = {0};
     cb.wall_posts = callback;
     return dna_submit_task(engine, TASK_WALL_TIMELINE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_wall_timeline_cached(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_wall_posts_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.wall_timeline_cached.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = {0};
+    cb.wall_posts = callback;
+    return dna_submit_task(engine, TASK_WALL_TIMELINE_CACHED, &params, cb, user_data);
 }
 
 /* ============================================================================

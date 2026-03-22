@@ -140,6 +140,7 @@ typedef enum {
     TASK_WALL_DELETE,
     TASK_WALL_LOAD,
     TASK_WALL_TIMELINE,
+    TASK_WALL_TIMELINE_CACHED,
 
     /* Wall Comments (v0.7.0+) */
     TASK_WALL_ADD_COMMENT,
@@ -391,6 +392,11 @@ typedef union {
     } wall_load;
 
     /* Wall: Timeline has no extra params (uses engine->contacts list) */
+
+    /* Wall: Timeline cached (cache-only, no identity required) */
+    struct {
+        char fingerprint[129];          /* Owner fingerprint for contacts_db lookup */
+    } wall_timeline_cached;
 
     /* Wall: Add comment (v0.7.0+) */
     struct {
@@ -905,6 +911,7 @@ void dna_handle_wall_post(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_delete(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_load(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_wall_timeline_cached(dna_engine_t *engine, dna_task_t *task);
 
 /* Wall Comments (v0.7.0+) */
 void dna_handle_wall_add_comment(dna_engine_t *engine, dna_task_t *task);

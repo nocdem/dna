@@ -203,6 +203,7 @@ Named channels with flat text posts. Open posting, day-bucket discovery.
 | `dna_request_id_t dna_engine_wall_delete(dna_engine_t *engine, const char *post_uuid, dna_completion_cb callback, void *user_data)` | Delete own wall post |
 | `dna_request_id_t dna_engine_wall_load(dna_engine_t *engine, const char *fingerprint, dna_wall_posts_cb callback, void *user_data)` | Load user's wall posts |
 | `dna_request_id_t dna_engine_wall_timeline(dna_engine_t *engine, dna_wall_posts_cb callback, void *user_data)` | Load timeline (all contacts' walls merged) |
+| `dna_request_id_t dna_engine_wall_timeline_cached(dna_engine_t *engine, const char *fingerprint, dna_wall_posts_cb callback, void *user_data)` | Load timeline from local cache only (no identity/DHT required) |
 | `dna_request_id_t dna_engine_wall_add_comment(dna_engine_t *engine, const char *post_uuid, const char *parent_comment_uuid, const char *text, dna_wall_comment_cb callback, void *user_data)` | Add a comment or reply to a wall post (parent_comment_uuid = NULL for top-level, UUID for reply) |
 | `dna_request_id_t dna_engine_wall_get_comments(dna_engine_t *engine, const char *post_uuid, dna_wall_comments_cb callback, void *user_data)` | Fetch all comments for a wall post |
 | `dna_request_id_t dna_engine_wall_like(dna_engine_t *engine, const char *post_uuid, dna_wall_likes_cb callback, void *user_data)` | Like a wall post (signed with Dilithium5, max 100 per post) |

@@ -1,5 +1,6 @@
 // Wall Provider - Personal wall posts, timeline, comments, and likes
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
 
@@ -13,7 +14,20 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallPost>> {
   @override
   Future<List<WallPost>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
+
     if (!identityLoaded) {
+      // Cache-first: show cached wall posts instantly before identity loads.
+      // Fingerprint from SharedPreferences (saved during previous loadIdentity).
+      final engine = await ref.watch(engineProvider.future);
+      final prefs = await SharedPreferences.getInstance();
+      final fp = prefs.getString('identity_fingerprint');
+      if (fp != null && fp.length == 128) {
+        try {
+          return await engine.wallTimelineCached(fp);
+        } catch (_) {
+          return state.valueOrNull ?? [];
+        }
+      }
       return state.valueOrNull ?? [];
     }
 

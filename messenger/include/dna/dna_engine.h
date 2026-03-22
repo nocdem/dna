@@ -3337,6 +3337,24 @@ DNA_API dna_request_id_t dna_engine_wall_timeline(
 );
 
 /**
+ * Get wall timeline from local cache only (no identity/DHT required).
+ * Returns cached posts for own + contacts' walls without network access.
+ * Use at startup to show content immediately before identity is fully loaded.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Owner's 128-char hex fingerprint (for contacts lookup)
+ * @param callback    Called with cached posts array
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_wall_timeline_cached(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_wall_posts_cb callback,
+    void *user_data
+);
+
+/**
  * Free wall posts array returned by callbacks
  */
 DNA_API void dna_free_wall_posts(dna_wall_post_info_t *posts, int count);

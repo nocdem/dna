@@ -1182,6 +1182,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_WALL_TIMELINE:
             dna_handle_wall_timeline(engine, task);
             break;
+        case TASK_WALL_TIMELINE_CACHED:
+            dna_handle_wall_timeline_cached(engine, task);
+            break;
 
         /* Wall Comments (v0.7.0+) */
         case TASK_WALL_ADD_COMMENT:

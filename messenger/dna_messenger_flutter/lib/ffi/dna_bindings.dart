@@ -3821,6 +3821,21 @@ class DnaBindings {
     return _dna_engine_wall_timeline(engine, callback, userData);
   }
 
+  late final _dna_engine_wall_timeline_cached = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<DnaWallPostsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<DnaWallPostsCb>,
+          Pointer<Void>)>('dna_engine_wall_timeline_cached');
+
+  int dna_engine_wall_timeline_cached(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaWallPostsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_timeline_cached(engine, fingerprint, callback, userData);
+  }
+
   late final _dna_free_wall_posts = _lib.lookupFunction<
       Void Function(Pointer<dna_wall_post_info_t>, Int32),
       void Function(
