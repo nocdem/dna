@@ -192,6 +192,32 @@ int wall_cache_init(void) {
         "(SELECT DISTINCT author_fingerprint FROM wall_posts);",
         NULL, NULL, NULL);
 
+    /* DEBUG: dump wall_posts fingerprints and meta state */
+    {
+        sqlite3_stmt *d_stmt = NULL;
+        if (sqlite3_prepare_v2(g_db,
+                "SELECT author_fingerprint, COUNT(*) FROM wall_posts "
+                "GROUP BY author_fingerprint;", -1, &d_stmt, NULL) == SQLITE_OK) {
+            while (sqlite3_step(d_stmt) == SQLITE_ROW) {
+                const char *fp = (const char *)sqlite3_column_text(d_stmt, 0);
+                int cnt = sqlite3_column_int(d_stmt, 1);
+                QGP_LOG_INFO(LOG_TAG, "init: wall_posts fp=%.32s... (len=%zu) count=%d\n",
+                             fp ? fp : "(null)", fp ? strlen(fp) : 0, cnt);
+            }
+            sqlite3_finalize(d_stmt);
+        }
+        d_stmt = NULL;
+        if (sqlite3_prepare_v2(g_db,
+                "SELECT cache_key FROM wall_cache_meta;", -1, &d_stmt, NULL) == SQLITE_OK) {
+            while (sqlite3_step(d_stmt) == SQLITE_ROW) {
+                const char *ck = (const char *)sqlite3_column_text(d_stmt, 0);
+                QGP_LOG_INFO(LOG_TAG, "init: meta cache_key=%.32s... (len=%zu)\n",
+                             ck ? ck : "(null)", ck ? strlen(ck) : 0);
+            }
+            sqlite3_finalize(d_stmt);
+        }
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Wall cache initialized\n");
     return 0;
 }
