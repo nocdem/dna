@@ -260,7 +260,8 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         conn->wpos = 0;
         conn->wlen = 0;
 #ifndef _WIN32
-        epoll_mod(tcp->epoll_fd, conn->fd, EPOLLIN | EPOLLET, conn);
+        uint32_t ev = EPOLLIN | (tcp->level_triggered ? 0 : EPOLLET);
+        epoll_mod(tcp->epoll_fd, conn->fd, ev, conn);
 #endif
     }
 }
@@ -289,7 +290,8 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 
 #ifndef _WIN32
     /* Switch to read mode */
-    uint32_t events = EPOLLIN | EPOLLET;
+    uint32_t et = tcp->level_triggered ? 0 : EPOLLET;
+    uint32_t events = EPOLLIN | et;
     if (conn->wlen > conn->wpos) events |= EPOLLOUT;
     epoll_mod(tcp->epoll_fd, conn->fd, events, conn);
 #endif
@@ -348,7 +350,7 @@ static void handle_accept(nodus_tcp_t *tcp) {
     conn->connected_at = nodus_time_now();
     conn->last_activity = conn->connected_at;
 
-    epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLET, conn);
+    epoll_add(tcp->epoll_fd, fd, EPOLLIN | (tcp->level_triggered ? 0 : EPOLLET), conn);
 
     if (tcp->on_accept)
         tcp->on_accept(conn, tcp->cb_ctx);
@@ -504,14 +506,14 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
         set_keepalive(fd);
         set_nodelay(fd);
 #ifndef _WIN32
-        epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLET, conn);
+        epoll_add(tcp->epoll_fd, fd, EPOLLIN | (tcp->level_triggered ? 0 : EPOLLET), conn);
 #endif
         if (tcp->on_connect)
             tcp->on_connect(conn, tcp->cb_ctx);
     } else if (IS_EINPROGRESS(get_socket_error())) {
         /* Connecting — wait for writable */
 #ifndef _WIN32
-        epoll_add(tcp->epoll_fd, fd, EPOLLOUT | EPOLLET, conn);
+        epoll_add(tcp->epoll_fd, fd, EPOLLOUT | (tcp->level_triggered ? 0 : EPOLLET), conn);
 #endif
     } else {
         conn_free(tcp, conn);
@@ -638,8 +640,10 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
     /* Re-enable EPOLLOUT for connections with pending writes */
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = tcp->pool[i];
-        if (c && c->state == NODUS_CONN_CONNECTED && c->wlen > c->wpos)
-            epoll_mod(tcp->epoll_fd, c->fd, EPOLLIN | EPOLLOUT | EPOLLET, c);
+        if (c && c->state == NODUS_CONN_CONNECTED && c->wlen > c->wpos) {
+            uint32_t ev = EPOLLIN | EPOLLOUT | (tcp->level_triggered ? 0 : EPOLLET);
+            epoll_mod(tcp->epoll_fd, c->fd, ev, c);
+        }
     }
 
     struct epoll_event events[MAX_EVENTS];

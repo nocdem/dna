@@ -839,6 +839,7 @@ int nodus_channel_server_listen(nodus_channel_server_t *cs,
     cs->tcp.on_disconnect  = on_ch_disconnect;
     cs->tcp.on_frame       = on_ch_frame;
     cs->tcp.cb_ctx         = cs;
+    cs->tcp.level_triggered = true;  /* avoid EPOLLET edge loss on channel port */
 
     rc = nodus_tcp_listen(&cs->tcp, bind_ip, port);
     if (rc != 0) {

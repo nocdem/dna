@@ -95,6 +95,7 @@ typedef struct {
     void               *cb_ctx;
 
     uint16_t            port;
+    bool                level_triggered; /* disable EPOLLET when true */
 } nodus_tcp_t;
 
 /**
