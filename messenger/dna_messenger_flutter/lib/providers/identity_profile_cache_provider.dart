@@ -17,9 +17,10 @@ class IdentityProfileCacheNotifier extends StateNotifier<Map<String, CachedIdent
   final Ref _ref;
   final CacheDatabase _db = CacheDatabase.instance;
   bool _initialized = false;
+  late final Future<void> initialized;
 
   IdentityProfileCacheNotifier(this._ref) : super({}) {
-    _init();
+    initialized = _init();
   }
 
   /// Initialize cache from SQLite

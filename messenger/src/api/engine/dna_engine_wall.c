@@ -541,6 +541,9 @@ void dna_handle_wall_timeline_cached(dna_engine_t *engine, dna_task_t *task) {
 
     for (size_t i = 0; i < cached_count; i++) {
         wall_post_to_info(&cached_posts[i], &info[i]);
+        QGP_LOG_DEBUG(LOG_TAG, "Timeline cached [%zu]: uuid=%.8s... author=%.16s... img=%s",
+                      i, info[i].uuid, info[i].author_name,
+                      info[i].image_json ? "yes" : "no");
     }
 
     wall_cache_free_posts(cached_posts, cached_count);

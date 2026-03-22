@@ -19,9 +19,10 @@ class ContactProfileCacheNotifier extends StateNotifier<Map<String, UserProfile>
   final Ref _ref;
   final CacheDatabase _db = CacheDatabase.instance;
   bool _initialized = false;
+  late final Future<void> initialized;
 
   ContactProfileCacheNotifier(this._ref) : super({}) {
-    _init();
+    initialized = _init();
   }
 
   /// Initialize cache from SQLite

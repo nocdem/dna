@@ -181,6 +181,9 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
         engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
 
         if (hasIdentity) {
+          // Ensure profile caches are loaded from SQLite before showing HomeScreen
+          await ref.read(contactProfileCacheProvider.notifier).initialized;
+          await ref.read(identityProfileCacheProvider.notifier).initialized;
           // Show HomeScreen immediately for cache-first wall display
           if (mounted) setState(() { _hasIdentity = true; });
 
