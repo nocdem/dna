@@ -93,6 +93,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   AppLifecycleObserver? _lifecycleObserver;
   bool _autoLoadStarted = false;
   bool _autoLoadComplete = false;
+  bool _hasIdentity = false;
   bool _registrationIncomplete = false;
   bool _updateDialogShown = false;
 
@@ -180,6 +181,9 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
         engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
 
         if (hasIdentity) {
+          // Show HomeScreen immediately for cache-first wall display
+          if (mounted) setState(() { _hasIdentity = true; });
+
           // Pre-warm: Set DHT state to "connecting" immediately for UI feedback
           // This shows "Connecting to network..." banner while DHT bootstraps
           ref.read(dhtConnectionStateProvider.notifier).state =
@@ -258,8 +262,11 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           return const _LoadingScreen();
         }
 
-        // Still loading - wait for check to complete
+        // Still loading — show HomeScreen early if identity exists (cache-first wall)
         if (!_autoLoadComplete) {
+          if (_hasIdentity) {
+            return const HomeScreen();
+          }
           return const _LoadingScreen();
         }
 
