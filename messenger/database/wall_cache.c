@@ -192,10 +192,9 @@ int wall_cache_init(void) {
         return -1;
     }
 
-    /* One-time cache reset: v0.9.91 stored posts with DHT fingerprint
-     * instead of contact-list fingerprint, causing permanent query miss.
-     * Nuke all cached data — DHT re-fetch will repopulate correctly.
-     * Uses PRAGMA user_version to run only once. */
+    /* One-time cache reset: clears stale meta + mismatched posts.
+     * v4: forced clean build to ensure this code actually runs
+     * (previous versions may have used cached .o with old code). */
     {
         int uv = 0;
         sqlite3_stmt *uv_stmt = NULL;
@@ -204,11 +203,12 @@ int wall_cache_init(void) {
                 uv = sqlite3_column_int(uv_stmt, 0);
             sqlite3_finalize(uv_stmt);
         }
-        if (uv < 3) {
+        QGP_LOG_INFO(LOG_TAG, "PRAGMA user_version = %d\n", uv);
+        if (uv < 4) {
             sqlite3_exec(g_db, "DELETE FROM wall_posts;", NULL, NULL, NULL);
             sqlite3_exec(g_db, "DELETE FROM wall_cache_meta;", NULL, NULL, NULL);
-            sqlite3_exec(g_db, "PRAGMA user_version = 3;", NULL, NULL, NULL);
-            QGP_LOG_INFO(LOG_TAG, "Cache reset (v3): clear stale meta from error-as-fresh bug\n");
+            sqlite3_exec(g_db, "PRAGMA user_version = 4;", NULL, NULL, NULL);
+            QGP_LOG_INFO(LOG_TAG, "Cache reset (v4): nuke all + clean build\n");
         }
     }
 
