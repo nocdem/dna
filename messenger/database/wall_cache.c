@@ -285,6 +285,8 @@ int wall_cache_store(const char *fingerprint,
             sqlite3_reset(ins_stmt);
             sqlite3_clear_bindings(ins_stmt);
 
+            QGP_LOG_DEBUG(LOG_TAG, "store: INSERT [%zu] fp=%.32s... uuid=%s\n",
+                         i, posts[i].author_fingerprint, posts[i].uuid);
             sqlite3_bind_text(ins_stmt, 1, posts[i].uuid, -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(ins_stmt, 2, posts[i].author_fingerprint, -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(ins_stmt, 3, posts[i].text, -1, SQLITE_TRANSIENT);
@@ -495,8 +497,9 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
             total++;
             if (total >= 200) break;
         }
-        QGP_LOG_DEBUG(LOG_TAG, "load_timeline: fp[%zu]=%.32s... → %zu rows\n",
-                      f, fingerprints[f], total - count_before);
+        QGP_LOG_INFO(LOG_TAG, "load_timeline: fp[%zu]=%.32s... (len=%zu) → %zu rows",
+                     f, fingerprints[f], fingerprints[f] ? strlen(fingerprints[f]) : 0,
+                     total - count_before);
         if (total >= 200) break;
     }
 

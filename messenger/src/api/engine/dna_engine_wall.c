@@ -378,6 +378,13 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
+    /* Debug: log fingerprint list for timeline query */
+    for (size_t i = 0; i < fp_count; i++) {
+        QGP_LOG_INFO(LOG_TAG, "Timeline query fp[%zu]=%.32s... (len=%zu)",
+                     i, fingerprints[i] ? fingerprints[i] : "(null)",
+                     fingerprints[i] ? strlen(fingerprints[i]) : 0);
+    }
+
     /* Phase 1: Kick off background refresh for stale walls (non-blocking)
      * v0.9.53: Cache-first pattern — return cached data immediately,
      * refresh stale entries in background, fire event when done. */
