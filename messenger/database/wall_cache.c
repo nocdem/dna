@@ -212,6 +212,11 @@ int wall_cache_init(void) {
         }
     }
 
+    /* Invalidate all staleness meta on every startup so bg-refresh
+     * pulls every contact's wall from DHT.  Post data stays in cache
+     * for instant UI; meta reset just forces a DHT re-check. */
+    sqlite3_exec(g_db, "DELETE FROM wall_cache_meta;", NULL, NULL, NULL);
+
     QGP_LOG_INFO(LOG_TAG, "Wall cache initialized\n");
     return 0;
 }
