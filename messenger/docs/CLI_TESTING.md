@@ -2,13 +2,13 @@
 
 **Version:** 3.0.0
 **Purpose:** Command-line tool for automated testing and debugging of DNA Connect without GUI
-**Location:** `/opt/dna/messenger/build/cli/dna-messenger-cli`
+**Location:** `/opt/dna/messenger/build/cli/dna-connect-cli`
 
 ---
 
 ## Overview
 
-The `dna-messenger-cli` tool allows Claude (or any automated system) to test DNA Connect functionality through single-command invocations. Each command initializes the engine, executes the operation, and exits cleanly.
+The `dna-connect-cli` tool allows Claude (or any automated system) to test DNA Connect functionality through single-command invocations. Each command initializes the engine, executes the operation, and exits cleanly.
 
 **Key Features (v3.0.0):**
 - **Grouped subcommand structure**: All commands use `<group> <subcommand>` format
@@ -24,17 +24,17 @@ The `dna-messenger-cli` tool allows Claude (or any automated system) to test DNA
 ```bash
 cd /opt/dna/messenger/build
 cmake ..
-make dna-messenger-cli
+make dna-connect-cli
 ```
 
-The executable will be at: `/opt/dna/messenger/build/cli/dna-messenger-cli`
+The executable will be at: `/opt/dna/messenger/build/cli/dna-connect-cli`
 
 ---
 
 ## Quick Reference
 
 ```bash
-CLI=/opt/dna/messenger/build/cli/dna-messenger-cli
+CLI=/opt/dna/messenger/build/cli/dna-connect-cli
 
 # Identity
 $CLI identity create <name>                    # Create new identity (prompts for password)
@@ -187,7 +187,7 @@ For commands that require an identity (everything except `identity create`, `ide
 Creates a new DNA identity with a BIP39 mnemonic phrase.
 
 ```bash
-dna-messenger-cli identity create alice
+dna-connect-cli identity create alice
 ```
 
 **Output:**
@@ -214,7 +214,7 @@ dna-messenger-cli identity create alice
 Restores an identity from a 24-word BIP39 mnemonic.
 
 ```bash
-dna-messenger-cli identity restore abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual adapt
+dna-connect-cli identity restore abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual adapt
 ```
 
 **Notes:**
@@ -228,7 +228,7 @@ dna-messenger-cli identity restore abandon ability able about above absent absor
 Lists all available identities in the data directory.
 
 ```bash
-dna-messenger-cli identity list
+dna-connect-cli identity list
 ```
 
 **Sample Output:**
@@ -245,7 +245,7 @@ Available identities (2):
 Loads an identity for operations.
 
 ```bash
-dna-messenger-cli identity load db73e609
+dna-connect-cli identity load db73e609
 ```
 
 **Notes:**
@@ -258,7 +258,7 @@ dna-messenger-cli identity load db73e609
 ### `identity whoami` - Show Current Identity
 
 ```bash
-dna-messenger-cli identity whoami
+dna-connect-cli identity whoami
 ```
 
 ---
@@ -268,7 +268,7 @@ dna-messenger-cli identity whoami
 Changes the password protecting the current identity's keys.
 
 ```bash
-dna-messenger-cli identity change-password
+dna-connect-cli identity change-password
 ```
 
 **Process:**
@@ -293,7 +293,7 @@ dna-messenger-cli identity change-password
 Registers a human-readable name on the DHT.
 
 ```bash
-dna-messenger-cli identity register alice
+dna-connect-cli identity register alice
 ```
 
 **Requirements:**
@@ -307,7 +307,7 @@ dna-messenger-cli identity register alice
 ### `identity name` - Show Registered Name
 
 ```bash
-dna-messenger-cli identity name
+dna-connect-cli identity name
 ```
 
 ---
@@ -315,7 +315,7 @@ dna-messenger-cli identity name
 ### `identity lookup <name>` - Check Name Availability
 
 ```bash
-dna-messenger-cli identity lookup alice
+dna-connect-cli identity lookup alice
 ```
 
 **Output:**
@@ -331,8 +331,8 @@ dna-messenger-cli identity lookup alice
 View complete profile data from DHT for any user (by name or fingerprint).
 
 ```bash
-dna-messenger-cli identity lookup-profile alice
-dna-messenger-cli identity lookup-profile 5a8f2c3d4e6b7a9c...
+dna-connect-cli identity lookup-profile alice
+dna-connect-cli identity lookup-profile 5a8f2c3d4e6b7a9c...
 ```
 
 **Sample Output:**
@@ -372,14 +372,14 @@ Bio: Post-quantum enthusiast
 
 Show profile:
 ```bash
-dna-messenger-cli identity profile
+dna-connect-cli identity profile
 ```
 
 Update profile field:
 ```bash
-dna-messenger-cli identity profile bio="Post-quantum enthusiast"
-dna-messenger-cli identity profile twitter="@alice"
-dna-messenger-cli identity profile website="https://alice.dev"
+dna-connect-cli identity profile bio="Post-quantum enthusiast"
+dna-connect-cli identity profile twitter="@alice"
+dna-connect-cli identity profile website="https://alice.dev"
 ```
 
 **Valid fields:** bio, location, website, telegram, twitter, github
@@ -391,7 +391,7 @@ dna-messenger-cli identity profile website="https://alice.dev"
 ### `contact list` - List Contacts
 
 ```bash
-dna-messenger-cli contact list
+dna-connect-cli contact list
 ```
 
 **Sample Output:**
@@ -410,8 +410,8 @@ Contacts (2):
 ### `contact add <name|fingerprint>` - Add Contact
 
 ```bash
-dna-messenger-cli contact add bob
-dna-messenger-cli contact add 5a8f2c3d4e6b7a9c...
+dna-connect-cli contact add bob
+dna-connect-cli contact add 5a8f2c3d4e6b7a9c...
 ```
 
 ---
@@ -419,7 +419,7 @@ dna-messenger-cli contact add 5a8f2c3d4e6b7a9c...
 ### `contact remove <fingerprint>` - Remove Contact
 
 ```bash
-dna-messenger-cli contact remove 5a8f2c3d
+dna-connect-cli contact remove 5a8f2c3d
 ```
 
 ---
@@ -427,8 +427,8 @@ dna-messenger-cli contact remove 5a8f2c3d
 ### `contact request <fingerprint> [message]` - Send Contact Request
 
 ```bash
-dna-messenger-cli contact request 5a8f2c3d "Hi, let's connect!"
-dna-messenger-cli contact request 5a8f2c3d
+dna-connect-cli contact request 5a8f2c3d "Hi, let's connect!"
+dna-connect-cli contact request 5a8f2c3d
 ```
 
 **Note:** The command waits 2 seconds for DHT propagation before exiting.
@@ -438,7 +438,7 @@ dna-messenger-cli contact request 5a8f2c3d
 ### `contact requests` - List Pending Requests
 
 ```bash
-dna-messenger-cli contact requests
+dna-connect-cli contact requests
 ```
 
 **Sample Output:**
@@ -456,7 +456,7 @@ Use 'contact approve <fingerprint>' to accept a request.
 ### `contact approve <fingerprint>` - Approve Contact Request
 
 ```bash
-dna-messenger-cli contact approve 7f8e9d0c
+dna-connect-cli contact approve 7f8e9d0c
 ```
 
 ---
@@ -466,8 +466,8 @@ dna-messenger-cli contact approve 7f8e9d0c
 ### `message send <name|fingerprint> <message>` - Send Message
 
 ```bash
-dna-messenger-cli message send nox "Hello from CLI!"
-dna-messenger-cli message send 5a8f2c3d4e6b7a9c1b2a34567890abcd... "Hello from CLI!"
+dna-connect-cli message send nox "Hello from CLI!"
+dna-connect-cli message send 5a8f2c3d4e6b7a9c1b2a34567890abcd... "Hello from CLI!"
 ```
 
 **IMPORTANT:** Use registered name OR full 128-char fingerprint. Partial fingerprints do NOT work for send.
@@ -484,8 +484,8 @@ dna-messenger-cli message send 5a8f2c3d4e6b7a9c1b2a34567890abcd... "Hello from C
 Shows messages with a contact. If a name is provided, it resolves to fingerprint via DHT lookup.
 
 ```bash
-dna-messenger-cli message list nox          # By registered name (resolves to fp)
-dna-messenger-cli message list 5a8f2c3d...  # By full fingerprint
+dna-connect-cli message list nox          # By registered name (resolves to fp)
+dna-connect-cli message list 5a8f2c3d...  # By full fingerprint
 ```
 
 **Sample Output:**
@@ -504,7 +504,7 @@ Conversation with f6ddccbee2b3ee69... (3 messages):
 ### `message check-offline` - Check Offline Messages
 
 ```bash
-dna-messenger-cli message check-offline
+dna-connect-cli message check-offline
 ```
 
 ---
@@ -514,7 +514,7 @@ dna-messenger-cli message check-offline
 ### `wallet list` - List Wallets
 
 ```bash
-dna-messenger-cli wallet list
+dna-connect-cli wallet list
 ```
 
 **Sample Output:**
@@ -531,7 +531,7 @@ Use 'wallet balance <index>' to see balances.
 ### `wallet balance <index>` - Show Wallet Balances
 
 ```bash
-dna-messenger-cli wallet balance 0
+dna-connect-cli wallet balance 0
 ```
 
 **Sample Output:**
@@ -548,7 +548,7 @@ Balances:
 ### `network online <fingerprint>` - Check Peer Online Status
 
 ```bash
-dna-messenger-cli network online 5a8f2c3d
+dna-connect-cli network online 5a8f2c3d
 ```
 
 **Output:**
@@ -581,7 +581,7 @@ These commands are non-functional and return deprecation messages. They are reta
 Publishes version information to a well-known DHT key. The first publisher "owns" the key - only that identity can update it.
 
 ```bash
-dna-messenger-cli version publish --lib 0.4.0 --app 0.99.106 --nodus 0.4.3
+dna-connect-cli version publish --lib 0.4.0 --app 0.99.106 --nodus 0.4.3
 ```
 
 **Required Arguments:**
@@ -618,7 +618,7 @@ Waiting for DHT propagation...
 Fetches version info from DHT and compares with local library version.
 
 ```bash
-dna-messenger-cli version check
+dna-connect-cli version check
 ```
 
 **Sample Output:**
@@ -649,7 +649,7 @@ Group messaging uses GEK (Group Encryption Key) for end-to-end encrypted group c
 Lists all groups the user belongs to.
 
 ```bash
-dna-messenger-cli group list
+dna-connect-cli group list
 ```
 
 **Sample Output:**
@@ -672,7 +672,7 @@ Groups (2):
 Creates a new group with you as the owner.
 
 ```bash
-dna-messenger-cli group create "Project Team"
+dna-connect-cli group create "Project Team"
 ```
 
 **Sample Output:**
@@ -694,7 +694,7 @@ UUID: a1b2c3d4-e5f6-7890-abcd-ef1234567890
 Sends an encrypted message to a group.
 
 ```bash
-dna-messenger-cli group send a1b2c3d4-e5f6-7890-abcd-ef1234567890 "Hello team!"
+dna-connect-cli group send a1b2c3d4-e5f6-7890-abcd-ef1234567890 "Hello team!"
 ```
 
 **Sample Output:**
@@ -714,7 +714,7 @@ Sending message to group a1b2c3d4...
 Displays group metadata and member list.
 
 ```bash
-dna-messenger-cli group info a1b2c3d4-e5f6-7890-abcd-ef1234567890
+dna-connect-cli group info a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
 **Sample Output:**
@@ -741,7 +741,7 @@ Members (3):
 Invites a user to join the group. Only the group owner can invite.
 
 ```bash
-dna-messenger-cli group invite a1b2c3d4-e5f6-7890-abcd-ef1234567890 5a8f2c3d4e6b7a9c...
+dna-connect-cli group invite a1b2c3d4-e5f6-7890-abcd-ef1234567890 5a8f2c3d4e6b7a9c...
 ```
 
 **Sample Output:**
@@ -763,7 +763,7 @@ GEK rotated to version 3.
 Syncs a specific group from DHT to local cache. Useful for recovering groups after database reset when you're still a member in the DHT metadata.
 
 ```bash
-dna-messenger-cli group sync c9291b06-6768-44f6-a08e-8f06f4ceebe9
+dna-connect-cli group sync c9291b06-6768-44f6-a08e-8f06f4ceebe9
 ```
 
 **Sample Output:**
@@ -788,7 +788,7 @@ Topic-based public feeds with categories and tags. All feeds data is signed with
 Creates a new public topic in the feed system.
 
 ```bash
-dna-messenger-cli feeds create "My Topic" "This is the body text" --category technology --tags "rust,webdev"
+dna-connect-cli feeds create "My Topic" "This is the body text" --category technology --tags "rust,webdev"
 ```
 
 **Options:**
@@ -815,7 +815,7 @@ Topic: My Topic
 Retrieves a channel by its UUID.
 
 ```bash
-dna-messenger-cli channel get 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
+dna-connect-cli channel get 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
 ```
 
 ---
@@ -825,7 +825,7 @@ dna-messenger-cli channel get 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
 Soft-deletes a topic (author only). Topic remains in DHT with `deleted=true` until TTL expires.
 
 ```bash
-dna-messenger-cli feeds delete 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
+dna-connect-cli feeds delete 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
 ```
 
 ---
@@ -835,7 +835,7 @@ dna-messenger-cli feeds delete 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
 Lists topics in a category from the last N days.
 
 ```bash
-dna-messenger-cli feeds list --category technology --days 7
+dna-connect-cli feeds list --category technology --days 7
 ```
 
 **Sample Output:**
@@ -860,7 +860,7 @@ Topics (2):
 Lists all topics from the last N days across all categories.
 
 ```bash
-dna-messenger-cli feeds list-all --days 7
+dna-connect-cli feeds list-all --days 7
 ```
 
 ---
@@ -870,7 +870,7 @@ dna-messenger-cli feeds list-all --days 7
 Posts a message to a channel.
 
 ```bash
-dna-messenger-cli channel post 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e "Great topic!"
+dna-connect-cli channel post 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e "Great topic!"
 ```
 
 ---
@@ -880,8 +880,8 @@ dna-messenger-cli channel post 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e "Great topic
 Retrieves posts from a channel by scanning daily DHT buckets.
 
 ```bash
-dna-messenger-cli channel posts 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
-dna-messenger-cli channel posts 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e --days 7
+dna-connect-cli channel posts 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e
+dna-connect-cli channel posts 4b7c5dce-28ad-4f45-92d1-c5dae1ed952e --days 7
 ```
 
 **Options:**
@@ -923,7 +923,7 @@ Comments (2):
 ### Workflow 1: Create Identity and Register Name
 
 ```bash
-CLI=/opt/dna/messenger/build/cli/dna-messenger-cli
+CLI=/opt/dna/messenger/build/cli/dna-connect-cli
 
 # Create identity (auto-registers name)
 $CLI identity create alice
@@ -1044,7 +1044,7 @@ These warnings appear during normal operation and don't indicate errors:
 
 | Item | Path |
 |------|------|
-| Executable | `/opt/dna/messenger/build/cli/dna-messenger-cli` |
+| Executable | `/opt/dna/messenger/build/cli/dna-connect-cli` |
 | Source | `cli/main.c`, `cli/cli_commands.c` |
 | Default data | `~/.dna/` |
 | Identity keys | `~/.dna/<fingerprint>/keys/` |
@@ -1061,7 +1061,7 @@ These warnings appear during normal operation and don't indicate errors:
 - Command groups: `identity`, `contact`, `message`, `group`, `channel`, `wallet`, `dex`, `network`, `version`, `sign`, `debug`
 - Old flat commands (e.g., `create`, `send`, `contacts`) no longer work
 - Added new commands: `contact deny`, `contact block/unblock/blocked/is-blocked`, `contact check-inbox`, `contact sync-up/sync-down`, `message page/delete/mark-read/unread/queue-send/queue-capacity/retry-pending/retry-message/backup/restore`, `group members/messages/sync-all/sync-up/sync-down/publish-gek/gek-fetch/invitations/invite-accept/invite-reject`, `wallet send/transactions/estimate-gas`, `dex quote/pairs`, `network dht-status/pause-presence/resume-presence/refresh-presence/changed/bootstrap-registry`, `sign data/pubkey`, `debug log-level/log-tags/log/entries/count/clear/export`
-- Updated CLI path to monorepo location: `/opt/dna/messenger/build/cli/dna-messenger-cli`
+- Updated CLI path to monorepo location: `/opt/dna/messenger/build/cli/dna-connect-cli`
 
 ### v2.7.0
 - Migrated feeds to channels system:

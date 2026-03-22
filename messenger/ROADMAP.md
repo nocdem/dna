@@ -348,8 +348,8 @@ Client → DHT (cached) ←→ Client
 
 ## Links
 
-- **GitLab:** https://gitlab.cpunk.io/cpunk/dna-messenger
-- **GitHub:** https://github.com/nocdem/dna-messenger
+- **GitLab:** https://gitlab.cpunk.io/cpunk/dna
+- **GitHub:** https://github.com/nocdem/dna
 - **Website:** https://cpunk.io
 - **Community:** https://cpunk.io
 

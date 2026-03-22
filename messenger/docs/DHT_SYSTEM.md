@@ -1163,7 +1163,7 @@ Nodus is a pure C post-quantum DHT server with PBFT consensus:
 - **Source**: `/opt/dna/nodus/` (top-level in monorepo)
 - **Protocol**: CBOR over wire frames (7-byte header: magic `0x4E44` + version + length)
 
-**Note:** The old `dna-nodus` (OpenDHT-based, `vendor/opendht-pq/tools/dna-nodus.cpp`) has been removed from the codebase. Production servers still run the legacy v0.4.5 binary from `/opt/dna-messenger/`.
+**Note:** The old `dna-nodus` (OpenDHT-based, `vendor/opendht-pq/tools/dna-nodus.cpp`) has been removed from the codebase. All production servers now run the current Nodus binary.
 
 ### 7.2 Protocol Tiers
 

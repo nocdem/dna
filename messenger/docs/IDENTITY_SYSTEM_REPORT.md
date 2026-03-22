@@ -49,7 +49,7 @@ fingerprint = SHA3-512(dilithium_pubkey) → 128 hex chars
 - Signature: 4,627 bytes
 - Fingerprint: 128 hex characters (64 bytes binary)
 
-**File:** `/opt/dna-messenger/messenger/keygen.c`
+**File:** `/opt/dna/messenger/messenger/keygen.c`
 
 ### 1.2 DHT Identity
 
@@ -76,7 +76,7 @@ SEPARATE Dilithium5 Keypair (dht_identity.bin)
 
 **Key Sizes:** Same as Messenger (Dilithium5)
 
-**File:** `/opt/dna-messenger/messenger/init.c` lines 374-509
+**File:** `/opt/dna/messenger/messenger/init.c` lines 374-509
 
 ### 1.3 Critical Difference
 
@@ -127,7 +127,7 @@ signature = key.sign(getToSign())       // Adds DHT signature (4,627 bytes)
 
 ### 2.2 Value::sign() Implementation
 
-**File:** `/opt/dna-messenger/vendor/opendht-pq/src/value.cpp` lines 258-264
+**File:** `/opt/dna/messenger/vendor/opendht-pq/src/value.cpp` lines 258-264
 
 ```cpp
 Value::sign(const crypto::PrivateKey& key)
@@ -141,7 +141,7 @@ Value::sign(const crypto::PrivateKey& key)
 
 ### 2.3 Proof of Double-Signing
 
-**SecureDht::putSigned()** at `/opt/dna-messenger/vendor/opendht-pq/src/securedht.cpp:507-509`:
+**SecureDht::putSigned()** at `/opt/dna/messenger/vendor/opendht-pq/src/securedht.cpp:507-509`:
 
 ```cpp
 [hash,val,this,callback,permanent] (bool /* ok */) {
@@ -186,7 +186,7 @@ This is called for EVERY `dht_put_signed()` operation, regardless of whether the
 
 ### 4.1 Identity Initialization Flow
 
-**File:** `/opt/dna-messenger/src/api/engine/dna_engine_identity.c`
+**File:** `/opt/dna/messenger/src/api/engine/dna_engine_identity.c`
 
 ```
 dna_handle_load_identity()
@@ -212,7 +212,7 @@ dna_handle_load_identity()
 
 ### 4.2 DHT Identity Loading
 
-**File:** `/opt/dna-messenger/messenger/init.c` lines 374-509
+**File:** `/opt/dna/messenger/messenger/init.c` lines 374-509
 
 ```c
 int messenger_load_dht_identity(const char *fingerprint) {
@@ -252,7 +252,7 @@ int messenger_load_dht_identity(const char *fingerprint) {
 
 ### 4.3 Fingerprint-to-Value-ID Mapping
 
-**File:** `/opt/dna-messenger/dht/shared/dht_contact_request.c`
+**File:** `/opt/dna/messenger/dht/shared/dht_contact_request.c`
 
 ```c
 uint64_t dht_fingerprint_to_value_id(const char *fingerprint) {
@@ -405,16 +405,16 @@ To verify the findings in this report:
 
 ```bash
 # Check DHT identity derivation
-grep -n "dht_identity" /opt/dna-messenger/messenger/init.c
+grep -n "dht_identity" /opt/dna/messenger/messenger/init.c
 
 # Check putSigned implementation
-grep -n "putSigned" /opt/dna-messenger/dht/core/dht_context.cpp
+grep -n "putSigned" /opt/dna/messenger/dht/core/dht_context.cpp
 
 # Check Value::sign
-grep -n "Value::sign" /opt/dna-messenger/vendor/opendht-pq/src/value.cpp
+grep -n "Value::sign" /opt/dna/messenger/vendor/opendht-pq/src/value.cpp
 
 # Check SecureDht::putSigned
-grep -n "sign\(\*val\)" /opt/dna-messenger/vendor/opendht-pq/src/securedht.cpp
+grep -n "sign\(\*val\)" /opt/dna/messenger/vendor/opendht-pq/src/securedht.cpp
 ```
 
 ---

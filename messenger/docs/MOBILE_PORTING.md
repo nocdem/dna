@@ -170,7 +170,7 @@ void qgp_platform_set_network_callback(callback, user_data);
 ### Build
 
 ```bash
-cd /opt/dna-messenger
+cd /opt/dna/messenger
 
 # Build for ARM64 (recommended)
 ./build-android.sh arm64-v8a
@@ -516,8 +516,8 @@ export ANDROID_NDK=/path/to/ndk
 
 ### Support
 
-- GitLab: https://gitlab.cpunk.io/cpunk/dna-messenger
-- GitHub: https://github.com/nocdem/dna-messenger
+- GitLab: https://gitlab.cpunk.io/cpunk/dna
+- GitHub: https://github.com/nocdem/dna
 - Telegram: @chippunk_official
 
 ---

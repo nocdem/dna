@@ -87,7 +87,7 @@ Total: 8.80s
 ```
 cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
 Result: 100% compiled
-Targets: libdna.so (shared), dna-messenger-cli
+Targets: libdna.so (shared), dna-connect-cli
 ```
 
 ### Test Results: Tests exist but not registered with ctest
@@ -149,7 +149,7 @@ Targets: libdna.so (shared), dna-messenger-cli
 | API complete | YES (83+ functions) |
 | Flutter app | YES (30+ screens, Android/Linux/Windows) |
 | Documentation | EXTENSIVE (50+ docs) |
-| CLI tool | FUNCTIONAL (dna-messenger-cli) |
+| CLI tool | FUNCTIONAL (dna-connect-cli) |
 | Production deployment | NOT YET (test cluster only) |
 
 ### Issues Found

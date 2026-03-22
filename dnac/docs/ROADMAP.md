@@ -300,7 +300,7 @@ Request Key: SHA3-512("dnac:nodus:epoch:request:" + witness_fp + ":" + epoch)
 
 ---
 
-## CLI Commands (to be added to dna-messenger-cli)
+## CLI Commands (to be added to dna-connect-cli)
 
 ```bash
 dnac balance                     # Show wallet balance

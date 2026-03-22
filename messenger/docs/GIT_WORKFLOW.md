@@ -99,8 +99,8 @@ The script:
 If remotes are not configured:
 
 ```bash
-git remote add gitlab ssh://git@gitlab.cpunk.io:10000/cpunk/dna-messenger.git
-git remote add origin git@github.com:nocdem/dna-messenger.git
+git remote add gitlab ssh://git@gitlab.cpunk.io:10000/cpunk/dna.git
+git remote add origin git@github.com:nocdem/dna.git
 ```
 
 Verify:

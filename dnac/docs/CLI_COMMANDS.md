@@ -332,7 +332,7 @@ static void on_name_lookup(uint64_t request_id, int error,
 
 #### Memory Management
 
-The `dna_engine_lookup_name()` callback receives a `strdup()`'d string that **must be freed by the callback**. This matches the pattern used in `dna-messenger-cli` (see `messenger/cli/cli_commands.c`).
+The `dna_engine_lookup_name()` callback receives a `strdup()`'d string that **must be freed by the callback**. This matches the pattern used in `dna-connect-cli` (see `messenger/cli/cli_commands.c`).
 
 ---
 

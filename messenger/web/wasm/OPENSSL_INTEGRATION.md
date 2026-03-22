@@ -46,7 +46,7 @@ emcc $EMCC_FLAGS $INCLUDES $ALL_SOURCES \
 
 **Test:**
 ```bash
-cd /opt/dna-messenger/web/wasm
+cd /opt/dna/messenger/web/wasm
 ./build_wasm.sh
 ```
 
@@ -120,7 +120,7 @@ emcc $EMCC_FLAGS $INCLUDES $ALL_SOURCES \
 ### Step 2: Test Build
 
 ```bash
-cd /opt/dna-messenger/web/wasm
+cd /opt/dna/messenger/web/wasm
 source /opt/emsdk/emsdk_env.sh
 ./build_wasm.sh
 ```

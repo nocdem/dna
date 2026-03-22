@@ -2,7 +2,7 @@
 
 **Version:** v0.11.1 | **Protocol:** v1 (Transparent Amounts)
 
-DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](https://github.com/nocdem/dna-messenger). It lives in the DNA monorepo at `/opt/dna/dnac/`.
+DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](https://github.com/nocdem/dna). It lives in the DNA monorepo at `/opt/dna/dnac/`.
 
 ## Features
 
@@ -306,5 +306,5 @@ MIT
 
 ## Related Projects
 
-- [DNA Connect](https://github.com/nocdem/dna-messenger) - Post-quantum encrypted messenger (monorepo: `/opt/dna/messenger/`)
+- [DNA Connect](https://github.com/nocdem/dna) - Post-quantum encrypted messenger (monorepo: `/opt/dna/messenger/`)
 - [Nodus](../nodus/) - Post-quantum Kademlia DHT with PBFT consensus (monorepo: `/opt/dna/nodus/`)

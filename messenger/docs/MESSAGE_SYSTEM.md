@@ -31,7 +31,7 @@ This document describes how the DNA Connect message system works, with all facts
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           DNA MESSENGER MESSAGE FLOW                         │
+│                           DNA CONNECT MESSAGE FLOW                         │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────────┐                                        ┌─────────────┐    │

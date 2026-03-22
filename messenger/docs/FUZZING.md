@@ -16,11 +16,11 @@ Fuzz testing (fuzzing) automatically generates random/malformed inputs to find c
 
 ```bash
 # Ensure main project is built first
-cd /path/to/dna-messenger/build
+cd /opt/dna/messenger/build
 cmake .. && make -j$(nproc)
 
 # Build fuzz targets
-cd /path/to/dna-messenger/tests
+cd /opt/dna/messenger/tests
 mkdir build-fuzz && cd build-fuzz
 CC=clang CXX=clang++ cmake -DENABLE_FUZZING=ON -DCMAKE_BUILD_TYPE=Debug ..
 make -j$(nproc)

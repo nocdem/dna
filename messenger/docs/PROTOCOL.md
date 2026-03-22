@@ -671,4 +671,4 @@ typedef enum {
 ---
 
 **Maintained by:** DNA Connect Team
-**Repository:** https://gitlab.cpunk.io/cpunk/dna-messenger
+**Repository:** https://gitlab.cpunk.io/cpunk/dna

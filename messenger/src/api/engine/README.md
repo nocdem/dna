@@ -190,12 +190,12 @@ cd /opt/dna/messenger/build
 cmake .. && make -j$(nproc)
 
 # Verify CLI functions
-./cli/dna-messenger-cli whoami
-./cli/dna-messenger-cli contacts
-./cli/dna-messenger-cli send nocdem "Test"
+./cli/dna-connect-cli whoami
+./cli/dna-connect-cli contacts
+./cli/dna-connect-cli send nocdem "Test"
 
 # Memory check (if valgrind available)
-valgrind --leak-check=full ./cli/dna-messenger-cli whoami
+valgrind --leak-check=full ./cli/dna-connect-cli whoami
 ```
 
 ## Version History

@@ -39,7 +39,7 @@ The DNA Engine (`src/api/dna_engine.c`) is a modular async C library with 17 dom
 - `transport/` — P2P transport layer
 - `database/` — SQLite persistence and caching
 - `blockchain/` — Multi-chain wallet (`cellframe/`, `ethereum/`, `solana/`, `tron/`)
-- `cli/` — CLI tool (`dna-messenger-cli`)
+- `cli/` — CLI tool (`dna-connect-cli`)
 - `jni/` — Android JNI bindings
 - `dna_messenger_flutter/` — Flutter app (Dart)
 - `include/` — Public C headers
@@ -156,7 +156,7 @@ For **Flutter app** — use the handler pattern, NOT `Platform.isAndroid`:
 ## CLI for Debugging and Testing
 
 ```bash
-CLI=/opt/dna/messenger/build/cli/dna-messenger-cli
+CLI=/opt/dna/messenger/build/cli/dna-connect-cli
 
 $CLI lookup-profile <name|fp>    # View any user's full DHT profile
 $CLI lookup <name>               # Check if name is registered

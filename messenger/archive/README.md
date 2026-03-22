@@ -20,7 +20,7 @@ This directory previously contained deprecated legacy code. All contents have be
 **DHT Debug Tools**
 - Deleted: 2026-01-08
 - Previously archived: 2026-01-01
-- Replaced by: `dna-messenger-cli` tool
+- Replaced by: `dna-connect-cli` tool
 
 ### legacy-tools/ (DELETED EARLIER)
 **Legacy CLI Tools**
@@ -36,7 +36,7 @@ All UI development is done in **Flutter**:
 ## CLI Tool
 
 For testing and debugging, use:
-- `dna-messenger-cli` (built with main project)
+- `dna-connect-cli` (built with main project)
 
 ---
 

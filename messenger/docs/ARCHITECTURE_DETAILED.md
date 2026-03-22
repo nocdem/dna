@@ -85,7 +85,7 @@ DNA Connect is a post-quantum end-to-end encrypted messenger with integrated cry
 ### Top-Level Layout
 
 ```
-/opt/dna-messenger/
+/opt/dna/messenger/
 │
 ├── include/dna/              # Public API headers
 │   └── dna_engine.h          # Unified async engine API (v1.0.0)
@@ -1743,7 +1743,7 @@ The Flutter app uses a native library (`libdna.so` / `dna.dll`) for cryptographi
 
 **Build (no GUI):**
 ```bash
-cd /opt/dna-messenger
+cd /opt/dna/messenger
 git pull
 rm -rf build && mkdir build && cd build
 cmake -DBUILD_GUI=OFF .. && make -j$(nproc)
@@ -1767,7 +1767,7 @@ cmake -DBUILD_GUI=OFF .. && make -j$(nproc)
 
 | File | Purpose |
 |------|---------|
-| `dna_messenger.ini` | GUI window layout, theme |
+| `dna_connect.ini` | GUI window layout, theme |
 | `<data_dir>/` | All user data (see [Data Directory](#data-directory)) |
 
 ### 14.5 Network Ports

@@ -73,14 +73,14 @@ The DNA Engine provides a unified async C API for DNA Connect core functionality
 
 ### CLI Tool
 
-For interactive testing without a GUI, use the `dna-messenger-cli` tool:
+For interactive testing without a GUI, use the `dna-connect-cli` tool:
 
 ```bash
 # Build
-cd build && cmake .. && make dna-messenger-cli
+cd build && cmake .. && make dna-connect-cli
 
 # Run
-./cli/dna-messenger-cli
+./cli/dna-connect-cli
 
 # Commands:
 > help           # Show commands
