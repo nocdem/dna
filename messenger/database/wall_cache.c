@@ -204,11 +204,11 @@ int wall_cache_init(void) {
                 uv = sqlite3_column_int(uv_stmt, 0);
             sqlite3_finalize(uv_stmt);
         }
-        if (uv < 2) {
+        if (uv < 3) {
             sqlite3_exec(g_db, "DELETE FROM wall_posts;", NULL, NULL, NULL);
             sqlite3_exec(g_db, "DELETE FROM wall_cache_meta;", NULL, NULL, NULL);
-            sqlite3_exec(g_db, "PRAGMA user_version = 2;", NULL, NULL, NULL);
-            QGP_LOG_INFO(LOG_TAG, "Cache reset (v2): cleared stale data from fingerprint mismatch bug\n");
+            sqlite3_exec(g_db, "PRAGMA user_version = 3;", NULL, NULL, NULL);
+            QGP_LOG_INFO(LOG_TAG, "Cache reset (v3): clear stale meta from error-as-fresh bug\n");
         }
     }
 
