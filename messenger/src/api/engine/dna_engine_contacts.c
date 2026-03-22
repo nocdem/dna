@@ -635,9 +635,13 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
     /* Approved request moved to contacts table — remove from contact_requests */
     contacts_db_remove_request(task->params.contact_request.fingerprint);
 
-    /* Start listeners for new contact (outbox, ACK) */
+    /* Start listeners for new contact (outbox, ACK, wall) */
     dna_engine_listen_outbox(engine, task->params.contact_request.fingerprint);
     dna_engine_start_ack_listener(engine, task->params.contact_request.fingerprint);
+    dna_engine_start_wall_listener(engine, task->params.contact_request.fingerprint);
+
+    /* Subscribe to DM channel for real-time push delivery */
+    dna_dm_channel_subscribe(engine, task->params.contact_request.fingerprint);
 
     /* Read salt from the approved request (stored during receive) */
     uint8_t approved_salt[DHT_CONTACT_SALT_SIZE];
