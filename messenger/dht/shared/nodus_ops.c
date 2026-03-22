@@ -192,7 +192,8 @@ int nodus_ops_get_str(const char *str_key,
     nodus_value_t *val = NULL;
     int rc = nodus_client_get(c, &k, &val);
     nodus_singleton_release();
-    if (rc != 0 || !val) return -1;
+    if (rc != 0) return rc;
+    if (!val) return NODUS_ERR_NOT_FOUND;
 
     *data_out = malloc(val->data_len);
     if (!*data_out) { nodus_value_free(val); return -1; }

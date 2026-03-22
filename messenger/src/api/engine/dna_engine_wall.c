@@ -27,6 +27,7 @@
 #include "engine_includes.h"
 #include "dht/client/dna_wall.h"
 #include "database/wall_cache.h"
+#include "nodus/nodus_types.h"
 
 /* Override LOG_TAG for this module (engine_includes.h defines DNA_ENGINE) */
 #undef LOG_TAG
@@ -276,13 +277,17 @@ static void *wall_fetch_thread(void *arg) {
         wall_cache_store(ctx->fingerprint, wall.posts, wall.post_count);
         wall_cache_update_meta(ctx->fingerprint);
         if (ctx->updated_count) atomic_fetch_add(ctx->updated_count, 1);
-    } else if (ret == -2) {
-        /* Not found on DHT - keep existing cached posts but mark meta
-         * as fresh so we don't re-fetch every second.  Will retry after
-         * the normal 5-minute TTL (WALL_CACHE_TTL_SECONDS). */
+    } else if (ret == NODUS_ERR_NOT_FOUND) {
+        /* Genuinely not found on DHT — mark meta fresh so we don't
+         * re-fetch every second.  Will retry after TTL (5 min). */
         wall_cache_update_meta(ctx->fingerprint);
-        QGP_LOG_DEBUG(LOG_TAG, "Wall not found on DHT for %.16s..., keeping cache (marked fresh)",
+        QGP_LOG_DEBUG(LOG_TAG, "Wall not found on DHT for %.16s... (marked fresh)",
                       ctx->fingerprint);
+    } else {
+        /* Error (timeout, disconnect, etc.) — leave meta stale so
+         * next timeline load retries the fetch. */
+        QGP_LOG_WARN(LOG_TAG, "Wall fetch error for %.16s... (nodus_rc=%d), will retry",
+                     ctx->fingerprint, ret);
     }
     dna_wall_free(&wall);
     return NULL;

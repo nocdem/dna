@@ -602,8 +602,9 @@ int dna_wall_load(const char *fingerprint,
     int ret = nodus_ops_get_str(base_key, &value, &value_len);
 
     if (ret != 0 || !value || value_len == 0) {
-        QGP_LOG_DEBUG(LOG_TAG, "No wall found for %s (ret=%d)", fingerprint, ret);
-        return -2;
+        QGP_LOG_DEBUG(LOG_TAG, "No wall found for %s (nodus_rc=%d)", fingerprint, ret);
+        if (value) free(value);
+        return ret;  /* propagate actual error code (NOT_FOUND, TIMEOUT, etc.) */
     }
 
     /* Convert to null-terminated string */
