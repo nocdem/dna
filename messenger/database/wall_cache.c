@@ -184,6 +184,14 @@ int wall_cache_init(void) {
         return -1;
     }
 
+    /* Clean orphaned meta: if meta says "fresh" but no posts cached,
+     * force re-fetch (fixes stale meta left by v0.9.91 cleanup bug) */
+    sqlite3_exec(g_db,
+        "DELETE FROM wall_cache_meta "
+        "WHERE cache_key NOT IN "
+        "(SELECT DISTINCT author_fingerprint FROM wall_posts);",
+        NULL, NULL, NULL);
+
     QGP_LOG_INFO(LOG_TAG, "Wall cache initialized\n");
     return 0;
 }
