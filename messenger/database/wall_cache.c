@@ -107,7 +107,10 @@ static int wall_cache_nuke_and_reopen(void) {
     }
 
     /* Set user_version to current so we don't trigger the migration reset */
-    sqlite3_exec(g_db, "PRAGMA user_version = 6;", NULL, NULL, NULL);
+    sqlite3_exec(g_db, "PRAGMA user_version = 7;", NULL, NULL, NULL);
+
+    /* Ensure temp storage is memory-based after recovery too */
+    sqlite3_exec(g_db, "PRAGMA temp_store = 2;", NULL, NULL, NULL);
 
     QGP_LOG_WARN(LOG_TAG, "RECOVERY: wall_cache.db rebuilt successfully\n");
     return 0;
@@ -149,6 +152,8 @@ static int create_schema(void) {
         ");"
         "CREATE INDEX IF NOT EXISTS idx_wall_author "
         "    ON wall_posts(author_fingerprint);"
+        "CREATE INDEX IF NOT EXISTS idx_wall_author_ts "
+        "    ON wall_posts(author_fingerprint, timestamp DESC);"
 
         /* ── wall_cache_meta ───────────────────────────────────── */
         "CREATE TABLE IF NOT EXISTS wall_cache_meta ("
@@ -271,6 +276,11 @@ int wall_cache_init(void) {
      * (matches feed_cache pattern - proven to work on Android) */
     sqlite3_exec(g_db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
 
+    /* Force temp storage to memory — prevents SQLITE_IOERR when ORDER BY
+     * needs a temp B-tree for large blob rows (e.g. 500KB image_json × 9).
+     * Some Android devices have restricted/broken temp file I/O. */
+    sqlite3_exec(g_db, "PRAGMA temp_store = 2;", NULL, NULL, NULL);
+
     /* Create schema */
     if (create_schema() != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Schema creation failed, attempting recovery\n");
@@ -299,8 +309,20 @@ int wall_cache_init(void) {
             sqlite3_exec(g_db, "REINDEX;", NULL, NULL, NULL);
             sqlite3_wal_checkpoint_v2(g_db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
             sqlite3_exec(g_db, "VACUUM;", NULL, NULL, NULL);
-            sqlite3_exec(g_db, "PRAGMA user_version = 6;", NULL, NULL, NULL);
-            QGP_LOG_INFO(LOG_TAG, "Cache reset (v6): nuke all + drop timestamp index + vacuum (WAL corruption fix)\n");
+            sqlite3_exec(g_db, "PRAGMA user_version = 7;", NULL, NULL, NULL);
+            QGP_LOG_INFO(LOG_TAG, "Cache reset (v6→7): nuke all + drop timestamp index + vacuum + composite index\n");
+        }
+        if (uv == 6) {
+            /* v7: Add composite index for ORDER BY without temp sorter.
+             * Fixes SQLITE_IOERR on Android when sorting large image_json blobs. */
+            sqlite3_exec(g_db, "CREATE INDEX IF NOT EXISTS idx_wall_author_ts "
+                                "ON wall_posts(author_fingerprint, timestamp DESC);",
+                         NULL, NULL, NULL);
+            /* Nuke cache to force rebuild with new index */
+            sqlite3_exec(g_db, "DELETE FROM wall_posts;", NULL, NULL, NULL);
+            sqlite3_exec(g_db, "DELETE FROM wall_cache_meta;", NULL, NULL, NULL);
+            sqlite3_exec(g_db, "PRAGMA user_version = 7;", NULL, NULL, NULL);
+            QGP_LOG_INFO(LOG_TAG, "Migration v7: composite index + cache nuke (IOERR fix)\n");
         }
     }
 
@@ -526,30 +548,36 @@ int wall_cache_load(const char *fingerprint,
     *posts = NULL;
     *count = 0;
 
-    const char *sql =
-        "SELECT uuid, author_fingerprint, text, image_json, timestamp, "
-        "signature, signature_len, verified "
-        "FROM wall_posts WHERE author_fingerprint = ? "
+    /* Two-phase query to avoid SQLITE_IOERR from temp sorter on large blobs.
+     * Phase 1: index-only scan for UUIDs in sorted order.
+     * Phase 2: fetch full rows by UUID (no ORDER BY). */
+    const char *sql_uuids =
+        "SELECT uuid FROM wall_posts WHERE author_fingerprint = ? "
         "ORDER BY timestamp DESC;";
 
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    sqlite3_stmt *uuid_stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql_uuids, -1, &uuid_stmt, NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "load: prepare: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
-    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_STATIC);
+    sqlite3_bind_text(uuid_stmt, 1, fingerprint, -1, SQLITE_STATIC);
 
-    /* First pass: count rows */
+    /* Collect UUIDs */
+    char uuids[200][37];
     size_t n = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        n++;
+    while (sqlite3_step(uuid_stmt) == SQLITE_ROW && n < 200) {
+        const char *u = (const char *)sqlite3_column_text(uuid_stmt, 0);
+        if (u) {
+            strncpy(uuids[n], u, 36);
+            uuids[n][36] = '\0';
+            n++;
+        }
     }
-    sqlite3_reset(stmt);
+    sqlite3_finalize(uuid_stmt);
 
     if (n == 0) {
-        sqlite3_finalize(stmt);
         return -2; /* Not found */
     }
 
@@ -557,18 +585,27 @@ int wall_cache_load(const char *fingerprint,
     dna_wall_post_t *result = calloc(n, sizeof(dna_wall_post_t));
     if (!result) {
         QGP_LOG_ERROR(LOG_TAG, "load: calloc failed\n");
-        sqlite3_finalize(stmt);
         return -1;
     }
 
-    /* Second pass: collect posts */
-    size_t i = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW && i < n) {
-        fill_post_from_row(stmt, &result[i]);
-        i++;
-    }
+    /* Fetch full rows by UUID */
+    const char *sql_full =
+        "SELECT uuid, author_fingerprint, text, image_json, timestamp, "
+        "signature, signature_len, verified "
+        "FROM wall_posts WHERE uuid = ?;";
 
-    sqlite3_finalize(stmt);
+    size_t i = 0;
+    for (size_t k = 0; k < n; k++) {
+        sqlite3_stmt *full_stmt = NULL;
+        rc = sqlite3_prepare_v2(g_db, sql_full, -1, &full_stmt, NULL);
+        if (rc != SQLITE_OK) continue;
+        sqlite3_bind_text(full_stmt, 1, uuids[k], -1, SQLITE_STATIC);
+        if (sqlite3_step(full_stmt) == SQLITE_ROW) {
+            fill_post_from_row(full_stmt, &result[i]);
+            i++;
+        }
+        sqlite3_finalize(full_stmt);
+    }
 
     *posts = result;
     *count = i;
@@ -603,40 +640,69 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
         return -1;
     }
 
-    const char *sql_single =
-        "SELECT uuid, author_fingerprint, text, image_json, timestamp, "
-        "signature, signature_len, verified "
-        "FROM wall_posts WHERE author_fingerprint = ? "
+    /* Two-phase query: Phase 1 collects UUIDs via index-only scan (no blob I/O),
+     * Phase 2 fetches full rows by UUID (no ORDER BY, no temp sorter).
+     * This avoids SQLITE_IOERR when ORDER BY tries to sort large image_json blobs
+     * through temp file storage on some Android devices. */
+    const char *sql_uuids =
+        "SELECT uuid FROM wall_posts WHERE author_fingerprint = ? "
         "ORDER BY timestamp DESC;";
 
+    const char *sql_full =
+        "SELECT uuid, author_fingerprint, text, image_json, timestamp, "
+        "signature, signature_len, verified "
+        "FROM wall_posts WHERE uuid = ?;";
+
     for (size_t f = 0; f < fp_count; f++) {
-        sqlite3_stmt *stmt = NULL;
-        int rc = sqlite3_prepare_v2(g_db, sql_single, -1, &stmt, NULL);
+        /* Phase 1: Get sorted UUIDs (index-only scan with composite index) */
+        sqlite3_stmt *uuid_stmt = NULL;
+        int rc = sqlite3_prepare_v2(g_db, sql_uuids, -1, &uuid_stmt, NULL);
         if (rc != SQLITE_OK) {
             QGP_LOG_ERROR(LOG_TAG, "load_timeline: prepare[%zu]: %s\n", f, sqlite3_errmsg(g_db));
             continue;
         }
-        sqlite3_bind_text(stmt, 1, fingerprints[f], -1, SQLITE_STATIC);
+        sqlite3_bind_text(uuid_stmt, 1, fingerprints[f], -1, SQLITE_STATIC);
 
-        size_t count_before = total;
+        /* Collect UUIDs into temp array */
+        char uuids[200][37];  /* max 200 UUIDs, 36 chars + null */
+        size_t uuid_count = 0;
         int step_rc;
-        while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-            /* Grow array if needed */
+        while ((step_rc = sqlite3_step(uuid_stmt)) == SQLITE_ROW && uuid_count < 200) {
+            const char *u = (const char *)sqlite3_column_text(uuid_stmt, 0);
+            if (u) {
+                strncpy(uuids[uuid_count], u, 36);
+                uuids[uuid_count][36] = '\0';
+                uuid_count++;
+            }
+            if (total + uuid_count >= 200) break;
+        }
+        sqlite3_finalize(uuid_stmt);
+
+        /* Phase 2: Fetch full rows by UUID (no ORDER BY needed) */
+        size_t count_before = total;
+        for (size_t u = 0; u < uuid_count; u++) {
             if (total >= capacity) {
                 size_t new_cap = capacity * 2;
                 if (new_cap > 200) new_cap = 200;
-                if (total >= new_cap) break;  /* Hit 200 limit */
+                if (total >= new_cap) break;
                 dna_wall_post_t *tmp = realloc(merged, new_cap * sizeof(dna_wall_post_t));
                 if (!tmp) break;
                 memset(tmp + capacity, 0, (new_cap - capacity) * sizeof(dna_wall_post_t));
                 merged = tmp;
                 capacity = new_cap;
             }
-            fill_post_from_row(stmt, &merged[total]);
-            total++;
+
+            sqlite3_stmt *full_stmt = NULL;
+            rc = sqlite3_prepare_v2(g_db, sql_full, -1, &full_stmt, NULL);
+            if (rc != SQLITE_OK) continue;
+            sqlite3_bind_text(full_stmt, 1, uuids[u], -1, SQLITE_STATIC);
+            if (sqlite3_step(full_stmt) == SQLITE_ROW) {
+                fill_post_from_row(full_stmt, &merged[total]);
+                total++;
+            }
+            sqlite3_finalize(full_stmt);
             if (total >= 200) break;
         }
-        sqlite3_finalize(stmt);
         size_t select_rows = total - count_before;
         if (select_rows == 0 && step_rc != SQLITE_DONE) {
             QGP_LOG_ERROR(LOG_TAG, "load_timeline: fp[%zu] sqlite3_step returned %d (%s) errmsg=%s",
