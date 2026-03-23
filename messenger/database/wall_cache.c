@@ -18,6 +18,7 @@
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
+#include <pthread.h>
 #ifdef _WIN32
 /* No additional includes needed */
 #else
@@ -27,6 +28,7 @@
 #define LOG_TAG "WALL_CACHE"
 
 static sqlite3 *g_db = NULL;
+static pthread_mutex_t g_store_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* ── Internal helpers ──────────────────────────────────────────────── */
 
@@ -204,11 +206,13 @@ int wall_cache_init(void) {
             sqlite3_finalize(uv_stmt);
         }
         QGP_LOG_INFO(LOG_TAG, "PRAGMA user_version = %d\n", uv);
-        if (uv < 4) {
+        if (uv < 5) {
             sqlite3_exec(g_db, "DELETE FROM wall_posts;", NULL, NULL, NULL);
             sqlite3_exec(g_db, "DELETE FROM wall_cache_meta;", NULL, NULL, NULL);
-            sqlite3_exec(g_db, "PRAGMA user_version = 4;", NULL, NULL, NULL);
-            QGP_LOG_INFO(LOG_TAG, "Cache reset (v4): nuke all + clean build\n");
+            sqlite3_exec(g_db, "DELETE FROM wall_boost_pointers;", NULL, NULL, NULL);
+            sqlite3_exec(g_db, "REINDEX;", NULL, NULL, NULL);
+            sqlite3_exec(g_db, "PRAGMA user_version = 5;", NULL, NULL, NULL);
+            QGP_LOG_INFO(LOG_TAG, "Cache reset (v5): nuke all + reindex (concurrent write fix)\n");
         }
     }
 
@@ -279,15 +283,19 @@ int wall_cache_evict_expired(void) {
 
 int wall_cache_store(const char *fingerprint,
                      const dna_wall_post_t *posts, size_t count) {
+    pthread_mutex_lock(&g_store_mutex);
+
     if (!g_db) {
         if (wall_cache_init() != 0) {
             QGP_LOG_WARN(LOG_TAG, "store: cache not available (init failed)\n");
+            pthread_mutex_unlock(&g_store_mutex);
             return -3;
         }
     }
 
     if (!fingerprint) {
         QGP_LOG_ERROR(LOG_TAG, "store: NULL fingerprint\n");
+        pthread_mutex_unlock(&g_store_mutex);
         return -1;
     }
 
@@ -297,6 +305,7 @@ int wall_cache_store(const char *fingerprint,
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "store: BEGIN failed: %s\n", err_msg);
         sqlite3_free(err_msg);
+        pthread_mutex_unlock(&g_store_mutex);
         return -1;
     }
 
@@ -314,6 +323,7 @@ int wall_cache_store(const char *fingerprint,
         if (rc != SQLITE_OK) {
             QGP_LOG_ERROR(LOG_TAG, "store: insert prepare: %s\n", sqlite3_errmsg(g_db));
             sqlite3_exec(g_db, "ROLLBACK;", NULL, NULL, NULL);
+            pthread_mutex_unlock(&g_store_mutex);
             return -1;
         }
 
@@ -344,6 +354,7 @@ int wall_cache_store(const char *fingerprint,
                 QGP_LOG_ERROR(LOG_TAG, "store: insert step[%zu]: %s\n", i, sqlite3_errmsg(g_db));
                 sqlite3_finalize(ins_stmt);
                 sqlite3_exec(g_db, "ROLLBACK;", NULL, NULL, NULL);
+                pthread_mutex_unlock(&g_store_mutex);
                 return -1;
             }
         }
@@ -361,6 +372,7 @@ int wall_cache_store(const char *fingerprint,
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "store: meta prepare: %s\n", sqlite3_errmsg(g_db));
         sqlite3_exec(g_db, "ROLLBACK;", NULL, NULL, NULL);
+        pthread_mutex_unlock(&g_store_mutex);
         return -1;
     }
 
@@ -374,6 +386,7 @@ int wall_cache_store(const char *fingerprint,
     if (rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "store: meta step: %s\n", sqlite3_errmsg(g_db));
         sqlite3_exec(g_db, "ROLLBACK;", NULL, NULL, NULL);
+        pthread_mutex_unlock(&g_store_mutex);
         return -1;
     }
 
@@ -383,6 +396,7 @@ int wall_cache_store(const char *fingerprint,
         QGP_LOG_ERROR(LOG_TAG, "store: COMMIT failed: %s\n", err_msg);
         sqlite3_free(err_msg);
         sqlite3_exec(g_db, "ROLLBACK;", NULL, NULL, NULL);
+        pthread_mutex_unlock(&g_store_mutex);
         return -1;
     }
 
@@ -406,6 +420,7 @@ int wall_cache_store(const char *fingerprint,
             sqlite3_finalize(v_stmt);
         }
     }
+    pthread_mutex_unlock(&g_store_mutex);
     return 0;
 }
 
