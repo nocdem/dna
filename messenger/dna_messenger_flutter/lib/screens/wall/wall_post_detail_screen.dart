@@ -10,7 +10,8 @@ import '../../l10n/app_localizations.dart';
 import '../../widgets/wall_comment_tile.dart';
 import 'wall_tip_dialog.dart';
 
-/// Detail screen for a wall post with threaded comments
+/// Detail screen for a wall post with threaded comments.
+/// Receives initial data from WallFeedItem to avoid redundant fetches.
 class WallPostDetailScreen extends ConsumerStatefulWidget {
   final WallPost post;
 
@@ -38,9 +39,14 @@ class _WallPostDetailScreenState extends ConsumerState<WallPostDetailScreen> {
     final theme = Theme.of(context);
     final fingerprint = ref.watch(currentFingerprintProvider) ?? '';
     final commentsAsync = ref.watch(wallCommentsProvider(widget.post.uuid));
-    final likesAsync = ref.watch(wallLikesProvider(widget.post.uuid));
-    final likes = likesAsync.valueOrNull ?? [];
-    final isLiked = likes.any((l) => l.authorFingerprint == fingerprint);
+
+    // Get like data from the timeline provider (single source of truth)
+    final timelineItems = ref.watch(wallTimelineProvider).valueOrNull ?? [];
+    final feedItem = timelineItems
+        .where((item) => item.post.uuid == widget.post.uuid)
+        .firstOrNull;
+    final likeCount = feedItem?.likeCount ?? 0;
+    final isLiked = feedItem?.isLikedByMe ?? false;
 
     return Scaffold(
       appBar: DnaAppBar(
@@ -65,11 +71,16 @@ class _WallPostDetailScreenState extends ConsumerState<WallPostDetailScreen> {
                   child: WallPostTile(
                     post: widget.post,
                     myFingerprint: fingerprint,
-                    likeCount: likes.length,
+                    authorDisplayName: feedItem?.authorDisplayName,
+                    authorAvatar: feedItem?.authorAvatar,
+                    decodedImage: feedItem?.decodedImage,
+                    likeCount: likeCount,
                     isLikedByMe: isLiked,
-                    onLike: () {
-                      ref.read(wallLikesProvider(widget.post.uuid).notifier).like();
-                    },
+                    onLike: isLiked
+                        ? null
+                        : () => ref
+                            .read(wallTimelineProvider.notifier)
+                            .likePost(widget.post.uuid),
                     onTip: !widget.post.isOwn(fingerprint)
                         ? () => showWallTipDialog(
                               context: context,
@@ -300,15 +311,21 @@ class _WallPostDetailScreenState extends ConsumerState<WallPostDetailScreen> {
     setState(() => _sending = true);
 
     try {
-      await ref.read(wallCommentsProvider(widget.post.uuid).notifier).addComment(
-        text,
-        parentCommentUuid: _replyToUuid,
-      );
+      await ref
+          .read(wallCommentsProvider(widget.post.uuid).notifier)
+          .addComment(
+            text,
+            parentCommentUuid: _replyToUuid,
+          );
       _commentController.clear();
       setState(() {
         _replyToUuid = null;
         _replyToAuthor = null;
       });
+      // Also update the comment count in the timeline
+      ref
+          .read(wallTimelineProvider.notifier)
+          .refreshComments(widget.post.uuid);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

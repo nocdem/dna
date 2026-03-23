@@ -1,19 +1,20 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../design_system/design_system.dart';
 import '../ffi/dna_engine.dart';
-import '../providers/contact_profile_cache_provider.dart';
-import '../providers/identity_profile_cache_provider.dart';
-import '../providers/profile_provider.dart';
 import '../l10n/app_localizations.dart';
 import '../utils/time_format.dart';
 
-class WallPostTile extends ConsumerWidget {
+/// Pure presentational widget — receives ALL data via constructor.
+/// Zero provider watches, zero async operations in build.
+class WallPostTile extends StatelessWidget {
   final WallPost post;
   final String myFingerprint;
+  final String? authorDisplayName;
+  final Uint8List? authorAvatar;
+  final Uint8List? decodedImage;
   final VoidCallback? onDelete;
   final VoidCallback? onAuthorTap;
   final VoidCallback? onShare;
@@ -30,6 +31,9 @@ class WallPostTile extends ConsumerWidget {
     super.key,
     required this.post,
     required this.myFingerprint,
+    this.authorDisplayName,
+    this.authorAvatar,
+    this.decodedImage,
     this.onDelete,
     this.onAuthorTap,
     this.onShare,
@@ -44,30 +48,15 @@ class WallPostTile extends ConsumerWidget {
   });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final isOwn = post.isOwn(myFingerprint);
     final theme = Theme.of(context);
-    final cachedProfile = ref.watch(
-      contactProfileCacheProvider.select((cache) => cache[post.authorFingerprint]),
-    );
-    Uint8List? avatarBytes = cachedProfile?.decodeAvatar();
 
-    // Own profile lives in identityProfileCacheProvider, not contactProfileCache
-    if (avatarBytes == null && isOwn) {
-      final cachedIdentity = ref.watch(
-        identityProfileCacheProvider.select((cache) => cache[myFingerprint]),
-      );
-      if (cachedIdentity != null && cachedIdentity.avatarBase64.isNotEmpty) {
-        try {
-          avatarBytes = base64Decode(cachedIdentity.avatarBase64);
-        } catch (_) {}
-      }
-      // Fallback: use local profile (available before DHT connects)
-      if (avatarBytes == null) {
-        final ownProfile = ref.watch(fullProfileProvider).valueOrNull;
-        avatarBytes = ownProfile?.decodeAvatar();
-      }
-    }
+    // Use pre-resolved display name, fallback to post data
+    final displayName = authorDisplayName ??
+        (post.authorName.isNotEmpty
+            ? post.authorName
+            : post.authorFingerprint.substring(0, 16));
 
     final fireLevel = _fireLevel(likeCount);
 
@@ -87,8 +76,8 @@ class WallPostTile extends ConsumerWidget {
               GestureDetector(
                 onTap: onAuthorTap,
                 child: DnaAvatar(
-                  imageBytes: avatarBytes,
-                  name: post.authorName.isNotEmpty ? post.authorName : '?',
+                  imageBytes: authorAvatar,
+                  name: displayName,
                   size: DnaAvatarSize.md,
                 ),
               ),
@@ -100,9 +89,7 @@ class WallPostTile extends ConsumerWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        post.authorName.isNotEmpty
-                            ? post.authorName
-                            : post.authorFingerprint.substring(0, 16),
+                        displayName,
                         style: theme.textTheme.titleSmall?.copyWith(
                           fontWeight: FontWeight.w600,
                         ),
@@ -122,8 +109,11 @@ class WallPostTile extends ConsumerWidget {
             ],
           ),
           const SizedBox(height: DnaSpacing.md),
-          // Image (v0.7.0+)
-          if (post.hasImage) _WallPostImage(imageJson: post.imageJson!),
+          // Image — uses pre-decoded bytes, no base64 in build
+          if (decodedImage != null)
+            _WallPostImage(imageBytes: decodedImage!)
+          else if (post.hasImage)
+            _WallPostImageFallback(imageJson: post.imageJson!),
           // Post text
           Text(
             post.text,
@@ -186,11 +176,11 @@ class WallPostTile extends ConsumerWidget {
     );
 
     if (fireLevel > 0) {
-      card = _FireGlow(level: fireLevel, child: card);
+      card = RepaintBoundary(child: _FireGlow(level: fireLevel, child: card));
     }
 
     if (isBoosted) {
-      card = _BoostGlow(child: card);
+      card = RepaintBoundary(child: _BoostGlow(child: card));
     }
 
     return card;
@@ -223,27 +213,27 @@ class _FireGlow extends StatelessWidget {
 
     switch (level) {
       case 1:
-        glowColor = const Color(0x40FF8C42); // subtle orange
+        glowColor = const Color(0x40FF8C42);
         blur = 4;
         spread = 0;
         borderWidth = 1;
       case 2:
-        glowColor = const Color(0x66FF6B35); // orange
+        glowColor = const Color(0x66FF6B35);
         blur = 8;
         spread = 1;
         borderWidth = 1.5;
       case 3:
-        glowColor = const Color(0x80FF4500); // red-orange
+        glowColor = const Color(0x80FF4500);
         blur = 12;
         spread = 2;
         borderWidth = 2;
       case 4:
-        glowColor = const Color(0x99FF2200); // intense red
+        glowColor = const Color(0x99FF2200);
         blur = 16;
         spread = 3;
         borderWidth = 2;
       case 5:
-        glowColor = const Color(0xBFFFD700); // gold
+        glowColor = const Color(0xBFFFD700);
         blur = 20;
         spread = 4;
         borderWidth = 2.5;
@@ -251,7 +241,7 @@ class _FireGlow extends StatelessWidget {
         return child;
     }
 
-    return Container(
+    return DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
         border: Border.all(
@@ -285,7 +275,7 @@ class _BoostGlow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
         gradient: const LinearGradient(
@@ -306,38 +296,24 @@ class _BoostGlow extends StatelessWidget {
   }
 }
 
-/// Displays an image from wall post image_json
+/// Displays an image from pre-decoded bytes (fast path)
 class _WallPostImage extends StatelessWidget {
-  final String imageJson;
+  final Uint8List imageBytes;
 
-  const _WallPostImage({required this.imageJson});
-
-  Uint8List? _decodeImage() {
-    try {
-      final map = jsonDecode(imageJson) as Map<String, dynamic>;
-      final data = map['data'] as String?;
-      if (data == null || data.isEmpty) return null;
-      return base64Decode(data);
-    } catch (e) {
-      return null;
-    }
-  }
+  const _WallPostImage({required this.imageBytes});
 
   @override
   Widget build(BuildContext context) {
-    final bytes = _decodeImage();
-    if (bytes == null) return const SizedBox.shrink();
-
     return Padding(
       padding: const EdgeInsets.only(bottom: DnaSpacing.sm),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
         child: GestureDetector(
-          onTap: () => _showFullscreen(context, bytes),
+          onTap: () => _showFullscreen(context, imageBytes),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxHeight: 300),
             child: Image.memory(
-              bytes,
+              imageBytes,
               fit: BoxFit.cover,
               width: double.infinity,
               errorBuilder: (_, e, s) => const SizedBox.shrink(),
@@ -365,6 +341,31 @@ class _WallPostImage extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Fallback: decodes image from JSON if pre-decoded bytes not available
+class _WallPostImageFallback extends StatelessWidget {
+  final String imageJson;
+
+  const _WallPostImageFallback({required this.imageJson});
+
+  Uint8List? _decodeImage() {
+    try {
+      final map = jsonDecode(imageJson) as Map<String, dynamic>;
+      final data = map['data'] as String?;
+      if (data == null || data.isEmpty) return null;
+      return base64Decode(data);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = _decodeImage();
+    if (bytes == null) return const SizedBox.shrink();
+    return _WallPostImage(imageBytes: bytes);
   }
 }
 
@@ -398,7 +399,8 @@ class _InlineComments extends StatelessWidget {
               child: Padding(
                 padding: const EdgeInsets.only(bottom: DnaSpacing.xs),
                 child: Text(
-                  AppLocalizations.of(context).wallViewAllComments(comments.length),
+                  AppLocalizations.of(context)
+                      .wallViewAllComments(comments.length),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),

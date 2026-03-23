@@ -76,38 +76,65 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
         ],
       ),
       body: timeline.when(
-        data: (posts) => posts.isEmpty
+        data: (items) => items.isEmpty
             ? _buildEmptyState(context)
             : RefreshIndicator(
-                onRefresh: () => ref.read(wallTimelineProvider.notifier).refresh(),
+                onRefresh: () =>
+                    ref.read(wallTimelineProvider.notifier).refresh(),
                 child: ListView.separated(
                   padding: const EdgeInsets.all(DnaSpacing.md),
-                  itemCount: posts.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: DnaSpacing.sm),
+                  itemCount: items.length,
+                  separatorBuilder: (_, __) =>
+                      const SizedBox(height: DnaSpacing.sm),
                   itemBuilder: (context, index) {
-                    final post = posts[index];
-                    return _WallPostWithComments(
-                      post: post,
+                    final item = items[index];
+                    final isOwn = item.isOwn(myFp);
+                    return WallPostTile(
+                      post: item.post,
                       myFingerprint: myFp,
+                      authorDisplayName: item.authorDisplayName,
+                      authorAvatar: item.authorAvatar,
+                      comments: item.previewComments,
+                      likeCount: item.likeCount,
+                      isLikedByMe: item.isLikedByMe,
+                      isBoosted: item.post.isBoosted,
+                      decodedImage: item.decodedImage,
+                      onLike: item.isLikedByMe
+                          ? null
+                          : () => ref
+                              .read(wallTimelineProvider.notifier)
+                              .likePost(item.post.uuid),
                       onReply: () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => WallPostDetailScreen(post: post),
+                          builder: (_) =>
+                              WallPostDetailScreen(post: item.post),
                         ),
                       ),
-                      onDelete: post.isOwn(myFp)
-                          ? () => _confirmDelete(context, ref, post.uuid)
+                      onViewAllComments: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              WallPostDetailScreen(post: item.post),
+                        ),
+                      ),
+                      onDelete: isOwn
+                          ? () => _confirmDelete(
+                              context, ref, item.post.uuid)
                           : null,
-                      onShare: !post.isOwn(myFp)
-                          ? () => _showRepostDialog(context, ref, post)
+                      onShare: !isOwn
+                          ? () => _showRepostDialog(
+                              context, ref, item.post)
                           : null,
-                      onTip: !post.isOwn(myFp)
+                      onTip: !isOwn
                           ? () => showWallTipDialog(
                                 context: context,
                                 ref: ref,
-                                post: post,
+                                post: item.post,
                               )
                           : null,
+                      onAuthorTap: () => _showAuthorProfile(
+                          context, ref, item),
                     );
                   },
                 ),
@@ -118,11 +145,21 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
             return ListView.separated(
               padding: const EdgeInsets.all(DnaSpacing.md),
               itemCount: cached.length,
-              separatorBuilder: (_, _) => const SizedBox(height: DnaSpacing.sm),
-              itemBuilder: (context, index) => WallPostTile(
-                post: cached[index],
-                myFingerprint: myFp,
-              ),
+              separatorBuilder: (_, __) =>
+                  const SizedBox(height: DnaSpacing.sm),
+              itemBuilder: (context, index) {
+                final item = cached[index];
+                return WallPostTile(
+                  post: item.post,
+                  myFingerprint: myFp,
+                  authorDisplayName: item.authorDisplayName,
+                  authorAvatar: item.authorAvatar,
+                  decodedImage: item.decodedImage,
+                  likeCount: item.likeCount,
+                  isLikedByMe: item.isLikedByMe,
+                  isBoosted: item.post.isBoosted,
+                );
+              },
             );
           }
           return const Center(child: CircularProgressIndicator());
@@ -217,7 +254,9 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
             onPressed: () async {
               Navigator.pop(context);
               try {
-                await ref.read(wallTimelineProvider.notifier).deletePost(postUuid);
+                await ref
+                    .read(wallTimelineProvider.notifier)
+                    .deletePost(postUuid);
               } catch (e) {
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -250,7 +289,8 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
         return AlertDialog(
           title: Row(
             children: [
-              FaIcon(FontAwesomeIcons.retweet, size: 16, color: theme.colorScheme.primary),
+              FaIcon(FontAwesomeIcons.retweet,
+                  size: 16, color: theme.colorScheme.primary),
               const SizedBox(width: DnaSpacing.sm),
               Text(AppLocalizations.of(dialogContext).wallRepost),
             ],
@@ -268,7 +308,8 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                     padding: const EdgeInsets.all(DnaSpacing.md),
                     decoration: BoxDecoration(
                       color: theme.colorScheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
+                      borderRadius:
+                          BorderRadius.circular(DnaSpacing.radiusSm),
                       border: Border(
                         left: BorderSide(
                           color: theme.colorScheme.primary,
@@ -328,11 +369,14 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                     ? quoteBlock
                     : '$quoteBlock\n\n$comment';
                 try {
-                  await ref.read(wallTimelineProvider.notifier).createPost(fullText);
+                  await ref
+                      .read(wallTimelineProvider.notifier)
+                      .createPost(fullText);
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: Text(AppLocalizations.of(context).wallReposted),
+                        content: Text(
+                            AppLocalizations.of(context).wallReposted),
                         duration: const Duration(seconds: 2),
                       ),
                     );
@@ -351,58 +395,11 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
       },
     );
   }
-}
 
-/// Wrapper that fetches comments for a post and passes them to WallPostTile
-class _WallPostWithComments extends ConsumerWidget {
-  final WallPost post;
-  final String myFingerprint;
-  final VoidCallback? onReply;
-  final VoidCallback? onDelete;
-  final VoidCallback? onShare;
-  final VoidCallback? onTip;
-
-  const _WallPostWithComments({
-    required this.post,
-    required this.myFingerprint,
-    this.onReply,
-    this.onDelete,
-    this.onShare,
-    this.onTip,
-  });
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // Trigger profile fetch for post author (populates avatar cache)
-    ref.read(contactProfileCacheProvider.notifier).fetchAndCache(post.authorFingerprint);
-
-    final commentsAsync = ref.watch(wallCommentsProvider(post.uuid));
-    final comments = commentsAsync.valueOrNull;
-    final likesAsync = ref.watch(wallLikesProvider(post.uuid));
-    final likes = likesAsync.valueOrNull ?? [];
-    final isLiked = likes.any((l) => l.authorFingerprint == myFingerprint);
-
-    return WallPostTile(
-      post: post,
-      myFingerprint: myFingerprint,
-      comments: comments,
-      onReply: onReply,
-      onViewAllComments: onReply,
-      onDelete: onDelete,
-      onShare: onShare,
-      onTip: onTip,
-      likeCount: likes.length,
-      isLikedByMe: isLiked,
-      isBoosted: post.isBoosted,
-      onLike: () {
-        ref.read(wallLikesProvider(post.uuid).notifier).like();
-      },
-      onAuthorTap: () => _showAuthorProfile(context, ref, post.authorFingerprint),
-    );
-  }
-
-  void _showAuthorProfile(BuildContext context, WidgetRef ref, String fingerprint) {
-    final profile = ref.read(contactProfileCacheProvider)[fingerprint];
+  void _showAuthorProfile(
+      BuildContext context, WidgetRef ref, WallFeedItem item) {
+    final profile =
+        ref.read(contactProfileCacheProvider)[item.post.authorFingerprint];
 
     showModalBottomSheet(
       context: context,
@@ -414,10 +411,7 @@ class _WallPostWithComments extends ConsumerWidget {
         expand: false,
         builder: (context, scrollController) {
           final theme = Theme.of(context);
-          final avatarBytes = profile?.decodeAvatar();
-          final name = post.authorName.isNotEmpty
-              ? post.authorName
-              : fingerprint.substring(0, 16);
+          final name = item.authorDisplayName;
           final bio = profile?.bio ?? '';
 
           return Container(
@@ -427,16 +421,19 @@ class _WallPostWithComments extends ConsumerWidget {
               children: [
                 Center(
                   child: Container(
-                    width: 40, height: 4,
+                    width: 40,
+                    height: 4,
                     decoration: BoxDecoration(
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(2)),
+                      color: theme.colorScheme.onSurface
+                          .withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
                 ),
                 const SizedBox(height: DnaSpacing.lg),
                 Center(
                   child: DnaAvatar(
-                    imageBytes: avatarBytes,
+                    imageBytes: item.authorAvatar,
                     name: name,
                     size: DnaAvatarSize.xl,
                   ),
@@ -444,44 +441,53 @@ class _WallPostWithComments extends ConsumerWidget {
                 const SizedBox(height: DnaSpacing.md),
                 Center(
                   child: Text(name,
-                    style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+                      style: theme.textTheme.titleLarge
+                          ?.copyWith(fontWeight: FontWeight.bold)),
                 ),
                 if (bio.isNotEmpty) ...[
                   const SizedBox(height: DnaSpacing.sm),
                   Center(
                     child: Text(bio,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.6)),
-                      textAlign: TextAlign.center),
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurface
+                                .withValues(alpha: 0.6)),
+                        textAlign: TextAlign.center),
                   ),
                 ],
                 const SizedBox(height: DnaSpacing.md),
                 // Fingerprint
                 ListTile(
-                  leading: const FaIcon(FontAwesomeIcons.fingerprint, size: 16),
-                  title: Text(fingerprint,
-                    style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
-                    maxLines: 2, overflow: TextOverflow.ellipsis),
+                  leading: const FaIcon(FontAwesomeIcons.fingerprint,
+                      size: 16),
+                  title: Text(item.post.authorFingerprint,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(fontFamily: 'monospace'),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis),
                 ),
                 // Social links
                 if (profile?.website.isNotEmpty == true)
                   ListTile(
-                    leading: const FaIcon(FontAwesomeIcons.globe, size: 16),
+                    leading:
+                        const FaIcon(FontAwesomeIcons.globe, size: 16),
                     title: Text(profile!.website),
                   ),
                 if (profile?.telegram.isNotEmpty == true)
                   ListTile(
-                    leading: const FaIcon(FontAwesomeIcons.telegram, size: 16),
+                    leading: const FaIcon(FontAwesomeIcons.telegram,
+                        size: 16),
                     title: Text(profile!.telegram),
                   ),
                 if (profile?.twitter.isNotEmpty == true)
                   ListTile(
-                    leading: const FaIcon(FontAwesomeIcons.xTwitter, size: 16),
+                    leading: const FaIcon(FontAwesomeIcons.xTwitter,
+                        size: 16),
                     title: Text(profile!.twitter),
                   ),
                 if (profile?.github.isNotEmpty == true)
                   ListTile(
-                    leading: const FaIcon(FontAwesomeIcons.github, size: 16),
+                    leading: const FaIcon(FontAwesomeIcons.github,
+                        size: 16),
                     title: Text(profile!.github),
                   ),
               ],
@@ -492,4 +498,3 @@ class _WallPostWithComments extends ConsumerWidget {
     );
   }
 }
-
