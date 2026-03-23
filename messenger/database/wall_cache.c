@@ -551,37 +551,73 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
         sqlite3_finalize(stmt);
         size_t select_rows = total - count_before;
         if (select_rows == 0 && step_rc != SQLITE_DONE) {
-            QGP_LOG_ERROR(LOG_TAG, "load_timeline: fp[%zu] sqlite3_step returned %d (%s)",
-                          f, step_rc, sqlite3_errstr(step_rc));
+            QGP_LOG_ERROR(LOG_TAG, "load_timeline: fp[%zu] sqlite3_step returned %d (%s) errmsg=%s",
+                          f, step_rc, sqlite3_errstr(step_rc), sqlite3_errmsg(g_db));
         }
-        QGP_LOG_INFO(LOG_TAG, "load_timeline: fp[%zu]=%.32s... (len=%zu) → %zu rows",
+        QGP_LOG_INFO(LOG_TAG, "load_timeline: fp[%zu]=%.32s... (len=%zu) → %zu rows (step_rc=%d)",
                      f, fingerprints[f], fingerprints[f] ? strlen(fingerprints[f]) : 0,
-                     select_rows);
-        /* DEBUG: if SELECT returned 0, do a COUNT to check if data exists */
+                     select_rows, step_rc);
+        /* DEBUG: if SELECT returned 0, exhaustive diagnosis */
         if (select_rows == 0 && fingerprints[f]) {
+            /* 1. COUNT with same WHERE */
             const char *dbg_sql = "SELECT COUNT(*) FROM wall_posts WHERE author_fingerprint = ?;";
             sqlite3_stmt *dbg = NULL;
+            int dbg_count = 0;
             if (sqlite3_prepare_v2(g_db, dbg_sql, -1, &dbg, NULL) == SQLITE_OK) {
                 sqlite3_bind_text(dbg, 1, fingerprints[f], -1, SQLITE_STATIC);
                 if (sqlite3_step(dbg) == SQLITE_ROW) {
-                    int dbg_count = sqlite3_column_int(dbg, 0);
-                    if (dbg_count > 0) {
-                        QGP_LOG_WARN(LOG_TAG, "load_timeline: BUG! fp[%zu] SELECT=0 but COUNT=%d for %.16s...",
-                                     f, dbg_count, fingerprints[f]);
-                    }
+                    dbg_count = sqlite3_column_int(dbg, 0);
                 }
                 sqlite3_finalize(dbg);
             }
-            /* Also count ALL rows in table for this debug */
+
+            /* 2. SELECT WITHOUT ORDER BY */
+            const char *no_order_sql =
+                "SELECT uuid, author_fingerprint FROM wall_posts WHERE author_fingerprint = ?;";
+            sqlite3_stmt *no_stmt = NULL;
+            int no_order_count = 0;
+            if (sqlite3_prepare_v2(g_db, no_order_sql, -1, &no_stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_text(no_stmt, 1, fingerprints[f], -1, SQLITE_STATIC);
+                while (sqlite3_step(no_stmt) == SQLITE_ROW) {
+                    no_order_count++;
+                    if (no_order_count == 1) {
+                        /* Log first matching row's fingerprint for comparison */
+                        const char *db_fp = (const char *)sqlite3_column_text(no_stmt, 1);
+                        QGP_LOG_WARN(LOG_TAG, "load_timeline: NO-ORDER fp[%zu] row1 db_fp=%s",
+                                     f, db_fp ? db_fp : "(null)");
+                    }
+                }
+                sqlite3_finalize(no_stmt);
+            }
+
+            /* 3. Total rows in table */
             const char *total_sql = "SELECT COUNT(*) FROM wall_posts;";
             sqlite3_stmt *tot = NULL;
+            int total_rows = 0;
             if (sqlite3_prepare_v2(g_db, total_sql, -1, &tot, NULL) == SQLITE_OK) {
                 if (sqlite3_step(tot) == SQLITE_ROW) {
-                    QGP_LOG_DEBUG(LOG_TAG, "load_timeline: total wall_posts rows in DB: %d",
-                                  sqlite3_column_int(tot, 0));
+                    total_rows = sqlite3_column_int(tot, 0);
                 }
                 sqlite3_finalize(tot);
             }
+
+            /* 4. FULL table scan — list all distinct author_fingerprints */
+            const char *authors_sql = "SELECT DISTINCT author_fingerprint, COUNT(*) FROM wall_posts GROUP BY author_fingerprint;";
+            sqlite3_stmt *auth_stmt = NULL;
+            if (sqlite3_prepare_v2(g_db, authors_sql, -1, &auth_stmt, NULL) == SQLITE_OK) {
+                QGP_LOG_WARN(LOG_TAG, "load_timeline: DB DUMP — %d total rows, queried fp=%.32s...", total_rows, fingerprints[f]);
+                while (sqlite3_step(auth_stmt) == SQLITE_ROW) {
+                    const char *afp = (const char *)sqlite3_column_text(auth_stmt, 0);
+                    int acnt = sqlite3_column_int(auth_stmt, 1);
+                    QGP_LOG_WARN(LOG_TAG, "load_timeline:   author=%.32s... count=%d %s",
+                                 afp ? afp : "(null)", acnt,
+                                 (afp && fingerprints[f] && strcmp(afp, fingerprints[f]) == 0) ? "← MATCH" : "");
+                }
+                sqlite3_finalize(auth_stmt);
+            }
+
+            QGP_LOG_WARN(LOG_TAG, "load_timeline: DIAG fp[%zu] COUNT=%d NO_ORDER_SELECT=%d total=%d",
+                         f, dbg_count, no_order_count, total_rows);
         }
         if (total >= 200) break;
     }
