@@ -327,7 +327,8 @@ typedef enum {
     NODUS_CH_DISCONNECTED = 0,
     NODUS_CH_CONNECTING,
     NODUS_CH_AUTHENTICATING,
-    NODUS_CH_READY
+    NODUS_CH_READY,
+    NODUS_CH_RECONNECTING
 } nodus_ch_state_t;
 
 /** Pending request slot for channel connection */
@@ -369,6 +370,10 @@ typedef struct {
     nodus_ch_pending_t      pending[NODUS_CH_MAX_PENDING];
     pthread_mutex_t         pending_mutex;
     pthread_mutex_t         send_mutex;
+
+    /* Reconnect state */
+    uint64_t                reconnect_at;     /* Timestamp (ms) for next reconnect attempt */
+    uint32_t                backoff_ms;       /* Current backoff interval */
 
     /* Internal read thread */
     pthread_t               read_thread;

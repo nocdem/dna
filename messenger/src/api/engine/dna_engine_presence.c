@@ -19,6 +19,7 @@
 
 #define DNA_ENGINE_PRESENCE_IMPL
 #include "engine_includes.h"
+#include "dht/shared/nodus_ops.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -153,6 +154,9 @@ static void* presence_heartbeat_thread(void *arg) {
                 QGP_LOG_DEBUG(LOG_TAG, "Heartbeat: batch presence query");
                 dna_presence_batch_query(engine);
             }
+
+            /* Channel health check: reconnect dead connections, catch up missed posts */
+            nodus_ops_ch_tick();
 
             /* Retry pending messages every 180s (3 heartbeats) */
             if (++retry_tick >= RETRY_INTERVAL_TICKS) {

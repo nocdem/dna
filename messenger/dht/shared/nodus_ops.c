@@ -966,6 +966,73 @@ void nodus_ops_ch_shutdown(void) {
     QGP_LOG_INFO(LOG_TAG_CH, "Channel connection pool shut down");
 }
 
+void nodus_ops_ch_tick(void) {
+    if (!g_ch_pool_initialized) return;
+
+    ch_pool_lock();
+    for (int i = 0; i < NODUS_OPS_CH_MAX_CONNS; i++) {
+        if (!g_ch_pool[i].active || !g_ch_pool[i].conn)
+            continue;
+
+        nodus_ch_conn_t *conn = g_ch_pool[i].conn;
+        if (nodus_channel_is_ready(conn))
+            continue;
+
+        /* Connection is dead — clean up and let next usage reconnect */
+        uint8_t uuid[NODUS_UUID_BYTES];
+        memcpy(uuid, g_ch_pool[i].channel_uuid, NODUS_UUID_BYTES);
+        uint64_t last_ra = g_ch_pool[i].last_received_at;
+
+        QGP_LOG_WARN(LOG_TAG_CH, "Tick: dead channel connection detected, cleaning up for reconnect");
+        nodus_channel_close(conn);
+        free(conn);
+        g_ch_pool[i].conn = NULL;
+        g_ch_pool[i].active = false;
+        /* Preserve last_received_at for catch-up */
+        ch_pool_unlock();
+
+        /* Reconnect outside lock (may take time) */
+        nodus_ch_conn_t *new_conn = ch_pool_connect(uuid);
+        if (new_conn) {
+            ch_pool_lock();
+            int slot = ch_pool_find_empty_locked();
+            if (slot >= 0) {
+                memcpy(g_ch_pool[slot].channel_uuid, uuid, NODUS_UUID_BYTES);
+                g_ch_pool[slot].conn = new_conn;
+                g_ch_pool[slot].active = true;
+                g_ch_pool[slot].last_received_at = last_ra;
+                ch_pool_unlock();
+
+                /* Catch-up missed posts */
+                if (last_ra > 0) {
+                    QGP_LOG_INFO(LOG_TAG_CH, "Tick: catch-up posts since %" PRIu64, last_ra);
+                    nodus_channel_post_t *posts = NULL;
+                    size_t count = 0;
+                    int rc = nodus_ch_conn_get_posts(new_conn, uuid, last_ra, 100, &posts, &count);
+                    if (rc == 0 && count > 0) {
+                        QGP_LOG_INFO(LOG_TAG_CH, "Tick: caught up %zu missed posts", count);
+                        for (size_t j = 0; j < count; j++) {
+                            if (g_ch_post_cb)
+                                g_ch_post_cb(uuid, &posts[j], g_ch_post_cb_data);
+                        }
+                        nodus_client_free_posts(posts, count);
+                    }
+                }
+            } else {
+                ch_pool_unlock();
+                QGP_LOG_ERROR(LOG_TAG_CH, "Tick: no free pool slot after reconnect");
+                nodus_channel_close(new_conn);
+                free(new_conn);
+            }
+        }
+
+        /* Restart iteration — pool may have shifted */
+        ch_pool_lock();
+        i = -1; /* Will be incremented to 0 */
+    }
+    ch_pool_unlock();
+}
+
 int nodus_ops_ch_create(const uint8_t channel_uuid[16]) {
     if (!g_ch_pool_initialized) return -1;
 

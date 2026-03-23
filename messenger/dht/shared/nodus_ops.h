@@ -226,6 +226,13 @@ void nodus_ops_ch_set_post_callback(nodus_ops_ch_post_cb_t on_post, void *user_d
 void nodus_ops_ch_shutdown(void);
 
 /**
+ * Periodic health check for channel connections.
+ * Detects dead connections, reconnects, and catches up missed posts.
+ * Call from a periodic tick (e.g. every 60s from heartbeat thread).
+ */
+void nodus_ops_ch_tick(void);
+
+/**
  * Create a channel on a connected nodus server.
  * Connects to any available server (no specific responsible node needed yet).
  *

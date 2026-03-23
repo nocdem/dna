@@ -2304,12 +2304,125 @@ static void ch_conn_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     (void)conn;
     nodus_ch_conn_t *ch = (nodus_ch_conn_t *)ctx;
     ch->conn = NULL;
-    ch->state = NODUS_CH_DISCONNECTED;
-    QGP_LOG_WARN(LOG_TAG_CH, "Disconnected from %s:%d", ch->host, ch->port);
+    /* If we had subscriptions, enter reconnecting state to auto-recover */
+    if (ch->ch_sub_count > 0 && !atomic_load(&ch->read_thread_stop)) {
+        ch->backoff_ms = 2000;  /* Initial 2s backoff */
+        ch->reconnect_at = now_ms() + ch->backoff_ms;
+        ch->state = NODUS_CH_RECONNECTING;
+        QGP_LOG_WARN(LOG_TAG_CH, "Disconnected from %s:%d — will reconnect in %ums",
+                     ch->host, ch->port, ch->backoff_ms);
+    } else {
+        ch->state = NODUS_CH_DISCONNECTED;
+        QGP_LOG_WARN(LOG_TAG_CH, "Disconnected from %s:%d", ch->host, ch->port);
+    }
 }
 
 static void ch_conn_on_connect(nodus_tcp_conn_t *conn, void *ctx) {
     (void)conn; (void)ctx;
+}
+
+/* Forward declaration for reconnect */
+static int ch_conn_do_auth(nodus_ch_conn_t *ch);
+
+/* ── ch_conn reconnect ─────────────────────────────────────────── */
+
+#define CH_CONN_RECONNECT_MIN_MS  2000
+#define CH_CONN_RECONNECT_MAX_MS  30000
+
+/**
+ * Re-subscribe all tracked channel subscriptions after reconnect.
+ * Fire-and-forget (same pattern as main client's resubscribe_all).
+ */
+static int ch_conn_resubscribe_all(nodus_ch_conn_t *ch) {
+    if (ch->ch_sub_count == 0) return 0;
+
+    uint8_t *buf = malloc(CH_CONN_BUF_SIZE);
+    if (!buf) return -1;
+
+    for (int i = 0; i < ch->ch_sub_count; i++) {
+        size_t len = 0;
+        uint32_t txn = atomic_fetch_add(&ch->next_txn, 1);
+        nodus_t2_ch_subscribe(txn, ch->token, ch->ch_subs[i],
+                               buf, CH_CONN_BUF_SIZE, &len);
+        ch_conn_send(ch, buf, len);
+    }
+
+    QGP_LOG_INFO(LOG_TAG_CH, "Re-subscribed %d channel(s) after reconnect",
+                 ch->ch_sub_count);
+    free(buf);
+    return 0;
+}
+
+/**
+ * Attempt to reconnect a channel connection.
+ * Called from read thread when in RECONNECTING state.
+ * @return 0 on success, -1 on failure (will retry with backoff)
+ */
+static int ch_conn_try_reconnect(nodus_ch_conn_t *ch) {
+    if (ch->state != NODUS_CH_RECONNECTING) return -1;
+    if (now_ms() < ch->reconnect_at) return -1;
+
+    nodus_tcp_t *tcp = (nodus_tcp_t *)ch->tcp;
+    if (!tcp) return -1;
+
+    QGP_LOG_INFO(LOG_TAG_CH, "Reconnecting to %s:%d ...", ch->host, ch->port);
+    ch->state = NODUS_CH_CONNECTING;
+
+    nodus_tcp_conn_t *conn = nodus_tcp_connect(tcp, ch->host, ch->port);
+    if (!conn) {
+        QGP_LOG_WARN(LOG_TAG_CH, "Reconnect TCP failed to %s:%d", ch->host, ch->port);
+        goto fail;
+    }
+    ch->conn = conn;
+
+    /* Wait for TCP connection */
+    int elapsed = 0;
+    while (ch->conn && conn->state == NODUS_CONN_CONNECTING &&
+           elapsed < CH_CONN_CONNECT_TIMEOUT) {
+        nodus_tcp_poll(tcp, 50);
+        elapsed += 50;
+        conn = (nodus_tcp_conn_t *)ch->conn;
+        if (!conn) break;
+    }
+
+    if (!ch->conn || conn == NULL || conn->state != NODUS_CONN_CONNECTED) {
+        QGP_LOG_WARN(LOG_TAG_CH, "Reconnect handshake failed to %s:%d", ch->host, ch->port);
+        if (ch->conn) {
+            nodus_tcp_disconnect(tcp, (nodus_tcp_conn_t *)ch->conn);
+            ch->conn = NULL;
+        }
+        goto fail;
+    }
+
+    /* Authenticate */
+    ch->state = NODUS_CH_AUTHENTICATING;
+    if (ch_conn_do_auth(ch) != 0) {
+        QGP_LOG_WARN(LOG_TAG_CH, "Reconnect auth failed to %s:%d", ch->host, ch->port);
+        if (ch->conn) {
+            nodus_tcp_disconnect(tcp, (nodus_tcp_conn_t *)ch->conn);
+            ch->conn = NULL;
+        }
+        goto fail;
+    }
+
+    ch->state = NODUS_CH_READY;
+    ch->backoff_ms = CH_CONN_RECONNECT_MIN_MS;
+
+    /* Re-subscribe all tracked channels */
+    ch_conn_resubscribe_all(ch);
+
+    QGP_LOG_INFO(LOG_TAG_CH, "Reconnected to %s:%d successfully", ch->host, ch->port);
+    return 0;
+
+fail:
+    /* Exponential backoff */
+    ch->backoff_ms *= 2;
+    if (ch->backoff_ms > CH_CONN_RECONNECT_MAX_MS)
+        ch->backoff_ms = CH_CONN_RECONNECT_MAX_MS;
+    ch->reconnect_at = now_ms() + ch->backoff_ms;
+    ch->state = NODUS_CH_RECONNECTING;
+    QGP_LOG_INFO(LOG_TAG_CH, "Reconnect failed — retry in %ums", ch->backoff_ms);
+    return -1;
 }
 
 /* ── ch_conn read thread ───────────────────────────────────────── */
@@ -2319,6 +2432,20 @@ static void *ch_conn_read_thread_fn(void *arg) {
     QGP_LOG_INFO(LOG_TAG_CH, "Read thread started for %s:%d", ch->host, ch->port);
 
     while (!atomic_load(&ch->read_thread_stop)) {
+        /* Handle reconnect attempts */
+        if (ch->state == NODUS_CH_RECONNECTING) {
+            ch_conn_try_reconnect(ch);
+            if (ch->state != NODUS_CH_READY) {
+                sleep_ms(200);
+                continue;
+            }
+        }
+
+        if (ch->state == NODUS_CH_DISCONNECTED) {
+            sleep_ms(200);
+            continue;
+        }
+
         if (!ch->conn || !ch->tcp) {
             sleep_ms(100);
             continue;
@@ -2329,8 +2456,6 @@ static void *ch_conn_read_thread_fn(void *arg) {
 
         if (rc < 0 && atomic_load(&ch->read_thread_stop))
             break;
-        if (ch->state == NODUS_CH_DISCONNECTED)
-            sleep_ms(100);
     }
 
     QGP_LOG_INFO(LOG_TAG_CH, "Read thread stopped for %s:%d", ch->host, ch->port);
