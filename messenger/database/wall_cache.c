@@ -533,9 +533,36 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
             if (total >= 200) break;
         }
         sqlite3_finalize(stmt);
+        size_t select_rows = total - count_before;
         QGP_LOG_INFO(LOG_TAG, "load_timeline: fp[%zu]=%.32s... (len=%zu) → %zu rows",
                      f, fingerprints[f], fingerprints[f] ? strlen(fingerprints[f]) : 0,
-                     total - count_before);
+                     select_rows);
+        /* DEBUG: if SELECT returned 0, do a COUNT to check if data exists */
+        if (select_rows == 0 && fingerprints[f]) {
+            const char *dbg_sql = "SELECT COUNT(*) FROM wall_posts WHERE author_fingerprint = ?;";
+            sqlite3_stmt *dbg = NULL;
+            if (sqlite3_prepare_v2(g_db, dbg_sql, -1, &dbg, NULL) == SQLITE_OK) {
+                sqlite3_bind_text(dbg, 1, fingerprints[f], -1, SQLITE_STATIC);
+                if (sqlite3_step(dbg) == SQLITE_ROW) {
+                    int dbg_count = sqlite3_column_int(dbg, 0);
+                    if (dbg_count > 0) {
+                        QGP_LOG_WARN(LOG_TAG, "load_timeline: BUG! fp[%zu] SELECT=0 but COUNT=%d for %.16s...",
+                                     f, dbg_count, fingerprints[f]);
+                    }
+                }
+                sqlite3_finalize(dbg);
+            }
+            /* Also count ALL rows in table for this debug */
+            const char *total_sql = "SELECT COUNT(*) FROM wall_posts;";
+            sqlite3_stmt *tot = NULL;
+            if (sqlite3_prepare_v2(g_db, total_sql, -1, &tot, NULL) == SQLITE_OK) {
+                if (sqlite3_step(tot) == SQLITE_ROW) {
+                    QGP_LOG_DEBUG(LOG_TAG, "load_timeline: total wall_posts rows in DB: %d",
+                                  sqlite3_column_int(tot, 0));
+                }
+                sqlite3_finalize(tot);
+            }
+        }
         if (total >= 200) break;
     }
 
@@ -762,39 +789,50 @@ bool wall_cache_is_stale(const char *fingerprint) {
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        return true; /* Treat as stale on error */
+        QGP_LOG_WARN(LOG_TAG, "is_stale: prepare failed for %.16s...: %s",
+                     fingerprint, sqlite3_errmsg(g_db));
+        return true;
     }
 
     sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_STATIC);
 
     bool stale = true;
+    bool has_meta = false;
+    uint64_t age = 0;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
+        has_meta = true;
         uint64_t last_fetched = (uint64_t)sqlite3_column_int64(stmt, 0);
         uint64_t now = (uint64_t)time(NULL);
-        uint64_t age = now - last_fetched;
+        age = now - last_fetched;
         stale = (age >= WALL_CACHE_TTL_SECONDS);
     }
 
     sqlite3_finalize(stmt);
 
-    /* Meta says fresh but cache has 0 posts → treat as stale so
-     * bg-refresh fetches from DHT.  Covers the case where a previous
-     * NOT_FOUND or empty fetch marked the meta fresh but the contact
-     * has since published wall posts. */
-    if (!stale) {
+    /* 0-post check: meta fresh but no cached posts → force stale */
+    int post_count = -1;
+    if (!stale && has_meta) {
         const char *cnt_sql =
             "SELECT COUNT(*) FROM wall_posts WHERE author_fingerprint = ?;";
         sqlite3_stmt *cnt_stmt = NULL;
         if (sqlite3_prepare_v2(g_db, cnt_sql, -1, &cnt_stmt, NULL) == SQLITE_OK) {
             sqlite3_bind_text(cnt_stmt, 1, fingerprint, -1, SQLITE_STATIC);
             if (sqlite3_step(cnt_stmt) == SQLITE_ROW) {
-                if (sqlite3_column_int(cnt_stmt, 0) == 0) {
+                post_count = sqlite3_column_int(cnt_stmt, 0);
+                if (post_count == 0) {
                     stale = true;
                 }
             }
             sqlite3_finalize(cnt_stmt);
         }
     }
+
+    QGP_LOG_INFO(LOG_TAG, "is_stale: %.16s... meta=%s age=%llu post_count=%d → %s",
+                 fingerprint,
+                 has_meta ? "YES" : "NO",
+                 (unsigned long long)age,
+                 post_count,
+                 stale ? "STALE" : "FRESH");
 
     return stale;
 }

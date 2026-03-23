@@ -2,7 +2,7 @@ name: dna_connect
 description: "Post-quantum encrypted P2P communication with integrated cryptocurrency wallet"
 publish_to: 'none'
 
-version: 1.0.0-rc64+10414
+version: 1.0.0-rc65+10415
 
 environment:
   sdk: ^3.10.0
