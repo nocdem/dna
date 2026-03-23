@@ -29,6 +29,89 @@
 
 static sqlite3 *g_db = NULL;
 static pthread_mutex_t g_store_mutex = PTHREAD_MUTEX_INITIALIZER;
+static bool g_recovery_attempted = false;
+
+/* Forward declarations for recovery helper */
+static int get_db_path(char *path_out, size_t path_size);
+static int create_schema(void);
+
+/**
+ * Check if SQLite error code is a fatal corruption/IO error
+ * that warrants nuking the cache and starting fresh.
+ */
+static bool is_fatal_sqlite_error(int rc) {
+    switch (rc) {
+    case SQLITE_IOERR:      /* 10 — disk I/O error */
+    case SQLITE_CORRUPT:    /* 11 — database corruption */
+    case SQLITE_NOTADB:     /* 26 — not a database file */
+    case 266:               /* SQLITE_IOERR_READ — extended I/O read error */
+        return true;
+    default:
+        return false;
+    }
+}
+
+/**
+ * Nuclear recovery: close DB, delete all files, reopen fresh.
+ * Only attempted ONCE per session to avoid infinite loops.
+ * Returns 0 on success, -1 on failure.
+ */
+static int wall_cache_nuke_and_reopen(void) {
+    if (g_recovery_attempted) {
+        QGP_LOG_ERROR(LOG_TAG, "Recovery already attempted this session, giving up\n");
+        return -1;
+    }
+    g_recovery_attempted = true;
+
+    QGP_LOG_WARN(LOG_TAG, "RECOVERY: nuking corrupt wall_cache.db and reopening fresh\n");
+
+    /* Close existing handle */
+    if (g_db) {
+        sqlite3_close(g_db);
+        g_db = NULL;
+    }
+
+    /* Build paths and remove all DB files */
+    char db_path[1024];
+    if (get_db_path(db_path, sizeof(db_path)) != 0) {
+        return -1;
+    }
+
+    char wal_path[1040];
+    char shm_path[1040];
+    snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
+    snprintf(shm_path, sizeof(shm_path), "%s-shm", db_path);
+
+    remove(db_path);
+    remove(wal_path);
+    remove(shm_path);
+
+    /* Reopen fresh */
+    int rc = sqlite3_open_v2(db_path, &g_db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "RECOVERY: reopen failed: %s\n", sqlite3_errmsg(g_db));
+        sqlite3_close(g_db);
+        g_db = NULL;
+        return -1;
+    }
+
+    sqlite3_busy_timeout(g_db, 5000);
+    sqlite3_exec(g_db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
+
+    if (create_schema() != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "RECOVERY: create_schema failed after nuke\n");
+        sqlite3_close(g_db);
+        g_db = NULL;
+        return -1;
+    }
+
+    /* Set user_version to current so we don't trigger the migration reset */
+    sqlite3_exec(g_db, "PRAGMA user_version = 6;", NULL, NULL, NULL);
+
+    QGP_LOG_WARN(LOG_TAG, "RECOVERY: wall_cache.db rebuilt successfully\n");
+    return 0;
+}
 
 /* ── Internal helpers ──────────────────────────────────────────────── */
 
@@ -171,9 +254,12 @@ int wall_cache_init(void) {
     int rc = sqlite3_open_v2(db_path, &g_db,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
     if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s (rc=%d)\n", sqlite3_errmsg(g_db), rc);
         sqlite3_close(g_db);
         g_db = NULL;
+        if (is_fatal_sqlite_error(rc)) {
+            return wall_cache_nuke_and_reopen();
+        }
         return -1;
     }
 
@@ -187,9 +273,10 @@ int wall_cache_init(void) {
 
     /* Create schema */
     if (create_schema() != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Schema creation failed, attempting recovery\n");
         sqlite3_close(g_db);
         g_db = NULL;
-        return -1;
+        return wall_cache_nuke_and_reopen();
     }
 
     /* One-time cache reset: clears stale meta + mismatched posts.
@@ -554,6 +641,19 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
         if (select_rows == 0 && step_rc != SQLITE_DONE) {
             QGP_LOG_ERROR(LOG_TAG, "load_timeline: fp[%zu] sqlite3_step returned %d (%s) errmsg=%s",
                           f, step_rc, sqlite3_errstr(step_rc), sqlite3_errmsg(g_db));
+            /* Fatal DB error: nuke and return empty timeline (DHT will repopulate) */
+            if (is_fatal_sqlite_error(step_rc)) {
+                QGP_LOG_WARN(LOG_TAG, "load_timeline: fatal error %d, triggering recovery\n", step_rc);
+                /* Free any posts we already collected */
+                for (size_t k = 0; k < total; k++) {
+                    free(merged[k].image_json);
+                }
+                free(merged);
+                wall_cache_nuke_and_reopen();
+                *posts = NULL;
+                *count = 0;
+                return 0; /* Empty timeline — DHT fetch will repopulate */
+            }
         }
         QGP_LOG_INFO(LOG_TAG, "load_timeline: fp[%zu]=%.32s... (len=%zu) → %zu rows (step_rc=%d)",
                      f, fingerprints[f], fingerprints[f] ? strlen(fingerprints[f]) : 0,
