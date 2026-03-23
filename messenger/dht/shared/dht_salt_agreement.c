@@ -338,11 +338,33 @@ int salt_agreement_fetch(
         return 0;
     }
 
-    /* Multiple valid salts (diverged) — deterministic tiebreaker.
+    /* Deduplicate: if all decrypted salts are identical, no real divergence.
+     * This happens when both parties publish the same salt — Kyber KEM produces
+     * different ciphertext each time, so DHT has multiple entries but the
+     * underlying plaintext salt is the same. */
+    size_t unique_count = 1;
+    for (size_t i = 1; i < valid_count; i++) {
+        bool is_dup = false;
+        for (size_t j = 0; j < i; j++) {
+            if (memcmp(valid_salts[i], valid_salts[j], SALT_AGREEMENT_SIZE) == 0) {
+                is_dup = true;
+                break;
+            }
+        }
+        if (!is_dup) unique_count++;
+    }
+
+    if (unique_count == 1) {
+        /* All values decrypt to the same salt — no divergence */
+        memcpy(salt_out, valid_salts[0], SALT_AGREEMENT_SIZE);
+        return 0;
+    }
+
+    /* Multiple DISTINCT salts (true divergence) — deterministic tiebreaker.
      * Hash each salt with SHA3-512, pick the one with the lowest hash.
      * Both parties compute the same result → guaranteed convergence. */
-    QGP_LOG_WARN(LOG_TAG, "Diverged salts detected (%zu valid values), applying tiebreaker",
-                 valid_count);
+    QGP_LOG_WARN(LOG_TAG, "Diverged salts detected (%zu unique of %zu valid), applying tiebreaker",
+                 unique_count, valid_count);
 
     size_t winner = 0;
     uint8_t winner_hash[64];
