@@ -506,17 +506,13 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
         "FROM wall_posts WHERE author_fingerprint = ? "
         "ORDER BY timestamp DESC;";
 
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(g_db, sql_single, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "load_timeline: prepare: %s\n", sqlite3_errmsg(g_db));
-        free(merged);
-        return -1;
-    }
-
     for (size_t f = 0; f < fp_count; f++) {
-        sqlite3_reset(stmt);
-        sqlite3_clear_bindings(stmt);
+        sqlite3_stmt *stmt = NULL;
+        int rc = sqlite3_prepare_v2(g_db, sql_single, -1, &stmt, NULL);
+        if (rc != SQLITE_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "load_timeline: prepare[%zu]: %s\n", f, sqlite3_errmsg(g_db));
+            continue;
+        }
         sqlite3_bind_text(stmt, 1, fingerprints[f], -1, SQLITE_STATIC);
 
         size_t count_before = total;
@@ -536,13 +532,12 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
             total++;
             if (total >= 200) break;
         }
+        sqlite3_finalize(stmt);
         QGP_LOG_INFO(LOG_TAG, "load_timeline: fp[%zu]=%.32s... (len=%zu) → %zu rows",
                      f, fingerprints[f], fingerprints[f] ? strlen(fingerprints[f]) : 0,
                      total - count_before);
         if (total >= 200) break;
     }
-
-    sqlite3_finalize(stmt);
 
     if (total == 0) {
         free(merged);
