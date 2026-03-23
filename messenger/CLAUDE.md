@@ -89,7 +89,7 @@ Flutter connects to the C library via `dart:ffi`:
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.9.114 | C code changes |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc70+10100 | Flutter/Dart changes |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc70+10420 | Flutter/Dart changes |
 | Nodus | `../nodus/include/nodus/nodus_types.h` | v0.9.17 | Nodus changes |
 
 Flutter app displays **both versions** in Settings:
