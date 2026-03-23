@@ -531,7 +531,8 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
         sqlite3_bind_text(stmt, 1, fingerprints[f], -1, SQLITE_STATIC);
 
         size_t count_before = total;
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
+        int step_rc;
+        while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
             /* Grow array if needed */
             if (total >= capacity) {
                 size_t new_cap = capacity * 2;
@@ -549,6 +550,10 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
         }
         sqlite3_finalize(stmt);
         size_t select_rows = total - count_before;
+        if (select_rows == 0 && step_rc != SQLITE_DONE) {
+            QGP_LOG_ERROR(LOG_TAG, "load_timeline: fp[%zu] sqlite3_step returned %d (%s)",
+                          f, step_rc, sqlite3_errstr(step_rc));
+        }
         QGP_LOG_INFO(LOG_TAG, "load_timeline: fp[%zu]=%.32s... (len=%zu) → %zu rows",
                      f, fingerprints[f], fingerprints[f] ? strlen(fingerprints[f]) : 0,
                      select_rows);
