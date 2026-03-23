@@ -720,25 +720,6 @@ int messenger_flush_recipient_outbox(messenger_context_t *ctx, const char *recip
     int put_rc = nodus_ops_put_str(base_key, serialized, serialized_len,
                                     DNA_DM_OUTBOX_TTL, nodus_ops_value_id());
 
-    /* 8b. Dual-write: also post via DM channel for push delivery.
-     * Best-effort — failure here doesn't affect the DHT send path.
-     * The blob is the same serialized outbox that goes to DHT. */
-    if (put_rc == 0) {
-        extern int dna_dm_channel_send(void *engine, const char *peer_fp,
-                                        const uint8_t *blob, size_t blob_len);
-        extern void *dna_engine_get_global(void);
-        void *engine = dna_engine_get_global();
-        if (engine && strlen(recipient_fp) == 128) {
-            int ch_rc = dna_dm_channel_send(engine, recipient_fp,
-                                             serialized, serialized_len);
-            if (ch_rc == 0) {
-                QGP_LOG_INFO(LOG_TAG, "[FLUSH] DM channel push OK for %.20s...", recipient);
-            } else {
-                QGP_LOG_DEBUG(LOG_TAG, "[FLUSH] DM channel push failed for %.20s... (rc=%d, non-fatal)",
-                             recipient, ch_rc);
-            }
-        }
-    }
 
     free(serialized);
     dht_offline_messages_free(offline_msgs, built_count);

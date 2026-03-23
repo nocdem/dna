@@ -33,7 +33,6 @@ set(DHT_COMMON_SOURCES
     client/dna_group_outbox.c   # Group message outbox (feed pattern)
     client/dna_group_channel.c          # Group channel connector (Phase 2)
     client/dna_group_channel_crypto.c   # Group channel encryption
-    client/dna_dm_channel.c             # DM channel connector (push-based 1-to-1)
     client/dna_wall.c           # Personal wall posts (DHT)
     client/dna_wall_comments.c  # Wall post comments (v0.7.0+)
     client/dna_wall_likes.c     # Wall post likes (v0.9.52+)

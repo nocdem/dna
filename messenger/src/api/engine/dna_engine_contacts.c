@@ -22,7 +22,6 @@
 #include "engine_includes.h"
 #include "crypto/utils/qgp_random.h"
 #include "database/wall_cache.h"
-#include "dht/client/dna_dm_channel.h"
 
 /* Message used for reciprocal contact request auto-approval */
 #define CONTACT_ACCEPTED_MSG "Contact request accepted"
@@ -239,8 +238,6 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
         /* Cancel wall listener for this contact */
         dna_engine_cancel_wall_listener(engine, fp);
 
-        /* Disconnect DM channel for this contact */
-        dna_dm_channel_disconnect(engine, fp);
 
         /* Delete all messages with this contact */
         if (engine->messenger) {
@@ -640,8 +637,6 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
     dna_engine_start_ack_listener(engine, task->params.contact_request.fingerprint);
     dna_engine_start_wall_listener(engine, task->params.contact_request.fingerprint);
 
-    /* Subscribe to DM channel for real-time push delivery */
-    dna_dm_channel_subscribe(engine, task->params.contact_request.fingerprint);
 
     /* Read salt from the approved request (stored during receive) */
     uint8_t approved_salt[DHT_CONTACT_SALT_SIZE];
