@@ -66,8 +66,6 @@ static int create_schema(void) {
         ");"
         "CREATE INDEX IF NOT EXISTS idx_wall_author "
         "    ON wall_posts(author_fingerprint);"
-        "CREATE INDEX IF NOT EXISTS idx_wall_timestamp "
-        "    ON wall_posts(timestamp DESC);"
 
         /* ── wall_cache_meta ───────────────────────────────────── */
         "CREATE TABLE IF NOT EXISTS wall_cache_meta ("
@@ -206,13 +204,16 @@ int wall_cache_init(void) {
             sqlite3_finalize(uv_stmt);
         }
         QGP_LOG_INFO(LOG_TAG, "PRAGMA user_version = %d\n", uv);
-        if (uv < 5) {
+        if (uv < 6) {
             sqlite3_exec(g_db, "DELETE FROM wall_posts;", NULL, NULL, NULL);
             sqlite3_exec(g_db, "DELETE FROM wall_cache_meta;", NULL, NULL, NULL);
             sqlite3_exec(g_db, "DELETE FROM wall_boost_pointers;", NULL, NULL, NULL);
+            sqlite3_exec(g_db, "DROP INDEX IF EXISTS idx_wall_timestamp;", NULL, NULL, NULL);
             sqlite3_exec(g_db, "REINDEX;", NULL, NULL, NULL);
-            sqlite3_exec(g_db, "PRAGMA user_version = 5;", NULL, NULL, NULL);
-            QGP_LOG_INFO(LOG_TAG, "Cache reset (v5): nuke all + reindex (concurrent write fix)\n");
+            sqlite3_wal_checkpoint_v2(g_db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+            sqlite3_exec(g_db, "VACUUM;", NULL, NULL, NULL);
+            sqlite3_exec(g_db, "PRAGMA user_version = 6;", NULL, NULL, NULL);
+            QGP_LOG_INFO(LOG_TAG, "Cache reset (v6): nuke all + drop timestamp index + vacuum (WAL corruption fix)\n");
         }
     }
 
