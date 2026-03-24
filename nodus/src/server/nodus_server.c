@@ -1243,6 +1243,28 @@ static void handle_t2_ch_search(nodus_server_t *srv, nodus_session_t *sess,
     free(metas);
 }
 
+static void handle_t2_ch_get(nodus_server_t *srv, nodus_session_t *sess,
+                               nodus_tier2_msg_t *msg) {
+    nodus_channel_meta_t meta;
+    int rc = nodus_channel_load_meta(&srv->ch_store, msg->channel_uuid, &meta);
+    if (rc != 0) {
+        uint8_t buf[256];
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_NOT_FOUND, "channel not found",
+                       buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return;
+    }
+
+    /* Reuse ch_list_ok with count=1 */
+    uint8_t *buf = malloc(4096);
+    if (!buf) return;
+    size_t len = 0;
+    nodus_t2_ch_list_ok(msg->txn_id, &meta, 1, buf, 4096, &len);
+    nodus_tcp_send(sess->conn, buf, len);
+    free(buf);
+}
+
 static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
                                 nodus_tier2_msg_t *msg) {
     /* Build server info list: self + alive cluster peers */
@@ -1833,6 +1855,8 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         handle_t2_ch_list(srv, sess, &msg);
     else if (strcmp(msg.method, "ch_search") == 0)
         handle_t2_ch_search(srv, sess, &msg);
+    else if (strcmp(msg.method, "ch_get") == 0)
+        handle_t2_ch_get(srv, sess, &msg);
     else {
         size_t rlen = 0;
         nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,

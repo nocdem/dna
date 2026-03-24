@@ -284,6 +284,17 @@ int nodus_client_ch_create(nodus_client_t *client,
  * @param count_out  Number of results
  * @return 0 on success
  */
+/**
+ * Get a single channel's metadata from server by UUID.
+ *
+ * @param uuid       16-byte channel UUID
+ * @param meta_out   Output: channel metadata (caller-owned, stack or heap)
+ * @return 0 on success, NODUS_ERR_NOT_FOUND if channel doesn't exist
+ */
+int nodus_client_ch_get(nodus_client_t *client,
+                         const uint8_t uuid[NODUS_UUID_BYTES],
+                         nodus_channel_meta_t *meta_out);
+
 int nodus_client_ch_list(nodus_client_t *client,
                           int offset, int limit,
                           nodus_channel_meta_t **metas_out,

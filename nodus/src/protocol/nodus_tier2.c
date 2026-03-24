@@ -371,6 +371,20 @@ int nodus_t2_ch_search(uint32_t txn, const uint8_t *token,
     return finish(&enc, out_len);
 }
 
+int nodus_t2_ch_get(uint32_t txn, const uint8_t *token,
+                     const uint8_t uuid[NODUS_UUID_BYTES],
+                     uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "ch_get");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "ch");
+    cbor_encode_bstr(&enc, uuid, NODUS_UUID_BYTES);
+    return finish(&enc, out_len);
+}
+
 /* Helper: encode UUID bytes as 32-char hex string */
 static void uuid_bytes_to_hex(const uint8_t uuid[NODUS_UUID_BYTES], char out[33]) {
     for (int i = 0; i < NODUS_UUID_BYTES; i++)

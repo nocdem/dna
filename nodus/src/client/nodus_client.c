@@ -927,6 +927,43 @@ int nodus_client_ch_create(nodus_client_t *client,
     return 0;
 }
 
+int nodus_client_ch_get(nodus_client_t *client,
+                         const uint8_t uuid[NODUS_UUID_BYTES],
+                         nodus_channel_meta_t *meta_out) {
+    if (!nodus_client_is_ready(client) || !uuid || !meta_out) return -1;
+    memset(meta_out, 0, sizeof(*meta_out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_ch_get(txn, client->token, uuid,
+                     buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+
+    /* Response uses ch_list_ok format with count=1 */
+    if (resp->ch_metas && resp->ch_meta_count > 0) {
+        *meta_out = resp->ch_metas[0];
+        free(resp->ch_metas);
+        resp->ch_metas = NULL;
+        resp->ch_meta_count = 0;
+    } else {
+        free_pending(client, req);
+        return NODUS_ERR_NOT_FOUND;
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
 int nodus_client_ch_list(nodus_client_t *client,
                           int offset, int limit,
                           nodus_channel_meta_t **metas_out,

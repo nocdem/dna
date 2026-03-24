@@ -1098,6 +1098,21 @@ int nodus_ops_ch_create(const uint8_t channel_uuid[16]) {
     return rc;
 }
 
+int nodus_ops_ch_get(const uint8_t channel_uuid[16],
+                      nodus_channel_meta_t *meta_out) {
+    if (!channel_uuid || !meta_out) return -1;
+
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
+
+    int rc = nodus_client_ch_get(c, channel_uuid, meta_out);
+    nodus_singleton_release();
+    return rc;
+}
+
 int nodus_ops_ch_list(int offset, int limit,
                        nodus_channel_meta_t **metas_out,
                        size_t *count_out) {

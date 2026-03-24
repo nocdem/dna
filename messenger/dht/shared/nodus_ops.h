@@ -251,6 +251,17 @@ int nodus_ops_ch_create(const uint8_t channel_uuid[16]);
  * @param count_out  Number of results
  * @return 0 on success
  */
+/**
+ * Get a single channel's metadata from server by UUID.
+ * Uses the main TCP 4001 client connection.
+ *
+ * @param channel_uuid  16-byte UUID
+ * @param meta_out      Output: channel metadata
+ * @return 0 on success
+ */
+int nodus_ops_ch_get(const uint8_t channel_uuid[16],
+                      nodus_channel_meta_t *meta_out);
+
 int nodus_ops_ch_list(int offset, int limit,
                        nodus_channel_meta_t **metas_out,
                        size_t *count_out);

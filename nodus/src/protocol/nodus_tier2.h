@@ -107,6 +107,10 @@ int nodus_t2_ch_search(uint32_t txn, const uint8_t *token,
                         const char *query, int offset, int limit,
                         uint8_t *buf, size_t cap, size_t *out_len);
 
+int nodus_t2_ch_get(uint32_t txn, const uint8_t *token,
+                     const uint8_t uuid[NODUS_UUID_BYTES],
+                     uint8_t *buf, size_t cap, size_t *out_len);
+
 /* Channel discovery (Nodus → Client) */
 int nodus_t2_ch_list_ok(uint32_t txn,
                          const nodus_channel_meta_t *metas, size_t count,

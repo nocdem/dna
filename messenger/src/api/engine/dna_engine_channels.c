@@ -493,6 +493,38 @@ void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task) {
     task->callback.channel(task->request_id, DNA_OK, info, task->user_data);
 }
 
+/** Convert nodus_channel_meta_t array to dna_channel_info_t array */
+static dna_channel_info_t *convert_metas_to_info(const nodus_channel_meta_t *metas,
+                                                   size_t count) {
+    dna_channel_info_t *info = calloc(count, sizeof(dna_channel_info_t));
+    if (!info) return NULL;
+
+    for (size_t i = 0; i < count; i++) {
+        /* Convert binary UUID to string */
+        char uuid_str[37];
+        uuid_bin_to_str(metas[i].uuid, uuid_str);
+        strncpy(info[i].channel_uuid, uuid_str, 36);
+
+        strncpy(info[i].name, metas[i].name, 100);
+        if (metas[i].description[0]) {
+            info[i].description = strdup(metas[i].description);
+        }
+
+        /* Convert binary fingerprint to hex string */
+        if (metas[i].has_creator_fp) {
+            fp_key_to_hex(&metas[i].creator_fp, info[i].creator_fingerprint);
+        }
+
+        info[i].created_at = metas[i].created_at;
+        info[i].is_public = metas[i].is_public;
+        info[i].deleted = false;
+        info[i].deleted_at = 0;
+        info[i].verified = false;
+    }
+
+    return info;
+}
+
 void dna_handle_channel_get(dna_engine_t *engine, dna_task_t *task) {
     const char *uuid = task->params.channel_by_uuid.uuid;
 
@@ -531,6 +563,28 @@ void dna_handle_channel_get(dna_engine_t *engine, dna_task_t *task) {
             free(info);
         }
         free(cached_json);
+
+        /* Fallback: try Nodus server (ch_get) */
+        uint8_t uuid_bin[16];
+        if (uuid_str_to_bin(uuid, uuid_bin) == 0) {
+            nodus_channel_meta_t meta;
+            if (nodus_ops_ch_get(uuid_bin, &meta) == 0) {
+                dna_channel_info_t *ninfo = convert_metas_to_info(&meta, 1);
+                if (ninfo) {
+                    QGP_LOG_INFO(LOG_TAG, "Channel %.8s...: fetched from Nodus server", uuid);
+                    /* Cache for future use */
+                    char *json_str = NULL;
+                    if (channel_info_to_json(ninfo, &json_str) == 0 && json_str) {
+                        channel_cache_put_channel_json(uuid, json_str,
+                                                        ninfo->created_at, 0);
+                        free(json_str);
+                    }
+                    task->callback.channel(task->request_id, DNA_OK, ninfo, task->user_data);
+                    return;
+                }
+            }
+        }
+
         int err = (ret == -2) ? DNA_ENGINE_ERROR_NOT_FOUND : DNA_ERROR_INTERNAL;
         task->callback.channel(task->request_id, err, NULL, task->user_data);
         if (channel) dna_channel_free(channel);
@@ -612,38 +666,6 @@ void dna_handle_channel_delete(dna_engine_t *engine, dna_task_t *task) {
 
     QGP_LOG_INFO(LOG_TAG, "Deleted channel: %s", task->params.channel_by_uuid.uuid);
     task->callback.completion(task->request_id, DNA_OK, task->user_data);
-}
-
-/** Convert nodus_channel_meta_t array to dna_channel_info_t array */
-static dna_channel_info_t *convert_metas_to_info(const nodus_channel_meta_t *metas,
-                                                   size_t count) {
-    dna_channel_info_t *info = calloc(count, sizeof(dna_channel_info_t));
-    if (!info) return NULL;
-
-    for (size_t i = 0; i < count; i++) {
-        /* Convert binary UUID to string */
-        char uuid_str[37];
-        uuid_bin_to_str(metas[i].uuid, uuid_str);
-        strncpy(info[i].channel_uuid, uuid_str, 36);
-
-        strncpy(info[i].name, metas[i].name, 100);
-        if (metas[i].description[0]) {
-            info[i].description = strdup(metas[i].description);
-        }
-
-        /* Convert binary fingerprint to hex string */
-        if (metas[i].has_creator_fp) {
-            fp_key_to_hex(&metas[i].creator_fp, info[i].creator_fingerprint);
-        }
-
-        info[i].created_at = metas[i].created_at;
-        info[i].is_public = metas[i].is_public;
-        info[i].deleted = false;
-        info[i].deleted_at = 0;
-        info[i].verified = false;
-    }
-
-    return info;
 }
 
 void dna_handle_channel_discover(dna_engine_t *engine, dna_task_t *task) {
