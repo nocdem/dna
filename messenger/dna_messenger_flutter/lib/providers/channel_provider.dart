@@ -272,10 +272,7 @@ final selectedChannelPostsProvider = Provider<AsyncValue<List<ChannelPost>>>((re
 // DISCOVER CHANNELS
 // =============================================================================
 
-/// Days back to look for discoverable channels (default 7)
-final channelDiscoverDaysBackProvider = StateProvider<int>((ref) => 7);
-
-/// Discover public channels from DHT
+/// Discover public channels from server
 final discoverChannelsProvider =
     AsyncNotifierProvider<DiscoverChannelsNotifier, List<Channel>>(
   DiscoverChannelsNotifier.new,
@@ -289,16 +286,41 @@ class DiscoverChannelsNotifier extends AsyncNotifier<List<Channel>> {
       return state.valueOrNull ?? [];
     }
 
-    final daysBack = ref.watch(channelDiscoverDaysBackProvider);
     final engine = await ref.watch(engineProvider.future);
-    return engine.channelDiscover(daysBack: daysBack);
+    return engine.channelDiscover();
   }
 
   Future<void> refresh() async {
     state = await AsyncValue.guard(() async {
-      final daysBack = ref.read(channelDiscoverDaysBackProvider);
       final engine = await ref.read(engineProvider.future);
-      return engine.channelDiscover(daysBack: daysBack);
+      return engine.channelDiscover();
     });
+  }
+}
+
+// =============================================================================
+// SEARCH CHANNELS
+// =============================================================================
+
+/// Channel search query state
+final channelSearchQueryProvider = StateProvider<String>((ref) => '');
+
+/// Search channels from server (debounced via UI)
+final searchChannelsProvider =
+    AsyncNotifierProvider<SearchChannelsNotifier, List<Channel>>(
+  SearchChannelsNotifier.new,
+);
+
+class SearchChannelsNotifier extends AsyncNotifier<List<Channel>> {
+  @override
+  Future<List<Channel>> build() async {
+    final query = ref.watch(channelSearchQueryProvider);
+    if (query.isEmpty) return [];
+
+    final identityLoaded = ref.watch(identityLoadedProvider);
+    if (!identityLoaded) return [];
+
+    final engine = await ref.watch(engineProvider.future);
+    return engine.channelSearch(query);
   }
 }

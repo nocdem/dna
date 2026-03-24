@@ -3524,6 +3524,10 @@ DNA_API dna_request_id_t dna_engine_channel_delete(dna_engine_t *engine,
 DNA_API dna_request_id_t dna_engine_channel_discover(dna_engine_t *engine,
     int days_back, dna_channels_cb callback, void *user_data);
 
+DNA_API dna_request_id_t dna_engine_channel_search(dna_engine_t *engine,
+    const char *query, int offset, int limit,
+    dna_channels_cb callback, void *user_data);
+
 /* Channel posts */
 DNA_API dna_request_id_t dna_engine_channel_post(dna_engine_t *engine,
     const char *channel_uuid, const char *body,

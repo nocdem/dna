@@ -159,6 +159,7 @@ typedef enum {
     TASK_CHANNEL_GET,
     TASK_CHANNEL_DELETE,
     TASK_CHANNEL_DISCOVER,
+    TASK_CHANNEL_SEARCH,
     TASK_CHANNEL_POST,
     TASK_CHANNEL_GET_POSTS,
     TASK_CHANNEL_GET_SUBSCRIPTIONS,
@@ -451,6 +452,13 @@ typedef union {
     struct {
         int days_back;
     } channel_discover;
+
+    /* Channel: search */
+    struct {
+        char *query;     /* Heap allocated, task owns */
+        int offset;
+        int limit;
+    } channel_search;
 
     /* Channel: post */
     struct {
@@ -930,6 +938,7 @@ void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_get(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_delete(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_discover(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_channel_search(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_post(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_get_posts(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_get_subscriptions(dna_engine_t *engine, dna_task_t *task);

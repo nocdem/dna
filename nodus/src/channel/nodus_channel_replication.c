@@ -209,7 +209,7 @@ int nodus_ch_replication_receive(nodus_ch_replication_t *rep,
     }
 
     /* Ensure channel table exists */
-    nodus_channel_create(cs->ch_store, channel_uuid, false);
+    nodus_channel_create(cs->ch_store, channel_uuid, false, NULL, NULL, false);
 
     /* Store post (INSERT OR IGNORE -- dedup by post_uuid) */
     nodus_channel_post_t mutable_post = *post;
@@ -334,8 +334,8 @@ int nodus_ch_replication_handle_sync_response(nodus_ch_replication_t *rep,
 {
     nodus_channel_server_t *cs = rep->cs;
 
-    /* Ensure channel table exists */
-    nodus_channel_create(cs->ch_store, channel_uuid, false);
+    /* Ensure channel table exists (bulk sync — no name/desc available) */
+    nodus_channel_create(cs->ch_store, channel_uuid, false, NULL, NULL, false);
 
     /* Store each post (INSERT OR IGNORE for dedup) */
     int stored = 0;

@@ -5514,6 +5514,58 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Search public channels by name/description (server-side)
+  ///
+  /// [query] - Search string
+  /// [offset] - Pagination offset (default 0)
+  /// [limit] - Maximum results (default 50)
+  Future<List<Channel>> channelSearch(String query, {int offset = 0, int limit = 50}) async {
+    final completer = Completer<List<Channel>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_channel_info_t> channels, int count,
+        Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <Channel>[];
+        for (var i = 0; i < count; i++) {
+          result.add(Channel.fromNative(channels[i]));
+        }
+        if (channels != nullptr && count > 0) {
+          _bindings.dna_free_channel_infos(channels, count);
+        }
+        completer.complete(result);
+      } else {
+        if (channels != nullptr && count > 0) {
+          _bindings.dna_free_channel_infos(channels, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaChannelsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final queryNative = query.toNativeUtf8();
+    final requestId = _bindings.dna_engine_channel_search(
+      _engine,
+      queryNative,
+      offset,
+      limit,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+    malloc.free(queryNative);
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   /// Post to a channel
   ///
   /// [channelUuid] - UUID of the channel to post to

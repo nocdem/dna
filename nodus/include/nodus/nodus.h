@@ -20,6 +20,7 @@
 #define NODUS_H
 
 #include "nodus/nodus_types.h"
+#include "channel/nodus_channel_store.h"
 #include <pthread.h>
 #include <stdatomic.h>
 
@@ -273,6 +274,36 @@ int nodus_client_get_servers(nodus_client_t *client,
  */
 int nodus_client_ch_create(nodus_client_t *client,
                             const uint8_t uuid[NODUS_UUID_BYTES]);
+
+/**
+ * List public channels from server (paginated).
+ *
+ * @param offset     Skip first N results (0 = start)
+ * @param limit      Maximum results to return (default 50, max 200)
+ * @param metas_out  Output: heap-allocated array. Caller frees with free().
+ * @param count_out  Number of results
+ * @return 0 on success
+ */
+int nodus_client_ch_list(nodus_client_t *client,
+                          int offset, int limit,
+                          nodus_channel_meta_t **metas_out,
+                          size_t *count_out);
+
+/**
+ * Search public channels by name/description (paginated).
+ *
+ * @param query      Search string (server does LIKE %query%)
+ * @param offset     Skip first N results
+ * @param limit      Maximum results to return
+ * @param metas_out  Output: heap-allocated array. Caller frees with free().
+ * @param count_out  Number of results
+ * @return 0 on success
+ */
+int nodus_client_ch_search(nodus_client_t *client,
+                            const char *query,
+                            int offset, int limit,
+                            nodus_channel_meta_t **metas_out,
+                            size_t *count_out);
 
 /**
  * Post a message to a channel.

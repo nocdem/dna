@@ -915,6 +915,7 @@ int nodus_client_ch_create(nodus_client_t *client,
     if (!req) { free(buf); return -1; }
 
     nodus_t2_ch_create(txn, client->token, uuid, false,
+                        NULL, NULL, false,
                         buf, CLIENT_BUF_SIZE, &len);
     if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
     free(buf);
@@ -922,6 +923,79 @@ int nodus_client_ch_create(nodus_client_t *client,
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    free_pending(client, req);
+    return 0;
+}
+
+int nodus_client_ch_list(nodus_client_t *client,
+                          int offset, int limit,
+                          nodus_channel_meta_t **metas_out,
+                          size_t *count_out) {
+    if (!nodus_client_is_ready(client) || !metas_out || !count_out) return -1;
+    *metas_out = NULL;
+    *count_out = 0;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_ch_list(txn, client->token, offset, limit,
+                      buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+
+    /* Transfer ownership of metas array to caller */
+    if (resp->ch_metas && resp->ch_meta_count > 0) {
+        *metas_out = resp->ch_metas;
+        *count_out = resp->ch_meta_count;
+        resp->ch_metas = NULL;  /* Prevent msg_free from freeing */
+        resp->ch_meta_count = 0;
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
+int nodus_client_ch_search(nodus_client_t *client,
+                            const char *query,
+                            int offset, int limit,
+                            nodus_channel_meta_t **metas_out,
+                            size_t *count_out) {
+    if (!nodus_client_is_ready(client) || !query || !metas_out || !count_out) return -1;
+    *metas_out = NULL;
+    *count_out = 0;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_ch_search(txn, client->token, query, offset, limit,
+                        buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+
+    /* Transfer ownership of metas array to caller */
+    if (resp->ch_metas && resp->ch_meta_count > 0) {
+        *metas_out = resp->ch_metas;
+        *count_out = resp->ch_meta_count;
+        resp->ch_metas = NULL;
+        resp->ch_meta_count = 0;
+    }
+
     free_pending(client, req);
     return 0;
 }
@@ -2712,6 +2786,7 @@ int nodus_ch_conn_create(nodus_ch_conn_t *ch,
     if (!req) { free(buf); return -1; }
 
     nodus_t2_ch_create(txn, ch->token, uuid, false,
+                        NULL, NULL, false,
                         buf, CH_CONN_BUF_SIZE, &len);
     if (ch_conn_send(ch, buf, len) != 0) { ch_conn_free_pending(ch, req); free(buf); return -1; }
     free(buf);

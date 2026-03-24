@@ -40,6 +40,9 @@ typedef struct {
     uint64_t    created_at;
     nodus_key_t creator_fp;         /* H-07: fingerprint of the channel creator */
     bool        has_creator_fp;     /* true if creator_fp was stored */
+    char        name[101];          /* Channel name (max 100 chars + null) */
+    char        description[501];   /* Channel description (max 500 chars + null) */
+    bool        is_public;          /* true if discoverable in ch_list */
 } nodus_channel_meta_t;
 
 /* ── Push target (encrypted channels only) ──────────────────────── */
@@ -99,10 +102,16 @@ void nodus_channel_store_close(nodus_channel_store_t *store);
  * Create a channel table. Idempotent — does nothing if already exists.
  * @param uuid       16-byte UUID (validated and converted to hex internally)
  * @param encrypted  true for encrypted group channels (skips sig verify, uses push targets)
+ * @param name       Channel name (NULL ok — stored as empty string)
+ * @param description Channel description (NULL ok — stored as empty string)
+ * @param is_public  true if channel should appear in ch_list discovery
  */
 int nodus_channel_create(nodus_channel_store_t *store,
                           const uint8_t uuid[NODUS_UUID_BYTES],
-                          bool encrypted);
+                          bool encrypted,
+                          const char *name,
+                          const char *description,
+                          bool is_public);
 
 /**
  * Check if a channel table exists.
@@ -153,6 +162,42 @@ int nodus_channel_drop(nodus_channel_store_t *store,
  */
 int nodus_channel_store_list_all(nodus_channel_store_t *store,
                                   uint8_t **uuids_out, size_t *count_out);
+
+/**
+ * Register default channels (General, Technology, Help, etc.)
+ * Idempotent — INSERT OR IGNORE. Called on server startup.
+ */
+void nodus_channel_store_register_defaults(nodus_channel_store_t *store);
+
+/* ── Channel discovery (ch_list / ch_search) ───────────────────── */
+
+/**
+ * List public channels with pagination.
+ * @param offset     Skip first N results
+ * @param limit      Maximum results to return
+ * @param metas_out  Output: array of nodus_channel_meta_t. Caller frees with free().
+ * @param count_out  Number of results returned
+ * @return 0 on success, -1 on error
+ */
+int nodus_channel_store_list_public(nodus_channel_store_t *store,
+                                     int offset, int limit,
+                                     nodus_channel_meta_t **metas_out,
+                                     size_t *count_out);
+
+/**
+ * Search public channels by name/description (LIKE match).
+ * @param query      Search string (matched with %query% on name and description)
+ * @param offset     Skip first N results
+ * @param limit      Maximum results to return
+ * @param metas_out  Output: array of nodus_channel_meta_t. Caller frees with free().
+ * @param count_out  Number of results returned
+ * @return 0 on success, -1 on error
+ */
+int nodus_channel_store_search(nodus_channel_store_t *store,
+                                const char *query,
+                                int offset, int limit,
+                                nodus_channel_meta_t **metas_out,
+                                size_t *count_out);
 
 /* ── Hinted handoff ─────────────────────────────────────────────── */
 

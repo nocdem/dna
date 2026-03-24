@@ -614,55 +614,102 @@ void dna_handle_channel_delete(dna_engine_t *engine, dna_task_t *task) {
     task->callback.completion(task->request_id, DNA_OK, task->user_data);
 }
 
-void dna_handle_channel_discover(dna_engine_t *engine, dna_task_t *task) {
-    int days = task->params.channel_discover.days_back;
-    if (days < 1) days = 1;
-    if (days > DNA_CHANNEL_INDEX_DAYS_MAX) days = DNA_CHANNEL_INDEX_DAYS_MAX;
-
-    dna_channel_t *channels = NULL;
-    size_t count = 0;
-    int ret = dna_channel_index_browse(days, &channels, &count);
-
-    if (ret != 0 && ret != -2) {
-        task->callback.channels(task->request_id, DNA_ERROR_INTERNAL,
-                                NULL, 0, task->user_data);
-        return;
-    }
-
-    if (ret == -2 || count == 0) {
-        task->callback.channels(task->request_id, DNA_OK,
-                                NULL, 0, task->user_data);
-        if (channels) dna_channels_free(channels, count);
-        return;
-    }
-
-    /* Convert array of dna_channel_t -> array of dna_channel_info_t */
+/** Convert nodus_channel_meta_t array to dna_channel_info_t array */
+static dna_channel_info_t *convert_metas_to_info(const nodus_channel_meta_t *metas,
+                                                   size_t count) {
     dna_channel_info_t *info = calloc(count, sizeof(dna_channel_info_t));
-    if (!info) {
-        dna_channels_free(channels, count);
-        task->callback.channels(task->request_id, DNA_ERROR_INTERNAL,
-                                NULL, 0, task->user_data);
-        return;
-    }
+    if (!info) return NULL;
 
     for (size_t i = 0; i < count; i++) {
-        strncpy(info[i].channel_uuid, channels[i].uuid, 36);
-        strncpy(info[i].name, channels[i].name, 100);
-        if (channels[i].description) {
-            info[i].description = strdup(channels[i].description);
+        /* Convert binary UUID to string */
+        char uuid_str[37];
+        uuid_bin_to_str(metas[i].uuid, uuid_str);
+        strncpy(info[i].channel_uuid, uuid_str, 36);
+
+        strncpy(info[i].name, metas[i].name, 100);
+        if (metas[i].description[0]) {
+            info[i].description = strdup(metas[i].description);
         }
-        strncpy(info[i].creator_fingerprint, channels[i].creator_fingerprint, 128);
-        info[i].created_at = channels[i].created_at;
-        info[i].is_public = channels[i].is_public;
-        info[i].deleted = channels[i].deleted;
-        info[i].deleted_at = channels[i].deleted_at;
-        info[i].verified = (channels[i].signature_len > 0);
+
+        /* Convert binary fingerprint to hex string */
+        if (metas[i].has_creator_fp) {
+            fp_key_to_hex(&metas[i].creator_fp, info[i].creator_fingerprint);
+        }
+
+        info[i].created_at = metas[i].created_at;
+        info[i].is_public = metas[i].is_public;
+        info[i].deleted = false;
+        info[i].deleted_at = 0;
+        info[i].verified = false;
     }
 
-    dna_channels_free(channels, count);
+    return info;
+}
 
-    QGP_LOG_INFO(LOG_TAG, "Discovered %d channels (days_back=%d)",
-                 (int)count, days);
+void dna_handle_channel_discover(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+
+    int offset = 0;
+    int limit = 200;
+
+    nodus_channel_meta_t *metas = NULL;
+    size_t count = 0;
+    int ret = nodus_ops_ch_list(offset, limit, &metas, &count);
+
+    if (ret != 0 || count == 0) {
+        task->callback.channels(task->request_id, ret == 0 ? DNA_OK : DNA_ERROR_INTERNAL,
+                                NULL, 0, task->user_data);
+        free(metas);
+        return;
+    }
+
+    dna_channel_info_t *info = convert_metas_to_info(metas, count);
+    free(metas);
+
+    if (!info) {
+        task->callback.channels(task->request_id, DNA_ERROR_INTERNAL,
+                                NULL, 0, task->user_data);
+        return;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Discovered %d channels from server", (int)count);
+    task->callback.channels(task->request_id, DNA_OK, info, (int)count, task->user_data);
+}
+
+void dna_handle_channel_search(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+
+    const char *query = task->params.channel_search.query;
+    int offset = task->params.channel_search.offset;
+    int limit = task->params.channel_search.limit;
+
+    if (!query || query[0] == '\0') {
+        task->callback.channels(task->request_id, DNA_OK,
+                                NULL, 0, task->user_data);
+        return;
+    }
+
+    nodus_channel_meta_t *metas = NULL;
+    size_t count = 0;
+    int ret = nodus_ops_ch_search(query, offset, limit, &metas, &count);
+
+    if (ret != 0 || count == 0) {
+        task->callback.channels(task->request_id, ret == 0 ? DNA_OK : DNA_ERROR_INTERNAL,
+                                NULL, 0, task->user_data);
+        free(metas);
+        return;
+    }
+
+    dna_channel_info_t *info = convert_metas_to_info(metas, count);
+    free(metas);
+
+    if (!info) {
+        task->callback.channels(task->request_id, DNA_ERROR_INTERNAL,
+                                NULL, 0, task->user_data);
+        return;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Channel search '%s': %d results", query, (int)count);
     task->callback.channels(task->request_id, DNA_OK, info, (int)count, task->user_data);
 }
 
@@ -1109,6 +1156,26 @@ dna_request_id_t dna_engine_channel_discover(
     dna_task_callback_t cb = {0};
     cb.channels = callback;
     return dna_submit_task(engine, TASK_CHANNEL_DISCOVER, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_channel_search(
+    dna_engine_t *engine,
+    const char *query,
+    int offset,
+    int limit,
+    dna_channels_cb callback,
+    void *user_data
+) {
+    if (!engine || !query) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.channel_search.query = strdup(query);
+    params.channel_search.offset = offset;
+    params.channel_search.limit = limit > 0 ? limit : 50;
+
+    dna_task_callback_t cb = {0};
+    cb.channels = callback;
+    return dna_submit_task(engine, TASK_CHANNEL_SEARCH, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_channel_post(

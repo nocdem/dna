@@ -13,6 +13,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 /* ── Common helpers ──────────────────────────────────────────────── */
 
@@ -181,17 +182,37 @@ int nodus_t2_servers(uint32_t txn, const uint8_t *token,
 int nodus_t2_ch_create(uint32_t txn, const uint8_t *token,
                         const uint8_t uuid[NODUS_UUID_BYTES],
                         bool encrypted,
+                        const char *name, const char *description,
+                        bool is_public,
                         uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 5, txn, "ch_create");
     enc_token(&enc, token);
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, encrypted ? 2 : 1);
+    /* Count map entries: ch(1) + enc?(1) + name?(1) + desc?(1) + pub?(1) */
+    int map_count = 1;
+    if (encrypted) map_count++;
+    if (name) map_count++;
+    if (description) map_count++;
+    if (is_public) map_count++;
+    cbor_encode_map(&enc, map_count);
     cbor_encode_cstr(&enc, "ch");
     cbor_encode_bstr(&enc, uuid, NODUS_UUID_BYTES);
     if (encrypted) {
         cbor_encode_cstr(&enc, "enc");
+        cbor_encode_bool(&enc, true);
+    }
+    if (name) {
+        cbor_encode_cstr(&enc, "name");
+        cbor_encode_cstr(&enc, name);
+    }
+    if (description) {
+        cbor_encode_cstr(&enc, "desc");
+        cbor_encode_cstr(&enc, description);
+    }
+    if (is_public) {
+        cbor_encode_cstr(&enc, "pub");
         cbor_encode_bool(&enc, true);
     }
     return finish(&enc, out_len);
@@ -299,6 +320,89 @@ int nodus_t2_ch_member_update_ok(uint32_t txn,
     enc_response_header(&enc, 4, txn, "ch_mu_ok");
     cbor_encode_cstr(&enc, "r");
     cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
+/* ── Channel discovery (Client → Nodus) ──────────────────────────── */
+
+int nodus_t2_ch_list(uint32_t txn, const uint8_t *token,
+                      int offset, int limit,
+                      uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "ch_list");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "off");
+    cbor_encode_uint(&enc, (uint64_t)offset);
+    cbor_encode_cstr(&enc, "lim");
+    cbor_encode_uint(&enc, (uint64_t)limit);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ch_search(uint32_t txn, const uint8_t *token,
+                        const char *query, int offset, int limit,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "ch_search");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 3);
+    cbor_encode_cstr(&enc, "q");
+    cbor_encode_cstr(&enc, query);
+    cbor_encode_cstr(&enc, "off");
+    cbor_encode_uint(&enc, (uint64_t)offset);
+    cbor_encode_cstr(&enc, "lim");
+    cbor_encode_uint(&enc, (uint64_t)limit);
+    return finish(&enc, out_len);
+}
+
+/* Helper: encode UUID bytes as 32-char hex string */
+static void uuid_bytes_to_hex(const uint8_t uuid[NODUS_UUID_BYTES], char out[33]) {
+    for (int i = 0; i < NODUS_UUID_BYTES; i++)
+        snprintf(out + i * 2, 3, "%02x", uuid[i]);
+    out[32] = '\0';
+}
+
+int nodus_t2_ch_list_ok(uint32_t txn,
+                         const nodus_channel_meta_t *metas, size_t count,
+                         uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ch_list_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "channels");
+    cbor_encode_array(&enc, count);
+
+    for (size_t i = 0; i < count; i++) {
+        const nodus_channel_meta_t *m = &metas[i];
+        cbor_encode_map(&enc, 5);
+
+        cbor_encode_cstr(&enc, "uuid");
+        char hex[33];
+        uuid_bytes_to_hex(m->uuid, hex);
+        cbor_encode_cstr(&enc, hex);
+
+        cbor_encode_cstr(&enc, "name");
+        cbor_encode_cstr(&enc, m->name);
+
+        cbor_encode_cstr(&enc, "desc");
+        cbor_encode_cstr(&enc, m->description);
+
+        cbor_encode_cstr(&enc, "fp");
+        if (m->has_creator_fp) {
+            cbor_encode_bstr(&enc, m->creator_fp.bytes, NODUS_KEY_BYTES);
+        } else {
+            cbor_encode_bstr(&enc, (const uint8_t *)"", 0);
+        }
+
+        cbor_encode_cstr(&enc, "ts");
+        cbor_encode_uint(&enc, m->created_at);
+    }
+
     return finish(&enc, out_len);
 }
 
@@ -1122,6 +1226,44 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BOOL)
                         msg->ch_encrypted = val.bool_val;
                 }
+                /* name (ch_create: channel name) */
+                else if (akey.tstr.len == 4 && memcmp(akey.tstr.ptr, "name", 4) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_TSTR && val.tstr.len > 0) {
+                        msg->ch_name = strndup(val.tstr.ptr, val.tstr.len);
+                    }
+                }
+                /* desc (ch_create: channel description) */
+                else if (akey.tstr.len == 4 && memcmp(akey.tstr.ptr, "desc", 4) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_TSTR) {
+                        msg->ch_description = strndup(val.tstr.ptr, val.tstr.len);
+                    }
+                }
+                /* pub (ch_create: is_public flag) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "pub", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BOOL)
+                        msg->ch_is_public = val.bool_val;
+                }
+                /* q (ch_search: query string) */
+                else if (akey.tstr.len == 1 && akey.tstr.ptr[0] == 'q') {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_TSTR && val.tstr.len > 0)
+                        msg->ch_query = strndup(val.tstr.ptr, val.tstr.len);
+                }
+                /* off (ch_list/ch_search: offset) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "off", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->ch_offset = (int)val.uint_val;
+                }
+                /* lim (ch_list/ch_search: limit) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "lim", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->ch_limit = (int)val.uint_val;
+                }
                 /* act (ch_member_update: action 1=add, 2=remove) */
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "act", 3) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
@@ -1258,6 +1400,70 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                                     }
                                 }
                                 msg->ch_post_count++;
+                            }
+                        }
+                    }
+                }
+                /* channels (ch_list_ok / ch_search_ok: array of channel metas) */
+                else if (rkey.tstr.len == 8 && memcmp(rkey.tstr.ptr, "channels", 8) == 0) {
+                    cbor_item_t arr = cbor_decode_next(&dec);
+                    if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        size_t cap2 = arr.count > 200 ? 200 : arr.count;
+                        msg->ch_metas = calloc(cap2, sizeof(nodus_channel_meta_t));
+                        if (msg->ch_metas) {
+                            msg->ch_meta_count = 0;
+                            for (size_t k = 0; k < arr.count; k++) {
+                                cbor_item_t cmap = cbor_decode_next(&dec);
+                                if (cmap.type != CBOR_ITEM_MAP) continue;
+                                if (msg->ch_meta_count >= cap2) {
+                                    for (size_t m2 = 0; m2 < cmap.count; m2++) {
+                                        cbor_decode_skip(&dec);
+                                        cbor_decode_skip(&dec);
+                                    }
+                                    continue;
+                                }
+                                nodus_channel_meta_t *cm = &msg->ch_metas[msg->ch_meta_count];
+                                memset(cm, 0, sizeof(*cm));
+                                for (size_t m2 = 0; m2 < cmap.count; m2++) {
+                                    cbor_item_t ck = cbor_decode_next(&dec);
+                                    if (ck.type != CBOR_ITEM_TSTR) {
+                                        cbor_decode_skip(&dec); continue;
+                                    }
+                                    if (ck.tstr.len == 4 && memcmp(ck.tstr.ptr, "uuid", 4) == 0) {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_TSTR && v.tstr.len == 32) {
+                                            /* Parse 32-char hex to 16-byte binary */
+                                            for (int b = 0; b < NODUS_UUID_BYTES; b++) {
+                                                unsigned int byte;
+                                                if (sscanf(v.tstr.ptr + b * 2, "%2x", &byte) == 1)
+                                                    cm->uuid[b] = (uint8_t)byte;
+                                            }
+                                        }
+                                    } else if (ck.tstr.len == 4 && memcmp(ck.tstr.ptr, "name", 4) == 0) {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_TSTR)
+                                            snprintf(cm->name, sizeof(cm->name), "%.*s",
+                                                     (int)v.tstr.len, v.tstr.ptr);
+                                    } else if (ck.tstr.len == 4 && memcmp(ck.tstr.ptr, "desc", 4) == 0) {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_TSTR)
+                                            snprintf(cm->description, sizeof(cm->description), "%.*s",
+                                                     (int)v.tstr.len, v.tstr.ptr);
+                                    } else if (ck.tstr.len == 2 && memcmp(ck.tstr.ptr, "fp", 2) == 0) {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_KEY_BYTES) {
+                                            memcpy(cm->creator_fp.bytes, v.bstr.ptr, NODUS_KEY_BYTES);
+                                            cm->has_creator_fp = true;
+                                        }
+                                    } else if (ck.tstr.len == 2 && memcmp(ck.tstr.ptr, "ts", 2) == 0) {
+                                        cbor_item_t v = cbor_decode_next(&dec);
+                                        if (v.type == CBOR_ITEM_UINT) cm->created_at = v.uint_val;
+                                    } else {
+                                        cbor_decode_skip(&dec);
+                                    }
+                                }
+                                cm->is_public = true;  /* Only public channels in list */
+                                msg->ch_meta_count++;
                             }
                         }
                     }
@@ -1499,6 +1705,14 @@ void nodus_t2_msg_free(nodus_tier2_msg_t *msg) {
         free(msg->ch_posts);
         msg->ch_posts = NULL;
     }
+    free(msg->ch_name);
+    msg->ch_name = NULL;
+    free(msg->ch_description);
+    msg->ch_description = NULL;
+    free(msg->ch_query);
+    msg->ch_query = NULL;
+    free(msg->ch_metas);
+    msg->ch_metas = NULL;
     free(msg->pq_fps);
     msg->pq_fps = NULL;
     free(msg->pq_online);

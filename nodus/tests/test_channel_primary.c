@@ -209,7 +209,7 @@ static void test_ensure_channel_already_exists(void) {
     make_uuid(uuid, 0xCC);
 
     /* Pre-create channel */
-    nodus_channel_create(&store, uuid, false);
+    nodus_channel_create(&store, uuid, false, NULL, NULL, false);
 
     /* Change identity to non-ring node -- should still return true
      * because channel already exists */

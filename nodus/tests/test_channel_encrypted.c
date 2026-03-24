@@ -49,7 +49,7 @@ static const uint8_t nonexist_uuid[16] = {
 static void test_create_encrypted_channel(void) {
     TEST("create encrypted channel — flag persists");
 
-    int rc = nodus_channel_create(&store, enc_uuid, true);
+    int rc = nodus_channel_create(&store, enc_uuid, true, NULL, NULL, false);
     if (rc != 0) { FAIL("create failed"); return; }
 
     if (!nodus_channel_exists(&store, enc_uuid)) {
@@ -78,7 +78,7 @@ static void test_create_encrypted_channel(void) {
 static void test_create_plain_channel(void) {
     TEST("create non-encrypted channel — backward compat");
 
-    int rc = nodus_channel_create(&store, plain_uuid, false);
+    int rc = nodus_channel_create(&store, plain_uuid, false, NULL, NULL, false);
     if (rc != 0) { FAIL("create failed"); return; }
 
     if (!nodus_channel_exists(&store, plain_uuid)) {

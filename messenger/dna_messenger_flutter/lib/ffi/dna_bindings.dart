@@ -3577,6 +3577,24 @@ class DnaBindings {
     return _dna_engine_channel_discover(engine, daysBack, callback, userData);
   }
 
+  late final _dna_engine_channel_search = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Int32, Int32,
+          Pointer<DnaChannelsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, int, int,
+          Pointer<DnaChannelsCb>, Pointer<Void>)>(
+      'dna_engine_channel_search');
+
+  int dna_engine_channel_search(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> query,
+    int offset,
+    int limit,
+    Pointer<DnaChannelsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_channel_search(engine, query, offset, limit, callback, userData);
+  }
+
   // --- Channel posts ---
 
   late final _dna_engine_channel_post = _lib.lookupFunction<

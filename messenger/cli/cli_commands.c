@@ -4505,6 +4505,47 @@ int cmd_channel_discover(dna_engine_t *engine, int days) {
     return 0;
 }
 
+int cmd_channel_list(dna_engine_t *engine) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+
+    printf("Listing public channels from server...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_channel_discover(engine, 0, on_channels_list, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to list channels: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
+int cmd_channel_search(dna_engine_t *engine, const char *query) {
+    if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
+    if (!query || strlen(query) == 0) { printf("Error: Search query required\n"); return -1; }
+
+    printf("Searching channels for \"%s\"...\n", query);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_channel_search(engine, query, 0, 50, on_channels_list, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        printf("Error: Failed to search channels: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    return 0;
+}
+
 int cmd_channel_post(dna_engine_t *engine, const char *channel_uuid, const char *body) {
     if (!engine) { printf("Error: Engine not initialized\n"); return -1; }
     if (!channel_uuid || strlen(channel_uuid) == 0) { printf("Error: Channel UUID required\n"); return -1; }
@@ -4976,7 +5017,9 @@ int dispatch_channel(dna_engine_t *engine, int argc, char **argv, int sub) {
         fprintf(stderr, "  create <name> [description]  Create a new channel\n");
         fprintf(stderr, "  get <uuid>                 Show channel info\n");
         fprintf(stderr, "  delete <uuid>              Delete your channel\n");
-        fprintf(stderr, "  discover [--days N]        Browse recent channels (default 7 days)\n");
+        fprintf(stderr, "  discover [--days N]        Browse channels from DHT index (legacy)\n");
+        fprintf(stderr, "  list                       List public channels from server\n");
+        fprintf(stderr, "  search <query>             Search channels by name/description\n");
         fprintf(stderr, "  post <uuid> <body>         Post to a channel\n");
         fprintf(stderr, "  posts <uuid> [--days N]    Read channel posts\n");
         fprintf(stderr, "  subscribe <uuid>           Subscribe to a channel\n");
@@ -5004,6 +5047,18 @@ int dispatch_channel(dna_engine_t *engine, int argc, char **argv, int sub) {
             }
         }
         return cmd_channel_discover(engine, days);
+    } else if (strcmp(subcmd, "list") == 0) {
+        return cmd_channel_list(engine);
+    } else if (strcmp(subcmd, "search") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: channel search <query>\n"); return 1; }
+        /* Concatenate remaining args as query */
+        static char search_buf[256];
+        search_buf[0] = '\0';
+        for (int i = sub + 1; i < argc; i++) {
+            if (i > sub + 1) strncat(search_buf, " ", sizeof(search_buf) - strlen(search_buf) - 1);
+            strncat(search_buf, argv[i], sizeof(search_buf) - strlen(search_buf) - 1);
+        }
+        return cmd_channel_search(engine, search_buf);
     } else if (strcmp(subcmd, "post") == 0) {
         if (sub + 2 >= argc) { fprintf(stderr, "Usage: channel post <uuid> <body>\n"); return 1; }
         /* Concatenate remaining args as body */
@@ -5580,8 +5635,8 @@ int dispatch_group_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- channel (REPL) ---------- */
 int dispatch_channel_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Channels — create | get | delete | discover | post | posts\n");
-        fprintf(stderr, "  subscribe | unsubscribe | subscriptions | sync\n");
+        fprintf(stderr, "Channels — create | get | delete | list | search | discover\n");
+        fprintf(stderr, "  post | posts | subscribe | unsubscribe | subscriptions | sync\n");
         return 1;
     }
     if (strcmp(subcmd, "create") == 0) {
@@ -5608,6 +5663,14 @@ int dispatch_channel_repl(dna_engine_t *engine, const char *subcmd) {
             arg = strtok(NULL, " \t");
         }
         return cmd_channel_discover(engine, days);
+    } else if (strcmp(subcmd, "list") == 0) {
+        return cmd_channel_list(engine);
+    } else if (strcmp(subcmd, "search") == 0) {
+        char *query = strtok(NULL, "");
+        if (!query) { fprintf(stderr, "Usage: channel search <query>\n"); return 1; }
+        /* Trim leading whitespace */
+        while (*query == ' ' || *query == '\t') query++;
+        return cmd_channel_search(engine, query);
     } else if (strcmp(subcmd, "post") == 0) {
         char *uuid = strtok(NULL, " \t");
         if (!uuid) { fprintf(stderr, "Usage: channel post <uuid> <body>\n"); return 1; }

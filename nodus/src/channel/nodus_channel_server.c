@@ -17,6 +17,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define LOG_TAG "CH_SERVER"
 
@@ -426,6 +427,68 @@ static void handle_ch_unsubscribe(nodus_channel_server_t *cs,
     nodus_ch_primary_handle_unsubscribe(cs, sess, msg);
 }
 
+static void handle_ch_list(nodus_channel_server_t *cs,
+                            nodus_ch_client_session_t *sess,
+                            nodus_tier2_msg_t *msg) {
+    int offset = msg->ch_offset;
+    int limit = msg->ch_limit;
+
+    nodus_channel_meta_t *metas = NULL;
+    size_t count = 0;
+    int rc = nodus_channel_store_list_public(cs->ch_store, offset, limit,
+                                              &metas, &count);
+    if (rc != 0) {
+        uint8_t buf[256];
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, 500, "internal error", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return;
+    }
+
+    uint8_t *buf = malloc(65536);
+    if (!buf) { free(metas); return; }
+    size_t len = 0;
+    nodus_t2_ch_list_ok(msg->txn_id, metas, count, buf, 65536, &len);
+    nodus_tcp_send(sess->conn, buf, len);
+    free(buf);
+    free(metas);
+}
+
+static void handle_ch_search(nodus_channel_server_t *cs,
+                               nodus_ch_client_session_t *sess,
+                               nodus_tier2_msg_t *msg) {
+    const char *query = msg->ch_query;
+    if (!query || query[0] == '\0') {
+        /* Empty query = list all */
+        handle_ch_list(cs, sess, msg);
+        return;
+    }
+
+    int offset = msg->ch_offset;
+    int limit = msg->ch_limit;
+
+    nodus_channel_meta_t *metas = NULL;
+    size_t count = 0;
+    int rc = nodus_channel_store_search(cs->ch_store, query, offset, limit,
+                                         &metas, &count);
+    if (rc != 0) {
+        uint8_t buf[256];
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, 500, "internal error", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return;
+    }
+
+    /* Reuse ch_list_ok format — same response structure */
+    uint8_t *buf = malloc(65536);
+    if (!buf) { free(metas); return; }
+    size_t len = 0;
+    nodus_t2_ch_list_ok(msg->txn_id, metas, count, buf, 65536, &len);
+    nodus_tcp_send(sess->conn, buf, len);
+    free(buf);
+    free(metas);
+}
+
 /* ---- Stub handlers (node operations) ----------------------------------- */
 
 static void handle_ch_replicate(nodus_channel_server_t *cs,
@@ -558,6 +621,10 @@ static void dispatch_client_msg(nodus_channel_server_t *cs,
         handle_ch_unsubscribe(cs, sess, msg);
     else if (strcmp(msg->method, "ch_mu") == 0)
         handle_ch_member_update(cs, sess, msg);
+    else if (strcmp(msg->method, "ch_list") == 0)
+        handle_ch_list(cs, sess, msg);
+    else if (strcmp(msg->method, "ch_search") == 0)
+        handle_ch_search(cs, sess, msg);
     else
         QGP_LOG_WARN(LOG_TAG, "Unknown client method: %s", msg->method);
 }

@@ -242,6 +242,35 @@ void nodus_ops_ch_tick(void);
 int nodus_ops_ch_create(const uint8_t channel_uuid[16]);
 
 /**
+ * List public channels from server (paginated).
+ * Uses the main TCP 4001 client connection.
+ *
+ * @param offset     Pagination offset (0 = start)
+ * @param limit      Maximum results (default 50, max 200)
+ * @param metas_out  Output: heap-allocated array. Caller frees with free().
+ * @param count_out  Number of results
+ * @return 0 on success
+ */
+int nodus_ops_ch_list(int offset, int limit,
+                       nodus_channel_meta_t **metas_out,
+                       size_t *count_out);
+
+/**
+ * Search public channels by name/description (paginated).
+ * Uses the main TCP 4001 client connection.
+ *
+ * @param query      Search string
+ * @param offset     Pagination offset
+ * @param limit      Maximum results
+ * @param metas_out  Output: heap-allocated array. Caller frees with free().
+ * @param count_out  Number of results
+ * @return 0 on success
+ */
+int nodus_ops_ch_search(const char *query, int offset, int limit,
+                         nodus_channel_meta_t **metas_out,
+                         size_t *count_out);
+
+/**
  * Post to a channel.
  * Auto-connects to a responsible node if not already connected.
  *

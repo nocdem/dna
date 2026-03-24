@@ -830,6 +830,9 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_CHANNEL_POST:
             free(task->params.channel_post.body);
             break;
+        case TASK_CHANNEL_SEARCH:
+            free(task->params.channel_search.query);
+            break;
         default:
             break;
     }
@@ -1207,6 +1210,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_CHANNEL_DISCOVER:
             dna_handle_channel_discover(engine, task);
+            break;
+        case TASK_CHANNEL_SEARCH:
+            dna_handle_channel_search(engine, task);
             break;
         case TASK_CHANNEL_POST:
             dna_handle_channel_post(engine, task);

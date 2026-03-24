@@ -1187,6 +1187,62 @@ static void handle_t2_ping(nodus_server_t *srv, nodus_session_t *sess,
     nodus_tcp_send(sess->conn, resp_buf, len);
 }
 
+/* ── Channel discovery on TCP 4001 ────────────────────────────────── */
+
+static void handle_t2_ch_list(nodus_server_t *srv, nodus_session_t *sess,
+                                nodus_tier2_msg_t *msg) {
+    nodus_channel_meta_t *metas = NULL;
+    size_t count = 0;
+    int rc = nodus_channel_store_list_public(&srv->ch_store,
+                                              msg->ch_offset, msg->ch_limit,
+                                              &metas, &count);
+    if (rc != 0) {
+        uint8_t buf[256];
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, 500, "internal error", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return;
+    }
+
+    uint8_t *buf = malloc(65536);
+    if (!buf) { free(metas); return; }
+    size_t len = 0;
+    nodus_t2_ch_list_ok(msg->txn_id, metas, count, buf, 65536, &len);
+    nodus_tcp_send(sess->conn, buf, len);
+    free(buf);
+    free(metas);
+}
+
+static void handle_t2_ch_search(nodus_server_t *srv, nodus_session_t *sess,
+                                  nodus_tier2_msg_t *msg) {
+    const char *query = msg->ch_query;
+    if (!query || query[0] == '\0') {
+        handle_t2_ch_list(srv, sess, msg);
+        return;
+    }
+
+    nodus_channel_meta_t *metas = NULL;
+    size_t count = 0;
+    int rc = nodus_channel_store_search(&srv->ch_store, query,
+                                         msg->ch_offset, msg->ch_limit,
+                                         &metas, &count);
+    if (rc != 0) {
+        uint8_t buf[256];
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, 500, "internal error", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return;
+    }
+
+    uint8_t *buf = malloc(65536);
+    if (!buf) { free(metas); return; }
+    size_t len = 0;
+    nodus_t2_ch_list_ok(msg->txn_id, metas, count, buf, 65536, &len);
+    nodus_tcp_send(sess->conn, buf, len);
+    free(buf);
+    free(metas);
+}
+
 static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
                                 nodus_tier2_msg_t *msg) {
     /* Build server info list: self + alive cluster peers */
@@ -1773,6 +1829,10 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         handle_t2_ping(srv, sess, &msg);
     else if (strcmp(msg.method, "servers") == 0)
         handle_t2_servers(srv, sess, &msg);
+    else if (strcmp(msg.method, "ch_list") == 0)
+        handle_t2_ch_list(srv, sess, &msg);
+    else if (strcmp(msg.method, "ch_search") == 0)
+        handle_t2_ch_search(srv, sess, &msg);
     else {
         size_t rlen = 0;
         nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
@@ -2168,7 +2228,7 @@ static void ch_startup_rejoin(nodus_server_t *srv)
         nodus_ch_ring_track(&srv->ch_ring, uuid, srv->ring.version);
 
         /* Ensure table exists (idempotent) */
-        nodus_channel_create(&srv->ch_store, uuid, false);
+        nodus_channel_create(&srv->ch_store, uuid, false, NULL, NULL, false);
 
         tracked++;
     }
@@ -2301,6 +2361,9 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         fprintf(stderr, "Failed to open channel store: %s\n", ch_db_path);
         return -1;
     }
+
+    /* Register default channels (idempotent) */
+    nodus_channel_store_register_defaults(&srv->ch_store);
 
     /* Init routing table */
     nodus_routing_init(&srv->routing, &srv->identity.node_id);

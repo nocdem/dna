@@ -1,4 +1,4 @@
-// Discover Channels Screen - Browse and subscribe to public channels from DHT
+// Discover Channels Screen - Browse and subscribe to public channels from server
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -19,19 +19,13 @@ class _DiscoverChannelsScreenState
     extends ConsumerState<DiscoverChannelsScreen> {
   String _searchQuery = '';
 
-  List<Channel> _filterChannels(List<Channel> channels) {
-    if (_searchQuery.isEmpty) return channels;
-    final query = _searchQuery.toLowerCase();
-    return channels
-        .where((c) =>
-            c.name.toLowerCase().contains(query) ||
-            c.description.toLowerCase().contains(query))
-        .toList();
-  }
-
   @override
   Widget build(BuildContext context) {
-    final channelsAsync = ref.watch(discoverChannelsProvider);
+    // When searching, use server-side search; otherwise show full list
+    final bool isSearching = _searchQuery.isNotEmpty;
+    final channelsAsync = isSearching
+        ? ref.watch(searchChannelsProvider)
+        : ref.watch(discoverChannelsProvider);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
@@ -49,20 +43,20 @@ class _DiscoverChannelsScreenState
       ),
       body: Column(
         children: [
-          // Search bar
+          // Search bar — triggers server-side search
           DnaSearchBar(
             hint: AppLocalizations.of(context).channelSearchChannels,
-            debounceMs: 300,
+            debounceMs: 500,
             onChanged: (value) {
               setState(() => _searchQuery = value);
+              ref.read(channelSearchQueryProvider.notifier).state = value;
             },
           ),
           // Channel list
           Expanded(
             child: channelsAsync.when(
               data: (channels) {
-                final filtered = _filterChannels(channels);
-                if (filtered.isEmpty) {
+                if (channels.isEmpty) {
                   return Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
@@ -74,9 +68,9 @@ class _DiscoverChannelsScreenState
                         ),
                         const SizedBox(height: DnaSpacing.lg),
                         Text(
-                          _searchQuery.isEmpty
-                              ? AppLocalizations.of(context).channelNoPublicChannels
-                              : 'No channels match "$_searchQuery"',
+                          isSearching
+                              ? 'No channels match "$_searchQuery"'
+                              : AppLocalizations.of(context).channelNoPublicChannels,
                           style: theme.textTheme.bodyLarge?.copyWith(
                             color:
                                 colorScheme.onSurface.withValues(alpha: 0.5),
@@ -92,9 +86,9 @@ class _DiscoverChannelsScreenState
                   child: ListView.builder(
                     padding:
                         const EdgeInsets.symmetric(vertical: DnaSpacing.sm),
-                    itemCount: filtered.length,
+                    itemCount: channels.length,
                     itemBuilder: (context, index) {
-                      final channel = filtered[index];
+                      final channel = channels[index];
                       return _ChannelTile(channel: channel);
                     },
                   ),

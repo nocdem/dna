@@ -1098,6 +1098,42 @@ int nodus_ops_ch_create(const uint8_t channel_uuid[16]) {
     return rc;
 }
 
+int nodus_ops_ch_list(int offset, int limit,
+                       nodus_channel_meta_t **metas_out,
+                       size_t *count_out) {
+    if (!metas_out || !count_out) return -1;
+    *metas_out = NULL;
+    *count_out = 0;
+
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
+
+    int rc = nodus_client_ch_list(c, offset, limit, metas_out, count_out);
+    nodus_singleton_release();
+    return rc;
+}
+
+int nodus_ops_ch_search(const char *query, int offset, int limit,
+                         nodus_channel_meta_t **metas_out,
+                         size_t *count_out) {
+    if (!query || !metas_out || !count_out) return -1;
+    *metas_out = NULL;
+    *count_out = 0;
+
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
+
+    int rc = nodus_client_ch_search(c, query, offset, limit, metas_out, count_out);
+    nodus_singleton_release();
+    return rc;
+}
+
 int nodus_ops_ch_post(const uint8_t channel_uuid[16],
                       const uint8_t post_uuid[16],
                       const uint8_t *body, size_t body_len,

@@ -15,6 +15,7 @@
 #include "nodus/nodus_types.h"
 #include "core/nodus_value.h"
 #include "channel/nodus_hashring.h"
+#include "channel/nodus_channel_store.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -63,6 +64,8 @@ int nodus_t2_servers(uint32_t txn, const uint8_t *token,
 int nodus_t2_ch_create(uint32_t txn, const uint8_t *token,
                         const uint8_t uuid[NODUS_UUID_BYTES],
                         bool encrypted,
+                        const char *name, const char *description,
+                        bool is_public,
                         uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_ch_post(uint32_t txn, const uint8_t *token,
@@ -94,6 +97,20 @@ int nodus_t2_ch_member_update(uint32_t txn, const uint8_t *token,
 
 int nodus_t2_ch_member_update_ok(uint32_t txn,
                                   uint8_t *buf, size_t cap, size_t *out_len);
+
+/* Channel discovery (Client → Nodus) */
+int nodus_t2_ch_list(uint32_t txn, const uint8_t *token,
+                      int offset, int limit,
+                      uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ch_search(uint32_t txn, const uint8_t *token,
+                        const char *query, int offset, int limit,
+                        uint8_t *buf, size_t cap, size_t *out_len);
+
+/* Channel discovery (Nodus → Client) */
+int nodus_t2_ch_list_ok(uint32_t txn,
+                         const nodus_channel_meta_t *metas, size_t count,
+                         uint8_t *buf, size_t cap, size_t *out_len);
 
 /* ── Nodus → Client encode ───────────────────────────────────────── */
 
@@ -306,6 +323,16 @@ typedef struct {
     /* Channel rewrite: sync fields */
     uint64_t        ch_since_ms;        /* ch_sync_req: since timestamp */
     bool            ch_encrypted;       /* ch_create: encrypted channel flag */
+    char           *ch_name;            /* ch_create: channel name (heap, may be NULL) */
+    char           *ch_description;     /* ch_create: channel description (heap, may be NULL) */
+    bool            ch_is_public;       /* ch_create: discoverable flag */
+
+    /* ch_list / ch_search fields */
+    int             ch_offset;          /* ch_list/ch_search: pagination offset */
+    int             ch_limit;           /* ch_list/ch_search: pagination limit */
+    char           *ch_query;           /* ch_search: search query (heap, may be NULL) */
+    nodus_channel_meta_t *ch_metas;     /* ch_list_ok/ch_search_ok: result array (heap) */
+    size_t          ch_meta_count;      /* ch_list_ok/ch_search_ok: result count */
 
     /* ch_member_update fields */
     uint8_t         ch_mu_action;       /* 1=add, 2=remove */
