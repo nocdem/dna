@@ -241,7 +241,7 @@ class _FireGlow extends StatelessWidget {
         return child;
     }
 
-    return DecoratedBox(
+    return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
         border: Border.all(
@@ -275,7 +275,7 @@ class _BoostGlow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
+    return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
         gradient: const LinearGradient(
