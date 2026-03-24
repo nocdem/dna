@@ -806,6 +806,53 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
         merged[j] = tmp;
     }
 
+    /* Phase 3: Content dedup — same author+text within 5 min = duplicate.
+     * Array is sorted newest-first. Keep the OLDEST (last seen), drop newer dupes.
+     * We walk backwards so the oldest survives. */
+    {
+        size_t deduped = 0;
+        for (size_t i = 0; i < total; i++) {
+            bool is_dup = false;
+            /* Check against already-kept posts */
+            for (size_t k = 0; k < deduped; k++) {
+                /* Same author? */
+                if (strcmp(merged[i].author_fingerprint,
+                           merged[k].author_fingerprint) != 0) continue;
+                /* Same text? */
+                if (strcmp(merged[i].text, merged[k].text) != 0) continue;
+                /* Within 5 minutes of each other? */
+                uint64_t t1 = merged[i].timestamp;
+                uint64_t t2 = merged[k].timestamp;
+                uint64_t diff = (t1 > t2) ? (t1 - t2) : (t2 - t1);
+                if (diff > 300) continue;
+                /* Same image presence? */
+                bool has_img_i = (merged[i].image_json != NULL &&
+                                  merged[i].image_json[0] != '\0');
+                bool has_img_k = (merged[k].image_json != NULL &&
+                                  merged[k].image_json[0] != '\0');
+                if (has_img_i != has_img_k) continue;
+                /* Duplicate found — drop this one */
+                is_dup = true;
+                QGP_LOG_DEBUG(LOG_TAG, "load_timeline: dedup dropping %s (dup of %s)",
+                              merged[i].uuid, merged[k].uuid);
+                free(merged[i].image_json);
+                merged[i].image_json = NULL;
+                break;
+            }
+            if (!is_dup) {
+                if (deduped != i) {
+                    merged[deduped] = merged[i];
+                }
+                deduped++;
+            }
+        }
+        if (deduped < total) {
+            QGP_LOG_INFO(LOG_TAG, "load_timeline: deduped %zu → %zu posts",
+                         total, deduped);
+            total = deduped;
+        }
+    }
+
     *posts = merged;
     *count = total;
     QGP_LOG_DEBUG(LOG_TAG, "load_timeline: %zu posts from %zu fingerprints\n", total, fp_count);

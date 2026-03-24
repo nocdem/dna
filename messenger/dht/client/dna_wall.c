@@ -260,6 +260,50 @@ int dna_wall_from_json(const char *json, dna_wall_t *wall) {
 }
 
 /* ============================================================================
+ * Content dedup — prevent duplicate posts within a time window
+ * ========================================================================== */
+
+#define WALL_DEDUP_WINDOW_SEC 300  /* 5 minutes */
+
+/**
+ * Check if a post with the same text (and optionally image) already exists
+ * in the wall within the dedup window. Returns the matching post index or -1.
+ */
+static int wall_find_duplicate(const dna_wall_t *wall, const char *text,
+                                const char *image_json) {
+    if (!wall || !wall->posts || wall->post_count == 0 || !text) return -1;
+
+    uint64_t now = (uint64_t)time(NULL);
+
+    for (size_t i = 0; i < wall->post_count; i++) {
+        const dna_wall_post_t *p = &wall->posts[i];
+
+        /* Only check recent posts */
+        if (now - p->timestamp > WALL_DEDUP_WINDOW_SEC) continue;
+
+        /* Text must match */
+        if (strcmp(p->text, text) != 0) continue;
+
+        /* Image presence must match */
+        bool existing_has_image = (p->image_json != NULL && p->image_json[0] != '\0');
+        bool new_has_image = (image_json != NULL && image_json[0] != '\0');
+
+        if (existing_has_image != new_has_image) continue;
+
+        /* If both have images, compare image_json */
+        if (existing_has_image && new_has_image) {
+            if (strcmp(p->image_json, image_json) != 0) continue;
+        }
+
+        QGP_LOG_WARN(LOG_TAG, "Duplicate post detected: existing=%s (age=%llu s)",
+                     p->uuid, (unsigned long long)(now - p->timestamp));
+        return (int)i;
+    }
+
+    return -1;
+}
+
+/* ============================================================================
  * Wall Operations
  * ========================================================================== */
 
@@ -322,6 +366,20 @@ int dna_wall_post(const char *fingerprint,
         QGP_LOG_WARN(LOG_TAG, "Failed to load existing wall, starting fresh");
         wall.posts = NULL;
         wall.post_count = 0;
+    }
+
+    /* Content dedup: reject if same text posted within 5 minutes */
+    int dup_idx = wall_find_duplicate(&wall, text, NULL);
+    if (dup_idx >= 0) {
+        QGP_LOG_WARN(LOG_TAG, "Dedup: returning existing post %s instead of creating duplicate",
+                     wall.posts[dup_idx].uuid);
+        if (out_post) {
+            *out_post = wall.posts[dup_idx];
+            out_post->image_json = wall.posts[dup_idx].image_json
+                ? strdup(wall.posts[dup_idx].image_json) : NULL;
+        }
+        dna_wall_free(&wall);
+        return 0;
     }
 
     /* If at max capacity, remove one oldest post by timestamp */
@@ -454,6 +512,21 @@ int dna_wall_post_with_image(const char *fingerprint,
         QGP_LOG_WARN(LOG_TAG, "Failed to load existing wall, starting fresh");
         wall.posts = NULL;
         wall.post_count = 0;
+    }
+
+    /* Content dedup: reject if same text+image posted within 5 minutes */
+    int dup_idx = wall_find_duplicate(&wall, text, image_json);
+    if (dup_idx >= 0) {
+        QGP_LOG_WARN(LOG_TAG, "Dedup: returning existing post %s instead of creating duplicate",
+                     wall.posts[dup_idx].uuid);
+        if (out_post) {
+            *out_post = wall.posts[dup_idx];
+            out_post->image_json = wall.posts[dup_idx].image_json
+                ? strdup(wall.posts[dup_idx].image_json) : NULL;
+        }
+        free(new_post.image_json);
+        dna_wall_free(&wall);
+        return 0;
     }
 
     /* If at max capacity, remove oldest post */
