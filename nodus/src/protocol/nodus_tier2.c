@@ -15,6 +15,18 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+/* Portable strndup (missing on Windows/MSVC) */
+#ifdef _MSC_VER
+static char *portable_strndup(const char *s, size_t n) {
+    size_t len = 0;
+    while (len < n && s[len]) len++;
+    char *p = (char *)malloc(len + 1);
+    if (p) { memcpy(p, s, len); p[len] = '\0'; }
+    return p;
+}
+#define strndup portable_strndup
+#endif
+
 /* ── Common helpers ──────────────────────────────────────────────── */
 
 static void enc_query_header(cbor_encoder_t *enc, size_t map_count,
