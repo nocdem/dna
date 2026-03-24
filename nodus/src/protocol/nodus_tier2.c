@@ -15,8 +15,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-/* Portable strndup (missing on Windows/MSVC) */
-#ifdef _MSC_VER
+/* Portable strndup (missing on Windows — both MSVC and MinGW) */
+#ifdef _WIN32
 static char *portable_strndup(const char *s, size_t n) {
     size_t len = 0;
     while (len < n && s[len]) len++;
