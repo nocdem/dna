@@ -136,7 +136,7 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       if (fp != null && fp.length == 128) {
         try {
           final posts = await engine.wallTimelineCached(fp);
-          return _assembleItems(posts, fp);
+          return _assembleItems(posts, fp, cacheOnly: true);
         } catch (_) {
           return state.valueOrNull ?? [];
         }
@@ -165,23 +165,37 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
   }
 
   /// Assemble WallFeedItems with batch-fetched comments, likes, profiles
+  /// Assemble WallFeedItems. When [cacheOnly] is true (pre-identity load),
+  /// skip likes/comments/profile DHT fetch — show posts only, no engagement data.
+  /// This prevents caching "0 likes" from failed DHT fetches before identity is ready.
   Future<List<WallFeedItem>> _assembleItems(
-      List<WallPost> posts, String myFp) async {
+      List<WallPost> posts, String myFp, {bool cacheOnly = false}) async {
     if (posts.isEmpty) return [];
 
     final engine = await ref.read(engineProvider.future);
 
-    // Batch fetch comments and likes for all posts in parallel
-    final commentsFutures = posts.map((p) => _safeGetComments(engine, p.uuid));
-    final likesFutures = posts.map((p) => _safeGetLikes(engine, p.uuid));
+    // Batch fetch comments and likes — only when identity is loaded (DHT ready)
+    List<List<WallComment>> allComments;
+    List<List<WallLike>> allLikes;
 
-    final allComments = await Future.wait(commentsFutures);
-    final allLikes = await Future.wait(likesFutures);
+    if (cacheOnly) {
+      // Pre-identity: no DHT fetch, show posts without engagement data
+      allComments = List.filled(posts.length, const []);
+      allLikes = List.filled(posts.length, const []);
+    } else {
+      final commentsFutures =
+          posts.map((p) => _safeGetComments(engine, p.uuid));
+      final likesFutures = posts.map((p) => _safeGetLikes(engine, p.uuid));
+      allComments = await Future.wait(commentsFutures);
+      allLikes = await Future.wait(likesFutures);
+    }
 
     // Collect unique author fingerprints and batch prefetch profiles
     final uniqueAuthors = posts.map((p) => p.authorFingerprint).toSet().toList();
     final profileCache = ref.read(contactProfileCacheProvider.notifier);
-    await profileCache.prefetchProfiles(uniqueAuthors);
+    if (!cacheOnly) {
+      await profileCache.prefetchProfiles(uniqueAuthors);
+    }
     final profiles = ref.read(contactProfileCacheProvider);
 
     // Resolve own profile for own posts
