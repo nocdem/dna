@@ -637,6 +637,20 @@ void dna_auto_republish_own_profile(dna_engine_t *engine) {
     strncpy(profile.website, cached->website, sizeof(profile.website) - 1);
     strncpy(profile.avatar_base64, cached->avatar_base64, sizeof(profile.avatar_base64) - 1);
 
+    /* If local cache has no avatar, try to preserve from DHT (prevents avatar loss
+     * when local cache was rebuilt but DHT still has the avatar) */
+    if (profile.avatar_base64[0] == '\0') {
+        dna_unified_identity_t *dht_id = NULL;
+        int dht_rc = dna_load_identity(engine->fingerprint, &dht_id);
+        if (dht_rc == 0 && dht_id && dht_id->avatar_base64[0] != '\0') {
+            strncpy(profile.avatar_base64, dht_id->avatar_base64,
+                    sizeof(profile.avatar_base64) - 1);
+            QGP_LOG_INFO(LOG_TAG, "[AUTO-REPUBLISH] Preserved avatar from DHT (%zu bytes)",
+                         strlen(profile.avatar_base64));
+        }
+        if (dht_id) dna_identity_free(dht_id);
+    }
+
     dna_identity_free(cached);
 
     /* Load keys for signing */
@@ -937,6 +951,22 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
                      p->eth[0] ? p->eth : "(none)",
                      p->sol[0] ? p->sol : "(none)",
                      p->trx[0] ? p->trx : "(none)");
+    }
+
+    /* Preserve existing avatar if new profile has none.
+     * Prevents accidental avatar loss during profile field updates
+     * (e.g., updating bio shouldn't wipe avatar). */
+    if (p->avatar_base64[0] == '\0') {
+        dna_unified_identity_t *existing = NULL;
+        uint64_t existing_at = 0;
+        if (profile_cache_get(engine->fingerprint, &existing, &existing_at) == 0
+            && existing && existing->avatar_base64[0] != '\0') {
+            strncpy(p->avatar_base64, existing->avatar_base64,
+                    sizeof(p->avatar_base64) - 1);
+            QGP_LOG_INFO(LOG_TAG, "update_profile: preserved existing avatar (%zu bytes)",
+                         strlen(p->avatar_base64));
+        }
+        if (existing) dna_identity_free(existing);
     }
 
     size_t avatar_len = p->avatar_base64[0] ? strlen(p->avatar_base64) : 0;
