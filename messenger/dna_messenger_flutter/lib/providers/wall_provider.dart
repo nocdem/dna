@@ -265,8 +265,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     return items;
   }
 
-  /// Merge boost posts into existing state
-  void _mergeBoosts(List<WallPost> boostPosts, String myFp) {
+  /// Merge boost posts into existing state (with full metadata)
+  Future<void> _mergeBoosts(List<WallPost> boostPosts, String myFp) async {
     final current = state.valueOrNull ?? [];
     final boostedUuids = {for (final p in boostPosts) p.uuid};
     final seenUuids = <String>{};
@@ -282,17 +282,49 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       }
     }
 
-    // Add new boost posts not already in timeline
-    // These get minimal metadata — will be fully populated on next refresh
-    for (final post in boostPosts) {
-      if (!seenUuids.contains(post.uuid)) {
-        seenUuids.add(post.uuid);
+    // Add new boost posts not already in timeline — fetch full metadata
+    final newBoosts = boostPosts
+        .where((p) => !seenUuids.contains(p.uuid))
+        .toList();
+
+    if (newBoosts.isNotEmpty) {
+      final engine = await ref.read(engineProvider.future);
+
+      // Batch fetch comments, likes, and profiles for new boost posts
+      final commentsFutures =
+          newBoosts.map((p) => _safeGetComments(engine, p.uuid));
+      final likesFutures =
+          newBoosts.map((p) => _safeGetLikes(engine, p.uuid));
+      final allComments = await Future.wait(commentsFutures);
+      final allLikes = await Future.wait(likesFutures);
+
+      // Prefetch profiles for boost post authors
+      final uniqueAuthors =
+          newBoosts.map((p) => p.authorFingerprint).toSet().toList();
+      final profileCache = ref.read(contactProfileCacheProvider.notifier);
+      await profileCache.prefetchProfiles(uniqueAuthors);
+      final profiles = ref.read(contactProfileCacheProvider);
+
+      for (var i = 0; i < newBoosts.length; i++) {
+        final post = newBoosts[i];
+        final comments = allComments[i];
+        final likes = allLikes[i];
         final boostedPost = post.copyWith(isBoosted: true);
+        final profile = profiles[post.authorFingerprint];
+        final previewComments =
+            comments.length <= 3 ? comments : comments.sublist(0, 3);
+
+        seenUuids.add(post.uuid);
         merged.add(WallFeedItem(
           post: boostedPost,
+          commentCount: comments.length,
+          previewComments: previewComments,
+          likeCount: likes.length,
+          isLikedByMe: likes.any((l) => l.authorFingerprint == myFp),
           authorDisplayName: post.authorName.isNotEmpty
               ? post.authorName
               : post.authorFingerprint.substring(0, 16),
+          authorAvatar: profile?.decodeAvatar(),
           decodedImage:
               _ImageCache.decodePostImage(post.uuid, post.imageJson),
         ));
