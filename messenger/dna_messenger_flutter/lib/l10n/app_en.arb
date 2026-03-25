@@ -521,6 +521,14 @@
   "lockTitle": "DNA Connect",
   "lockEnterPIN": "Enter PIN to unlock",
   "lockIncorrectPIN": "Incorrect PIN",
+  "lockTooManyAttempts": "Too many attempts. Try again in {seconds}s",
+  "@lockTooManyAttempts": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
   "lockUseBiometrics": "Use biometrics to unlock",
 
   "appLockTitle": "App Lock",

@@ -342,6 +342,7 @@
   "lockTitle": "DNA Connect",
   "lockEnterPIN": "Voer PIN in om te ontgrendelen",
   "lockIncorrectPIN": "Onjuiste PIN",
+  "lockTooManyAttempts": "Te veel pogingen. Probeer opnieuw over {seconds}s",
   "lockUseBiometrics": "Gebruik biometrie om te ontgrendelen",
   "appLockTitle": "App-vergrendeling",
   "appLockEnable": "App-vergrendeling inschakelen",

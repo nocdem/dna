@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,6 +25,7 @@ class _LockScreenState extends ConsumerState<LockScreen>
   late AnimationController _shakeController;
   late Animation<double> _shakeAnimation;
   final FocusNode _focusNode = FocusNode();
+  Timer? _lockoutTimer;
 
   @override
   void initState() {
@@ -46,6 +48,7 @@ class _LockScreenState extends ConsumerState<LockScreen>
 
   @override
   void dispose() {
+    _lockoutTimer?.cancel();
     _shakeController.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -111,6 +114,10 @@ class _LockScreenState extends ConsumerState<LockScreen>
   }
 
   void _onKeyPressed(String key) {
+    // Block input during lockout
+    final appLock = ref.read(appLockProvider);
+    if (appLock.isLockedOut) return;
+
     HapticFeedback.lightImpact();
 
     if (key == 'backspace') {
@@ -136,9 +143,33 @@ class _LockScreenState extends ConsumerState<LockScreen>
     }
   }
 
+  void _startLockoutTimer() {
+    _lockoutTimer?.cancel();
+    _lockoutTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final appLock = ref.read(appLockProvider);
+      if (!appLock.isLockedOut) {
+        _lockoutTimer?.cancel();
+        _lockoutTimer = null;
+        if (mounted) setState(() => _error = null);
+      } else if (mounted) {
+        final seconds = appLock.remainingLockout.inSeconds;
+        setState(() {
+          _error = AppLocalizations.of(context).lockTooManyAttempts(seconds);
+        });
+      }
+    });
+  }
+
   Future<void> _verifyPin() async {
     if (_enteredPin.length < 4) {
       setState(() => _error = 'PIN must be at least 4 digits');
+      return;
+    }
+
+    // Check lockout before attempting
+    final currentState = ref.read(appLockProvider);
+    if (currentState.isLockedOut) {
+      _startLockoutTimer();
       return;
     }
 
@@ -152,9 +183,16 @@ class _LockScreenState extends ConsumerState<LockScreen>
       if (success) {
         _unlock();
       } else {
+        final appLock = ref.read(appLockProvider);
         setState(() {
-          _error = AppLocalizations.of(context).lockIncorrectPIN;
           _enteredPin = '';
+          if (appLock.isLockedOut) {
+            _error = AppLocalizations.of(context)
+                .lockTooManyAttempts(appLock.remainingLockout.inSeconds);
+            _startLockoutTimer();
+          } else {
+            _error = AppLocalizations.of(context).lockIncorrectPIN;
+          }
         });
         _shakeController.forward(from: 0);
       }

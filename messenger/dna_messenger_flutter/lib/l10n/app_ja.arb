@@ -342,6 +342,7 @@
   "lockTitle": "DNA Connect",
   "lockEnterPIN": "PINを入力してロック解除",
   "lockIncorrectPIN": "PINが正しくありません",
+  "lockTooManyAttempts": "試行回数が多すぎます。{seconds}秒後に再試行してください",
   "lockUseBiometrics": "生体認証でロック解除",
   "appLockTitle": "アプリロック",
   "appLockEnable": "アプリロックを有効にする",

@@ -371,6 +371,7 @@
   "lockTitle": "DNA Connect",
   "lockEnterPIN": "Kilit açmak için PIN girin",
   "lockIncorrectPIN": "Yanlış PIN",
+  "lockTooManyAttempts": "Çok fazla deneme. {seconds} saniye sonra tekrar deneyin",
   "lockUseBiometrics": "Kilit açmak için biyometrik kullanın",
 
   "appLockTitle": "Uygulama Kilidi",

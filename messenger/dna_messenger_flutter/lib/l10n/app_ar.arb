@@ -371,6 +371,7 @@
   "lockTitle": "DNA Connect",
   "lockEnterPIN": "أدخل رمز PIN للفتح",
   "lockIncorrectPIN": "رمز PIN غير صحيح",
+  "lockTooManyAttempts": "محاولات كثيرة جداً. حاول مرة أخرى بعد {seconds} ثانية",
   "lockUseBiometrics": "استخدم البصمة للفتح",
 
   "appLockTitle": "قفل التطبيق",

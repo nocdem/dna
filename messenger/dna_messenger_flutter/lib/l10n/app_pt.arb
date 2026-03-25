@@ -342,6 +342,7 @@
   "lockTitle": "DNA Connect",
   "lockEnterPIN": "Digite o PIN para desbloquear",
   "lockIncorrectPIN": "PIN incorreto",
+  "lockTooManyAttempts": "Muitas tentativas. Tente novamente em {seconds}s",
   "lockUseBiometrics": "Usar biometria para desbloquear",
   "appLockTitle": "Bloqueio do App",
   "appLockEnable": "Ativar Bloqueio do App",

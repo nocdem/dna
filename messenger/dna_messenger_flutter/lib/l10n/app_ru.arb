@@ -342,6 +342,7 @@
   "lockTitle": "DNA Connect",
   "lockEnterPIN": "Введите PIN для разблокировки",
   "lockIncorrectPIN": "Неверный PIN",
+  "lockTooManyAttempts": "Слишком много попыток. Повторите через {seconds}с",
   "lockUseBiometrics": "Использовать биометрию для разблокировки",
   "appLockTitle": "Блокировка приложения",
   "appLockEnable": "Включить блокировку",
