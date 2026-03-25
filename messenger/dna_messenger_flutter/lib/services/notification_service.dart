@@ -75,6 +75,7 @@ class NotificationService {
       priority: Priority.high,
       playSound: true,
       enableVibration: true,
+      visibility: NotificationVisibility.private,
     );
 
     const linuxDetails = LinuxNotificationDetails();
