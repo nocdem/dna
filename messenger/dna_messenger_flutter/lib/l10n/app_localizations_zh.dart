@@ -869,6 +869,19 @@ class AppLocalizationsZh extends AppLocalizations {
   String get wallDelete => '删除';
 
   @override
+  String get wallBlockUser => 'Block User';
+
+  @override
+  String wallBlockUserConfirm(String name) {
+    return 'Block $name? You will no longer see their posts or messages.';
+  }
+
+  @override
+  String wallUserBlocked(String name) {
+    return '$name has been blocked';
+  }
+
+  @override
   String get wallTip => '打赏';
 
   @override
@@ -1091,6 +1104,11 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get lockIncorrectPIN => 'PIN 不正确';
+
+  @override
+  String lockTooManyAttempts(int seconds) {
+    return '尝试次数过多。请在 $seconds 秒后重试';
+  }
 
   @override
   String get lockUseBiometrics => '使用生物识别解锁';

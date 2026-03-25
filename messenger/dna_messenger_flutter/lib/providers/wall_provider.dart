@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
 import 'contact_profile_cache_provider.dart';
+import 'contact_requests_provider.dart';
 import 'identity_profile_cache_provider.dart';
 import 'identity_provider.dart';
 import 'profile_provider.dart';
@@ -172,6 +173,14 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       List<WallPost> posts, String myFp, {bool cacheOnly = false}) async {
     if (posts.isEmpty) return [];
 
+    // Filter out posts from blocked users
+    final blockedList = ref.read(blockedUsersProvider).valueOrNull ?? [];
+    if (blockedList.isNotEmpty) {
+      final blockedFps = {for (final b in blockedList) b.fingerprint};
+      posts = posts.where((p) => !blockedFps.contains(p.authorFingerprint)).toList();
+      if (posts.isEmpty) return [];
+    }
+
     final engine = await ref.read(engineProvider.future);
 
     // Batch fetch comments and likes — only when identity is loaded (DHT ready)
@@ -267,6 +276,14 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
 
   /// Merge boost posts into existing state (with full metadata)
   Future<void> _mergeBoosts(List<WallPost> boostPosts, String myFp) async {
+    // Filter out blocked users' boosts
+    final blockedList = ref.read(blockedUsersProvider).valueOrNull ?? [];
+    if (blockedList.isNotEmpty) {
+      final blockedFps = {for (final b in blockedList) b.fingerprint};
+      boostPosts = boostPosts.where((p) => !blockedFps.contains(p.authorFingerprint)).toList();
+      if (boostPosts.isEmpty) return;
+    }
+
     final current = state.valueOrNull ?? [];
     final boostedUuids = {for (final p in boostPosts) p.uuid};
     final seenUuids = <String>{};
@@ -397,6 +414,13 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     final current = state.valueOrNull ?? [];
     state = AsyncData(
         current.where((item) => item.post.uuid != postUuid).toList());
+  }
+
+  /// Remove all posts by a specific author (used after blocking)
+  void removePostsByAuthor(String authorFingerprint) {
+    final current = state.valueOrNull ?? [];
+    state = AsyncData(
+        current.where((item) => item.post.authorFingerprint != authorFingerprint).toList());
   }
 
   /// Like a post — updates the specific item in the list

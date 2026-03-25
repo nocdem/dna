@@ -897,6 +897,19 @@ class AppLocalizationsEs extends AppLocalizations {
   String get wallDelete => 'Eliminar';
 
   @override
+  String get wallBlockUser => 'Block User';
+
+  @override
+  String wallBlockUserConfirm(String name) {
+    return 'Block $name? You will no longer see their posts or messages.';
+  }
+
+  @override
+  String wallUserBlocked(String name) {
+    return '$name has been blocked';
+  }
+
+  @override
   String get wallTip => 'Propina';
 
   @override
@@ -1120,6 +1133,11 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get lockIncorrectPIN => 'PIN incorrecto';
+
+  @override
+  String lockTooManyAttempts(int seconds) {
+    return 'Demasiados intentos. Intenta de nuevo en ${seconds}s';
+  }
 
   @override
   String get lockUseBiometrics => 'Usar biometría para desbloquear';

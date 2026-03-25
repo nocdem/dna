@@ -410,6 +410,19 @@
   "wallCopy": "Copy",
   "wallReply": "Reply",
   "wallDelete": "Delete",
+  "wallBlockUser": "Block User",
+  "wallBlockUserConfirm": "Block {name}? You will no longer see their posts or messages.",
+  "@wallBlockUserConfirm": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "wallUserBlocked": "{name} has been blocked",
+  "@wallUserBlocked": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
   "wallTip": "Tip",
   "wallTipTitle": "Tip this post",
   "wallTipAmount": "{amount} CPUNK",

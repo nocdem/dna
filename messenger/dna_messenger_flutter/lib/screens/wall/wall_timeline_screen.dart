@@ -122,6 +122,10 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                           ? () => _confirmDelete(
                               context, ref, item.post.uuid)
                           : null,
+                      onBlock: !isOwn
+                          ? () => _confirmBlock(
+                              context, ref, item)
+                          : null,
                       onShare: !isOwn
                           ? () => _showRepostDialog(
                               context, ref, item.post)
@@ -266,6 +270,51 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
               }
             },
             child: Text(AppLocalizations.of(context).delete),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmBlock(BuildContext context, WidgetRef ref, WallFeedItem item) {
+    final displayName = item.authorDisplayName;
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(AppLocalizations.of(context).wallBlockUser),
+        content: Text(AppLocalizations.of(context).wallBlockUserConfirm(displayName)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(AppLocalizations.of(context).cancel),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: DnaColors.textWarning),
+            onPressed: () async {
+              Navigator.pop(context);
+              try {
+                await ref
+                    .read(blockedUsersProvider.notifier)
+                    .block(item.post.authorFingerprint, 'Blocked from wall');
+                // Remove blocked user's posts from timeline
+                ref.read(wallTimelineProvider.notifier).removePostsByAuthor(
+                    item.post.authorFingerprint);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(AppLocalizations.of(context).wallUserBlocked(displayName)),
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Failed to block: $e')),
+                  );
+                }
+              }
+            },
+            child: Text(AppLocalizations.of(context).wallBlockUser),
           ),
         ],
       ),

@@ -893,6 +893,19 @@ class AppLocalizationsTr extends AppLocalizations {
   String get wallDelete => 'Sil';
 
   @override
+  String get wallBlockUser => 'Kullanıcıyı Engelle';
+
+  @override
+  String wallBlockUserConfirm(String name) {
+    return '$name engellensin mi? Artık gönderilerini ve mesajlarını görmeyeceksiniz.';
+  }
+
+  @override
+  String wallUserBlocked(String name) {
+    return '$name engellendi';
+  }
+
+  @override
   String get wallTip => 'Bahşiş';
 
   @override
@@ -1115,6 +1128,11 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get lockIncorrectPIN => 'Yanlış PIN';
+
+  @override
+  String lockTooManyAttempts(int seconds) {
+    return 'Çok fazla deneme. $seconds saniye sonra tekrar deneyin';
+  }
 
   @override
   String get lockUseBiometrics => 'Kilit açmak için biyometrik kullanın';

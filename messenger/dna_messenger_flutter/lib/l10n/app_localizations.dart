@@ -1748,6 +1748,24 @@ abstract class AppLocalizations {
   /// **'Delete'**
   String get wallDelete;
 
+  /// No description provided for @wallBlockUser.
+  ///
+  /// In en, this message translates to:
+  /// **'Block User'**
+  String get wallBlockUser;
+
+  /// No description provided for @wallBlockUserConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Block {name}? You will no longer see their posts or messages.'**
+  String wallBlockUserConfirm(String name);
+
+  /// No description provided for @wallUserBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} has been blocked'**
+  String wallUserBlocked(String name);
+
   /// No description provided for @wallTip.
   ///
   /// In en, this message translates to:
@@ -2167,6 +2185,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Incorrect PIN'**
   String get lockIncorrectPIN;
+
+  /// No description provided for @lockTooManyAttempts.
+  ///
+  /// In en, this message translates to:
+  /// **'Too many attempts. Try again in {seconds}s'**
+  String lockTooManyAttempts(int seconds);
 
   /// No description provided for @lockUseBiometrics.
   ///

@@ -16,6 +16,7 @@ class WallPostTile extends StatelessWidget {
   final Uint8List? authorAvatar;
   final Uint8List? decodedImage;
   final VoidCallback? onDelete;
+  final VoidCallback? onBlock;
   final VoidCallback? onAuthorTap;
   final VoidCallback? onShare;
   final VoidCallback? onReply;
@@ -35,6 +36,7 @@ class WallPostTile extends StatelessWidget {
     this.authorAvatar,
     this.decodedImage,
     this.onDelete,
+    this.onBlock,
     this.onAuthorTap,
     this.onShare,
     this.onReply,
@@ -106,6 +108,42 @@ class WallPostTile extends StatelessWidget {
                   ),
                 ),
               ),
+              if (isOwn && onDelete != null || !isOwn && onBlock != null)
+                PopupMenuButton<String>(
+                  icon: FaIcon(
+                    FontAwesomeIcons.ellipsisVertical,
+                    size: 16,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  onSelected: (value) {
+                    if (value == 'delete') onDelete?.call();
+                    if (value == 'block') onBlock?.call();
+                  },
+                  itemBuilder: (context) => [
+                    if (isOwn && onDelete != null)
+                      PopupMenuItem(
+                        value: 'delete',
+                        child: Row(
+                          children: [
+                            FaIcon(FontAwesomeIcons.trash, size: 16, color: DnaColors.textWarning),
+                            const SizedBox(width: 8),
+                            Text(AppLocalizations.of(context).wallDelete, style: TextStyle(color: DnaColors.textWarning)),
+                          ],
+                        ),
+                      ),
+                    if (!isOwn && onBlock != null)
+                      PopupMenuItem(
+                        value: 'block',
+                        child: Row(
+                          children: [
+                            FaIcon(FontAwesomeIcons.ban, size: 16, color: DnaColors.textWarning),
+                            const SizedBox(width: 8),
+                            Text(AppLocalizations.of(context).wallBlockUser, style: TextStyle(color: DnaColors.textWarning)),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
             ],
           ),
           const SizedBox(height: DnaSpacing.md),
