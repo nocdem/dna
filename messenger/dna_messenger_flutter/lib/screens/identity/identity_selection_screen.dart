@@ -12,6 +12,7 @@ import '../../ffi/dna_engine.dart' as dna;
 import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart';
 import '../../design_system/theme/dna_colors.dart';
+import '../../utils/clipboard_utils.dart';
 import '../../utils/logger.dart' show log, logError;
 
 /// Entry point for onboarding - in v0.3.0 single-user model, this just shows the unified flow
@@ -315,7 +316,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           // Copy button
           OutlinedButton.icon(
             onPressed: () {
-              Clipboard.setData(ClipboardData(text: _mnemonic));
+              ClipboardUtils.copyWithAutoClear(_mnemonic);
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text(AppLocalizations.of(context).copiedToClipboard)),
               );

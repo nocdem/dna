@@ -12,6 +12,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../l10n/app_localizations.dart';
+import '../../utils/clipboard_utils.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
@@ -683,7 +684,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                           ),
                           child: ElevatedButton.icon(
                             onPressed: () {
-                              Clipboard.setData(ClipboardData(text: mnemonic));
+                              ClipboardUtils.copyWithAutoClear(mnemonic);
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(content: Text(AppLocalizations.of(context).settingsSeedCopied)),
                               );
