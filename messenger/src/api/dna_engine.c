@@ -784,11 +784,26 @@ void dna_free_task_params(dna_task_t *task) {
     if (!task) return;
     switch (task->type) {
         case TASK_CREATE_IDENTITY:
+            /* Zero seed material (stack-embedded in union, 32 bytes each) */
+            qgp_secure_memzero(task->params.create_identity.signing_seed, 32);
+            qgp_secure_memzero(task->params.create_identity.encryption_seed, 32);
+            /* Free and zero heap-allocated seed/mnemonic */
+            if (task->params.create_identity.master_seed) {
+                qgp_secure_memzero(task->params.create_identity.master_seed, 64);
+                free(task->params.create_identity.master_seed);
+                task->params.create_identity.master_seed = NULL;
+            }
+            if (task->params.create_identity.mnemonic) {
+                qgp_secure_memzero(task->params.create_identity.mnemonic,
+                       strlen(task->params.create_identity.mnemonic));
+                free(task->params.create_identity.mnemonic);
+                task->params.create_identity.mnemonic = NULL;
+            }
             if (task->params.create_identity.password) {
-                /* Secure clear password before freeing */
                 qgp_secure_memzero(task->params.create_identity.password,
                        strlen(task->params.create_identity.password));
                 free(task->params.create_identity.password);
+                task->params.create_identity.password = NULL;
             }
             break;
         case TASK_LOAD_IDENTITY:
