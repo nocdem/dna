@@ -13,6 +13,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../l10n/app_localizations.dart';
 import '../../utils/clipboard_utils.dart';
+import '../../utils/screen_security.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
@@ -519,6 +520,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
           final theme = Theme.of(context);
           final isDark = theme.brightness == Brightness.dark;
 
+          ScreenSecurity.enable();
           showDialog(
             context: context,
             barrierDismissible: false,
@@ -712,7 +714,10 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                         width: double.infinity,
                         height: 46,
                         child: OutlinedButton(
-                          onPressed: () => Navigator.pop(context),
+                          onPressed: () {
+                                ScreenSecurity.disable();
+                                Navigator.pop(context);
+                              },
                           style: OutlinedButton.styleFrom(
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),

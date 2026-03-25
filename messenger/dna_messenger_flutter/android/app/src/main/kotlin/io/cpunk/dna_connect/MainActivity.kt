@@ -3,22 +3,26 @@ package io.cpunk.dna_connect
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileOutputStream
 
 /**
  * DNA Connect Main Activity
  *
- * Minimal activity: camera permission + CA certificate bundle copy.
+ * Minimal activity: camera permission + CA certificate bundle copy + screen security.
  * No background service, no notifications — engine runs while app is open.
  */
 class MainActivity : FlutterFragmentActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val CAMERA_PERMISSION_REQUEST_CODE = 1003
+        private const val CHANNEL = "io.cpunk.dna_connect/screen_security"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -29,6 +33,27 @@ class MainActivity : FlutterFragmentActivity() {
 
         // Request camera permission for QR scanner
         requestCameraPermissionIfNeeded()
+    }
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "enableSecureMode" -> {
+                    window.setFlags(
+                        WindowManager.LayoutParams.FLAG_SECURE,
+                        WindowManager.LayoutParams.FLAG_SECURE
+                    )
+                    result.success(null)
+                }
+                "disableSecureMode" -> {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
     }
 
     /**

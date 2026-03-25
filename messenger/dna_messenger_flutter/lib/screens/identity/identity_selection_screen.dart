@@ -14,6 +14,7 @@ import '../../providers/providers.dart';
 import '../../design_system/theme/dna_colors.dart';
 import '../../utils/clipboard_utils.dart';
 import '../../utils/logger.dart' show log, logError;
+import '../../utils/screen_security.dart';
 
 /// Entry point for onboarding - in v0.3.0 single-user model, this just shows the unified flow
 class IdentitySelectionScreen extends ConsumerWidget {
@@ -151,6 +152,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     switch (_step) {
       case _OnboardingStep.showSeed:
       case _OnboardingStep.enterSeed:
+        ScreenSecurity.disable();
         setState(() {
           _step = _OnboardingStep.welcome;
           _mnemonic = '';
@@ -256,6 +258,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Future<void> _generateNewSeed() async {
     try {
       final mnemonic = await ref.read(identitiesProvider.notifier).generateMnemonic();
+      ScreenSecurity.enable();
       setState(() {
         _mnemonic = mnemonic;
         _step = _OnboardingStep.showSeed;
@@ -591,6 +594,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   // ==================== STEP 3: Processing ====================
   Future<void> _processSeed() async {
+    ScreenSecurity.disable();
     setState(() => _step = _OnboardingStep.processing);
 
     // Get mnemonic (either generated or from input)

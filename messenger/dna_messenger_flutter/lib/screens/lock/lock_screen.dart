@@ -8,6 +8,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../providers/app_lock_provider.dart';
 import '../../design_system/theme/dna_colors.dart';
 import '../../l10n/app_localizations.dart';
+import '../../utils/screen_security.dart';
 
 /// Lock screen - requires biometric or PIN to unlock
 class LockScreen extends ConsumerStatefulWidget {
@@ -37,6 +38,9 @@ class _LockScreenState extends ConsumerState<LockScreen>
     _shakeAnimation = Tween<double>(begin: 0, end: 10).animate(
       CurvedAnimation(parent: _shakeController, curve: Curves.elasticIn),
     );
+
+    // Block screenshots on lock screen
+    ScreenSecurity.enable();
 
     // Auto-trigger biometric auth on load
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -110,6 +114,7 @@ class _LockScreenState extends ConsumerState<LockScreen>
   }
 
   void _unlock() {
+    ScreenSecurity.disable();
     ref.read(appLockedProvider.notifier).state = false;
   }
 
