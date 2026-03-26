@@ -56,6 +56,8 @@ typedef struct {
     int wall_comment_count;
     dna_wall_like_info_t *wall_likes;
     int wall_like_count;
+    dna_wall_engagement_t *wall_engagements;
+    int wall_engagement_count;
 } cli_wait_t;
 
 /**

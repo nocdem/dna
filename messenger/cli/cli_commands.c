@@ -82,6 +82,8 @@ void cli_wait_init(cli_wait_t *wait) {
     wait->wall_comment_count = 0;
     wait->wall_likes = NULL;
     wait->wall_like_count = 0;
+    wait->wall_engagements = NULL;
+    wait->wall_engagement_count = 0;
 }
 
 void cli_wait_destroy(cli_wait_t *wait) {
@@ -6250,6 +6252,81 @@ int cmd_wall_likes(dna_engine_t *engine, const char *post_uuid) {
     return rc;
 }
 
+/* ── Wall Engagement Batch (v0.9.124+) ── */
+
+static void on_wall_engagement_loaded(dna_request_id_t req, int error,
+                                       dna_wall_engagement_t *engagements, int count,
+                                       void *user_data) {
+    (void)req;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+    if (error == 0 && engagements && count > 0) {
+        /* Deep copy — engagement owns comment arrays */
+        wait->wall_engagements = calloc((size_t)count, sizeof(dna_wall_engagement_t));
+        if (wait->wall_engagements) {
+            for (int i = 0; i < count; i++) {
+                memcpy(wait->wall_engagements[i].post_uuid, engagements[i].post_uuid, 37);
+                wait->wall_engagements[i].like_count = engagements[i].like_count;
+                wait->wall_engagements[i].is_liked_by_me = engagements[i].is_liked_by_me;
+                wait->wall_engagements[i].comment_count = engagements[i].comment_count;
+                if (engagements[i].comments && engagements[i].comment_count > 0) {
+                    wait->wall_engagements[i].comments = calloc(
+                        (size_t)engagements[i].comment_count, sizeof(dna_wall_comment_info_t));
+                    if (wait->wall_engagements[i].comments) {
+                        memcpy(wait->wall_engagements[i].comments, engagements[i].comments,
+                               (size_t)engagements[i].comment_count * sizeof(dna_wall_comment_info_t));
+                    }
+                }
+            }
+            wait->wall_engagement_count = count;
+        }
+    }
+    if (engagements) dna_free_wall_engagement(engagements, count);
+    cli_wait_signal(wait, error);
+}
+
+int cmd_wall_engagement(dna_engine_t *engine, int argc, char **argv, int start) {
+    if (!engine || start >= argc) {
+        fprintf(stderr, "Usage: wall engagement <uuid1> [uuid2] ...\n");
+        return 1;
+    }
+
+    int post_count = argc - start;
+    if (post_count > 32) post_count = 32;
+    const char **uuids = (const char **)&argv[start];
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    dna_engine_wall_get_engagement(engine, uuids, post_count,
+                                    on_wall_engagement_loaded, &wait);
+    int rc = cli_wait_for(&wait);
+    if (rc == 0) {
+        if (!wait.wall_engagements || wait.wall_engagement_count == 0) {
+            printf("No engagement data.\n");
+        } else {
+            for (int i = 0; i < wait.wall_engagement_count; i++) {
+                dna_wall_engagement_t *e = &wait.wall_engagements[i];
+                printf("── %s ──\n", e->post_uuid);
+                printf("  Likes: %d%s\n", e->like_count,
+                       e->is_liked_by_me ? " (liked by me)" : "");
+                printf("  Comments: %d\n", e->comment_count);
+                for (int j = 0; j < e->comment_count && j < 3; j++) {
+                    dna_wall_comment_info_t *c = &e->comments[j];
+                    const char *name = c->author_name[0] ? c->author_name : "unknown";
+                    printf("    [%s] %s\n", name, c->body);
+                }
+                if (e->comment_count > 3)
+                    printf("    ... +%d more\n", e->comment_count - 3);
+                free(e->comments);
+            }
+            free(wait.wall_engagements);
+        }
+    } else {
+        fprintf(stderr, "Failed to load engagement (error=%d)\n", rc);
+    }
+    cli_wait_destroy(&wait);
+    return rc;
+}
+
 int dispatch_wall(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
         fprintf(stderr, "Wall — Social posts, timeline, comments & likes\n\n");
@@ -6261,6 +6338,7 @@ int dispatch_wall(dna_engine_t *engine, int argc, char **argv, int sub) {
         fprintf(stderr, "  comments <post_uuid>         List comments\n");
         fprintf(stderr, "  like <post_uuid>             Like/unlike a post\n");
         fprintf(stderr, "  likes <post_uuid>            List likes\n");
+        fprintf(stderr, "  engagement <uuid1> [uuid2...]  Batch engagement (comments+likes)\n");
         return 1;
     }
     const char *subcmd = argv[sub];
@@ -6299,6 +6377,9 @@ int dispatch_wall(dna_engine_t *engine, int argc, char **argv, int sub) {
     } else if (strcmp(subcmd, "likes") == 0) {
         if (sub + 1 >= argc) { fprintf(stderr, "Usage: wall likes <post_uuid>\n"); return 1; }
         return cmd_wall_likes(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "engagement") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wall engagement <uuid1> [uuid2...]\n"); return 1; }
+        return cmd_wall_engagement(engine, argc, argv, sub + 1);
     } else {
         fprintf(stderr, "Unknown wall subcommand: %s\n", subcmd);
         return 1;
@@ -6309,6 +6390,7 @@ int dispatch_wall_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
         fprintf(stderr, "Wall — post | list [fp] | timeline | delete <uuid>\n");
         fprintf(stderr, "  comment <uuid> <text> | comments <uuid> | like <uuid> | likes <uuid>\n");
+        fprintf(stderr, "  engagement <uuid1> [uuid2...]  Batch engagement (comments+likes)\n");
         return 1;
     }
     if (strcmp(subcmd, "post") == 0) {
@@ -6341,6 +6423,15 @@ int dispatch_wall_repl(dna_engine_t *engine, const char *subcmd) {
         char *post_uuid = strtok(NULL, " \t");
         if (!post_uuid) { fprintf(stderr, "Usage: wall likes <post_uuid>\n"); return 1; }
         return cmd_wall_likes(engine, post_uuid);
+    } else if (strcmp(subcmd, "engagement") == 0) {
+        /* Collect remaining tokens as UUIDs */
+        char *uuids[32];
+        int count = 0;
+        char *tok;
+        while ((tok = strtok(NULL, " \t")) != NULL && count < 32)
+            uuids[count++] = tok;
+        if (count == 0) { fprintf(stderr, "Usage: wall engagement <uuid1> [uuid2...]\n"); return 1; }
+        return cmd_wall_engagement(engine, count, uuids, 0);
     } else {
         fprintf(stderr, "Unknown wall subcommand: %s\n", subcmd);
         return 1;

@@ -1337,9 +1337,11 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                     continue;
 
                 /* Parse JSON array of comments from this author */
+                json_tokener *tok = json_tokener_new();
                 json_object *arr = json_tokener_parse_ex(
-                    json_tokener_new(), (const char *)comment_results[i].values[v],
+                    tok, (const char *)comment_results[i].values[v],
                     (int)comment_results[i].lens[v]);
+                json_tokener_free(tok);
                 if (!arr) continue;
 
                 /* Handle both array and single object */
