@@ -559,7 +559,7 @@
         <div class="page-hero-content">
           <h1>Privacy Policy</h1>
           <p class="subtitle">DNA Connect &mdash; Post-Quantum Encrypted Messenger</p>
-          <p class="effective-date">Effective Date: March 17, 2026 &middot; Last Updated: March 17, 2026</p>
+          <p class="effective-date">Effective Date: March 17, 2026 &middot; Last Updated: March 26, 2026</p>
         </div>
       </section>
 
@@ -578,7 +578,7 @@
               <p>
                 DNA Connect does not collect, store, or transmit any personal data to centralized servers.
                 All communication is end-to-end encrypted using NIST-approved post-quantum algorithms
-                (Kyber1024 for key exchange, Dilithium5 for signatures).
+                (Kyber1024 for key encapsulation, Dilithium5 for signatures).
               </p>
             </div>
           </div>
@@ -708,18 +708,35 @@
             <h2>4. Decentralized Network (DHT)</h2>
             <p>
               DNA Connect uses a decentralized hash table (DHT) network called Nodus for message delivery and
-              profile discovery. The following data is published to this distributed network:
+              profile discovery. Data published to this network falls into two categories:
             </p>
+
+            <h3>Public Data (readable by DHT nodes and other users)</h3>
             <ul>
-              <li><strong>Public identity:</strong> Your public cryptographic keys and registered display name. This is
-                intentionally public to allow others to find and communicate with you.</li>
-              <li><strong>Encrypted messages:</strong> Messages in transit are encrypted with Kyber1024 (NIST ML-KEM)
-                and can only be decrypted by the intended recipient's private key.</li>
-              <li><strong>Wall posts:</strong> Public posts you choose to publish are visible to anyone on the network.</li>
+              <li><strong>Public profile:</strong> Your public cryptographic keys, registered display name, bio,
+                avatar, location, website, social links, and wallet addresses. This data is intentionally
+                public to allow others to find and communicate with you.</li>
+              <li><strong>Wall posts, comments, and likes:</strong> Public posts you choose to publish, along with
+                any comments or likes, are visible to anyone on the network. Posts are signed but not encrypted.</li>
+              <li><strong>Channel posts and metadata:</strong> Public channel content including channel name,
+                description, and posts are readable by DHT nodes.</li>
             </ul>
+
+            <h3>Encrypted Data (not readable by DHT nodes)</h3>
+            <ul>
+              <li><strong>Direct messages:</strong> Encrypted with Kyber1024 key encapsulation and AES-256-GCM.
+                Only the intended recipient can decrypt them.</li>
+              <li><strong>Group messages:</strong> Encrypted with a Group Encryption Key (GEK), distributed
+                to group members via Kyber1024 encapsulation.</li>
+              <li><strong>Contact lists and address books:</strong> Self-encrypted with your own Kyber1024 public key.</li>
+              <li><strong>Message backups:</strong> Self-encrypted with your own Kyber1024 public key.</li>
+              <li><strong>Group membership lists:</strong> Self-encrypted with your own Kyber1024 public key.</li>
+            </ul>
+
             <p>
-              No centralized server stores or has access to your private keys or unencrypted messages.
-              DHT nodes only relay encrypted data — they cannot read message contents.
+              No centralized server stores or has access to your private keys.
+              DHT nodes can read public profile information and wall posts, but
+              cannot read your private messages, contact lists, or group memberships.
             </p>
           </div>
 
@@ -766,6 +783,16 @@
                   <td>Haptic feedback for notifications</td>
                   <td>No — optional</td>
                 </tr>
+                <tr>
+                  <td>Wi-Fi State</td>
+                  <td>Detect Wi-Fi connectivity for optimizing network connections</td>
+                  <td>Yes</td>
+                </tr>
+                <tr>
+                  <td>Battery Optimization Exemption</td>
+                  <td>Keep background message delivery active (user-triggered from Settings)</td>
+                  <td>No — optional</td>
+                </tr>
               </tbody>
             </table>
             <p>
@@ -785,10 +812,15 @@
               <li>No crash reporting services that transmit data externally</li>
             </ul>
             <p>
-              The application may connect to third-party blockchain RPC endpoints (Cellframe, Ethereum, Solana, TRON)
-              solely for wallet balance queries and transaction broadcasting when you use the built-in wallet feature.
-              These connections transmit only your public wallet address — never private keys.
+              The application connects to the following third-party services for wallet functionality:
             </p>
+            <ul>
+              <li><strong>Blockchain RPC endpoints</strong> (Cellframe, Ethereum, Solana, TRON) for wallet balance
+                queries and transaction broadcasting. These connections transmit only your public wallet address —
+                never private keys.</li>
+              <li><strong>BitcoinTry API</strong> (api.bitcointry.com) for real-time cryptocurrency price data.
+                No personal data or wallet addresses are sent — only token pair identifiers (e.g., ETH_USDT).</li>
+            </ul>
           </div>
 
           <!-- 7. Encryption -->
@@ -796,7 +828,7 @@
             <h2>7. Encryption &amp; Security</h2>
             <p>All cryptographic operations use NIST-approved post-quantum algorithms:</p>
             <ul>
-              <li><strong>Key Exchange:</strong> ML-KEM (Kyber1024) — NIST Category 5</li>
+              <li><strong>Key Encapsulation:</strong> ML-KEM (Kyber1024) — NIST Category 5</li>
               <li><strong>Digital Signatures:</strong> ML-DSA (Dilithium5) — NIST Category 5</li>
               <li><strong>Symmetric Encryption:</strong> AES-256-GCM for message content</li>
               <li><strong>Hashing:</strong> SHA3-512 for identity fingerprints</li>
@@ -812,8 +844,8 @@
             <h2>8. Data Retention &amp; Deletion</h2>
             <ul>
               <li>All data is stored on your device. Uninstalling the app deletes all local data.</li>
-              <li>Public profile data on the DHT network expires automatically if not refreshed by your device.</li>
-              <li>Wall posts have a 30-day TTL (time-to-live) on the network and expire automatically.</li>
+              <li>Public profile data on the DHT network has a 7-day TTL and expires automatically if not refreshed by your device.</li>
+              <li>Wall posts have a 30-day TTL on the network and expire automatically.</li>
               <li>You can delete your account at any time by uninstalling the app. There is no server-side account to delete.</li>
             </ul>
           </div>
