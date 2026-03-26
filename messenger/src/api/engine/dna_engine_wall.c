@@ -1375,13 +1375,13 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                         strncpy(ci->post_uuid, json_object_get_string(jv), 36);
                     if (json_object_object_get_ex(obj, "parent_uuid", &jv))
                         strncpy(ci->parent_comment_uuid, json_object_get_string(jv), 36);
-                    if (json_object_object_get_ex(obj, "author_fp", &jv))
+                    if (json_object_object_get_ex(obj, "author", &jv))
                         strncpy(ci->author_fingerprint, json_object_get_string(jv), 128);
                     if (json_object_object_get_ex(obj, "body", &jv))
                         strncpy(ci->body, json_object_get_string(jv), 2000);
-                    if (json_object_object_get_ex(obj, "ts", &jv))
+                    if (json_object_object_get_ex(obj, "created_at", &jv))
                         ci->created_at = (uint64_t)json_object_get_int64(jv);
-                    if (json_object_object_get_ex(obj, "type", &jv))
+                    if (json_object_object_get_ex(obj, "comment_type", &jv))
                         ci->comment_type = (uint32_t)json_object_get_int(jv);
 
                     ci->verified = true;  /* Nodus verifies signatures on storage */

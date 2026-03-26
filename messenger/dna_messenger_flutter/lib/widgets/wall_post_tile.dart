@@ -456,7 +456,9 @@ class _InlineComments extends StatelessWidget {
                           TextSpan(
                             text: comment.authorName.isNotEmpty
                                 ? comment.authorName
-                                : comment.authorFingerprint.substring(0, 12),
+                                : comment.authorFingerprint.length >= 12
+                                    ? comment.authorFingerprint.substring(0, 12)
+                                    : comment.authorFingerprint,
                             style: theme.textTheme.bodySmall?.copyWith(
                               fontWeight: FontWeight.w600,
                             ),
