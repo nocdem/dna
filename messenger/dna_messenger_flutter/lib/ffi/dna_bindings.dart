@@ -645,6 +645,24 @@ final class dna_wall_like_info_t extends Struct {
   external bool verified;
 }
 
+/// Wall engagement data (v0.9.123+ batch)
+/// Matches dna_wall_engagement_t from dna_engine.h
+final class dna_wall_engagement_t extends Struct {
+  @Array(37)
+  external Array<Char> post_uuid;
+
+  external Pointer<dna_wall_comment_info_t> comments;
+
+  @Int32()
+  external int comment_count;
+
+  @Int32()
+  external int like_count;
+
+  @Bool()
+  external bool is_liked_by_me;
+}
+
 // =============================================================================
 // EVENT TYPES
 // =============================================================================
@@ -1185,6 +1203,16 @@ typedef DnaWallLikesCbNative = Void Function(
   Pointer<Void> user_data,
 );
 typedef DnaWallLikesCb = NativeFunction<DnaWallLikesCbNative>;
+
+/// Wall: Engagement batch callback - Native (v0.9.123+)
+typedef DnaWallEngagementCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_wall_engagement_t> engagements,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaWallEngagementCb = NativeFunction<DnaWallEngagementCbNative>;
 
 /// Event callback - Native
 typedef DnaEventCbNative = Void Function(
@@ -4051,6 +4079,35 @@ class DnaBindings {
   void dna_free_wall_likes(
       Pointer<dna_wall_like_info_t> likes, int count) {
     _dna_free_wall_likes(likes, count);
+  }
+
+  // Wall Engagement Batch (v0.9.123+)
+  late final _dna_engine_wall_get_engagement = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Pointer<Utf8>>, Int32,
+          Pointer<DnaWallEngagementCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Pointer<Utf8>>, int,
+          Pointer<DnaWallEngagementCb>, Pointer<Void>)>(
+      'dna_engine_wall_get_engagement');
+
+  int dna_engine_wall_get_engagement(
+    Pointer<dna_engine_t> engine,
+    Pointer<Pointer<Utf8>> postUuids,
+    int postCount,
+    Pointer<DnaWallEngagementCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_get_engagement(
+        engine, postUuids, postCount, callback, userData);
+  }
+
+  late final _dna_free_wall_engagement = _lib.lookupFunction<
+      Void Function(Pointer<dna_wall_engagement_t>, Int32),
+      void Function(
+          Pointer<dna_wall_engagement_t>, int)>('dna_free_wall_engagement');
+
+  void dna_free_wall_engagement(
+      Pointer<dna_wall_engagement_t> engagements, int count) {
+    _dna_free_wall_engagement(engagements, count);
   }
 }
 

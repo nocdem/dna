@@ -1208,6 +1208,21 @@ class WallLike {
   }
 }
 
+/// Wall engagement data for a single post (batch result)
+class WallEngagement {
+  final String postUuid;
+  final List<WallComment> comments;
+  final int likeCount;
+  final bool isLikedByMe;
+
+  WallEngagement({
+    required this.postUuid,
+    required this.comments,
+    required this.likeCount,
+    required this.isLikedByMe,
+  });
+}
+
 /// Wall new post event (contact posted to their wall)
 class WallNewPostEvent extends DnaEvent {
   final String authorFingerprint;
@@ -6465,6 +6480,79 @@ class DnaEngine {
       calloc.free(postUuidPtr);
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit wall get likes');
+    }
+
+    return completer.future;
+  }
+
+  /// Batch fetch engagement data (comments + like count) for multiple posts
+  Future<List<WallEngagement>> wallGetEngagement(
+      List<String> postUuids) async {
+    final completer = Completer<List<WallEngagement>>();
+    final localId = _nextLocalId++;
+
+    // Allocate native array of string pointers
+    final nativeUuids = calloc<Pointer<Utf8>>(postUuids.length);
+    for (var i = 0; i < postUuids.length; i++) {
+      nativeUuids[i] = postUuids[i].toNativeUtf8();
+    }
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_engagement_t> engagements, int count,
+        Pointer<Void> userData) {
+      // Free native UUID array
+      for (var i = 0; i < postUuids.length; i++) {
+        calloc.free(nativeUuids[i]);
+      }
+      calloc.free(nativeUuids);
+
+      if (error == 0) {
+        final result = <WallEngagement>[];
+        for (var i = 0; i < count; i++) {
+          final e = engagements[i];
+          final comments = <WallComment>[];
+          for (var j = 0; j < e.comment_count; j++) {
+            comments.add(WallComment.fromNative(e.comments[j]));
+          }
+          result.add(WallEngagement(
+            postUuid: e.post_uuid.toDartString(37),
+            comments: comments,
+            likeCount: e.like_count,
+            isLikedByMe: e.is_liked_by_me,
+          ));
+        }
+        if (engagements != nullptr && count > 0) {
+          _bindings.dna_free_wall_engagement(engagements, count);
+        }
+        completer.complete(result);
+      } else {
+        if (engagements != nullptr && count > 0) {
+          _bindings.dna_free_wall_engagement(engagements, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallEngagementCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_get_engagement(
+      _engine,
+      nativeUuids,
+      postUuids.length,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      for (var i = 0; i < postUuids.length; i++) {
+        calloc.free(nativeUuids[i]);
+      }
+      calloc.free(nativeUuids);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall get engagement');
     }
 
     return completer.future;

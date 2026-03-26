@@ -1205,6 +1205,11 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             dna_handle_wall_get_likes(engine, task);
             break;
 
+        /* Wall Engagement Batch (v0.9.123+) */
+        case TASK_WALL_GET_ENGAGEMENT:
+            dna_handle_wall_get_engagement(engine, task);
+            break;
+
         /* Wall Boost (v0.9.71+) */
         case TASK_WALL_BOOST_POST:
             dna_handle_wall_boost_post(engine, task);

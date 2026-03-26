@@ -150,6 +150,9 @@ typedef enum {
     TASK_WALL_LIKE,
     TASK_WALL_GET_LIKES,
 
+    /* Wall Engagement Batch (v0.9.123+) */
+    TASK_WALL_GET_ENGAGEMENT,
+
     /* Wall Boost (v0.9.71+) */
     TASK_WALL_BOOST_POST,
     TASK_WALL_BOOST_TIMELINE,
@@ -422,6 +425,12 @@ typedef union {
         char post_uuid[37];             /* Post UUID */
     } wall_get_likes;
 
+    /* Wall: Engagement batch (v0.9.123+) */
+    struct {
+        char **post_uuids;              /* Heap array of UUID strings (task owns) */
+        int post_count;
+    } wall_get_engagement;
+
     /* Wall: Boost post (v0.9.71+) */
     struct {
         char *text;                     /* Heap allocated, task owns */
@@ -513,6 +522,7 @@ typedef union {
     dna_wall_comment_cb wall_comment;
     dna_wall_comments_cb wall_comments;
     dna_wall_likes_cb wall_likes;
+    dna_wall_engagement_cb wall_engagement;
     dna_channel_cb channel;
     dna_channels_cb channels;
     dna_channel_post_cb channel_post_cb;
@@ -928,6 +938,9 @@ void dna_handle_wall_get_comments(dna_engine_t *engine, dna_task_t *task);
 /* Wall Likes (v0.9.52+) */
 void dna_handle_wall_like(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_get_likes(dna_engine_t *engine, dna_task_t *task);
+
+/* Wall Engagement Batch (v0.9.123+) */
+void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task);
 
 /* Wall Boost (v0.9.71+) */
 void dna_handle_wall_boost_post(dna_engine_t *engine, dna_task_t *task);

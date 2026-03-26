@@ -268,6 +268,17 @@ typedef struct {
     bool verified;                  /* Signature verified */
 } dna_wall_like_info_t;
 
+/**
+ * Wall: Per-post engagement data (v0.9.123+ batch)
+ */
+typedef struct {
+    char post_uuid[37];
+    dna_wall_comment_info_t *comments;
+    int comment_count;
+    int like_count;
+    bool is_liked_by_me;
+} dna_wall_engagement_t;
+
 /* =====================================================
  * Channel System (RSS-like channels)
  * ===================================================== */
@@ -643,6 +654,19 @@ typedef void (*dna_wall_likes_cb)(
     dna_request_id_t request_id,
     int error,
     dna_wall_like_info_t *likes,
+    int count,
+    void *user_data
+);
+
+/**
+ * Wall: Batch engagement callback (v0.9.123+)
+ * Returns engagement data for multiple posts in one call.
+ * Caller takes ownership - free with dna_free_wall_engagement(engagements, count)
+ */
+typedef void (*dna_wall_engagement_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_wall_engagement_t *engagements,
     int count,
     void *user_data
 );
@@ -3462,6 +3486,27 @@ DNA_API dna_request_id_t dna_engine_wall_get_likes(
  * Free wall likes array returned by callbacks
  */
 DNA_API void dna_free_wall_likes(dna_wall_like_info_t *likes, int count);
+
+/* ── Wall Engagement Batch (v0.9.123+) ── */
+
+/**
+ * Batch fetch engagement (comments + like count) for multiple posts.
+ * Uses get_batch for comments (full data) and count_batch for likes (count only).
+ * Reduces N*2 DHT requests to 2 batch requests.
+ *
+ * @param post_uuids  Array of post UUID strings (max 32)
+ * @param post_count  Number of posts
+ */
+DNA_API dna_request_id_t dna_engine_wall_get_engagement(
+    dna_engine_t *engine,
+    const char **post_uuids,
+    int post_count,
+    dna_wall_engagement_cb callback,
+    void *user_data
+);
+
+/** Free engagement array returned by callback */
+DNA_API void dna_free_wall_engagement(dna_wall_engagement_t *engagements, int count);
 
 /* ============================================================================
  * WALL BOOST (v0.9.71+ — Global boosted posts)
