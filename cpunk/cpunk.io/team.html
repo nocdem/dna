@@ -75,14 +75,15 @@
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
-    html, body {
+    html {
       height: 100%;
       scroll-behavior: smooth;
-      max-width: 100%;
-      overflow-x: hidden;
     }
 
     body {
+      height: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
       font-family: var(--font-body);
       background: var(--bg);
       color: var(--text-main);
@@ -880,6 +881,109 @@
       text-decoration: underline;
     }
 
+    /* -- Downloads -- */
+
+    .dl-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.2rem;
+      max-width: 52rem;
+      margin: 0 auto 2rem;
+    }
+    @media (max-width: 700px) { .dl-grid { grid-template-columns: 1fr; max-width: 20rem; } }
+
+    .dl-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2.2rem 1.5rem 1.8rem;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border-subtle);
+      background: var(--panel);
+      text-align: center;
+      transition: border-color 0.3s, transform 0.3s, box-shadow 0.3s;
+    }
+    .dl-card:hover {
+      border-color: rgba(6,197,210,0.4);
+      transform: translateY(-4px);
+      box-shadow: 0 16px 48px rgba(6,197,210,0.08);
+    }
+
+    .dl-card-icon { width: 56px; height: 56px; margin-bottom: 1rem; }
+    .dl-card-icon svg { width: 56px; height: 56px; fill: rgba(255,255,255,0.7); transition: fill 0.3s; }
+    .dl-card:hover .dl-card-icon svg { fill: var(--teal); }
+
+    .dl-card-name {
+      font-family: var(--font-display);
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text-main);
+      margin-bottom: 0.8rem;
+      letter-spacing: 0.03em;
+    }
+
+    .dl-card-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 1.6rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--teal);
+      background: rgba(6,197,210,0.1);
+      color: var(--teal);
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      cursor: pointer;
+      transition: all 0.25s;
+    }
+    .dl-card-btn:hover {
+      background: var(--teal);
+      color: var(--bg);
+      box-shadow: 0 4px 20px rgba(6,197,210,0.3);
+    }
+    .dl-card-btn svg {
+      width: 16px; height: 16px;
+      stroke: currentColor; stroke-width: 2; fill: none;
+    }
+
+    .dl-card-extra {
+      margin-top: 0.6rem;
+      display: flex;
+      gap: 0.5rem;
+      justify-content: center;
+    }
+    .dl-card-extra a {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      border-bottom: 1px dashed var(--border-subtle);
+      transition: color 0.2s;
+    }
+    .dl-card-extra a:hover { color: var(--teal); }
+
+    /* hidden widget for JS — shown only when JS loads */
+    .downloads-widget {
+      display: none;
+    }
+    .downloads-title, .downloads-sub { display: none; }
+    .download-grid { display: none; }
+    .download-btn { display: none; }
+    .dl-badge { display: none; }
+    .downloads-fallback a { text-decoration: underline; color: var(--orange); }
+
+    .dl-source {
+      text-align: center;
+      margin-top: 0.5rem;
+      font-size: 0.78rem;
+      color: var(--text-dim);
+    }
+    .dl-source a {
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-subtle);
+      transition: color 0.2s;
+    }
+    .dl-source a:hover { color: var(--teal); }
+
     /* -- CTA -- */
 
     .cta-section { padding: 4rem 0; }
@@ -1016,29 +1120,28 @@
 
               <div class="nav-item" data-dropdown="products">
                 <div class="nav-item-label">
-                  <span>Products</span>
+                  <span>DNA-Connect</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/products/dna-identity.html">DNA Identity</a>
-                  <a href="/products/dna-connect.html">DNA Connect</a>
-                  <a href="/products/nodus.html">DNA Nodus</a>
+                  <a href="/DNA-Connect/identity.html">The Identity</a>
+                  <a href="/DNA-Connect/messenger.html">The Messenger</a>
+                  <a href="/DNA-Connect/wallet.html">The Wallet</a>
+                  <a href="/DNA-Connect/nodus.html">The Nodus</a>
                 </div>
               </div>
 
-              <a href="/whitepaper.html">Whitepaper</a>
-              <a href="/roadmap.html">Roadmap</a>
+              <a href="/team.html" class="active">Team</a>
 
-              <div class="nav-item" data-dropdown="about">
+              <div class="nav-item" data-dropdown="documents">
                 <div class="nav-item-label">
-                  <span>About</span>
+                  <span>Documents</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/about.html">About CPUNK</a>
-                  <a href="/team.html" class="active">Team</a>
-                  <a href="/contact.html">Contact</a>
-                  <a href="/legal.html">Legal</a>
+                  <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
+                  <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
+                  <a href="/privacy.html">Privacy Policy</a>
                 </div>
               </div>
             </nav>
@@ -1309,6 +1412,71 @@
         </div>
       </section>
 
+      <!-- Downloads -->
+      <section id="downloads" class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label">Downloads</div>
+            <h2 class="section-title">Get DNA Connect</h2>
+            <p class="section-desc" style="max-width:34rem;">
+              Encrypted messaging, multi-chain wallet, and decentralized identity &mdash; one app, three platforms.
+            </p>
+          </div>
+
+          <div class="dl-grid stagger">
+
+            <!-- Android -->
+            <div class="dl-card reveal">
+              <div class="dl-card-icon">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17.523 2.476l1.5-2.6a.5.5 0 0 0-.87-.5l-1.52 2.63A8.3 8.3 0 0 0 12 1.07a8.3 8.3 0 0 0-4.63.936L5.85-.594a.5.5 0 0 0-.87.5l1.5 2.6A7.9 7.9 0 0 0 2 9.5h20a7.9 7.9 0 0 0-4.477-7.024zM7 7.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm10 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2zM3 11h1v7a2 2 0 0 0 2 2h1v3.5a1.5 1.5 0 0 0 3 0V20h4v3.5a1.5 1.5 0 0 0 3 0V20h1a2 2 0 0 0 2-2v-7h1a1.5 1.5 0 0 0 0-3H3a1.5 1.5 0 0 0 0 3z"/></svg>
+              </div>
+              <div class="dl-card-name">Android</div>
+              <a id="dl-android" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
+                <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Download APK
+              </a>
+            </div>
+
+            <!-- Linux -->
+            <div class="dl-card reveal">
+              <div class="dl-card-icon">
+                <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M8.996 4.497c.104-.076.1-.168.186-.158s.022.102-.098.207c-.12.104-.308.243-.46.323-.291.152-.631.336-.993.336s-.647-.167-.853-.33c-.102-.082-.186-.162-.248-.221-.11-.086-.096-.207-.052-.204.075.01.087.109.134.153.064.06.144.137.241.214.195.154.454.304.778.304s.702-.19.932-.32c.13-.073.297-.204.433-.304M7.34 3.781c.055-.02.123-.031.174-.003.011.006.024.021.02.034-.012.038-.074.032-.11.05-.032.017-.057.052-.093.054-.034 0-.086-.012-.09-.046-.007-.044.058-.072.1-.089m.581-.003c.05-.028.119-.018.173.003.041.017.106.045.1.09-.004.033-.057.046-.09.045-.036-.002-.062-.037-.093-.053-.036-.019-.098-.013-.11-.051-.004-.013.008-.028.02-.034"/><path fill-rule="evenodd" d="M8.446.019c2.521.003 2.38 2.66 2.364 4.093-.01.939.509 1.574 1.04 2.244.474.56 1.095 1.38 1.45 2.32.29.765.402 1.613.115 2.465a.8.8 0 0 1 .254.152l.001.002c.207.175.271.447.329.698.058.252.112.488.224.615.344.382.494.667.48.922-.015.254-.203.43-.435.57-.465.28-1.164.491-1.586 1.002-.443.527-.99.83-1.505.871a1.25 1.25 0 0 1-1.256-.716v-.001a1 1 0 0 1-.078-.21c-.67.038-1.252-.165-1.718-.128-.687.038-1.116.204-1.506.206-.151.331-.445.547-.808.63-.5.114-1.126 0-1.743-.324-.577-.306-1.31-.278-1.85-.39-.27-.057-.51-.157-.626-.384-.116-.226-.095-.538.07-.988.051-.16.012-.398-.026-.648a2.5 2.5 0 0 1-.037-.369c0-.133.022-.265.087-.386v-.002c.14-.266.368-.377.577-.451s.397-.125.53-.258c.143-.15.27-.374.443-.56q.036-.037.073-.07c-.081-.538.007-1.105.192-1.662.393-1.18 1.223-2.314 1.811-3.014.502-.713.65-1.287.701-2.016.042-.997-.705-3.974 2.112-4.2q.168-.015.321-.013"/></svg>
+              </div>
+              <div class="dl-card-name">Linux</div>
+              <a id="dl-linux" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
+                <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Download AppImage
+              </a>
+              <div class="dl-card-extra">
+                <a id="dl-linux-tar" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener">Also available as tar.gz</a>
+              </div>
+            </div>
+
+            <!-- Windows -->
+            <div class="dl-card reveal">
+              <div class="dl-card-icon">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 5.548l7.195-0.984v6.948H3V5.548zm0 12.904l7.195 0.984v-6.948H3v5.964zm8.019 1.097L22 21v-8.512H11.019v8.061zm0-14.098v8.061H22V3L11.019 5.451z"/></svg>
+              </div>
+              <div class="dl-card-name">Windows</div>
+              <a id="dl-windows" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
+                <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Download EXE
+              </a>
+            </div>
+
+          </div>
+
+          <!-- Hidden widget for JS to populate links -->
+          <div class="downloads-widget" id="dna-downloads"></div>
+
+          <p class="dl-source">
+            Open source &mdash;
+            <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noopener">GitLab</a> &middot;
+            <a href="https://github.com/nocdem/dna" target="_blank" rel="noopener">GitHub</a>
+          </p>
+        </div>
+      </section>
+
       <!-- CTA -->
       <section class="cta-section">
         <div class="wrap">
@@ -1319,7 +1487,6 @@
               you want to improve. Every meaningful contributor once started as a community member.
             </p>
             <div class="cta-actions">
-              <a href="/products/dna-connect.html" class="btn btn-primary btn-lg">Download DNA Connect</a>
               <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Join Telegram</a>
               <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Explore Code</a>
               <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Follow on X</a>
@@ -1337,12 +1504,14 @@
           <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
             <a href="/">Home</a>
-            <a href="/products/dna-identity.html">DNA Identity</a>
-            <a href="/products/dna-connect.html">DNA Connect</a>
-            <a href="/products/nodus.html">DNA Nodus</a>
+            <a href="/DNA-Connect/identity.html">The Identity</a>
+            <a href="/DNA-Connect/messenger.html">The Messenger</a>
+            <a href="/DNA-Connect/wallet.html">The Wallet</a>
+            <a href="/DNA-Connect/nodus.html">The Nodus</a>
             <a href="/team.html">Team</a>
             <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-            <a href="/doc/cpunk-legal.pdf" target="_blank">Legal &amp; Compliance</a>
+            <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
+            <a href="/privacy.html">Privacy Policy</a>
           </div>
         </div>
       </div>

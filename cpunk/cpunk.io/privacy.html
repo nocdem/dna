@@ -58,415 +58,816 @@
       --orange-soft: rgba(242, 98, 41, 0.08);
       --orange-glow: rgba(242, 98, 41, 0.35);
       --orange-dim: rgba(242, 98, 41, 0.15);
-      --text: #e4e7ef;
-      --text-muted: #8891a8;
-      --text-dim: #5a6380;
+      --pink: #e040a0;
+      --text-main: #f0f2ff;
+      --text-muted: #8a94c0;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.5);
+      --radius-lg: 20px;
+      --radius-xl: 28px;
+      --radius-pill: 999px;
+      --transition-fast: 150ms ease-out;
+      --nav-height: 72px;
+      --max-width: 1120px;
+      --font-display: 'Orbitron', sans-serif;
+      --font-body: 'Inter', system-ui, -apple-system, sans-serif;
     }
 
-    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html {
+      height: 100%;
+      scroll-behavior: smooth;
+    }
+
     body {
-      font-family: 'Inter', system-ui, sans-serif;
+      height: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+      font-family: var(--font-body);
       background: var(--bg);
-      color: var(--text);
-      line-height: 1.7;
-      -webkit-font-smoothing: antialiased;
+      color: var(--text-main);
     }
-    a { color: var(--teal); text-decoration: none; transition: color 0.2s; }
-    a:hover { color: var(--orange); }
 
-    .wrap { max-width: 900px; margin: 0 auto; padding: 0 1.5rem; }
+    a { color: inherit; text-decoration: none; }
 
-    /* Header */
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .wrap {
+      width: 100%;
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 0 1.25rem;
+    }
+
+    /* -- Animations -- */
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(30px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* -- Header / Nav -- */
+
     header {
-      padding: 1.2rem 0;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(12px);
+      background: linear-gradient(to bottom, rgba(5,7,18,0.96), rgba(5,7,18,0.88), transparent);
+      border-bottom: 1px solid rgba(255,255,255,0.04);
     }
-    .nav { display: flex; align-items: center; justify-content: space-between; }
-    .brand { display: flex; align-items: center; gap: 0.8rem; }
-    .brand-name { font-family: 'Orbitron', monospace; font-weight: 700; font-size: 1.3rem; color: var(--teal); }
-    .brand-tag { font-size: 0.65rem; color: var(--text-dim); letter-spacing: 0.08em; text-transform: uppercase; display: block; }
-    .back-link { font-size: 0.85rem; color: var(--text-muted); }
-    .back-link:hover { color: var(--teal); }
 
-    /* Hero */
-    .hero {
-      padding: 3rem 0 2rem;
-      text-align: center;
+    .nav {
+      height: var(--nav-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.5rem;
+      position: relative;
     }
-    .hero h1 {
-      font-family: 'Orbitron', monospace;
-      font-size: clamp(1.6rem, 4vw, 2.2rem);
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
+
+    .brand-name {
+      font-family: var(--font-display);
       font-weight: 700;
-      color: var(--teal);
+      letter-spacing: 0.08em;
+      font-size: 1rem;
+      text-transform: uppercase;
+    }
+
+    .brand-tag { font-size: 0.7rem; color: var(--text-muted); }
+
+    .nav-menu { display: flex; align-items: center; gap: 1.5rem; }
+
+    .nav-links { display: flex; align-items: center; gap: 1.5rem; font-size: 0.9rem; }
+
+    .nav-links a {
+      color: var(--text-muted);
+      padding-bottom: 2px;
+      border-bottom: 1px solid transparent;
+      transition: color var(--transition-fast), border-bottom-color var(--transition-fast);
+    }
+
+    .nav-links a.active { color: var(--text-main); border-bottom-color: var(--teal); }
+    .nav-links a:hover { color: var(--orange); border-bottom-color: var(--orange); }
+
+    .nav-cta { display: flex; align-items: center; gap: 0.8rem; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      padding: 0.5rem 1.2rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid transparent;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      background: transparent;
+      color: var(--text-main);
+      transition: background var(--transition-fast), border var(--transition-fast),
+        transform var(--transition-fast), box-shadow var(--transition-fast);
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--orange);
+      border-color: rgba(242,98,41,0.5);
+      box-shadow: 0 8px 25px rgba(242,98,41,0.25);
+      color: #ffffff;
+      font-weight: 600;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 35px rgba(242,98,41,0.35);
+    }
+
+    .mobile-menu-toggle {
+      display: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(7,9,25,0.9);
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .mobile-menu-toggle span {
+      display: block; width: 16px; height: 2px;
+      border-radius: 999px; background: #fff; position: relative;
+    }
+
+    .mobile-menu-toggle span::before,
+    .mobile-menu-toggle span::after {
+      content: ""; position: absolute; left: 0;
+      width: 16px; height: 2px; border-radius: inherit; background: inherit;
+    }
+
+    .mobile-menu-toggle span::before { top: -5px; }
+    .mobile-menu-toggle span::after { top: 5px; }
+
+    /* Dropdown */
+    .nav-item { position: relative; }
+
+    .nav-item-label {
+      display: inline-flex; align-items: center; gap: 0.25rem;
+      cursor: pointer; color: var(--text-muted);
+    }
+
+    .nav-item:hover .nav-item-label { color: var(--text-main); }
+    .nav-item .caret { border: 4px solid transparent; border-top-color: var(--text-muted); margin-top: 2px; }
+
+    .dropdown {
+      position: absolute; top: 110%; left: 0; min-width: 190px;
+      background: rgba(5,7,18,0.98); border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 14px 30px rgba(0,0,0,0.6);
+      padding: 0.4rem 0; display: none; z-index: 30;
+    }
+
+    .dropdown a { display: block; padding: 0.4rem 0.9rem; font-size: 0.85rem; color: var(--text-muted); }
+    .dropdown a:hover { background: rgba(255,255,255,0.04); color: var(--orange); }
+    .dropdown a.active { background: rgba(255,255,255,0.06); color: var(--text-main); }
+    .nav-item:hover .dropdown { display: block; }
+
+    /* -- Page Hero -- */
+
+    .page-hero {
+      padding: 4rem 0 2rem;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .page-hero-bg {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      background:
+        radial-gradient(ellipse at 50% 50%, rgba(6,197,210,0.1) 0%, transparent 55%),
+        var(--bg);
+    }
+
+    .page-hero-content {
+      position: relative;
+      z-index: 1;
+    }
+
+    .page-hero h1 {
+      font-family: var(--font-display);
+      font-size: clamp(1.6rem, 4vw, 2.4rem);
+      font-weight: 800;
+      letter-spacing: 0.04em;
       margin-bottom: 0.5rem;
     }
-    .hero .subtitle {
+
+    .page-hero .subtitle {
       font-size: 1rem;
       color: var(--text-muted);
-    }
-    .hero .effective-date {
-      font-size: 0.8rem;
-      color: var(--text-dim);
-      margin-top: 0.5rem;
+      margin-bottom: 0.3rem;
     }
 
-    /* Content */
-    .content {
-      padding: 2rem 0 4rem;
+    .page-hero .effective-date {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      opacity: 0.6;
     }
-    .section {
+
+    /* -- Content Sections -- */
+
+    .privacy-content {
+      padding: 2rem 0 4rem;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    .privacy-section {
       background: var(--panel);
-      border: 1px solid rgba(255,255,255,0.05);
-      border-radius: 12px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
       padding: 2rem;
       margin-bottom: 1.5rem;
+      transition: border-color 0.4s;
     }
-    .section h2 {
-      font-family: 'Orbitron', monospace;
-      font-size: 1.1rem;
+
+    .privacy-section:hover {
+      border-color: rgba(6,197,210,0.15);
+    }
+
+    .privacy-section h2 {
+      font-family: var(--font-display);
+      font-size: 0.95rem;
       font-weight: 600;
       color: var(--orange);
       margin-bottom: 1rem;
       padding-bottom: 0.5rem;
       border-bottom: 1px solid var(--orange-dim);
+      letter-spacing: 0.04em;
     }
-    .section h3 {
-      font-size: 0.95rem;
+
+    .privacy-section h3 {
+      font-size: 0.9rem;
       font-weight: 600;
       color: var(--teal);
       margin: 1.2rem 0 0.5rem;
     }
-    .section p, .section li {
-      font-size: 0.9rem;
+
+    .privacy-section p {
+      font-size: 0.88rem;
       color: var(--text-muted);
       line-height: 1.8;
     }
-    .section ul {
+
+    .privacy-section p + p {
+      margin-top: 0.6rem;
+    }
+
+    .privacy-section ul {
       list-style: none;
       padding-left: 0;
+      margin: 0.5rem 0;
     }
-    .section ul li {
+
+    .privacy-section ul li {
       padding: 0.3rem 0;
       padding-left: 1.2rem;
       position: relative;
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      line-height: 1.7;
     }
-    .section ul li::before {
-      content: '›';
+
+    .privacy-section ul li::before {
+      content: "\25B9";
       position: absolute;
       left: 0;
+      top: 0.3rem;
       color: var(--teal);
-      font-weight: 700;
+      font-size: 0.8rem;
     }
-    .highlight {
+
+    .privacy-section ul li strong {
+      color: var(--text-main);
+      font-weight: 500;
+    }
+
+    .privacy-section a {
+      color: var(--teal);
+      transition: color 0.2s;
+    }
+
+    .privacy-section a:hover {
+      color: var(--orange);
+    }
+
+    .highlight-box {
       background: var(--teal-soft);
       border: 1px solid var(--teal-dim);
-      border-radius: 8px;
+      border-radius: 12px;
       padding: 1rem 1.2rem;
       margin: 1rem 0;
     }
-    .highlight p {
-      color: var(--text);
+
+    .highlight-box p {
+      color: var(--text-main) !important;
       font-weight: 500;
     }
-    table {
+
+    .privacy-table {
       width: 100%;
       border-collapse: collapse;
       margin: 1rem 0;
     }
-    th, td {
+
+    .privacy-table th,
+    .privacy-table td {
       padding: 0.6rem 0.8rem;
       text-align: left;
-      font-size: 0.85rem;
-      border-bottom: 1px solid rgba(255,255,255,0.05);
+      font-size: 0.82rem;
+      border-bottom: 1px solid var(--border-subtle);
     }
-    th {
+
+    .privacy-table th {
       color: var(--teal);
       font-weight: 600;
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       text-transform: uppercase;
       letter-spacing: 0.05em;
+      font-family: var(--font-display);
     }
-    td { color: var(--text-muted); }
 
-    /* Footer */
-    footer {
-      padding: 2rem 0;
-      border-top: 1px solid rgba(255,255,255,0.06);
-      text-align: center;
-      font-size: 0.8rem;
-      color: var(--text-dim);
+    .privacy-table td {
+      color: var(--text-muted);
     }
-    footer a { color: var(--text-muted); margin: 0 0.5rem; }
-    footer a:hover { color: var(--orange); }
+
+    /* -- Footer -- */
+
+    footer {
+      padding: 1.8rem 0 2.2rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .footer-row {
+      display: flex; flex-wrap: wrap; justify-content: space-between;
+      gap: 1rem; align-items: end;
+    }
+
+    .footer-links { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+    .footer-links a { color: var(--text-muted); font-size: 0.8rem; }
+    .footer-links a:hover { color: var(--orange); }
+
+    /* -- Responsive -- */
+
+    @media (max-width: 768px) {
+      .nav-menu {
+        display: none; position: absolute; top: var(--nav-height);
+        right: 0; left: 0; padding: 0.9rem 1rem 1rem; border-radius: 14px;
+        background: rgba(5,7,18,0.98); border: 1px solid rgba(255,255,255,0.08);
+        flex-direction: column; align-items: flex-start; gap: 0.7rem; z-index: 15;
+      }
+
+      .nav-menu.active { display: flex; }
+
+      .nav-links { flex-direction: column; align-items: flex-start; width: 100%; gap: 0.75rem; }
+      .nav-links a { width: 100%; padding: 0.25rem 0; }
+      .nav-cta { width: 100%; justify-content: flex-start; margin-top: 0.4rem; }
+      .mobile-menu-toggle { display: inline-flex; }
+
+      .dropdown {
+        position: static; box-shadow: none; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.06); margin-top: 0.3rem;
+      }
+
+      .nav-item:hover .dropdown { display: none; }
+      .nav-item.open .dropdown { display: block; }
+
+      .privacy-section { padding: 1.5rem 1rem; }
+      .privacy-table th, .privacy-table td { padding: 0.4rem 0.5rem; font-size: 0.78rem; }
+    }
+
+    @media (max-width: 480px) {
+      .page-hero h1 { font-size: 1.6rem; }
+      .privacy-content { padding: 1rem 0 3rem; }
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      .reveal { opacity: 1; transform: none; }
+    }
   </style>
 </head>
 <body>
 
-  <header>
-    <div class="wrap">
-      <div class="nav">
-        <a href="/" class="brand">
-          <div class="brand-text">
-            <span class="brand-name">CPUNK.IO</span>
-            <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+  <div class="page">
+
+    <!-- Header / Nav -->
+    <header>
+      <div class="wrap">
+        <div class="nav">
+          <a href="/" class="brand">
+            <div class="brand-text">
+              <span class="brand-name">CPUNK.IO</span>
+              <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+            </div>
+          </a>
+
+          <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+            <span></span>
+          </button>
+
+          <div class="nav-menu">
+            <nav class="nav-links">
+              <a href="/">Home</a>
+
+              <div class="nav-item" data-dropdown="products">
+                <div class="nav-item-label">
+                  <span>DNA-Connect</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/DNA-Connect/identity.html">The Identity</a>
+                  <a href="/DNA-Connect/messenger.html">The Messenger</a>
+                  <a href="/DNA-Connect/wallet.html">The Wallet</a>
+                  <a href="/DNA-Connect/nodus.html">The Nodus</a>
+                </div>
+              </div>
+
+              <a href="/team.html">Team</a>
+
+              <div class="nav-item" data-dropdown="documents">
+                <div class="nav-item-label">
+                  <span>Documents</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
+                  <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
+                  <a href="/privacy.html" class="active">Privacy Policy</a>
+                </div>
+              </div>
+            </nav>
+
+            <div class="nav-cta">
+              <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
+                Trade CPUNK
+              </a>
+            </div>
           </div>
-        </a>
-        <a href="/legal.html" class="back-link">&larr; Legal &amp; Compliance</a>
+        </div>
       </div>
-    </div>
-  </header>
+    </header>
 
-  <div class="wrap">
+    <main id="top">
 
-    <div class="hero">
-      <h1>Privacy Policy</h1>
-      <p class="subtitle">DNA Connect — Post-Quantum Encrypted Messenger</p>
-      <p class="effective-date">Effective Date: March 17, 2026 &middot; Last Updated: March 17, 2026</p>
-    </div>
+      <!-- Hero -->
+      <section class="page-hero">
+        <div class="page-hero-bg"></div>
+        <div class="page-hero-content">
+          <h1>Privacy Policy</h1>
+          <p class="subtitle">DNA Connect &mdash; Post-Quantum Encrypted Messenger</p>
+          <p class="effective-date">Effective Date: March 17, 2026 &middot; Last Updated: March 17, 2026</p>
+        </div>
+      </section>
 
-    <div class="content">
+      <!-- Content -->
+      <div class="wrap">
+        <div class="privacy-content">
 
-      <!-- Overview -->
-      <div class="section">
-        <h2>1. Overview</h2>
-        <p>
-          DNA Connect is a decentralized, peer-to-peer messaging application built on post-quantum cryptography.
-          This privacy policy explains what data the application accesses, how it is used, and your rights as a user.
-        </p>
-        <div class="highlight">
-          <p>
-            DNA Connect does not collect, store, or transmit any personal data to centralized servers.
-            All communication is end-to-end encrypted using NIST-approved post-quantum algorithms
-            (Kyber1024 for key exchange, Dilithium5 for signatures).
-          </p>
+          <!-- 1. Overview -->
+          <div class="privacy-section reveal">
+            <h2>1. Overview</h2>
+            <p>
+              DNA Connect is a decentralized, peer-to-peer messaging application built on post-quantum cryptography.
+              This privacy policy explains what data the application accesses, how it is used, and your rights as a user.
+            </p>
+            <div class="highlight-box">
+              <p>
+                DNA Connect does not collect, store, or transmit any personal data to centralized servers.
+                All communication is end-to-end encrypted using NIST-approved post-quantum algorithms
+                (Kyber1024 for key exchange, Dilithium5 for signatures).
+              </p>
+            </div>
+          </div>
+
+          <!-- 2. Data We Do NOT Collect -->
+          <div class="privacy-section reveal">
+            <h2>2. Data We Do NOT Collect</h2>
+            <p>DNA Connect is designed with privacy as its core principle. We do not collect:</p>
+            <ul>
+              <li>Personal information (name, email, phone number)</li>
+              <li>Message content — all messages are end-to-end encrypted and only readable by the intended recipient</li>
+              <li>Contact lists or address books from your device</li>
+              <li>Location data</li>
+              <li>Usage analytics or telemetry</li>
+              <li>Advertising identifiers</li>
+              <li>Device fingerprints for tracking purposes</li>
+              <li>Browsing history or app usage patterns</li>
+            </ul>
+          </div>
+
+          <!-- 3. Data Stored Locally -->
+          <div class="privacy-section reveal">
+            <h2>3. Data Stored Locally on Your Device</h2>
+            <p>The following data is stored exclusively on your device and never transmitted to us:</p>
+            <table class="privacy-table">
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Purpose</th>
+                  <th>Storage</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Cryptographic keys</td>
+                  <td>Identity and message encryption</td>
+                  <td>Encrypted local storage</td>
+                </tr>
+                <tr>
+                  <td>Seed phrase (24 words)</td>
+                  <td>Account recovery</td>
+                  <td>Generated once, shown to user, not stored by app after creation</td>
+                </tr>
+                <tr>
+                  <td>Message history</td>
+                  <td>Conversation display</td>
+                  <td>Encrypted SQLite database on device</td>
+                </tr>
+                <tr>
+                  <td>Contact list</td>
+                  <td>Managing trusted contacts</td>
+                  <td>Local SQLite database, synced to DHT (encrypted)</td>
+                </tr>
+                <tr>
+                  <td>Profile information</td>
+                  <td>Display name, avatar</td>
+                  <td>Published to decentralized DHT network (public)</td>
+                </tr>
+                <tr>
+                  <td>Wallet addresses</td>
+                  <td>Cryptocurrency transactions</td>
+                  <td>Derived from seed, stored locally</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- 4. Decentralized Network -->
+          <div class="privacy-section reveal">
+            <h2>4. Decentralized Network (DHT)</h2>
+            <p>
+              DNA Connect uses a decentralized hash table (DHT) network called Nodus for message delivery and
+              profile discovery. The following data is published to this distributed network:
+            </p>
+            <ul>
+              <li><strong>Public identity:</strong> Your public cryptographic keys and registered display name. This is
+                intentionally public to allow others to find and communicate with you.</li>
+              <li><strong>Encrypted messages:</strong> Messages in transit are encrypted with Kyber1024 (NIST ML-KEM)
+                and can only be decrypted by the intended recipient's private key.</li>
+              <li><strong>Wall posts:</strong> Public posts you choose to publish are visible to anyone on the network.</li>
+            </ul>
+            <p>
+              No centralized server stores or has access to your private keys or unencrypted messages.
+              DHT nodes only relay encrypted data — they cannot read message contents.
+            </p>
+          </div>
+
+          <!-- 5. Permissions -->
+          <div class="privacy-section reveal">
+            <h2>5. Device Permissions</h2>
+            <p>DNA Connect requests the following Android permissions:</p>
+            <table class="privacy-table">
+              <thead>
+                <tr>
+                  <th>Permission</th>
+                  <th>Purpose</th>
+                  <th>Required?</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Internet</td>
+                  <td>Connect to the decentralized DHT network for messaging</td>
+                  <td>Yes</td>
+                </tr>
+                <tr>
+                  <td>Network State</td>
+                  <td>Detect online/offline status for message delivery</td>
+                  <td>Yes</td>
+                </tr>
+                <tr>
+                  <td>Camera</td>
+                  <td>Take photos for profile avatar and scan QR codes for adding contacts</td>
+                  <td>No — optional</td>
+                </tr>
+                <tr>
+                  <td>Biometric</td>
+                  <td>App lock feature — authenticate with fingerprint or face recognition</td>
+                  <td>No — optional</td>
+                </tr>
+                <tr>
+                  <td>Notifications</td>
+                  <td>Receive alerts for new messages</td>
+                  <td>No — optional (Android 13+)</td>
+                </tr>
+                <tr>
+                  <td>Vibrate</td>
+                  <td>Haptic feedback for notifications</td>
+                  <td>No — optional</td>
+                </tr>
+              </tbody>
+            </table>
+            <p>
+              No permission is used for advertising, tracking, or data collection.
+              Camera and biometric access are only activated when you explicitly use those features.
+            </p>
+          </div>
+
+          <!-- 6. Third-Party Services -->
+          <div class="privacy-section reveal">
+            <h2>6. Third-Party Services</h2>
+            <p>DNA Connect does not integrate any third-party analytics, advertising, or tracking services. Specifically:</p>
+            <ul>
+              <li>No Google Analytics or Firebase Analytics</li>
+              <li>No Facebook SDK</li>
+              <li>No advertising networks</li>
+              <li>No crash reporting services that transmit data externally</li>
+            </ul>
+            <p>
+              The application may connect to third-party blockchain RPC endpoints (Cellframe, Ethereum, Solana, TRON)
+              solely for wallet balance queries and transaction broadcasting when you use the built-in wallet feature.
+              These connections transmit only your public wallet address — never private keys.
+            </p>
+          </div>
+
+          <!-- 7. Encryption -->
+          <div class="privacy-section reveal">
+            <h2>7. Encryption &amp; Security</h2>
+            <p>All cryptographic operations use NIST-approved post-quantum algorithms:</p>
+            <ul>
+              <li><strong>Key Exchange:</strong> ML-KEM (Kyber1024) — NIST Category 5</li>
+              <li><strong>Digital Signatures:</strong> ML-DSA (Dilithium5) — NIST Category 5</li>
+              <li><strong>Symmetric Encryption:</strong> AES-256-GCM for message content</li>
+              <li><strong>Hashing:</strong> SHA3-512 for identity fingerprints</li>
+            </ul>
+            <p>
+              These algorithms are designed to resist attacks from both classical and quantum computers.
+              Your private keys never leave your device.
+            </p>
+          </div>
+
+          <!-- 8. Data Retention -->
+          <div class="privacy-section reveal">
+            <h2>8. Data Retention &amp; Deletion</h2>
+            <ul>
+              <li>All data is stored on your device. Uninstalling the app deletes all local data.</li>
+              <li>Public profile data on the DHT network expires automatically if not refreshed by your device.</li>
+              <li>Wall posts have a 30-day TTL (time-to-live) on the network and expire automatically.</li>
+              <li>You can delete your account at any time by uninstalling the app. There is no server-side account to delete.</li>
+            </ul>
+          </div>
+
+          <!-- 9. Children -->
+          <div class="privacy-section reveal">
+            <h2>9. Children's Privacy</h2>
+            <p>
+              DNA Connect does not knowingly collect any information from children under the age of 13.
+              The application does not require any personal information to create an account —
+              only a locally-generated cryptographic key pair.
+            </p>
+          </div>
+
+          <!-- 10. Changes -->
+          <div class="privacy-section reveal">
+            <h2>10. Changes to This Policy</h2>
+            <p>
+              We may update this privacy policy from time to time. Any changes will be reflected on this page
+              with an updated "Last Updated" date. Continued use of DNA Connect after changes constitutes
+              acceptance of the revised policy.
+            </p>
+          </div>
+
+          <!-- 11. Contact -->
+          <div class="privacy-section reveal">
+            <h2>11. Contact</h2>
+            <p>
+              If you have questions about this privacy policy or DNA Connect's data practices:
+            </p>
+            <ul>
+              <li><strong>Email:</strong> <a href="mailto:privacy@cpunk.io">privacy@cpunk.io</a></li>
+              <li><strong>Website:</strong> <a href="https://cpunk.io">cpunk.io</a></li>
+              <li><strong>GitHub:</strong> <a href="https://github.com/nocdem/dna-messenger">github.com/nocdem/dna-messenger</a></li>
+            </ul>
+          </div>
+
         </div>
       </div>
 
-      <!-- Data We Do NOT Collect -->
-      <div class="section">
-        <h2>2. Data We Do NOT Collect</h2>
-        <p>DNA Connect is designed with privacy as its core principle. We do not collect:</p>
-        <ul>
-          <li>Personal information (name, email, phone number)</li>
-          <li>Message content — all messages are end-to-end encrypted and only readable by the intended recipient</li>
-          <li>Contact lists or address books from your device</li>
-          <li>Location data</li>
-          <li>Usage analytics or telemetry</li>
-          <li>Advertising identifiers</li>
-          <li>Device fingerprints for tracking purposes</li>
-          <li>Browsing history or app usage patterns</li>
-        </ul>
-      </div>
+    </main>
 
-      <!-- Data Stored Locally -->
-      <div class="section">
-        <h2>3. Data Stored Locally on Your Device</h2>
-        <p>The following data is stored exclusively on your device and never transmitted to us:</p>
-        <table>
-          <thead>
-            <tr>
-              <th>Data</th>
-              <th>Purpose</th>
-              <th>Storage</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Cryptographic keys</td>
-              <td>Identity and message encryption</td>
-              <td>Encrypted local storage</td>
-            </tr>
-            <tr>
-              <td>Seed phrase (24 words)</td>
-              <td>Account recovery</td>
-              <td>Generated once, shown to user, not stored by app after creation</td>
-            </tr>
-            <tr>
-              <td>Message history</td>
-              <td>Conversation display</td>
-              <td>Encrypted SQLite database on device</td>
-            </tr>
-            <tr>
-              <td>Contact list</td>
-              <td>Managing trusted contacts</td>
-              <td>Local SQLite database, synced to DHT (encrypted)</td>
-            </tr>
-            <tr>
-              <td>Profile information</td>
-              <td>Display name, avatar</td>
-              <td>Published to decentralized DHT network (public)</td>
-            </tr>
-            <tr>
-              <td>Wallet addresses</td>
-              <td>Cryptocurrency transactions</td>
-              <td>Derived from seed, stored locally</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Decentralized Network -->
-      <div class="section">
-        <h2>4. Decentralized Network (DHT)</h2>
-        <p>
-          DNA Connect uses a decentralized hash table (DHT) network called Nodus for message delivery and
-          profile discovery. The following data is published to this distributed network:
-        </p>
-        <ul>
-          <li><strong>Public identity:</strong> Your public cryptographic keys and registered display name. This is
-            intentionally public to allow others to find and communicate with you.</li>
-          <li><strong>Encrypted messages:</strong> Messages in transit are encrypted with Kyber1024 (NIST ML-KEM)
-            and can only be decrypted by the intended recipient's private key.</li>
-          <li><strong>Wall posts:</strong> Public posts you choose to publish are visible to anyone on the network.</li>
-        </ul>
-        <p>
-          No centralized server stores or has access to your private keys or unencrypted messages.
-          DHT nodes only relay encrypted data — they cannot read message contents.
-        </p>
-      </div>
-
-      <!-- Permissions -->
-      <div class="section">
-        <h2>5. Device Permissions</h2>
-        <p>DNA Connect requests the following Android permissions:</p>
-        <table>
-          <thead>
-            <tr>
-              <th>Permission</th>
-              <th>Purpose</th>
-              <th>Required?</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Internet</td>
-              <td>Connect to the decentralized DHT network for messaging</td>
-              <td>Yes</td>
-            </tr>
-            <tr>
-              <td>Network State</td>
-              <td>Detect online/offline status for message delivery</td>
-              <td>Yes</td>
-            </tr>
-            <tr>
-              <td>Camera</td>
-              <td>Take photos for profile avatar and scan QR codes for adding contacts</td>
-              <td>No — optional</td>
-            </tr>
-            <tr>
-              <td>Biometric</td>
-              <td>App lock feature — authenticate with fingerprint or face recognition</td>
-              <td>No — optional</td>
-            </tr>
-            <tr>
-              <td>Notifications</td>
-              <td>Receive alerts for new messages</td>
-              <td>No — optional (Android 13+)</td>
-            </tr>
-            <tr>
-              <td>Vibrate</td>
-              <td>Haptic feedback for notifications</td>
-              <td>No — optional</td>
-            </tr>
-          </tbody>
-        </table>
-        <p>
-          No permission is used for advertising, tracking, or data collection.
-          Camera and biometric access are only activated when you explicitly use those features.
-        </p>
-      </div>
-
-      <!-- Third-Party Services -->
-      <div class="section">
-        <h2>6. Third-Party Services</h2>
-        <p>DNA Connect does not integrate any third-party analytics, advertising, or tracking services. Specifically:</p>
-        <ul>
-          <li>No Google Analytics or Firebase Analytics</li>
-          <li>No Facebook SDK</li>
-          <li>No advertising networks</li>
-          <li>No crash reporting services that transmit data externally</li>
-        </ul>
-        <p>
-          The application may connect to third-party blockchain RPC endpoints (Cellframe, Ethereum, Solana, TRON)
-          solely for wallet balance queries and transaction broadcasting when you use the built-in wallet feature.
-          These connections transmit only your public wallet address — never private keys.
-        </p>
-      </div>
-
-      <!-- Encryption -->
-      <div class="section">
-        <h2>7. Encryption &amp; Security</h2>
-        <p>All cryptographic operations use NIST-approved post-quantum algorithms:</p>
-        <ul>
-          <li><strong>Key Exchange:</strong> ML-KEM (Kyber1024) — NIST Category 5</li>
-          <li><strong>Digital Signatures:</strong> ML-DSA (Dilithium5) — NIST Category 5</li>
-          <li><strong>Symmetric Encryption:</strong> AES-256-GCM for message content</li>
-          <li><strong>Hashing:</strong> SHA3-512 for identity fingerprints</li>
-        </ul>
-        <p>
-          These algorithms are designed to resist attacks from both classical and quantum computers.
-          Your private keys never leave your device.
-        </p>
-      </div>
-
-      <!-- Data Retention -->
-      <div class="section">
-        <h2>8. Data Retention &amp; Deletion</h2>
-        <ul>
-          <li>All data is stored on your device. Uninstalling the app deletes all local data.</li>
-          <li>Public profile data on the DHT network expires automatically if not refreshed by your device.</li>
-          <li>Wall posts have a 30-day TTL (time-to-live) on the network and expire automatically.</li>
-          <li>You can delete your account at any time by uninstalling the app. There is no server-side account to delete.</li>
-        </ul>
-      </div>
-
-      <!-- Children -->
-      <div class="section">
-        <h2>9. Children's Privacy</h2>
-        <p>
-          DNA Connect does not knowingly collect any information from children under the age of 13.
-          The application does not require any personal information to create an account —
-          only a locally-generated cryptographic key pair.
-        </p>
-      </div>
-
-      <!-- Changes -->
-      <div class="section">
-        <h2>10. Changes to This Policy</h2>
-        <p>
-          We may update this privacy policy from time to time. Any changes will be reflected on this page
-          with an updated "Last Updated" date. Continued use of DNA Connect after changes constitutes
-          acceptance of the revised policy.
-        </p>
-      </div>
-
-      <!-- Contact -->
-      <div class="section">
-        <h2>11. Contact</h2>
-        <p>
-          If you have questions about this privacy policy or DNA Connect's data practices:
-        </p>
-        <ul>
-          <li><strong>Email:</strong> <a href="mailto:privacy@cpunk.io">privacy@cpunk.io</a></li>
-          <li><strong>Website:</strong> <a href="https://cpunk.io">cpunk.io</a></li>
-          <li><strong>GitHub:</strong> <a href="https://github.com/nocdem/dna-messenger">github.com/nocdem/dna-messenger</a></li>
-        </ul>
-      </div>
-
-    </div>
-
+    <!-- Footer -->
     <footer>
-      <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
-      <div style="margin-top: 0.5rem;">
-        <a href="/">Home</a>
-        <a href="/products/dna-connect.html">DNA Connect</a>
-        <a href="/legal.html">Legal</a>
-        <a href="/contact.html">Contact</a>
+      <div class="wrap">
+        <div class="footer-row">
+          <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+          <div class="footer-links">
+            <a href="/">Home</a>
+            <a href="/DNA-Connect/identity.html">The Identity</a>
+            <a href="/DNA-Connect/messenger.html">The Messenger</a>
+            <a href="/DNA-Connect/wallet.html">The Wallet</a>
+            <a href="/DNA-Connect/nodus.html">The Nodus</a>
+            <a href="/team.html">Team</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
+            <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
+            <a href="/privacy.html">Privacy Policy</a>
+          </div>
+        </div>
       </div>
     </footer>
-
   </div>
 
+  <!-- JS: Mobile Nav + Scroll Reveal -->
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var mobileToggle = document.querySelector('.mobile-menu-toggle');
+      var navMenu = document.querySelector('.nav-menu');
+
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function() {
+          navMenu.classList.toggle('active');
+        });
+      }
+
+      document.querySelectorAll('.nav-item').forEach(function(item) {
+        var label = item.querySelector('.nav-item-label');
+        if (!label) return;
+        label.addEventListener('click', function(e) {
+          if (window.innerWidth <= 768) {
+            e.stopPropagation();
+            item.classList.toggle('open');
+          }
+        });
+      });
+
+      /* Scroll Reveal (IntersectionObserver) */
+      var revealElements = document.querySelectorAll('.reveal');
+
+      if ('IntersectionObserver' in window) {
+        var observer = new IntersectionObserver(function(entries) {
+          entries.forEach(function(entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('visible');
+              observer.unobserve(entry.target);
+            }
+          });
+        }, {
+          threshold: 0.12,
+          rootMargin: '0px 0px -40px 0px'
+        });
+
+        revealElements.forEach(function(el) {
+          observer.observe(el);
+        });
+      } else {
+        revealElements.forEach(function(el) {
+          el.classList.add('visible');
+        });
+      }
+    });
+  </script>
 </body>
 </html>
