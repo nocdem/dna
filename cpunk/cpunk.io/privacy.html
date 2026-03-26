@@ -603,6 +603,8 @@
           <div class="privacy-section reveal">
             <h2>3. Data Stored Locally on Your Device</h2>
             <p>The following data is stored exclusively on your device and never transmitted to us:</p>
+
+            <h3>Cryptographic Material</h3>
             <table class="privacy-table">
               <thead>
                 <tr>
@@ -613,37 +615,92 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>Cryptographic keys</td>
-                  <td>Identity and message encryption</td>
-                  <td>Encrypted local storage</td>
+                  <td>Dilithium5 signing key pair</td>
+                  <td>Identity verification and message signing</td>
+                  <td>Local file (identity.dsa), derived from recovery phrase</td>
                 </tr>
                 <tr>
-                  <td>Seed phrase (24 words)</td>
-                  <td>Account recovery</td>
-                  <td>Generated once, shown to user, not stored by app after creation</td>
+                  <td>Kyber1024 encryption key pair</td>
+                  <td>Post-quantum key encapsulation</td>
+                  <td>Local file (identity.kem), derived from recovery phrase</td>
                 </tr>
                 <tr>
-                  <td>Message history</td>
-                  <td>Conversation display</td>
-                  <td>Encrypted SQLite database on device</td>
+                  <td>Recovery phrase (24 words)</td>
+                  <td>Account backup and recovery</td>
+                  <td>Encrypted with Kyber1024 public key (mnemonic.enc). Never stored as plain text.</td>
                 </tr>
                 <tr>
-                  <td>Contact list</td>
-                  <td>Managing trusted contacts</td>
-                  <td>Local SQLite database, synced to DHT (encrypted)</td>
-                </tr>
-                <tr>
-                  <td>Profile information</td>
-                  <td>Display name, avatar</td>
-                  <td>Published to decentralized DHT network (public)</td>
-                </tr>
-                <tr>
-                  <td>Wallet addresses</td>
-                  <td>Cryptocurrency transactions</td>
-                  <td>Derived from seed, stored locally</td>
+                  <td>DHT node identity</td>
+                  <td>Authentication on the decentralized network</td>
+                  <td>Cached locally (dht_identity.bin), deterministically derived from recovery phrase</td>
                 </tr>
               </tbody>
             </table>
+
+            <h3>Application Data</h3>
+            <table class="privacy-table">
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Purpose</th>
+                  <th>Storage</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Contact list</td>
+                  <td>Managing trusted contacts, block list</td>
+                  <td>Local SQLite database (contacts.db)</td>
+                </tr>
+                <tr>
+                  <td>Message history</td>
+                  <td>Conversation backup and display</td>
+                  <td>Local SQLite database (messages.db)</td>
+                </tr>
+                <tr>
+                  <td>Profile cache</td>
+                  <td>Caching display names, avatars, and public keys of contacts</td>
+                  <td>Local SQLite databases (profiles.db, keyserver_cache.db)</td>
+                </tr>
+                <tr>
+                  <td>Wall post cache</td>
+                  <td>Offline access to public posts, comments, and likes</td>
+                  <td>Local SQLite database (wall_cache.db)</td>
+                </tr>
+                <tr>
+                  <td>Group &amp; channel data</td>
+                  <td>Group memberships, encrypted group keys, channel subscriptions</td>
+                  <td>Local SQLite databases (groups.db, channel_subscriptions.db)</td>
+                </tr>
+                <tr>
+                  <td>Wallet balance &amp; transaction cache</td>
+                  <td>Displaying wallet balances and transaction history</td>
+                  <td>Local SQLite database (wallet_cache.db). Private keys are never stored &mdash; derived on-demand from recovery phrase.</td>
+                </tr>
+                <tr>
+                  <td>Wallet address book</td>
+                  <td>Saved recipient addresses with labels</td>
+                  <td>Local SQLite database (addressbook.db)</td>
+                </tr>
+                <tr>
+                  <td>App lock PIN</td>
+                  <td>Optional app lock authentication</td>
+                  <td>PBKDF2-SHA256 hash with random salt, stored in Android Keystore / iOS Keychain (encrypted by OS)</td>
+                </tr>
+                <tr>
+                  <td>App preferences</td>
+                  <td>Settings such as biometric lock, notification preferences</td>
+                  <td>OS-managed local storage (SharedPreferences)</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <p>
+              Local SQLite databases are not individually encrypted. The application relies on
+              OS-level storage isolation (Android app sandbox) to protect database files.
+              Sensitive cryptographic material (recovery phrase, PIN) uses dedicated encryption
+              as described above.
+            </p>
           </div>
 
           <!-- 4. Decentralized Network -->
