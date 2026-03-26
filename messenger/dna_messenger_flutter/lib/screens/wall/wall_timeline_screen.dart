@@ -84,7 +84,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                 child: ListView.separated(
                   padding: const EdgeInsets.all(DnaSpacing.md),
                   itemCount: items.length,
-                  separatorBuilder: (_, __) =>
+                  separatorBuilder: (_, _) =>
                       const SizedBox(height: DnaSpacing.sm),
                   itemBuilder: (context, index) {
                     final item = items[index];
@@ -149,19 +149,61 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
             return ListView.separated(
               padding: const EdgeInsets.all(DnaSpacing.md),
               itemCount: cached.length,
-              separatorBuilder: (_, __) =>
+              separatorBuilder: (_, _) =>
                   const SizedBox(height: DnaSpacing.sm),
               itemBuilder: (context, index) {
                 final item = cached[index];
+                final isOwn = item.isOwn(myFp);
                 return WallPostTile(
                   post: item.post,
                   myFingerprint: myFp,
                   authorDisplayName: item.authorDisplayName,
                   authorAvatar: item.authorAvatar,
                   decodedImage: item.decodedImage,
+                  comments: item.previewComments,
                   likeCount: item.likeCount,
                   isLikedByMe: item.isLikedByMe,
                   isBoosted: item.post.isBoosted,
+                  onLike: item.isLikedByMe
+                      ? null
+                      : () => ref
+                          .read(wallTimelineProvider.notifier)
+                          .likePost(item.post.uuid),
+                  onReply: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          WallPostDetailScreen(post: item.post),
+                    ),
+                  ),
+                  onViewAllComments: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          WallPostDetailScreen(post: item.post),
+                    ),
+                  ),
+                  onDelete: isOwn
+                      ? () => _confirmDelete(
+                          context, ref, item.post.uuid)
+                      : null,
+                  onBlock: !isOwn
+                      ? () => _confirmBlock(
+                          context, ref, item)
+                      : null,
+                  onShare: !isOwn
+                      ? () => _showRepostDialog(
+                          context, ref, item.post)
+                      : null,
+                  onTip: !isOwn
+                      ? () => showWallTipDialog(
+                            context: context,
+                            ref: ref,
+                            post: item.post,
+                          )
+                      : null,
+                  onAuthorTap: () => _showAuthorProfile(
+                      context, ref, item),
                 );
               },
             );

@@ -119,8 +119,8 @@ final wallTimelineProvider =
 );
 
 class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
-  bool _hasMore = true;
-  bool _isLoadingMore = false;
+  final bool _hasMore = true;
+  final bool _isLoadingMore = false;
 
   bool get hasMore => _hasMore;
   bool get isLoadingMore => _isLoadingMore;
@@ -137,7 +137,7 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       if (fp != null && fp.length == 128) {
         try {
           final posts = await engine.wallTimelineCached(fp);
-          return _assembleItems(posts, fp, cacheOnly: true);
+          return _assembleItems(posts, fp);
         } catch (_) {
           return state.valueOrNull ?? [];
         }
@@ -150,10 +150,11 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     return _fetchAndAssemble(engine, myFp);
   }
 
-  /// Main fetch: get wall posts, batch-assemble with comments/likes/profiles
+  /// Main fetch: get wall posts, return immediately with cached engagement,
+  /// then refresh engagement data from DHT in background.
   Future<List<WallFeedItem>> _fetchAndAssemble(
       DnaEngine engine, String myFp) async {
-    // Get wall posts
+    // Get wall posts (cache-first, returns quickly)
     final wallPosts = await engine.wallTimeline();
 
     // Fire-and-forget: fetch boosts in background, merge when ready
@@ -162,15 +163,86 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       _mergeBoosts(boostPosts, myFp);
     }).catchError((_) {});
 
-    return _assembleItems(wallPosts, myFp);
+    // Phase 1: assemble with whatever cache has now (fast)
+    final items = await _assembleItems(wallPosts, myFp);
+
+    // Phase 2: background refresh — re-fetch engagement after DHT has had
+    // time to return fresh data, then update state progressively.
+    _refreshEngagementInBackground(wallPosts, myFp, engine);
+
+    return items;
   }
 
-  /// Assemble WallFeedItems with batch-fetched comments, likes, profiles
-  /// Assemble WallFeedItems. When [cacheOnly] is true (pre-identity load),
-  /// skip likes/comments/profile DHT fetch — show posts only, no engagement data.
-  /// This prevents caching "0 likes" from failed DHT fetches before identity is ready.
+  /// Re-fetch comments and likes for all posts in background,
+  /// then update state if anything changed.
+  void _refreshEngagementInBackground(
+      List<WallPost> posts, String myFp, DnaEngine engine) {
+    () async {
+      try {
+        final commentsFutures =
+            posts.map((p) => _safeGetComments(engine, p.uuid));
+        final likesFutures =
+            posts.map((p) => _safeGetLikes(engine, p.uuid));
+        final results = await Future.wait([
+          Future.wait(commentsFutures),
+          Future.wait(likesFutures),
+        ]);
+        final allComments = results[0] as List<List<WallComment>>;
+        final allLikes = results[1] as List<List<WallLike>>;
+
+        final current = state.valueOrNull;
+        if (current == null || current.isEmpty) return;
+
+        // Build lookup by uuid for updated engagement
+        final commentMap = <String, List<WallComment>>{};
+        final likeMap = <String, List<WallLike>>{};
+        for (var i = 0; i < posts.length; i++) {
+          commentMap[posts[i].uuid] = allComments[i];
+          likeMap[posts[i].uuid] = allLikes[i];
+        }
+
+        // Check if anything actually changed
+        bool changed = false;
+        final updated = current.map((item) {
+          final newComments = commentMap[item.post.uuid];
+          final newLikes = likeMap[item.post.uuid];
+          if (newComments == null && newLikes == null) return item;
+
+          final newLikeCount = newLikes?.length ?? item.likeCount;
+          final newCommentCount = newComments?.length ?? item.commentCount;
+          final newIsLiked = newLikes?.any((l) => l.authorFingerprint == myFp) ?? item.isLikedByMe;
+          final newPreview = newComments != null
+              ? (newComments.length <= 3 ? newComments : newComments.sublist(0, 3))
+              : item.previewComments;
+
+          if (newLikeCount != item.likeCount ||
+              newCommentCount != item.commentCount ||
+              newIsLiked != item.isLikedByMe) {
+            changed = true;
+            return item.copyWith(
+              likeCount: newLikeCount,
+              isLikedByMe: newIsLiked,
+              commentCount: newCommentCount,
+              previewComments: newPreview,
+            );
+          }
+          return item;
+        }).toList();
+
+        if (changed) {
+          state = AsyncData(updated);
+        }
+      } catch (_) {
+        // Silent fail — engagement refresh is best-effort
+      }
+    }();
+  }
+
+  /// Assemble WallFeedItems with batch-fetched comments, likes, profiles.
+  /// C handlers are cache-first: returns cached data instantly, falls back to
+  /// DHT only when cache is stale. Safe to call before identity is loaded.
   Future<List<WallFeedItem>> _assembleItems(
-      List<WallPost> posts, String myFp, {bool cacheOnly = false}) async {
+      List<WallPost> posts, String myFp) async {
     if (posts.isEmpty) return [];
 
     // Filter out posts from blocked users
@@ -187,24 +259,22 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     List<List<WallComment>> allComments;
     List<List<WallLike>> allLikes;
 
-    if (cacheOnly) {
-      // Pre-identity: no DHT fetch, show posts without engagement data
-      allComments = List.filled(posts.length, const []);
-      allLikes = List.filled(posts.length, const []);
-    } else {
-      final commentsFutures =
-          posts.map((p) => _safeGetComments(engine, p.uuid));
-      final likesFutures = posts.map((p) => _safeGetLikes(engine, p.uuid));
-      allComments = await Future.wait(commentsFutures);
-      allLikes = await Future.wait(likesFutures);
-    }
+    // Fetch comments and likes in parallel — C handlers are cache-first,
+    // so pre-identity this returns cached data (or empty if cache is stale).
+    final commentsFutures =
+        posts.map((p) => _safeGetComments(engine, p.uuid));
+    final likesFutures = posts.map((p) => _safeGetLikes(engine, p.uuid));
+    final results = await Future.wait([
+      Future.wait(commentsFutures),
+      Future.wait(likesFutures),
+    ]);
+    allComments = results[0] as List<List<WallComment>>;
+    allLikes = results[1] as List<List<WallLike>>;
 
     // Collect unique author fingerprints and batch prefetch profiles
     final uniqueAuthors = posts.map((p) => p.authorFingerprint).toSet().toList();
     final profileCache = ref.read(contactProfileCacheProvider.notifier);
-    if (!cacheOnly) {
-      await profileCache.prefetchProfiles(uniqueAuthors);
-    }
+    await profileCache.prefetchProfiles(uniqueAuthors);
     final profiles = ref.read(contactProfileCacheProvider);
 
     // Resolve own profile for own posts
