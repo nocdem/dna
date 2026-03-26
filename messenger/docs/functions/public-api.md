@@ -208,9 +208,11 @@ Named channels with flat text posts. Open posting, day-bucket discovery.
 | `dna_request_id_t dna_engine_wall_get_comments(dna_engine_t *engine, const char *post_uuid, dna_wall_comments_cb callback, void *user_data)` | Fetch all comments for a wall post |
 | `dna_request_id_t dna_engine_wall_like(dna_engine_t *engine, const char *post_uuid, dna_wall_likes_cb callback, void *user_data)` | Like a wall post (signed with Dilithium5, max 100 per post) |
 | `dna_request_id_t dna_engine_wall_get_likes(dna_engine_t *engine, const char *post_uuid, dna_wall_likes_cb callback, void *user_data)` | Fetch all likes for a wall post |
+| `dna_request_id_t dna_engine_wall_get_engagement(dna_engine_t *engine, const char **post_uuids, int post_count, dna_wall_engagement_cb callback, void *user_data)` | Batch fetch engagement (comments + like count) for multiple posts. Uses get_batch + count_batch (2 requests instead of N*2). Max 32 posts. (v0.9.124+) |
 | `void dna_free_wall_posts(dna_wall_post_info_t *posts, int count)` | Free wall posts array |
 | `void dna_free_wall_comments(dna_wall_comment_info_t *comments, int count)` | Free wall comments array |
 | `void dna_free_wall_likes(dna_wall_like_info_t *likes, int count)` | Free wall likes array |
+| `void dna_free_wall_engagement(dna_wall_engagement_t *engagements, int count)` | Free engagement array (v0.9.124+) |
 
 **Structures and Types:**
 
@@ -219,6 +221,7 @@ Named channels with flat text posts. Open posting, day-bucket discovery.
 | `dna_wall_post_info_t` | Wall post info struct; includes `char *image_json` field for attached image metadata |
 | `dna_wall_comment_info_t` | Wall comment info struct (uuid, post_uuid, parent_comment_uuid, author_fp, text, timestamp) |
 | `dna_wall_like_info_t` | Wall like info struct (author_fingerprint, author_name, timestamp, verified) |
+| `dna_wall_engagement_t` | Per-post engagement: comments array + comment_count + like_count + is_liked_by_me (v0.9.124+) |
 | `dna_wall_comment_cb` | Callback for a single wall comment result: `void (*)(dna_wall_comment_info_t *comment, int error, void *user_data)` |
 | `dna_wall_comments_cb` | Callback for a list of wall comments: `void (*)(dna_wall_comment_info_t *comments, int count, int error, void *user_data)` |
 | `dna_wall_likes_cb` | Callback for a list of wall likes: `void (*)(dna_wall_like_info_t *likes, int count, int error, void *user_data)` |

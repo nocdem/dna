@@ -369,6 +369,8 @@ All operations below require a valid session token (`"tok"` field).
 | `put` | C→S | Store a signed value |
 | `get` | C→S | Retrieve latest value by key |
 | `get_all` | C→S | Retrieve all values for a key (all writers) |
+| `get_batch` | C→S | Batch get_all for N keys (max 32) in one request |
+| `cnt_batch` | C→S | Batch count + has_mine for N keys (no data transfer) |
 | `listen` | C→S | Subscribe to value changes on a key |
 | `unlisten` | C→S | Unsubscribe from a key |
 | `ping` | C→S | Keepalive |
@@ -376,6 +378,8 @@ All operations below require a valid session token (`"tok"` field).
 | `put_ok` | S→C | PUT acknowledgement |
 | `result` | S→C | GET result (single value) |
 | `result` (multi) | S→C | GET_ALL result (value array) |
+| `result` (batch) | S→C | GET_BATCH result (per-key value arrays) |
+| `result` (counts) | S→C | CNT_BATCH result (per-key count + has_mine) |
 | `listen_ok` | S→C | LISTEN acknowledgement |
 | `pong` | S→C | Keepalive response |
 | `value_changed` | S→C | Push notification: watched key updated |
@@ -405,6 +409,37 @@ All operations below require a valid session token (`"tok"` field).
     "k": <bytes[64]>,
     "val": <bytes(serialized NodusValue)>
 }}
+```
+
+**GET_BATCH** (`"q": "get_batch"`) — v0.9.20+:
+```
+{"t": txn, "y": "q", "q": "get_batch", "tok": <bytes[32]>, "a": {
+    "ks": [<bytes[64]>, <bytes[64]>, ...]    # Array of key hashes (max 32)
+}}
+```
+Response:
+```
+{"t": txn, "y": "r", "q": "result", "r": {"batch": [
+    {"k": <bytes[64]>, "vs": [<serialized_value>, ...]},
+    {"k": <bytes[64]>, "vs": []},
+    ...
+]}}
+```
+
+**CNT_BATCH** (`"q": "cnt_batch"`) — v0.9.20+:
+```
+{"t": txn, "y": "q", "q": "cnt_batch", "tok": <bytes[32]>, "a": {
+    "ks": [<bytes[64]>, <bytes[64]>, ...],   # Array of key hashes (max 32)
+    "fp": <bytes[64]>                         # Caller fingerprint for has_mine check
+}}
+```
+Response:
+```
+{"t": txn, "y": "r", "q": "result", "r": {"counts": [
+    {"k": <bytes[64]>, "c": <uint>, "my": <bool>},
+    {"k": <bytes[64]>, "c": <uint>, "my": <bool>},
+    ...
+]}}
 ```
 
 **ERROR** (`"y": "e"`):

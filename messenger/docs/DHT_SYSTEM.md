@@ -1170,7 +1170,7 @@ Nodus is a pure C post-quantum DHT server with PBFT consensus:
 | Tier | Transport | Messages | Purpose |
 |------|-----------|----------|---------|
 | Tier 1 | UDP | ping, find_node, put, get | Kademlia inter-node operations |
-| Tier 2 | TCP | auth, dht_put, dht_get, listen, channels | Client-facing operations |
+| Tier 2 | TCP | auth, dht_put, dht_get, get_batch, cnt_batch, listen, channels | Client-facing operations |
 
 ### 7.3 Deployment
 
