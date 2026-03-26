@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  9
-#define NODUS_VERSION_PATCH  19
-#define NODUS_VERSION_STRING "0.9.19"
+#define NODUS_VERSION_PATCH  20
+#define NODUS_VERSION_STRING "0.9.20"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -98,6 +98,7 @@ extern "C" {
 #define NODUS_MAX_WIRE_FPS         1000    /* Max fingerprints per message */
 #define NODUS_MAX_WIRE_VALUES      10000   /* Max values per message */
 #define NODUS_MAX_WIRE_POSTS       10000   /* Max channel posts per message */
+#define NODUS_MAX_BATCH_KEYS       32      /* Max keys per get_batch request */
 
 /* Tier 3: Witness/BFT consensus (DNAC) */
 #define NODUS_T3_MAX_WITNESSES      128

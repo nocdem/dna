@@ -236,6 +236,60 @@ int nodus_client_get_all(nodus_client_t *client,
                           nodus_value_t ***vals_out,
                           size_t *count_out);
 
+/* ── Batch DHT Operations ───────────────────────────────────────── */
+
+/** Result for one key in a get_batch response */
+typedef struct {
+    nodus_key_t     key;
+    nodus_value_t **vals;
+    size_t          count;
+} nodus_batch_result_t;
+
+/** Result for one key in a count_batch response */
+typedef struct {
+    nodus_key_t     key;
+    size_t          count;
+    bool            has_mine;
+} nodus_count_result_t;
+
+/**
+ * Batch get_all: retrieve all values for multiple keys in one request.
+ * Caller must free results with nodus_client_free_batch_result().
+ *
+ * @param keys           Array of keys to query
+ * @param key_count      Number of keys (1..32)
+ * @param results_out    Output: heap-allocated array of per-key results
+ * @param result_count_out  Number of results (== key_count on success)
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_get_batch(nodus_client_t *client,
+                            const nodus_key_t *keys, int key_count,
+                            nodus_batch_result_t **results_out,
+                            int *result_count_out);
+
+/**
+ * Batch count: get value counts + has_mine for multiple keys in one request.
+ * Caller must free results with nodus_client_free_count_result().
+ *
+ * @param keys           Array of keys to query
+ * @param key_count      Number of keys (1..32)
+ * @param my_fp          Caller fingerprint for has_mine check (NULL to skip)
+ * @param results_out    Output: heap-allocated array of per-key results
+ * @param result_count_out  Number of results
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_count_batch(nodus_client_t *client,
+                              const nodus_key_t *keys, int key_count,
+                              const nodus_key_t *my_fp,
+                              nodus_count_result_t **results_out,
+                              int *result_count_out);
+
+/** Free results from nodus_client_get_batch(). */
+void nodus_client_free_batch_result(nodus_batch_result_t *results, int count);
+
+/** Free results from nodus_client_count_batch(). */
+void nodus_client_free_count_result(nodus_count_result_t *results, int count);
+
 /**
  * Subscribe to changes on a DHT key.
  * Notifications delivered via on_value_changed callback.

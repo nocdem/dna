@@ -1153,6 +1153,126 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     }
 }
 
+static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
+                                 nodus_tier2_msg_t *msg) {
+    if (msg->batch_key_count < 1 || msg->batch_key_count > NODUS_MAX_BATCH_KEYS) {
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "invalid batch key count", resp_buf, sizeof(resp_buf), &len);
+        nodus_tcp_send(sess->conn, resp_buf, len);
+        return;
+    }
+
+    int n = msg->batch_key_count;
+    nodus_value_t ***vals_per_key = calloc((size_t)n, sizeof(nodus_value_t **));
+    size_t *counts_per_key = calloc((size_t)n, sizeof(size_t));
+    if (!vals_per_key || !counts_per_key) {
+        free(vals_per_key);
+        free(counts_per_key);
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "alloc failed", resp_buf, sizeof(resp_buf), &len);
+        nodus_tcp_send(sess->conn, resp_buf, len);
+        return;
+    }
+
+    for (int i = 0; i < n; i++) {
+        nodus_storage_get_all(&srv->storage, &msg->batch_keys[i],
+                               &vals_per_key[i], &counts_per_key[i]);
+    }
+
+    /* Heap buffer — batch result can be large */
+    size_t buf_cap = RESP_BUF_SIZE;
+    uint8_t *buf = malloc(buf_cap);
+    if (!buf) goto cleanup;
+
+    size_t len = 0;
+    int rc = nodus_t2_result_get_batch(msg->txn_id, msg->batch_keys, n,
+                                        vals_per_key, counts_per_key,
+                                        buf, buf_cap, &len);
+    if (rc == 0) {
+        nodus_tcp_send(sess->conn, buf, len);
+    } else {
+        size_t elen = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "batch encode failed", resp_buf, sizeof(resp_buf), &elen);
+        nodus_tcp_send(sess->conn, resp_buf, elen);
+    }
+    free(buf);
+
+cleanup:
+    for (int i = 0; i < n; i++) {
+        if (vals_per_key[i]) {
+            for (size_t j = 0; j < counts_per_key[i]; j++)
+                nodus_value_free(vals_per_key[i][j]);
+            free(vals_per_key[i]);
+        }
+    }
+    free(vals_per_key);
+    free(counts_per_key);
+}
+
+static void handle_t2_count_batch(nodus_server_t *srv, nodus_session_t *sess,
+                                    nodus_tier2_msg_t *msg) {
+    if (msg->batch_key_count < 1 || msg->batch_key_count > NODUS_MAX_BATCH_KEYS) {
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "invalid batch key count", resp_buf, sizeof(resp_buf), &len);
+        nodus_tcp_send(sess->conn, resp_buf, len);
+        return;
+    }
+
+    int n = msg->batch_key_count;
+    size_t *counts = calloc((size_t)n, sizeof(size_t));
+    bool *has_mine = calloc((size_t)n, sizeof(bool));
+    if (!counts || !has_mine) {
+        free(counts);
+        free(has_mine);
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "alloc failed", resp_buf, sizeof(resp_buf), &len);
+        nodus_tcp_send(sess->conn, resp_buf, len);
+        return;
+    }
+
+    /* Use session's fingerprint (from auth) as caller_fp.
+     * msg->fp is set if client sent "fp" in args, otherwise fall back to session. */
+    nodus_key_t caller_fp;
+    bool has_caller = false;
+    if (memcmp(msg->fp.bytes, "\0\0\0\0\0\0\0\0", 8) != 0) {
+        memcpy(&caller_fp, &msg->fp, sizeof(nodus_key_t));
+        has_caller = true;
+    } else if (memcmp(sess->client_fp.bytes, "\0\0\0\0\0\0\0\0", 8) != 0) {
+        memcpy(&caller_fp, &sess->client_fp, sizeof(nodus_key_t));
+        has_caller = true;
+    }
+
+    for (int i = 0; i < n; i++) {
+        int c = nodus_storage_count_key(&srv->storage, &msg->batch_keys[i]);
+        counts[i] = c >= 0 ? (size_t)c : 0;
+        if (has_caller) {
+            int ho = nodus_storage_has_owner(&srv->storage,
+                                              &msg->batch_keys[i], &caller_fp);
+            has_mine[i] = (ho == 1);
+        }
+    }
+
+    size_t len = 0;
+    if (nodus_t2_result_count_batch(msg->txn_id, msg->batch_keys, n,
+                                     counts, has_mine,
+                                     resp_buf, sizeof(resp_buf), &len) == 0) {
+        nodus_tcp_send(sess->conn, resp_buf, len);
+    } else {
+        size_t elen = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "count batch encode failed", resp_buf, sizeof(resp_buf), &elen);
+        nodus_tcp_send(sess->conn, resp_buf, elen);
+    }
+
+    free(counts);
+    free(has_mine);
+}
+
 static void handle_t2_listen(nodus_server_t *srv, nodus_session_t *sess,
                               nodus_tier2_msg_t *msg) {
     if (session_add_listen(sess, &msg->key) != 0) {
@@ -1843,6 +1963,10 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         handle_t2_get(srv, sess, &msg);
     else if (strcmp(msg.method, "get_all") == 0)
         handle_t2_get_all(srv, sess, &msg);
+    else if (strcmp(msg.method, "get_batch") == 0)
+        handle_t2_get_batch(srv, sess, &msg);
+    else if (strcmp(msg.method, "cnt_batch") == 0)
+        handle_t2_count_batch(srv, sess, &msg);
     else if (strcmp(msg.method, "listen") == 0)
         handle_t2_listen(srv, sess, &msg);
     else if (strcmp(msg.method, "unlisten") == 0)

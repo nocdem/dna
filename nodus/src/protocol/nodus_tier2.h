@@ -116,6 +116,35 @@ int nodus_t2_ch_list_ok(uint32_t txn,
                          const nodus_channel_meta_t *metas, size_t count,
                          uint8_t *buf, size_t cap, size_t *out_len);
 
+/* ── Batch operations (Client → Nodus) ──────────────────────────── */
+
+/** Client → Nodus: batch get_all for multiple keys */
+int nodus_t2_get_batch(uint32_t txn, const uint8_t *token,
+                        const nodus_key_t *keys, int key_count,
+                        uint8_t *buf, size_t cap, size_t *out_len);
+
+/** Client → Nodus: batch count for multiple keys (+ has_mine check) */
+int nodus_t2_count_batch(uint32_t txn, const uint8_t *token,
+                          const nodus_key_t *keys, int key_count,
+                          const nodus_key_t *caller_fp,
+                          uint8_t *buf, size_t cap, size_t *out_len);
+
+/* ── Batch responses (Nodus → Client) ───────────────────────────── */
+
+/** Nodus → Client: batch get_all result (per-key value arrays) */
+int nodus_t2_result_get_batch(uint32_t txn,
+                               const nodus_key_t *keys, int key_count,
+                               nodus_value_t ***vals_per_key,
+                               const size_t *counts_per_key,
+                               uint8_t *buf, size_t cap, size_t *out_len);
+
+/** Nodus → Client: batch count result (per-key count + has_mine) */
+int nodus_t2_result_count_batch(uint32_t txn,
+                                 const nodus_key_t *keys, int key_count,
+                                 const size_t *counts,
+                                 const bool *has_mine,
+                                 uint8_t *buf, size_t cap, size_t *out_len);
+
 /* ── Nodus → Client encode ───────────────────────────────────────── */
 
 int nodus_t2_challenge(uint32_t txn, const uint8_t *nonce,
@@ -361,6 +390,15 @@ typedef struct {
     nodus_key_t    *os_fps;         /* FP array (heap) */
     uint64_t       *os_last_seen;   /* Last seen timestamps (heap) */
     int             os_count;
+
+    /* Batch get/count fields */
+    nodus_key_t    *batch_keys;       /* Array of keys (heap) */
+    int             batch_key_count;
+    nodus_value_t ***batch_vals;      /* get_batch: per-key value arrays (heap) */
+    size_t         *batch_val_counts; /* get_batch: value count per key (heap) */
+    size_t         *batch_counts;     /* count_batch: value count per key (heap) */
+    bool           *batch_has_mine;   /* count_batch: client has value for key (heap) */
+    nodus_key_t     batch_caller_fp;  /* count_batch: caller fingerprint */
 
     /* Error */
     int             error_code;

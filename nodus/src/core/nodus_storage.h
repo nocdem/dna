@@ -172,6 +172,28 @@ int nodus_storage_fetch_batch(nodus_storage_t *store,
 int nodus_storage_check_quota(nodus_storage_t *store,
                                const nodus_key_t *owner_fp);
 
+/**
+ * Count values for a specific key (all owners).
+ *
+ * @param store     Storage handle
+ * @param key_hash  Key to count
+ * @return count >= 0 on success, -1 on error
+ */
+int nodus_storage_count_key(nodus_storage_t *store,
+                             const nodus_key_t *key_hash);
+
+/**
+ * Check if a specific owner has a value for a key.
+ *
+ * @param store     Storage handle
+ * @param key_hash  Key to check
+ * @param owner_fp  Owner fingerprint
+ * @return 1 if owner has value, 0 if not, -1 on error
+ */
+int nodus_storage_has_owner(nodus_storage_t *store,
+                             const nodus_key_t *key_hash,
+                             const nodus_key_t *owner_fp);
+
 /* ── DHT Hinted Handoff ─────────────────────────────────────────── */
 
 /**

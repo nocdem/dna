@@ -189,6 +189,109 @@ int nodus_t2_servers(uint32_t txn, const uint8_t *token,
     return finish(&enc, out_len);
 }
 
+/* ── Batch operations (Client → Nodus) ──────────────────────────── */
+
+int nodus_t2_get_batch(uint32_t txn, const uint8_t *token,
+                        const nodus_key_t *keys, int key_count,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    if (!keys || key_count < 1 || key_count > NODUS_MAX_BATCH_KEYS) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "get_batch");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "ks");
+    cbor_encode_array(&enc, (size_t)key_count);
+    for (int i = 0; i < key_count; i++)
+        cbor_encode_bstr(&enc, keys[i].bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_count_batch(uint32_t txn, const uint8_t *token,
+                          const nodus_key_t *keys, int key_count,
+                          const nodus_key_t *caller_fp,
+                          uint8_t *buf, size_t cap, size_t *out_len) {
+    if (!keys || key_count < 1 || key_count > NODUS_MAX_BATCH_KEYS) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "cnt_batch");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, caller_fp ? 2 : 1);
+    cbor_encode_cstr(&enc, "ks");
+    cbor_encode_array(&enc, (size_t)key_count);
+    for (int i = 0; i < key_count; i++)
+        cbor_encode_bstr(&enc, keys[i].bytes, NODUS_KEY_BYTES);
+    if (caller_fp) {
+        cbor_encode_cstr(&enc, "fp");
+        cbor_encode_bstr(&enc, caller_fp->bytes, NODUS_KEY_BYTES);
+    }
+    return finish(&enc, out_len);
+}
+
+/* ── Batch responses (Nodus → Client) ───────────────────────────── */
+
+int nodus_t2_result_get_batch(uint32_t txn,
+                               const nodus_key_t *keys, int key_count,
+                               nodus_value_t ***vals_per_key,
+                               const size_t *counts_per_key,
+                               uint8_t *buf, size_t cap, size_t *out_len) {
+    if (!keys || key_count < 1) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "result");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "batch");
+    cbor_encode_array(&enc, (size_t)key_count);
+    for (int i = 0; i < key_count; i++) {
+        size_t vc = counts_per_key ? counts_per_key[i] : 0;
+        cbor_encode_map(&enc, 2);
+        cbor_encode_cstr(&enc, "k");
+        cbor_encode_bstr(&enc, keys[i].bytes, NODUS_KEY_BYTES);
+        cbor_encode_cstr(&enc, "vs");
+        cbor_encode_array(&enc, vc);
+        for (size_t j = 0; j < vc; j++) {
+            uint8_t *vbuf = NULL;
+            size_t vlen = 0;
+            if (vals_per_key && vals_per_key[i] && vals_per_key[i][j] &&
+                nodus_value_serialize(vals_per_key[i][j], &vbuf, &vlen) == 0) {
+                cbor_encode_bstr(&enc, vbuf, vlen);
+                free(vbuf);
+            } else {
+                cbor_encode_bstr(&enc, (const uint8_t *)"", 0);
+            }
+        }
+    }
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_result_count_batch(uint32_t txn,
+                                 const nodus_key_t *keys, int key_count,
+                                 const size_t *counts,
+                                 const bool *has_mine,
+                                 uint8_t *buf, size_t cap, size_t *out_len) {
+    if (!keys || key_count < 1) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "result");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "counts");
+    cbor_encode_array(&enc, (size_t)key_count);
+    for (int i = 0; i < key_count; i++) {
+        cbor_encode_map(&enc, 3);
+        cbor_encode_cstr(&enc, "k");
+        cbor_encode_bstr(&enc, keys[i].bytes, NODUS_KEY_BYTES);
+        cbor_encode_cstr(&enc, "c");
+        cbor_encode_uint(&enc, counts ? counts[i] : 0);
+        cbor_encode_cstr(&enc, "my");
+        cbor_encode_bool(&enc, has_mine ? has_mine[i] : false);
+    }
+    return finish(&enc, out_len);
+}
+
 /* ── Channel operations (Client → Nodus) ─────────────────────────── */
 
 int nodus_t2_ch_create(uint32_t txn, const uint8_t *token,
@@ -1304,6 +1407,28 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
                         memcpy(msg->ch_mu_target_fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                 }
+                /* ks (get_batch / cnt_batch: key array) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "ks", 2) == 0) {
+                    cbor_item_t arr = cbor_decode_next(&dec);
+                    if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        size_t bk_cap = arr.count > NODUS_MAX_BATCH_KEYS ?
+                                        NODUS_MAX_BATCH_KEYS : arr.count;
+                        msg->batch_keys = calloc(bk_cap, sizeof(nodus_key_t));
+                        if (msg->batch_keys) {
+                            msg->batch_key_count = 0;
+                            for (size_t k = 0; k < arr.count; k++) {
+                                cbor_item_t vi = cbor_decode_next(&dec);
+                                if (vi.type == CBOR_ITEM_BSTR &&
+                                    vi.bstr.len == NODUS_KEY_BYTES &&
+                                    (size_t)msg->batch_key_count < bk_cap) {
+                                    memcpy(msg->batch_keys[msg->batch_key_count].bytes,
+                                           vi.bstr.ptr, NODUS_KEY_BYTES);
+                                    msg->batch_key_count++;
+                                }
+                            }
+                        }
+                    }
+                }
                 else {
                     cbor_decode_skip(&dec);
                 }
@@ -1355,6 +1480,126 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                                     if (nodus_value_deserialize(vi.bstr.ptr, vi.bstr.len, &v) == 0)
                                         msg->values[msg->value_count++] = v;
                                 }
+                            }
+                        }
+                    }
+                }
+                /* batch (get_batch result: array of {k, vs}) */
+                else if (rkey.tstr.len == 5 && memcmp(rkey.tstr.ptr, "batch", 5) == 0) {
+                    cbor_item_t arr = cbor_decode_next(&dec);
+                    if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        size_t bk_cap = arr.count > NODUS_MAX_BATCH_KEYS ?
+                                        NODUS_MAX_BATCH_KEYS : arr.count;
+                        msg->batch_keys = calloc(bk_cap, sizeof(nodus_key_t));
+                        msg->batch_vals = calloc(bk_cap, sizeof(nodus_value_t **));
+                        msg->batch_val_counts = calloc(bk_cap, sizeof(size_t));
+                        if (msg->batch_keys && msg->batch_vals && msg->batch_val_counts) {
+                            msg->batch_key_count = 0;
+                            for (size_t ki = 0; ki < arr.count; ki++) {
+                                cbor_item_t emap = cbor_decode_next(&dec);
+                                if (emap.type != CBOR_ITEM_MAP) continue;
+                                if ((size_t)msg->batch_key_count >= bk_cap) {
+                                    for (size_t m = 0; m < emap.count; m++) {
+                                        cbor_decode_skip(&dec);
+                                        cbor_decode_skip(&dec);
+                                    }
+                                    continue;
+                                }
+                                int bi = msg->batch_key_count;
+                                msg->batch_vals[bi] = NULL;
+                                msg->batch_val_counts[bi] = 0;
+                                for (size_t m = 0; m < emap.count; m++) {
+                                    cbor_item_t ek = cbor_decode_next(&dec);
+                                    if (ek.type != CBOR_ITEM_TSTR) {
+                                        cbor_decode_skip(&dec); continue;
+                                    }
+                                    if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'k') {
+                                        cbor_item_t ev = cbor_decode_next(&dec);
+                                        if (ev.type == CBOR_ITEM_BSTR &&
+                                            ev.bstr.len == NODUS_KEY_BYTES)
+                                            memcpy(msg->batch_keys[bi].bytes,
+                                                   ev.bstr.ptr, NODUS_KEY_BYTES);
+                                    } else if (ek.tstr.len == 2 &&
+                                               memcmp(ek.tstr.ptr, "vs", 2) == 0) {
+                                        cbor_item_t varr = cbor_decode_next(&dec);
+                                        if (varr.type == CBOR_ITEM_ARRAY) {
+                                            size_t vc = varr.count > NODUS_MAX_WIRE_VALUES ?
+                                                        NODUS_MAX_WIRE_VALUES : varr.count;
+                                            if (vc > 0) {
+                                                msg->batch_vals[bi] = calloc(vc,
+                                                    sizeof(nodus_value_t *));
+                                            }
+                                            if (msg->batch_vals[bi] || vc == 0) {
+                                                for (size_t vi2 = 0; vi2 < varr.count; vi2++) {
+                                                    cbor_item_t vitem = cbor_decode_next(&dec);
+                                                    if (vitem.type == CBOR_ITEM_BSTR &&
+                                                        msg->batch_val_counts[bi] < vc) {
+                                                        nodus_value_t *v = NULL;
+                                                        if (nodus_value_deserialize(
+                                                                vitem.bstr.ptr, vitem.bstr.len,
+                                                                &v) == 0)
+                                                            msg->batch_vals[bi][
+                                                                msg->batch_val_counts[bi]++] = v;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        cbor_decode_skip(&dec);
+                                    }
+                                }
+                                msg->batch_key_count++;
+                            }
+                        }
+                    }
+                }
+                /* counts (count_batch result: array of {k, c, my}) */
+                else if (rkey.tstr.len == 6 && memcmp(rkey.tstr.ptr, "counts", 6) == 0) {
+                    cbor_item_t arr = cbor_decode_next(&dec);
+                    if (arr.type == CBOR_ITEM_ARRAY && arr.count > 0) {
+                        size_t bk_cap = arr.count > NODUS_MAX_BATCH_KEYS ?
+                                        NODUS_MAX_BATCH_KEYS : arr.count;
+                        msg->batch_keys = calloc(bk_cap, sizeof(nodus_key_t));
+                        msg->batch_counts = calloc(bk_cap, sizeof(size_t));
+                        msg->batch_has_mine = calloc(bk_cap, sizeof(bool));
+                        if (msg->batch_keys && msg->batch_counts && msg->batch_has_mine) {
+                            msg->batch_key_count = 0;
+                            for (size_t ki = 0; ki < arr.count; ki++) {
+                                cbor_item_t emap = cbor_decode_next(&dec);
+                                if (emap.type != CBOR_ITEM_MAP) continue;
+                                if ((size_t)msg->batch_key_count >= bk_cap) {
+                                    for (size_t m = 0; m < emap.count; m++) {
+                                        cbor_decode_skip(&dec);
+                                        cbor_decode_skip(&dec);
+                                    }
+                                    continue;
+                                }
+                                int ci = msg->batch_key_count;
+                                for (size_t m = 0; m < emap.count; m++) {
+                                    cbor_item_t ek = cbor_decode_next(&dec);
+                                    if (ek.type != CBOR_ITEM_TSTR) {
+                                        cbor_decode_skip(&dec); continue;
+                                    }
+                                    if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'k') {
+                                        cbor_item_t ev = cbor_decode_next(&dec);
+                                        if (ev.type == CBOR_ITEM_BSTR &&
+                                            ev.bstr.len == NODUS_KEY_BYTES)
+                                            memcpy(msg->batch_keys[ci].bytes,
+                                                   ev.bstr.ptr, NODUS_KEY_BYTES);
+                                    } else if (ek.tstr.len == 1 && ek.tstr.ptr[0] == 'c') {
+                                        cbor_item_t ev = cbor_decode_next(&dec);
+                                        if (ev.type == CBOR_ITEM_UINT)
+                                            msg->batch_counts[ci] = (size_t)ev.uint_val;
+                                    } else if (ek.tstr.len == 2 &&
+                                               memcmp(ek.tstr.ptr, "my", 2) == 0) {
+                                        cbor_item_t ev = cbor_decode_next(&dec);
+                                        if (ev.type == CBOR_ITEM_BOOL)
+                                            msg->batch_has_mine[ci] = ev.bool_val;
+                                    } else {
+                                        cbor_decode_skip(&dec);
+                                    }
+                                }
+                                msg->batch_key_count++;
                             }
                         }
                     }
@@ -1751,4 +1996,26 @@ void nodus_t2_msg_free(nodus_tier2_msg_t *msg) {
     msg->os_fps = NULL;
     free(msg->os_last_seen);
     msg->os_last_seen = NULL;
+
+    /* Batch fields */
+    if (msg->batch_vals) {
+        for (int i = 0; i < msg->batch_key_count; i++) {
+            if (msg->batch_vals[i]) {
+                for (size_t j = 0; j < (msg->batch_val_counts ?
+                     msg->batch_val_counts[i] : 0); j++)
+                    nodus_value_free(msg->batch_vals[i][j]);
+                free(msg->batch_vals[i]);
+            }
+        }
+        free(msg->batch_vals);
+        msg->batch_vals = NULL;
+    }
+    free(msg->batch_val_counts);
+    msg->batch_val_counts = NULL;
+    free(msg->batch_keys);
+    msg->batch_keys = NULL;
+    free(msg->batch_counts);
+    msg->batch_counts = NULL;
+    free(msg->batch_has_mine);
+    msg->batch_has_mine = NULL;
 }

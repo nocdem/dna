@@ -550,6 +550,15 @@ Convenience wrappers around the Nodus singleton for DHT operations and presence.
 |----------|-------------|
 | `int nodus_ops_presence_query(const char **fingerprints, size_t count, bool *results)` | Batch-query presence for multiple contacts via single TCP call to Nodus server. Returns online/offline status per fingerprint in `results` array. |
 
+### 12.2 Batch Operations (v0.9.123+)
+
+| Function | Description |
+|----------|-------------|
+| `int nodus_ops_get_batch_str(const char **str_keys, int key_count, nodus_ops_batch_result_t **results_out, int *count_out)` | Batch GET_ALL — retrieve full data for N string keys in one request. Max 32 keys. Caller frees with `nodus_ops_free_batch_result()`. |
+| `int nodus_ops_count_batch_str(const char **str_keys, int key_count, nodus_ops_count_result_t **results_out, int *count_out)` | Batch COUNT — get value counts + has_mine for N string keys. No value data transferred. Caller frees with `nodus_ops_free_count_result()`. |
+| `void nodus_ops_free_batch_result(nodus_ops_batch_result_t *results, int count)` | Free batch get results. |
+| `void nodus_ops_free_count_result(nodus_ops_count_result_t *results, int count)` | Free batch count results. |
+
 ---
 
 ## 13. Salt Agreement (`dht/shared/dht_salt_agreement.h`)

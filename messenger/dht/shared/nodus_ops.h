@@ -113,6 +113,49 @@ int nodus_ops_get_all_str_with_ids(const char *str_key,
                                     uint8_t ***values_out, size_t **lens_out,
                                     uint64_t **vids_out, size_t *count_out);
 
+/* ── Batch operations ─────────────────────────────────────────── */
+
+/** Result for one key in a batch get_all response */
+typedef struct {
+    char        str_key[256];
+    uint8_t   **values;
+    size_t     *lens;
+    size_t      count;
+} nodus_ops_batch_result_t;
+
+/** Result for one key in a batch count response */
+typedef struct {
+    char        str_key[256];
+    size_t      count;
+    bool        has_mine;
+} nodus_ops_count_result_t;
+
+/**
+ * Batch GET_ALL — full data for N string keys in one request.
+ * Caller must free results with nodus_ops_free_batch_result().
+ *
+ * @return 0 on success, -1 on error
+ */
+int nodus_ops_get_batch_str(const char **str_keys, int key_count,
+                             nodus_ops_batch_result_t **results_out,
+                             int *count_out);
+
+/**
+ * Batch COUNT — just counts + has_mine for N string keys in one request.
+ * Caller must free results with nodus_ops_free_count_result().
+ *
+ * @return 0 on success, -1 on error
+ */
+int nodus_ops_count_batch_str(const char **str_keys, int key_count,
+                               nodus_ops_count_result_t **results_out,
+                               int *count_out);
+
+/** Free results from nodus_ops_get_batch_str(). */
+void nodus_ops_free_batch_result(nodus_ops_batch_result_t *results, int count);
+
+/** Free results from nodus_ops_count_batch_str(). */
+void nodus_ops_free_count_result(nodus_ops_count_result_t *results, int count);
+
 /* ── LISTEN operations ─────────────────────────────────────────── */
 
 /**

@@ -237,6 +237,157 @@ static void test_result_with_value(void) {
     nodus_t2_msg_free(&msg);
 }
 
+static void test_get_batch_roundtrip(void) {
+    TEST("get_batch request encode/decode");
+
+    uint8_t token[NODUS_SESSION_TOKEN_LEN];
+    memset(token, 0xCC, sizeof(token));
+
+    nodus_key_t keys[3];
+    nodus_hash((const uint8_t *)"key:0", 5, &keys[0]);
+    nodus_hash((const uint8_t *)"key:1", 5, &keys[1]);
+    nodus_hash((const uint8_t *)"key:2", 5, &keys[2]);
+
+    size_t len = 0;
+    int rc = nodus_t2_get_batch(70, token, keys, 3,
+                                 msgbuf, sizeof(msgbuf), &len);
+    if (rc != 0) { FAIL("encode"); return; }
+
+    nodus_tier2_msg_t msg;
+    rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && msg.txn_id == 70 && msg.type == 'q' &&
+        strcmp(msg.method, "get_batch") == 0 &&
+        msg.batch_key_count == 3 &&
+        nodus_key_cmp(&msg.batch_keys[0], &keys[0]) == 0 &&
+        nodus_key_cmp(&msg.batch_keys[1], &keys[1]) == 0 &&
+        nodus_key_cmp(&msg.batch_keys[2], &keys[2]) == 0) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
+static void test_get_batch_result_roundtrip(void) {
+    TEST("get_batch result encode/decode");
+
+    nodus_key_t keys[2];
+    nodus_hash((const uint8_t *)"bk:0", 4, &keys[0]);
+    nodus_hash((const uint8_t *)"bk:1", 4, &keys[1]);
+
+    /* Create test values for key 0 (2 values) and key 1 (1 value) */
+    nodus_value_t *v0a = NULL, *v0b = NULL, *v1a = NULL;
+    nodus_value_create(&keys[0], (const uint8_t *)"val0a", 5,
+                        NODUS_VALUE_PERMANENT, 0, 1, 1, &test_id.pk, &v0a);
+    nodus_value_sign(v0a, &test_id.sk);
+    nodus_value_create(&keys[0], (const uint8_t *)"val0b", 5,
+                        NODUS_VALUE_PERMANENT, 0, 2, 1, &test_id.pk, &v0b);
+    nodus_value_sign(v0b, &test_id.sk);
+    nodus_value_create(&keys[1], (const uint8_t *)"val1a", 5,
+                        NODUS_VALUE_PERMANENT, 0, 3, 1, &test_id.pk, &v1a);
+    nodus_value_sign(v1a, &test_id.sk);
+
+    nodus_value_t *k0_vals[] = {v0a, v0b};
+    nodus_value_t *k1_vals[] = {v1a};
+    nodus_value_t **vals_per_key[] = {k0_vals, k1_vals};
+    size_t counts[] = {2, 1};
+
+    size_t len = 0;
+    int rc = nodus_t2_result_get_batch(71, keys, 2, vals_per_key, counts,
+                                        msgbuf, sizeof(msgbuf), &len);
+    if (rc != 0) {
+        FAIL("encode");
+        nodus_value_free(v0a); nodus_value_free(v0b); nodus_value_free(v1a);
+        return;
+    }
+
+    nodus_tier2_msg_t msg;
+    rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && msg.batch_key_count == 2 &&
+        nodus_key_cmp(&msg.batch_keys[0], &keys[0]) == 0 &&
+        nodus_key_cmp(&msg.batch_keys[1], &keys[1]) == 0 &&
+        msg.batch_val_counts[0] == 2 &&
+        msg.batch_val_counts[1] == 1 &&
+        msg.batch_vals[0][0]->data_len == 5 &&
+        memcmp(msg.batch_vals[0][0]->data, "val0a", 5) == 0 &&
+        msg.batch_vals[1][0]->data_len == 5 &&
+        memcmp(msg.batch_vals[1][0]->data, "val1a", 5) == 0) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+
+    nodus_value_free(v0a); nodus_value_free(v0b); nodus_value_free(v1a);
+    nodus_t2_msg_free(&msg);
+}
+
+static void test_count_batch_roundtrip(void) {
+    TEST("count_batch request encode/decode");
+
+    uint8_t token[NODUS_SESSION_TOKEN_LEN];
+    memset(token, 0xDD, sizeof(token));
+
+    nodus_key_t keys[2];
+    nodus_hash((const uint8_t *)"cnt:0", 5, &keys[0]);
+    nodus_hash((const uint8_t *)"cnt:1", 5, &keys[1]);
+
+    nodus_key_t caller_fp;
+    nodus_hash((const uint8_t *)"caller", 6, &caller_fp);
+
+    size_t len = 0;
+    int rc = nodus_t2_count_batch(80, token, keys, 2, &caller_fp,
+                                   msgbuf, sizeof(msgbuf), &len);
+    if (rc != 0) { FAIL("encode"); return; }
+
+    nodus_tier2_msg_t msg;
+    rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && msg.txn_id == 80 && msg.type == 'q' &&
+        strcmp(msg.method, "cnt_batch") == 0 &&
+        msg.batch_key_count == 2 &&
+        nodus_key_cmp(&msg.batch_keys[0], &keys[0]) == 0 &&
+        nodus_key_cmp(&msg.batch_keys[1], &keys[1]) == 0 &&
+        nodus_key_cmp(&msg.fp, &caller_fp) == 0) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
+static void test_count_batch_result_roundtrip(void) {
+    TEST("count_batch result encode/decode");
+
+    nodus_key_t keys[3];
+    nodus_hash((const uint8_t *)"cr:0", 4, &keys[0]);
+    nodus_hash((const uint8_t *)"cr:1", 4, &keys[1]);
+    nodus_hash((const uint8_t *)"cr:2", 4, &keys[2]);
+
+    size_t counts[] = {42, 0, 7};
+    bool has_mine[] = {true, false, true};
+
+    size_t len = 0;
+    int rc = nodus_t2_result_count_batch(81, keys, 3, counts, has_mine,
+                                          msgbuf, sizeof(msgbuf), &len);
+    if (rc != 0) { FAIL("encode"); return; }
+
+    nodus_tier2_msg_t msg;
+    rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && msg.batch_key_count == 3 &&
+        nodus_key_cmp(&msg.batch_keys[0], &keys[0]) == 0 &&
+        nodus_key_cmp(&msg.batch_keys[2], &keys[2]) == 0 &&
+        msg.batch_counts[0] == 42 &&
+        msg.batch_counts[1] == 0 &&
+        msg.batch_counts[2] == 7 &&
+        msg.batch_has_mine[0] == true &&
+        msg.batch_has_mine[1] == false &&
+        msg.batch_has_mine[2] == true) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
 static void test_pong_roundtrip(void) {
     TEST("pong encode/decode");
     size_t len = 0;
@@ -266,6 +417,10 @@ int main(void) {
     test_listen_roundtrip();
     test_error_roundtrip();
     test_result_with_value();
+    test_get_batch_roundtrip();
+    test_get_batch_result_roundtrip();
+    test_count_batch_roundtrip();
+    test_count_batch_result_roundtrip();
     test_pong_roundtrip();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);

@@ -343,7 +343,7 @@ int nodus_client_init(nodus_client_t *client,
     if (client->config.connect_timeout_ms <= 0)
         client->config.connect_timeout_ms = 5000;
     if (client->config.request_timeout_ms <= 0)
-        client->config.request_timeout_ms = 30000;
+        client->config.request_timeout_ms = 10000;
     if (client->config.reconnect_min_ms <= 0)
         client->config.reconnect_min_ms = 1000;
     if (client->config.reconnect_max_ms <= 0)
@@ -799,6 +799,115 @@ int nodus_client_get_all(nodus_client_t *client,
     }
     free_pending(client, req);
     return 0;
+}
+
+/* ── Batch DHT Operations ──────────────────────────────────────── */
+
+int nodus_client_get_batch(nodus_client_t *client,
+                            const nodus_key_t *keys, int key_count,
+                            nodus_batch_result_t **results_out,
+                            int *result_count_out) {
+    if (!nodus_client_is_ready(client) || !keys || !results_out || !result_count_out)
+        return -1;
+    if (key_count < 1 || key_count > NODUS_MAX_BATCH_KEYS) return -1;
+    *results_out = NULL;
+    *result_count_out = 0;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_get_batch(txn, client->token, keys, key_count,
+                        buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+
+    if (resp->batch_keys && resp->batch_key_count > 0) {
+        int n = resp->batch_key_count;
+        nodus_batch_result_t *results = calloc((size_t)n, sizeof(nodus_batch_result_t));
+        if (results) {
+            for (int i = 0; i < n; i++) {
+                memcpy(&results[i].key, &resp->batch_keys[i], sizeof(nodus_key_t));
+                results[i].vals = resp->batch_vals ? resp->batch_vals[i] : NULL;
+                results[i].count = resp->batch_val_counts ? resp->batch_val_counts[i] : 0;
+                /* Transfer ownership */
+                if (resp->batch_vals) resp->batch_vals[i] = NULL;
+                if (resp->batch_val_counts) resp->batch_val_counts[i] = 0;
+            }
+            *results_out = results;
+            *result_count_out = n;
+        }
+    }
+    free_pending(client, req);
+    return 0;
+}
+
+int nodus_client_count_batch(nodus_client_t *client,
+                              const nodus_key_t *keys, int key_count,
+                              const nodus_key_t *my_fp,
+                              nodus_count_result_t **results_out,
+                              int *result_count_out) {
+    if (!nodus_client_is_ready(client) || !keys || !results_out || !result_count_out)
+        return -1;
+    if (key_count < 1 || key_count > NODUS_MAX_BATCH_KEYS) return -1;
+    *results_out = NULL;
+    *result_count_out = 0;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    nodus_t2_count_batch(txn, client->token, keys, key_count, my_fp,
+                          buf, CLIENT_BUF_SIZE, &len);
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+
+    if (resp->batch_keys && resp->batch_key_count > 0) {
+        int n = resp->batch_key_count;
+        nodus_count_result_t *results = calloc((size_t)n, sizeof(nodus_count_result_t));
+        if (results) {
+            for (int i = 0; i < n; i++) {
+                memcpy(&results[i].key, &resp->batch_keys[i], sizeof(nodus_key_t));
+                results[i].count = resp->batch_counts ? resp->batch_counts[i] : 0;
+                results[i].has_mine = resp->batch_has_mine ? resp->batch_has_mine[i] : false;
+            }
+            *results_out = results;
+            *result_count_out = n;
+        }
+    }
+    free_pending(client, req);
+    return 0;
+}
+
+void nodus_client_free_batch_result(nodus_batch_result_t *results, int count) {
+    if (!results) return;
+    for (int i = 0; i < count; i++) {
+        if (results[i].vals) {
+            for (size_t j = 0; j < results[i].count; j++)
+                nodus_value_free(results[i].vals[j]);
+            free(results[i].vals);
+        }
+    }
+    free(results);
+}
+
+void nodus_client_free_count_result(nodus_count_result_t *results, int count) {
+    (void)count;
+    free(results);
 }
 
 int nodus_client_listen(nodus_client_t *client, const nodus_key_t *key) {

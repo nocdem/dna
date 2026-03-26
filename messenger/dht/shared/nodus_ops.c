@@ -317,6 +317,141 @@ int nodus_ops_get_all_str_with_ids(const char *str_key,
                                       values_out, lens_out, vids_out, count_out);
 }
 
+/* ── Batch operations ─────────────────────────────────────────── */
+
+int nodus_ops_get_batch_str(const char **str_keys, int key_count,
+                             nodus_ops_batch_result_t **results_out,
+                             int *count_out) {
+    if (!str_keys || !results_out || !count_out) return -1;
+    if (key_count < 1 || key_count > NODUS_MAX_BATCH_KEYS) return -1;
+    *results_out = NULL;
+    *count_out = 0;
+
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
+
+    /* Hash string keys */
+    nodus_key_t *keys = calloc((size_t)key_count, sizeof(nodus_key_t));
+    if (!keys) { nodus_singleton_release(); return -1; }
+    for (int i = 0; i < key_count; i++)
+        hash_str(str_keys[i], &keys[i]);
+
+    nodus_batch_result_t *batch = NULL;
+    int batch_count = 0;
+    int rc = nodus_client_get_batch(c, keys, key_count, &batch, &batch_count);
+    nodus_singleton_release();
+    free(keys);
+    if (rc != 0) return -1;
+
+    /* Convert nodus types to ops types */
+    nodus_ops_batch_result_t *results = calloc((size_t)batch_count,
+                                                sizeof(nodus_ops_batch_result_t));
+    if (!results) {
+        nodus_client_free_batch_result(batch, batch_count);
+        return -1;
+    }
+
+    for (int i = 0; i < batch_count; i++) {
+        snprintf(results[i].str_key, sizeof(results[i].str_key), "%s",
+                 i < key_count ? str_keys[i] : "");
+        size_t n = batch[i].count;
+        if (n > 0 && batch[i].vals) {
+            results[i].values = calloc(n, sizeof(uint8_t *));
+            results[i].lens = calloc(n, sizeof(size_t));
+            if (results[i].values && results[i].lens) {
+                for (size_t j = 0; j < n; j++) {
+                    if (batch[i].vals[j] && batch[i].vals[j]->data_len > 0) {
+                        results[i].values[j] = malloc(batch[i].vals[j]->data_len);
+                        if (results[i].values[j]) {
+                            memcpy(results[i].values[j], batch[i].vals[j]->data,
+                                   batch[i].vals[j]->data_len);
+                            results[i].lens[j] = batch[i].vals[j]->data_len;
+                        }
+                    }
+                }
+                results[i].count = n;
+            }
+        }
+    }
+
+    nodus_client_free_batch_result(batch, batch_count);
+    *results_out = results;
+    *count_out = batch_count;
+    return 0;
+}
+
+int nodus_ops_count_batch_str(const char **str_keys, int key_count,
+                               nodus_ops_count_result_t **results_out,
+                               int *count_out) {
+    if (!str_keys || !results_out || !count_out) return -1;
+    if (key_count < 1 || key_count > NODUS_MAX_BATCH_KEYS) return -1;
+    *results_out = NULL;
+    *count_out = 0;
+
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
+
+    /* Hash string keys */
+    nodus_key_t *keys = calloc((size_t)key_count, sizeof(nodus_key_t));
+    if (!keys) { nodus_singleton_release(); return -1; }
+    for (int i = 0; i < key_count; i++)
+        hash_str(str_keys[i], &keys[i]);
+
+    /* Use identity's node_id (== owner_fp in DHT values) for has_mine */
+    const nodus_identity_t *id = nodus_singleton_identity();
+    const nodus_key_t *my_fp = id ? &id->node_id : NULL;
+
+    nodus_count_result_t *batch = NULL;
+    int batch_count = 0;
+    int rc = nodus_client_count_batch(c, keys, key_count, my_fp, &batch, &batch_count);
+    nodus_singleton_release();
+    free(keys);
+    if (rc != 0) return -1;
+
+    nodus_ops_count_result_t *results = calloc((size_t)batch_count,
+                                                sizeof(nodus_ops_count_result_t));
+    if (!results) {
+        nodus_client_free_count_result(batch, batch_count);
+        return -1;
+    }
+
+    for (int i = 0; i < batch_count; i++) {
+        snprintf(results[i].str_key, sizeof(results[i].str_key), "%s",
+                 i < key_count ? str_keys[i] : "");
+        results[i].count = batch[i].count;
+        results[i].has_mine = batch[i].has_mine;
+    }
+
+    nodus_client_free_count_result(batch, batch_count);
+    *results_out = results;
+    *count_out = batch_count;
+    return 0;
+}
+
+void nodus_ops_free_batch_result(nodus_ops_batch_result_t *results, int count) {
+    if (!results) return;
+    for (int i = 0; i < count; i++) {
+        if (results[i].values) {
+            for (size_t j = 0; j < results[i].count; j++)
+                free(results[i].values[j]);
+            free(results[i].values);
+        }
+        free(results[i].lens);
+    }
+    free(results);
+}
+
+void nodus_ops_free_count_result(nodus_ops_count_result_t *results, int count) {
+    (void)count;
+    free(results);
+}
+
 /* ── LISTEN operations ─────────────────────────────────────────── */
 
 void nodus_ops_dispatch(const nodus_key_t *key,

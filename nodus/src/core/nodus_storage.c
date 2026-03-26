@@ -396,6 +396,42 @@ int nodus_storage_count(nodus_storage_t *store) {
     return -1;
 }
 
+int nodus_storage_count_key(nodus_storage_t *store,
+                             const nodus_key_t *key_hash) {
+    if (!store || !store->db || !key_hash) return -1;
+
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(store->db,
+        "SELECT COUNT(*) FROM nodus_values WHERE key_hash = ?",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_blob(s, 1, key_hash->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    int count = -1;
+    if (sqlite3_step(s) == SQLITE_ROW)
+        count = sqlite3_column_int(s, 0);
+    sqlite3_finalize(s);
+    return count;
+}
+
+int nodus_storage_has_owner(nodus_storage_t *store,
+                             const nodus_key_t *key_hash,
+                             const nodus_key_t *owner_fp) {
+    if (!store || !store->db || !key_hash || !owner_fp) return -1;
+
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(store->db,
+        "SELECT 1 FROM nodus_values WHERE key_hash = ? AND owner_fp = ? LIMIT 1",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_blob(s, 1, key_hash->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 2, owner_fp->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    int result = (sqlite3_step(s) == SQLITE_ROW) ? 1 : 0;
+    sqlite3_finalize(s);
+    return result;
+}
+
 int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val) {
     if (!store || !store->db || !val) return -1;
 
