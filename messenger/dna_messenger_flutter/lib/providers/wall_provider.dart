@@ -150,8 +150,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     return _fetchAndAssemble(engine, myFp);
   }
 
-  /// Main fetch: get wall posts, return immediately with cached engagement,
-  /// then refresh engagement data from DHT in background.
+  /// Main fetch: get wall posts, return immediately WITHOUT engagement data,
+  /// then fetch comments/likes in background and update state when ready.
   Future<List<WallFeedItem>> _fetchAndAssemble(
       DnaEngine engine, String myFp) async {
     // Get wall posts (cache-first, returns quickly)
@@ -163,19 +163,15 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       _mergeBoosts(boostPosts, myFp);
     }).catchError((_) {});
 
-    // Phase 1: assemble with whatever cache has now (fast)
+    // Assemble items WITHOUT engagement (instant) then refresh in background
     final items = await _assembleItems(wallPosts, myFp);
-
-    // Phase 2: background refresh — re-fetch engagement after DHT has had
-    // time to return fresh data, then update state progressively.
-    _refreshEngagementInBackground(wallPosts, myFp, engine);
-
+    _refreshEngagement(wallPosts, myFp, engine);
     return items;
   }
 
-  /// Re-fetch comments and likes for all posts in background,
+  /// Fetch comments and likes for all posts in background (fire-and-forget),
   /// then update state if anything changed.
-  void _refreshEngagementInBackground(
+  void _refreshEngagement(
       List<WallPost> posts, String myFp, DnaEngine engine) {
     () async {
       try {
@@ -201,7 +197,6 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
           likeMap[posts[i].uuid] = allLikes[i];
         }
 
-        // Check if anything actually changed
         bool changed = false;
         final updated = current.map((item) {
           final newComments = commentMap[item.post.uuid];
@@ -238,9 +233,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     }();
   }
 
-  /// Assemble WallFeedItems with batch-fetched comments, likes, profiles.
-  /// C handlers are cache-first: returns cached data instantly, falls back to
-  /// DHT only when cache is stale. Safe to call before identity is loaded.
+  /// Assemble WallFeedItems with profiles only — NO comment/like fetch.
+  /// Engagement data is loaded separately via _refreshEngagement().
   Future<List<WallFeedItem>> _assembleItems(
       List<WallPost> posts, String myFp) async {
     if (posts.isEmpty) return [];
@@ -252,24 +246,6 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       posts = posts.where((p) => !blockedFps.contains(p.authorFingerprint)).toList();
       if (posts.isEmpty) return [];
     }
-
-    final engine = await ref.read(engineProvider.future);
-
-    // Batch fetch comments and likes — only when identity is loaded (DHT ready)
-    List<List<WallComment>> allComments;
-    List<List<WallLike>> allLikes;
-
-    // Fetch comments and likes in parallel — C handlers are cache-first,
-    // so pre-identity this returns cached data (or empty if cache is stale).
-    final commentsFutures =
-        posts.map((p) => _safeGetComments(engine, p.uuid));
-    final likesFutures = posts.map((p) => _safeGetLikes(engine, p.uuid));
-    final results = await Future.wait([
-      Future.wait(commentsFutures),
-      Future.wait(likesFutures),
-    ]);
-    allComments = results[0] as List<List<WallComment>>;
-    allLikes = results[1] as List<List<WallLike>>;
 
     // Collect unique author fingerprints and batch prefetch profiles
     final uniqueAuthors = posts.map((p) => p.authorFingerprint).toSet().toList();
@@ -295,12 +271,10 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       ownName = ref.read(userProfileProvider).valueOrNull?.nickname;
     }
 
-    // Assemble items
+    // Assemble items — no engagement data, just posts + profiles + images
     final items = <WallFeedItem>[];
     for (var i = 0; i < posts.length; i++) {
       final post = posts[i];
-      final comments = allComments[i];
-      final likes = allLikes[i];
       final isOwn = post.isOwn(myFp);
 
       // Resolve author display name and avatar
@@ -325,16 +299,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       final decodedImage =
           _ImageCache.decodePostImage(post.uuid, post.imageJson);
 
-      // Preview: up to 3 most recent comments
-      final previewComments =
-          comments.length <= 3 ? comments : comments.sublist(0, 3);
-
       items.add(WallFeedItem(
         post: post,
-        commentCount: comments.length,
-        previewComments: previewComments,
-        likeCount: likes.length,
-        isLikedByMe: likes.any((l) => l.authorFingerprint == myFp),
         authorDisplayName: displayName,
         authorAvatar: avatar,
         decodedImage: decodedImage,

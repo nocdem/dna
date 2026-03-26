@@ -862,17 +862,21 @@ void dna_handle_wall_get_comments(dna_engine_t *engine, dna_task_t *task) {
     size_t count = 0;
     int ret = dna_wall_comments_get(post_uuid, &comments, &count);
 
-    if (ret != 0 && ret != -2) {
-        task->callback.wall_comments(task->request_id, DNA_ERROR_INTERNAL,
+    if (ret != 0) {
+        /* DHT error (not connected, timeout, etc.) — do NOT cache,
+         * return empty without poisoning cache with false negatives */
+        task->callback.wall_comments(task->request_id,
+                                      ret == -2 ? DNA_OK : DNA_ERROR_INTERNAL,
                                       NULL, 0, task->user_data);
+        if (comments) dna_wall_comments_free(comments, count);
         return;
     }
 
-    if (ret == -2 || count == 0) {
-        /* No comments */
+    if (count == 0) {
+        /* DHT returned successfully but no comments exist — safe to cache */
+        wall_cache_store_comments(post_uuid, "[]", 0);
         task->callback.wall_comments(task->request_id, DNA_OK,
                                       NULL, 0, task->user_data);
-        if (comments) dna_wall_comments_free(comments, count);
         return;
     }
 
@@ -1217,18 +1221,22 @@ void dna_handle_wall_get_likes(dna_engine_t *engine, dna_task_t *task) {
     size_t count = 0;
     int ret = dna_wall_likes_get(post_uuid, &likes, &count);
 
-    if (ret == -2 || count == 0) {
-        /* No likes — cache empty result */
-        wall_cache_store_likes(post_uuid, "[]", 0);
-        task->callback.wall_likes(task->request_id, DNA_OK,
+    if (ret != 0) {
+        /* DHT error (not connected, timeout, etc.) — do NOT cache,
+         * return empty without poisoning cache with false negatives */
+        task->callback.wall_likes(task->request_id,
+                                   ret == -2 ? DNA_OK : DNA_ERROR_INTERNAL,
                                    NULL, 0, task->user_data);
         if (likes) dna_wall_likes_free(likes, count);
         return;
     }
 
-    if (ret != 0) {
-        task->callback.wall_likes(task->request_id, DNA_ERROR_INTERNAL,
+    if (count == 0) {
+        /* DHT returned successfully but no likes exist — safe to cache */
+        wall_cache_store_likes(post_uuid, "[]", 0);
+        task->callback.wall_likes(task->request_id, DNA_OK,
                                    NULL, 0, task->user_data);
+        if (likes) dna_wall_likes_free(likes, count);
         return;
     }
 
