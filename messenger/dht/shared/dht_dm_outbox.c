@@ -631,6 +631,163 @@ int dht_dm_outbox_sync_full(
     return 0;
 }
 
+/*============================================================================
+ * Batch helper: fetch one day for all contacts via get_batch
+ * Returns messages appended to *all_messages / *total_count.
+ *============================================================================*/
+static void dm_batch_sync_one_day(
+    const char *my_fp,
+    const char **contact_list,
+    size_t contact_count,
+    const uint8_t **salt_list,
+    uint64_t day_bucket,
+    dht_offline_message_t **all_messages,
+    size_t *total_count)
+{
+    /* Phase 1: compute salted keys for all contacts */
+    char **keys = calloc(contact_count, sizeof(char *));
+    if (!keys) return;
+
+    for (size_t i = 0; i < contact_count; i++) {
+        keys[i] = malloc(512);
+        if (!keys[i]) goto cleanup;
+        if (dht_dm_outbox_make_key(contact_list[i], my_fp, day_bucket,
+                                    salt_list ? salt_list[i] : NULL,
+                                    keys[i], 512) != 0) {
+            keys[i][0] = '\0';  /* Mark as invalid */
+        }
+    }
+
+    /* Phase 2: batch fetch (chunk if > 32 keys) */
+    size_t offset = 0;
+    while (offset < contact_count) {
+        size_t chunk = contact_count - offset;
+        if (chunk > 32) chunk = 32;
+
+        /* Build key array for this chunk (skip invalid) */
+        const char *batch_keys[32];
+        int batch_map[32];  /* maps batch index → contact index */
+        int batch_count = 0;
+
+        for (size_t i = 0; i < chunk; i++) {
+            if (keys[offset + i][0] != '\0') {
+                batch_keys[batch_count] = keys[offset + i];
+                batch_map[batch_count] = (int)(offset + i);
+                batch_count++;
+            }
+        }
+
+        if (batch_count == 0) { offset += chunk; continue; }
+
+        nodus_ops_batch_result_t *results = NULL;
+        int result_count = 0;
+        int rc = nodus_ops_get_batch_str(batch_keys, batch_count, &results, &result_count);
+
+        if (rc == 0 && results) {
+            /* Phase 3: unsalted fallback for misses */
+            const char *fallback_keys[32];
+            int fallback_count = 0;
+
+            for (int r = 0; r < result_count; r++) {
+                if (results[r].count > 0) {
+                    /* Got data — deserialize each value */
+                    for (size_t v = 0; v < results[r].count; v++) {
+                        if (!results[r].values[v] || results[r].lens[v] == 0) continue;
+
+                        /* Blob dedup */
+                        if (blob_cache_check_and_update(results[r].str_key,
+                                results[r].values[v], results[r].lens[v]))
+                            continue;
+
+                        dht_offline_message_t *msgs = NULL;
+                        size_t msg_count = 0;
+                        if (dht_deserialize_messages(results[r].values[v],
+                                results[r].lens[v], &msgs, &msg_count) == 0 &&
+                            msgs && msg_count > 0) {
+                            dht_offline_message_t *combined = realloc(*all_messages,
+                                (*total_count + msg_count) * sizeof(dht_offline_message_t));
+                            if (combined) {
+                                *all_messages = combined;
+                                memcpy(&combined[*total_count], msgs,
+                                       msg_count * sizeof(dht_offline_message_t));
+                                *total_count += msg_count;
+                                free(msgs);
+                            } else {
+                                dht_offline_messages_free(msgs, msg_count);
+                            }
+                        }
+                    }
+                } else {
+                    /* No data for this key — queue unsalted fallback if contact has salt */
+                    int ci = batch_map[r];
+                    if (salt_list && salt_list[ci]) {
+                        char *fb_key = malloc(512);
+                        if (fb_key && dht_dm_outbox_make_key(contact_list[ci], my_fp,
+                                day_bucket, NULL, fb_key, 512) == 0) {
+                            fallback_keys[fallback_count] = fb_key;
+                            fallback_count++;
+                        } else {
+                            free(fb_key);
+                        }
+                    }
+                }
+            }
+            nodus_ops_free_batch_result(results, result_count);
+
+            /* Execute unsalted fallback batch */
+            if (fallback_count > 0) {
+                QGP_LOG_DEBUG(LOG_TAG, "Day %lu: %d unsalted fallbacks",
+                             (unsigned long)day_bucket, fallback_count);
+                nodus_ops_batch_result_t *fb_results = NULL;
+                int fb_result_count = 0;
+                rc = nodus_ops_get_batch_str(fallback_keys, fallback_count,
+                                              &fb_results, &fb_result_count);
+                if (rc == 0 && fb_results) {
+                    for (int r = 0; r < fb_result_count; r++) {
+                        for (size_t v = 0; v < fb_results[r].count; v++) {
+                            if (!fb_results[r].values[v] || fb_results[r].lens[v] == 0)
+                                continue;
+                            if (blob_cache_check_and_update(fb_results[r].str_key,
+                                    fb_results[r].values[v], fb_results[r].lens[v]))
+                                continue;
+
+                            dht_offline_message_t *msgs = NULL;
+                            size_t msg_count = 0;
+                            if (dht_deserialize_messages(fb_results[r].values[v],
+                                    fb_results[r].lens[v], &msgs, &msg_count) == 0 &&
+                                msgs && msg_count > 0) {
+                                dht_offline_message_t *combined = realloc(*all_messages,
+                                    (*total_count + msg_count) * sizeof(dht_offline_message_t));
+                                if (combined) {
+                                    *all_messages = combined;
+                                    memcpy(&combined[*total_count], msgs,
+                                           msg_count * sizeof(dht_offline_message_t));
+                                    *total_count += msg_count;
+                                    free(msgs);
+                                } else {
+                                    dht_offline_messages_free(msgs, msg_count);
+                                }
+                            }
+                        }
+                    }
+                    nodus_ops_free_batch_result(fb_results, fb_result_count);
+                }
+                for (int i = 0; i < fallback_count; i++) free((void *)fallback_keys[i]);
+            }
+        } else {
+            /* Batch failed — log and continue to next day (progressive) */
+            QGP_LOG_DEBUG(LOG_TAG, "Day %lu: batch fetch failed (rc=%d)",
+                         (unsigned long)day_bucket, rc);
+        }
+
+        offset += chunk;
+    }
+
+cleanup:
+    for (size_t i = 0; i < contact_count; i++) free(keys[i]);
+    free(keys);
+}
+
 int dht_dm_outbox_sync_all_contacts_recent(
     const char *my_fp,
     const char **contact_list,
@@ -650,66 +807,28 @@ int dht_dm_outbox_sync_all_contacts_recent(
         return 0;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Syncing recent messages from %zu contacts via thread pool", contact_count);
+    QGP_LOG_INFO(LOG_TAG, "Batch sync recent: %zu contacts, day-by-day", contact_count);
 
-    /* Allocate worker contexts */
-    dm_fetch_worker_ctx_t *workers = calloc(contact_count, sizeof(dm_fetch_worker_ctx_t));
-    void **args = calloc(contact_count, sizeof(void *));
-    if (!workers || !args) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate parallel fetch memory");
-        free(workers);
-        free(args);
-        return -1;
-    }
+    uint64_t today = dht_dm_outbox_get_day_bucket();
+    /* Priority order: today first (most likely to have new messages) */
+    uint64_t days[3] = { today, today - 1, today + 1 };
 
-    /* Initialize worker contexts */
-    for (size_t i = 0; i < contact_count; i++) {
-        workers[i].my_fp = my_fp;
-        workers[i].contact_fp = contact_list[i];
-        workers[i].salt = salt_list ? salt_list[i] : NULL;
-        workers[i].use_full_sync = false;  /* Recent sync */
-        workers[i].messages = NULL;
-        workers[i].count = 0;
-        workers[i].result = -1;
-        args[i] = &workers[i];
-    }
+    QGP_LOG_DEBUG(LOG_TAG, "Syncing recent 3 days: %lu, %lu, %lu",
+                 (unsigned long)days[0], (unsigned long)days[1], (unsigned long)days[2]);
 
-    /* Execute all fetches in parallel via thread pool */
-    threadpool_map(dm_fetch_worker, args, contact_count, 0);
-
-    free(args);
-
-    /* Collect results from all workers */
     dht_offline_message_t *all_messages = NULL;
     size_t total_count = 0;
 
-    for (size_t i = 0; i < contact_count; i++) {
-        if (workers[i].result == 0 && workers[i].messages && workers[i].count > 0) {
-            /* Append to combined array */
-            dht_offline_message_t *combined = (dht_offline_message_t*)realloc(
-                all_messages, (total_count + workers[i].count) * sizeof(dht_offline_message_t));
-
-            if (combined) {
-                all_messages = combined;
-                memcpy(&all_messages[total_count], workers[i].messages,
-                       workers[i].count * sizeof(dht_offline_message_t));
-                total_count += workers[i].count;
-                free(workers[i].messages);  /* Free array, contents moved */
-            } else {
-                dht_offline_messages_free(workers[i].messages, workers[i].count);
-            }
-        } else if (workers[i].messages) {
-            /* Fetch failed or returned 0 messages - free if allocated */
-            dht_offline_messages_free(workers[i].messages, workers[i].count);
-        }
+    for (int d = 0; d < 3; d++) {
+        dm_batch_sync_one_day(my_fp, contact_list, contact_count, salt_list,
+                              days[d], &all_messages, &total_count);
     }
-
-    free(workers);
 
     *messages_out = all_messages;
     *count_out = total_count;
 
-    QGP_LOG_INFO(LOG_TAG, "Thread pool sync complete: %zu messages from %zu contacts", total_count, contact_count);
+    QGP_LOG_INFO(LOG_TAG, "Batch sync complete: %zu messages from %zu contacts",
+                 total_count, contact_count);
     return 0;
 }
 
@@ -732,66 +851,28 @@ int dht_dm_outbox_sync_all_contacts_full(
         return 0;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Full sync (8 days) from %zu contacts via thread pool", contact_count);
+    QGP_LOG_INFO(LOG_TAG, "Batch sync full (8 days): %zu contacts, day-by-day", contact_count);
 
-    /* Allocate worker contexts */
-    dm_fetch_worker_ctx_t *workers = calloc(contact_count, sizeof(dm_fetch_worker_ctx_t));
-    void **args = calloc(contact_count, sizeof(void *));
-    if (!workers || !args) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate parallel fetch memory");
-        free(workers);
-        free(args);
-        return -1;
-    }
+    uint64_t today = dht_dm_outbox_get_day_bucket();
 
-    /* Initialize worker contexts */
-    for (size_t i = 0; i < contact_count; i++) {
-        workers[i].my_fp = my_fp;
-        workers[i].contact_fp = contact_list[i];
-        workers[i].salt = salt_list ? salt_list[i] : NULL;
-        workers[i].use_full_sync = true;  /* Full 8-day sync */
-        workers[i].messages = NULL;
-        workers[i].count = 0;
-        workers[i].result = -1;
-        args[i] = &workers[i];
-    }
-
-    /* Execute all fetches in parallel via thread pool */
-    threadpool_map(dm_fetch_worker, args, contact_count, 0);
-
-    free(args);
-
-    /* Collect results from all workers */
+    /* Priority order: newest first (today, today-1, ..., today-6, today+1) */
     dht_offline_message_t *all_messages = NULL;
     size_t total_count = 0;
 
-    for (size_t i = 0; i < contact_count; i++) {
-        if (workers[i].result == 0 && workers[i].messages && workers[i].count > 0) {
-            /* Append to combined array */
-            dht_offline_message_t *combined = (dht_offline_message_t*)realloc(
-                all_messages, (total_count + workers[i].count) * sizeof(dht_offline_message_t));
-
-            if (combined) {
-                all_messages = combined;
-                memcpy(&all_messages[total_count], workers[i].messages,
-                       workers[i].count * sizeof(dht_offline_message_t));
-                total_count += workers[i].count;
-                free(workers[i].messages);  /* Free array, contents moved */
-            } else {
-                dht_offline_messages_free(workers[i].messages, workers[i].count);
-            }
-        } else if (workers[i].messages) {
-            /* Fetch failed or returned 0 messages - free if allocated */
-            dht_offline_messages_free(workers[i].messages, workers[i].count);
-        }
+    /* Today first, then backwards, then tomorrow */
+    for (int d = 0; d <= 6; d++) {
+        dm_batch_sync_one_day(my_fp, contact_list, contact_count, salt_list,
+                              today - (uint64_t)d, &all_messages, &total_count);
     }
-
-    free(workers);
+    /* Tomorrow (clock skew) last */
+    dm_batch_sync_one_day(my_fp, contact_list, contact_count, salt_list,
+                          today + 1, &all_messages, &total_count);
 
     *messages_out = all_messages;
     *count_out = total_count;
 
-    QGP_LOG_INFO(LOG_TAG, "Thread pool full sync complete: %zu messages from %zu contacts", total_count, contact_count);
+    QGP_LOG_INFO(LOG_TAG, "Batch sync full complete: %zu messages from %zu contacts",
+                 total_count, contact_count);
     return 0;
 }
 
