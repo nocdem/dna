@@ -1155,8 +1155,15 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
 
 /* ── Batch Forward (BF) ─── get_batch miss → forward to closest peer ── */
 
-static void bf_conn_cleanup(dht_bf_conn_t *c) {
-    if (c->fd >= 0) close(c->fd);
+static void bf_conn_cleanup(nodus_server_t *srv, dht_bf_conn_t *c) {
+    if (c->fd >= 0) {
+        epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_DEL, c->fd, NULL);
+        if (c->fd < NODUS_BF_FD_TABLE_SIZE) {
+            srv->bf_fd_table[c->fd].batch_idx = -1;
+            srv->bf_fd_table[c->fd].forward_idx = -1;
+        }
+        close(c->fd);
+    }
     c->fd = -1;
     free(c->send_buf); c->send_buf = NULL;
     free(c->recv_buf); c->recv_buf = NULL;
@@ -1164,9 +1171,9 @@ static void bf_conn_cleanup(dht_bf_conn_t *c) {
     c->state = 3; /* done */
 }
 
-static void bf_batch_cleanup(dht_bf_batch_t *b) {
+static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b) {
     for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) {
-        if (b->forwards[i].fd >= 0) bf_conn_cleanup(&b->forwards[i]);
+        if (b->forwards[i].fd >= 0) bf_conn_cleanup(srv, &b->forwards[i]);
     }
     if (b->vals_per_key) {
         for (int i = 0; i < b->key_count; i++) {
@@ -1186,7 +1193,7 @@ static void bf_batch_cleanup(dht_bf_batch_t *b) {
 /** Send batch response to client and clean up */
 static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
     nodus_session_t *sess = &srv->sessions[b->session_slot];
-    if (!sess->conn) { bf_batch_cleanup(b); return; }
+    if (!sess->conn) { bf_batch_cleanup(srv, b); return; }
 
     size_t buf_cap = RESP_BUF_SIZE;
     uint8_t *buf = malloc(buf_cap);
@@ -1198,7 +1205,7 @@ static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
             nodus_tcp_send(sess->conn, buf, len);
         free(buf);
     }
-    bf_batch_cleanup(b);
+    bf_batch_cleanup(srv, b);
 }
 
 /** Handle epoll events for batch forward fds */
@@ -1207,14 +1214,16 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
     int bi = srv->bf_fd_table[fd].batch_idx;
     int fi = srv->bf_fd_table[fd].forward_idx;
     if (bi < 0 || bi >= NODUS_BF_MAX_BATCHES) return;
+    if (fi < 0 || fi >= NODUS_BF_MAX_FORWARDS) return;
     dht_bf_batch_t *b = &srv->bf_state.batches[bi];
     if (!b->active) return;
     dht_bf_conn_t *c = &b->forwards[fi];
+    if (c->fd < 0) return;  /* Already cleaned up */
 
     if (events & (EPOLLERR | EPOLLHUP)) {
         epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_DEL, fd, NULL);
         srv->bf_fd_table[fd].batch_idx = -1;
-        bf_conn_cleanup(c);
+        bf_conn_cleanup(srv, c);
         if (--b->pending_forwards <= 0) bf_send_result(srv, b);
         return;
     }
@@ -1287,7 +1296,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
             }
         }
 
-        bf_conn_cleanup(c);
+        bf_conn_cleanup(srv, c);
         if (--b->pending_forwards <= 0) bf_send_result(srv, b);
     }
 }
@@ -1309,17 +1318,14 @@ static void bf_tick(nodus_server_t *srv) {
 
         /* Check client disconnect */
         nodus_session_t *sess = &srv->sessions[b->session_slot];
-        if (!sess->conn) { bf_batch_cleanup(b); continue; }
+        if (!sess->conn) { bf_batch_cleanup(srv, b); continue; }
 
         /* Overall batch timeout */
         if (now - b->started_at > NODUS_BF_TIMEOUT_MS) {
             /* Timeout: clean up remaining forwards, send what we have */
             for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
                 if (b->forwards[fi].fd >= 0) {
-                    epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_DEL,
-                              b->forwards[fi].fd, NULL);
-                    srv->bf_fd_table[b->forwards[fi].fd].batch_idx = -1;
-                    bf_conn_cleanup(&b->forwards[fi]);
+                    bf_conn_cleanup(srv, &b->forwards[fi]);
                 }
             }
             bf_send_result(srv, b);
@@ -1539,7 +1545,7 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
         /* Take back ownership before cleanup */
         b->vals_per_key = NULL;
         b->counts_per_key = NULL;
-        bf_batch_cleanup(b);
+        bf_batch_cleanup(srv, b);
         goto send_response;
     }
 
@@ -3200,7 +3206,7 @@ void nodus_server_close(nodus_server_t *srv) {
     /* Clean up batch forward state */
     for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
         if (srv->bf_state.batches[i].active)
-            bf_batch_cleanup(&srv->bf_state.batches[i]);
+            bf_batch_cleanup(srv, &srv->bf_state.batches[i]);
     }
     if (srv->bf_state.bf_epoll_fd >= 0) {
         close(srv->bf_state.bf_epoll_fd);
