@@ -118,18 +118,14 @@ class ChannelListNotifier extends AsyncNotifier<List<Channel>> {
         }
 
         final engine = await ref.read(engineProvider.future);
-        final channels = <Channel>[];
+        final uuids = subscriptions.map((s) => s.channelUuid).toList();
 
-        for (final sub in subscriptions) {
-          try {
-            final channel = await engine.channelGet(sub.channelUuid);
-            channels.add(channel);
-          } catch (e) {
-            // Channel may have expired from DHT - skip
-          }
+        try {
+          return await engine.channelGetBatch(uuids);
+        } catch (e) {
+          // Batch failed - return cached state if available
+          return state.valueOrNull ?? [];
         }
-
-        return channels;
       },
       loading: () async => state.valueOrNull ?? [],
       error: (e, s) async => state.valueOrNull ?? [],

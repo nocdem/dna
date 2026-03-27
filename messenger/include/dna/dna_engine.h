@@ -3583,6 +3583,17 @@ DNA_API dna_request_id_t dna_engine_channel_create(dna_engine_t *engine,
 DNA_API dna_request_id_t dna_engine_channel_get(dna_engine_t *engine,
     const char *uuid, dna_channel_cb callback, void *user_data);
 
+/**
+ * Batch fetch channel metadata for multiple UUIDs.
+ * Cache-first: fresh cached channels returned immediately, only stale/miss
+ * channels are fetched via single DHT batch request.
+ * @param uuids Array of UUID strings (copied internally)
+ * @param count Number of UUIDs
+ * @return Request ID, or -1 on error
+ */
+DNA_API dna_request_id_t dna_engine_channel_get_batch(dna_engine_t *engine,
+    const char **uuids, int count, dna_channels_cb callback, void *user_data);
+
 DNA_API dna_request_id_t dna_engine_channel_delete(dna_engine_t *engine,
     const char *uuid, dna_completion_cb callback, void *user_data);
 

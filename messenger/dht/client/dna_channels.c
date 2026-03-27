@@ -214,7 +214,7 @@ static int channel_to_json(const dna_channel_t *channel, bool include_signature,
 /**
  * Deserialize channel from JSON.
  */
-static int channel_from_json(const char *json_str, dna_channel_t **channel_out) {
+int channel_from_json(const char *json_str, dna_channel_t **channel_out) {
     json_object *root = json_tokener_parse(json_str);
     if (!root) return -1;
 

@@ -5446,6 +5446,70 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Batch fetch channel metadata for multiple UUIDs.
+  /// Cache-first: fresh cached channels returned immediately.
+  Future<List<Channel>> channelGetBatch(List<String> uuids) async {
+    if (uuids.isEmpty) return [];
+
+    final completer = Completer<List<Channel>>();
+    final localId = _nextLocalId++;
+
+    // Allocate native string array
+    final uuidPtrs = calloc<Pointer<Utf8>>(uuids.length);
+    for (var i = 0; i < uuids.length; i++) {
+      uuidPtrs[i] = uuids[i].toNativeUtf8();
+    }
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_channel_info_t> channels, int count,
+        Pointer<Void> userData) {
+      // Free native strings
+      for (var i = 0; i < uuids.length; i++) {
+        calloc.free(uuidPtrs[i]);
+      }
+      calloc.free(uuidPtrs);
+
+      if (error == 0) {
+        final result = <Channel>[];
+        for (var i = 0; i < count; i++) {
+          result.add(Channel.fromNative(channels[i]));
+        }
+        if (channels != nullptr && count > 0) {
+          _bindings.dna_free_channel_infos(channels, count);
+        }
+        completer.complete(result);
+      } else {
+        if (channels != nullptr && count > 0) {
+          _bindings.dna_free_channel_infos(channels, count);
+        }
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaChannelsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_channel_get_batch(
+      _engine,
+      uuidPtrs,
+      uuids.length,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      for (var i = 0; i < uuids.length; i++) {
+        calloc.free(uuidPtrs[i]);
+      }
+      calloc.free(uuidPtrs);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   /// Delete a channel (soft delete - creator only)
   Future<void> channelDelete(String uuid) async {
     final completer = Completer<void>();

@@ -3573,6 +3573,24 @@ class DnaBindings {
     return _dna_engine_channel_get(engine, uuid, callback, userData);
   }
 
+  // channel_get_batch
+  late final _dna_engine_channel_get_batch = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Pointer<Utf8>>, Int32,
+          Pointer<DnaChannelsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Pointer<Utf8>>, int,
+          Pointer<DnaChannelsCb>, Pointer<Void>)>(
+      'dna_engine_channel_get_batch');
+
+  int dna_engine_channel_get_batch(
+    Pointer<dna_engine_t> engine,
+    Pointer<Pointer<Utf8>> uuids,
+    int count,
+    Pointer<DnaChannelsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_channel_get_batch(engine, uuids, count, callback, userData);
+  }
+
   late final _dna_engine_channel_delete = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
           Pointer<DnaCompletionCb>, Pointer<Void>),

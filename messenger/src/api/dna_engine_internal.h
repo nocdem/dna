@@ -168,6 +168,7 @@ typedef enum {
     TASK_CHANNEL_GET_SUBSCRIPTIONS,
     TASK_CHANNEL_SYNC_SUBS_TO_DHT,
     TASK_CHANNEL_SYNC_SUBS_FROM_DHT,
+    TASK_CHANNEL_GET_BATCH,
 
     /* Follow system (v0.9.126+) */
     TASK_FOLLOW,
@@ -457,6 +458,12 @@ typedef union {
     struct {
         char uuid[37];
     } channel_by_uuid;
+
+    /* Channel: get_batch (v0.9.127+) */
+    struct {
+        char **uuids;       /* Heap-allocated array of UUID strings (freed after handler) */
+        int count;
+    } channel_get_batch;
 
     /* Channel: get_posts */
     struct {
@@ -962,6 +969,7 @@ void dna_handle_wall_boost_timeline(dna_engine_t *engine, dna_task_t *task);
 /* Channel handlers (dna_engine_channels.c) */
 void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_get(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_channel_get_batch(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_delete(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_discover(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_search(dna_engine_t *engine, dna_task_t *task);

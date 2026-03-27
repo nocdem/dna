@@ -630,6 +630,193 @@ void dna_handle_channel_get(dna_engine_t *engine, dna_task_t *task) {
     task->callback.channel(task->request_id, DNA_OK, info, task->user_data);
 }
 
+void dna_handle_channel_get_batch(dna_engine_t *engine, dna_task_t *task) {
+    char **uuids = task->params.channel_get_batch.uuids;
+    int uuid_count = task->params.channel_get_batch.count;
+
+    if (!uuids || uuid_count <= 0) {
+        task->callback.channels(task->request_id, DNA_OK, NULL, 0, task->user_data);
+        goto cleanup_uuids;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Batch channel get: %d channels", uuid_count);
+
+    dna_channel_info_t *results = calloc((size_t)uuid_count, sizeof(dna_channel_info_t));
+    if (!results) {
+        task->callback.channels(task->request_id, DNA_ERROR_INTERNAL,
+                                NULL, 0, task->user_data);
+        goto cleanup_uuids;
+    }
+
+    int result_count = 0;
+    bool *need_dht = calloc((size_t)uuid_count, sizeof(bool));
+    if (!need_dht) {
+        free(results);
+        task->callback.channels(task->request_id, DNA_ERROR_INTERNAL,
+                                NULL, 0, task->user_data);
+        goto cleanup_uuids;
+    }
+
+    /* Phase 1: check cache for each UUID */
+    int dht_needed = 0;
+    for (int i = 0; i < uuid_count; i++) {
+        char cache_key[64];
+        snprintf(cache_key, sizeof(cache_key), "channel:%s", uuids[i]);
+
+        char *cached_json = NULL;
+        int cache_ret = channel_cache_get_channel_json(uuids[i], &cached_json);
+        if (cache_ret == 0 && cached_json && !channel_cache_is_stale(cache_key)) {
+            /* Fresh cache hit */
+            if (channel_info_from_json(cached_json, &results[result_count]) == 0) {
+                result_count++;
+                free(cached_json);
+                continue;
+            }
+        }
+        free(cached_json);
+        need_dht[i] = true;
+        dht_needed++;
+    }
+
+    if (dht_needed == 0) {
+        QGP_LOG_INFO(LOG_TAG, "Batch channel get: all %d from cache", result_count);
+        free(need_dht);
+        task->callback.channels(task->request_id, DNA_OK, results, result_count,
+                                task->user_data);
+        goto cleanup_uuids;
+    }
+
+    /* Phase 2: batch fetch from DHT */
+    const char **dht_keys = malloc((size_t)dht_needed * sizeof(char *));
+    char **dht_key_storage = malloc((size_t)dht_needed * sizeof(char *));
+    int *dht_uuid_map = malloc((size_t)dht_needed * sizeof(int));
+    if (!dht_keys || !dht_key_storage || !dht_uuid_map) {
+        free(dht_keys);
+        free(dht_key_storage);
+        free(dht_uuid_map);
+        free(need_dht);
+        /* Return whatever we got from cache */
+        task->callback.channels(task->request_id, DNA_OK, results, result_count,
+                                task->user_data);
+        goto cleanup_uuids;
+    }
+
+    int dht_count = 0;
+    for (int i = 0; i < uuid_count; i++) {
+        if (!need_dht[i]) continue;
+        char *key = malloc(256);
+        if (!key) continue;
+        snprintf(key, 256, "%s%s", "dna:channels:meta:", uuids[i]);
+        dht_key_storage[dht_count] = key;
+        dht_keys[dht_count] = key;
+        dht_uuid_map[dht_count] = i;
+        dht_count++;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Batch channel get: %d cache, %d DHT", result_count, dht_count);
+
+    /* Chunk if > 32 */
+    int offset = 0;
+    while (offset < dht_count) {
+        int chunk = dht_count - offset;
+        if (chunk > 32) chunk = 32;
+
+        nodus_ops_batch_result_t *batch_results = NULL;
+        int batch_count = 0;
+        int rc = nodus_ops_get_batch_str(&dht_keys[offset], chunk,
+                                          &batch_results, &batch_count);
+
+        if (rc == 0 && batch_results) {
+            for (int r = 0; r < batch_count; r++) {
+                if (batch_results[r].count == 0) continue;
+                /* Use first value (latest) */
+                uint8_t *val = batch_results[r].values[0];
+                size_t val_len = batch_results[r].lens[0];
+                if (!val || val_len == 0) continue;
+
+                /* Parse raw channel JSON */
+                char *json_str = malloc(val_len + 1);
+                if (!json_str) continue;
+                memcpy(json_str, val, val_len);
+                json_str[val_len] = '\0';
+
+                dna_channel_t *channel = NULL;
+                if (channel_from_json(json_str, &channel) == 0 && channel) {
+                    dna_channel_info_t *info = &results[result_count];
+                    strncpy(info->channel_uuid, channel->uuid, 36);
+                    strncpy(info->name, channel->name, 100);
+                    if (channel->description)
+                        info->description = strdup(channel->description);
+                    strncpy(info->creator_fingerprint, channel->creator_fingerprint, 128);
+                    info->created_at = channel->created_at;
+                    info->is_public = channel->is_public;
+                    info->deleted = channel->deleted;
+                    info->deleted_at = channel->deleted_at;
+                    info->verified = (channel->signature_len > 0);
+                    result_count++;
+
+                    /* Update cache */
+                    char *cache_json = NULL;
+                    if (channel_info_to_json(info, &cache_json) == 0 && cache_json) {
+                        channel_cache_put_channel_json(info->channel_uuid, cache_json,
+                                                        info->created_at,
+                                                        info->deleted ? 1 : 0);
+                        char ck[64];
+                        snprintf(ck, sizeof(ck), "channel:%s", info->channel_uuid);
+                        channel_cache_mark_fresh(ck);
+                        free(cache_json);
+                    }
+                    dna_channel_free(channel);
+                }
+                free(json_str);
+            }
+            nodus_ops_free_batch_result(batch_results, batch_count);
+        }
+        offset += chunk;
+    }
+
+    /* Phase 3: stale cache fallback for any still-missing channels */
+    for (int d = 0; d < dht_count; d++) {
+        int uuid_idx = dht_uuid_map[d];
+        /* Check if this UUID already in results */
+        bool found = false;
+        for (int r = 0; r < result_count; r++) {
+            if (strcmp(results[r].channel_uuid, uuids[uuid_idx]) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (found) continue;
+
+        /* Try stale cache */
+        char *cached_json = NULL;
+        if (channel_cache_get_channel_json(uuids[uuid_idx], &cached_json) == 0 && cached_json) {
+            if (channel_info_from_json(cached_json, &results[result_count]) == 0) {
+                QGP_LOG_INFO(LOG_TAG, "Channel %.8s...: batch miss, using stale cache",
+                             uuids[uuid_idx]);
+                result_count++;
+            }
+            free(cached_json);
+        }
+    }
+
+    for (int d = 0; d < dht_count; d++) free(dht_key_storage[d]);
+    free(dht_keys);
+    free(dht_key_storage);
+    free(dht_uuid_map);
+    free(need_dht);
+
+    QGP_LOG_INFO(LOG_TAG, "Batch channel get: %d/%d resolved", result_count, uuid_count);
+    task->callback.channels(task->request_id, DNA_OK, results, result_count,
+                            task->user_data);
+
+cleanup_uuids:
+    if (uuids) {
+        for (int i = 0; i < uuid_count; i++) free(uuids[i]);
+        free(uuids);
+    }
+}
+
 void dna_handle_channel_delete(dna_engine_t *engine, dna_task_t *task) {
     qgp_key_t *key = dna_load_private_key(engine);
 
@@ -1146,6 +1333,36 @@ dna_request_id_t dna_engine_channel_get(
     dna_task_callback_t cb = {0};
     cb.channel = callback;
     return dna_submit_task(engine, TASK_CHANNEL_GET, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_channel_get_batch(
+    dna_engine_t *engine,
+    const char **uuids,
+    int count,
+    dna_channels_cb callback,
+    void *user_data
+) {
+    if (!engine || !uuids || count <= 0) return DNA_REQUEST_ID_INVALID;
+
+    /* Deep-copy UUIDs (freed in handler) */
+    char **uuid_copy = malloc((size_t)count * sizeof(char *));
+    if (!uuid_copy) return DNA_REQUEST_ID_INVALID;
+    for (int i = 0; i < count; i++) {
+        uuid_copy[i] = strdup(uuids[i]);
+        if (!uuid_copy[i]) {
+            for (int j = 0; j < i; j++) free(uuid_copy[j]);
+            free(uuid_copy);
+            return DNA_REQUEST_ID_INVALID;
+        }
+    }
+
+    dna_task_params_t params = {0};
+    params.channel_get_batch.uuids = uuid_copy;
+    params.channel_get_batch.count = count;
+
+    dna_task_callback_t cb = {0};
+    cb.channels = callback;
+    return dna_submit_task(engine, TASK_CHANNEL_GET_BATCH, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_channel_delete(

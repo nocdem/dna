@@ -1225,6 +1225,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_CHANNEL_GET:
             dna_handle_channel_get(engine, task);
             break;
+        case TASK_CHANNEL_GET_BATCH:
+            dna_handle_channel_get_batch(engine, task);
+            break;
         case TASK_CHANNEL_DELETE:
             dna_handle_channel_delete(engine, task);
             break;

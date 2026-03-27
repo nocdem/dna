@@ -94,6 +94,9 @@ int dna_channel_create(const char *name,
 int dna_channel_get(const char *uuid,
     dna_channel_t **channel_out);
 
+/** Parse raw DHT JSON into channel struct (used by batch handler) */
+int channel_from_json(const char *json_str, dna_channel_t **channel_out);
+
 int dna_channel_delete(const char *uuid,
     const char *creator_fingerprint, const uint8_t *private_key);
 
