@@ -1153,6 +1153,254 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     }
 }
 
+/* ── Batch Forward (BF) ─── get_batch miss → forward to closest peer ── */
+
+static void bf_conn_cleanup(dht_bf_conn_t *c) {
+    if (c->fd >= 0) close(c->fd);
+    c->fd = -1;
+    free(c->send_buf); c->send_buf = NULL;
+    free(c->recv_buf); c->recv_buf = NULL;
+    free(c->key_indices); c->key_indices = NULL;
+    c->state = 3; /* done */
+}
+
+static void bf_batch_cleanup(dht_bf_batch_t *b) {
+    for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) {
+        if (b->forwards[i].fd >= 0) bf_conn_cleanup(&b->forwards[i]);
+    }
+    if (b->vals_per_key) {
+        for (int i = 0; i < b->key_count; i++) {
+            if (b->vals_per_key[i]) {
+                for (size_t j = 0; j < b->counts_per_key[i]; j++)
+                    nodus_value_free(b->vals_per_key[i][j]);
+                free(b->vals_per_key[i]);
+            }
+        }
+        free(b->vals_per_key);
+    }
+    free(b->counts_per_key);
+    free(b->keys);
+    memset(b, 0, sizeof(*b));
+}
+
+/** Send batch response to client and clean up */
+static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
+    nodus_session_t *sess = &srv->sessions[b->session_slot];
+    if (!sess->conn) { bf_batch_cleanup(b); return; }
+
+    size_t buf_cap = RESP_BUF_SIZE;
+    uint8_t *buf = malloc(buf_cap);
+    if (buf) {
+        size_t len = 0;
+        if (nodus_t2_result_get_batch(b->txn_id, b->keys, b->key_count,
+                                       b->vals_per_key, b->counts_per_key,
+                                       buf, buf_cap, &len) == 0)
+            nodus_tcp_send(sess->conn, buf, len);
+        free(buf);
+    }
+    bf_batch_cleanup(b);
+}
+
+/** Handle epoll events for batch forward fds */
+static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
+    if (fd < 0 || fd >= NODUS_BF_FD_TABLE_SIZE) return;
+    int bi = srv->bf_fd_table[fd].batch_idx;
+    int fi = srv->bf_fd_table[fd].forward_idx;
+    if (bi < 0 || bi >= NODUS_BF_MAX_BATCHES) return;
+    dht_bf_batch_t *b = &srv->bf_state.batches[bi];
+    if (!b->active) return;
+    dht_bf_conn_t *c = &b->forwards[fi];
+
+    if (events & (EPOLLERR | EPOLLHUP)) {
+        epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+        srv->bf_fd_table[fd].batch_idx = -1;
+        bf_conn_cleanup(c);
+        if (--b->pending_forwards <= 0) bf_send_result(srv, b);
+        return;
+    }
+
+    if (c->state == 0 && (events & EPOLLOUT)) {
+        /* Connect completed → start sending */
+        c->state = 1;
+    }
+
+    if (c->state == 1 && (events & EPOLLOUT)) {
+        /* Send data */
+        ssize_t n = send(fd, c->send_buf + c->send_pos,
+                         c->send_len - c->send_pos, MSG_NOSIGNAL);
+        if (n > 0) c->send_pos += (size_t)n;
+        if (c->send_pos >= c->send_len) {
+            c->state = 2;
+            struct epoll_event ev = { .events = EPOLLIN, .data.fd = fd };
+            epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+        }
+    }
+
+    if (c->state == 2 && (events & EPOLLIN)) {
+        /* Receive response */
+        ssize_t n = recv(fd, c->recv_buf + c->recv_len,
+                         c->recv_cap - c->recv_len, 0);
+        if (n <= 0) {
+            /* Connection closed or error — try to parse what we have */
+            goto parse_response;
+        }
+        c->recv_len += (size_t)n;
+
+        /* Check if we have a complete frame */
+        if (c->recv_len >= 7) {
+            uint32_t frame_len = 0;
+            if (c->recv_buf[0] == 0x4E && c->recv_buf[1] == 0x44) {
+                frame_len = (uint32_t)c->recv_buf[3] << 24 |
+                            (uint32_t)c->recv_buf[4] << 16 |
+                            (uint32_t)c->recv_buf[5] << 8 |
+                            (uint32_t)c->recv_buf[6];
+                if (c->recv_len >= 7 + frame_len) {
+                    goto parse_response;
+                }
+            }
+        }
+        return;
+
+    parse_response:
+        epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+        srv->bf_fd_table[fd].batch_idx = -1;
+
+        /* Parse batch response from peer */
+        if (c->recv_len > 7) {
+            nodus_tier2_msg_t resp;
+            memset(&resp, 0, sizeof(resp));
+            if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &resp) == 0 &&
+                resp.batch_keys && resp.batch_key_count > 0) {
+                /* Merge results into parent batch */
+                for (int r = 0; r < resp.batch_key_count && r < c->key_count; r++) {
+                    int ki = c->key_indices[r];
+                    if (ki < 0 || ki >= b->key_count) continue;
+                    if (b->counts_per_key[ki] > 0) continue; /* Already have data */
+
+                    /* Transfer ownership of values */
+                    b->vals_per_key[ki] = resp.batch_vals ? resp.batch_vals[r] : NULL;
+                    b->counts_per_key[ki] = resp.batch_val_counts ? resp.batch_val_counts[r] : 0;
+                    if (resp.batch_vals) resp.batch_vals[r] = NULL;
+                    if (resp.batch_val_counts) resp.batch_val_counts[r] = 0;
+                }
+                nodus_t2_msg_free(&resp);
+            }
+        }
+
+        bf_conn_cleanup(c);
+        if (--b->pending_forwards <= 0) bf_send_result(srv, b);
+    }
+}
+
+/** Tick: advance all batch forwards (called from main event loop) */
+static void bf_tick(nodus_server_t *srv) {
+    if (srv->bf_state.bf_epoll_fd < 0) return;
+
+    struct epoll_event events[32];
+    int n = epoll_wait(srv->bf_state.bf_epoll_fd, events, 32, 0);
+    for (int i = 0; i < n; i++)
+        bf_handle_event(srv, events[i].data.fd, events[i].events);
+
+    /* Check timeouts */
+    uint64_t now = nodus_time_now_ms();
+    for (int bi = 0; bi < NODUS_BF_MAX_BATCHES; bi++) {
+        dht_bf_batch_t *b = &srv->bf_state.batches[bi];
+        if (!b->active) continue;
+
+        /* Check client disconnect */
+        nodus_session_t *sess = &srv->sessions[b->session_slot];
+        if (!sess->conn) { bf_batch_cleanup(b); continue; }
+
+        /* Overall batch timeout */
+        if (now - b->started_at > NODUS_BF_TIMEOUT_MS) {
+            /* Timeout: clean up remaining forwards, send what we have */
+            for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
+                if (b->forwards[fi].fd >= 0) {
+                    epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_DEL,
+                              b->forwards[fi].fd, NULL);
+                    srv->bf_fd_table[b->forwards[fi].fd].batch_idx = -1;
+                    bf_conn_cleanup(&b->forwards[fi]);
+                }
+            }
+            bf_send_result(srv, b);
+        }
+    }
+}
+
+/** Start a batch forward to a peer node */
+static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
+                              int fi, const nodus_peer_t *peer,
+                              const nodus_key_t *keys, const int *key_indices,
+                              int key_count) {
+    dht_bf_conn_t *c = &b->forwards[fi];
+    memset(c, 0, sizeof(*c));
+    c->fd = -1;
+
+    /* Copy key indices */
+    c->key_indices = malloc((size_t)key_count * sizeof(int));
+    if (!c->key_indices) return -1;
+    memcpy(c->key_indices, key_indices, (size_t)key_count * sizeof(int));
+    c->key_count = key_count;
+
+    /* Build get_batch CBOR frame */
+    uint8_t cbor_buf[4096];
+    size_t cbor_len = 0;
+    /* Use txn_id=0 for inter-node (we track by fd, not txn) */
+    if (nodus_t2_get_batch(0, NULL, keys, key_count,
+                            cbor_buf, sizeof(cbor_buf), &cbor_len) != 0)
+        goto fail;
+
+    uint8_t frame_buf[4096 + 16];
+    size_t flen = nodus_frame_encode(frame_buf, sizeof(frame_buf),
+                                      cbor_buf, (uint32_t)cbor_len);
+    if (flen == 0) goto fail;
+
+    c->send_buf = malloc(flen);
+    if (!c->send_buf) goto fail;
+    memcpy(c->send_buf, frame_buf, flen);
+    c->send_len = flen;
+
+    c->recv_cap = RESP_BUF_SIZE;
+    c->recv_buf = malloc(c->recv_cap);
+    if (!c->recv_buf) goto fail;
+
+    /* Non-blocking connect to peer's inter-node port (4002) */
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (fd < 0) goto fail;
+    if (fd >= NODUS_BF_FD_TABLE_SIZE) { close(fd); goto fail; }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(peer->tcp_port ? peer->tcp_port : 4002);
+    inet_pton(AF_INET, peer->ip, &addr.sin_addr);
+
+    int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc < 0 && errno != EINPROGRESS) { close(fd); goto fail; }
+
+    c->fd = fd;
+    c->state = 0; /* connecting */
+    c->started_at = nodus_time_now_ms();
+    snprintf(c->ip, sizeof(c->ip), "%s", peer->ip);
+    c->port = peer->tcp_port ? peer->tcp_port : 4002;
+
+    /* Register with batch forward epoll */
+    int bi = (int)(b - srv->bf_state.batches);
+    srv->bf_fd_table[fd].batch_idx = bi;
+    srv->bf_fd_table[fd].forward_idx = fi;
+
+    struct epoll_event ev = { .events = EPOLLOUT | EPOLLERR | EPOLLHUP, .data.fd = fd };
+    epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+
+    return 0;
+
+fail:
+    free(c->key_indices); c->key_indices = NULL;
+    free(c->send_buf); c->send_buf = NULL;
+    free(c->recv_buf); c->recv_buf = NULL;
+    return -1;
+}
+
 static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
                                  nodus_tier2_msg_t *msg) {
     if (msg->batch_key_count < 1 || msg->batch_key_count > NODUS_MAX_BATCH_KEYS) {
@@ -1176,40 +1424,152 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
+    /* Phase 1: local storage lookup for all keys */
+    int miss_count = 0;
+    int miss_indices[NODUS_MAX_BATCH_KEYS];
+
     for (int i = 0; i < n; i++) {
         nodus_storage_get_all(&srv->storage, &msg->batch_keys[i],
                                &vals_per_key[i], &counts_per_key[i]);
-    }
-
-    /* Heap buffer — batch result can be large */
-    size_t buf_cap = RESP_BUF_SIZE;
-    uint8_t *buf = malloc(buf_cap);
-    if (!buf) goto cleanup;
-
-    size_t len = 0;
-    int rc = nodus_t2_result_get_batch(msg->txn_id, msg->batch_keys, n,
-                                        vals_per_key, counts_per_key,
-                                        buf, buf_cap, &len);
-    if (rc == 0) {
-        nodus_tcp_send(sess->conn, buf, len);
-    } else {
-        size_t elen = 0;
-        nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "batch encode failed", resp_buf, sizeof(resp_buf), &elen);
-        nodus_tcp_send(sess->conn, resp_buf, elen);
-    }
-    free(buf);
-
-cleanup:
-    for (int i = 0; i < n; i++) {
-        if (vals_per_key[i]) {
-            for (size_t j = 0; j < counts_per_key[i]; j++)
-                nodus_value_free(vals_per_key[i][j]);
-            free(vals_per_key[i]);
+        if (counts_per_key[i] == 0) {
+            miss_indices[miss_count++] = i;
         }
     }
-    free(vals_per_key);
-    free(counts_per_key);
+
+    /* Phase 2: if all found locally → respond immediately (fast path) */
+    if (miss_count == 0) {
+        goto send_response;
+    }
+
+    /* Phase 3: group misses by closest peer and start batch forwards */
+    {
+        /* Find a free batch slot */
+        int bi = -1;
+        for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
+            if (!srv->bf_state.batches[i].active) { bi = i; break; }
+        }
+
+        if (bi < 0) {
+            /* No batch slots available — send local-only results */
+            goto send_response;
+        }
+
+        /* Group misses by closest peer */
+        typedef struct { nodus_peer_t peer; int key_idx[NODUS_MAX_BATCH_KEYS]; int count; } peer_group_t;
+        peer_group_t groups[NODUS_BF_MAX_FORWARDS];
+        int group_count = 0;
+
+        for (int m = 0; m < miss_count; m++) {
+            int ki = miss_indices[m];
+            nodus_peer_t closest[1];
+            int found = nodus_routing_find_closest(&srv->routing, &msg->batch_keys[ki],
+                                                     closest, 1);
+            if (found == 0) continue; /* No peers known — skip */
+
+            /* Skip self */
+            if (nodus_key_cmp(&closest[0].node_id, &srv->identity.node_id) == 0) {
+                /* We ARE the closest — no point forwarding */
+                continue;
+            }
+
+            /* Find existing group for this peer or create new */
+            int gi = -1;
+            for (int g = 0; g < group_count; g++) {
+                if (strcmp(groups[g].peer.ip, closest[0].ip) == 0 &&
+                    groups[g].peer.tcp_port == closest[0].tcp_port) {
+                    gi = g;
+                    break;
+                }
+            }
+            if (gi < 0 && group_count < NODUS_BF_MAX_FORWARDS) {
+                gi = group_count++;
+                groups[gi].peer = closest[0];
+                groups[gi].count = 0;
+            }
+            if (gi >= 0 && groups[gi].count < NODUS_MAX_BATCH_KEYS) {
+                groups[gi].key_idx[groups[gi].count++] = ki;
+            }
+        }
+
+        if (group_count == 0) {
+            /* No peers to forward to — send local-only results */
+            goto send_response;
+        }
+
+        /* Set up batch context — transfer ownership of results */
+        dht_bf_batch_t *b = &srv->bf_state.batches[bi];
+        memset(b, 0, sizeof(*b));
+        b->active = true;
+        b->txn_id = msg->txn_id;
+        b->session_slot = (int)(sess - srv->sessions);
+        b->started_at = nodus_time_now_ms();
+        b->key_count = n;
+        b->keys = malloc((size_t)n * sizeof(nodus_key_t));
+        if (b->keys)
+            memcpy(b->keys, msg->batch_keys, (size_t)n * sizeof(nodus_key_t));
+        b->vals_per_key = vals_per_key;   /* Transfer ownership */
+        b->counts_per_key = counts_per_key;
+        b->pending_forwards = 0;
+
+        /* Start forwards */
+        for (int g = 0; g < group_count; g++) {
+            /* Build key array for this group */
+            nodus_key_t *fwd_keys = malloc((size_t)groups[g].count * sizeof(nodus_key_t));
+            if (!fwd_keys) continue;
+            for (int k = 0; k < groups[g].count; k++)
+                fwd_keys[k] = msg->batch_keys[groups[g].key_idx[k]];
+
+            if (bf_start_forward(srv, b, g, &groups[g].peer,
+                                  fwd_keys, groups[g].key_idx,
+                                  groups[g].count) == 0) {
+                b->pending_forwards++;
+            }
+            free(fwd_keys);
+        }
+
+        if (b->pending_forwards > 0) {
+            /* Response deferred — bf_tick will send when all forwards complete */
+            return;
+        }
+
+        /* All forwards failed to start — send local results and clean up */
+        /* Take back ownership before cleanup */
+        b->vals_per_key = NULL;
+        b->counts_per_key = NULL;
+        bf_batch_cleanup(b);
+        goto send_response;
+    }
+
+send_response:
+    {
+        size_t buf_cap = RESP_BUF_SIZE;
+        uint8_t *buf = malloc(buf_cap);
+        if (buf) {
+            size_t len = 0;
+            int rc = nodus_t2_result_get_batch(msg->txn_id, msg->batch_keys, n,
+                                                vals_per_key, counts_per_key,
+                                                buf, buf_cap, &len);
+            if (rc == 0) {
+                nodus_tcp_send(sess->conn, buf, len);
+            } else {
+                size_t elen = 0;
+                nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
+                                "batch encode failed", resp_buf, sizeof(resp_buf), &elen);
+                nodus_tcp_send(sess->conn, resp_buf, elen);
+            }
+            free(buf);
+        }
+
+        for (int i = 0; i < n; i++) {
+            if (vals_per_key[i]) {
+                for (size_t j = 0; j < counts_per_key[i]; j++)
+                    nodus_value_free(vals_per_key[i][j]);
+                free(vals_per_key[i]);
+            }
+        }
+        free(vals_per_key);
+        free(counts_per_key);
+    }
 }
 
 static void handle_t2_count_batch(nodus_server_t *srv, nodus_session_t *sess,
@@ -1664,6 +2024,42 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             return;
 
         }
+        } else if (strcmp(msg.method, "get_batch") == 0) {
+            /* Inter-node forwarded get_batch — local-only, no re-forward */
+            if (msg.batch_key_count > 0 && msg.batch_key_count <= NODUS_MAX_BATCH_KEYS &&
+                msg.batch_keys) {
+                int n = msg.batch_key_count;
+                nodus_value_t ***vals = calloc((size_t)n, sizeof(nodus_value_t **));
+                size_t *counts = calloc((size_t)n, sizeof(size_t));
+                if (vals && counts) {
+                    for (int i = 0; i < n; i++)
+                        nodus_storage_get_all(&srv->storage, &msg.batch_keys[i],
+                                               &vals[i], &counts[i]);
+
+                    size_t buf_cap = RESP_BUF_SIZE;
+                    uint8_t *buf = malloc(buf_cap);
+                    if (buf) {
+                        size_t rlen = 0;
+                        if (nodus_t2_result_get_batch(msg.txn_id, msg.batch_keys, n,
+                                                       vals, counts, buf, buf_cap, &rlen) == 0)
+                            nodus_tcp_send(sess->conn, buf, rlen);
+                        free(buf);
+                    }
+
+                    for (int i = 0; i < n; i++) {
+                        if (vals[i]) {
+                            for (size_t j = 0; j < counts[i]; j++)
+                                nodus_value_free(vals[i][j]);
+                            free(vals[i]);
+                        }
+                    }
+                }
+                free(vals);
+                free(counts);
+            }
+            nodus_t2_msg_free(&msg);
+            return;
+
         /* ch_rep, ring_check, ring_ack, ring_evict now go via TCP 4003 (channel server) */
 
         /* T2 decode succeeded but method is not a known T2 inter-node method.
@@ -2473,6 +2869,17 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         return -1;
     }
 
+    /* Create batch forward epoll fd */
+    srv->bf_state.bf_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (srv->bf_state.bf_epoll_fd < 0) {
+        fprintf(stderr, "Failed to create BF epoll fd\n");
+        return -1;
+    }
+    for (int i = 0; i < NODUS_BF_FD_TABLE_SIZE; i++) {
+        srv->bf_fd_table[i].batch_idx = -1;
+        srv->bf_fd_table[i].forward_idx = -1;
+    }
+
     /* Create republish epoll fd for non-blocking sends */
     srv->rp_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (srv->rp_epoll_fd < 0) {
@@ -2752,6 +3159,9 @@ int nodus_server_run(nodus_server_t *srv) {
         /* FIND_VALUE async state machine tick */
         dht_find_value_tick(srv);
 
+        /* Batch forward async tick */
+        bf_tick(srv);
+
         /* Kademlia bucket refresh (every 15 min) */
         dht_bucket_refresh(srv);
 
@@ -2780,6 +3190,16 @@ void nodus_server_close(nodus_server_t *srv) {
     if (srv->fv_epoll_fd >= 0) {
         close(srv->fv_epoll_fd);
         srv->fv_epoll_fd = -1;
+    }
+
+    /* Clean up batch forward state */
+    for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
+        if (srv->bf_state.batches[i].active)
+            bf_batch_cleanup(&srv->bf_state.batches[i]);
+    }
+    if (srv->bf_state.bf_epoll_fd >= 0) {
+        close(srv->bf_state.bf_epoll_fd);
+        srv->bf_state.bf_epoll_fd = -1;
     }
 
     /* Clean up republish connections */

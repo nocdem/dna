@@ -169,6 +169,64 @@ typedef struct {
     int query_idx;    /**< Index into lookup->queries[] */
 } dht_fv_fd_entry_t;
 
+/* ── Batch forward (get_batch miss → forward to closest peer) ────── */
+
+#define NODUS_BF_MAX_FORWARDS   8    /* Max concurrent forwards per batch */
+#define NODUS_BF_MAX_BATCHES    4    /* Max concurrent batch requests with forwards */
+#define NODUS_BF_TIMEOUT_MS     5000 /* Per-forward timeout */
+
+/** One outgoing batch forward connection to a peer */
+typedef struct {
+    int         fd;              /**< Non-blocking socket (-1 if unused) */
+    int         state;           /**< 0=connecting, 1=sending, 2=receiving, 3=done */
+    char        ip[64];
+    uint16_t    port;
+    uint64_t    started_at;
+    uint8_t    *send_buf;        /**< Encoded get_batch frame */
+    size_t      send_len;
+    size_t      send_pos;
+    uint8_t    *recv_buf;        /**< Response buffer */
+    size_t      recv_cap;
+    size_t      recv_len;
+    /* Which keys this forward carries (indices into parent batch) */
+    int        *key_indices;     /**< Array of indices into batch's key array */
+    int         key_count;
+} dht_bf_conn_t;
+
+/** One batch request being forwarded (coordinates multiple forwards) */
+typedef struct {
+    bool            active;
+    uint32_t        txn_id;          /**< Client's transaction ID */
+    int             session_slot;    /**< Client session index */
+    uint64_t        started_at;
+
+    /* All keys in the batch */
+    nodus_key_t    *keys;
+    int             key_count;
+
+    /* Per-key results (local + forwarded merged) */
+    nodus_value_t ***vals_per_key;
+    size_t          *counts_per_key;
+
+    /* Active forwards */
+    dht_bf_conn_t   forwards[NODUS_BF_MAX_FORWARDS];
+    int             pending_forwards;  /**< Countdown: when 0 → send response */
+} dht_bf_batch_t;
+
+/** Batch forward state (part of nodus_server_t) */
+typedef struct {
+    dht_bf_batch_t  batches[NODUS_BF_MAX_BATCHES];
+    int             bf_epoll_fd;     /**< Separate epoll for batch forward fds */
+} dht_bf_state_t;
+
+/** bf fd→batch index mapping */
+typedef struct {
+    int batch_idx;
+    int forward_idx;
+} dht_bf_fd_entry_t;
+
+#define NODUS_BF_FD_TABLE_SIZE  256
+
 /** One non-blocking republish TCP connection (fire-and-forget) */
 typedef struct {
     int      fd;
@@ -245,6 +303,10 @@ typedef struct nodus_server {
     dht_fv_state_t          fv_state;
     dht_fv_fd_entry_t       fv_fd_table[NODUS_FV_FD_TABLE_SIZE];
     int                     fv_epoll_fd;
+
+    /* Batch forward state machine (get_batch miss → forward to closest peer) */
+    dht_bf_state_t          bf_state;
+    dht_bf_fd_entry_t       bf_fd_table[NODUS_BF_FD_TABLE_SIZE];
 
     /* Periodic republish */
     dht_republish_state_t   republish;
