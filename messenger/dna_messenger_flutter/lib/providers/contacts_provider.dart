@@ -122,12 +122,10 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       // Timeout or error - presence will update on next poll
     }
 
-    // Offline message check in background (non-blocking, reduced timeout)
-    try {
-      await engine.checkOfflineMessages().timeout(const Duration(seconds: 5));
-    } catch (_) {
-      // Timeout or error - messages will arrive on next poll
-    }
+    // Note: DM outbox sync removed from here — it fires too early during
+    // startup burst (before salt verification), causing timeout cascade.
+    // The C-side listener setup (dna_engine_listeners.c) does a full DM sync
+    // after salt verification, right before starting listeners.
   }
 
   /// Lookup presence for a single contact with timeout
