@@ -775,7 +775,8 @@ void dna_handle_channel_get_batch(dna_engine_t *engine, dna_task_t *task) {
         offset += chunk;
     }
 
-    /* Phase 3: stale cache fallback for any still-missing channels */
+    /* Phase 3: individual fallback (Kademlia FIND_VALUE) + stale cache for misses.
+     * Batch uses local storage only; individual get triggers Kademlia routing. */
     for (int d = 0; d < dht_count; d++) {
         int uuid_idx = dht_uuid_map[d];
         /* Check if this UUID already in results */
@@ -788,7 +789,38 @@ void dna_handle_channel_get_batch(dna_engine_t *engine, dna_task_t *task) {
         }
         if (found) continue;
 
-        /* Try stale cache */
+        /* Try individual get (triggers Kademlia FIND_VALUE if not local) */
+        dna_channel_t *channel = NULL;
+        if (dna_channel_get(uuids[uuid_idx], &channel) == 0 && channel) {
+            dna_channel_info_t *info = &results[result_count];
+            strncpy(info->channel_uuid, channel->uuid, 36);
+            strncpy(info->name, channel->name, 100);
+            if (channel->description) info->description = strdup(channel->description);
+            strncpy(info->creator_fingerprint, channel->creator_fingerprint, 128);
+            info->created_at = channel->created_at;
+            info->is_public = channel->is_public;
+            info->deleted = channel->deleted;
+            info->deleted_at = channel->deleted_at;
+            info->verified = (channel->signature_len > 0);
+            result_count++;
+
+            /* Update cache */
+            char *cache_json = NULL;
+            if (channel_info_to_json(info, &cache_json) == 0 && cache_json) {
+                channel_cache_put_channel_json(info->channel_uuid, cache_json,
+                                                info->created_at, info->deleted ? 1 : 0);
+                char ck[64];
+                snprintf(ck, sizeof(ck), "channel:%s", info->channel_uuid);
+                channel_cache_mark_fresh(ck);
+                free(cache_json);
+            }
+            dna_channel_free(channel);
+            QGP_LOG_INFO(LOG_TAG, "Channel %.8s...: batch miss, found via Kademlia",
+                         uuids[uuid_idx]);
+            continue;
+        }
+
+        /* Last resort: stale cache */
         char *cached_json = NULL;
         if (channel_cache_get_channel_json(uuids[uuid_idx], &cached_json) == 0 && cached_json) {
             if (channel_info_from_json(cached_json, &results[result_count]) == 0) {

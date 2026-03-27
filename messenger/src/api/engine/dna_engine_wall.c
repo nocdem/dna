@@ -422,45 +422,40 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
      * v0.9.53: Cache-first pattern — return cached data immediately,
      * refresh stale entries in background, fire event when done. */
     {
+        /* Single pass: collect stale fingerprints (avoids double is_stale call) */
+        wall_fetch_ctx_t *stale_ctxs = calloc(fp_count, sizeof(wall_fetch_ctx_t));
         int stale_count = 0;
-        for (size_t i = 0; i < fp_count; i++) {
-            if (wall_cache_is_stale(fingerprints[i])) {
-                stale_count++;
+        if (stale_ctxs) {
+            for (size_t i = 0; i < fp_count; i++) {
+                if (wall_cache_is_stale(fingerprints[i])) {
+                    strncpy(stale_ctxs[stale_count].fingerprint, fingerprints[i], 128);
+                    stale_ctxs[stale_count].fingerprint[128] = '\0';
+                    stale_count++;
+                }
             }
         }
 
-        if (stale_count > 0) {
-            wall_fetch_ctx_t *stale_ctxs = calloc(stale_count, sizeof(wall_fetch_ctx_t));
-            if (stale_ctxs) {
-                int idx = 0;
-                for (size_t i = 0; i < fp_count && idx < stale_count; i++) {
-                    if (wall_cache_is_stale(fingerprints[i])) {
-                        strncpy(stale_ctxs[idx].fingerprint, fingerprints[i], 128);
-                        stale_ctxs[idx].fingerprint[128] = '\0';
-                        idx++;
-                    }
-                }
+        if (stale_count > 0 && stale_ctxs) {
+            wall_bg_refresh_ctx_t *bg_ctx = calloc(1, sizeof(wall_bg_refresh_ctx_t));
+            if (bg_ctx) {
+                bg_ctx->engine = engine;
+                bg_ctx->stale_ctxs = stale_ctxs;
+                bg_ctx->stale_count = stale_count;
 
-                wall_bg_refresh_ctx_t *bg_ctx = calloc(1, sizeof(wall_bg_refresh_ctx_t));
-                if (bg_ctx) {
-                    bg_ctx->engine = engine;
-                    bg_ctx->stale_ctxs = stale_ctxs;
-                    bg_ctx->stale_count = stale_count;
-
-                    pthread_t bg_thread;
-                    if (pthread_create(&bg_thread, NULL, wall_bg_refresh_thread, bg_ctx) == 0) {
-                        pthread_detach(bg_thread);
-                        QGP_LOG_INFO(LOG_TAG, "Timeline: %d stale walls, refreshing in background", stale_count);
-                    } else {
-                        /* Thread creation failed — free context, continue with stale cache */
-                        free(stale_ctxs);
-                        free(bg_ctx);
-                        QGP_LOG_WARN(LOG_TAG, "Timeline: failed to spawn bg refresh thread");
-                    }
+                pthread_t bg_thread;
+                if (pthread_create(&bg_thread, NULL, wall_bg_refresh_thread, bg_ctx) == 0) {
+                    pthread_detach(bg_thread);
+                    QGP_LOG_INFO(LOG_TAG, "Timeline: %d stale walls, refreshing in background", stale_count);
                 } else {
                     free(stale_ctxs);
+                    free(bg_ctx);
+                    QGP_LOG_WARN(LOG_TAG, "Timeline: failed to spawn bg refresh thread");
                 }
+            } else {
+                free(stale_ctxs);
             }
+        } else {
+            free(stale_ctxs);
         }
     }
 
