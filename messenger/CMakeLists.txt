@@ -178,6 +178,7 @@ if(BUILD_SHARED_LIB)
         # Modular engine components
         src/api/engine/dna_engine_channels.c
         src/api/engine/dna_engine_wall.c
+        src/api/engine/dna_engine_follow.c
         src/api/engine/dna_engine_presence.c
         src/api/engine/dna_engine_wallet.c
         src/api/engine/dna_engine_groups.c
@@ -213,6 +214,7 @@ if(BUILD_SHARED_LIB)
         messenger_groups.c          # DHT-based group messaging
         database/keyserver_cache.c  # SQLite keyserver cache
         database/contacts_db.c      # Local contacts database
+        database/following_db.c     # Following list database
         database/addressbook_db.c   # Wallet address book database
         database/channel_subscriptions_db.c # Channel subscriptions database
         database/channel_cache.c    # Channel cache (metadata, posts, staleness)
@@ -262,6 +264,7 @@ else()
         # Modular engine components
         src/api/engine/dna_engine_channels.c
         src/api/engine/dna_engine_wall.c
+        src/api/engine/dna_engine_follow.c
         src/api/engine/dna_engine_presence.c
         src/api/engine/dna_engine_wallet.c
         src/api/engine/dna_engine_groups.c
@@ -297,6 +300,7 @@ else()
         messenger_groups.c          # DHT-based group messaging
         database/keyserver_cache.c  # SQLite keyserver cache
         database/contacts_db.c      # Local contacts database
+        database/following_db.c     # Following list database
         database/addressbook_db.c   # Wallet address book database
         database/channel_subscriptions_db.c # Channel subscriptions database
         database/channel_cache.c    # Channel cache (metadata, posts, staleness)

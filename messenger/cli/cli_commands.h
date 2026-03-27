@@ -58,6 +58,9 @@ typedef struct {
     int wall_like_count;
     dna_wall_engagement_t *wall_engagements;
     int wall_engagement_count;
+    /* Following storage */
+    dna_following_t *following;
+    int following_count;
 } cli_wait_t;
 
 /**
@@ -532,6 +535,7 @@ int dispatch_version(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_sign(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_debug(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_wall(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_follow(dna_engine_t *engine, int argc, char **argv, int sub);
 
 int dispatch_identity_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_contact_repl(dna_engine_t *engine, const char *subcmd);
@@ -545,6 +549,7 @@ int dispatch_version_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_sign_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_debug_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_wall_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_follow_repl(dna_engine_t *engine, const char *subcmd);
 
 /* ============================================================================
  * COMMAND PARSER

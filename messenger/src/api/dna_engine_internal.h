@@ -167,7 +167,14 @@ typedef enum {
     TASK_CHANNEL_GET_POSTS,
     TASK_CHANNEL_GET_SUBSCRIPTIONS,
     TASK_CHANNEL_SYNC_SUBS_TO_DHT,
-    TASK_CHANNEL_SYNC_SUBS_FROM_DHT
+    TASK_CHANNEL_SYNC_SUBS_FROM_DHT,
+
+    /* Follow system (v0.9.126+) */
+    TASK_FOLLOW,
+    TASK_UNFOLLOW,
+    TASK_GET_FOLLOWING,
+    TASK_SYNC_FOLLOWING_TO_DHT,
+    TASK_SYNC_FOLLOWING_FROM_DHT
 } dna_task_type_t;
 
 /* ============================================================================
@@ -491,6 +498,11 @@ typedef union {
         char amount_in[64];
     } dex_swap;
 
+    /* Follow/Unfollow */
+    struct {
+        char fingerprint[129];          /* User to follow/unfollow */
+    } follow;
+
 } dna_task_params_t;
 
 /**
@@ -532,6 +544,7 @@ typedef union {
     dna_dex_pairs_cb dex_pairs;
     dna_dex_swap_cb dex_swap;
     dna_tx_status_cb tx_status;
+    dna_following_cb following;
 } dna_task_callback_t;
 
 /**
@@ -957,6 +970,13 @@ void dna_handle_channel_get_posts(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_get_subscriptions(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_sync_subs_to_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_sync_subs_from_dht(dna_engine_t *engine, dna_task_t *task);
+
+/* Follow handlers (dna_engine_follow.c) */
+void dna_handle_follow(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_unfollow(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_following(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_sync_following_to_dht(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_sync_following_from_dht(dna_engine_t *engine, dna_task_t *task);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS - Helpers

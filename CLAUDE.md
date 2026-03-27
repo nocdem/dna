@@ -470,7 +470,7 @@ git push origin main    # GitHub second (mirror)
 
 ### Messenger C Library Architecture
 
-The DNA Engine (`messenger/src/api/dna_engine.c`) is a modular async C library with 17 domain modules in `messenger/src/api/engine/`. See `messenger/CLAUDE.md` for module list and details.
+The DNA Engine (`messenger/src/api/dna_engine.c`) is a modular async C library with 18 domain modules in `messenger/src/api/engine/`. See `messenger/CLAUDE.md` for module list and details.
 
 Public API: `messenger/include/dna/dna_engine.h` (async callbacks, opaque `dna_engine_t`).
 

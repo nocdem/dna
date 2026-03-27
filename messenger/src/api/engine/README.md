@@ -12,7 +12,7 @@ The DNA Engine has been refactored from a 10,843-line monolith into modular comp
 |--------|-------|
 | Original monolith | 10,843 lines |
 | Current monolith | 3,093 lines (71% reduction) |
-| Modules extracted | 16 integrated |
+| Modules extracted | 17 integrated |
 
 ## Module Status
 
@@ -35,6 +35,7 @@ The DNA Engine has been refactored from a 10,843-line monolith into modular comp
 | `dna_engine_version.c` | 243 | ✅ Integrated | 4 | Version string, DHT publish/check |
 | `dna_engine_signing.c` | 115 | ✅ Integrated | 2 | Dilithium5 signing for QR Auth |
 | `dna_engine_wall.c` | — | ✅ Integrated | 4 | Wall post, delete, load, timeline |
+| `dna_engine_follow.c` | — | ✅ Integrated | 7 | Follow/unfollow, list, DHT sync |
 
 ## Architecture
 
@@ -60,7 +61,8 @@ src/api/
     ├── dna_engine_helpers.c  # DHT context, key loading, stabilization
     ├── dna_engine_workers.c  # Worker thread pool management
     ├── dna_engine_version.c  # DHT version publish/check
-    └── dna_engine_signing.c  # Dilithium5 signing API
+    ├── dna_engine_signing.c  # Dilithium5 signing API
+    └── dna_engine_follow.c   # Follow system (one-directional)
 ```
 
 ## Module Pattern

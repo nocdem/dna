@@ -204,7 +204,7 @@ int main(int argc, char *argv[]) {
     int bare_group = (optind + 1 >= argc) ||
                      (optind + 1 < argc && strcmp(argv[optind + 1], "help") == 0);
     const char *known_groups[] = {"identity", "contact", "message", "group", "channel",
-                                  "wallet", "dex", "network", "version", "sign", "debug", "wall", NULL};
+                                  "wallet", "dex", "network", "version", "sign", "debug", "wall", "follow", NULL};
     if (bare_group) {
         for (int i = 0; known_groups[i]; i++) {
             if (strcmp(command, known_groups[i]) == 0) {
@@ -221,6 +221,7 @@ int main(int argc, char *argv[]) {
                 else if (strcmp(command, "sign") == 0) dispatch_sign(NULL, argc, argv, optind + 1);
                 else if (strcmp(command, "debug") == 0) dispatch_debug(NULL, argc, argv, optind + 1);
                 else if (strcmp(command, "wall") == 0) dispatch_wall(NULL, argc, argv, optind + 1);
+                else if (strcmp(command, "follow") == 0) dispatch_follow(NULL, argc, argv, optind + 1);
                 return 1;
             }
         }
@@ -331,6 +332,9 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "wall") == 0) {
         result = dispatch_wall(g_engine, argc, argv, optind + 1);
+    }
+    else if (strcmp(command, "follow") == 0) {
+        result = dispatch_follow(g_engine, argc, argv, optind + 1);
     }
     else {
         fprintf(stderr, "Unknown command group: '%s'\n", command);

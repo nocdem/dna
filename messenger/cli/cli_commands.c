@@ -119,6 +119,22 @@ static void on_completion(dna_request_id_t request_id, int error, void *user_dat
     cli_wait_signal(wait, error);
 }
 
+static void on_following_list(dna_request_id_t request_id, int error,
+                              dna_following_t *following, int count, void *user_data) {
+    (void)request_id;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+
+    pthread_mutex_lock(&wait->mutex);
+    wait->result = error;
+    if (error == 0 && following && count > 0) {
+        wait->following = following;
+        wait->following_count = count;
+    }
+    wait->done = true;
+    pthread_cond_signal(&wait->cond);
+    pthread_mutex_unlock(&wait->mutex);
+}
+
 /* v0.3.0: on_identities_listed callback removed - single-user model */
 
 static void on_display_name(dna_request_id_t request_id, int error,
@@ -4796,9 +4812,6 @@ int dispatch_contact(dna_engine_t *engine, int argc, char **argv, int sub) {
     const char *subcmd = argv[sub];
     if (strcmp(subcmd, "list") == 0) {
         return cmd_contacts(engine);
-    } else if (strcmp(subcmd, "add") == 0) {
-        fprintf(stderr, "Direct add disabled — use 'contact request <fp> [message]' instead.\n");
-        return 1;
     } else if (strcmp(subcmd, "remove") == 0) {
         if (sub + 1 >= argc) { fprintf(stderr, "Usage: contact remove <fp>\n"); return 1; }
         return cmd_remove_contact(engine, argv[sub + 1]);
@@ -5443,9 +5456,6 @@ int dispatch_contact_repl(dna_engine_t *engine, const char *subcmd) {
     }
     if (strcmp(subcmd, "list") == 0) {
         return cmd_contacts(engine);
-    } else if (strcmp(subcmd, "add") == 0) {
-        fprintf(stderr, "Direct add disabled — use 'contact request <fp> [message]' instead.\n");
-        return 1;
     } else if (strcmp(subcmd, "remove") == 0) {
         char *fp = strtok(NULL, " \t");
         if (!fp) { fprintf(stderr, "Usage: contact remove <fp>\n"); return 1; }
@@ -6439,6 +6449,216 @@ int dispatch_wall_repl(dna_engine_t *engine, const char *subcmd) {
 }
 
 /* ============================================================================
+ * FOLLOW COMMANDS
+ * ============================================================================ */
+
+static int resolve_name_to_fp(dna_engine_t *engine, const char *identifier, char *fp_out) {
+    if (strlen(identifier) == 128) {
+        strncpy(fp_out, identifier, 128);
+        fp_out[128] = '\0';
+        return 0;
+    }
+
+    printf("Resolving name '%s'...\n", identifier);
+    cli_wait_t lookup_wait;
+    cli_wait_init(&lookup_wait);
+
+    dna_engine_lookup_name(engine, identifier, on_display_name, &lookup_wait);
+    int result = cli_wait_for(&lookup_wait);
+
+    if (result != 0 || strlen(lookup_wait.display_name) == 0) {
+        fprintf(stderr, "Error: Name '%s' not found in DHT\n", identifier);
+        cli_wait_destroy(&lookup_wait);
+        return -1;
+    }
+
+    strncpy(fp_out, lookup_wait.display_name, 128);
+    fp_out[128] = '\0';
+    cli_wait_destroy(&lookup_wait);
+    printf("Resolved to: %.16s...\n", fp_out);
+    return 0;
+}
+
+static int cmd_follow(dna_engine_t *engine, const char *identifier) {
+    if (!engine || !identifier) {
+        fprintf(stderr, "Usage: follow <name|fp>\n");
+        return 1;
+    }
+
+    char resolved_fp[129] = {0};
+    if (resolve_name_to_fp(engine, identifier, resolved_fp) != 0) return 1;
+
+    printf("Following %.16s...\n", resolved_fp);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_follow(engine, resolved_fp, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        fprintf(stderr, "Error: Failed to follow: %s\n", dna_engine_error_string(result));
+        return 1;
+    }
+
+    printf("Now following %.16s...\n", resolved_fp);
+    return 0;
+}
+
+static int cmd_unfollow(dna_engine_t *engine, const char *identifier) {
+    if (!engine || !identifier) {
+        fprintf(stderr, "Usage: follow remove <name|fp>\n");
+        return 1;
+    }
+
+    char resolved_fp[129] = {0};
+    if (resolve_name_to_fp(engine, identifier, resolved_fp) != 0) return 1;
+
+    printf("Unfollowing %.16s...\n", resolved_fp);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_unfollow(engine, resolved_fp, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        fprintf(stderr, "Error: Failed to unfollow: %s\n", dna_engine_error_string(result));
+        return 1;
+    }
+
+    printf("Unfollowed %.16s...\n", resolved_fp);
+    return 0;
+}
+
+static int cmd_following(dna_engine_t *engine) {
+    if (!engine) return 1;
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_get_following(engine, on_following_list, &wait);
+    int result = cli_wait_for(&wait);
+
+    if (result != 0) {
+        fprintf(stderr, "Error: Failed to get following list: %s\n", dna_engine_error_string(result));
+        cli_wait_destroy(&wait);
+        return 1;
+    }
+
+    if (wait.following_count == 0) {
+        printf("Not following anyone.\n");
+        cli_wait_destroy(&wait);
+        return 0;
+    }
+
+    printf("\n--- Following (%d) ---\n", wait.following_count);
+    for (int i = 0; i < wait.following_count; i++) {
+        time_t ts = (time_t)wait.following[i].followed_at;
+        char time_str[64];
+        struct tm *tm = localtime(&ts);
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm);
+        printf("  %d. %.32s... (since %s)\n", i + 1, wait.following[i].fingerprint, time_str);
+    }
+    printf("\n");
+
+    if (wait.following) dna_free_following(wait.following, wait.following_count);
+    cli_wait_destroy(&wait);
+    return 0;
+}
+
+static int cmd_follow_sync_up(dna_engine_t *engine) {
+    if (!engine) return 1;
+
+    printf("Syncing follow list to DHT...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_sync_following_to_dht(engine, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        fprintf(stderr, "Error: Sync to DHT failed: %s\n", dna_engine_error_string(result));
+        return 1;
+    }
+
+    printf("Follow list synced to DHT.\n");
+    return 0;
+}
+
+static int cmd_follow_sync_down(dna_engine_t *engine) {
+    if (!engine) return 1;
+
+    printf("Syncing follow list from DHT...\n");
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_sync_following_from_dht(engine, on_completion, &wait);
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+
+    if (result != 0) {
+        fprintf(stderr, "Error: Sync from DHT failed: %s\n", dna_engine_error_string(result));
+        return 1;
+    }
+
+    printf("Follow list synced from DHT.\n");
+    return 0;
+}
+
+int dispatch_follow(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Follow — One-directional follow (no approval needed)\n\n");
+        fprintf(stderr, "  <name|fp>          Follow a user\n");
+        fprintf(stderr, "  list               List followed users\n");
+        fprintf(stderr, "  remove <name|fp>   Unfollow a user\n");
+        fprintf(stderr, "\n  Sync:\n");
+        fprintf(stderr, "  sync-up            Push follow list to DHT\n");
+        fprintf(stderr, "  sync-down          Pull follow list from DHT\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "list") == 0) {
+        return cmd_following(engine);
+    } else if (strcmp(subcmd, "remove") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: follow remove <name|fp>\n"); return 1; }
+        return cmd_unfollow(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "sync-up") == 0) {
+        return cmd_follow_sync_up(engine);
+    } else if (strcmp(subcmd, "sync-down") == 0) {
+        return cmd_follow_sync_down(engine);
+    } else {
+        /* Default: treat subcmd as the user to follow */
+        return cmd_follow(engine, subcmd);
+    }
+}
+
+int dispatch_follow_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Follow — <name|fp> | list | remove <name|fp> | sync-up | sync-down\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "list") == 0) {
+        return cmd_following(engine);
+    } else if (strcmp(subcmd, "remove") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) { fprintf(stderr, "Usage: follow remove <name|fp>\n"); return 1; }
+        return cmd_unfollow(engine, id);
+    } else if (strcmp(subcmd, "sync-up") == 0) {
+        return cmd_follow_sync_up(engine);
+    } else if (strcmp(subcmd, "sync-down") == 0) {
+        return cmd_follow_sync_down(engine);
+    } else {
+        return cmd_follow(engine, subcmd);
+    }
+}
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 
@@ -6530,6 +6750,10 @@ bool execute_command(dna_engine_t *engine, const char *line) {
     else if (strcmp(cmd, "wall") == 0) {
         char *subcmd = strtok(NULL, " \t");
         dispatch_wall_repl(engine, subcmd);
+    }
+    else if (strcmp(cmd, "follow") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_follow_repl(engine, subcmd);
     }
     else {
         printf("Unknown command group: %s\n", cmd);

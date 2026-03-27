@@ -361,28 +361,54 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    /* Build fingerprint list: own + all contacts */
+    /* Build fingerprint list: own + contacts + following */
     if (contacts_db_init(engine->fingerprint) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Timeline: contacts_db_init failed, using own wall only");
     }
+    following_db_init(engine->fingerprint);
 
     contact_list_t *list = NULL;
     contacts_db_list(&list);
 
-    size_t fp_count = 1 + (list ? list->count : 0);
+    following_list_t *follow_list = NULL;
+    following_db_list(&follow_list);
+
+    size_t contact_count = list ? list->count : 0;
+    size_t follow_count = follow_list ? follow_list->count : 0;
+    size_t fp_count = 1 + contact_count + follow_count;
     const char **fingerprints = calloc(fp_count, sizeof(const char *));
     if (!fingerprints) {
         if (list) contacts_db_free_list(list);
+        if (follow_list) following_db_free_list(follow_list);
         task->callback.wall_posts(task->request_id, DNA_ERROR_INTERNAL,
                                   NULL, 0, task->user_data);
         return;
     }
 
     fingerprints[0] = engine->fingerprint;
+    size_t idx = 1;
     if (list) {
         for (size_t i = 0; i < list->count; i++) {
-            fingerprints[1 + i] = list->contacts[i].identity;
+            fingerprints[idx++] = list->contacts[i].identity;
         }
+    }
+
+    /* Add followed users (skip duplicates with contacts) */
+    if (follow_list) {
+        for (size_t i = 0; i < follow_list->count; i++) {
+            const char *fp = follow_list->entries[i].fingerprint;
+            bool dup = false;
+            for (size_t j = 0; j < idx; j++) {
+                if (fingerprints[j] && strcmp(fingerprints[j], fp) == 0) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                fingerprints[idx++] = fp;
+            }
+        }
+        fp_count = idx;  /* Adjust for skipped duplicates */
     }
 
     /* Debug: log fingerprint list for timeline query */
@@ -446,6 +472,7 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
 
     free(fingerprints);
     if (list) contacts_db_free_list(list);
+    if (follow_list) following_db_free_list(follow_list);
 
     if (cache_ret != 0 || !cached_posts || cached_count == 0) {
         /* Empty timeline */
@@ -496,24 +523,50 @@ void dna_handle_wall_timeline_cached(dna_engine_t *engine, dna_task_t *task) {
     if (contacts_db_init(fingerprint) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Timeline cached: contacts_db_init failed, using own wall only");
     }
+    following_db_init(fingerprint);
 
     contact_list_t *list = NULL;
     contacts_db_list(&list);
 
-    size_t fp_count = 1 + (list ? list->count : 0);
+    following_list_t *follow_list = NULL;
+    following_db_list(&follow_list);
+
+    size_t contact_count = list ? list->count : 0;
+    size_t follow_count = follow_list ? follow_list->count : 0;
+    size_t fp_count = 1 + contact_count + follow_count;
     const char **fingerprints = calloc(fp_count, sizeof(const char *));
     if (!fingerprints) {
         if (list) contacts_db_free_list(list);
+        if (follow_list) following_db_free_list(follow_list);
         task->callback.wall_posts(task->request_id, DNA_ERROR_INTERNAL,
                                   NULL, 0, task->user_data);
         return;
     }
 
     fingerprints[0] = fingerprint;
+    size_t idx = 1;
     if (list) {
         for (size_t i = 0; i < list->count; i++) {
-            fingerprints[1 + i] = list->contacts[i].identity;
+            fingerprints[idx++] = list->contacts[i].identity;
         }
+    }
+
+    /* Add followed users (skip duplicates with contacts) */
+    if (follow_list) {
+        for (size_t i = 0; i < follow_list->count; i++) {
+            const char *fp = follow_list->entries[i].fingerprint;
+            bool dup = false;
+            for (size_t j = 0; j < idx; j++) {
+                if (fingerprints[j] && strcmp(fingerprints[j], fp) == 0) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                fingerprints[idx++] = fp;
+            }
+        }
+        fp_count = idx;
     }
 
     /* Read from cache only — no staleness check, no DHT refresh */
@@ -524,6 +577,7 @@ void dna_handle_wall_timeline_cached(dna_engine_t *engine, dna_task_t *task) {
 
     free(fingerprints);
     if (list) contacts_db_free_list(list);
+    if (follow_list) following_db_free_list(follow_list);
 
     if (cache_ret != 0 || !cached_posts || cached_count == 0) {
         if (cached_posts) wall_cache_free_posts(cached_posts, cached_count);

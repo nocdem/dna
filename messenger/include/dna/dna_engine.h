@@ -104,6 +104,14 @@ typedef struct {
 } dna_contact_t;
 
 /**
+ * Following entry (one-directional follow)
+ */
+typedef struct {
+    char fingerprint[129];      /* Followed user's fingerprint */
+    uint64_t followed_at;       /* Unix timestamp when followed */
+} dna_following_t;
+
+/**
  * Contact request information (ICQ-style request)
  */
 typedef struct {
@@ -422,6 +430,18 @@ typedef void (*dna_contacts_cb)(
     dna_request_id_t request_id,
     int error,
     dna_contact_t *contacts,
+    int count,
+    void *user_data
+);
+
+/**
+ * Following list callback
+ * Caller takes ownership of @p following - free with dna_free_following()
+ */
+typedef void (*dna_following_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_following_t *following,
     int count,
     void *user_data
 );
@@ -3597,6 +3617,77 @@ DNA_API dna_request_id_t dna_engine_channel_sync_subs_to_dht(dna_engine_t *engin
 
 DNA_API dna_request_id_t dna_engine_channel_sync_subs_from_dht(dna_engine_t *engine,
     dna_completion_cb callback, void *user_data);
+
+/* ============================================================================
+ * FOLLOWING (one-directional follow, v0.9.126+)
+ * ============================================================================ */
+
+/**
+ * Follow a user (one-directional, no approval needed)
+ *
+ * @param engine     Engine instance
+ * @param fingerprint 128-char hex fingerprint of user to follow
+ * @param callback   Completion callback
+ * @param user_data  User data for callback
+ */
+DNA_API dna_request_id_t dna_engine_follow(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Unfollow a user
+ *
+ * @param engine     Engine instance
+ * @param fingerprint 128-char hex fingerprint of user to unfollow
+ * @param callback   Completion callback
+ * @param user_data  User data for callback
+ */
+DNA_API dna_request_id_t dna_engine_unfollow(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get list of followed users
+ * Caller takes ownership of the result — free with dna_free_following()
+ *
+ * @param engine     Engine instance
+ * @param callback   Following list callback
+ * @param user_data  User data for callback
+ */
+DNA_API dna_request_id_t dna_engine_get_following(
+    dna_engine_t *engine,
+    dna_following_cb callback,
+    void *user_data
+);
+
+/**
+ * Free following list returned by dna_engine_get_following
+ */
+DNA_API void dna_free_following(dna_following_t *following, int count);
+
+/**
+ * Sync follow list to DHT (encrypted, private)
+ */
+DNA_API dna_request_id_t dna_engine_sync_following_to_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Sync follow list from DHT (restore from backup)
+ */
+DNA_API dna_request_id_t dna_engine_sync_following_from_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
 
 /* ============================================================================
  * SIGNING (for QR Auth and external authentication)

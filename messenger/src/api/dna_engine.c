@@ -1249,6 +1249,23 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_CHANNEL_SYNC_SUBS_FROM_DHT:
             dna_handle_channel_sync_subs_from_dht(engine, task);
             break;
+
+        /* Follow system */
+        case TASK_FOLLOW:
+            dna_handle_follow(engine, task);
+            break;
+        case TASK_UNFOLLOW:
+            dna_handle_unfollow(engine, task);
+            break;
+        case TASK_GET_FOLLOWING:
+            dna_handle_get_following(engine, task);
+            break;
+        case TASK_SYNC_FOLLOWING_TO_DHT:
+            dna_handle_sync_following_to_dht(engine, task);
+            break;
+        case TASK_SYNC_FOLLOWING_FROM_DHT:
+            dna_handle_sync_following_from_dht(engine, task);
+            break;
     }
 }
 

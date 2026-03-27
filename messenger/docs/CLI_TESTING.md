@@ -57,7 +57,6 @@ $CLI identity refresh-profile <fp>             # Refresh profile from DHT
 
 # Contacts
 $CLI contact list                              # List contacts
-$CLI contact add <name|fp>                     # Add contact
 $CLI contact remove <fp>                       # Remove contact
 $CLI contact request <fp> [message]            # Send contact request
 $CLI contact requests                          # List pending requests
@@ -71,6 +70,13 @@ $CLI contact is-blocked <fp>                   # Check if user is blocked
 $CLI contact check-inbox <id>                  # Check inbox for contact
 $CLI contact sync-up                           # Sync contacts to DHT
 $CLI contact sync-down                         # Sync contacts from DHT
+
+# Following (one-directional, no approval needed)
+$CLI follow <name|fp>                          # Follow a user
+$CLI follow list                               # List followed users
+$CLI follow remove <name|fp>                   # Unfollow a user
+$CLI follow sync-up                            # Push follow list to DHT
+$CLI follow sync-down                          # Pull follow list from DHT
 
 # Messaging
 $CLI message send <name|fp> "message"          # Send message (use name or FULL fingerprint)

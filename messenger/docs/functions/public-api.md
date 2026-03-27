@@ -226,7 +226,32 @@ Named channels with flat text posts. Open posting, day-bucket discovery.
 | `dna_wall_comments_cb` | Callback for a list of wall comments: `void (*)(dna_wall_comment_info_t *comments, int count, int error, void *user_data)` |
 | `dna_wall_likes_cb` | Callback for a list of wall likes: `void (*)(dna_wall_like_info_t *likes, int count, int error, void *user_data)` |
 
-## 1.12 Backward Compatibility
+## 1.12 Follow API (v0.9.126+)
+
+One-directional follow system. No approval needed, private to owner.
+
+| Function | Description |
+|----------|-------------|
+| `dna_request_id_t dna_engine_follow(engine, fingerprint, cb, user_data)` | Follow a user (one-directional, no approval) |
+| `dna_request_id_t dna_engine_unfollow(engine, fingerprint, cb, user_data)` | Unfollow a user |
+| `dna_request_id_t dna_engine_get_following(engine, cb, user_data)` | Get list of followed users |
+| `void dna_free_following(dna_following_t*, int)` | Free following list |
+| `dna_request_id_t dna_engine_sync_following_to_dht(engine, cb, user_data)` | Push follow list to DHT (encrypted) |
+| `dna_request_id_t dna_engine_sync_following_from_dht(engine, cb, user_data)` | Pull follow list from DHT (restore) |
+
+**Data Types:**
+| Type | Description |
+|------|-------------|
+| `dna_following_t` | Following entry: `fingerprint[129]`, `followed_at` (uint64_t) |
+| `dna_following_cb` | Callback: `void (*)(req_id, error, dna_following_t *following, int count, void *user_data)` |
+
+**Notes:**
+- Follow list is private (encrypted with owner's Kyber1024 key in DHT)
+- Followed users' wall posts appear in timeline alongside contacts
+- DHT key: `SHA3-512(identity + ":followlist")`
+- BIP39 seed recovery restores follow list from DHT
+
+## 1.13 Backward Compatibility
 
 | Function | Description |
 |----------|-------------|
