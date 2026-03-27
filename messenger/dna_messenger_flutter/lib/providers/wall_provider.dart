@@ -150,6 +150,21 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     return _fetchAndAssemble(engine, myFp);
   }
 
+  /// Refresh from cache only (no DHT query, no boost, no engagement re-fetch).
+  /// Called after bg-refresh updates the cache — avoids redundant full timeline query.
+  Future<void> refreshFromCache() async {
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final myFp = ref.read(currentFingerprintProvider) ?? '';
+      if (myFp.isEmpty) return;
+      final posts = await engine.wallTimelineCached(myFp);
+      final items = await _assembleItems(posts, myFp);
+      state = AsyncValue.data(items);
+    } catch (_) {
+      // Cache read failed — keep current state
+    }
+  }
+
   /// Main fetch: get wall posts, return immediately WITHOUT engagement data,
   /// then fetch comments/likes in background and update state when ready.
   Future<List<WallFeedItem>> _fetchAndAssemble(

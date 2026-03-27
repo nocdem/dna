@@ -317,7 +317,9 @@ class EventHandler {
 
       case WallNewPostEvent(authorFingerprint: final author, postUuid: final uuid):
         logPrint('[DART-HANDLER] WallNewPostEvent: author=${author.length >= 16 ? author.substring(0, 16) : author}..., post=$uuid');
-        _ref.invalidate(wallTimelineProvider);
+        // Refresh from cache only — bg-refresh already updated the cache,
+        // no need for another full DHT timeline query + boost + engagement
+        _ref.read(wallTimelineProvider.notifier).refreshFromCache();
         break;
 
       case ChannelNewPostEvent(channelUuid: final uuid):
