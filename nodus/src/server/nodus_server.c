@@ -1505,8 +1505,11 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
         b->started_at = nodus_time_now_ms();
         b->key_count = n;
         b->keys = malloc((size_t)n * sizeof(nodus_key_t));
-        if (b->keys)
-            memcpy(b->keys, msg->batch_keys, (size_t)n * sizeof(nodus_key_t));
+        if (!b->keys) {
+            b->active = false;
+            goto send_response;
+        }
+        memcpy(b->keys, msg->batch_keys, (size_t)n * sizeof(nodus_key_t));
         b->vals_per_key = vals_per_key;   /* Transfer ownership */
         b->counts_per_key = counts_per_key;
         b->pending_forwards = 0;
@@ -2024,7 +2027,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             return;
 
         }
-        } else if (strcmp(msg.method, "get_batch") == 0) {
+
+        if (strcmp(msg.method, "get_batch") == 0) {
             /* Inter-node forwarded get_batch — local-only, no re-forward */
             if (msg.batch_key_count > 0 && msg.batch_key_count <= NODUS_MAX_BATCH_KEYS &&
                 msg.batch_keys) {
@@ -2059,6 +2063,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             }
             nodus_t2_msg_free(&msg);
             return;
+        }
 
         /* ch_rep, ring_check, ring_ack, ring_evict now go via TCP 4003 (channel server) */
 
