@@ -2021,6 +2021,51 @@ class DnaBindings {
   }
 
   // ---------------------------------------------------------------------------
+  // FOLLOWING
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_follow = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_follow');
+
+  int dna_engine_follow(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_follow(engine, fingerprint, callback, user_data);
+  }
+
+  late final _dna_engine_unfollow = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_unfollow');
+
+  int dna_engine_unfollow(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_unfollow(engine, fingerprint, callback, user_data);
+  }
+
+  late final _dna_engine_is_following = _lib.lookupFunction<
+      Bool Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      bool Function(Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_is_following');
+
+  bool dna_engine_is_following(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+  ) {
+    return _dna_engine_is_following(engine, fingerprint);
+  }
+
+  // ---------------------------------------------------------------------------
   // MESSAGING
   // ---------------------------------------------------------------------------
 

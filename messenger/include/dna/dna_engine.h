@@ -3683,6 +3683,15 @@ DNA_API dna_request_id_t dna_engine_get_following(
 DNA_API void dna_free_following(dna_following_t *following, int count);
 
 /**
+ * Check if following a user (synchronous, local DB check)
+ *
+ * @param engine      Engine instance
+ * @param fingerprint 128-char hex fingerprint to check
+ * @return            true if following, false otherwise
+ */
+DNA_API bool dna_engine_is_following(dna_engine_t *engine, const char *fingerprint);
+
+/**
  * Sync follow list to DHT (encrypted, private)
  */
 DNA_API dna_request_id_t dna_engine_sync_following_to_dht(

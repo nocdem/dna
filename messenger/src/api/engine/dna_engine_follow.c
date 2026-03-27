@@ -412,6 +412,16 @@ void dna_free_following(dna_following_t *following, int count) {
     free(following);
 }
 
+bool dna_engine_is_following(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine || !fingerprint || !engine->identity_loaded) return false;
+
+    if (following_db_init(engine->fingerprint) != 0) {
+        return false;
+    }
+
+    return following_db_exists(fingerprint);
+}
+
 dna_request_id_t dna_engine_sync_following_to_dht(
     dna_engine_t *engine,
     dna_completion_cb callback,

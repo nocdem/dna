@@ -423,6 +423,41 @@
       "name": {"type": "String"}
     }
   },
+  "wallSendContactRequest": "Send Contact Request",
+  "wallContactRequestSent": "Contact request sent to {name}",
+  "@wallContactRequestSent": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "wallContactRequestMessage": "Message (optional)",
+  "wallUnfriend": "Remove from Contacts",
+  "wallUnfriendConfirm": "Remove {name} from your contacts?",
+  "@wallUnfriendConfirm": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "wallUnfriended": "{name} removed from contacts",
+  "@wallUnfriended": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "wallFollow": "Follow",
+  "wallUnfollow": "Unfollow",
+  "wallFollowed": "Now following {name}",
+  "@wallFollowed": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "wallUnfollowed": "Unfollowed {name}",
+  "@wallUnfollowed": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
   "wallTip": "Tip",
   "wallTipTitle": "Tip this post",
   "wallTipAmount": "{amount} CPUNK",

@@ -491,17 +491,25 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
       BuildContext context, WidgetRef ref, WallFeedItem item) {
     final profile =
         ref.read(contactProfileCacheProvider)[item.post.authorFingerprint];
+    final myFp = ref.read(currentFingerprintProvider) ?? '';
+    final isOwn = item.post.authorFingerprint == myFp;
+    final authorFp = item.post.authorFingerprint;
+
+    // Check if author is a contact
+    final contacts = ref.read(contactsProvider).valueOrNull ?? [];
+    final isContact = contacts.any((c) => c.fingerprint == authorFp);
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.5,
-        maxChildSize: 0.8,
+      builder: (sheetContext) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        maxChildSize: 0.85,
         minChildSize: 0.3,
         expand: false,
-        builder: (context, scrollController) {
-          final theme = Theme.of(context);
+        builder: (sheetContext, scrollController) {
+          final theme = Theme.of(sheetContext);
+          final l10n = AppLocalizations.of(sheetContext);
           final name = item.authorDisplayName;
           final bio = profile?.bio ?? '';
 
@@ -550,7 +558,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                 ListTile(
                   leading: const FaIcon(FontAwesomeIcons.fingerprint,
                       size: 16),
-                  title: Text(item.post.authorFingerprint,
+                  title: Text(authorFp,
                       style: theme.textTheme.bodySmall
                           ?.copyWith(fontFamily: 'monospace'),
                       maxLines: 2,
@@ -581,11 +589,259 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                         size: 16),
                     title: Text(profile!.github),
                   ),
+                // Action buttons (only for other users)
+                if (!isOwn) ...[
+                  const SizedBox(height: DnaSpacing.lg),
+                  const Divider(),
+                  const SizedBox(height: DnaSpacing.sm),
+                  if (isContact) ...[
+                    // User is a contact — show Unfriend
+                    ListTile(
+                      leading: const FaIcon(FontAwesomeIcons.userMinus,
+                          size: 16),
+                      title: Text(l10n.wallUnfriend),
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        _confirmUnfriend(context, ref, authorFp, name);
+                      },
+                    ),
+                  ] else ...[
+                    // User is NOT a contact — show Contact Request + Follow/Unfollow
+                    ListTile(
+                      leading: const FaIcon(FontAwesomeIcons.userPlus,
+                          size: 16),
+                      title: Text(l10n.wallSendContactRequest),
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        _showContactRequestDialog(
+                            context, ref, authorFp, name);
+                      },
+                    ),
+                    _FollowTile(
+                      fingerprint: authorFp,
+                      displayName: name,
+                    ),
+                  ],
+                  // Block — always shown for other users
+                  ListTile(
+                    leading: FaIcon(FontAwesomeIcons.ban,
+                        size: 16, color: DnaColors.textWarning),
+                    title: Text(l10n.wallBlockUser,
+                        style: TextStyle(color: DnaColors.textWarning)),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      _confirmBlock(context, ref, item);
+                    },
+                  ),
+                ],
               ],
             ),
           );
         },
       ),
+    );
+  }
+
+  void _confirmUnfriend(BuildContext context, WidgetRef ref,
+      String fingerprint, String displayName) {
+    final l10n = AppLocalizations.of(context);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l10n.wallUnfriend),
+        content: Text(l10n.wallUnfriendConfirm(displayName)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              try {
+                final engine = await ref.read(engineProvider.future);
+                await engine.removeContact(fingerprint);
+                ref.invalidate(contactsProvider);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content:
+                          Text(l10n.wallUnfriended(displayName)),
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Failed: $e')),
+                  );
+                }
+              }
+            },
+            child: Text(l10n.wallUnfriend),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showContactRequestDialog(BuildContext context, WidgetRef ref,
+      String fingerprint, String displayName) {
+    final l10n = AppLocalizations.of(context);
+    final messageController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l10n.wallSendContactRequest),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(displayName,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w600)),
+            const SizedBox(height: DnaSpacing.md),
+            TextField(
+              controller: messageController,
+              decoration: InputDecoration(
+                hintText: l10n.wallContactRequestMessage,
+                border: const OutlineInputBorder(),
+              ),
+              maxLines: 2,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              try {
+                final engine = await ref.read(engineProvider.future);
+                final msg = messageController.text.trim();
+                await engine.sendContactRequest(
+                    fingerprint, msg.isEmpty ? null : msg);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                          l10n.wallContactRequestSent(displayName)),
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Failed: $e')),
+                  );
+                }
+              }
+            },
+            child: Text(l10n.addContactSendRequest),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Stateful follow/unfollow tile that checks following status via engine
+class _FollowTile extends ConsumerStatefulWidget {
+  final String fingerprint;
+  final String displayName;
+
+  const _FollowTile({
+    required this.fingerprint,
+    required this.displayName,
+  });
+
+  @override
+  ConsumerState<_FollowTile> createState() => _FollowTileState();
+}
+
+class _FollowTileState extends ConsumerState<_FollowTile> {
+  bool _isFollowing = false;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkFollowStatus();
+  }
+
+  Future<void> _checkFollowStatus() async {
+    try {
+      final engine = await ref.read(engineProvider.future);
+      // Check via database — the engine exposes following_db_exists via
+      // the get_following list. For simplicity, we just check the list.
+      // This is fast since it's a local SQLite query.
+      final result = engine.isFollowingUser(widget.fingerprint);
+      if (mounted) setState(() { _isFollowing = result; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _toggleFollow() async {
+    final l10n = AppLocalizations.of(context);
+    setState(() => _loading = true);
+    try {
+      final engine = await ref.read(engineProvider.future);
+      if (_isFollowing) {
+        await engine.unfollowUser(widget.fingerprint);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l10n.wallUnfollowed(widget.displayName))),
+          );
+        }
+      } else {
+        await engine.followUser(widget.fingerprint);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l10n.wallFollowed(widget.displayName))),
+          );
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _isFollowing = !_isFollowing;
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    if (_loading) {
+      return const ListTile(
+        leading: SizedBox(
+          width: 16, height: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+        title: Text('...'),
+      );
+    }
+    return ListTile(
+      leading: FaIcon(
+        _isFollowing ? FontAwesomeIcons.userCheck : FontAwesomeIcons.userPlus,
+        size: 16,
+      ),
+      title: Text(_isFollowing ? l10n.wallUnfollow : l10n.wallFollow),
+      onTap: _toggleFollow,
     );
   }
 }
