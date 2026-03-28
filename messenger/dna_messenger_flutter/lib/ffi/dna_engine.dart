@@ -6170,7 +6170,12 @@ class DnaEngine {
         Pointer<Utf8> imageJson, Pointer<Void> userData) {
       calloc.free(postUuidPtr);
       if (error == 0 && imageJson != nullptr) {
-        completer.complete(imageJson.toDartString());
+        try {
+          completer.complete(imageJson.toDartString());
+        } catch (_) {
+          // Corrupt UTF-8 in image JSON — skip this image
+          completer.complete(null);
+        }
       } else if (error == 0) {
         // Success but no image found
         completer.complete(null);

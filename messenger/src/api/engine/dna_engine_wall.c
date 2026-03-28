@@ -1772,13 +1772,29 @@ void dna_handle_wall_boost_timeline(dna_engine_t *engine, dna_task_t *task) {
         }
 
         if (!found) {
-            QGP_LOG_DEBUG(LOG_TAG, "Boost: could not resolve post %s from %s",
+            QGP_LOG_DEBUG(LOG_TAG, "Boost: could not resolve post %s from %s (orphan)",
                           target_uuid, fp);
+            /* Skip orphan pointers — don't store in cache */
+            continue;
         }
     }
 
-    /* Cache boost pointers for cache-first startup */
-    wall_cache_store_boosts(ptrs, ptr_count);
+    /* Cache only resolved boost pointers (skip orphans) */
+    if (result_count > 0) {
+        /* Build clean pointer array from resolved results */
+        dna_wall_boost_ptr_t *clean_ptrs = calloc((size_t)result_count,
+                                                    sizeof(dna_wall_boost_ptr_t));
+        if (clean_ptrs) {
+            for (int r = 0; r < result_count; r++) {
+                strncpy(clean_ptrs[r].uuid, results[r].uuid, 36);
+                strncpy(clean_ptrs[r].author_fingerprint,
+                        results[r].author_fingerprint, 128);
+                clean_ptrs[r].timestamp = results[r].timestamp;
+            }
+            wall_cache_store_boosts(clean_ptrs, (size_t)result_count);
+            free(clean_ptrs);
+        }
+    }
 
     dna_wall_boost_free(ptrs, ptr_count);
 
