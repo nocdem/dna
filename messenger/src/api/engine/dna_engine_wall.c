@@ -1429,6 +1429,12 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                     if (!need_dht_likes[i]) continue;
                     engagements[i].like_count = (int)results[i].count;
                     engagements[i].is_liked_by_me = results[i].has_mine;
+
+                    /* Cache the count so next call skips DHT */
+                    char count_json[32];
+                    snprintf(count_json, sizeof(count_json), "[]");
+                    wall_cache_store_likes(post_uuids[i], count_json,
+                                           (int)results[i].count);
                 }
                 nodus_ops_free_count_result(results, result_count);
             }
