@@ -8,6 +8,7 @@
 
 #include "core/nodus_media_storage.h"
 #include "crypto/utils/qgp_log.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -34,7 +35,8 @@ static const char *MEDIA_SCHEMA_SQL =
     "  chunk_index   INTEGER NOT NULL,"
     "  data          BLOB NOT NULL,"
     "  PRIMARY KEY (content_hash, chunk_index)"
-    ");";
+    ");"
+    "CREATE INDEX IF NOT EXISTS idx_media_meta_owner ON media_meta(owner_fp);";
 
 static const char *PUT_META_SQL =
     "INSERT OR IGNORE INTO media_meta "
@@ -103,6 +105,7 @@ int nodus_media_storage_open(sqlite3 *db, nodus_media_storage_t *ms) {
         sqlite3_prepare_v2(db, COUNT_CHUNKS_SQL, -1, &ms->stmt_count_chunks, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db, CLEANUP_EXPIRED_SQL, -1, &ms->stmt_cleanup_expired, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db, CLEANUP_INCOMPLETE_SQL, -1, &ms->stmt_cleanup_incomplete, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db, CLEANUP_EXPIRED_CHUNKS_SQL, -1, &ms->stmt_cleanup_orphan_chunks, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db, COUNT_PER_OWNER_SQL, -1, &ms->stmt_count_per_owner, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "statement preparation failed: %s", sqlite3_errmsg(db));
         nodus_media_storage_close(ms);
@@ -123,8 +126,9 @@ void nodus_media_storage_close(nodus_media_storage_t *ms) {
     if (ms->stmt_mark_complete)      sqlite3_finalize(ms->stmt_mark_complete);
     if (ms->stmt_count_chunks)       sqlite3_finalize(ms->stmt_count_chunks);
     if (ms->stmt_cleanup_expired)    sqlite3_finalize(ms->stmt_cleanup_expired);
-    if (ms->stmt_cleanup_incomplete) sqlite3_finalize(ms->stmt_cleanup_incomplete);
-    if (ms->stmt_count_per_owner)    sqlite3_finalize(ms->stmt_count_per_owner);
+    if (ms->stmt_cleanup_incomplete)    sqlite3_finalize(ms->stmt_cleanup_incomplete);
+    if (ms->stmt_cleanup_orphan_chunks) sqlite3_finalize(ms->stmt_cleanup_orphan_chunks);
+    if (ms->stmt_count_per_owner)       sqlite3_finalize(ms->stmt_count_per_owner);
     /* NOTE: We do NOT close ms->db — it is owned by the caller (main storage) */
     memset(ms, 0, sizeof(*ms));
 }
@@ -163,6 +167,8 @@ int nodus_media_put_chunk(nodus_media_storage_t *ms,
 
     sqlite3_stmt *s = ms->stmt_put_chunk;
     sqlite3_reset(s);
+
+    if (data_len > INT_MAX) return -1;
 
     sqlite3_bind_blob(s, 1, content_hash, 64, SQLITE_STATIC);
     sqlite3_bind_int(s, 2, (int)chunk_index);
@@ -230,14 +236,23 @@ int nodus_media_get_chunk(nodus_media_storage_t *ms,
     sqlite3_bind_int(s, 2, (int)chunk_index);
 
     int rc = sqlite3_step(s);
-    if (rc != SQLITE_ROW) return -1;
+    if (rc != SQLITE_ROW) {
+        sqlite3_reset(s);
+        return -1;
+    }
 
     const void *blob = sqlite3_column_blob(s, 0);
     int blob_len = sqlite3_column_bytes(s, 0);
-    if (!blob || blob_len <= 0) return -1;
+    if (!blob || blob_len <= 0) {
+        sqlite3_reset(s);
+        return -1;
+    }
 
     *data_out = malloc((size_t)blob_len);
-    if (!*data_out) return -1;
+    if (!*data_out) {
+        sqlite3_reset(s);
+        return -1;
+    }
 
     memcpy(*data_out, blob, (size_t)blob_len);
     *data_len_out = (size_t)blob_len;
@@ -316,7 +331,7 @@ int nodus_media_cleanup(nodus_media_storage_t *ms) {
         total_cleaned += sqlite3_changes(ms->db);
 
     /* 2. Delete incomplete uploads older than timeout */
-    uint64_t cutoff = now - NODUS_MEDIA_INCOMPLETE_TIMEOUT;
+    uint64_t cutoff = (now > NODUS_MEDIA_INCOMPLETE_TIMEOUT) ? now - NODUS_MEDIA_INCOMPLETE_TIMEOUT : 0;
     s = ms->stmt_cleanup_incomplete;
     sqlite3_reset(s);
     sqlite3_bind_int64(s, 1, (sqlite3_int64)cutoff);
@@ -327,11 +342,10 @@ int nodus_media_cleanup(nodus_media_storage_t *ms) {
 
     /* 3. Delete orphaned chunks (meta was deleted above) */
     if (total_cleaned > 0) {
-        char *err = NULL;
-        sqlite3_exec(ms->db, CLEANUP_EXPIRED_CHUNKS_SQL, NULL, NULL, &err);
-        if (err) {
-            QGP_LOG_WARN(LOG_TAG, "orphan chunk cleanup error: %s", err);
-            sqlite3_free(err);
+        sqlite3_reset(ms->stmt_cleanup_orphan_chunks);
+        rc = sqlite3_step(ms->stmt_cleanup_orphan_chunks);
+        if (rc != SQLITE_DONE) {
+            QGP_LOG_WARN(LOG_TAG, "orphan chunk cleanup error: %s", sqlite3_errmsg(ms->db));
         }
     }
 

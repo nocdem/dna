@@ -56,6 +56,7 @@ typedef struct {
     sqlite3_stmt *stmt_count_chunks;
     sqlite3_stmt *stmt_cleanup_expired;
     sqlite3_stmt *stmt_cleanup_incomplete;
+    sqlite3_stmt *stmt_cleanup_orphan_chunks;
     sqlite3_stmt *stmt_count_per_owner;
 } nodus_media_storage_t;
 
