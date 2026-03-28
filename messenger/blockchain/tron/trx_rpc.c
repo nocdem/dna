@@ -37,7 +37,22 @@
 
 /* Track last request time for rate limiting (shared across all TRON modules) */
 static uint64_t g_trx_last_request_ms = 0;
+
+#ifdef _WIN32
+static CRITICAL_SECTION g_trx_rate_cs;
+static LONG g_trx_rate_cs_init = 0;
+static void trx_rate_lock(void) {
+    if (InterlockedCompareExchange(&g_trx_rate_cs_init, 1, 0) == 0) {
+        InitializeCriticalSection(&g_trx_rate_cs);
+    }
+    EnterCriticalSection(&g_trx_rate_cs);
+}
+static void trx_rate_unlock(void) { LeaveCriticalSection(&g_trx_rate_cs); }
+#else
 static pthread_mutex_t g_trx_rate_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void trx_rate_lock(void)   { pthread_mutex_lock(&g_trx_rate_mutex); }
+static void trx_rate_unlock(void) { pthread_mutex_unlock(&g_trx_rate_mutex); }
+#endif
 
 /* RPC endpoints with fallbacks (defined in trx_wallet_create.c) */
 extern const char *g_trx_rpc_endpoints[];
@@ -54,18 +69,18 @@ static uint64_t trx_get_current_ms(void) {
 }
 
 void trx_rate_limit_delay(void) {
-    pthread_mutex_lock(&g_trx_rate_mutex);
+    trx_rate_lock();
     uint64_t now = trx_get_current_ms();
     uint64_t elapsed = now - g_trx_last_request_ms;
     if (elapsed < TRX_RPC_MIN_DELAY_MS && g_trx_last_request_ms > 0) {
         uint64_t delay = TRX_RPC_MIN_DELAY_MS - elapsed;
-        pthread_mutex_unlock(&g_trx_rate_mutex);
+        trx_rate_unlock();
         QGP_LOG_DEBUG(LOG_TAG, "Rate limiting: waiting %lu ms", (unsigned long)delay);
         qgp_platform_sleep_ms((unsigned int)delay);
-        pthread_mutex_lock(&g_trx_rate_mutex);
+        trx_rate_lock();
     }
     g_trx_last_request_ms = trx_get_current_ms();
-    pthread_mutex_unlock(&g_trx_rate_mutex);
+    trx_rate_unlock();
 }
 
 /* Response buffer for curl */

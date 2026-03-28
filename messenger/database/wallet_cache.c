@@ -19,12 +19,32 @@
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <pthread.h>
+#endif
 
 #define LOG_TAG "WALLET_CACHE"
 
 static sqlite3 *g_db = NULL;
+
+#ifdef _WIN32
+static CRITICAL_SECTION g_wallet_cs;
+static LONG g_wallet_cs_init = 0;
+static void wallet_lock(void) {
+    if (InterlockedCompareExchange(&g_wallet_cs_init, 1, 0) == 0) {
+        InitializeCriticalSection(&g_wallet_cs);
+    }
+    EnterCriticalSection(&g_wallet_cs);
+}
+static void wallet_unlock(void) { LeaveCriticalSection(&g_wallet_cs); }
+#else
 static pthread_mutex_t g_wallet_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void wallet_lock(void)   { pthread_mutex_lock(&g_wallet_mutex); }
+static void wallet_unlock(void) { pthread_mutex_unlock(&g_wallet_mutex); }
+#endif
 
 /* ── Internal helpers ──────────────────────────────────────────────── */
 
@@ -136,13 +156,13 @@ int wallet_cache_init(void) {
 }
 
 void wallet_cache_close(void) {
-    pthread_mutex_lock(&g_wallet_mutex);
+    wallet_lock();
     if (g_db) {
         sqlite3_close(g_db);
         g_db = NULL;
         QGP_LOG_DEBUG(LOG_TAG, "Wallet cache closed");
     }
-    pthread_mutex_unlock(&g_wallet_mutex);
+    wallet_unlock();
 }
 
 /* ── Balance operations ────────────────────────────────────────────── */
