@@ -14,6 +14,7 @@
 
 #include "nodus/nodus_types.h"
 #include "core/nodus_value.h"
+#include "core/nodus_media_storage.h"
 #include "channel/nodus_hashring.h"
 #include "channel/nodus_channel_store.h"
 
@@ -115,6 +116,38 @@ int nodus_t2_ch_get(uint32_t txn, const uint8_t *token,
 int nodus_t2_ch_list_ok(uint32_t txn,
                          const nodus_channel_meta_t *metas, size_t count,
                          uint8_t *buf, size_t cap, size_t *out_len);
+
+/* ── Media operations (Client → Nodus) ──────────────────────────── */
+
+int nodus_t2_media_put(uint32_t txn, const uint8_t *token,
+                       const uint8_t content_hash[64],
+                       uint32_t chunk_index, uint32_t chunk_count,
+                       uint64_t total_size, uint8_t media_type,
+                       uint32_t ttl, bool encrypted,
+                       const uint8_t *data, size_t data_len,
+                       const nodus_sig_t *sig,
+                       uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_media_get_meta(uint32_t txn, const uint8_t *token,
+                            const uint8_t content_hash[64],
+                            uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_media_get_chunk(uint32_t txn, const uint8_t *token,
+                             const uint8_t content_hash[64],
+                             uint32_t chunk_index,
+                             uint8_t *buf, size_t cap, size_t *out_len);
+
+/* ── Media responses (Nodus → Client) ───────────────────────────── */
+
+int nodus_t2_media_put_ok(uint32_t txn, uint32_t chunk_index, bool complete,
+                          uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_media_meta_result(uint32_t txn, const nodus_media_meta_t *meta,
+                               uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_media_chunk_result(uint32_t txn, uint32_t chunk_index,
+                                const uint8_t *data, size_t data_len,
+                                uint8_t *buf, size_t cap, size_t *out_len);
 
 /* ── Batch operations (Client → Nodus) ──────────────────────────── */
 
@@ -399,6 +432,16 @@ typedef struct {
     size_t         *batch_counts;     /* count_batch: value count per key (heap) */
     bool           *batch_has_mine;   /* count_batch: client has value for key (heap) */
     nodus_key_t     batch_caller_fp;  /* count_batch: caller fingerprint */
+
+    /* Media fields */
+    uint8_t         media_hash[64];       /* content_hash (SHA3-512) */
+    uint32_t        media_chunk_idx;      /* chunk index */
+    uint32_t        media_chunk_count;    /* total chunks (chunk 0 only) */
+    uint64_t        media_total_size;     /* total bytes (chunk 0 only) */
+    uint8_t         media_type;           /* 0=image, 1=video, 2=audio */
+    bool            media_encrypted;      /* true=DM/group, false=wall */
+    bool            media_complete;       /* put_ok: all chunks received? */
+    bool            has_media;            /* true if media fields present */
 
     /* Error */
     int             error_code;

@@ -192,6 +192,76 @@ int nodus_t2_servers(uint32_t txn, const uint8_t *token,
     return finish(&enc, out_len);
 }
 
+/* ── Media operations (Client → Nodus) ──────────────────────────── */
+
+int nodus_t2_media_put(uint32_t txn, const uint8_t *token,
+                       const uint8_t content_hash[64],
+                       uint32_t chunk_index, uint32_t chunk_count,
+                       uint64_t total_size, uint8_t media_type,
+                       uint32_t ttl, bool encrypted,
+                       const uint8_t *data, size_t data_len,
+                       const nodus_sig_t *sig,
+                       uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "m_put");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 10);
+    cbor_encode_cstr(&enc, "mh");
+    cbor_encode_bstr(&enc, content_hash, 64);
+    cbor_encode_cstr(&enc, "ci");
+    cbor_encode_uint(&enc, chunk_index);
+    cbor_encode_cstr(&enc, "cc");
+    cbor_encode_uint(&enc, chunk_count);
+    cbor_encode_cstr(&enc, "tsz");
+    cbor_encode_uint(&enc, total_size);
+    cbor_encode_cstr(&enc, "mt");
+    cbor_encode_uint(&enc, media_type);
+    cbor_encode_cstr(&enc, "ttl");
+    cbor_encode_uint(&enc, ttl);
+    cbor_encode_cstr(&enc, "menc");
+    cbor_encode_bool(&enc, encrypted);
+    cbor_encode_cstr(&enc, "d");
+    cbor_encode_bstr(&enc, data, data_len);
+    cbor_encode_cstr(&enc, "sig");
+    cbor_encode_bstr(&enc, sig->bytes, NODUS_SIG_BYTES);
+    cbor_encode_cstr(&enc, "mfl");
+    cbor_encode_bool(&enc, true);  /* media flag — marks as media message */
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_media_get_meta(uint32_t txn, const uint8_t *token,
+                            const uint8_t content_hash[64],
+                            uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "m_meta");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "mh");
+    cbor_encode_bstr(&enc, content_hash, 64);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_media_get_chunk(uint32_t txn, const uint8_t *token,
+                             const uint8_t content_hash[64],
+                             uint32_t chunk_index,
+                             uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "m_chunk");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "mh");
+    cbor_encode_bstr(&enc, content_hash, 64);
+    cbor_encode_cstr(&enc, "ci");
+    cbor_encode_uint(&enc, chunk_index);
+    return finish(&enc, out_len);
+}
+
 /* ── Batch operations (Client → Nodus) ──────────────────────────── */
 
 int nodus_t2_get_batch(uint32_t txn, const uint8_t *token,
@@ -678,6 +748,61 @@ int nodus_t2_listen_ok(uint32_t txn,
     enc_response_header(&enc, 4, txn, "listen_ok");
     cbor_encode_cstr(&enc, "r");
     cbor_encode_map(&enc, 0);
+    return finish(&enc, out_len);
+}
+
+/* ── Media responses (Nodus → Client) ───────────────────────────── */
+
+int nodus_t2_media_put_ok(uint32_t txn, uint32_t chunk_index, bool complete,
+                          uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "m_put_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ci");
+    cbor_encode_uint(&enc, chunk_index);
+    cbor_encode_cstr(&enc, "cmp");
+    cbor_encode_bool(&enc, complete);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_media_meta_result(uint32_t txn, const nodus_media_meta_t *meta,
+                               uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "m_meta_r");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 7);
+    cbor_encode_cstr(&enc, "mh");
+    cbor_encode_bstr(&enc, meta->content_hash, 64);
+    cbor_encode_cstr(&enc, "mt");
+    cbor_encode_uint(&enc, meta->media_type);
+    cbor_encode_cstr(&enc, "tsz");
+    cbor_encode_uint(&enc, meta->total_size);
+    cbor_encode_cstr(&enc, "cc");
+    cbor_encode_uint(&enc, meta->chunk_count);
+    cbor_encode_cstr(&enc, "menc");
+    cbor_encode_bool(&enc, meta->encrypted);
+    cbor_encode_cstr(&enc, "ttl");
+    cbor_encode_uint(&enc, meta->ttl);
+    cbor_encode_cstr(&enc, "cmp");
+    cbor_encode_bool(&enc, meta->complete);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_media_chunk_result(uint32_t txn, uint32_t chunk_index,
+                                const uint8_t *data, size_t data_len,
+                                uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "m_chunk_r");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ci");
+    cbor_encode_uint(&enc, chunk_index);
+    cbor_encode_cstr(&enc, "d");
+    cbor_encode_bstr(&enc, data, data_len);
     return finish(&enc, out_len);
 }
 
@@ -1410,6 +1535,60 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
                         memcpy(msg->ch_mu_target_fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                 }
+                /* mh (media: content hash SHA3-512) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "mh", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 64) {
+                        memcpy(msg->media_hash, val.bstr.ptr, 64);
+                        msg->has_media = true;
+                    }
+                }
+                /* ci (media: chunk index) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "ci", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->media_chunk_idx = (uint32_t)val.uint_val;
+                        msg->has_media = true;
+                    }
+                }
+                /* cc (media: chunk count) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "cc", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->media_chunk_count = (uint32_t)val.uint_val;
+                        msg->has_media = true;
+                    }
+                }
+                /* tsz (media: total size) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "tsz", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->media_total_size = val.uint_val;
+                        msg->has_media = true;
+                    }
+                }
+                /* mt (media: media type) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "mt", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->media_type = (uint8_t)val.uint_val;
+                        msg->has_media = true;
+                    }
+                }
+                /* menc (media: encrypted flag) */
+                else if (akey.tstr.len == 4 && memcmp(akey.tstr.ptr, "menc", 4) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BOOL) {
+                        msg->media_encrypted = val.bool_val;
+                        msg->has_media = true;
+                    }
+                }
+                /* mfl (media flag — marks message as media) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "mfl", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BOOL && val.bool_val)
+                        msg->has_media = true;
+                }
                 /* ks (get_batch / cnt_batch: key array) */
                 else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "ks", 2) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
@@ -1929,6 +2108,79 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BOOL)
                         msg->ring_agree = val.bool_val;
+                }
+                /* mh (media response: content hash) */
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "mh", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 64) {
+                        memcpy(msg->media_hash, val.bstr.ptr, 64);
+                        msg->has_media = true;
+                    }
+                }
+                /* ci (media response: chunk index) */
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "ci", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->media_chunk_idx = (uint32_t)val.uint_val;
+                        msg->has_media = true;
+                    }
+                }
+                /* cc (media response: chunk count) */
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "cc", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->media_chunk_count = (uint32_t)val.uint_val;
+                        msg->has_media = true;
+                    }
+                }
+                /* tsz (media response: total size) */
+                else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "tsz", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->media_total_size = val.uint_val;
+                        msg->has_media = true;
+                    }
+                }
+                /* mt (media response: media type) */
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "mt", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->media_type = (uint8_t)val.uint_val;
+                        msg->has_media = true;
+                    }
+                }
+                /* menc (media response: encrypted flag) */
+                else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "menc", 4) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BOOL) {
+                        msg->media_encrypted = val.bool_val;
+                        msg->has_media = true;
+                    }
+                }
+                /* cmp (media response: complete flag) */
+                else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "cmp", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BOOL) {
+                        msg->media_complete = val.bool_val;
+                        msg->has_media = true;
+                    }
+                }
+                /* d (media response: chunk data) */
+                else if (rkey.tstr.len == 1 && rkey.tstr.ptr[0] == 'd') {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len > 0) {
+                        msg->data = malloc(val.bstr.len);
+                        if (msg->data) {
+                            memcpy(msg->data, val.bstr.ptr, val.bstr.len);
+                            msg->data_len = val.bstr.len;
+                        }
+                    }
+                }
+                /* ttl (media response: TTL) */
+                else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "ttl", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->ttl = (uint32_t)val.uint_val;
                 }
                 /* code (error) */
                 else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "code", 4) == 0) {
