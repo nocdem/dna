@@ -114,9 +114,9 @@ int dht_dm_outbox_make_key(
  * Flow:
  * 1. Generate today's bucket key: sender_fp:outbox:recipient_fp:day
  * 2. Check local cache for existing messages
- * 3. If cache miss, fetch from DHT via dht_chunked_fetch()
+ * 3. If cache miss, fetch from DHT via nodus_ops_get()
  * 4. Append new message to bucket
- * 5. Publish updated bucket via dht_chunked_publish()
+ * 5. Publish updated bucket via nodus_ops_put()
  *
  * NOTE: No watermark fetching or pruning! TTL handles cleanup.
  *

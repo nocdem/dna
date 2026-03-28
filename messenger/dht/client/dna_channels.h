@@ -9,8 +9,8 @@
  * - Public index: "dna:channels:idx:" + YYYYMMDD -> multi-owner day buckets
  *
  * Patterns:
- * - Metadata uses dht_chunked_publish/fetch (single-owner, only creator can update)
- * - Posts use dht_chunked_fetch_mine/publish + dht_chunked_fetch_all (multi-owner)
+ * - Metadata uses nodus_ops_put/get (single-owner, only creator can update)
+ * - Posts use nodus_ops for multi-owner DHT storage
  * - Index uses multi-owner day-bucket pattern (same as dna_feed_index.c)
  *
  * Part of DNA Connect

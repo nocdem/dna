@@ -2,7 +2,7 @@
  * DHT Message Backup/Restore Implementation
  * Per-identity encrypted message backup with DHT storage
  *
- * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
+ * Uses nodus_ops for DHT storage and retrieval.
  */
 
 #include "dht_message_backup.h"
@@ -47,7 +47,7 @@
 /**
  * Generate base key string for message backup storage
  * Format: "fingerprint:message_backup"
- * The dht_chunked layer handles hashing internally
+ * Key is hashed via SHA3-512 for DHT storage
  */
 static int make_base_key(const char *fingerprint, char *key_out, size_t key_out_size) {
     if (!fingerprint || !key_out) {

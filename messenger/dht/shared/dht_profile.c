@@ -2,7 +2,7 @@
  * DHT Profile Storage Implementation
  * Public user profile data stored in DHT
  *
- * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
+ * Uses nodus_ops for DHT storage and retrieval.
  *
  * @file dht_profile.c
  * @author DNA Connect Team
@@ -205,7 +205,7 @@ static int deserialize_from_json(const char *json, dht_profile_t *profile_out) {
 /**
  * Generate base key string for profile storage
  * Format: "fingerprint:profile"
- * The dht_chunked layer handles hashing internally
+ * Key is hashed via SHA3-512 for DHT storage
  */
 static int make_base_key(const char *user_fingerprint, char *key_out, size_t key_out_size) {
     if (!user_fingerprint || !key_out) return -1;

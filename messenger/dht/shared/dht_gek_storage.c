@@ -2,9 +2,9 @@
  * @file dht_gek_storage.c
  * @brief DHT Storage for GEK Initial Key Packets
  *
- * Simplified implementation using the generic dht_chunked layer.
- * Handles publishing and fetching of large Initial Key Packets
+ * Handles publishing and fetching of Initial Key Packets
  * for Group Encryption Key (GEK) distribution via DHT.
+ * Uses nodus_ops for DHT storage and retrieval.
  *
  * Part of DNA Connect - GEK System
  *
@@ -95,7 +95,7 @@ int dht_gek_make_chunk_key(const char *group_uuid,
  * Serialize chunk to binary format
  *
  * Legacy function - kept for any code that still uses it directly.
- * New code should use dht_chunked_publish() which handles serialization internally.
+ * New code should use nodus_ops_put which handles serialization internally.
  */
 int dht_gek_serialize_chunk(const dht_gek_chunk_t *chunk,
                              uint8_t **serialized_out,
@@ -240,8 +240,7 @@ void dht_gek_free_chunk(dht_gek_chunk_t *chunk) {
 /**
  * Publish Initial Key Packet to DHT
  *
- * Uses the generic dht_chunked layer for automatic chunking,
- * compression, and parallel-friendly storage.
+ * Uses nodus_ops_put_str for DHT storage.
  */
 int dht_gek_publish(const char *group_uuid,
                     uint32_t gek_version,
@@ -277,8 +276,7 @@ int dht_gek_publish(const char *group_uuid,
 /**
  * Fetch Initial Key Packet from DHT
  *
- * Uses the generic dht_chunked layer for parallel fetching,
- * automatic reassembly, and decompression.
+ * Uses nodus_ops_get for DHT retrieval.
  */
 int dht_gek_fetch(const char *group_uuid,
                   uint32_t gek_version,

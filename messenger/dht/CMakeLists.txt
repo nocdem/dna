@@ -15,7 +15,6 @@ set(DHT_COMMON_SOURCES
     shared/dht_groups.c
     shared/dht_profile.c
     shared/dht_gek_storage.c  # GEK chunked storage
-    shared/dht_publish_queue.c  # Non-blocking publish queue (v0.6.80+)
     shared/dht_contact_request.c  # ICQ-style contact request system
     shared/dht_channel_subscriptions.c  # Channel subscription DHT sync
     shared/nodus_ops.c                  # Nodus v5 direct operations layer

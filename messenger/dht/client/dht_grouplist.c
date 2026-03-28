@@ -2,7 +2,7 @@
  * DHT Group List Synchronization Implementation
  * Per-identity encrypted group lists with DHT storage
  *
- * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
+ * Uses nodus_ops for DHT storage and retrieval.
  */
 
 #include "dht_grouplist.h"
@@ -44,7 +44,7 @@
 /**
  * Generate base key string for group list storage
  * Format: "identity:grouplist"
- * The dht_chunked layer handles hashing internally
+ * Key is hashed via SHA3-512 for DHT storage
  */
 static int make_base_key(const char *identity, char *key_out, size_t key_out_size) {
     if (!identity || !key_out) {

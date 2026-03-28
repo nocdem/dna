@@ -641,7 +641,7 @@ int dht_retrieve_queued_messages_from_contacts(
  * ============================================================================
  * PARALLEL MESSAGE RETRIEVAL (BATCH API)
  * ============================================================================
- * Uses dht_chunked_fetch_batch() to fetch all contacts' outboxes in parallel.
+ * Uses nodus_ops batch API to fetch all contacts' outboxes in parallel.
  * This provides 10-100x speedup compared to sequential fetching.
  *
  * Performance: 50 contacts sequential = ~12.5s, parallel = ~0.3s
