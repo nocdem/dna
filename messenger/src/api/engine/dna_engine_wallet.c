@@ -33,13 +33,9 @@ int blockchain_query_tx_status(const char *chain, const char *txhash, int *statu
  * WALLET TASK HANDLERS
  * ============================================================================ */
 
-/* Lazy-init wallet cache (called on first use) */
+/* Lazy-init wallet cache (thread-safe, wallet_cache_init has internal mutex) */
 static void ensure_wallet_cache(void) {
-    static int initialized = 0;
-    if (!initialized) {
-        wallet_cache_init();
-        initialized = 1;
-    }
+    wallet_cache_init();
 }
 
 void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {

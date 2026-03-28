@@ -19,10 +19,12 @@
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
+#include <pthread.h>
 
 #define LOG_TAG "WALLET_CACHE"
 
 static sqlite3 *g_db = NULL;
+static pthread_mutex_t g_wallet_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* ── Internal helpers ──────────────────────────────────────────────── */
 
@@ -134,11 +136,13 @@ int wallet_cache_init(void) {
 }
 
 void wallet_cache_close(void) {
+    pthread_mutex_lock(&g_wallet_mutex);
     if (g_db) {
         sqlite3_close(g_db);
         g_db = NULL;
         QGP_LOG_DEBUG(LOG_TAG, "Wallet cache closed");
     }
+    pthread_mutex_unlock(&g_wallet_mutex);
 }
 
 /* ── Balance operations ────────────────────────────────────────────── */
