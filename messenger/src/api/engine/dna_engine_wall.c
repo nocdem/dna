@@ -1243,8 +1243,9 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
         strncpy(engagements[i].post_uuid, post_uuids[i], 36);
         engagements[i].post_uuid[36] = '\0';
 
-        /* Try comments cache */
-        if (!wall_cache_is_stale_comments(post_uuids[i])) {
+        /* Try comments cache (serve even if stale — better than 0) */
+        {
+            bool comments_stale = wall_cache_is_stale_comments(post_uuids[i]);
             char *cached_json = NULL;
             int cached_count = 0;
             if (wall_cache_load_comments(post_uuids[i], &cached_json, &cached_count) == 0
@@ -1257,17 +1258,15 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                 }
                 free(cached_json);
             }
-            if (!engagements[i].comments) {
+            if (comments_stale) {
                 need_dht_comments[i] = true;
                 stale_comment_count++;
             }
-        } else {
-            need_dht_comments[i] = true;
-            stale_comment_count++;
         }
 
-        /* Try likes cache */
-        if (!wall_cache_is_stale_likes(post_uuids[i])) {
+        /* Try likes cache (serve even if stale — better than 0) */
+        {
+            bool likes_stale = wall_cache_is_stale_likes(post_uuids[i]);
             char *cached_json = NULL;
             int cached_count = 0;
             if (wall_cache_load_likes(post_uuids[i], &cached_json, &cached_count) == 0
@@ -1276,7 +1275,6 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                 int parsed = 0;
                 if (wall_like_infos_from_json(cached_json, &infos, &parsed) == 0) {
                     engagements[i].like_count = parsed;
-                    /* Check is_liked_by_me from parsed likes */
                     if (engine->identity_loaded) {
                         for (int k = 0; k < parsed; k++) {
                             if (strcmp(infos[k].author_fingerprint,
@@ -1290,13 +1288,10 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                 }
                 free(cached_json);
             }
-            if (engagements[i].like_count == 0 && !need_dht_likes[i]) {
-                /* Could be genuinely 0 likes (cached "[]") or parse failed */
-                /* Mark as "no DHT needed" — 0 is valid cached result */
+            if (likes_stale) {
+                need_dht_likes[i] = true;
+                stale_like_count++;
             }
-        } else {
-            need_dht_likes[i] = true;
-            stale_like_count++;
         }
     }
 

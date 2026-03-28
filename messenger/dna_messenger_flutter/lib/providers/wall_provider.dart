@@ -229,43 +229,60 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
         return item;
       }).toList();
     }
-    // Engagement is cache-first (v0.9.143+) — returns instantly if cached
-    await _refreshEngagementSync(wallPosts, myFp, engine, items);
+    // Fire-and-forget: engagement refresh in background.
+    // C side serves stale cache immediately + fetches DHT for stale entries.
+    // When done, update state with fresh data.
+    _refreshEngagementBg(wallPosts, myFp, engine);
     return items;
   }
 
-  /// Fetch engagement (comments/likes) synchronously and apply to items list.
-  /// Cache-first on C side (v0.9.143+) — returns instantly when cache is fresh.
-  Future<void> _refreshEngagementSync(
-      List<WallPost> posts, String myFp, DnaEngine engine,
-      List<WallFeedItem> items) async {
-    try {
-      final uuids = posts.map((p) => p.uuid).toList();
-      final engagements = await engine.wallGetEngagement(uuids);
+  /// Fetch engagement in background, update state when ready.
+  /// C side serves stale cache + refreshes from DHT for stale entries.
+  void _refreshEngagementBg(
+      List<WallPost> posts, String myFp, DnaEngine engine) {
+    () async {
+      try {
+        final uuids = posts.map((p) => p.uuid).toList();
+        final engagements = await engine.wallGetEngagement(uuids);
 
-      final engMap = <String, WallEngagement>{};
-      for (final e in engagements) {
-        engMap[e.postUuid] = e;
+        final current = state.valueOrNull;
+        if (current == null || current.isEmpty) return;
+
+        final engMap = <String, WallEngagement>{};
+        for (final e in engagements) {
+          engMap[e.postUuid] = e;
+        }
+
+        bool changed = false;
+        final updated = current.map((item) {
+          final eng = engMap[item.post.uuid];
+          if (eng == null) return item;
+
+          final newPreview = eng.comments.length <= 3
+              ? eng.comments
+              : eng.comments.sublist(0, 3);
+
+          if (eng.likeCount != item.likeCount ||
+              eng.comments.length != item.commentCount ||
+              eng.isLikedByMe != item.isLikedByMe) {
+            changed = true;
+            return item.copyWith(
+              likeCount: eng.likeCount,
+              isLikedByMe: eng.isLikedByMe,
+              commentCount: eng.comments.length,
+              previewComments: newPreview,
+            );
+          }
+          return item;
+        }).toList();
+
+        if (changed) {
+          state = AsyncData(updated);
+        }
+      } catch (_) {
+        // Silent fail — engagement refresh is best-effort
       }
-
-      for (var i = 0; i < items.length; i++) {
-        final eng = engMap[items[i].post.uuid];
-        if (eng == null) continue;
-
-        final newPreview = eng.comments.length <= 3
-            ? eng.comments
-            : eng.comments.sublist(0, 3);
-
-        items[i] = items[i].copyWith(
-          likeCount: eng.likeCount,
-          isLikedByMe: eng.isLikedByMe,
-          commentCount: eng.comments.length,
-          previewComments: newPreview,
-        );
-      }
-    } catch (_) {
-      // Engagement fetch failed — show posts without counts (0)
-    }
+    }();
   }
 
   /// Assemble WallFeedItems with profiles only — NO comment/like fetch.
