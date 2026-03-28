@@ -1352,3 +1352,174 @@ void nodus_ops_ch_disconnect(const uint8_t channel_uuid[16]) {
     }
     ch_pool_unlock();
 }
+
+/* ── Media Operations ─────────────────────────────────────────────── */
+
+#define LOG_TAG_MEDIA "MEDIA_OPS"
+
+int nodus_ops_media_put(const uint8_t content_hash[64],
+                        const uint8_t *data, size_t data_len,
+                        uint8_t media_type, bool encrypted, uint32_t ttl) {
+    if (!content_hash || !data || data_len == 0) return -1;
+
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
+
+    /* Dedup: check if already uploaded */
+    bool exists = false;
+    int rc = nodus_client_media_exists(c, content_hash, &exists);
+    if (rc == 0 && exists) {
+        QGP_LOG_INFO(LOG_TAG_MEDIA, "media already uploaded, skipping");
+        nodus_singleton_release();
+        return 0;
+    }
+
+    const nodus_identity_t *id = nodus_singleton_identity();
+    if (!id) {
+        nodus_singleton_release();
+        return -1;
+    }
+
+    uint32_t chunk_count = (uint32_t)((data_len + NODUS_OPS_MEDIA_CHUNK_SIZE - 1)
+                                       / NODUS_OPS_MEDIA_CHUNK_SIZE);
+
+    for (uint32_t i = 0; i < chunk_count; i++) {
+        size_t offset = (size_t)i * NODUS_OPS_MEDIA_CHUNK_SIZE;
+        size_t chunk_len = data_len - offset;
+        if (chunk_len > NODUS_OPS_MEDIA_CHUNK_SIZE)
+            chunk_len = NODUS_OPS_MEDIA_CHUNK_SIZE;
+
+        const uint8_t *chunk_data = data + offset;
+
+        /* Sign the chunk data */
+        nodus_sig_t sig;
+        if (nodus_sign(&sig, chunk_data, chunk_len, &id->sk) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_MEDIA, "failed to sign chunk %u", i);
+            nodus_singleton_release();
+            return -1;
+        }
+
+        bool complete = false;
+        rc = nodus_client_media_put(c, content_hash, i, chunk_count,
+                                    (uint64_t)data_len, media_type,
+                                    encrypted, ttl,
+                                    chunk_data, chunk_len,
+                                    &sig, &complete);
+        if (rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG_MEDIA, "media_put chunk %u/%u failed: %d",
+                          i, chunk_count, rc);
+            nodus_singleton_release();
+            return -1;
+        }
+
+        QGP_LOG_DEBUG(LOG_TAG_MEDIA, "uploaded chunk %u/%u (%zu bytes)%s",
+                      i, chunk_count, chunk_len, complete ? " [complete]" : "");
+
+        if (complete) break;
+    }
+
+    nodus_singleton_release();
+    QGP_LOG_INFO(LOG_TAG_MEDIA, "media upload done (%zu bytes, %u chunks)",
+                 data_len, chunk_count);
+    return 0;
+}
+
+int nodus_ops_media_get(const uint8_t content_hash[64],
+                        uint8_t **data_out, size_t *data_len_out) {
+    if (!content_hash || !data_out || !data_len_out) return -1;
+
+    *data_out = NULL;
+    *data_len_out = 0;
+
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
+
+    /* Fetch metadata */
+    nodus_media_meta_t meta;
+    int rc = nodus_client_media_get_meta(c, content_hash, &meta);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG_MEDIA, "media_get_meta failed: %d", rc);
+        nodus_singleton_release();
+        return -1;
+    }
+
+    if (meta.total_size == 0 || meta.chunk_count == 0) {
+        QGP_LOG_ERROR(LOG_TAG_MEDIA, "invalid meta: size=%" PRIu64 " chunks=%u",
+                      meta.total_size, meta.chunk_count);
+        nodus_singleton_release();
+        return -1;
+    }
+
+    uint8_t *buf = malloc(meta.total_size);
+    if (!buf) {
+        QGP_LOG_ERROR(LOG_TAG_MEDIA, "malloc failed for %" PRIu64 " bytes",
+                      meta.total_size);
+        nodus_singleton_release();
+        return -1;
+    }
+
+    size_t total_written = 0;
+    for (uint32_t i = 0; i < meta.chunk_count; i++) {
+        uint8_t *chunk_data = NULL;
+        size_t chunk_len = 0;
+
+        rc = nodus_client_media_get_chunk(c, content_hash, i,
+                                          &chunk_data, &chunk_len);
+        if (rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG_MEDIA, "media_get_chunk %u/%u failed: %d",
+                          i, meta.chunk_count, rc);
+            free(buf);
+            nodus_singleton_release();
+            return -1;
+        }
+
+        if (total_written + chunk_len > meta.total_size) {
+            QGP_LOG_ERROR(LOG_TAG_MEDIA, "chunk overflow: %zu + %zu > %" PRIu64,
+                          total_written, chunk_len, meta.total_size);
+            free(chunk_data);
+            free(buf);
+            nodus_singleton_release();
+            return -1;
+        }
+
+        memcpy(buf + total_written, chunk_data, chunk_len);
+        total_written += chunk_len;
+        free(chunk_data);
+    }
+
+    nodus_singleton_release();
+
+    *data_out = buf;
+    *data_len_out = total_written;
+    QGP_LOG_INFO(LOG_TAG_MEDIA, "media download done (%zu bytes, %u chunks)",
+                 total_written, meta.chunk_count);
+    return 0;
+}
+
+int nodus_ops_media_exists(const uint8_t content_hash[64], bool *exists) {
+    if (!content_hash || !exists) return -1;
+
+    *exists = false;
+
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c || !nodus_client_is_ready(c)) {
+        if (c) nodus_singleton_release();
+        return -1;
+    }
+
+    int rc = nodus_client_media_exists(c, content_hash, exists);
+    nodus_singleton_release();
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG_MEDIA, "media_exists failed: %d", rc);
+        return -1;
+    }
+
+    return 0;
+}

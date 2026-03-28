@@ -384,6 +384,36 @@ int nodus_ops_ch_unsubscribe(const uint8_t channel_uuid[16]);
  */
 void nodus_ops_ch_disconnect(const uint8_t channel_uuid[16]);
 
+/* ── Media Operations ──────────────────────────────────────────────── */
+
+#define NODUS_OPS_MEDIA_CHUNK_SIZE  (4 * 1024 * 1024)  /* 4MB per chunk */
+
+/**
+ * Upload media to Nodus DHT. Handles chunking, signing, dedup.
+ * content_hash is SHA3-512 of the data (caller computes beforehand).
+ *
+ * @return 0 on success, -1 on error
+ */
+int nodus_ops_media_put(const uint8_t content_hash[64],
+                        const uint8_t *data, size_t data_len,
+                        uint8_t media_type, bool encrypted, uint32_t ttl);
+
+/**
+ * Download media from Nodus DHT. Fetches meta, then all chunks, reassembles.
+ * Caller must free(*data_out).
+ *
+ * @return 0 on success, -1 on error
+ */
+int nodus_ops_media_get(const uint8_t content_hash[64],
+                        uint8_t **data_out, size_t *data_len_out);
+
+/**
+ * Check if media exists on Nodus (complete upload).
+ *
+ * @return 0 on success (exists set), -1 on error
+ */
+int nodus_ops_media_exists(const uint8_t content_hash[64], bool *exists);
+
 #ifdef __cplusplus
 }
 #endif
