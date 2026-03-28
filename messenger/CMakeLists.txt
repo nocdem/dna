@@ -180,6 +180,7 @@ if(BUILD_SHARED_LIB)
         src/api/engine/dna_engine_wall.c
         src/api/engine/dna_engine_wall_poll.c
         src/api/engine/dna_engine_follow.c
+        src/api/engine/dna_engine_media.c
         src/api/engine/dna_engine_presence.c
         src/api/engine/dna_engine_wallet.c
         src/api/engine/dna_engine_groups.c
@@ -267,6 +268,7 @@ else()
         src/api/engine/dna_engine_wall.c
         src/api/engine/dna_engine_wall_poll.c
         src/api/engine/dna_engine_follow.c
+        src/api/engine/dna_engine_media.c
         src/api/engine/dna_engine_presence.c
         src/api/engine/dna_engine_wallet.c
         src/api/engine/dna_engine_groups.c

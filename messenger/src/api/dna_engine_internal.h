@@ -181,7 +181,12 @@ typedef enum {
     TASK_UNFOLLOW,
     TASK_GET_FOLLOWING,
     TASK_SYNC_FOLLOWING_TO_DHT,
-    TASK_SYNC_FOLLOWING_FROM_DHT
+    TASK_SYNC_FOLLOWING_FROM_DHT,
+
+    /* Media operations (v0.9.146+) */
+    TASK_MEDIA_UPLOAD,
+    TASK_MEDIA_DOWNLOAD,
+    TASK_MEDIA_EXISTS
 } dna_task_type_t;
 
 /* ============================================================================
@@ -527,6 +532,26 @@ typedef union {
         char fingerprint[129];          /* User to follow/unfollow */
     } follow;
 
+    /* Media: Upload (v0.9.146+) */
+    struct {
+        uint8_t  *data;             /* Heap allocated, task owns */
+        size_t    data_len;
+        uint8_t   content_hash[64]; /* SHA3-512 computed by caller */
+        uint8_t   media_type;       /* 0=image, 1=video, 2=audio */
+        bool      encrypted;
+        uint32_t  ttl;
+    } media_upload;
+
+    /* Media: Download (v0.9.146+) */
+    struct {
+        uint8_t   content_hash[64];
+    } media_download;
+
+    /* Media: Exists check (v0.9.146+) */
+    struct {
+        uint8_t   content_hash[64];
+    } media_exists;
+
 } dna_task_params_t;
 
 /**
@@ -570,6 +595,9 @@ typedef union {
     dna_dex_swap_cb dex_swap;
     dna_tx_status_cb tx_status;
     dna_following_cb following;
+    dna_media_upload_cb media_upload;
+    dna_media_download_cb media_download;
+    dna_media_exists_cb media_exists;
 } dna_task_callback_t;
 
 /**
@@ -986,6 +1014,11 @@ void dna_handle_channel_get_posts(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_get_subscriptions(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_sync_subs_to_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_channel_sync_subs_from_dht(dna_engine_t *engine, dna_task_t *task);
+
+/* Media handlers (dna_engine_media.c) */
+void dna_handle_media_upload(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_media_download(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_media_exists(dna_engine_t *engine, dna_task_t *task);
 
 /* Follow handlers (dna_engine_follow.c) */
 void dna_handle_follow(dna_engine_t *engine, dna_task_t *task);

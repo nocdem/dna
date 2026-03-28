@@ -703,6 +703,40 @@ typedef void (*dna_wall_image_cb)(
 );
 
 /**
+ * Media: Upload callback (v0.9.146+)
+ * Called when media upload completes. content_hash is the SHA3-512 of the uploaded data.
+ */
+typedef void (*dna_media_upload_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const uint8_t content_hash[64],
+    void *user_data
+);
+
+/**
+ * Media: Download callback (v0.9.146+)
+ * Called with the downloaded data. Caller must copy data if needed beyond callback scope.
+ */
+typedef void (*dna_media_download_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const uint8_t *data,
+    size_t data_len,
+    void *user_data
+);
+
+/**
+ * Media: Exists callback (v0.9.146+)
+ * Called with whether the media exists (complete upload) on DHT.
+ */
+typedef void (*dna_media_exists_cb)(
+    dna_request_id_t request_id,
+    int error,
+    bool exists,
+    void *user_data
+);
+
+/**
  * Profile callback
  */
 typedef void (*dna_profile_cb)(
@@ -3747,6 +3781,62 @@ DNA_API dna_request_id_t dna_engine_sync_following_from_dht(
     dna_completion_cb callback,
     void *user_data
 );
+
+/* ============================================================================
+ * MEDIA OPERATIONS (v0.9.146+)
+ * ============================================================================ */
+
+/**
+ * Upload media to DHT. Data is chunked and uploaded automatically.
+ * content_hash must be pre-computed SHA3-512 of the data.
+ * The engine takes ownership of data (will be freed after upload).
+ *
+ * @param engine        Engine instance
+ * @param data          Media data (engine copies internally)
+ * @param data_len      Data length in bytes
+ * @param content_hash  SHA3-512 hash of the data (64 bytes)
+ * @param media_type    0=image, 1=video, 2=audio
+ * @param encrypted     Whether data is pre-encrypted
+ * @param ttl           TTL in seconds (0 = permanent)
+ * @param callback      Called on completion
+ * @param user_data     User data for callback
+ * @return              Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_media_upload(
+    dna_engine_t *engine,
+    const uint8_t *data, size_t data_len,
+    const uint8_t content_hash[64],
+    uint8_t media_type, bool encrypted, uint32_t ttl,
+    dna_media_upload_cb callback, void *user_data);
+
+/**
+ * Download media from DHT. Fetches all chunks and reassembles.
+ * Callback receives the complete data (caller must copy if needed).
+ *
+ * @param engine        Engine instance
+ * @param content_hash  SHA3-512 hash identifying the media (64 bytes)
+ * @param callback      Called with downloaded data
+ * @param user_data     User data for callback
+ * @return              Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_media_download(
+    dna_engine_t *engine,
+    const uint8_t content_hash[64],
+    dna_media_download_cb callback, void *user_data);
+
+/**
+ * Check if media exists (complete) on DHT.
+ *
+ * @param engine        Engine instance
+ * @param content_hash  SHA3-512 hash identifying the media (64 bytes)
+ * @param callback      Called with exists result
+ * @param user_data     User data for callback
+ * @return              Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_media_exists(
+    dna_engine_t *engine,
+    const uint8_t content_hash[64],
+    dna_media_exists_cb callback, void *user_data);
 
 /* ============================================================================
  * SIGNING (for QR Auth and external authentication)

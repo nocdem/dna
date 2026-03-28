@@ -833,6 +833,9 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_CHANNEL_SEARCH:
             free(task->params.channel_search.query);
             break;
+        case TASK_MEDIA_UPLOAD:
+            free(task->params.media_upload.data);
+            break;
         default:
             break;
     }
@@ -1259,6 +1262,17 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_SYNC_FOLLOWING_FROM_DHT:
             dna_handle_sync_following_from_dht(engine, task);
+            break;
+
+        /* Media operations */
+        case TASK_MEDIA_UPLOAD:
+            dna_handle_media_upload(engine, task);
+            break;
+        case TASK_MEDIA_DOWNLOAD:
+            dna_handle_media_download(engine, task);
+            break;
+        case TASK_MEDIA_EXISTS:
+            dna_handle_media_exists(engine, task);
             break;
     }
 }
