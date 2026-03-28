@@ -47,7 +47,10 @@ static void enc_response_header(cbor_encoder_t *enc, size_t map_count,
 
 static void enc_token(cbor_encoder_t *enc, const uint8_t *token) {
     cbor_encode_cstr(enc, "tok");
-    cbor_encode_bstr(enc, token, NODUS_SESSION_TOKEN_LEN);
+    if (token)
+        cbor_encode_bstr(enc, token, NODUS_SESSION_TOKEN_LEN);
+    else
+        cbor_encode_bstr(enc, (const uint8_t *)"", 0);
 }
 
 static int finish(cbor_encoder_t *enc, size_t *out_len) {

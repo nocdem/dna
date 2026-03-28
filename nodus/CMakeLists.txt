@@ -221,6 +221,10 @@ add_executable(test_tier2 tests/test_tier2.c)
 target_link_libraries(test_tier2 nodus dsa nodus)
 add_test(NAME test_tier2 COMMAND test_tier2)
 
+# Batch forward live test (not in ctest — requires running server)
+add_executable(test_batch_forward_live tests/test_batch_forward_live.c)
+target_link_libraries(test_batch_forward_live nodus dsa nodus)
+
 # Tier 3 protocol test (BFT CBOR)
 add_executable(test_tier3 tests/test_tier3.c)
 target_link_libraries(test_tier3 nodus dsa nodus)
