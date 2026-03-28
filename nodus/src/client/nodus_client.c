@@ -317,8 +317,16 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
 }
 
 static void client_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
-    (void)conn;
     nodus_client_t *client = (nodus_client_t *)ctx;
+    int sock_err = 0;
+    socklen_t elen = sizeof(sock_err);
+    if (conn && conn->fd >= 0)
+        getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, &sock_err, &elen);
+    QGP_LOG_WARN(LOG_TAG, "[DISCONNECT] server=%s:%d sock_err=%d idle=%lums",
+                 conn && conn->ip[0] ? conn->ip : "?",
+                 conn ? conn->port : 0,
+                 sock_err,
+                 conn ? (unsigned long)(now_ms() - conn->last_activity * 1000) : 0);
     client->conn = NULL;
 
     if (client->state == NODUS_CLIENT_READY ||

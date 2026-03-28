@@ -123,10 +123,23 @@ static void load_fallback_nodes(nodus_client_config_t *nconfig) {
 /**
  * Nodus client on_state_change callback — fires messenger status callback.
  */
+static const char *state_name(nodus_client_state_t s) {
+    switch (s) {
+        case NODUS_CLIENT_DISCONNECTED: return "DISCONNECTED";
+        case NODUS_CLIENT_CONNECTING:   return "CONNECTING";
+        case NODUS_CLIENT_AUTHENTICATING: return "AUTHENTICATING";
+        case NODUS_CLIENT_READY:        return "READY";
+        case NODUS_CLIENT_RECONNECTING: return "RECONNECTING";
+        default: return "UNKNOWN";
+    }
+}
+
 static void on_state_change(nodus_client_state_t old_state,
                             nodus_client_state_t new_state,
                             void *user_data) {
     (void)user_data;
+
+    QGP_LOG_INFO(LOG_TAG, "[STATE] %s → %s", state_name(old_state), state_name(new_state));
 
     if (!g_status_cb) return;
 
@@ -135,6 +148,7 @@ static void on_state_change(nodus_client_state_t old_state,
         g_status_cb(true, g_status_cb_data);
     } else if (old_state == NODUS_CLIENT_READY) {
         /* Actual disconnect — was connected, now lost connection */
+        QGP_LOG_WARN(LOG_TAG, "[DISCONNECT] Connection lost (was READY → %s)", state_name(new_state));
         g_status_cb(false, g_status_cb_data);
     }
     /* Ignore non-READY → non-READY transitions (DISCONNECTED→CONNECTING,
