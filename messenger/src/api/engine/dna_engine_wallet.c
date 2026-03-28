@@ -70,6 +70,32 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
+    /* Mark as loading to prevent concurrent derivation from other workers */
+    if (engine->wallets_loaded) {
+        /* Another worker just finished — return its result */
+        if (engine->blockchain_wallets) {
+            blockchain_wallet_list_t *list = engine->blockchain_wallets;
+            if (list->count > 0) {
+                wallets = calloc(list->count, sizeof(dna_wallet_t));
+                if (wallets) {
+                    for (size_t i = 0; i < list->count; i++) {
+                        strncpy(wallets[i].name, list->wallets[i].name, sizeof(wallets[i].name) - 1);
+                        strncpy(wallets[i].address, list->wallets[i].address, sizeof(wallets[i].address) - 1);
+                        if (list->wallets[i].type == BLOCKCHAIN_ETHEREUM)      wallets[i].sig_type = 100;
+                        else if (list->wallets[i].type == BLOCKCHAIN_SOLANA)   wallets[i].sig_type = 101;
+                        else if (list->wallets[i].type == BLOCKCHAIN_TRON)     wallets[i].sig_type = 102;
+                        else                                                    wallets[i].sig_type = 4;
+                        wallets[i].is_protected = list->wallets[i].is_encrypted;
+                    }
+                    count = (int)list->count;
+                }
+            }
+        }
+        task->callback.wallets(task->request_id, DNA_OK, wallets, count, task->user_data);
+        return;
+    }
+    engine->wallets_loaded = true;  /* Claim slot — prevents second worker from deriving */
+
     /* Derive wallets on-demand from mnemonic (seed-based only, no wallet files) */
     char mnemonic[512] = {0};
     if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) != DNA_OK) {
@@ -98,6 +124,7 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
 
     if (rc != 0 || !engine->blockchain_wallets) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to derive wallets from seed");
+        engine->wallets_loaded = false;  /* Release slot so next call can retry */
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }

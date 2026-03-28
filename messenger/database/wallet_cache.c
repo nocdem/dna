@@ -120,38 +120,47 @@ static int create_schema(void) {
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
 int wallet_cache_init(void) {
+    wallet_lock();
+
     if (g_db) {
+        wallet_unlock();
         return 0; /* Already initialized */
     }
 
     char db_path[512];
     if (get_db_path(db_path, sizeof(db_path)) != 0) {
+        wallet_unlock();
         return -1;
     }
 
-    int rc = sqlite3_open_v2(db_path, &g_db,
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open_v2(db_path, &db,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
         NULL);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s",
-                      g_db ? sqlite3_errmsg(g_db) : "unknown");
-        if (g_db) {
-            sqlite3_close(g_db);
-            g_db = NULL;
+                      db ? sqlite3_errmsg(db) : "unknown");
+        if (db) {
+            sqlite3_close(db);
         }
+        wallet_unlock();
         return -1;
     }
 
     /* WAL mode for concurrent read/write */
-    sqlite3_exec(g_db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+    sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+
+    g_db = db;
 
     if (create_schema() != 0) {
         sqlite3_close(g_db);
         g_db = NULL;
+        wallet_unlock();
         return -1;
     }
 
     QGP_LOG_INFO(LOG_TAG, "Wallet cache initialized: %s", db_path);
+    wallet_unlock();
     return 0;
 }
 
