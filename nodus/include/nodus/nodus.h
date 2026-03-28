@@ -131,6 +131,9 @@ typedef struct {
     int                    backoff_ms;
     uint64_t               reconnect_at; /* Unix ms when to reconnect */
 
+    /* Keepalive ping (prevents server idle sweep) */
+    uint64_t               last_ping_ms; /* Unix ms of last ping sent */
+
     /* Active subscriptions (for re-subscribe on reconnect) */
     nodus_key_t            listen_keys[NODUS_CLIENT_MAX_LISTENS];
     int                    listen_count;

@@ -95,6 +95,20 @@ static void *read_thread_fn(void *arg) {
         nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
         int rc = nodus_tcp_poll(tcp, 100);
 
+        /* Keepalive ping every 60s to prevent server idle sweep */
+        if (client->state == NODUS_CLIENT_READY) {
+            uint64_t now = now_ms();
+            if (now - client->last_ping_ms >= 60000) {
+                client->last_ping_ms = now;
+                uint8_t ping_buf[128];
+                size_t ping_len = 0;
+                uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+                if (nodus_t2_ping(txn, client->token, ping_buf, sizeof(ping_buf), &ping_len) == 0) {
+                    nodus_tcp_send(client->conn, ping_buf, ping_len);
+                }
+            }
+        }
+
         pthread_mutex_unlock(&client->poll_mutex);
 
         if (rc < 0 && atomic_load(&client->read_thread_stop))
@@ -451,6 +465,7 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
         return -1;
     }
 
+    client->last_ping_ms = now_ms();
     set_state(client, NODUS_CLIENT_READY);
 
     /* Re-subscribe after reconnect */

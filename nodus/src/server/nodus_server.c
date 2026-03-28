@@ -1992,7 +1992,7 @@ static void eviction_sweep(nodus_server_t *srv) {
 /* ── CRIT-4: TCP idle timeout sweep ──────────────────────────────── */
 
 #define IDLE_SWEEP_INTERVAL   30   /* seconds between sweeps */
-#define IDLE_TIMEOUT_AUTH     60   /* seconds for authenticated connections */
+#define IDLE_TIMEOUT_AUTH    180   /* seconds for authenticated connections (client pings every 60s) */
 #define IDLE_TIMEOUT_UNAUTH   15   /* seconds for unauthenticated connections */
 
 static void idle_timeout_sweep(nodus_server_t *srv) {
