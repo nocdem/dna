@@ -152,6 +152,7 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
 
   /// Refresh from cache only (no DHT query, no boost, no engagement re-fetch).
   /// Called after bg-refresh updates the cache — avoids redundant full timeline query.
+  /// Preserves existing engagement data (comments, likes) from current state.
   Future<void> refreshFromCache() async {
     try {
       final engine = await ref.read(engineProvider.future);
@@ -159,7 +160,31 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       if (myFp.isEmpty) return;
       final posts = await engine.wallTimelineCached(myFp);
       final items = await _assembleItems(posts, myFp);
-      state = AsyncValue.data(items);
+
+      // Preserve engagement data from current state
+      final current = state.valueOrNull;
+      if (current != null && current.isNotEmpty) {
+        final engMap = <String, WallFeedItem>{};
+        for (final item in current) {
+          engMap[item.post.uuid] = item;
+        }
+        final merged = items.map((item) {
+          final prev = engMap[item.post.uuid];
+          if (prev != null &&
+              (prev.commentCount > 0 || prev.likeCount > 0)) {
+            return item.copyWith(
+              commentCount: prev.commentCount,
+              previewComments: prev.previewComments,
+              likeCount: prev.likeCount,
+              isLikedByMe: prev.isLikedByMe,
+            );
+          }
+          return item;
+        }).toList();
+        state = AsyncValue.data(merged);
+      } else {
+        state = AsyncValue.data(items);
+      }
     } catch (_) {
       // Cache read failed — keep current state
     }
