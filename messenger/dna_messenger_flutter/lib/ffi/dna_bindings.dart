@@ -1223,6 +1223,34 @@ typedef DnaWallImageCbNative = Void Function(
 );
 typedef DnaWallImageCb = NativeFunction<DnaWallImageCbNative>;
 
+/// Media: Upload callback - Native (v0.9.146+)
+typedef DnaMediaUploadCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<Uint8> content_hash,
+  Pointer<Void> user_data,
+);
+typedef DnaMediaUploadCb = NativeFunction<DnaMediaUploadCbNative>;
+
+/// Media: Download callback - Native (v0.9.146+)
+typedef DnaMediaDownloadCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<Uint8> data,
+  Uint64 data_len,
+  Pointer<Void> user_data,
+);
+typedef DnaMediaDownloadCb = NativeFunction<DnaMediaDownloadCbNative>;
+
+/// Media: Exists callback - Native (v0.9.146+)
+typedef DnaMediaExistsCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Bool exists,
+  Pointer<Void> user_data,
+);
+typedef DnaMediaExistsCb = NativeFunction<DnaMediaExistsCbNative>;
+
 /// Event callback - Native
 typedef DnaEventCbNative = Void Function(
   Pointer<dna_event_t> event,
@@ -1464,6 +1492,28 @@ typedef DnaWallImageCbDart = void Function(
   int requestId,
   int error,
   Pointer<Utf8> imageJson,
+  Pointer<Void> userData,
+);
+
+typedef DnaMediaUploadCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<Uint8> contentHash,
+  Pointer<Void> userData,
+);
+
+typedef DnaMediaDownloadCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<Uint8> data,
+  int dataLen,
+  Pointer<Void> userData,
+);
+
+typedef DnaMediaExistsCbDart = void Function(
+  int requestId,
+  int error,
+  bool exists,
   Pointer<Void> userData,
 );
 
@@ -4224,6 +4274,75 @@ class DnaBindings {
   ) {
     return _dna_engine_wall_get_image(
         engine, postUuid, callback, userData);
+  }
+
+  // ===========================================================================
+  // MEDIA API (v0.9.146+)
+  // ===========================================================================
+
+  late final _dna_engine_media_upload = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<Uint8>, Uint64,
+          Pointer<Uint8>, Uint8, Bool, Uint32,
+          Pointer<DnaMediaUploadCb>, Pointer<Void>),
+      int Function(
+          Pointer<dna_engine_t>, Pointer<Uint8>, int,
+          Pointer<Uint8>, int, bool, int,
+          Pointer<DnaMediaUploadCb>, Pointer<Void>)>(
+      'dna_engine_media_upload');
+
+  int dna_engine_media_upload(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> data,
+    int dataLen,
+    Pointer<Uint8> contentHash,
+    int mediaType,
+    bool encrypted,
+    int ttl,
+    Pointer<DnaMediaUploadCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_media_upload(
+        engine, data, dataLen, contentHash, mediaType, encrypted, ttl,
+        callback, userData);
+  }
+
+  late final _dna_engine_media_download = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<Uint8>,
+          Pointer<DnaMediaDownloadCb>, Pointer<Void>),
+      int Function(
+          Pointer<dna_engine_t>, Pointer<Uint8>,
+          Pointer<DnaMediaDownloadCb>, Pointer<Void>)>(
+      'dna_engine_media_download');
+
+  int dna_engine_media_download(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> contentHash,
+    Pointer<DnaMediaDownloadCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_media_download(
+        engine, contentHash, callback, userData);
+  }
+
+  late final _dna_engine_media_exists = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<Uint8>,
+          Pointer<DnaMediaExistsCb>, Pointer<Void>),
+      int Function(
+          Pointer<dna_engine_t>, Pointer<Uint8>,
+          Pointer<DnaMediaExistsCb>, Pointer<Void>)>(
+      'dna_engine_media_exists');
+
+  int dna_engine_media_exists(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> contentHash,
+    Pointer<DnaMediaExistsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_media_exists(
+        engine, contentHash, callback, userData);
   }
 }
 

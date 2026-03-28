@@ -6206,6 +6206,191 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // MEDIA (v0.9.146+ — DHT media upload/download/exists)
+  // ---------------------------------------------------------------------------
+
+  /// Upload media to DHT.
+  /// [data] is the raw media bytes.
+  /// [contentHash] is the pre-computed SHA3-512 hash (64 bytes).
+  /// [mediaType] is 0=image, 1=video, 2=audio.
+  /// [encrypted] whether data is pre-encrypted.
+  /// [ttl] TTL in seconds (0 = permanent).
+  /// Returns the content hash as a hex string on success.
+  Future<String> mediaUpload(Uint8List data, Uint8List contentHash,
+      int mediaType, bool encrypted, int ttl) async {
+    if (contentHash.length != 64) {
+      throw ArgumentError('contentHash must be 64 bytes (SHA3-512)');
+    }
+
+    final completer = Completer<String>();
+    final localId = _nextLocalId++;
+
+    // Allocate native memory for data and contentHash
+    final dataPtr = calloc<Uint8>(data.length);
+    for (var i = 0; i < data.length; i++) {
+      dataPtr[i] = data[i];
+    }
+    final hashPtr = calloc<Uint8>(64);
+    for (var i = 0; i < 64; i++) {
+      hashPtr[i] = contentHash[i];
+    }
+
+    void onComplete(int requestId, int error, Pointer<Uint8> resultHash,
+        Pointer<Void> userData) {
+      calloc.free(dataPtr);
+      calloc.free(hashPtr);
+
+      if (error == 0 && resultHash != nullptr) {
+        // Convert 64 bytes to hex string
+        final hexBuf = StringBuffer();
+        for (var i = 0; i < 64; i++) {
+          hexBuf.write(resultHash[i].toRadixString(16).padLeft(2, '0'));
+        }
+        completer.complete(hexBuf.toString());
+      } else if (error == 0) {
+        completer.completeError(
+            DnaEngineException(-1, 'Media upload returned null hash'));
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaMediaUploadCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_media_upload(
+      _engine,
+      dataPtr,
+      data.length,
+      hashPtr,
+      mediaType,
+      encrypted,
+      ttl,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(dataPtr);
+      calloc.free(hashPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit media upload');
+    }
+
+    return completer.future;
+  }
+
+  /// Download media from DHT by content hash hex string.
+  /// Returns the raw media bytes.
+  Future<Uint8List> mediaDownload(String contentHashHex) async {
+    if (contentHashHex.length != 128) {
+      throw ArgumentError(
+          'contentHashHex must be 128 hex chars (64 bytes SHA3-512)');
+    }
+
+    final completer = Completer<Uint8List>();
+    final localId = _nextLocalId++;
+
+    // Convert hex string to 64 bytes
+    final hashPtr = calloc<Uint8>(64);
+    for (var i = 0; i < 64; i++) {
+      hashPtr[i] =
+          int.parse(contentHashHex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+
+    void onComplete(int requestId, int error, Pointer<Uint8> data,
+        int dataLen, Pointer<Void> userData) {
+      calloc.free(hashPtr);
+
+      if (error == 0 && data != nullptr && dataLen > 0) {
+        // Copy data before returning — C side may free after callback
+        final result = Uint8List(dataLen);
+        for (var i = 0; i < dataLen; i++) {
+          result[i] = data[i];
+        }
+        completer.complete(result);
+      } else if (error == 0) {
+        completer.completeError(
+            DnaEngineException(-1, 'Media download returned empty data'));
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaMediaDownloadCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_media_download(
+      _engine,
+      hashPtr,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(hashPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit media download');
+    }
+
+    return completer.future;
+  }
+
+  /// Check if media exists (complete) on DHT.
+  /// [contentHashHex] is the 128-char hex string (64 bytes SHA3-512).
+  Future<bool> mediaExists(String contentHashHex) async {
+    if (contentHashHex.length != 128) {
+      throw ArgumentError(
+          'contentHashHex must be 128 hex chars (64 bytes SHA3-512)');
+    }
+
+    final completer = Completer<bool>();
+    final localId = _nextLocalId++;
+
+    // Convert hex string to 64 bytes
+    final hashPtr = calloc<Uint8>(64);
+    for (var i = 0; i < 64; i++) {
+      hashPtr[i] =
+          int.parse(contentHashHex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+
+    void onComplete(
+        int requestId, int error, bool exists, Pointer<Void> userData) {
+      calloc.free(hashPtr);
+
+      if (error == 0) {
+        completer.complete(exists);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaMediaExistsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_media_exists(
+      _engine,
+      hashPtr,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(hashPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit media exists check');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
   // CLEANUP
   // ---------------------------------------------------------------------------
 
