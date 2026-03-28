@@ -66,6 +66,7 @@ set(NODUS_SOURCES
     src/core/nodus_value.c
     src/core/nodus_routing.c
     src/core/nodus_storage.c
+    src/core/nodus_media_storage.c
 
     # Protocol
     src/protocol/nodus_cbor.c
@@ -200,6 +201,11 @@ add_test(NAME test_routing COMMAND test_routing)
 add_executable(test_storage tests/test_storage.c)
 target_link_libraries(test_storage nodus dsa nodus)
 add_test(NAME test_storage COMMAND test_storage)
+
+# Media storage test
+add_executable(test_media_storage tests/test_media_storage.c)
+target_link_libraries(test_media_storage nodus dsa nodus)
+add_test(NAME test_media_storage COMMAND test_media_storage)
 
 # Hash ring test
 add_executable(test_hashring tests/test_hashring.c)
