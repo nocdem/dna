@@ -6,8 +6,11 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../design_system/design_system.dart';
 import '../ffi/dna_engine.dart';
 import '../l10n/app_localizations.dart';
+import '../models/media_ref.dart';
 import '../providers/engine_provider.dart';
 import '../providers/wall_provider.dart' show wallImageCache, wallImageCachePut;
+import '../services/media_service.dart';
+import '../utils/logger.dart';
 import '../utils/time_format.dart';
 
 /// Pure presentational widget — receives ALL data via constructor.
@@ -411,6 +414,7 @@ class _WallPostImageFallback extends StatelessWidget {
 }
 
 /// Lazy-loads image from SQLite cache via FFI when not in memory cache.
+/// Supports both legacy inline base64 image_json and new media_ref format.
 class _LazyWallPostImage extends ConsumerStatefulWidget {
   final String postUuid;
 
@@ -421,8 +425,13 @@ class _LazyWallPostImage extends ConsumerStatefulWidget {
 }
 
 class _LazyWallPostImageState extends ConsumerState<_LazyWallPostImage> {
+  static const String _tag = 'WALL_IMG';
+
   Uint8List? _imageBytes;
+  Uint8List? _thumbnailBytes;
+  MediaRef? _mediaRef;
   bool _loading = false;
+  bool _downloading = false;
   bool _failed = false;
 
   @override
@@ -451,8 +460,35 @@ class _LazyWallPostImageState extends ConsumerState<_LazyWallPostImage> {
         return;
       }
 
-      // Decode the JSON and extract base64 data
       final map = jsonDecode(imageJson) as Map<String, dynamic>;
+
+      // Check for new media_ref format
+      if (map['type'] == 'media_ref') {
+        final ref = MediaRef.fromJson(map);
+        if (ref == null) {
+          setState(() => _failed = true);
+          return;
+        }
+
+        // Show thumbnail immediately, then download full image
+        Uint8List? thumbBytes;
+        try {
+          if (ref.thumbnail.isNotEmpty) {
+            thumbBytes = base64Decode(ref.thumbnail);
+          }
+        } catch (_) {}
+
+        setState(() {
+          _mediaRef = ref;
+          _thumbnailBytes = thumbBytes;
+        });
+
+        // Auto-download full image
+        _downloadMediaRef(engine, ref);
+        return;
+      }
+
+      // Legacy inline base64 format
       final data = map['data'] as String?;
       if (data == null || data.isEmpty) {
         setState(() => _failed = true);
@@ -472,14 +508,118 @@ class _LazyWallPostImageState extends ConsumerState<_LazyWallPostImage> {
     }
   }
 
+  Future<void> _downloadMediaRef(DnaEngine engine, MediaRef ref) async {
+    if (_downloading) return;
+    _downloading = true;
+
+    try {
+      final mediaService = MediaService(engine);
+      final bytes = await mediaService.download(ref);
+      wallImageCachePut(widget.postUuid, bytes);
+
+      if (mounted) {
+        setState(() {
+          _imageBytes = bytes;
+          _downloading = false;
+        });
+      }
+    } catch (e) {
+      logError(_tag, 'Media download failed: $e');
+      if (mounted) {
+        setState(() {
+          _downloading = false;
+          _failed = _thumbnailBytes == null; // Only fail if no thumbnail
+        });
+      }
+    }
+  }
+
+  Future<void> _retryDownload() async {
+    if (_mediaRef == null) return;
+    final engine = await ref.read(engineProvider.future);
+    setState(() => _failed = false);
+    _downloadMediaRef(engine, _mediaRef!);
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Full image available (from any source)
     if (_imageBytes != null) {
       return _WallPostImage(imageBytes: _imageBytes!);
     }
+
+    // Media ref with thumbnail: show thumbnail while downloading
+    if (_thumbnailBytes != null) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: DnaSpacing.sm),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
+          child: GestureDetector(
+            onTap: _failed ? _retryDownload : null,
+            child: Stack(
+              children: [
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 300),
+                  child: Image.memory(
+                    _thumbnailBytes!,
+                    fit: BoxFit.cover,
+                    width: double.infinity,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                ),
+                if (_downloading)
+                  Positioned.fill(
+                    child: Container(
+                      color: Colors.black26,
+                      child: Center(
+                        child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white.withAlpha(200),
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                else if (_failed)
+                  Positioned.fill(
+                    child: Container(
+                      color: Colors.black38,
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const FaIcon(
+                              FontAwesomeIcons.arrowRotateRight,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              AppLocalizations.of(context).chatTapToDownload,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     if (_failed) {
       return const SizedBox.shrink();
     }
+
     // Loading placeholder
     return Padding(
       padding: const EdgeInsets.only(bottom: DnaSpacing.sm),

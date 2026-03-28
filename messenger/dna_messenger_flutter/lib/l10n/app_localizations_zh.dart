@@ -919,6 +919,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get wallPosting => '发布中...';
 
   @override
+  String get wallUploadingImage => 'Uploading...';
+
+  @override
   String get wallBoost => '推广';
 
   @override

@@ -945,6 +945,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get wallPosting => 'Публикация...';
 
   @override
+  String get wallUploadingImage => 'Uploading...';
+
+  @override
   String get wallBoost => 'Boost';
 
   @override

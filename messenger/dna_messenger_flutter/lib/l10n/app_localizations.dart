@@ -1808,6 +1808,12 @@ abstract class AppLocalizations {
   /// **'Posting...'**
   String get wallPosting;
 
+  /// No description provided for @wallUploadingImage.
+  ///
+  /// In en, this message translates to:
+  /// **'Uploading...'**
+  String get wallUploadingImage;
+
   /// No description provided for @wallBoost.
   ///
   /// In en, this message translates to:

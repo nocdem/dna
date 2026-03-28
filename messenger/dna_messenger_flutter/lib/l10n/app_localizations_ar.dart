@@ -934,6 +934,9 @@ class AppLocalizationsAr extends AppLocalizations {
   String get wallPosting => 'جارٍ النشر...';
 
   @override
+  String get wallUploadingImage => 'Uploading...';
+
+  @override
   String get wallBoost => 'تعزيز';
 
   @override

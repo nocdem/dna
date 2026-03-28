@@ -95,6 +95,18 @@ class _ImageCache {
     if (cached != null) return cached;
     try {
       final map = jsonDecode(imageJson) as Map<String, dynamic>;
+
+      // New media_ref format: decode thumbnail for quick display
+      if (map['type'] == 'media_ref') {
+        final thumb = map['thumbnail'] as String?;
+        if (thumb == null || thumb.isEmpty) return null;
+        final bytes = base64Decode(thumb);
+        // Don't cache thumbnail as full image — _LazyWallPostImage will
+        // download the full resolution and cache that instead
+        return bytes;
+      }
+
+      // Legacy inline base64 format
       final data = map['data'] as String?;
       if (data == null || data.isEmpty) return null;
       final bytes = base64Decode(data);

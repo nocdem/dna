@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -9,7 +8,10 @@ import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../providers/providers.dart';
 import '../../services/image_attachment_service.dart';
+import '../../services/media_service.dart';
+import '../../models/media_ref.dart';
 import '../../l10n/app_localizations.dart';
+import '../../utils/logger.dart';
 
 /// Full-screen post creation page (modern design)
 class CreatePostScreen extends ConsumerStatefulWidget {
@@ -27,13 +29,16 @@ class CreatePostScreen extends ConsumerStatefulWidget {
 }
 
 class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
+  static const String _tag = 'WALL_CREATE';
   final _controller = TextEditingController();
   final _imageService = ImageAttachmentService();
   final _focusNode = FocusNode();
   ImageAttachment? _attachment;
+  Uint8List? _rawImageBytes; // Raw bytes for MediaService upload
   Uint8List? _previewBytes;
   bool _posting = false;
   bool _boost = false;
+  bool _uploading = false;
 
   @override
   void initState() {
@@ -56,7 +61,8 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
       final attachment = await _imageService.processImage(bytes);
       setState(() {
         _attachment = attachment;
-        _previewBytes = base64Decode(attachment.base64Data);
+        _rawImageBytes = bytes;
+        _previewBytes = Uint8List.fromList(bytes);
       });
     } catch (e) {
       if (mounted) {
@@ -73,15 +79,30 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
 
     try {
       final notifier = ref.read(wallTimelineProvider.notifier);
-      if (_attachment != null) {
-        final imageJson = _attachment!.toMessageJson();
+      if (_rawImageBytes != null) {
+        // Upload image via MediaService (unencrypted, 30-day TTL for wall)
+        setState(() => _uploading = true);
+        final dnaEngine = await ref.read(engineProvider.future);
+        final mediaService = MediaService(dnaEngine);
+        final mediaRef = await mediaService.uploadImage(
+          _rawImageBytes!,
+          encrypted: false,
+          ttl: 2592000, // 30 days — matches wall post TTL
+        );
+        log(_tag, 'Media uploaded: ${mediaRef.contentHash.substring(0, 16)}...');
+        setState(() => _uploading = false);
+
+        final imageJson = mediaRef.toMessageJson();
         await notifier.createPostWithImage(text, imageJson, boost: _boost);
       } else {
         await notifier.createPost(text, boost: _boost);
       }
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
-      setState(() => _posting = false);
+      setState(() {
+        _posting = false;
+        _uploading = false;
+      });
       if (mounted) {
         DnaSnackBar.error(context, 'Failed to post: $e');
       }
@@ -117,7 +138,11 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
           Padding(
             padding: const EdgeInsets.only(right: DnaSpacing.sm),
             child: DnaButton(
-              label: _posting ? l10n.wallPosting : l10n.wallPost,
+              label: _uploading
+                  ? l10n.wallUploadingImage
+                  : _posting
+                      ? l10n.wallPosting
+                      : l10n.wallPost,
               onPressed: (hasText && !_posting) ? _submit : null,
               icon: _posting ? null : FontAwesomeIcons.paperPlane,
               loading: _posting,
@@ -268,6 +293,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen> {
                                       DnaSpacing.radiusFull),
                                   onTap: () => setState(() {
                                     _attachment = null;
+                                    _rawImageBytes = null;
                                     _previewBytes = null;
                                   }),
                                   child: const Padding(

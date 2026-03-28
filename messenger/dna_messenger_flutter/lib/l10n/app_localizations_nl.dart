@@ -943,6 +943,9 @@ class AppLocalizationsNl extends AppLocalizations {
   String get wallPosting => 'Plaatsen...';
 
   @override
+  String get wallUploadingImage => 'Uploading...';
+
+  @override
   String get wallBoost => 'Boost';
 
   @override
