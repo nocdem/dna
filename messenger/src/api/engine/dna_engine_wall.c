@@ -1208,7 +1208,6 @@ void dna_handle_wall_get_likes(dna_engine_t *engine, dna_task_t *task) {
 /* ── Wall Engagement Batch (v0.9.123+) ── */
 
 void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
-    (void)engine;
     char **post_uuids = task->params.wall_get_engagement.post_uuids;
     int post_count = task->params.wall_get_engagement.post_count;
 
@@ -1227,12 +1226,14 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    /* Build comment and like DHT keys */
-    const char **comment_keys = calloc((size_t)post_count, sizeof(char *));
-    const char **like_keys = calloc((size_t)post_count, sizeof(char *));
-    char *key_storage = calloc((size_t)post_count * 2, 256);  /* key buffer pool */
-    if (!comment_keys || !like_keys || !key_storage) {
-        free(comment_keys); free(like_keys); free(key_storage); free(engagements);
+    /* ── Phase 1: Serve from cache where fresh ── */
+    bool *need_dht_comments = calloc((size_t)post_count, sizeof(bool));
+    bool *need_dht_likes = calloc((size_t)post_count, sizeof(bool));
+    int stale_comment_count = 0;
+    int stale_like_count = 0;
+
+    if (!need_dht_comments || !need_dht_likes) {
+        free(need_dht_comments); free(need_dht_likes); free(engagements);
         task->callback.wall_engagement(task->request_id, DNA_ERROR_INTERNAL,
                                         NULL, 0, task->user_data);
         return;
@@ -1242,110 +1243,202 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
         strncpy(engagements[i].post_uuid, post_uuids[i], 36);
         engagements[i].post_uuid[36] = '\0';
 
-        char *ck = key_storage + (size_t)(i * 2) * 256;
-        char *lk = key_storage + (size_t)(i * 2 + 1) * 256;
-        snprintf(ck, 256, "%s%s", DNA_WALL_COMMENT_KEY_PREFIX, post_uuids[i]);
-        snprintf(lk, 256, "%s%s", DNA_WALL_LIKE_KEY_PREFIX, post_uuids[i]);
-        comment_keys[i] = ck;
-        like_keys[i] = lk;
+        /* Try comments cache */
+        if (!wall_cache_is_stale_comments(post_uuids[i])) {
+            char *cached_json = NULL;
+            int cached_count = 0;
+            if (wall_cache_load_comments(post_uuids[i], &cached_json, &cached_count) == 0
+                && cached_json) {
+                dna_wall_comment_info_t *infos = NULL;
+                int parsed = 0;
+                if (wall_comment_infos_from_json(cached_json, &infos, &parsed) == 0) {
+                    engagements[i].comments = infos;
+                    engagements[i].comment_count = parsed;
+                }
+                free(cached_json);
+            }
+            if (!engagements[i].comments) {
+                need_dht_comments[i] = true;
+                stale_comment_count++;
+            }
+        } else {
+            need_dht_comments[i] = true;
+            stale_comment_count++;
+        }
+
+        /* Try likes cache */
+        if (!wall_cache_is_stale_likes(post_uuids[i])) {
+            char *cached_json = NULL;
+            int cached_count = 0;
+            if (wall_cache_load_likes(post_uuids[i], &cached_json, &cached_count) == 0
+                && cached_json) {
+                dna_wall_like_info_t *infos = NULL;
+                int parsed = 0;
+                if (wall_like_infos_from_json(cached_json, &infos, &parsed) == 0) {
+                    engagements[i].like_count = parsed;
+                    /* Check is_liked_by_me from parsed likes */
+                    if (engine->identity_loaded) {
+                        for (int k = 0; k < parsed; k++) {
+                            if (strcmp(infos[k].author_fingerprint,
+                                       engine->fingerprint) == 0) {
+                                engagements[i].is_liked_by_me = true;
+                                break;
+                            }
+                        }
+                    }
+                    free(infos);
+                }
+                free(cached_json);
+            }
+            if (engagements[i].like_count == 0 && !need_dht_likes[i]) {
+                /* Could be genuinely 0 likes (cached "[]") or parse failed */
+                /* Mark as "no DHT needed" — 0 is valid cached result */
+            }
+        } else {
+            need_dht_likes[i] = true;
+            stale_like_count++;
+        }
     }
 
-    /* ── Batch comments (full data via get_batch) ── */
-    nodus_ops_batch_result_t *comment_results = NULL;
-    int comment_result_count = 0;
-    int rc_comments = nodus_ops_get_batch_str(comment_keys, post_count,
-                                               &comment_results, &comment_result_count);
+    QGP_LOG_INFO(LOG_TAG, "Engagement batch: %d posts, %d stale comments, %d stale likes",
+                 post_count, stale_comment_count, stale_like_count);
 
-    if (rc_comments == 0 && comment_results) {
-        for (int i = 0; i < post_count && i < comment_result_count; i++) {
-            /* Parse each value's JSON comment array */
-            int total_comments = 0;
-            dna_wall_comment_info_t *all_infos = NULL;
-            size_t alloc_cap = 0;
-
-            for (size_t v = 0; v < comment_results[i].count; v++) {
-                if (!comment_results[i].values[v] || comment_results[i].lens[v] == 0)
-                    continue;
-
-                /* Parse JSON array of comments from this author */
-                json_tokener *tok = json_tokener_new();
-                json_object *arr = json_tokener_parse_ex(
-                    tok, (const char *)comment_results[i].values[v],
-                    (int)comment_results[i].lens[v]);
-                json_tokener_free(tok);
-                if (!arr) continue;
-
-                /* Handle both array and single object */
-                json_object *jarr = arr;
-                if (json_object_get_type(jarr) != json_type_array) {
-                    json_object_put(arr);
-                    continue;
-                }
-
-                int arr_len = (int)json_object_array_length(jarr);
-                for (int j = 0; j < arr_len; j++) {
-                    json_object *obj = json_object_array_get_idx(jarr, (size_t)j);
-                    if (!obj) continue;
-
-                    /* Grow array if needed */
-                    if ((size_t)total_comments >= alloc_cap) {
-                        alloc_cap = alloc_cap == 0 ? 16 : alloc_cap * 2;
-                        dna_wall_comment_info_t *tmp = realloc(all_infos,
-                            alloc_cap * sizeof(dna_wall_comment_info_t));
-                        if (!tmp) break;
-                        all_infos = tmp;
-                    }
-
-                    dna_wall_comment_info_t *ci = &all_infos[total_comments];
-                    memset(ci, 0, sizeof(*ci));
-
-                    json_object *jv;
-                    if (json_object_object_get_ex(obj, "uuid", &jv))
-                        strncpy(ci->comment_uuid, json_object_get_string(jv), 36);
-                    if (json_object_object_get_ex(obj, "post_uuid", &jv))
-                        strncpy(ci->post_uuid, json_object_get_string(jv), 36);
-                    if (json_object_object_get_ex(obj, "parent_uuid", &jv))
-                        strncpy(ci->parent_comment_uuid, json_object_get_string(jv), 36);
-                    if (json_object_object_get_ex(obj, "author", &jv))
-                        strncpy(ci->author_fingerprint, json_object_get_string(jv), 128);
-                    if (json_object_object_get_ex(obj, "body", &jv))
-                        strncpy(ci->body, json_object_get_string(jv), 2000);
-                    if (json_object_object_get_ex(obj, "created_at", &jv))
-                        ci->created_at = (uint64_t)json_object_get_int64(jv);
-                    if (json_object_object_get_ex(obj, "comment_type", &jv))
-                        ci->comment_type = (uint32_t)json_object_get_int(jv);
-
-                    ci->verified = true;  /* Nodus verifies signatures on storage */
-                    resolve_author_name(ci->author_fingerprint,
-                                       ci->author_name, sizeof(ci->author_name));
-                    total_comments++;
-                }
-                json_object_put(arr);
+    /* ── Phase 2: Batch fetch stale entries from DHT ── */
+    if (stale_comment_count > 0) {
+        /* Build keys only for stale comment posts */
+        const char **comment_keys = calloc((size_t)post_count, sizeof(char *));
+        char *ck_buf = calloc((size_t)post_count, 256);
+        if (comment_keys && ck_buf) {
+            for (int i = 0; i < post_count; i++) {
+                char *ck = ck_buf + (size_t)i * 256;
+                snprintf(ck, 256, "%s%s",
+                         DNA_WALL_COMMENT_KEY_PREFIX, post_uuids[i]);
+                comment_keys[i] = ck;
             }
 
-            engagements[i].comments = all_infos;
-            engagements[i].comment_count = total_comments;
+            nodus_ops_batch_result_t *results = NULL;
+            int result_count = 0;
+            int rc = nodus_ops_get_batch_str(comment_keys, post_count,
+                                              &results, &result_count);
+
+            if (rc == 0 && results) {
+                for (int i = 0; i < post_count && i < result_count; i++) {
+                    if (!need_dht_comments[i]) continue;  /* Already served from cache */
+
+                    int total_comments = 0;
+                    dna_wall_comment_info_t *all_infos = NULL;
+                    size_t alloc_cap = 0;
+
+                    for (size_t v = 0; v < results[i].count; v++) {
+                        if (!results[i].values[v] || results[i].lens[v] == 0)
+                            continue;
+
+                        json_tokener *tok = json_tokener_new();
+                        json_object *arr = json_tokener_parse_ex(
+                            tok, (const char *)results[i].values[v],
+                            (int)results[i].lens[v]);
+                        json_tokener_free(tok);
+                        if (!arr) continue;
+
+                        if (json_object_get_type(arr) != json_type_array) {
+                            json_object_put(arr);
+                            continue;
+                        }
+
+                        int arr_len = (int)json_object_array_length(arr);
+                        for (int j = 0; j < arr_len; j++) {
+                            json_object *obj = json_object_array_get_idx(arr, (size_t)j);
+                            if (!obj) continue;
+
+                            if ((size_t)total_comments >= alloc_cap) {
+                                alloc_cap = alloc_cap == 0 ? 16 : alloc_cap * 2;
+                                dna_wall_comment_info_t *tmp = realloc(all_infos,
+                                    alloc_cap * sizeof(dna_wall_comment_info_t));
+                                if (!tmp) break;
+                                all_infos = tmp;
+                            }
+
+                            dna_wall_comment_info_t *ci = &all_infos[total_comments];
+                            memset(ci, 0, sizeof(*ci));
+
+                            json_object *jv;
+                            if (json_object_object_get_ex(obj, "uuid", &jv))
+                                strncpy(ci->comment_uuid, json_object_get_string(jv), 36);
+                            if (json_object_object_get_ex(obj, "post_uuid", &jv))
+                                strncpy(ci->post_uuid, json_object_get_string(jv), 36);
+                            if (json_object_object_get_ex(obj, "parent_uuid", &jv))
+                                strncpy(ci->parent_comment_uuid, json_object_get_string(jv), 36);
+                            if (json_object_object_get_ex(obj, "author", &jv))
+                                strncpy(ci->author_fingerprint, json_object_get_string(jv), 128);
+                            if (json_object_object_get_ex(obj, "body", &jv))
+                                strncpy(ci->body, json_object_get_string(jv), 2000);
+                            if (json_object_object_get_ex(obj, "created_at", &jv))
+                                ci->created_at = (uint64_t)json_object_get_int64(jv);
+                            if (json_object_object_get_ex(obj, "comment_type", &jv))
+                                ci->comment_type = (uint32_t)json_object_get_int(jv);
+
+                            ci->verified = true;
+                            resolve_author_name(ci->author_fingerprint,
+                                               ci->author_name, sizeof(ci->author_name));
+                            total_comments++;
+                        }
+                        json_object_put(arr);
+                    }
+
+                    /* Free old cache data if any, replace with DHT data */
+                    free(engagements[i].comments);
+                    engagements[i].comments = all_infos;
+                    engagements[i].comment_count = total_comments;
+
+                    /* Update cache with fresh DHT data */
+                    if (total_comments > 0 && all_infos) {
+                        char *json = NULL;
+                        if (wall_comment_infos_to_json(all_infos, total_comments, &json) == 0) {
+                            wall_cache_store_comments(post_uuids[i], json, total_comments);
+                            free(json);
+                        }
+                    } else {
+                        wall_cache_store_comments(post_uuids[i], "[]", 0);
+                    }
+                }
+                nodus_ops_free_batch_result(results, result_count);
+            }
         }
-        nodus_ops_free_batch_result(comment_results, comment_result_count);
+        free(comment_keys);
+        free(ck_buf);
     }
 
-    /* ── Batch likes (count only via count_batch) ── */
-    nodus_ops_count_result_t *like_results = NULL;
-    int like_result_count = 0;
-    int rc_likes = nodus_ops_count_batch_str(like_keys, post_count,
-                                              &like_results, &like_result_count);
+    if (stale_like_count > 0) {
+        const char **like_keys = calloc((size_t)post_count, sizeof(char *));
+        char *lk_buf = calloc((size_t)post_count, 256);
+        if (like_keys && lk_buf) {
+            for (int i = 0; i < post_count; i++) {
+                char *lk = lk_buf + (size_t)i * 256;
+                snprintf(lk, 256, "%s%s",
+                         DNA_WALL_LIKE_KEY_PREFIX, post_uuids[i]);
+                like_keys[i] = lk;
+            }
 
-    if (rc_likes == 0 && like_results) {
-        for (int i = 0; i < post_count && i < like_result_count; i++) {
-            engagements[i].like_count = (int)like_results[i].count;
-            engagements[i].is_liked_by_me = like_results[i].has_mine;
+            nodus_ops_count_result_t *results = NULL;
+            int result_count = 0;
+            int rc = nodus_ops_count_batch_str(like_keys, post_count,
+                                                &results, &result_count);
+
+            if (rc == 0 && results) {
+                for (int i = 0; i < post_count && i < result_count; i++) {
+                    if (!need_dht_likes[i]) continue;
+                    engagements[i].like_count = (int)results[i].count;
+                    engagements[i].is_liked_by_me = results[i].has_mine;
+                }
+                nodus_ops_free_count_result(results, result_count);
+            }
         }
-        nodus_ops_free_count_result(like_results, like_result_count);
+        free(like_keys);
+        free(lk_buf);
     }
 
-    free(comment_keys);
-    free(like_keys);
-    free(key_storage);
+    free(need_dht_comments);
+    free(need_dht_likes);
 
     /* Free the post_uuids array (task owns it) */
     for (int i = 0; i < post_count; i++)
@@ -1353,7 +1446,7 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
     free(post_uuids);
     task->params.wall_get_engagement.post_uuids = NULL;
 
-    QGP_LOG_INFO(LOG_TAG, "Batch engagement: %d posts", post_count);
+    QGP_LOG_INFO(LOG_TAG, "Batch engagement: %d posts (cache-first)", post_count);
     task->callback.wall_engagement(task->request_id, DNA_OK,
                                     engagements, post_count, task->user_data);
 }

@@ -229,85 +229,43 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
         return item;
       }).toList();
     }
-    _refreshEngagement(wallPosts, myFp, engine);
+    // Engagement is cache-first (v0.9.143+) — returns instantly if cached
+    await _refreshEngagementSync(wallPosts, myFp, engine, items);
     return items;
   }
 
-  /// Fetch comments and likes for all posts in background (fire-and-forget),
-  /// then update state if anything changed.
-  /// Uses batch operations (2 requests) instead of N*2 individual requests.
-  void _refreshEngagement(
-      List<WallPost> posts, String myFp, DnaEngine engine) {
-    () async {
-      try {
-        final uuids = posts.map((p) => p.uuid).toList();
+  /// Fetch engagement (comments/likes) synchronously and apply to items list.
+  /// Cache-first on C side (v0.9.143+) — returns instantly when cache is fresh.
+  Future<void> _refreshEngagementSync(
+      List<WallPost> posts, String myFp, DnaEngine engine,
+      List<WallFeedItem> items) async {
+    try {
+      final uuids = posts.map((p) => p.uuid).toList();
+      final engagements = await engine.wallGetEngagement(uuids);
 
-        // Single batch call: get_batch (comments) + count_batch (likes)
-        List<WallEngagement> engagements;
-        try {
-          engagements = await engine.wallGetEngagement(uuids);
-        } catch (_) {
-          // Batch not supported (old server) — fallback to individual calls
-          engagements = [];
-          final commentsFutures =
-              posts.map((p) => _safeGetComments(engine, p.uuid));
-          final likesFutures =
-              posts.map((p) => _safeGetLikes(engine, p.uuid));
-          final results = await Future.wait([
-            Future.wait(commentsFutures),
-            Future.wait(likesFutures),
-          ]);
-          final allComments = results[0] as List<List<WallComment>>;
-          final allLikes = results[1] as List<List<WallLike>>;
-          for (var i = 0; i < posts.length; i++) {
-            engagements.add(WallEngagement(
-              postUuid: posts[i].uuid,
-              comments: allComments[i],
-              likeCount: allLikes[i].length,
-              isLikedByMe: allLikes[i].any((l) => l.authorFingerprint == myFp),
-            ));
-          }
-        }
-
-        final current = state.valueOrNull;
-        if (current == null || current.isEmpty) return;
-
-        // Build lookup by uuid
-        final engMap = <String, WallEngagement>{};
-        for (final e in engagements) {
-          engMap[e.postUuid] = e;
-        }
-
-        bool changed = false;
-        final updated = current.map((item) {
-          final eng = engMap[item.post.uuid];
-          if (eng == null) return item;
-
-          final newPreview = eng.comments.length <= 3
-              ? eng.comments
-              : eng.comments.sublist(0, 3);
-
-          if (eng.likeCount != item.likeCount ||
-              eng.comments.length != item.commentCount ||
-              eng.isLikedByMe != item.isLikedByMe) {
-            changed = true;
-            return item.copyWith(
-              likeCount: eng.likeCount,
-              isLikedByMe: eng.isLikedByMe,
-              commentCount: eng.comments.length,
-              previewComments: newPreview,
-            );
-          }
-          return item;
-        }).toList();
-
-        if (changed) {
-          state = AsyncData(updated);
-        }
-      } catch (_) {
-        // Silent fail — engagement refresh is best-effort
+      final engMap = <String, WallEngagement>{};
+      for (final e in engagements) {
+        engMap[e.postUuid] = e;
       }
-    }();
+
+      for (var i = 0; i < items.length; i++) {
+        final eng = engMap[items[i].post.uuid];
+        if (eng == null) continue;
+
+        final newPreview = eng.comments.length <= 3
+            ? eng.comments
+            : eng.comments.sublist(0, 3);
+
+        items[i] = items[i].copyWith(
+          likeCount: eng.likeCount,
+          isLikedByMe: eng.isLikedByMe,
+          commentCount: eng.comments.length,
+          previewComments: newPreview,
+        );
+      }
+    } catch (_) {
+      // Engagement fetch failed — show posts without counts (0)
+    }
   }
 
   /// Assemble WallFeedItems with profiles only — NO comment/like fetch.
