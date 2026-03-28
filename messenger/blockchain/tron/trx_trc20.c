@@ -329,6 +329,128 @@ int trx_trc20_get_balance(
     return 0;
 }
 
+int trx_trc20_get_all_balances(
+    const char *address,
+    char balances_out[][64],
+    int max_tokens,
+    size_t balance_size
+) {
+    if (!address || !balances_out || max_tokens <= 0 || balance_size < 32) {
+        return -1;
+    }
+
+    if (!trx_validate_address(address)) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid address: %s", address);
+        return -1;
+    }
+
+    /* Initialize all balances to "0.0" */
+    int token_count = 0;
+    for (int i = 0; g_known_tokens[i].symbol[0] != '\0' && i < max_tokens; i++) {
+        snprintf(balances_out[i], balance_size, "0.0");
+        token_count++;
+    }
+
+    trx_rate_limit_delay();
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize CURL");
+        return -1;
+    }
+
+    char url[512];
+    snprintf(url, sizeof(url), "%s/v1/accounts/%s", trx_rpc_get_endpoint(), address);
+
+    QGP_LOG_DEBUG(LOG_TAG, "TronGrid batch TRC-20 request: %s", url);
+
+    struct response_buffer resp_buf = {0};
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
+
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Batch CURL request failed: %s", curl_easy_strerror(res));
+        if (resp_buf.data) free(resp_buf.data);
+        return -1;
+    }
+
+    if (!resp_buf.data) {
+        QGP_LOG_ERROR(LOG_TAG, "Empty response from TronGrid");
+        return -1;
+    }
+
+    json_object *jresp = json_tokener_parse(resp_buf.data);
+    free(resp_buf.data);
+
+    if (!jresp) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse TronGrid response");
+        return -1;
+    }
+
+    json_object *jdata = NULL;
+    if (!json_object_object_get_ex(jresp, "data", &jdata) ||
+        !json_object_is_type(jdata, json_type_array) ||
+        json_object_array_length(jdata) == 0) {
+        json_object_put(jresp);
+        return token_count;  /* All zeros — account not found */
+    }
+
+    json_object *jaccount = json_object_array_get_idx(jdata, 0);
+    if (!jaccount) {
+        json_object_put(jresp);
+        return token_count;
+    }
+
+    json_object *jtrc20 = NULL;
+    if (!json_object_object_get_ex(jaccount, "trc20", &jtrc20) ||
+        !json_object_is_type(jtrc20, json_type_array)) {
+        json_object_put(jresp);
+        return token_count;  /* No TRC-20 tokens */
+    }
+
+    /* Scan trc20 array once, match all known tokens */
+    int trc20_len = json_object_array_length(jtrc20);
+    int found = 0;
+
+    for (int i = 0; i < trc20_len; i++) {
+        json_object *jtoken = json_object_array_get_idx(jtrc20, i);
+        if (!jtoken || !json_object_is_type(jtoken, json_type_object)) continue;
+
+        json_object_object_foreach(jtoken, key, val) {
+            for (int t = 0; t < token_count; t++) {
+                if (strcasecmp(key, g_known_tokens[t].contract) == 0) {
+                    const char *balance_str = json_object_get_string(val);
+                    if (balance_str) {
+                        format_token_balance(balance_str, g_known_tokens[t].decimals,
+                                             balances_out[t], balance_size);
+                        QGP_LOG_DEBUG(LOG_TAG, "Batch: %s = %s",
+                                      g_known_tokens[t].symbol, balances_out[t]);
+                        found++;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    json_object_put(jresp);
+    QGP_LOG_INFO(LOG_TAG, "Batch TRC-20: %d/%d tokens found for %s", found, token_count, address);
+    return token_count;
+}
+
 int trx_trc20_get_balance_by_symbol(
     const char *address,
     const char *symbol,

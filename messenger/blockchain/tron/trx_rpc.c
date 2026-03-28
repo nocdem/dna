@@ -17,15 +17,14 @@
 #include <stdint.h>
 #ifdef _WIN32
 #define CURL_STATICLIB
+#include <windows.h>
+#else
+#include <unistd.h>
+#include <sys/time.h>
+#include <pthread.h>
 #endif
 #include <curl/curl.h>
 #include <json-c/json.h>
-#ifndef _WIN32
-#include <unistd.h>
-#include <sys/time.h>
-#else
-#include <windows.h>
-#endif
 
 #define LOG_TAG "TRX_RPC"
 
@@ -38,6 +37,7 @@
 
 /* Track last request time for rate limiting (shared across all TRON modules) */
 static uint64_t g_trx_last_request_ms = 0;
+static pthread_mutex_t g_trx_rate_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* RPC endpoints with fallbacks (defined in trx_wallet_create.c) */
 extern const char *g_trx_rpc_endpoints[];
@@ -54,14 +54,18 @@ static uint64_t trx_get_current_ms(void) {
 }
 
 void trx_rate_limit_delay(void) {
+    pthread_mutex_lock(&g_trx_rate_mutex);
     uint64_t now = trx_get_current_ms();
     uint64_t elapsed = now - g_trx_last_request_ms;
     if (elapsed < TRX_RPC_MIN_DELAY_MS && g_trx_last_request_ms > 0) {
         uint64_t delay = TRX_RPC_MIN_DELAY_MS - elapsed;
+        pthread_mutex_unlock(&g_trx_rate_mutex);
         QGP_LOG_DEBUG(LOG_TAG, "Rate limiting: waiting %lu ms", (unsigned long)delay);
         qgp_platform_sleep_ms((unsigned int)delay);
+        pthread_mutex_lock(&g_trx_rate_mutex);
     }
     g_trx_last_request_ms = trx_get_current_ms();
+    pthread_mutex_unlock(&g_trx_rate_mutex);
 }
 
 /* Response buffer for curl */

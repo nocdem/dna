@@ -253,38 +253,33 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
             }
         }
 
-        /* USDT (TRC-20) balance */
+        /* TRC-20 balances (USDT, USDC) — single HTTP call for all tokens */
         strncpy(balances[1].token, "USDT", sizeof(balances[1].token) - 1);
         strncpy(balances[1].network, "Tron", sizeof(balances[1].network) - 1);
         strcpy(balances[1].balance, "0.0");
 
-        char usdt_balance[64] = {0};
-        if (trx_trc20_get_balance_by_symbol(wallet_info->address, "USDT", usdt_balance, sizeof(usdt_balance)) == 0) {
-            strncpy(balances[1].balance, usdt_balance, sizeof(balances[1].balance) - 1);
-            any_fetch_succeeded = 1;
-        } else {
-            for (int ci = 0; ci < cached_count; ci++) {
-                if (strcmp(cached[ci].token, "USDT") == 0 && strcmp(cached[ci].network, "Tron") == 0) {
-                    strncpy(balances[1].balance, cached[ci].balance, sizeof(balances[1].balance) - 1);
-                    break;
-                }
-            }
-        }
-
-        /* USDC (TRC-20) balance */
         strncpy(balances[2].token, "USDC", sizeof(balances[2].token) - 1);
         strncpy(balances[2].network, "Tron", sizeof(balances[2].network) - 1);
-        strcpy(balances[2].balance, "0");
+        strcpy(balances[2].balance, "0.0");
 
-        char usdc_balance_trx[64] = {0};
-        if (trx_trc20_get_balance_by_symbol(wallet_info->address, "USDC", usdc_balance_trx, sizeof(usdc_balance_trx)) == 0) {
-            strncpy(balances[2].balance, usdc_balance_trx, sizeof(balances[2].balance) - 1);
+        /* Batch: one /v1/accounts/ call returns USDT+USDC+USDD */
+        char trc20_balances[3][64];
+        int trc20_ret = trx_trc20_get_all_balances(wallet_info->address,
+                                                    trc20_balances, 3, 64);
+        if (trc20_ret > 0) {
+            /* Index 0=USDT, 1=USDC, 2=USDD (matches g_known_tokens order) */
+            strncpy(balances[1].balance, trc20_balances[0], sizeof(balances[1].balance) - 1);
+            strncpy(balances[2].balance, trc20_balances[1], sizeof(balances[2].balance) - 1);
             any_fetch_succeeded = 1;
         } else {
+            /* RPC failed — preserve cached balances */
             for (int ci = 0; ci < cached_count; ci++) {
-                if (strcmp(cached[ci].token, "USDC") == 0 && strcmp(cached[ci].network, "Tron") == 0) {
-                    strncpy(balances[2].balance, cached[ci].balance, sizeof(balances[2].balance) - 1);
-                    break;
+                if (strcmp(cached[ci].network, "Tron") == 0) {
+                    if (strcmp(cached[ci].token, "USDT") == 0) {
+                        strncpy(balances[1].balance, cached[ci].balance, sizeof(balances[1].balance) - 1);
+                    } else if (strcmp(cached[ci].token, "USDC") == 0) {
+                        strncpy(balances[2].balance, cached[ci].balance, sizeof(balances[2].balance) - 1);
+                    }
                 }
             }
         }

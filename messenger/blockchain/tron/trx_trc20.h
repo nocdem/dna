@@ -112,6 +112,25 @@ int trx_trc20_get_balance_by_symbol(
     size_t balance_size
 );
 
+/**
+ * Get ALL known TRC-20 token balances in a single HTTP call
+ *
+ * Makes one /v1/accounts/{address} request and extracts balances for all
+ * known tokens (USDT, USDC, USDD). Avoids rate limiting by batching.
+ *
+ * @param address       TRON address (Base58Check)
+ * @param balances_out  Array of balance strings (indexed by g_known_tokens order)
+ * @param max_tokens    Size of balances_out array
+ * @param balance_size  Size of each balance string buffer
+ * @return              Number of tokens found (>=0), -1 on error
+ */
+int trx_trc20_get_all_balances(
+    const char *address,
+    char balances_out[][64],
+    int max_tokens,
+    size_t balance_size
+);
+
 /* ============================================================================
  * TOKEN TRANSFERS
  * ============================================================================ */
