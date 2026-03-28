@@ -1168,7 +1168,8 @@ static void bf_conn_cleanup(nodus_server_t *srv, dht_bf_conn_t *c) {
     free(c->send_buf); c->send_buf = NULL;
     free(c->recv_buf); c->recv_buf = NULL;
     free(c->key_indices); c->key_indices = NULL;
-    c->state = 3; /* done */
+    free(c->batch_keys); c->batch_keys = NULL;
+    c->state = BF_DONE;
 }
 
 static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b) {
@@ -1208,7 +1209,53 @@ static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
     bf_batch_cleanup(srv, b);
 }
 
-/** Handle epoll events for batch forward fds */
+/** Build a framed CBOR message into malloc'd buffer. Returns 0 on success. */
+static int bf_build_frame(uint8_t **buf_out, size_t *len_out,
+                            const uint8_t *cbor, size_t cbor_len);
+
+/** Try to receive a complete nodus frame. Returns 1 if complete, 0 if need more, -1 on error. */
+static int bf_recv_frame(dht_bf_conn_t *c, int fd) {
+    ssize_t n = recv(fd, c->recv_buf + c->recv_len,
+                     c->recv_cap - c->recv_len, 0);
+    if (n <= 0) return -1;  /* closed or error */
+    c->recv_len += (size_t)n;
+
+    if (c->recv_len < 7) return 0;  /* need more */
+    if (c->recv_buf[0] != 0x4E || c->recv_buf[1] != 0x44) return -1;  /* bad magic */
+
+    uint32_t frame_len = (uint32_t)c->recv_buf[3] << 24 |
+                         (uint32_t)c->recv_buf[4] << 16 |
+                         (uint32_t)c->recv_buf[5] << 8 |
+                         (uint32_t)c->recv_buf[6];
+    return (c->recv_len >= 7 + frame_len) ? 1 : 0;
+}
+
+/** Reset send/recv buffers for next round-trip */
+static void bf_reset_buffers(dht_bf_conn_t *c) {
+    free(c->send_buf); c->send_buf = NULL;
+    c->send_len = 0; c->send_pos = 0;
+    c->recv_len = 0;  /* keep recv_buf allocated */
+}
+
+/** Switch epoll to EPOLLOUT for sending */
+static void bf_switch_to_send(nodus_server_t *srv, dht_bf_conn_t *c) {
+    struct epoll_event ev = { .events = EPOLLOUT | EPOLLERR | EPOLLHUP, .data.fd = c->fd };
+    epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_MOD, c->fd, &ev);
+}
+
+/** Switch epoll to EPOLLIN for receiving */
+static void bf_switch_to_recv(nodus_server_t *srv, dht_bf_conn_t *c) {
+    struct epoll_event ev = { .events = EPOLLIN | EPOLLERR | EPOLLHUP, .data.fd = c->fd };
+    epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_MOD, c->fd, &ev);
+}
+
+/** Forward error → cleanup + check batch completion */
+static void bf_forward_fail(nodus_server_t *srv, dht_bf_batch_t *b, dht_bf_conn_t *c) {
+    bf_conn_cleanup(srv, c);
+    if (--b->pending_forwards <= 0) bf_send_result(srv, b);
+}
+
+/** Handle epoll events for batch forward fds — full auth state machine */
 static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
     if (fd < 0 || fd >= NODUS_BF_FD_TABLE_SIZE) return;
     int bi = srv->bf_fd_table[fd].batch_idx;
@@ -1218,75 +1265,123 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
     dht_bf_batch_t *b = &srv->bf_state.batches[bi];
     if (!b->active) return;
     dht_bf_conn_t *c = &b->forwards[fi];
-    if (c->fd < 0) return;  /* Already cleaned up */
+    if (c->fd < 0) return;
 
     if (events & (EPOLLERR | EPOLLHUP)) {
-        epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-        srv->bf_fd_table[fd].batch_idx = -1;
-        bf_conn_cleanup(srv, c);
-        if (--b->pending_forwards <= 0) bf_send_result(srv, b);
+        bf_forward_fail(srv, b, c);
         return;
     }
 
-    if (c->state == 0 && (events & EPOLLOUT)) {
-        /* Connect completed → start sending */
-        c->state = 1;
+    /* ── State 0: Connecting → send HELLO ── */
+    if (c->state == BF_CONNECTING && (events & EPOLLOUT)) {
+        c->state = BF_SEND_HELLO;
+        /* send_buf already has HELLO frame from bf_start_forward */
     }
 
-    if (c->state == 1 && (events & EPOLLOUT)) {
-        /* Send data */
+    /* ── Send states (HELLO / AUTH / BATCH) ── */
+    if ((c->state == BF_SEND_HELLO || c->state == BF_SEND_AUTH ||
+         c->state == BF_SEND_BATCH) && (events & EPOLLOUT)) {
+        if (!c->send_buf) { bf_forward_fail(srv, b, c); return; }
         ssize_t n = send(fd, c->send_buf + c->send_pos,
                          c->send_len - c->send_pos, MSG_NOSIGNAL);
+        if (n < 0) { bf_forward_fail(srv, b, c); return; }
         if (n > 0) c->send_pos += (size_t)n;
         if (c->send_pos >= c->send_len) {
-            c->state = 2;
-            struct epoll_event ev = { .events = EPOLLIN, .data.fd = fd };
-            epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_MOD, fd, &ev);
-        }
-    }
-
-    if (c->state == 2 && (events & EPOLLIN)) {
-        /* Receive response */
-        ssize_t n = recv(fd, c->recv_buf + c->recv_len,
-                         c->recv_cap - c->recv_len, 0);
-        if (n <= 0) {
-            /* Connection closed or error — try to parse what we have */
-            goto parse_response;
-        }
-        c->recv_len += (size_t)n;
-
-        /* Check if we have a complete frame */
-        if (c->recv_len >= 7) {
-            uint32_t frame_len = 0;
-            if (c->recv_buf[0] == 0x4E && c->recv_buf[1] == 0x44) {
-                frame_len = (uint32_t)c->recv_buf[3] << 24 |
-                            (uint32_t)c->recv_buf[4] << 16 |
-                            (uint32_t)c->recv_buf[5] << 8 |
-                            (uint32_t)c->recv_buf[6];
-                if (c->recv_len >= 7 + frame_len) {
-                    goto parse_response;
-                }
-            }
+            /* Send complete → switch to recv for response */
+            if (c->state == BF_SEND_HELLO)  c->state = BF_RECV_CHALL;
+            else if (c->state == BF_SEND_AUTH) c->state = BF_RECV_AUTHOK;
+            else if (c->state == BF_SEND_BATCH) c->state = BF_RECV_RESULT;
+            bf_reset_buffers(c);
+            bf_switch_to_recv(srv, c);
         }
         return;
+    }
 
-    parse_response:
-        epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-        srv->bf_fd_table[fd].batch_idx = -1;
+    /* ── State 2: Recv CHALLENGE → sign nonce → send AUTH ── */
+    if (c->state == BF_RECV_CHALL && (events & EPOLLIN)) {
+        int rc = bf_recv_frame(c, fd);
+        if (rc < 0) { bf_forward_fail(srv, b, c); return; }
+        if (rc == 0) return;  /* need more data */
 
+        /* Parse challenge nonce */
+        nodus_tier2_msg_t msg;
+        memset(&msg, 0, sizeof(msg));
+        if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &msg) != 0) {
+            nodus_t2_msg_free(&msg);
+            bf_forward_fail(srv, b, c); return;
+        }
+
+        /* Sign nonce with our secret key */
+        nodus_sig_t sig;
+        if (nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN, &srv->identity.sk) != 0) {
+            nodus_t2_msg_free(&msg);
+            bf_forward_fail(srv, b, c); return;
+        }
+        nodus_t2_msg_free(&msg);
+
+        /* Build AUTH frame */
+        uint8_t cbor[8192];
+        size_t clen = 0;
+        if (nodus_t2_auth(2, &sig, cbor, sizeof(cbor), &clen) != 0 ||
+            bf_build_frame(&c->send_buf, &c->send_len, cbor, clen) != 0) {
+            bf_forward_fail(srv, b, c); return;
+        }
+        c->send_pos = 0;
+        c->recv_len = 0;
+        c->state = BF_SEND_AUTH;
+        bf_switch_to_send(srv, c);
+        return;
+    }
+
+    /* ── State 4: Recv AUTH_OK → extract token → send get_batch ── */
+    if (c->state == BF_RECV_AUTHOK && (events & EPOLLIN)) {
+        int rc = bf_recv_frame(c, fd);
+        if (rc < 0) { bf_forward_fail(srv, b, c); return; }
+        if (rc == 0) return;
+
+        /* Parse auth_ok → get token */
+        nodus_tier2_msg_t msg;
+        memset(&msg, 0, sizeof(msg));
+        if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &msg) != 0 ||
+            msg.type == 'e') {
+            nodus_t2_msg_free(&msg);
+            bf_forward_fail(srv, b, c); return;
+        }
+        memcpy(c->token, msg.token, NODUS_SESSION_TOKEN_LEN);
+        nodus_t2_msg_free(&msg);
+
+        /* Build get_batch frame WITH token */
+        uint8_t cbor[4096];
+        size_t clen = 0;
+        if (nodus_t2_get_batch(3, c->token, c->batch_keys, c->batch_key_count,
+                                cbor, sizeof(cbor), &clen) != 0 ||
+            bf_build_frame(&c->send_buf, &c->send_len, cbor, clen) != 0) {
+            bf_forward_fail(srv, b, c); return;
+        }
+        c->send_pos = 0;
+        c->recv_len = 0;
+        c->state = BF_SEND_BATCH;
+        bf_switch_to_send(srv, c);
+        return;
+    }
+
+    /* ── State 6: Recv batch result → merge → done ── */
+    if (c->state == BF_RECV_RESULT && (events & EPOLLIN)) {
+        int rc = bf_recv_frame(c, fd);
+        if (rc < 0) goto merge_and_done;
+        if (rc == 0) return;
+
+    merge_and_done:
         /* Parse batch response from peer */
         if (c->recv_len > 7) {
             nodus_tier2_msg_t resp;
             memset(&resp, 0, sizeof(resp));
             if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &resp) == 0 &&
                 resp.batch_keys && resp.batch_key_count > 0) {
-                /* Merge results into parent batch */
                 for (int r = 0; r < resp.batch_key_count && r < c->key_count; r++) {
                     int ki = c->key_indices[r];
                     if (ki < 0 || ki >= b->key_count) continue;
-                    if (b->counts_per_key[ki] > 0) continue; /* Already have data */
-
-                    /* Transfer ownership of values */
+                    if (b->counts_per_key[ki] > 0) continue;
                     b->vals_per_key[ki] = resp.batch_vals ? resp.batch_vals[r] : NULL;
                     b->counts_per_key[ki] = resp.batch_val_counts ? resp.batch_val_counts[r] : 0;
                     if (resp.batch_vals) resp.batch_vals[r] = NULL;
@@ -1295,7 +1390,6 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
                 nodus_t2_msg_free(&resp);
             }
         }
-
         bf_conn_cleanup(srv, c);
         if (--b->pending_forwards <= 0) bf_send_result(srv, b);
     }
@@ -1333,6 +1427,19 @@ static void bf_tick(nodus_server_t *srv) {
     }
 }
 
+/** Build a framed CBOR message into malloc'd buffer. Returns 0 on success. */
+static int bf_build_frame(uint8_t **buf_out, size_t *len_out,
+                            const uint8_t *cbor, size_t cbor_len) {
+    uint8_t tmp[8192];
+    size_t flen = nodus_frame_encode(tmp, sizeof(tmp), cbor, (uint32_t)cbor_len);
+    if (flen == 0) return -1;
+    *buf_out = malloc(flen);
+    if (!*buf_out) return -1;
+    memcpy(*buf_out, tmp, flen);
+    *len_out = flen;
+    return 0;
+}
+
 /** Start a batch forward to a peer node */
 static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
                               int fi, const nodus_peer_t *peer,
@@ -1348,47 +1455,48 @@ static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
     memcpy(c->key_indices, key_indices, (size_t)key_count * sizeof(int));
     c->key_count = key_count;
 
-    /* Build get_batch CBOR frame */
+    /* Store batch keys for later (sent after auth completes) */
+    c->batch_keys = malloc((size_t)key_count * sizeof(nodus_key_t));
+    if (!c->batch_keys) goto fail;
+    memcpy(c->batch_keys, keys, (size_t)key_count * sizeof(nodus_key_t));
+    c->batch_key_count = key_count;
+
+    /* Build HELLO frame (first message in auth handshake) */
     uint8_t cbor_buf[4096];
     size_t cbor_len = 0;
-    /* Use txn_id=0 for inter-node (we track by fd, not txn) */
-    if (nodus_t2_get_batch(0, NULL, keys, key_count,
-                            cbor_buf, sizeof(cbor_buf), &cbor_len) != 0)
+    if (nodus_t2_hello(1, &srv->identity.pk, &srv->identity.node_id,
+                        cbor_buf, sizeof(cbor_buf), &cbor_len) != 0)
         goto fail;
 
-    uint8_t frame_buf[4096 + 16];
-    size_t flen = nodus_frame_encode(frame_buf, sizeof(frame_buf),
-                                      cbor_buf, (uint32_t)cbor_len);
-    if (flen == 0) goto fail;
-
-    c->send_buf = malloc(flen);
-    if (!c->send_buf) goto fail;
-    memcpy(c->send_buf, frame_buf, flen);
-    c->send_len = flen;
+    if (bf_build_frame(&c->send_buf, &c->send_len, cbor_buf, cbor_len) != 0)
+        goto fail;
 
     c->recv_cap = RESP_BUF_SIZE;
     c->recv_buf = malloc(c->recv_cap);
     if (!c->recv_buf) goto fail;
 
-    /* Non-blocking connect to peer's inter-node port (4002) */
+    /* Non-blocking connect to peer's INTER-NODE port (4002) */
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (fd < 0) goto fail;
     if (fd >= NODUS_BF_FD_TABLE_SIZE) { close(fd); goto fail; }
 
+    /* Inter-node port = UDP port + 2 (convention: 4000→4002) */
+    uint16_t inter_port = peer->udp_port ? (peer->udp_port + 2) : 4002;
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(peer->tcp_port ? peer->tcp_port : 4002);
+    addr.sin_port = htons(inter_port);
     inet_pton(AF_INET, peer->ip, &addr.sin_addr);
 
     int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
     if (rc < 0 && errno != EINPROGRESS) { close(fd); goto fail; }
 
     c->fd = fd;
-    c->state = 0; /* connecting */
+    c->state = BF_CONNECTING;
     c->started_at = nodus_time_now_ms();
     snprintf(c->ip, sizeof(c->ip), "%s", peer->ip);
-    c->port = peer->tcp_port ? peer->tcp_port : 4002;
+    c->port = inter_port;
 
     /* Register with batch forward epoll */
     int bi = (int)(b - srv->bf_state.batches);
@@ -1404,6 +1512,7 @@ fail:
     free(c->key_indices); c->key_indices = NULL;
     free(c->send_buf); c->send_buf = NULL;
     free(c->recv_buf); c->recv_buf = NULL;
+    free(c->batch_keys); c->batch_keys = NULL;
     return -1;
 }
 

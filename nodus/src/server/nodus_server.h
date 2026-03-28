@@ -175,19 +175,36 @@ typedef struct {
 #define NODUS_BF_MAX_BATCHES    4    /* Max concurrent batch requests with forwards */
 #define NODUS_BF_TIMEOUT_MS     5000 /* Per-forward timeout */
 
+/** Batch forward connection states */
+enum {
+    BF_CONNECTING   = 0,
+    BF_SEND_HELLO   = 1,
+    BF_RECV_CHALL   = 2,
+    BF_SEND_AUTH    = 3,
+    BF_RECV_AUTHOK  = 4,
+    BF_SEND_BATCH   = 5,
+    BF_RECV_RESULT  = 6,
+    BF_DONE         = 7,
+};
+
 /** One outgoing batch forward connection to a peer */
 typedef struct {
     int         fd;              /**< Non-blocking socket (-1 if unused) */
-    int         state;           /**< 0=connecting, 1=sending, 2=receiving, 3=done */
+    int         state;           /**< BF_CONNECTING..BF_DONE */
     char        ip[64];
     uint16_t    port;
     uint64_t    started_at;
-    uint8_t    *send_buf;        /**< Encoded get_batch frame */
+    uint8_t    *send_buf;        /**< Current send frame (reused for hello/auth/batch) */
     size_t      send_len;
     size_t      send_pos;
     uint8_t    *recv_buf;        /**< Response buffer */
     size_t      recv_cap;
     size_t      recv_len;
+    /* Auth state */
+    uint8_t     token[NODUS_SESSION_TOKEN_LEN]; /**< Session token from auth_ok */
+    /* Batch keys (stored for sending after auth) */
+    nodus_key_t *batch_keys;     /**< Keys to query (heap, freed on cleanup) */
+    int         batch_key_count;
     /* Which keys this forward carries (indices into parent batch) */
     int        *key_indices;     /**< Array of indices into batch's key array */
     int         key_count;
