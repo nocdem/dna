@@ -2749,6 +2749,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Swap failed: {error}'**
   String swapFailed(String error);
+
+  /// No description provided for @chatDownloadingMedia.
+  ///
+  /// In en, this message translates to:
+  /// **'Downloading...'**
+  String get chatDownloadingMedia;
+
+  /// No description provided for @chatUploadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload failed. Tap to retry.'**
+  String get chatUploadFailed;
+
+  /// No description provided for @chatTapToDownload.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap to download'**
+  String get chatTapToDownload;
+
+  /// No description provided for @chatVideoComingSoon.
+  ///
+  /// In en, this message translates to:
+  /// **'Video playback coming soon'**
+  String get chatVideoComingSoon;
+
+  /// No description provided for @chatAudioComingSoon.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio playback coming soon'**
+  String get chatAudioComingSoon;
+
+  /// No description provided for @chatMediaUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Unsupported media type'**
+  String get chatMediaUnsupported;
 }
 
 class _AppLocalizationsDelegate

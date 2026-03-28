@@ -1457,4 +1457,23 @@ class AppLocalizationsTr extends AppLocalizations {
   String swapFailed(String error) {
     return 'Takas başarısız: $error';
   }
+
+  @override
+  String get chatDownloadingMedia => 'İndiriliyor...';
+
+  @override
+  String get chatUploadFailed =>
+      'Yükleme başarısız. Tekrar denemek için dokunun.';
+
+  @override
+  String get chatTapToDownload => 'İndirmek için dokunun';
+
+  @override
+  String get chatVideoComingSoon => 'Video oynatma yakında';
+
+  @override
+  String get chatAudioComingSoon => 'Ses oynatma yakında';
+
+  @override
+  String get chatMediaUnsupported => 'Desteklenmeyen medya türü';
 }

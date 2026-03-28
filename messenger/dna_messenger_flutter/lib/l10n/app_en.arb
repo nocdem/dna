@@ -735,5 +735,11 @@
     "placeholders": {
       "error": { "type": "String" }
     }
-  }
+  },
+  "chatDownloadingMedia": "Downloading...",
+  "chatUploadFailed": "Upload failed. Tap to retry.",
+  "chatTapToDownload": "Tap to download",
+  "chatVideoComingSoon": "Video playback coming soon",
+  "chatAudioComingSoon": "Audio playback coming soon",
+  "chatMediaUnsupported": "Unsupported media type"
 }

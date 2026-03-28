@@ -474,5 +474,11 @@
   "swapFeeValue": "Komisyon: {value}",
   "swapBestPrice": "{count} borsadan en iyi fiyat",
   "swapSuccess": "{amountIn} {fromToken} → {amountOut} {toToken} takas edildi ({dex})",
-  "swapFailed": "Takas başarısız: {error}"
+  "swapFailed": "Takas başarısız: {error}",
+  "chatDownloadingMedia": "İndiriliyor...",
+  "chatUploadFailed": "Yükleme başarısız. Tekrar denemek için dokunun.",
+  "chatTapToDownload": "İndirmek için dokunun",
+  "chatVideoComingSoon": "Video oynatma yakında",
+  "chatAudioComingSoon": "Ses oynatma yakında",
+  "chatMediaUnsupported": "Desteklenmeyen medya türü"
 }

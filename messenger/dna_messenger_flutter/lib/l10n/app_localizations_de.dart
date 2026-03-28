@@ -1470,4 +1470,22 @@ class AppLocalizationsDe extends AppLocalizations {
   String swapFailed(String error) {
     return 'Tausch fehlgeschlagen: $error';
   }
+
+  @override
+  String get chatDownloadingMedia => 'Downloading...';
+
+  @override
+  String get chatUploadFailed => 'Upload failed. Tap to retry.';
+
+  @override
+  String get chatTapToDownload => 'Tap to download';
+
+  @override
+  String get chatVideoComingSoon => 'Video playback coming soon';
+
+  @override
+  String get chatAudioComingSoon => 'Audio playback coming soon';
+
+  @override
+  String get chatMediaUnsupported => 'Unsupported media type';
 }

@@ -147,7 +147,7 @@ class MediaService {
     String? caption,
     int ttl = 604800,
   }) async {
-    DnaLogger.log(_tag, 'uploadImage: ${bytes.length} bytes, encrypted=$encrypted');
+    log(_tag, 'uploadImage: ${bytes.length} bytes, encrypted=$encrypted');
 
     // 1. Decode and compress image
     final decoded = img.decodeImage(bytes);
@@ -156,7 +156,7 @@ class MediaService {
     }
 
     final compressed = _compressImage(decoded);
-    DnaLogger.log(_tag,
+    log(_tag,
         'Compressed: ${bytes.length} -> ${compressed.length} bytes');
 
     // 2. Generate thumbnail
@@ -184,7 +184,7 @@ class MediaService {
       encrypted,
       ttl,
     );
-    DnaLogger.log(_tag, 'Uploaded: hash=${hashHex.substring(0, 16)}...');
+    log(_tag, 'Uploaded: hash=${hashHex.substring(0, 16)}...');
 
     // 6. Get dimensions from decoded image (before compression may resize)
     // Use compressed dimensions — _compressImage may have resized
@@ -210,16 +210,16 @@ class MediaService {
   /// [ref] the MediaRef containing content hash and optional encryption key.
   /// Returns the decrypted media bytes.
   Future<Uint8List> download(MediaRef ref) async {
-    DnaLogger.log(_tag,
+    log(_tag,
         'download: hash=${ref.contentHash.substring(0, 16)}...');
 
     final data = await _engine.mediaDownload(ref.contentHash);
-    DnaLogger.log(_tag, 'Downloaded ${data.length} bytes');
+    log(_tag, 'Downloaded ${data.length} bytes');
 
     if (ref.isEncrypted && ref.encryptionKey != null) {
       final aesKey = base64Decode(ref.encryptionKey!);
       final decrypted = _aesGcmDecrypt(data, aesKey);
-      DnaLogger.log(_tag, 'Decrypted: ${data.length} -> ${decrypted.length} bytes');
+      log(_tag, 'Decrypted: ${data.length} -> ${decrypted.length} bytes');
       return decrypted;
     }
     return data;

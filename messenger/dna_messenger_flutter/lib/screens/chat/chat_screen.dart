@@ -17,7 +17,10 @@ import '../../design_system/design_system.dart';
 import '../../widgets/emoji_shortcode_field.dart';
 import '../../widgets/formatted_text.dart';
 import '../../widgets/image_message_bubble.dart';
+import '../../widgets/media_message_bubble.dart';
 import '../../services/image_attachment_service.dart';
+import '../../services/media_service.dart';
+import '../../models/media_ref.dart';
 import 'contact_profile_dialog.dart';
 import 'widgets/message_bubble.dart';
 
@@ -695,6 +698,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
                           ? () => _retryMessage(message.id)
                           : null,
+                      engine: ref.read(engineProvider).valueOrNull,
                     ),
                   );
                 },
@@ -1034,13 +1038,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Future<void> _pickAndSendImage(Contact contact, ImageSource source) async {
-    final service = ImageAttachmentService();
+    final imageService = ImageAttachmentService();
 
     try {
       // Pick image
-      final bytes = await service.pickImage(source);
+      final bytes = await imageService.pickImage(source);
       if (bytes == null) return; // User cancelled
 
+      if (!mounted) return;
+
+      // Show caption dialog first (before uploading)
+      final caption = await _showCaptionDialog(context);
       if (!mounted) return;
 
       // Show loading indicator
@@ -1050,18 +1058,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         builder: (_) => const Center(child: CircularProgressIndicator()),
       );
 
-      // Process and compress
-      final attachment = await service.processImage(bytes);
+      // Upload via MediaService (compress + thumbnail + DHT upload)
+      final engine = await ref.read(engineProvider.future);
+      final mediaService = MediaService(engine);
+      final mediaRef = await mediaService.uploadImage(
+        bytes,
+        encrypted: true,
+        caption: caption,
+        ttl: 604800,
+      );
 
       if (!mounted) return;
       Navigator.pop(context); // Dismiss loading
 
-      // Show caption dialog
-      final caption = await _showCaptionDialog(context);
-      if (!mounted) return;
-
-      // Send via existing message queue
-      final messageJson = attachment.toMessageJson(caption: caption);
+      // Send media_ref JSON via existing message queue
+      final messageJson = mediaRef.toMessageJson();
       final result = ref
           .read(conversationProvider(contact.fingerprint).notifier)
           .sendMessage(messageJson);
@@ -1081,9 +1092,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
         );
       }
+    } on MediaServiceException catch (e) {
+      if (!mounted) return;
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          backgroundColor: DnaColors.snackbarError,
+        ),
+      );
     } on ImageAttachmentException catch (e) {
       if (!mounted) return;
-      // Dismiss loading if showing
       if (Navigator.canPop(context)) {
         Navigator.pop(context);
       }
@@ -1095,7 +1116,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      // Dismiss loading if showing
       if (Navigator.canPop(context)) {
         Navigator.pop(context);
       }
@@ -1938,8 +1958,9 @@ class _MessageBubble extends StatelessWidget {
   final Message message;
   final bool isStarred;
   final VoidCallback? onRetry;
+  final DnaEngine? engine;
 
-  const _MessageBubble({required this.message, this.isStarred = false, this.onRetry});
+  const _MessageBubble({required this.message, this.isStarred = false, this.onRetry, this.engine});
 
   /// Check if message is a token transfer by parsing JSON content
   Map<String, dynamic>? _parseTransferData() {
@@ -1950,6 +1971,19 @@ class _MessageBubble extends StatelessWidget {
       }
     } catch (_) {
       // Not JSON or invalid format - treat as regular message
+    }
+    return null;
+  }
+
+  /// Check if message is a media_ref (new chunked media format)
+  Map<String, dynamic>? _parseMediaRef() {
+    try {
+      final data = jsonDecode(message.plaintext) as Map<String, dynamic>;
+      if (data['type'] == 'media_ref') {
+        return data;
+      }
+    } catch (_) {
+      // Not JSON or invalid format
     }
     return null;
   }
@@ -2026,7 +2060,13 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Handle image attachments with special bubble
+    // Handle media_ref messages (new chunked media format)
+    final mediaData = _parseMediaRef();
+    if (mediaData != null && engine != null) {
+      return MediaMessageBubble(message: message, mediaData: mediaData, engine: engine!);
+    }
+
+    // Handle legacy image attachments with special bubble
     final imageData = _parseImageData();
     if (imageData != null) {
       return ImageMessageBubble(message: message, imageData: imageData);
