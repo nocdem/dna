@@ -94,7 +94,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   bool _autoLoadStarted = false;
   bool _autoLoadComplete = false;
   bool _hasIdentity = false;
-  bool _registrationIncomplete = false;
+  bool _registrationIncomplete = true;
   bool _updateDialogShown = false;
 
   @override
@@ -134,23 +134,71 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           await CacheDatabase.instance.saveRegisteredName(fp, registeredName);
           if (mounted) {
             ref.read(identityProfileCacheProvider.notifier).updateIdentity(fp, registeredName, '');
+            setState(() {
+              _registrationIncomplete = false;
+            });
           }
         } else {
-          // No name in DHT — this is a genuinely incomplete registration
+          // No name in DHT — genuinely incomplete registration
+          // _registrationIncomplete stays true (default) — registration screen shown
           engine.debugLog('STARTUP', 'Backfill: no registered name in DHT — showing registration');
-          if (mounted) {
-            setState(() {
-              _registrationIncomplete = true;
-            });
+        }
+      } catch (e) {
+        // DHT lookup failed — keep _registrationIncomplete true to force registration
+        engine.debugLog('STARTUP', 'Backfill: DHT lookup failed: $e — showing registration');
+      }
+    });
+  }
+
+  /// Background check: if local cache has a name but DHT doesn't, re-register it.
+  /// If the name was taken by someone else, force registration screen for new name.
+  void _ensureNameInDht(dynamic engine, String localName) {
+    Future.delayed(const Duration(seconds: 5), () async {
+      // Wait for DHT to connect
+      for (int i = 0; i < 6; i++) {
+        if (engine.isDhtConnected()) break;
+        await Future.delayed(const Duration(seconds: 2));
+      }
+
+      if (!mounted) return;
+
+      try {
+        final dhtName = await engine.getRegisteredName();
+        if (dhtName != null && dhtName.isNotEmpty) return; // Already in DHT, all good
+
+        // Name missing from DHT — check if it's still available
+        engine.debugLog('STARTUP', 'Name "$localName" missing from DHT, checking availability...');
+        final ownerFp = await engine.lookupName(localName);
+
+        if (!mounted) return;
+
+        if (ownerFp.isEmpty) {
+          // Name is available — re-register it
+          engine.debugLog('STARTUP', 'Name "$localName" available, re-registering...');
+          await ref.read(identitiesProvider.notifier).registerName(localName);
+          engine.debugLog('STARTUP', 'Re-registered name to DHT: $localName');
+        } else {
+          // Name taken by someone else — force new name registration
+          final myFp = ref.read(currentFingerprintProvider) ?? '';
+          if (ownerFp == myFp) {
+            // It's ours but getRegisteredName didn't find it (race) — re-register
+            engine.debugLog('STARTUP', 'Name "$localName" is ours but profile missing, re-registering...');
+            await ref.read(identitiesProvider.notifier).registerName(localName);
+            engine.debugLog('STARTUP', 'Re-registered name to DHT: $localName');
+          } else {
+            // Someone else took our name — clear local cache, show registration
+            engine.debugLog('STARTUP', 'Name "$localName" taken by ${ownerFp.substring(0, 16)}... — forcing new registration');
+            await CacheDatabase.instance.saveRegisteredName(myFp, '');
+            if (mounted) {
+              ref.read(identityProfileCacheProvider.notifier).updateIdentity(myFp, '', '');
+              setState(() {
+                _registrationIncomplete = true;
+              });
+            }
           }
         }
       } catch (e) {
-        engine.debugLog('STARTUP', 'Backfill: DHT lookup failed: $e — showing registration');
-        if (mounted) {
-          setState(() {
-            _registrationIncomplete = true;
-          });
-        }
+        engine.debugLog('STARTUP', 'DHT name check/re-register failed: $e');
       }
     });
   }
@@ -202,10 +250,20 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           final fp = ref.read(currentFingerprintProvider);
           if (fp != null) {
             final cached = await CacheDatabase.instance.getIdentity(fp);
-            if (cached == null || cached.registeredName.isEmpty) {
-              // No registered name cached — go to home screen, backfill from DHT async.
-              // If DHT confirms no name exists, THEN show registration screen.
-              engine.debugLog('STARTUP', 'No cached registeredName for ${fp.substring(0, 16)}... — will backfill from DHT async');
+            if (cached != null && cached.registeredName.isNotEmpty) {
+              // Registered name found in local cache — allow HomeScreen
+              engine.debugLog('STARTUP', 'Cached registeredName found for ${fp.substring(0, 16)}...: ${cached.registeredName}');
+              if (mounted) {
+                setState(() {
+                  _registrationIncomplete = false;
+                });
+              }
+              // Background: verify name exists in DHT, re-register if missing
+              _ensureNameInDht(engine, cached.registeredName);
+            } else {
+              // No registered name cached — backfill from DHT.
+              // _registrationIncomplete stays true, blocking HomeScreen until resolved.
+              engine.debugLog('STARTUP', 'No cached registeredName for ${fp.substring(0, 16)}... — backfilling from DHT');
               _backfillNameFromDht(engine, fp);
             }
           }
