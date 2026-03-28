@@ -73,6 +73,7 @@ static void print_usage(const char *prog_name) {
     printf("  group       Encrypted group chats with GEK key rotation\n");
     printf("  channel     Public broadcast channels (create, post, subscribe)\n");
     printf("  wall        Social wall — posts, timeline, comments, likes\n");
+    printf("  media       Upload, download, and send media via DHT\n");
     printf("  wallet      Multi-chain wallet (Backbone, ETH, SOL, TRX)\n");
     printf("  dex         Decentralized exchange (quotes, swaps, pairs)\n");
     printf("  network     DHT status, presence, bootstrap registry\n");
@@ -204,7 +205,7 @@ int main(int argc, char *argv[]) {
     int bare_group = (optind + 1 >= argc) ||
                      (optind + 1 < argc && strcmp(argv[optind + 1], "help") == 0);
     const char *known_groups[] = {"identity", "contact", "message", "group", "channel",
-                                  "wallet", "dex", "network", "version", "sign", "debug", "wall", "follow", NULL};
+                                  "wallet", "dex", "network", "version", "sign", "debug", "wall", "follow", "media", NULL};
     if (bare_group) {
         for (int i = 0; known_groups[i]; i++) {
             if (strcmp(command, known_groups[i]) == 0) {
@@ -222,6 +223,7 @@ int main(int argc, char *argv[]) {
                 else if (strcmp(command, "debug") == 0) dispatch_debug(NULL, argc, argv, optind + 1);
                 else if (strcmp(command, "wall") == 0) dispatch_wall(NULL, argc, argv, optind + 1);
                 else if (strcmp(command, "follow") == 0) dispatch_follow(NULL, argc, argv, optind + 1);
+                else if (strcmp(command, "media") == 0) dispatch_media(NULL, argc, argv, optind + 1);
                 return 1;
             }
         }
@@ -335,6 +337,9 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "follow") == 0) {
         result = dispatch_follow(g_engine, argc, argv, optind + 1);
+    }
+    else if (strcmp(command, "media") == 0) {
+        result = dispatch_media(g_engine, argc, argv, optind + 1);
     }
     else {
         fprintf(stderr, "Unknown command group: '%s'\n", command);

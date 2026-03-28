@@ -6659,6 +6659,373 @@ int dispatch_follow_repl(dna_engine_t *engine, const char *subcmd) {
 }
 
 /* ============================================================================
+ * MEDIA COMMANDS
+ * ============================================================================ */
+
+static void on_media_upload(dna_request_id_t req, int error,
+                            const uint8_t content_hash[64], void *user_data) {
+    (void)req;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+    if (error == 0 && content_hash) {
+        memcpy(wait->media_hash, content_hash, 64);
+    }
+    cli_wait_signal(wait, error);
+}
+
+static void on_media_download(dna_request_id_t req, int error,
+                              const uint8_t *data, size_t data_len, void *user_data) {
+    (void)req;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+    if (error == 0 && data && data_len > 0) {
+        wait->media_data = malloc(data_len);
+        if (wait->media_data) {
+            memcpy(wait->media_data, data, data_len);
+            wait->media_data_len = data_len;
+        }
+    }
+    cli_wait_signal(wait, error);
+}
+
+static void on_media_exists(dna_request_id_t req, int error,
+                            bool exists, void *user_data) {
+    (void)req;
+    cli_wait_t *wait = (cli_wait_t *)user_data;
+    if (error == 0) {
+        wait->media_exists = exists;
+    }
+    cli_wait_signal(wait, error);
+}
+
+/**
+ * Parse 128-char hex string into 64-byte binary hash
+ */
+static int parse_hex_hash(const char *hex, uint8_t out[64]) {
+    if (!hex || strlen(hex) != 128) return -1;
+    for (int i = 0; i < 64; i++) {
+        unsigned int byte;
+        if (sscanf(hex + i * 2, "%2x", &byte) != 1) return -1;
+        out[i] = (uint8_t)byte;
+    }
+    return 0;
+}
+
+/**
+ * Format 64-byte binary hash as 128-char hex string
+ */
+static void format_hex_hash(const uint8_t hash[64], char out[129]) {
+    for (int i = 0; i < 64; i++) {
+        sprintf(out + i * 2, "%02x", hash[i]);
+    }
+    out[128] = '\0';
+}
+
+int cmd_media_upload(dna_engine_t *engine, const char *filepath, uint8_t media_type) {
+    if (!engine || !filepath) {
+        fprintf(stderr, "Usage: media upload <filepath> [type]\n");
+        return 1;
+    }
+
+    /* Read file */
+    FILE *f = fopen(filepath, "rb");
+    if (!f) {
+        fprintf(stderr, "Error: Cannot open file '%s'\n", filepath);
+        return 1;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (fsize <= 0 || fsize > 50 * 1024 * 1024) {
+        fprintf(stderr, "Error: File too large or empty (max 50MB, got %ld bytes)\n", fsize);
+        fclose(f);
+        return 1;
+    }
+
+    uint8_t *data = malloc((size_t)fsize);
+    if (!data) {
+        fprintf(stderr, "Error: Out of memory\n");
+        fclose(f);
+        return 1;
+    }
+
+    size_t data_len = fread(data, 1, (size_t)fsize, f);
+    fclose(f);
+
+    if (data_len != (size_t)fsize) {
+        fprintf(stderr, "Error: Failed to read file\n");
+        free(data);
+        return 1;
+    }
+
+    /* Compute SHA3-512 hash */
+    uint8_t content_hash[64];
+    qgp_sha3_512(data, data_len, content_hash);
+
+    char hash_hex[129];
+    format_hex_hash(content_hash, hash_hex);
+
+    printf("Uploading %s (%zu bytes, hash: %.16s...)\n", filepath, data_len, hash_hex);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_media_upload(engine, data, data_len, content_hash,
+                            media_type, false, 0, on_media_upload, &wait);
+    int rc = cli_wait_for(&wait);
+
+    free(data);
+
+    if (rc != 0) {
+        fprintf(stderr, "Error: Upload failed: %s\n", dna_engine_error_string(rc));
+        cli_wait_destroy(&wait);
+        return 1;
+    }
+
+    char result_hex[129];
+    format_hex_hash(wait.media_hash, result_hex);
+    printf("Upload complete!\n");
+    printf("Content hash: %s\n", result_hex);
+
+    cli_wait_destroy(&wait);
+    return 0;
+}
+
+int cmd_media_download(dna_engine_t *engine, const char *hash_hex, const char *output_path) {
+    if (!engine || !hash_hex || !output_path) {
+        fprintf(stderr, "Usage: media download <hash> <output_path>\n");
+        return 1;
+    }
+
+    uint8_t content_hash[64];
+    if (parse_hex_hash(hash_hex, content_hash) != 0) {
+        fprintf(stderr, "Error: Invalid hash (need 128 hex chars)\n");
+        return 1;
+    }
+
+    printf("Downloading media %.16s...\n", hash_hex);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    wait.media_data = NULL;
+    wait.media_data_len = 0;
+
+    dna_engine_media_download(engine, content_hash, on_media_download, &wait);
+    int rc = cli_wait_for(&wait);
+
+    if (rc != 0) {
+        fprintf(stderr, "Error: Download failed: %s\n", dna_engine_error_string(rc));
+        cli_wait_destroy(&wait);
+        return 1;
+    }
+
+    if (!wait.media_data || wait.media_data_len == 0) {
+        fprintf(stderr, "Error: No data received\n");
+        cli_wait_destroy(&wait);
+        return 1;
+    }
+
+    /* Write to file */
+    FILE *f = fopen(output_path, "wb");
+    if (!f) {
+        fprintf(stderr, "Error: Cannot open output file '%s'\n", output_path);
+        free(wait.media_data);
+        cli_wait_destroy(&wait);
+        return 1;
+    }
+
+    size_t written = fwrite(wait.media_data, 1, wait.media_data_len, f);
+    fclose(f);
+    free(wait.media_data);
+    wait.media_data = NULL;
+
+    if (written != wait.media_data_len) {
+        fprintf(stderr, "Error: Write incomplete (%zu/%zu bytes)\n", written, wait.media_data_len);
+        cli_wait_destroy(&wait);
+        return 1;
+    }
+
+    printf("Downloaded %zu bytes to %s\n", wait.media_data_len, output_path);
+    cli_wait_destroy(&wait);
+    return 0;
+}
+
+int cmd_media_exists(dna_engine_t *engine, const char *hash_hex) {
+    if (!engine || !hash_hex) {
+        fprintf(stderr, "Usage: media exists <hash>\n");
+        return 1;
+    }
+
+    uint8_t content_hash[64];
+    if (parse_hex_hash(hash_hex, content_hash) != 0) {
+        fprintf(stderr, "Error: Invalid hash (need 128 hex chars)\n");
+        return 1;
+    }
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+    wait.media_exists = false;
+
+    dna_engine_media_exists(engine, content_hash, on_media_exists, &wait);
+    int rc = cli_wait_for(&wait);
+
+    if (rc != 0) {
+        fprintf(stderr, "Error: Exists check failed: %s\n", dna_engine_error_string(rc));
+        cli_wait_destroy(&wait);
+        return 1;
+    }
+
+    printf("Media %.16s...: %s\n", hash_hex, wait.media_exists ? "EXISTS" : "NOT FOUND");
+    cli_wait_destroy(&wait);
+    return 0;
+}
+
+int cmd_media_send(dna_engine_t *engine, const char *recipient, const char *filepath, uint8_t media_type) {
+    if (!engine || !recipient || !filepath) {
+        fprintf(stderr, "Usage: media send <recipient> <filepath> [type]\n");
+        return 1;
+    }
+
+    /* Read file */
+    FILE *f = fopen(filepath, "rb");
+    if (!f) {
+        fprintf(stderr, "Error: Cannot open file '%s'\n", filepath);
+        return 1;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (fsize <= 0 || fsize > 50 * 1024 * 1024) {
+        fprintf(stderr, "Error: File too large or empty (max 50MB)\n");
+        fclose(f);
+        return 1;
+    }
+
+    uint8_t *data = malloc((size_t)fsize);
+    if (!data) {
+        fprintf(stderr, "Error: Out of memory\n");
+        fclose(f);
+        return 1;
+    }
+
+    size_t data_len = fread(data, 1, (size_t)fsize, f);
+    fclose(f);
+
+    if (data_len != (size_t)fsize) {
+        fprintf(stderr, "Error: Failed to read file\n");
+        free(data);
+        return 1;
+    }
+
+    /* Compute SHA3-512 hash */
+    uint8_t content_hash[64];
+    qgp_sha3_512(data, data_len, content_hash);
+
+    char hash_hex[129];
+    format_hex_hash(content_hash, hash_hex);
+
+    /* Step 1: Upload */
+    printf("Uploading %s (%zu bytes)...\n", filepath, data_len);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_engine_media_upload(engine, data, data_len, content_hash,
+                            media_type, false, 0, on_media_upload, &wait);
+    int rc = cli_wait_for(&wait);
+    free(data);
+
+    if (rc != 0) {
+        fprintf(stderr, "Error: Upload failed: %s\n", dna_engine_error_string(rc));
+        cli_wait_destroy(&wait);
+        return 1;
+    }
+
+    printf("Upload complete (hash: %.16s...)\n", hash_hex);
+
+    /* Step 2: Send hash as message */
+    static char msg_buf[256];
+    const char *type_str = (media_type == 0) ? "image" : (media_type == 1) ? "video" : "audio";
+    snprintf(msg_buf, sizeof(msg_buf), "[media:%s:%s]", type_str, hash_hex);
+
+    cli_wait_destroy(&wait);
+
+    printf("Sending media reference to %s...\n", recipient);
+    return cmd_send(engine, recipient, msg_buf);
+}
+
+static uint8_t parse_media_type(const char *type_str) {
+    if (!type_str) return 0;  /* default: image */
+    if (strcmp(type_str, "image") == 0 || strcmp(type_str, "0") == 0) return 0;
+    if (strcmp(type_str, "video") == 0 || strcmp(type_str, "1") == 0) return 1;
+    if (strcmp(type_str, "audio") == 0 || strcmp(type_str, "2") == 0) return 2;
+    return 0;  /* default: image */
+}
+
+int dispatch_media(dna_engine_t *engine, int argc, char **argv, int sub) {
+    if (sub >= argc || strcmp(argv[sub], "help") == 0) {
+        fprintf(stderr, "Media — Upload, download, and send media via DHT\n\n");
+        fprintf(stderr, "  upload <filepath> [type]            Upload file (type: image|video|audio, default: image)\n");
+        fprintf(stderr, "  download <hash> <output_path>       Download by content hash\n");
+        fprintf(stderr, "  exists <hash>                       Check if media exists on DHT\n");
+        fprintf(stderr, "  send <recipient> <filepath> [type]  Upload and send as message\n");
+        return 1;
+    }
+    const char *subcmd = argv[sub];
+    if (strcmp(subcmd, "upload") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: media upload <filepath> [type]\n"); return 1; }
+        uint8_t mtype = (sub + 2 < argc) ? parse_media_type(argv[sub + 2]) : 0;
+        return cmd_media_upload(engine, argv[sub + 1], mtype);
+    } else if (strcmp(subcmd, "download") == 0) {
+        if (sub + 2 >= argc) { fprintf(stderr, "Usage: media download <hash> <output_path>\n"); return 1; }
+        return cmd_media_download(engine, argv[sub + 1], argv[sub + 2]);
+    } else if (strcmp(subcmd, "exists") == 0) {
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: media exists <hash>\n"); return 1; }
+        return cmd_media_exists(engine, argv[sub + 1]);
+    } else if (strcmp(subcmd, "send") == 0) {
+        if (sub + 2 >= argc) { fprintf(stderr, "Usage: media send <recipient> <filepath> [type]\n"); return 1; }
+        uint8_t mtype = (sub + 3 < argc) ? parse_media_type(argv[sub + 3]) : 0;
+        return cmd_media_send(engine, argv[sub + 1], argv[sub + 2], mtype);
+    } else {
+        fprintf(stderr, "Unknown media subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+int dispatch_media_repl(dna_engine_t *engine, const char *subcmd) {
+    if (!subcmd || strcmp(subcmd, "help") == 0) {
+        fprintf(stderr, "Media — upload <file> [type] | download <hash> <path> | exists <hash> | send <to> <file> [type]\n");
+        return 1;
+    }
+    if (strcmp(subcmd, "upload") == 0) {
+        char *filepath = strtok(NULL, " \t");
+        char *type_str = strtok(NULL, " \t");
+        if (!filepath) { fprintf(stderr, "Usage: media upload <filepath> [type]\n"); return 1; }
+        return cmd_media_upload(engine, filepath, parse_media_type(type_str));
+    } else if (strcmp(subcmd, "download") == 0) {
+        char *hash = strtok(NULL, " \t");
+        char *path = strtok(NULL, " \t");
+        if (!hash || !path) { fprintf(stderr, "Usage: media download <hash> <output_path>\n"); return 1; }
+        return cmd_media_download(engine, hash, path);
+    } else if (strcmp(subcmd, "exists") == 0) {
+        char *hash = strtok(NULL, " \t");
+        if (!hash) { fprintf(stderr, "Usage: media exists <hash>\n"); return 1; }
+        return cmd_media_exists(engine, hash);
+    } else if (strcmp(subcmd, "send") == 0) {
+        char *recipient = strtok(NULL, " \t");
+        char *filepath = strtok(NULL, " \t");
+        char *type_str = strtok(NULL, " \t");
+        if (!recipient || !filepath) { fprintf(stderr, "Usage: media send <recipient> <filepath> [type]\n"); return 1; }
+        return cmd_media_send(engine, recipient, filepath, parse_media_type(type_str));
+    } else {
+        fprintf(stderr, "Unknown media subcommand: %s\n", subcmd);
+        return 1;
+    }
+}
+
+/* ============================================================================
  * COMMAND PARSER
  * ============================================================================ */
 
@@ -6754,6 +7121,10 @@ bool execute_command(dna_engine_t *engine, const char *line) {
     else if (strcmp(cmd, "follow") == 0) {
         char *subcmd = strtok(NULL, " \t");
         dispatch_follow_repl(engine, subcmd);
+    }
+    else if (strcmp(cmd, "media") == 0) {
+        char *subcmd = strtok(NULL, " \t");
+        dispatch_media_repl(engine, subcmd);
     }
     else {
         printf("Unknown command group: %s\n", cmd);

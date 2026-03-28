@@ -61,6 +61,11 @@ typedef struct {
     /* Following storage */
     dna_following_t *following;
     int following_count;
+    /* Media storage */
+    uint8_t media_hash[64];
+    uint8_t *media_data;
+    size_t media_data_len;
+    bool media_exists;
 } cli_wait_t;
 
 /**
@@ -536,6 +541,7 @@ int dispatch_sign(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_debug(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_wall(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_follow(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_media(dna_engine_t *engine, int argc, char **argv, int sub);
 
 int dispatch_identity_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_contact_repl(dna_engine_t *engine, const char *subcmd);
@@ -550,6 +556,47 @@ int dispatch_sign_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_debug_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_wall_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_follow_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_media_repl(dna_engine_t *engine, const char *subcmd);
+
+/* ============================================================================
+ * MEDIA COMMANDS (upload/download/exists/send)
+ * ============================================================================ */
+
+/**
+ * Upload a file to DHT media storage
+ * @param engine DNA engine instance
+ * @param filepath Local file path to upload
+ * @param media_type 0=image, 1=video, 2=audio
+ * @return 0 on success, negative on error
+ */
+int cmd_media_upload(dna_engine_t *engine, const char *filepath, uint8_t media_type);
+
+/**
+ * Download media from DHT by content hash
+ * @param engine DNA engine instance
+ * @param hash_hex SHA3-512 content hash (128 hex chars)
+ * @param output_path Local file path to save to
+ * @return 0 on success, negative on error
+ */
+int cmd_media_download(dna_engine_t *engine, const char *hash_hex, const char *output_path);
+
+/**
+ * Check if media exists on DHT
+ * @param engine DNA engine instance
+ * @param hash_hex SHA3-512 content hash (128 hex chars)
+ * @return 0 on success, negative on error
+ */
+int cmd_media_exists(dna_engine_t *engine, const char *hash_hex);
+
+/**
+ * Upload a file and send its hash as a message to a contact
+ * @param engine DNA engine instance
+ * @param recipient Contact name or fingerprint
+ * @param filepath Local file path to upload and send
+ * @param media_type 0=image, 1=video, 2=audio
+ * @return 0 on success, negative on error
+ */
+int cmd_media_send(dna_engine_t *engine, const char *recipient, const char *filepath, uint8_t media_type);
 
 /* ============================================================================
  * COMMAND PARSER
