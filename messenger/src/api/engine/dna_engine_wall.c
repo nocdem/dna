@@ -1271,11 +1271,16 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
             int cached_count = 0;
             if (wall_cache_load_likes(post_uuids[i], &cached_json, &cached_count) == 0
                 && cached_json) {
-                dna_wall_like_info_t *infos = NULL;
-                int parsed = 0;
-                if (wall_like_infos_from_json(cached_json, &infos, &parsed) == 0) {
-                    engagements[i].like_count = parsed;
-                    if (engine->identity_loaded) {
+                /* Use cached_count from SQLite like_count column (reliable).
+                 * JSON may be "[]" (from count_batch which only stores count). */
+                engagements[i].like_count = cached_count;
+
+                /* Try to resolve is_liked_by_me from JSON if it has real data */
+                if (cached_count > 0 && engine->identity_loaded) {
+                    dna_wall_like_info_t *infos = NULL;
+                    int parsed = 0;
+                    if (wall_like_infos_from_json(cached_json, &infos, &parsed) == 0
+                        && parsed > 0) {
                         for (int k = 0; k < parsed; k++) {
                             if (strcmp(infos[k].author_fingerprint,
                                        engine->fingerprint) == 0) {
@@ -1283,8 +1288,8 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                                 break;
                             }
                         }
+                        free(infos);
                     }
-                    free(infos);
                 }
                 free(cached_json);
             }
