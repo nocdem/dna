@@ -265,22 +265,26 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
     /* Check for missed incoming messages after reconnect.
-     * Android: Skip auto-fetch - Flutter handles fetching when app resumes.
-     *          This prevents ACKs being published while app is backgrounded,
-     *          which would mark messages as "received" before user sees them.
-     * Desktop: Fetch immediately since there's no background service. */
-#ifndef __ANDROID__
+     * Android: Fetch with publish_watermarks=false (cache only, no ACKs).
+     *          ACKs are published later when user opens the chat in Flutter.
+     * Desktop: Fetch with publish_watermarks=true (immediate ACK). */
     if (engine->messenger && engine->messenger->transport_ctx) {
+#ifdef __ANDROID__
+        /* Android: fetch with publish_watermarks=false so messages are cached locally
+         * but ACKs are NOT published — user hasn't seen them yet.
+         * ACKs will be published when user opens the chat (Flutter handles this). */
+        QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: checking for missed messages (Android, no ACKs)");
+        size_t received = 0;
+        transport_check_offline_messages(engine->messenger->transport_ctx, NULL, false, false, &received);
+#else
         QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: checking for missed messages");
         size_t received = 0;
         transport_check_offline_messages(engine->messenger->transport_ctx, NULL, true, false, &received);
+#endif
         if (received > 0) {
             QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: received %zu missed messages", received);
         }
     }
-#else
-    QGP_LOG_INFO(LOG_TAG, "[FETCH] DHT reconnect: skipping auto-fetch (Android - Flutter handles on resume)");
-#endif
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
