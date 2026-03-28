@@ -103,6 +103,7 @@ if(NOT WIN32)
         src/channel/nodus_channel_ring.c
         src/consensus/nodus_cluster.c
         src/server/nodus_server.c
+        src/server/nodus_media_handler.c
         src/server/nodus_auth.c
         src/server/nodus_presence.c
         src/witness/nodus_witness.c

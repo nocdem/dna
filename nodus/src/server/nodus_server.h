@@ -15,6 +15,7 @@
 #include "transport/nodus_udp.h"
 #include "core/nodus_routing.h"
 #include "core/nodus_storage.h"
+#include "core/nodus_media_storage.h"
 #include "channel/nodus_hashring.h"
 #include "channel/nodus_channel_store.h"
 #include "channel/nodus_channel_server.h"
@@ -293,6 +294,7 @@ typedef struct nodus_server {
 
     /* Storage */
     nodus_storage_t         storage;
+    nodus_media_storage_t   media_storage;
     nodus_channel_store_t   ch_store;
     nodus_routing_t         routing;
     nodus_hashring_t        ring;

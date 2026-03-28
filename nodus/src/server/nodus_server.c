@@ -6,6 +6,7 @@
  */
 
 #include "server/nodus_server.h"
+#include "server/nodus_media_handler.h"
 #include "channel/nodus_channel_server.h"
 #include "channel/nodus_channel_replication.h"
 #include "channel/nodus_channel_ring.h"
@@ -382,6 +383,8 @@ static void dht_storage_cleanup(nodus_server_t *srv) {
     int cleaned = nodus_storage_cleanup(&srv->storage);
     if (cleaned > 0)
         fprintf(stderr, "DHT-CLEANUP: removed %d expired values\n", cleaned);
+
+    nodus_media_cleanup(&srv->media_storage);
 }
 
 /* ── Periodic republish (non-blocking) ───────────────────────────── */
@@ -2506,6 +2509,12 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         handle_t2_ch_search(srv, sess, &msg);
     else if (strcmp(msg.method, "ch_get") == 0)
         handle_t2_ch_get(srv, sess, &msg);
+    else if (strcmp(msg.method, "m_put") == 0)
+        handle_t2_media_put(srv, sess, &msg);
+    else if (strcmp(msg.method, "m_meta") == 0)
+        handle_t2_media_get_meta(srv, sess, &msg);
+    else if (strcmp(msg.method, "m_chunk") == 0)
+        handle_t2_media_get_chunk(srv, sess, &msg);
     else {
         size_t rlen = 0;
         nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
@@ -3054,6 +3063,12 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         return -1;
     }
 
+    /* Open media storage (shares same DB handle) */
+    if (nodus_media_storage_open(srv->storage.db, &srv->media_storage) != 0) {
+        fprintf(stderr, "Failed to open media storage\n");
+        return -1;
+    }
+
     /* Open channel storage */
     char ch_db_path[512];
     snprintf(ch_db_path, sizeof(ch_db_path), "%s/channels.db",
@@ -3369,6 +3384,7 @@ void nodus_server_close(nodus_server_t *srv) {
     nodus_tcp_close(&srv->inter_tcp);
     nodus_tcp_close(&srv->witness_tcp);
     nodus_udp_close(&srv->udp);
+    nodus_media_storage_close(&srv->media_storage);
     nodus_storage_close(&srv->storage);
     nodus_channel_store_close(&srv->ch_store);
     nodus_identity_clear(&srv->identity);
