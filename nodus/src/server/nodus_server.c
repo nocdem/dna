@@ -2008,8 +2008,17 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
         uint64_t idle = now - c->last_activity;
         bool authed = srv->sessions[c->slot].authenticated;
         uint64_t timeout = authed ? IDLE_TIMEOUT_AUTH : IDLE_TIMEOUT_UNAUTH;
-        if (idle > timeout)
+        if (idle > timeout) {
+            char fp_hex[33] = {0};
+            if (authed)
+                for (int j = 0; j < 16; j++)
+                    sprintf(fp_hex + j*2, "%02x", srv->sessions[c->slot].client_fp.bytes[j]);
+            fprintf(stderr, "IDLE_SWEEP: slot=%d ip=%s idle=%lus timeout=%lus auth=%s fp=%s\n",
+                    c->slot, c->ip,
+                    (unsigned long)idle, (unsigned long)timeout,
+                    authed ? "yes" : "no", fp_hex);
             nodus_tcp_disconnect(&srv->tcp, c);
+        }
     }
 
     /* Sweep inter-node TCP pool */
@@ -2735,8 +2744,25 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_session_t *sess = session_for_conn(srv, conn);
     if (sess) {
-        if (sess->authenticated)
+        char fp_hex[33] = {0};
+        if (sess->authenticated) {
+            for (int i = 0; i < 16; i++)
+                sprintf(fp_hex + i*2, "%02x", sess->client_fp.bytes[i]);
+            fprintf(stderr, "CLIENT_DISCONNECT: %s slot=%d ip=%s auth=yes idle=%lus reason=",
+                    fp_hex, conn->slot, conn->ip,
+                    (unsigned long)(nodus_time_now() - conn->last_activity));
+            /* Detect reason */
+            int err = 0;
+            socklen_t elen = sizeof(err);
+            if (conn->fd >= 0) getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, &err, &elen);
+            if (err) fprintf(stderr, "socket_error(%d)\n", err);
+            else fprintf(stderr, "clean_close_or_sweep\n");
             nodus_presence_remove_local(srv, &sess->client_fp);
+        } else {
+            fprintf(stderr, "CLIENT_DISCONNECT: unauth slot=%d ip=%s idle=%lus\n",
+                    conn->slot, conn->ip,
+                    (unsigned long)(nodus_time_now() - conn->last_activity));
+        }
         session_clear(sess);
     }
 
