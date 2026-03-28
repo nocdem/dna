@@ -154,6 +154,49 @@ int wall_cache_update_meta(const char *fingerprint);
  */
 void wall_cache_free_posts(dna_wall_post_t *posts, size_t count);
 
+/* ── Daily Bucket Meta (v0.9.141+) ───────────────────────────────── */
+
+/**
+ * Check if wall meta is stale for a fingerprint
+ * Uses cache_key "meta:<fingerprint>" in wall_cache_meta table
+ */
+bool wall_cache_is_stale_wall_meta(const char *fingerprint);
+
+/**
+ * Mark wall meta as fresh for a fingerprint
+ */
+int wall_cache_update_wall_meta(const char *fingerprint);
+
+/**
+ * Check if a specific day's bucket is stale for a fingerprint
+ * Uses cache_key "<fingerprint>:<YYYY-MM-DD>" in wall_cache_meta table
+ */
+bool wall_cache_is_stale_day(const char *fingerprint, const char *date_str);
+
+/**
+ * Mark a specific day's bucket as fresh
+ */
+int wall_cache_update_meta_day(const char *fingerprint, const char *date_str);
+
+/**
+ * Store wall meta JSON blob (DHT meta key content)
+ */
+int wall_cache_store_wall_meta(const char *fingerprint, const char *meta_json);
+
+/**
+ * Load cached wall meta JSON blob
+ * @param meta_json_out  Output: heap-allocated JSON string (caller frees)
+ * @return 0 on success, -1 on error, -2 if not found
+ */
+int wall_cache_load_wall_meta(const char *fingerprint, char **meta_json_out);
+
+/**
+ * Get post timestamp from cache by UUID
+ * Used by delete handler to derive bucket day
+ * @return timestamp on success, 0 if not found
+ */
+uint64_t wall_cache_get_post_timestamp(const char *post_uuid);
+
 /* ── Comment cache (v0.7.0+) ─────────────────────────────────────── */
 
 /**

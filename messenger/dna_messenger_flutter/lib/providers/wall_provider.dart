@@ -119,8 +119,9 @@ final wallTimelineProvider =
 );
 
 class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
-  final bool _hasMore = true;
-  final bool _isLoadingMore = false;
+  bool _hasMore = true;
+  bool _isLoadingMore = false;
+  int _loadedDays = 2; // Start with today + yesterday (DNA_WALL_INITIAL_DAYS)
 
   bool get hasMore => _hasMore;
   bool get isLoadingMore => _isLoadingMore;
@@ -462,11 +463,78 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
   }
 
   Future<void> refresh() async {
+    _loadedDays = 2;
+    _hasMore = true;
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       final myFp = ref.read(currentFingerprintProvider) ?? '';
       return _fetchAndAssemble(engine, myFp);
     });
+  }
+
+  /// Load older days on scroll (lazy load).
+  /// Fetches the next day's bucket for all contacts.
+  Future<void> loadMoreDays() async {
+    if (_isLoadingMore || !_hasMore) return;
+    _isLoadingMore = true;
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final myFp = ref.read(currentFingerprintProvider) ?? '';
+      if (myFp.isEmpty) return;
+
+      // Calculate date string for the next day to load
+      final targetDay = DateTime.now()
+          .toUtc()
+          .subtract(Duration(days: _loadedDays));
+      if (_loadedDays >= 30) {
+        _hasMore = false;
+        return;
+      }
+
+      final dateStr =
+          '${targetDay.year}-${targetDay.month.toString().padLeft(2, '0')}-${targetDay.day.toString().padLeft(2, '0')}';
+
+      // Get contact + following fingerprints
+      // Reuse cached timeline posts to extract unique authors
+      final current = state.valueOrNull ?? [];
+      final authors = current.map((i) => i.post.authorFingerprint).toSet();
+      if (authors.isEmpty) authors.add(myFp);
+
+      // Fetch this day's bucket for each author
+      final newPosts = <WallPost>[];
+      for (final fp in authors) {
+        try {
+          final posts = await engine.wallLoadDay(fp, dateStr);
+          newPosts.addAll(posts);
+        } catch (_) {
+          // No bucket for this author on this day — normal
+        }
+      }
+
+      _loadedDays++;
+
+      if (newPosts.isEmpty) {
+        // No posts found — try a few more days before giving up
+        if (_loadedDays >= 30) _hasMore = false;
+      } else {
+        // Assemble and merge into existing state
+        final newItems = await _assembleItems(newPosts, myFp);
+        final existing = state.valueOrNull ?? [];
+        final existingUuids = {for (final i in existing) i.post.uuid};
+        final deduped =
+            newItems.where((i) => !existingUuids.contains(i.post.uuid)).toList();
+
+        if (deduped.isNotEmpty) {
+          final merged = [...existing, ...deduped];
+          merged.sort(
+              (a, b) => b.post.timestamp.compareTo(a.post.timestamp));
+          state = AsyncData(merged);
+        }
+      }
+    } finally {
+      _isLoadingMore = false;
+    }
   }
 
   /// Create a text-only wall post

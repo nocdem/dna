@@ -4028,6 +4028,24 @@ class DnaBindings {
     return _dna_engine_wall_boost_timeline(engine, callback, userData);
   }
 
+  // ── Wall Load Day (v0.9.141+) ──
+
+  late final _dna_engine_wall_load_day = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaWallPostsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaWallPostsCb>, Pointer<Void>)>('dna_engine_wall_load_day');
+
+  int dna_engine_wall_load_day(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<Utf8> dateStr,
+    Pointer<DnaWallPostsCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_load_day(engine, fingerprint, dateStr, callback, userData);
+  }
+
   // ── Wall Comments (v0.7.0+) ──
 
   late final _dna_engine_wall_add_comment = _lib.lookupFunction<

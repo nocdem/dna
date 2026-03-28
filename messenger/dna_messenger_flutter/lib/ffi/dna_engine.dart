@@ -5788,6 +5788,55 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Load a single day's wall bucket from DHT (v0.9.141+)
+  /// Used for lazy-loading older days on scroll.
+  Future<List<WallPost>> wallLoadDay(String fingerprint, String dateStr) async {
+    final completer = Completer<List<WallPost>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_wall_post_info_t> posts, int count,
+        Pointer<Void> userData) {
+      if (error == 0) {
+        final list = <WallPost>[];
+        for (int i = 0; i < count; i++) {
+          list.add(WallPost.fromNative(posts[i]));
+        }
+        if (count > 0) _bindings.dna_free_wall_posts(posts, count);
+        completer.complete(list);
+      } else {
+        if (count > 0) _bindings.dna_free_wall_posts(posts, count);
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallPostsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final fpPtr = fingerprint.toNativeUtf8();
+    final datePtr = dateStr.toNativeUtf8();
+
+    final requestId = _bindings.dna_engine_wall_load_day(
+      _engine,
+      fpPtr.cast(),
+      datePtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    calloc.free(fpPtr);
+    calloc.free(datePtr);
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit wall load day request');
+    }
+
+    return completer.future;
+  }
+
   // ---------------------------------------------------------------------------
   // WALL COMMENTS (v0.7.0+)
   // ---------------------------------------------------------------------------

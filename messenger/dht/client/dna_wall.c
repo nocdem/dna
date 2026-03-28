@@ -104,6 +104,49 @@ static void wall_base_key(const char *fingerprint, char *base_key, size_t base_k
     snprintf(base_key, base_key_size, "%s%s", DNA_WALL_KEY_PREFIX, fingerprint);
 }
 
+/**
+ * Build DHT key for a daily wall bucket: "dna:wall:<fp>:<YYYY-MM-DD>"
+ */
+static void wall_bucket_key(const char *fingerprint, const char *date_str,
+                             char *base_key, size_t base_key_size) {
+    snprintf(base_key, base_key_size, "%s%s:%s", DNA_WALL_KEY_PREFIX, fingerprint, date_str);
+}
+
+/**
+ * Build DHT key for wall metadata: "dna:wall:meta:<fp>"
+ */
+static void wall_meta_key(const char *fingerprint, char *base_key, size_t base_key_size) {
+    snprintf(base_key, base_key_size, "%s%s", DNA_WALL_META_KEY_PREFIX, fingerprint);
+}
+
+/**
+ * Get today's date as "YYYY-MM-DD" (UTC).
+ */
+static void wall_today_str(char *buf, size_t buf_size) {
+    time_t now = time(NULL);
+    struct tm tm_now;
+#ifdef _WIN32
+    gmtime_s(&tm_now, &now);
+#else
+    gmtime_r(&now, &tm_now);
+#endif
+    strftime(buf, buf_size, "%Y-%m-%d", &tm_now);
+}
+
+/**
+ * Convert Unix timestamp to "YYYY-MM-DD" (UTC).
+ */
+static void wall_date_from_timestamp(uint64_t ts, char *buf, size_t buf_size) {
+    time_t t = (time_t)ts;
+    struct tm tm_val;
+#ifdef _WIN32
+    gmtime_s(&tm_val, &t);
+#else
+    gmtime_r(&t, &tm_val);
+#endif
+    strftime(buf, buf_size, "%Y-%m-%d", &tm_val);
+}
+
 /* ============================================================================
  * DHT Key Derivation
  * ========================================================================== */
@@ -354,95 +397,93 @@ int dna_wall_post(const char *fingerprint,
     new_post.signature_len = sig_len;
     new_post.verified = true;
 
-    /* Load existing wall from DHT */
-    dna_wall_t wall;
-    memset(&wall, 0, sizeof(wall));
-    strncpy(wall.owner_fingerprint, fingerprint, 128);
-    wall.owner_fingerprint[128] = '\0';
+    /* Load today's bucket from DHT (daily bucket storage v0.9.141+) */
+    char today[16];
+    wall_today_str(today, sizeof(today));
 
-    int load_ret = dna_wall_load(fingerprint, &wall);
-    /* load_ret == -2 means no existing wall, which is fine */
-    if (load_ret != 0 && load_ret != -2) {
-        QGP_LOG_WARN(LOG_TAG, "Failed to load existing wall, starting fresh");
-        wall.posts = NULL;
-        wall.post_count = 0;
+    dna_wall_t bucket;
+    memset(&bucket, 0, sizeof(bucket));
+    strncpy(bucket.owner_fingerprint, fingerprint, 128);
+    bucket.owner_fingerprint[128] = '\0';
+
+    int load_ret = dna_wall_load_day(fingerprint, today, &bucket);
+    if (load_ret != 0 && load_ret != -2 && load_ret != NODUS_ERR_NOT_FOUND) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to load today's bucket, starting fresh");
+        bucket.posts = NULL;
+        bucket.post_count = 0;
     }
 
-    /* Content dedup: reject if same text posted within 5 minutes */
-    int dup_idx = wall_find_duplicate(&wall, text, NULL);
+    /* Content dedup within today's bucket */
+    int dup_idx = wall_find_duplicate(&bucket, text, NULL);
     if (dup_idx >= 0) {
         QGP_LOG_WARN(LOG_TAG, "Dedup: returning existing post %s instead of creating duplicate",
-                     wall.posts[dup_idx].uuid);
+                     bucket.posts[dup_idx].uuid);
         if (out_post) {
-            *out_post = wall.posts[dup_idx];
-            out_post->image_json = wall.posts[dup_idx].image_json
-                ? strdup(wall.posts[dup_idx].image_json) : NULL;
+            *out_post = bucket.posts[dup_idx];
+            out_post->image_json = bucket.posts[dup_idx].image_json
+                ? strdup(bucket.posts[dup_idx].image_json) : NULL;
         }
-        dna_wall_free(&wall);
+        dna_wall_free(&bucket);
         return 0;
     }
 
-    /* If at max capacity, remove one oldest post by timestamp */
-    if (wall.post_count >= DNA_WALL_MAX_POSTS) {
-        size_t oldest_idx = 0;
-        uint64_t oldest_ts = wall.posts[0].timestamp;
-        for (size_t i = 1; i < wall.post_count; i++) {
-            if (wall.posts[i].timestamp < oldest_ts) {
-                oldest_ts = wall.posts[i].timestamp;
-                oldest_idx = i;
-            }
-        }
-        /* Free heap members before overwriting */
-        free(wall.posts[oldest_idx].image_json);
-        if (oldest_idx < wall.post_count - 1) {
-            memmove(&wall.posts[oldest_idx], &wall.posts[oldest_idx + 1],
-                    (wall.post_count - oldest_idx - 1) * sizeof(dna_wall_post_t));
-        }
-        wall.post_count--;
+    /* Max posts check via meta total */
+    dna_wall_meta_t meta = {0};
+    int meta_ret = dna_wall_load_meta(fingerprint, &meta);
+    if (meta_ret == 0 && meta.total_posts >= DNA_WALL_MAX_POSTS) {
+        QGP_LOG_WARN(LOG_TAG, "Max posts reached (%zu), rejecting new post",
+                     meta.total_posts);
+        dna_wall_meta_free(&meta);
+        dna_wall_free(&bucket);
+        return -5;
     }
+    dna_wall_meta_free(&meta);
 
-    /* Append new post */
-    dna_wall_post_t *new_posts = realloc(wall.posts,
-                                          (wall.post_count + 1) * sizeof(dna_wall_post_t));
+    /* Append new post to today's bucket */
+    dna_wall_post_t *new_posts = realloc(bucket.posts,
+                                          (bucket.post_count + 1) * sizeof(dna_wall_post_t));
     if (!new_posts) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate memory for new post");
-        dna_wall_free(&wall);
+        dna_wall_free(&bucket);
         return -1;
     }
-    wall.posts = new_posts;
-    wall.posts[wall.post_count] = new_post;
-    wall.post_count++;
+    bucket.posts = new_posts;
+    bucket.posts[bucket.post_count] = new_post;
+    bucket.post_count++;
 
-    /* Serialize and publish to DHT */
-    char *json_str = dna_wall_to_json(&wall);
+    /* Serialize and publish today's bucket to DHT */
+    char *json_str = dna_wall_to_json(&bucket);
     if (!json_str) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize wall to JSON");
-        dna_wall_free(&wall);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize bucket to JSON");
+        dna_wall_free(&bucket);
         return -1;
     }
 
-    char base_key[256];
-    wall_base_key(fingerprint, base_key, sizeof(base_key));
+    char bkey[512];
+    wall_bucket_key(fingerprint, today, bkey, sizeof(bkey));
 
-    QGP_LOG_INFO(LOG_TAG, "Publishing wall post %s to DHT", new_post.uuid);
-    ret = nodus_ops_put_str(base_key,
+    QGP_LOG_INFO(LOG_TAG, "Publishing wall post %s to bucket %s", new_post.uuid, today);
+    ret = nodus_ops_put_str(bkey,
                              (const uint8_t *)json_str, strlen(json_str),
-                             (30*24*3600), nodus_ops_value_id());
+                             DNA_WALL_BUCKET_TTL_SECS, nodus_ops_value_id());
     free(json_str);
 
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to publish wall (ret=%d)", ret);
-        dna_wall_free(&wall);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish bucket (ret=%d)", ret);
+        dna_wall_free(&bucket);
         return -1;
     }
+
+    /* Update meta key */
+    dna_wall_update_meta(fingerprint, today, 1);
 
     /* Fill out_post if requested */
     if (out_post) {
         *out_post = new_post;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Wall post %s published successfully", new_post.uuid);
-    dna_wall_free(&wall);
+    QGP_LOG_INFO(LOG_TAG, "Wall post %s published to bucket %s", new_post.uuid, today);
+    dna_wall_free(&bucket);
     return 0;
 }
 
@@ -501,163 +542,179 @@ int dna_wall_post_with_image(const char *fingerprint,
     new_post.signature_len = sig_len;
     new_post.verified = true;
 
-    /* Load existing wall from DHT */
-    dna_wall_t wall;
-    memset(&wall, 0, sizeof(wall));
-    strncpy(wall.owner_fingerprint, fingerprint, 128);
-    wall.owner_fingerprint[128] = '\0';
+    /* Load today's bucket from DHT (daily bucket storage v0.9.141+) */
+    char today[16];
+    wall_today_str(today, sizeof(today));
 
-    int load_ret = dna_wall_load(fingerprint, &wall);
-    if (load_ret != 0 && load_ret != -2) {
-        QGP_LOG_WARN(LOG_TAG, "Failed to load existing wall, starting fresh");
-        wall.posts = NULL;
-        wall.post_count = 0;
+    dna_wall_t bucket;
+    memset(&bucket, 0, sizeof(bucket));
+    strncpy(bucket.owner_fingerprint, fingerprint, 128);
+    bucket.owner_fingerprint[128] = '\0';
+
+    int load_ret = dna_wall_load_day(fingerprint, today, &bucket);
+    if (load_ret != 0 && load_ret != -2 && load_ret != NODUS_ERR_NOT_FOUND) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to load today's bucket, starting fresh");
+        bucket.posts = NULL;
+        bucket.post_count = 0;
     }
 
-    /* Content dedup: reject if same text+image posted within 5 minutes */
-    int dup_idx = wall_find_duplicate(&wall, text, image_json);
+    /* Content dedup within today's bucket */
+    int dup_idx = wall_find_duplicate(&bucket, text, image_json);
     if (dup_idx >= 0) {
         QGP_LOG_WARN(LOG_TAG, "Dedup: returning existing post %s instead of creating duplicate",
-                     wall.posts[dup_idx].uuid);
+                     bucket.posts[dup_idx].uuid);
         if (out_post) {
-            *out_post = wall.posts[dup_idx];
-            out_post->image_json = wall.posts[dup_idx].image_json
-                ? strdup(wall.posts[dup_idx].image_json) : NULL;
+            *out_post = bucket.posts[dup_idx];
+            out_post->image_json = bucket.posts[dup_idx].image_json
+                ? strdup(bucket.posts[dup_idx].image_json) : NULL;
         }
         free(new_post.image_json);
-        dna_wall_free(&wall);
+        dna_wall_free(&bucket);
         return 0;
     }
 
-    /* If at max capacity, remove oldest post */
-    if (wall.post_count >= DNA_WALL_MAX_POSTS) {
-        size_t oldest_idx = 0;
-        uint64_t oldest_ts = wall.posts[0].timestamp;
-        for (size_t i = 1; i < wall.post_count; i++) {
-            if (wall.posts[i].timestamp < oldest_ts) {
-                oldest_ts = wall.posts[i].timestamp;
-                oldest_idx = i;
-            }
-        }
-        free(wall.posts[oldest_idx].image_json);
-        if (oldest_idx < wall.post_count - 1) {
-            memmove(&wall.posts[oldest_idx], &wall.posts[oldest_idx + 1],
-                    (wall.post_count - oldest_idx - 1) * sizeof(dna_wall_post_t));
-        }
-        wall.post_count--;
+    /* Max posts check via meta total */
+    dna_wall_meta_t meta = {0};
+    int meta_ret = dna_wall_load_meta(fingerprint, &meta);
+    if (meta_ret == 0 && meta.total_posts >= DNA_WALL_MAX_POSTS) {
+        QGP_LOG_WARN(LOG_TAG, "Max posts reached (%zu), rejecting new post",
+                     meta.total_posts);
+        dna_wall_meta_free(&meta);
+        free(new_post.image_json);
+        dna_wall_free(&bucket);
+        return -5;
     }
+    dna_wall_meta_free(&meta);
 
-    /* Append new post */
-    dna_wall_post_t *new_posts = realloc(wall.posts,
-                                          (wall.post_count + 1) * sizeof(dna_wall_post_t));
+    /* Append new post to today's bucket */
+    dna_wall_post_t *new_posts = realloc(bucket.posts,
+                                          (bucket.post_count + 1) * sizeof(dna_wall_post_t));
     if (!new_posts) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate memory for new post");
         free(new_post.image_json);
-        dna_wall_free(&wall);
+        dna_wall_free(&bucket);
         return -1;
     }
-    wall.posts = new_posts;
-    wall.posts[wall.post_count] = new_post;
-    wall.post_count++;
+    bucket.posts = new_posts;
+    bucket.posts[bucket.post_count] = new_post;
+    bucket.post_count++;
 
-    /* Serialize and publish to DHT */
-    char *json_str = dna_wall_to_json(&wall);
+    /* Serialize and publish today's bucket to DHT */
+    char *json_str = dna_wall_to_json(&bucket);
     if (!json_str) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize wall to JSON");
-        dna_wall_free(&wall);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize bucket to JSON");
+        dna_wall_free(&bucket);
         return -1;
     }
 
-    char base_key[256];
-    wall_base_key(fingerprint, base_key, sizeof(base_key));
+    char bkey[512];
+    wall_bucket_key(fingerprint, today, bkey, sizeof(bkey));
 
-    QGP_LOG_INFO(LOG_TAG, "Publishing wall post %s (with image) to DHT", new_post.uuid);
-    ret = nodus_ops_put_str(base_key,
+    QGP_LOG_INFO(LOG_TAG, "Publishing wall post %s (with image) to bucket %s", new_post.uuid, today);
+    ret = nodus_ops_put_str(bkey,
                              (const uint8_t *)json_str, strlen(json_str),
-                             (30*24*3600), nodus_ops_value_id());
+                             DNA_WALL_BUCKET_TTL_SECS, nodus_ops_value_id());
     free(json_str);
 
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to publish wall (ret=%d)", ret);
-        dna_wall_free(&wall);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish bucket (ret=%d)", ret);
+        dna_wall_free(&bucket);
         return -1;
     }
 
-    /* Fill out_post with a separate copy of image_json (wall_free will free the array's copy) */
+    /* Update meta key */
+    dna_wall_update_meta(fingerprint, today, 1);
+
+    /* Fill out_post with a separate copy of image_json (bucket_free will free the array's copy) */
     if (out_post) {
         *out_post = new_post;
         out_post->image_json = new_post.image_json ? strdup(new_post.image_json) : NULL;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Wall post %s (with image) published successfully", new_post.uuid);
-    dna_wall_free(&wall);
+    QGP_LOG_INFO(LOG_TAG, "Wall post %s (with image) published to bucket %s", new_post.uuid, today);
+    dna_wall_free(&bucket);
     return 0;
 }
 
 int dna_wall_delete(const char *fingerprint,
                     const uint8_t *private_key,
-                    const char *post_uuid) {
+                    const char *post_uuid,
+                    uint64_t post_timestamp) {
     if (!fingerprint || !private_key || !post_uuid) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for wall delete");
         return -1;
     }
 
-    /* Load existing wall */
-    dna_wall_t wall;
-    memset(&wall, 0, sizeof(wall));
-    int ret = dna_wall_load(fingerprint, &wall);
+    /* Derive bucket day from post timestamp */
+    char date_str[16];
+    if (post_timestamp > 0) {
+        wall_date_from_timestamp(post_timestamp, date_str, sizeof(date_str));
+    } else {
+        /* Fallback: use today (caller should provide timestamp) */
+        wall_today_str(date_str, sizeof(date_str));
+        QGP_LOG_WARN(LOG_TAG, "Delete without timestamp, assuming today: %s", date_str);
+    }
+
+    /* Load the day's bucket */
+    dna_wall_t bucket;
+    memset(&bucket, 0, sizeof(bucket));
+    int ret = dna_wall_load_day(fingerprint, date_str, &bucket);
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load wall for delete");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load bucket %s for delete (rc=%d)", date_str, ret);
         return ret;
     }
 
     /* Find and remove the post */
     bool found = false;
-    for (size_t i = 0; i < wall.post_count; i++) {
-        if (strcmp(wall.posts[i].uuid, post_uuid) == 0) {
-            /* Free heap members before overwriting */
-            free(wall.posts[i].image_json);
-            /* Shift remaining posts */
-            if (i < wall.post_count - 1) {
-                memmove(&wall.posts[i], &wall.posts[i + 1],
-                        (wall.post_count - i - 1) * sizeof(dna_wall_post_t));
+    for (size_t i = 0; i < bucket.post_count; i++) {
+        if (strcmp(bucket.posts[i].uuid, post_uuid) == 0) {
+            free(bucket.posts[i].image_json);
+            if (i < bucket.post_count - 1) {
+                memmove(&bucket.posts[i], &bucket.posts[i + 1],
+                        (bucket.post_count - i - 1) * sizeof(dna_wall_post_t));
             }
-            wall.post_count--;
+            bucket.post_count--;
             found = true;
             break;
         }
     }
 
     if (!found) {
-        QGP_LOG_WARN(LOG_TAG, "Post %s not found on wall", post_uuid);
-        dna_wall_free(&wall);
+        QGP_LOG_WARN(LOG_TAG, "Post %s not found in bucket %s", post_uuid, date_str);
+        dna_wall_free(&bucket);
         return -1;
     }
 
-    /* Re-serialize and republish */
-    char *json_str = dna_wall_to_json(&wall);
-    if (!json_str) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize wall after delete");
-        dna_wall_free(&wall);
-        return -1;
+    /* Re-serialize and republish the bucket */
+    char bkey[512];
+    wall_bucket_key(fingerprint, date_str, bkey, sizeof(bkey));
+
+    if (bucket.post_count > 0) {
+        char *json_str = dna_wall_to_json(&bucket);
+        if (!json_str) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to serialize bucket after delete");
+            dna_wall_free(&bucket);
+            return -1;
+        }
+        ret = nodus_ops_put_str(bkey, (const uint8_t *)json_str, strlen(json_str),
+                                 DNA_WALL_BUCKET_TTL_SECS, nodus_ops_value_id());
+        free(json_str);
+    } else {
+        /* Empty bucket — publish empty array so DHT overwrites */
+        ret = nodus_ops_put_str(bkey, (const uint8_t *)"[]", 2,
+                                 DNA_WALL_BUCKET_TTL_SECS, nodus_ops_value_id());
     }
-
-    char base_key[256];
-    wall_base_key(fingerprint, base_key, sizeof(base_key));
-
-    QGP_LOG_INFO(LOG_TAG, "Republishing wall after deleting post %s", post_uuid);
-    ret = nodus_ops_put_str(base_key,
-                             (const uint8_t *)json_str, strlen(json_str),
-                             (30*24*3600), nodus_ops_value_id());
-    free(json_str);
-    dna_wall_free(&wall);
+    dna_wall_free(&bucket);
 
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to republish wall (ret=%d)", ret);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to republish bucket %s (ret=%d)", date_str, ret);
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Post %s deleted from wall", post_uuid);
+    /* Update meta */
+    dna_wall_update_meta(fingerprint, date_str, -1);
+
+    QGP_LOG_INFO(LOG_TAG, "Post %s deleted from bucket %s", post_uuid, date_str);
     return 0;
 }
 
@@ -666,45 +723,64 @@ int dna_wall_load(const char *fingerprint,
     if (!fingerprint || !wall) {
         return -1;
     }
-
-    char base_key[256];
-    wall_base_key(fingerprint, base_key, sizeof(base_key));
-
-    uint8_t *value = NULL;
-    size_t value_len = 0;
-    int ret = nodus_ops_get_str(base_key, &value, &value_len);
-
-    if (ret != 0 || !value || value_len == 0) {
-        QGP_LOG_DEBUG(LOG_TAG, "No wall found for %s (nodus_rc=%d)", fingerprint, ret);
-        if (value) free(value);
-        return ret;  /* propagate actual error code (NOT_FOUND, TIMEOUT, etc.) */
-    }
-
-    /* Convert to null-terminated string */
-    char *json_str = malloc(value_len + 1);
-    if (!json_str) {
-        free(value);
-        return -1;
-    }
-    memcpy(json_str, value, value_len);
-    json_str[value_len] = '\0';
-    free(value);
-
-    /* Parse JSON */
-    ret = dna_wall_from_json(json_str, wall);
-    free(json_str);
-
-    if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to parse wall JSON for %s", fingerprint);
-        return -1;
-    }
-
-    /* Set owner fingerprint */
+    memset(wall, 0, sizeof(*wall));
     strncpy(wall->owner_fingerprint, fingerprint, 128);
     wall->owner_fingerprint[128] = '\0';
 
-    QGP_LOG_DEBUG(LOG_TAG, "Loaded wall for %s: %zu posts", fingerprint, wall->post_count);
-    return 0;
+    /* Try daily bucket format first (v0.9.141+) */
+    dna_wall_meta_t meta = {0};
+    int meta_ret = dna_wall_load_meta(fingerprint, &meta);
+
+    if (meta_ret == 0 && meta.day_count > 0) {
+        /* Aggregate posts from all day buckets */
+        for (size_t d = 0; d < meta.day_count; d++) {
+            dna_wall_t day_wall = {0};
+            int day_ret = dna_wall_load_day(fingerprint, meta.days[d], &day_wall);
+            if (day_ret != 0 || day_wall.post_count == 0) {
+                dna_wall_free(&day_wall);
+                continue;
+            }
+
+            /* Grow posts array */
+            dna_wall_post_t *grown = realloc(wall->posts,
+                (wall->post_count + day_wall.post_count) * sizeof(dna_wall_post_t));
+            if (!grown) {
+                dna_wall_free(&day_wall);
+                continue;
+            }
+            wall->posts = grown;
+
+            /* Copy posts (transfer ownership of image_json pointers) */
+            for (size_t i = 0; i < day_wall.post_count; i++) {
+                wall->posts[wall->post_count] = day_wall.posts[i];
+                wall->posts[wall->post_count].image_json =
+                    day_wall.posts[i].image_json ? strdup(day_wall.posts[i].image_json) : NULL;
+                wall->post_count++;
+            }
+            dna_wall_free(&day_wall);
+        }
+        dna_wall_meta_free(&meta);
+
+        /* Sort by timestamp DESC */
+        for (size_t i = 1; i < wall->post_count; i++) {
+            dna_wall_post_t tmp = wall->posts[i];
+            size_t j = i;
+            while (j > 0 && wall->posts[j - 1].timestamp < tmp.timestamp) {
+                wall->posts[j] = wall->posts[j - 1];
+                j--;
+            }
+            wall->posts[j] = tmp;
+        }
+
+        QGP_LOG_DEBUG(LOG_TAG, "Loaded wall for %.16s...: %zu posts from %zu buckets",
+                      fingerprint, wall->post_count, meta.day_count);
+        return wall->post_count > 0 ? 0 : -2;
+    }
+    dna_wall_meta_free(&meta);
+
+    /* No meta found — no wall posts for this user */
+    QGP_LOG_DEBUG(LOG_TAG, "No meta for %.16s..., no wall", fingerprint);
+    return meta_ret;
 }
 
 /* ============================================================================
@@ -721,6 +797,241 @@ void dna_wall_free(dna_wall_t *wall) {
     }
     wall->posts = NULL;
     wall->post_count = 0;
+}
+
+/* ============================================================================
+ * Wall Meta — Daily Bucket Metadata (v0.9.141+)
+ * ========================================================================== */
+
+char *dna_wall_meta_to_json(const dna_wall_meta_t *meta) {
+    if (!meta) return NULL;
+
+    json_object *obj = json_object_new_object();
+    if (!obj) return NULL;
+
+    json_object *days_arr = json_object_new_array();
+    if (!days_arr) { json_object_put(obj); return NULL; }
+
+    for (size_t i = 0; i < meta->day_count; i++) {
+        json_object_array_add(days_arr, json_object_new_string(meta->days[i]));
+    }
+    json_object_object_add(obj, "days", days_arr);
+    json_object_object_add(obj, "total", json_object_new_int64((int64_t)meta->total_posts));
+    json_object_object_add(obj, "updated", json_object_new_int64((int64_t)meta->updated));
+
+    const char *str = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PLAIN);
+    char *result = str ? strdup(str) : NULL;
+    json_object_put(obj);
+    return result;
+}
+
+int dna_wall_meta_from_json(const char *json, dna_wall_meta_t *meta) {
+    if (!json || !meta) return -1;
+    memset(meta, 0, sizeof(*meta));
+
+    json_object *obj = json_tokener_parse(json);
+    if (!obj) return -1;
+
+    json_object *jv;
+
+    /* Parse days array */
+    if (json_object_object_get_ex(obj, "days", &jv) &&
+        json_object_is_type(jv, json_type_array)) {
+        int arr_len = json_object_array_length(jv);
+        if (arr_len > 0) {
+            meta->days = calloc((size_t)arr_len, sizeof(char *));
+            if (meta->days) {
+                meta->day_count = 0;
+                for (int i = 0; i < arr_len; i++) {
+                    json_object *elem = json_object_array_get_idx(jv, (size_t)i);
+                    const char *s = json_object_get_string(elem);
+                    if (s && strlen(s) == 10) {  /* "YYYY-MM-DD" */
+                        meta->days[meta->day_count++] = strdup(s);
+                    }
+                }
+            }
+        }
+    }
+
+    if (json_object_object_get_ex(obj, "total", &jv))
+        meta->total_posts = (size_t)json_object_get_int64(jv);
+    if (json_object_object_get_ex(obj, "updated", &jv))
+        meta->updated = (uint64_t)json_object_get_int64(jv);
+
+    json_object_put(obj);
+    return 0;
+}
+
+void dna_wall_meta_free(dna_wall_meta_t *meta) {
+    if (!meta) return;
+    if (meta->days) {
+        for (size_t i = 0; i < meta->day_count; i++) {
+            free(meta->days[i]);
+        }
+        free(meta->days);
+    }
+    memset(meta, 0, sizeof(*meta));
+}
+
+int dna_wall_load_day(const char *fingerprint, const char *date_str,
+                      dna_wall_t *wall) {
+    if (!fingerprint || !date_str || !wall) return -1;
+    memset(wall, 0, sizeof(*wall));
+
+    char key[512];
+    wall_bucket_key(fingerprint, date_str, key, sizeof(key));
+
+    uint8_t *value = NULL;
+    size_t value_len = 0;
+    int ret = nodus_ops_get_str(key, &value, &value_len);
+
+    if (ret != 0 || !value || value_len == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "No bucket found for %.16s... day=%s (rc=%d)",
+                      fingerprint, date_str, ret);
+        free(value);
+        return ret == 0 ? -2 : ret;
+    }
+
+    char *json_str = malloc(value_len + 1);
+    if (!json_str) { free(value); return -1; }
+    memcpy(json_str, value, value_len);
+    json_str[value_len] = '\0';
+    free(value);
+
+    ret = dna_wall_from_json(json_str, wall);
+    free(json_str);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse bucket JSON for %.16s... day=%s",
+                      fingerprint, date_str);
+        return -1;
+    }
+
+    strncpy(wall->owner_fingerprint, fingerprint, 128);
+    wall->owner_fingerprint[128] = '\0';
+
+    QGP_LOG_DEBUG(LOG_TAG, "Loaded bucket %.16s... day=%s: %zu posts",
+                  fingerprint, date_str, wall->post_count);
+    return 0;
+}
+
+int dna_wall_load_meta(const char *fingerprint, dna_wall_meta_t *meta) {
+    if (!fingerprint || !meta) return -1;
+    memset(meta, 0, sizeof(*meta));
+
+    char key[512];
+    wall_meta_key(fingerprint, key, sizeof(key));
+
+    uint8_t *value = NULL;
+    size_t value_len = 0;
+    int ret = nodus_ops_get_str(key, &value, &value_len);
+
+    if (ret != 0 || !value || value_len == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "No meta found for %.16s... (rc=%d)",
+                      fingerprint, ret);
+        free(value);
+        return ret == 0 ? -2 : ret;
+    }
+
+    char *json_str = malloc(value_len + 1);
+    if (!json_str) { free(value); return -1; }
+    memcpy(json_str, value, value_len);
+    json_str[value_len] = '\0';
+    free(value);
+
+    ret = dna_wall_meta_from_json(json_str, meta);
+    free(json_str);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse meta JSON for %.16s...", fingerprint);
+        return -1;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Loaded meta %.16s...: %zu days, %zu total posts",
+                  fingerprint, meta->day_count, meta->total_posts);
+    return 0;
+}
+
+int dna_wall_update_meta(const char *fingerprint, const char *date_str, int delta) {
+    if (!fingerprint || !date_str) return -1;
+
+    /* Load existing meta (or start fresh) */
+    dna_wall_meta_t meta = {0};
+    int load_ret = dna_wall_load_meta(fingerprint, &meta);
+    if (load_ret != 0 && load_ret != -2 && load_ret != NODUS_ERR_NOT_FOUND) {
+        /* -2 or NODUS_ERR_NOT_FOUND(2) = not found (ok, start fresh) */
+        dna_wall_meta_free(&meta);
+        return load_ret;
+    }
+
+    /* Find if date_str already in days[] */
+    int found_idx = -1;
+    for (size_t i = 0; i < meta.day_count; i++) {
+        if (meta.days[i] && strcmp(meta.days[i], date_str) == 0) {
+            found_idx = (int)i;
+            break;
+        }
+    }
+
+    if (delta > 0 && found_idx < 0) {
+        /* Add new day — insert sorted (newest first) */
+        char **new_days = realloc(meta.days, (meta.day_count + 1) * sizeof(char *));
+        if (!new_days) { dna_wall_meta_free(&meta); return -1; }
+        meta.days = new_days;
+
+        /* Find insertion point (days sorted descending) */
+        size_t insert_at = 0;
+        for (size_t i = 0; i < meta.day_count; i++) {
+            if (strcmp(date_str, meta.days[i]) > 0) {
+                insert_at = i;
+                break;
+            }
+            insert_at = i + 1;
+        }
+
+        /* Shift right */
+        for (size_t i = meta.day_count; i > insert_at; i--) {
+            meta.days[i] = meta.days[i - 1];
+        }
+        meta.days[insert_at] = strdup(date_str);
+        meta.day_count++;
+    }
+
+    /* Update total */
+    if (delta > 0) {
+        meta.total_posts += (size_t)delta;
+    } else if (delta < 0 && meta.total_posts > 0) {
+        size_t abs_delta = (size_t)(-delta);
+        meta.total_posts = meta.total_posts > abs_delta ? meta.total_posts - abs_delta : 0;
+    }
+
+    /* If delta < 0 and the day's bucket might be empty, caller should check
+     * and remove the day. For now, keep the day in meta — bg-refresh will
+     * reconcile if bucket is truly empty. */
+
+    meta.updated = (uint64_t)time(NULL);
+
+    /* Serialize and publish */
+    char *json_str = dna_wall_meta_to_json(&meta);
+    dna_wall_meta_free(&meta);
+    if (!json_str) return -1;
+
+    char key[512];
+    wall_meta_key(fingerprint, key, sizeof(key));
+
+    int ret = nodus_ops_put_str(key, (const uint8_t *)json_str, strlen(json_str),
+                                 DNA_WALL_META_TTL_SECS, nodus_ops_value_id());
+    free(json_str);
+
+    if (ret != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish meta for %.16s... (ret=%d)",
+                      fingerprint, ret);
+        return ret;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Meta updated for %.16s...: day=%s delta=%d",
+                 fingerprint, date_str, delta);
+    return 0;
 }
 
 /* ============================================================================

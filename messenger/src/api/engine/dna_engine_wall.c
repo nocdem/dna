@@ -161,8 +161,10 @@ void dna_handle_wall_delete(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
+    /* Look up post timestamp from cache for daily bucket routing */
+    uint64_t post_ts = wall_cache_get_post_timestamp(task->params.wall_delete.uuid);
     int ret = dna_wall_delete(engine->fingerprint, key->private_key,
-                              task->params.wall_delete.uuid);
+                              task->params.wall_delete.uuid, post_ts);
     qgp_key_free(key);
 
     if (ret != 0) {
@@ -273,25 +275,53 @@ static void *wall_fetch_thread(void *arg) {
     wall_fetch_ctx_t *ctx = (wall_fetch_ctx_t *)arg;
     if (!ctx) return NULL;
 
-    dna_wall_t wall = {0};
-    int ret = dna_wall_load(ctx->fingerprint, &wall);
-    if (ret == 0) {
-        wall_cache_store(ctx->fingerprint, wall.posts, wall.post_count);
-        wall_cache_update_meta(ctx->fingerprint);
-        if (ctx->updated_count) atomic_fetch_add(ctx->updated_count, 1);
-    } else if (ret == NODUS_ERR_NOT_FOUND) {
-        /* Genuinely not found on DHT — mark meta fresh so we don't
-         * re-fetch every second.  Will retry after TTL (5 min). */
-        wall_cache_update_meta(ctx->fingerprint);
-        QGP_LOG_DEBUG(LOG_TAG, "Wall not found on DHT for %.16s... (marked fresh)",
-                      ctx->fingerprint);
-    } else {
-        /* Error (timeout, disconnect, etc.) — leave meta stale so
-         * next timeline load retries the fetch. */
-        QGP_LOG_WARN(LOG_TAG, "Wall fetch error for %.16s... (nodus_rc=%d), will retry",
-                     ctx->fingerprint, ret);
+    /* v0.9.141+: Daily bucket refresh — fetch meta, then today + yesterday only */
+    dna_wall_meta_t meta = {0};
+    int meta_ret = dna_wall_load_meta(ctx->fingerprint, &meta);
+
+    if (meta_ret == 0 && meta.day_count > 0) {
+        /* Meta found — fetch only stale day buckets (today + yesterday max) */
+        int fetched = 0;
+        size_t days_to_check = meta.day_count < (size_t)DNA_WALL_INITIAL_DAYS
+                               ? meta.day_count : (size_t)DNA_WALL_INITIAL_DAYS;
+
+        for (size_t d = 0; d < days_to_check; d++) {
+            if (!wall_cache_is_stale_day(ctx->fingerprint, meta.days[d]))
+                continue;
+
+            dna_wall_t day_wall = {0};
+            int ret = dna_wall_load_day(ctx->fingerprint, meta.days[d], &day_wall);
+            if (ret == 0 && day_wall.post_count > 0) {
+                wall_cache_store(ctx->fingerprint, day_wall.posts, day_wall.post_count);
+                wall_cache_update_meta_day(ctx->fingerprint, meta.days[d]);
+                fetched++;
+            } else if (ret == NODUS_ERR_NOT_FOUND || ret == -2) {
+                wall_cache_update_meta_day(ctx->fingerprint, meta.days[d]);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "Bucket fetch error %.16s... day=%s (rc=%d)",
+                             ctx->fingerprint, meta.days[d], ret);
+            }
+            dna_wall_free(&day_wall);
+        }
+
+        /* Cache the meta JSON locally */
+        char *meta_json = dna_wall_meta_to_json(&meta);
+        if (meta_json) {
+            wall_cache_store_wall_meta(ctx->fingerprint, meta_json);
+            free(meta_json);
+        }
+        wall_cache_update_wall_meta(ctx->fingerprint);
+        dna_wall_meta_free(&meta);
+
+        if (fetched > 0 && ctx->updated_count)
+            atomic_fetch_add(ctx->updated_count, 1);
+        return NULL;
     }
-    dna_wall_free(&wall);
+    dna_wall_meta_free(&meta);
+
+    /* No meta found — user has no wall posts (or hasn't posted with new version) */
+    wall_cache_update_wall_meta(ctx->fingerprint);
+    QGP_LOG_DEBUG(LOG_TAG, "No wall meta for %.16s... (marked fresh)", ctx->fingerprint);
     return NULL;
 }
 
@@ -427,7 +457,7 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
         int stale_count = 0;
         if (stale_ctxs) {
             for (size_t i = 0; i < fp_count; i++) {
-                if (wall_cache_is_stale(fingerprints[i])) {
+                if (wall_cache_is_stale_wall_meta(fingerprints[i])) {
                     strncpy(stale_ctxs[stale_count].fingerprint, fingerprints[i], 128);
                     stale_ctxs[stale_count].fingerprint[128] = '\0';
                     stale_count++;
@@ -1619,6 +1649,47 @@ void dna_handle_wall_boost_post(dna_engine_t *engine, dna_task_t *task) {
     task->callback.wall_post(task->request_id, DNA_OK, info, task->user_data);
 }
 
+/* ── Load single day bucket (v0.9.141+) ── */
+
+void dna_handle_wall_load_day(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+    const char *fp = task->params.wall_load_day.fingerprint;
+    const char *date = task->params.wall_load_day.date_str;
+
+    dna_wall_t wall = {0};
+    int ret = dna_wall_load_day(fp, date, &wall);
+
+    if (ret != 0 || wall.post_count == 0) {
+        dna_wall_free(&wall);
+        task->callback.wall_posts(task->request_id,
+                                  ret == -2 ? DNA_OK : DNA_ERROR_INTERNAL,
+                                  NULL, 0, task->user_data);
+        return;
+    }
+
+    /* Store in cache */
+    wall_cache_store(fp, wall.posts, wall.post_count);
+    wall_cache_update_meta_day(fp, date);
+
+    /* Convert to public API format */
+    dna_wall_post_info_t *info = calloc(wall.post_count, sizeof(dna_wall_post_info_t));
+    if (!info) {
+        dna_wall_free(&wall);
+        task->callback.wall_posts(task->request_id, DNA_ERROR_INTERNAL,
+                                  NULL, 0, task->user_data);
+        return;
+    }
+
+    for (size_t i = 0; i < wall.post_count; i++) {
+        wall_post_to_info(&wall.posts[i], &info[i]);
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Load day %.16s... %s: %zu posts", fp, date, wall.post_count);
+    task->callback.wall_posts(task->request_id, DNA_OK,
+                              info, (int)wall.post_count, task->user_data);
+    dna_wall_free(&wall);
+}
+
 void dna_handle_wall_boost_timeline(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->identity_loaded) {
         task->callback.wall_posts(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
@@ -1760,4 +1831,26 @@ dna_request_id_t dna_engine_wall_boost_timeline(
     dna_task_callback_t cb = {0};
     cb.wall_posts = callback;
     return dna_submit_task(engine, TASK_WALL_BOOST_TIMELINE, &params, cb, user_data);
+}
+
+/* ── Wall Load Day (v0.9.141+) ── */
+
+dna_request_id_t dna_engine_wall_load_day(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *date_str,
+    dna_wall_posts_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !date_str || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.wall_load_day.fingerprint, fingerprint, 128);
+    params.wall_load_day.fingerprint[128] = '\0';
+    strncpy(params.wall_load_day.date_str, date_str, 10);
+    params.wall_load_day.date_str[10] = '\0';
+
+    dna_task_callback_t cb = {0};
+    cb.wall_posts = callback;
+    return dna_submit_task(engine, TASK_WALL_LOAD_DAY, &params, cb, user_data);
 }

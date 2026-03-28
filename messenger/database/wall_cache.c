@@ -183,6 +183,13 @@ static int create_schema(void) {
         "    author_fingerprint TEXT NOT NULL,"
         "    timestamp INTEGER NOT NULL,"
         "    cached_at INTEGER NOT NULL"
+        ");"
+
+        /* ── wall_day_meta (v0.9.141+ daily buckets) ────── */
+        "CREATE TABLE IF NOT EXISTS wall_day_meta ("
+        "    fingerprint TEXT PRIMARY KEY,"
+        "    meta_json TEXT NOT NULL,"
+        "    cached_at INTEGER NOT NULL"
         ");";
 
     char *err_msg = NULL;
@@ -1459,4 +1466,118 @@ int wall_cache_load_boosts(dna_wall_boost_ptr_t **ptrs_out, size_t *count_out) {
     *ptrs_out = ptrs;
     *count_out = total;
     return 0;
+}
+
+/* ============================================================================
+ * Daily Bucket Meta (v0.9.141+)
+ * ============================================================================ */
+
+bool wall_cache_is_stale_wall_meta(const char *fingerprint) {
+    if (!fingerprint) return true;
+    char cache_key[256];
+    snprintf(cache_key, sizeof(cache_key), "meta:%s", fingerprint);
+    return wall_cache_is_stale(cache_key);
+}
+
+int wall_cache_update_wall_meta(const char *fingerprint) {
+    if (!fingerprint) return -1;
+    char cache_key[256];
+    snprintf(cache_key, sizeof(cache_key), "meta:%s", fingerprint);
+    return wall_cache_update_meta(cache_key);
+}
+
+bool wall_cache_is_stale_day(const char *fingerprint, const char *date_str) {
+    if (!fingerprint || !date_str) return true;
+    char cache_key[256];
+    snprintf(cache_key, sizeof(cache_key), "%s:%s", fingerprint, date_str);
+    return wall_cache_is_stale(cache_key);
+}
+
+int wall_cache_update_meta_day(const char *fingerprint, const char *date_str) {
+    if (!fingerprint || !date_str) return -1;
+    char cache_key[256];
+    snprintf(cache_key, sizeof(cache_key), "%s:%s", fingerprint, date_str);
+    return wall_cache_update_meta(cache_key);
+}
+
+int wall_cache_store_wall_meta(const char *fingerprint, const char *meta_json) {
+    if (!fingerprint || !meta_json) return -1;
+    if (!g_db) return -3;
+
+    pthread_mutex_lock(&g_store_mutex);
+
+    const char *sql = "INSERT OR REPLACE INTO wall_day_meta "
+                      "(fingerprint, meta_json, cached_at) VALUES (?, ?, ?);";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "store_wall_meta prepare: %s", sqlite3_errmsg(g_db));
+        pthread_mutex_unlock(&g_store_mutex);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, meta_json, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, (sqlite3_int64)time(NULL));
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&g_store_mutex);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int wall_cache_load_wall_meta(const char *fingerprint, char **meta_json_out) {
+    if (!fingerprint || !meta_json_out) return -1;
+    if (!g_db) return -3;
+    *meta_json_out = NULL;
+
+    pthread_mutex_lock(&g_store_mutex);
+
+    const char *sql = "SELECT meta_json FROM wall_day_meta WHERE fingerprint = ?;";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        pthread_mutex_unlock(&g_store_mutex);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+
+    if (rc == SQLITE_ROW) {
+        const char *json = (const char *)sqlite3_column_text(stmt, 0);
+        if (json) *meta_json_out = strdup(json);
+    }
+
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&g_store_mutex);
+
+    return *meta_json_out ? 0 : -2;
+}
+
+uint64_t wall_cache_get_post_timestamp(const char *post_uuid) {
+    if (!post_uuid || !g_db) return 0;
+
+    pthread_mutex_lock(&g_store_mutex);
+
+    const char *sql = "SELECT timestamp FROM wall_posts WHERE uuid = ?;";
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        pthread_mutex_unlock(&g_store_mutex);
+        return 0;
+    }
+
+    sqlite3_bind_text(stmt, 1, post_uuid, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+
+    uint64_t ts = 0;
+    if (rc == SQLITE_ROW) {
+        ts = (uint64_t)sqlite3_column_int64(stmt, 0);
+    }
+
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&g_store_mutex);
+    return ts;
 }

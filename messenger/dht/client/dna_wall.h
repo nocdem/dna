@@ -30,6 +30,12 @@ extern "C" {
 #define DNA_WALL_TTL_DAYS        30
 #define DNA_WALL_KEY_PREFIX      "dna:wall:"
 
+/* Daily Bucket Storage (v0.9.141+) */
+#define DNA_WALL_META_KEY_PREFIX   "dna:wall:meta:"
+#define DNA_WALL_BUCKET_TTL_SECS   (30 * 24 * 3600)   /* 30 days */
+#define DNA_WALL_META_TTL_SECS     (30 * 24 * 3600)   /* 30 days */
+#define DNA_WALL_INITIAL_DAYS      2                    /* fetch today + yesterday on refresh */
+
 /* Wall Comments (v0.7.0+) */
 #define DNA_WALL_COMMENT_MAX_BODY       2000
 #define DNA_WALL_COMMENT_KEY_PREFIX     "dna:wall:comments:"
@@ -60,6 +66,68 @@ typedef struct {
     dna_wall_post_t *posts;             /* Array of posts */
     size_t post_count;                  /* Number of posts */
 } dna_wall_t;
+
+/* ── Wall Meta (Daily Buckets v0.9.141+) ── */
+
+/**
+ * Wall metadata stored at dna:wall:meta:<fingerprint>
+ * Lists which days have posts, enabling per-day bucket fetching.
+ */
+typedef struct {
+    char **days;            /* Array of "YYYY-MM-DD" strings, newest first */
+    size_t day_count;
+    size_t total_posts;     /* Sum of posts across all buckets */
+    uint64_t updated;       /* Unix epoch of last modification */
+} dna_wall_meta_t;
+
+/**
+ * Load a single day's wall bucket from DHT
+ * @param fingerprint  Wall owner's fingerprint
+ * @param date_str     Day string "YYYY-MM-DD"
+ * @param wall         Output wall structure (caller must free with dna_wall_free)
+ * @return 0 on success, -1 on error, -2 if not found
+ */
+int dna_wall_load_day(const char *fingerprint,
+                      const char *date_str,
+                      dna_wall_t *wall);
+
+/**
+ * Load wall metadata from DHT
+ * @param fingerprint  Wall owner's fingerprint
+ * @param meta         Output meta structure (caller must free with dna_wall_meta_free)
+ * @return 0 on success, -1 on error, -2 if not found
+ */
+int dna_wall_load_meta(const char *fingerprint,
+                       dna_wall_meta_t *meta);
+
+/**
+ * Update wall metadata after post/delete
+ * Loads existing meta, modifies day entry, re-publishes.
+ * @param fingerprint  Wall owner's fingerprint
+ * @param date_str     Day affected ("YYYY-MM-DD")
+ * @param delta        +1 for post, -1 for delete, 0 for refresh
+ * @return 0 on success, negative on error
+ */
+int dna_wall_update_meta(const char *fingerprint,
+                         const char *date_str,
+                         int delta);
+
+/**
+ * Serialize wall meta to JSON
+ * @return JSON string (caller frees) or NULL on error
+ */
+char *dna_wall_meta_to_json(const dna_wall_meta_t *meta);
+
+/**
+ * Deserialize wall meta from JSON
+ * @return 0 on success, -1 on error
+ */
+int dna_wall_meta_from_json(const char *json, dna_wall_meta_t *meta);
+
+/**
+ * Free wall meta structure
+ */
+void dna_wall_meta_free(dna_wall_meta_t *meta);
 
 /* ── DHT Key Derivation ── */
 
@@ -103,15 +171,17 @@ int dna_wall_post_with_image(const char *fingerprint,
                               dna_wall_post_t *out_post);
 
 /**
- * Delete a post from own wall
- * @param fingerprint  Owner's SHA3-512 fingerprint
- * @param private_key  Owner's Dilithium5 private key
- * @param post_uuid    UUID of post to delete
+ * Delete a post from own wall (daily bucket version)
+ * @param fingerprint      Owner's SHA3-512 fingerprint
+ * @param private_key      Owner's Dilithium5 private key
+ * @param post_uuid        UUID of post to delete
+ * @param post_timestamp   Post's creation timestamp (to derive bucket day)
  * @return 0 on success, negative on error
  */
 int dna_wall_delete(const char *fingerprint,
                     const uint8_t *private_key,
-                    const char *post_uuid);
+                    const char *post_uuid,
+                    uint64_t post_timestamp);
 
 /**
  * Load a user's wall posts from DHT

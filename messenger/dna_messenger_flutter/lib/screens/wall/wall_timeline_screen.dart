@@ -25,10 +25,27 @@ class WallTimelineScreen extends ConsumerStatefulWidget {
 }
 
 class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
+  final _scrollController = ScrollController();
+
   @override
   void initState() {
     super.initState();
     _checkLostCameraData();
+    _scrollController.addListener(_onScroll);
+  }
+
+  @override
+  void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels >=
+        _scrollController.position.maxScrollExtent - 200) {
+      ref.read(wallTimelineProvider.notifier).loadMoreDays();
+    }
   }
 
   /// Recover image data lost when Android killed the Activity during camera use
@@ -82,6 +99,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                 onRefresh: () =>
                     ref.read(wallTimelineProvider.notifier).refresh(),
                 child: ListView.separated(
+                  controller: _scrollController,
                   padding: const EdgeInsets.all(DnaSpacing.md),
                   itemCount: items.length,
                   separatorBuilder: (_, _) =>

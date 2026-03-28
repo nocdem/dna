@@ -157,6 +157,9 @@ typedef enum {
     TASK_WALL_BOOST_POST,
     TASK_WALL_BOOST_TIMELINE,
 
+    /* Wall Daily Bucket (v0.9.141+) */
+    TASK_WALL_LOAD_DAY,
+
     /* Channel system (RSS-like channels) */
     TASK_CHANNEL_CREATE,
     TASK_CHANNEL_GET,
@@ -446,6 +449,12 @@ typedef union {
     } wall_boost_post;
 
     /* Wall: Boost timeline has no extra params */
+
+    /* Wall: Load day bucket (v0.9.141+) */
+    struct {
+        char fingerprint[129];
+        char date_str[11];              /* "YYYY-MM-DD" */
+    } wall_load_day;
 
     /* Channel: create */
     struct {
@@ -965,6 +974,7 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task);
 /* Wall Boost (v0.9.71+) */
 void dna_handle_wall_boost_post(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_boost_timeline(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_wall_load_day(dna_engine_t *engine, dna_task_t *task);
 
 /* Channel handlers (dna_engine_channels.c) */
 void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task);

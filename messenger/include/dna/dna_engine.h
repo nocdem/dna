@@ -3571,6 +3571,21 @@ DNA_API dna_request_id_t dna_engine_wall_boost_timeline(
     void *user_data
 );
 
+/**
+ * Load a single day's wall bucket from DHT (v0.9.141+).
+ * Used for lazy-loading older days on scroll.
+ *
+ * @param fingerprint  Wall owner's fingerprint
+ * @param date_str     Day string "YYYY-MM-DD"
+ */
+DNA_API dna_request_id_t dna_engine_wall_load_day(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *date_str,
+    dna_wall_posts_cb callback,
+    void *user_data
+);
+
 /* ============================================================================
  * CHANNELS (RSS-like public channels via DHT)
  * ============================================================================ */
