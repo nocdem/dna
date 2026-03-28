@@ -43,10 +43,31 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
     dna_wallet_t *wallets = NULL;
     int count = 0;
 
-    /* Free existing blockchain wallet list */
-    if (engine->blockchain_wallets) {
-        blockchain_wallet_list_free(engine->blockchain_wallets);
-        engine->blockchain_wallets = NULL;
+    /* Return cached wallets if already derived (addresses are deterministic) */
+    if (engine->wallets_loaded && engine->blockchain_wallets) {
+        blockchain_wallet_list_t *list = engine->blockchain_wallets;
+        if (list->count > 0) {
+            wallets = calloc(list->count, sizeof(dna_wallet_t));
+            if (wallets) {
+                for (size_t i = 0; i < list->count; i++) {
+                    strncpy(wallets[i].name, list->wallets[i].name, sizeof(wallets[i].name) - 1);
+                    strncpy(wallets[i].address, list->wallets[i].address, sizeof(wallets[i].address) - 1);
+                    if (list->wallets[i].type == BLOCKCHAIN_ETHEREUM) {
+                        wallets[i].sig_type = 100;
+                    } else if (list->wallets[i].type == BLOCKCHAIN_SOLANA) {
+                        wallets[i].sig_type = 101;
+                    } else if (list->wallets[i].type == BLOCKCHAIN_TRON) {
+                        wallets[i].sig_type = 102;
+                    } else {
+                        wallets[i].sig_type = 4;
+                    }
+                    wallets[i].is_protected = list->wallets[i].is_encrypted;
+                }
+                count = (int)list->count;
+            }
+        }
+        task->callback.wallets(task->request_id, DNA_OK, wallets, count, task->user_data);
+        return;
     }
 
     /* Derive wallets on-demand from mnemonic (seed-based only, no wallet files) */
