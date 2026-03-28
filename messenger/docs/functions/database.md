@@ -300,6 +300,13 @@ Per-identity SQLite database for channel subscriptions.
 | `int wall_cache_update_meta(const char*)` | Update last-fetched timestamp for a fingerprint cache key |
 | `int wall_cache_delete_meta(const char*)` | Delete staleness metadata to force DHT re-fetch (v0.7.3+) |
 | `bool wall_cache_is_stale(const char*)` | Check if post cache is stale for a fingerprint (>5 min) |
+| `bool wall_cache_is_stale_wall_meta(const char*)` | Check if wall meta is stale for a fingerprint (v0.9.141+) |
+| `int wall_cache_update_wall_meta(const char*)` | Mark wall meta as fresh (v0.9.141+) |
+| `bool wall_cache_is_stale_day(const char*, const char*)` | Check if day bucket is stale (fp + date_str) (v0.9.141+) |
+| `int wall_cache_update_meta_day(const char*, const char*)` | Mark day bucket as fresh (v0.9.141+) |
+| `int wall_cache_store_wall_meta(const char*, const char*)` | Store DHT meta JSON blob locally (v0.9.141+) |
+| `int wall_cache_load_wall_meta(const char*, char**)` | Load cached DHT meta JSON blob (v0.9.141+) |
+| `uint64_t wall_cache_get_post_timestamp(const char*)` | Get post timestamp by UUID (for delete bucket routing) (v0.9.141+) |
 
 ---
 

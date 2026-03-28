@@ -447,15 +447,25 @@ Uses `dna:channels:` DHT namespace.
 | `int dht_channel_subscriptions_sync_to_dht(dht_context_t*, const char*, const uint8_t*)` | Sync subscription list to DHT (multi-device backup) |
 | `int dht_channel_subscriptions_sync_from_dht(dht_context_t*, const char*)` | Sync subscriptions from DHT (restore on new device) |
 
-### 11.7 Wall (Personal Wall Posts)
+### 11.7 Wall (Personal Wall Posts — Daily Bucket Storage v0.9.141+)
+
+Wall posts use daily bucket storage: each day's posts stored under `dna:wall:<fp>:<YYYY-MM-DD>`,
+with a meta key `dna:wall:meta:<fp>` listing which days have posts. TTL 30 days per bucket.
+Refresh only fetches today's bucket (not all 30 days). Older days loaded on scroll (lazy load).
 
 | Function | Description |
 |----------|-------------|
 | `void dna_wall_make_key(const char *fingerprint, char *out_key)` | Derive DHT key SHA3-512("dna:wall:<fingerprint>") |
-| `int dna_wall_post(dht_context_t *dht, const char *fingerprint, const uint8_t *private_key, const char *text, dna_wall_post_t *out_post)` | Post to own wall (sign + publish to DHT) |
-| `int dna_wall_post_with_image(dht_context_t *dht, const char *fingerprint, const uint8_t *private_key, const char *text, const char *image_json, dna_wall_post_t *out_post)` | Post to own wall with image attachment; image_json is base64+metadata JSON (v0.7.0+) |
-| `int dna_wall_delete(dht_context_t *dht, const char *fingerprint, const uint8_t *private_key, const char *post_uuid)` | Delete own wall post by UUID |
-| `int dna_wall_load(dht_context_t *dht, const char *fingerprint, dna_wall_t *wall)` | Load user's wall from DHT |
+| `int dna_wall_post(const char *fingerprint, const uint8_t *private_key, const char *text, dna_wall_post_t *out_post)` | Post to own wall — writes to today's bucket + updates meta |
+| `int dna_wall_post_with_image(const char *fingerprint, const uint8_t *private_key, const char *text, const char *image_json, dna_wall_post_t *out_post)` | Post with image to today's bucket + updates meta |
+| `int dna_wall_delete(const char *fingerprint, const uint8_t *private_key, const char *post_uuid, uint64_t post_timestamp)` | Delete post from its day bucket (timestamp used to derive bucket day) |
+| `int dna_wall_load(const char *fingerprint, dna_wall_t *wall)` | Load user's wall — reads meta then aggregates all day buckets |
+| `int dna_wall_load_day(const char *fingerprint, const char *date_str, dna_wall_t *wall)` | Load a single day's bucket from DHT (v0.9.141+) |
+| `int dna_wall_load_meta(const char *fingerprint, dna_wall_meta_t *meta)` | Load wall metadata from DHT (v0.9.141+) |
+| `int dna_wall_update_meta(const char *fingerprint, const char *date_str, int delta)` | Update meta after post/delete (+1/-1) (v0.9.141+) |
+| `char* dna_wall_meta_to_json(const dna_wall_meta_t *meta)` | Serialize meta to JSON (v0.9.141+) |
+| `int dna_wall_meta_from_json(const char *json, dna_wall_meta_t *meta)` | Deserialize meta from JSON (v0.9.141+) |
+| `void dna_wall_meta_free(dna_wall_meta_t *meta)` | Free meta structure (v0.9.141+) |
 | `void dna_wall_free(dna_wall_t *wall)` | Free wall structure |
 | `int dna_wall_post_verify(const dna_wall_post_t *post, const uint8_t *public_key)` | Verify post Dilithium5 signature (0=valid) |
 | `char* dna_wall_to_json(const dna_wall_t *wall)` | Serialize wall to JSON string |

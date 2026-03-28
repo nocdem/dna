@@ -197,9 +197,10 @@ All posts for a user are stored as a single JSON array under one DHT key. No dai
 
 ### Key Format
 
-**Wall posts:**
+**Wall daily buckets (v0.9.141+):**
 ```
-dna:wall:<fingerprint>
+dna:wall:<fingerprint>:<YYYY-MM-DD>    (per-day bucket)
+dna:wall:meta:<fingerprint>            (meta: list of days with posts)
 ```
 
 **Wall comments (per post):**
@@ -211,13 +212,15 @@ dna:wall:comments:<post_uuid>
 
 | Property | Value |
 |----------|-------|
-| **TTL** | 30 days (2,592,000 seconds) |
-| **Owner model** | Single-owner (wall posts), Multi-owner (comments) |
-| **Serialization** | JSON array |
+| **TTL** | 30 days (2,592,000 seconds) per bucket |
+| **Owner model** | Single-owner (wall buckets + meta), Multi-owner (comments) |
+| **Serialization** | JSON array (buckets), JSON object (meta) |
 | **Signature** | Each post signed with Dilithium5 |
-| **Max posts** | 50 per user |
+| **Max posts** | 50 per user (across all buckets, tracked in meta) |
 | **Max text** | 2,048 characters |
 | **Image support** | `image_json` field (v0.7.0+), base64-encoded |
+| **Refresh** | Only today's bucket fetched on refresh (not all 30 days) |
+| **Meta format** | `{"days":["YYYY-MM-DD",...],"total":N,"updated":epoch}` |
 
 ### JSON Format
 
