@@ -1403,6 +1403,162 @@ void nodus_client_free_presence_result(nodus_presence_result_t *result) {
     result->offline_seen_count = 0;
 }
 
+/* ── Media Operations ──────────────────────────────────────────────── */
+
+int nodus_client_media_put(nodus_client_t *client,
+                           const uint8_t content_hash[64],
+                           uint32_t chunk_index, uint32_t chunk_count,
+                           uint64_t total_size, uint8_t media_type,
+                           bool encrypted, uint32_t ttl,
+                           const uint8_t *data, size_t data_len,
+                           const nodus_sig_t *sig,
+                           bool *complete_out) {
+    if (!nodus_client_is_ready(client) || !content_hash || !data || !sig)
+        return -1;
+    if (complete_out) *complete_out = false;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE_PUT);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    if (nodus_t2_media_put(txn, client->token, content_hash,
+                           chunk_index, chunk_count, total_size,
+                           media_type, ttl, encrypted,
+                           data, data_len, sig,
+                           buf, CLIENT_BUF_SIZE_PUT, &len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "media_put encode failed (chunk=%u, data_len=%zu)",
+                      chunk_index, data_len);
+        free_pending(client, req); free(buf); return -1;
+    }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code;
+        free_pending(client, req); return rc;
+    }
+    if (complete_out) *complete_out = resp->media_complete;
+    free_pending(client, req);
+    return 0;
+}
+
+int nodus_client_media_get_meta(nodus_client_t *client,
+                                const uint8_t content_hash[64],
+                                nodus_media_meta_t *meta_out) {
+    if (!nodus_client_is_ready(client) || !content_hash || !meta_out)
+        return -1;
+    memset(meta_out, 0, sizeof(*meta_out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    if (nodus_t2_media_get_meta(txn, client->token, content_hash,
+                                buf, CLIENT_BUF_SIZE, &len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "media_get_meta encode failed");
+        free_pending(client, req); free(buf); return -1;
+    }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code;
+        free_pending(client, req); return rc;
+    }
+
+    memcpy(meta_out->content_hash, resp->media_hash, 64);
+    meta_out->media_type   = resp->media_type;
+    meta_out->total_size   = resp->media_total_size;
+    meta_out->chunk_count  = resp->media_chunk_count;
+    meta_out->encrypted    = resp->media_encrypted;
+    meta_out->ttl          = resp->ttl;
+    meta_out->complete     = resp->media_complete;
+
+    free_pending(client, req);
+    return 0;
+}
+
+int nodus_client_media_get_chunk(nodus_client_t *client,
+                                 const uint8_t content_hash[64],
+                                 uint32_t chunk_index,
+                                 uint8_t **data_out, size_t *data_len_out) {
+    if (!nodus_client_is_ready(client) || !content_hash || !data_out || !data_len_out)
+        return -1;
+    *data_out = NULL;
+    *data_len_out = 0;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    size_t len = 0;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    if (nodus_t2_media_get_chunk(txn, client->token, content_hash, chunk_index,
+                                 buf, CLIENT_BUF_SIZE, &len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "media_get_chunk encode failed (chunk=%u)", chunk_index);
+        free_pending(client, req); free(buf); return -1;
+    }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code;
+        free_pending(client, req); return rc;
+    }
+
+    /* Copy data before freeing response (resp->data freed by nodus_t2_msg_free) */
+    if (resp->data && resp->data_len > 0) {
+        *data_out = malloc(resp->data_len);
+        if (!*data_out) { free_pending(client, req); return -1; }
+        memcpy(*data_out, resp->data, resp->data_len);
+        *data_len_out = resp->data_len;
+    } else {
+        free_pending(client, req);
+        return NODUS_ERR_NOT_FOUND;
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
+int nodus_client_media_exists(nodus_client_t *client,
+                              const uint8_t content_hash[64],
+                              bool *exists_out) {
+    if (!client || !content_hash || !exists_out) return -1;
+    *exists_out = false;
+
+    nodus_media_meta_t meta;
+    int rc = nodus_client_media_get_meta(client, content_hash, &meta);
+    if (rc == 0) {
+        *exists_out = true;
+        return 0;
+    }
+    if (rc == NODUS_ERR_NOT_FOUND) {
+        *exists_out = false;
+        return 0;
+    }
+    return rc;
+}
+
 /* ── DNAC Operations ─────────────────────────────────────────────── */
 
 /**

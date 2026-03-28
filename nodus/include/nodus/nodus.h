@@ -20,6 +20,7 @@
 #define NODUS_H
 
 #include "nodus/nodus_types.h"
+#include "core/nodus_media_storage.h"
 #include "channel/nodus_channel_store.h"
 #include <pthread.h>
 #include <stdatomic.h>
@@ -722,6 +723,54 @@ void nodus_client_free_tx_result(nodus_dnac_tx_result_t *result);
  * Free block range from nodus_client_dnac_block_range().
  */
 void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *result);
+
+/* ── Media Operations ──────────────────────────────────────────────── */
+
+/**
+ * Upload a media chunk to the DHT.
+ * For chunk_index=0, provides metadata (chunk_count, total_size, media_type, ttl, encrypted).
+ * Server responds with put_ok; complete_out is set true when all chunks received.
+ *
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_media_put(nodus_client_t *client,
+                           const uint8_t content_hash[64],
+                           uint32_t chunk_index, uint32_t chunk_count,
+                           uint64_t total_size, uint8_t media_type,
+                           bool encrypted, uint32_t ttl,
+                           const uint8_t *data, size_t data_len,
+                           const nodus_sig_t *sig,
+                           bool *complete_out);
+
+/**
+ * Get media metadata (chunk count, size, type, completion status).
+ * Caller provides pre-allocated meta_out.
+ *
+ * @return 0 on success, NODUS_ERR_NOT_FOUND if missing
+ */
+int nodus_client_media_get_meta(nodus_client_t *client,
+                                const uint8_t content_hash[64],
+                                nodus_media_meta_t *meta_out);
+
+/**
+ * Download a single media chunk by index.
+ * Caller must free(*data_out).
+ *
+ * @return 0 on success, NODUS_ERR_NOT_FOUND if missing
+ */
+int nodus_client_media_get_chunk(nodus_client_t *client,
+                                 const uint8_t content_hash[64],
+                                 uint32_t chunk_index,
+                                 uint8_t **data_out, size_t *data_len_out);
+
+/**
+ * Check if media exists and is complete on the DHT.
+ *
+ * @return 0 on success (exists_out set), error code on failure
+ */
+int nodus_client_media_exists(nodus_client_t *client,
+                              const uint8_t content_hash[64],
+                              bool *exists_out);
 
 /* ── Utility ────────────────────────────────────────────────────── */
 
