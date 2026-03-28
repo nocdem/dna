@@ -4,6 +4,7 @@
  */
 #include "nodus/nodus.h"
 #include "nodus/nodus_types.h"
+#include "core/nodus_value.h"
 #include "crypto/nodus_identity.h"
 #include <stdio.h>
 #include <string.h>
