@@ -168,6 +168,16 @@ bool wall_cache_is_stale_wall_meta(const char *fingerprint);
 int wall_cache_update_wall_meta(const char *fingerprint);
 
 /**
+ * Invalidate wall meta staleness for a fingerprint.
+ * Deletes "meta:<fingerprint>" from wall_cache_meta, forcing next
+ * timeline load to re-fetch daily bucket meta from DHT.
+ *
+ * @param fingerprint  Author's SHA3-512 fingerprint
+ * @return 0 on success, -1 on error, -3 if uninitialized
+ */
+int wall_cache_invalidate_wall_meta(const char *fingerprint);
+
+/**
  * Check if a specific day's bucket is stale for a fingerprint
  * Uses cache_key "<fingerprint>:<YYYY-MM-DD>" in wall_cache_meta table
  */
@@ -292,6 +302,62 @@ int wall_cache_store_boosts(const dna_wall_boost_ptr_t *ptrs, size_t count);
  * @return 0 on success, -1 on error, -2 if none found, -3 if uninitialized
  */
 int wall_cache_load_boosts(dna_wall_boost_ptr_t **ptrs_out, size_t *count_out);
+
+/* ── Image cache (v0.9.142+ separate table) ────────────────────── */
+
+/**
+ * Store image JSON for a wall post in separate image table.
+ *
+ * @param uuid        Post UUID
+ * @param image_json  Image JSON string (base64 + metadata)
+ * @return 0 on success, -1 on error, -3 if uninitialized
+ */
+int wall_cache_store_image(const char *uuid, const char *image_json);
+
+/**
+ * Load image JSON for a wall post from image table.
+ *
+ * @param uuid           Post UUID
+ * @param image_json_out Output: heap-allocated JSON string (caller frees)
+ * @return 0 on success, -1 on error, -2 if not found, -3 if uninitialized
+ */
+int wall_cache_load_image(const char *uuid, char **image_json_out);
+
+/* ── Day complete tracking (v0.9.142+ immutable past days) ─────── */
+
+/**
+ * Mark a day as completely fetched for a fingerprint.
+ * Past days are immutable — once set, no need to re-fetch from DHT.
+ *
+ * @param fingerprint  Author's SHA3-512 fingerprint
+ * @param date_str     Day string "YYYY-MM-DD"
+ * @param post_count   Number of posts fetched for this day (0 = no posts)
+ * @return 0 on success, -1 on error, -3 if uninitialized
+ */
+int wall_day_complete_set(const char *fingerprint, const char *date_str,
+                          int post_count);
+
+/**
+ * Check if a day was completely fetched for a fingerprint.
+ *
+ * @param fingerprint  Author's SHA3-512 fingerprint
+ * @param date_str     Day string "YYYY-MM-DD"
+ * @return post_count (>= 0) if complete, -1 if not fetched
+ */
+int wall_day_complete_get(const char *fingerprint, const char *date_str);
+
+/**
+ * Load wall posts from cache for a specific fingerprint and date.
+ * Uses epoch range derived from date_str with composite index.
+ *
+ * @param fingerprint  Author's SHA3-512 fingerprint
+ * @param date_str     Day string "YYYY-MM-DD"
+ * @param posts        Output: heap-allocated array (caller frees with wall_cache_free_posts)
+ * @param count        Output: number of posts
+ * @return 0 on success, -1 on error, -2 if not found, -3 if uninitialized
+ */
+int wall_cache_load_by_date(const char *fingerprint, const char *date_str,
+                            dna_wall_post_t **posts, size_t *count);
 
 #ifdef __cplusplus
 }

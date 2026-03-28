@@ -692,6 +692,17 @@ typedef void (*dna_wall_engagement_cb)(
 );
 
 /**
+ * Wall: Image fetch callback (v0.9.142+)
+ * Returns image JSON for a single post from local cache.
+ */
+typedef void (*dna_wall_image_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const char *image_json,
+    void *user_data
+);
+
+/**
  * Profile callback
  */
 typedef void (*dna_profile_cb)(
@@ -3583,6 +3594,19 @@ DNA_API dna_request_id_t dna_engine_wall_load_day(
     const char *fingerprint,
     const char *date_str,
     dna_wall_posts_cb callback,
+    void *user_data
+);
+
+/**
+ * Fetch image JSON for a wall post from local cache (v0.9.142+).
+ * Returns the image data via callback (no DHT access).
+ *
+ * @param post_uuid  UUID of the post
+ */
+DNA_API dna_request_id_t dna_engine_wall_get_image(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    dna_wall_image_cb callback,
     void *user_data
 );
 

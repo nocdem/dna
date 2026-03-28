@@ -160,6 +160,9 @@ typedef enum {
     /* Wall Daily Bucket (v0.9.141+) */
     TASK_WALL_LOAD_DAY,
 
+    /* Wall Image Fetch (v0.9.142+) */
+    TASK_WALL_GET_IMAGE,
+
     /* Channel system (RSS-like channels) */
     TASK_CHANNEL_CREATE,
     TASK_CHANNEL_GET,
@@ -456,6 +459,11 @@ typedef union {
         char date_str[11];              /* "YYYY-MM-DD" */
     } wall_load_day;
 
+    /* Wall: Get image (v0.9.142+) */
+    struct {
+        char post_uuid[37];
+    } wall_get_image;
+
     /* Channel: create */
     struct {
         char name[101];
@@ -551,6 +559,7 @@ typedef union {
     dna_wall_comments_cb wall_comments;
     dna_wall_likes_cb wall_likes;
     dna_wall_engagement_cb wall_engagement;
+    dna_wall_image_cb wall_image;
     dna_channel_cb channel;
     dna_channels_cb channels;
     dna_channel_post_cb channel_post_cb;
@@ -975,6 +984,7 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_boost_post(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_boost_timeline(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_wall_load_day(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_wall_get_image(dna_engine_t *engine, dna_task_t *task);
 
 /* Channel handlers (dna_engine_channels.c) */
 void dna_handle_channel_create(dna_engine_t *engine, dna_task_t *task);

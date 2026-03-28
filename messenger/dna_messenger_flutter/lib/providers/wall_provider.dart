@@ -109,6 +109,9 @@ class _ImageCache {
 /// Public accessor for image cache (used by WallPostTile)
 Uint8List? wallImageCache(String uuid) => _ImageCache.get(uuid);
 
+/// Public accessor to store in image cache (used by lazy image loader)
+void wallImageCachePut(String uuid, Uint8List bytes) => _ImageCache.put(uuid, bytes);
+
 // ---------------------------------------------------------------------------
 // Wall timeline provider — batch-loaded, paginated feed
 // ---------------------------------------------------------------------------
@@ -369,9 +372,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
             : post.authorFingerprint.substring(0, 16);
       }
 
-      // Decode image once, cache it
-      final decodedImage =
-          _ImageCache.decodePostImage(post.uuid, post.imageJson);
+      // Only check in-memory cache (image loaded lazily by tile)
+      final decodedImage = _ImageCache.get(post.uuid);
 
       items.add(WallFeedItem(
         post: post,
@@ -452,8 +454,7 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
               ? post.authorName
               : post.authorFingerprint.substring(0, 16),
           authorAvatar: profile?.decodeAvatar(),
-          decodedImage:
-              _ImageCache.decodePostImage(post.uuid, post.imageJson),
+          decodedImage: _ImageCache.get(post.uuid),
         ));
       }
     }
@@ -578,7 +579,7 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
           : ref.read(userProfileProvider).valueOrNull?.nickname ??
               post.authorFingerprint.substring(0, 16),
       authorAvatar: ownAvatar,
-      decodedImage: _ImageCache.decodePostImage(post.uuid, post.imageJson),
+      decodedImage: _ImageCache.get(post.uuid),
     );
 
     final current = state.valueOrNull ?? [];

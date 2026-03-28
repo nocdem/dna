@@ -75,6 +75,7 @@ typedef struct {
  */
 typedef struct {
     char **days;            /* Array of "YYYY-MM-DD" strings, newest first */
+    int *day_post_counts;   /* Parallel array: post count per day (NULL if unknown/old format) */
     size_t day_count;
     size_t total_posts;     /* Sum of posts across all buckets */
     uint64_t updated;       /* Unix epoch of last modification */

@@ -1,10 +1,13 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../design_system/design_system.dart';
 import '../ffi/dna_engine.dart';
 import '../l10n/app_localizations.dart';
+import '../providers/engine_provider.dart';
+import '../providers/wall_provider.dart' show wallImageCache, wallImageCachePut;
 import '../utils/time_format.dart';
 
 /// Pure presentational widget — receives ALL data via constructor.
@@ -147,11 +150,11 @@ class WallPostTile extends StatelessWidget {
             ],
           ),
           const SizedBox(height: DnaSpacing.md),
-          // Image — uses pre-decoded bytes, no base64 in build
+          // Image — pre-decoded bytes or lazy load from SQLite cache
           if (decodedImage != null)
             _WallPostImage(imageBytes: decodedImage!)
           else if (post.hasImage)
-            _WallPostImageFallback(imageJson: post.imageJson!),
+            _LazyWallPostImage(postUuid: post.uuid),
           // Post text
           Text(
             post.text,
@@ -404,6 +407,96 @@ class _WallPostImageFallback extends StatelessWidget {
     final bytes = _decodeImage();
     if (bytes == null) return const SizedBox.shrink();
     return _WallPostImage(imageBytes: bytes);
+  }
+}
+
+/// Lazy-loads image from SQLite cache via FFI when not in memory cache.
+class _LazyWallPostImage extends ConsumerStatefulWidget {
+  final String postUuid;
+
+  const _LazyWallPostImage({required this.postUuid});
+
+  @override
+  ConsumerState<_LazyWallPostImage> createState() => _LazyWallPostImageState();
+}
+
+class _LazyWallPostImageState extends ConsumerState<_LazyWallPostImage> {
+  Uint8List? _imageBytes;
+  bool _loading = false;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Check in-memory cache first
+    final cached = wallImageCache(widget.postUuid);
+    if (cached != null) {
+      _imageBytes = cached;
+    } else {
+      _loadImage();
+    }
+  }
+
+  Future<void> _loadImage() async {
+    if (_loading) return;
+    _loading = true;
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final imageJson = await engine.wallGetImage(widget.postUuid);
+      if (!mounted) return;
+
+      if (imageJson == null || imageJson.isEmpty) {
+        setState(() => _failed = true);
+        return;
+      }
+
+      // Decode the JSON and extract base64 data
+      final map = jsonDecode(imageJson) as Map<String, dynamic>;
+      final data = map['data'] as String?;
+      if (data == null || data.isEmpty) {
+        setState(() => _failed = true);
+        return;
+      }
+
+      final bytes = base64Decode(data);
+      wallImageCachePut(widget.postUuid, bytes);
+
+      if (mounted) {
+        setState(() => _imageBytes = bytes);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _failed = true);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_imageBytes != null) {
+      return _WallPostImage(imageBytes: _imageBytes!);
+    }
+    if (_failed) {
+      return const SizedBox.shrink();
+    }
+    // Loading placeholder
+    return Padding(
+      padding: const EdgeInsets.only(bottom: DnaSpacing.sm),
+      child: SizedBox(
+        height: 200,
+        child: Center(
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

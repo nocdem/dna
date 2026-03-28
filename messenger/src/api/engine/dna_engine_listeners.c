@@ -1313,8 +1313,10 @@ static bool wall_listen_callback(
         QGP_LOG_INFO(LOG_TAG, "[WALL_LISTEN] Wall updated for %.16s...",
                      ctx->contact_fingerprint);
 
-        /* Invalidate cache staleness so next timeline load refreshes from DHT */
-        wall_cache_delete_meta(ctx->contact_fingerprint);
+        /* Invalidate wall meta staleness so next timeline load refreshes from DHT.
+         * Must use wall_cache_invalidate_wall_meta (cache_key = "meta:<fp>")
+         * not wall_cache_delete_meta (cache_key = "<fp>" — old format). */
+        wall_cache_invalidate_wall_meta(ctx->contact_fingerprint);
 
         /* Fire DNA_EVENT_WALL_NEW_POST event */
         dna_event_t event = {0};
@@ -1356,9 +1358,14 @@ size_t dna_engine_start_wall_listener(dna_engine_t *engine, const char *contact_
         return 0;
     }
 
-    /* Derive DHT key for this contact's wall */
-    uint8_t wall_key[64];
-    dna_wall_make_key(contact_fingerprint, wall_key);
+    /* Derive DHT key for this contact's wall META (daily bucket system v0.9.141+).
+     * Posts are written to per-day bucket keys, but meta is updated on every
+     * post/delete. Listening on meta key catches all wall changes. */
+    char meta_str[512];
+    snprintf(meta_str, sizeof(meta_str), "%s%s",
+             DNA_WALL_META_KEY_PREFIX, contact_fingerprint);
+    uint8_t meta_key[64];
+    qgp_sha3_512((const uint8_t *)meta_str, strlen(meta_str), meta_key);
 
     /* Allocate context */
     wall_listener_ctx_t *ctx = calloc(1, sizeof(wall_listener_ctx_t));
@@ -1370,8 +1377,8 @@ size_t dna_engine_start_wall_listener(dna_engine_t *engine, const char *contact_
     strncpy(ctx->contact_fingerprint, contact_fingerprint, 128);
     ctx->contact_fingerprint[128] = '\0';
 
-    /* Start listening */
-    size_t token = nodus_ops_listen(wall_key, 64,
+    /* Start listening on meta key */
+    size_t token = nodus_ops_listen(meta_key, 64,
                                      wall_listen_callback, ctx,
                                      wall_listener_cleanup);
 
@@ -1393,16 +1400,16 @@ size_t dna_engine_start_wall_listener(dna_engine_t *engine, const char *contact_
 
     pthread_mutex_unlock(&engine->wall_listeners_mutex);
 
-    /* v0.9.1: Initial pull — fetch existing wall data from DHT.
+    /* v0.9.1: Initial pull — fetch existing meta from DHT.
      * The listener only catches NEW puts after registration. */
     {
-        uint8_t *wall_data = NULL;
-        size_t wall_len = 0;
-        if (nodus_ops_get(wall_key, 64, &wall_data, &wall_len) == 0
-            && wall_data && wall_len > 0) {
-            wall_listen_callback(wall_data, wall_len, false, ctx);
+        uint8_t *meta_data = NULL;
+        size_t meta_len = 0;
+        if (nodus_ops_get(meta_key, 64, &meta_data, &meta_len) == 0
+            && meta_data && meta_len > 0) {
+            wall_listen_callback(meta_data, meta_len, false, ctx);
         }
-        if (wall_data) free(wall_data);
+        if (meta_data) free(meta_data);
     }
 
     QGP_LOG_DEBUG(LOG_TAG, "[WALL_LISTEN] Started wall listener for %.16s... (token=%zu)",

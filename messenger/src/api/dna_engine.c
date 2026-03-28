@@ -1201,6 +1201,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_WALL_LOAD_DAY:
             dna_handle_wall_load_day(engine, task);
             break;
+        case TASK_WALL_GET_IMAGE:
+            dna_handle_wall_get_image(engine, task);
+            break;
 
         /* Channel system (RSS-like channels) */
         case TASK_CHANNEL_CREATE:

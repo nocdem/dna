@@ -816,6 +816,19 @@ char *dna_wall_meta_to_json(const dna_wall_meta_t *meta) {
         json_object_array_add(days_arr, json_object_new_string(meta->days[i]));
     }
     json_object_object_add(obj, "days", days_arr);
+
+    /* Per-day counts (v0.9.142+) */
+    if (meta->day_post_counts) {
+        json_object *counts_arr = json_object_new_array();
+        if (counts_arr) {
+            for (size_t i = 0; i < meta->day_count; i++) {
+                json_object_array_add(counts_arr,
+                    json_object_new_int(meta->day_post_counts[i]));
+            }
+            json_object_object_add(obj, "counts", counts_arr);
+        }
+    }
+
     json_object_object_add(obj, "total", json_object_new_int64((int64_t)meta->total_posts));
     json_object_object_add(obj, "updated", json_object_new_int64((int64_t)meta->updated));
 
@@ -853,6 +866,22 @@ int dna_wall_meta_from_json(const char *json, dna_wall_meta_t *meta) {
         }
     }
 
+    /* Parse per-day counts (v0.9.142+, optional for backward compat) */
+    if (json_object_object_get_ex(obj, "counts", &jv) &&
+        json_object_is_type(jv, json_type_array)) {
+        int counts_len = json_object_array_length(jv);
+        if (counts_len > 0 && (size_t)counts_len == meta->day_count) {
+            meta->day_post_counts = calloc((size_t)counts_len, sizeof(int));
+            if (meta->day_post_counts) {
+                for (int i = 0; i < counts_len; i++) {
+                    json_object *elem = json_object_array_get_idx(jv, (size_t)i);
+                    meta->day_post_counts[i] = json_object_get_int(elem);
+                }
+            }
+        }
+    }
+    /* If "counts" not present (old format), day_post_counts stays NULL */
+
     if (json_object_object_get_ex(obj, "total", &jv))
         meta->total_posts = (size_t)json_object_get_int64(jv);
     if (json_object_object_get_ex(obj, "updated", &jv))
@@ -870,6 +899,7 @@ void dna_wall_meta_free(dna_wall_meta_t *meta) {
         }
         free(meta->days);
     }
+    free(meta->day_post_counts);  /* NULL-safe */
     memset(meta, 0, sizeof(*meta));
 }
 
@@ -979,6 +1009,17 @@ int dna_wall_update_meta(const char *fingerprint, const char *date_str, int delt
         if (!new_days) { dna_wall_meta_free(&meta); return -1; }
         meta.days = new_days;
 
+        /* Grow day_post_counts (or allocate if NULL — old format upgrade) */
+        int *new_counts = realloc(meta.day_post_counts,
+                                   (meta.day_count + 1) * sizeof(int));
+        if (!new_counts) {
+            /* Allocate fresh if was NULL */
+            new_counts = calloc(meta.day_count + 1, sizeof(int));
+        }
+        if (new_counts) {
+            meta.day_post_counts = new_counts;
+        }
+
         /* Find insertion point (days sorted descending) */
         size_t insert_at = 0;
         for (size_t i = 0; i < meta.day_count; i++) {
@@ -989,12 +1030,24 @@ int dna_wall_update_meta(const char *fingerprint, const char *date_str, int delt
             insert_at = i + 1;
         }
 
-        /* Shift right */
+        /* Shift right — both days and counts */
         for (size_t i = meta.day_count; i > insert_at; i--) {
             meta.days[i] = meta.days[i - 1];
+            if (meta.day_post_counts) {
+                meta.day_post_counts[i] = meta.day_post_counts[i - 1];
+            }
         }
         meta.days[insert_at] = strdup(date_str);
+        if (meta.day_post_counts) {
+            meta.day_post_counts[insert_at] = (delta > 0) ? delta : 0;
+        }
         meta.day_count++;
+    } else if (found_idx >= 0 && meta.day_post_counts) {
+        /* Existing day — update count */
+        meta.day_post_counts[found_idx] += delta;
+        if (meta.day_post_counts[found_idx] < 0) {
+            meta.day_post_counts[found_idx] = 0;
+        }
     }
 
     /* Update total */

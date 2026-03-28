@@ -190,6 +190,22 @@ static int create_schema(void) {
         "    fingerprint TEXT PRIMARY KEY,"
         "    meta_json TEXT NOT NULL,"
         "    cached_at INTEGER NOT NULL"
+        ");"
+
+        /* ── wall_post_images (v0.9.142+ image separation) ─── */
+        "CREATE TABLE IF NOT EXISTS wall_post_images ("
+        "    uuid TEXT PRIMARY KEY,"
+        "    image_json TEXT NOT NULL,"
+        "    cached_at INTEGER NOT NULL"
+        ");"
+
+        /* ── wall_day_complete (v0.9.142+ immutable day tracking) ── */
+        "CREATE TABLE IF NOT EXISTS wall_day_complete ("
+        "    fingerprint TEXT NOT NULL,"
+        "    date_str    TEXT NOT NULL,"
+        "    post_count  INTEGER NOT NULL,"
+        "    fetched_at  INTEGER NOT NULL,"
+        "    PRIMARY KEY (fingerprint, date_str)"
         ");";
 
     char *err_msg = NULL;
@@ -203,6 +219,49 @@ static int create_schema(void) {
     /* v0.7.0 migration: add image_json column if missing (existing DBs) */
     sqlite3_exec(g_db, "ALTER TABLE wall_posts ADD COLUMN image_json TEXT;",
                  NULL, NULL, NULL);
+
+    /* v0.9.142 migration: move existing images to separate table */
+    {
+        sqlite3_stmt *chk = NULL;
+        bool need_migrate = true;
+        if (sqlite3_prepare_v2(g_db,
+                "SELECT 1 FROM wall_post_images LIMIT 1;", -1, &chk, NULL) == SQLITE_OK) {
+            if (sqlite3_step(chk) == SQLITE_ROW) {
+                need_migrate = false;
+            }
+            sqlite3_finalize(chk);
+        }
+
+        if (need_migrate) {
+            sqlite3_stmt *cnt = NULL;
+            int img_count = 0;
+            if (sqlite3_prepare_v2(g_db,
+                    "SELECT COUNT(*) FROM wall_posts WHERE image_json IS NOT NULL "
+                    "AND image_json != '' AND image_json != '1';",
+                    -1, &cnt, NULL) == SQLITE_OK) {
+                if (sqlite3_step(cnt) == SQLITE_ROW) {
+                    img_count = sqlite3_column_int(cnt, 0);
+                }
+                sqlite3_finalize(cnt);
+            }
+
+            if (img_count > 0) {
+                QGP_LOG_INFO(LOG_TAG, "Migrating %d images to wall_post_images table", img_count);
+                sqlite3_exec(g_db,
+                    "INSERT OR IGNORE INTO wall_post_images (uuid, image_json, cached_at) "
+                    "SELECT uuid, image_json, cached_at FROM wall_posts "
+                    "WHERE image_json IS NOT NULL AND image_json != '' AND image_json != '1';",
+                    NULL, NULL, NULL);
+
+                sqlite3_exec(g_db,
+                    "UPDATE wall_posts SET image_json = '1' "
+                    "WHERE image_json IS NOT NULL AND image_json != '' AND image_json != '1';",
+                    NULL, NULL, NULL);
+
+                QGP_LOG_INFO(LOG_TAG, "Image migration complete");
+            }
+        }
+    }
 
     return 0;
 }
@@ -455,8 +514,10 @@ int wall_cache_store(const char *fingerprint,
             sqlite3_bind_text(ins_stmt, 1, posts[i].uuid, -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(ins_stmt, 2, posts[i].author_fingerprint, -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(ins_stmt, 3, posts[i].text, -1, SQLITE_TRANSIENT);
-            if (posts[i].image_json) {
-                sqlite3_bind_text(ins_stmt, 4, posts[i].image_json, -1, SQLITE_TRANSIENT);
+            /* Image stored in separate table (v0.9.142+).
+             * Store "1" marker so hasImage check works, full data in wall_post_images. */
+            if (posts[i].image_json && posts[i].image_json[0] != '\0') {
+                sqlite3_bind_text(ins_stmt, 4, "1", 1, SQLITE_STATIC);
             } else {
                 sqlite3_bind_null(ins_stmt, 4);
             }
@@ -477,6 +538,13 @@ int wall_cache_store(const char *fingerprint,
         }
 
         sqlite3_finalize(ins_stmt);
+
+        /* Store images in separate table */
+        for (size_t i = 0; i < count; i++) {
+            if (posts[i].image_json && posts[i].image_json[0] != '\0') {
+                wall_cache_store_image(posts[i].uuid, posts[i].image_json);
+            }
+        }
     }
 
     /* Update meta: mark this fingerprint as freshly fetched */
@@ -647,90 +715,60 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
         return -1;
     }
 
-    /* Two-phase query: Phase 1 collects UUIDs via index-only scan (no blob I/O),
-     * Phase 2 fetches full rows by UUID (no ORDER BY, no temp sorter).
-     * This avoids SQLITE_IOERR when ORDER BY tries to sort large image_json blobs
-     * through temp file storage on some Android devices. */
-    const char *sql_uuids =
-        "SELECT uuid FROM wall_posts WHERE author_fingerprint = ? "
-        "ORDER BY timestamp DESC;";
-
-    const char *sql_full =
+    /* Single-query approach (v0.9.142+): image_json is now NULL or "1" marker
+     * (actual images in wall_post_images table), so ORDER BY is safe — no large
+     * blob sorting that caused SQLITE_IOERR on Android. */
+    const char *sql =
         "SELECT uuid, author_fingerprint, text, image_json, timestamp, "
         "signature, signature_len, verified "
-        "FROM wall_posts WHERE uuid = ?;";
+        "FROM wall_posts WHERE author_fingerprint = ? "
+        "ORDER BY timestamp DESC;";
 
     for (size_t f = 0; f < fp_count; f++) {
-        /* Phase 1: Get sorted UUIDs (index-only scan with composite index) */
-        sqlite3_stmt *uuid_stmt = NULL;
-        int rc = sqlite3_prepare_v2(g_db, sql_uuids, -1, &uuid_stmt, NULL);
+        sqlite3_stmt *stmt = NULL;
+        int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
         if (rc != SQLITE_OK) {
-            QGP_LOG_ERROR(LOG_TAG, "load_timeline: prepare[%zu]: %s\n", f, sqlite3_errmsg(g_db));
+            QGP_LOG_ERROR(LOG_TAG, "load_timeline: prepare[%zu]: %s\n",
+                          f, sqlite3_errmsg(g_db));
             continue;
         }
-        sqlite3_bind_text(uuid_stmt, 1, fingerprints[f], -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 1, fingerprints[f], -1, SQLITE_STATIC);
 
-        /* Collect UUIDs into temp array */
-        char uuids[200][37];  /* max 200 UUIDs, 36 chars + null */
-        size_t uuid_count = 0;
-        int step_rc;
-        while ((step_rc = sqlite3_step(uuid_stmt)) == SQLITE_ROW && uuid_count < 200) {
-            const char *u = (const char *)sqlite3_column_text(uuid_stmt, 0);
-            if (u) {
-                strncpy(uuids[uuid_count], u, 36);
-                uuids[uuid_count][36] = '\0';
-                uuid_count++;
-            }
-            if (total + uuid_count >= 200) break;
-        }
-        sqlite3_finalize(uuid_stmt);
-
-        /* Phase 2: Fetch full rows by UUID (no ORDER BY needed) */
         size_t count_before = total;
-        for (size_t u = 0; u < uuid_count; u++) {
+        int step_rc;
+        while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW && total < 200) {
             if (total >= capacity) {
                 size_t new_cap = capacity * 2;
                 if (new_cap > 200) new_cap = 200;
-                if (total >= new_cap) break;
                 dna_wall_post_t *tmp = realloc(merged, new_cap * sizeof(dna_wall_post_t));
                 if (!tmp) break;
                 memset(tmp + capacity, 0, (new_cap - capacity) * sizeof(dna_wall_post_t));
                 merged = tmp;
                 capacity = new_cap;
             }
-
-            sqlite3_stmt *full_stmt = NULL;
-            rc = sqlite3_prepare_v2(g_db, sql_full, -1, &full_stmt, NULL);
-            if (rc != SQLITE_OK) continue;
-            sqlite3_bind_text(full_stmt, 1, uuids[u], -1, SQLITE_STATIC);
-            if (sqlite3_step(full_stmt) == SQLITE_ROW) {
-                fill_post_from_row(full_stmt, &merged[total]);
-                total++;
-            }
-            sqlite3_finalize(full_stmt);
-            if (total >= 200) break;
+            fill_post_from_row(stmt, &merged[total]);
+            total++;
         }
+
         size_t select_rows = total - count_before;
-        if (select_rows == 0 && step_rc != SQLITE_DONE) {
-            QGP_LOG_ERROR(LOG_TAG, "load_timeline: fp[%zu] sqlite3_step returned %d (%s) errmsg=%s",
-                          f, step_rc, sqlite3_errstr(step_rc), sqlite3_errmsg(g_db));
-            /* Fatal DB error: nuke and return empty timeline (DHT will repopulate) */
+
+        if (step_rc != SQLITE_DONE && step_rc != SQLITE_ROW) {
+            QGP_LOG_ERROR(LOG_TAG, "load_timeline: fp[%zu] step=%d (%s)",
+                          f, step_rc, sqlite3_errmsg(g_db));
             if (is_fatal_sqlite_error(step_rc)) {
-                QGP_LOG_WARN(LOG_TAG, "load_timeline: fatal error %d, triggering recovery\n", step_rc);
-                /* Free any posts we already collected */
-                for (size_t k = 0; k < total; k++) {
-                    free(merged[k].image_json);
-                }
+                for (size_t k = 0; k < total; k++) free(merged[k].image_json);
                 free(merged);
                 wall_cache_nuke_and_reopen();
                 *posts = NULL;
                 *count = 0;
-                return 0; /* Empty timeline — DHT fetch will repopulate */
+                sqlite3_finalize(stmt);
+                return 0;
             }
         }
-        QGP_LOG_INFO(LOG_TAG, "load_timeline: fp[%zu]=%.32s... (len=%zu) → %zu rows (step_rc=%d)",
-                     f, fingerprints[f], fingerprints[f] ? strlen(fingerprints[f]) : 0,
-                     select_rows, step_rc);
+
+        QGP_LOG_INFO(LOG_TAG, "load_timeline: fp[%zu]=%.32s... → %zu total",
+                     f, fingerprints[f] ? fingerprints[f] : "(null)", total);
+
         /* DEBUG: if SELECT returned 0, exhaustive diagnosis */
         if (select_rows == 0 && fingerprints[f]) {
             /* 1. COUNT with same WHERE */
@@ -755,7 +793,6 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
                 while (sqlite3_step(no_stmt) == SQLITE_ROW) {
                     no_order_count++;
                     if (no_order_count == 1) {
-                        /* Log first matching row's fingerprint for comparison */
                         const char *db_fp = (const char *)sqlite3_column_text(no_stmt, 1);
                         QGP_LOG_WARN(LOG_TAG, "load_timeline: NO-ORDER fp[%zu] row1 db_fp=%s",
                                      f, db_fp ? db_fp : "(null)");
@@ -793,6 +830,7 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
             QGP_LOG_WARN(LOG_TAG, "load_timeline: DIAG fp[%zu] COUNT=%d NO_ORDER_SELECT=%d total=%d",
                          f, dbg_count, no_order_count, total_rows);
         }
+        sqlite3_finalize(stmt);
         if (total >= 200) break;
     }
 
@@ -957,8 +995,9 @@ int wall_cache_insert_post(const dna_wall_post_t *post) {
     sqlite3_bind_text(stmt, 1, post->uuid, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, post->author_fingerprint, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, post->text, -1, SQLITE_TRANSIENT);
-    if (post->image_json) {
-        sqlite3_bind_text(stmt, 4, post->image_json, -1, SQLITE_TRANSIENT);
+    /* Image stored in separate table (v0.9.142+) */
+    if (post->image_json && post->image_json[0] != '\0') {
+        sqlite3_bind_text(stmt, 4, "1", 1, SQLITE_STATIC);
     } else {
         sqlite3_bind_null(stmt, 4);
     }
@@ -974,6 +1013,11 @@ int wall_cache_insert_post(const dna_wall_post_t *post) {
     if (rc != SQLITE_DONE) {
         QGP_LOG_ERROR(LOG_TAG, "insert_post step: %s\n", sqlite3_errmsg(g_db));
         return -1;
+    }
+
+    /* Store image separately if present */
+    if (post->image_json && post->image_json[0] != '\0') {
+        wall_cache_store_image(post->uuid, post->image_json);
     }
 
     QGP_LOG_DEBUG(LOG_TAG, "Inserted post %s by %.16s...\n", post->uuid, post->author_fingerprint);
@@ -1486,6 +1530,13 @@ int wall_cache_update_wall_meta(const char *fingerprint) {
     return wall_cache_update_meta(cache_key);
 }
 
+int wall_cache_invalidate_wall_meta(const char *fingerprint) {
+    if (!fingerprint) return -1;
+    char cache_key[256];
+    snprintf(cache_key, sizeof(cache_key), "meta:%s", fingerprint);
+    return wall_cache_delete_meta(cache_key);
+}
+
 bool wall_cache_is_stale_day(const char *fingerprint, const char *date_str) {
     if (!fingerprint || !date_str) return true;
     char cache_key[256];
@@ -1580,4 +1631,186 @@ uint64_t wall_cache_get_post_timestamp(const char *post_uuid) {
     sqlite3_finalize(stmt);
     pthread_mutex_unlock(&g_store_mutex);
     return ts;
+}
+
+/* ── Image cache (v0.9.142+ separate table) ───────────────────────── */
+
+int wall_cache_store_image(const char *uuid, const char *image_json) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -3;
+    }
+    if (!uuid || !image_json) return -1;
+
+    const char *sql =
+        "INSERT OR REPLACE INTO wall_post_images (uuid, image_json, cached_at) "
+        "VALUES (?, ?, ?);";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_text(stmt, 1, uuid, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, image_json, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, (int64_t)time(NULL));
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int wall_cache_load_image(const char *uuid, char **image_json_out) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -3;
+    }
+    if (!uuid || !image_json_out) return -1;
+    *image_json_out = NULL;
+
+    const char *sql =
+        "SELECT image_json FROM wall_post_images WHERE uuid = ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_text(stmt, 1, uuid, -1, SQLITE_STATIC);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *json = (const char *)sqlite3_column_text(stmt, 0);
+        *image_json_out = json ? strdup(json) : NULL;
+        sqlite3_finalize(stmt);
+        return *image_json_out ? 0 : -2;
+    }
+
+    sqlite3_finalize(stmt);
+    return -2;
+}
+
+/* ── Day complete tracking (v0.9.142+ immutable past days) ─────────── */
+
+int wall_day_complete_set(const char *fingerprint, const char *date_str,
+                          int post_count) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -3;
+    }
+    if (!fingerprint || !date_str) return -1;
+
+    const char *sql =
+        "INSERT OR REPLACE INTO wall_day_complete "
+        "(fingerprint, date_str, post_count, fetched_at) VALUES (?, ?, ?, ?);";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, date_str, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, post_count);
+    sqlite3_bind_int64(stmt, 4, (int64_t)time(NULL));
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int wall_day_complete_get(const char *fingerprint, const char *date_str) {
+    if (!g_db || !fingerprint || !date_str) return -1;
+
+    const char *sql =
+        "SELECT post_count FROM wall_day_complete "
+        "WHERE fingerprint = ? AND date_str = ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, date_str, -1, SQLITE_STATIC);
+
+    int result = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        result = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+/**
+ * Parse "YYYY-MM-DD" to UTC epoch range [start, end).
+ */
+static int date_str_to_epoch_range(const char *date_str,
+                                    uint64_t *start_out, uint64_t *end_out) {
+    int year, month, day;
+    if (sscanf(date_str, "%d-%d-%d", &year, &month, &day) != 3) return -1;
+
+    struct tm tm_val;
+    memset(&tm_val, 0, sizeof(tm_val));
+    tm_val.tm_year = year - 1900;
+    tm_val.tm_mon = month - 1;
+    tm_val.tm_mday = day;
+    tm_val.tm_isdst = 0;
+
+    time_t start = timegm(&tm_val);
+    if (start == (time_t)-1) return -1;
+
+    *start_out = (uint64_t)start;
+    *end_out = (uint64_t)start + 86400;
+    return 0;
+}
+
+int wall_cache_load_by_date(const char *fingerprint, const char *date_str,
+                            dna_wall_post_t **posts, size_t *count) {
+    if (!g_db) {
+        if (wall_cache_init() != 0) return -3;
+    }
+    if (!fingerprint || !date_str || !posts || !count) return -1;
+
+    *posts = NULL;
+    *count = 0;
+
+    uint64_t day_start, day_end;
+    if (date_str_to_epoch_range(date_str, &day_start, &day_end) != 0) return -1;
+
+    /* Uses composite index (author_fingerprint, timestamp DESC) */
+    const char *sql =
+        "SELECT uuid, author_fingerprint, text, image_json, timestamp, "
+        "signature, signature_len, verified "
+        "FROM wall_posts "
+        "WHERE author_fingerprint = ? AND timestamp >= ? AND timestamp < ? "
+        "ORDER BY timestamp DESC;";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 2, (int64_t)day_start);
+    sqlite3_bind_int64(stmt, 3, (int64_t)day_end);
+
+    size_t capacity = 16;
+    size_t total = 0;
+    dna_wall_post_t *result = calloc(capacity, sizeof(dna_wall_post_t));
+    if (!result) { sqlite3_finalize(stmt); return -1; }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW && total < 200) {
+        if (total >= capacity) {
+            size_t new_cap = capacity * 2;
+            dna_wall_post_t *tmp = realloc(result, new_cap * sizeof(dna_wall_post_t));
+            if (!tmp) break;
+            memset(tmp + capacity, 0, (new_cap - capacity) * sizeof(dna_wall_post_t));
+            result = tmp;
+            capacity = new_cap;
+        }
+        fill_post_from_row(stmt, &result[total]);
+        total++;
+    }
+    sqlite3_finalize(stmt);
+
+    if (total == 0) {
+        free(result);
+        return -2;
+    }
+
+    *posts = result;
+    *count = total;
+    return 0;
 }

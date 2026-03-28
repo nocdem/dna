@@ -36,6 +36,18 @@
 #define LOG_TAG "ENGINE_WALL"
 
 /* ============================================================================
+ * HELPER FUNCTIONS - Date
+ * ============================================================================ */
+
+/** Get today's date as "YYYY-MM-DD" (UTC) */
+static void engine_today_str(char *buf, size_t buf_size) {
+    time_t now = time(NULL);
+    struct tm *utc = gmtime(&now);
+    snprintf(buf, buf_size, "%04d-%02d-%02d",
+             utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday);
+}
+
+/* ============================================================================
  * HELPER FUNCTIONS - Name Resolution
  * ============================================================================ */
 
@@ -295,9 +307,26 @@ static void *wall_fetch_thread(void *arg) {
             if (ret == 0 && day_wall.post_count > 0) {
                 wall_cache_store(ctx->fingerprint, day_wall.posts, day_wall.post_count);
                 wall_cache_update_meta_day(ctx->fingerprint, meta.days[d]);
+                /* Mark past days as complete */
+                {
+                    char today_buf[16];
+                    engine_today_str(today_buf, sizeof(today_buf));
+                    if (strcmp(meta.days[d], today_buf) != 0) {
+                        wall_day_complete_set(ctx->fingerprint, meta.days[d],
+                                              (int)day_wall.post_count);
+                    }
+                }
                 fetched++;
             } else if (ret == NODUS_ERR_NOT_FOUND || ret == -2) {
                 wall_cache_update_meta_day(ctx->fingerprint, meta.days[d]);
+                /* Mark empty past day as complete */
+                {
+                    char today_buf[16];
+                    engine_today_str(today_buf, sizeof(today_buf));
+                    if (strcmp(meta.days[d], today_buf) != 0) {
+                        wall_day_complete_set(ctx->fingerprint, meta.days[d], 0);
+                    }
+                }
             } else {
                 QGP_LOG_WARN(LOG_TAG, "Bucket fetch error %.16s... day=%s (rc=%d)",
                              ctx->fingerprint, meta.days[d], ret);
@@ -1657,13 +1686,69 @@ void dna_handle_wall_load_day(dna_engine_t *engine, dna_task_t *task) {
     const char *fp = task->params.wall_load_day.fingerprint;
     const char *date = task->params.wall_load_day.date_str;
 
+    /* ── Cache-first: past days are immutable, serve from cache ── */
+    char today[16];
+    engine_today_str(today, sizeof(today));
+    bool is_today = (strcmp(date, today) == 0);
+
+    if (!is_today) {
+        int expected_count = wall_day_complete_get(fp, date);
+
+        if (expected_count >= 0) {
+            /* Day was fully fetched before */
+            if (expected_count == 0) {
+                QGP_LOG_DEBUG(LOG_TAG, "Load day %.16s... %s: complete (0 posts)",
+                             fp, date);
+                task->callback.wall_posts(task->request_id, DNA_OK,
+                                          NULL, 0, task->user_data);
+                return;
+            }
+
+            /* Load from cache */
+            dna_wall_post_t *cached = NULL;
+            size_t cached_count = 0;
+            if (wall_cache_load_by_date(fp, date, &cached, &cached_count) == 0
+                && cached) {
+                if ((int)cached_count == expected_count) {
+                    dna_wall_post_info_t *info = calloc(cached_count,
+                                                         sizeof(dna_wall_post_info_t));
+                    if (info) {
+                        for (size_t i = 0; i < cached_count; i++) {
+                            wall_post_to_info(&cached[i], &info[i]);
+                        }
+                        wall_cache_free_posts(cached, cached_count);
+                        QGP_LOG_DEBUG(LOG_TAG,
+                            "Load day %.16s... %s: cache hit (%zu posts)",
+                            fp, date, cached_count);
+                        task->callback.wall_posts(task->request_id, DNA_OK,
+                                                  info, (int)cached_count,
+                                                  task->user_data);
+                        return;
+                    }
+                }
+                /* Count mismatch — cache inconsistent, re-fetch from DHT */
+                QGP_LOG_WARN(LOG_TAG,
+                    "Load day %.16s... %s: count mismatch (expected=%d got=%zu)",
+                    fp, date, expected_count, cached_count);
+                wall_cache_free_posts(cached, cached_count);
+            }
+            /* Cache read failed — fall through to DHT */
+        }
+        /* Not fetched yet — fall through to DHT */
+    }
+
+    /* ── DHT fetch ── */
     dna_wall_t wall = {0};
     int ret = dna_wall_load_day(fp, date, &wall);
 
     if (ret != 0 || wall.post_count == 0) {
+        if (!is_today) {
+            wall_day_complete_set(fp, date, 0);
+        }
         dna_wall_free(&wall);
         task->callback.wall_posts(task->request_id,
-                                  ret == -2 ? DNA_OK : DNA_ERROR_INTERNAL,
+                                  ret == -2 ? DNA_OK
+                                            : (ret != 0 ? DNA_ERROR_INTERNAL : DNA_OK),
                                   NULL, 0, task->user_data);
         return;
     }
@@ -1671,6 +1756,10 @@ void dna_handle_wall_load_day(dna_engine_t *engine, dna_task_t *task) {
     /* Store in cache */
     wall_cache_store(fp, wall.posts, wall.post_count);
     wall_cache_update_meta_day(fp, date);
+
+    if (!is_today) {
+        wall_day_complete_set(fp, date, (int)wall.post_count);
+    }
 
     /* Convert to public API format */
     dna_wall_post_info_t *info = calloc(wall.post_count, sizeof(dna_wall_post_info_t));
@@ -1685,7 +1774,8 @@ void dna_handle_wall_load_day(dna_engine_t *engine, dna_task_t *task) {
         wall_post_to_info(&wall.posts[i], &info[i]);
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Load day %.16s... %s: %zu posts", fp, date, wall.post_count);
+    QGP_LOG_INFO(LOG_TAG, "Load day %.16s... %s: %zu posts (DHT)",
+                 fp, date, wall.post_count);
     task->callback.wall_posts(task->request_id, DNA_OK,
                               info, (int)wall.post_count, task->user_data);
     dna_wall_free(&wall);
@@ -1854,4 +1944,39 @@ dna_request_id_t dna_engine_wall_load_day(
     dna_task_callback_t cb = {0};
     cb.wall_posts = callback;
     return dna_submit_task(engine, TASK_WALL_LOAD_DAY, &params, cb, user_data);
+}
+
+/* ── Wall Get Image (v0.9.142+) ── */
+
+void dna_handle_wall_get_image(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
+    const char *uuid = task->params.wall_get_image.post_uuid;
+
+    char *image_json = NULL;
+    int ret = wall_cache_load_image(uuid, &image_json);
+
+    if (ret == 0 && image_json) {
+        task->callback.wall_image(task->request_id, DNA_OK,
+                                   image_json, task->user_data);
+        free(image_json);
+    } else {
+        task->callback.wall_image(task->request_id, DNA_OK,
+                                   NULL, task->user_data);
+    }
+}
+
+dna_request_id_t dna_engine_wall_get_image(
+    dna_engine_t *engine,
+    const char *post_uuid,
+    dna_wall_image_cb callback,
+    void *user_data
+) {
+    if (!engine || !post_uuid || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.wall_get_image.post_uuid, post_uuid, 36);
+
+    dna_task_callback_t cb = {0};
+    cb.wall_image = callback;
+    return dna_submit_task(engine, TASK_WALL_GET_IMAGE, &params, cb, user_data);
 }

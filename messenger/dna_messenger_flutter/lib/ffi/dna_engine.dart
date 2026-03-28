@@ -6156,6 +6156,51 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // WALL IMAGE (v0.9.142+ — lazy image load from local cache)
+  // ---------------------------------------------------------------------------
+
+  /// Fetch image JSON for a wall post from local SQLite cache.
+  /// Returns the JSON string (with base64 data), or null if not found.
+  Future<String?> wallGetImage(String postUuid) async {
+    final completer = Completer<String?>();
+    final localId = _nextLocalId++;
+    final postUuidPtr = postUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<Utf8> imageJson, Pointer<Void> userData) {
+      calloc.free(postUuidPtr);
+      if (error == 0 && imageJson != nullptr) {
+        completer.complete(imageJson.toDartString());
+      } else if (error == 0) {
+        // Success but no image found
+        completer.complete(null);
+      } else {
+        completer.complete(null);
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback =
+        NativeCallable<DnaWallImageCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_wall_get_image(
+      _engine,
+      postUuidPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(postUuidPtr);
+      _cleanupRequest(localId);
+      return null;
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
   // CLEANUP
   // ---------------------------------------------------------------------------
 

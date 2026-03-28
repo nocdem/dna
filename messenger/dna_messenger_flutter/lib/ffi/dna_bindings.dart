@@ -1214,6 +1214,15 @@ typedef DnaWallEngagementCbNative = Void Function(
 );
 typedef DnaWallEngagementCb = NativeFunction<DnaWallEngagementCbNative>;
 
+/// Wall: Image fetch callback - Native (v0.9.142+)
+typedef DnaWallImageCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<Utf8> image_json,
+  Pointer<Void> user_data,
+);
+typedef DnaWallImageCb = NativeFunction<DnaWallImageCbNative>;
+
 /// Event callback - Native
 typedef DnaEventCbNative = Void Function(
   Pointer<dna_event_t> event,
@@ -1448,6 +1457,13 @@ typedef DnaWallLikesCbDart = void Function(
   int error,
   Pointer<dna_wall_like_info_t> likes,
   int count,
+  Pointer<Void> userData,
+);
+
+typedef DnaWallImageCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<Utf8> imageJson,
   Pointer<Void> userData,
 );
 
@@ -4189,6 +4205,25 @@ class DnaBindings {
   void dna_free_wall_engagement(
       Pointer<dna_wall_engagement_t> engagements, int count) {
     _dna_free_wall_engagement(engagements, count);
+  }
+
+  // ── Wall Image Fetch (v0.9.142+) ──
+
+  late final _dna_engine_wall_get_image = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaWallImageCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaWallImageCb>, Pointer<Void>)>(
+      'dna_engine_wall_get_image');
+
+  int dna_engine_wall_get_image(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> postUuid,
+    Pointer<DnaWallImageCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_get_image(
+        engine, postUuid, callback, userData);
   }
 }
 
