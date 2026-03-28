@@ -203,8 +203,28 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       _mergeBoosts(boostPosts, myFp);
     }).catchError((_) {});
 
-    // Assemble items WITHOUT engagement (instant) then refresh in background
-    final items = await _assembleItems(wallPosts, myFp);
+    // Assemble items, preserving existing engagement data while bg-refresh runs
+    var items = await _assembleItems(wallPosts, myFp);
+    final current = state.valueOrNull;
+    if (current != null && current.isNotEmpty) {
+      final engMap = <String, WallFeedItem>{};
+      for (final item in current) {
+        engMap[item.post.uuid] = item;
+      }
+      items = items.map((item) {
+        final prev = engMap[item.post.uuid];
+        if (prev != null &&
+            (prev.commentCount > 0 || prev.likeCount > 0)) {
+          return item.copyWith(
+            commentCount: prev.commentCount,
+            previewComments: prev.previewComments,
+            likeCount: prev.likeCount,
+            isLikedByMe: prev.isLikedByMe,
+          );
+        }
+        return item;
+      }).toList();
+    }
     _refreshEngagement(wallPosts, myFp, engine);
     return items;
   }
