@@ -33,6 +33,23 @@ int blockchain_query_tx_status(const char *chain, const char *txhash, int *statu
  * WALLET TASK HANDLERS
  * ============================================================================ */
 
+#ifndef _WIN32
+#include <pthread.h>
+static pthread_mutex_t g_derive_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void derive_lock(void)   { pthread_mutex_lock(&g_derive_mutex); }
+static void derive_unlock(void) { pthread_mutex_unlock(&g_derive_mutex); }
+#else
+#include <windows.h>
+static CRITICAL_SECTION g_derive_cs;
+static LONG g_derive_cs_init = 0;
+static void derive_lock(void) {
+    if (InterlockedCompareExchange(&g_derive_cs_init, 1, 0) == 0)
+        InitializeCriticalSection(&g_derive_cs);
+    EnterCriticalSection(&g_derive_cs);
+}
+static void derive_unlock(void) { LeaveCriticalSection(&g_derive_cs); }
+#endif
+
 /* Lazy-init wallet cache (thread-safe, wallet_cache_init has internal mutex) */
 static void ensure_wallet_cache(void) {
     wallet_cache_init();
@@ -43,24 +60,23 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
     dna_wallet_t *wallets = NULL;
     int count = 0;
 
+    /* Serialize wallet derivation — multiple workers may enter simultaneously */
+    derive_lock();
+
     /* Return cached wallets if already derived (addresses are deterministic) */
     if (engine->wallets_loaded && engine->blockchain_wallets) {
         blockchain_wallet_list_t *list = engine->blockchain_wallets;
+        derive_unlock();
         if (list->count > 0) {
             wallets = calloc(list->count, sizeof(dna_wallet_t));
             if (wallets) {
                 for (size_t i = 0; i < list->count; i++) {
                     strncpy(wallets[i].name, list->wallets[i].name, sizeof(wallets[i].name) - 1);
                     strncpy(wallets[i].address, list->wallets[i].address, sizeof(wallets[i].address) - 1);
-                    if (list->wallets[i].type == BLOCKCHAIN_ETHEREUM) {
-                        wallets[i].sig_type = 100;
-                    } else if (list->wallets[i].type == BLOCKCHAIN_SOLANA) {
-                        wallets[i].sig_type = 101;
-                    } else if (list->wallets[i].type == BLOCKCHAIN_TRON) {
-                        wallets[i].sig_type = 102;
-                    } else {
-                        wallets[i].sig_type = 4;
-                    }
+                    if (list->wallets[i].type == BLOCKCHAIN_ETHEREUM)      wallets[i].sig_type = 100;
+                    else if (list->wallets[i].type == BLOCKCHAIN_SOLANA)   wallets[i].sig_type = 101;
+                    else if (list->wallets[i].type == BLOCKCHAIN_TRON)     wallets[i].sig_type = 102;
+                    else                                                    wallets[i].sig_type = 4;
                     wallets[i].is_protected = list->wallets[i].is_encrypted;
                 }
                 count = (int)list->count;
@@ -69,32 +85,7 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         task->callback.wallets(task->request_id, DNA_OK, wallets, count, task->user_data);
         return;
     }
-
-    /* Mark as loading to prevent concurrent derivation from other workers */
-    if (engine->wallets_loaded) {
-        /* Another worker just finished — return its result */
-        if (engine->blockchain_wallets) {
-            blockchain_wallet_list_t *list = engine->blockchain_wallets;
-            if (list->count > 0) {
-                wallets = calloc(list->count, sizeof(dna_wallet_t));
-                if (wallets) {
-                    for (size_t i = 0; i < list->count; i++) {
-                        strncpy(wallets[i].name, list->wallets[i].name, sizeof(wallets[i].name) - 1);
-                        strncpy(wallets[i].address, list->wallets[i].address, sizeof(wallets[i].address) - 1);
-                        if (list->wallets[i].type == BLOCKCHAIN_ETHEREUM)      wallets[i].sig_type = 100;
-                        else if (list->wallets[i].type == BLOCKCHAIN_SOLANA)   wallets[i].sig_type = 101;
-                        else if (list->wallets[i].type == BLOCKCHAIN_TRON)     wallets[i].sig_type = 102;
-                        else                                                    wallets[i].sig_type = 4;
-                        wallets[i].is_protected = list->wallets[i].is_encrypted;
-                    }
-                    count = (int)list->count;
-                }
-            }
-        }
-        task->callback.wallets(task->request_id, DNA_OK, wallets, count, task->user_data);
-        return;
-    }
-    engine->wallets_loaded = true;  /* Claim slot — prevents second worker from deriving */
+    derive_unlock();
 
     /* Derive wallets on-demand from mnemonic (seed-based only, no wallet files) */
     char mnemonic[512] = {0};
@@ -155,7 +146,9 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         count = (int)list->count;
     }
 
+    derive_lock();
     engine->wallets_loaded = true;
+    derive_unlock();
 
 done:
     task->callback.wallets(task->request_id, error, wallets, count, task->user_data);
