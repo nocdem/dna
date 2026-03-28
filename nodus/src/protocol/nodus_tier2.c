@@ -207,7 +207,7 @@ int nodus_t2_media_put(uint32_t txn, const uint8_t *token,
     enc_query_header(&enc, 5, txn, "m_put");
     enc_token(&enc, token);
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 10);
+    cbor_encode_map(&enc, 9);
     cbor_encode_cstr(&enc, "mh");
     cbor_encode_bstr(&enc, content_hash, 64);
     cbor_encode_cstr(&enc, "ci");
@@ -226,8 +226,6 @@ int nodus_t2_media_put(uint32_t txn, const uint8_t *token,
     cbor_encode_bstr(&enc, data, data_len);
     cbor_encode_cstr(&enc, "sig");
     cbor_encode_bstr(&enc, sig->bytes, NODUS_SIG_BYTES);
-    cbor_encode_cstr(&enc, "mfl");
-    cbor_encode_bool(&enc, true);  /* media flag — marks as media message */
     return finish(&enc, out_len);
 }
 
@@ -1583,12 +1581,6 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                         msg->has_media = true;
                     }
                 }
-                /* mfl (media flag — marks message as media) */
-                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "mfl", 3) == 0) {
-                    cbor_item_t val = cbor_decode_next(&dec);
-                    if (val.type == CBOR_ITEM_BOOL && val.bool_val)
-                        msg->has_media = true;
-                }
                 /* ks (get_batch / cnt_batch: key array) */
                 else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "ks", 2) == 0) {
                     cbor_item_t arr = cbor_decode_next(&dec);
@@ -2179,8 +2171,10 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 /* ttl (media response: TTL) */
                 else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "ttl", 3) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
-                    if (val.type == CBOR_ITEM_UINT)
+                    if (val.type == CBOR_ITEM_UINT) {
                         msg->ttl = (uint32_t)val.uint_val;
+                        msg->has_media = true;
+                    }
                 }
                 /* code (error) */
                 else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "code", 4) == 0) {
