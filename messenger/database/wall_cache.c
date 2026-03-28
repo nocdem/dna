@@ -1749,7 +1749,11 @@ static int date_str_to_epoch_range(const char *date_str,
     tm_val.tm_mday = day;
     tm_val.tm_isdst = 0;
 
+#ifdef _WIN32
+    time_t start = _mkgmtime(&tm_val);
+#else
     time_t start = timegm(&tm_val);
+#endif
     if (start == (time_t)-1) return -1;
 
     *start_out = (uint64_t)start;
