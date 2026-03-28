@@ -60,7 +60,7 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
     dna_wallet_t *wallets = NULL;
     int count = 0;
 
-    /* Serialize wallet derivation — multiple workers may enter simultaneously */
+    /* Serialize wallet derivation — lock held through entire derive path */
     derive_lock();
 
     /* Return cached wallets if already derived (addresses are deterministic) */
@@ -85,7 +85,7 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         task->callback.wallets(task->request_id, DNA_OK, wallets, count, task->user_data);
         return;
     }
-    derive_unlock();
+    /* NOTE: derive_lock still held — second worker blocks until we finish + set wallets_loaded */
 
     /* Derive wallets on-demand from mnemonic (seed-based only, no wallet files) */
     char mnemonic[512] = {0};
@@ -146,11 +146,10 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         count = (int)list->count;
     }
 
-    derive_lock();
     engine->wallets_loaded = true;
-    derive_unlock();
 
 done:
+    derive_unlock();
     task->callback.wallets(task->request_id, error, wallets, count, task->user_data);
 }
 
