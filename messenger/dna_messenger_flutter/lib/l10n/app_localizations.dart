@@ -152,11 +152,11 @@ abstract class AppLocalizations {
   /// **'Chats'**
   String get navChats;
 
-  /// No description provided for @navChannels.
+  /// No description provided for @navWallet.
   ///
   /// In en, this message translates to:
-  /// **'Channels'**
-  String get navChannels;
+  /// **'Wallet'**
+  String get navWallet;
 
   /// No description provided for @navMore.
   ///
@@ -619,126 +619,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Delete'**
   String get messageMenuDelete;
-
-  /// No description provided for @channelsTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Channels'**
-  String get channelsTitle;
-
-  /// No description provided for @channelsEmpty.
-  ///
-  /// In en, this message translates to:
-  /// **'No channels yet'**
-  String get channelsEmpty;
-
-  /// No description provided for @channelsCreateOrDiscover.
-  ///
-  /// In en, this message translates to:
-  /// **'Create or discover channels'**
-  String get channelsCreateOrDiscover;
-
-  /// No description provided for @channelsCreate.
-  ///
-  /// In en, this message translates to:
-  /// **'Create Channel'**
-  String get channelsCreate;
-
-  /// No description provided for @channelsDiscover.
-  ///
-  /// In en, this message translates to:
-  /// **'Discover Channels'**
-  String get channelsDiscover;
-
-  /// No description provided for @channelName.
-  ///
-  /// In en, this message translates to:
-  /// **'Channel Name'**
-  String get channelName;
-
-  /// No description provided for @channelDescription.
-  ///
-  /// In en, this message translates to:
-  /// **'Description'**
-  String get channelDescription;
-
-  /// No description provided for @channelListPublicly.
-  ///
-  /// In en, this message translates to:
-  /// **'List publicly'**
-  String get channelListPublicly;
-
-  /// No description provided for @channelListPubliclyHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Allow others to discover this channel'**
-  String get channelListPubliclyHint;
-
-  /// No description provided for @channelSubscribe.
-  ///
-  /// In en, this message translates to:
-  /// **'Subscribe'**
-  String get channelSubscribe;
-
-  /// No description provided for @channelSubscribed.
-  ///
-  /// In en, this message translates to:
-  /// **'Subscribed'**
-  String get channelSubscribed;
-
-  /// No description provided for @channelUnsubscribe.
-  ///
-  /// In en, this message translates to:
-  /// **'Unsubscribe'**
-  String get channelUnsubscribe;
-
-  /// No description provided for @channelWritePost.
-  ///
-  /// In en, this message translates to:
-  /// **'Write a post...'**
-  String get channelWritePost;
-
-  /// No description provided for @channelNoPosts.
-  ///
-  /// In en, this message translates to:
-  /// **'No posts yet'**
-  String get channelNoPosts;
-
-  /// No description provided for @channelLoadOlderPosts.
-  ///
-  /// In en, this message translates to:
-  /// **'Load older posts'**
-  String get channelLoadOlderPosts;
-
-  /// No description provided for @channelSearchChannels.
-  ///
-  /// In en, this message translates to:
-  /// **'Search channels...'**
-  String get channelSearchChannels;
-
-  /// No description provided for @channelNoPublicChannels.
-  ///
-  /// In en, this message translates to:
-  /// **'No public channels found'**
-  String get channelNoPublicChannels;
-
-  /// No description provided for @channelCreated.
-  ///
-  /// In en, this message translates to:
-  /// **'Channel created'**
-  String get channelCreated;
-
-  /// No description provided for @channelReply.
-  ///
-  /// In en, this message translates to:
-  /// **'Reply'**
-  String get channelReply;
-
-  /// No description provided for @channelCopy.
-  ///
-  /// In en, this message translates to:
-  /// **'Copy'**
-  String get channelCopy;
 
   /// No description provided for @groupsTitle.
   ///
@@ -1765,6 +1645,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{name} has been blocked'**
   String wallUserBlocked(String name);
+
+  /// No description provided for @wallSendContactRequest.
+  ///
+  /// In en, this message translates to:
+  /// **'Send Contact Request'**
+  String get wallSendContactRequest;
+
+  /// No description provided for @wallContactRequestSent.
+  ///
+  /// In en, this message translates to:
+  /// **'Contact request sent to {name}'**
+  String wallContactRequestSent(String name);
+
+  /// No description provided for @wallContactRequestMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Message (optional)'**
+  String get wallContactRequestMessage;
+
+  /// No description provided for @wallUnfriend.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove from Contacts'**
+  String get wallUnfriend;
+
+  /// No description provided for @wallUnfriendConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove {name} from your contacts?'**
+  String wallUnfriendConfirm(String name);
+
+  /// No description provided for @wallUnfriended.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} removed from contacts'**
+  String wallUnfriended(String name);
+
+  /// No description provided for @wallFollow.
+  ///
+  /// In en, this message translates to:
+  /// **'Follow'**
+  String get wallFollow;
+
+  /// No description provided for @wallUnfollow.
+  ///
+  /// In en, this message translates to:
+  /// **'Unfollow'**
+  String get wallUnfollow;
+
+  /// No description provided for @wallFollowed.
+  ///
+  /// In en, this message translates to:
+  /// **'Now following {name}'**
+  String wallFollowed(String name);
+
+  /// No description provided for @wallUnfollowed.
+  ///
+  /// In en, this message translates to:
+  /// **'Unfollowed {name}'**
+  String wallUnfollowed(String name);
 
   /// No description provided for @wallTip.
   ///

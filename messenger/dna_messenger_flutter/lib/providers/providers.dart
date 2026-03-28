@@ -18,5 +18,5 @@ export 'sync_settings_provider.dart';
 export 'wallet_settings_provider.dart'; // v0.6.37: Hide zero balance toggle
 export 'name_resolver_provider.dart'; // v0.6.94: Fingerprint → name resolution
 export 'wall_provider.dart'; // v0.6.135: Personal wall posts
-export 'channel_provider.dart'; // Channels: RSS-like channel system
+
 export 'locale_provider.dart'; // i18n: Language selection

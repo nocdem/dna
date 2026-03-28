@@ -27,7 +27,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get navChats => '聊天';
 
   @override
-  String get navChannels => '频道';
+  String get navWallet => '钱包';
 
   @override
   String get navMore => '更多';
@@ -279,66 +279,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get messageMenuDelete => '删除';
-
-  @override
-  String get channelsTitle => '频道';
-
-  @override
-  String get channelsEmpty => '暂无频道';
-
-  @override
-  String get channelsCreateOrDiscover => '创建或发现频道';
-
-  @override
-  String get channelsCreate => '创建频道';
-
-  @override
-  String get channelsDiscover => '发现频道';
-
-  @override
-  String get channelName => '频道名称';
-
-  @override
-  String get channelDescription => '描述';
-
-  @override
-  String get channelListPublicly => '公开列出';
-
-  @override
-  String get channelListPubliclyHint => '允许他人发现此频道';
-
-  @override
-  String get channelSubscribe => '订阅';
-
-  @override
-  String get channelSubscribed => '已订阅';
-
-  @override
-  String get channelUnsubscribe => '取消订阅';
-
-  @override
-  String get channelWritePost => '写一篇帖子...';
-
-  @override
-  String get channelNoPosts => '暂无帖子';
-
-  @override
-  String get channelLoadOlderPosts => '加载更早的帖子';
-
-  @override
-  String get channelSearchChannels => '搜索频道...';
-
-  @override
-  String get channelNoPublicChannels => '未找到公开频道';
-
-  @override
-  String get channelCreated => '频道已创建';
-
-  @override
-  String get channelReply => '回复';
-
-  @override
-  String get channelCopy => '复制';
 
   @override
   String get groupsTitle => '群组';
@@ -879,6 +819,46 @@ class AppLocalizationsZh extends AppLocalizations {
   @override
   String wallUserBlocked(String name) {
     return '$name has been blocked';
+  }
+
+  @override
+  String get wallSendContactRequest => 'Send Contact Request';
+
+  @override
+  String wallContactRequestSent(String name) {
+    return 'Contact request sent to $name';
+  }
+
+  @override
+  String get wallContactRequestMessage => 'Message (optional)';
+
+  @override
+  String get wallUnfriend => 'Remove from Contacts';
+
+  @override
+  String wallUnfriendConfirm(String name) {
+    return 'Remove $name from your contacts?';
+  }
+
+  @override
+  String wallUnfriended(String name) {
+    return '$name removed from contacts';
+  }
+
+  @override
+  String get wallFollow => 'Follow';
+
+  @override
+  String get wallUnfollow => 'Unfollow';
+
+  @override
+  String wallFollowed(String name) {
+    return 'Now following $name';
+  }
+
+  @override
+  String wallUnfollowed(String name) {
+    return 'Unfollowed $name';
   }
 
   @override

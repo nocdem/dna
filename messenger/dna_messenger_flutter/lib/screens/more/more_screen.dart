@@ -8,7 +8,6 @@ import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart' as engine show UserProfile;
 import '../../platform/platform_handler.dart';
 import '../../providers/providers.dart' hide UserProfile;
-import '../wallet/wallet_screen.dart';
 import '../qr/qr_scanner_screen.dart';
 import '../wallet/address_book_screen.dart';
 import '../settings/starred_messages_screen.dart';
@@ -35,14 +34,6 @@ class MoreScreen extends ConsumerWidget {
 
     // Build grid items
     final gridItems = <DnaMoreGridItem>[
-      DnaMoreGridItem(
-        icon: FontAwesomeIcons.wallet,
-        label: AppLocalizations.of(context).moreWallet,
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const WalletScreen()),
-        ),
-      ),
       if (supportsCamera)
         DnaMoreGridItem(
           icon: FontAwesomeIcons.qrcode,

@@ -7,10 +7,10 @@ import '../l10n/app_localizations.dart';
 import '../providers/providers.dart';
 import 'wall/wall_timeline_screen.dart';
 import 'messages/messages_screen.dart';
-import 'channels/channel_list_screen.dart';
+import 'wallet/wallet_screen.dart';
 import 'more/more_screen.dart';
 
-/// Current tab index: 0=Home, 1=Chats, 2=Channels, 3=More
+/// Current tab index: 0=Home, 1=Chats, 2=Wallet, 3=More
 final currentTabProvider = StateProvider<int>((ref) => 0);
 
 /// v0.3.0: Single-user model - HomeScreen always shows main navigation
@@ -42,7 +42,7 @@ class _MainNavigation extends ConsumerWidget {
         children: const [
           WallTimelineScreen(),   // 0: Home
           MessagesScreen(),       // 1: Chats
-          ChannelListScreen(),    // 2: Channels
+          WalletScreen(),         // 2: Wallet
           MoreScreen(),           // 3: More
         ],
       ),
@@ -62,9 +62,9 @@ class _MainNavigation extends ConsumerWidget {
             badgeCount: totalMsgUnread,
           ),
           DnaBottomBarItem(
-            icon: FontAwesomeIcons.hashtag,
-            activeIcon: FontAwesomeIcons.hashtag,
-            label: AppLocalizations.of(context).navChannels,
+            icon: FontAwesomeIcons.wallet,
+            activeIcon: FontAwesomeIcons.wallet,
+            label: AppLocalizations.of(context).navWallet,
           ),
           DnaBottomBarItem(
             icon: FontAwesomeIcons.ellipsis,

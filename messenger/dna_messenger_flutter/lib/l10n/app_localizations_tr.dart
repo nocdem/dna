@@ -28,7 +28,7 @@ class AppLocalizationsTr extends AppLocalizations {
   String get navChats => 'Sohbetler';
 
   @override
-  String get navChannels => 'Kanallar';
+  String get navWallet => 'Cüzdan';
 
   @override
   String get navMore => 'Diğer';
@@ -281,67 +281,6 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get messageMenuDelete => 'Sil';
-
-  @override
-  String get channelsTitle => 'Kanallar';
-
-  @override
-  String get channelsEmpty => 'Henüz kanal yok';
-
-  @override
-  String get channelsCreateOrDiscover => 'Kanal oluşturun veya keşfedin';
-
-  @override
-  String get channelsCreate => 'Kanal Oluştur';
-
-  @override
-  String get channelsDiscover => 'Kanalları Keşfet';
-
-  @override
-  String get channelName => 'Kanal Adı';
-
-  @override
-  String get channelDescription => 'Açıklama';
-
-  @override
-  String get channelListPublicly => 'Herkese açık listele';
-
-  @override
-  String get channelListPubliclyHint =>
-      'Başkalarının bu kanalı keşfetmesine izin ver';
-
-  @override
-  String get channelSubscribe => 'Abone Ol';
-
-  @override
-  String get channelSubscribed => 'Abone Olundu';
-
-  @override
-  String get channelUnsubscribe => 'Abonelikten Çık';
-
-  @override
-  String get channelWritePost => 'Bir gönderi yazın...';
-
-  @override
-  String get channelNoPosts => 'Henüz gönderi yok';
-
-  @override
-  String get channelLoadOlderPosts => 'Eski gönderileri yükle';
-
-  @override
-  String get channelSearchChannels => 'Kanal ara...';
-
-  @override
-  String get channelNoPublicChannels => 'Herkese açık kanal bulunamadı';
-
-  @override
-  String get channelCreated => 'Kanal oluşturuldu';
-
-  @override
-  String get channelReply => 'Yanıtla';
-
-  @override
-  String get channelCopy => 'Kopyala';
 
   @override
   String get groupsTitle => 'Gruplar';
@@ -903,6 +842,46 @@ class AppLocalizationsTr extends AppLocalizations {
   @override
   String wallUserBlocked(String name) {
     return '$name engellendi';
+  }
+
+  @override
+  String get wallSendContactRequest => 'Kişi İsteği Gönder';
+
+  @override
+  String wallContactRequestSent(String name) {
+    return '$name kişisine istek gönderildi';
+  }
+
+  @override
+  String get wallContactRequestMessage => 'Mesaj (isteğe bağlı)';
+
+  @override
+  String get wallUnfriend => 'Kişilerden Çıkar';
+
+  @override
+  String wallUnfriendConfirm(String name) {
+    return '$name kişilerinizden çıkarılsın mı?';
+  }
+
+  @override
+  String wallUnfriended(String name) {
+    return '$name kişilerden çıkarıldı';
+  }
+
+  @override
+  String get wallFollow => 'Takip Et';
+
+  @override
+  String get wallUnfollow => 'Takibi Bırak';
+
+  @override
+  String wallFollowed(String name) {
+    return '$name takip ediliyor';
+  }
+
+  @override
+  String wallUnfollowed(String name) {
+    return '$name takipten çıkarıldı';
   }
 
   @override

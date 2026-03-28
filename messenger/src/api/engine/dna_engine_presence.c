@@ -169,7 +169,9 @@ static void* presence_heartbeat_thread(void *arg) {
                 day_rotation_tick = 0;
                 dna_engine_check_group_day_rotation(engine);
                 dna_engine_check_outbox_day_rotation(engine);
+#ifdef DNA_CHANNELS_ENABLED
                 dna_engine_check_channel_day_rotation(engine);
+#endif
             }
         } else {
             /* BACKGROUND: TCP reading handled by nodus read thread.

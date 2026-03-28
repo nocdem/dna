@@ -229,7 +229,9 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
     dna_engine_cancel_all_outbox_listeners(engine);
     dna_engine_cancel_contact_request_listener(engine);
     dna_engine_cancel_all_wall_listeners(engine);
+#ifdef DNA_CHANNELS_ENABLED
     dna_engine_cancel_all_channel_listeners(engine);
+#endif
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
@@ -238,9 +240,11 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
+#ifdef DNA_CHANNELS_ENABLED
     /* Start channel post listeners for all subscribed channels */
     int channel_count = dna_engine_listen_all_channels(engine);
     QGP_LOG_INFO(LOG_TAG, "[LISTEN] Background thread: started %d channel listeners", channel_count);
+#endif
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
@@ -480,6 +484,7 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
+#ifdef DNA_CHANNELS_ENABLED
     /* 5. Subscribe all channels on TCP 4003 for push notifications.
      * Previously in dna_dht_status_callback but moved here because DHT connects
      * before channel_subscriptions DB is initialized (race condition). */
@@ -509,6 +514,7 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
             QGP_LOG_INFO(LOG_TAG, "[RETRY] Subscribed %d channel(s) on TCP 4003 for push", sub_count);
         }
     }
+#endif
 
     /* v0.9.17: Wallet file creation removed — seed-based derivation only */
 
@@ -523,6 +529,7 @@ cleanup:
     return NULL;
 }
 
+#ifdef DNA_CHANNELS_ENABLED
 /**
  * Channel push post callback - fires DNA_EVENT_CHANNEL_NEW_POST when a post
  * arrives via TCP 4003 push notification.
@@ -575,6 +582,7 @@ static void dna_channel_push_callback(const uint8_t channel_uuid[16],
     dna_group_channel_handle_push(channel_uuid, post, user_data);
 
 }
+#endif /* DNA_CHANNELS_ENABLED */
 
 /**
  * DHT status change callback - dispatches DHT_CONNECTED/DHT_DISCONNECTED events
@@ -603,12 +611,14 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
         QGP_LOG_WARN(LOG_TAG, "DHT connected (bootstrap complete, ready for operations)");
         event.type = DNA_EVENT_DHT_CONNECTED;
 
+#ifdef DNA_CHANNELS_ENABLED
         /* Register channel push callback so TCP 4003 notifications fire events */
         nodus_ops_ch_set_post_callback(dna_channel_push_callback, NULL);
 
         /* Channel TCP 4003 subscribe moved to stabilization_retry_thread (step 5)
          * to avoid race condition: DHT connects before channel_subscriptions DB
          * is initialized, so channel_subscriptions_db_get_all() returns 0 subs. */
+#endif
 
         /* Prefetch profiles for local identities (for identity selection screen) */
         if (engine->data_dir) {
@@ -1368,10 +1378,12 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->wall_listener_count = 0;
     memset(engine->wall_listeners, 0, sizeof(engine->wall_listeners));
 
+#ifdef DNA_CHANNELS_ENABLED
     /* Initialize channel listeners */
     pthread_mutex_init(&engine->channel_listeners_mutex, NULL);
     engine->channel_listener_count = 0;
     memset(engine->channel_listeners, 0, sizeof(engine->channel_listeners));
+#endif
 
     /* Initialize group outbox listeners */
     pthread_mutex_init(&engine->group_listen_mutex, NULL);
@@ -1405,8 +1417,10 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Initialize global wall cache (for instant wall rendering) */
     wall_cache_init();
 
+#ifdef DNA_CHANNELS_ENABLED
     /* Initialize global channel cache (for instant channel rendering) */
     channel_cache_init();
+#endif
 
     /* Initialize global profile cache + manager (for profile prefetching)
      * MUST be before status callback registration - callback triggers prefetch */
@@ -1698,9 +1712,11 @@ void dna_engine_destroy(dna_engine_t *engine) {
     dna_engine_cancel_all_wall_listeners(engine);
     pthread_mutex_destroy(&engine->wall_listeners_mutex);
 
+#ifdef DNA_CHANNELS_ENABLED
     /* Cancel all channel listeners */
     dna_engine_cancel_all_channel_listeners(engine);
     pthread_mutex_destroy(&engine->channel_listeners_mutex);
+#endif
 
 
     /* Unsubscribe from all groups */

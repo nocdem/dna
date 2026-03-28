@@ -1170,6 +1170,7 @@ int dna_engine_create_identity_sync(
     keyserver_cache_put_name(fingerprint_out, name, 0);
     QGP_LOG_INFO(LOG_TAG, "Identity created and registered: %s -> %.16s...", name, fingerprint_out);
 
+#ifdef DNA_CHANNELS_ENABLED
     /* Step 6: Auto-subscribe to default channels */
     if (channel_subscriptions_db_init() == 0) {
         for (int i = 0; i < DNA_DEFAULT_CHANNEL_COUNT; i++) {
@@ -1179,6 +1180,7 @@ int dna_engine_create_identity_sync(
             }
         }
     }
+#endif
 
     return DNA_OK;
 }

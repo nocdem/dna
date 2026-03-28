@@ -629,17 +629,22 @@ int dna_engine_refresh_listeners(dna_engine_t *engine)
     dna_engine_cancel_all_outbox_listeners(engine);
     dna_engine_cancel_contact_request_listener(engine);
     dna_engine_cancel_all_wall_listeners(engine);
+#ifdef DNA_CHANNELS_ENABLED
     dna_engine_cancel_all_channel_listeners(engine);
+#endif
 
     /* Restart listeners for all contacts (includes contact request listener) */
     int count = dna_engine_listen_all_contacts(engine);
     QGP_LOG_INFO(LOG_TAG, "[REFRESH] Restarted %d contact listeners", count);
 
+#ifdef DNA_CHANNELS_ENABLED
     /* Restart channel listeners */
     int ch_count = dna_engine_listen_all_channels(engine);
     QGP_LOG_INFO(LOG_TAG, "[REFRESH] Restarted %d channel listeners", ch_count);
-
     return count + ch_count;
+#else
+    return count;
+#endif
 }
 
 /* ============================================================================

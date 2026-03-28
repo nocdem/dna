@@ -39,8 +39,8 @@ DNA Connect uses Flutter for cross-platform UI. Flutter was chosen for:
 │  │   - Navigation: bottom bar, app bar, more menu             ││
 │  │   - Inputs: text field, search bar, switch                 ││
 │  ├─────────────────────────────────────────────────────────────┤│
-│  │   Screens (home, messages, channels, more, wallet, settings)││
-│  │   Navigation: Bottom tabs (Home, Messages, Channels, More) ││
+│  │   Screens (home, messages, wallet, more, settings)          ││
+│  │   Navigation: Bottom tabs (Home, Messages, Wallet, More)   ││
 │  └─────────────────────────────────────────────────────────────┘│
 │                              │                                   │
 │                    Riverpod Providers                            │
@@ -96,7 +96,6 @@ dna_messenger_flutter/
 │   │   ├── theme_provider.dart
 │   │   ├── event_handler.dart      # ✅ Real-time event handling + local notifications
 │   │   ├── background_tasks_provider.dart  # ✅ DHT offline message polling
-│   │   ├── channel_provider.dart    # ✅ Channel subscriptions, posts, discovery
 │   │   └── wall_provider.dart      # ✅ Wall: WallFeedItem model, batch-fetch, image cache (v0.7.0+, refactored v1.0.0-rc70)
 │   ├── screens/                # ✅ UI screens
 │   │   ├── identity/identity_selection_screen.dart  # ✅ BIP39 integrated
@@ -104,12 +103,8 @@ dna_messenger_flutter/
 │   │   ├── chat/chat_screen.dart   # ✅ Selectable text, status icons, view profile
 │   │   ├── chat/contact_profile_dialog.dart  # ✅ View contact's DHT profile
 │   │   ├── groups/groups_screen.dart   # ✅ + GroupChatScreen
-│   │   ├── wallet/wallet_screen.dart   # ✅ Send dialog
+│   │   ├── wallet/wallet_screen.dart   # ✅ Send dialog (now in bottom nav)
 │   │   ├── settings/settings_screen.dart  # ✅ Name registration
-│   │   ├── channels/channel_list_screen.dart      # ✅ Lists subscribed channels
-│   │   ├── channels/channel_detail_screen.dart    # ✅ Shows posts in a channel
-│   │   ├── channels/create_channel_screen.dart    # ✅ Create new channel form
-│   │   ├── channels/discover_channels_screen.dart # ✅ Discover and subscribe to channels
 │   │   ├── wall/wall_timeline_screen.dart  # ✅ Home tab (wall timeline + image attach)
 │   │   ├── wall/wall_post_detail_screen.dart  # ✅ Post detail with threaded comments
 │   │   ├── messages/messages_screen.dart   # ✅ Messages tab (unified chats + groups)
@@ -461,34 +456,15 @@ Future<List<WallLike>> wallLike(String postUuid)
 
 ## Recent UI Changes (2025-12-06)
 
-**Channels (RSS-like):**
-- Named channels (UUID-based) with flat text posts, no threading
-- Open posting: anyone can post to any channel
-- Day-bucket discovery: discover channels by scanning recent days
-- 7 default channels: General, Technology, Help, Announcements, Trading, Off Topic, Cpunk
-- Channel subscriptions with DHT sync for multi-device
-- Files: `channel_list_screen.dart`, `channel_detail_screen.dart`, `create_channel_screen.dart`, `discover_channels_screen.dart`, `channel_provider.dart`
-
-**Channel Post Daily Bucket Pagination (v0.7.5+):**
-
-Channel posts are stored in daily DHT buckets. The `ChannelPostsNotifier` supports incremental loading:
-
-- `_daysBack` state: tracks how many days of posts are currently loaded (starts at 3)
-- `canLoadMore` getter: returns `true` if `_daysBack < 30` (max)
-- `loadMore()` method: increments `_daysBack` by 3 and re-fetches posts from DHT
-- `channelGetPosts(uuid, daysBack: N)` FFI call passes `days_back` parameter to C engine
-
-UI in `ChannelDetailScreen`:
-- "Load older posts" button appears at bottom of post list when `canLoadMore` is true
-- Button triggers `ref.read(channelPostsProvider(uuid).notifier).loadMore()`
-- Shows loading indicator while fetching, then appends older posts to the list
+**Channels:** DISABLED (v0.9.131+). C engine code preserved behind `DNA_CHANNELS_ENABLED` guard.
+To re-enable: define `DNA_CHANNELS_ENABLED` in CMake, restore Flutter channel screens/providers/model.
 
 **Navigation:**
-- Bottom tab navigation with 4 tabs: **[Home] [Messages] [Channels] [More]**
+- Bottom tab navigation with 4 tabs: **[Home] [Messages] [Wallet] [More]**
 - **Home** tab: `WallTimelineScreen` — contacts' wall posts timeline with create/delete
 - **Messages** tab: `MessagesScreen` — unified view with [All] [Chats] [Groups] filter chips
-- **Channels** tab: `ChannelListScreen` — subscribed channels with unread indicators
-- **More** tab: `MoreScreen` — wallet, settings, contacts management (unchanged)
+- **Wallet** tab: `WalletScreen` — multi-chain wallet (moved from More menu)
+- **More** tab: `MoreScreen` — QR scanner, addresses, starred, contacts, settings
 - Home (wall timeline) is the default landing page (index 0)
 
 **Typography:**

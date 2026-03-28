@@ -27,7 +27,7 @@ class AppLocalizationsAr extends AppLocalizations {
   String get navChats => 'المحادثات';
 
   @override
-  String get navChannels => 'القنوات';
+  String get navWallet => 'المحفظة';
 
   @override
   String get navMore => 'المزيد';
@@ -280,66 +280,6 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get messageMenuDelete => 'حذف';
-
-  @override
-  String get channelsTitle => 'القنوات';
-
-  @override
-  String get channelsEmpty => 'لا توجد قنوات بعد';
-
-  @override
-  String get channelsCreateOrDiscover => 'أنشئ أو اكتشف قنوات';
-
-  @override
-  String get channelsCreate => 'إنشاء قناة';
-
-  @override
-  String get channelsDiscover => 'اكتشاف القنوات';
-
-  @override
-  String get channelName => 'اسم القناة';
-
-  @override
-  String get channelDescription => 'الوصف';
-
-  @override
-  String get channelListPublicly => 'إدراج علنيًا';
-
-  @override
-  String get channelListPubliclyHint => 'السماح للآخرين باكتشاف هذه القناة';
-
-  @override
-  String get channelSubscribe => 'اشتراك';
-
-  @override
-  String get channelSubscribed => 'مشترك';
-
-  @override
-  String get channelUnsubscribe => 'إلغاء الاشتراك';
-
-  @override
-  String get channelWritePost => 'اكتب منشورًا...';
-
-  @override
-  String get channelNoPosts => 'لا توجد منشورات بعد';
-
-  @override
-  String get channelLoadOlderPosts => 'تحميل منشورات أقدم';
-
-  @override
-  String get channelSearchChannels => 'بحث في القنوات...';
-
-  @override
-  String get channelNoPublicChannels => 'لم يتم العثور على قنوات عامة';
-
-  @override
-  String get channelCreated => 'تم إنشاء القناة';
-
-  @override
-  String get channelReply => 'رد';
-
-  @override
-  String get channelCopy => 'نسخ';
 
   @override
   String get groupsTitle => 'المجموعات';
@@ -893,6 +833,46 @@ class AppLocalizationsAr extends AppLocalizations {
   @override
   String wallUserBlocked(String name) {
     return '$name has been blocked';
+  }
+
+  @override
+  String get wallSendContactRequest => 'Send Contact Request';
+
+  @override
+  String wallContactRequestSent(String name) {
+    return 'Contact request sent to $name';
+  }
+
+  @override
+  String get wallContactRequestMessage => 'Message (optional)';
+
+  @override
+  String get wallUnfriend => 'Remove from Contacts';
+
+  @override
+  String wallUnfriendConfirm(String name) {
+    return 'Remove $name from your contacts?';
+  }
+
+  @override
+  String wallUnfriended(String name) {
+    return '$name removed from contacts';
+  }
+
+  @override
+  String get wallFollow => 'Follow';
+
+  @override
+  String get wallUnfollow => 'Unfollow';
+
+  @override
+  String wallFollowed(String name) {
+    return 'Now following $name';
+  }
+
+  @override
+  String wallUnfollowed(String name) {
+    return 'Unfollowed $name';
   }
 
   @override

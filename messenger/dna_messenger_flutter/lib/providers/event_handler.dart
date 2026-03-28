@@ -14,7 +14,6 @@ import 'identity_provider.dart';
 import 'identity_profile_cache_provider.dart';
 import 'contact_profile_cache_provider.dart';
 import 'wall_provider.dart';
-import 'channel_provider.dart';
 
 /// Connection state for DHT
 enum DhtConnectionState { disconnected, connecting, connected }
@@ -322,15 +321,7 @@ class EventHandler {
         _ref.read(wallTimelineProvider.notifier).refreshFromCache();
         break;
 
-      case ChannelNewPostEvent(channelUuid: final uuid):
-        logPrint('[DART-HANDLER] ChannelNewPostEvent: channel=$uuid');
-        _ref.invalidate(channelPostsProvider(uuid));
-        break;
-
-      case ChannelSubsSyncedEvent(subscriptionsSynced: final count):
-        logPrint('[DART-HANDLER] ChannelSubsSyncedEvent: subscriptions synced from DHT (count=$count)');
-        _ref.invalidate(channelSubscriptionsProvider);
-        break;
+      // Channels disabled — events ignored
 
       case ErrorEvent(message: final errorMsg):
         // Store error for UI to display
