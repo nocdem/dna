@@ -94,7 +94,8 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   bool _autoLoadStarted = false;
   bool _autoLoadComplete = false;
   bool _hasIdentity = false;
-  bool _registrationIncomplete = true;
+  bool _registrationIncomplete = false;
+  bool _nameCheckDone = false;
   bool _updateDialogShown = false;
 
   @override
@@ -135,17 +136,29 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           if (mounted) {
             ref.read(identityProfileCacheProvider.notifier).updateIdentity(fp, registeredName, '');
             setState(() {
+              _nameCheckDone = true;
               _registrationIncomplete = false;
             });
           }
         } else {
           // No name in DHT — genuinely incomplete registration
-          // _registrationIncomplete stays true (default) — registration screen shown
           engine.debugLog('STARTUP', 'Backfill: no registered name in DHT — showing registration');
+          if (mounted) {
+            setState(() {
+              _nameCheckDone = true;
+              _registrationIncomplete = true;
+            });
+          }
         }
       } catch (e) {
-        // DHT lookup failed — keep _registrationIncomplete true to force registration
+        // DHT lookup failed — force registration to be safe
         engine.debugLog('STARTUP', 'Backfill: DHT lookup failed: $e — showing registration');
+        if (mounted) {
+          setState(() {
+            _nameCheckDone = true;
+            _registrationIncomplete = true;
+          });
+        }
       }
     });
   }
@@ -192,6 +205,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
             if (mounted) {
               ref.read(identityProfileCacheProvider.notifier).updateIdentity(myFp, '', '');
               setState(() {
+                _nameCheckDone = true;
                 _registrationIncomplete = true;
               });
             }
@@ -251,10 +265,11 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           if (fp != null) {
             final cached = await CacheDatabase.instance.getIdentity(fp);
             if (cached != null && cached.registeredName.isNotEmpty) {
-              // Registered name found in local cache — allow HomeScreen
+              // Registered name found in local cache — allow HomeScreen immediately
               engine.debugLog('STARTUP', 'Cached registeredName found for ${fp.substring(0, 16)}...: ${cached.registeredName}');
               if (mounted) {
                 setState(() {
+                  _nameCheckDone = true;
                   _registrationIncomplete = false;
                 });
               }
@@ -262,7 +277,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
               _ensureNameInDht(engine, cached.registeredName);
             } else {
               // No registered name cached — backfill from DHT.
-              // _registrationIncomplete stays true, blocking HomeScreen until resolved.
+              // Don't set _nameCheckDone yet — wait for DHT result.
               engine.debugLog('STARTUP', 'No cached registeredName for ${fp.substring(0, 16)}... — backfilling from DHT');
               _backfillNameFromDht(engine, fp);
             }
@@ -341,8 +356,8 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           final cached = profileCache[currentFingerprint];
           final hasName = cached != null && cached.registeredName.isNotEmpty;
 
-          if (!hasName && _registrationIncomplete) {
-            // Keys exist but no registered name — send back to registration
+          if (_nameCheckDone && !hasName && _registrationIncomplete) {
+            // Name check completed and confirmed no registered name — send to registration
             return IdentitySelectionScreen(resumeFingerprint: currentFingerprint);
           }
 
