@@ -173,7 +173,8 @@ void dna_engine_cancel_ack_listener(dna_engine_t *engine, const char *contact_fi
 void dna_engine_cancel_all_ack_listeners(dna_engine_t *engine);
 size_t dna_engine_listen_outbox(dna_engine_t *engine, const char *contact_fingerprint);
 size_t dna_engine_start_ack_listener(dna_engine_t *engine, const char *contact_fingerprint);
-void dna_engine_cancel_all_wall_listeners(dna_engine_t *engine);
+void dna_engine_start_wall_poll(dna_engine_t *engine);
+void dna_engine_stop_wall_poll(dna_engine_t *engine);
 void dna_engine_cancel_all_channel_listeners(dna_engine_t *engine);
 int dna_engine_listen_all_channels(dna_engine_t *engine);
 
@@ -228,7 +229,6 @@ static void *dna_engine_setup_listeners_thread(void *arg) {
      * engine-level arrays still show active=true, blocking new listener creation. */
     dna_engine_cancel_all_outbox_listeners(engine);
     dna_engine_cancel_contact_request_listener(engine);
-    dna_engine_cancel_all_wall_listeners(engine);
 #ifdef DNA_CHANNELS_ENABLED
     dna_engine_cancel_all_channel_listeners(engine);
 #endif
@@ -1350,10 +1350,8 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->ack_listener_count = 0;
     memset(engine->ack_listeners, 0, sizeof(engine->ack_listeners));
 
-    /* Initialize wall listeners */
-    pthread_mutex_init(&engine->wall_listeners_mutex, NULL);
-    engine->wall_listener_count = 0;
-    memset(engine->wall_listeners, 0, sizeof(engine->wall_listeners));
+    /* Initialize wall poll timer (v0.9.142+) */
+    engine->wall_poll_active = false;
 
 #ifdef DNA_CHANNELS_ENABLED
     /* Initialize channel listeners */
@@ -1685,9 +1683,8 @@ void dna_engine_destroy(dna_engine_t *engine) {
     dna_engine_cancel_all_ack_listeners(engine);
     pthread_mutex_destroy(&engine->ack_listeners_mutex);
 
-    /* Cancel all wall listeners */
-    dna_engine_cancel_all_wall_listeners(engine);
-    pthread_mutex_destroy(&engine->wall_listeners_mutex);
+    /* Stop wall poll timer (v0.9.142+) */
+    dna_engine_stop_wall_poll(engine);
 
 #ifdef DNA_CHANNELS_ENABLED
     /* Cancel all channel listeners */

@@ -21,6 +21,9 @@
 #include "engine_includes.h"
 #include "database/channel_subscriptions_db.h"
 
+/* Forward declaration — implemented in dna_engine_wall_poll.c */
+void dna_engine_start_wall_poll(dna_engine_t *engine);
+
 /* ============================================================================
  * IDENTITY TASK HANDLERS
  * ============================================================================ */
@@ -238,6 +241,11 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     engine->identity_loaded = true;
     engine->state = DNA_ENGINE_STATE_ACTIVE;
     QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, state=ACTIVE");
+
+    /* v0.9.142+: Start wall poll timer (replaces per-contact wall listeners) */
+    if (!minimal_mode) {
+        dna_engine_start_wall_poll(engine);
+    }
 
     /* v0.6.88+: All DHT operations moved to background stabilization thread
      * for instant startup. Identity load now only does local operations.

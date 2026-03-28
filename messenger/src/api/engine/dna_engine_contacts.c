@@ -235,10 +235,6 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
         /* Cancel ACK listener for this contact (v15) */
         dna_engine_cancel_ack_listener(engine, fp);
 
-        /* Cancel wall listener for this contact */
-        dna_engine_cancel_wall_listener(engine, fp);
-
-
         /* Delete all messages with this contact */
         if (engine->messenger) {
             int del_rc = messenger_delete_conversation_full(engine->messenger, fp);
@@ -635,8 +631,6 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
     /* Start listeners for new contact (outbox, ACK, wall) */
     dna_engine_listen_outbox(engine, task->params.contact_request.fingerprint);
     dna_engine_start_ack_listener(engine, task->params.contact_request.fingerprint);
-    dna_engine_start_wall_listener(engine, task->params.contact_request.fingerprint);
-
 
     /* Read salt from the approved request (stored during receive) */
     uint8_t approved_salt[DHT_CONTACT_SALT_SIZE];
