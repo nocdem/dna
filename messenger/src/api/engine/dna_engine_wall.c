@@ -175,8 +175,9 @@ void dna_handle_wall_delete(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    /* Remove from local cache */
+    /* Remove from local cache and invalidate meta so next load re-fetches */
     wall_cache_delete_post(task->params.wall_delete.uuid);
+    wall_cache_delete_meta(engine->fingerprint);
 
     QGP_LOG_INFO(LOG_TAG, "Wall post deleted: %s", task->params.wall_delete.uuid);
     task->callback.completion(task->request_id, DNA_OK, task->user_data);
@@ -185,8 +186,8 @@ void dna_handle_wall_delete(dna_engine_t *engine, dna_task_t *task) {
 void dna_handle_wall_load(dna_engine_t *engine, dna_task_t *task) {
     const char *fp = task->params.wall_load.fingerprint;
 
-    /* Check cache first */
-    if (!wall_cache_is_stale(fp)) {
+    /* Check cache first (use wall meta staleness for daily buckets) */
+    if (!wall_cache_is_stale_wall_meta(fp)) {
         dna_wall_post_t *cached_posts = NULL;
         size_t cached_count = 0;
         int cache_ret = wall_cache_load(fp, &cached_posts, &cached_count);
