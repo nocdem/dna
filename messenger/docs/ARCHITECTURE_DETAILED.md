@@ -641,6 +641,36 @@ EU-2: 164.68.116.180:4000
 int dht_context_bootstrap_runtime(dht_context_t *ctx, const char *ip, uint16_t port);
 ```
 
+### 5.5 Media Storage (v0.9.147+)
+
+**Nodus Tier 2 Commands:**
+| Command | Description |
+|---------|-------------|
+| `m_put` | Upload media (metadata + chunked data in one request) |
+| `m_meta` | Get media metadata by content hash |
+| `m_chunk` | Get a single chunk by content hash + index |
+
+**Nodus Server Storage (SQLite):**
+| Table | Columns | Purpose |
+|-------|---------|---------|
+| `media_meta` | content_hash, media_type, size, chunk_count, encrypted, ttl, created_at | Media metadata |
+| `media_chunks` | content_hash, chunk_index, data, size | Chunk binary data |
+
+**Client SDK Functions (`nodus/src/client/nodus_client.c`):**
+| Function | Description |
+|----------|-------------|
+| `nodus_client_media_put(client, hash, data, len, type, encrypted, ttl)` | Upload media |
+| `nodus_client_media_get_meta(client, hash, meta_out)` | Get metadata |
+| `nodus_client_media_get_chunk(client, hash, index, data_out, len_out)` | Get chunk |
+| `nodus_client_media_exists(client, hash, exists_out)` | Check existence |
+
+**Messenger Wrappers (`dht/shared/nodus_ops.c`):**
+| Function | Description |
+|----------|-------------|
+| `nodus_ops_media_put(hash, data, len, type, encrypted, ttl)` | Upload via singleton |
+| `nodus_ops_media_get(hash, data_out, len_out)` | Download (reassembles chunks) |
+| `nodus_ops_media_exists(hash, exists_out)` | Check existence via singleton |
+
 ---
 
 ## 6. P2P Transport Layer

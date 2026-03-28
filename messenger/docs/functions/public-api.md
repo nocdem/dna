@@ -252,14 +252,30 @@ One-directional follow system. No approval needed, private to owner.
 - DHT key: `SHA3-512(identity + ":followlist")`
 - BIP39 seed recovery restores follow list from DHT
 
-## 1.13 Backward Compatibility
+## 1.13 Media Storage (v0.9.147+)
+
+| Function | Description |
+|----------|-------------|
+| `dna_request_id_t dna_engine_media_upload(engine, data, data_len, content_hash, media_type, encrypted, ttl, callback, user_data)` | Upload media to DHT. Computes SHA3-512 content hash, chunks (4MB), stores via Nodus. Max 64MB. |
+| `dna_request_id_t dna_engine_media_download(engine, content_hash, callback, user_data)` | Download media from DHT. Reassembles chunks into contiguous buffer. |
+| `dna_request_id_t dna_engine_media_exists(engine, content_hash, callback, user_data)` | Check if media exists on DHT (deduplication check). |
+
+**Callback Types:**
+
+| Type | Signature |
+|------|-----------|
+| `dna_media_upload_cb` | `void (*)(dna_request_id_t req_id, int error, const uint8_t *content_hash, void *user_data)` |
+| `dna_media_download_cb` | `void (*)(dna_request_id_t req_id, int error, const uint8_t *data, size_t data_len, void *user_data)` |
+| `dna_media_exists_cb` | `void (*)(dna_request_id_t req_id, int error, bool exists, void *user_data)` |
+
+## 1.14 Backward Compatibility
 
 | Function | Description |
 |----------|-------------|
 | `void* dna_engine_get_messenger_context(dna_engine_t*)` | Get underlying messenger context |
 | `int dna_engine_is_dht_connected(dna_engine_t*)` | Check if DHT is connected |
 
-## 1.13 Log Configuration
+## 1.15 Log Configuration
 
 | Function | Description |
 |----------|-------------|
@@ -268,7 +284,7 @@ One-directional follow system. No approval needed, private to owner.
 | `const char* dna_engine_get_log_tags(void)` | Get log tags filter |
 | `int dna_engine_set_log_tags(const char *tags)` | Set log tags filter |
 
-## 1.14 Memory Management
+## 1.16 Memory Management
 
 | Function | Description |
 |----------|-------------|
@@ -292,7 +308,7 @@ One-directional follow system. No approval needed, private to owner.
 | `void dna_free_profile(dna_profile_t*)` | Free profile |
 | `void dna_free_addressbook_entries(dna_addressbook_entry_t*, int)` | Free address book entries array |
 
-## 1.15 Global Engine Access
+## 1.17 Global Engine Access
 
 **v0.6.0+:** Global engine functions are deprecated. Each caller (Flutter/Service) owns its own engine.
 
@@ -307,7 +323,7 @@ One-directional follow system. No approval needed, private to owner.
 |------|----------|-------------|
 | -117 | `DNA_ENGINE_ERROR_IDENTITY_LOCKED` | Identity lock held by another process |
 
-## 1.16 Debug Log API
+## 1.18 Debug Log API
 
 | Function | Description |
 |----------|-------------|
@@ -320,7 +336,7 @@ One-directional follow system. No approval needed, private to owner.
 | `void dna_engine_debug_log_message_level(const char*, const char*, int)` | Add log message with level (0=DEBUG,1=INFO,2=WARN,3=ERROR) |
 | `int dna_engine_debug_log_export(const char *filepath)` | Export debug logs to file |
 
-## 1.17 Message Backup/Restore
+## 1.19 Message Backup/Restore
 
 | Function | Description |
 |----------|-------------|
@@ -328,7 +344,7 @@ One-directional follow system. No approval needed, private to owner.
 | `dna_request_id_t dna_engine_restore_messages(...)` | Restore messages from DHT |
 | `dna_request_id_t dna_engine_check_backup_exists(...)` | Check if backup exists for identity |
 
-## 1.18 Version Check API
+## 1.20 Version Check API
 
 | Function | Description |
 |----------|-------------|
@@ -339,7 +355,7 @@ One-directional follow system. No approval needed, private to owner.
 - `dna_version_info_t` - Version info from DHT (library/app/nodus current+minimum, publisher, timestamp)
 - `dna_version_check_result_t` - Check result with update_available flags + below_minimum flags (`library_below_minimum`, `app_below_minimum` — blocks app when true)
 
-## 1.19 Signing API (for QR Auth)
+## 1.21 Signing API (for QR Auth)
 
 | Function | Description |
 |----------|-------------|
@@ -355,7 +371,7 @@ One-directional follow system. No approval needed, private to owner.
 
 **Protocol Documentation:** See [QR_AUTH.md](../QR_AUTH.md) for full QR authentication protocol specification (v1/v2/v3), payload formats, RP binding, and canonical signing.
 
-## 1.20 Address Book (Wallet Addresses)
+## 1.22 Address Book (Wallet Addresses)
 
 | Function | Description |
 |----------|-------------|

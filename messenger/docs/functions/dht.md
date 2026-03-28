@@ -569,6 +569,14 @@ Convenience wrappers around the Nodus singleton for DHT operations and presence.
 | `void nodus_ops_free_batch_result(nodus_ops_batch_result_t *results, int count)` | Free batch get results. |
 | `void nodus_ops_free_count_result(nodus_ops_count_result_t *results, int count)` | Free batch count results. |
 
+### 12.3 Media Operations (v0.9.147+)
+
+| Function | Description |
+|----------|-------------|
+| `int nodus_ops_media_put(const uint8_t content_hash[64], const uint8_t *data, size_t data_len, uint8_t media_type, bool encrypted, uint32_t ttl)` | Upload media to DHT. Chunks data (4MB max per chunk, 16 chunks max = 64MB). media_type: 0=image, 1=video, 2=audio. Returns 0 on success. |
+| `int nodus_ops_media_get(const uint8_t content_hash[64], uint8_t **data_out, size_t *data_len_out)` | Download media from DHT. Fetches metadata + all chunks, reassembles into contiguous buffer. Caller frees `*data_out`. Returns 0 on success. |
+| `int nodus_ops_media_exists(const uint8_t content_hash[64], bool *exists)` | Check if media exists on DHT (deduplication). Returns 0 on success. |
+
 ---
 
 ## 13. Salt Agreement (`dht/shared/dht_salt_agreement.h`)

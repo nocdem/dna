@@ -1938,7 +1938,63 @@ void dna_free_wall_comments(dna_wall_comment_info_t *comments, int count);
 
 ---
 
-## 5c. Channels (RSS-like Public Channels)
+## 5c. Media Storage (v0.9.147+)
+
+Upload, download, and check existence of media on the DHT (images, video, audio).
+
+### dna_engine_media_upload
+
+```c
+dna_request_id_t dna_engine_media_upload(
+    dna_engine_t *engine,
+    const uint8_t *data,
+    size_t data_len,
+    uint8_t content_hash[64],    // OUT: SHA3-512 hash
+    uint8_t media_type,          // 0=image, 1=video, 2=audio
+    bool encrypted,
+    uint32_t ttl,                // seconds (0 = default 7 days)
+    dna_media_upload_cb callback,
+    void *user_data
+);
+```
+
+Uploads media to DHT. Computes SHA3-512 content hash, chunks data (4MB chunks, max 16), stores via Nodus `m_put`.
+
+**Callback:** `void (*dna_media_upload_cb)(dna_request_id_t req_id, int error, const uint8_t *content_hash, void *user_data)`
+
+### dna_engine_media_download
+
+```c
+dna_request_id_t dna_engine_media_download(
+    dna_engine_t *engine,
+    const uint8_t *content_hash,
+    dna_media_download_cb callback,
+    void *user_data
+);
+```
+
+Downloads media from DHT. Fetches metadata, then all chunks, reassembles into contiguous buffer.
+
+**Callback:** `void (*dna_media_download_cb)(dna_request_id_t req_id, int error, const uint8_t *data, size_t data_len, void *user_data)`
+
+### dna_engine_media_exists
+
+```c
+dna_request_id_t dna_engine_media_exists(
+    dna_engine_t *engine,
+    const uint8_t *content_hash,
+    dna_media_exists_cb callback,
+    void *user_data
+);
+```
+
+Checks if media exists on DHT (deduplication check before upload).
+
+**Callback:** `void (*dna_media_exists_cb)(dna_request_id_t req_id, int error, bool exists, void *user_data)`
+
+---
+
+## 5d. Channels (RSS-like Public Channels)
 
 Named channels with flat text posts. Posts stored in daily DHT buckets for scalable retrieval.
 

@@ -432,6 +432,38 @@ Example for 1 recipient, 100-byte plaintext:
 | v0.07 | Added fingerprint (64 bytes) inside encrypted payload for identity privacy | `messages.c:155-160` |
 | v0.08 | Added encrypted timestamp (8 bytes) for replay protection | `messages.c:162-178` |
 
+### 3.6 Media Reference Format (v0.9.147+)
+
+Messages containing media use `media_ref` type in the plaintext payload (JSON):
+
+```json
+{
+  "type": "media_ref",
+  "content_hash": "<128-char hex SHA3-512>",
+  "media_type": 0,
+  "mime_type": "image/jpeg",
+  "size": 15000000,
+  "width": 1920,
+  "height": 1080,
+  "duration": 0,
+  "thumbnail": "<base64 ~10-20KB mini JPEG>",
+  "caption": "optional text",
+  "encryption_key": "<base64 AES-256 key>"
+}
+```
+
+**Fields:**
+- `media_type`: 0=image, 1=video, 2=audio
+- `thumbnail`: Sender-generated mini JPEG (~10-20KB), embedded in message for instant preview
+- `encryption_key`: AES-256-GCM key used to encrypt the media data before upload (present for DM/Group, absent for Wall)
+- `duration`: Seconds (video/audio only, 0 for images)
+
+**Encryption:**
+- **DM / Group**: Media encrypted with random AES-256-GCM key before upload. Key included in `encryption_key` field. The message itself is E2E encrypted (Kyber1024 for DM, GEK for groups), so the media key is protected in transit.
+- **Wall**: Media stored unencrypted on DHT (public). No `encryption_key` field.
+
+**Backward Compatibility:** The old `image_attachment` format (inline base64) is still supported for receiving. New messages use `media_ref`.
+
 ---
 
 ## 4. Encryption Process

@@ -1237,8 +1237,35 @@ ssh root@<IP> 'journalctl -u nodus -f'
 | **Group Outbox** | 7 days | `dna:group:<uuid>:out:<day>:<sender_fp>` | No | Per-sender, day buckets, chunked ZSTD |
 | Message Wall | 30 days | `SHA3-512(fingerprint:message_wall)` | Yes | DNA Board |
 | Bootstrap Registry | 7 days | `SHA3-512("dna:bootstrap:registry")` | Special | Self-healing |
+| **Media Metadata** | 7/30 days | `media:<content_hash>:meta` | No | DM/Group=7d, Wall=30d |
+| **Media Chunks** | 7/30 days | `media:<content_hash>:chunk_N` | No | DM/Group=7d, Wall=30d |
 
-### 8.1 Presence Data (Nodus-Native, v0.9.0+)
+### 8.1 Media Storage (v0.9.147+)
+
+Media (images, video, audio) is stored on the DHT as chunked binary data, deduplicated by content hash.
+
+**DHT Key Format:**
+- Metadata: `media:<content_hash>:meta` — stores media type, size, chunk count, encryption flag
+- Chunks: `media:<content_hash>:chunk_0`, `media:<content_hash>:chunk_1`, ... — raw binary data
+
+**Content Hash:** SHA3-512 of the raw (unencrypted) media data. Used as the deduplication key — identical files produce identical hashes and are stored only once.
+
+**Limits:**
+- Max file size: 64 MB
+- Chunk size: 4 MB
+- Max chunks: 16
+
+**Media Types:** image (0), video (1), audio (2)
+
+**TTLs:**
+- DM / Group media: 7 days (matches message TTL)
+- Wall media: 30 days (matches wall post TTL)
+
+**Nodus Tier 2 Commands:** `m_put` (upload), `m_meta` (get metadata), `m_chunk` (get chunk)
+
+**Nodus Server Storage:** `media_meta` and `media_chunks` SQLite tables.
+
+### 8.2 Presence Data (Nodus-Native, v0.9.0+)
 
 Presence is tracked natively by the Nodus server. Connected clients are registered server-side via `nodus_presence_add_local`/`nodus_presence_remove_local`. Presence is broadcast between Nodus nodes via the `p_sync` protocol.
 
@@ -1273,7 +1300,7 @@ int dna_engine_lookup_presence(
 // No Dart-side polling — C heartbeat handles everything (10s interval)
 ```
 
-### 8.2 Contact Requests
+### 8.3 Contact Requests
 
 ICQ-style mutual contact request system. Requests are stored in recipient's DHT inbox.
 

@@ -137,6 +137,14 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_wall_add_comment(dna_engine_t*, dna_task_t*)` | Handle wall add comment task (`TASK_WALL_ADD_COMMENT`, v0.7.0+) |
 | `void dna_handle_wall_get_comments(dna_engine_t*, dna_task_t*)` | Handle wall get comments task (`TASK_WALL_GET_COMMENTS`, v0.7.0+) |
 
+### Task Handlers - Media (v0.9.147+)
+
+| Function | Description |
+|----------|-------------|
+| `void dna_handle_media_upload(dna_engine_t*, dna_task_t*)` | Handle media upload (hash, chunk, store via Nodus m_put) |
+| `void dna_handle_media_download(dna_engine_t*, dna_task_t*)` | Handle media download (fetch meta + chunks, reassemble) |
+| `void dna_handle_media_exists(dna_engine_t*, dna_task_t*)` | Handle media existence check |
+
 ### Wall Poll (v0.9.142+ — replaces wall listeners)
 
 | Function | Description |
