@@ -758,24 +758,26 @@ class _WalletHeroCard extends ConsumerWidget {
 class _PortfolioBreakdownSheet extends ConsumerWidget {
   const _PortfolioBreakdownSheet();
 
+  // Official brand colors — maximum contrast, globally recognizable
   static const _tokenColors = <String, Color>{
-    'CPUNK': Color(0xFF00D4AA),
-    'CELL': Color(0xFF6B4CE6),
-    'ETH': Color(0xFF627EEA),
-    'SOL': Color(0xFF9945FF),
-    'TRX': Color(0xFFFF0013),
-    'USDT': Color(0xFF26A17B),
-    'USDC': Color(0xFF2775CA),
-    'KEL': Color(0xFFFF6B35),
-    'NYS': Color(0xFFE91E63),
-    'QEVM': Color(0xFF795548),
+    'CPUNK': Color(0xFF00E5A0),  // CPUNK vibrant cyan-green (brand)
+    'CELL': Color(0xFF7B3FE4),   // Cellframe purple (official)
+    'ETH': Color(0xFF627EEA),    // Ethereum blue (official)
+    'SOL': Color(0xFF14F195),    // Solana green (official brand)
+    'TRX': Color(0xFFEF0027),    // TRON red (official)
+    'USDT': Color(0xFF50AF95),   // Tether green (official)
+    'USDC': Color(0xFF2775CA),   // USD Coin blue (official)
+    'KEL': Color(0xFFFF8C42),    // KEL warm orange
+    'NYS': Color(0xFFE040FB),    // NYS magenta/purple
+    'QEVM': Color(0xFF4FC3F7),   // QEVM light blue
   };
 
+  // Chain brand colors — distinct from each other
   static const _chainColors = <String, Color>{
-    'cellframe': Color(0xFF6B4CE6),
-    'ethereum': Color(0xFF627EEA),
-    'solana': Color(0xFF9945FF),
-    'tron': Color(0xFFFF0013),
+    'cellframe': Color(0xFF7B3FE4),  // Cellframe purple
+    'ethereum': Color(0xFF627EEA),   // Ethereum blue
+    'solana': Color(0xFF14F195),     // Solana green
+    'tron': Color(0xFFEF0027),       // TRON red
   };
 
   static const _chainIcons = <String, String>{
@@ -898,14 +900,28 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
               if (sortedTokens.isNotEmpty) ...[
                 // Donut chart with total in center
                 SizedBox(
-                  height: 200,
+                  height: 220,
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
+                      // Subtle glow behind chart
+                      Container(
+                        width: 180, height: 180,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: DnaColors.gradientStart.withValues(alpha: 0.08),
+                              blurRadius: 40,
+                              spreadRadius: 10,
+                            ),
+                          ],
+                        ),
+                      ),
                       PieChart(
                         PieChartData(
-                          sectionsSpace: 3,
-                          centerSpaceRadius: 50,
+                          sectionsSpace: 2,
+                          centerSpaceRadius: 55,
                           startDegreeOffset: -90,
                           sections: sortedTokens.asMap().entries.map((entry) {
                             final e = entry.value;
@@ -913,21 +929,23 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
                             final color = _colorForToken(e.key);
                             return PieChartSectionData(
                               value: e.value,
-                              color: color,
-                              radius: 32,
+                              gradient: SweepGradient(
+                                colors: [color, color.withValues(alpha: 0.7)],
+                              ),
+                              radius: 36,
                               title: '',
-                              badgeWidget: pct >= 10 ? _PieBadge(
+                              badgeWidget: pct >= 8 ? _PieBadge(
                                 token: e.key,
                                 color: color,
                               ) : null,
-                              badgePositionPercentageOffset: 1.8,
+                              badgePositionPercentageOffset: 1.6,
                             );
                           }).toList(),
                         ),
-                        duration: const Duration(milliseconds: 600),
+                        duration: const Duration(milliseconds: 800),
                         curve: Curves.easeOutCubic,
                       ),
-                      // Center text
+                      // Center content
                       Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -941,7 +959,8 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
                           Text(
                             'tokens',
                             style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                              color: theme.colorScheme.onSurface.withValues(alpha: 0.4),
+                              fontSize: 11,
                             ),
                           ),
                         ],
@@ -1191,7 +1210,7 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-/// Pie chart badge — small token indicator outside the donut
+/// Pie chart badge — token icon floating outside the donut ring
 class _PieBadge extends StatelessWidget {
   final String token;
   final Color color;
@@ -1201,27 +1220,32 @@ class _PieBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final iconPath = getTokenIconPath(token);
     return Container(
-      width: 28, height: 28,
+      width: 32, height: 32,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: Theme.of(context).colorScheme.surface,
         shape: BoxShape.circle,
-        border: Border.all(color: color, width: 2),
+        border: Border.all(color: color, width: 2.5),
         boxShadow: [
           BoxShadow(
-            color: color.withValues(alpha: 0.3),
-            blurRadius: 6,
-            spreadRadius: 1,
+            color: color.withValues(alpha: 0.4),
+            blurRadius: 8,
+            spreadRadius: 2,
+          ),
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.15),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
       child: iconPath != null
           ? Padding(
-              padding: const EdgeInsets.all(4),
+              padding: const EdgeInsets.all(5),
               child: buildCryptoIcon(iconPath),
             )
           : Center(
               child: Text(token[0], style: TextStyle(
-                color: color, fontWeight: FontWeight.w800, fontSize: 11)),
+                color: color, fontWeight: FontWeight.w900, fontSize: 12)),
             ),
     );
   }
@@ -1656,9 +1680,9 @@ class _GroupedTokenTile extends ConsumerWidget {
   Color _getGroupedTokenColor(String token) {
     switch (token.toUpperCase()) {
       case 'USDT':
-        return const Color(0xFF26A17B);
+        return const Color(0xFF50AF95); // Tether green (official)
       case 'USDC':
-        return const Color(0xFF2775CA);
+        return const Color(0xFF2775CA); // USD Coin blue (official)
       default:
         return DnaColors.textInfo;
     }
@@ -1830,13 +1854,25 @@ class _BalanceTile extends ConsumerWidget {
   Color _getTokenColor(String token) {
     switch (token.toUpperCase()) {
       case 'CPUNK':
-        return const Color(0xFF00D4AA); // Cyan/Teal for CPUNK
+        return const Color(0xFF00E5A0); // CPUNK vibrant cyan-green
       case 'CELL':
-        return const Color(0xFF6B4CE6); // Purple for CELL
+        return const Color(0xFF7B3FE4); // Cellframe purple
       case 'ETH':
         return const Color(0xFF627EEA); // Ethereum blue
       case 'SOL':
-        return const Color(0xFF9945FF); // Solana purple
+        return const Color(0xFF14F195); // Solana green
+      case 'TRX':
+        return const Color(0xFFEF0027); // TRON red
+      case 'USDT':
+        return const Color(0xFF50AF95); // Tether green
+      case 'USDC':
+        return const Color(0xFF2775CA); // USD Coin blue
+      case 'KEL':
+        return const Color(0xFFFF8C42); // KEL orange
+      case 'NYS':
+        return const Color(0xFFE040FB); // NYS magenta
+      case 'QEVM':
+        return const Color(0xFF4FC3F7); // QEVM light blue
       default:
         return DnaColors.textInfo;
     }
