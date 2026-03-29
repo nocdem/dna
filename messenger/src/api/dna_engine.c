@@ -493,6 +493,71 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
 
     /* v0.9.17: Wallet file creation removed — seed-based derivation only */
 
+    /* Post-stabilization: ensure reverse name key (fingerprint:rname) exists in DHT.
+     * If user registered a name but reverse key is missing, publish it now.
+     * This self-heals older identities that were created before reverse keys existed. */
+    {
+        char cached_name[64] = {0};
+        if (keyserver_cache_get_name(engine->fingerprint, cached_name, sizeof(cached_name)) == 0 &&
+            cached_name[0] != '\0') {
+            /* Check if reverse key already exists */
+            char rname_key[256];
+            snprintf(rname_key, sizeof(rname_key), "%s:rname", engine->fingerprint);
+            uint8_t *existing = NULL;
+            size_t existing_len = 0;
+            int rc = nodus_ops_get_str(rname_key, &existing, &existing_len);
+            if (rc != 0 || !existing || existing_len == 0) {
+                /* Reverse key missing — publish it */
+                nodus_ops_put_str(rname_key,
+                                  (uint8_t*)cached_name, strlen(cached_name),
+                                  0, nodus_ops_value_id());
+                QGP_LOG_INFO(LOG_TAG, "[RETRY] Published missing reverse name: %.16s... -> %s",
+                             engine->fingerprint, cached_name);
+            } else {
+                QGP_LOG_DEBUG(LOG_TAG, "[RETRY] Reverse name already exists: %s", cached_name);
+            }
+            if (existing) free(existing);
+
+            /* Also ensure profile has registered_name set — self-heal if it was lost */
+            dna_unified_identity_t *identity = NULL;
+            if (profile_manager_get_profile(engine->fingerprint, &identity) == 0 && identity) {
+                if (!identity->has_registered_name || identity->registered_name[0] == '\0') {
+                    QGP_LOG_WARN(LOG_TAG, "[RETRY] Profile missing registered_name, re-publishing with '%s'",
+                                 cached_name);
+                    /* Trigger a profile re-publish via getProfile (which auto-publishes when wallets change) */
+                    /* The keyserver_profiles.c fix will recover the name from cache during update */
+                    qgp_key_t *sign_key = dna_load_private_key(engine);
+                    if (sign_key) {
+                        qgp_key_t *enc_key = dna_load_encryption_key(engine);
+                        if (enc_key) {
+                            dna_profile_t profile = {0};
+                            /* Copy existing profile data */
+                            strncpy(profile.backbone, identity->wallets.backbone, sizeof(profile.backbone) - 1);
+                            strncpy(profile.eth, identity->wallets.eth, sizeof(profile.eth) - 1);
+                            strncpy(profile.sol, identity->wallets.sol, sizeof(profile.sol) - 1);
+                            strncpy(profile.trx, identity->wallets.trx, sizeof(profile.trx) - 1);
+                            strncpy(profile.bio, identity->bio, sizeof(profile.bio) - 1);
+                            strncpy(profile.avatar_base64, identity->avatar_base64, sizeof(profile.avatar_base64) - 1);
+                            strncpy(profile.location, identity->location, sizeof(profile.location) - 1);
+                            strncpy(profile.website, identity->website, sizeof(profile.website) - 1);
+                            strncpy(profile.telegram, identity->socials.telegram, sizeof(profile.telegram) - 1);
+
+                            int update_rc = dna_update_profile(engine->fingerprint, &profile,
+                                                               sign_key->private_key, sign_key->public_key,
+                                                               enc_key->public_key);
+                            if (update_rc == 0) {
+                                QGP_LOG_INFO(LOG_TAG, "[RETRY] Profile re-published with recovered registered_name");
+                            }
+                            qgp_key_free(enc_key);
+                        }
+                        qgp_key_free(sign_key);
+                    }
+                }
+                dna_identity_free(identity);
+            }
+        }
+    }
+
     QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD COMPLETE <<<");
 
 cleanup:

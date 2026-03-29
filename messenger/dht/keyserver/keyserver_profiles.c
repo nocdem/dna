@@ -78,6 +78,19 @@ int dna_update_profile(
         }
     }
 
+    // Ensure registered_name is preserved — recover from local cache if missing.
+    // This prevents name loss when DHT returned a profile without registered_name
+    // (e.g., after a profile update overwrote it during a network outage).
+    if (!identity->has_registered_name || identity->registered_name[0] == '\0') {
+        char cached_name[64] = {0};
+        if (keyserver_cache_get_name(fingerprint, cached_name, sizeof(cached_name)) == 0 &&
+            cached_name[0] != '\0') {
+            identity->has_registered_name = true;
+            strncpy(identity->registered_name, cached_name, sizeof(identity->registered_name) - 1);
+            QGP_LOG_INFO(LOG_TAG, "Recovered registered_name '%s' from cache during update\n", cached_name);
+        }
+    }
+
     // Update profile data from flat dna_profile_t
     // Wallets
     strncpy(identity->wallets.backbone, profile->backbone, sizeof(identity->wallets.backbone) - 1);

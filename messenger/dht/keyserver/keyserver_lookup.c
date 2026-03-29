@@ -187,18 +187,65 @@ int dht_keyserver_reverse_lookup(
         return ret;
     }
 
-    // Extract registered name
-    if (identity->has_registered_name && identity->registered_name[0] != '\0') {
-        *identity_out = strdup(identity->registered_name);
-        QGP_LOG_INFO(LOG_TAG, "✓ Reverse lookup successful: %s\n", identity->registered_name);
-        // Cache for future lookups
-        keyserver_cache_put_name(fingerprint, identity->registered_name, 0);
+    // Name resolution with proof of ownership verification.
+    // Priority: 1) fingerprint:rname DHT key  2) profile registered_name  3) local cache
+    // All candidates verified via name:lookup → fingerprint (authoritative proof).
+
+    char candidate[64] = {0};
+    bool have_candidate = false;
+
+    // Try 1: DHT reverse key (fingerprint:rname → name)
+    {
+        char rname_key[256];
+        snprintf(rname_key, sizeof(rname_key), "%s:rname", fingerprint);
+        uint8_t *rname_val = NULL;
+        size_t rname_len = 0;
+        if (nodus_ops_get_str(rname_key, &rname_val, &rname_len) == 0 &&
+            rname_val && rname_len > 0 && rname_len < sizeof(candidate)) {
+            memcpy(candidate, rname_val, rname_len);
+            candidate[rname_len] = '\0';
+            have_candidate = true;
+        }
+        if (rname_val) free(rname_val);
+    }
+
+    // Try 2: profile registered_name
+    if (!have_candidate && identity->has_registered_name && identity->registered_name[0] != '\0') {
+        strncpy(candidate, identity->registered_name, sizeof(candidate) - 1);
+        have_candidate = true;
+    }
+
+    // Try 3: local cache
+    if (!have_candidate) {
+        keyserver_cache_get_name(fingerprint, candidate, sizeof(candidate));
+        if (candidate[0] != '\0') have_candidate = true;
+    }
+
+    // Verify candidate via name:lookup → fingerprint (proof of ownership)
+    if (have_candidate) {
+        char verify_key[256];
+        snprintf(verify_key, sizeof(verify_key), "%s:lookup", candidate);
+        uint8_t *lookup_fp = NULL;
+        size_t lookup_len = 0;
+        int vrc = nodus_ops_get_str(verify_key, &lookup_fp, &lookup_len);
+
+        if (vrc == 0 && lookup_fp && lookup_len >= 128 &&
+            strncmp((char*)lookup_fp, fingerprint, 128) == 0) {
+            *identity_out = strdup(candidate);
+            QGP_LOG_INFO(LOG_TAG, "✓ Reverse lookup VERIFIED: %s\n", candidate);
+            keyserver_cache_put_name(fingerprint, candidate, 0);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "⚠ Name '%s' failed verification for %.16s...\n", candidate, fingerprint);
+            char short_fp[32];
+            snprintf(short_fp, sizeof(short_fp), "%.16s...", fingerprint);
+            *identity_out = strdup(short_fp);
+        }
+        if (lookup_fp) free(lookup_fp);
     } else {
-        // No registered name - return shortened fingerprint
         char short_fp[32];
         snprintf(short_fp, sizeof(short_fp), "%.16s...", fingerprint);
         *identity_out = strdup(short_fp);
-        QGP_LOG_INFO(LOG_TAG, "No registered name, returning fingerprint prefix\n");
+        QGP_LOG_INFO(LOG_TAG, "No name candidate found for %.16s...\n", fingerprint);
     }
 
     dna_identity_free(identity);
