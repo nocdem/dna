@@ -572,6 +572,10 @@ class _WalletHeroCard extends ConsumerWidget {
     if (fingerprint != null) {
       final profileCache = ref.watch(identityProfileCacheProvider);
       final cachedIdentity = profileCache[fingerprint];
+      // Trigger fetch if not yet cached (wallet screen may open before cache is populated)
+      if (cachedIdentity == null) {
+        ref.read(identityProfileCacheProvider.notifier).fetchAndCache(fingerprint);
+      }
       if (cachedIdentity != null && cachedIdentity.avatarBase64.isNotEmpty) {
         try {
           final bytes = _base64ToBytes(cachedIdentity.avatarBase64);
