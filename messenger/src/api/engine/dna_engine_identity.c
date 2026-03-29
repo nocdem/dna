@@ -747,26 +747,11 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
     /* Wallets */
     strncpy(profile->backbone, identity->wallets.backbone, sizeof(profile->backbone) - 1);
 
-    /* Derive backbone address from Dilithium pubkey if not in profile */
-    if (profile->backbone[0] == '\0' && identity->dilithium_pubkey[0] != 0) {
-        /* Cellframe address is derived from SHA3-256 hash of serialized Dilithium pubkey
-         * The pubkey in identity is raw 2592 bytes, but we need the serialized format
-         * that includes length prefix (8 bytes) + kind (4 bytes) + key data.
-         * For now, we build the serialized format matching wallet file structure. */
-        uint8_t serialized[2604];  /* 8 + 4 + 2592 */
-        uint64_t total_len = 2592 + 4;  /* key + kind */
-        memcpy(serialized, &total_len, 8);  /* Little-endian length */
-        uint32_t kind = 0x0102;  /* Dilithium signature type */
-        memcpy(serialized + 8, &kind, 4);
-        memcpy(serialized + 12, identity->dilithium_pubkey, 2592);
-
-        char derived_addr[128] = {0};
-        if (cellframe_addr_from_pubkey(serialized, sizeof(serialized),
-                                       CELLFRAME_NET_BACKBONE, derived_addr) == 0) {
-            strncpy(profile->backbone, derived_addr, sizeof(profile->backbone) - 1);
-            QGP_LOG_INFO(LOG_TAG, "Derived backbone address from pubkey: %.20s...", derived_addr);
-        }
-    }
+    /* NOTE: Do NOT derive backbone address from Dilithium pubkey as fallback.
+     * The real wallet address is derived from BIP39 mnemonic (master_seed path),
+     * which produces a DIFFERENT address than Dilithium pubkey derivation.
+     * Sending tokens to a pubkey-derived address loses funds permanently.
+     * If backbone is empty, leave it empty — UI must show "no wallet address" error. */
 
     strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
     strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
