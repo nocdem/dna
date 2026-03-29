@@ -1011,6 +1011,40 @@ int nodus_t2_presence_sync(uint32_t txn, const nodus_key_t *fps, int count,
     return finish(&enc, out_len);
 }
 
+/* ── Inter-Nodus media replication ────────────────────────────────── */
+
+int nodus_t2_media_store_value(uint32_t txn,
+                               const nodus_media_meta_t *meta,
+                               uint32_t chunk_index,
+                               const uint8_t *data, size_t data_len,
+                               uint8_t *buf, size_t cap, size_t *out_len) {
+    if (!meta || !data || data_len == 0) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "m_sv");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 9);
+    cbor_encode_cstr(&enc, "mh");
+    cbor_encode_bstr(&enc, meta->content_hash, 64);
+    cbor_encode_cstr(&enc, "ci");
+    cbor_encode_uint(&enc, chunk_index);
+    cbor_encode_cstr(&enc, "cc");
+    cbor_encode_uint(&enc, meta->chunk_count);
+    cbor_encode_cstr(&enc, "tsz");
+    cbor_encode_uint(&enc, meta->total_size);
+    cbor_encode_cstr(&enc, "mt");
+    cbor_encode_uint(&enc, meta->media_type);
+    cbor_encode_cstr(&enc, "ttl");
+    cbor_encode_uint(&enc, meta->ttl);
+    cbor_encode_cstr(&enc, "menc");
+    cbor_encode_bool(&enc, meta->encrypted);
+    cbor_encode_cstr(&enc, "cmp");
+    cbor_encode_bool(&enc, meta->complete);
+    cbor_encode_cstr(&enc, "d");
+    cbor_encode_bstr(&enc, data, data_len);
+    return finish(&enc, out_len);
+}
+
 /* ── Inter-Nodus replication ──────────────────────────────────────── */
 
 int nodus_t2_ch_replicate(uint32_t txn,

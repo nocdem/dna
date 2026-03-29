@@ -262,6 +262,16 @@ int nodus_t2_presence_result(uint32_t txn,
 int nodus_t2_presence_sync(uint32_t txn, const nodus_key_t *fps, int count,
                              uint8_t *buf, size_t cap, size_t *out_len);
 
+/* ── Inter-Nodus media replication ────────────────────────────────── */
+
+/** Encode a media chunk for inter-node replication (Nodus → Nodus, no auth).
+ * Method: "m_sv". Contains meta fields + chunk data for one chunk. */
+int nodus_t2_media_store_value(uint32_t txn,
+                               const nodus_media_meta_t *meta,
+                               uint32_t chunk_index,
+                               const uint8_t *data, size_t data_len,
+                               uint8_t *buf, size_t cap, size_t *out_len);
+
 /* ── Inter-Nodus replication ──────────────────────────────────────── */
 
 /** Encode a channel replication message (Nodus → Nodus, no auth).

@@ -147,6 +147,10 @@ void handle_t2_media_put(nodus_server_t *srv, nodus_session_t *sess,
             QGP_LOG_INFO(LOG_TAG, "m_put: media complete (%d/%u chunks)",
                          chunk_count, stored_meta.chunk_count);
         }
+
+        /* Replicate this chunk to K-closest nodes */
+        nodus_server_replicate_media_chunk(srv, &stored_meta, msg->media_chunk_idx,
+                                            msg->data, msg->data_len);
     }
 
     /* Respond OK */

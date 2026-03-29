@@ -58,6 +58,7 @@ typedef struct {
     sqlite3_stmt *stmt_cleanup_incomplete;
     sqlite3_stmt *stmt_cleanup_orphan_chunks;
     sqlite3_stmt *stmt_count_per_owner;
+    sqlite3_stmt *stmt_fetch_batch;
 } nodus_media_storage_t;
 
 int  nodus_media_storage_open(sqlite3 *db, nodus_media_storage_t *ms);
@@ -92,6 +93,16 @@ int  nodus_media_cleanup(nodus_media_storage_t *ms);
 
 int  nodus_media_count_per_owner(nodus_media_storage_t *ms,
                                  const char *owner_fp);
+
+/** Fetch a batch of complete media entries for republish (bookmark pagination).
+ *  @param after_hash  Content hash to start after (NULL for first batch).
+ *  @param batch_out   Array of nodus_media_meta_t to fill.
+ *  @param batch_size  Max entries to fetch.
+ *  @return Number of entries fetched. */
+int  nodus_media_fetch_batch(nodus_media_storage_t *ms,
+                             const uint8_t *after_hash,
+                             nodus_media_meta_t *batch_out,
+                             int batch_size);
 
 #ifdef __cplusplus
 }

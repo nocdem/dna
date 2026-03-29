@@ -258,6 +258,57 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
     free(frame);
 }
 
+void nodus_server_replicate_media_chunk(nodus_server_t *srv,
+                                         const nodus_media_meta_t *meta,
+                                         uint32_t chunk_index,
+                                         const uint8_t *data, size_t data_len) {
+    if (!srv || !meta || !data || data_len == 0) return;
+
+    /* Encode m_sv message with meta + chunk */
+    uint8_t *cbor_buf = malloc(RESP_BUF_SIZE);
+    if (!cbor_buf) return;
+    size_t clen = 0;
+    if (nodus_t2_media_store_value(0, meta, chunk_index,
+                                    data, data_len,
+                                    cbor_buf, RESP_BUF_SIZE, &clen) != 0) {
+        free(cbor_buf);
+        return;
+    }
+
+    /* Wire-frame it */
+    uint8_t *frame = malloc(clen + 16);
+    if (!frame) { free(cbor_buf); return; }
+    size_t flen = nodus_frame_encode(frame, clen + 16, cbor_buf, (uint32_t)clen);
+    free(cbor_buf);
+    if (flen == 0) { free(frame); return; }
+
+    /* Map content_hash[64] to nodus_key_t for routing lookup */
+    nodus_key_t media_key;
+    memcpy(media_key.bytes, meta->content_hash, NODUS_KEY_BYTES);
+
+    /* Replicate to K-closest nodes via Kademlia routing table */
+    nodus_peer_t closest[NODUS_K];
+    int count = nodus_routing_find_closest(&srv->routing, &media_key,
+                                            closest, NODUS_K);
+
+    for (int i = 0; i < count; i++) {
+        /* Skip self */
+        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0)
+            continue;
+
+        if (srv->republish.pending_fds < NODUS_REPUBLISH_MAX_FDS) {
+            dht_republish_send_async(srv, closest[i].ip, closest[i].tcp_port, frame, flen);
+        } else {
+            nodus_storage_hinted_insert(&srv->storage,
+                                         &closest[i].node_id,
+                                         closest[i].ip, closest[i].tcp_port,
+                                         frame, flen);
+        }
+    }
+
+    free(frame);
+}
+
 /**
  * Retry DHT hinted handoff entries every NODUS_HINTED_RETRY_SEC seconds.
  * For each ALIVE cluster peer, query pending hints, attempt send, delete on success.
@@ -589,6 +640,60 @@ static void dht_republish(nodus_server_t *srv) {
     if (fetched < NODUS_REPUBLISH_BATCH) {
         rs->active = false;
         rs->cycle_start = nodus_time_now();
+    }
+}
+
+/** Periodic media republish — send stored media chunks to K-closest */
+static void dht_media_republish(nodus_server_t *srv) {
+    dht_media_republish_state_t *mrs = &srv->media_republish;
+    dht_republish_state_t *rs = &srv->republish;
+    uint64_t now = nodus_time_now();
+
+    if (!mrs->active) {
+        /* Start new cycle every NODUS_REPUBLISH_SEC (same interval as value republish) */
+        if (now - mrs->cycle_start < NODUS_REPUBLISH_SEC) return;
+        memset(mrs->last_hash, 0, sizeof(mrs->last_hash));
+        mrs->active = true;
+        mrs->first_batch = true;
+        mrs->cycle_start = now;
+    }
+
+    /* Don't fetch more if too many sends in flight */
+    if (rs->pending_fds >= NODUS_REPUBLISH_MAX_FDS) return;
+
+    /* Fetch batch of complete media entries */
+    nodus_media_meta_t batch[NODUS_REPUBLISH_BATCH];
+    int fetched = nodus_media_fetch_batch(&srv->media_storage,
+                                           mrs->first_batch ? NULL : mrs->last_hash,
+                                           batch, NODUS_REPUBLISH_BATCH);
+    mrs->first_batch = false;
+
+    for (int i = 0; i < fetched; i++) {
+        nodus_media_meta_t *meta = &batch[i];
+
+        /* For each chunk, replicate */
+        for (uint32_t ci = 0; ci < meta->chunk_count; ci++) {
+            uint8_t *chunk_data = NULL;
+            size_t chunk_len = 0;
+            if (nodus_media_get_chunk(&srv->media_storage, meta->content_hash,
+                                       ci, &chunk_data, &chunk_len) != 0)
+                continue;
+
+            nodus_server_replicate_media_chunk(srv, meta, ci, chunk_data, chunk_len);
+            free(chunk_data);
+
+            /* Bail if too many in flight */
+            if (rs->pending_fds >= NODUS_REPUBLISH_MAX_FDS) break;
+        }
+
+        /* Update bookmark */
+        memcpy(mrs->last_hash, meta->content_hash, 64);
+    }
+
+    /* Cycle complete if fewer rows than batch size */
+    if (fetched < NODUS_REPUBLISH_BATCH) {
+        mrs->active = false;
+        mrs->cycle_start = nodus_time_now();
     }
 }
 
@@ -2194,6 +2299,60 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
 
         /* ch_rep, ring_check, ring_ack, ring_evict now go via TCP 4003 (channel server) */
 
+        if (strcmp(msg.method, "m_sv") == 0 && msg.has_media) {
+            /* Inter-node media replication: store replicated media chunk */
+
+            /* Per-session rate limit (same window as sv) */
+            uint64_t msv_now = nodus_time_now();
+            if (msv_now != sess->sv_window_start) { sess->sv_window_start = msv_now; sess->sv_count = 0; }
+            if (++sess->sv_count > NODUS_SV_MAX_PER_SEC) {
+                fprintf(stderr, "MEDIA_REPL: m_sv rate limit hit (%d/s), slot=%d\n",
+                        sess->sv_count, sess->conn ? sess->conn->slot : -1);
+                nodus_t2_msg_free(&msg);
+                return;
+            }
+
+            /* Validate fields */
+            if (msg.data && msg.data_len > 0 &&
+                msg.media_chunk_count > 0 && msg.media_chunk_count <= NODUS_MEDIA_MAX_CHUNKS &&
+                msg.media_total_size > 0 && msg.media_total_size <= NODUS_MEDIA_MAX_TOTAL_SIZE &&
+                msg.data_len <= NODUS_MEDIA_MAX_CHUNK_SIZE) {
+
+                /* Create meta via INSERT OR IGNORE (dedup safe) */
+                nodus_media_meta_t meta;
+                memset(&meta, 0, sizeof(meta));
+                memcpy(meta.content_hash, msg.media_hash, 64);
+                memcpy(meta.owner_fp, "replicated", 11);
+                meta.media_type  = msg.media_type;
+                meta.total_size  = msg.media_total_size;
+                meta.chunk_count = msg.media_chunk_count;
+                meta.encrypted   = msg.media_encrypted;
+                meta.ttl         = msg.ttl;
+                meta.created_at  = (uint64_t)time(NULL);
+                meta.expires_at  = (meta.ttl > 0) ? meta.created_at + meta.ttl : 0;
+                meta.complete    = false;
+
+                /* INSERT OR IGNORE — if meta already exists, this is a no-op */
+                nodus_media_put_meta(&srv->media_storage, &meta);
+
+                /* Store chunk data */
+                int rc = nodus_media_put_chunk(&srv->media_storage, msg.media_hash,
+                                               msg.media_chunk_idx,
+                                               msg.data, msg.data_len);
+                if (rc == 0) {
+                    /* Check completeness */
+                    int chunk_count = nodus_media_count_chunks(&srv->media_storage, msg.media_hash);
+                    if (chunk_count >= (int)msg.media_chunk_count) {
+                        nodus_media_mark_complete(&srv->media_storage, msg.media_hash);
+                        fprintf(stderr, "MEDIA_REPL: m_sv replicated media complete (%d/%u chunks)\n",
+                                chunk_count, msg.media_chunk_count);
+                    }
+                }
+            }
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+
         /* T2 decode succeeded but method is not a known T2 inter-node method.
          * Fall through to T1 decode — sv payloads can parse as valid T2 CBOR. */
         nodus_t2_msg_free(&msg);
@@ -3331,6 +3490,9 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Periodic republish — send stored values to K-closest (every 1 hour) */
         dht_republish(srv);
+
+        /* Periodic media republish — send stored media to K-closest (every 1 hour) */
+        dht_media_republish(srv);
     }
 
     return 0;

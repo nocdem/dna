@@ -78,6 +78,12 @@ static const char *CLEANUP_INCOMPLETE_SQL =
 static const char *COUNT_PER_OWNER_SQL =
     "SELECT COUNT(*) FROM media_meta WHERE owner_fp = ?";
 
+static const char *FETCH_BATCH_SQL =
+    "SELECT content_hash, owner_fp, media_type, total_size, chunk_count, "
+    "       encrypted, ttl, created_at, expires_at, complete "
+    "FROM media_meta WHERE complete = 1 AND content_hash > ? "
+    "ORDER BY content_hash LIMIT ?";
+
 /* ── API ─────────────────────────────────────────────────────────── */
 
 int nodus_media_storage_open(sqlite3 *db, nodus_media_storage_t *ms) {
@@ -106,7 +112,8 @@ int nodus_media_storage_open(sqlite3 *db, nodus_media_storage_t *ms) {
         sqlite3_prepare_v2(db, CLEANUP_EXPIRED_SQL, -1, &ms->stmt_cleanup_expired, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db, CLEANUP_INCOMPLETE_SQL, -1, &ms->stmt_cleanup_incomplete, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(db, CLEANUP_EXPIRED_CHUNKS_SQL, -1, &ms->stmt_cleanup_orphan_chunks, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(db, COUNT_PER_OWNER_SQL, -1, &ms->stmt_count_per_owner, NULL) != SQLITE_OK) {
+        sqlite3_prepare_v2(db, COUNT_PER_OWNER_SQL, -1, &ms->stmt_count_per_owner, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db, FETCH_BATCH_SQL, -1, &ms->stmt_fetch_batch, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "statement preparation failed: %s", sqlite3_errmsg(db));
         nodus_media_storage_close(ms);
         return -1;
@@ -129,6 +136,7 @@ void nodus_media_storage_close(nodus_media_storage_t *ms) {
     if (ms->stmt_cleanup_incomplete)    sqlite3_finalize(ms->stmt_cleanup_incomplete);
     if (ms->stmt_cleanup_orphan_chunks) sqlite3_finalize(ms->stmt_cleanup_orphan_chunks);
     if (ms->stmt_count_per_owner)       sqlite3_finalize(ms->stmt_count_per_owner);
+    if (ms->stmt_fetch_batch)           sqlite3_finalize(ms->stmt_fetch_batch);
     /* NOTE: We do NOT close ms->db — it is owned by the caller (main storage) */
     memset(ms, 0, sizeof(*ms));
 }
@@ -368,4 +376,54 @@ int nodus_media_count_per_owner(nodus_media_storage_t *ms,
         return sqlite3_column_int(s, 0);
 
     return -1;
+}
+
+int nodus_media_fetch_batch(nodus_media_storage_t *ms,
+                            const uint8_t *after_hash,
+                            nodus_media_meta_t *batch_out,
+                            int batch_size) {
+    if (!ms || !ms->db || !batch_out || batch_size <= 0) return 0;
+
+    sqlite3_stmt *s = ms->stmt_fetch_batch;
+    sqlite3_reset(s);
+
+    if (after_hash) {
+        sqlite3_bind_blob(s, 1, after_hash, 64, SQLITE_STATIC);
+    } else {
+        /* First batch: start from beginning (all zeros) */
+        uint8_t zeros[64];
+        memset(zeros, 0, sizeof(zeros));
+        sqlite3_bind_blob(s, 1, zeros, 64, SQLITE_STATIC);
+    }
+    sqlite3_bind_int(s, 2, batch_size);
+
+    int fetched = 0;
+    while (sqlite3_step(s) == SQLITE_ROW && fetched < batch_size) {
+        nodus_media_meta_t *m = &batch_out[fetched];
+        memset(m, 0, sizeof(*m));
+
+        const void *blob = sqlite3_column_blob(s, 0);
+        int blob_len = sqlite3_column_bytes(s, 0);
+        if (blob && blob_len == 64)
+            memcpy(m->content_hash, blob, 64);
+
+        const char *fp = (const char *)sqlite3_column_text(s, 1);
+        if (fp) {
+            strncpy(m->owner_fp, fp, sizeof(m->owner_fp) - 1);
+            m->owner_fp[sizeof(m->owner_fp) - 1] = '\0';
+        }
+
+        m->media_type  = (uint8_t)sqlite3_column_int(s, 2);
+        m->total_size  = (uint64_t)sqlite3_column_int64(s, 3);
+        m->chunk_count = (uint32_t)sqlite3_column_int(s, 4);
+        m->encrypted   = sqlite3_column_int(s, 5) != 0;
+        m->ttl         = (uint32_t)sqlite3_column_int(s, 6);
+        m->created_at  = (uint64_t)sqlite3_column_int64(s, 7);
+        m->expires_at  = (uint64_t)sqlite3_column_int64(s, 8);
+        m->complete    = sqlite3_column_int(s, 9) != 0;
+
+        fetched++;
+    }
+
+    return fetched;
 }

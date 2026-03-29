@@ -277,6 +277,14 @@ typedef struct {
     dht_republish_conn_t conns[NODUS_REPUBLISH_MAX_FDS];
 } dht_republish_state_t;
 
+/** Media republish state (persistent across ticks) */
+typedef struct {
+    uint8_t     last_hash[64];  /**< Bookmark: last content_hash processed */
+    bool        active;         /**< Republish cycle in progress */
+    bool        first_batch;    /**< First batch of cycle (no bookmark yet) */
+    uint64_t    cycle_start;    /**< When current cycle began */
+} dht_media_republish_state_t;
+
 /* ── Server ──────────────────────────────────────────────────────── */
 
 typedef struct nodus_server {
@@ -329,6 +337,7 @@ typedef struct nodus_server {
 
     /* Periodic republish */
     dht_republish_state_t   republish;
+    dht_media_republish_state_t media_republish;
     int                     rp_epoll_fd;
 
     /* Ping-before-evict pending entries */
@@ -365,6 +374,15 @@ void nodus_server_close(nodus_server_t *srv);
  * Used for channel node announcements and client PUT replication.
  */
 void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val);
+
+/**
+ * Replicate a media chunk to K-closest Kademlia peers.
+ * Used after storing each chunk from a client upload.
+ */
+void nodus_server_replicate_media_chunk(nodus_server_t *srv,
+                                         const nodus_media_meta_t *meta,
+                                         uint32_t chunk_index,
+                                         const uint8_t *data, size_t data_len);
 
 /* ── Auth helpers (used by server) ───────────────────────────────── */
 
