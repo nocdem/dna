@@ -187,6 +187,22 @@ int dht_keyserver_publish(
         QGP_LOG_INFO(LOG_TAG, "Name alias published: %s -> %.16s...\n", name, fingerprint);
     }
 
+    // Publish reverse mapping: fingerprint:rname → name
+    // This allows fingerprint → name lookups without scanning the name registry.
+    // Authoritative proof is still name:lookup → fingerprint (verified on read).
+    {
+        char rname_key[256];
+        snprintf(rname_key, sizeof(rname_key), "%s:rname", fingerprint);
+        ret = nodus_ops_put_str(rname_key,
+                                (uint8_t*)name, strlen(name),
+                                0, nodus_ops_value_id());
+        if (ret == 0) {
+            QGP_LOG_INFO(LOG_TAG, "Reverse name published: %.16s... -> %s\n", fingerprint, name);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to publish reverse name mapping\n");
+        }
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Identity published successfully\n");
     return 0;
 }
