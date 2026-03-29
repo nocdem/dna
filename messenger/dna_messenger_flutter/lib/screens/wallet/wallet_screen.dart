@@ -662,12 +662,27 @@ class _WalletHeroCard extends ConsumerWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            l10n.walletMyWallet,
-                            style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.7),
-                              fontSize: 12,
-                            ),
+                          Row(
+                            children: [
+                              Text(
+                                l10n.walletMyWallet,
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.7),
+                                  fontSize: 12,
+                                ),
+                              ),
+                              Builder(builder: (context) {
+                                final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
+                                final change24h = ref.watch(portfolioChange24hProvider);
+                                if (!hideBalances && change24h != null && change24h != 0.0) {
+                                  return Padding(
+                                    padding: const EdgeInsets.only(left: 8),
+                                    child: _Change24hBadge(changePercent: change24h, light: true),
+                                  );
+                                }
+                                return const SizedBox.shrink();
+                              }),
+                            ],
                           ),
                           const SizedBox(height: 2),
                           Text(
@@ -708,31 +723,18 @@ class _WalletHeroCard extends ConsumerWidget {
                   final cachedTotal = ref.watch(cachedPortfolioTotalProvider);
                   final totalValue = cachedTotal.valueOrNull;
                   final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
-                  final change24h = ref.watch(portfolioChange24hProvider);
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        hideBalances
-                            ? '\$*****'
-                            : (totalValue != null && totalValue > 0)
-                                ? '\$${_formatUsdValue(totalValue)}'
-                                : '\$0.00',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 30,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: -0.5,
-                        ),
-                      ),
-                      if (!hideBalances && change24h != null && change24h != 0.0) ...[
-                        const SizedBox(width: 10),
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 4),
-                          child: _Change24hBadge(changePercent: change24h, light: true),
-                        ),
-                      ],
-                    ],
+                  return Text(
+                    hideBalances
+                        ? '\$*****'
+                        : (totalValue != null && totalValue > 0)
+                            ? '\$${_formatUsdValue(totalValue)}'
+                            : '\$0.00',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5,
+                    ),
                   );
                 }),
                 // Portfolio sparkline
