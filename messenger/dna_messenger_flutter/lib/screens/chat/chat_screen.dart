@@ -9,6 +9,7 @@ import 'package:intl/intl.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:image_picker/image_picker.dart';
+import 'dart:io';
 import '../../ffi/dna_engine.dart';
 import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart' hide UserProfile;
@@ -18,6 +19,7 @@ import '../../widgets/emoji_shortcode_field.dart';
 import '../../widgets/formatted_text.dart';
 import '../../widgets/image_message_bubble.dart';
 import '../../widgets/media_message_bubble.dart';
+import '../../widgets/voice_record_sheet.dart';
 import '../../services/image_attachment_service.dart';
 import '../../services/media_service.dart';
 import '../../models/media_ref.dart';
@@ -910,34 +912,40 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
             const SizedBox(width: 8),
 
-            // Send button - uses ValueListenableBuilder for zero parent rebuilds
+            // Send / Mic button - uses ValueListenableBuilder for zero parent rebuilds
             ValueListenableBuilder<TextEditingValue>(
               valueListenable: _messageController,
               builder: (context, value, child) {
                 final hasText = value.text.trim().isNotEmpty;
-                return Material(
-                  color: hasText
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.onSurface.withAlpha(30),
-                  shape: const CircleBorder(),
-                  child: InkWell(
-                    onTap: hasText ? () => _sendMessage(contact) : null,
-                    customBorder: const CircleBorder(),
-                    child: SizedBox(
-                      width: 44,
-                      height: 44,
-                      child: Center(
-                        child: FaIcon(
-                          FontAwesomeIcons.solidPaperPlane,
-                          size: 18,
-                          color: hasText
-                              ? theme.colorScheme.onPrimary
-                              : theme.colorScheme.onSurface.withAlpha(100),
+                if (hasText) {
+                  return Material(
+                    color: theme.colorScheme.primary,
+                    shape: const CircleBorder(),
+                    child: InkWell(
+                      onTap: () => _sendMessage(contact),
+                      customBorder: const CircleBorder(),
+                      child: SizedBox(
+                        width: 44,
+                        height: 44,
+                        child: Center(
+                          child: FaIcon(
+                            FontAwesomeIcons.solidPaperPlane,
+                            size: 18,
+                            color: theme.colorScheme.onPrimary,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                );
+                  );
+                } else {
+                  return IconButton(
+                    icon: FaIcon(
+                      FontAwesomeIcons.microphone,
+                      color: theme.colorScheme.onSurface.withAlpha(180),
+                    ),
+                    onPressed: () => _showVoiceRecordSheet(contact),
+                  );
+                }
               },
             ),
           ],
@@ -1031,6 +1039,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 _pickAndSendImage(contact, ImageSource.camera);
               },
             ),
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.video),
+              title: Text(AppLocalizations.of(context).chatVideoGallery),
+              onTap: () {
+                Navigator.pop(context);
+                _pickAndSendVideo(contact, ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.clapperboard),
+              title: Text(AppLocalizations.of(context).chatRecordVideo),
+              onTap: () {
+                Navigator.pop(context);
+                _pickAndSendVideo(contact, ImageSource.camera);
+              },
+            ),
           ],
         ),
       ),
@@ -1119,6 +1143,156 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (Navigator.canPop(context)) {
         Navigator.pop(context);
       }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: DnaColors.snackbarError,
+        ),
+      );
+    }
+  }
+
+  Future<void> _pickAndSendVideo(Contact contact, ImageSource source) async {
+    try {
+      final picker = ImagePicker();
+      final pickedFile = await picker.pickVideo(
+        source: source,
+        maxDuration: const Duration(minutes: 3),
+      );
+      if (pickedFile == null) return; // User cancelled
+
+      final file = File(pickedFile.path);
+      final fileSize = await file.length();
+
+      // Validate size (64MB max)
+      if (fileSize > 64 * 1024 * 1024) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(AppLocalizations.of(context).chatVideoTooLarge),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+        return;
+      }
+
+      if (!mounted) return;
+
+      // Show caption dialog
+      final caption = await _showCaptionDialog(context);
+      if (!mounted) return;
+
+      // Show loading indicator
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(child: CircularProgressIndicator()),
+      );
+
+      // Upload via MediaService
+      final engine = await ref.read(engineProvider.future);
+      final mediaService = MediaService(engine);
+      final mediaRef = await mediaService.uploadVideo(
+        file,
+        encrypted: true,
+        caption: caption,
+        ttl: 604800,
+      );
+
+      if (!mounted) return;
+      Navigator.pop(context); // Dismiss loading
+
+      // Send media_ref JSON via existing message queue
+      final messageJson = mediaRef.toMessageJson();
+      final result = ref
+          .read(conversationProvider(contact.fingerprint).notifier)
+          .sendMessage(messageJson);
+
+      if (result == -1) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Message queue full. Please wait and try again.'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      } else if (result == -2) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Failed to send video. Please try again.'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } on MediaServiceException catch (e) {
+      if (!mounted) return;
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          backgroundColor: DnaColors.snackbarError,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: DnaColors.snackbarError,
+        ),
+      );
+    }
+  }
+
+  Future<void> _showVoiceRecordSheet(Contact contact) async {
+    final result = await showModalBottomSheet<VoiceRecordResult>(
+      context: context,
+      builder: (context) => const VoiceRecordSheet(),
+    );
+    if (result == null) return;
+    if (!mounted) return;
+
+    // Show loading indicator
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final mediaService = MediaService(engine);
+      final mediaRef = await mediaService.uploadAudio(
+        result.audioBytes,
+        durationSeconds: result.durationSeconds,
+        encrypted: true,
+        ttl: 604800,
+      );
+
+      if (!mounted) return;
+      Navigator.pop(context); // Dismiss loading
+
+      // Send media_ref JSON
+      final messageJson = mediaRef.toMessageJson();
+      ref
+          .read(conversationProvider(contact.fingerprint).notifier)
+          .sendMessage(messageJson);
+    } on MediaServiceException catch (e) {
+      if (!mounted) return;
+      if (Navigator.canPop(context)) Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          backgroundColor: DnaColors.snackbarError,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      if (Navigator.canPop(context)) Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error: $e'),

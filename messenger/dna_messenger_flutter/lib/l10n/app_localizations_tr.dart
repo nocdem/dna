@@ -1462,6 +1462,24 @@ class AppLocalizationsTr extends AppLocalizations {
   }
 
   @override
+  String get chatVideoGallery => 'Kütüphaneden Video';
+
+  @override
+  String get chatRecordVideo => 'Video Çek';
+
+  @override
+  String get chatVideoTooLarge => 'Video 64MB limitini aşıyor';
+
+  @override
+  String get chatRecordingHold => 'Kayıt için basılı tutun';
+
+  @override
+  String get chatRecordingRelease => 'Durdurmak için bırakın';
+
+  @override
+  String get chatVoiceMessage => 'Sesli mesaj';
+
+  @override
   String get chatDownloadingMedia => 'İndiriliyor...';
 
   @override

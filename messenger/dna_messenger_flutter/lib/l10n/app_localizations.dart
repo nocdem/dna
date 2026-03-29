@@ -2756,6 +2756,42 @@ abstract class AppLocalizations {
   /// **'Swap failed: {error}'**
   String swapFailed(String error);
 
+  /// No description provided for @chatVideoGallery.
+  ///
+  /// In en, this message translates to:
+  /// **'Video from Library'**
+  String get chatVideoGallery;
+
+  /// No description provided for @chatRecordVideo.
+  ///
+  /// In en, this message translates to:
+  /// **'Record Video'**
+  String get chatRecordVideo;
+
+  /// No description provided for @chatVideoTooLarge.
+  ///
+  /// In en, this message translates to:
+  /// **'Video exceeds 64MB limit'**
+  String get chatVideoTooLarge;
+
+  /// No description provided for @chatRecordingHold.
+  ///
+  /// In en, this message translates to:
+  /// **'Hold to record'**
+  String get chatRecordingHold;
+
+  /// No description provided for @chatRecordingRelease.
+  ///
+  /// In en, this message translates to:
+  /// **'Release to stop'**
+  String get chatRecordingRelease;
+
+  /// No description provided for @chatVoiceMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice message'**
+  String get chatVoiceMessage;
+
   /// No description provided for @chatDownloadingMedia.
   ///
   /// In en, this message translates to:

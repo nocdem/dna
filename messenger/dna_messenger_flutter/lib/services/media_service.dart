@@ -205,6 +205,137 @@ class MediaService {
     );
   }
 
+  /// Upload a video to Nodus DHT.
+  ///
+  /// [videoFile] video file to upload.
+  /// [encrypted] true to AES-256-GCM encrypt before upload (default true).
+  /// [caption] optional caption text.
+  /// [ttl] time-to-live in seconds (default 7 days).
+  ///
+  /// Returns a [MediaRef] that can be serialized into a message.
+  Future<MediaRef> uploadVideo(
+    File videoFile, {
+    bool encrypted = true,
+    String? caption,
+    int ttl = 604800,
+  }) async {
+    final bytes = await videoFile.readAsBytes();
+    log(_tag, 'uploadVideo: ${bytes.length} bytes, encrypted=$encrypted');
+
+    // Validate size (64MB max)
+    if (bytes.length > 64 * 1024 * 1024) {
+      throw MediaServiceException('Video exceeds 64MB limit');
+    }
+
+    // Generate placeholder thumbnail (200x112 dark gray JPEG)
+    final thumbImage = img.Image(width: 200, height: 112);
+    img.fill(thumbImage, color: img.ColorRgb8(48, 48, 48));
+    final thumbnailBytes =
+        Uint8List.fromList(img.encodeJpg(thumbImage, quality: 60));
+
+    // Encrypt if requested
+    Uint8List uploadData;
+    String? aesKeyBase64;
+    if (encrypted) {
+      final aesKey = _generateRandomBytes(_aesKeyLen);
+      uploadData = _aesGcmEncrypt(bytes, aesKey);
+      aesKeyBase64 = base64Encode(aesKey);
+    } else {
+      uploadData = bytes;
+    }
+
+    // Compute SHA3-512 of upload data
+    final contentHash = _computeSha3_512(uploadData);
+
+    // Upload to Nodus
+    final hashHex = await _engine.mediaUpload(
+      uploadData,
+      contentHash,
+      1, // video
+      encrypted,
+      ttl,
+    );
+    log(_tag, 'Uploaded video: hash=${hashHex.substring(0, 16)}...');
+
+    return MediaRef(
+      contentHash: hashHex,
+      mediaType: 1,
+      mimeType: 'video/mp4',
+      size: uploadData.length,
+      width: 0,
+      height: 0,
+      duration: 0,
+      thumbnail: base64Encode(thumbnailBytes),
+      caption: caption,
+      encryptionKey: aesKeyBase64,
+    );
+  }
+
+  /// Upload audio to Nodus DHT.
+  ///
+  /// [audioBytes] raw audio bytes.
+  /// [durationSeconds] audio duration in seconds.
+  /// [encrypted] true to AES-256-GCM encrypt before upload (default true).
+  /// [ttl] time-to-live in seconds (default 7 days).
+  ///
+  /// Returns a [MediaRef] that can be serialized into a message.
+  Future<MediaRef> uploadAudio(
+    Uint8List audioBytes, {
+    int durationSeconds = 0,
+    bool encrypted = true,
+    int ttl = 604800,
+  }) async {
+    log(_tag,
+        'uploadAudio: ${audioBytes.length} bytes, duration=${durationSeconds}s');
+
+    // Validate size (64MB max)
+    if (audioBytes.length > 64 * 1024 * 1024) {
+      throw MediaServiceException('Audio exceeds 64MB limit');
+    }
+
+    // Minimal 1x1 gray pixel thumbnail
+    final thumbImage = img.Image(width: 1, height: 1);
+    img.fill(thumbImage, color: img.ColorRgb8(80, 80, 80));
+    final thumbnailBytes =
+        Uint8List.fromList(img.encodeJpg(thumbImage, quality: 60));
+
+    // Encrypt if requested
+    Uint8List uploadData;
+    String? aesKeyBase64;
+    if (encrypted) {
+      final aesKey = _generateRandomBytes(_aesKeyLen);
+      uploadData = _aesGcmEncrypt(audioBytes, aesKey);
+      aesKeyBase64 = base64Encode(aesKey);
+    } else {
+      uploadData = audioBytes;
+    }
+
+    // Compute SHA3-512 of upload data
+    final contentHash = _computeSha3_512(uploadData);
+
+    // Upload to Nodus
+    final hashHex = await _engine.mediaUpload(
+      uploadData,
+      contentHash,
+      2, // audio
+      encrypted,
+      ttl,
+    );
+    log(_tag, 'Uploaded audio: hash=${hashHex.substring(0, 16)}...');
+
+    return MediaRef(
+      contentHash: hashHex,
+      mediaType: 2,
+      mimeType: 'audio/aac',
+      size: uploadData.length,
+      width: 0,
+      height: 0,
+      duration: durationSeconds,
+      thumbnail: base64Encode(thumbnailBytes),
+      encryptionKey: aesKeyBase64,
+    );
+  }
+
   /// Download and optionally decrypt media from Nodus DHT.
   ///
   /// [ref] the MediaRef containing content hash and optional encryption key.

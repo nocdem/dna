@@ -1475,6 +1475,24 @@ class AppLocalizationsDe extends AppLocalizations {
   }
 
   @override
+  String get chatVideoGallery => 'Video from Library';
+
+  @override
+  String get chatRecordVideo => 'Record Video';
+
+  @override
+  String get chatVideoTooLarge => 'Video exceeds 64MB limit';
+
+  @override
+  String get chatRecordingHold => 'Hold to record';
+
+  @override
+  String get chatRecordingRelease => 'Release to stop';
+
+  @override
+  String get chatVoiceMessage => 'Voice message';
+
+  @override
   String get chatDownloadingMedia => 'Downloading...';
 
   @override

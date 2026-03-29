@@ -737,6 +737,12 @@
       "error": { "type": "String" }
     }
   },
+  "chatVideoGallery": "Video from Library",
+  "chatRecordVideo": "Record Video",
+  "chatVideoTooLarge": "Video exceeds 64MB limit",
+  "chatRecordingHold": "Hold to record",
+  "chatRecordingRelease": "Release to stop",
+  "chatVoiceMessage": "Voice message",
   "chatDownloadingMedia": "Downloading...",
   "chatUploadFailed": "Upload failed. Tap to retry.",
   "chatTapToDownload": "Tap to download",
