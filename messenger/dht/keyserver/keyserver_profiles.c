@@ -8,6 +8,7 @@
 #include "dht/shared/nodus_ops.h"
 #include "crypto/utils/qgp_log.h"
 #include "database/profile_cache.h"
+#include "database/keyserver_cache.h"
 
 #define LOG_TAG "KEYSERVER"
 
