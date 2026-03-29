@@ -760,7 +760,7 @@ class _WalletHeroCard extends ConsumerWidget {
   }
 }
 
-/// Portfolio breakdown bottom sheet — token allocation pie chart + chain breakdown
+/// Portfolio breakdown bottom sheet — token allocation donut + chain breakdown
 class _PortfolioBreakdownSheet extends ConsumerWidget {
   const _PortfolioBreakdownSheet();
 
@@ -784,6 +784,13 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
     'tron': Color(0xFFFF0013),
   };
 
+  static const _chainIcons = <String, String>{
+    'cellframe': 'assets/icons/crypto/cell.svg',
+    'ethereum': 'assets/icons/crypto/eth.svg',
+    'solana': 'assets/icons/crypto/sol.svg',
+    'tron': 'assets/icons/crypto/trx.svg',
+  };
+
   Color _colorForToken(String token) =>
       _tokenColors[token.toUpperCase()] ?? DnaColors.textInfo;
 
@@ -797,7 +804,7 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
     final prices = ref.watch(priceProvider).valueOrNull ?? {};
     final cachedTotal = ref.watch(cachedPortfolioTotalProvider).valueOrNull ?? 0.0;
 
-    // Build token breakdown (token → USD value)
+    // Build token + chain breakdowns
     final tokenUsd = <String, double>{};
     final chainUsd = <String, double>{};
 
@@ -809,12 +816,10 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
       if (usd <= 0) continue;
 
       tokenUsd[token] = (tokenUsd[token] ?? 0.0) + usd;
-
       final chain = wb.balance.network.toLowerCase();
       chainUsd[chain] = (chainUsd[chain] ?? 0.0) + usd;
     }
 
-    // Sort by value descending
     final sortedTokens = tokenUsd.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     final sortedChains = chainUsd.entries.toList()
@@ -828,161 +833,319 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
         borderRadius: const BorderRadius.vertical(top: Radius.circular(DnaSpacing.radiusXl)),
       ),
       child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(DnaSpacing.lg),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(DnaSpacing.lg, DnaSpacing.sm, DnaSpacing.lg, DnaSpacing.lg),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               // Handle bar
               Container(
                 width: 40, height: 4,
+                margin: const EdgeInsets.only(bottom: DnaSpacing.lg),
                 decoration: BoxDecoration(
                   color: theme.dividerColor,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              const SizedBox(height: DnaSpacing.lg),
-              Text(
-                'Portfolio Breakdown',
-                style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
-              ),
-              Text(
-                '\$${_formatUsdValue(total)}',
-                style: theme.textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  color: theme.colorScheme.primary,
-                ),
-              ),
-              const SizedBox(height: DnaSpacing.xl),
 
-              // Token allocation donut chart
-              if (sortedTokens.isNotEmpty) ...[
-                Text(
-                  'By Token',
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                  ),
+              // Gradient header card
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+                decoration: BoxDecoration(
+                  gradient: DnaGradients.primaryVertical,
+                  borderRadius: BorderRadius.circular(DnaSpacing.radiusLg),
+                  boxShadow: [
+                    BoxShadow(
+                      color: DnaColors.gradientStart.withValues(alpha: 0.3),
+                      blurRadius: 16,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: DnaSpacing.md),
-                SizedBox(
-                  height: 180,
-                  child: Row(
-                    children: [
-                      // Pie chart
-                      Expanded(
-                        child: PieChart(
-                          PieChartData(
-                            sectionsSpace: 2,
-                            centerSpaceRadius: 35,
-                            sections: sortedTokens.map((e) {
-                              final pct = total > 0 ? (e.value / total * 100) : 0.0;
-                              return PieChartSectionData(
-                                value: e.value,
-                                color: _colorForToken(e.key),
-                                radius: 45,
-                                title: pct >= 5 ? '${pct.toStringAsFixed(0)}%' : '',
-                                titleStyle: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              );
-                            }).toList(),
-                          ),
-                        ),
+                child: Column(
+                  children: [
+                    Text(
+                      'Portfolio',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.7),
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
                       ),
-                      // Legend
-                      Expanded(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: sortedTokens.map((e) {
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '\$${_formatUsdValue(total)}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 36,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -1,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Builder(builder: (context) {
+                      final change24h = ref.watch(portfolioChange24hProvider);
+                      if (change24h != null && change24h != 0.0) {
+                        return _Change24hBadge(changePercent: change24h, light: true);
+                      }
+                      return const SizedBox.shrink();
+                    }),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              // ── Token Allocation ──
+              _SectionHeader(title: 'Token Allocation'),
+              const SizedBox(height: 16),
+
+              if (sortedTokens.isNotEmpty) ...[
+                // Donut chart with total in center
+                SizedBox(
+                  height: 200,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      PieChart(
+                        PieChartData(
+                          sectionsSpace: 3,
+                          centerSpaceRadius: 50,
+                          startDegreeOffset: -90,
+                          sections: sortedTokens.asMap().entries.map((entry) {
+                            final e = entry.value;
                             final pct = total > 0 ? (e.value / total * 100) : 0.0;
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 3),
-                              child: Row(
-                                children: [
-                                  Container(
-                                    width: 10, height: 10,
-                                    decoration: BoxDecoration(
-                                      color: _colorForToken(e.key),
-                                      shape: BoxShape.circle,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(e.key, style: theme.textTheme.bodySmall?.copyWith(
-                                    fontWeight: FontWeight.w600)),
-                                  const Spacer(),
-                                  Text('${pct.toStringAsFixed(1)}%',
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                                    )),
-                                ],
-                              ),
+                            final color = _colorForToken(e.key);
+                            return PieChartSectionData(
+                              value: e.value,
+                              color: color,
+                              radius: 32,
+                              title: '',
+                              badgeWidget: pct >= 10 ? _PieBadge(
+                                token: e.key,
+                                color: color,
+                              ) : null,
+                              badgePositionPercentageOffset: 1.8,
                             );
                           }).toList(),
                         ),
+                        duration: const Duration(milliseconds: 600),
+                        curve: Curves.easeOutCubic,
+                      ),
+                      // Center text
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '${sortedTokens.length}',
+                            style: theme.textTheme.headlineSmall?.copyWith(
+                              fontWeight: FontWeight.w800,
+                              color: theme.colorScheme.primary,
+                            ),
+                          ),
+                          Text(
+                            'tokens',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 ),
+                const SizedBox(height: 16),
+
+                // Token legend cards
+                ...sortedTokens.map((e) {
+                  final pct = total > 0 ? (e.value / total * 100) : 0.0;
+                  final color = _colorForToken(e.key);
+                  final iconPath = getTokenIconPath(e.key);
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
+                      border: Border.all(color: color.withValues(alpha: 0.15)),
+                    ),
+                    child: Row(
+                      children: [
+                        // Token icon
+                        Container(
+                          width: 34, height: 34,
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.12),
+                            shape: BoxShape.circle,
+                          ),
+                          child: iconPath != null
+                              ? Padding(
+                                  padding: const EdgeInsets.all(6),
+                                  child: buildCryptoIcon(iconPath),
+                                )
+                              : Center(
+                                  child: Text(e.key[0], style: TextStyle(
+                                    color: color, fontWeight: FontWeight.bold, fontSize: 14)),
+                                ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(e.key, style: theme.textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w700)),
+                              const SizedBox(height: 2),
+                              // Mini progress bar
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(3),
+                                child: SizedBox(
+                                  height: 4,
+                                  child: LinearProgressIndicator(
+                                    value: pct / 100,
+                                    backgroundColor: color.withValues(alpha: 0.1),
+                                    valueColor: AlwaysStoppedAnimation(color),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text('\$${_formatUsdValue(e.value)}',
+                              style: theme.textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w700)),
+                            Text('${pct.toStringAsFixed(1)}%',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: color, fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  );
+                }),
               ],
 
-              const SizedBox(height: DnaSpacing.xl),
+              const SizedBox(height: 24),
 
-              // Chain breakdown
+              // ── Chain Distribution ──
+              _SectionHeader(title: 'Chain Distribution'),
+              const SizedBox(height: 16),
+
               if (sortedChains.isNotEmpty) ...[
-                Text(
-                  'By Chain',
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                  ),
-                ),
-                const SizedBox(height: DnaSpacing.md),
                 ...sortedChains.map((e) {
                   final pct = total > 0 ? (e.value / total * 100) : 0.0;
+                  final color = _colorForChain(e.key);
                   final label = getNetworkDisplayLabel(e.key);
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
+                  final iconPath = _chainIcons[e.key.toLowerCase()];
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+                      borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
+                      border: Border.all(
+                        color: color.withValues(alpha: 0.2),
+                      ),
+                    ),
                     child: Column(
                       children: [
                         Row(
                           children: [
+                            // Chain icon
                             Container(
-                              width: 12, height: 12,
+                              width: 38, height: 38,
+                              padding: const EdgeInsets.all(7),
                               decoration: BoxDecoration(
-                                color: _colorForChain(e.key),
-                                borderRadius: BorderRadius.circular(3),
+                                gradient: LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [
+                                    color.withValues(alpha: 0.15),
+                                    color.withValues(alpha: 0.05),
+                                  ],
+                                ),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: color.withValues(alpha: 0.2)),
+                              ),
+                              child: iconPath != null
+                                  ? buildCryptoIcon(iconPath)
+                                  : Center(child: Text(label[0],
+                                      style: TextStyle(color: color, fontWeight: FontWeight.bold))),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(label, style: theme.textTheme.titleSmall?.copyWith(
+                                    fontWeight: FontWeight.w700, fontSize: 15)),
+                                  Text(e.key.substring(0, 1).toUpperCase() + e.key.substring(1),
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: theme.colorScheme.onSurface.withValues(alpha: 0.4),
+                                      fontSize: 11)),
+                                ],
                               ),
                             ),
-                            const SizedBox(width: 10),
-                            Text(label, style: theme.textTheme.bodyMedium?.copyWith(
-                              fontWeight: FontWeight.w600)),
-                            const Spacer(),
-                            Text('\$${_formatUsdValue(e.value)}',
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                fontWeight: FontWeight.bold)),
-                            const SizedBox(width: 8),
-                            SizedBox(
-                              width: 45,
-                              child: Text('${pct.toStringAsFixed(0)}%',
-                                textAlign: TextAlign.right,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
-                                )),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text('\$${_formatUsdValue(e.value)}',
+                                  style: theme.textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w800)),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: color.withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(DnaSpacing.radiusFull),
+                                  ),
+                                  child: Text('${pct.toStringAsFixed(1)}%',
+                                    style: TextStyle(
+                                      color: color,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                    )),
+                                ),
+                              ],
                             ),
                           ],
                         ),
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 12),
+                        // Gradient progress bar
                         ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: LinearProgressIndicator(
-                            value: pct / 100,
-                            minHeight: 6,
-                            backgroundColor: theme.colorScheme.surfaceContainerHighest,
-                            valueColor: AlwaysStoppedAnimation(_colorForChain(e.key)),
+                          borderRadius: BorderRadius.circular(5),
+                          child: Container(
+                            height: 8,
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(5),
+                            ),
+                            child: FractionallySizedBox(
+                              alignment: Alignment.centerLeft,
+                              widthFactor: pct / 100,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      color,
+                                      color.withValues(alpha: 0.6),
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(5),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: color.withValues(alpha: 0.4),
+                                      blurRadius: 6,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ),
                         ),
                       ],
@@ -991,7 +1154,7 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
                 }),
               ],
 
-              const SizedBox(height: DnaSpacing.xl),
+              const SizedBox(height: DnaSpacing.lg),
               SizedBox(
                 width: double.infinity,
                 child: TextButton(
@@ -1003,6 +1166,69 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Section header with gradient accent line
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  const _SectionHeader({required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        Container(
+          width: 3, height: 18,
+          decoration: BoxDecoration(
+            gradient: DnaGradients.primary,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Text(title, style: theme.textTheme.titleMedium?.copyWith(
+          fontWeight: FontWeight.w700,
+          letterSpacing: -0.3,
+        )),
+      ],
+    );
+  }
+}
+
+/// Pie chart badge — small token indicator outside the donut
+class _PieBadge extends StatelessWidget {
+  final String token;
+  final Color color;
+  const _PieBadge({required this.token, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    final iconPath = getTokenIconPath(token);
+    return Container(
+      width: 28, height: 28,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+        border: Border.all(color: color, width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: color.withValues(alpha: 0.3),
+            blurRadius: 6,
+            spreadRadius: 1,
+          ),
+        ],
+      ),
+      child: iconPath != null
+          ? Padding(
+              padding: const EdgeInsets.all(4),
+              child: buildCryptoIcon(iconPath),
+            )
+          : Center(
+              child: Text(token[0], style: TextStyle(
+                color: color, fontWeight: FontWeight.w800, fontSize: 11)),
+            ),
     );
   }
 }
