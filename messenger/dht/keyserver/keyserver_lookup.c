@@ -187,53 +187,13 @@ int dht_keyserver_reverse_lookup(
         return ret;
     }
 
-    // Name resolution priority (proof of ownership chain):
-    // 1. DHT reverse key: fingerprint:rname → candidate name
-    // 2. Profile's registered_name as fallback candidate
-    // 3. Local cache as last resort candidate
-    // ALL candidates verified via: name:lookup → fingerprint (authoritative proof)
-
-    char candidate_name[64] = {0};
-    bool found_candidate = false;
-
-    // Step 1: Try DHT reverse mapping (fingerprint:rname → name)
-    {
-        char rname_key[256];
-        snprintf(rname_key, sizeof(rname_key), "%s:rname", fingerprint);
-        uint8_t *rname_val = NULL;
-        size_t rname_len = 0;
-        if (nodus_ops_get_str(rname_key, &rname_val, &rname_len) == 0 &&
-            rname_val && rname_len > 0 && rname_len < sizeof(candidate_name)) {
-            memcpy(candidate_name, rname_val, rname_len);
-            candidate_name[rname_len] = '\0';
-            found_candidate = true;
-            QGP_LOG_DEBUG(LOG_TAG, "Reverse key candidate: %s\n", candidate_name);
-        }
-        if (rname_val) free(rname_val);
-    }
-
-    // Step 2: Fall back to profile's registered_name
-    if (!found_candidate && identity->has_registered_name && identity->registered_name[0] != '\0') {
-        strncpy(candidate_name, identity->registered_name, sizeof(candidate_name) - 1);
-        found_candidate = true;
-        QGP_LOG_DEBUG(LOG_TAG, "Profile candidate: %s\n", candidate_name);
-    }
-
-    // Step 3: Fall back to local cache
-    if (!found_candidate) {
-        char cached_rname[64] = {0};
-        if (keyserver_cache_get_name(fingerprint, cached_rname, sizeof(cached_rname)) == 0 &&
-            cached_rname[0] != '\0') {
-            strncpy(candidate_name, cached_rname, sizeof(candidate_name) - 1);
-            found_candidate = true;
-            QGP_LOG_DEBUG(LOG_TAG, "Cache candidate: %s\n", candidate_name);
-        }
-    }
-
-    // Verify candidate against name registry (proof of ownership)
-    if (found_candidate && candidate_name[0] != '\0') {
+    // Extract registered name and VERIFY against name registry (proof of ownership).
+    // Profile's registered_name is self-reported and not authoritative.
+    // The real proof is: name:lookup → fingerprint mapping in DHT.
+    if (identity->has_registered_name && identity->registered_name[0] != '\0') {
+        // Verify: does name:lookup point back to this fingerprint?
         char verify_key[256];
-        snprintf(verify_key, sizeof(verify_key), "%s:lookup", candidate_name);
+        snprintf(verify_key, sizeof(verify_key), "%s:lookup", identity->registered_name);
 
         uint8_t *lookup_fp = NULL;
         size_t lookup_len = 0;
@@ -241,14 +201,15 @@ int dht_keyserver_reverse_lookup(
 
         if (verify_rc == 0 && lookup_fp && lookup_len >= 128 &&
             strncmp((char*)lookup_fp, fingerprint, 128) == 0) {
-            // ✓ Verified: name registry confirms ownership
-            *identity_out = strdup(candidate_name);
-            QGP_LOG_INFO(LOG_TAG, "✓ Reverse lookup VERIFIED: %s\n", candidate_name);
-            keyserver_cache_put_name(fingerprint, candidate_name, 0);
+            // ✓ Verified: name registry confirms this fingerprint owns the name
+            *identity_out = strdup(identity->registered_name);
+            QGP_LOG_INFO(LOG_TAG, "✓ Reverse lookup VERIFIED: %s (proof: name:lookup matches)\n",
+                        identity->registered_name);
+            keyserver_cache_put_name(fingerprint, identity->registered_name, 0);
         } else {
-            // ✗ Verification failed — name doesn't belong to this fingerprint
-            QGP_LOG_WARN(LOG_TAG, "⚠ Name '%s' failed verification for %.16s...\n",
-                        candidate_name, fingerprint);
+            // ✗ Name claim not verified — profile says one thing, registry says another
+            QGP_LOG_WARN(LOG_TAG, "⚠ Reverse lookup: name '%s' NOT verified (registry mismatch)\n",
+                        identity->registered_name);
             char short_fp[32];
             snprintf(short_fp, sizeof(short_fp), "%.16s...", fingerprint);
             *identity_out = strdup(short_fp);
@@ -256,11 +217,11 @@ int dht_keyserver_reverse_lookup(
 
         if (lookup_fp) free(lookup_fp);
     } else {
-        // No name candidate found anywhere
+        // No registered name - return shortened fingerprint
         char short_fp[32];
         snprintf(short_fp, sizeof(short_fp), "%.16s...", fingerprint);
         *identity_out = strdup(short_fp);
-        QGP_LOG_INFO(LOG_TAG, "No name candidate found for %.16s...\n", fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "No registered name, returning fingerprint prefix\n");
     }
 
     dna_identity_free(identity);
