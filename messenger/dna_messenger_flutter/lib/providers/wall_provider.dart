@@ -146,14 +146,45 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     final identityLoaded = ref.watch(identityLoadedProvider);
 
     if (!identityLoaded) {
-      // Cache-first: show cached wall posts instantly before identity loads
+      // Cache-first: show cached wall posts WITH engagement instantly
       final engine = await ref.watch(engineProvider.future);
       final prefs = await SharedPreferences.getInstance();
       final fp = prefs.getString('identity_fingerprint');
       if (fp != null && fp.length == 128) {
         try {
           final posts = await engine.wallTimelineCached(fp);
-          return _assembleItems(posts, fp);
+          var items = await _assembleItems(posts, fp);
+
+          // Fetch engagement from cache (C serves stale cache immediately)
+          if (posts.isNotEmpty) {
+            try {
+              final uuids = posts.map((p) => p.uuid).toList();
+              final engagements = await engine.wallGetEngagement(uuids);
+              if (engagements.isNotEmpty) {
+                final engMap = <String, WallEngagement>{};
+                for (final e in engagements) {
+                  engMap[e.postUuid] = e;
+                }
+                items = items.map((item) {
+                  final eng = engMap[item.post.uuid];
+                  if (eng != null) {
+                    final preview = eng.comments.length <= 3
+                        ? eng.comments
+                        : eng.comments.sublist(0, 3);
+                    return item.copyWith(
+                      likeCount: eng.likeCount,
+                      isLikedByMe: eng.isLikedByMe,
+                      commentCount: eng.comments.length,
+                      previewComments: preview,
+                    );
+                  }
+                  return item;
+                }).toList();
+              }
+            } catch (_) {}
+          }
+
+          return items;
         } catch (_) {
           return state.valueOrNull ?? [];
         }
