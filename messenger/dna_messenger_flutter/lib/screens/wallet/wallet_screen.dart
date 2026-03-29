@@ -12,6 +12,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../../ffi/dna_engine.dart' show Contact, DexQuote, Transaction, UserProfile, Wallet;
 import '../../providers/addressbook_provider.dart';
 import '../../providers/identity_profile_cache_provider.dart';
+import '../../providers/profile_provider.dart' show fullProfileProvider;
 import '../../providers/portfolio_history_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
@@ -564,30 +565,23 @@ class _WalletHeroCard extends ConsumerWidget {
       ref.read(nameResolverProvider.notifier).resolveName(fingerprint);
     }
 
-    // Get avatar from identity profile cache
+    // Get avatar from own profile (engine.getProfile returns avatar directly)
     Widget avatarWidget = DnaAvatar(
       name: identityName ?? 'W',
       size: DnaAvatarSize.lg,
     );
-    if (fingerprint != null) {
-      final profileCache = ref.watch(identityProfileCacheProvider);
-      final cachedIdentity = profileCache[fingerprint];
-      // Trigger fetch if not yet cached (wallet screen may open before cache is populated)
-      if (cachedIdentity == null) {
-        ref.read(identityProfileCacheProvider.notifier).fetchAndCache(fingerprint);
-      }
-      if (cachedIdentity != null && cachedIdentity.avatarBase64.isNotEmpty) {
-        try {
-          final bytes = _base64ToBytes(cachedIdentity.avatarBase64);
-          if (bytes.isNotEmpty) {
-            avatarWidget = DnaAvatar(
-              imageBytes: bytes,
-              name: identityName,
-              size: DnaAvatarSize.lg,
-            );
-          }
-        } catch (_) {}
-      }
+    final ownProfile = ref.watch(fullProfileProvider).valueOrNull;
+    if (ownProfile != null && ownProfile.avatarBase64.isNotEmpty) {
+      try {
+        final bytes = _base64ToBytes(ownProfile.avatarBase64);
+        if (bytes.isNotEmpty) {
+          avatarWidget = DnaAvatar(
+            imageBytes: bytes,
+            name: identityName,
+            size: DnaAvatarSize.lg,
+          );
+        }
+      } catch (_) {}
     }
 
     return GestureDetector(
