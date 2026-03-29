@@ -143,6 +143,14 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     // (DHT PUT is async and may not be queryable yet)
     await ref.read(identityProfileCacheProvider.notifier).updateIdentity(fingerprint, name, '', registeredName: name);
 
+    // Trigger getProfile to auto-populate wallet addresses and publish to DHT.
+    // Without this, wallet fields (backbone, eth, sol, trx) stay empty until
+    // the user manually opens their profile screen.
+    try {
+      await engine.getProfile();
+      engine.debugLog('IDENTITY', 'createIdentityFromMnemonic - profile auto-published with wallets');
+    } catch (_) {}
+
     // Android: Store fingerprint for background service
     if (Platform.isAndroid) {
       final prefs = await SharedPreferences.getInstance();
@@ -176,6 +184,14 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     );
 
     await refresh();
+
+    // Trigger getProfile to auto-populate wallet addresses and publish to DHT.
+    // Without this, wallet fields (backbone, eth, sol, trx) stay empty until
+    // the user manually opens their profile screen.
+    try {
+      await engine.getProfile();
+      engine.debugLog('IDENTITY', 'restoreIdentityFromMnemonic - profile auto-published with wallets');
+    } catch (_) {}
 
     // Android: Store fingerprint for background service
     if (Platform.isAndroid) {
