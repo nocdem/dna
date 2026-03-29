@@ -50,12 +50,25 @@ int dna_update_profile(
             memcpy(identity->dilithium_pubkey, dilithium_pubkey, sizeof(identity->dilithium_pubkey));
             memcpy(identity->kyber_pubkey, kyber_pubkey, sizeof(identity->kyber_pubkey));
 
-            // Initialize name registration fields
-            identity->has_registered_name = false;
-            memset(identity->registered_name, 0, sizeof(identity->registered_name));
-            identity->name_registered_at = 0;
-            identity->name_expires_at = 0;
-            identity->name_version = 0;
+            // Recover registered name from local cache if available.
+            // Prevents name loss when DHT is temporarily unreachable during profile updates.
+            {
+                char cached_name[64] = {0};
+                if (keyserver_cache_get_name(fingerprint, cached_name, sizeof(cached_name)) == 0 && cached_name[0]) {
+                    identity->has_registered_name = true;
+                    strncpy(identity->registered_name, cached_name, sizeof(identity->registered_name) - 1);
+                    identity->name_registered_at = time(NULL);
+                    identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);
+                    identity->name_version = 1;
+                    QGP_LOG_INFO(LOG_TAG, "Recovered registered name '%s' from local cache\n", cached_name);
+                } else {
+                    identity->has_registered_name = false;
+                    memset(identity->registered_name, 0, sizeof(identity->registered_name));
+                    identity->name_registered_at = 0;
+                    identity->name_expires_at = 0;
+                    identity->name_version = 0;
+                }
+            }
 
             QGP_LOG_INFO(LOG_TAG, "Created new identity (first-time profile)\n");
         } else {
