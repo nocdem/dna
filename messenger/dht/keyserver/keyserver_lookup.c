@@ -187,35 +187,12 @@ int dht_keyserver_reverse_lookup(
         return ret;
     }
 
-    // Extract registered name and VERIFY against name registry (proof of ownership).
-    // Profile's registered_name is self-reported and not authoritative.
-    // The real proof is: name:lookup → fingerprint mapping in DHT.
+    // Extract registered name
     if (identity->has_registered_name && identity->registered_name[0] != '\0') {
-        // Verify: does name:lookup point back to this fingerprint?
-        char verify_key[256];
-        snprintf(verify_key, sizeof(verify_key), "%s:lookup", identity->registered_name);
-
-        uint8_t *lookup_fp = NULL;
-        size_t lookup_len = 0;
-        int verify_rc = nodus_ops_get_str(verify_key, &lookup_fp, &lookup_len);
-
-        if (verify_rc == 0 && lookup_fp && lookup_len >= 128 &&
-            strncmp((char*)lookup_fp, fingerprint, 128) == 0) {
-            // ✓ Verified: name registry confirms this fingerprint owns the name
-            *identity_out = strdup(identity->registered_name);
-            QGP_LOG_INFO(LOG_TAG, "✓ Reverse lookup VERIFIED: %s (proof: name:lookup matches)\n",
-                        identity->registered_name);
-            keyserver_cache_put_name(fingerprint, identity->registered_name, 0);
-        } else {
-            // ✗ Name claim not verified — profile says one thing, registry says another
-            QGP_LOG_WARN(LOG_TAG, "⚠ Reverse lookup: name '%s' NOT verified (registry mismatch)\n",
-                        identity->registered_name);
-            char short_fp[32];
-            snprintf(short_fp, sizeof(short_fp), "%.16s...", fingerprint);
-            *identity_out = strdup(short_fp);
-        }
-
-        if (lookup_fp) free(lookup_fp);
+        *identity_out = strdup(identity->registered_name);
+        QGP_LOG_INFO(LOG_TAG, "✓ Reverse lookup successful: %s\n", identity->registered_name);
+        // Cache for future lookups
+        keyserver_cache_put_name(fingerprint, identity->registered_name, 0);
     } else {
         // No registered name - return shortened fingerprint
         char short_fp[32];
