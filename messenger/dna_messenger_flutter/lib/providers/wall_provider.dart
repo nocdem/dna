@@ -219,32 +219,41 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       _mergeBoosts(boostPosts, myFp);
     }).catchError((_) {});
 
-    // Assemble items, preserving existing engagement data while bg-refresh runs
+    // Fetch engagement from cache immediately (C side serves stale cache first,
+    // then refreshes from DHT for stale entries in the same call).
+    // This way posts + likes/comments render together on first frame.
+    final uuids = wallPosts.map((p) => p.uuid).toList();
+    List<WallEngagement> engagements = [];
+    try {
+      engagements = await engine.wallGetEngagement(uuids);
+    } catch (_) {}
+
+    // Assemble items WITH engagement data from cache
     var items = await _assembleItems(wallPosts, myFp);
-    final current = state.valueOrNull;
-    if (current != null && current.isNotEmpty) {
-      final engMap = <String, WallFeedItem>{};
-      for (final item in current) {
-        engMap[item.post.uuid] = item;
+
+    // Merge engagement into items
+    if (engagements.isNotEmpty) {
+      final engMap = <String, WallEngagement>{};
+      for (final e in engagements) {
+        engMap[e.postUuid] = e;
       }
       items = items.map((item) {
-        final prev = engMap[item.post.uuid];
-        if (prev != null &&
-            (prev.commentCount > 0 || prev.likeCount > 0)) {
+        final eng = engMap[item.post.uuid];
+        if (eng != null) {
+          final preview = eng.comments.length <= 3
+              ? eng.comments
+              : eng.comments.sublist(0, 3);
           return item.copyWith(
-            commentCount: prev.commentCount,
-            previewComments: prev.previewComments,
-            likeCount: prev.likeCount,
-            isLikedByMe: prev.isLikedByMe,
+            likeCount: eng.likeCount,
+            isLikedByMe: eng.isLikedByMe,
+            commentCount: eng.comments.length,
+            previewComments: preview,
           );
         }
         return item;
       }).toList();
     }
-    // Fire-and-forget: engagement refresh in background.
-    // C side serves stale cache immediately + fetches DHT for stale entries.
-    // When done, update state with fresh data.
-    _refreshEngagementBg(wallPosts, myFp, engine);
+
     return items;
   }
 
