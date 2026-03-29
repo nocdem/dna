@@ -2,7 +2,7 @@ name: dna_connect
 description: "Post-quantum encrypted P2P communication with integrated cryptocurrency wallet"
 publish_to: 'none'
 
-version: 1.0.0-rc111+10461
+version: 1.0.0-rc112+10462
 
 environment:
   sdk: ^3.10.0
@@ -31,6 +31,9 @@ dependencies:
   sqflite: ^2.3.0  # Local SQLite for caching (Android/iOS)
   sqflite_common_ffi: ^2.3.0  # SQLite FFI for desktop (Linux/Windows/macOS)
   mobile_scanner: ^5.2.3
+
+  # Charts
+  fl_chart: ^0.70.2
 
   # UI components
   qr_flutter: ^4.1.0

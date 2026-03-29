@@ -1026,6 +1026,36 @@ class AppLocalizationsJa extends AppLocalizations {
   String get walletNetwork => 'ネットワーク';
 
   @override
+  String get walletAllChains => 'すべて';
+
+  @override
+  String get walletAssets => '資産';
+
+  @override
+  String get walletPortfolio => 'ポートフォリオ';
+
+  @override
+  String get walletMyWallet => 'マイウォレット';
+
+  @override
+  String get walletTxToday => '今日';
+
+  @override
+  String get walletTxYesterday => '昨日';
+
+  @override
+  String get walletTxThisWeek => '今週';
+
+  @override
+  String get walletTxEarlier => 'それ以前';
+
+  @override
+  String get walletNoNonZeroBalances => '残高のある資産なし';
+
+  @override
+  String get walletNoBalances => '残高なし';
+
+  @override
   String get qrScannerTitle => 'QRスキャナー';
 
   @override

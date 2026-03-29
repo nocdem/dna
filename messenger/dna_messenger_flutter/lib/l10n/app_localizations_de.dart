@@ -1054,6 +1054,36 @@ class AppLocalizationsDe extends AppLocalizations {
   String get walletNetwork => 'Netzwerk';
 
   @override
+  String get walletAllChains => 'Alle';
+
+  @override
+  String get walletAssets => 'Vermögen';
+
+  @override
+  String get walletPortfolio => 'Portfolio';
+
+  @override
+  String get walletMyWallet => 'Meine Wallet';
+
+  @override
+  String get walletTxToday => 'Heute';
+
+  @override
+  String get walletTxYesterday => 'Gestern';
+
+  @override
+  String get walletTxThisWeek => 'Diese Woche';
+
+  @override
+  String get walletTxEarlier => 'Früher';
+
+  @override
+  String get walletNoNonZeroBalances => 'Keine Vermögenswerte mit Guthaben';
+
+  @override
+  String get walletNoBalances => 'Kein Guthaben';
+
+  @override
   String get qrScannerTitle => 'QR-Scanner';
 
   @override

@@ -9,6 +9,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'l10n/app_localizations.dart';
+import 'providers/portfolio_history_provider.dart';
 import 'providers/providers.dart';
 import 'providers/version_check_provider.dart';
 import 'screens/screens.dart';
@@ -298,6 +299,8 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     Future.microtask(() {
       if (mounted) {
         ref.read(allBalancesProvider.notifier).refresh();
+        // Initialize portfolio history recording (hourly sparkline data)
+        ref.read(portfolioHistoryProvider);
       }
     });
 

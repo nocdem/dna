@@ -1047,6 +1047,36 @@ class AppLocalizationsRu extends AppLocalizations {
   String get walletNetwork => 'Сеть';
 
   @override
+  String get walletAllChains => 'Все';
+
+  @override
+  String get walletAssets => 'Активы';
+
+  @override
+  String get walletPortfolio => 'Портфель';
+
+  @override
+  String get walletMyWallet => 'Мой Кошелёк';
+
+  @override
+  String get walletTxToday => 'Сегодня';
+
+  @override
+  String get walletTxYesterday => 'Вчера';
+
+  @override
+  String get walletTxThisWeek => 'На этой неделе';
+
+  @override
+  String get walletTxEarlier => 'Ранее';
+
+  @override
+  String get walletNoNonZeroBalances => 'Нет активов с балансом';
+
+  @override
+  String get walletNoBalances => 'Нет баланса';
+
+  @override
   String get qrScannerTitle => 'QR-сканер';
 
   @override

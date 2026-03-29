@@ -1036,6 +1036,36 @@ class AppLocalizationsAr extends AppLocalizations {
   String get walletNetwork => 'الشبكة';
 
   @override
+  String get walletAllChains => 'الكل';
+
+  @override
+  String get walletAssets => 'الأصول';
+
+  @override
+  String get walletPortfolio => 'المحفظة';
+
+  @override
+  String get walletMyWallet => 'محفظتي';
+
+  @override
+  String get walletTxToday => 'اليوم';
+
+  @override
+  String get walletTxYesterday => 'أمس';
+
+  @override
+  String get walletTxThisWeek => 'هذا الأسبوع';
+
+  @override
+  String get walletTxEarlier => 'سابقاً';
+
+  @override
+  String get walletNoNonZeroBalances => 'لا توجد أصول برصيد';
+
+  @override
+  String get walletNoBalances => 'لا يوجد رصيد';
+
+  @override
   String get qrScannerTitle => 'ماسح QR';
 
   @override

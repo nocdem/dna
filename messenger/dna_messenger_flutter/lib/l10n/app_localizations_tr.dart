@@ -1044,6 +1044,36 @@ class AppLocalizationsTr extends AppLocalizations {
   String get walletNetwork => 'Ağ';
 
   @override
+  String get walletAllChains => 'Tümü';
+
+  @override
+  String get walletAssets => 'Varlıklar';
+
+  @override
+  String get walletPortfolio => 'Portföy';
+
+  @override
+  String get walletMyWallet => 'Cüzdanım';
+
+  @override
+  String get walletTxToday => 'Bugün';
+
+  @override
+  String get walletTxYesterday => 'Dün';
+
+  @override
+  String get walletTxThisWeek => 'Bu Hafta';
+
+  @override
+  String get walletTxEarlier => 'Daha Önce';
+
+  @override
+  String get walletNoNonZeroBalances => 'Bakiyesi olan varlık yok';
+
+  @override
+  String get walletNoBalances => 'Bakiye yok';
+
+  @override
   String get qrScannerTitle => 'QR Tarayıcı';
 
   @override

@@ -2000,6 +2000,66 @@ abstract class AppLocalizations {
   /// **'Network'**
   String get walletNetwork;
 
+  /// No description provided for @walletAllChains.
+  ///
+  /// In en, this message translates to:
+  /// **'All'**
+  String get walletAllChains;
+
+  /// No description provided for @walletAssets.
+  ///
+  /// In en, this message translates to:
+  /// **'Assets'**
+  String get walletAssets;
+
+  /// No description provided for @walletPortfolio.
+  ///
+  /// In en, this message translates to:
+  /// **'Portfolio'**
+  String get walletPortfolio;
+
+  /// No description provided for @walletMyWallet.
+  ///
+  /// In en, this message translates to:
+  /// **'My Wallet'**
+  String get walletMyWallet;
+
+  /// No description provided for @walletTxToday.
+  ///
+  /// In en, this message translates to:
+  /// **'Today'**
+  String get walletTxToday;
+
+  /// No description provided for @walletTxYesterday.
+  ///
+  /// In en, this message translates to:
+  /// **'Yesterday'**
+  String get walletTxYesterday;
+
+  /// No description provided for @walletTxThisWeek.
+  ///
+  /// In en, this message translates to:
+  /// **'This Week'**
+  String get walletTxThisWeek;
+
+  /// No description provided for @walletTxEarlier.
+  ///
+  /// In en, this message translates to:
+  /// **'Earlier'**
+  String get walletTxEarlier;
+
+  /// No description provided for @walletNoNonZeroBalances.
+  ///
+  /// In en, this message translates to:
+  /// **'No non-zero balances'**
+  String get walletNoNonZeroBalances;
+
+  /// No description provided for @walletNoBalances.
+  ///
+  /// In en, this message translates to:
+  /// **'No balances'**
+  String get walletNoBalances;
+
   /// No description provided for @qrScannerTitle.
   ///
   /// In en, this message translates to:

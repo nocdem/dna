@@ -1049,6 +1049,36 @@ class AppLocalizationsPt extends AppLocalizations {
   String get walletNetwork => 'Rede';
 
   @override
+  String get walletAllChains => 'Todos';
+
+  @override
+  String get walletAssets => 'Ativos';
+
+  @override
+  String get walletPortfolio => 'Portfólio';
+
+  @override
+  String get walletMyWallet => 'Minha Carteira';
+
+  @override
+  String get walletTxToday => 'Hoje';
+
+  @override
+  String get walletTxYesterday => 'Ontem';
+
+  @override
+  String get walletTxThisWeek => 'Esta Semana';
+
+  @override
+  String get walletTxEarlier => 'Anterior';
+
+  @override
+  String get walletNoNonZeroBalances => 'Sem ativos com saldo';
+
+  @override
+  String get walletNoBalances => 'Sem saldo';
+
+  @override
   String get qrScannerTitle => 'Scanner de QR';
 
   @override

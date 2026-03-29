@@ -1,4 +1,8 @@
 // Wallet Screen - Wallet list and balances
+import 'dart:convert' show base64Decode;
+import 'dart:typed_data' show Uint8List;
+import 'dart:ui';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,6 +11,8 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../ffi/dna_engine.dart' show Contact, DexQuote, Transaction, UserProfile, Wallet;
 import '../../providers/addressbook_provider.dart';
+import '../../providers/identity_profile_cache_provider.dart';
+import '../../providers/portfolio_history_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
 import '../../providers/price_provider.dart';
@@ -224,6 +230,8 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
         children: [
           const _WalletHeroCard(),
           const _ActionButtonsRow(),
+          const _ChainFilterBar(),
+          const SizedBox(height: 4),
           const _AllBalancesSection(),
         ],
       ),
@@ -336,29 +344,39 @@ class _PillAction extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 105,
+        width: 110,
         padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
           gradient: DnaGradients.primary,
           borderRadius: BorderRadius.circular(DnaSpacing.radiusFull),
           boxShadow: [
             BoxShadow(
-              color: DnaColors.gradientStart.withValues(alpha: 0.3),
-              blurRadius: 8,
-              offset: const Offset(0, 3),
+              color: DnaColors.gradientStart.withValues(alpha: 0.25),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
             ),
           ],
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            FaIcon(icon, color: Colors.white, size: 16),
-            const SizedBox(width: 10),
+            Container(
+              width: 26,
+              height: 26,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.2),
+                shape: BoxShape.circle,
+              ),
+              child: Center(
+                child: FaIcon(icon, color: Colors.white, size: 12),
+              ),
+            ),
+            const SizedBox(width: 8),
             Text(
               label,
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 15,
+                fontSize: 14,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -539,185 +557,354 @@ class _WalletHeroCard extends ConsumerWidget {
     final fingerprint = ref.watch(currentFingerprintProvider);
     final nameCache = ref.watch(nameResolverProvider);
     final identityName = fingerprint != null ? nameCache[fingerprint] : null;
+    final l10n = AppLocalizations.of(context);
 
     // Trigger resolution if not yet cached
     if (fingerprint != null && !nameCache.containsKey(fingerprint)) {
       ref.read(nameResolverProvider.notifier).resolveName(fingerprint);
     }
 
+    // Get avatar from identity profile cache
+    Widget avatarWidget = DnaAvatar(
+      name: identityName ?? 'W',
+      size: DnaAvatarSize.lg,
+    );
+    if (fingerprint != null) {
+      final profileCache = ref.watch(identityProfileCacheProvider);
+      final cachedIdentity = profileCache[fingerprint];
+      if (cachedIdentity != null && cachedIdentity.avatarBase64.isNotEmpty) {
+        try {
+          final bytes = _base64ToBytes(cachedIdentity.avatarBase64);
+          if (bytes.isNotEmpty) {
+            avatarWidget = DnaAvatar(
+              imageBytes: bytes,
+              name: identityName,
+              size: DnaAvatarSize.lg,
+            );
+          }
+        } catch (_) {}
+      }
+    }
+
     return Container(
-      margin: const EdgeInsets.all(DnaSpacing.lg),
-      padding: const EdgeInsets.all(20),
+      margin: const EdgeInsets.fromLTRB(DnaSpacing.lg, DnaSpacing.lg, DnaSpacing.lg, DnaSpacing.sm),
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        gradient: DnaGradients.primaryVertical,
-        borderRadius: BorderRadius.circular(DnaSpacing.radiusLg),
-        boxShadow: [
-          BoxShadow(
-            color: DnaColors.gradientStart.withValues(alpha: 0.3),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        borderRadius: BorderRadius.circular(DnaSpacing.radiusXl),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Stack(
         children: [
-          Text(
-            'My Wallet',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.7),
-              fontSize: 13,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            identityName ?? 'Wallet',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 28,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          // Total portfolio value + 24h change + hide toggle
-          Builder(builder: (context) {
-            final cachedTotal = ref.watch(cachedPortfolioTotalProvider);
-            final totalValue = cachedTotal.valueOrNull;
-            final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
-            final change24h = ref.watch(portfolioChange24hProvider);
-            return Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Row(
-                children: [
-                  Text(
-                    hideBalances
-                        ? '\$*****'
-                        : (totalValue != null && totalValue > 0)
-                            ? '\$${_formatUsdValue(totalValue)}'
-                            : '\$0.00',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 22,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  if (!hideBalances && change24h != null && change24h != 0.0) ...[
-                    const SizedBox(width: 8),
-                    _Change24hBadge(changePercent: change24h, light: true),
-                  ],
-                  const SizedBox(width: 10),
-                  GestureDetector(
-                    onTap: () => ref.read(walletSettingsProvider.notifier).toggleHideBalances(),
-                    child: FaIcon(
-                      hideBalances ? FontAwesomeIcons.eyeSlash : FontAwesomeIcons.eye,
-                      size: 16,
-                      color: Colors.white.withValues(alpha: 0.6),
-                    ),
-                  ),
-                ],
+          // Gradient background
+          Positioned.fill(
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: DnaGradients.primaryVertical,
               ),
-            );
-          }),
-          const SizedBox(height: 16),
-          Builder(builder: (context) {
-            final activeFilter = ref.watch(walletNetworkFilterProvider);
-            return Row(
+            ),
+          ),
+          // Decorative circles for depth
+          Positioned(
+            top: -30,
+            right: -20,
+            child: Container(
+              width: 120,
+              height: 120,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withValues(alpha: 0.06),
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: -40,
+            left: -30,
+            child: Container(
+              width: 140,
+              height: 140,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withValues(alpha: 0.04),
+              ),
+            ),
+          ),
+          // Glassmorphism overlay
+          Positioned.fill(
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 1.5, sigmaY: 1.5),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(DnaSpacing.radiusXl),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.15),
+                    width: 1,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // Content
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _ChainIcon(
-                  asset: 'assets/icons/crypto/cell.svg',
-                  label: 'CELL',
-                  isSelected: activeFilter == 'cellframe',
-                  onTap: () {
-                    final notifier = ref.read(walletNetworkFilterProvider.notifier);
-                    notifier.state = activeFilter == 'cellframe' ? null : 'cellframe';
-                  },
+                // Avatar + name row
+                Row(
+                  children: [
+                    avatarWidget,
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            l10n.walletMyWallet,
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.7),
+                              fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            identityName ?? 'Wallet',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () => ref.read(walletSettingsProvider.notifier).toggleHideBalances(),
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: FaIcon(
+                          ref.watch(walletSettingsProvider).hideBalances
+                              ? FontAwesomeIcons.eyeSlash
+                              : FontAwesomeIcons.eye,
+                          size: 15,
+                          color: Colors.white.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                _ChainIcon(
-                  asset: 'assets/icons/crypto/eth.svg',
-                  label: 'ETH',
-                  isSelected: activeFilter == 'ethereum',
-                  onTap: () {
-                    final notifier = ref.read(walletNetworkFilterProvider.notifier);
-                    notifier.state = activeFilter == 'ethereum' ? null : 'ethereum';
-                  },
-                ),
-                const SizedBox(width: 12),
-                _ChainIcon(
-                  asset: 'assets/icons/crypto/sol.svg',
-                  label: 'SOL',
-                  isSelected: activeFilter == 'solana',
-                  onTap: () {
-                    final notifier = ref.read(walletNetworkFilterProvider.notifier);
-                    notifier.state = activeFilter == 'solana' ? null : 'solana';
-                  },
-                ),
-                const SizedBox(width: 12),
-                _ChainIcon(
-                  asset: 'assets/icons/crypto/trx.svg',
-                  label: 'TRX',
-                  isSelected: activeFilter == 'tron',
-                  onTap: () {
-                    final notifier = ref.read(walletNetworkFilterProvider.notifier);
-                    notifier.state = activeFilter == 'tron' ? null : 'tron';
-                  },
-                ),
+                const SizedBox(height: 16),
+                // Portfolio total + 24h change
+                Builder(builder: (context) {
+                  final cachedTotal = ref.watch(cachedPortfolioTotalProvider);
+                  final totalValue = cachedTotal.valueOrNull;
+                  final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
+                  final change24h = ref.watch(portfolioChange24hProvider);
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        hideBalances
+                            ? '\$*****'
+                            : (totalValue != null && totalValue > 0)
+                                ? '\$${_formatUsdValue(totalValue)}'
+                                : '\$0.00',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 30,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                      if (!hideBalances && change24h != null && change24h != 0.0) ...[
+                        const SizedBox(width: 10),
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: _Change24hBadge(changePercent: change24h, light: true),
+                        ),
+                      ],
+                    ],
+                  );
+                }),
+                // Portfolio sparkline
+                const _PortfolioSparkline(),
               ],
-            );
-          }),
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
-class _ChainIcon extends StatelessWidget {
-  final String asset;
-  final String label;
-  final bool isSelected;
-  final VoidCallback? onTap;
+/// Decode base64 avatar string to bytes
+Uint8List _base64ToBytes(String base64Str) {
+  try {
+    // Strip data URI prefix if present
+    final raw = base64Str.contains(',') ? base64Str.split(',').last : base64Str;
+    return Uint8List.fromList(
+      List<int>.from(Uri.parse('data:;base64,$raw').data!.contentAsBytes()),
+    );
+  } catch (_) {
+    try {
+      return Uint8List.fromList(
+        List<int>.from(base64Decode(base64Str)),
+      );
+    } catch (_) {
+      return Uint8List(0);
+    }
+  }
+}
 
-  const _ChainIcon({
-    required this.asset,
-    required this.label,
-    this.isSelected = false,
-    this.onTap,
-  });
+/// Portfolio sparkline widget — shows 7-day trend inside hero card
+class _PortfolioSparkline extends ConsumerWidget {
+  const _PortfolioSparkline();
 
   @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? Colors.white.withValues(alpha: 0.4)
-                  : Colors.white.withValues(alpha: 0.15),
-              shape: BoxShape.circle,
-              border: isSelected
-                  ? Border.all(color: Colors.white, width: 2)
-                  : null,
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(6),
-              child: buildCryptoIcon(asset),
-            ),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final history = ref.watch(portfolioHistoryProvider);
+    final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
+
+    // Need at least 2 points for a line
+    if (history.length < 2 || hideBalances) {
+      return const SizedBox(height: 8);
+    }
+
+    final spots = <FlSpot>[];
+    for (int i = 0; i < history.length; i++) {
+      spots.add(FlSpot(i.toDouble(), history[i].totalUsd));
+    }
+
+    // Determine trend color
+    final isUp = history.last.totalUsd >= history.first.totalUsd;
+    final lineColor = isUp
+        ? const Color(0xFF34D399) // green
+        : const Color(0xFFEF4444); // red
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: SizedBox(
+        height: 50,
+        child: LineChart(
+          LineChartData(
+            gridData: const FlGridData(show: false),
+            titlesData: const FlTitlesData(show: false),
+            borderData: FlBorderData(show: false),
+            lineTouchData: const LineTouchData(enabled: false),
+            clipData: const FlClipData.all(),
+            lineBarsData: [
+              LineChartBarData(
+                spots: spots,
+                isCurved: true,
+                curveSmoothness: 0.3,
+                color: lineColor,
+                barWidth: 2,
+                isStrokeCapRound: true,
+                dotData: const FlDotData(show: false),
+                belowBarData: BarAreaData(
+                  show: true,
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      lineColor.withValues(alpha: 0.25),
+                      lineColor.withValues(alpha: 0.0),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: TextStyle(
-              color: isSelected
-                  ? Colors.white
-                  : Colors.white.withValues(alpha: 0.7),
-              fontSize: 10,
-              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-            ),
-          ),
-        ],
+          duration: const Duration(milliseconds: 300),
+        ),
+      ),
+    );
+  }
+}
+
+/// Chain filter chip bar — horizontal scrollable chips below hero card
+class _ChainFilterBar extends ConsumerWidget {
+  const _ChainFilterBar();
+
+  static const _chains = [
+    (null, 'All', null),
+    ('cellframe', 'CELL', 'assets/icons/crypto/cell.svg'),
+    ('ethereum', 'ETH', 'assets/icons/crypto/eth.svg'),
+    ('solana', 'SOL', 'assets/icons/crypto/sol.svg'),
+    ('tron', 'TRX', 'assets/icons/crypto/trx.svg'),
+  ];
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final activeFilter = ref.watch(walletNetworkFilterProvider);
+    final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.lg, vertical: DnaSpacing.xs),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: _chains.map((entry) {
+            final (network, label, iconPath) = entry;
+            final isSelected = activeFilter == network;
+            final displayLabel = network == null ? l10n.walletAllChains : label;
+
+            return Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: GestureDetector(
+                onTap: () {
+                  ref.read(walletNetworkFilterProvider.notifier).state =
+                      isSelected ? null : network;
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? theme.colorScheme.primary.withValues(alpha: 0.15)
+                        : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(DnaSpacing.radiusFull),
+                    border: Border.all(
+                      color: isSelected
+                          ? theme.colorScheme.primary.withValues(alpha: 0.5)
+                          : theme.colorScheme.outline.withValues(alpha: 0.1),
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (iconPath != null) ...[
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: buildCryptoIcon(iconPath),
+                        ),
+                        const SizedBox(width: 6),
+                      ],
+                      Text(
+                        displayLabel,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                          color: isSelected
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
       ),
     );
   }
@@ -778,12 +965,22 @@ class _AllBalancesSection extends ConsumerWidget {
 
     return filteredGroups.isEmpty
         ? Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              walletSettings.hideZeroBalances
-                  ? 'No non-zero balances'
-                  : 'No balances',
-              style: theme.textTheme.bodySmall,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            child: Center(
+              child: Column(
+                children: [
+                  FaIcon(FontAwesomeIcons.coins, size: 32,
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.2)),
+                  const SizedBox(height: 8),
+                  Text(
+                    walletSettings.hideZeroBalances
+                        ? 'No non-zero balances'
+                        : 'No balances',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.4)),
+                  ),
+                ],
+              ),
             ),
           )
         : Column(
@@ -827,32 +1024,68 @@ class _GroupedTokenTile extends ConsumerWidget {
     final iconPath = getTokenIconPath(token);
     final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
 
+    final tokenColor = _getGroupedTokenColor(token);
+
     return DnaCard(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       onTap: () => _showChainBreakdown(context, ref),
       child: Row(
         children: [
-          // Token icon
-          iconPath != null
-              ? SizedBox(width: 40, height: 40, child: buildCryptoIcon(iconPath))
-              : CircleAvatar(
-                  backgroundColor: Colors.blue.withValues(alpha: 0.2),
-                  radius: 20,
-                  child: Text(token.isNotEmpty ? token[0].toUpperCase() : '?',
-                    style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
+          // Token icon with glow ring
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: tokenColor.withValues(alpha: 0.2),
+                  blurRadius: 8,
+                  spreadRadius: 1,
                 ),
-          const SizedBox(width: 12),
+              ],
+            ),
+            child: Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: tokenColor.withValues(alpha: 0.3),
+                  width: 1.5,
+                ),
+                color: tokenColor.withValues(alpha: 0.08),
+              ),
+              child: iconPath != null
+                  ? Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: buildCryptoIcon(iconPath),
+                    )
+                  : Center(
+                      child: Text(
+                        token.isNotEmpty ? token[0].toUpperCase() : '?',
+                        style: TextStyle(
+                          color: tokenColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+            ),
+          ),
+          const SizedBox(width: 14),
           // Token name + chain count
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(token,
-                  style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600, fontSize: 15)),
+                const SizedBox(height: 2),
                 Text('${groupedToken.chains.length} chains',
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.45))),
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.4),
+                    fontSize: 12)),
               ],
             ),
           ),
@@ -934,6 +1167,17 @@ class _GroupedTokenTile extends ConsumerWidget {
       ),
     );
   }
+
+  Color _getGroupedTokenColor(String token) {
+    switch (token.toUpperCase()) {
+      case 'USDT':
+        return const Color(0xFF26A17B);
+      case 'USDC':
+        return const Color(0xFF2775CA);
+      default:
+        return DnaColors.textInfo;
+    }
+  }
 }
 
 class _BalanceTile extends ConsumerWidget {
@@ -949,45 +1193,73 @@ class _BalanceTile extends ConsumerWidget {
     final balance = walletBalance.balance;
     final iconPath = getTokenIconPath(balance.token);
     final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
+    final tokenColor = _getTokenColor(balance.token);
 
     return DnaCard(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       onTap: () => _showTokenDetails(context, ref),
       child: Row(
         children: [
-          // Token icon
-          iconPath != null
-              ? SizedBox(
-                  width: 40,
-                  height: 40,
-                  child: buildCryptoIcon(iconPath),
-                )
-              : CircleAvatar(
-                  backgroundColor: _getTokenColor(balance.token).withValues(alpha: 0.2),
-                  radius: 20,
-                  child: Text(
-                    balance.token.isNotEmpty ? balance.token[0].toUpperCase() : '?',
-                    style: TextStyle(
-                      color: _getTokenColor(balance.token),
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+          // Token icon with glow ring
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: tokenColor.withValues(alpha: 0.2),
+                  blurRadius: 8,
+                  spreadRadius: 1,
                 ),
-          const SizedBox(width: 12),
-          // Token name + network inline
+              ],
+            ),
+            child: Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: tokenColor.withValues(alpha: 0.3),
+                  width: 1.5,
+                ),
+                color: tokenColor.withValues(alpha: 0.08),
+              ),
+              child: iconPath != null
+                  ? Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: buildCryptoIcon(iconPath),
+                    )
+                  : Center(
+                      child: Text(
+                        balance.token.isNotEmpty ? balance.token[0].toUpperCase() : '?',
+                        style: TextStyle(
+                          color: tokenColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+            ),
+          ),
+          const SizedBox(width: 14),
+          // Token name + network
           Expanded(
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   balance.token,
-                  style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 15,
+                  ),
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(height: 2),
                 Text(
-                  '(${getNetworkDisplayLabel(balance.network)})',
+                  getNetworkDisplayLabel(balance.network),
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.45),
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.4),
+                    fontSize: 12,
                   ),
                 ),
               ],
@@ -2209,11 +2481,27 @@ class _TokenDetailSheet extends ConsumerWidget {
                       );
                     }
 
+                    // Build grouped list with date separators
+                    final groupedItems = _buildDateGroupedItems(filtered, context);
                     return ListView.builder(
                       controller: scrollController,
-                      itemCount: filtered.length,
+                      itemCount: groupedItems.length,
                       itemBuilder: (context, index) {
-                        final tx = filtered[index];
+                        final item = groupedItems[index];
+                        if (item is String) {
+                          // Date separator
+                          return Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                            child: Text(
+                              item,
+                              style: theme.textTheme.labelMedium?.copyWith(
+                                color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          );
+                        }
+                        final tx = item as Transaction;
                         return _TransactionTile(transaction: tx, network: network);
                       },
                     );
@@ -2256,6 +2544,49 @@ class _TokenDetailSheet extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// Group transactions by date with separator labels
+  List<dynamic> _buildDateGroupedItems(List<Transaction> txs, BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final weekAgo = today.subtract(const Duration(days: 7));
+
+    final items = <dynamic>[];
+    String? lastGroup;
+
+    for (final tx in txs) {
+      final ts = int.tryParse(tx.timestamp);
+      final txDate = ts != null && ts > 0
+          ? DateTime.fromMillisecondsSinceEpoch(ts * 1000)
+          : null;
+
+      String group;
+      if (txDate == null) {
+        group = l10n.walletTxEarlier;
+      } else {
+        final txDay = DateTime(txDate.year, txDate.month, txDate.day);
+        if (txDay == today) {
+          group = l10n.walletTxToday;
+        } else if (txDay == yesterday) {
+          group = l10n.walletTxYesterday;
+        } else if (txDay.isAfter(weekAgo)) {
+          group = l10n.walletTxThisWeek;
+        } else {
+          group = l10n.walletTxEarlier;
+        }
+      }
+
+      if (group != lastGroup) {
+        items.add(group);
+        lastGroup = group;
+      }
+      items.add(tx);
+    }
+
+    return items;
   }
 
   void _showSend(BuildContext context, WidgetRef ref, String currentBalance) {

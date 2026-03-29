@@ -1021,6 +1021,36 @@ class AppLocalizationsZh extends AppLocalizations {
   String get walletNetwork => '网络';
 
   @override
+  String get walletAllChains => '全部';
+
+  @override
+  String get walletAssets => '资产';
+
+  @override
+  String get walletPortfolio => '投资组合';
+
+  @override
+  String get walletMyWallet => '我的钱包';
+
+  @override
+  String get walletTxToday => '今天';
+
+  @override
+  String get walletTxYesterday => '昨天';
+
+  @override
+  String get walletTxThisWeek => '本周';
+
+  @override
+  String get walletTxEarlier => '更早';
+
+  @override
+  String get walletNoNonZeroBalances => '无有余额的资产';
+
+  @override
+  String get walletNoBalances => '无余额';
+
+  @override
   String get qrScannerTitle => 'QR 扫描仪';
 
   @override

@@ -1045,6 +1045,36 @@ class AppLocalizationsNl extends AppLocalizations {
   String get walletNetwork => 'Netwerk';
 
   @override
+  String get walletAllChains => 'Alles';
+
+  @override
+  String get walletAssets => 'Activa';
+
+  @override
+  String get walletPortfolio => 'Portfolio';
+
+  @override
+  String get walletMyWallet => 'Mijn Wallet';
+
+  @override
+  String get walletTxToday => 'Vandaag';
+
+  @override
+  String get walletTxYesterday => 'Gisteren';
+
+  @override
+  String get walletTxThisWeek => 'Deze Week';
+
+  @override
+  String get walletTxEarlier => 'Eerder';
+
+  @override
+  String get walletNoNonZeroBalances => 'Geen activa met saldo';
+
+  @override
+  String get walletNoBalances => 'Geen saldo';
+
+  @override
   String get qrScannerTitle => 'QR-scanner';
 
   @override

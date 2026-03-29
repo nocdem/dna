@@ -1049,6 +1049,36 @@ class AppLocalizationsEs extends AppLocalizations {
   String get walletNetwork => 'Red';
 
   @override
+  String get walletAllChains => 'Todos';
+
+  @override
+  String get walletAssets => 'Activos';
+
+  @override
+  String get walletPortfolio => 'Portafolio';
+
+  @override
+  String get walletMyWallet => 'Mi Billetera';
+
+  @override
+  String get walletTxToday => 'Hoy';
+
+  @override
+  String get walletTxYesterday => 'Ayer';
+
+  @override
+  String get walletTxThisWeek => 'Esta Semana';
+
+  @override
+  String get walletTxEarlier => 'Anterior';
+
+  @override
+  String get walletNoNonZeroBalances => 'Sin activos con saldo';
+
+  @override
+  String get walletNoBalances => 'Sin saldo';
+
+  @override
   String get qrScannerTitle => 'Escáner QR';
 
   @override
