@@ -590,7 +590,9 @@ class _WalletHeroCard extends ConsumerWidget {
       }
     }
 
-    return Container(
+    return GestureDetector(
+      onTap: () => _showPortfolioBreakdown(context, ref),
+      child: Container(
       margin: const EdgeInsets.fromLTRB(DnaSpacing.lg, DnaSpacing.lg, DnaSpacing.lg, DnaSpacing.sm),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
@@ -743,6 +745,263 @@ class _WalletHeroCard extends ConsumerWidget {
             ),
           ),
         ],
+      ),
+      ),
+    );
+  }
+
+  void _showPortfolioBreakdown(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => const _PortfolioBreakdownSheet(),
+    );
+  }
+}
+
+/// Portfolio breakdown bottom sheet — token allocation pie chart + chain breakdown
+class _PortfolioBreakdownSheet extends ConsumerWidget {
+  const _PortfolioBreakdownSheet();
+
+  static const _tokenColors = <String, Color>{
+    'CPUNK': Color(0xFF00D4AA),
+    'CELL': Color(0xFF6B4CE6),
+    'ETH': Color(0xFF627EEA),
+    'SOL': Color(0xFF9945FF),
+    'TRX': Color(0xFFFF0013),
+    'USDT': Color(0xFF26A17B),
+    'USDC': Color(0xFF2775CA),
+    'KEL': Color(0xFFFF6B35),
+    'NYS': Color(0xFFE91E63),
+    'QEVM': Color(0xFF795548),
+  };
+
+  static const _chainColors = <String, Color>{
+    'cellframe': Color(0xFF6B4CE6),
+    'ethereum': Color(0xFF627EEA),
+    'solana': Color(0xFF9945FF),
+    'tron': Color(0xFFFF0013),
+  };
+
+  Color _colorForToken(String token) =>
+      _tokenColors[token.toUpperCase()] ?? DnaColors.textInfo;
+
+  Color _colorForChain(String chain) =>
+      _chainColors[chain.toLowerCase()] ?? DnaColors.textInfo;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final allBalances = ref.watch(allBalancesProvider).valueOrNull ?? [];
+    final prices = ref.watch(priceProvider).valueOrNull ?? {};
+    final cachedTotal = ref.watch(cachedPortfolioTotalProvider).valueOrNull ?? 0.0;
+
+    // Build token breakdown (token → USD value)
+    final tokenUsd = <String, double>{};
+    final chainUsd = <String, double>{};
+
+    for (final wb in allBalances) {
+      final token = wb.balance.token.toUpperCase();
+      final bal = double.tryParse(wb.balance.balance) ?? 0.0;
+      final price = prices[token]?.price ?? 0.0;
+      final usd = bal * price;
+      if (usd <= 0) continue;
+
+      tokenUsd[token] = (tokenUsd[token] ?? 0.0) + usd;
+
+      final chain = wb.balance.network.toLowerCase();
+      chainUsd[chain] = (chainUsd[chain] ?? 0.0) + usd;
+    }
+
+    // Sort by value descending
+    final sortedTokens = tokenUsd.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final sortedChains = chainUsd.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    final total = cachedTotal > 0 ? cachedTotal : tokenUsd.values.fold(0.0, (a, b) => a + b);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(DnaSpacing.radiusXl)),
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(DnaSpacing.lg),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Handle bar
+              Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: theme.dividerColor,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: DnaSpacing.lg),
+              Text(
+                'Portfolio Breakdown',
+                style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              Text(
+                '\$${_formatUsdValue(total)}',
+                style: theme.textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: theme.colorScheme.primary,
+                ),
+              ),
+              const SizedBox(height: DnaSpacing.xl),
+
+              // Token allocation donut chart
+              if (sortedTokens.isNotEmpty) ...[
+                Text(
+                  'By Token',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                  ),
+                ),
+                const SizedBox(height: DnaSpacing.md),
+                SizedBox(
+                  height: 180,
+                  child: Row(
+                    children: [
+                      // Pie chart
+                      Expanded(
+                        child: PieChart(
+                          PieChartData(
+                            sectionsSpace: 2,
+                            centerSpaceRadius: 35,
+                            sections: sortedTokens.map((e) {
+                              final pct = total > 0 ? (e.value / total * 100) : 0.0;
+                              return PieChartSectionData(
+                                value: e.value,
+                                color: _colorForToken(e.key),
+                                radius: 45,
+                                title: pct >= 5 ? '${pct.toStringAsFixed(0)}%' : '',
+                                titleStyle: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ),
+                      // Legend
+                      Expanded(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: sortedTokens.map((e) {
+                            final pct = total > 0 ? (e.value / total * 100) : 0.0;
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 3),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 10, height: 10,
+                                    decoration: BoxDecoration(
+                                      color: _colorForToken(e.key),
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(e.key, style: theme.textTheme.bodySmall?.copyWith(
+                                    fontWeight: FontWeight.w600)),
+                                  const Spacer(),
+                                  Text('${pct.toStringAsFixed(1)}%',
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                                    )),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: DnaSpacing.xl),
+
+              // Chain breakdown
+              if (sortedChains.isNotEmpty) ...[
+                Text(
+                  'By Chain',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                  ),
+                ),
+                const SizedBox(height: DnaSpacing.md),
+                ...sortedChains.map((e) {
+                  final pct = total > 0 ? (e.value / total * 100) : 0.0;
+                  final label = getNetworkDisplayLabel(e.key);
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              width: 12, height: 12,
+                              decoration: BoxDecoration(
+                                color: _colorForChain(e.key),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Text(label, style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w600)),
+                            const Spacer(),
+                            Text('\$${_formatUsdValue(e.value)}',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.bold)),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              width: 45,
+                              child: Text('${pct.toStringAsFixed(0)}%',
+                                textAlign: TextAlign.right,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                                )),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: LinearProgressIndicator(
+                            value: pct / 100,
+                            minHeight: 6,
+                            backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                            valueColor: AlwaysStoppedAnimation(_colorForChain(e.key)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+              ],
+
+              const SizedBox(height: DnaSpacing.xl),
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Close'),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
