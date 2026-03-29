@@ -487,5 +487,8 @@
   "chatTapToDownload": "İndirmek için dokunun",
   "chatVideoComingSoon": "Video oynatma yakında",
   "chatAudioComingSoon": "Ses oynatma yakında",
-  "chatMediaUnsupported": "Desteklenmeyen medya türü"
+  "chatMediaUnsupported": "Desteklenmeyen medya türü",
+  "chatTapToPlay": "Oynatmak için dokunun",
+  "chatVideoError": "Video oynatma hatası",
+  "chatAudioError": "Ses oynatma hatası"
 }

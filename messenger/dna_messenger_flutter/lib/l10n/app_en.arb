@@ -748,5 +748,8 @@
   "chatTapToDownload": "Tap to download",
   "chatVideoComingSoon": "Video playback coming soon",
   "chatAudioComingSoon": "Audio playback coming soon",
-  "chatMediaUnsupported": "Unsupported media type"
+  "chatMediaUnsupported": "Unsupported media type",
+  "chatTapToPlay": "Tap to play",
+  "chatVideoError": "Video playback error",
+  "chatAudioError": "Audio playback error"
 }

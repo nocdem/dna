@@ -1497,4 +1497,13 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get chatMediaUnsupported => 'Desteklenmeyen medya türü';
+
+  @override
+  String get chatTapToPlay => 'Oynatmak için dokunun';
+
+  @override
+  String get chatVideoError => 'Video oynatma hatası';
+
+  @override
+  String get chatAudioError => 'Ses oynatma hatası';
 }

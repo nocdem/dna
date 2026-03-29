@@ -1499,4 +1499,13 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get chatMediaUnsupported => 'Unsupported media type';
+
+  @override
+  String get chatTapToPlay => 'Tap to play';
+
+  @override
+  String get chatVideoError => 'Video playback error';
+
+  @override
+  String get chatAudioError => 'Audio playback error';
 }

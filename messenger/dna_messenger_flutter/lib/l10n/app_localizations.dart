@@ -2827,6 +2827,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Unsupported media type'**
   String get chatMediaUnsupported;
+
+  /// No description provided for @chatTapToPlay.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap to play'**
+  String get chatTapToPlay;
+
+  /// No description provided for @chatVideoError.
+  ///
+  /// In en, this message translates to:
+  /// **'Video playback error'**
+  String get chatVideoError;
+
+  /// No description provided for @chatAudioError.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio playback error'**
+  String get chatAudioError;
 }
 
 class _AppLocalizationsDelegate

@@ -1,12 +1,16 @@
 // Media Message Bubble - Display widget for media_ref messages in chat
 // Shows thumbnail immediately, downloads full media on tap via MediaService.
+// Supports image (fullscreen viewer), video (fullscreen player), audio (inline player).
 
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:video_player/video_player.dart';
 
 import '../ffi/dna_engine.dart';
 import '../design_system/theme/dna_colors.dart';
@@ -41,7 +45,15 @@ class MediaMessageBubble extends StatefulWidget {
 class _MediaMessageBubbleState extends State<MediaMessageBubble> {
   bool _downloading = false;
   bool _downloadFailed = false;
-  Uint8List? _fullImageBytes;
+  Uint8List? _fullMediaBytes;
+
+  // Audio player state
+  AudioPlayer? _audioPlayer;
+  bool _audioLoaded = false;
+  Duration _audioDuration = Duration.zero;
+  Duration _audioPosition = Duration.zero;
+  bool _audioPlaying = false;
+  File? _audioTempFile;
 
   MediaRef? get _ref => MediaRef.fromJson(widget.mediaData);
 
@@ -51,8 +63,15 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
     // Check cache
     final ref = _ref;
     if (ref != null) {
-      _fullImageBytes = _mediaCache[ref.contentHash];
+      _fullMediaBytes = _mediaCache[ref.contentHash];
     }
+  }
+
+  @override
+  void dispose() {
+    _audioPlayer?.dispose();
+    _audioTempFile?.delete().catchError((_) {});
+    super.dispose();
   }
 
   Uint8List? _decodeThumbnail() {
@@ -72,7 +91,7 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
     // Already cached
     if (_mediaCache.containsKey(ref.contentHash)) {
       setState(() {
-        _fullImageBytes = _mediaCache[ref.contentHash];
+        _fullMediaBytes = _mediaCache[ref.contentHash];
         _downloadFailed = false;
       });
       return;
@@ -89,7 +108,7 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
       _mediaCache[ref.contentHash] = bytes;
       if (mounted) {
         setState(() {
-          _fullImageBytes = bytes;
+          _fullMediaBytes = bytes;
           _downloading = false;
         });
       }
@@ -112,19 +131,9 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
     if (ref.isImage) {
       return _buildImageBubble(context, ref);
     } else if (ref.isVideo) {
-      return _buildPlaceholderBubble(
-        context,
-        ref,
-        FontAwesomeIcons.circlePlay,
-        AppLocalizations.of(context).chatVideoComingSoon,
-      );
+      return _buildVideoBubble(context, ref);
     } else if (ref.isAudio) {
-      return _buildPlaceholderBubble(
-        context,
-        ref,
-        FontAwesomeIcons.headphones,
-        AppLocalizations.of(context).chatAudioComingSoon,
-      );
+      return _buildAudioBubble(context, ref);
     } else {
       return _buildPlaceholderBubble(
         context,
@@ -134,6 +143,10 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
       );
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Image bubble (existing, unchanged)
+  // ---------------------------------------------------------------------------
 
   Widget _buildImageBubble(BuildContext context, MediaRef ref) {
     final theme = Theme.of(context);
@@ -193,9 +206,9 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
                     fit: StackFit.expand,
                     children: [
                       // Image layer: full if available, else thumbnail
-                      if (_fullImageBytes != null)
+                      if (_fullMediaBytes != null)
                         Image.memory(
-                          _fullImageBytes!,
+                          _fullMediaBytes!,
                           fit: BoxFit.cover,
                           errorBuilder: (_, __, ___) => _buildErrorPlaceholder(),
                         )
@@ -210,54 +223,103 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
 
                       // Overlay: download indicator
                       if (_downloading)
-                        Container(
-                          color: Colors.black38,
-                          child: Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  l10n.chatDownloadingMedia,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        )
+                        _buildDownloadingOverlay(l10n)
                       else if (_downloadFailed)
-                        Container(
-                          color: Colors.black38,
-                          child: Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const FaIcon(
-                                  FontAwesomeIcons.circleExclamation,
-                                  color: Colors.white,
-                                  size: 24,
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  l10n.chatUploadFailed,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ],
-                            ),
-                          ),
+                        _buildFailedOverlay(l10n)
+                      else if (_fullMediaBytes == null)
+                        _buildTapToDownloadOverlay(l10n),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+            // Caption, timestamp, status
+            _buildCaptionTimestamp(context, ref),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Video bubble
+  // ---------------------------------------------------------------------------
+
+  Widget _buildVideoBubble(BuildContext context, MediaRef ref) {
+    final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
+    final isOutgoing = widget.message.isOutgoing;
+    final thumbnailBytes = _decodeThumbnail();
+    final caption = ref.caption;
+    final width = ref.width;
+    final height = ref.height;
+
+    final aspectRatio =
+        width > 0 && height > 0 ? width / height : 16 / 9;
+
+    return Align(
+      alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 280),
+        margin: EdgeInsets.only(
+          top: 4,
+          bottom: 4,
+          left: isOutgoing ? 48 : 0,
+          right: isOutgoing ? 0 : 48,
+        ),
+        decoration: BoxDecoration(
+          color: isOutgoing
+              ? theme.colorScheme.primary
+              : theme.colorScheme.surface,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isOutgoing ? 16 : 4),
+            bottomRight: Radius.circular(isOutgoing ? 4 : 16),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.only(
+                topLeft: const Radius.circular(16),
+                topRight: const Radius.circular(16),
+                bottomLeft: Radius.circular(
+                    caption != null && caption.isNotEmpty
+                        ? 0
+                        : (isOutgoing ? 16 : 4)),
+                bottomRight: Radius.circular(
+                    caption != null && caption.isNotEmpty
+                        ? 0
+                        : (isOutgoing ? 4 : 16)),
+              ),
+              child: GestureDetector(
+                onTap: () => _onVideoTap(context, ref),
+                child: AspectRatio(
+                  aspectRatio: (aspectRatio as double).clamp(0.5, 2.0),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // Thumbnail layer
+                      if (thumbnailBytes != null)
+                        Image.memory(
+                          thumbnailBytes,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) =>
+                              Container(color: Colors.grey[800]),
                         )
-                      else if (_fullImageBytes == null)
+                      else
+                        Container(color: Colors.grey[800]),
+
+                      // Overlay states
+                      if (_downloading)
+                        _buildDownloadingOverlay(l10n)
+                      else if (_downloadFailed)
+                        _buildFailedOverlay(l10n)
+                      else if (_fullMediaBytes == null)
+                        // Not downloaded yet: show download icon
                         Container(
                           color: Colors.black26,
                           child: Center(
@@ -267,7 +329,7 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
                                 const FaIcon(
                                   FontAwesomeIcons.circleDown,
                                   color: Colors.white,
-                                  size: 28,
+                                  size: 36,
                                 ),
                                 const SizedBox(height: 6),
                                 Text(
@@ -280,6 +342,51 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
                               ],
                             ),
                           ),
+                        )
+                      else
+                        // Downloaded: show play button overlay
+                        Container(
+                          color: Colors.black26,
+                          child: Center(
+                            child: Container(
+                              width: 56,
+                              height: 56,
+                              decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Center(
+                                child: FaIcon(
+                                  FontAwesomeIcons.play,
+                                  color: Colors.white,
+                                  size: 24,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+
+                      // Duration badge (bottom-right)
+                      if (ref.duration > 0)
+                        Positioned(
+                          bottom: 8,
+                          right: 8,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              _formatDuration(Duration(seconds: ref.duration)),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
                         ),
                     ],
                   ),
@@ -288,50 +395,323 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
             ),
 
             // Caption, timestamp, status
+            _buildCaptionTimestamp(context, ref),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _onVideoTap(BuildContext context, MediaRef ref) {
+    if (_fullMediaBytes != null) {
+      // Open fullscreen video player
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => _FullscreenVideoPlayer(
+            videoData: _fullMediaBytes!,
+            caption: ref.caption,
+          ),
+        ),
+      );
+    } else if (!_downloading) {
+      _downloadFullMedia();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Audio bubble (inline player)
+  // ---------------------------------------------------------------------------
+
+  Widget _buildAudioBubble(BuildContext context, MediaRef ref) {
+    final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
+    final isOutgoing = widget.message.isOutgoing;
+    final caption = ref.caption;
+
+    return Align(
+      alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 280),
+        margin: EdgeInsets.only(
+          top: 4,
+          bottom: 4,
+          left: isOutgoing ? 48 : 0,
+          right: isOutgoing ? 0 : 48,
+        ),
+        decoration: BoxDecoration(
+          color: isOutgoing
+              ? theme.colorScheme.primary
+              : theme.colorScheme.surface,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isOutgoing ? 16 : 4),
+            bottomRight: Radius.circular(isOutgoing ? 4 : 16),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Audio player controls
             Padding(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+              child: _buildAudioControls(context, ref, l10n),
+            ),
+
+            // Caption, timestamp, status
+            _buildCaptionTimestamp(context, ref),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAudioControls(
+      BuildContext context, MediaRef ref, AppLocalizations l10n) {
+    final theme = Theme.of(context);
+    final isOutgoing = widget.message.isOutgoing;
+    final contentColor = isOutgoing
+        ? theme.colorScheme.onPrimary
+        : theme.colorScheme.onSurface;
+
+    // Not downloaded yet
+    if (_fullMediaBytes == null && !_downloading) {
+      return GestureDetector(
+        onTap: _downloadFullMedia,
+        child: Row(
+          children: [
+            FaIcon(
+              FontAwesomeIcons.circleDown,
+              color: contentColor,
+              size: 28,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
               child: Column(
-                crossAxisAlignment: isOutgoing
-                    ? CrossAxisAlignment.end
-                    : CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (caption != null && caption.isNotEmpty) ...[
-                    Text(
-                      caption,
-                      style: TextStyle(
-                        color: isOutgoing
-                            ? theme.colorScheme.onPrimary
-                            : theme.colorScheme.onSurface,
-                      ),
+                  // Placeholder progress bar
+                  LinearProgressIndicator(
+                    value: 0,
+                    backgroundColor: contentColor.withAlpha(51),
+                    color: contentColor.withAlpha(102),
+                    minHeight: 3,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    ref.duration > 0
+                        ? _formatDuration(Duration(seconds: ref.duration))
+                        : l10n.chatTapToDownload,
+                    style: TextStyle(
+                      color: contentColor.withAlpha(179),
+                      fontSize: 11,
                     ),
-                    const SizedBox(height: 4),
-                  ],
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        DateFormat('HH:mm').format(widget.message.timestamp),
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontSize: 10,
-                          color: isOutgoing
-                              ? theme.colorScheme.onPrimary.withAlpha(179)
-                              : theme.textTheme.bodySmall?.color,
-                        ),
-                      ),
-                      if (isOutgoing) ...[
-                        const SizedBox(width: 4),
-                        _buildStatusIndicator(widget.message.status, theme),
-                      ],
-                    ],
                   ),
                 ],
               ),
             ),
           ],
         ),
+      );
+    }
+
+    // Downloading
+    if (_downloading) {
+      return Row(
+        children: [
+          SizedBox(
+            width: 28,
+            height: 28,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: contentColor,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LinearProgressIndicator(
+                  backgroundColor: contentColor.withAlpha(51),
+                  color: contentColor.withAlpha(102),
+                  minHeight: 3,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  l10n.chatDownloadingMedia,
+                  style: TextStyle(
+                    color: contentColor.withAlpha(179),
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Download failed
+    if (_downloadFailed) {
+      return GestureDetector(
+        onTap: _downloadFullMedia,
+        child: Row(
+          children: [
+            FaIcon(
+              FontAwesomeIcons.circleExclamation,
+              color: DnaColors.textWarning,
+              size: 28,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                l10n.chatUploadFailed,
+                style: TextStyle(
+                  color: contentColor.withAlpha(179),
+                  fontSize: 11,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Downloaded — show player controls
+    final progress = _audioDuration.inMilliseconds > 0
+        ? _audioPosition.inMilliseconds / _audioDuration.inMilliseconds
+        : 0.0;
+
+    final posText = _formatDuration(_audioPosition);
+    final durText = _audioLoaded
+        ? _formatDuration(_audioDuration)
+        : (ref.duration > 0
+            ? _formatDuration(Duration(seconds: ref.duration))
+            : '0:00');
+
+    return GestureDetector(
+      onTap: () => _onAudioPlayPause(ref),
+      child: Row(
+        children: [
+          FaIcon(
+            _audioPlaying
+                ? FontAwesomeIcons.circlePause
+                : FontAwesomeIcons.circlePlay,
+            color: contentColor,
+            size: 28,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LinearProgressIndicator(
+                  value: progress.clamp(0.0, 1.0),
+                  backgroundColor: contentColor.withAlpha(51),
+                  color: contentColor,
+                  minHeight: 3,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '$posText / $durText',
+                  style: TextStyle(
+                    color: contentColor.withAlpha(179),
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
+
+  Future<void> _onAudioPlayPause(MediaRef ref) async {
+    if (!_audioLoaded) {
+      await _initAudioPlayer(ref);
+    }
+    if (_audioPlayer == null) return;
+
+    if (_audioPlaying) {
+      await _audioPlayer!.pause();
+    } else {
+      // If completed, seek to start before playing
+      if (_audioPlayer!.processingState == ProcessingState.completed) {
+        await _audioPlayer!.seek(Duration.zero);
+      }
+      await _audioPlayer!.play();
+    }
+  }
+
+  Future<void> _initAudioPlayer(MediaRef ref) async {
+    if (_fullMediaBytes == null) return;
+
+    try {
+      // Determine extension from mime type
+      final ext = ref.mimeType.contains('ogg')
+          ? '.ogg'
+          : ref.mimeType.contains('wav')
+              ? '.wav'
+              : ref.mimeType.contains('mp3')
+                  ? '.mp3'
+                  : '.m4a';
+
+      final dir = Directory.systemTemp;
+      _audioTempFile = File(
+          '${dir.path}/dna_audio_${DateTime.now().millisecondsSinceEpoch}$ext');
+      await _audioTempFile!.writeAsBytes(_fullMediaBytes!);
+
+      _audioPlayer = AudioPlayer();
+
+      // Listen to position updates
+      _audioPlayer!.positionStream.listen((pos) {
+        if (mounted) {
+          setState(() {
+            _audioPosition = pos;
+          });
+        }
+      });
+
+      // Listen to duration
+      _audioPlayer!.durationStream.listen((dur) {
+        if (dur != null && mounted) {
+          setState(() {
+            _audioDuration = dur;
+          });
+        }
+      });
+
+      // Listen to player state
+      _audioPlayer!.playerStateStream.listen((state) {
+        if (mounted) {
+          setState(() {
+            _audioPlaying = state.playing;
+            // Reset position display when completed
+            if (state.processingState == ProcessingState.completed) {
+              _audioPlaying = false;
+            }
+          });
+        }
+      });
+
+      final duration =
+          await _audioPlayer!.setFilePath(_audioTempFile!.path);
+      if (mounted) {
+        setState(() {
+          _audioLoaded = true;
+          if (duration != null) _audioDuration = duration;
+        });
+      }
+    } catch (e) {
+      logError(_tag, 'Audio init failed: $e');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Placeholder bubble (for unsupported types)
+  // ---------------------------------------------------------------------------
 
   Widget _buildPlaceholderBubble(
     BuildContext context,
@@ -415,58 +795,24 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
             ),
 
             // Caption + timestamp
-            Padding(
-              padding: const EdgeInsets.all(8),
-              child: Column(
-                crossAxisAlignment: isOutgoing
-                    ? CrossAxisAlignment.end
-                    : CrossAxisAlignment.start,
-                children: [
-                  if (caption != null && caption.isNotEmpty) ...[
-                    Text(
-                      caption,
-                      style: TextStyle(
-                        color: isOutgoing
-                            ? theme.colorScheme.onPrimary
-                            : theme.colorScheme.onSurface,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                  ],
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        DateFormat('HH:mm').format(widget.message.timestamp),
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontSize: 10,
-                          color: isOutgoing
-                              ? theme.colorScheme.onPrimary.withAlpha(179)
-                              : theme.textTheme.bodySmall?.color,
-                        ),
-                      ),
-                      if (isOutgoing) ...[
-                        const SizedBox(width: 4),
-                        _buildStatusIndicator(widget.message.status, theme),
-                      ],
-                    ],
-                  ),
-                ],
-              ),
-            ),
+            _buildCaptionTimestamp(context, ref),
           ],
         ),
       ),
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Shared helpers
+  // ---------------------------------------------------------------------------
+
   void _onImageTap(BuildContext context, MediaRef ref) {
-    if (_fullImageBytes != null) {
+    if (_fullMediaBytes != null) {
       // Show fullscreen viewer
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => _FullscreenMediaViewer(
-            imageBytes: _fullImageBytes!,
+            imageBytes: _fullMediaBytes!,
             caption: ref.caption,
           ),
         ),
@@ -475,6 +821,129 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
       // Download first, then show
       _downloadFullMedia();
     }
+  }
+
+  Widget _buildCaptionTimestamp(BuildContext context, MediaRef ref) {
+    final theme = Theme.of(context);
+    final isOutgoing = widget.message.isOutgoing;
+    final caption = ref.caption;
+
+    return Padding(
+      padding: const EdgeInsets.all(8),
+      child: Column(
+        crossAxisAlignment:
+            isOutgoing ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        children: [
+          if (caption != null && caption.isNotEmpty) ...[
+            Text(
+              caption,
+              style: TextStyle(
+                color: isOutgoing
+                    ? theme.colorScheme.onPrimary
+                    : theme.colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: 4),
+          ],
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                DateFormat('HH:mm').format(widget.message.timestamp),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontSize: 10,
+                  color: isOutgoing
+                      ? theme.colorScheme.onPrimary.withAlpha(179)
+                      : theme.textTheme.bodySmall?.color,
+                ),
+              ),
+              if (isOutgoing) ...[
+                const SizedBox(width: 4),
+                _buildStatusIndicator(widget.message.status, theme),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDownloadingOverlay(AppLocalizations l10n) {
+    return Container(
+      color: Colors.black38,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(
+              color: Colors.white,
+              strokeWidth: 2,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              l10n.chatDownloadingMedia,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFailedOverlay(AppLocalizations l10n) {
+    return Container(
+      color: Colors.black38,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const FaIcon(
+              FontAwesomeIcons.circleExclamation,
+              color: Colors.white,
+              size: 24,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              l10n.chatUploadFailed,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTapToDownloadOverlay(AppLocalizations l10n) {
+    return Container(
+      color: Colors.black26,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const FaIcon(
+              FontAwesomeIcons.circleDown,
+              color: Colors.white,
+              size: 28,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              l10n.chatTapToDownload,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildErrorPlaceholder() {
@@ -512,9 +981,18 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
 
     return FaIcon(icon, size: size, color: color);
   }
+
+  String _formatDuration(Duration d) {
+    final minutes = d.inMinutes;
+    final seconds = d.inSeconds.remainder(60);
+    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
 }
 
-/// Fullscreen image viewer with pinch-zoom (same as ImageMessageBubble's viewer)
+// =============================================================================
+// Fullscreen image viewer (existing, unchanged)
+// =============================================================================
+
 class _FullscreenMediaViewer extends StatelessWidget {
   final Uint8List imageBytes;
   final String? caption;
@@ -548,5 +1026,221 @@ class _FullscreenMediaViewer extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+// =============================================================================
+// Fullscreen video player
+// =============================================================================
+
+class _FullscreenVideoPlayer extends StatefulWidget {
+  final Uint8List videoData;
+  final String? caption;
+
+  const _FullscreenVideoPlayer({
+    required this.videoData,
+    this.caption,
+  });
+
+  @override
+  State<_FullscreenVideoPlayer> createState() => _FullscreenVideoPlayerState();
+}
+
+class _FullscreenVideoPlayerState extends State<_FullscreenVideoPlayer> {
+  VideoPlayerController? _controller;
+  File? _tempFile;
+  bool _initialized = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _initPlayer();
+  }
+
+  Future<void> _initPlayer() async {
+    try {
+      final dir = Directory.systemTemp;
+      _tempFile = File(
+          '${dir.path}/dna_video_${DateTime.now().millisecondsSinceEpoch}.mp4');
+      await _tempFile!.writeAsBytes(widget.videoData);
+
+      _controller = VideoPlayerController.file(_tempFile!);
+      await _controller!.initialize();
+      if (mounted) {
+        setState(() {
+          _initialized = true;
+        });
+        _controller!.play();
+      }
+    } catch (e) {
+      logError(_tag, 'Video player init failed: $e');
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    _tempFile?.delete().catchError((_) {});
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Video content
+            if (_error != null)
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const FaIcon(
+                      FontAwesomeIcons.circleExclamation,
+                      color: Colors.white,
+                      size: 40,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      l10n.chatVideoError,
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                    ),
+                  ],
+                ),
+              )
+            else if (!_initialized)
+              const Center(
+                child: CircularProgressIndicator(color: Colors.white),
+              )
+            else
+              GestureDetector(
+                onTap: _togglePlayPause,
+                child: Center(
+                  child: AspectRatio(
+                    aspectRatio: _controller!.value.aspectRatio,
+                    child: VideoPlayer(_controller!),
+                  ),
+                ),
+              ),
+
+            // Play/pause overlay icon (shown briefly or when paused)
+            if (_initialized && !_controller!.value.isPlaying)
+              GestureDetector(
+                onTap: _togglePlayPause,
+                child: Container(
+                  color: Colors.transparent,
+                  child: Center(
+                    child: Container(
+                      width: 64,
+                      height: 64,
+                      decoration: const BoxDecoration(
+                        color: Colors.black54,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Center(
+                        child: FaIcon(
+                          FontAwesomeIcons.play,
+                          color: Colors.white,
+                          size: 28,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // Progress bar at bottom
+            if (_initialized)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: VideoProgressIndicator(
+                  _controller!,
+                  allowScrubbing: true,
+                  colors: const VideoProgressColors(
+                    playedColor: Colors.white,
+                    bufferedColor: Colors.white24,
+                    backgroundColor: Colors.white12,
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 16),
+                ),
+              ),
+
+            // Close button (top-right)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton(
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const FaIcon(
+                  FontAwesomeIcons.xmark,
+                  color: Colors.white,
+                  size: 24,
+                ),
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.black54,
+                ),
+              ),
+            ),
+
+            // Caption (top-left)
+            if (widget.caption != null && widget.caption!.isNotEmpty)
+              Positioned(
+                top: 16,
+                left: 16,
+                right: 56,
+                child: Text(
+                  widget.caption!,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    shadows: [
+                      Shadow(color: Colors.black54, blurRadius: 4),
+                    ],
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _togglePlayPause() {
+    if (_controller == null || !_initialized) return;
+    setState(() {
+      if (_controller!.value.isPlaying) {
+        _controller!.pause();
+      } else {
+        // If at end, restart
+        if (_controller!.value.position >= _controller!.value.duration) {
+          _controller!.seekTo(Duration.zero);
+        }
+        _controller!.play();
+      }
+    });
+    // Listen for state changes to refresh UI
+    _controller!.addListener(_onVideoUpdate);
+  }
+
+  void _onVideoUpdate() {
+    if (mounted) {
+      setState(() {});
+    }
   }
 }
