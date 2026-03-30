@@ -77,6 +77,12 @@ static void *read_thread_fn(void *arg) {
 
         /* Handle reconnect */
         if (client->state == NODUS_CLIENT_RECONNECTING) {
+            if (atomic_load(&client->suspended)) {
+                /* App in background — don't reconnect, just idle */
+                pthread_mutex_unlock(&client->poll_mutex);
+                sleep_ms(500);
+                continue;
+            }
             try_reconnect(client);
             if (client->state != NODUS_CLIENT_READY && client->tcp) {
                 nodus_tcp_t *tcp = (nodus_tcp_t *)client->tcp;
@@ -662,6 +668,35 @@ bool nodus_client_is_ready(const nodus_client_t *client) {
 
 nodus_client_state_t nodus_client_state(const nodus_client_t *client) {
     return client ? client->state : NODUS_CLIENT_DISCONNECTED;
+}
+
+void nodus_client_suspend(nodus_client_t *client) {
+    if (!client) return;
+    atomic_store(&client->suspended, true);
+    QGP_LOG_INFO(LOG_TAG, "Suspended (app background) — closing TCP, no auto-reconnect");
+
+    /* Gracefully close the connection — read thread stays alive but idle */
+    pthread_mutex_lock(&client->poll_mutex);
+    if (client->conn && client->tcp) {
+        nodus_tcp_disconnect((nodus_tcp_t *)client->tcp,
+                              (nodus_tcp_conn_t *)client->conn);
+        client->conn = NULL;
+    }
+    client->state = NODUS_CLIENT_DISCONNECTED;
+    pthread_mutex_unlock(&client->poll_mutex);
+}
+
+void nodus_client_resume(nodus_client_t *client) {
+    if (!client) return;
+    atomic_store(&client->suspended, false);
+    QGP_LOG_INFO(LOG_TAG, "Resumed (app foreground) — triggering reconnect");
+
+    if (client->state == NODUS_CLIENT_DISCONNECTED ||
+        client->state == NODUS_CLIENT_RECONNECTING) {
+        client->state = NODUS_CLIENT_RECONNECTING;
+        client->backoff_ms = client->config.reconnect_min_ms;
+        client->reconnect_at = now_ms(); /* Immediate */
+    }
 }
 
 void nodus_client_force_disconnect(nodus_client_t *client) {

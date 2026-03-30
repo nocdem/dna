@@ -113,6 +113,16 @@ void nodus_singleton_force_disconnect(void) {
     nodus_client_force_disconnect(&g_client);
 }
 
+void nodus_singleton_suspend(void) {
+    if (!ATOMIC_LOAD_INIT()) return;
+    nodus_client_suspend(&g_client);
+}
+
+void nodus_singleton_resume(void) {
+    if (!ATOMIC_LOAD_INIT()) return;
+    nodus_client_resume(&g_client);
+}
+
 void nodus_singleton_lock(void) {
 #ifdef _WIN32
     ensure_cs();

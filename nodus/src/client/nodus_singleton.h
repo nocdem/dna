@@ -72,6 +72,8 @@ void nodus_singleton_close(void);
  * Does not free memory. Use before joining threads that may be blocked.
  */
 void nodus_singleton_force_disconnect(void);
+void nodus_singleton_suspend(void);
+void nodus_singleton_resume(void);
 
 /**
  * Lock/unlock the singleton mutex.

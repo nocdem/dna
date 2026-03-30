@@ -152,6 +152,9 @@ typedef struct {
     _Atomic bool           read_thread_running;
     _Atomic bool           read_thread_stop;
 
+    /* App lifecycle — suspend prevents auto-reconnect while in background */
+    _Atomic bool           suspended;
+
 } nodus_client_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
@@ -186,6 +189,19 @@ int nodus_client_poll(nodus_client_t *client, int timeout_ms);
  * Check if client is connected and authenticated.
  */
 bool nodus_client_is_ready(const nodus_client_t *client);
+
+/**
+ * Suspend client — close TCP and prevent auto-reconnect.
+ * Call when app goes to background to avoid dead sockets.
+ * Read thread stays alive but idle.
+ */
+void nodus_client_suspend(nodus_client_t *client);
+
+/**
+ * Resume client — allow auto-reconnect and trigger immediate reconnect.
+ * Call when app comes to foreground.
+ */
+void nodus_client_resume(nodus_client_t *client);
 
 /**
  * Get current connection state.

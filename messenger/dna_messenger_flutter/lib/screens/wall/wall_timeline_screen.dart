@@ -165,6 +165,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
           final cached = timeline.valueOrNull;
           if (cached != null && cached.isNotEmpty) {
             return ListView.separated(
+              controller: _scrollController,
               padding: const EdgeInsets.all(DnaSpacing.md),
               itemCount: cached.length,
               separatorBuilder: (_, _) =>

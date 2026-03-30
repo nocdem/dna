@@ -85,6 +85,29 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
     sess->conn->peer_pk = sess->client_pk;
     sess->conn->peer_id_set = true;
 
+    /* Evict stale sessions for same identity (ghost connections from dead sockets).
+     * When a mobile client reconnects, the old session may still be alive because
+     * the server hasn't detected the dead socket yet (idle sweep runs every 30s).
+     * Without eviction, stale responses can leak into the new connection's slot. */
+    for (int i = 0; i < NODUS_MAX_SESSIONS; i++) {
+        nodus_session_t *old = &srv->sessions[i];
+        if (old == sess) continue;  /* Skip ourselves */
+        if (!old->conn || !old->authenticated) continue;
+        if (nodus_key_cmp(&old->client_fp, &sess->client_fp) != 0) continue;
+        /* Same identity on a different slot — evict */
+        {
+            char old_fp[33];
+            for (int k = 0; k < 16; k++)
+                sprintf(old_fp + k*2, "%02x", old->client_fp.bytes[k]);
+            old_fp[32] = '\0';
+            fprintf(stderr, "SESSION_EVICT: old slot=%d ip=%s fp=%s... (replaced by new slot=%d)\n",
+                    old->conn->slot, old->conn->ip, old_fp, sess->conn->slot);
+        }
+        nodus_tcp_disconnect(&srv->tcp, old->conn);
+        old->conn = NULL;
+        old->authenticated = false;
+    }
+
     /* Track presence */
     nodus_presence_add_local(srv, &sess->client_fp);
     {

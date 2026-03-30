@@ -649,6 +649,16 @@ void nodus_messenger_force_disconnect(void) {
     nodus_singleton_force_disconnect();
 }
 
+void nodus_messenger_suspend(void) {
+    if (!g_initialized) return;
+    nodus_singleton_suspend();
+}
+
+void nodus_messenger_resume(void) {
+    if (!g_initialized) return;
+    nodus_singleton_resume();
+}
+
 bool nodus_messenger_wait_for_ready(int timeout_ms) {
     int elapsed = 0;
     while (!nodus_messenger_is_ready() && elapsed < timeout_ms) {

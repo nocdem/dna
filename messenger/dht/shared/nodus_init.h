@@ -77,6 +77,16 @@ int nodus_messenger_poll(int timeout_ms);
 void nodus_messenger_force_disconnect(void);
 
 /**
+ * Suspend DHT — close TCP, prevent auto-reconnect (app background).
+ */
+void nodus_messenger_suspend(void);
+
+/**
+ * Resume DHT — trigger immediate reconnect (app foreground).
+ */
+void nodus_messenger_resume(void);
+
+/**
  * Wait for the singleton to become ready (polling).
  * @param timeout_ms  Maximum wait time in milliseconds
  * @return true if ready, false if timed out
