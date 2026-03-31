@@ -244,6 +244,14 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     // Get wall posts (cache-first, returns quickly)
     final wallPosts = await engine.wallTimeline();
 
+    // Debug: log boost status from C
+    final boostedCount = wallPosts.where((p) => p.isBoosted).length;
+    final totalCount = wallPosts.length;
+    engine.debugLog('WALL_DART', 'wallTimeline returned $totalCount posts, $boostedCount boosted');
+    for (final p in wallPosts.where((p) => p.isBoosted)) {
+      engine.debugLog('WALL_DART', '  BOOSTED: ${p.uuid.substring(0, 8)}... by ${p.authorName.isNotEmpty ? p.authorName : p.authorFingerprint.substring(0, 16)}');
+    }
+
     // Fire-and-forget: fetch boosts in background, merge when ready
     engine.wallBoostTimeline().then((boostPosts) {
       if (boostPosts.isEmpty) return;
