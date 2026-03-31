@@ -1352,20 +1352,17 @@ class _ChainFilterBar extends ConsumerWidget {
   const _ChainFilterBar();
 
   static const _chains = [
-    (null, 'All', null),
+    ('bsc', 'BNB', 'assets/icons/crypto/bnb.svg'),
     ('cellframe', 'CELL', 'assets/icons/crypto/cell.svg'),
     ('ethereum', 'ETH', 'assets/icons/crypto/eth.svg'),
     ('solana', 'SOL', 'assets/icons/crypto/sol.svg'),
     ('tron', 'TRX', 'assets/icons/crypto/trx.svg'),
-    ('bsc', 'BNB', 'assets/icons/crypto/bnb.svg'),
   ];
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final activeFilter = ref.watch(walletNetworkFilterProvider);
     final theme = Theme.of(context);
-    final l10n = AppLocalizations.of(context);
-
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.lg, vertical: DnaSpacing.xs),
       child: SingleChildScrollView(
@@ -1374,7 +1371,6 @@ class _ChainFilterBar extends ConsumerWidget {
           children: _chains.map((entry) {
             final (network, label, iconPath) = entry;
             final isSelected = activeFilter == network;
-            final displayLabel = network == null ? l10n.walletAllChains : label;
 
             return Padding(
               padding: const EdgeInsets.only(right: 8),
@@ -1410,7 +1406,7 @@ class _ChainFilterBar extends ConsumerWidget {
                         const SizedBox(width: 6),
                       ],
                       Text(
-                        displayLabel,
+                        label,
                         style: TextStyle(
                           fontSize: 13,
                           fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
@@ -1472,11 +1468,26 @@ class _AllBalancesSection extends ConsumerWidget {
       WalletSettingsState walletSettings, ThemeData theme) {
     var filteredGroups = groups.toList();
 
-    // Filter by network if active
+    // Filter by network if active — also trim grouped token chains
     if (networkFilter != null) {
-      filteredGroups = filteredGroups.where((g) =>
-        g.chains.any((wb) =>
-          wb.balance.network.toLowerCase() == networkFilter)).toList();
+      filteredGroups = filteredGroups
+        .where((g) => g.chains.any((wb) =>
+          wb.balance.network.toLowerCase() == networkFilter))
+        .map((g) {
+          final filtered = g.chains.where((wb) =>
+            wb.balance.network.toLowerCase() == networkFilter).toList();
+          if (filtered.length == g.chains.length) return g;
+          double total = 0;
+          for (final wb in filtered) {
+            total += double.tryParse(wb.balance.balance) ?? 0.0;
+          }
+          return GroupedToken(
+            token: g.token,
+            totalBalance: total,
+            chains: filtered,
+          );
+        })
+        .toList();
     }
 
     // Filter zero balances if setting enabled
