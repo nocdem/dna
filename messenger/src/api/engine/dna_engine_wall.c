@@ -395,9 +395,11 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
                     }
                     if (found) continue;
 
-                    /* Resolve from wall cache */
+                    /* Resolve from wall cache, fallback to DHT if connected */
                     dna_wall_post_t *bp = NULL;
                     size_t bp_count = 0;
+                    bool resolved = false;
+
                     if (wall_cache_load(boost_ptrs[b].author_fingerprint, &bp, &bp_count) == 0 && bp) {
                         for (size_t p = 0; p < bp_count; p++) {
                             if (strncmp(bp[p].uuid, boost_ptrs[b].uuid, 36) == 0) {
@@ -405,11 +407,32 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
                                     wall_post_to_info(&bp[p], &info[final_count]);
                                     info[final_count].is_boosted = true;
                                     final_count++;
+                                    resolved = true;
                                 }
                                 break;
                             }
                         }
                         wall_cache_free_posts(bp, bp_count);
+                    }
+
+                    /* Cache miss — try DHT if connected (non-follow authors) */
+                    if (!resolved && nodus_ops_is_ready()) {
+                        dna_wall_t wall = {0};
+                        if (dna_wall_load(boost_ptrs[b].author_fingerprint, &wall) == 0) {
+                            wall_cache_store(boost_ptrs[b].author_fingerprint,
+                                             wall.posts, wall.post_count);
+                            for (size_t p = 0; p < wall.post_count; p++) {
+                                if (strncmp(wall.posts[p].uuid, boost_ptrs[b].uuid, 36) == 0) {
+                                    if (final_count < new_cap) {
+                                        wall_post_to_info(&wall.posts[p], &info[final_count]);
+                                        info[final_count].is_boosted = true;
+                                        final_count++;
+                                    }
+                                    break;
+                                }
+                            }
+                            dna_wall_free(&wall);
+                        }
                     }
                 }
                 QGP_LOG_INFO(LOG_TAG, "Timeline: merged %zu boost pointers", boost_count);
