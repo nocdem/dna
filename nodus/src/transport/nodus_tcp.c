@@ -8,6 +8,9 @@
 
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_wire.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG_TCP "NODUS_TCP"
 
 #ifdef _WIN32
   #include <winsock2.h>
@@ -532,20 +535,35 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                              const uint8_t *payload, size_t len,
                              nodus_tcp_progress_cb progress_cb,
                              void *user_data) {
-    if (!conn || !payload || conn->state == NODUS_CONN_CLOSED) return -1;
-    if (len > NODUS_MAX_FRAME_TCP) return -1;  /* M-02: prevent uint32_t truncation */
+    if (!conn || !payload) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "send: NULL conn=%p payload=%p", (void*)conn, (void*)payload);
+        return -1;
+    }
+    if (conn->state == NODUS_CONN_CLOSED) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "send: connection closed (fd=%d)", conn->fd);
+        return -1;
+    }
+    if (len > NODUS_MAX_FRAME_TCP) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "send: payload too large (%zu > %d)", len, NODUS_MAX_FRAME_TCP);
+        return -1;
+    }
 
     size_t frame_size = NODUS_FRAME_HEADER_SIZE + len;
     size_t needed = conn->wlen + frame_size;
 
-    if (buf_ensure(&conn->wbuf, &conn->wcap, needed) != 0)
+    if (buf_ensure(&conn->wbuf, &conn->wcap, needed) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "send: buf_ensure failed (needed=%zu, wcap=%zu)", needed, conn->wcap);
         return -1;
+    }
 
     /* Write frame directly into write buffer */
     size_t written = nodus_frame_encode(conn->wbuf + conn->wlen,
                                          conn->wcap - conn->wlen,
                                          payload, (uint32_t)len);
-    if (written == 0) return -1;
+    if (written == 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "send: frame_encode failed (len=%zu)", len);
+        return -1;
+    }
     conn->wlen += written;
 
     /* Try immediate send */
