@@ -770,5 +770,6 @@
   "userProfileEditProfile": "Edit Profile",
   "userProfileMessage": "Message",
   "userProfilePosts": "Posts",
-  "userProfileNoPosts": "No posts yet"
+  "userProfileNoPosts": "No posts yet",
+  "userProfileTotalTips": "Tips"
 }

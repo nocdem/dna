@@ -2953,6 +2953,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No posts yet'**
   String get userProfileNoPosts;
+
+  /// No description provided for @userProfileTotalTips.
+  ///
+  /// In en, this message translates to:
+  /// **'Tips'**
+  String get userProfileTotalTips;
 }
 
 class _AppLocalizationsDelegate

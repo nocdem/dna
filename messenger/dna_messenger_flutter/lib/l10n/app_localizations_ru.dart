@@ -1562,4 +1562,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get userProfileNoPosts => 'No posts yet';
+
+  @override
+  String get userProfileTotalTips => 'Tips';
 }

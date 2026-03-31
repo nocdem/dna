@@ -509,5 +509,6 @@
   "userProfileEditProfile": "Profili Düzenle",
   "userProfileMessage": "Mesaj",
   "userProfilePosts": "Paylaşımlar",
-  "userProfileNoPosts": "Henüz paylaşım yok"
+  "userProfileNoPosts": "Henüz paylaşım yok",
+  "userProfileTotalTips": "Bahşiş"
 }

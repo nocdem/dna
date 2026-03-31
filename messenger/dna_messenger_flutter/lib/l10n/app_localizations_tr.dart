@@ -1560,4 +1560,7 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get userProfileNoPosts => 'Henüz paylaşım yok';
+
+  @override
+  String get userProfileTotalTips => 'Bahşiş';
 }

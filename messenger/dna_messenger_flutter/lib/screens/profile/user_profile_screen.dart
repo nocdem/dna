@@ -1,4 +1,5 @@
 // User Profile Screen - Full-screen profile view for self and other users
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -39,6 +40,8 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   bool _isContact = false;
   bool _isSelf = false;
   List<WallFeedItem> _posts = [];
+  int _totalLikes = 0;
+  int _totalTips = 0;
   bool _isLoadingPosts = false;
   bool _isLoadingProfile = true;
 
@@ -155,9 +158,14 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
         .toList();
 
     if (cachedPosts.isNotEmpty) {
+      int likes = 0;
+      for (final item in cachedPosts) {
+        likes += item.likeCount;
+      }
       if (mounted) {
         setState(() {
           _posts = cachedPosts;
+          _totalLikes = likes;
           _isLoadingPosts = false;
         });
       }
@@ -171,6 +179,8 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
       final posts = await engine.wallLoad(widget.fingerprint);
 
       final feedItems = <WallFeedItem>[];
+      int likes = 0;
+      int tips = 0;
       if (posts.isNotEmpty) {
         final uuids = posts.map((p) => p.uuid).toList();
         final engMap = <String, WallEngagement>{};
@@ -178,6 +188,15 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
           final engagements = await engine.wallGetEngagement(uuids);
           for (final e in engagements) {
             engMap[e.postUuid] = e;
+            likes += e.likeCount;
+            for (final c in e.comments) {
+              if (c.isTip) {
+                try {
+                  final data = jsonDecode(c.body) as Map<String, dynamic>;
+                  tips += int.parse(data['amount'] as String? ?? '0');
+                } catch (_) {}
+              }
+            }
           }
         } catch (_) {}
 
@@ -203,6 +222,8 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
       if (mounted) {
         setState(() {
           _posts = feedItems;
+          _totalLikes = likes;
+          _totalTips = tips;
           _isLoadingPosts = false;
         });
       }
@@ -664,6 +685,17 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
               count: _posts.length,
               label: l10n.userProfilePosts,
             ),
+            _buildStatItem(
+              theme,
+              count: _totalLikes,
+              icon: FontAwesomeIcons.fire,
+            ),
+            _buildStatItem(
+              theme,
+              count: _totalTips,
+              label: l10n.userProfileTotalTips,
+              suffix: ' CPUNK',
+            ),
           ],
         ),
       ),
@@ -673,14 +705,17 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   Widget _buildStatItem(
     ThemeData theme, {
     required int count,
-    required String label,
+    String? label,
+    IconData? icon,
+    String? suffix,
   }) {
+    final countText = '$count${suffix ?? ''}';
     return Column(
       children: [
         ShaderMask(
           shaderCallback: DnaGradients.primaryShader,
           child: Text(
-            count.toString(),
+            countText,
             style: theme.textTheme.titleLarge?.copyWith(
               fontWeight: FontWeight.bold,
               color: Colors.white,
@@ -688,10 +723,16 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
           ),
         ),
         const SizedBox(height: DnaSpacing.xs),
-        Text(label,
-            style: theme.textTheme.bodySmall?.copyWith(
-                color:
-                    theme.colorScheme.onSurface.withValues(alpha: 0.5))),
+        if (icon != null)
+          ShaderMask(
+            shaderCallback: DnaGradients.primaryShader,
+            child: FaIcon(icon, size: 14, color: Colors.white),
+          )
+        else if (label != null)
+          Text(label,
+              style: theme.textTheme.bodySmall?.copyWith(
+                  color:
+                      theme.colorScheme.onSurface.withValues(alpha: 0.5))),
       ],
     );
   }
