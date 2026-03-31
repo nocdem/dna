@@ -735,7 +735,17 @@ static void transport_message_received_internal(
                         dna_dispatch_event(engine, &event);
                     }
 
-                    /* Don't save DELETE notices as regular messages — return early */
+                    /* Save DELETE notice as a minimal record so dedup prevents
+                     * re-processing on next session (content_hash in messages table).
+                     * message_type=99 marks it as a processed delete notice. */
+                    {
+                        time_t del_ts = sender_timestamp ? (time_t)sender_timestamp : time(NULL);
+                        message_backup_save(ctx->backup_ctx,
+                                            sender_identity, ctx->identity,
+                                            plaintext, sender_identity,
+                                            del_ts, false, 0, 99);
+                    }
+
                     json_object_put(j_msg);
                     free(plaintext);
                     free(sender_identity);

@@ -668,10 +668,12 @@ int message_backup_mark_read(message_backup_context_t *ctx, int message_id) {
 int message_backup_get_unread_count(message_backup_context_t *ctx, const char *contact_identity) {
     if (!ctx || !ctx->db || !contact_identity) return -1;
 
-    /* Count unread incoming messages from contact (where I am recipient) */
+    /* Count unread incoming messages from contact (where I am recipient)
+     * Exclude message_type=99 (processed delete notice dedup anchors) */
     const char *sql =
         "SELECT COUNT(*) FROM messages "
-        "WHERE sender = ? AND recipient = ? AND read = 0 AND is_outgoing = 0";
+        "WHERE sender = ? AND recipient = ? AND read = 0 AND is_outgoing = 0 "
+        "AND message_type != 99";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -743,9 +745,11 @@ int message_backup_get_conversation_page(message_backup_context_t *ctx,
     if (offset < 0) offset = 0;
 
     // First, get total count for this conversation
+    // message_type=99 are processed delete notices (dedup anchors), exclude them
     const char *count_sql =
         "SELECT COUNT(*) FROM messages "
-        "WHERE (sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)";
+        "WHERE ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) "
+        "AND message_type != 99";
 
     sqlite3_stmt *count_stmt;
     int rc = sqlite3_prepare_v2(ctx->db, count_sql, -1, &count_stmt, NULL);
@@ -775,10 +779,12 @@ int message_backup_get_conversation_page(message_backup_context_t *ctx,
 
     // Get paginated messages - ORDER BY timestamp DESC for newest-first
     // This allows efficient loading for reverse-scroll chat UI
+    // message_type=99 are processed delete notices (dedup anchors), exclude them
     const char *sql =
         "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, is_outgoing, deleted_by_sender "
         "FROM messages "
-        "WHERE (sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?) "
+        "WHERE ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) "
+        "AND message_type != 99 "
         "ORDER BY timestamp DESC "
         "LIMIT ? OFFSET ?";
 
@@ -1216,7 +1222,8 @@ int message_backup_get_recent_contacts(message_backup_context_t *ctx,
         "    ELSE sender "
         "  END AS contact "
         "FROM messages "
-        "WHERE sender = ? OR recipient = ? "
+        "WHERE (sender = ? OR recipient = ?) "
+        "AND message_type != 99 "
         "ORDER BY timestamp DESC";
 
     sqlite3_stmt *stmt;
