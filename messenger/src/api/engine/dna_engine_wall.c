@@ -607,6 +607,17 @@ void dna_handle_wall_timeline_cached(dna_engine_t *engine, dna_task_t *task) {
         QGP_LOG_INFO(LOG_TAG, "Timeline cached: merged %zu boost pointers", boost_count);
     }
 
+    /* Sort by timestamp descending (boost posts may have been appended at end) */
+    for (size_t i = 0; i < cached_count; i++) {
+        for (size_t j = i + 1; j < cached_count; j++) {
+            if (info[j].timestamp > info[i].timestamp) {
+                dna_wall_post_info_t tmp = info[i];
+                info[i] = info[j];
+                info[j] = tmp;
+            }
+        }
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Timeline cached: %zu posts (cache-only, no DHT)", cached_count);
     task->callback.wall_posts(task->request_id, DNA_OK, info, (int)cached_count, task->user_data);
 }
