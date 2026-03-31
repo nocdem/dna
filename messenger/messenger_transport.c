@@ -670,8 +670,27 @@ static void transport_message_received_internal(
                     }
                 }
 
-                /* DELETE notice handling (v17) */
+                /* DELETE notice handling (v17, dedup fix v18) */
                 if (type_str && strcmp(type_str, "delete") == 0) {
+                    /* Dedup check FIRST — save record and skip if already processed.
+                     * Fixes: repeated "new message" notifications when DELETE notice
+                     * sits in DHT outbox and gets re-fetched on every sync/reconnect. */
+                    time_t del_ts = sender_timestamp ? (time_t)sender_timestamp : time(NULL);
+                    int dedup_rc = message_backup_save(ctx->backup_ctx,
+                                                       sender_identity, ctx->identity,
+                                                       (const char *)plaintext,
+                                                       (const char *)sender_identity,
+                                                       del_ts, false, 0, 99);
+                    if (dedup_rc == 1) {
+                        /* Already processed — skip everything */
+                        QGP_LOG_DEBUG(LOG_TAG, "DELETE notice from %.20s... already processed (dedup)",
+                                     sender_identity);
+                        json_object_put(j_msg);
+                        free(plaintext);
+                        free(sender_identity);
+                        return;
+                    }
+
                     json_object *j_action = NULL, *j_hashes = NULL;
                     json_object_object_get_ex(j_msg, "action", &j_action);
                     json_object_object_get_ex(j_msg, "hashes", &j_hashes);
@@ -724,7 +743,7 @@ static void transport_message_received_internal(
                         }
                     }
 
-                    /* Fire event so UI can refresh */
+                    /* Fire event so UI can refresh (only for NEW delete notices) */
                     dna_engine_t *engine = dna_engine_get_global();
                     if (engine) {
                         dna_event_t event = {0};
@@ -733,18 +752,6 @@ static void transport_message_received_internal(
                                 sender_identity,
                                 sizeof(event.data.message_received.message.sender) - 1);
                         dna_dispatch_event(engine, &event);
-                    }
-
-                    /* Save DELETE notice as a minimal record so dedup prevents
-                     * re-processing on next session (content_hash in messages table).
-                     * message_type=99 marks it as a processed delete notice. */
-                    {
-                        time_t del_ts = sender_timestamp ? (time_t)sender_timestamp : time(NULL);
-                        message_backup_save(ctx->backup_ctx,
-                                            sender_identity, ctx->identity,
-                                            (const char *)plaintext,
-                                            (const char *)sender_identity,
-                                            del_ts, false, 0, 99);
                     }
 
                     json_object_put(j_msg);
