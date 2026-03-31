@@ -296,34 +296,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           engine.debugLog('STARTUP', 'Fingerprint stored for Android service');
         }
       } else if (engine.hasIdentity()) {
-        // Auto-load in create() failed (lock error, etc.) — retry via provider
-        engine.debugLog('STARTUP', 'Identity exists but not loaded — retrying via provider');
-        try {
-          await ref.read(identitiesProvider.notifier).loadIdentity();
-          // Success — sync state
-          final fp = engine.fingerprint;
-          if (fp != null) {
-            ref.read(currentFingerprintProvider.notifier).state = fp;
-            ref.read(identityReadyProvider.notifier).state = true;
-            ref.read(dhtConnectionStateProvider.notifier).state =
-                engine.isDhtConnected() ? DhtConnectionState.connected : DhtConnectionState.connecting;
-
-            final cached = await CacheDatabase.instance.getIdentity(fp);
-            if (cached != null && cached.registeredName.isNotEmpty) {
-              if (mounted) setState(() { _nameCheckDone = true; _registrationIncomplete = false; });
-              _ensureNameInDht(engine, cached.registeredName);
-            } else {
-              _backfillNameFromDht(engine, fp);
-            }
-
-            if (Platform.isAndroid) {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.setString('identity_fingerprint', fp);
-            }
-          }
-        } catch (e) {
-          engine.debugLog('STARTUP', 'Fallback loadIdentity also failed: $e');
-        }
+        engine.debugLog('STARTUP', 'Identity exists but not loaded (encrypted keys?)');
       } else {
         engine.debugLog('STARTUP', 'No identity — onboarding');
       }

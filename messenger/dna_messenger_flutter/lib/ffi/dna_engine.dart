@@ -1351,37 +1351,19 @@ class DnaEngine {
     engine._setupEventCallback();
 
     // v0.10.0: Auto-load identity if exists (non-blocking DHT, ~80ms)
-    // Retry on identity lock errors (-117): Android foreground service may
-    // briefly hold the lock during cleanup. C-side retries for 5s, but if
-    // that's not enough we retry the full call with a delay.
     if (engine.hasIdentity() && !engine.isIdentityLoaded()) {
-      const maxRetries = 3;
-      const retryDelay = Duration(seconds: 2);
-      for (int attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          await engine.loadIdentity();
-          engine.debugLog('STARTUP', 'Identity auto-loaded in create() (attempt $attempt)');
-          break;  // Success
-        } on DnaEngineException catch (e) {
-          if (e.code == -111) {
-            // DNA_ENGINE_ERROR_PASSWORD_REQUIRED — keys encrypted, skip
-            engine.debugLog('STARTUP', 'Keys encrypted — skipping auto-load');
-            break;
-          }
-          final isLockError = e.code == -117 ||
-              e.toString().contains('identity_locked') ||
-              e.toString().contains('Identity lock');
-          if (isLockError && attempt < maxRetries) {
-            engine.debugLog('STARTUP', 'Identity locked (attempt $attempt/$maxRetries), retrying in ${retryDelay.inSeconds}s...');
-            await Future.delayed(retryDelay);
-            continue;
-          }
+      try {
+        await engine.loadIdentity();
+        engine.debugLog('STARTUP', 'Identity auto-loaded in create()');
+      } on DnaEngineException catch (e) {
+        if (e.code == -111) {
+          // DNA_ENGINE_ERROR_PASSWORD_REQUIRED — keys encrypted, skip auto-load
+          engine.debugLog('STARTUP', 'Keys encrypted — skipping auto-load');
+        } else {
           engine.debugLog('STARTUP', 'Auto-load failed: $e');
-          break;
-        } catch (e) {
-          engine.debugLog('STARTUP', 'Auto-load unexpected error: $e');
-          break;
         }
+      } catch (e) {
+        engine.debugLog('STARTUP', 'Auto-load unexpected error: $e');
       }
     }
 
