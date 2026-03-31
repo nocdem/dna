@@ -244,6 +244,13 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     // Get wall posts (cache-first, returns quickly)
     final wallPosts = await engine.wallTimeline();
 
+    // Debug: trace post count through pipeline
+    final boostedPosts = wallPosts.where((p) => p.isBoosted).toList();
+    engine.debugLog('WALL_DART', 'C returned ${wallPosts.length} posts, ${boostedPosts.length} boosted');
+    for (final p in boostedPosts) {
+      engine.debugLog('WALL_DART', '  BOOST: ${p.uuid.substring(0, 8)} author=${p.authorName.isNotEmpty ? p.authorName : p.authorFingerprint.substring(0, 16)}');
+    }
+
     // v0.9.151: Boost merge handled by C cache-first path (dna_engine_wall.c).
     // wallBoostTimeline() DHT call removed — it caused state oscillation
     // (build() and _mergeBoosts fighting over state, causing appear/disappear
@@ -265,6 +272,10 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
 
     // Assemble items WITH engagement data from cache
     var items = await _assembleItems(wallPosts, myFp);
+
+    // Debug: trace after assembly
+    final assembledBoosted = items.where((i) => i.post.isBoosted).length;
+    engine.debugLog('WALL_DART', 'Assembled ${items.length} items, $assembledBoosted boosted (lost ${boostedPosts.length - assembledBoosted})');
 
     // Merge engagement into items
     if (engagements.isNotEmpty) {
