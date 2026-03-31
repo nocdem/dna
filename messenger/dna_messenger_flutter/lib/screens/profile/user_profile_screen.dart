@@ -147,11 +147,28 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
 
   Future<void> _loadPosts() async {
     if (!mounted) return;
+
+    // Step 1: Show posts from timeline provider instantly (no async)
+    final timeline = ref.read(wallTimelineProvider).valueOrNull ?? [];
+    final cachedPosts = timeline
+        .where((i) => i.post.authorFingerprint == widget.fingerprint)
+        .toList();
+
+    if (cachedPosts.isNotEmpty) {
+      if (mounted) {
+        setState(() {
+          _posts = cachedPosts;
+          _isLoadingPosts = false;
+        });
+      }
+      return; // Already have posts with engagement — done
+    }
+
+    // Step 2: No cached posts — load from engine (DHT/cache)
     setState(() => _isLoadingPosts = true);
     try {
       final engine = await ref.read(engineProvider.future);
       final posts = await engine.wallLoad(widget.fingerprint);
-      final myFp = ref.read(currentFingerprintProvider) ?? '';
 
       final feedItems = <WallFeedItem>[];
       if (posts.isNotEmpty) {
