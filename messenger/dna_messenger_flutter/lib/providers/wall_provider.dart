@@ -516,7 +516,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
   }
 
   /// Load older days on scroll (lazy load).
-  /// Fetches the next day's bucket for all contacts.
+  /// Skips days already covered by cache (wallTimeline returns all cached posts).
+  /// Only fetches days beyond what's already in state.
   Future<void> loadMoreDays() async {
     if (_isLoadingMore || !_hasMore) return;
     _isLoadingMore = true;
@@ -526,21 +527,37 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       final myFp = ref.read(currentFingerprintProvider) ?? '';
       if (myFp.isEmpty) return;
 
-      // Calculate date string for the next day to load
-      final targetDay = DateTime.now()
-          .toUtc()
-          .subtract(Duration(days: _loadedDays));
+      final now = DateTime.now().toUtc();
+      final current = state.valueOrNull ?? [];
+
+      // Skip past days already covered by cache: find oldest post in state
+      // and advance _loadedDays so we don't re-fetch cached days via DHT.
+      if (current.isNotEmpty && _loadedDays <= 2) {
+        int oldestTs = current.last.post.timestamp;
+        for (final item in current) {
+          if (item.post.timestamp < oldestTs) {
+            oldestTs = item.post.timestamp;
+          }
+        }
+        final oldestDate = DateTime.fromMillisecondsSinceEpoch(
+            oldestTs * 1000, isUtc: true);
+        final daysSinceOldest = now.difference(oldestDate).inDays + 1;
+        if (daysSinceOldest > _loadedDays) {
+          _loadedDays = daysSinceOldest;
+        }
+      }
+
       if (_loadedDays >= 30) {
         _hasMore = false;
         return;
       }
 
+      // Calculate date string for the next day to load
+      final targetDay = now.subtract(Duration(days: _loadedDays));
       final dateStr =
           '${targetDay.year}-${targetDay.month.toString().padLeft(2, '0')}-${targetDay.day.toString().padLeft(2, '0')}';
 
       // Get contact + following fingerprints
-      // Reuse cached timeline posts to extract unique authors
-      final current = state.valueOrNull ?? [];
       final authors = current.map((i) => i.post.authorFingerprint).toSet();
       if (authors.isEmpty) authors.add(myFp);
 

@@ -707,7 +707,7 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
      * Individual WHERE = ? queries work reliably. Merge + sort here. */
 
     /* Phase 1: Collect all posts from individual fingerprint queries */
-    size_t capacity = 64;
+    size_t capacity = 256;
     size_t total = 0;
     dna_wall_post_t *merged = calloc(capacity, sizeof(dna_wall_post_t));
     if (!merged) {
@@ -736,10 +736,10 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
 
         size_t count_before = total;
         int step_rc;
-        while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW && total < 200) {
+        while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW && total < 3000) {
             if (total >= capacity) {
                 size_t new_cap = capacity * 2;
-                if (new_cap > 200) new_cap = 200;
+                if (new_cap > 3000) new_cap = 3000;
                 dna_wall_post_t *tmp = realloc(merged, new_cap * sizeof(dna_wall_post_t));
                 if (!tmp) break;
                 memset(tmp + capacity, 0, (new_cap - capacity) * sizeof(dna_wall_post_t));
@@ -831,7 +831,7 @@ int wall_cache_load_timeline(const char **fingerprints, size_t fp_count,
                          f, dbg_count, no_order_count, total_rows);
         }
         sqlite3_finalize(stmt);
-        if (total >= 200) break;
+        if (total >= 3000) break;
     }
 
     if (total == 0) {
@@ -1795,7 +1795,7 @@ int wall_cache_load_by_date(const char *fingerprint, const char *date_str,
     dna_wall_post_t *result = calloc(capacity, sizeof(dna_wall_post_t));
     if (!result) { sqlite3_finalize(stmt); return -1; }
 
-    while (sqlite3_step(stmt) == SQLITE_ROW && total < 200) {
+    while (sqlite3_step(stmt) == SQLITE_ROW && total < 3000) {
         if (total >= capacity) {
             size_t new_cap = capacity * 2;
             dna_wall_post_t *tmp = realloc(result, new_cap * sizeof(dna_wall_post_t));
