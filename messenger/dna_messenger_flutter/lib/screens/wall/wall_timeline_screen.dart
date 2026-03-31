@@ -514,6 +514,8 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
       MaterialPageRoute(
         builder: (_) => UserProfileScreen(
           fingerprint: item.post.authorFingerprint,
+          initialDisplayName: item.authorDisplayName,
+          initialAvatar: item.authorAvatar,
         ),
       ),
     );

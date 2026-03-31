@@ -17,8 +17,15 @@ import 'profile_editor_screen.dart';
 
 class UserProfileScreen extends ConsumerStatefulWidget {
   final String fingerprint;
+  final String? initialDisplayName;
+  final Uint8List? initialAvatar;
 
-  const UserProfileScreen({super.key, required this.fingerprint});
+  const UserProfileScreen({
+    super.key,
+    required this.fingerprint,
+    this.initialDisplayName,
+    this.initialAvatar,
+  });
 
   @override
   ConsumerState<UserProfileScreen> createState() => _UserProfileScreenState();
@@ -38,43 +45,75 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   @override
   void initState() {
     super.initState();
+    // Use initial data from caller — instant, no spinner
+    if (widget.initialDisplayName != null && widget.initialDisplayName!.isNotEmpty) {
+      _displayName = widget.initialDisplayName!;
+    }
+    if (widget.initialAvatar != null) {
+      _avatar = widget.initialAvatar;
+    }
+    // If we have initial data, don't show spinner
+    if (_displayName.isNotEmpty) {
+      _isLoadingProfile = false;
+    }
     _loadData();
   }
 
   Future<void> _loadData() async {
-    final engine = await ref.read(engineProvider.future);
     final myFp = ref.read(currentFingerprintProvider) ?? '';
-
     _isSelf = widget.fingerprint == myFp;
 
-    // Step 1: Show cached data instantly (no loading spinner)
-    final cached =
-        ref.read(identityProfileCacheProvider)[widget.fingerprint];
-    if (cached != null) {
-      _displayName = cached.displayName.isNotEmpty
-          ? cached.displayName
-          : widget.fingerprint.substring(0, 16);
-      if (cached.avatarBase64.isNotEmpty) {
+    // Step 1: Fill from cache if initState didn't have initial data
+    if (_displayName.isEmpty || _profile == null) {
+      final identityCache =
+          ref.read(identityProfileCacheProvider)[widget.fingerprint];
+      final profileCache =
+          ref.read(contactProfileCacheProvider)[widget.fingerprint];
+
+      if (_displayName.isEmpty && identityCache != null) {
+        _displayName = identityCache.displayName.isNotEmpty
+            ? identityCache.displayName
+            : widget.fingerprint.substring(0, 16);
+      }
+      if (_avatar == null && identityCache != null && identityCache.avatarBase64.isNotEmpty) {
         try {
-          _avatar = decodeBase64WithPadding(cached.avatarBase64);
+          _avatar = decodeBase64WithPadding(identityCache.avatarBase64);
         } catch (_) {}
+      }
+      if (_profile == null && profileCache != null) {
+        _profile = profileCache;
+        if (_avatar == null) {
+          _avatar = profileCache.decodeAvatar();
+        }
       }
     }
 
-    // Relationship status (sync, instant)
+    // Fallback display name
+    if (_displayName.isEmpty) {
+      _displayName = widget.fingerprint.substring(0, 16);
+    }
+
+    // Relationship status (sync providers, no await)
     if (!_isSelf) {
-      _isFollowing = engine.isFollowingUser(widget.fingerprint);
       final contacts = ref.read(contactsProvider).valueOrNull ?? [];
       _isContact =
           contacts.any((c) => c.fingerprint == widget.fingerprint);
     }
 
-    // Show what we have from cache, start loading posts in parallel
+    // Show what we have — no spinner if we have a display name
     if (mounted) {
-      setState(() => _isLoadingProfile = cached == null);
+      setState(() => _isLoadingProfile = _displayName.isEmpty);
     }
 
-    // Step 2: Load profile from DHT and posts in parallel
+    // Step 2: Async work — engine, follow status, DHT profile, posts
+    final engine = await ref.read(engineProvider.future);
+
+    if (!_isSelf) {
+      _isFollowing = engine.isFollowingUser(widget.fingerprint);
+      if (mounted) setState(() {});
+    }
+
+    // Load fresh profile from DHT and posts in parallel
     await Future.wait([
       _loadProfile(engine),
       _loadPosts(),
