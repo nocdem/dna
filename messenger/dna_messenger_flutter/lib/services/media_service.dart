@@ -13,6 +13,7 @@ import 'package:image/image.dart' as img;
 import '../ffi/dna_engine.dart';
 import '../models/media_ref.dart';
 import '../utils/logger.dart';
+import 'media_cache_service.dart';
 
 const String _tag = 'MEDIA_SVC';
 
@@ -192,7 +193,7 @@ class MediaService {
     final width = compressedDecoded?.width ?? decoded.width;
     final height = compressedDecoded?.height ?? decoded.height;
 
-    return MediaRef(
+    final ref = MediaRef(
       contentHash: hashHex,
       mediaType: 0,
       mimeType: 'image/jpeg',
@@ -203,6 +204,11 @@ class MediaService {
       caption: caption,
       encryptionKey: aesKeyBase64,
     );
+
+    // Cache decrypted bytes so sent images don't need re-download
+    MediaCacheService.instance?.put(hashHex, 'image/jpeg', compressed);
+
+    return ref;
   }
 
   /// Upload a video to Nodus DHT.
@@ -257,7 +263,7 @@ class MediaService {
     );
     log(_tag, 'Uploaded video: hash=${hashHex.substring(0, 16)}...');
 
-    return MediaRef(
+    final ref = MediaRef(
       contentHash: hashHex,
       mediaType: 1,
       mimeType: 'video/mp4',
@@ -269,6 +275,11 @@ class MediaService {
       caption: caption,
       encryptionKey: aesKeyBase64,
     );
+
+    // Cache decrypted bytes so sent videos don't need re-download
+    MediaCacheService.instance?.put(hashHex, 'video/mp4', bytes);
+
+    return ref;
   }
 
   /// Upload audio to Nodus DHT.
@@ -323,7 +334,7 @@ class MediaService {
     );
     log(_tag, 'Uploaded audio: hash=${hashHex.substring(0, 16)}...');
 
-    return MediaRef(
+    final ref = MediaRef(
       contentHash: hashHex,
       mediaType: 2,
       mimeType: 'audio/aac',
@@ -334,6 +345,11 @@ class MediaService {
       thumbnail: base64Encode(thumbnailBytes),
       encryptionKey: aesKeyBase64,
     );
+
+    // Cache decrypted bytes so sent audio don't need re-download
+    MediaCacheService.instance?.put(hashHex, 'audio/aac', audioBytes);
+
+    return ref;
   }
 
   /// Download and optionally decrypt media from Nodus DHT.

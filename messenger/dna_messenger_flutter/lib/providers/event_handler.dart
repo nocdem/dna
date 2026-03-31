@@ -1,8 +1,11 @@
 // Event Handler - Listens to engine events and updates UI state
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
+import '../models/media_ref.dart';
 import '../platform/platform_handler.dart';
+import '../services/media_cache_service.dart';
 import '../services/notification_service.dart';
 import '../utils/lifecycle_observer.dart';
 import '../utils/logger.dart';
@@ -233,6 +236,9 @@ class EventHandler {
         // Contact tiles don't show message previews - only avatar, name, online status, and unread count.
         // Unread counts are already updated via incrementCount() above.
         // Full contact list rebuilds cause unnecessary UI churn and presence bouncing.
+
+        // Background prefetch: if message is a media_ref, queue download
+        _prefetchMediaIfNeeded(msg.plaintext, engine);
 
       case MessageSentEvent(messageId: final msgId, status: final sentStatus, recipientFingerprint: final recipientFp):
         // Update the pending message status to sent (no full reload needed)
@@ -526,6 +532,22 @@ class EventHandler {
       messagePreview: preview,
       id: contactFingerprint.hashCode.abs() % 100000,
     );
+  }
+
+  /// Queue background download for media_ref messages.
+  void _prefetchMediaIfNeeded(String messageText, DnaEngine? engine) {
+    if (engine == null) return;
+    try {
+      final data = jsonDecode(messageText) as Map<String, dynamic>;
+      if (data['type'] != 'media_ref') return;
+      final ref = MediaRef.fromJson(data);
+      if (ref == null) return;
+      final cache = MediaCacheService.instance;
+      if (cache == null) return;
+      cache.prefetch(ref, engine);
+    } catch (_) {
+      // Not JSON or not media_ref — ignore
+    }
   }
 
   void dispose() {

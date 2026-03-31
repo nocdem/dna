@@ -16,6 +16,7 @@ import '../ffi/dna_engine.dart';
 import '../design_system/theme/dna_colors.dart';
 import '../l10n/app_localizations.dart';
 import '../models/media_ref.dart';
+import '../services/media_cache_service.dart';
 import '../services/media_service.dart';
 import '../utils/logger.dart';
 
@@ -60,17 +61,38 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
   @override
   void initState() {
     super.initState();
-    // Check cache
+    // Check in-memory cache first
     final ref = _ref;
     if (ref != null) {
       _fullMediaBytes = _mediaCache[ref.contentHash];
+      // If not in memory, check disk cache
+      if (_fullMediaBytes == null) {
+        _loadFromDiskCache(ref);
+      }
+    }
+  }
+
+  /// Load media from disk cache asynchronously.
+  Future<void> _loadFromDiskCache(MediaRef ref) async {
+    final cache = MediaCacheService.instance;
+    if (cache == null) return;
+
+    final bytes = await cache.get(ref.contentHash, ref.mimeType);
+    if (bytes != null) {
+      // Also populate in-memory cache
+      _mediaCache[ref.contentHash] = bytes;
+      if (mounted) {
+        setState(() {
+          _fullMediaBytes = bytes;
+        });
+      }
     }
   }
 
   @override
   void dispose() {
     _audioPlayer?.dispose();
-    _audioTempFile?.delete().catchError((_) {});
+    _audioTempFile?.delete().catchError((_) => _audioTempFile!);
     super.dispose();
   }
 
@@ -88,13 +110,29 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
     final ref = _ref;
     if (ref == null) return;
 
-    // Already cached
+    // Already in memory
     if (_mediaCache.containsKey(ref.contentHash)) {
       setState(() {
         _fullMediaBytes = _mediaCache[ref.contentHash];
         _downloadFailed = false;
       });
       return;
+    }
+
+    // Check disk cache before downloading from DHT
+    final cache = MediaCacheService.instance;
+    if (cache != null) {
+      final cached = await cache.get(ref.contentHash, ref.mimeType);
+      if (cached != null) {
+        _mediaCache[ref.contentHash] = cached;
+        if (mounted) {
+          setState(() {
+            _fullMediaBytes = cached;
+            _downloadFailed = false;
+          });
+        }
+        return;
+      }
     }
 
     setState(() {
@@ -105,7 +143,9 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
     try {
       final mediaService = MediaService(widget.engine);
       final bytes = await mediaService.download(ref);
+      // Save to both in-memory and disk cache
       _mediaCache[ref.contentHash] = bytes;
+      cache?.put(ref.contentHash, ref.mimeType, bytes);
       if (mounted) {
         setState(() {
           _fullMediaBytes = bytes;
@@ -201,7 +241,7 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
               child: GestureDetector(
                 onTap: () => _onImageTap(context, ref),
                 child: AspectRatio(
-                  aspectRatio: (aspectRatio as double).clamp(0.5, 2.0),
+                  aspectRatio: aspectRatio.clamp(0.5, 2.0),
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
@@ -210,13 +250,13 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
                         Image.memory(
                           _fullMediaBytes!,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _buildErrorPlaceholder(),
+                          errorBuilder: (_, _, _) => _buildErrorPlaceholder(),
                         )
                       else if (thumbnailBytes != null)
                         Image.memory(
                           thumbnailBytes,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _buildErrorPlaceholder(),
+                          errorBuilder: (_, _, _) => _buildErrorPlaceholder(),
                         )
                       else
                         _buildErrorPlaceholder(),
@@ -298,7 +338,7 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
               child: GestureDetector(
                 onTap: () => _onVideoTap(context, ref),
                 child: AspectRatio(
-                  aspectRatio: (aspectRatio as double).clamp(0.5, 2.0),
+                  aspectRatio: aspectRatio.clamp(0.5, 2.0),
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
@@ -307,7 +347,7 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
                         Image.memory(
                           thumbnailBytes,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) =>
+                          errorBuilder: (_, _, _) =>
                               Container(color: Colors.grey[800]),
                         )
                       else
@@ -426,7 +466,6 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
     final theme = Theme.of(context);
     final l10n = AppLocalizations.of(context);
     final isOutgoing = widget.message.isOutgoing;
-    final caption = ref.caption;
 
     return Align(
       alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
@@ -721,7 +760,6 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
   ) {
     final theme = Theme.of(context);
     final isOutgoing = widget.message.isOutgoing;
-    final caption = ref.caption;
     final thumbnailBytes = _decodeThumbnail();
 
     return Align(
@@ -763,7 +801,7 @@ class _MediaMessageBubbleState extends State<MediaMessageBubble> {
                       Image.memory(
                         thumbnailBytes,
                         fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Container(
+                        errorBuilder: (_, _, _) => Container(
                           color: Colors.grey[800],
                         ),
                       )
@@ -1086,7 +1124,7 @@ class _FullscreenVideoPlayerState extends State<_FullscreenVideoPlayer> {
   @override
   void dispose() {
     _controller?.dispose();
-    _tempFile?.delete().catchError((_) {});
+    _tempFile?.delete().catchError((_) => _tempFile!);
     super.dispose();
   }
 
