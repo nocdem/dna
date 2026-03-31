@@ -6,6 +6,7 @@ import '../ffi/dna_engine.dart';
 import '../models/media_ref.dart';
 import '../platform/platform_handler.dart';
 import '../services/media_cache_service.dart';
+import '../services/media_outbox_service.dart';
 import '../services/notification_service.dart';
 import '../utils/lifecycle_observer.dart';
 import '../utils/logger.dart';
@@ -182,6 +183,11 @@ class EventHandler {
         // Bypasses C-side cache to get fresh data after connection restored
         _refreshContactProfiles();
 
+        // Resume pending media uploads on reconnect
+        final engine = _ref.read(engineProvider).valueOrNull;
+        if (engine != null) {
+          MediaOutboxService.instance.processPendingUploads(engine);
+        }
 
       case DhtDisconnectedEvent():
         _ref.read(dhtConnectionStateProvider.notifier).state =

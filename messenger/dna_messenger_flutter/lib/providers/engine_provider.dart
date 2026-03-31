@@ -7,6 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import '../ffi/dna_engine.dart';
 import '../services/media_cache_service.dart';
+import '../services/media_outbox_service.dart';
 import '../utils/logger.dart';
 
 /// Main engine provider - singleton instance
@@ -85,6 +86,9 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
 
     // Initialize media disk cache (must be ready before messages load)
     await MediaCacheService.getInstance();
+
+    // Resume any pending media uploads from previous session
+    MediaOutboxService.instance.processPendingUploads(engine);
 
     // Log version info at startup (Lib from C library, App from pubspec.yaml)
     final packageInfo = await PackageInfo.fromPlatform();

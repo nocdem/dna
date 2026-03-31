@@ -9,13 +9,18 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
 
 import '../ffi/dna_engine.dart';
 import '../models/media_ref.dart';
 import '../utils/logger.dart';
+import 'cache_database.dart';
 import 'media_cache_service.dart';
 
 const String _tag = 'MEDIA_SVC';
+
+// Must match C-side NODUS_OPS_MEDIA_CHUNK_SIZE (512KB)
+const int mediaChunkSize = 512 * 1024;
 
 // AES-256-GCM constants
 const int _aesKeyLen = 32; // 256 bits
@@ -144,6 +149,7 @@ class MediaService {
   /// Returns a [MediaRef] that can be serialized into a message.
   Future<MediaRef> uploadImage(
     Uint8List bytes, {
+    String? recipientFp,
     bool encrypted = true,
     String? caption,
     int ttl = 604800,
@@ -176,22 +182,53 @@ class MediaService {
 
     // 4. Compute SHA3-512 of upload data
     final contentHash = _computeSha3_512(uploadData);
+    final hashHex = contentHash.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
-    // 5. Upload to Nodus
-    final hashHex = await _engine.mediaUpload(
-      uploadData,
-      contentHash,
-      0, // image
-      encrypted,
-      ttl,
-    );
-    log(_tag, 'Uploaded: hash=${hashHex.substring(0, 16)}...');
-
-    // 6. Get dimensions from decoded image (before compression may resize)
-    // Use compressed dimensions — _compressImage may have resized
+    // 5. Get dimensions
     final compressedDecoded = img.decodeImage(compressed);
     final width = compressedDecoded?.width ?? decoded.width;
     final height = compressedDecoded?.height ?? decoded.height;
+
+    // 6. Save encrypted bytes to disk + create pending_uploads row
+    if (recipientFp != null) {
+      final encPath = await _saveEncryptedToDisk(uploadData, hashHex);
+      await _createPendingUpload(
+        contentHash: hashHex,
+        recipientFp: recipientFp,
+        mediaType: 0,
+        mimeType: 'image/jpeg',
+        encryptedFilePath: encPath,
+        encryptionKey: aesKeyBase64,
+        thumbnail: base64Encode(thumbnailBytes),
+        caption: caption,
+        totalSize: uploadData.length,
+        width: width,
+        height: height,
+      );
+    }
+
+    // 7. Upload to Nodus
+    try {
+      await _engine.mediaUpload(
+        uploadData,
+        contentHash,
+        0, // image
+        encrypted,
+        ttl,
+      );
+      log(_tag, 'Uploaded: hash=${hashHex.substring(0, 16)}...');
+
+      // Mark complete in DB
+      if (recipientFp != null) {
+        await CacheDatabase.instance.updateUploadStatus(hashHex, 'complete');
+      }
+    } catch (e) {
+      // Mark failed — outbox will retry later
+      if (recipientFp != null) {
+        await CacheDatabase.instance.updateUploadStatus(hashHex, 'failed', e.toString());
+      }
+      rethrow;
+    }
 
     final ref = MediaRef(
       contentHash: hashHex,
@@ -221,6 +258,7 @@ class MediaService {
   /// Returns a [MediaRef] that can be serialized into a message.
   Future<MediaRef> uploadVideo(
     File videoFile, {
+    String? recipientFp,
     bool encrypted = true,
     String? caption,
     int ttl = 604800,
@@ -252,16 +290,44 @@ class MediaService {
 
     // Compute SHA3-512 of upload data
     final contentHash = _computeSha3_512(uploadData);
+    final hashHex = contentHash.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+    // Save encrypted bytes to disk + create pending_uploads row
+    if (recipientFp != null) {
+      final encPath = await _saveEncryptedToDisk(uploadData, hashHex);
+      await _createPendingUpload(
+        contentHash: hashHex,
+        recipientFp: recipientFp,
+        mediaType: 1,
+        mimeType: 'video/mp4',
+        encryptedFilePath: encPath,
+        encryptionKey: aesKeyBase64,
+        thumbnail: base64Encode(thumbnailBytes),
+        caption: caption,
+        totalSize: uploadData.length,
+      );
+    }
 
     // Upload to Nodus
-    final hashHex = await _engine.mediaUpload(
-      uploadData,
-      contentHash,
-      1, // video
-      encrypted,
-      ttl,
-    );
-    log(_tag, 'Uploaded video: hash=${hashHex.substring(0, 16)}...');
+    try {
+      await _engine.mediaUpload(
+        uploadData,
+        contentHash,
+        1, // video
+        encrypted,
+        ttl,
+      );
+      log(_tag, 'Uploaded video: hash=${hashHex.substring(0, 16)}...');
+
+      if (recipientFp != null) {
+        await CacheDatabase.instance.updateUploadStatus(hashHex, 'complete');
+      }
+    } catch (e) {
+      if (recipientFp != null) {
+        await CacheDatabase.instance.updateUploadStatus(hashHex, 'failed', e.toString());
+      }
+      rethrow;
+    }
 
     final ref = MediaRef(
       contentHash: hashHex,
@@ -292,6 +358,7 @@ class MediaService {
   /// Returns a [MediaRef] that can be serialized into a message.
   Future<MediaRef> uploadAudio(
     Uint8List audioBytes, {
+    String? recipientFp,
     int durationSeconds = 0,
     bool encrypted = true,
     int ttl = 604800,
@@ -323,16 +390,44 @@ class MediaService {
 
     // Compute SHA3-512 of upload data
     final contentHash = _computeSha3_512(uploadData);
+    final hashHex = contentHash.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+    // Save encrypted bytes to disk + create pending_uploads row
+    if (recipientFp != null) {
+      final encPath = await _saveEncryptedToDisk(uploadData, hashHex);
+      await _createPendingUpload(
+        contentHash: hashHex,
+        recipientFp: recipientFp,
+        mediaType: 2,
+        mimeType: 'audio/aac',
+        encryptedFilePath: encPath,
+        encryptionKey: aesKeyBase64,
+        thumbnail: base64Encode(thumbnailBytes),
+        totalSize: uploadData.length,
+        duration: durationSeconds,
+      );
+    }
 
     // Upload to Nodus
-    final hashHex = await _engine.mediaUpload(
-      uploadData,
-      contentHash,
-      2, // audio
-      encrypted,
-      ttl,
-    );
-    log(_tag, 'Uploaded audio: hash=${hashHex.substring(0, 16)}...');
+    try {
+      await _engine.mediaUpload(
+        uploadData,
+        contentHash,
+        2, // audio
+        encrypted,
+        ttl,
+      );
+      log(_tag, 'Uploaded audio: hash=${hashHex.substring(0, 16)}...');
+
+      if (recipientFp != null) {
+        await CacheDatabase.instance.updateUploadStatus(hashHex, 'complete');
+      }
+    } catch (e) {
+      if (recipientFp != null) {
+        await CacheDatabase.instance.updateUploadStatus(hashHex, 'failed', e.toString());
+      }
+      rethrow;
+    }
 
     final ref = MediaRef(
       contentHash: hashHex,
@@ -588,6 +683,59 @@ class MediaService {
     final rng = Random.secure();
     return Uint8List.fromList(
         List<int>.generate(length, (_) => rng.nextInt(256)));
+  }
+
+  // ---------------------------------------------------------------------------
+  // OUTBOX — Persist encrypted bytes + DB row for resume
+  // ---------------------------------------------------------------------------
+
+  /// Save encrypted upload data to media_outbox/ directory.
+  Future<String> _saveEncryptedToDisk(Uint8List data, String contentHashHex) async {
+    final dir = await getApplicationSupportDirectory();
+    final outboxDir = Directory('${dir.path}/media_outbox');
+    if (!await outboxDir.exists()) await outboxDir.create(recursive: true);
+    final file = File('${outboxDir.path}/$contentHashHex.enc');
+    await file.writeAsBytes(data);
+    log(_tag, 'Saved encrypted ${data.length} bytes to ${file.path}');
+    return file.path;
+  }
+
+  /// Create a pending_uploads row in SQLite.
+  Future<void> _createPendingUpload({
+    required String contentHash,
+    required String recipientFp,
+    required int mediaType,
+    required String mimeType,
+    required String encryptedFilePath,
+    required int totalSize,
+    String? encryptionKey,
+    String? thumbnail,
+    String? caption,
+    int width = 0,
+    int height = 0,
+    int duration = 0,
+  }) async {
+    final now = DateTime.now();
+    final chunkCount = (totalSize + mediaChunkSize - 1) ~/ mediaChunkSize;
+
+    await CacheDatabase.instance.insertPendingUpload(PendingUpload(
+      contentHash: contentHash,
+      recipientFp: recipientFp,
+      mediaType: mediaType,
+      mimeType: mimeType,
+      encryptedFilePath: encryptedFilePath,
+      encryptionKey: encryptionKey,
+      thumbnail: thumbnail,
+      caption: caption,
+      width: width,
+      height: height,
+      duration: duration,
+      totalSize: totalSize,
+      chunkCount: chunkCount,
+      createdAt: now,
+      updatedAt: now,
+    ));
+    log(_tag, 'Created pending upload: $contentHash ($chunkCount chunks)');
   }
 }
 

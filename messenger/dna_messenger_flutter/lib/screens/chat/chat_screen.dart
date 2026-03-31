@@ -20,6 +20,7 @@ import '../../widgets/formatted_text.dart';
 import '../../widgets/image_message_bubble.dart';
 import '../../widgets/media_message_bubble.dart';
 import '../../widgets/voice_record_sheet.dart';
+import '../../services/cache_database.dart';
 import '../../services/image_attachment_service.dart';
 import '../../services/media_service.dart';
 import 'contact_profile_dialog.dart';
@@ -55,6 +56,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _isUploading = false;
   double _uploadProgress = 0.0;
   StreamSubscription<DnaEvent>? _uploadProgressSub;
+  String? _uploadContentHash;
+  int _lastReportedChunk = -1;
 
   @override
   void initState() {
@@ -1087,8 +1090,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   /// Start upload progress tracking (non-blocking)
-  void _startUploadProgress(DnaEngine engine) {
+  void _startUploadProgress(DnaEngine engine, {String? contentHash}) {
     _uploadProgressSub?.cancel();
+    _uploadContentHash = contentHash;
+    _lastReportedChunk = -1;
     setState(() {
       _isUploading = true;
       _uploadProgress = 0.0;
@@ -1101,6 +1106,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         setState(() {
           _uploadProgress = (e.bytesSent / e.totalBytes).clamp(0.0, 1.0);
         });
+
+        // Track chunk progress in DB for resume capability
+        if (_uploadContentHash != null) {
+          final currentChunk = (e.bytesSent / mediaChunkSize).floor();
+          if (currentChunk > _lastReportedChunk) {
+            _lastReportedChunk = currentChunk;
+            CacheDatabase.instance.updateChunksSent(
+                _uploadContentHash!, currentChunk);
+          }
+        }
       }
     });
   }
@@ -1109,6 +1124,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void _finishUploadProgress() {
     _uploadProgressSub?.cancel();
     _uploadProgressSub = null;
+    _uploadContentHash = null;
+    _lastReportedChunk = -1;
     if (mounted) {
       setState(() {
         _isUploading = false;
@@ -1139,6 +1156,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final mediaService = MediaService(engine);
       final mediaRef = await mediaService.uploadImage(
         bytes,
+        recipientFp: contact.fingerprint,
         encrypted: true,
         caption: caption,
         ttl: 604800,
@@ -1236,6 +1254,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final mediaService = MediaService(engine);
       final mediaRef = await mediaService.uploadVideo(
         file,
+        recipientFp: contact.fingerprint,
         encrypted: true,
         caption: caption,
         ttl: 604800,
@@ -1302,6 +1321,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final mediaService = MediaService(engine);
       final mediaRef = await mediaService.uploadAudio(
         result.audioBytes,
+        recipientFp: contact.fingerprint,
         durationSeconds: result.durationSeconds,
         encrypted: true,
         ttl: 604800,
