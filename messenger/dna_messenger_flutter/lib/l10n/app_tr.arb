@@ -503,5 +503,11 @@
   "chatMediaUnsupported": "Desteklenmeyen medya türü",
   "chatTapToPlay": "Oynatmak için dokunun",
   "chatVideoError": "Video oynatma hatası",
-  "chatAudioError": "Ses oynatma hatası"
+  "chatAudioError": "Ses oynatma hatası",
+
+  "userProfileTitle": "Profil",
+  "userProfileEditProfile": "Profili Düzenle",
+  "userProfileMessage": "Mesaj",
+  "userProfilePosts": "Paylaşımlar",
+  "userProfileNoPosts": "Henüz paylaşım yok"
 }

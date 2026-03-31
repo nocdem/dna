@@ -1537,4 +1537,19 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get chatAudioError => 'Audio playback error';
+
+  @override
+  String get userProfileTitle => 'Profile';
+
+  @override
+  String get userProfileEditProfile => 'Edit Profile';
+
+  @override
+  String get userProfileMessage => 'Message';
+
+  @override
+  String get userProfilePosts => 'Posts';
+
+  @override
+  String get userProfileNoPosts => 'No posts yet';
 }

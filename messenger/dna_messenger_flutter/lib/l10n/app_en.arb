@@ -764,5 +764,11 @@
   "chatMediaUnsupported": "Unsupported media type",
   "chatTapToPlay": "Tap to play",
   "chatVideoError": "Video playback error",
-  "chatAudioError": "Audio playback error"
+  "chatAudioError": "Audio playback error",
+
+  "userProfileTitle": "Profile",
+  "userProfileEditProfile": "Edit Profile",
+  "userProfileMessage": "Message",
+  "userProfilePosts": "Posts",
+  "userProfileNoPosts": "No posts yet"
 }

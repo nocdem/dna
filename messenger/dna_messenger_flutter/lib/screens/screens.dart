@@ -7,4 +7,5 @@ export 'groups/groups_screen.dart';
 export 'wallet/wallet_screen.dart';
 export 'settings/settings_screen.dart';
 export 'profile/profile_editor_screen.dart';
+export 'profile/user_profile_screen.dart';
 export 'more/more_screen.dart';

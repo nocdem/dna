@@ -1545,4 +1545,19 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get chatAudioError => 'Ses oynatma hatası';
+
+  @override
+  String get userProfileTitle => 'Profil';
+
+  @override
+  String get userProfileEditProfile => 'Profili Düzenle';
+
+  @override
+  String get userProfileMessage => 'Mesaj';
+
+  @override
+  String get userProfilePosts => 'Paylaşımlar';
+
+  @override
+  String get userProfileNoPosts => 'Henüz paylaşım yok';
 }

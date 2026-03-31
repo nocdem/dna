@@ -2923,6 +2923,36 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Audio playback error'**
   String get chatAudioError;
+
+  /// No description provided for @userProfileTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Profile'**
+  String get userProfileTitle;
+
+  /// No description provided for @userProfileEditProfile.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit Profile'**
+  String get userProfileEditProfile;
+
+  /// No description provided for @userProfileMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Message'**
+  String get userProfileMessage;
+
+  /// No description provided for @userProfilePosts.
+  ///
+  /// In en, this message translates to:
+  /// **'Posts'**
+  String get userProfilePosts;
+
+  /// No description provided for @userProfileNoPosts.
+  ///
+  /// In en, this message translates to:
+  /// **'No posts yet'**
+  String get userProfileNoPosts;
 }
 
 class _AppLocalizationsDelegate

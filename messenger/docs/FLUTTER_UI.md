@@ -275,6 +275,16 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
    - Nickname registration on DHT
    - Get registered name for current identity
    - Display name lookup for contacts
+   - **UserProfileScreen** (`lib/screens/profile/user_profile_screen.dart`):
+     - Full-screen profile page, accepts `fingerprint` parameter
+     - Self mode: shows Edit Profile button → navigates to `ProfileEditorScreen`
+     - Other user mode: shows action buttons based on relationship:
+       - Contact: Message, Follow/Unfollow, Unfriend, Block
+       - Non-contact: Follow/Unfollow, Contact Request, Block
+       - Message button only visible if mutual contact
+     - Displays user's wall posts below profile header with full engagement
+     - Replaces previous bottom sheet modal from `WallTimelineScreen`
+     - Navigation: Wall author tap → `UserProfileScreen`
 
 5. **Settings:**
    - Nickname registration works
