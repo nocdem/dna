@@ -441,6 +441,19 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
+    /* Sort by timestamp descending (boost posts may have been appended at end) */
+    if (final_count > cached_count) {
+        for (size_t i = 0; i < final_count - 1; i++) {
+            for (size_t j = i + 1; j < final_count; j++) {
+                if (info[j].timestamp > info[i].timestamp) {
+                    dna_wall_post_info_t tmp = info[i];
+                    info[i] = info[j];
+                    info[j] = tmp;
+                }
+            }
+        }
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Timeline: %zu posts (cache-first)", final_count);
     task->callback.wall_posts(task->request_id, DNA_OK, info, (int)final_count, task->user_data);
 }
