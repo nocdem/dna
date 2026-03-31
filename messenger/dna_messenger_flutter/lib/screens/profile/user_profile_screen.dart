@@ -45,49 +45,65 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     final engine = await ref.read(engineProvider.future);
     final myFp = ref.read(currentFingerprintProvider) ?? '';
 
-    setState(() {
-      _isSelf = widget.fingerprint == myFp;
-      _isLoadingProfile = true;
-    });
+    _isSelf = widget.fingerprint == myFp;
 
-    // Load profile and display name
+    // Step 1: Show cached data instantly (no loading spinner)
+    final cached =
+        ref.read(identityProfileCacheProvider)[widget.fingerprint];
+    if (cached != null) {
+      _displayName = cached.displayName.isNotEmpty
+          ? cached.displayName
+          : widget.fingerprint.substring(0, 16);
+      if (cached.avatarBase64.isNotEmpty) {
+        try {
+          _avatar = decodeBase64WithPadding(cached.avatarBase64);
+        } catch (_) {}
+      }
+    }
+
+    // Relationship status (sync, instant)
+    if (!_isSelf) {
+      _isFollowing = engine.isFollowingUser(widget.fingerprint);
+      final contacts = ref.read(contactsProvider).valueOrNull ?? [];
+      _isContact =
+          contacts.any((c) => c.fingerprint == widget.fingerprint);
+    }
+
+    // Show what we have from cache, start loading posts in parallel
+    if (mounted) {
+      setState(() => _isLoadingProfile = cached == null);
+    }
+
+    // Step 2: Load profile from DHT and posts in parallel
+    await Future.wait([
+      _loadProfile(engine),
+      _loadPosts(),
+    ]);
+  }
+
+  Future<void> _loadProfile(DnaEngine engine) async {
     try {
       final profile = await engine.lookupProfile(widget.fingerprint);
       final displayName = await engine.getDisplayName(widget.fingerprint);
 
       _profile = profile;
-      _displayName = (displayName.isNotEmpty)
-          ? displayName
-          : widget.fingerprint.substring(0, 16);
-
-      // Avatar: try cache first, then profile
-      final cached =
-          ref.read(identityProfileCacheProvider)[widget.fingerprint];
-      if (cached != null && cached.avatarBase64.isNotEmpty) {
-        try {
-          _avatar = decodeBase64WithPadding(cached.avatarBase64);
-        } catch (_) {}
+      if (displayName.isNotEmpty) {
+        _displayName = displayName;
+      } else if (_displayName.isEmpty) {
+        _displayName = widget.fingerprint.substring(0, 16);
       }
+
+      // Update avatar from full profile if cache didn't have it
       if (_avatar == null && profile != null) {
         _avatar = profile.decodeAvatar();
       }
-
-      // Relationship status (only for other users)
-      if (!_isSelf) {
-        _isFollowing = engine.isFollowingUser(widget.fingerprint);
-        final contacts = ref.read(contactsProvider).valueOrNull ?? [];
-        _isContact =
-            contacts.any((c) => c.fingerprint == widget.fingerprint);
-      }
     } catch (_) {
-      // Profile lookup failed — show what we have
+      // DHT lookup failed — keep cached data
     }
 
     if (mounted) {
       setState(() => _isLoadingProfile = false);
     }
-
-    _loadPosts();
   }
 
   Future<void> _loadPosts() async {
@@ -302,61 +318,76 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.lg),
-      child: Wrap(
-        spacing: DnaSpacing.sm,
-        runSpacing: DnaSpacing.sm,
-        alignment: WrapAlignment.center,
+      child: Column(
         children: [
-          // Message (only if contact)
-          if (_isContact)
-            FilledButton.icon(
-              onPressed: _openChat,
-              icon: const FaIcon(FontAwesomeIcons.comment, size: 14),
-              label: Text(l10n.userProfileMessage),
-            ),
-          // Follow / Unfollow
-          if (_isFollowing)
-            OutlinedButton.icon(
-              onPressed: _toggleFollow,
-              icon: const FaIcon(FontAwesomeIcons.userCheck, size: 14),
-              label: Text(l10n.wallUnfollow),
-            )
-          else
-            FilledButton.tonal(
-              onPressed: _toggleFollow,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const FaIcon(FontAwesomeIcons.userPlus, size: 14),
-                  const SizedBox(width: DnaSpacing.xs),
-                  Text(l10n.wallFollow),
-                ],
+          // Primary row: Message + Follow (equal width)
+          Row(
+            children: [
+              // Message or Contact Request (left button)
+              Expanded(
+                child: _isContact
+                    ? FilledButton.icon(
+                        onPressed: _openChat,
+                        icon: const FaIcon(FontAwesomeIcons.comment, size: 14),
+                        label: Text(l10n.userProfileMessage),
+                      )
+                    : OutlinedButton.icon(
+                        onPressed: _sendContactRequest,
+                        icon: const FaIcon(FontAwesomeIcons.userPlus, size: 14),
+                        label: Text(l10n.wallSendContactRequest),
+                      ),
               ),
-            ),
-          // Contact Request / Unfriend
-          if (_isContact)
-            OutlinedButton.icon(
-              onPressed: _confirmUnfriend,
-              icon: const FaIcon(FontAwesomeIcons.userMinus, size: 14),
-              label: Text(l10n.wallUnfriend),
-              style: OutlinedButton.styleFrom(
-                  foregroundColor: DnaColors.textWarning),
-            )
-          else
-            OutlinedButton.icon(
-              onPressed: _sendContactRequest,
-              icon: const FaIcon(FontAwesomeIcons.userPlus, size: 14),
-              label: Text(l10n.wallSendContactRequest),
-            ),
-          // Block
-          OutlinedButton.icon(
-            onPressed: _confirmBlock,
-            icon: FaIcon(FontAwesomeIcons.ban,
-                size: 14, color: DnaColors.textWarning),
-            label: Text(l10n.wallBlockUser,
-                style: TextStyle(color: DnaColors.textWarning)),
-            style: OutlinedButton.styleFrom(
-                side: BorderSide(color: DnaColors.textWarning)),
+              const SizedBox(width: DnaSpacing.sm),
+              // Follow / Unfollow (right button)
+              Expanded(
+                child: _isFollowing
+                    ? OutlinedButton.icon(
+                        onPressed: _toggleFollow,
+                        icon: const FaIcon(FontAwesomeIcons.userCheck, size: 14),
+                        label: Text(l10n.wallUnfollow),
+                      )
+                    : FilledButton.tonal(
+                        onPressed: _toggleFollow,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const FaIcon(FontAwesomeIcons.userPlus, size: 14),
+                            const SizedBox(width: DnaSpacing.xs),
+                            Text(l10n.wallFollow),
+                          ],
+                        ),
+                      ),
+              ),
+            ],
+          ),
+          const SizedBox(height: DnaSpacing.sm),
+          // Secondary row: Unfriend/Block
+          Row(
+            children: [
+              if (_isContact)
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _confirmUnfriend,
+                    icon: const FaIcon(FontAwesomeIcons.userMinus, size: 14),
+                    label: Text(l10n.wallUnfriend),
+                    style: OutlinedButton.styleFrom(
+                        foregroundColor: DnaColors.textWarning),
+                  ),
+                ),
+              if (_isContact) const SizedBox(width: DnaSpacing.sm),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _confirmBlock,
+                  icon: FaIcon(FontAwesomeIcons.ban,
+                      size: 14, color: DnaColors.textWarning),
+                  label: Text(l10n.wallBlockUser,
+                      style: TextStyle(color: DnaColors.textWarning)),
+                  style: OutlinedButton.styleFrom(
+                      side: BorderSide(color: DnaColors.textWarning)),
+                ),
+              ),
+            ],
           ),
         ],
       ),
