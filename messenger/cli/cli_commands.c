@@ -326,7 +326,7 @@ void cmd_help(void) {
     printf("  group       Encrypted group chats with GEK key rotation\n");
     printf("  channel     Public broadcast channels (create, post, subscribe)\n");
     printf("  wall        Social wall — posts, timeline, comments, likes\n");
-    printf("  wallet      Multi-chain wallet (Backbone, ETH, SOL, TRX)\n");
+    printf("  wallet      Multi-chain wallet (Backbone, ETH, SOL, TRX, BNB)\n");
     printf("  dex         Decentralized exchange (quotes, swaps, pairs)\n");
     printf("  network     DHT status, presence, bootstrap registry\n");
     printf("  sign        Sign data with your Dilithium5 key\n");
@@ -1630,6 +1630,7 @@ int cmd_wallets(dna_engine_t *engine) {
                 case 100: network = "Ethereum"; break;
                 case 101: network = "Solana";   break;
                 case 102: network = "Tron";     break;
+                case 103: network = "BSC";      break;
                 default:  network = "Cellframe"; break;
             }
 
@@ -5112,11 +5113,11 @@ int dispatch_channel(dna_engine_t *engine, int argc, char **argv, int sub) {
 /* ---------- wallet ---------- */
 int dispatch_wallet(dna_engine_t *engine, int argc, char **argv, int sub) {
     if (sub >= argc || strcmp(argv[sub], "help") == 0) {
-        fprintf(stderr, "Wallet — Multi-chain wallet (Backbone, Ethereum, Solana, Tron)\n\n");
+        fprintf(stderr, "Wallet — Multi-chain wallet (Backbone, Ethereum, Solana, Tron, BSC)\n\n");
         fprintf(stderr, "  list                       List all wallets with addresses\n");
-        fprintf(stderr, "  balance <index>            Show balances (0=ETH, 1=SOL, 2=TRX, 3=Backbone)\n");
+        fprintf(stderr, "  balance <index>            Show balances (0=ETH, 1=SOL, 2=TRX, 3=Backbone, 4=BSC)\n");
         fprintf(stderr, "  send <idx> <net> <token> <to> <amount>  Send tokens\n");
-        fprintf(stderr, "  transactions <idx> [net]   Transaction history (Backbone|Solana|Ethereum|Tron)\n");
+        fprintf(stderr, "  transactions <idx> [net]   Transaction history (Backbone|Solana|Ethereum|Tron|BSC)\n");
         fprintf(stderr, "  estimate-gas <network>     Estimate gas fees for a network\n");
         return 1;
     }
@@ -5130,7 +5131,7 @@ int dispatch_wallet(dna_engine_t *engine, int argc, char **argv, int sub) {
         if (sub + 5 >= argc) { fprintf(stderr, "Usage: wallet send <wallet_idx> <network> <token> <to_address> <amount>\n"); return 1; }
         return cmd_send_tokens(engine, atoi(argv[sub + 1]), argv[sub + 2], argv[sub + 3], argv[sub + 4], argv[sub + 5]);
     } else if (strcmp(subcmd, "transactions") == 0) {
-        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wallet transactions <wallet_index> [network]\n  Networks: Backbone (default), Solana, Ethereum, Tron\n"); return 1; }
+        if (sub + 1 >= argc) { fprintf(stderr, "Usage: wallet transactions <wallet_index> [network]\n  Networks: Backbone (default), Solana, Ethereum, Tron, BSC\n"); return 1; }
         const char *net = (sub + 2 < argc) ? argv[sub + 2] : NULL;
         return cmd_transactions(engine, atoi(argv[sub + 1]), net);
     } else if (strcmp(subcmd, "estimate-gas") == 0) {
@@ -5745,7 +5746,7 @@ int dispatch_wallet_repl(dna_engine_t *engine, const char *subcmd) {
         return cmd_send_tokens(engine, atoi(idx), net, tok, to, amt);
     } else if (strcmp(subcmd, "transactions") == 0) {
         char *idx = strtok(NULL, " \t");
-        if (!idx) { fprintf(stderr, "Usage: wallet transactions <wallet_index> [network]\n  Networks: Backbone (default), Solana, Ethereum, Tron\n"); return 1; }
+        if (!idx) { fprintf(stderr, "Usage: wallet transactions <wallet_index> [network]\n  Networks: Backbone (default), Solana, Ethereum, Tron, BSC\n"); return 1; }
         char *net = strtok(NULL, " \t");
         return cmd_transactions(engine, atoi(idx), net);
     } else if (strcmp(subcmd, "estimate-gas") == 0) {

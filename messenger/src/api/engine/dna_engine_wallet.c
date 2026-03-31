@@ -21,6 +21,8 @@
 #include "blockchain/solana/sol_dex.h"
 #include "blockchain/solana/sol_spl.h"
 #include "blockchain/ethereum/eth_dex.h"
+#include "blockchain/bsc/bsc_bep20.h"
+#include "blockchain/bsc/bsc_rpc.h"
 #include "blockchain/cellframe/cellframe_dex.h"
 #include "database/wallet_cache.h"
 
@@ -76,6 +78,7 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
                     if (list->wallets[i].type == BLOCKCHAIN_ETHEREUM)      wallets[i].sig_type = 100;
                     else if (list->wallets[i].type == BLOCKCHAIN_SOLANA)   wallets[i].sig_type = 101;
                     else if (list->wallets[i].type == BLOCKCHAIN_TRON)     wallets[i].sig_type = 102;
+                    else if (list->wallets[i].type == BLOCKCHAIN_BSC)      wallets[i].sig_type = 103;
                     else                                                    wallets[i].sig_type = 4;
                     wallets[i].is_protected = list->wallets[i].is_encrypted;
                 }
@@ -138,6 +141,8 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
                 wallets[i].sig_type = 101;  /* Use 101 for SOL (Ed25519) */
             } else if (list->wallets[i].type == BLOCKCHAIN_TRON) {
                 wallets[i].sig_type = 102;  /* Use 102 for TRX (secp256k1) */
+            } else if (list->wallets[i].type == BLOCKCHAIN_BSC) {
+                wallets[i].sig_type = 103;  /* Use 103 for BSC (secp256k1, EVM) */
             } else {
                 wallets[i].sig_type = 4;    /* Dilithium for Cellframe */
             }
@@ -384,6 +389,72 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         } else {
             for (int ci = 0; ci < cached_count; ci++) {
                 if (strcmp(cached[ci].token, "USDC") == 0 && strcmp(cached[ci].network, "Solana") == 0) {
+                    strncpy(balances[2].balance, cached[ci].balance, sizeof(balances[2].balance) - 1);
+                    break;
+                }
+            }
+        }
+
+        goto done;
+    }
+
+    if (wallet_info->type == BLOCKCHAIN_BSC) {
+        /* BSC: BNB + USDT + USDC (BEP-20) */
+        balances = calloc(3, sizeof(dna_balance_t));
+        if (!balances) {
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+        count = 3;
+
+        /* Native BNB balance */
+        strncpy(balances[0].token, "BNB", sizeof(balances[0].token) - 1);
+        strncpy(balances[0].network, "BSC", sizeof(balances[0].network) - 1);
+        strcpy(balances[0].balance, "0.0");
+
+        blockchain_balance_t bc_balance;
+        if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
+            strncpy(balances[0].balance, bc_balance.balance, sizeof(balances[0].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "BNB") == 0 && strcmp(cached[ci].network, "BSC") == 0) {
+                    strncpy(balances[0].balance, cached[ci].balance, sizeof(balances[0].balance) - 1);
+                    break;
+                }
+            }
+        }
+
+        /* USDT (BEP-20) balance */
+        strncpy(balances[1].token, "USDT", sizeof(balances[1].token) - 1);
+        strncpy(balances[1].network, "BSC", sizeof(balances[1].network) - 1);
+        strcpy(balances[1].balance, "0.0");
+
+        char bsc_usdt[64] = {0};
+        if (bsc_bep20_get_balance_by_symbol(wallet_info->address, "USDT", bsc_usdt, sizeof(bsc_usdt)) == 0) {
+            strncpy(balances[1].balance, bsc_usdt, sizeof(balances[1].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "USDT") == 0 && strcmp(cached[ci].network, "BSC") == 0) {
+                    strncpy(balances[1].balance, cached[ci].balance, sizeof(balances[1].balance) - 1);
+                    break;
+                }
+            }
+        }
+
+        /* USDC (BEP-20) balance */
+        strncpy(balances[2].token, "USDC", sizeof(balances[2].token) - 1);
+        strncpy(balances[2].network, "BSC", sizeof(balances[2].network) - 1);
+        strcpy(balances[2].balance, "0.0");
+
+        char bsc_usdc[64] = {0};
+        if (bsc_bep20_get_balance_by_symbol(wallet_info->address, "USDC", bsc_usdc, sizeof(bsc_usdc)) == 0) {
+            strncpy(balances[2].balance, bsc_usdc, sizeof(balances[2].balance) - 1);
+            any_fetch_succeeded = 1;
+        } else {
+            for (int ci = 0; ci < cached_count; ci++) {
+                if (strcmp(cached[ci].token, "USDC") == 0 && strcmp(cached[ci].network, "BSC") == 0) {
                     strncpy(balances[2].balance, cached[ci].balance, sizeof(balances[2].balance) - 1);
                     break;
                 }

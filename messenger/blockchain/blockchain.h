@@ -27,6 +27,7 @@ typedef enum {
     BLOCKCHAIN_TYPE_CELLFRAME,
     BLOCKCHAIN_TYPE_TRON,         /* TRC-20, secp256k1 */
     BLOCKCHAIN_TYPE_SOLANA,       /* Ed25519 */
+    BLOCKCHAIN_TYPE_BSC,          /* BNB Smart Chain, EVM-compatible */
 } blockchain_type_t;
 
 /* Transaction status */

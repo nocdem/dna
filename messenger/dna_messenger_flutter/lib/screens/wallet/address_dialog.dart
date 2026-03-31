@@ -54,6 +54,7 @@ class _AddressDialogState extends State<AddressDialog> {
     ('ethereum', 'Ethereum (ERC20)'),
     ('solana', 'Solana (SPL)'),
     ('tron', 'TRON (TRC20)'),
+    ('bsc', 'BNB Smart Chain (BEP20)'),
   ];
 
   @override
@@ -201,6 +202,8 @@ class _AddressDialogState extends State<AddressDialog> {
         return 'Base58 address...';
       case 'tron':
         return 'T...';
+      case 'bsc':
+        return '0x...';
       default:
         return 'Address...';
     }
@@ -220,6 +223,9 @@ class _AddressDialogState extends State<AddressDialog> {
       case 'tron':
         // TRON: T + 33 Base58 chars
         return RegExp(r'^T[1-9A-HJ-NP-Za-km-z]{33}$').hasMatch(address);
+      case 'bsc':
+        // BSC: same format as ETH (0x + 40 hex)
+        return RegExp(r'^0x[a-fA-F0-9]{40}$').hasMatch(address);
       default:
         return address.isNotEmpty;
     }

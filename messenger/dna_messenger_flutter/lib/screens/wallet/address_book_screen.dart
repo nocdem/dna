@@ -243,6 +243,8 @@ class AddressBookScreen extends ConsumerWidget {
         return const Color(0xFF00D18C); // Solana green
       case 'tron':
         return const Color(0xFFFF060A); // TRON red
+      case 'bsc':
+        return const Color(0xFFF0B90B); // BNB yellow
       default:
         return Colors.grey;
     }

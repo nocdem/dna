@@ -35,6 +35,7 @@ typedef enum {
     BLOCKCHAIN_ETHEREUM  = 1,   /* Ethereum mainnet */
     BLOCKCHAIN_TRON      = 2,   /* TRON mainnet (TRC-20, secp256k1) */
     BLOCKCHAIN_SOLANA    = 3,   /* Solana (Ed25519) */
+    BLOCKCHAIN_BSC       = 4,   /* BNB Smart Chain (EVM-compatible, secp256k1) */
     BLOCKCHAIN_COUNT            /* Number of supported blockchains */
 } blockchain_type_t;
 

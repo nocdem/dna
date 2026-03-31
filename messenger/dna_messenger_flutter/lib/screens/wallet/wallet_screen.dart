@@ -41,6 +41,8 @@ String? getTokenIconPath(String token) {
       return 'assets/icons/crypto/sol.svg';
     case 'TRX':
       return 'assets/icons/crypto/trx.svg';
+    case 'BNB':
+      return 'assets/icons/crypto/bnb.svg';
     case 'USDT':
       return 'assets/icons/crypto/usdt.svg';
     case 'KEL':
@@ -58,7 +60,7 @@ String? getTokenIconPath(String token) {
 }
 
 /// sigType-to-network mapping for wallet address lookup
-/// Cellframe=4, ETH=100, SOL=101, TRX=102
+/// Cellframe=4, ETH=100, SOL=101, TRX=102, BSC=103
 String? getWalletAddressByNetwork(List<Wallet> wallets, String network) {
   final int targetSigType;
   switch (network.toLowerCase()) {
@@ -70,6 +72,9 @@ String? getWalletAddressByNetwork(List<Wallet> wallets, String network) {
       break;
     case 'tron':
       targetSigType = 102;
+      break;
+    case 'bsc':
+      targetSigType = 103;
       break;
     default: // cellframe
       targetSigType = 4;
@@ -93,6 +98,8 @@ String getNetworkDisplayLabel(String network) {
       return 'SPL';
     case 'tron':
       return 'TRC20';
+    case 'bsc':
+      return 'BEP20';
     default:
       return network;
   }
@@ -406,6 +413,7 @@ class _ReceiveSheetState extends State<_ReceiveSheet> {
     ('ethereum', 'ERC20', 'assets/icons/crypto/eth.svg'),
     ('solana', 'SPL', 'assets/icons/crypto/sol.svg'),
     ('tron', 'TRC20', 'assets/icons/crypto/trx.svg'),
+    ('bsc', 'BEP20', 'assets/icons/crypto/bnb.svg'),
   ];
 
   String get _currentAddress =>
@@ -770,6 +778,7 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
     'KEL': Color(0xFFFF8C42),    // KEL warm orange
     'NYS': Color(0xFFE040FB),    // NYS magenta/purple
     'QEVM': Color(0xFF4FC3F7),   // QEVM light blue
+    'BNB': Color(0xFFF0B90B),    // BNB yellow (official brand)
   };
 
   // Chain brand colors — distinct from each other
@@ -778,6 +787,7 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
     'ethereum': Color(0xFF627EEA),   // Ethereum blue
     'solana': Color(0xFF14F195),     // Solana green
     'tron': Color(0xFFEF0027),       // TRON red
+    'bsc': Color(0xFFF0B90B),        // BNB yellow
   };
 
   static const _chainIcons = <String, String>{
@@ -785,6 +795,7 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
     'ethereum': 'assets/icons/crypto/eth.svg',
     'solana': 'assets/icons/crypto/sol.svg',
     'tron': 'assets/icons/crypto/trx.svg',
+    'bsc': 'assets/icons/crypto/bnb.svg',
   };
 
   Color _colorForToken(String token) =>
@@ -1346,6 +1357,7 @@ class _ChainFilterBar extends ConsumerWidget {
     ('ethereum', 'ETH', 'assets/icons/crypto/eth.svg'),
     ('solana', 'SOL', 'assets/icons/crypto/sol.svg'),
     ('tron', 'TRX', 'assets/icons/crypto/trx.svg'),
+    ('bsc', 'BNB', 'assets/icons/crypto/bnb.svg'),
   ];
 
   @override
@@ -2119,6 +2131,9 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       return profile.sol.isNotEmpty ? profile.sol : null;
     } else if (network == 'tron') {
       return profile.trx.isNotEmpty ? profile.trx : null;
+    } else if (network == 'bsc') {
+      // BSC uses same address as ETH (EVM-compatible)
+      return profile.eth.isNotEmpty ? profile.eth : null;
     } else {
       // Cellframe (default)
       return profile.backbone.isNotEmpty ? profile.backbone : null;
@@ -2134,6 +2149,8 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       return 'SOL';
     } else if (network == 'tron') {
       return 'TRX';
+    } else if (network == 'bsc') {
+      return 'BNB';
     } else {
       return 'Cellframe';
     }
@@ -2640,6 +2657,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       DropdownMenuItem(value: 'Ethereum', child: Text('ERC20')),
       DropdownMenuItem(value: 'Solana', child: Text('SPL')),
       DropdownMenuItem(value: 'Tron', child: Text('TRC20')),
+      DropdownMenuItem(value: 'BSC', child: Text('BEP20')),
     ];
   }
 
@@ -2648,6 +2666,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       case 'ethereum': return 'ERC20';
       case 'solana': return 'SPL';
       case 'tron': return 'TRC20';
+      case 'bsc': return 'BEP20';
       default: return 'CF20';
     }
   }

@@ -33,6 +33,7 @@ const _tokenPairMap = <String, String?>{
   'CPUNK': 'CPUNK_USDT',
   'KEL': 'KEL_USDT',
   'NYS': 'NYS_USDT',
+  'BNB': 'BNB_USDT',
   'USDT': null, // Already USDT — hardcoded
   'USDC': 'USDC_USDT',
 };

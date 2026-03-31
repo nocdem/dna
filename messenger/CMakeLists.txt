@@ -253,6 +253,10 @@ if(BUILD_SHARED_LIB)
         blockchain/tron/trx_chain.c                    # TRON blockchain_ops implementation
         blockchain/tron/trx_tx.c                       # TRON transaction building/signing
         blockchain/tron/trx_trc20.c                    # TRC-20 token support (USDT, USDC)
+        blockchain/bsc/bsc_chain.c                     # BSC blockchain_ops implementation
+        blockchain/bsc/bsc_rpc.c                       # BSC JSON-RPC client
+        blockchain/bsc/bsc_tx.c                        # BSC transaction building/signing
+        blockchain/bsc/bsc_bep20.c                     # BEP-20 token support (USDT, USDC)
         ${SHARED_DIR}/crypto/key/bip32/bip32.c                           # BIP-32 HD key derivation
         ${SHARED_DIR}/crypto/hash/keccak256.c                       # Keccak-256 (Ethereum hash)
         ${SHARED_DIR}/crypto/utils/base58.c       # Base58 encoding for addresses
@@ -341,6 +345,10 @@ else()
         blockchain/tron/trx_chain.c                    # TRON blockchain_ops implementation
         blockchain/tron/trx_tx.c                       # TRON transaction building/signing
         blockchain/tron/trx_trc20.c                    # TRC-20 token support (USDT, USDC)
+        blockchain/bsc/bsc_chain.c                     # BSC blockchain_ops implementation
+        blockchain/bsc/bsc_rpc.c                       # BSC JSON-RPC client
+        blockchain/bsc/bsc_tx.c                        # BSC transaction building/signing
+        blockchain/bsc/bsc_bep20.c                     # BEP-20 token support (USDT, USDC)
         ${SHARED_DIR}/crypto/key/bip32/bip32.c                           # BIP-32 HD key derivation
         ${SHARED_DIR}/crypto/hash/keccak256.c                       # Keccak-256 (Ethereum hash)
         ${SHARED_DIR}/crypto/utils/base58.c       # Base58 encoding for addresses

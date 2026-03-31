@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-03-31 | **Status:** BETA | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.9.153 | Flutter v1.0.0-rc134 | Nodus v0.9.26
+**Versions:** Library v0.9.155 | Flutter v1.0.0-rc136 | Nodus v0.9.26
 
 **Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains messenger-specific guidelines only.
 
@@ -30,7 +30,7 @@ The DNA Engine (`src/api/dna_engine.c`) is a modular async C library with 18 dom
 | `dna_engine_version.c` | Version info and checking |
 | `dna_engine_wall.c` | Personal wall posts |
 | `dna_engine_follow.c` | Follow/unfollow, list, DHT sync |
-| `dna_engine_wallet.c` | Multi-chain wallet (Cellframe, ETH, SOL, TRON) |
+| `dna_engine_wallet.c` | Multi-chain wallet (Cellframe, ETH, SOL, TRON, BSC) |
 | `dna_engine_workers.c` | Background thread pool |
 
 **Directory layout:**
@@ -39,7 +39,7 @@ The DNA Engine (`src/api/dna_engine.c`) is a modular async C library with 18 dom
 - `dht/` — DHT operations (`core/`, `client/`, `shared/`, `keyserver/`)
 - `transport/` — P2P transport layer
 - `database/` — SQLite persistence and caching
-- `blockchain/` — Multi-chain wallet (`cellframe/`, `ethereum/`, `solana/`, `tron/`)
+- `blockchain/` — Multi-chain wallet (`cellframe/`, `ethereum/`, `solana/`, `tron/`, `bsc/`)
 - `cli/` — CLI tool (`dna-connect-cli`)
 - `jni/` — Android JNI bindings
 - `dna_messenger_flutter/` — Flutter app (Dart)
@@ -89,8 +89,8 @@ Flutter connects to the C library via `dart:ffi`:
 
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.9.153 | C code changes |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc134+10484 | Flutter/Dart changes |
+| C Library | `include/dna/version.h` | v0.9.155 | C code changes |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc136+10486 | Flutter/Dart changes |
 | Nodus | `../nodus/include/nodus/nodus_types.h` | v0.9.22 | Nodus changes |
 
 Flutter app displays **both versions** in Settings:

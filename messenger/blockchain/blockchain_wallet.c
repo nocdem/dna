@@ -14,6 +14,10 @@
 #include "ethereum/eth_wallet.h"
 #include "ethereum/eth_tx.h"
 #include "ethereum/eth_erc20.h"
+#include "bsc/bsc_wallet.h"
+#include "bsc/bsc_tx.h"
+#include "bsc/bsc_bep20.h"
+#include "bsc/bsc_rpc.h"
 #include "solana/sol_wallet.h"
 #include "solana/sol_rpc.h"
 #include "solana/sol_tx.h"
@@ -80,6 +84,7 @@ const char* blockchain_type_name(blockchain_type_t type) {
         case BLOCKCHAIN_ETHEREUM:  return "Ethereum";
         case BLOCKCHAIN_TRON:      return "TRON";
         case BLOCKCHAIN_SOLANA:    return "Solana";
+        case BLOCKCHAIN_BSC:      return "BNB Smart Chain";
         default:                   return "Unknown";
     }
 }
@@ -90,6 +95,7 @@ const char* blockchain_type_ticker(blockchain_type_t type) {
         case BLOCKCHAIN_ETHEREUM:  return "ETH";
         case BLOCKCHAIN_TRON:      return "TRX";
         case BLOCKCHAIN_SOLANA:    return "SOL";
+        case BLOCKCHAIN_BSC:      return "BNB";
         default:                   return "???";
     }
 }
@@ -155,6 +161,9 @@ int blockchain_get_balance(
         case BLOCKCHAIN_TRON:
             return trx_rpc_get_balance(address, balance_out->balance, sizeof(balance_out->balance));
 
+        case BLOCKCHAIN_BSC:
+            return bsc_rpc_get_balance(address, balance_out->balance, sizeof(balance_out->balance));
+
         default:
             QGP_LOG_ERROR(LOG_TAG, "Balance check not implemented for %s", blockchain_type_name(type));
             return -1;
@@ -187,6 +196,9 @@ bool blockchain_validate_address(blockchain_type_t type, const char *address) {
 
         case BLOCKCHAIN_TRON:
             return trx_validate_address(address);
+
+        case BLOCKCHAIN_BSC:
+            return bsc_validate_address(address);
 
         default:
             return false;
@@ -317,6 +329,21 @@ int blockchain_derive_wallets_from_seed(
             trx_wallet_clear(&trx_wallet);
             idx++;
             QGP_LOG_DEBUG(LOG_TAG, "Derived TRX address: %s", info->address);
+        }
+    }
+
+    /* Derive BSC wallet address (same key as ETH — EVM-compatible) */
+    {
+        bsc_wallet_t bsc_wallet;
+        if (bsc_wallet_generate(master_seed, 64, &bsc_wallet) == 0) {
+            blockchain_wallet_info_t *info = &list->wallets[idx];
+            info->type = BLOCKCHAIN_BSC;
+            strncpy(info->name, fingerprint, sizeof(info->name) - 1);
+            strncpy(info->address, bsc_wallet.address_hex, sizeof(info->address) - 1);
+            info->is_encrypted = false;
+            bsc_wallet_clear(&bsc_wallet);
+            idx++;
+            QGP_LOG_DEBUG(LOG_TAG, "Derived BSC address: %s", info->address);
         }
     }
 
@@ -480,6 +507,43 @@ int blockchain_send_tokens_with_seed(
 
             /* Securely clear private key */
             trx_wallet_clear(&trx_wallet);
+            break;
+        }
+
+        case BLOCKCHAIN_BSC: {
+            chain_name = "BSC";
+
+            /* Derive BSC wallet on-demand (same key as ETH) */
+            bsc_wallet_t bsc_wallet;
+            if (bsc_wallet_generate(master_seed, 64, &bsc_wallet) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to derive BSC wallet");
+                return -1;
+            }
+
+            if (token != NULL && strlen(token) > 0 && strcasecmp(token, "BNB") != 0) {
+                /* BEP-20 token transfer */
+                ret = bsc_bep20_send_by_symbol(
+                    bsc_wallet.private_key,
+                    bsc_wallet.address_hex,
+                    to_address,
+                    amount,
+                    token,
+                    gas_speed,
+                    tx_hash_out
+                );
+            } else {
+                /* Native BNB transfer */
+                ret = bsc_send_bnb_with_gas(
+                    bsc_wallet.private_key,
+                    bsc_wallet.address_hex,
+                    to_address,
+                    amount,
+                    gas_speed,
+                    tx_hash_out
+                );
+            }
+
+            bsc_wallet_clear(&bsc_wallet);
             break;
         }
 

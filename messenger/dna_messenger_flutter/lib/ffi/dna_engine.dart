@@ -145,6 +145,8 @@ class AddressBookEntry {
         return 'Solana';
       case 'tron':
         return 'TRON';
+      case 'bsc':
+        return 'BNB Smart Chain';
       default:
         return network;
     }
