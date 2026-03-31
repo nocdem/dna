@@ -171,7 +171,7 @@ cd messenger
 | Component | Version |
 |-----------|---------|
 | C Library | v0.9.152 |
-| Flutter App | v1.0.0-rc131 |
+| Flutter App | v1.0.0-rc132 |
 | Nodus DHT | v0.9.26 |
 
 ---
