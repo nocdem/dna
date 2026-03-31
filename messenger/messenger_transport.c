@@ -742,7 +742,8 @@ static void transport_message_received_internal(
                         time_t del_ts = sender_timestamp ? (time_t)sender_timestamp : time(NULL);
                         message_backup_save(ctx->backup_ctx,
                                             sender_identity, ctx->identity,
-                                            plaintext, sender_identity,
+                                            (const char *)plaintext,
+                                            (const char *)sender_identity,
                                             del_ts, false, 0, 99);
                     }
 
