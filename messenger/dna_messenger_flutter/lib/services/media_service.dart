@@ -10,6 +10,7 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:image/image.dart' as img;
+import 'package:light_compressor/light_compressor.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../ffi/dna_engine.dart';
@@ -233,7 +234,7 @@ class MediaService {
     );
 
     // Cache decrypted bytes so sent images don't need re-download
-    MediaCacheService.instance?.put(hashHex, 'image/jpeg', compressed);
+    await MediaCacheService.instance?.put(hashHex, 'image/jpeg', compressed);
 
     // Send message — independent of widget lifecycle
     if (recipientFp != null) {
@@ -259,7 +260,13 @@ class MediaService {
     String? caption,
     int ttl = 604800,
   }) async {
-    final bytes = await videoFile.readAsBytes();
+    // Compress video on mobile platforms (Android/iOS)
+    File fileToUpload = videoFile;
+    if (Platform.isAndroid || Platform.isIOS) {
+      fileToUpload = await _compressVideo(videoFile);
+    }
+
+    final bytes = await fileToUpload.readAsBytes();
     log(_tag, 'uploadVideo: ${bytes.length} bytes, encrypted=$encrypted');
 
     // Validate size (64MB max)
@@ -330,7 +337,7 @@ class MediaService {
     );
 
     // Cache decrypted bytes so sent videos don't need re-download
-    MediaCacheService.instance?.put(hashHex, 'video/mp4', bytes);
+    await MediaCacheService.instance?.put(hashHex, 'video/mp4', bytes);
 
     // Send message — independent of widget lifecycle
     if (recipientFp != null) {
@@ -426,7 +433,7 @@ class MediaService {
     );
 
     // Cache decrypted bytes so sent audio don't need re-download
-    MediaCacheService.instance?.put(hashHex, 'audio/aac', audioBytes);
+    await MediaCacheService.instance?.put(hashHex, 'audio/aac', audioBytes);
 
     // Send message — independent of widget lifecycle
     if (recipientFp != null) {
@@ -460,6 +467,52 @@ class MediaService {
   /// Check if media exists (complete) on Nodus DHT.
   Future<bool> exists(String contentHashHex) async {
     return _engine.mediaExists(contentHashHex);
+  }
+
+  // ---------------------------------------------------------------------------
+  // VIDEO COMPRESSION
+  // ---------------------------------------------------------------------------
+
+  /// Compress video to 1024px width, medium quality H.264.
+  /// Returns compressed file, or original if compression fails.
+  Future<File> _compressVideo(File videoFile) async {
+    final originalSize = await videoFile.length();
+    log(_tag, 'Compressing video: $originalSize bytes');
+
+    try {
+      final videoName = 'compressed_${DateTime.now().millisecondsSinceEpoch}';
+
+      final LightCompressor compressor = LightCompressor();
+      final result = await compressor.compressVideo(
+        path: videoFile.path,
+        videoQuality: VideoQuality.medium,
+        android: AndroidConfig(isSharedStorage: false),
+        ios: IOSConfig(saveInGallery: false),
+        video: Video(
+          videoName: videoName,
+          keepOriginalResolution: false,
+          videoWidth: 1024,
+        ),
+        isMinBitrateCheckEnabled: false,
+      );
+
+      if (result is OnSuccess) {
+        final compressedFile = File(result.destinationPath);
+        final compressedSize = await compressedFile.length();
+        log(_tag, 'Video compressed: $originalSize -> $compressedSize bytes '
+            '(${(compressedSize * 100 / originalSize).toStringAsFixed(1)}%)');
+        return compressedFile;
+      } else if (result is OnFailure) {
+        log(_tag, 'Video compression failed: ${result.message}, using original');
+        return videoFile;
+      } else {
+        log(_tag, 'Video compression cancelled, using original');
+        return videoFile;
+      }
+    } catch (e) {
+      log(_tag, 'Video compression error: $e, using original');
+      return videoFile;
+    }
   }
 
   // ---------------------------------------------------------------------------
