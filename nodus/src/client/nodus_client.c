@@ -1510,13 +1510,18 @@ int nodus_client_media_put(nodus_client_t *client,
     int media_timeout = client->config.request_timeout_ms;
     if (media_timeout < 30000) media_timeout = 30000;
     media_timeout += (int)(data_len / 50);  /* +20ms per KB */
+    QGP_LOG_DEBUG(LOG_TAG, "media_put: waiting for response (timeout=%dms, data_len=%zu)",
+                  media_timeout, data_len);
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, media_timeout)) {
+        QGP_LOG_ERROR(LOG_TAG, "media_put: client timeout after %dms (chunk=%u)",
+                      media_timeout, chunk_index);
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
         int rc = resp->error_code;
+        QGP_LOG_ERROR(LOG_TAG, "media_put: server error %d for chunk %u", rc, chunk_index);
         free_pending(client, req); return rc;
     }
     if (complete_out) *complete_out = resp->media_complete;
