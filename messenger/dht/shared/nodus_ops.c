@@ -1422,6 +1422,8 @@ int nodus_ops_media_put(const uint8_t content_hash[64],
         .total_bytes = data_len,
     };
 
+    const int max_retries = 3;
+
     for (uint32_t i = 0; i < chunk_count; i++) {
         size_t offset = (size_t)i * NODUS_OPS_MEDIA_CHUNK_SIZE;
         size_t chunk_len = data_len - offset;
@@ -1440,16 +1442,35 @@ int nodus_ops_media_put(const uint8_t content_hash[64],
         }
 
         bool complete = false;
-        rc = nodus_client_media_put(c, content_hash, i, chunk_count,
-                                    (uint64_t)data_len, media_type,
-                                    encrypted, ttl,
-                                    chunk_data, chunk_len,
-                                    &sig, &complete,
-                                    progress_cb ? _media_tcp_progress : NULL,
-                                    progress_cb ? &pctx : NULL);
-        if (rc != 0) {
-            QGP_LOG_ERROR(LOG_TAG_MEDIA, "media_put chunk %u/%u failed: %d",
-                          i, chunk_count, rc);
+        bool chunk_ok = false;
+
+        for (int attempt = 0; attempt <= max_retries; attempt++) {
+            if (attempt > 0) {
+                QGP_LOG_WARN(LOG_TAG_MEDIA, "retrying chunk %u/%u (attempt %d/%d)",
+                             i, chunk_count, attempt, max_retries);
+                /* Brief pause before retry (500ms * attempt) */
+                struct timespec ts = { .tv_sec = 0, .tv_nsec = 500000000L * attempt };
+                nanosleep(&ts, NULL);
+            }
+
+            rc = nodus_client_media_put(c, content_hash, i, chunk_count,
+                                        (uint64_t)data_len, media_type,
+                                        encrypted, ttl,
+                                        chunk_data, chunk_len,
+                                        &sig, &complete,
+                                        progress_cb ? _media_tcp_progress : NULL,
+                                        progress_cb ? &pctx : NULL);
+            if (rc == 0) {
+                chunk_ok = true;
+                break;
+            }
+            QGP_LOG_ERROR(LOG_TAG_MEDIA, "media_put chunk %u/%u failed: %d (attempt %d)",
+                          i, chunk_count, rc, attempt);
+        }
+
+        if (!chunk_ok) {
+            QGP_LOG_ERROR(LOG_TAG_MEDIA, "chunk %u/%u failed after %d retries, aborting",
+                          i, chunk_count, max_retries);
             nodus_singleton_release();
             return -1;
         }
