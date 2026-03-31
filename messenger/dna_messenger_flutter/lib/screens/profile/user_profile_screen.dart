@@ -215,33 +215,68 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   // BUILD
   // ---------------------------------------------------------------------------
 
+  // Gradient banner height and avatar overlap constants
+  static const double _bannerHeight = 140;
+  static const double _avatarRadius = 48;
+  static const double _avatarBorderWidth = 4;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final l10n = AppLocalizations.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: Text(_displayName)),
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
       body: _isLoadingProfile
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
               onRefresh: _loadData,
+              edgeOffset: 100,
               child: CustomScrollView(
                 slivers: [
-                  // Profile header
+                  // Gradient banner + avatar overlay + name/bio
                   SliverToBoxAdapter(
-                      child: _buildProfileHeader(theme, l10n)),
+                      child: _buildHeroHeader(theme, l10n)),
                   // Action buttons
                   SliverToBoxAdapter(
                       child: _buildActionButtons(theme, l10n)),
-                  // Divider + Posts label
+                  // Stats row
+                  SliverToBoxAdapter(child: _buildStatsRow(theme, l10n)),
+                  // Divider
                   SliverToBoxAdapter(
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(DnaSpacing.md,
-                          DnaSpacing.lg, DnaSpacing.md, DnaSpacing.sm),
-                      child: Text(l10n.userProfilePosts,
-                          style: theme.textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.bold)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: DnaSpacing.lg),
+                      child: Divider(
+                        color: theme.colorScheme.onSurface
+                            .withValues(alpha: 0.08),
+                      ),
+                    ),
+                  ),
+                  // Posts label
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(DnaSpacing.lg,
+                          DnaSpacing.md, DnaSpacing.lg, DnaSpacing.sm),
+                      child: Row(
+                        children: [
+                          ShaderMask(
+                            shaderCallback: DnaGradients.primaryShader,
+                            child: const FaIcon(FontAwesomeIcons.newspaper,
+                                size: 16, color: Colors.white),
+                          ),
+                          const SizedBox(width: DnaSpacing.sm),
+                          Text(l10n.userProfilePosts,
+                              style: theme.textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.bold)),
+                        ],
+                      ),
                     ),
                   ),
                   // Posts
@@ -255,12 +290,19 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
                   else if (_posts.isEmpty)
                     SliverToBoxAdapter(
                       child: Padding(
-                        padding: const EdgeInsets.all(DnaSpacing.xl),
-                        child: Center(
-                          child: Text(l10n.userProfileNoPosts,
-                              style: theme.textTheme.bodyLarge?.copyWith(
-                                  color: theme.colorScheme.onSurface
-                                      .withValues(alpha: 0.5))),
+                        padding: const EdgeInsets.all(DnaSpacing.xxxl),
+                        child: Column(
+                          children: [
+                            FaIcon(FontAwesomeIcons.feather,
+                                size: 32,
+                                color: theme.colorScheme.onSurface
+                                    .withValues(alpha: 0.2)),
+                            const SizedBox(height: DnaSpacing.md),
+                            Text(l10n.userProfileNoPosts,
+                                style: theme.textTheme.bodyLarge?.copyWith(
+                                    color: theme.colorScheme.onSurface
+                                        .withValues(alpha: 0.4))),
+                          ],
                         ),
                       ),
                     )
@@ -284,68 +326,145 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   // PROFILE HEADER
   // ---------------------------------------------------------------------------
 
-  Widget _buildProfileHeader(ThemeData theme, AppLocalizations l10n) {
+  Widget _buildHeroHeader(ThemeData theme, AppLocalizations l10n) {
     final bio = _profile?.bio ?? '';
     final location = _profile?.location ?? '';
     final website = _profile?.website ?? '';
+    final isDark = theme.brightness == Brightness.dark;
+    final scaffoldBg = theme.scaffoldBackgroundColor;
 
-    return Padding(
-      padding: const EdgeInsets.all(DnaSpacing.lg),
-      child: Column(
-        children: [
-          DnaAvatar(
-            imageBytes: _avatar,
-            name: _displayName,
-            size: DnaAvatarSize.xl,
+    return Column(
+      children: [
+        // ── Gradient banner + Avatar overlay ──
+        SizedBox(
+          height: _bannerHeight + _avatarRadius + _avatarBorderWidth,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              // Gradient banner with subtle pattern
+              Container(
+                height: _bannerHeight,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      DnaColors.gradientStart,
+                      DnaColors.gradientEnd,
+                      DnaColors.gradientEnd.withValues(alpha: 0.85),
+                    ],
+                    stops: const [0.0, 0.6, 1.0],
+                  ),
+                ),
+                // Subtle overlay circles for visual depth
+                child: CustomPaint(
+                  painter: _BannerPatternPainter(isDark: isDark),
+                ),
+              ),
+              // Avatar centered at bottom of banner
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: scaffoldBg,
+                        width: _avatarBorderWidth,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.2),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: DnaAvatar(
+                      imageBytes: _avatar,
+                      name: _displayName,
+                      size: DnaAvatarSize.xl,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: DnaSpacing.md),
-          Text(_displayName,
-              style: theme.textTheme.headlineSmall
-                  ?.copyWith(fontWeight: FontWeight.bold)),
-          if (bio.isNotEmpty) ...[
-            const SizedBox(height: DnaSpacing.sm),
-            Text(bio,
+        ),
+        const SizedBox(height: DnaSpacing.md),
+        // ── Name ──
+        Text(_displayName,
+            style: theme.textTheme.headlineSmall
+                ?.copyWith(fontWeight: FontWeight.bold)),
+        // ── Bio ──
+        if (bio.isNotEmpty) ...[
+          const SizedBox(height: DnaSpacing.sm),
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: DnaSpacing.xl),
+            child: Text(bio,
                 style: theme.textTheme.bodyMedium?.copyWith(
                     color: theme.colorScheme.onSurface
                         .withValues(alpha: 0.7)),
                 textAlign: TextAlign.center),
-          ],
-          if (location.isNotEmpty) ...[
-            const SizedBox(height: DnaSpacing.sm),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FaIcon(FontAwesomeIcons.locationDot,
-                    size: 14,
-                    color: theme.colorScheme.onSurface
-                        .withValues(alpha: 0.5)),
-                const SizedBox(width: DnaSpacing.xs),
-                Text(location,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurface
-                            .withValues(alpha: 0.5))),
-              ],
-            ),
-          ],
-          if (website.isNotEmpty) ...[
-            const SizedBox(height: DnaSpacing.xs),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FaIcon(FontAwesomeIcons.globe,
-                    size: 14, color: theme.colorScheme.primary),
-                const SizedBox(width: DnaSpacing.xs),
-                Flexible(
-                  child: Text(website,
-                      style: theme.textTheme.bodySmall
-                          ?.copyWith(color: theme.colorScheme.primary),
-                      overflow: TextOverflow.ellipsis),
-                ),
-              ],
-            ),
-          ],
+          ),
         ],
-      ),
+        // ── Location & Website row ──
+        if (location.isNotEmpty || website.isNotEmpty) ...[
+          const SizedBox(height: DnaSpacing.sm),
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: DnaSpacing.xl),
+            child: Wrap(
+              alignment: WrapAlignment.center,
+              spacing: DnaSpacing.lg,
+              runSpacing: DnaSpacing.xs,
+              children: [
+                if (location.isNotEmpty)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FaIcon(FontAwesomeIcons.locationDot,
+                          size: 13,
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: 0.45)),
+                      const SizedBox(width: DnaSpacing.xs),
+                      Text(location,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurface
+                                  .withValues(alpha: 0.55))),
+                    ],
+                  ),
+                if (website.isNotEmpty)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ShaderMask(
+                        shaderCallback: DnaGradients.primaryShader,
+                        child: const FaIcon(FontAwesomeIcons.globe,
+                            size: 13, color: Colors.white),
+                      ),
+                      const SizedBox(width: DnaSpacing.xs),
+                      Flexible(
+                        child: ShaderMask(
+                          shaderCallback: DnaGradients.primaryShader,
+                          child: Text(website,
+                              style: theme.textTheme.bodySmall
+                                  ?.copyWith(color: Colors.white),
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: DnaSpacing.lg),
+      ],
     );
   }
 
@@ -353,21 +472,111 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   // ACTION BUTTONS
   // ---------------------------------------------------------------------------
 
+  // Shared button style constants
+  static const double _buttonHeight = 42;
+  static final BorderRadius _buttonRadius =
+      BorderRadius.circular(DnaSpacing.radiusFull);
+
+  /// Gradient primary action button (Message, Follow, Edit Profile)
+  Widget _gradientButton({
+    required String label,
+    required IconData icon,
+    required VoidCallback onPressed,
+  }) {
+    return Expanded(
+      child: Container(
+        height: _buttonHeight,
+        decoration: BoxDecoration(
+          gradient: DnaGradients.primary,
+          borderRadius: _buttonRadius,
+          boxShadow: [
+            BoxShadow(
+              color: DnaColors.gradientEnd.withValues(alpha: 0.3),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: _buttonRadius,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                FaIcon(icon, size: 14, color: Colors.white),
+                const SizedBox(width: DnaSpacing.sm),
+                Text(label,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    )),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Outlined secondary action button (Unfollow, Contact Request)
+  Widget _outlinedButton({
+    required String label,
+    required IconData icon,
+    required VoidCallback onPressed,
+    bool isDanger = false,
+  }) {
+    final color = isDanger ? DnaColors.textWarning : DnaColors.gradientEnd;
+    return Expanded(
+      child: SizedBox(
+        height: _buttonHeight,
+        child: OutlinedButton(
+          onPressed: onPressed,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: color,
+            side: BorderSide(color: color.withValues(alpha: 0.5)),
+            shape: RoundedRectangleBorder(borderRadius: _buttonRadius),
+            padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.md),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              FaIcon(icon, size: 14, color: color),
+              const SizedBox(width: DnaSpacing.sm),
+              Flexible(
+                child: Text(label,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: color,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    )),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildActionButtons(ThemeData theme, AppLocalizations l10n) {
     if (_isSelf) {
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.lg),
-        child: SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                  builder: (_) => const ProfileEditorScreen()),
+        child: Row(
+          children: [
+            _outlinedButton(
+              label: l10n.userProfileEditProfile,
+              icon: FontAwesomeIcons.penToSquare,
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const ProfileEditorScreen()),
+              ),
             ),
-            icon: const FaIcon(FontAwesomeIcons.penToSquare, size: 14),
-            label: Text(l10n.userProfileEditProfile),
-          ),
+          ],
         ),
       );
     }
@@ -376,77 +585,114 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
       padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.lg),
       child: Column(
         children: [
-          // Primary row: Message + Follow (equal width)
-          Row(
-            children: [
-              // Message or Contact Request (left button)
-              Expanded(
-                child: _isContact
-                    ? FilledButton.icon(
-                        onPressed: _openChat,
-                        icon: const FaIcon(FontAwesomeIcons.comment, size: 14),
-                        label: Text(l10n.userProfileMessage),
-                      )
-                    : OutlinedButton.icon(
-                        onPressed: _sendContactRequest,
-                        icon: const FaIcon(FontAwesomeIcons.userPlus, size: 14),
-                        label: Text(l10n.wallSendContactRequest),
-                      ),
-              ),
-              const SizedBox(width: DnaSpacing.sm),
-              // Follow / Unfollow (right button)
-              Expanded(
-                child: _isFollowing
-                    ? OutlinedButton.icon(
-                        onPressed: _toggleFollow,
-                        icon: const FaIcon(FontAwesomeIcons.userCheck, size: 14),
-                        label: Text(l10n.wallUnfollow),
-                      )
-                    : FilledButton.tonal(
-                        onPressed: _toggleFollow,
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const FaIcon(FontAwesomeIcons.userPlus, size: 14),
-                            const SizedBox(width: DnaSpacing.xs),
-                            Text(l10n.wallFollow),
-                          ],
-                        ),
-                      ),
-              ),
-            ],
-          ),
-          const SizedBox(height: DnaSpacing.sm),
-          // Secondary row: Unfriend/Block
+          // Primary row: Message/ContactRequest + Follow/Unfollow
           Row(
             children: [
               if (_isContact)
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _confirmUnfriend,
-                    icon: const FaIcon(FontAwesomeIcons.userMinus, size: 14),
-                    label: Text(l10n.wallUnfriend),
-                    style: OutlinedButton.styleFrom(
-                        foregroundColor: DnaColors.textWarning),
-                  ),
+                _gradientButton(
+                  label: l10n.userProfileMessage,
+                  icon: FontAwesomeIcons.comment,
+                  onPressed: _openChat,
+                )
+              else
+                _gradientButton(
+                  label: l10n.wallSendContactRequest,
+                  icon: FontAwesomeIcons.userPlus,
+                  onPressed: _sendContactRequest,
                 ),
-              if (_isContact) const SizedBox(width: DnaSpacing.sm),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _confirmBlock,
-                  icon: FaIcon(FontAwesomeIcons.ban,
-                      size: 14, color: DnaColors.textWarning),
-                  label: Text(l10n.wallBlockUser,
-                      style: TextStyle(color: DnaColors.textWarning)),
-                  style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: DnaColors.textWarning)),
+              const SizedBox(width: DnaSpacing.sm),
+              if (_isFollowing)
+                _outlinedButton(
+                  label: l10n.wallUnfollow,
+                  icon: FontAwesomeIcons.userCheck,
+                  onPressed: _toggleFollow,
+                )
+              else
+                _outlinedButton(
+                  label: l10n.wallFollow,
+                  icon: FontAwesomeIcons.userPlus,
+                  onPressed: _toggleFollow,
                 ),
+            ],
+          ),
+          const SizedBox(height: DnaSpacing.sm),
+          // Secondary row: Unfriend + Block (danger style)
+          Row(
+            children: [
+              if (_isContact) ...[
+                _outlinedButton(
+                  label: l10n.wallUnfriend,
+                  icon: FontAwesomeIcons.userMinus,
+                  onPressed: _confirmUnfriend,
+                  isDanger: true,
+                ),
+                const SizedBox(width: DnaSpacing.sm),
+              ],
+              _outlinedButton(
+                label: l10n.wallBlockUser,
+                icon: FontAwesomeIcons.ban,
+                onPressed: _confirmBlock,
+                isDanger: true,
               ),
             ],
           ),
         ],
       ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // STATS ROW
+  // ---------------------------------------------------------------------------
+
+  Widget _buildStatsRow(ThemeData theme, AppLocalizations l10n) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+          DnaSpacing.lg, DnaSpacing.lg, DnaSpacing.lg, DnaSpacing.sm),
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+            vertical: DnaSpacing.md, horizontal: DnaSpacing.lg),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.onSurface.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            _buildStatItem(
+              theme,
+              count: _posts.length,
+              label: l10n.userProfilePosts,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatItem(
+    ThemeData theme, {
+    required int count,
+    required String label,
+  }) {
+    return Column(
+      children: [
+        ShaderMask(
+          shaderCallback: DnaGradients.primaryShader,
+          child: Text(
+            count.toString(),
+            style: theme.textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
+        ),
+        const SizedBox(height: DnaSpacing.xs),
+        Text(label,
+            style: theme.textTheme.bodySmall?.copyWith(
+                color:
+                    theme.colorScheme.onSurface.withValues(alpha: 0.5))),
+      ],
     );
   }
 
@@ -734,4 +980,35 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
       MaterialPageRoute(builder: (_) => WallPostDetailScreen(post: post)),
     );
   }
+}
+
+/// Paints subtle decorative circles on the gradient banner for visual depth.
+class _BannerPatternPainter extends CustomPainter {
+  _BannerPatternPainter({required this.isDark});
+  final bool isDark;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withValues(alpha: isDark ? 0.06 : 0.1)
+      ..style = PaintingStyle.fill;
+
+    // Large circle top-right
+    canvas.drawCircle(
+      Offset(size.width * 0.85, size.height * 0.15),
+      size.height * 0.5,
+      paint,
+    );
+
+    // Small circle left
+    canvas.drawCircle(
+      Offset(size.width * 0.1, size.height * 0.7),
+      size.height * 0.25,
+      paint..color = Colors.white.withValues(alpha: isDark ? 0.04 : 0.07),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _BannerPatternPainter old) =>
+      old.isDark != isDark;
 }
