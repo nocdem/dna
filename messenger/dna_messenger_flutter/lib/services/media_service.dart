@@ -245,6 +245,12 @@ class MediaService {
     // Cache decrypted bytes so sent images don't need re-download
     MediaCacheService.instance?.put(hashHex, 'image/jpeg', compressed);
 
+    // Send message — independent of widget lifecycle
+    if (recipientFp != null) {
+      _engine.queueMessage(recipientFp, ref.toMessageJson());
+      log(_tag, 'Queued image message to ${recipientFp.substring(0, 16)}...');
+    }
+
     return ref;
   }
 
@@ -345,6 +351,12 @@ class MediaService {
     // Cache decrypted bytes so sent videos don't need re-download
     MediaCacheService.instance?.put(hashHex, 'video/mp4', bytes);
 
+    // Send message — independent of widget lifecycle
+    if (recipientFp != null) {
+      _engine.queueMessage(recipientFp, ref.toMessageJson());
+      log(_tag, 'Queued video message to ${recipientFp.substring(0, 16)}...');
+    }
+
     return ref;
   }
 
@@ -443,6 +455,12 @@ class MediaService {
 
     // Cache decrypted bytes so sent audio don't need re-download
     MediaCacheService.instance?.put(hashHex, 'audio/aac', audioBytes);
+
+    // Send message — independent of widget lifecycle
+    if (recipientFp != null) {
+      _engine.queueMessage(recipientFp, ref.toMessageJson());
+      log(_tag, 'Queued audio message to ${recipientFp.substring(0, 16)}...');
+    }
 
     return ref;
   }

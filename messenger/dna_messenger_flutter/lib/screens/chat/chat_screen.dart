@@ -1154,7 +1154,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
       // Upload via MediaService (compress + thumbnail + DHT upload)
       final mediaService = MediaService(engine);
-      final mediaRef = await mediaService.uploadImage(
+      await mediaService.uploadImage(
         bytes,
         recipientFp: contact.fingerprint,
         encrypted: true,
@@ -1162,30 +1162,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ttl: 604800,
       );
 
+      // Message sent by MediaService on success (lifecycle-independent)
       _finishUploadProgress();
-      if (!mounted) return;
-
-      // Send media_ref JSON via existing message queue
-      final messageJson = mediaRef.toMessageJson();
-      final result = ref
-          .read(conversationProvider(contact.fingerprint).notifier)
-          .sendMessage(messageJson);
-
-      if (result == -1) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('Message queue full. Please wait and try again.'),
-            backgroundColor: DnaColors.snackbarError,
-          ),
-        );
-      } else if (result == -2) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('Failed to send image. Please try again.'),
-            backgroundColor: DnaColors.snackbarError,
-          ),
-        );
-      }
     } on MediaServiceException catch (e) {
       _finishUploadProgress();
       if (!mounted) return;
@@ -1252,7 +1230,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
       // Upload via MediaService
       final mediaService = MediaService(engine);
-      final mediaRef = await mediaService.uploadVideo(
+      await mediaService.uploadVideo(
         file,
         recipientFp: contact.fingerprint,
         encrypted: true,
@@ -1260,30 +1238,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ttl: 604800,
       );
 
+      // Message sent by MediaService on success (lifecycle-independent)
       _finishUploadProgress();
-      if (!mounted) return;
-
-      // Send media_ref JSON via existing message queue
-      final messageJson = mediaRef.toMessageJson();
-      final result = ref
-          .read(conversationProvider(contact.fingerprint).notifier)
-          .sendMessage(messageJson);
-
-      if (result == -1) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('Message queue full. Please wait and try again.'),
-            backgroundColor: DnaColors.snackbarError,
-          ),
-        );
-      } else if (result == -2) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('Failed to send video. Please try again.'),
-            backgroundColor: DnaColors.snackbarError,
-          ),
-        );
-      }
     } on MediaServiceException catch (e) {
       _finishUploadProgress();
       if (!mounted) return;
@@ -1319,7 +1275,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       _startUploadProgress(engine);
 
       final mediaService = MediaService(engine);
-      final mediaRef = await mediaService.uploadAudio(
+      await mediaService.uploadAudio(
         result.audioBytes,
         recipientFp: contact.fingerprint,
         durationSeconds: result.durationSeconds,
@@ -1327,14 +1283,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ttl: 604800,
       );
 
+      // Message sent by MediaService on success (lifecycle-independent)
       _finishUploadProgress();
-      if (!mounted) return;
-
-      // Send media_ref JSON
-      final messageJson = mediaRef.toMessageJson();
-      ref
-          .read(conversationProvider(contact.fingerprint).notifier)
-          .sendMessage(messageJson);
     } on MediaServiceException catch (e) {
       _finishUploadProgress();
       if (!mounted) return;
