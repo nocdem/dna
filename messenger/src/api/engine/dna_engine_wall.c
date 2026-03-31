@@ -374,8 +374,52 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
 
     wall_cache_free_posts(cached_posts, cached_count);
 
-    QGP_LOG_INFO(LOG_TAG, "Timeline: %zu posts (cache-first)", cached_count);
-    task->callback.wall_posts(task->request_id, DNA_OK, info, (int)cached_count, task->user_data);
+    /* Merge cached boost pointers (same logic as cached path) */
+    size_t final_count = cached_count;
+    {
+        dna_wall_boost_ptr_t *boost_ptrs = NULL;
+        size_t boost_count = 0;
+        if (wall_cache_load_boosts(&boost_ptrs, &boost_count) == 0 && boost_ptrs && boost_count > 0) {
+            size_t new_cap = cached_count + boost_count;
+            dna_wall_post_info_t *merged = realloc(info, new_cap * sizeof(dna_wall_post_info_t));
+            if (merged) {
+                info = merged;
+                for (size_t b = 0; b < boost_count; b++) {
+                    bool found = false;
+                    for (size_t e = 0; e < final_count; e++) {
+                        if (strncmp(info[e].uuid, boost_ptrs[b].uuid, 36) == 0) {
+                            info[e].is_boosted = true;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) continue;
+
+                    /* Resolve from wall cache */
+                    dna_wall_post_t *bp = NULL;
+                    size_t bp_count = 0;
+                    if (wall_cache_load(boost_ptrs[b].author_fingerprint, &bp, &bp_count) == 0 && bp) {
+                        for (size_t p = 0; p < bp_count; p++) {
+                            if (strncmp(bp[p].uuid, boost_ptrs[b].uuid, 36) == 0) {
+                                if (final_count < new_cap) {
+                                    wall_post_to_info(&bp[p], &info[final_count]);
+                                    info[final_count].is_boosted = true;
+                                    final_count++;
+                                }
+                                break;
+                            }
+                        }
+                        wall_cache_free_posts(bp, bp_count);
+                    }
+                }
+                QGP_LOG_INFO(LOG_TAG, "Timeline: merged %zu boost pointers", boost_count);
+            }
+            free(boost_ptrs);
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Timeline: %zu posts (cache-first)", final_count);
+    task->callback.wall_posts(task->request_id, DNA_OK, info, (int)final_count, task->user_data);
 }
 
 /* ============================================================================
