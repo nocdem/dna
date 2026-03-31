@@ -533,14 +533,12 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       // Skip past days already covered by cache: find oldest post in state
       // and advance _loadedDays so we don't re-fetch cached days via DHT.
       if (current.isNotEmpty && _loadedDays <= 2) {
-        int oldestTs = current.last.post.timestamp;
+        DateTime oldestDate = current.last.post.timestamp;
         for (final item in current) {
-          if (item.post.timestamp < oldestTs) {
-            oldestTs = item.post.timestamp;
+          if (item.post.timestamp.isBefore(oldestDate)) {
+            oldestDate = item.post.timestamp;
           }
         }
-        final oldestDate = DateTime.fromMillisecondsSinceEpoch(
-            oldestTs * 1000, isUtc: true);
         final daysSinceOldest = now.difference(oldestDate).inDays + 1;
         if (daysSinceOldest > _loadedDays) {
           _loadedDays = daysSinceOldest;
