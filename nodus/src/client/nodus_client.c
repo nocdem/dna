@@ -1462,16 +1462,29 @@ int nodus_client_media_put(nodus_client_t *client,
                            bool *complete_out,
                            nodus_media_progress_cb progress_cb,
                            void *progress_user_data) {
-    if (!nodus_client_is_ready(client) || !content_hash || !data || !sig)
+    if (!nodus_client_is_ready(client)) {
+        QGP_LOG_ERROR(LOG_TAG, "media_put: client not ready");
         return -1;
+    }
+    if (!content_hash || !data || !sig) {
+        QGP_LOG_ERROR(LOG_TAG, "media_put: NULL param (hash=%p, data=%p, sig=%p)",
+                      (void*)content_hash, (void*)data, (void*)sig);
+        return -1;
+    }
     if (complete_out) *complete_out = false;
 
     uint8_t *buf = malloc(CLIENT_BUF_SIZE_PUT);
-    if (!buf) return -1;
+    if (!buf) {
+        QGP_LOG_ERROR(LOG_TAG, "media_put: malloc failed (%d bytes)", CLIENT_BUF_SIZE_PUT);
+        return -1;
+    }
     size_t len = 0;
     uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
     nodus_pending_t *req = alloc_pending(client, txn);
-    if (!req) { free(buf); return -1; }
+    if (!req) {
+        QGP_LOG_ERROR(LOG_TAG, "media_put: alloc_pending failed (all slots busy)");
+        free(buf); return -1;
+    }
 
     if (nodus_t2_media_put(txn, client->token, content_hash,
                            chunk_index, chunk_count, total_size,
@@ -1482,9 +1495,13 @@ int nodus_client_media_put(nodus_client_t *client,
                       chunk_index, data_len);
         free_pending(client, req); free(buf); return -1;
     }
+    QGP_LOG_DEBUG(LOG_TAG, "media_put: encoded %zu bytes for chunk %u/%u",
+                  len, chunk_index, chunk_count);
     if (send_request_progress(client, buf, len,
                               (nodus_tcp_progress_cb)progress_cb,
                               progress_user_data) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "media_put: send failed (chunk=%u, encoded_len=%zu)",
+                      chunk_index, len);
         free_pending(client, req); free(buf); return -1;
     }
     free(buf);
