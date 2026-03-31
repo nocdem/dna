@@ -1475,7 +1475,16 @@ class AppLocalizationsZh extends AppLocalizations {
   String get chatRecordingHold => 'Hold to record';
 
   @override
-  String get chatRecordingRelease => 'Release to stop';
+  String get chatRecordingRelease => '松开停止';
+
+  @override
+  String get chatRecordingTap => '点击录音';
+
+  @override
+  String get chatRecordingInProgress => '录音中...';
+
+  @override
+  String get chatRecordingListening => '播放中...';
 
   @override
   String get chatVoiceMessage => 'Voice message';

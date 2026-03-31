@@ -1482,7 +1482,16 @@ class AppLocalizationsJa extends AppLocalizations {
   String get chatRecordingHold => 'Hold to record';
 
   @override
-  String get chatRecordingRelease => 'Release to stop';
+  String get chatRecordingRelease => '離して停止';
+
+  @override
+  String get chatRecordingTap => 'タップして録音';
+
+  @override
+  String get chatRecordingInProgress => '録音中...';
+
+  @override
+  String get chatRecordingListening => '再生中...';
 
   @override
   String get chatVoiceMessage => 'Voice message';

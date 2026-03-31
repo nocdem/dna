@@ -1512,7 +1512,16 @@ class AppLocalizationsEs extends AppLocalizations {
   String get chatRecordingHold => 'Hold to record';
 
   @override
-  String get chatRecordingRelease => 'Release to stop';
+  String get chatRecordingRelease => 'Suelta para detener';
+
+  @override
+  String get chatRecordingTap => 'Toca para grabar';
+
+  @override
+  String get chatRecordingInProgress => 'Grabando...';
+
+  @override
+  String get chatRecordingListening => 'Reproduciendo...';
 
   @override
   String get chatVoiceMessage => 'Voice message';

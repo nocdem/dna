@@ -1510,7 +1510,16 @@ class AppLocalizationsPt extends AppLocalizations {
   String get chatRecordingHold => 'Hold to record';
 
   @override
-  String get chatRecordingRelease => 'Release to stop';
+  String get chatRecordingRelease => 'Solte para parar';
+
+  @override
+  String get chatRecordingTap => 'Toque para gravar';
+
+  @override
+  String get chatRecordingInProgress => 'Gravando...';
+
+  @override
+  String get chatRecordingListening => 'Reproduzindo...';
 
   @override
   String get chatVoiceMessage => 'Voice message';

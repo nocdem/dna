@@ -2846,6 +2846,24 @@ abstract class AppLocalizations {
   /// **'Release to stop'**
   String get chatRecordingRelease;
 
+  /// No description provided for @chatRecordingTap.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap to record'**
+  String get chatRecordingTap;
+
+  /// No description provided for @chatRecordingInProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'Recording...'**
+  String get chatRecordingInProgress;
+
+  /// No description provided for @chatRecordingListening.
+  ///
+  /// In en, this message translates to:
+  /// **'Playing...'**
+  String get chatRecordingListening;
+
   /// No description provided for @chatVoiceMessage.
   ///
   /// In en, this message translates to:

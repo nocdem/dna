@@ -329,6 +329,10 @@ class EventHandler {
 
       // Channels disabled — events ignored
 
+      case MediaUploadProgressEvent():
+        // Handled by chat_screen via direct stream subscription
+        break;
+
       case ErrorEvent(message: final errorMsg):
         // Store error for UI to display
         _ref.read(lastErrorProvider.notifier).state = errorMsg;

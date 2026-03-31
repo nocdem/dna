@@ -1507,6 +1507,15 @@ class AppLocalizationsTr extends AppLocalizations {
   String get chatRecordingRelease => 'Durdurmak için bırakın';
 
   @override
+  String get chatRecordingTap => 'Kayıt için dokunun';
+
+  @override
+  String get chatRecordingInProgress => 'Kaydediliyor...';
+
+  @override
+  String get chatRecordingListening => 'Dinleniyor...';
+
+  @override
   String get chatVoiceMessage => 'Sesli mesaj';
 
   @override
