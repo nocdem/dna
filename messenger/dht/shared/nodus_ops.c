@@ -1448,9 +1448,23 @@ int nodus_ops_media_put(const uint8_t content_hash[64],
             if (attempt > 0) {
                 QGP_LOG_WARN(LOG_TAG_MEDIA, "retrying chunk %u/%u (attempt %d/%d)",
                              i, chunk_count, attempt, max_retries);
-                /* Brief pause before retry (500ms * attempt) */
-                struct timespec ts = { .tv_sec = 0, .tv_nsec = 500000000L * attempt };
-                nanosleep(&ts, NULL);
+
+                /* Wait for reconnect if client disconnected */
+                nodus_singleton_release();
+                for (int wait = 0; wait < 10; wait++) {
+                    struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
+                    nanosleep(&ts, NULL);
+                    c = nodus_singleton_get();
+                    if (c && nodus_client_is_ready(c)) break;
+                    if (c) nodus_singleton_release();
+                    c = NULL;
+                    QGP_LOG_DEBUG(LOG_TAG_MEDIA, "waiting for reconnect... (%d/10)", wait + 1);
+                }
+                if (!c || !nodus_client_is_ready(c)) {
+                    QGP_LOG_ERROR(LOG_TAG_MEDIA, "reconnect timeout, aborting upload");
+                    if (c) nodus_singleton_release();
+                    return -1;
+                }
             }
 
             rc = nodus_client_media_put(c, content_hash, i, chunk_count,
