@@ -1,0 +1,105 @@
+{
+  "_meta": {
+    "language": "Turkish",
+    "direction": "ltr",
+    "native": "Türkçe"
+  },
+
+  "nav.home": "Ana Sayfa",
+  "nav.dna_connect": "DNA-Connect",
+  "nav.identity": "Kimlik",
+  "nav.messenger": "Mesajlaşma",
+  "nav.wallet": "Cüzdan",
+  "nav.nodus": "Nodus",
+  "nav.team": "Ekip",
+  "nav.documents": "Belgeler",
+  "nav.litepaper": "Litepaper",
+  "nav.legal": "Yasal",
+  "nav.privacy": "Gizlilik Politikası",
+  "nav.trade": "CPUNK Al/Sat",
+
+  "hero.title": "CPUNK",
+  "hero.subtitle_line1": "Bir Topluluk, bir Vizyon.",
+  "hero.subtitle_privacy": "Gizlilik",
+  "hero.subtitle_quantum": "Kuantum Güvenliği",
+  "hero.subtitle_decentralization": "Merkeziyetsizlik",
+  "hero.subtitle_line3": "Egemen bir dijital gelecek için araçlar inşa ediyoruz.",
+  "hero.cta": "DNA Connect'i İndir",
+
+  "community.label": "Topluluk",
+  "community.title": "Halk tarafından, halk için",
+  "community.desc": "CPUNK bir şirket değil — bir harekettir. Her şey topluluk tarafından inşa edilir, yönetilir ve sahiplenilir.",
+
+  "community.privacy.title": "Gizlilik",
+  "community.privacy.desc": "Verileriniz size aittir. İzleme yok, gözetim yok, taviz yok. Gizlilik bir özellik değil, bir haktır.",
+  "community.quantum.title": "Kuantum Güvenliği",
+  "community.quantum.desc": "Kuantum sonrası kriptografi üzerine inşa edildi. Yarının kuantum bilgisayarlarına karşı bugünden güvende.",
+  "community.decentralization.title": "Merkeziyetsizlik",
+  "community.decentralization.desc": "Merkezi otorite yok, tek hata noktası yok. Ağ, topluluğu tarafından sahiplenilir ve işletilir.",
+  "community.governance.title": "Yönetişim",
+  "community.governance.desc": "CIP'ler aracılığıyla ekosistem değişiklikleri önerin ve oylayın. Her ses önemli, her oy değerli.",
+
+  "token.label": "Token",
+  "token.title": "Tek token. Gerçek fayda. Topluluk mülkiyeti.",
+  "token.desc": "$CPUNK tüm ekosistemi güçlendirir — DAO yönetişiminden zincir üstü oylamaya, DNA kimlik kaydından uygulama içi transferlere kadar. DNA Connect'e doğal olarak entegre edilmiş olan $CPUNK, ağdaki her eylemin yakıtıdır. Adil lansman, sabit arz ve topluluk mülkiyeti. İçeriden bilen yok, kapı tutucu yok — sadece parçası olabileceğiniz bir hareket.",
+
+  "token.quantum.title": "Kuantum Güvenli",
+  "token.quantum.desc": "Cellframe üzerinde CF20 token — NIST Kategori 5 kuantum sonrası kriptografi. ML-KEM-1024, ML-DSA-87, SHA-3-512.",
+  "token.fairlaunch.title": "Adil Lansman",
+  "token.fairlaunch.desc": "5 hafta boyunca 10 halka açık DEX emri. Özel tur yok, tohum yatırımcısı yok. Herkes için eşit erişim.",
+  "token.supply.title": "1.000.000.000",
+  "token.supply.desc": "Sabit arz. Basım yok, gizli açılım yok, enflasyon yok. Var olan tek şey, var olacak olan her şeydir.",
+  "token.zeroinflation.title": "Sıfır Enflasyon",
+  "token.zeroinflation.desc": "Emisyon takvimi yok, açılım yok, seyreltme yok. Payınız sonsuza kadar payınız kalır.",
+
+  "token.cta_litepaper": "Litepaper'ı Oku",
+  "token.cta_trade": "CPUNK Al/Sat",
+
+  "dna.label": "DNA Connect",
+  "dna.title": "Üç araç, tek uygulama",
+  "dna.desc": "DNA Connect, kuantum sonrası mesajlaşma, çoklu zincir cüzdanı ve merkeziyetsiz kimliği tek bir istemcide birleştirir — telefon numarası yok, merkezi sunucu yok, taviz yok.",
+
+  "dna.messaging.title": "Mesajlaşma",
+  "dna.messaging.desc": "Tamamen merkeziyetsiz bir ağ üzerinden kuantum sonrası şifreli iletişim. Merkezi sunucu yok, üst veri yok. Çevrimdışı mesajlar, siz tekrar çevrimiçi olana kadar dağıtık posta kutularında bekler.",
+  "dna.messaging.link": "Daha fazla →",
+
+  "dna.wallet.title": "Çoklu Zincir Cüzdanı",
+  "dna.wallet.desc": "Birden fazla cüzdanı doğrudan uygulama içinden yönetin. Herhangi bir sohbette token gönderin ve alın — uygulama değiştirmeye veya adres kopyalamaya gerek yok.",
+  "dna.wallet.link": "Daha fazla →",
+
+  "dna.identity.title": "Merkeziyetsiz Kimlik",
+  "dna.identity.desc": "DNA adınız kimliğinizdir — telefon numarasına veya e-postaya değil, kriptografik anahtar çiftine bağlıdır. Bir kez kaydolun ve tüm ağda erişilebilir olun.",
+  "dna.identity.link": "Daha fazla →",
+
+  "downloads.label": "İndirmeler",
+  "downloads.title": "DNA Connect'i İndir",
+  "downloads.desc": "Şifreli mesajlaşma, çoklu zincir cüzdanı ve merkeziyetsiz kimlik — tek uygulama, üç platform.",
+
+  "downloads.android": "Android",
+  "downloads.android_btn": "APK İndir",
+  "downloads.linux": "Linux",
+  "downloads.linux_btn": "AppImage İndir",
+  "downloads.linux_extra": "tar.gz olarak da mevcut",
+  "downloads.windows": "Windows",
+  "downloads.windows_btn": "EXE İndir",
+  "downloads.source": "Açık kaynak —",
+
+  "cta.title": "Bir Topluluk, Bir Vizyon.",
+  "cta.text": "DNA Connect'i indirin, sohbete katılın ve geliştirmek istediğiniz bir parça bulun. Her anlamlı katkıcı, bir zamanlar topluluk üyesi olarak başladı.",
+  "cta.telegram": "Telegram'a Katıl",
+  "cta.code": "Kodu Keşfet",
+  "cta.x": "X'te Takip Et",
+
+  "footer.copyright": "© 2026 DNA Protocol — Gizlilik, Kuantum Güvenliği, Merkeziyetsizlik.",
+  "footer.home": "Ana Sayfa",
+  "footer.identity": "Kimlik",
+  "footer.messenger": "Mesajlaşma",
+  "footer.wallet": "Cüzdan",
+  "footer.nodus": "Nodus",
+  "footer.team": "Ekip",
+  "footer.litepaper": "Litepaper",
+  "footer.legal": "Yasal",
+  "footer.privacy": "Gizlilik Politikası",
+
+  "brand.tag": "Gizlilik • Kuantum Güvenliği • Merkeziyetsizlik"
+}

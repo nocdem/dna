@@ -1,0 +1,105 @@
+{
+  "_meta": {
+    "language": "English",
+    "direction": "ltr",
+    "native": "English"
+  },
+
+  "nav.home": "Home",
+  "nav.dna_connect": "DNA-Connect",
+  "nav.identity": "The Identity",
+  "nav.messenger": "The Messenger",
+  "nav.wallet": "The Wallet",
+  "nav.nodus": "The Nodus",
+  "nav.team": "Team",
+  "nav.documents": "Documents",
+  "nav.litepaper": "Litepaper",
+  "nav.legal": "Legal",
+  "nav.privacy": "Privacy Policy",
+  "nav.trade": "Trade CPUNK",
+
+  "hero.title": "CPUNK",
+  "hero.subtitle_line1": "One Community, one Vision.",
+  "hero.subtitle_privacy": "Privacy",
+  "hero.subtitle_quantum": "Quantum Safety",
+  "hero.subtitle_decentralization": "Decentralization",
+  "hero.subtitle_line3": "Building the tools for a sovereign digital future.",
+  "hero.cta": "Download DNA Connect",
+
+  "community.label": "The Community",
+  "community.title": "By the people, for the people",
+  "community.desc": "CPUNK is not a company — it's a movement. Everything is built, governed, and owned by the community.",
+
+  "community.privacy.title": "Privacy",
+  "community.privacy.desc": "Your data belongs to you. No tracking, no surveillance, no compromise. Privacy is a right, not a feature.",
+  "community.quantum.title": "Quantum Safety",
+  "community.quantum.desc": "Built on post-quantum cryptography. Secured today against tomorrow's quantum computers.",
+  "community.decentralization.title": "Decentralization",
+  "community.decentralization.desc": "No central authority, no single point of failure. The network is owned and operated by its community.",
+  "community.governance.title": "Governance",
+  "community.governance.desc": "Propose and vote on ecosystem changes through CIPs. Every voice counts, every vote matters.",
+
+  "token.label": "The Token",
+  "token.title": "One token. Real utility. Community owned.",
+  "token.desc": "$CPUNK powers the entire ecosystem — from DAO governance and on-chain voting to DNA identity registration and in-app transfers. Integrated natively into DNA Connect, it's the fuel behind every action in the network. Fair-launched, hard-capped, and owned by the community. No insiders, no gatekeepers — just a movement you can be part of.",
+
+  "token.quantum.title": "Quantum Safe",
+  "token.quantum.desc": "CF20 token on Cellframe — NIST Category 5 post-quantum cryptography. ML-KEM-1024, ML-DSA-87, SHA-3-512.",
+  "token.fairlaunch.title": "Fair Launch",
+  "token.fairlaunch.desc": "10 public DEX orders over 5 weeks. No private rounds, no seed investors. Equal access for everyone.",
+  "token.supply.title": "1,000,000,000",
+  "token.supply.desc": "Fixed supply. No minting, no hidden unlocks, no inflation. What exists is all there will ever be.",
+  "token.zeroinflation.title": "Zero Inflation",
+  "token.zeroinflation.desc": "No emission schedule, no unlocks, no dilution. Your share stays your share — forever.",
+
+  "token.cta_litepaper": "Read Litepaper",
+  "token.cta_trade": "Trade CPUNK",
+
+  "dna.label": "DNA Connect",
+  "dna.title": "Three utilities, one app",
+  "dna.desc": "DNA Connect combines post-quantum messaging, a multi-chain wallet, and decentralized identity into a single client — no phone numbers, no central servers, no compromises.",
+
+  "dna.messaging.title": "Messaging",
+  "dna.messaging.desc": "Post-quantum encrypted conversations over a fully decentralized network. No central servers, no metadata. Offline messages wait in distributed mailboxes until you come back online.",
+  "dna.messaging.link": "Learn more →",
+
+  "dna.wallet.title": "Multi-Chain Wallet",
+  "dna.wallet.desc": "Manage multiple wallets directly inside the app. Send and receive tokens within any conversation — no need to switch apps or copy-paste addresses.",
+  "dna.wallet.link": "Learn more →",
+
+  "dna.identity.title": "Decentralized Identity",
+  "dna.identity.desc": "Your DNA name is your identity — tied to a cryptographic key pair, not to a phone number or email. Register once and be reachable across the entire network.",
+  "dna.identity.link": "Learn more →",
+
+  "downloads.label": "Downloads",
+  "downloads.title": "Get DNA Connect",
+  "downloads.desc": "Encrypted messaging, multi-chain wallet, and decentralized identity — one app, three platforms.",
+
+  "downloads.android": "Android",
+  "downloads.android_btn": "Download APK",
+  "downloads.linux": "Linux",
+  "downloads.linux_btn": "Download AppImage",
+  "downloads.linux_extra": "Also available as tar.gz",
+  "downloads.windows": "Windows",
+  "downloads.windows_btn": "Download EXE",
+  "downloads.source": "Open source —",
+
+  "cta.title": "One Community, One Vision.",
+  "cta.text": "Download DNA Connect, join the conversation, and find a piece of the project you want to improve. Every meaningful contributor once started as a community member.",
+  "cta.telegram": "Join Telegram",
+  "cta.code": "Explore Code",
+  "cta.x": "Follow on X",
+
+  "footer.copyright": "© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.",
+  "footer.home": "Home",
+  "footer.identity": "The Identity",
+  "footer.messenger": "The Messenger",
+  "footer.wallet": "The Wallet",
+  "footer.nodus": "The Nodus",
+  "footer.team": "Team",
+  "footer.litepaper": "Litepaper",
+  "footer.legal": "Legal",
+  "footer.privacy": "Privacy Policy",
+
+  "brand.tag": "Privacy • Quantum Safety • Decentralization"
+}
