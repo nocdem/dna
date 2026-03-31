@@ -36,18 +36,18 @@ int blockchain_query_tx_status(const char *chain, const char *txhash, int *statu
 #ifndef _WIN32
 #include <pthread.h>
 static pthread_mutex_t g_derive_mutex = PTHREAD_MUTEX_INITIALIZER;
-static void derive_lock(void)   { pthread_mutex_lock(&g_derive_mutex); }
-static void derive_unlock(void) { pthread_mutex_unlock(&g_derive_mutex); }
+void derive_lock(void)   { pthread_mutex_lock(&g_derive_mutex); }
+void derive_unlock(void) { pthread_mutex_unlock(&g_derive_mutex); }
 #else
 #include <windows.h>
 static CRITICAL_SECTION g_derive_cs;
 static LONG g_derive_cs_init = 0;
-static void derive_lock(void) {
+void derive_lock(void) {
     if (InterlockedCompareExchange(&g_derive_cs_init, 1, 0) == 0)
         InitializeCriticalSection(&g_derive_cs);
     EnterCriticalSection(&g_derive_cs);
 }
-static void derive_unlock(void) { LeaveCriticalSection(&g_derive_cs); }
+void derive_unlock(void) { LeaveCriticalSection(&g_derive_cs); }
 #endif
 
 /* Lazy-init wallet cache (thread-safe, wallet_cache_init has internal mutex) */

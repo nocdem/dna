@@ -64,19 +64,20 @@ void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task) {
     );
 }
 
-void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
-    const char *password = task->params.load_identity.password;
+/* Internal identity load — no callbacks, no events.
+ * Returns DNA_OK (0) on success, error code on failure.
+ * Called by dna_handle_load_identity() and dna_engine_auto_load_identity(). */
+int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
+                                const char *password, bool minimal) {
     int error = DNA_OK;
 
     /* v0.3.0: Compute fingerprint from flat key file if not provided */
     char fingerprint_buf[129] = {0};
-    const char *fingerprint = task->params.load_identity.fingerprint;
     if (!fingerprint || fingerprint[0] == '\0' || strlen(fingerprint) != 128) {
         /* Compute from identity.dsa */
         if (messenger_compute_identity_fingerprint(NULL, fingerprint_buf) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "No identity found - cannot compute fingerprint");
-            error = DNA_ENGINE_ERROR_NO_IDENTITY;
-            goto done;
+            return DNA_ENGINE_ERROR_NO_IDENTITY;
         }
         fingerprint = fingerprint_buf;
         QGP_LOG_INFO(LOG_TAG, "v0.3.0: Computed fingerprint from flat key file");
@@ -88,8 +89,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         engine->identity_lock_fd = qgp_platform_acquire_identity_lock(engine->data_dir);
         if (engine->identity_lock_fd < 0) {
             QGP_LOG_WARN(LOG_TAG, "Identity lock held by another process - cannot load");
-            error = DNA_ENGINE_ERROR_IDENTITY_LOCKED;
-            goto done;
+            return DNA_ENGINE_ERROR_IDENTITY_LOCKED;
         }
         QGP_LOG_INFO(LOG_TAG, "v0.6.0+: Identity lock acquired (fd=%td)", engine->identity_lock_fd);
     }
@@ -123,8 +123,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         if (is_encrypted) {
             if (!password) {
                 QGP_LOG_ERROR(LOG_TAG, "Identity keys are encrypted but no password provided");
-                error = DNA_ENGINE_ERROR_PASSWORD_REQUIRED;
-                goto done;
+                return DNA_ENGINE_ERROR_PASSWORD_REQUIRED;
             }
 
             /* Verify password by attempting to load key */
@@ -132,8 +131,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             int load_rc = qgp_key_load_encrypted(kem_path, password, &test_key);
             if (load_rc != 0 || !test_key) {
                 QGP_LOG_ERROR(LOG_TAG, "Failed to decrypt keys - incorrect password");
-                error = DNA_ENGINE_ERROR_WRONG_PASSWORD;
-                goto done;
+                return DNA_ENGINE_ERROR_WRONG_PASSWORD;
             }
             qgp_key_free(test_key);
 
@@ -148,8 +146,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Initialize messenger with fingerprint */
     engine->messenger = messenger_init(fingerprint);
     if (!engine->messenger) {
-        error = DNA_ENGINE_ERROR_INIT;
-        goto done;
+        return DNA_ENGINE_ERROR_INIT;
     }
 
     /* Pass session password to messenger for encrypted key operations (v0.2.17+) */
@@ -214,8 +211,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Profile cache is now global - initialized in dna_engine_create() */
 
     /* Check if minimal mode (background service) - skip heavy initialization */
-    bool minimal_mode = task->params.load_identity.minimal;
-    if (minimal_mode) {
+    if (minimal) {
         QGP_LOG_INFO(LOG_TAG, "Minimal mode: skipping transport, presence, wallet init");
     }
 
@@ -226,10 +222,10 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Initialize P2P transport for DHT and messaging
      * - Full mode: includes presence registration + heartbeat
      * - Minimal mode: transport only for polling (no presence) */
-    if (messenger_transport_init(engine->messenger, minimal_mode) != 0) {
+    if (messenger_transport_init(engine->messenger, minimal) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize P2P transport");
         /* Non-fatal - continue without P2P, DHT operations will still work via singleton */
-    } else if (!minimal_mode) {
+    } else if (!minimal) {
         /* Full mode only: Start presence heartbeat thread (announces every 4 minutes) */
         if (dna_start_presence_heartbeat(engine) != 0) {
             QGP_LOG_WARN(LOG_TAG, "Warning: Failed to start presence heartbeat");
@@ -243,14 +239,14 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, state=ACTIVE");
 
     /* v0.9.142+: Start wall poll timer (replaces per-contact wall listeners) */
-    if (!minimal_mode) {
+    if (!minimal) {
         dna_engine_start_wall_poll(engine);
     }
 
     /* v0.6.88+: All DHT operations moved to background stabilization thread
      * for instant startup. Identity load now only does local operations.
      * Listeners, subscriptions, and wallets are set up after DHT stabilizes. */
-    if (engine->messenger && !minimal_mode) {
+    if (engine->messenger && !minimal) {
         QGP_LOG_INFO(LOG_TAG, "[LISTEN] Full mode: spawning background thread for DHT operations");
 
         /* Spawn post-stabilization thread for ALL DHT operations.
@@ -301,15 +297,25 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
      * If the profile is missing from DHT, user can re-register name or
      * edit profile to republish. No need for blocking verification on startup.
      */
-    (void)0;  /* Empty statement to satisfy compiler */
+    return error;
+}
 
-    /* Dispatch identity loaded event */
-    dna_event_t event = {0};
-    event.type = DNA_EVENT_IDENTITY_LOADED;
-    strncpy(event.data.identity_loaded.fingerprint, fingerprint, 128);
-    dna_dispatch_event(engine, &event);
+void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
+    int error = dna_load_identity_internal(
+        engine,
+        task->params.load_identity.fingerprint,
+        task->params.load_identity.password,
+        task->params.load_identity.minimal
+    );
 
-done:
+    /* Dispatch identity loaded event on success */
+    if (error == DNA_OK) {
+        dna_event_t event = {0};
+        event.type = DNA_EVENT_IDENTITY_LOADED;
+        strncpy(event.data.identity_loaded.fingerprint, engine->fingerprint, 128);
+        dna_dispatch_event(engine, &event);
+    }
+
     task->callback.completion(task->request_id, error, task->user_data);
 }
 
@@ -493,18 +499,32 @@ populate_wallets:
         bool wallets_changed = false;
         blockchain_wallet_list_t *bc_wallets = NULL;
 
-        /* Derive wallet addresses from mnemonic */
-        char mnemonic[512] = {0};
-        if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) == DNA_OK) {
-            uint8_t master_seed[64];
-            if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
-                blockchain_derive_wallets_from_seed(master_seed, mnemonic,
-                    engine->fingerprint, &bc_wallets);
-                qgp_secure_memzero(master_seed, sizeof(master_seed));
+        derive_lock();
+
+        if (engine->wallets_loaded && engine->blockchain_wallets) {
+            /* Use cached wallets (already derived by list_wallets or previous getProfile) */
+            bc_wallets = engine->blockchain_wallets;
+        } else {
+            /* Derive and cache */
+            char mnemonic[512] = {0};
+            if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) == DNA_OK) {
+                uint8_t master_seed[64];
+                if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
+                    blockchain_derive_wallets_from_seed(master_seed, mnemonic,
+                        engine->fingerprint, &bc_wallets);
+                    qgp_secure_memzero(master_seed, sizeof(master_seed));
+                }
+                qgp_secure_memzero(mnemonic, sizeof(mnemonic));
             }
-            qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+            if (bc_wallets) {
+                engine->blockchain_wallets = bc_wallets;
+                engine->wallets_loaded = true;
+            }
         }
 
+        derive_unlock();
+
+        /* Populate profile wallet fields from derived/cached wallets */
         if (bc_wallets) {
             for (size_t i = 0; i < bc_wallets->count; i++) {
                 blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
@@ -537,7 +557,7 @@ populate_wallets:
                         break;
                 }
             }
-            blockchain_wallet_list_free(bc_wallets);
+            /* DO NOT free bc_wallets — owned by engine */
         }
 
         /* Auto-publish profile if wallets were populated */
@@ -895,16 +915,30 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
     /* Derive wallet addresses from seed (ignore Flutter-provided wallet fields) */
     {
         blockchain_wallet_list_t *bc_wallets = NULL;
-        char mnemonic[512] = {0};
-        if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) == DNA_OK) {
-            uint8_t master_seed[64];
-            if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
-                blockchain_derive_wallets_from_seed(master_seed, mnemonic,
-                    engine->fingerprint, &bc_wallets);
-                qgp_secure_memzero(master_seed, sizeof(master_seed));
+
+        derive_lock();
+
+        if (engine->wallets_loaded && engine->blockchain_wallets) {
+            /* Use cached wallets */
+            bc_wallets = engine->blockchain_wallets;
+        } else {
+            char mnemonic[512] = {0};
+            if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) == DNA_OK) {
+                uint8_t master_seed[64];
+                if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
+                    blockchain_derive_wallets_from_seed(master_seed, mnemonic,
+                        engine->fingerprint, &bc_wallets);
+                    qgp_secure_memzero(master_seed, sizeof(master_seed));
+                }
+                qgp_secure_memzero(mnemonic, sizeof(mnemonic));
             }
-            qgp_secure_memzero(mnemonic, sizeof(mnemonic));
+            if (bc_wallets) {
+                engine->blockchain_wallets = bc_wallets;
+                engine->wallets_loaded = true;
+            }
         }
+
+        derive_unlock();
 
         /* Clear Flutter-provided wallet fields and fill from seed */
         memset(p->backbone, 0, sizeof(p->backbone));
@@ -937,7 +971,7 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
                         break;
                 }
             }
-            blockchain_wallet_list_free(bc_wallets);
+            /* DO NOT free bc_wallets — owned by engine */
         }
 
         QGP_LOG_INFO(LOG_TAG, "update_profile: wallets derived from seed (eth=%.10s... sol=%.10s... trx=%.10s...)",

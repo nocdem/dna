@@ -561,6 +561,9 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
     QGP_LOG_WARN(LOG_TAG, "[RETRY] >>> STABILIZATION THREAD COMPLETE <<<");
 
 cleanup:
+    /* Mark first startup as handled (reconnects will use setup_listeners_thread) */
+    atomic_store(&engine->initial_connect_handled, true);
+
     /* v0.6.0+: Mark thread as not running before exit */
     pthread_mutex_lock(&engine->background_threads_mutex);
     engine->stabilization_retry_running = false;
@@ -671,27 +674,38 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
          * IMPORTANT: Run listener setup on a background thread!
          * This callback runs on the Nodus callback thread. If we block here
          * we deadlock (Nodus needs this thread for dispatch). */
-        QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d",
-                     engine->identity_loaded);
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d, initial_connect_handled=%d",
+                     engine->identity_loaded,
+                     atomic_load(&engine->initial_connect_handled));
         if (engine->identity_loaded) {
-            /* Spawn listener setup thread for FULL listeners */
-            pthread_mutex_lock(&engine->background_threads_mutex);
-            if (engine->setup_listeners_running) {
-                /* Previous thread still running - skip (it will handle everything) */
-                pthread_mutex_unlock(&engine->background_threads_mutex);
-                QGP_LOG_INFO(LOG_TAG, "[LISTEN] Listener setup thread already running, skipping");
-            } else {
-                /* Spawn new thread and track it */
-                engine->setup_listeners_running = true;
-                pthread_mutex_unlock(&engine->background_threads_mutex);
-                if (pthread_create(&engine->setup_listeners_thread, NULL,
-                                   dna_engine_setup_listeners_thread, engine) == 0) {
-                    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Spawned background thread for listener setup");
+            if (!atomic_load(&engine->initial_connect_handled)) {
+                /* First connect — stabilization thread handles full setup */
+                if (engine->stabilization_retry_running) {
+                    QGP_LOG_INFO(LOG_TAG, "[LISTEN] First connect — stabilization thread active, skipping");
                 } else {
-                    pthread_mutex_lock(&engine->background_threads_mutex);
-                    engine->setup_listeners_running = false;
+                    /* Safety net: stabilization not running but flag not set */
+                    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Unexpected: no stabilization thread, spawning listeners");
+                    goto spawn_listeners;
+                }
+            } else {
+                /* Reconnect — spawn listener setup thread */
+spawn_listeners:
+                pthread_mutex_lock(&engine->background_threads_mutex);
+                if (engine->setup_listeners_running) {
                     pthread_mutex_unlock(&engine->background_threads_mutex);
-                    QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to spawn listener setup thread");
+                    QGP_LOG_INFO(LOG_TAG, "[LISTEN] Listener setup thread already running, skipping");
+                } else {
+                    engine->setup_listeners_running = true;
+                    pthread_mutex_unlock(&engine->background_threads_mutex);
+                    if (pthread_create(&engine->setup_listeners_thread, NULL,
+                                       dna_engine_setup_listeners_thread, engine) == 0) {
+                        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Spawned background thread for listener setup (reconnect)");
+                    } else {
+                        pthread_mutex_lock(&engine->background_threads_mutex);
+                        engine->setup_listeners_running = false;
+                        pthread_mutex_unlock(&engine->background_threads_mutex);
+                        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to spawn listener setup thread");
+                    }
                 }
             }
         } else {
@@ -1453,6 +1467,7 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     pthread_cond_init(&engine->background_thread_exit_cond, NULL);  /* v0.6.113: For efficient thread join */
     engine->setup_listeners_running = false;
     engine->stabilization_retry_running = false;
+    atomic_store(&engine->initial_connect_handled, false);
 
     /* v0.6.107+: Initialize state synchronization */
     pthread_mutex_init(&engine->state_mutex, NULL);

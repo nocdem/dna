@@ -806,6 +806,7 @@ struct dna_engine {
     pthread_t stabilization_retry_thread;  /* Stabilization retry thread handle */
     bool setup_listeners_running;          /* True while thread is active */
     bool stabilization_retry_running;      /* True while thread is active */
+    _Atomic bool initial_connect_handled;  /* True after first stabilization completes */
     pthread_mutex_t background_threads_mutex;  /* Protects running flags */
     pthread_cond_t background_thread_exit_cond;  /* v0.6.113: Signaled when background thread exits */
 

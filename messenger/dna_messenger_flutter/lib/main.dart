@@ -1,13 +1,16 @@
 // DNA Connect - Post-Quantum Encrypted P2P Communication
 // Phase 14: DHT-only messaging with Android background support
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'ffi/dna_engine.dart' show DhtConnectedEvent;
 import 'l10n/app_localizations.dart';
 import 'providers/portfolio_history_provider.dart';
 import 'providers/providers.dart';
@@ -92,12 +95,13 @@ class _AppLoader extends ConsumerStatefulWidget {
 
 class _AppLoaderState extends ConsumerState<_AppLoader> {
   AppLifecycleObserver? _lifecycleObserver;
-  bool _autoLoadStarted = false;
-  bool _autoLoadComplete = false;
-  bool _hasIdentity = false;
+  bool _startupDone = false;
+  bool _syncStarted = false;
   bool _registrationIncomplete = false;
   bool _nameCheckDone = false;
   bool _updateDialogShown = false;
+  StreamSubscription? _nameBackfillSub;
+  StreamSubscription? _nameEnsureSub;
 
   @override
   void initState() {
@@ -111,6 +115,8 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
 
   @override
   void dispose() {
+    _nameBackfillSub?.cancel();
+    _nameEnsureSub?.cancel();
     if (_lifecycleObserver != null) {
       WidgetsBinding.instance.removeObserver(_lifecycleObserver!);
     }
@@ -119,16 +125,13 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
 
   /// Async backfill: recover registered name from DHT after DHT connects.
   /// If name found → cache it. If not found → show registration screen.
+  /// Uses subscribe-then-check to avoid races between event and connection check.
   void _backfillNameFromDht(dynamic engine, String fp) {
-    Future.delayed(const Duration(seconds: 3), () async {
-      // Wait for DHT to connect (up to 15s total, checking every 2s)
-      for (int i = 0; i < 6; i++) {
-        if (engine.isDhtConnected()) break;
-        await Future.delayed(const Duration(seconds: 2));
-      }
+    bool done = false;
 
-      if (!mounted) return;
-
+    Future<void> doBackfill() async {
+      if (done || !mounted) return;
+      done = true;
       try {
         final registeredName = await engine.getRegisteredName();
         if (registeredName != null && registeredName.isNotEmpty) {
@@ -142,7 +145,6 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
             });
           }
         } else {
-          // No name in DHT — genuinely incomplete registration
           engine.debugLog('STARTUP', 'Backfill: no registered name in DHT — showing registration');
           if (mounted) {
             setState(() {
@@ -152,7 +154,6 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           }
         }
       } catch (e) {
-        // DHT lookup failed — force registration to be safe
         engine.debugLog('STARTUP', 'Backfill: DHT lookup failed: $e — showing registration');
         if (mounted) {
           setState(() {
@@ -161,21 +162,33 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           });
         }
       }
+    }
+
+    // Subscribe FIRST (prevents race: event fires between check and subscribe)
+    _nameBackfillSub?.cancel();
+    _nameBackfillSub = engine.events.listen((event) {
+      if (event is DhtConnectedEvent) {
+        _nameBackfillSub?.cancel();
+        doBackfill();
+      }
     });
+
+    // Check SECOND (handles already-connected case)
+    if (engine.isDhtConnected()) {
+      _nameBackfillSub?.cancel();
+      doBackfill();
+    }
   }
 
   /// Background check: if local cache has a name but DHT doesn't, re-register it.
   /// If the name was taken by someone else, force registration screen for new name.
+  /// Uses subscribe-then-check to avoid races between event and connection check.
   void _ensureNameInDht(dynamic engine, String localName) {
-    Future.delayed(const Duration(seconds: 5), () async {
-      // Wait for DHT to connect
-      for (int i = 0; i < 6; i++) {
-        if (engine.isDhtConnected()) break;
-        await Future.delayed(const Duration(seconds: 2));
-      }
+    bool done = false;
 
-      if (!mounted) return;
-
+    Future<void> doEnsure() async {
+      if (done || !mounted) return;
+      done = true;
       try {
         final dhtName = await engine.getRegisteredName();
         if (dhtName != null && dhtName.isNotEmpty) return; // Already in DHT, all good
@@ -215,108 +228,99 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
       } catch (e) {
         engine.debugLog('STARTUP', 'DHT name check/re-register failed: $e');
       }
+    }
+
+    // Subscribe FIRST (prevents race: event fires between check and subscribe)
+    _nameEnsureSub?.cancel();
+    _nameEnsureSub = engine.events.listen((event) {
+      if (event is DhtConnectedEvent) {
+        _nameEnsureSub?.cancel();
+        doEnsure();
+      }
     });
+
+    // Check SECOND (handles already-connected case)
+    if (engine.isDhtConnected()) {
+      _nameEnsureSub?.cancel();
+      doEnsure();
+    }
   }
 
-  /// Try to auto-load identity if one exists on disk (runs once at startup)
-  /// v0.100.94: Added try/catch to prevent permanent loading screen on errors.
-  /// v0.101.36: If engine is reused (Activity recreation), restore state without re-loading.
-  Future<void> _tryAutoLoadIdentity(dynamic engine) async {
-    if (_autoLoadStarted) return;
-    if (engine == null) return;
-
-    _autoLoadStarted = true;
+  /// Sync Dart-side state with the already-loaded engine identity (runs once at startup).
+  /// DnaEngine.create() auto-loads identity, so by the time engineProvider resolves,
+  /// engine.isIdentityLoaded() is already true. No loadIdentity() call needed here.
+  Future<void> _syncIdentityState(dynamic engine) async {
+    if (_startupDone || _syncStarted) return;
+    _syncStarted = true;
 
     try {
-      // v0.101.36: Check if engine already has identity loaded (Activity recreation).
-      // The cached engine survives Activity recreation with identity + lock intact.
-      // Skip loadIdentity() to avoid re-acquiring the lock and re-initializing.
       if (engine.isIdentityLoaded()) {
         final fp = engine.fingerprint;
-        engine.debugLog('STARTUP', 'Engine reused: identity already loaded fp=${fp?.substring(0, 16)}...');
+        engine.debugLog('STARTUP', 'Identity pre-loaded, syncing Dart state fp=${fp?.substring(0, 16)}...');
+
+        // Profile caches MUST init before HomeScreen (prevents avatar flash)
+        await ref.read(contactProfileCacheProvider.notifier).initialized;
+        await ref.read(identityProfileCacheProvider.notifier).initialized;
+
+        // Set Riverpod state
         ref.read(currentFingerprintProvider.notifier).state = fp;
         ref.read(identityReadyProvider.notifier).state = true;
         ref.read(dhtConnectionStateProvider.notifier).state =
             engine.isDhtConnected() ? DhtConnectionState.connected : DhtConnectionState.connecting;
-      } else {
-        // v0.3.0: Check if identity exists and auto-load
-        final hasIdentity = engine.hasIdentity();
-        engine.debugLog('STARTUP', 'v0.3.0: hasIdentity=$hasIdentity');
 
-        if (hasIdentity) {
-          // Ensure profile caches are loaded from SQLite before showing HomeScreen
-          await ref.read(contactProfileCacheProvider.notifier).initialized;
-          await ref.read(identityProfileCacheProvider.notifier).initialized;
-          // Show HomeScreen immediately for cache-first wall display
-          if (mounted) setState(() { _hasIdentity = true; });
+        engine.debugLog('STARTUP', 'Dart state synced, checking registered name...');
 
-          // Pre-warm: Set DHT state to "connecting" immediately for UI feedback
-          // This shows "Connecting to network..." banner while DHT bootstraps
-          ref.read(dhtConnectionStateProvider.notifier).state =
-              DhtConnectionState.connecting;
-          engine.debugLog('STARTUP', 'v0.3.0: DHT pre-warm - state set to connecting');
-
-          engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
-          await ref.read(identitiesProvider.notifier).loadIdentity();
-          engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');
-
-          // Check if registration was completed (user has a registered DNA name)
-          // Uses registeredName field (immutable) — not displayName (editable)
-          final fp = ref.read(currentFingerprintProvider);
-          if (fp != null) {
-            final cached = await CacheDatabase.instance.getIdentity(fp);
-            if (cached != null && cached.registeredName.isNotEmpty) {
-              // Registered name found in local cache — allow HomeScreen immediately
-              engine.debugLog('STARTUP', 'Cached registeredName found for ${fp.substring(0, 16)}...: ${cached.registeredName}');
-              if (mounted) {
-                setState(() {
-                  _nameCheckDone = true;
-                  _registrationIncomplete = false;
-                });
-              }
-              // Background: verify name exists in DHT, re-register if missing
-              _ensureNameInDht(engine, cached.registeredName);
-            } else {
-              // No registered name cached — backfill from DHT.
-              // Don't set _nameCheckDone yet — wait for DHT result.
-              engine.debugLog('STARTUP', 'No cached registeredName for ${fp.substring(0, 16)}... — backfilling from DHT');
-              _backfillNameFromDht(engine, fp);
+        // Name check (reuse existing methods)
+        if (fp != null) {
+          final cached = await CacheDatabase.instance.getIdentity(fp);
+          if (cached != null && cached.registeredName.isNotEmpty) {
+            engine.debugLog('STARTUP', 'Cached registeredName: ${cached.registeredName}');
+            if (mounted) {
+              setState(() {
+                _nameCheckDone = true;
+                _registrationIncomplete = false;
+              });
             }
+            // Background: verify name exists in DHT
+            _ensureNameInDht(engine, cached.registeredName);
+          } else {
+            engine.debugLog('STARTUP', 'No cached registeredName — backfilling from DHT');
+            _backfillNameFromDht(engine, fp);
           }
-        } else {
-          engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
         }
+
+        // Android: store fingerprint for background service
+        if (Platform.isAndroid && fp != null) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('identity_fingerprint', fp);
+          engine.debugLog('STARTUP', 'Fingerprint stored for Android service');
+        }
+      } else if (engine.hasIdentity()) {
+        engine.debugLog('STARTUP', 'Identity exists but not loaded (encrypted keys?)');
+      } else {
+        engine.debugLog('STARTUP', 'No identity — onboarding');
       }
     } catch (e) {
-      // v0.100.94: Don't get stuck on loading screen forever.
-      // loadIdentity has its own retry logic for lock errors.
-      // If we still fail here, show onboarding/error instead of infinite spinner.
-      engine.debugLog('STARTUP', 'v0.3.0: Auto-load failed: $e');
+      engine.debugLog('STARTUP', 'State sync failed: $e');
     }
 
-    // Pre-warm wallet balances from cache + live RPC in background
-    // so DM send sheet and wallet screen have data immediately
-    Future.microtask(() {
-      if (mounted) {
-        ref.read(allBalancesProvider.notifier).refresh();
-        // Initialize portfolio history recording (hourly sparkline data)
-        ref.read(portfolioHistoryProvider);
-      }
-    });
-
-    // Trigger rebuild after check completes (even on error - prevents stuck loading screen)
+    // Wallet pre-warm (always, even without identity)
     if (mounted) {
-      setState(() {
-        _autoLoadComplete = true;
+      Future.microtask(() {
+        if (mounted) {
+          ref.read(allBalancesProvider.notifier).refresh();
+          ref.read(portfolioHistoryProvider);
+        }
       });
     }
+
+    _startupDone = true;
+    if (mounted) setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
     final engine = ref.watch(engineProvider);
-    // Watch currentFingerprintProvider to reactively update when identity is loaded
-    // This is set by loadIdentity() after successful load, and by createIdentity() path
     final currentFingerprint = ref.watch(currentFingerprintProvider);
     // Watch appFullyReadyProvider to wait for DHT operations (presence lookups) to complete
     // ignore: unused_local_variable
@@ -328,43 +332,30 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
 
     return engine.when(
       data: (eng) {
-        // Check app lock first - before any other logic
+        // App lock check
         if (appLock.enabled && isLocked) {
           return const LockScreen();
         }
 
-        // Trigger auto-load once at startup (for existing identities)
-        if (!_autoLoadStarted) {
+        // Trigger state sync once
+        if (!_startupDone) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            _tryAutoLoadIdentity(eng);
+            _syncIdentityState(eng);
           });
           return const _LoadingScreen();
         }
 
-        // Still loading — show HomeScreen early if identity exists (cache-first wall)
-        if (!_autoLoadComplete) {
-          if (_hasIdentity) {
-            return const HomeScreen();
-          }
-          return const _LoadingScreen();
-        }
-
-        // v0.3.0: Route based on whether identity is loaded (reactive)
-        // currentFingerprint is non-null when identity is loaded
+        // Identity loaded — show appropriate screen
         if (currentFingerprint != null) {
-          // v0.101.38: Check if registration was completed (user has a registered name).
-          // Watch the profile cache reactively — when registerName() updates it,
-          // this rebuilds and routes to HomeScreen automatically.
+          // Name registration check
           final profileCache = ref.watch(identityProfileCacheProvider);
           final cached = profileCache[currentFingerprint];
           final hasName = cached != null && cached.registeredName.isNotEmpty;
-
           if (_nameCheckDone && !hasName && _registrationIncomplete) {
-            // Name check completed and confirmed no registered name — send to registration
             return IdentitySelectionScreen(resumeFingerprint: currentFingerprint);
           }
 
-          // v0.9.27: Check if app/library version is below DHT minimum — block if so
+          // Version check
           final versionCheck = ref.watch(versionCheckProvider);
           final versionResult = versionCheck.valueOrNull;
           if (versionResult != null && versionResult.isBelowMinimum) {
@@ -375,19 +366,12 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
             );
           }
 
-          // Trigger contacts provider to start presence lookups in background
-          // (presence data will update progressively via _updatePresenceInBackground)
+          // Activate providers
           ref.watch(contactsProvider);
-
-          // v0.100.71: Removed appFullyReady blocking check for faster startup
-          // UI now shows immediately, presence data updates in background
-          // Contacts show "Syncing..." until presence is fetched
-
-          // Only activate providers AFTER identity is loaded
           ref.watch(eventHandlerActiveProvider);
           ref.watch(backgroundTasksActiveProvider);
 
-          // Show update-available dialog once per session when DHT reports a newer version
+          // Update available dialog (once per session)
           if (versionResult != null && versionResult.hasUpdate && !_updateDialogShown) {
             final dismissed = ref.watch(updateDismissedProvider);
             if (!dismissed) {
@@ -399,7 +383,11 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           }
 
           return const HomeScreen();
+        } else if (eng.hasIdentity()) {
+          // Identity exists but not loaded (encrypted keys?)
+          return const IdentitySelectionScreen();
         } else {
+          // No identity — onboarding
           return const IdentitySelectionScreen();
         }
       },

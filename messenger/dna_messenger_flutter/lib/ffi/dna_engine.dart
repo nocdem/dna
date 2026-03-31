@@ -1349,6 +1349,24 @@ class DnaEngine {
     }
 
     engine._setupEventCallback();
+
+    // v0.10.0: Auto-load identity if exists (non-blocking DHT, ~80ms)
+    if (engine.hasIdentity() && !engine.isIdentityLoaded()) {
+      try {
+        await engine.loadIdentity();
+        engine.debugLog('STARTUP', 'Identity auto-loaded in create()');
+      } on DnaEngineException catch (e) {
+        if (e.code == -111) {
+          // DNA_ENGINE_ERROR_PASSWORD_REQUIRED — keys encrypted, skip auto-load
+          engine.debugLog('STARTUP', 'Keys encrypted — skipping auto-load');
+        } else {
+          engine.debugLog('STARTUP', 'Auto-load failed: $e');
+        }
+      } catch (e) {
+        engine.debugLog('STARTUP', 'Auto-load unexpected error: $e');
+      }
+    }
+
     return engine;
   }
 

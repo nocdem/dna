@@ -231,6 +231,14 @@ int dna_engine_check_group_day_rotation(dna_engine_t *engine);
 int dna_engine_check_outbox_day_rotation(dna_engine_t *engine);
 int dna_engine_check_channel_day_rotation(dna_engine_t *engine);
 
+/* From dna_engine_identity.c */
+int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
+                                const char *password, bool minimal);
+
+/* Wallet derivation lock (shared between wallet, identity, profile modules) */
+void derive_lock(void);
+void derive_unlock(void);
+
 /* Global engine accessors (thread-safe) */
 extern dna_engine_t *g_dht_callback_engine;
 extern pthread_mutex_t g_engine_global_mutex;

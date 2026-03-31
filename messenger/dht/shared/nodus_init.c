@@ -8,6 +8,7 @@
  * - Always calls nodus_singleton_close() on cleanup (shutdown leak fix)
  * - Single init/close path (no borrowed context complexity)
  * - nodus_ops_dispatch is the only value_changed callback
+ * - Non-blocking init: connect happens in background thread
  *
  * @file nodus_init.c
  */
@@ -25,6 +26,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <errno.h>
 #include <pthread.h>
@@ -47,7 +49,9 @@
 /* ── State ──────────────────────────────────────────────────────── */
 
 static nodus_identity_t g_stored_identity;      /* Value type — no heap alloc */
-static bool g_initialized = false;
+static _Atomic bool g_initialized = false;
+static pthread_t g_connect_thread;
+static _Atomic bool g_connect_thread_running = false;
 static bool g_config_loaded = false;
 static dna_config_t g_config = {0};
 
@@ -445,6 +449,53 @@ static void start_rtt_probe(void) {
     }
 }
 
+/* ── Background Connect Thread ──────────────────────────────────── */
+
+static void* nodus_connect_thread_fn(void *arg) {
+    (void)arg;
+    QGP_LOG_INFO(LOG_TAG, "Connect thread started");
+
+    int rc = nodus_singleton_connect();
+    fprintf(stderr, "[NODUS_INIT] Singleton connect rc=%d\n", rc);
+
+    if (rc != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Connect failed, retrying with hardcoded fallback nodes");
+        nodus_singleton_close();
+
+        nodus_client_config_t nconfig;
+        memset(&nconfig, 0, sizeof(nconfig));
+        nconfig.auto_reconnect = true;
+        nconfig.on_value_changed = nodus_ops_dispatch;
+        nconfig.on_state_change = on_state_change;
+        load_fallback_nodes(&nconfig);
+
+        for (int i = 0; i < nconfig.server_count; i++) {
+            fprintf(stderr, "[NODUS_INIT] Fallback server %d: %s:%d\n",
+                    i, nconfig.servers[i].ip, nconfig.servers[i].port);
+        }
+
+        if (nconfig.server_count > 0) {
+            rc = nodus_singleton_init(&nconfig, &g_stored_identity);
+            if (rc == 0) {
+                rc = nodus_singleton_connect();
+                fprintf(stderr, "[NODUS_INIT] Fallback connect rc=%d\n", rc);
+            }
+        }
+    }
+
+    if (rc == 0) {
+        start_rtt_probe();
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "All bootstrap sources failed (connect thread)");
+    }
+
+    /* NOTE: Do NOT clear g_connect_thread_running here.
+     * The flag means "thread was spawned and needs join", not "thread is active".
+     * close()/reinit() will join and clear the flag. */
+    QGP_LOG_INFO(LOG_TAG, "Connect thread exiting (rc=%d)", rc);
+    return NULL;
+}
+
 /* ── Public API ─────────────────────────────────────────────────── */
 
 int nodus_messenger_init(const nodus_identity_t *identity) {
@@ -453,7 +504,7 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
         return -1;
     }
 
-    if (g_initialized) {
+    if (atomic_load(&g_initialized)) {
         QGP_LOG_WARN(LOG_TAG, "Already initialized");
         return 0;
     }
@@ -508,8 +559,6 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
                 i, nconfig.servers[i].ip, nconfig.servers[i].port);
     }
 
-    /* ── Try connect, fall back on failure ── */
-
     int rc = nodus_singleton_init(&nconfig, &g_stored_identity);
     if (rc != 0) {
         fprintf(stderr, "[NODUS_INIT] Singleton init failed (rc=%d)\n", rc);
@@ -517,71 +566,36 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
         return -1;
     }
 
-    rc = nodus_singleton_connect();
-    fprintf(stderr, "[NODUS_INIT] Singleton connect rc=%d\n", rc);
-
-    /* If config nodes failed, retry with hardcoded fallback */
-    if (rc != 0) {
-        QGP_LOG_WARN(LOG_TAG, "Connect failed, retrying with hardcoded fallback nodes");
-        nodus_singleton_close();
-
-        memset(&nconfig, 0, sizeof(nconfig));
-        nconfig.auto_reconnect = true;
-        nconfig.on_value_changed = nodus_ops_dispatch;
-        nconfig.on_state_change = on_state_change;
-        load_fallback_nodes(&nconfig);
-
-        for (int i = 0; i < nconfig.server_count; i++) {
-            fprintf(stderr, "[NODUS_INIT] Fallback server %d: %s:%d\n",
-                    i, nconfig.servers[i].ip, nconfig.servers[i].port);
-        }
-
-        rc = nodus_singleton_init(&nconfig, &g_stored_identity);
-        if (rc != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Singleton init failed (fallback)");
-            return -1;
-        }
-        rc = nodus_singleton_connect();
-        fprintf(stderr, "[NODUS_INIT] Fallback connect rc=%d\n", rc);
-    }
-
-    if (rc != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "All bootstrap sources failed");
-        nodus_singleton_close();
-        return -1;
-    }
-
-    g_initialized = true;
-
     /* Initialize channel connection pool (TCP 4003) */
     nodus_ops_ch_init(NULL, NULL);
 
-    /* Wait briefly for connection */
-    int elapsed = 0;
-    while (!nodus_singleton_is_ready() && elapsed < 500) {
-        nodus_singleton_poll(100);
-        elapsed += 100;
-    }
+    /* Mark initialized before spawning connect thread */
+    atomic_store(&g_initialized, true);
 
-    if (nodus_singleton_is_ready()) {
-        QGP_LOG_INFO(LOG_TAG, "Connected");
-        /* NOTE: Do NOT fire g_status_cb(true) here — on_state_change() already
-         * fires it when nodus client transitions to NODUS_CLIENT_READY.
-         * Firing it again causes duplicate DHT_CONNECTED events (double channel
-         * push cb registration, double profile prefetch, double listen check). */
-        /* Start background RTT probe to find fastest node for next startup */
-        start_rtt_probe();
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "Not connected after 500ms (will retry in background)");
+    /* Spawn background connect thread (non-blocking init) */
+    atomic_store(&g_connect_thread_running, true);
+    if (pthread_create(&g_connect_thread, NULL, nodus_connect_thread_fn, NULL) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "Failed to create connect thread, falling back to blocking connect");
+        atomic_store(&g_connect_thread_running, false);
+        /* Blocking fallback */
+        nodus_singleton_connect();
     }
 
     return 0;
 }
 
 void nodus_messenger_close(void) {
-    if (!g_initialized) return;
+    if (!atomic_load(&g_initialized)) return;
 
     QGP_LOG_INFO(LOG_TAG, "Closing");
+
+    /* Join connect thread BEFORE closing singleton */
+    if (atomic_load(&g_connect_thread_running)) {
+        QGP_LOG_INFO(LOG_TAG, "Waiting for connect thread to finish...");
+        nodus_singleton_force_disconnect();
+        pthread_join(g_connect_thread, NULL);
+        atomic_store(&g_connect_thread_running, false);
+    }
 
     /* Shut down channel connection pool (TCP 4003) before closing singleton */
     nodus_ops_ch_shutdown();
@@ -597,13 +611,13 @@ void nodus_messenger_close(void) {
 
     /* bootstrap_cache disabled — no cleanup needed */
 
-    g_initialized = false;
+    atomic_store(&g_initialized, false);
 }
 
 int nodus_messenger_reinit(void) {
     QGP_LOG_INFO(LOG_TAG, "Network change, reinitializing...");
 
-    if (!g_initialized) {
+    if (!atomic_load(&g_initialized)) {
         QGP_LOG_ERROR(LOG_TAG, "Not initialized, cannot reinit");
         return -1;
     }
@@ -611,22 +625,30 @@ int nodus_messenger_reinit(void) {
     /* Save identity before close */
     nodus_identity_t saved = g_stored_identity;
 
+    /* Join connect thread BEFORE closing singleton */
+    if (atomic_load(&g_connect_thread_running)) {
+        QGP_LOG_INFO(LOG_TAG, "Waiting for connect thread to finish...");
+        nodus_singleton_force_disconnect();
+        pthread_join(g_connect_thread, NULL);
+        atomic_store(&g_connect_thread_running, false);
+    }
+
     /* Close current connection */
     nodus_ops_ch_shutdown();
     nodus_ops_cancel_all();
     nodus_singleton_close();
-    g_initialized = false;
+    atomic_store(&g_initialized, false);
 
     /* Re-init with saved identity */
     return nodus_messenger_init(&saved);
 }
 
 bool nodus_messenger_is_ready(void) {
-    return g_initialized && nodus_singleton_is_ready();
+    return atomic_load(&g_initialized) && nodus_singleton_is_ready();
 }
 
 bool nodus_messenger_is_initialized(void) {
-    return g_initialized;
+    return atomic_load(&g_initialized);
 }
 
 void nodus_messenger_set_status_callback(nodus_messenger_status_cb_t cb, void *user_data) {
@@ -634,28 +656,28 @@ void nodus_messenger_set_status_callback(nodus_messenger_status_cb_t cb, void *u
     g_status_cb_data = user_data;
 
     /* Fire immediately if already connected */
-    if (g_initialized && nodus_singleton_is_ready() && cb) {
+    if (atomic_load(&g_initialized) && nodus_singleton_is_ready() && cb) {
         cb(true, user_data);
     }
 }
 
 int nodus_messenger_poll(int timeout_ms) {
-    if (!g_initialized) return -1;
+    if (!atomic_load(&g_initialized)) return -1;
     return nodus_singleton_poll(timeout_ms);
 }
 
 void nodus_messenger_force_disconnect(void) {
-    if (!g_initialized) return;
+    if (!atomic_load(&g_initialized)) return;
     nodus_singleton_force_disconnect();
 }
 
 void nodus_messenger_suspend(void) {
-    if (!g_initialized) return;
+    if (!atomic_load(&g_initialized)) return;
     nodus_singleton_suspend();
 }
 
 void nodus_messenger_resume(void) {
-    if (!g_initialized) return;
+    if (!atomic_load(&g_initialized)) return;
     nodus_singleton_resume();
 }
 
