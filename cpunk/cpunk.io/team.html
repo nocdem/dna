@@ -1094,6 +1094,66 @@
       }
       .reveal, .reveal-left, .reveal-right { opacity: 1; transform: none; }
     }
+
+    /* ── Language selector ── */
+    #lang-selector {
+      position: relative;
+      margin-left: 0.5rem;
+    }
+    .lang-btn {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      padding: 0.35rem 0.6rem;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      white-space: nowrap;
+    }
+    .lang-btn:hover {
+      border-color: var(--teal-dim);
+      background: var(--teal-soft);
+    }
+    .lang-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.4rem);
+      right: 0;
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 0.4rem;
+      min-width: 160px;
+      z-index: 1000;
+      box-shadow: var(--shadow-soft);
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .lang-dropdown.open { display: block; }
+    .lang-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      padding: 0.45rem 0.7rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition-fast), color var(--transition-fast);
+    }
+    .lang-option:hover {
+      background: var(--teal-soft);
+      color: var(--text-main);
+    }
+    .lang-option.active {
+      color: var(--teal);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -1106,7 +1166,7 @@
           <a href="/" class="brand">
             <div class="brand-text">
               <span class="brand-name">CPUNK.IO</span>
-              <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+              <span class="brand-tag" data-i18n="brand.tag">Privacy • Quantum Safety • Decentralization</span>
             </div>
           </a>
 
@@ -1116,40 +1176,41 @@
 
           <div class="nav-menu">
             <nav class="nav-links">
-              <a href="/">Home</a>
+              <a href="/" data-i18n="nav.home">Home</a>
 
               <div class="nav-item" data-dropdown="products">
                 <div class="nav-item-label">
-                  <span>DNA-Connect</span>
+                  <span data-i18n="nav.dna_connect">DNA-Connect</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/DNA-Connect/identity.html">The Identity</a>
-                  <a href="/DNA-Connect/messenger.html">The Messenger</a>
-                  <a href="/DNA-Connect/wallet.html">The Wallet</a>
-                  <a href="/DNA-Connect/nodus.html">The Nodus</a>
+                  <a href="/DNA-Connect/identity.html" data-i18n="nav.identity">The Identity</a>
+                  <a href="/DNA-Connect/messenger.html" data-i18n="nav.messenger">The Messenger</a>
+                  <a href="/DNA-Connect/wallet.html" data-i18n="nav.wallet">The Wallet</a>
+                  <a href="/DNA-Connect/nodus.html" data-i18n="nav.nodus">The Nodus</a>
                 </div>
               </div>
 
-              <a href="/team.html" class="active">Team</a>
+              <a href="/team.html" class="active" data-i18n="nav.team">Team</a>
 
               <div class="nav-item" data-dropdown="documents">
                 <div class="nav-item-label">
-                  <span>Documents</span>
+                  <span data-i18n="nav.documents">Documents</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-                  <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
-                  <a href="/privacy.html">Privacy Policy</a>
+                  <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="nav.litepaper">Litepaper</a>
+                  <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="nav.legal">Legal</a>
+                  <a href="/privacy.html" data-i18n="nav.privacy">Privacy Policy</a>
                 </div>
               </div>
             </nav>
 
             <div class="nav-cta">
               <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
-                Trade CPUNK
+                <span data-i18n="nav.trade">Trade CPUNK</span>
               </a>
+              <div id="lang-selector"></div>
             </div>
           </div>
         </div>
@@ -1166,48 +1227,48 @@
             <div class="hero-split-text">
               <div class="eyebrow">
                 <span class="eyebrow-dot"></span>
-                <span class="eyebrow-label">Community</span>
-                <span>Built by the people who use it</span>
+                <span class="eyebrow-label" data-i18n="team.hero.eyebrow_label">Community</span>
+                <span data-i18n="team.hero.eyebrow_text">Built by the people who use it</span>
               </div>
 
               <h1>
-                <span class="gradient-text">Built by the Community</span>
+                <span class="gradient-text" data-i18n="team.hero.title">Built by the Community</span>
               </h1>
 
-              <p class="subtitle">
+              <p class="subtitle" data-i18n="team.hero.subtitle_html">
                 CPUNK is an <strong>open, community-driven protocol</strong> for
                 post-quantum identity and messaging. No central company, no closed team &mdash;
                 anyone with passion for privacy and the post-quantum future can contribute.
               </p>
 
               <div class="hero-actions">
-                <a href="#contribute" class="btn btn-primary">How you can contribute</a>
-                <a href="#contributors" class="btn btn-ghost">Meet contributors</a>
+                <a href="#contribute" class="btn btn-primary" data-i18n="team.hero.btn_contribute">How you can contribute</a>
+                <a href="#contributors" class="btn btn-ghost" data-i18n="team.hero.btn_contributors">Meet contributors</a>
               </div>
 
               <div class="hero-meta">
                 <span>
                   <span class="hero-meta-dot"></span>
-                  No VC unlocks &middot; No corporate owner
+                  <span data-i18n="team.hero.meta_no_vc">No VC unlocks &middot; No corporate owner</span>
                 </span>
-                <span>Driven by: <strong style="color:var(--text-main);font-weight:500;">Builders, node operators, and users</strong></span>
+                <span><span data-i18n="team.hero.meta_driven_by">Driven by:</span> <strong style="color:var(--text-main);font-weight:500;" data-i18n="team.hero.meta_driven_by_who">Builders, node operators, and users</strong></span>
               </div>
             </div>
 
             <aside class="hero-split-panel" aria-label="Community snapshot">
               <div class="hero-panel-header">
                 <div class="hero-chip">
-                  <span>Open</span>
-                  Protocol
+                  <span data-i18n="team.hero.chip_label">Open</span>
+                  <span data-i18n="team.hero.chip_text">Protocol</span>
                 </div>
                 <div class="hero-chain">
-                  Network:<br />
+                  <span data-i18n="team.hero.network_label">Network:</span><br />
                   <strong>DNA Protocol</strong>
                 </div>
               </div>
 
               <div class="hero-panel-body">
-                <p>
+                <p data-i18n="team.hero.panel_body_html">
                   The project depends on a mix of <strong style="color:var(--text-main);font-weight:500;">code, infrastructure,
                   writing, design, research, and community work</strong>.
                 </p>
@@ -1216,26 +1277,26 @@
               <div class="stat-grid">
                 <div class="stat-item">
                   <div class="stat-value">6+</div>
-                  <div class="stat-label">Active Contributors</div>
+                  <div class="stat-label" data-i18n="team.hero.stat_contributors">Active Contributors</div>
                 </div>
                 <div class="stat-item">
-                  <div class="stat-value">Global</div>
-                  <div class="stat-label">Validator Network</div>
+                  <div class="stat-value" data-i18n="team.hero.stat_global_value">Global</div>
+                  <div class="stat-label" data-i18n="team.hero.stat_global_label">Validator Network</div>
                 </div>
                 <div class="stat-item">
-                  <div class="stat-value">Open</div>
-                  <div class="stat-label">Source (GPLv3)</div>
+                  <div class="stat-value" data-i18n="team.hero.stat_open_value">Open</div>
+                  <div class="stat-label" data-i18n="team.hero.stat_open_label">Source (GPLv3)</div>
                 </div>
                 <div class="stat-item">
                   <div class="stat-value">PQ</div>
-                  <div class="stat-label">Post-Quantum Security</div>
+                  <div class="stat-label" data-i18n="team.hero.stat_pq_label">Post-Quantum Security</div>
                 </div>
               </div>
 
               <div class="hero-panel-footer">
                 <div class="hero-pill">
                   <span class="hero-pill-dot"></span>
-                  No permission needed to start contributing
+                  <span data-i18n="team.hero.pill_text">No permission needed to start contributing</span>
                 </div>
               </div>
             </aside>
@@ -1247,9 +1308,9 @@
       <section id="contribute" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Contribute</div>
-            <h2 class="section-title">Your skills, your impact</h2>
-            <p class="section-desc" style="max-width: 38rem;">
+            <div class="section-label" data-i18n="team.contribute.label">Contribute</div>
+            <h2 class="section-title" data-i18n="team.contribute.title">Your skills, your impact</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="team.contribute.desc">
               CPUNK moves forward when the community does. Pick the area that matches your skills
               and start making an impact.
             </p>
@@ -1260,8 +1321,8 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
               </span>
-              <h3>Build the Protocol &amp; Tools</h3>
-              <p>
+              <h3 data-i18n="team.contribute.build_title">Build the Protocol &amp; Tools</h3>
+              <p data-i18n="team.contribute.build_desc">
                 Contribute to open-source repositories, implement features,
                 harden security, and maintain DNA Connect and supporting services.
               </p>
@@ -1271,8 +1332,8 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
               </span>
-              <h3>Design the Experience</h3>
-              <p>
+              <h3 data-i18n="team.contribute.design_title">Design the Experience</h3>
+              <p data-i18n="team.contribute.design_desc">
                 Work on UI/UX for apps and websites, create visuals, animations,
                 infographics, and branding that explain CPUNK to new users.
               </p>
@@ -1282,8 +1343,8 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
               </span>
-              <h3>Explain &amp; Document</h3>
-              <p>
+              <h3 data-i18n="team.contribute.explain_title">Explain &amp; Document</h3>
+              <p data-i18n="team.contribute.explain_desc">
                 Write documentation, tutorials, blog posts, and translations.
                 Help others understand how DNA identity and post-quantum cryptography work together.
               </p>
@@ -1293,8 +1354,8 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
               </span>
-              <h3>Run Validators &amp; Nodes</h3>
-              <p>
+              <h3 data-i18n="team.contribute.validators_title">Run Validators &amp; Nodes</h3>
+              <p data-i18n="team.contribute.validators_desc">
                 Operate nodes and validators that process transactions,
                 validate DNA registrations, and participate in consensus to secure the network.
               </p>
@@ -1304,8 +1365,8 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
               </span>
-              <h3>Grow the Community</h3>
-              <p>
+              <h3 data-i18n="team.contribute.grow_title">Grow the Community</h3>
+              <p data-i18n="team.contribute.grow_desc">
                 Share updates on social media, invite new contributors, organize
                 calls or meetups, and connect CPUNK with the broader Web3 ecosystem.
               </p>
@@ -1315,8 +1376,8 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
               </span>
-              <h3>Shape the Roadmap</h3>
-              <p>
+              <h3 data-i18n="team.contribute.roadmap_title">Shape the Roadmap</h3>
+              <p data-i18n="team.contribute.roadmap_desc">
                 Participate in discussions, proposals, and governance decisions.
                 Help align development priorities with long-term protocol goals.
               </p>
@@ -1329,9 +1390,9 @@
       <section id="contributors" class="s-section s-panel">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Contributors</div>
-            <h2 class="section-title">People helping CPUNK move forward</h2>
-            <p class="section-desc" style="max-width: 38rem;">
+            <div class="section-label" data-i18n="team.contributors.label">Contributors</div>
+            <h2 class="section-title" data-i18n="team.contributors.title">People helping CPUNK move forward</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="team.contributors.desc">
               A non-exhaustive list of community members who contribute to
               development, infrastructure, communication, and ecosystem growth.
             </p>
@@ -1339,10 +1400,10 @@
 
           <div class="card-grid-3 stagger">
             <article class="token-card reveal">
-              <div class="card-tag"><span>DNA</span> Identity</div>
+              <div class="card-tag"><span>DNA</span> <span data-i18n="team.contributors.bios_tag">Identity</span></div>
               <h3>bios</h3>
-              <div class="card-sub">Protocol &amp; identity contributor</div>
-              <p>
+              <div class="card-sub" data-i18n="team.contributors.bios_role">Protocol &amp; identity contributor</div>
+              <p data-i18n="team.contributors.bios_bio">
                 Works on identity flows, protocol integration, and tooling around
                 Decentralized Network Applications (DNA) within the CPUNK ecosystem.
               </p>
@@ -1350,59 +1411,59 @@
             </article>
 
             <article class="token-card reveal">
-              <div class="card-tag"><span>Core</span> Dev &amp; Architect</div>
+              <div class="card-tag"><span data-i18n="team.contributors.nocdem_tag_label">Core</span> <span data-i18n="team.contributors.nocdem_tag">Dev &amp; Architect</span></div>
               <h3>nocdem</h3>
-              <div class="card-sub">Development &amp; systems designer</div>
-              <p>
+              <div class="card-sub" data-i18n="team.contributors.nocdem_role">Development &amp; systems designer</div>
+              <p data-i18n="team.contributors.nocdem_bio">
                 Contributes to code, infrastructure, and network operations that
                 keep CPUNK services and tooling online and evolving.
               </p>
             </article>
 
             <article class="token-card reveal">
-              <div class="card-tag"><span>Community</span> Dev &amp; Architect</div>
+              <div class="card-tag"><span data-i18n="team.contributors.cellgainz_tag_label">Community</span> <span data-i18n="team.contributors.cellgainz_tag">Dev &amp; Architect</span></div>
               <h3>cellgainz</h3>
-              <div class="card-sub">User interface &amp; application</div>
-              <p>
+              <div class="card-sub" data-i18n="team.contributors.cellgainz_role">User interface &amp; application</div>
+              <p data-i18n="team.contributors.cellgainz_bio">
                 Lead designer of network protocols, GUI and app design.
               </p>
             </article>
 
             <article class="token-card reveal">
-              <div class="card-tag"><span>Support</span> Ecosystem</div>
+              <div class="card-tag"><span data-i18n="team.contributors.cc_tag_label">Support</span> <span data-i18n="team.contributors.cc_tag">Ecosystem</span></div>
               <h3>cc</h3>
-              <div class="card-sub">Ecosystem &amp; support</div>
-              <p>
+              <div class="card-sub" data-i18n="team.contributors.cc_role">Ecosystem &amp; support</div>
+              <p data-i18n="team.contributors.cc_bio">
                 Involved in ecosystem coordination, technical support, and helping
                 new users and contributors onboard to the DNA Protocol.
               </p>
             </article>
 
             <article class="token-card reveal">
-              <div class="card-tag"><span>Ops</span> Validator</div>
+              <div class="card-tag"><span>Ops</span> <span data-i18n="team.contributors.mert_tag">Validator</span></div>
               <h3>mert</h3>
-              <div class="card-sub">Operations &amp; node running</div>
-              <p>
+              <div class="card-sub" data-i18n="team.contributors.mert_role">Operations &amp; node running</div>
+              <p data-i18n="team.contributors.mert_bio">
                 Works on validator operations, network reliability, and practical
                 infrastructure that keeps the protocol stable and accessible.
               </p>
             </article>
 
             <article class="token-card reveal">
-              <div class="card-tag"><span>Comms</span> Strategy</div>
+              <div class="card-tag"><span>Comms</span> <span data-i18n="team.contributors.trader_tag">Strategy</span></div>
               <h3>trader</h3>
-              <div class="card-sub">Communication &amp; coordination</div>
-              <p>
+              <div class="card-sub" data-i18n="team.contributors.trader_role">Communication &amp; coordination</div>
+              <p data-i18n="team.contributors.trader_bio">
                 Focused on community engagement, education, and awareness around
                 CPUNK and post-quantum infrastructure.
               </p>
             </article>
 
             <article class="token-card reveal">
-              <div class="card-tag"><span>AI</span> Assistants</div>
+              <div class="card-tag"><span>AI</span> <span data-i18n="team.contributors.ai_tag">Assistants</span></div>
               <h3>Claude &amp; ChatGPT</h3>
-              <div class="card-sub">Tooling &amp; content assistance</div>
-              <p>
+              <div class="card-sub" data-i18n="team.contributors.ai_role">Tooling &amp; content assistance</div>
+              <p data-i18n="team.contributors.ai_bio">
                 Used by the community to draft documentation, prototype ideas,
                 improve code, and explore complex post-quantum concepts.
                 These are tools, not decision-makers &mdash; humans remain in control.
@@ -1416,9 +1477,9 @@
       <section id="downloads" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Downloads</div>
-            <h2 class="section-title">Get DNA Connect</h2>
-            <p class="section-desc" style="max-width:34rem;">
+            <div class="section-label" data-i18n="team.downloads.label">Downloads</div>
+            <h2 class="section-title" data-i18n="team.downloads.title">Get DNA Connect</h2>
+            <p class="section-desc" style="max-width:34rem;" data-i18n="team.downloads.desc">
               Encrypted messaging, multi-chain wallet, and decentralized identity &mdash; one app, three platforms.
             </p>
           </div>
@@ -1433,7 +1494,7 @@
               <div class="dl-card-name">Android</div>
               <a id="dl-android" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download APK
+                <span data-i18n="team.downloads.btn_apk">Download APK</span>
               </a>
             </div>
 
@@ -1445,10 +1506,10 @@
               <div class="dl-card-name">Linux</div>
               <a id="dl-linux" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download AppImage
+                <span data-i18n="team.downloads.btn_appimage">Download AppImage</span>
               </a>
               <div class="dl-card-extra">
-                <a id="dl-linux-tar" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener">Also available as tar.gz</a>
+                <a id="dl-linux-tar" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" data-i18n="team.downloads.also_targz">Also available as tar.gz</a>
               </div>
             </div>
 
@@ -1460,7 +1521,7 @@
               <div class="dl-card-name">Windows</div>
               <a id="dl-windows" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download EXE
+                <span data-i18n="team.downloads.btn_exe">Download EXE</span>
               </a>
             </div>
 
@@ -1469,7 +1530,7 @@
           <!-- Hidden widget for JS to populate links -->
           <div class="downloads-widget" id="dna-downloads"></div>
 
-          <p class="dl-source">
+          <p class="dl-source" data-i18n="team.downloads.source_html">
             Open source &mdash;
             <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noopener">GitLab</a> &middot;
             <a href="https://github.com/nocdem/dna" target="_blank" rel="noopener">GitHub</a>
@@ -1481,15 +1542,15 @@
       <section class="cta-section">
         <div class="wrap">
           <div class="cta-box reveal">
-            <h2 class="cta-title">Join the movement</h2>
-            <p class="cta-text">
+            <h2 class="cta-title" data-i18n="team.cta.title">Join the movement</h2>
+            <p class="cta-text" data-i18n="team.cta.text">
               Download DNA Connect, join the conversation, and find a piece of the project
               you want to improve. Every meaningful contributor once started as a community member.
             </p>
             <div class="cta-actions">
-              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Join Telegram</a>
-              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Explore Code</a>
-              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Follow on X</a>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="team.cta.btn_telegram">Join Telegram</a>
+              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="team.cta.btn_code">Explore Code</a>
+              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="team.cta.btn_x">Follow on X</a>
             </div>
           </div>
         </div>
@@ -1501,17 +1562,17 @@
     <footer>
       <div class="wrap">
         <div class="footer-row">
-          <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+          <div data-i18n="footer.copyright">© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
-            <a href="/">Home</a>
-            <a href="/DNA-Connect/identity.html">The Identity</a>
-            <a href="/DNA-Connect/messenger.html">The Messenger</a>
-            <a href="/DNA-Connect/wallet.html">The Wallet</a>
-            <a href="/DNA-Connect/nodus.html">The Nodus</a>
-            <a href="/team.html">Team</a>
-            <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-            <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
-            <a href="/privacy.html">Privacy Policy</a>
+            <a href="/" data-i18n="footer.home">Home</a>
+            <a href="/DNA-Connect/identity.html" data-i18n="footer.identity">The Identity</a>
+            <a href="/DNA-Connect/messenger.html" data-i18n="footer.messenger">The Messenger</a>
+            <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">The Wallet</a>
+            <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">The Nodus</a>
+            <a href="/team.html" data-i18n="footer.team">Team</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
+            <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
+            <a href="/privacy.html" data-i18n="footer.privacy">Privacy Policy</a>
           </div>
         </div>
       </div>
@@ -1519,6 +1580,9 @@
   </div>
 
   <!-- JS: Mobile Nav + Scroll Reveal -->
+  <!-- i18n -->
+  <script src="/i18n/i18n.js"></script>
+
   <script>
     document.addEventListener('DOMContentLoaded', function() {
       var mobileToggle = document.querySelector('.mobile-menu-toggle');

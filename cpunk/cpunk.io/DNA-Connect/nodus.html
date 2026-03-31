@@ -963,6 +963,66 @@
       transition: color 0.2s;
     }
     .dl-source a:hover { color: var(--teal); }
+
+    /* ── Language selector ── */
+    #lang-selector {
+      position: relative;
+      margin-left: 0.5rem;
+    }
+    .lang-btn {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      padding: 0.35rem 0.6rem;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      white-space: nowrap;
+    }
+    .lang-btn:hover {
+      border-color: var(--teal-dim);
+      background: var(--teal-soft);
+    }
+    .lang-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.4rem);
+      right: 0;
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 0.4rem;
+      min-width: 160px;
+      z-index: 1000;
+      box-shadow: var(--shadow-soft);
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .lang-dropdown.open { display: block; }
+    .lang-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      padding: 0.45rem 0.7rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition-fast), color var(--transition-fast);
+    }
+    .lang-option:hover {
+      background: var(--teal-soft);
+      color: var(--text-main);
+    }
+    .lang-option.active {
+      color: var(--teal);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -975,7 +1035,7 @@
           <a href="/" class="brand">
             <div class="brand-text">
               <span class="brand-name">CPUNK.IO</span>
-              <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+              <span class="brand-tag" data-i18n="brand.tag">Privacy • Quantum Safety • Decentralization</span>
             </div>
           </a>
 
@@ -985,40 +1045,41 @@
 
           <div class="nav-menu">
             <nav class="nav-links">
-              <a href="/">Home</a>
+              <a href="/" data-i18n="nav.home">Home</a>
 
               <div class="nav-item" data-dropdown="products">
                 <div class="nav-item-label">
-                  <span>DNA-Connect</span>
+                  <span data-i18n="nav.dna_connect">DNA-Connect</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/DNA-Connect/identity.html">The Identity</a>
-                  <a href="/DNA-Connect/messenger.html">The Messenger</a>
-                  <a href="/DNA-Connect/wallet.html">The Wallet</a>
-                  <a href="/DNA-Connect/nodus.html" class="active">The Nodus</a>
+                  <a href="/DNA-Connect/identity.html" data-i18n="nav.identity">The Identity</a>
+                  <a href="/DNA-Connect/messenger.html" data-i18n="nav.messenger">The Messenger</a>
+                  <a href="/DNA-Connect/wallet.html" data-i18n="nav.wallet">The Wallet</a>
+                  <a href="/DNA-Connect/nodus.html" class="active" data-i18n="nav.nodus">The Nodus</a>
                 </div>
               </div>
 
-              <a href="/team.html">Team</a>
+              <a href="/team.html" data-i18n="nav.team">Team</a>
 
               <div class="nav-item" data-dropdown="documents">
                 <div class="nav-item-label">
-                  <span>Documents</span>
+                  <span data-i18n="nav.documents">Documents</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-                  <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
-                  <a href="/privacy.html">Privacy Policy</a>
+                  <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="nav.litepaper">Litepaper</a>
+                  <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="nav.legal">Legal</a>
+                  <a href="/privacy.html" data-i18n="nav.privacy">Privacy Policy</a>
                 </div>
               </div>
             </nav>
 
             <div class="nav-cta">
               <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
-                Trade CPUNK
+                <span data-i18n="nav.trade">Trade CPUNK</span>
               </a>
+              <div id="lang-selector"></div>
             </div>
           </div>
         </div>
@@ -1035,37 +1096,37 @@
             <div class="hero-split-text">
               <div class="eyebrow">
                 <span class="eyebrow-dot"></span>
-                <span class="eyebrow-label">Infrastructure</span>
-                <span>Decentralized routing, discovery &amp; storage</span>
+                <span class="eyebrow-label" data-i18n="nodus_page.hero.eyebrow_label">Infrastructure</span>
+                <span data-i18n="nodus_page.hero.eyebrow_text">Decentralized routing, discovery &amp; storage</span>
               </div>
 
-              <h1>
+              <h1 data-i18n="nodus_page.hero.title">
                 DNA <span class="accent">Nodus</span>
               </h1>
 
-              <p class="subtitle">
+              <p class="subtitle" data-i18n="nodus_page.hero.subtitle1">
                 The Nodus Network is the <strong>decentralized networking layer</strong> of the DNA protocol.
                 It provides peer discovery, routing, identity resolution, and distributed storage without relying on centralized servers.
               </p>
-              <p class="subtitle">
+              <p class="subtitle" data-i18n="nodus_page.hero.subtitle2">
                 Nodus is built as a post-quantum secure distributed hash table (DHT) network where nodes cooperate to locate peers, route encrypted messages, and store temporary data across the network. All operations are cryptographically signed (ML-DSA-87), with built-in support for key encapsulation (ML-KEM-1024) and AES-256-GCM encryption.
               </p>
-              <p class="subtitle">
+              <p class="subtitle" data-i18n="nodus_page.hero.subtitle3">
                 Instead of relying on a central infrastructure, the Nodus network forms a self-organizing mesh of nodes that collectively maintain the routing and discovery layer used by DNA services such as DNA Connect and DNA Identity.
               </p>
 
               <div class="hero-actions">
-                <a href="#downloads" class="btn btn-primary">Download</a>
-                <a href="#architecture" class="btn btn-ghost">Architecture</a>
-                <a href="#dht" class="btn btn-ghost">DHT</a>
+                <a href="#downloads" class="btn btn-primary" data-i18n="nodus_page.hero.btn_download">Download</a>
+                <a href="#architecture" class="btn btn-ghost" data-i18n="nodus_page.hero.btn_architecture">Architecture</a>
+                <a href="#dht" class="btn btn-ghost" data-i18n="nodus_page.hero.btn_dht">DHT</a>
               </div>
 
               <div class="hero-meta">
                 <span>
                   <span class="hero-meta-dot"></span>
-                  No central servers. No single point of failure.
+                  <span data-i18n="nodus_page.hero.meta1">No central servers. No single point of failure.</span>
                 </span>
-                <span>
+                <span data-i18n="nodus_page.hero.meta2">
                   Community-operated &middot; <strong style="color:var(--text-main);font-weight:500;">Post-quantum secure</strong>
                 </span>
               </div>
@@ -1085,9 +1146,9 @@
       <section id="architecture" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Architecture</div>
-            <h2 class="section-title">Two-Tier Architecture</h2>
-            <p class="section-desc" style="max-width: 38rem;">
+            <div class="section-label" data-i18n="nodus_page.arch.label">Architecture</div>
+            <h2 class="section-title" data-i18n="nodus_page.arch.title">Two-Tier Architecture</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="nodus_page.arch.desc">
               The Nodus network operates using a two-tier architecture designed to separate core network operations from client access.
             </p>
           </div>
@@ -1095,22 +1156,22 @@
           <div class="token-grid stagger" style="grid-template-columns: repeat(2, 1fr);">
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><line x1="8" y1="12" x2="16" y2="12"/><circle cx="12" cy="5" r="3"/><circle cx="12" cy="19" r="3"/><line x1="12" y1="8" x2="12" y2="16"/></svg></span>
-              <h3>Tier 1 &mdash; Nodus to Nodus</h3>
-              <p>
+              <h3 data-i18n="nodus_page.arch.tier1_title">Tier 1 &mdash; Nodus to Nodus</h3>
+              <p data-i18n="nodus_page.arch.tier1_desc1">
                 The node backbone of the network. Nodus nodes communicate directly with each other using <strong style="color:var(--text-main)">TCP</strong> and <strong style="color:var(--text-main)">UDP</strong>.
               </p>
-              <p style="margin-top: 0.6rem;">
+              <p style="margin-top: 0.6rem;" data-i18n="nodus_page.arch.tier1_desc2">
                 This layer maintains the distributed hash table, performs peer discovery, and handles message routing across the global network. Tier 1 nodes form the core mesh infrastructure that keeps the network decentralized and resilient.
               </p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="6" rx="1.5"/><path d="M6 6h.01"/><path d="M12 9v3"/><path d="M8 15h8v5H8z"/><path d="M12 15v5"/></svg></span>
-              <h3>Tier 2 &mdash; Client to Nodus</h3>
-              <p>
+              <h3 data-i18n="nodus_page.arch.tier2_title">Tier 2 &mdash; Client to Nodus</h3>
+              <p data-i18n="nodus_page.arch.tier2_desc1">
                 The client access layer. Applications such as DNA Connect connect to Nodus nodes over <strong style="color:var(--text-main)">TCP</strong>.
               </p>
-              <p style="margin-top: 0.6rem;">
+              <p style="margin-top: 0.6rem;" data-i18n="nodus_page.arch.tier2_desc2">
                 Through this connection, clients can resolve DNA identities, send encrypted messages, retrieve offline messages, publish or fetch distributed data, and communicate with other peers through the network. Clients do not communicate directly with each other &mdash; they interact with the Nodus network through connected nodes.
               </p>
             </article>
@@ -1123,20 +1184,20 @@
         <div class="wrap">
           <div class="dna-row">
             <div class="dna-text reveal-left">
-              <h3><span class="teal">Distributed</span> Hash Table</h3>
-              <p>
+              <h3 data-i18n="nodus_page.dht.title"><span class="teal">Distributed</span> Hash Table</h3>
+              <p data-i18n="nodus_page.dht.desc1">
                 At its core, Nodus operates as a distributed hash table. The DHT allows nodes to locate information and peers without centralized coordination.
               </p>
-              <p>
+              <p data-i18n="nodus_page.dht.desc2">
                 Each node is responsible for a portion of the keyspace and can store or route data associated with those keys. This mechanism allows the network to:
               </p>
               <ul>
-                <li><strong>Locate identities</strong> across the network</li>
-                <li><strong>Route messages</strong> between peers</li>
-                <li><strong>Distribute temporary storage</strong> across nodes</li>
-                <li><strong>Maintain peer discovery</strong> without central directories</li>
+                <li data-i18n="nodus_page.dht.li1"><strong>Locate identities</strong> across the network</li>
+                <li data-i18n="nodus_page.dht.li2"><strong>Route messages</strong> between peers</li>
+                <li data-i18n="nodus_page.dht.li3"><strong>Distribute temporary storage</strong> across nodes</li>
+                <li data-i18n="nodus_page.dht.li4"><strong>Maintain peer discovery</strong> without central directories</li>
               </ul>
-              <p>
+              <p data-i18n="nodus_page.dht.desc3">
                 All operations are performed collectively by the network nodes.
               </p>
             </div>
@@ -1154,18 +1215,18 @@
         <div class="wrap">
           <div class="dna-row reverse">
             <div class="dna-text reveal-right">
-              <h3><span class="teal">Identity</span> Resolution</h3>
-              <p>
+              <h3 data-i18n="nodus_page.identity.title"><span class="teal">Identity</span> Resolution</h3>
+              <p data-i18n="nodus_page.identity.desc1">
                 DNA identities are resolved through the Nodus network. When a client looks up a DNA name, the request is routed through the DHT until it reaches the nodes responsible for that identity's record &mdash; no centralized registries or servers involved.
               </p>
-              <p>
+              <p data-i18n="nodus_page.identity.desc2">
                 Each identity record contains the data needed to establish secure communication:
               </p>
               <ul>
-                <li><strong>Dilithium5 public key</strong> &mdash; verifies signatures and proves ownership</li>
-                <li><strong>Kyber1024 public key</strong> &mdash; enables post-quantum key encapsulation</li>
-                <li><strong>Wallet addresses</strong> &mdash; Cellframe, Ethereum, Solana, TRON</li>
-                <li><strong>Presence status</strong> &mdash; online, offline, or last-seen timestamp</li>
+                <li data-i18n="nodus_page.identity.li1"><strong>Dilithium5 public key</strong> &mdash; verifies signatures and proves ownership</li>
+                <li data-i18n="nodus_page.identity.li2"><strong>Kyber1024 public key</strong> &mdash; enables post-quantum key encapsulation</li>
+                <li data-i18n="nodus_page.identity.li3"><strong>Wallet addresses</strong> &mdash; Cellframe, Ethereum, Solana, TRON</li>
+                <li data-i18n="nodus_page.identity.li4"><strong>Presence status</strong> &mdash; online, offline, or last-seen timestamp</li>
               </ul>
             </div>
             <div class="dna-visual reveal-left">
@@ -1182,17 +1243,17 @@
         <div class="wrap">
           <div class="dna-row">
             <div class="dna-text reveal-left">
-              <h3><span class="teal">Offline</span> Message Delivery</h3>
-              <p>
+              <h3 data-i18n="nodus_page.offline.title"><span class="teal">Offline</span> Message Delivery</h3>
+              <p data-i18n="nodus_page.offline.desc1">
                 The Nodus network supports offline message delivery. When a recipient is offline, encrypted messages are temporarily stored across distributed storage nodes until the recipient reconnects and retrieves them.
               </p>
               <ul>
-                <li><strong>7-day TTL</strong> &mdash; messages persist on the network for up to 7 days</li>
-                <li><strong>End-to-end encrypted</strong> &mdash; storage nodes see only encrypted blobs</li>
-                <li><strong>Automatic retrieval</strong> &mdash; clients pull pending messages on reconnect</li>
-                <li><strong>Multi-node replication</strong> &mdash; messages stored on k closest nodes for redundancy</li>
+                <li data-i18n="nodus_page.offline.li1"><strong>7-day TTL</strong> &mdash; messages persist on the network for up to 7 days</li>
+                <li data-i18n="nodus_page.offline.li2"><strong>End-to-end encrypted</strong> &mdash; storage nodes see only encrypted blobs</li>
+                <li data-i18n="nodus_page.offline.li3"><strong>Automatic retrieval</strong> &mdash; clients pull pending messages on reconnect</li>
+                <li data-i18n="nodus_page.offline.li4"><strong>Multi-node replication</strong> &mdash; messages stored on k closest nodes for redundancy</li>
               </ul>
-              <p>
+              <p data-i18n="nodus_page.offline.desc2">
                 This enables asynchronous communication while maintaining full decentralization &mdash; no central inbox server, no metadata leakage.
               </p>
             </div>
@@ -1210,18 +1271,18 @@
         <div class="wrap">
           <div class="dna-row reverse">
             <div class="dna-text reveal-right">
-              <h3><span class="teal">Decentralized</span> by Design</h3>
-              <p>
+              <h3 data-i18n="nodus_page.design.title"><span class="teal">Decentralized</span> by Design</h3>
+              <p data-i18n="nodus_page.design.desc1">
                 Nodus removes the need for centralized messaging servers. Instead of relying on a single infrastructure provider, the network operates as a global peer-to-peer mesh where nodes collectively maintain routing, discovery, and temporary storage.
               </p>
-              <p>This design improves:</p>
+              <p data-i18n="nodus_page.design.desc2">This design improves:</p>
               <ul>
-                <li><strong>Resilience</strong> &mdash; no single point of failure</li>
-                <li><strong>Censorship resistance</strong> &mdash; no central authority to block</li>
-                <li><strong>Availability</strong> &mdash; the network is always on</li>
-                <li><strong>Privacy</strong> &mdash; nodes only see encrypted blobs</li>
+                <li data-i18n="nodus_page.design.li1"><strong>Resilience</strong> &mdash; no single point of failure</li>
+                <li data-i18n="nodus_page.design.li2"><strong>Censorship resistance</strong> &mdash; no central authority to block</li>
+                <li data-i18n="nodus_page.design.li3"><strong>Availability</strong> &mdash; the network is always on</li>
+                <li data-i18n="nodus_page.design.li4"><strong>Privacy</strong> &mdash; nodes only see encrypted blobs</li>
               </ul>
-              <p>
+              <p data-i18n="nodus_page.design.desc3">
                 The network continues to function as long as nodes remain connected.
               </p>
             </div>
@@ -1238,9 +1299,9 @@
       <section id="ecosystem" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Ecosystem</div>
-            <h2 class="section-title">Role in the DNA Ecosystem</h2>
-            <p class="section-desc" style="max-width: 38rem;">
+            <div class="section-label" data-i18n="nodus_page.ecosystem.label">Ecosystem</div>
+            <h2 class="section-title" data-i18n="nodus_page.ecosystem.title">Role in the DNA Ecosystem</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="nodus_page.ecosystem.desc">
               Nodus is the infrastructure layer of the DNA ecosystem. While DNA applications provide user-facing functionality, Nodus provides the underlying decentralized networking system that connects identities and peers.
             </p>
           </div>
@@ -1248,20 +1309,20 @@
           <div class="token-grid stagger" style="grid-template-columns: repeat(3, 1fr);">
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
-              <h3>DNA Identity</h3>
-              <p>Decentralized identity resolution &mdash; human-readable names tied to cryptographic key pairs, resolved through the Nodus DHT.</p>
+              <h3 data-i18n="nodus_page.ecosystem.identity_title">DNA Identity</h3>
+              <p data-i18n="nodus_page.ecosystem.identity_desc">Decentralized identity resolution &mdash; human-readable names tied to cryptographic key pairs, resolved through the Nodus DHT.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h8"/><path d="M8 13h5"/></svg></span>
-              <h3>DNA Connect</h3>
-              <p>Post-quantum encrypted communication &mdash; messages routed and delivered through the Nodus network with offline support.</p>
+              <h3 data-i18n="nodus_page.ecosystem.connect_title">DNA Connect</h3>
+              <p data-i18n="nodus_page.ecosystem.connect_desc">Post-quantum encrypted communication &mdash; messages routed and delivered through the Nodus network with offline support.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg></span>
-              <h3>Future Applications</h3>
-              <p>Any decentralized application can build on Nodus &mdash; forming a post-quantum capable decentralized communication stack.</p>
+              <h3 data-i18n="nodus_page.ecosystem.future_title">Future Applications</h3>
+              <p data-i18n="nodus_page.ecosystem.future_desc">Any decentralized application can build on Nodus &mdash; forming a post-quantum capable decentralized communication stack.</p>
             </article>
           </div>
         </div>
@@ -1271,9 +1332,9 @@
       <section id="specs" class="s-section s-panel">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Specifications</div>
-            <h2 class="section-title">Technical specifications</h2>
-            <p class="section-desc" style="max-width: 38rem;">
+            <div class="section-label" data-i18n="nodus_page.specs.label">Specifications</div>
+            <h2 class="section-title" data-i18n="nodus_page.specs.title">Technical specifications</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="nodus_page.specs.desc">
               Nodus is a pure C implementation with no C++ dependencies. Every protocol operation is cryptographically signed and verified.
             </p>
           </div>
@@ -1282,41 +1343,41 @@
             <table class="security-table">
               <thead>
                 <tr>
-                  <th>Parameter</th>
-                  <th>Value</th>
-                  <th>Purpose</th>
+                  <th data-i18n="nodus_page.specs.th_parameter">Parameter</th>
+                  <th data-i18n="nodus_page.specs.th_value">Value</th>
+                  <th data-i18n="nodus_page.specs.th_purpose">Purpose</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td class="algo">Keyspace</td>
+                  <td class="algo" data-i18n="nodus_page.specs.keyspace">Keyspace</td>
                   <td><strong>512-bit</strong> (SHA3-512)</td>
-                  <td>DHT address space for node and data routing</td>
+                  <td data-i18n="nodus_page.specs.keyspace_purpose">DHT address space for node and data routing</td>
                 </tr>
                 <tr>
-                  <td class="algo">Replication Factor</td>
+                  <td class="algo" data-i18n="nodus_page.specs.replication">Replication Factor</td>
                   <td><strong>k = 8</strong></td>
-                  <td>Data stored on 8 closest nodes for redundancy</td>
+                  <td data-i18n="nodus_page.specs.replication_purpose">Data stored on 8 closest nodes for redundancy</td>
                 </tr>
                 <tr>
-                  <td class="algo">Data TTL</td>
-                  <td><strong>7 days</strong></td>
-                  <td>Temporary storage lifetime for messages and records</td>
+                  <td class="algo" data-i18n="nodus_page.specs.ttl">Data TTL</td>
+                  <td><strong data-i18n="nodus_page.specs.ttl_value">7 days</strong></td>
+                  <td data-i18n="nodus_page.specs.ttl_purpose">Temporary storage lifetime for messages and records</td>
                 </tr>
                 <tr>
-                  <td class="algo">Wire Protocol</td>
+                  <td class="algo" data-i18n="nodus_page.specs.wire">Wire Protocol</td>
                   <td><strong>CBOR</strong></td>
-                  <td>Compact binary encoding over framed TCP/UDP</td>
+                  <td data-i18n="nodus_page.specs.wire_purpose">Compact binary encoding over framed TCP/UDP</td>
                 </tr>
                 <tr>
-                  <td class="algo">Signing</td>
+                  <td class="algo" data-i18n="nodus_page.specs.signing">Signing</td>
                   <td><strong>ML-DSA-87</strong> (Dilithium5)</td>
-                  <td>All protocol operations signed and verified</td>
+                  <td data-i18n="nodus_page.specs.signing_purpose">All protocol operations signed and verified</td>
                 </tr>
                 <tr>
-                  <td class="algo">Encryption</td>
+                  <td class="algo" data-i18n="nodus_page.specs.encryption">Encryption</td>
                   <td><strong>ML-KEM-1024</strong> + AES-256-GCM</td>
-                  <td>Post-quantum key exchange and payload encryption</td>
+                  <td data-i18n="nodus_page.specs.encryption_purpose">Post-quantum key exchange and payload encryption</td>
                 </tr>
               </tbody>
             </table>
@@ -1327,24 +1388,24 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
               </span>
-              <h3>Tier 1 &mdash; UDP</h3>
-              <p>Kademlia peer discovery: ping, find_node, put, get. Lightweight node-to-node protocol for maintaining the distributed routing table.</p>
+              <h3 data-i18n="nodus_page.specs.tier1_title">Tier 1 &mdash; UDP</h3>
+              <p data-i18n="nodus_page.specs.tier1_desc">Kademlia peer discovery: ping, find_node, put, get. Lightweight node-to-node protocol for maintaining the distributed routing table.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="6" rx="1.5"/><path d="M6 6h.01"/><path d="M12 9v3"/><path d="M8 15h8v5H8z"/></svg>
               </span>
-              <h3>Tier 2 &mdash; TCP</h3>
-              <p>Client access layer: authentication, DHT operations, listen/subscribe, channels, and witness BFT. Full-duplex framed connections.</p>
+              <h3 data-i18n="nodus_page.specs.tier2_title">Tier 2 &mdash; TCP</h3>
+              <p data-i18n="nodus_page.specs.tier2_desc">Client access layer: authentication, DHT operations, listen/subscribe, channels, and witness BFT. Full-duplex framed connections.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
               </span>
-              <h3>Open Source</h3>
-              <p>Pure C codebase under Apache 2.0. No external crypto dependencies &mdash; all post-quantum primitives are implemented in the shared crypto layer.</p>
+              <h3 data-i18n="nodus_page.specs.opensource_title">Open Source</h3>
+              <p data-i18n="nodus_page.specs.opensource_desc">Pure C codebase under Apache 2.0. No external crypto dependencies &mdash; all post-quantum primitives are implemented in the shared crypto layer.</p>
             </article>
           </div>
         </div>
@@ -1354,9 +1415,9 @@
       <section id="downloads" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Downloads</div>
-            <h2 class="section-title">Get DNA Connect</h2>
-            <p class="section-desc" style="max-width:34rem;">
+            <div class="section-label" data-i18n="nodus_page.downloads.label">Downloads</div>
+            <h2 class="section-title" data-i18n="nodus_page.downloads.title">Get DNA Connect</h2>
+            <p class="section-desc" style="max-width:34rem;" data-i18n="nodus_page.downloads.desc">
               Encrypted messaging, multi-chain wallet, and decentralized identity &mdash; one app, three platforms.
             </p>
           </div>
@@ -1368,8 +1429,8 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17.523 2.476l1.5-2.6a.5.5 0 0 0-.87-.5l-1.52 2.63A8.3 8.3 0 0 0 12 1.07a8.3 8.3 0 0 0-4.63.936L5.85-.594a.5.5 0 0 0-.87.5l1.5 2.6A7.9 7.9 0 0 0 2 9.5h20a7.9 7.9 0 0 0-4.477-7.024zM7 7.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm10 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2zM3 11h1v7a2 2 0 0 0 2 2h1v3.5a1.5 1.5 0 0 0 3 0V20h4v3.5a1.5 1.5 0 0 0 3 0V20h1a2 2 0 0 0 2-2v-7h1a1.5 1.5 0 0 0 0-3H3a1.5 1.5 0 0 0 0 3z"/></svg>
               </div>
-              <div class="dl-card-name">Android</div>
-              <a id="dl-android" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
+              <div class="dl-card-name" data-i18n="nodus_page.downloads.android">Android</div>
+              <a id="dl-android" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn" data-i18n="nodus_page.downloads.android_btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 Download APK
               </a>
@@ -1380,13 +1441,13 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M8.996 4.497c.104-.076.1-.168.186-.158s.022.102-.098.207c-.12.104-.308.243-.46.323-.291.152-.631.336-.993.336s-.647-.167-.853-.33c-.102-.082-.186-.162-.248-.221-.11-.086-.096-.207-.052-.204.075.01.087.109.134.153.064.06.144.137.241.214.195.154.454.304.778.304s.702-.19.932-.32c.13-.073.297-.204.433-.304M7.34 3.781c.055-.02.123-.031.174-.003.011.006.024.021.02.034-.012.038-.074.032-.11.05-.032.017-.057.052-.093.054-.034 0-.086-.012-.09-.046-.007-.044.058-.072.1-.089m.581-.003c.05-.028.119-.018.173.003.041.017.106.045.1.09-.004.033-.057.046-.09.045-.036-.002-.062-.037-.093-.053-.036-.019-.098-.013-.11-.051-.004-.013.008-.028.02-.034"/><path fill-rule="evenodd" d="M8.446.019c2.521.003 2.38 2.66 2.364 4.093-.01.939.509 1.574 1.04 2.244.474.56 1.095 1.38 1.45 2.32.29.765.402 1.613.115 2.465a.8.8 0 0 1 .254.152l.001.002c.207.175.271.447.329.698.058.252.112.488.224.615.344.382.494.667.48.922-.015.254-.203.43-.435.57-.465.28-1.164.491-1.586 1.002-.443.527-.99.83-1.505.871a1.25 1.25 0 0 1-1.256-.716v-.001a1 1 0 0 1-.078-.21c-.67.038-1.252-.165-1.718-.128-.687.038-1.116.204-1.506.206-.151.331-.445.547-.808.63-.5.114-1.126 0-1.743-.324-.577-.306-1.31-.278-1.85-.39-.27-.057-.51-.157-.626-.384-.116-.226-.095-.538.07-.988.051-.16.012-.398-.026-.648a2.5 2.5 0 0 1-.037-.369c0-.133.022-.265.087-.386v-.002c.14-.266.368-.377.577-.451s.397-.125.53-.258c.143-.15.27-.374.443-.56q.036-.037.073-.07c-.081-.538.007-1.105.192-1.662.393-1.18 1.223-2.314 1.811-3.014.502-.713.65-1.287.701-2.016.042-.997-.705-3.974 2.112-4.2q.168-.015.321-.013"/></svg>
               </div>
-              <div class="dl-card-name">Linux</div>
-              <a id="dl-linux" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
+              <div class="dl-card-name" data-i18n="nodus_page.downloads.linux">Linux</div>
+              <a id="dl-linux" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn" data-i18n="nodus_page.downloads.linux_btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 Download AppImage
               </a>
               <div class="dl-card-extra">
-                <a id="dl-linux-tar" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener">Also available as tar.gz</a>
+                <a id="dl-linux-tar" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" data-i18n="nodus_page.downloads.linux_tar">Also available as tar.gz</a>
               </div>
             </div>
 
@@ -1395,8 +1456,8 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 5.548l7.195-0.984v6.948H3V5.548zm0 12.904l7.195 0.984v-6.948H3v5.964zm8.019 1.097L22 21v-8.512H11.019v8.061zm0-14.098v8.061H22V3L11.019 5.451z"/></svg>
               </div>
-              <div class="dl-card-name">Windows</div>
-              <a id="dl-windows" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
+              <div class="dl-card-name" data-i18n="nodus_page.downloads.windows">Windows</div>
+              <a id="dl-windows" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn" data-i18n="nodus_page.downloads.windows_btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 Download EXE
               </a>
@@ -1407,7 +1468,7 @@
           <!-- Hidden widget for JS to populate links -->
           <div class="downloads-widget" id="dna-downloads"></div>
 
-          <p class="dl-source">
+          <p class="dl-source" data-i18n="nodus_page.downloads.source">
             Open source &mdash;
             <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noopener">GitLab</a> &middot;
             <a href="https://github.com/nocdem/dna" target="_blank" rel="noopener">GitHub</a>
@@ -1419,15 +1480,15 @@
       <section class="cta-section">
         <div class="wrap">
           <div class="cta-box reveal">
-            <h2 class="cta-title">Join the movement</h2>
-            <p class="cta-text">
+            <h2 class="cta-title" data-i18n="nodus_page.cta.title">Join the movement</h2>
+            <p class="cta-text" data-i18n="nodus_page.cta.text">
               Download DNA Connect, join the conversation, and find a piece of the project
               you want to improve. Every meaningful contributor once started as a community member.
             </p>
             <div class="cta-actions">
-              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-primary btn-lg">Join Telegram</a>
-              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Explore Code</a>
-              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Follow on X</a>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-primary btn-lg" data-i18n="nodus_page.cta.btn_telegram">Join Telegram</a>
+              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="nodus_page.cta.btn_code">Explore Code</a>
+              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="nodus_page.cta.btn_x">Follow on X</a>
             </div>
           </div>
         </div>
@@ -1439,22 +1500,25 @@
     <footer>
       <div class="wrap">
         <div class="footer-row">
-          <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+          <div data-i18n="footer.copyright">© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
-            <a href="/">Home</a>
-            <a href="/DNA-Connect/identity.html">The Identity</a>
-            <a href="/DNA-Connect/messenger.html">The Messenger</a>
-            <a href="/DNA-Connect/wallet.html">The Wallet</a>
-            <a href="/DNA-Connect/nodus.html">The Nodus</a>
-            <a href="/team.html">Team</a>
-            <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-            <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
-            <a href="/privacy.html">Privacy Policy</a>
+            <a href="/" data-i18n="footer.home">Home</a>
+            <a href="/DNA-Connect/identity.html" data-i18n="footer.identity">The Identity</a>
+            <a href="/DNA-Connect/messenger.html" data-i18n="footer.messenger">The Messenger</a>
+            <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">The Wallet</a>
+            <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">The Nodus</a>
+            <a href="/team.html" data-i18n="footer.team">Team</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
+            <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
+            <a href="/privacy.html" data-i18n="footer.privacy">Privacy Policy</a>
           </div>
         </div>
       </div>
     </footer>
   </div>
+
+  <!-- i18n -->
+  <script src="/i18n/i18n.js"></script>
 
   <script>
     document.addEventListener('DOMContentLoaded', function() {

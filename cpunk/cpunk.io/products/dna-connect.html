@@ -1124,6 +1124,66 @@
       }
       .reveal { opacity: 1; transform: none; }
     }
+
+    /* ── Language selector ── */
+    #lang-selector {
+      position: relative;
+      margin-left: 0.5rem;
+    }
+    .lang-btn {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      padding: 0.35rem 0.6rem;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      white-space: nowrap;
+    }
+    .lang-btn:hover {
+      border-color: var(--teal-dim);
+      background: var(--teal-soft);
+    }
+    .lang-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.4rem);
+      right: 0;
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 0.4rem;
+      min-width: 160px;
+      z-index: 1000;
+      box-shadow: var(--shadow-soft);
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .lang-dropdown.open { display: block; }
+    .lang-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      padding: 0.45rem 0.7rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition-fast), color var(--transition-fast);
+    }
+    .lang-option:hover {
+      background: var(--teal-soft);
+      color: var(--text-main);
+    }
+    .lang-option.active {
+      color: var(--teal);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -1136,7 +1196,7 @@
         <a href="/" class="brand">
           <div class="brand-text">
             <span class="brand-name">CPUNK.IO</span>
-            <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+            <span class="brand-tag" data-i18n="brand.tag">Privacy • Quantum Safety • Decentralization</span>
           </div>
         </a>
 
@@ -1146,7 +1206,7 @@
 
         <div class="nav-menu">
           <nav class="nav-links">
-            <a href="/">Home</a>
+            <a href="/" data-i18n="nav.home">Home</a>
 
             <div class="nav-item" data-dropdown="products">
               <div class="nav-item-label">
@@ -1171,17 +1231,18 @@
               </div>
               <div class="dropdown">
                 <a href="/about.html">About CPUNK</a>
-                <a href="/team.html">Team</a>
+                <a href="/team.html" data-i18n="nav.team">Team</a>
                 <a href="/contact.html">Contact</a>
-                <a href="/legal.html">Legal</a>
+                <a href="/legal.html" data-i18n="nav.legal">Legal</a>
               </div>
             </div>
           </nav>
 
           <div class="nav-cta">
             <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
-              Trade CPUNK
+              <span data-i18n="nav.trade">Trade CPUNK</span>
             </a>
+            <div id="lang-selector"></div>
           </div>
         </div>
       </div>
@@ -1198,24 +1259,24 @@
           <div class="hero-text">
             <div class="hero-badge">
               <span class="hero-badge-dot"></span>
-              <span class="hero-badge-label">v1.0.0-rc30 &middot; Open Beta</span>
+              <span class="hero-badge-label" data-i18n="prod_connect.hero.badge">v1.0.0-rc30 &middot; Open Beta</span>
             </div>
-            <h1>Post-Quantum<br><span class="accent">Encrypted Messenger</span></h1>
-            <p class="lead">
+            <h1 data-i18n="[html]prod_connect.hero.title">Post-Quantum<br><span class="accent">Encrypted Messenger</span></h1>
+            <p class="lead" data-i18n="[html]prod_connect.hero.lead">
               A <strong>fully decentralized messenger</strong> with <strong>NIST Category 5 post-quantum encryption</strong>.
               No central servers, no phone numbers, no metadata collection. Messages travel through a peer-to-peer network &mdash;
               encrypted end-to-end with <strong>Kyber1024 + AES-256-GCM</strong>.
             </p>
             <div class="hero-actions">
-              <a href="#features" class="btn btn-primary btn-lg">Features</a>
-              <a href="#security" class="btn btn-ghost btn-lg">Security</a>
-              <a href="#downloads" class="btn btn-ghost btn-lg">Downloads</a>
+              <a href="#features" class="btn btn-primary btn-lg" data-i18n="prod_connect.hero.btn_features">Features</a>
+              <a href="#security" class="btn btn-ghost btn-lg" data-i18n="prod_connect.hero.btn_security">Security</a>
+              <a href="#downloads" class="btn btn-ghost btn-lg" data-i18n="prod_connect.hero.btn_downloads">Downloads</a>
             </div>
             <div class="hero-facts">
-              <span class="hero-fact">No central servers</span>
-              <span class="hero-fact">No IP leakage</span>
-              <span class="hero-fact">No metadata</span>
-              <span class="hero-fact">Android, Linux, Windows</span>
+              <span class="hero-fact" data-i18n="prod_connect.hero.fact1">No central servers</span>
+              <span class="hero-fact" data-i18n="prod_connect.hero.fact2">No IP leakage</span>
+              <span class="hero-fact" data-i18n="prod_connect.hero.fact3">No metadata</span>
+              <span class="hero-fact" data-i18n="prod_connect.hero.fact4">Android, Linux, Windows</span>
             </div>
           </div>
           <div class="hero-media">
@@ -1231,9 +1292,9 @@
     <section class="s-section s-dark" id="features">
       <div class="wrap">
         <div class="section-header">
-          <div class="section-label">Features</div>
-          <h2 class="section-title">Private messaging. Public channels. Your wallet.</h2>
-          <p class="section-desc">
+          <div class="section-label" data-i18n="prod_connect.features.label">Features</div>
+          <h2 class="section-title" data-i18n="prod_connect.features.title">Private messaging. Public channels. Your wallet.</h2>
+          <p class="section-desc" data-i18n="prod_connect.features.desc">
             Encrypted direct messages, Telegram-style public channels, personal wall posts, and a built-in multi-chain wallet &mdash; all running on a decentralized network with zero central servers.
           </p>
         </div>
@@ -1246,13 +1307,13 @@
               <div class="feature-icon feature-icon-teal">
                 <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               </div>
-              <h3>Encrypted Direct Messages</h3>
+              <h3 data-i18n="prod_connect.features.dm_title">Encrypted Direct Messages</h3>
             </div>
-            <p>Private conversations encrypted with <strong>Kyber1024 + AES-256-GCM</strong>. Address contacts by their DNA name &mdash; no phone numbers or email needed.</p>
+            <p data-i18n="[html]prod_connect.features.dm_desc">Private conversations encrypted with <strong>Kyber1024 + AES-256-GCM</strong>. Address contacts by their DNA name &mdash; no phone numbers or email needed.</p>
             <ul class="feature-list">
-              <li>Delivery and read receipts</li>
-              <li>Offline message queue with 7-day TTL</li>
-              <li>Cross-device sync via recovery phrase</li>
+              <li data-i18n="prod_connect.features.dm_li1">Delivery and read receipts</li>
+              <li data-i18n="prod_connect.features.dm_li2">Offline message queue with 7-day TTL</li>
+              <li data-i18n="prod_connect.features.dm_li3">Cross-device sync via recovery phrase</li>
             </ul>
           </div>
 
@@ -1262,13 +1323,13 @@
               <div class="feature-icon feature-icon-orange">
                 <svg viewBox="0 0 24 24"><path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1" fill="currentColor" stroke="none"/></svg>
               </div>
-              <h3>Public Channels</h3>
+              <h3 data-i18n="prod_connect.features.channels_title">Public Channels</h3>
             </div>
-            <p>Open chat rooms where people hang out and talk &mdash; like Telegram groups, but decentralized. Every message is signed with <strong>Dilithium5</strong> so you always know who said what.</p>
+            <p data-i18n="[html]prod_connect.features.channels_desc">Open chat rooms where people hang out and talk &mdash; like Telegram groups, but decentralized. Every message is signed with <strong>Dilithium5</strong> so you always know who said what.</p>
             <ul class="feature-list">
-              <li>Real-time group conversations</li>
-              <li>React, reply, copy, and repost</li>
-              <li>Image sharing and media support</li>
+              <li data-i18n="prod_connect.features.channels_li1">Real-time group conversations</li>
+              <li data-i18n="prod_connect.features.channels_li2">React, reply, copy, and repost</li>
+              <li data-i18n="prod_connect.features.channels_li3">Image sharing and media support</li>
             </ul>
           </div>
 
@@ -1278,13 +1339,13 @@
               <div class="feature-icon feature-icon-teal">
                 <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
               </div>
-              <h3>Wall Posts</h3>
+              <h3 data-i18n="prod_connect.features.wall_title">Wall Posts</h3>
             </div>
-            <p>A personal public feed tied to your DNA identity. Share updates, thoughts, or announcements that anyone can see on your profile.</p>
+            <p data-i18n="prod_connect.features.wall_desc">A personal public feed tied to your DNA identity. Share updates, thoughts, or announcements that anyone can see on your profile.</p>
             <ul class="feature-list">
-              <li>Signed with your identity key</li>
-              <li>Visible on your public profile</li>
-              <li>Stored on the decentralized network</li>
+              <li data-i18n="prod_connect.features.wall_li1">Signed with your identity key</li>
+              <li data-i18n="prod_connect.features.wall_li2">Visible on your public profile</li>
+              <li data-i18n="prod_connect.features.wall_li3">Stored on the decentralized network</li>
             </ul>
           </div>
 
@@ -1294,13 +1355,13 @@
               <div class="feature-icon feature-icon-orange">
                 <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
               </div>
-              <h3>Group Messaging</h3>
+              <h3 data-i18n="prod_connect.features.groups_title">Group Messaging</h3>
             </div>
-            <p>Decentralized groups with <strong>GEK encryption</strong> &mdash; efficient key distribution for groups of any size. Automatic key rotation on member changes.</p>
+            <p data-i18n="[html]prod_connect.features.groups_desc">Decentralized groups with <strong>GEK encryption</strong> &mdash; efficient key distribution for groups of any size. Automatic key rotation on member changes.</p>
             <ul class="feature-list">
-              <li>Group ownership transfer</li>
-              <li>P2P group invitations</li>
-              <li>Forward security via GEK versioning</li>
+              <li data-i18n="prod_connect.features.groups_li1">Group ownership transfer</li>
+              <li data-i18n="prod_connect.features.groups_li2">P2P group invitations</li>
+              <li data-i18n="prod_connect.features.groups_li3">Forward security via GEK versioning</li>
             </ul>
           </div>
 
@@ -1313,15 +1374,15 @@
       <div class="wrap">
         <div class="split-row">
           <div class="split-text">
-            <div class="section-label">Home Feed</div>
-            <h3><span class="teal">Your timeline</span><br>Wall posts, images, and reactions</h3>
-            <p>
+            <div class="section-label" data-i18n="prod_connect.feed.label">Home Feed</div>
+            <h3 data-i18n="[html]prod_connect.feed.title"><span class="teal">Your timeline</span><br>Wall posts, images, and reactions</h3>
+            <p data-i18n="prod_connect.feed.desc">
               The home feed shows wall posts from people you follow. Share images, react, reply, repost &mdash; a decentralized social layer built on top of the encrypted network.
             </p>
             <ul class="feature-list">
-              <li>Image posts with full media support</li>
-              <li>Reactions, threaded replies, and reposts</li>
-              <li>All content signed and stored on the DHT</li>
+              <li data-i18n="prod_connect.feed.li1">Image posts with full media support</li>
+              <li data-i18n="prod_connect.feed.li2">Reactions, threaded replies, and reposts</li>
+              <li data-i18n="prod_connect.feed.li3">All content signed and stored on the DHT</li>
             </ul>
           </div>
           <div class="split-visual">
@@ -1336,15 +1397,15 @@
       <div class="wrap">
         <div class="split-row reverse">
           <div class="split-text">
-            <div class="section-label">Wallet</div>
-            <h3><span class="orange">Multi-Chain Wallet</span><br>Built into the messenger</h3>
-            <p>
+            <div class="section-label" data-i18n="prod_connect.wallet.label">Wallet</div>
+            <h3 data-i18n="[html]prod_connect.wallet.title"><span class="orange">Multi-Chain Wallet</span><br>Built into the messenger</h3>
+            <p data-i18n="prod_connect.wallet.desc">
               A single recovery phrase derives wallets across four blockchains. Send and receive tokens without leaving the conversation.
             </p>
             <ul class="feature-list">
-              <li><strong>Cellframe, Ethereum, Solana, TRON</strong> &mdash; one wallet, four chains, native signing per chain</li>
-              <li><strong>In-chat transfers</strong> &mdash; send tokens to any DNA contact directly</li>
-              <li><strong>DEX swaps</strong> &mdash; best price from multiple exchanges (Uniswap, PancakeSwap, Jupiter, Cellframe DEX)</li>
+              <li data-i18n="[html]prod_connect.wallet.li1"><strong>Cellframe, Ethereum, Solana, TRON</strong> &mdash; one wallet, four chains, native signing per chain</li>
+              <li data-i18n="[html]prod_connect.wallet.li2"><strong>In-chat transfers</strong> &mdash; send tokens to any DNA contact directly</li>
+              <li data-i18n="[html]prod_connect.wallet.li3"><strong>DEX swaps</strong> &mdash; best price from multiple exchanges (Uniswap, PancakeSwap, Jupiter, Cellframe DEX)</li>
             </ul>
           </div>
           <div class="split-visual">
@@ -1358,9 +1419,9 @@
     <section class="s-section s-dark" id="security">
       <div class="wrap">
         <div class="section-header">
-          <div class="section-label">Security</div>
-          <h2 class="section-title">NIST Category 5 &mdash; maximum quantum resistance</h2>
-          <p class="section-desc">
+          <div class="section-label" data-i18n="prod_connect.security.label">Security</div>
+          <h2 class="section-title" data-i18n="prod_connect.security.title">NIST Category 5 &mdash; maximum quantum resistance</h2>
+          <p class="section-desc" data-i18n="prod_connect.security.desc">
             256-bit security level. Protected against both current classical attacks and future quantum computers. Your keys never leave your device.
           </p>
         </div>
@@ -1369,36 +1430,36 @@
           <table class="security-table">
             <thead>
               <tr>
-                <th>Algorithm</th>
-                <th>Standard</th>
-                <th>Purpose</th>
+                <th data-i18n="prod_connect.security.th_algorithm">Algorithm</th>
+                <th data-i18n="prod_connect.security.th_standard">Standard</th>
+                <th data-i18n="prod_connect.security.th_purpose">Purpose</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td class="algo">Kyber1024</td>
                 <td><strong>ML-KEM-1024</strong> (FIPS 203)</td>
-                <td>Key encapsulation &amp; exchange</td>
+                <td data-i18n="prod_connect.security.kyber_purpose">Key encapsulation &amp; exchange</td>
               </tr>
               <tr>
                 <td class="algo">Dilithium5</td>
                 <td><strong>ML-DSA-87</strong> (FIPS 204)</td>
-                <td>Digital signatures</td>
+                <td data-i18n="prod_connect.security.dilithium_purpose">Digital signatures</td>
               </tr>
               <tr>
                 <td class="algo">AES-256-GCM</td>
                 <td><strong>NIST</strong></td>
-                <td>Symmetric message encryption</td>
+                <td data-i18n="prod_connect.security.aes_purpose">Symmetric message encryption</td>
               </tr>
               <tr>
                 <td class="algo">SHA3-512</td>
                 <td><strong>NIST</strong></td>
-                <td>Cryptographic hashing</td>
+                <td data-i18n="prod_connect.security.sha3_purpose">Cryptographic hashing</td>
               </tr>
               <tr>
                 <td class="algo">BIP39</td>
                 <td><strong>Bitcoin Standard</strong></td>
-                <td>24-word recovery phrase</td>
+                <td data-i18n="prod_connect.security.bip39_purpose">24-word recovery phrase</td>
               </tr>
             </tbody>
           </table>
@@ -1409,29 +1470,29 @@
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             </div>
-            <h3 class="pillar-title">No Central Servers</h3>
-            <p class="pillar-desc">Messages travel peer-to-peer through the DHT. Nothing to compromise or subpoena.</p>
+            <h3 class="pillar-title" data-i18n="prod_connect.security.pillar1_title">No Central Servers</h3>
+            <p class="pillar-desc" data-i18n="prod_connect.security.pillar1_desc">Messages travel peer-to-peer through the DHT. Nothing to compromise or subpoena.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><line x1="2" y1="2" x2="22" y2="22" stroke-width="2"/></svg>
             </div>
-            <h3 class="pillar-title">No IP Leakage</h3>
-            <p class="pillar-desc">Your real IP is never exposed to contacts or third parties. DHT-only transport.</p>
+            <h3 class="pillar-title" data-i18n="prod_connect.security.pillar2_title">No IP Leakage</h3>
+            <p class="pillar-desc" data-i18n="prod_connect.security.pillar2_desc">Your real IP is never exposed to contacts or third parties. DHT-only transport.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
             </div>
-            <h3 class="pillar-title">No Metadata</h3>
-            <p class="pillar-desc">Minimal routing header. Cannot track who talks to whom.</p>
+            <h3 class="pillar-title" data-i18n="prod_connect.security.pillar3_title">No Metadata</h3>
+            <p class="pillar-desc" data-i18n="prod_connect.security.pillar3_desc">Minimal routing header. Cannot track who talks to whom.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
             </div>
-            <h3 class="pillar-title">No Phone Number</h3>
-            <p class="pillar-desc">Identity via DNA name tied to your cryptographic key pair. No personal data required.</p>
+            <h3 class="pillar-title" data-i18n="prod_connect.security.pillar4_title">No Phone Number</h3>
+            <p class="pillar-desc" data-i18n="prod_connect.security.pillar4_desc">Identity via DNA name tied to your cryptographic key pair. No personal data required.</p>
           </div>
         </div>
       </div>
@@ -1441,9 +1502,9 @@
     <section class="s-section s-alt" id="architecture">
       <div class="wrap">
         <div class="section-header-center">
-          <div class="section-label">Architecture</div>
-          <h2 class="section-title">Serverless peer-to-peer stack</h2>
-          <p class="section-desc">
+          <div class="section-label" data-i18n="prod_connect.arch.label">Architecture</div>
+          <h2 class="section-title" data-i18n="prod_connect.arch.title">Serverless peer-to-peer stack</h2>
+          <p class="section-desc" data-i18n="[html]prod_connect.arch.desc">
             DNA Connect runs on <strong>Nodus</strong> &mdash; a post-quantum Kademlia DHT with ML-DSA + ML-KEM support, PBFT consensus, and a 6-node production cluster.
           </p>
         </div>
@@ -1458,9 +1519,9 @@
     <section class="s-section s-dark" id="technology">
       <div class="wrap">
         <div class="section-header-center">
-          <div class="section-label">Technology</div>
-          <h2 class="section-title">Post-quantum C engine under the hood</h2>
-          <p class="section-desc">
+          <div class="section-label" data-i18n="prod_connect.tech.label">Technology</div>
+          <h2 class="section-title" data-i18n="prod_connect.tech.title">Post-quantum C engine under the hood</h2>
+          <p class="section-desc" data-i18n="prod_connect.tech.desc">
             All cryptography, messaging, and DHT operations run in a native C library (libdna). Flutter, Android, and CLI connect through thin FFI bindings &mdash; zero crypto in managed code.
           </p>
         </div>
@@ -1470,29 +1531,29 @@
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
             </div>
-            <h3 class="pillar-title">Modular Engine</h3>
-            <p class="pillar-desc">Async task queue with domain modules: messaging, identity, wallet, contacts, DHT, backup. Thread pool for concurrent execution.</p>
+            <h3 class="pillar-title" data-i18n="prod_connect.tech.pillar1_title">Modular Engine</h3>
+            <p class="pillar-desc" data-i18n="prod_connect.tech.pillar1_desc">Async task queue with domain modules: messaging, identity, wallet, contacts, DHT, backup. Thread pool for concurrent execution.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
             </div>
-            <h3 class="pillar-title">Cross-Platform</h3>
-            <p class="pillar-desc">Same C code compiles for Linux, Windows, and Android. Flutter via dart:ffi, Android via JNI, CLI for automation.</p>
+            <h3 class="pillar-title" data-i18n="prod_connect.tech.pillar2_title">Cross-Platform</h3>
+            <p class="pillar-desc" data-i18n="prod_connect.tech.pillar2_desc">Same C code compiles for Linux, Windows, and Android. Flutter via dart:ffi, Android via JNI, CLI for automation.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
             </div>
-            <h3 class="pillar-title">Open Source</h3>
-            <p class="pillar-desc">C library, Nodus server, and shared crypto are Apache 2.0 licensed. DNA Connect app is source-available for auditing.</p>
+            <h3 class="pillar-title" data-i18n="prod_connect.tech.pillar3_title">Open Source</h3>
+            <p class="pillar-desc" data-i18n="prod_connect.tech.pillar3_desc">C library, Nodus server, and shared crypto are Apache 2.0 licensed. DNA Connect app is source-available for auditing.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(-30 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(30 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(90 12 12)"/><circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"/></svg>
             </div>
-            <h3 class="pillar-title">NIST Category 5</h3>
-            <p class="pillar-desc">ML-KEM-1024 key exchange, ML-DSA-87 signatures, SHA3-512 hashing, AES-256-GCM encryption. Maximum quantum resistance.</p>
+            <h3 class="pillar-title" data-i18n="prod_connect.tech.pillar4_title">NIST Category 5</h3>
+            <p class="pillar-desc" data-i18n="prod_connect.tech.pillar4_desc">ML-KEM-1024 key exchange, ML-DSA-87 signatures, SHA3-512 hashing, AES-256-GCM encryption. Maximum quantum resistance.</p>
           </div>
         </div>
       </div>
@@ -1502,26 +1563,26 @@
     <section class="s-section s-alt" id="downloads">
       <div class="wrap">
         <div class="section-header">
-          <div class="section-label">Downloads</div>
-          <h2 class="section-title">Get DNA Connect</h2>
-          <p class="section-desc">
+          <div class="section-label" data-i18n="prod_connect.downloads.label">Downloads</div>
+          <h2 class="section-title" data-i18n="prod_connect.downloads.title">Get DNA Connect</h2>
+          <p class="section-desc" data-i18n="prod_connect.downloads.desc">
             Open beta &mdash; available for Android, Linux, and Windows. Open source under GPLv3.
           </p>
         </div>
 
         <div class="downloads-widget" id="dna-downloads">
-          <div class="downloads-title">Downloads</div>
-          <div class="downloads-sub">Loading latest builds&hellip;</div>
+          <div class="downloads-title" data-i18n="prod_connect.downloads.widget_title">Downloads</div>
+          <div class="downloads-sub" data-i18n="prod_connect.downloads.widget_loading">Loading latest builds&hellip;</div>
         </div>
 
         <div class="version-chips">
-          <div class="version-chip"><strong>C Library</strong>&nbsp; v0.9.63</div>
-          <div class="version-chip"><strong>App</strong>&nbsp; v1.0.0-rc30</div>
-          <div class="version-chip"><strong>Nodus</strong>&nbsp; v0.6.8</div>
+          <div class="version-chip" data-i18n="[html]prod_connect.downloads.chip_clib"><strong>C Library</strong>&nbsp; v0.9.63</div>
+          <div class="version-chip" data-i18n="[html]prod_connect.downloads.chip_app"><strong>App</strong>&nbsp; v1.0.0-rc30</div>
+          <div class="version-chip" data-i18n="[html]prod_connect.downloads.chip_nodus"><strong>Nodus</strong>&nbsp; v0.6.8</div>
         </div>
 
         <p class="source-links">
-          Source code:
+          <span data-i18n="prod_connect.downloads.source_code">Source code:</span>
           <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noopener">GitLab</a> &middot;
           <a href="https://github.com/nocdem/dna" target="_blank" rel="noopener">GitHub (Mirror)</a>
         </p>
@@ -1532,15 +1593,15 @@
     <section class="s-section s-dark cta-section">
       <div class="wrap">
         <div class="cta-box">
-          <h2 class="cta-title">Join the movement</h2>
-          <p class="cta-text">
+          <h2 class="cta-title" data-i18n="prod_connect.cta.title">Join the movement</h2>
+          <p class="cta-text" data-i18n="prod_connect.cta.text">
             Download DNA Connect, join the conversation, and help build the future of private communication.
           </p>
           <div class="cta-actions">
-            <a href="#downloads" class="btn btn-primary btn-lg">Download DNA Connect</a>
-            <a href="https://t.me/chippunk_official" class="btn btn-ghost btn-lg">Join Telegram</a>
-            <a href="https://gitlab.cpunk.io/cpunk/dna" class="btn btn-ghost btn-lg">Explore Code</a>
-            <a href="https://x.com/OfficialCpunk" class="btn btn-ghost btn-lg">Follow on X</a>
+            <a href="#downloads" class="btn btn-primary btn-lg" data-i18n="prod_connect.cta.btn_download">Download DNA Connect</a>
+            <a href="https://t.me/chippunk_official" class="btn btn-ghost btn-lg" data-i18n="prod_connect.cta.btn_telegram">Join Telegram</a>
+            <a href="https://gitlab.cpunk.io/cpunk/dna" class="btn btn-ghost btn-lg" data-i18n="prod_connect.cta.btn_code">Explore Code</a>
+            <a href="https://x.com/OfficialCpunk" class="btn btn-ghost btn-lg" data-i18n="prod_connect.cta.btn_x">Follow on X</a>
           </div>
         </div>
       </div>
@@ -1552,16 +1613,16 @@
   <footer>
     <div class="wrap">
       <div class="footer-row">
-        <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+        <div data-i18n="footer.copyright">© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.</div>
         <div class="footer-links">
-          <a href="/">Home</a>
+          <a href="/" data-i18n="footer.home">Home</a>
           <a href="/products/dna-identity.html">DNA Identity</a>
           <a href="/products/dna-connect.html">DNA Connect</a>
           <a href="/products/nodus.html">DNA Nodus</a>
 
-          <a href="/team.html">Team</a>
-          <a href="/doc/cpunk-litepaper.pdf">Litepaper</a>
-          <a href="/doc/cpunk-legal.pdf">Legal</a>
+          <a href="/team.html" data-i18n="footer.team">Team</a>
+          <a href="/doc/cpunk-litepaper.pdf" data-i18n="footer.litepaper">Litepaper</a>
+          <a href="/doc/cpunk-legal.pdf" data-i18n="footer.legal">Legal</a>
         </div>
       </div>
     </div>
@@ -1570,7 +1631,10 @@
 </div>
 
 <!-- ── Scripts ──────────────────────────────── -->
-<script>
+<!-- i18n -->
+  <script src="/i18n/i18n.js"></script>
+
+  <script>
 document.addEventListener('DOMContentLoaded', function() {
   /* Mobile menu */
   var toggle = document.querySelector('.mobile-menu-toggle');

@@ -488,6 +488,66 @@
       }
       .reveal { opacity: 1; transform: none; }
     }
+
+    /* ── Language selector ── */
+    #lang-selector {
+      position: relative;
+      margin-left: 0.5rem;
+    }
+    .lang-btn {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      padding: 0.35rem 0.6rem;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      white-space: nowrap;
+    }
+    .lang-btn:hover {
+      border-color: var(--teal-dim);
+      background: var(--teal-soft);
+    }
+    .lang-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.4rem);
+      right: 0;
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 0.4rem;
+      min-width: 160px;
+      z-index: 1000;
+      box-shadow: var(--shadow-soft);
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .lang-dropdown.open { display: block; }
+    .lang-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      padding: 0.45rem 0.7rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition-fast), color var(--transition-fast);
+    }
+    .lang-option:hover {
+      background: var(--teal-soft);
+      color: var(--text-main);
+    }
+    .lang-option.active {
+      color: var(--teal);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -501,7 +561,7 @@
           <a href="/" class="brand">
             <div class="brand-text">
               <span class="brand-name">CPUNK.IO</span>
-              <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+              <span class="brand-tag" data-i18n="brand.tag">Privacy • Quantum Safety • Decentralization</span>
             </div>
           </a>
 
@@ -511,40 +571,41 @@
 
           <div class="nav-menu">
             <nav class="nav-links">
-              <a href="/">Home</a>
+              <a href="/" data-i18n="nav.home">Home</a>
 
               <div class="nav-item" data-dropdown="products">
                 <div class="nav-item-label">
-                  <span>DNA-Connect</span>
+                  <span data-i18n="nav.dna_connect">DNA-Connect</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/DNA-Connect/identity.html">The Identity</a>
-                  <a href="/DNA-Connect/messenger.html">The Messenger</a>
-                  <a href="/DNA-Connect/wallet.html">The Wallet</a>
-                  <a href="/DNA-Connect/nodus.html">The Nodus</a>
+                  <a href="/DNA-Connect/identity.html" data-i18n="nav.identity">The Identity</a>
+                  <a href="/DNA-Connect/messenger.html" data-i18n="nav.messenger">The Messenger</a>
+                  <a href="/DNA-Connect/wallet.html" data-i18n="nav.wallet">The Wallet</a>
+                  <a href="/DNA-Connect/nodus.html" data-i18n="nav.nodus">The Nodus</a>
                 </div>
               </div>
 
-              <a href="/team.html">Team</a>
+              <a href="/team.html" data-i18n="nav.team">Team</a>
 
               <div class="nav-item" data-dropdown="documents">
                 <div class="nav-item-label">
-                  <span>Documents</span>
+                  <span data-i18n="nav.documents">Documents</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-                  <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
-                  <a href="/privacy.html" class="active">Privacy Policy</a>
+                  <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="nav.litepaper">Litepaper</a>
+                  <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="nav.legal">Legal</a>
+                  <a href="/privacy.html" class="active" data-i18n="nav.privacy">Privacy Policy</a>
                 </div>
               </div>
             </nav>
 
             <div class="nav-cta">
               <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
-                Trade CPUNK
+                <span data-i18n="nav.trade">Trade CPUNK</span>
               </a>
+              <div id="lang-selector"></div>
             </div>
           </div>
         </div>
@@ -557,9 +618,9 @@
       <section class="page-hero">
         <div class="page-hero-bg"></div>
         <div class="page-hero-content">
-          <h1>Privacy Policy</h1>
-          <p class="subtitle">DNA Connect &mdash; Post-Quantum Encrypted Messenger</p>
-          <p class="effective-date">Effective Date: March 17, 2026 &middot; Last Updated: March 26, 2026</p>
+          <h1 data-i18n="privacy.title">Privacy Policy</h1>
+          <p class="subtitle" data-i18n="privacy.subtitle">DNA Connect &mdash; Post-Quantum Encrypted Messenger</p>
+          <p class="effective-date" data-i18n="privacy.effective_date">Effective Date: March 17, 2026 &middot; Last Updated: March 26, 2026</p>
         </div>
       </section>
 
@@ -569,13 +630,13 @@
 
           <!-- 1. Overview -->
           <div class="privacy-section reveal">
-            <h2>1. Overview</h2>
-            <p>
+            <h2 data-i18n="privacy.s1.title">1. Overview</h2>
+            <p data-i18n="privacy.s1.p1">
               DNA Connect is a decentralized, peer-to-peer messaging application built on post-quantum cryptography.
               This privacy policy explains what data the application accesses, how it is used, and your rights as a user.
             </p>
             <div class="highlight-box">
-              <p>
+              <p data-i18n="privacy.s1.highlight">
                 DNA Connect does not collect, store, or transmit any personal data to centralized servers.
                 All communication is end-to-end encrypted using NIST-approved post-quantum algorithms
                 (Kyber1024 for key encapsulation, Dilithium5 for signatures).
@@ -585,117 +646,117 @@
 
           <!-- 2. Data We Do NOT Collect -->
           <div class="privacy-section reveal">
-            <h2>2. Data We Do NOT Collect</h2>
-            <p>DNA Connect is designed with privacy as its core principle. We do not collect:</p>
+            <h2 data-i18n="privacy.s2.title">2. Data We Do NOT Collect</h2>
+            <p data-i18n="privacy.s2.p1">DNA Connect is designed with privacy as its core principle. We do not collect:</p>
             <ul>
-              <li>Personal information (name, email, phone number)</li>
-              <li>Message content — all messages are end-to-end encrypted and only readable by the intended recipient</li>
-              <li>Contact lists or address books from your device</li>
-              <li>Location data</li>
-              <li>Usage analytics or telemetry</li>
-              <li>Advertising identifiers</li>
-              <li>Device fingerprints for tracking purposes</li>
-              <li>Browsing history or app usage patterns</li>
+              <li data-i18n="privacy.s2.li1">Personal information (name, email, phone number)</li>
+              <li data-i18n="privacy.s2.li2">Message content — all messages are end-to-end encrypted and only readable by the intended recipient</li>
+              <li data-i18n="privacy.s2.li3">Contact lists or address books from your device</li>
+              <li data-i18n="privacy.s2.li4">Location data</li>
+              <li data-i18n="privacy.s2.li5">Usage analytics or telemetry</li>
+              <li data-i18n="privacy.s2.li6">Advertising identifiers</li>
+              <li data-i18n="privacy.s2.li7">Device fingerprints for tracking purposes</li>
+              <li data-i18n="privacy.s2.li8">Browsing history or app usage patterns</li>
             </ul>
           </div>
 
           <!-- 3. Data Stored Locally -->
           <div class="privacy-section reveal">
-            <h2>3. Data Stored Locally on Your Device</h2>
-            <p>The following data is stored exclusively on your device and never transmitted to us:</p>
+            <h2 data-i18n="privacy.s3.title">3. Data Stored Locally on Your Device</h2>
+            <p data-i18n="privacy.s3.p1">The following data is stored exclusively on your device and never transmitted to us:</p>
 
-            <h3>Cryptographic Material</h3>
+            <h3 data-i18n="privacy.s3.crypto_title">Cryptographic Material</h3>
             <table class="privacy-table">
               <thead>
                 <tr>
-                  <th>Data</th>
-                  <th>Purpose</th>
-                  <th>Storage</th>
+                  <th data-i18n="privacy.s3.th_data">Data</th>
+                  <th data-i18n="privacy.s3.th_purpose">Purpose</th>
+                  <th data-i18n="privacy.s3.th_storage">Storage</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Dilithium5 signing key pair</td>
-                  <td>Identity verification and message signing</td>
-                  <td>Local file (identity.dsa), derived from recovery phrase</td>
+                  <td data-i18n="privacy.s3.crypto_r1_data">Dilithium5 signing key pair</td>
+                  <td data-i18n="privacy.s3.crypto_r1_purpose">Identity verification and message signing</td>
+                  <td data-i18n="privacy.s3.crypto_r1_storage">Local file (identity.dsa), derived from recovery phrase</td>
                 </tr>
                 <tr>
-                  <td>Kyber1024 encryption key pair</td>
-                  <td>Post-quantum key encapsulation</td>
-                  <td>Local file (identity.kem), derived from recovery phrase</td>
+                  <td data-i18n="privacy.s3.crypto_r2_data">Kyber1024 encryption key pair</td>
+                  <td data-i18n="privacy.s3.crypto_r2_purpose">Post-quantum key encapsulation</td>
+                  <td data-i18n="privacy.s3.crypto_r2_storage">Local file (identity.kem), derived from recovery phrase</td>
                 </tr>
                 <tr>
-                  <td>Recovery phrase (24 words)</td>
-                  <td>Account backup and recovery</td>
-                  <td>Encrypted with Kyber1024 public key (mnemonic.enc). Never stored as plain text.</td>
+                  <td data-i18n="privacy.s3.crypto_r3_data">Recovery phrase (24 words)</td>
+                  <td data-i18n="privacy.s3.crypto_r3_purpose">Account backup and recovery</td>
+                  <td data-i18n="privacy.s3.crypto_r3_storage">Encrypted with Kyber1024 public key (mnemonic.enc). Never stored as plain text.</td>
                 </tr>
                 <tr>
-                  <td>DHT node identity</td>
-                  <td>Authentication on the decentralized network</td>
-                  <td>Cached locally (dht_identity.bin), deterministically derived from recovery phrase</td>
+                  <td data-i18n="privacy.s3.crypto_r4_data">DHT node identity</td>
+                  <td data-i18n="privacy.s3.crypto_r4_purpose">Authentication on the decentralized network</td>
+                  <td data-i18n="privacy.s3.crypto_r4_storage">Cached locally (dht_identity.bin), deterministically derived from recovery phrase</td>
                 </tr>
               </tbody>
             </table>
 
-            <h3>Application Data</h3>
+            <h3 data-i18n="privacy.s3.app_title">Application Data</h3>
             <table class="privacy-table">
               <thead>
                 <tr>
-                  <th>Data</th>
-                  <th>Purpose</th>
-                  <th>Storage</th>
+                  <th data-i18n="privacy.s3.th_data2">Data</th>
+                  <th data-i18n="privacy.s3.th_purpose2">Purpose</th>
+                  <th data-i18n="privacy.s3.th_storage2">Storage</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Contact list</td>
-                  <td>Managing trusted contacts, block list</td>
-                  <td>Local SQLite database (contacts.db)</td>
+                  <td data-i18n="privacy.s3.app_r1_data">Contact list</td>
+                  <td data-i18n="privacy.s3.app_r1_purpose">Managing trusted contacts, block list</td>
+                  <td data-i18n="privacy.s3.app_r1_storage">Local SQLite database (contacts.db)</td>
                 </tr>
                 <tr>
-                  <td>Message history</td>
-                  <td>Conversation backup and display</td>
-                  <td>Local SQLite database (messages.db)</td>
+                  <td data-i18n="privacy.s3.app_r2_data">Message history</td>
+                  <td data-i18n="privacy.s3.app_r2_purpose">Conversation backup and display</td>
+                  <td data-i18n="privacy.s3.app_r2_storage">Local SQLite database (messages.db)</td>
                 </tr>
                 <tr>
-                  <td>Profile cache</td>
-                  <td>Caching display names, avatars, and public keys of contacts</td>
-                  <td>Local SQLite databases (profiles.db, keyserver_cache.db)</td>
+                  <td data-i18n="privacy.s3.app_r3_data">Profile cache</td>
+                  <td data-i18n="privacy.s3.app_r3_purpose">Caching display names, avatars, and public keys of contacts</td>
+                  <td data-i18n="privacy.s3.app_r3_storage">Local SQLite databases (profiles.db, keyserver_cache.db)</td>
                 </tr>
                 <tr>
-                  <td>Wall post cache</td>
-                  <td>Offline access to public posts, comments, and likes</td>
-                  <td>Local SQLite database (wall_cache.db)</td>
+                  <td data-i18n="privacy.s3.app_r4_data">Wall post cache</td>
+                  <td data-i18n="privacy.s3.app_r4_purpose">Offline access to public posts, comments, and likes</td>
+                  <td data-i18n="privacy.s3.app_r4_storage">Local SQLite database (wall_cache.db)</td>
                 </tr>
                 <tr>
-                  <td>Group &amp; channel data</td>
-                  <td>Group memberships, encrypted group keys, channel subscriptions</td>
-                  <td>Local SQLite databases (groups.db, channel_subscriptions.db)</td>
+                  <td data-i18n="privacy.s3.app_r5_data">Group &amp; channel data</td>
+                  <td data-i18n="privacy.s3.app_r5_purpose">Group memberships, encrypted group keys, channel subscriptions</td>
+                  <td data-i18n="privacy.s3.app_r5_storage">Local SQLite databases (groups.db, channel_subscriptions.db)</td>
                 </tr>
                 <tr>
-                  <td>Wallet balance &amp; transaction cache</td>
-                  <td>Displaying wallet balances and transaction history</td>
-                  <td>Local SQLite database (wallet_cache.db). Private keys are never stored &mdash; derived on-demand from recovery phrase.</td>
+                  <td data-i18n="privacy.s3.app_r6_data">Wallet balance &amp; transaction cache</td>
+                  <td data-i18n="privacy.s3.app_r6_purpose">Displaying wallet balances and transaction history</td>
+                  <td data-i18n="privacy.s3.app_r6_storage">Local SQLite database (wallet_cache.db). Private keys are never stored &mdash; derived on-demand from recovery phrase.</td>
                 </tr>
                 <tr>
-                  <td>Wallet address book</td>
-                  <td>Saved recipient addresses with labels</td>
-                  <td>Local SQLite database (addressbook.db)</td>
+                  <td data-i18n="privacy.s3.app_r7_data">Wallet address book</td>
+                  <td data-i18n="privacy.s3.app_r7_purpose">Saved recipient addresses with labels</td>
+                  <td data-i18n="privacy.s3.app_r7_storage">Local SQLite database (addressbook.db)</td>
                 </tr>
                 <tr>
-                  <td>App lock PIN</td>
-                  <td>Optional app lock authentication</td>
-                  <td>PBKDF2-SHA256 hash with random salt, stored in Android Keystore / iOS Keychain (encrypted by OS)</td>
+                  <td data-i18n="privacy.s3.app_r8_data">App lock PIN</td>
+                  <td data-i18n="privacy.s3.app_r8_purpose">Optional app lock authentication</td>
+                  <td data-i18n="privacy.s3.app_r8_storage">PBKDF2-SHA256 hash with random salt, stored in Android Keystore / iOS Keychain (encrypted by OS)</td>
                 </tr>
                 <tr>
-                  <td>App preferences</td>
-                  <td>Settings such as biometric lock, notification preferences</td>
-                  <td>OS-managed local storage (SharedPreferences)</td>
+                  <td data-i18n="privacy.s3.app_r9_data">App preferences</td>
+                  <td data-i18n="privacy.s3.app_r9_purpose">Settings such as biometric lock, notification preferences</td>
+                  <td data-i18n="privacy.s3.app_r9_storage">OS-managed local storage (SharedPreferences)</td>
                 </tr>
               </tbody>
             </table>
 
-            <p>
+            <p data-i18n="privacy.s3.p2">
               Local SQLite databases are not individually encrypted. The application relies on
               OS-level storage isolation (Android app sandbox) to protect database files.
               Sensitive cryptographic material (recovery phrase, PIN) uses dedicated encryption
@@ -705,35 +766,35 @@
 
           <!-- 4. Decentralized Network -->
           <div class="privacy-section reveal">
-            <h2>4. Decentralized Network (DHT)</h2>
-            <p>
+            <h2 data-i18n="privacy.s4.title">4. Decentralized Network (DHT)</h2>
+            <p data-i18n="privacy.s4.p1">
               DNA Connect uses a decentralized hash table (DHT) network called Nodus for message delivery and
               profile discovery. Data published to this network falls into two categories:
             </p>
 
-            <h3>Public Data (readable by DHT nodes and other users)</h3>
+            <h3 data-i18n="privacy.s4.public_title">Public Data (readable by DHT nodes and other users)</h3>
             <ul>
-              <li><strong>Public profile:</strong> Your public cryptographic keys, registered display name, bio,
+              <li data-i18n="privacy.s4.public_li1"><strong>Public profile:</strong> Your public cryptographic keys, registered display name, bio,
                 avatar, location, website, social links, and wallet addresses. This data is intentionally
                 public to allow others to find and communicate with you.</li>
-              <li><strong>Wall posts, comments, and likes:</strong> Public posts you choose to publish, along with
+              <li data-i18n="privacy.s4.public_li2"><strong>Wall posts, comments, and likes:</strong> Public posts you choose to publish, along with
                 any comments or likes, are visible to anyone on the network. Posts are signed but not encrypted.</li>
-              <li><strong>Channel posts and metadata:</strong> Public channel content including channel name,
+              <li data-i18n="privacy.s4.public_li3"><strong>Channel posts and metadata:</strong> Public channel content including channel name,
                 description, and posts are readable by DHT nodes.</li>
             </ul>
 
-            <h3>Encrypted Data (not readable by DHT nodes)</h3>
+            <h3 data-i18n="privacy.s4.encrypted_title">Encrypted Data (not readable by DHT nodes)</h3>
             <ul>
-              <li><strong>Direct messages:</strong> Encrypted with Kyber1024 key encapsulation and AES-256-GCM.
+              <li data-i18n="privacy.s4.encrypted_li1"><strong>Direct messages:</strong> Encrypted with Kyber1024 key encapsulation and AES-256-GCM.
                 Only the intended recipient can decrypt them.</li>
-              <li><strong>Group messages:</strong> Encrypted with a Group Encryption Key (GEK), distributed
+              <li data-i18n="privacy.s4.encrypted_li2"><strong>Group messages:</strong> Encrypted with a Group Encryption Key (GEK), distributed
                 to group members via Kyber1024 encapsulation.</li>
-              <li><strong>Contact lists and address books:</strong> Self-encrypted with your own Kyber1024 public key.</li>
-              <li><strong>Message backups:</strong> Self-encrypted with your own Kyber1024 public key.</li>
-              <li><strong>Group membership lists:</strong> Self-encrypted with your own Kyber1024 public key.</li>
+              <li data-i18n="privacy.s4.encrypted_li3"><strong>Contact lists and address books:</strong> Self-encrypted with your own Kyber1024 public key.</li>
+              <li data-i18n="privacy.s4.encrypted_li4"><strong>Message backups:</strong> Self-encrypted with your own Kyber1024 public key.</li>
+              <li data-i18n="privacy.s4.encrypted_li5"><strong>Group membership lists:</strong> Self-encrypted with your own Kyber1024 public key.</li>
             </ul>
 
-            <p>
+            <p data-i18n="privacy.s4.p2">
               No centralized server stores or has access to your private keys.
               DHT nodes can read public profile information and wall posts, but
               cannot read your private messages, contact lists, or group memberships.
@@ -742,60 +803,60 @@
 
           <!-- 5. Permissions -->
           <div class="privacy-section reveal">
-            <h2>5. Device Permissions</h2>
-            <p>DNA Connect requests the following Android permissions:</p>
+            <h2 data-i18n="privacy.s5.title">5. Device Permissions</h2>
+            <p data-i18n="privacy.s5.p1">DNA Connect requests the following Android permissions:</p>
             <table class="privacy-table">
               <thead>
                 <tr>
-                  <th>Permission</th>
-                  <th>Purpose</th>
-                  <th>Required?</th>
+                  <th data-i18n="privacy.s5.th_permission">Permission</th>
+                  <th data-i18n="privacy.s5.th_purpose">Purpose</th>
+                  <th data-i18n="privacy.s5.th_required">Required?</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>Internet</td>
-                  <td>Connect to the decentralized DHT network for messaging</td>
-                  <td>Yes</td>
+                  <td data-i18n="privacy.s5.perm_r1_name">Internet</td>
+                  <td data-i18n="privacy.s5.perm_r1_purpose">Connect to the decentralized DHT network for messaging</td>
+                  <td data-i18n="privacy.s5.perm_r1_required">Yes</td>
                 </tr>
                 <tr>
-                  <td>Network State</td>
-                  <td>Detect online/offline status for message delivery</td>
-                  <td>Yes</td>
+                  <td data-i18n="privacy.s5.perm_r2_name">Network State</td>
+                  <td data-i18n="privacy.s5.perm_r2_purpose">Detect online/offline status for message delivery</td>
+                  <td data-i18n="privacy.s5.perm_r2_required">Yes</td>
                 </tr>
                 <tr>
-                  <td>Camera</td>
-                  <td>Take photos for profile avatar and scan QR codes for adding contacts</td>
-                  <td>No — optional</td>
+                  <td data-i18n="privacy.s5.perm_r3_name">Camera</td>
+                  <td data-i18n="privacy.s5.perm_r3_purpose">Take photos for profile avatar and scan QR codes for adding contacts</td>
+                  <td data-i18n="privacy.s5.perm_r3_required">No — optional</td>
                 </tr>
                 <tr>
-                  <td>Biometric</td>
-                  <td>App lock feature — authenticate with fingerprint or face recognition</td>
-                  <td>No — optional</td>
+                  <td data-i18n="privacy.s5.perm_r4_name">Biometric</td>
+                  <td data-i18n="privacy.s5.perm_r4_purpose">App lock feature — authenticate with fingerprint or face recognition</td>
+                  <td data-i18n="privacy.s5.perm_r4_required">No — optional</td>
                 </tr>
                 <tr>
-                  <td>Notifications</td>
-                  <td>Receive alerts for new messages</td>
-                  <td>No — optional (Android 13+)</td>
+                  <td data-i18n="privacy.s5.perm_r5_name">Notifications</td>
+                  <td data-i18n="privacy.s5.perm_r5_purpose">Receive alerts for new messages</td>
+                  <td data-i18n="privacy.s5.perm_r5_required">No — optional (Android 13+)</td>
                 </tr>
                 <tr>
-                  <td>Vibrate</td>
-                  <td>Haptic feedback for notifications</td>
-                  <td>No — optional</td>
+                  <td data-i18n="privacy.s5.perm_r6_name">Vibrate</td>
+                  <td data-i18n="privacy.s5.perm_r6_purpose">Haptic feedback for notifications</td>
+                  <td data-i18n="privacy.s5.perm_r6_required">No — optional</td>
                 </tr>
                 <tr>
-                  <td>Wi-Fi State</td>
-                  <td>Detect Wi-Fi connectivity for optimizing network connections</td>
-                  <td>Yes</td>
+                  <td data-i18n="privacy.s5.perm_r7_name">Wi-Fi State</td>
+                  <td data-i18n="privacy.s5.perm_r7_purpose">Detect Wi-Fi connectivity for optimizing network connections</td>
+                  <td data-i18n="privacy.s5.perm_r7_required">Yes</td>
                 </tr>
                 <tr>
-                  <td>Battery Optimization Exemption</td>
-                  <td>Keep background message delivery active (user-triggered from Settings)</td>
-                  <td>No — optional</td>
+                  <td data-i18n="privacy.s5.perm_r8_name">Battery Optimization Exemption</td>
+                  <td data-i18n="privacy.s5.perm_r8_purpose">Keep background message delivery active (user-triggered from Settings)</td>
+                  <td data-i18n="privacy.s5.perm_r8_required">No — optional</td>
                 </tr>
               </tbody>
             </table>
-            <p>
+            <p data-i18n="privacy.s5.p2">
               No permission is used for advertising, tracking, or data collection.
               Camera and biometric access are only activated when you explicitly use those features.
             </p>
@@ -803,37 +864,37 @@
 
           <!-- 6. Third-Party Services -->
           <div class="privacy-section reveal">
-            <h2>6. Third-Party Services</h2>
-            <p>DNA Connect does not integrate any third-party analytics, advertising, or tracking services. Specifically:</p>
+            <h2 data-i18n="privacy.s6.title">6. Third-Party Services</h2>
+            <p data-i18n="privacy.s6.p1">DNA Connect does not integrate any third-party analytics, advertising, or tracking services. Specifically:</p>
             <ul>
-              <li>No Google Analytics or Firebase Analytics</li>
-              <li>No Facebook SDK</li>
-              <li>No advertising networks</li>
-              <li>No crash reporting services that transmit data externally</li>
+              <li data-i18n="privacy.s6.li1">No Google Analytics or Firebase Analytics</li>
+              <li data-i18n="privacy.s6.li2">No Facebook SDK</li>
+              <li data-i18n="privacy.s6.li3">No advertising networks</li>
+              <li data-i18n="privacy.s6.li4">No crash reporting services that transmit data externally</li>
             </ul>
-            <p>
+            <p data-i18n="privacy.s6.p2">
               The application connects to the following third-party services for wallet functionality:
             </p>
             <ul>
-              <li><strong>Blockchain RPC endpoints</strong> (Cellframe, Ethereum, Solana, TRON) for wallet balance
+              <li data-i18n="privacy.s6.li5"><strong>Blockchain RPC endpoints</strong> (Cellframe, Ethereum, Solana, TRON) for wallet balance
                 queries and transaction broadcasting. These connections transmit only your public wallet address —
                 never private keys.</li>
-              <li><strong>BitcoinTry API</strong> (api.bitcointry.com) for real-time cryptocurrency price data.
+              <li data-i18n="privacy.s6.li6"><strong>BitcoinTry API</strong> (api.bitcointry.com) for real-time cryptocurrency price data.
                 No personal data or wallet addresses are sent — only token pair identifiers (e.g., ETH_USDT).</li>
             </ul>
           </div>
 
           <!-- 7. Encryption -->
           <div class="privacy-section reveal">
-            <h2>7. Encryption &amp; Security</h2>
-            <p>All cryptographic operations use NIST-approved post-quantum algorithms:</p>
+            <h2 data-i18n="privacy.s7.title">7. Encryption &amp; Security</h2>
+            <p data-i18n="privacy.s7.p1">All cryptographic operations use NIST-approved post-quantum algorithms:</p>
             <ul>
-              <li><strong>Key Encapsulation:</strong> ML-KEM (Kyber1024) — NIST Category 5</li>
-              <li><strong>Digital Signatures:</strong> ML-DSA (Dilithium5) — NIST Category 5</li>
-              <li><strong>Symmetric Encryption:</strong> AES-256-GCM for message content</li>
-              <li><strong>Hashing:</strong> SHA3-512 for identity fingerprints</li>
+              <li data-i18n="privacy.s7.li1"><strong>Key Encapsulation:</strong> ML-KEM (Kyber1024) — NIST Category 5</li>
+              <li data-i18n="privacy.s7.li2"><strong>Digital Signatures:</strong> ML-DSA (Dilithium5) — NIST Category 5</li>
+              <li data-i18n="privacy.s7.li3"><strong>Symmetric Encryption:</strong> AES-256-GCM for message content</li>
+              <li data-i18n="privacy.s7.li4"><strong>Hashing:</strong> SHA3-512 for identity fingerprints</li>
             </ul>
-            <p>
+            <p data-i18n="privacy.s7.p2">
               These algorithms are designed to resist attacks from both classical and quantum computers.
               Your private keys never leave your device.
             </p>
@@ -841,20 +902,20 @@
 
           <!-- 8. Data Retention -->
           <div class="privacy-section reveal">
-            <h2>8. Data Retention &amp; Deletion</h2>
+            <h2 data-i18n="privacy.s8.title">8. Data Retention &amp; Deletion</h2>
             <ul>
-              <li>All data is stored on your device. Uninstalling the app deletes all local data.</li>
-              <li>Public profile data on the DHT network is stored permanently to ensure your contacts can always find you.
+              <li data-i18n="privacy.s8.li1">All data is stored on your device. Uninstalling the app deletes all local data.</li>
+              <li data-i18n="privacy.s8.li2">Public profile data on the DHT network is stored permanently to ensure your contacts can always find you.
                 Your device periodically refreshes this data to keep it current.</li>
-              <li>Wall posts have a 30-day TTL on the network and expire automatically.</li>
-              <li>You can delete your account at any time by uninstalling the app. There is no server-side account to delete.</li>
+              <li data-i18n="privacy.s8.li3">Wall posts have a 30-day TTL on the network and expire automatically.</li>
+              <li data-i18n="privacy.s8.li4">You can delete your account at any time by uninstalling the app. There is no server-side account to delete.</li>
             </ul>
           </div>
 
           <!-- 9. Children -->
           <div class="privacy-section reveal">
-            <h2>9. Children's Privacy</h2>
-            <p>
+            <h2 data-i18n="privacy.s9.title">9. Children's Privacy</h2>
+            <p data-i18n="privacy.s9.p1">
               DNA Connect does not knowingly collect any information from children under the age of 13.
               The application does not require any personal information to create an account —
               only a locally-generated cryptographic key pair.
@@ -863,8 +924,8 @@
 
           <!-- 10. Changes -->
           <div class="privacy-section reveal">
-            <h2>10. Changes to This Policy</h2>
-            <p>
+            <h2 data-i18n="privacy.s10.title">10. Changes to This Policy</h2>
+            <p data-i18n="privacy.s10.p1">
               We may update this privacy policy from time to time. Any changes will be reflected on this page
               with an updated "Last Updated" date. Continued use of DNA Connect after changes constitutes
               acceptance of the revised policy.
@@ -873,14 +934,14 @@
 
           <!-- 11. Contact -->
           <div class="privacy-section reveal">
-            <h2>11. Contact</h2>
-            <p>
+            <h2 data-i18n="privacy.s11.title">11. Contact</h2>
+            <p data-i18n="privacy.s11.p1">
               If you have questions about this privacy policy or DNA Connect's data practices:
             </p>
             <ul>
-              <li><strong>Email:</strong> <a href="mailto:privacy@cpunk.io">privacy@cpunk.io</a></li>
-              <li><strong>Website:</strong> <a href="https://cpunk.io">cpunk.io</a></li>
-              <li><strong>GitHub:</strong> <a href="https://github.com/nocdem/dna-messenger">github.com/nocdem/dna-messenger</a></li>
+              <li data-i18n="privacy.s11.li1"><strong>Email:</strong> <a href="mailto:privacy@cpunk.io">privacy@cpunk.io</a></li>
+              <li data-i18n="privacy.s11.li2"><strong>Website:</strong> <a href="https://cpunk.io">cpunk.io</a></li>
+              <li data-i18n="privacy.s11.li3"><strong>GitHub:</strong> <a href="https://github.com/nocdem/dna-messenger">github.com/nocdem/dna-messenger</a></li>
             </ul>
           </div>
 
@@ -893,17 +954,17 @@
     <footer>
       <div class="wrap">
         <div class="footer-row">
-          <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+          <div data-i18n="footer.copyright">© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
-            <a href="/">Home</a>
-            <a href="/DNA-Connect/identity.html">The Identity</a>
-            <a href="/DNA-Connect/messenger.html">The Messenger</a>
-            <a href="/DNA-Connect/wallet.html">The Wallet</a>
-            <a href="/DNA-Connect/nodus.html">The Nodus</a>
-            <a href="/team.html">Team</a>
-            <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-            <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
-            <a href="/privacy.html">Privacy Policy</a>
+            <a href="/" data-i18n="footer.home">Home</a>
+            <a href="/DNA-Connect/identity.html" data-i18n="footer.identity">The Identity</a>
+            <a href="/DNA-Connect/messenger.html" data-i18n="footer.messenger">The Messenger</a>
+            <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">The Wallet</a>
+            <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">The Nodus</a>
+            <a href="/team.html" data-i18n="footer.team">Team</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
+            <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
+            <a href="/privacy.html" data-i18n="footer.privacy">Privacy Policy</a>
           </div>
         </div>
       </div>
@@ -911,6 +972,9 @@
   </div>
 
   <!-- JS: Mobile Nav + Scroll Reveal -->
+  <!-- i18n -->
+  <script src="/i18n/i18n.js"></script>
+
   <script>
     document.addEventListener('DOMContentLoaded', function() {
       var mobileToggle = document.querySelector('.mobile-menu-toggle');

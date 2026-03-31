@@ -1130,6 +1130,66 @@
       }
       .reveal { opacity: 1; transform: none; }
     }
+
+    /* ── Language selector ── */
+    #lang-selector {
+      position: relative;
+      margin-left: 0.5rem;
+    }
+    .lang-btn {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      padding: 0.35rem 0.6rem;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      white-space: nowrap;
+    }
+    .lang-btn:hover {
+      border-color: var(--teal-dim);
+      background: var(--teal-soft);
+    }
+    .lang-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.4rem);
+      right: 0;
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 0.4rem;
+      min-width: 160px;
+      z-index: 1000;
+      box-shadow: var(--shadow-soft);
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .lang-dropdown.open { display: block; }
+    .lang-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      padding: 0.45rem 0.7rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition-fast), color var(--transition-fast);
+    }
+    .lang-option:hover {
+      background: var(--teal-soft);
+      color: var(--text-main);
+    }
+    .lang-option.active {
+      color: var(--teal);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -1142,7 +1202,7 @@
         <a href="/" class="brand">
           <div class="brand-text">
             <span class="brand-name">CPUNK.IO</span>
-            <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+            <span class="brand-tag" data-i18n="brand.tag">Privacy • Quantum Safety • Decentralization</span>
           </div>
         </a>
 
@@ -1152,40 +1212,41 @@
 
         <div class="nav-menu">
             <nav class="nav-links">
-              <a href="/">Home</a>
+              <a href="/" data-i18n="nav.home">Home</a>
 
               <div class="nav-item" data-dropdown="products">
                 <div class="nav-item-label">
-                  <span>DNA-Connect</span>
+                  <span data-i18n="nav.dna_connect">DNA-Connect</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/DNA-Connect/identity.html">The Identity</a>
-                  <a href="/DNA-Connect/messenger.html" class="active">The Messenger</a>
-                  <a href="/DNA-Connect/wallet.html">The Wallet</a>
-                  <a href="/DNA-Connect/nodus.html">The Nodus</a>
+                  <a href="/DNA-Connect/identity.html" data-i18n="nav.identity">The Identity</a>
+                  <a href="/DNA-Connect/messenger.html" class="active" data-i18n="nav.messenger">The Messenger</a>
+                  <a href="/DNA-Connect/wallet.html" data-i18n="nav.wallet">The Wallet</a>
+                  <a href="/DNA-Connect/nodus.html" data-i18n="nav.nodus">The Nodus</a>
                 </div>
               </div>
 
-              <a href="/team.html">Team</a>
+              <a href="/team.html" data-i18n="nav.team">Team</a>
 
               <div class="nav-item" data-dropdown="documents">
                 <div class="nav-item-label">
-                  <span>Documents</span>
+                  <span data-i18n="nav.documents">Documents</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-                  <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
-                  <a href="/privacy.html">Privacy Policy</a>
+                  <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="nav.litepaper">Litepaper</a>
+                  <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="nav.legal">Legal</a>
+                  <a href="/privacy.html" data-i18n="nav.privacy">Privacy Policy</a>
                 </div>
               </div>
             </nav>
 
           <div class="nav-cta">
             <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
-              Trade CPUNK
+              <span data-i18n="nav.trade">Trade CPUNK</span>
             </a>
+            <div id="lang-selector"></div>
           </div>
         </div>
       </div>
@@ -1202,24 +1263,24 @@
           <div class="hero-text">
             <div class="hero-badge">
               <span class="hero-badge-dot"></span>
-              <span class="hero-badge-label">v1.0.0-rc30 &middot; Open Beta</span>
+              <span class="hero-badge-label" data-i18n="messenger.hero.badge">v1.0.0-rc30 &middot; Open Beta</span>
             </div>
-            <h1>Post-Quantum<br><span class="accent">Encrypted Messenger</span></h1>
-            <p class="lead">
+            <h1 data-i18n="messenger.hero.title">Post-Quantum<br><span class="accent">Encrypted Messenger</span></h1>
+            <p class="lead" data-i18n="messenger.hero.lead">
               A <strong>fully decentralized messenger</strong> with <strong>NIST Category 5 post-quantum encryption</strong>.
               No central servers, no phone numbers, no metadata collection. Messages travel through a peer-to-peer network &mdash;
               encrypted end-to-end with <strong>Kyber1024 + AES-256-GCM</strong>.
             </p>
             <div class="hero-actions">
-              <a href="#features" class="btn btn-primary btn-lg">Features</a>
-              <a href="#security" class="btn btn-ghost btn-lg">Security</a>
-              <a href="#downloads" class="btn btn-ghost btn-lg">Downloads</a>
+              <a href="#features" class="btn btn-primary btn-lg" data-i18n="messenger.hero.btn.features">Features</a>
+              <a href="#security" class="btn btn-ghost btn-lg" data-i18n="messenger.hero.btn.security">Security</a>
+              <a href="#downloads" class="btn btn-ghost btn-lg" data-i18n="messenger.hero.btn.downloads">Downloads</a>
             </div>
             <div class="hero-facts">
-              <span class="hero-fact">No central servers</span>
-              <span class="hero-fact">No IP leakage</span>
-              <span class="hero-fact">No metadata</span>
-              <span class="hero-fact">Android, Linux, Windows</span>
+              <span class="hero-fact" data-i18n="messenger.hero.fact1">No central servers</span>
+              <span class="hero-fact" data-i18n="messenger.hero.fact2">No IP leakage</span>
+              <span class="hero-fact" data-i18n="messenger.hero.fact3">No metadata</span>
+              <span class="hero-fact" data-i18n="messenger.hero.fact4">Android, Linux, Windows</span>
             </div>
           </div>
           <div class="hero-media">
@@ -1235,9 +1296,9 @@
     <section class="s-section s-dark" id="features">
       <div class="wrap">
         <div class="section-header">
-          <div class="section-label">Features</div>
-          <h2 class="section-title">Private messaging. Public channels. Send funds in chat.</h2>
-          <p class="section-desc">
+          <div class="section-label" data-i18n="messenger.features.label">Features</div>
+          <h2 class="section-title" data-i18n="messenger.features.title">Private messaging. Public channels. Send funds in chat.</h2>
+          <p class="section-desc" data-i18n="messenger.features.desc">
             Encrypted direct messages, Telegram-style public channels, personal wall posts, and the ability to send funds directly in conversation &mdash; all running on a decentralized network with zero central servers.
           </p>
         </div>
@@ -1250,13 +1311,13 @@
               <div class="feature-icon feature-icon-teal">
                 <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               </div>
-              <h3>Encrypted Direct Messages</h3>
+              <h3 data-i18n="messenger.features.dm.title">Encrypted Direct Messages</h3>
             </div>
-            <p>Private conversations encrypted with <strong>Kyber1024 + AES-256-GCM</strong>. Address contacts by their DNA name &mdash; no phone numbers or email needed.</p>
+            <p data-i18n="messenger.features.dm.desc">Private conversations encrypted with <strong>Kyber1024 + AES-256-GCM</strong>. Address contacts by their DNA name &mdash; no phone numbers or email needed.</p>
             <ul class="feature-list">
-              <li>Delivery and read receipts</li>
-              <li>Offline message queue with 7-day TTL</li>
-              <li>Cross-device sync via recovery phrase</li>
+              <li data-i18n="messenger.features.dm.li1">Delivery and read receipts</li>
+              <li data-i18n="messenger.features.dm.li2">Offline message queue with 7-day TTL</li>
+              <li data-i18n="messenger.features.dm.li3">Cross-device sync via recovery phrase</li>
             </ul>
           </div>
 
@@ -1266,13 +1327,13 @@
               <div class="feature-icon feature-icon-orange">
                 <svg viewBox="0 0 24 24"><path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1" fill="currentColor" stroke="none"/></svg>
               </div>
-              <h3>Public Channels</h3>
+              <h3 data-i18n="messenger.features.channels.title">Public Channels</h3>
             </div>
-            <p>Open chat rooms where people hang out and talk &mdash; like Telegram groups, but decentralized. Every message is signed with <strong>Dilithium5</strong> so you always know who said what.</p>
+            <p data-i18n="messenger.features.channels.desc">Open chat rooms where people hang out and talk &mdash; like Telegram groups, but decentralized. Every message is signed with <strong>Dilithium5</strong> so you always know who said what.</p>
             <ul class="feature-list">
-              <li>Real-time group conversations</li>
-              <li>React, reply, copy, and repost</li>
-              <li>Image sharing and media support</li>
+              <li data-i18n="messenger.features.channels.li1">Real-time group conversations</li>
+              <li data-i18n="messenger.features.channels.li2">React, reply, copy, and repost</li>
+              <li data-i18n="messenger.features.channels.li3">Image sharing and media support</li>
             </ul>
           </div>
 
@@ -1282,13 +1343,13 @@
               <div class="feature-icon feature-icon-teal">
                 <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
               </div>
-              <h3>Wall Posts</h3>
+              <h3 data-i18n="messenger.features.wall.title">Wall Posts</h3>
             </div>
-            <p>A personal public feed tied to your DNA identity. Share updates, thoughts, or announcements that anyone can see on your profile.</p>
+            <p data-i18n="messenger.features.wall.desc">A personal public feed tied to your DNA identity. Share updates, thoughts, or announcements that anyone can see on your profile.</p>
             <ul class="feature-list">
-              <li>Signed with your identity key</li>
-              <li>Visible on your public profile</li>
-              <li>Stored on the decentralized network</li>
+              <li data-i18n="messenger.features.wall.li1">Signed with your identity key</li>
+              <li data-i18n="messenger.features.wall.li2">Visible on your public profile</li>
+              <li data-i18n="messenger.features.wall.li3">Stored on the decentralized network</li>
             </ul>
           </div>
 
@@ -1298,13 +1359,13 @@
               <div class="feature-icon feature-icon-orange">
                 <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
               </div>
-              <h3>Group Messaging</h3>
+              <h3 data-i18n="messenger.features.groups.title">Group Messaging</h3>
             </div>
-            <p>Decentralized groups with <strong>GEK encryption</strong> &mdash; efficient key distribution for groups of any size. Automatic key rotation on member changes.</p>
+            <p data-i18n="messenger.features.groups.desc">Decentralized groups with <strong>GEK encryption</strong> &mdash; efficient key distribution for groups of any size. Automatic key rotation on member changes.</p>
             <ul class="feature-list">
-              <li>Group ownership transfer</li>
-              <li>P2P group invitations</li>
-              <li>Forward security via GEK versioning</li>
+              <li data-i18n="messenger.features.groups.li1">Group ownership transfer</li>
+              <li data-i18n="messenger.features.groups.li2">P2P group invitations</li>
+              <li data-i18n="messenger.features.groups.li3">Forward security via GEK versioning</li>
             </ul>
           </div>
 
@@ -1317,15 +1378,15 @@
       <div class="wrap">
         <div class="split-row">
           <div class="split-text">
-            <div class="section-label">Home Feed</div>
-            <h3><span class="teal">Your timeline</span><br>Wall posts, images, and reactions</h3>
-            <p>
+            <div class="section-label" data-i18n="messenger.showcase.label">Home Feed</div>
+            <h3 data-i18n="messenger.showcase.title"><span class="teal">Your timeline</span><br>Wall posts, images, and reactions</h3>
+            <p data-i18n="messenger.showcase.desc">
               The home feed shows wall posts from people you follow. Share images, react, reply, repost &mdash; a decentralized social layer built on top of the encrypted network.
             </p>
             <ul class="feature-list">
-              <li>Image posts with full media support</li>
-              <li>Reactions, threaded replies, and reposts</li>
-              <li>All content signed and stored on the DHT</li>
+              <li data-i18n="messenger.showcase.li1">Image posts with full media support</li>
+              <li data-i18n="messenger.showcase.li2">Reactions, threaded replies, and reposts</li>
+              <li data-i18n="messenger.showcase.li3">All content signed and stored on the DHT</li>
             </ul>
           </div>
           <div class="split-visual">
@@ -1340,9 +1401,9 @@
     <section class="s-section s-dark" id="security">
       <div class="wrap">
         <div class="section-header">
-          <div class="section-label">Security</div>
-          <h2 class="section-title">NIST Category 5 &mdash; maximum quantum resistance</h2>
-          <p class="section-desc">
+          <div class="section-label" data-i18n="messenger.security.label">Security</div>
+          <h2 class="section-title" data-i18n="messenger.security.title">NIST Category 5 &mdash; maximum quantum resistance</h2>
+          <p class="section-desc" data-i18n="messenger.security.desc">
             256-bit security level. Protected against both current classical attacks and future quantum computers. Your keys never leave your device.
           </p>
         </div>
@@ -1351,36 +1412,36 @@
           <table class="security-table">
             <thead>
               <tr>
-                <th>Algorithm</th>
-                <th>Standard</th>
-                <th>Purpose</th>
+                <th data-i18n="messenger.security.table.algorithm">Algorithm</th>
+                <th data-i18n="messenger.security.table.standard">Standard</th>
+                <th data-i18n="messenger.security.table.purpose">Purpose</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td class="algo">Kyber1024</td>
                 <td><strong>ML-KEM-1024</strong> (FIPS 203)</td>
-                <td>Key encapsulation &amp; exchange</td>
+                <td data-i18n="messenger.security.table.kyber.purpose">Key encapsulation &amp; exchange</td>
               </tr>
               <tr>
                 <td class="algo">Dilithium5</td>
                 <td><strong>ML-DSA-87</strong> (FIPS 204)</td>
-                <td>Digital signatures</td>
+                <td data-i18n="messenger.security.table.dilithium.purpose">Digital signatures</td>
               </tr>
               <tr>
                 <td class="algo">AES-256-GCM</td>
                 <td><strong>NIST</strong></td>
-                <td>Symmetric message encryption</td>
+                <td data-i18n="messenger.security.table.aes.purpose">Symmetric message encryption</td>
               </tr>
               <tr>
                 <td class="algo">SHA3-512</td>
                 <td><strong>NIST</strong></td>
-                <td>Cryptographic hashing</td>
+                <td data-i18n="messenger.security.table.sha3.purpose">Cryptographic hashing</td>
               </tr>
               <tr>
                 <td class="algo">BIP39</td>
                 <td><strong>Bitcoin Standard</strong></td>
-                <td>24-word recovery phrase</td>
+                <td data-i18n="messenger.security.table.bip39.purpose">24-word recovery phrase</td>
               </tr>
             </tbody>
           </table>
@@ -1391,29 +1452,29 @@
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             </div>
-            <h3 class="pillar-title">No Central Servers</h3>
-            <p class="pillar-desc">Messages travel peer-to-peer through the DHT. Nothing to compromise or subpoena.</p>
+            <h3 class="pillar-title" data-i18n="messenger.security.pillar1.title">No Central Servers</h3>
+            <p class="pillar-desc" data-i18n="messenger.security.pillar1.desc">Messages travel peer-to-peer through the DHT. Nothing to compromise or subpoena.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><line x1="2" y1="2" x2="22" y2="22" stroke-width="2"/></svg>
             </div>
-            <h3 class="pillar-title">No IP Leakage</h3>
-            <p class="pillar-desc">Your real IP is never exposed to contacts or third parties. DHT-only transport.</p>
+            <h3 class="pillar-title" data-i18n="messenger.security.pillar2.title">No IP Leakage</h3>
+            <p class="pillar-desc" data-i18n="messenger.security.pillar2.desc">Your real IP is never exposed to contacts or third parties. DHT-only transport.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
             </div>
-            <h3 class="pillar-title">No Metadata</h3>
-            <p class="pillar-desc">Minimal routing header. Cannot track who talks to whom.</p>
+            <h3 class="pillar-title" data-i18n="messenger.security.pillar3.title">No Metadata</h3>
+            <p class="pillar-desc" data-i18n="messenger.security.pillar3.desc">Minimal routing header. Cannot track who talks to whom.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
             </div>
-            <h3 class="pillar-title">No Phone Number</h3>
-            <p class="pillar-desc">Identity via DNA name tied to your cryptographic key pair. No personal data required.</p>
+            <h3 class="pillar-title" data-i18n="messenger.security.pillar4.title">No Phone Number</h3>
+            <p class="pillar-desc" data-i18n="messenger.security.pillar4.desc">Identity via DNA name tied to your cryptographic key pair. No personal data required.</p>
           </div>
         </div>
       </div>
@@ -1423,9 +1484,9 @@
     <section class="s-section s-alt" id="architecture">
       <div class="wrap">
         <div class="section-header-center">
-          <div class="section-label">Architecture</div>
-          <h2 class="section-title">Serverless peer-to-peer stack</h2>
-          <p class="section-desc">
+          <div class="section-label" data-i18n="messenger.arch.label">Architecture</div>
+          <h2 class="section-title" data-i18n="messenger.arch.title">Serverless peer-to-peer stack</h2>
+          <p class="section-desc" data-i18n="messenger.arch.desc">
             DNA Connect runs on <strong>Nodus</strong> &mdash; a post-quantum Kademlia DHT with ML-DSA + ML-KEM support, PBFT consensus, and a 6-node production cluster.
           </p>
         </div>
@@ -1440,9 +1501,9 @@
     <section class="s-section s-dark" id="technology">
       <div class="wrap">
         <div class="section-header-center">
-          <div class="section-label">Technology</div>
-          <h2 class="section-title">Post-quantum C engine under the hood</h2>
-          <p class="section-desc">
+          <div class="section-label" data-i18n="messenger.tech.label">Technology</div>
+          <h2 class="section-title" data-i18n="messenger.tech.title">Post-quantum C engine under the hood</h2>
+          <p class="section-desc" data-i18n="messenger.tech.desc">
             All cryptography, messaging, and DHT operations run in a native C library (libdna). Flutter, Android, and CLI connect through thin FFI bindings &mdash; zero crypto in managed code.
           </p>
         </div>
@@ -1452,29 +1513,29 @@
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
             </div>
-            <h3 class="pillar-title">Modular Engine</h3>
-            <p class="pillar-desc">Async task queue with domain modules: messaging, identity, contacts, DHT, backup. Thread pool for concurrent execution.</p>
+            <h3 class="pillar-title" data-i18n="messenger.tech.pillar1.title">Modular Engine</h3>
+            <p class="pillar-desc" data-i18n="messenger.tech.pillar1.desc">Async task queue with domain modules: messaging, identity, contacts, DHT, backup. Thread pool for concurrent execution.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
             </div>
-            <h3 class="pillar-title">Cross-Platform</h3>
-            <p class="pillar-desc">Same C code compiles for Linux, Windows, and Android. Flutter via dart:ffi, Android via JNI, CLI for automation.</p>
+            <h3 class="pillar-title" data-i18n="messenger.tech.pillar2.title">Cross-Platform</h3>
+            <p class="pillar-desc" data-i18n="messenger.tech.pillar2.desc">Same C code compiles for Linux, Windows, and Android. Flutter via dart:ffi, Android via JNI, CLI for automation.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
             </div>
-            <h3 class="pillar-title">Open Source</h3>
-            <p class="pillar-desc">C library, Nodus server, and shared crypto are Apache 2.0 licensed. DNA Connect app is source-available for auditing.</p>
+            <h3 class="pillar-title" data-i18n="messenger.tech.pillar3.title">Open Source</h3>
+            <p class="pillar-desc" data-i18n="messenger.tech.pillar3.desc">C library, Nodus server, and shared crypto are Apache 2.0 licensed. DNA Connect app is source-available for auditing.</p>
           </div>
           <div class="pillar reveal">
             <div class="pillar-icon">
               <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(-30 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(30 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(90 12 12)"/><circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"/></svg>
             </div>
-            <h3 class="pillar-title">NIST Category 5</h3>
-            <p class="pillar-desc">ML-KEM-1024 key exchange, ML-DSA-87 signatures, SHA3-512 hashing, AES-256-GCM encryption. Maximum quantum resistance.</p>
+            <h3 class="pillar-title" data-i18n="messenger.tech.pillar4.title">NIST Category 5</h3>
+            <p class="pillar-desc" data-i18n="messenger.tech.pillar4.desc">ML-KEM-1024 key exchange, ML-DSA-87 signatures, SHA3-512 hashing, AES-256-GCM encryption. Maximum quantum resistance.</p>
           </div>
         </div>
       </div>
@@ -1484,9 +1545,9 @@
       <section id="downloads" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Downloads</div>
-            <h2 class="section-title">Get DNA Connect</h2>
-            <p class="section-desc" style="max-width:34rem;">
+            <div class="section-label" data-i18n="messenger.downloads.label">Downloads</div>
+            <h2 class="section-title" data-i18n="messenger.downloads.title">Get DNA Connect</h2>
+            <p class="section-desc" data-i18n="messenger.downloads.desc" style="max-width:34rem;">
               Open beta &mdash; available for Android, Linux, and Windows. Open source under GPLv3.
             </p>
           </div>
@@ -1498,10 +1559,10 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17.523 2.476l1.5-2.6a.5.5 0 0 0-.87-.5l-1.52 2.63A8.3 8.3 0 0 0 12 1.07a8.3 8.3 0 0 0-4.63.936L5.85-.594a.5.5 0 0 0-.87.5l1.5 2.6A7.9 7.9 0 0 0 2 9.5h20a7.9 7.9 0 0 0-4.477-7.024zM7 7.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm10 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2zM3 11h1v7a2 2 0 0 0 2 2h1v3.5a1.5 1.5 0 0 0 3 0V20h4v3.5a1.5 1.5 0 0 0 3 0V20h1a2 2 0 0 0 2-2v-7h1a1.5 1.5 0 0 0 0-3H3a1.5 1.5 0 0 0 0 3z"/></svg>
               </div>
-              <div class="dl-card-name">Android</div>
+              <div class="dl-card-name" data-i18n="messenger.downloads.android.name">Android</div>
               <a id="dl-android" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download APK
+                <span data-i18n="messenger.downloads.android.btn">Download APK</span>
               </a>
             </div>
 
@@ -1510,13 +1571,13 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M8.996 4.497c.104-.076.1-.168.186-.158s.022.102-.098.207c-.12.104-.308.243-.46.323-.291.152-.631.336-.993.336s-.647-.167-.853-.33c-.102-.082-.186-.162-.248-.221-.11-.086-.096-.207-.052-.204.075.01.087.109.134.153.064.06.144.137.241.214.195.154.454.304.778.304s.702-.19.932-.32c.13-.073.297-.204.433-.304M7.34 3.781c.055-.02.123-.031.174-.003.011.006.024.021.02.034-.012.038-.074.032-.11.05-.032.017-.057.052-.093.054-.034 0-.086-.012-.09-.046-.007-.044.058-.072.1-.089m.581-.003c.05-.028.119-.018.173.003.041.017.106.045.1.09-.004.033-.057.046-.09.045-.036-.002-.062-.037-.093-.053-.036-.019-.098-.013-.11-.051-.004-.013.008-.028.02-.034"/><path fill-rule="evenodd" d="M8.446.019c2.521.003 2.38 2.66 2.364 4.093-.01.939.509 1.574 1.04 2.244.474.56 1.095 1.38 1.45 2.32.29.765.402 1.613.115 2.465a.8.8 0 0 1 .254.152l.001.002c.207.175.271.447.329.698.058.252.112.488.224.615.344.382.494.667.48.922-.015.254-.203.43-.435.57-.465.28-1.164.491-1.586 1.002-.443.527-.99.83-1.505.871a1.25 1.25 0 0 1-1.256-.716v-.001a1 1 0 0 1-.078-.21c-.67.038-1.252-.165-1.718-.128-.687.038-1.116.204-1.506.206-.151.331-.445.547-.808.63-.5.114-1.126 0-1.743-.324-.577-.306-1.31-.278-1.85-.39-.27-.057-.51-.157-.626-.384-.116-.226-.095-.538.07-.988.051-.16.012-.398-.026-.648a2.5 2.5 0 0 1-.037-.369c0-.133.022-.265.087-.386v-.002c.14-.266.368-.377.577-.451s.397-.125.53-.258c.143-.15.27-.374.443-.56q.036-.037.073-.07c-.081-.538.007-1.105.192-1.662.393-1.18 1.223-2.314 1.811-3.014.502-.713.65-1.287.701-2.016.042-.997-.705-3.974 2.112-4.2q.168-.015.321-.013"/></svg>
               </div>
-              <div class="dl-card-name">Linux</div>
+              <div class="dl-card-name" data-i18n="messenger.downloads.linux.name">Linux</div>
               <a id="dl-linux" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download AppImage
+                <span data-i18n="messenger.downloads.linux.btn">Download AppImage</span>
               </a>
               <div class="dl-card-extra">
-                <a id="dl-linux-tar" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener">Also available as tar.gz</a>
+                <a id="dl-linux-tar" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" data-i18n="messenger.downloads.linux.extra">Also available as tar.gz</a>
               </div>
             </div>
 
@@ -1525,10 +1586,10 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 5.548l7.195-0.984v6.948H3V5.548zm0 12.904l7.195 0.984v-6.948H3v5.964zm8.019 1.097L22 21v-8.512H11.019v8.061zm0-14.098v8.061H22V3L11.019 5.451z"/></svg>
               </div>
-              <div class="dl-card-name">Windows</div>
+              <div class="dl-card-name" data-i18n="messenger.downloads.windows.name">Windows</div>
               <a id="dl-windows" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download EXE
+                <span data-i18n="messenger.downloads.windows.btn">Download EXE</span>
               </a>
             </div>
 
@@ -1537,7 +1598,7 @@
           <!-- Hidden widget for JS to populate links -->
           <div class="downloads-widget" id="dna-downloads"></div>
 
-          <p class="dl-source">
+          <p class="dl-source" data-i18n="messenger.downloads.source">
             Open source &mdash;
             <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noopener">GitLab</a> &middot;
             <a href="https://github.com/nocdem/dna" target="_blank" rel="noopener">GitHub</a>
@@ -1549,14 +1610,14 @@
       <section class="cta-section">
         <div class="wrap">
           <div class="cta-box reveal">
-            <h2 class="cta-title">Join the movement</h2>
-            <p class="cta-text">
+            <h2 class="cta-title" data-i18n="messenger.cta.title">Join the movement</h2>
+            <p class="cta-text" data-i18n="messenger.cta.text">
               Download DNA Connect, join the conversation, and help build the future of private communication.
             </p>
             <div class="cta-actions">
-              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-primary btn-lg">Join Telegram</a>
-              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Explore Code</a>
-              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Follow on X</a>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-primary btn-lg" data-i18n="messenger.cta.telegram">Join Telegram</a>
+              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="messenger.cta.code">Explore Code</a>
+              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="messenger.cta.x">Follow on X</a>
             </div>
           </div>
         </div>
@@ -1568,22 +1629,25 @@
     <footer>
       <div class="wrap">
         <div class="footer-row">
-          <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+          <div data-i18n="footer.copyright">© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
-            <a href="/">Home</a>
-            <a href="/DNA-Connect/identity.html">The Identity</a>
-            <a href="/DNA-Connect/messenger.html">The Messenger</a>
-            <a href="/DNA-Connect/wallet.html">The Wallet</a>
-            <a href="/DNA-Connect/nodus.html">The Nodus</a>
-            <a href="/team.html">Team</a>
-            <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-            <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
-            <a href="/privacy.html">Privacy Policy</a>
+            <a href="/" data-i18n="footer.home">Home</a>
+            <a href="/DNA-Connect/identity.html" data-i18n="footer.identity">The Identity</a>
+            <a href="/DNA-Connect/messenger.html" data-i18n="footer.messenger">The Messenger</a>
+            <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">The Wallet</a>
+            <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">The Nodus</a>
+            <a href="/team.html" data-i18n="footer.team">Team</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
+            <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
+            <a href="/privacy.html" data-i18n="footer.privacy">Privacy Policy</a>
           </div>
         </div>
       </div>
     </footer>
   </div>
+
+  <!-- i18n -->
+  <script src="/i18n/i18n.js"></script>
 
   <script>
     document.addEventListener('DOMContentLoaded', function() {

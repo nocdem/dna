@@ -859,6 +859,66 @@
       }
       .reveal, .reveal-left, .reveal-right { opacity: 1; transform: none; }
     }
+
+    /* ── Language selector ── */
+    #lang-selector {
+      position: relative;
+      margin-left: 0.5rem;
+    }
+    .lang-btn {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      padding: 0.35rem 0.6rem;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      white-space: nowrap;
+    }
+    .lang-btn:hover {
+      border-color: var(--teal-dim);
+      background: var(--teal-soft);
+    }
+    .lang-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.4rem);
+      right: 0;
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 0.4rem;
+      min-width: 160px;
+      z-index: 1000;
+      box-shadow: var(--shadow-soft);
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .lang-dropdown.open { display: block; }
+    .lang-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      padding: 0.45rem 0.7rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition-fast), color var(--transition-fast);
+    }
+    .lang-option:hover {
+      background: var(--teal-soft);
+      color: var(--text-main);
+    }
+    .lang-option.active {
+      color: var(--teal);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -871,7 +931,7 @@
           <a href="/" class="brand">
             <div class="brand-text">
               <span class="brand-name">CPUNK.IO</span>
-              <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+              <span class="brand-tag" data-i18n="brand.tag">Privacy • Quantum Safety • Decentralization</span>
             </div>
           </a>
 
@@ -881,7 +941,7 @@
 
           <div class="nav-menu">
             <nav class="nav-links">
-              <a href="/">Home</a>
+              <a href="/" data-i18n="nav.home">Home</a>
 
               <div class="nav-item" data-dropdown="products">
                 <div class="nav-item-label">
@@ -905,17 +965,18 @@
                 </div>
                 <div class="dropdown">
                   <a href="/about.html">About CPUNK</a>
-                  <a href="/team.html">Team</a>
+                  <a href="/team.html" data-i18n="nav.team">Team</a>
                   <a href="/contact.html">Contact</a>
-                  <a href="/legal.html">Legal</a>
+                  <a href="/legal.html" data-i18n="nav.legal">Legal</a>
                 </div>
               </div>
             </nav>
 
             <div class="nav-cta">
               <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
-                Trade CPUNK
+                <span data-i18n="nav.trade">Trade CPUNK</span>
               </a>
+              <div id="lang-selector"></div>
             </div>
           </div>
         </div>
@@ -932,38 +993,38 @@
             <div class="hero-split-text">
               <div class="eyebrow">
                 <span class="eyebrow-dot"></span>
-                <span class="eyebrow-label">Infrastructure</span>
-                <span>Decentralized routing, discovery &amp; storage</span>
+                <span class="eyebrow-label" data-i18n="prod_nodus.hero.eyebrow_label">Infrastructure</span>
+                <span data-i18n="prod_nodus.hero.eyebrow_sub">Decentralized routing, discovery &amp; storage</span>
               </div>
 
-              <h1>
+              <h1 data-i18n="[html]prod_nodus.hero.title">
                 DNA <span class="accent">Nodus</span>
               </h1>
 
-              <p class="subtitle">
+              <p class="subtitle" data-i18n="[html]prod_nodus.hero.subtitle1">
                 The Nodus Network is the <strong>decentralized networking layer</strong> of the DNA protocol.
                 It provides peer discovery, routing, identity resolution, and distributed storage without relying on centralized servers.
               </p>
-              <p class="subtitle">
+              <p class="subtitle" data-i18n="prod_nodus.hero.subtitle2">
                 Nodus is built as a post-quantum secure distributed hash table (DHT) network where nodes cooperate to locate peers, route encrypted messages, and store temporary data across the network. All operations are cryptographically signed (ML-DSA-87), with built-in support for key encapsulation (ML-KEM-1024) and AES-256-GCM encryption.
               </p>
-              <p class="subtitle">
+              <p class="subtitle" data-i18n="prod_nodus.hero.subtitle3">
                 Instead of relying on a central infrastructure, the Nodus network forms a self-organizing mesh of nodes that collectively maintain the routing and discovery layer used by DNA services such as DNA Connect and DNA Identity.
               </p>
 
               <div class="hero-actions">
-                <a href="#architecture" class="btn btn-primary">Two-Tier Architecture</a>
-                <a href="#dht" class="btn btn-ghost">DHT</a>
-                <a href="#identity" class="btn btn-ghost">Identity Resolution</a>
-                <a href="#offline" class="btn btn-ghost">Offline Messaging</a>
+                <a href="#architecture" class="btn btn-primary" data-i18n="prod_nodus.hero.btn_arch">Two-Tier Architecture</a>
+                <a href="#dht" class="btn btn-ghost" data-i18n="prod_nodus.hero.btn_dht">DHT</a>
+                <a href="#identity" class="btn btn-ghost" data-i18n="prod_nodus.hero.btn_identity">Identity Resolution</a>
+                <a href="#offline" class="btn btn-ghost" data-i18n="prod_nodus.hero.btn_offline">Offline Messaging</a>
               </div>
 
               <div class="hero-meta">
                 <span>
                   <span class="hero-meta-dot"></span>
-                  No central servers. No single point of failure.
+                  <span data-i18n="prod_nodus.hero.meta1">No central servers. No single point of failure.</span>
                 </span>
-                <span>
+                <span data-i18n="[html]prod_nodus.hero.meta2">
                   Community-operated &middot; <strong style="color:var(--text-main);font-weight:500;">Post-quantum secure</strong>
                 </span>
               </div>
@@ -983,9 +1044,9 @@
       <section id="architecture" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Architecture</div>
-            <h2 class="section-title">Two-Tier Architecture</h2>
-            <p class="section-desc" style="max-width: 38rem;">
+            <div class="section-label" data-i18n="prod_nodus.arch.label">Architecture</div>
+            <h2 class="section-title" data-i18n="prod_nodus.arch.title">Two-Tier Architecture</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="prod_nodus.arch.desc">
               The Nodus network operates using a two-tier architecture designed to separate core network operations from client access.
             </p>
           </div>
@@ -993,22 +1054,22 @@
           <div class="token-grid stagger" style="grid-template-columns: repeat(2, 1fr);">
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><line x1="8" y1="12" x2="16" y2="12"/><circle cx="12" cy="5" r="3"/><circle cx="12" cy="19" r="3"/><line x1="12" y1="8" x2="12" y2="16"/></svg></span>
-              <h3>Tier 1 &mdash; Nodus to Nodus</h3>
-              <p>
+              <h3 data-i18n="prod_nodus.arch.tier1_title">Tier 1 &mdash; Nodus to Nodus</h3>
+              <p data-i18n="[html]prod_nodus.arch.tier1_desc1">
                 The node backbone of the network. Nodus nodes communicate directly with each other using <strong style="color:var(--text-main)">TCP</strong> and <strong style="color:var(--text-main)">UDP</strong>.
               </p>
-              <p style="margin-top: 0.6rem;">
+              <p style="margin-top: 0.6rem;" data-i18n="prod_nodus.arch.tier1_desc2">
                 This layer maintains the distributed hash table, performs peer discovery, and handles message routing across the global network. Tier 1 nodes form the core mesh infrastructure that keeps the network decentralized and resilient.
               </p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="6" rx="1.5"/><path d="M6 6h.01"/><path d="M12 9v3"/><path d="M8 15h8v5H8z"/><path d="M12 15v5"/></svg></span>
-              <h3>Tier 2 &mdash; Client to Nodus</h3>
-              <p>
+              <h3 data-i18n="prod_nodus.arch.tier2_title">Tier 2 &mdash; Client to Nodus</h3>
+              <p data-i18n="[html]prod_nodus.arch.tier2_desc1">
                 The client access layer. Applications such as DNA Connect connect to Nodus nodes over <strong style="color:var(--text-main)">TCP</strong>.
               </p>
-              <p style="margin-top: 0.6rem;">
+              <p style="margin-top: 0.6rem;" data-i18n="prod_nodus.arch.tier2_desc2">
                 Through this connection, clients can resolve DNA identities, send encrypted messages, retrieve offline messages, publish or fetch distributed data, and communicate with other peers through the network. Clients do not communicate directly with each other &mdash; they interact with the Nodus network through connected nodes.
               </p>
             </article>
@@ -1021,20 +1082,20 @@
         <div class="wrap">
           <div class="dna-row">
             <div class="dna-text reveal-left">
-              <h3><span class="teal">Distributed</span> Hash Table</h3>
-              <p>
+              <h3 data-i18n="[html]prod_nodus.dht.title"><span class="teal">Distributed</span> Hash Table</h3>
+              <p data-i18n="prod_nodus.dht.desc1">
                 At its core, Nodus operates as a distributed hash table. The DHT allows nodes to locate information and peers without centralized coordination.
               </p>
-              <p>
+              <p data-i18n="prod_nodus.dht.desc2">
                 Each node is responsible for a portion of the keyspace and can store or route data associated with those keys. This mechanism allows the network to:
               </p>
               <ul>
-                <li><strong>Locate identities</strong> across the network</li>
-                <li><strong>Route messages</strong> between peers</li>
-                <li><strong>Distribute temporary storage</strong> across nodes</li>
-                <li><strong>Maintain peer discovery</strong> without central directories</li>
+                <li data-i18n="[html]prod_nodus.dht.li1"><strong>Locate identities</strong> across the network</li>
+                <li data-i18n="[html]prod_nodus.dht.li2"><strong>Route messages</strong> between peers</li>
+                <li data-i18n="[html]prod_nodus.dht.li3"><strong>Distribute temporary storage</strong> across nodes</li>
+                <li data-i18n="[html]prod_nodus.dht.li4"><strong>Maintain peer discovery</strong> without central directories</li>
               </ul>
-              <p>
+              <p data-i18n="prod_nodus.dht.desc3">
                 All operations are performed collectively by the network nodes.
               </p>
             </div>
@@ -1052,14 +1113,14 @@
         <div class="wrap">
           <div class="dna-row reverse">
             <div class="dna-text reveal-right">
-              <h3><span class="teal">Identity</span> Resolution</h3>
-              <p>
+              <h3 data-i18n="[html]prod_nodus.identity.title"><span class="teal">Identity</span> Resolution</h3>
+              <p data-i18n="prod_nodus.identity.desc1">
                 DNA identities are resolved through the Nodus network.
               </p>
-              <p>
+              <p data-i18n="prod_nodus.identity.desc2">
                 When a client attempts to locate a DNA identity, the request is routed through the DHT until it reaches the nodes responsible for that identity's record.
               </p>
-              <p>
+              <p data-i18n="prod_nodus.identity.desc3">
                 This process allows identity lookups to occur without centralized registries or servers.
               </p>
             </div>
@@ -1077,17 +1138,17 @@
         <div class="wrap">
           <div class="dna-row">
             <div class="dna-text reveal-left">
-              <h3><span class="teal">Offline</span> Message Delivery</h3>
-              <p>
+              <h3 data-i18n="[html]prod_nodus.offline.title"><span class="teal">Offline</span> Message Delivery</h3>
+              <p data-i18n="prod_nodus.offline.desc1">
                 The Nodus network supports offline message delivery.
               </p>
-              <p>
+              <p data-i18n="prod_nodus.offline.desc2">
                 When a recipient is offline, encrypted messages can be temporarily stored within the network using distributed storage nodes.
               </p>
-              <p>
+              <p data-i18n="prod_nodus.offline.desc3">
                 When the recipient reconnects, their client retrieves the stored messages from the network.
               </p>
-              <p>
+              <p data-i18n="prod_nodus.offline.desc4">
                 This allows asynchronous communication while maintaining decentralization.
               </p>
             </div>
@@ -1105,18 +1166,18 @@
         <div class="wrap">
           <div class="dna-row reverse">
             <div class="dna-text reveal-right">
-              <h3><span class="teal">Decentralized</span> by Design</h3>
-              <p>
+              <h3 data-i18n="[html]prod_nodus.design.title"><span class="teal">Decentralized</span> by Design</h3>
+              <p data-i18n="prod_nodus.design.desc1">
                 Nodus removes the need for centralized messaging servers. Instead of relying on a single infrastructure provider, the network operates as a global peer-to-peer mesh where nodes collectively maintain routing, discovery, and temporary storage.
               </p>
-              <p>This design improves:</p>
+              <p data-i18n="prod_nodus.design.desc2">This design improves:</p>
               <ul>
-                <li><strong>Resilience</strong> &mdash; no single point of failure</li>
-                <li><strong>Censorship resistance</strong> &mdash; no central authority to block</li>
-                <li><strong>Availability</strong> &mdash; the network is always on</li>
-                <li><strong>Privacy</strong> &mdash; nodes only see encrypted blobs</li>
+                <li data-i18n="[html]prod_nodus.design.li1"><strong>Resilience</strong> &mdash; no single point of failure</li>
+                <li data-i18n="[html]prod_nodus.design.li2"><strong>Censorship resistance</strong> &mdash; no central authority to block</li>
+                <li data-i18n="[html]prod_nodus.design.li3"><strong>Availability</strong> &mdash; the network is always on</li>
+                <li data-i18n="[html]prod_nodus.design.li4"><strong>Privacy</strong> &mdash; nodes only see encrypted blobs</li>
               </ul>
-              <p>
+              <p data-i18n="prod_nodus.design.desc3">
                 The network continues to function as long as nodes remain connected.
               </p>
             </div>
@@ -1133,9 +1194,9 @@
       <section id="ecosystem" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Ecosystem</div>
-            <h2 class="section-title">Role in the DNA Ecosystem</h2>
-            <p class="section-desc" style="max-width: 38rem;">
+            <div class="section-label" data-i18n="prod_nodus.ecosystem.label">Ecosystem</div>
+            <h2 class="section-title" data-i18n="prod_nodus.ecosystem.title">Role in the DNA Ecosystem</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="prod_nodus.ecosystem.desc">
               Nodus is the infrastructure layer of the DNA ecosystem. While DNA applications provide user-facing functionality, Nodus provides the underlying decentralized networking system that connects identities and peers.
             </p>
           </div>
@@ -1143,20 +1204,20 @@
           <div class="token-grid stagger" style="grid-template-columns: repeat(3, 1fr);">
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
-              <h3>DNA Identity</h3>
-              <p>Decentralized identity resolution &mdash; human-readable names tied to cryptographic key pairs, resolved through the Nodus DHT.</p>
+              <h3 data-i18n="prod_nodus.ecosystem.card1_title">DNA Identity</h3>
+              <p data-i18n="prod_nodus.ecosystem.card1_desc">Decentralized identity resolution &mdash; human-readable names tied to cryptographic key pairs, resolved through the Nodus DHT.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h8"/><path d="M8 13h5"/></svg></span>
-              <h3>DNA Connect</h3>
-              <p>Post-quantum encrypted communication &mdash; messages routed and delivered through the Nodus network with offline support.</p>
+              <h3 data-i18n="prod_nodus.ecosystem.card2_title">DNA Connect</h3>
+              <p data-i18n="prod_nodus.ecosystem.card2_desc">Post-quantum encrypted communication &mdash; messages routed and delivered through the Nodus network with offline support.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg></span>
-              <h3>Future Applications</h3>
-              <p>Any decentralized application can build on Nodus &mdash; forming a post-quantum capable decentralized communication stack.</p>
+              <h3 data-i18n="prod_nodus.ecosystem.card3_title">Future Applications</h3>
+              <p data-i18n="prod_nodus.ecosystem.card3_desc">Any decentralized application can build on Nodus &mdash; forming a post-quantum capable decentralized communication stack.</p>
             </article>
           </div>
         </div>
@@ -1166,16 +1227,16 @@
       <section class="cta-section">
         <div class="wrap">
           <div class="cta-box reveal">
-            <h2 class="cta-title">Join the movement</h2>
-            <p class="cta-text">
+            <h2 class="cta-title" data-i18n="prod_nodus.cta.title">Join the movement</h2>
+            <p class="cta-text" data-i18n="prod_nodus.cta.text">
               Download DNA Connect, join the conversation, and find a piece of the project
               you want to improve. Every meaningful contributor once started as a community member.
             </p>
             <div class="cta-actions">
-              <a href="/products/dna-connect.html" class="btn btn-primary btn-lg">Download DNA Connect</a>
-              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Join Telegram</a>
-              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Explore Code</a>
-              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Follow on X</a>
+              <a href="/products/dna-connect.html" class="btn btn-primary btn-lg" data-i18n="prod_nodus.cta.btn_download">Download DNA Connect</a>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="prod_nodus.cta.btn_telegram">Join Telegram</a>
+              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="prod_nodus.cta.btn_code">Explore Code</a>
+              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="prod_nodus.cta.btn_x">Follow on X</a>
             </div>
           </div>
         </div>
@@ -1187,20 +1248,23 @@
     <footer>
       <div class="wrap">
         <div class="footer-row">
-          <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+          <div data-i18n="footer.copyright">© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
-            <a href="/">Home</a>
+            <a href="/" data-i18n="footer.home">Home</a>
             <a href="/products/dna-identity.html">DNA Identity</a>
             <a href="/products/dna-connect.html">DNA Connect</a>
             <a href="/products/nodus.html">DNA Nodus</a>
-            <a href="/team.html">Team</a>
-            <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
+            <a href="/team.html" data-i18n="footer.team">Team</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
             <a href="/doc/cpunk-legal.pdf" target="_blank">Legal &amp; Compliance</a>
           </div>
         </div>
       </div>
     </footer>
   </div>
+
+  <!-- i18n -->
+  <script src="/i18n/i18n.js"></script>
 
   <script>
     document.addEventListener('DOMContentLoaded', function() {

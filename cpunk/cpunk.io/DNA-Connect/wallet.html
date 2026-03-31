@@ -1111,6 +1111,66 @@
       transition: color 0.2s;
     }
     .dl-source a:hover { color: var(--teal); }
+
+    /* ── Language selector ── */
+    #lang-selector {
+      position: relative;
+      margin-left: 0.5rem;
+    }
+    .lang-btn {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      padding: 0.35rem 0.6rem;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      white-space: nowrap;
+    }
+    .lang-btn:hover {
+      border-color: var(--teal-dim);
+      background: var(--teal-soft);
+    }
+    .lang-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.4rem);
+      right: 0;
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 0.4rem;
+      min-width: 160px;
+      z-index: 1000;
+      box-shadow: var(--shadow-soft);
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .lang-dropdown.open { display: block; }
+    .lang-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      padding: 0.45rem 0.7rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition-fast), color var(--transition-fast);
+    }
+    .lang-option:hover {
+      background: var(--teal-soft);
+      color: var(--text-main);
+    }
+    .lang-option.active {
+      color: var(--teal);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -1123,7 +1183,7 @@
           <a href="/hometest.html" class="brand">
             <div class="brand-text">
               <span class="brand-name">CPUNK.IO</span>
-              <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+              <span class="brand-tag" data-i18n="brand.tag">Privacy • Quantum Safety • Decentralization</span>
             </div>
           </a>
 
@@ -1133,40 +1193,41 @@
 
           <div class="nav-menu">
             <nav class="nav-links">
-              <a href="/">Home</a>
+              <a href="/" data-i18n="nav.home">Home</a>
 
               <div class="nav-item" data-dropdown="products">
                 <div class="nav-item-label">
-                  <span>DNA-Connect</span>
+                  <span data-i18n="nav.dna_connect">DNA-Connect</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/DNA-Connect/identity.html">The Identity</a>
-                  <a href="/DNA-Connect/messenger.html">The Messenger</a>
-                  <a href="/DNA-Connect/wallet.html" class="active">The Wallet</a>
-                  <a href="/DNA-Connect/nodus.html">The Nodus</a>
+                  <a href="/DNA-Connect/identity.html" data-i18n="nav.identity">The Identity</a>
+                  <a href="/DNA-Connect/messenger.html" data-i18n="nav.messenger">The Messenger</a>
+                  <a href="/DNA-Connect/wallet.html" class="active" data-i18n="nav.wallet">The Wallet</a>
+                  <a href="/DNA-Connect/nodus.html" data-i18n="nav.nodus">The Nodus</a>
                 </div>
               </div>
 
-              <a href="/team.html">Team</a>
+              <a href="/team.html" data-i18n="nav.team">Team</a>
 
               <div class="nav-item" data-dropdown="documents">
                 <div class="nav-item-label">
-                  <span>Documents</span>
+                  <span data-i18n="nav.documents">Documents</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-                  <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
-                  <a href="/privacy.html">Privacy Policy</a>
+                  <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="nav.litepaper">Litepaper</a>
+                  <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="nav.legal">Legal</a>
+                  <a href="/privacy.html" data-i18n="nav.privacy">Privacy Policy</a>
                 </div>
               </div>
             </nav>
 
             <div class="nav-cta">
               <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
-                Trade CPUNK
+                <span data-i18n="nav.trade">Trade CPUNK</span>
               </a>
+              <div id="lang-selector"></div>
             </div>
           </div>
         </div>
@@ -1183,33 +1244,33 @@
             <div class="hero-split-text">
               <div class="eyebrow">
                 <span class="eyebrow-dot"></span>
-                <span class="eyebrow-label">Product</span>
-                <span>DNA-Wallet multi-chain layer</span>
+                <span class="eyebrow-label" data-i18n="wallet.hero.eyebrowLabel">Product</span>
+                <span data-i18n="wallet.hero.eyebrowText">DNA-Wallet multi-chain layer</span>
               </div>
 
-              <h1 style="color:#ffffff;">
+              <h1 style="color:#ffffff;" data-i18n="wallet.hero.title">
                 DNA-Wallet<br>
                 One Seed, Every Chain
               </h1>
 
-              <p class="subtitle">
+              <p class="subtitle" data-i18n="wallet.hero.subtitle">
                 DNA-Wallet is the <strong>multi-chain wallet built into DNA-Messenger</strong>.
                 A single BIP-39 seed phrase derives wallets across <strong>four blockchains</strong> &mdash;
                 Cellframe, Ethereum, Solana, and TRON. Send and receive tokens without leaving the chat.
               </p>
 
               <div class="hero-actions">
-                <a href="#downloads" class="btn btn-primary">Download</a>
-                <a href="#overview" class="btn btn-ghost">How it works</a>
-                <a href="#chains" class="btn btn-ghost">Supported chains</a>
+                <a href="#downloads" class="btn btn-primary" data-i18n="wallet.hero.btnDownload">Download</a>
+                <a href="#overview" class="btn btn-ghost" data-i18n="wallet.hero.btnHowItWorks">How it works</a>
+                <a href="#chains" class="btn btn-ghost" data-i18n="wallet.hero.btnSupportedChains">Supported chains</a>
               </div>
 
               <div class="hero-meta">
                 <span>
                   <span class="hero-meta-dot"></span>
-                  4 blockchains, 1 seed phrase, 0 third parties.
+                  <span data-i18n="wallet.hero.metaBlockchains">4 blockchains, 1 seed phrase, 0 third parties.</span>
                 </span>
-                <span>
+                <span data-i18n="wallet.hero.metaIntegrated">
                   Integrated in: <strong style="color:var(--text-main);font-weight:500;">DNA-Messenger</strong> &middot; Android, Linux, Windows
                 </span>
               </div>
@@ -1250,7 +1311,7 @@
                   <div class="chain-bal">500 TRX</div>
                 </div>
                 <div class="wallet-seed-label">
-                  All wallets derived from <strong>one BIP-39 seed phrase</strong>
+                  <span data-i18n="wallet.hero.seedLabel">All wallets derived from <strong>one BIP-39 seed phrase</strong></span>
                 </div>
               </div>
             </aside>
@@ -1262,9 +1323,9 @@
       <section id="overview" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Overview</div>
-            <h2 class="section-title">Multi-chain, built into the messenger</h2>
-            <p class="section-desc" style="max-width: 38rem;">
+            <div class="section-label" data-i18n="wallet.overview.label">Overview</div>
+            <h2 class="section-title" data-i18n="wallet.overview.title">Multi-chain, built into the messenger</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="wallet.overview.desc">
               DNA-Wallet is not a separate app. It lives inside DNA-Messenger &mdash; every conversation is also a payment channel. No address copying, no app switching, no friction.
             </p>
           </div>
@@ -1274,8 +1335,8 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"/></svg>
               </span>
-              <h3>Multi-Chain Architecture</h3>
-              <p>
+              <h3 data-i18n="wallet.overview.multiChainTitle">Multi-Chain Architecture</h3>
+              <p data-i18n="wallet.overview.multiChainDesc">
                 One wallet interface, four blockchains managed from a single unified view. Each chain uses its native signing algorithm &mdash; see <a href="#chains" style="color:var(--teal);border-bottom:1px solid var(--teal-dim);">supported chains</a> for details.
               </p>
             </article>
@@ -1284,8 +1345,8 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h.01"/><path d="M12 10h.01"/><path d="M16 10h.01"/></svg>
               </span>
-              <h3>In-Chat Transfers</h3>
-              <p>
+              <h3 data-i18n="wallet.overview.inChatTitle">In-Chat Transfers</h3>
+              <p data-i18n="wallet.overview.inChatDesc">
                 Send tokens to any <strong style="color:var(--text-main)">DNA contact directly inside a conversation</strong>. The recipient's wallet address is resolved automatically from their DNA identity &mdash; no raw addresses needed.
               </p>
             </article>
@@ -1294,8 +1355,8 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
               </span>
-              <h3>One Seed Phrase</h3>
-              <p>
+              <h3 data-i18n="wallet.overview.oneSeedTitle">One Seed Phrase</h3>
+              <p data-i18n="wallet.overview.oneSeedDesc">
                 A single <strong style="color:var(--text-main)">BIP-39 mnemonic</strong> is the master key. Back up one seed phrase &mdash; recover all your wallets. New chains are added automatically with no re-backup needed.
               </p>
             </article>
@@ -1307,31 +1368,31 @@
       <section id="derivation" class="s-section s-panel">
         <div class="wrap">
           <div class="section-header reveal">
-            <div class="section-label">Architecture</div>
-            <h2 class="section-title">How key derivation works</h2>
+            <div class="section-label" data-i18n="wallet.derivation.label">Architecture</div>
+            <h2 class="section-title" data-i18n="wallet.derivation.title">How key derivation works</h2>
           </div>
 
           <div class="dna-row">
             <div class="dna-text reveal-left">
-              <h3><span class="teal">One Mnemonic</span>, Four Derivation Paths</h3>
-              <p>
+              <h3 data-i18n="wallet.derivation.heading"><span class="teal">One Mnemonic</span>, Four Derivation Paths</h3>
+              <p data-i18n="wallet.derivation.desc1">
                 Each blockchain uses its own derivation method to produce keys from the same BIP-39 seed material. The diagram shows the full flow from mnemonic to chain-specific wallets.
               </p>
-              <p>
+              <p data-i18n="wallet.derivation.desc2">
                 When new blockchain support is added, <strong style="color:var(--text-main)">missing wallets are created automatically</strong> on identity load &mdash; no user action required.
               </p>
             </div>
             <div class="dna-visual reveal-right" style="align-items: flex-start;">
               <div class="derivation-diagram">
-                <div class="derivation-title">Key Derivation Flow</div>
+                <div class="derivation-title" data-i18n="wallet.derivation.diagramTitle">Key Derivation Flow</div>
                 <div class="derivation-seed">
-                  <div class="label">BIP-39 Mnemonic</div>
-                  <div class="value">ocean wine grape ... harvest moon</div>
+                  <div class="label" data-i18n="wallet.derivation.diagramMnemonic">BIP-39 Mnemonic</div>
+                  <div class="value" data-i18n="wallet.derivation.diagramMnemonicValue">ocean wine grape ... harvest moon</div>
                 </div>
                 <div class="derivation-arrow">&darr;</div>
                 <div class="derivation-seed" style="background:rgba(242,98,41,0.06);border-color:rgba(242,98,41,0.15);">
-                  <div class="label" style="color:var(--orange);">64-byte Master Seed</div>
-                  <div class="value" style="font-size:0.7rem;">PBKDF2-HMAC-SHA512 &middot; 2048 rounds</div>
+                  <div class="label" style="color:var(--orange);" data-i18n="wallet.derivation.diagramMasterSeed">64-byte Master Seed</div>
+                  <div class="value" style="font-size:0.7rem;" data-i18n="wallet.derivation.diagramMasterSeedValue">PBKDF2-HMAC-SHA512 &middot; 2048 rounds</div>
                 </div>
                 <div class="derivation-arrow">&darr;</div>
                 <div class="derivation-paths">
@@ -1366,9 +1427,9 @@
       <section id="chains" class="s-section s-gradient">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Chains</div>
-            <h2 class="section-title">Supported blockchains</h2>
-            <p class="section-desc" style="max-width: 38rem;">
+            <div class="section-label" data-i18n="wallet.chains.label">Chains</div>
+            <h2 class="section-title" data-i18n="wallet.chains.title">Supported blockchains</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="wallet.chains.desc">
               Each chain is a first-class citizen with native transaction building, token support, and RPC integration. No wrapped tokens, no bridges &mdash; real on-chain transactions.
             </p>
           </div>
@@ -1378,14 +1439,14 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
               </span>
-              <h3>Cellframe</h3>
-              <p>
+              <h3 data-i18n="wallet.chains.cellframeTitle">Cellframe</h3>
+              <p data-i18n="wallet.chains.cellframeDesc">
                 Post-quantum blockchain with <strong style="color:var(--text-main)">Dilithium signatures</strong> (NIST Category 5). Native CPUNK token and CF20 standard. Wallet files use the <code>.dwallet</code> format.
               </p>
               <ul>
-                <li>Dilithium Mode 1 &mdash; 1,184B public key</li>
-                <li>SHA3-256 seed derivation</li>
-                <li>Native CPUNK &amp; CELL tokens</li>
+                <li data-i18n="wallet.chains.cellframeLi1">Dilithium Mode 1 &mdash; 1,184B public key</li>
+                <li data-i18n="wallet.chains.cellframeLi2">SHA3-256 seed derivation</li>
+                <li data-i18n="wallet.chains.cellframeLi3">Native CPUNK &amp; CELL tokens</li>
               </ul>
             </article>
 
@@ -1393,14 +1454,14 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
               </span>
-              <h3>Ethereum</h3>
-              <p>
+              <h3 data-i18n="wallet.chains.ethereumTitle">Ethereum</h3>
+              <p data-i18n="wallet.chains.ethereumDesc">
                 Full Ethereum mainnet support with <strong style="color:var(--text-main)">ERC-20 token transfers</strong>, RLP encoding, and dynamic gas estimation with slow/normal/fast presets.
               </p>
               <ul>
-                <li>BIP-44 path m/44'/60'/0'/0/0</li>
-                <li>EIP-55 checksum addresses</li>
-                <li>ERC-20 token support</li>
+                <li data-i18n="wallet.chains.ethereumLi1">BIP-44 path m/44'/60'/0'/0/0</li>
+                <li data-i18n="wallet.chains.ethereumLi2">EIP-55 checksum addresses</li>
+                <li data-i18n="wallet.chains.ethereumLi3">ERC-20 token support</li>
               </ul>
             </article>
 
@@ -1408,14 +1469,14 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 8h2"/><path d="M15 8h2"/><path d="M7 12h10"/></svg>
               </span>
-              <h3>Solana</h3>
-              <p>
+              <h3 data-i18n="wallet.chains.solanaTitle">Solana</h3>
+              <p data-i18n="wallet.chains.solanaDesc">
                 High-throughput chain with <strong style="color:var(--text-main)">Ed25519 signatures</strong> and SPL token standard. SLIP-10 derivation ensures compatibility with the Solana ecosystem.
               </p>
               <ul>
-                <li>SLIP-10 Ed25519 derivation</li>
-                <li>SPL token transfers</li>
-                <li>Native SOL transactions</li>
+                <li data-i18n="wallet.chains.solanaLi1">SLIP-10 Ed25519 derivation</li>
+                <li data-i18n="wallet.chains.solanaLi2">SPL token transfers</li>
+                <li data-i18n="wallet.chains.solanaLi3">Native SOL transactions</li>
               </ul>
             </article>
 
@@ -1423,14 +1484,14 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M12 2L2 19.5h20L12 2z"/><path d="M12 8v5"/><circle cx="12" cy="16" r="0.5" fill="var(--orange)" stroke="none"/></svg>
               </span>
-              <h3>TRON</h3>
-              <p>
+              <h3 data-i18n="wallet.chains.tronTitle">TRON</h3>
+              <p data-i18n="wallet.chains.tronDesc">
                 TRON mainnet with <strong style="color:var(--text-main)">TRC-20 token support</strong>. Uses secp256k1 signing with Base58Check address encoding. Full RPC integration for balance queries and transfers.
               </p>
               <ul>
-                <li>secp256k1 key derivation</li>
-                <li>Base58Check addresses</li>
-                <li>TRC-20 token transfers</li>
+                <li data-i18n="wallet.chains.tronLi1">secp256k1 key derivation</li>
+                <li data-i18n="wallet.chains.tronLi2">Base58Check addresses</li>
+                <li data-i18n="wallet.chains.tronLi3">TRC-20 token transfers</li>
               </ul>
             </article>
           </div>
@@ -1441,46 +1502,46 @@
       <section id="security" class="s-section s-panel">
         <div class="wrap">
           <div class="section-header reveal">
-            <div class="section-label">Security</div>
-            <h2 class="section-title">Post-quantum seed protection</h2>
+            <div class="section-label" data-i18n="wallet.security.label">Security</div>
+            <h2 class="section-title" data-i18n="wallet.security.title">Post-quantum seed protection</h2>
           </div>
 
           <div class="dna-row reverse">
             <div class="dna-text reveal-right">
-              <h3><span class="teal">Kyber1024</span> Encrypted Seed Storage</h3>
-              <p>
+              <h3 data-i18n="wallet.security.heading"><span class="teal">Kyber1024</span> Encrypted Seed Storage</h3>
+              <p data-i18n="wallet.security.desc">
                 Your master seed is encrypted at rest using <strong style="color:var(--text-main)">Kyber1024</strong> &mdash; a NIST-standardized post-quantum key encapsulation mechanism. Even if your device storage is compromised, the seed remains protected against both classical and quantum attacks.
               </p>
               <ul>
-                <li><strong>Encrypted storage:</strong> Kyber1024 private key (3,168 bytes) &mdash; quantum-safe at rest</li>
-                <li><strong>Secure memory:</strong> Private keys wiped after signing via <code style="color:var(--teal);">secure_memzero()</code></li>
-                <li><strong>On-demand derivation:</strong> Keys derived, used, and cleared without ever touching disk</li>
-                <li><strong>Local only:</strong> All signing happens on your device &mdash; private keys never leave the client</li>
+                <li data-i18n="wallet.security.li1"><strong>Encrypted storage:</strong> Kyber1024 private key (3,168 bytes) &mdash; quantum-safe at rest</li>
+                <li data-i18n="wallet.security.li2"><strong>Secure memory:</strong> Private keys wiped after signing via <code style="color:var(--teal);">secure_memzero()</code></li>
+                <li data-i18n="wallet.security.li3"><strong>On-demand derivation:</strong> Keys derived, used, and cleared without ever touching disk</li>
+                <li data-i18n="wallet.security.li4"><strong>Local only:</strong> All signing happens on your device &mdash; private keys never leave the client</li>
               </ul>
             </div>
             <div class="dna-visual reveal-left" style="align-items: flex-start;">
               <div class="derivation-diagram">
-                <div class="derivation-title">Security Model</div>
+                <div class="derivation-title" data-i18n="wallet.security.diagramTitle">Security Model</div>
                 <div class="derivation-seed" style="background:rgba(242,98,41,0.06);border-color:rgba(242,98,41,0.15);">
-                  <div class="label" style="color:var(--orange);">Master Seed (64 bytes)</div>
-                  <div class="value" style="font-size:0.72rem;">Generated once at identity creation</div>
+                  <div class="label" style="color:var(--orange);" data-i18n="wallet.security.diagramMasterSeed">Master Seed (64 bytes)</div>
+                  <div class="value" style="font-size:0.72rem;" data-i18n="wallet.security.diagramMasterSeedValue">Generated once at identity creation</div>
                 </div>
                 <div class="derivation-arrow">&darr;</div>
                 <div class="derivation-seed">
-                  <div class="label">Encrypted with Kyber1024</div>
-                  <div class="value" style="font-size:0.72rem;">master_seed.enc &middot; quantum-safe at rest</div>
+                  <div class="label" data-i18n="wallet.security.diagramEncrypted">Encrypted with Kyber1024</div>
+                  <div class="value" style="font-size:0.72rem;" data-i18n="wallet.security.diagramEncryptedValue">master_seed.enc &middot; quantum-safe at rest</div>
                 </div>
                 <div class="derivation-arrow">&darr;</div>
                 <div class="derivation-paths" style="grid-template-columns: 1fr;">
                   <div class="derivation-path" style="text-align:center;">
-                    <div class="chain-label cf-label">On-Demand Key Derivation</div>
-                    <div class="path-value">Decrypt &rarr; Derive &rarr; Sign &rarr; Wipe</div>
-                    <div class="algo-value">Private keys never persist in memory or on disk longer than needed</div>
+                    <div class="chain-label cf-label" data-i18n="wallet.security.diagramOnDemand">On-Demand Key Derivation</div>
+                    <div class="path-value" data-i18n="wallet.security.diagramOnDemandFlow">Decrypt &rarr; Derive &rarr; Sign &rarr; Wipe</div>
+                    <div class="algo-value" data-i18n="wallet.security.diagramOnDemandNote">Private keys never persist in memory or on disk longer than needed</div>
                   </div>
                 </div>
                 <div style="margin-top:0.8rem; padding:0.5rem 0.7rem; border-radius:10px; background:rgba(6,197,210,0.05); border:1px solid var(--border-subtle); text-align:center;">
-                  <div style="font-size:0.7rem; color:var(--teal); font-weight:600; text-transform:uppercase; letter-spacing:0.06em;">File Permissions</div>
-                  <div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem; font-family:monospace;">chmod 0600 &middot; owner-only read/write</div>
+                  <div style="font-size:0.7rem; color:var(--teal); font-weight:600; text-transform:uppercase; letter-spacing:0.06em;" data-i18n="wallet.security.diagramFilePerms">File Permissions</div>
+                  <div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem; font-family:monospace;" data-i18n="wallet.security.diagramFilePermsValue">chmod 0600 &middot; owner-only read/write</div>
                 </div>
               </div>
             </div>
@@ -1492,9 +1553,9 @@
       <section id="downloads" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Downloads</div>
-            <h2 class="section-title">Get DNA Connect</h2>
-            <p class="section-desc" style="max-width:34rem;">
+            <div class="section-label" data-i18n="wallet.downloads.label">Downloads</div>
+            <h2 class="section-title" data-i18n="wallet.downloads.title">Get DNA Connect</h2>
+            <p class="section-desc" style="max-width:34rem;" data-i18n="wallet.downloads.desc">
               Encrypted messaging, multi-chain wallet, and decentralized identity &mdash; one app, three platforms.
             </p>
           </div>
@@ -1506,10 +1567,10 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17.523 2.476l1.5-2.6a.5.5 0 0 0-.87-.5l-1.52 2.63A8.3 8.3 0 0 0 12 1.07a8.3 8.3 0 0 0-4.63.936L5.85-.594a.5.5 0 0 0-.87.5l1.5 2.6A7.9 7.9 0 0 0 2 9.5h20a7.9 7.9 0 0 0-4.477-7.024zM7 7.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm10 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2zM3 11h1v7a2 2 0 0 0 2 2h1v3.5a1.5 1.5 0 0 0 3 0V20h4v3.5a1.5 1.5 0 0 0 3 0V20h1a2 2 0 0 0 2-2v-7h1a1.5 1.5 0 0 0 0-3H3a1.5 1.5 0 0 0 0 3z"/></svg>
               </div>
-              <div class="dl-card-name">Android</div>
+              <div class="dl-card-name" data-i18n="wallet.downloads.android">Android</div>
               <a id="dl-android" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download APK
+                <span data-i18n="wallet.downloads.downloadApk">Download APK</span>
               </a>
             </div>
 
@@ -1518,13 +1579,13 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M8.996 4.497c.104-.076.1-.168.186-.158s.022.102-.098.207c-.12.104-.308.243-.46.323-.291.152-.631.336-.993.336s-.647-.167-.853-.33c-.102-.082-.186-.162-.248-.221-.11-.086-.096-.207-.052-.204.075.01.087.109.134.153.064.06.144.137.241.214.195.154.454.304.778.304s.702-.19.932-.32c.13-.073.297-.204.433-.304M7.34 3.781c.055-.02.123-.031.174-.003.011.006.024.021.02.034-.012.038-.074.032-.11.05-.032.017-.057.052-.093.054-.034 0-.086-.012-.09-.046-.007-.044.058-.072.1-.089m.581-.003c.05-.028.119-.018.173.003.041.017.106.045.1.09-.004.033-.057.046-.09.045-.036-.002-.062-.037-.093-.053-.036-.019-.098-.013-.11-.051-.004-.013.008-.028.02-.034"/><path fill-rule="evenodd" d="M8.446.019c2.521.003 2.38 2.66 2.364 4.093-.01.939.509 1.574 1.04 2.244.474.56 1.095 1.38 1.45 2.32.29.765.402 1.613.115 2.465a.8.8 0 0 1 .254.152l.001.002c.207.175.271.447.329.698.058.252.112.488.224.615.344.382.494.667.48.922-.015.254-.203.43-.435.57-.465.28-1.164.491-1.586 1.002-.443.527-.99.83-1.505.871a1.25 1.25 0 0 1-1.256-.716v-.001a1 1 0 0 1-.078-.21c-.67.038-1.252-.165-1.718-.128-.687.038-1.116.204-1.506.206-.151.331-.445.547-.808.63-.5.114-1.126 0-1.743-.324-.577-.306-1.31-.278-1.85-.39-.27-.057-.51-.157-.626-.384-.116-.226-.095-.538.07-.988.051-.16.012-.398-.026-.648a2.5 2.5 0 0 1-.037-.369c0-.133.022-.265.087-.386v-.002c.14-.266.368-.377.577-.451s.397-.125.53-.258c.143-.15.27-.374.443-.56q.036-.037.073-.07c-.081-.538.007-1.105.192-1.662.393-1.18 1.223-2.314 1.811-3.014.502-.713.65-1.287.701-2.016.042-.997-.705-3.974 2.112-4.2q.168-.015.321-.013"/></svg>
               </div>
-              <div class="dl-card-name">Linux</div>
+              <div class="dl-card-name" data-i18n="wallet.downloads.linux">Linux</div>
               <a id="dl-linux" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download AppImage
+                <span data-i18n="wallet.downloads.downloadAppImage">Download AppImage</span>
               </a>
               <div class="dl-card-extra">
-                <a id="dl-linux-tar" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener">Also available as tar.gz</a>
+                <a id="dl-linux-tar" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" data-i18n="wallet.downloads.alsoTarGz">Also available as tar.gz</a>
               </div>
             </div>
 
@@ -1533,10 +1594,10 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 5.548l7.195-0.984v6.948H3V5.548zm0 12.904l7.195 0.984v-6.948H3v5.964zm8.019 1.097L22 21v-8.512H11.019v8.061zm0-14.098v8.061H22V3L11.019 5.451z"/></svg>
               </div>
-              <div class="dl-card-name">Windows</div>
+              <div class="dl-card-name" data-i18n="wallet.downloads.windows">Windows</div>
               <a id="dl-windows" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Download EXE
+                <span data-i18n="wallet.downloads.downloadExe">Download EXE</span>
               </a>
             </div>
 
@@ -1545,7 +1606,7 @@
           <!-- Hidden widget for JS to populate links -->
           <div class="downloads-widget" id="dna-downloads"></div>
 
-          <p class="dl-source">
+          <p class="dl-source" data-i18n="wallet.downloads.openSource">
             Open source &mdash;
             <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noopener">GitLab</a> &middot;
             <a href="https://github.com/nocdem/dna" target="_blank" rel="noopener">GitHub</a>
@@ -1557,15 +1618,15 @@
       <section class="cta-section">
         <div class="wrap">
           <div class="cta-box reveal">
-            <h2 class="cta-title">Join the CPUNK movement</h2>
-            <p class="cta-text">
+            <h2 class="cta-title" data-i18n="wallet.cta.title">Join the CPUNK movement</h2>
+            <p class="cta-text" data-i18n="wallet.cta.text">
               Download DNA Messenger, join the conversation, and find a piece of the project
               you want to improve. Every meaningful contributor once started as a community member.
             </p>
             <div class="cta-actions">
-              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-primary btn-lg">Join Telegram</a>
-              <a href="https://gitlab.cpunk.io/cpunk/" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Explore Code</a>
-              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Follow on X</a>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-primary btn-lg" data-i18n="wallet.cta.btnTelegram">Join Telegram</a>
+              <a href="https://gitlab.cpunk.io/cpunk/" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="wallet.cta.btnCode">Explore Code</a>
+              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="wallet.cta.btnX">Follow on X</a>
             </div>
           </div>
         </div>
@@ -1577,17 +1638,17 @@
     <footer>
       <div class="wrap">
         <div class="footer-row">
-          <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+          <div data-i18n="footer.copyright">© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
-            <a href="/">Home</a>
-            <a href="/DNA-Connect/identity.html">The Identity</a>
-            <a href="/DNA-Connect/messenger.html">The Messenger</a>
-            <a href="/DNA-Connect/wallet.html">The Wallet</a>
-            <a href="/DNA-Connect/nodus.html">The Nodus</a>
-            <a href="/team.html">Team</a>
-            <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
-            <a href="/doc/cpunk-legal.pdf" target="_blank">Legal</a>
-            <a href="/privacy.html">Privacy Policy</a>
+            <a href="/" data-i18n="footer.home">Home</a>
+            <a href="/DNA-Connect/identity.html" data-i18n="footer.identity">The Identity</a>
+            <a href="/DNA-Connect/messenger.html" data-i18n="footer.messenger">The Messenger</a>
+            <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">The Wallet</a>
+            <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">The Nodus</a>
+            <a href="/team.html" data-i18n="footer.team">Team</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
+            <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
+            <a href="/privacy.html" data-i18n="footer.privacy">Privacy Policy</a>
           </div>
         </div>
       </div>
@@ -1595,6 +1656,9 @@
   </div>
 
   <!-- JS: Mobile Nav + Scroll Reveal -->
+  <!-- i18n -->
+  <script src="/i18n/i18n.js"></script>
+
   <script>
     document.addEventListener('DOMContentLoaded', function() {
       var mobileToggle = document.querySelector('.mobile-menu-toggle');

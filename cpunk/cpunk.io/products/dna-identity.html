@@ -888,6 +888,66 @@
       }
       .reveal, .reveal-left, .reveal-right { opacity: 1; transform: none; }
     }
+
+    /* ── Language selector ── */
+    #lang-selector {
+      position: relative;
+      margin-left: 0.5rem;
+    }
+    .lang-btn {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      padding: 0.35rem 0.6rem;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      white-space: nowrap;
+    }
+    .lang-btn:hover {
+      border-color: var(--teal-dim);
+      background: var(--teal-soft);
+    }
+    .lang-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.4rem);
+      right: 0;
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 0.4rem;
+      min-width: 160px;
+      z-index: 1000;
+      box-shadow: var(--shadow-soft);
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .lang-dropdown.open { display: block; }
+    .lang-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      padding: 0.45rem 0.7rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition-fast), color var(--transition-fast);
+    }
+    .lang-option:hover {
+      background: var(--teal-soft);
+      color: var(--text-main);
+    }
+    .lang-option.active {
+      color: var(--teal);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -900,7 +960,7 @@
           <a href="/" class="brand">
             <div class="brand-text">
               <span class="brand-name">CPUNK.IO</span>
-              <span class="brand-tag">Privacy &bull; Quantum Safety &bull; Decentralization</span>
+              <span class="brand-tag" data-i18n="brand.tag">Privacy • Quantum Safety • Decentralization</span>
             </div>
           </a>
 
@@ -910,7 +970,7 @@
 
           <div class="nav-menu">
             <nav class="nav-links">
-              <a href="/">Home</a>
+              <a href="/" data-i18n="nav.home">Home</a>
 
               <div class="nav-item" data-dropdown="products">
                 <div class="nav-item-label">
@@ -934,17 +994,18 @@
                 </div>
                 <div class="dropdown">
                   <a href="/about.html">About CPUNK</a>
-                  <a href="/team.html">Team</a>
+                  <a href="/team.html" data-i18n="nav.team">Team</a>
                   <a href="/contact.html">Contact</a>
-                  <a href="/legal.html">Legal</a>
+                  <a href="/legal.html" data-i18n="nav.legal">Legal</a>
                 </div>
               </div>
             </nav>
 
             <div class="nav-cta">
               <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
-                Trade CPUNK
+                <span data-i18n="nav.trade">Trade CPUNK</span>
               </a>
+              <div id="lang-selector"></div>
             </div>
           </div>
         </div>
@@ -961,33 +1022,33 @@
             <div class="hero-split-text">
               <div class="eyebrow">
                 <span class="eyebrow-dot"></span>
-                <span class="eyebrow-label">Identity</span>
-                <span>Decentralized Network Applications</span>
+                <span class="eyebrow-label" data-i18n="prod_identity.hero.eyebrow_label">Identity</span>
+                <span data-i18n="prod_identity.hero.eyebrow_sub">Decentralized Network Applications</span>
               </div>
 
-              <h1>
+              <h1 data-i18n="[html]prod_identity.hero.title">
                 DNA Identity<br>
                 <span class="accent">Your Name, Your Keys</span>
               </h1>
 
-              <p class="subtitle">
+              <p class="subtitle" data-i18n="[html]prod_identity.hero.subtitle">
                 A <strong>human-readable name</strong> tied to your cryptographic key pair &mdash;
                 no phone number, no email, no central authority. One seed generates
                 <strong>all your wallets</strong> and one identity you fully own.
               </p>
 
               <div class="hero-actions">
-                <a href="#pillars" class="btn btn-primary">How it works</a>
-                <a href="#how" class="btn btn-ghost">Registration</a>
-                <a href="/products/dna-connect.html" class="btn btn-ghost">Download App</a>
+                <a href="#pillars" class="btn btn-primary" data-i18n="prod_identity.hero.btn_how">How it works</a>
+                <a href="#how" class="btn btn-ghost" data-i18n="prod_identity.hero.btn_registration">Registration</a>
+                <a href="/products/dna-connect.html" class="btn btn-ghost" data-i18n="prod_identity.hero.btn_download">Download App</a>
               </div>
 
               <div class="hero-meta">
                 <span>
                   <span class="hero-meta-dot"></span>
-                  Self-sovereign identity for the post-quantum era.
+                  <span data-i18n="prod_identity.hero.meta1">Self-sovereign identity for the post-quantum era.</span>
                 </span>
-                <span>
+                <span data-i18n="[html]prod_identity.hero.meta2">
                   Free registration &middot; <strong style="color:var(--text-main);font-weight:500;">Permanent &amp; immutable</strong>
                 </span>
               </div>
@@ -1007,9 +1068,9 @@
       <section id="pillars" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label">Core Pillars</div>
-            <h2 class="section-title">Identity built for the post-quantum era</h2>
-            <p class="section-desc" style="max-width: 38rem;">
+            <div class="section-label" data-i18n="prod_identity.pillars.label">Core Pillars</div>
+            <h2 class="section-title" data-i18n="prod_identity.pillars.title">Identity built for the post-quantum era</h2>
+            <p class="section-desc" style="max-width: 38rem;" data-i18n="prod_identity.pillars.desc">
               DNA (Decentralized Network Applications) replaces centralized logins with a self-sovereign identity layer. Ownership is defined by your private key &mdash; not by a company or service provider.
             </p>
           </div>
@@ -1017,26 +1078,26 @@
           <div class="token-grid stagger">
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
-              <h3>Self-Sovereign</h3>
-              <p>Your identity is a cryptographic key pair. No company can revoke, reassign, or censor it. Only your private key defines ownership.</p>
+              <h3 data-i18n="prod_identity.pillars.card1_title">Self-Sovereign</h3>
+              <p data-i18n="prod_identity.pillars.card1_desc">Your identity is a cryptographic key pair. No company can revoke, reassign, or censor it. Only your private key defines ownership.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M3 12h18"/><path d="M5.6 5.6l12.8 12.8"/><path d="M18.4 5.6L5.6 18.4"/></svg></span>
-              <h3>One Seed, All Chains</h3>
-              <p>A single seed generates your DNA name and all wallets &mdash; CF20, ETH, SOL, TRC. One identity across every chain, no duplicates.</p>
+              <h3 data-i18n="prod_identity.pillars.card2_title">One Seed, All Chains</h3>
+              <p data-i18n="prod_identity.pillars.card2_desc">A single seed generates your DNA name and all wallets &mdash; CF20, ETH, SOL, TRC. One identity across every chain, no duplicates.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 2L4 6v5c0 5.25 3.4 10.2 8 11.6 4.6-1.4 8-6.35 8-11.6V6L12 2z"/><ellipse cx="12" cy="11" rx="4.5" ry="2" transform="rotate(-30 12 11)"/><ellipse cx="12" cy="11" rx="4.5" ry="2" transform="rotate(30 12 11)"/><ellipse cx="12" cy="11" rx="4.5" ry="2" transform="rotate(90 12 11)"/></svg></span>
-              <h3>Post-Quantum Safe</h3>
-              <p>Protected by NIST Category 5 lattice-based cryptography (ML-KEM-1024, ML-DSA-87). Secure today and against future quantum computers.</p>
+              <h3 data-i18n="prod_identity.pillars.card3_title">Post-Quantum Safe</h3>
+              <p data-i18n="prod_identity.pillars.card3_desc">Protected by NIST Category 5 lattice-based cryptography (ML-KEM-1024, ML-DSA-87). Secure today and against future quantum computers.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 10l3 3 5-5"/><line x1="8" y1="17" x2="16" y2="17"/></svg></span>
-              <h3>Ecosystem-Wide</h3>
-              <p>One DNA name across messaging, wallet, governance, and all CPUNK services. It acts as your universal namespace within the ecosystem.</p>
+              <h3 data-i18n="prod_identity.pillars.card4_title">Ecosystem-Wide</h3>
+              <p data-i18n="prod_identity.pillars.card4_desc">One DNA name across messaging, wallet, governance, and all CPUNK services. It acts as your universal namespace within the ecosystem.</p>
             </article>
           </div>
         </div>
@@ -1047,22 +1108,22 @@
         <div class="wrap">
           <div class="dna-row">
             <div class="dna-text reveal-left">
-              <h3><span class="teal">How</span> DNA Identity Works</h3>
-              <p>
+              <h3 data-i18n="[html]prod_identity.how.title"><span class="teal">How</span> DNA Identity Works</h3>
+              <p data-i18n="[html]prod_identity.how.desc">
                 Registration happens directly inside <strong style="color:var(--text-main)">DNA Connect</strong> &mdash; the app is your wallet. Three steps, no web forms, no fees.
               </p>
               <ol class="step-list">
                 <li class="step-item">
                   <span class="step-num">1</span>
-                  <span><strong>Create or restore</strong> your wallet in DNA Connect from a single seed phrase.</span>
+                  <span data-i18n="[html]prod_identity.how.step1"><strong>Create or restore</strong> your wallet in DNA Connect from a single seed phrase.</span>
                 </li>
                 <li class="step-item">
                   <span class="step-num">2</span>
-                  <span><strong>Choose a unique DNA name</strong> (3&ndash;20 characters). The name is checked for uniqueness and bound to your public key on the Nodus DHT network.</span>
+                  <span data-i18n="[html]prod_identity.how.step2"><strong>Choose a unique DNA name</strong> (3&ndash;20 characters). The name is checked for uniqueness and bound to your public key on the Nodus DHT network.</span>
                 </li>
                 <li class="step-item">
                   <span class="step-num">3</span>
-                  <span><strong>Use it everywhere</strong> &mdash; message contacts, manage wallets, vote on proposals, and interact across all CPUNK services with one identity.</span>
+                  <span data-i18n="[html]prod_identity.how.step3"><strong>Use it everywhere</strong> &mdash; message contacts, manage wallets, vote on proposals, and interact across all CPUNK services with one identity.</span>
                 </li>
               </ol>
             </div>
@@ -1080,34 +1141,34 @@
         <div class="wrap">
           <div class="dna-row reverse">
             <div class="dna-text reveal-right">
-              <h3>Security &amp; <span class="teal">Privacy</span></h3>
-              <p>
+              <h3 data-i18n="[html]prod_identity.security.title">Security &amp; <span class="teal">Privacy</span></h3>
+              <p data-i18n="prod_identity.security.desc">
                 DNA is designed to survive the transition to quantum computing while collecting the absolute minimum amount of data.
               </p>
               <div class="bullet-grid" style="margin-top: 1.2rem;">
                 <div class="bullet-item">
                   <span class="bullet-dot"></span>
-                  <span><strong>Pseudonymous by default</strong> &mdash; DNA names need not reveal real-world identity</span>
+                  <span data-i18n="[html]prod_identity.security.bullet1"><strong>Pseudonymous by default</strong> &mdash; DNA names need not reveal real-world identity</span>
                 </div>
                 <div class="bullet-item">
                   <span class="bullet-dot"></span>
-                  <span><strong>No phone or email</strong> required to register or use your identity</span>
+                  <span data-i18n="[html]prod_identity.security.bullet2"><strong>No phone or email</strong> required to register or use your identity</span>
                 </div>
                 <div class="bullet-item">
                   <span class="bullet-dot"></span>
-                  <span><strong>Immutable records</strong> stored across the distributed Nodus network</span>
+                  <span data-i18n="[html]prod_identity.security.bullet3"><strong>Immutable records</strong> stored across the distributed Nodus network</span>
                 </div>
                 <div class="bullet-item">
                   <span class="bullet-dot"></span>
-                  <span><strong>You control</strong> which metadata fields are exposed &mdash; nothing more</span>
+                  <span data-i18n="[html]prod_identity.security.bullet4"><strong>You control</strong> which metadata fields are exposed &mdash; nothing more</span>
                 </div>
                 <div class="bullet-item">
                   <span class="bullet-dot"></span>
-                  <span><strong>No single point of failure</strong> &mdash; fully decentralized storage and resolution</span>
+                  <span data-i18n="[html]prod_identity.security.bullet5"><strong>No single point of failure</strong> &mdash; fully decentralized storage and resolution</span>
                 </div>
                 <div class="bullet-item">
                   <span class="bullet-dot"></span>
-                  <span><strong>Mathematically verifiable</strong> ownership proofs via post-quantum signatures</span>
+                  <span data-i18n="[html]prod_identity.security.bullet6"><strong>Mathematically verifiable</strong> ownership proofs via post-quantum signatures</span>
                 </div>
               </div>
             </div>
@@ -1124,16 +1185,16 @@
       <section class="cta-section">
         <div class="wrap">
           <div class="cta-box reveal">
-            <h2 class="cta-title">Join the movement</h2>
-            <p class="cta-text">
+            <h2 class="cta-title" data-i18n="prod_identity.cta.title">Join the movement</h2>
+            <p class="cta-text" data-i18n="prod_identity.cta.text">
               Download DNA Connect, join the conversation, and find a piece of the project
               you want to improve. Every meaningful contributor once started as a community member.
             </p>
             <div class="cta-actions">
-              <a href="/products/dna-connect.html" class="btn btn-primary btn-lg">Download DNA Connect</a>
-              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Join Telegram</a>
-              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Explore Code</a>
-              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg">Follow on X</a>
+              <a href="/products/dna-connect.html" class="btn btn-primary btn-lg" data-i18n="prod_identity.cta.btn_download">Download DNA Connect</a>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="prod_identity.cta.btn_telegram">Join Telegram</a>
+              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="prod_identity.cta.btn_code">Explore Code</a>
+              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="prod_identity.cta.btn_x">Follow on X</a>
             </div>
           </div>
         </div>
@@ -1145,20 +1206,23 @@
     <footer>
       <div class="wrap">
         <div class="footer-row">
-          <div>&copy; 2026 DNA Protocol &mdash; Privacy, Quantum Safety, Decentralization.</div>
+          <div data-i18n="footer.copyright">© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
-            <a href="/">Home</a>
+            <a href="/" data-i18n="footer.home">Home</a>
             <a href="/products/dna-identity.html">DNA Identity</a>
             <a href="/products/dna-connect.html">DNA Connect</a>
             <a href="/products/nodus.html">DNA Nodus</a>
-            <a href="/team.html">Team</a>
-            <a href="/doc/cpunk-litepaper.pdf" target="_blank">Litepaper</a>
+            <a href="/team.html" data-i18n="footer.team">Team</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
             <a href="/doc/cpunk-legal.pdf" target="_blank">Legal &amp; Compliance</a>
           </div>
         </div>
       </div>
     </footer>
   </div>
+
+  <!-- i18n -->
+  <script src="/i18n/i18n.js"></script>
 
   <script>
     document.addEventListener('DOMContentLoaded', function() {
