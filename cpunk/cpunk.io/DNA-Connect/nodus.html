@@ -964,6 +964,49 @@
     }
     .dl-source a:hover { color: var(--teal); }
 
+    /* ── Specs table ── */
+    .security-table-wrap {
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      overflow: hidden;
+      margin-top: 1.5rem;
+    }
+    .security-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    .security-table th,
+    .security-table td {
+      padding: 0.7rem 1.2rem;
+      text-align: left;
+    }
+    .security-table th {
+      font-family: var(--font-display);
+      font-size: 0.68rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--teal);
+      font-weight: 600;
+      background: rgba(6,197,210,0.04);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .security-table td {
+      color: var(--text-muted);
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .security-table tr:last-child td { border-bottom: none; }
+    .security-table td strong { color: var(--text-main); font-weight: 500; }
+    .security-table tr:hover td { background: rgba(255,255,255,0.015); }
+    .security-table .algo {
+      color: var(--orange);
+      font-weight: 600;
+      font-family: var(--font-display);
+      font-size: 0.78rem;
+      letter-spacing: 0.02em;
+    }
+
     /* ── Language selector ── */
     #lang-selector {
       position: relative;
