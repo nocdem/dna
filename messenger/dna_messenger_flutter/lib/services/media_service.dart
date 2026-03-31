@@ -1,6 +1,7 @@
 // MediaService — upload/download media with encryption via Nodus DHT.
 // Uses the C library (libdna) for SHA3-512 hashing and AES-256-GCM encryption.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
@@ -207,27 +208,16 @@ class MediaService {
       );
     }
 
-    // 7. Upload to Nodus
-    try {
-      await _engine.mediaUpload(
-        uploadData,
-        contentHash,
-        0, // image
-        encrypted,
-        ttl,
+    // 7. Upload to Nodus with tracking
+    if (recipientFp != null) {
+      await _uploadWithTracking(
+        uploadData: uploadData, contentHash: contentHash,
+        hashHex: hashHex, mediaType: 0, encrypted: encrypted,
+        ttl: ttl, recipientFp: recipientFp,
       );
+    } else {
+      await _engine.mediaUpload(uploadData, contentHash, 0, encrypted, ttl);
       log(_tag, 'Uploaded: hash=${hashHex.substring(0, 16)}...');
-
-      // Mark complete in DB
-      if (recipientFp != null) {
-        await CacheDatabase.instance.updateUploadStatus(hashHex, 'complete');
-      }
-    } catch (e) {
-      // Mark failed — outbox will retry later
-      if (recipientFp != null) {
-        await CacheDatabase.instance.updateUploadStatus(hashHex, 'failed', e.toString());
-      }
-      rethrow;
     }
 
     final ref = MediaRef(
@@ -314,25 +304,16 @@ class MediaService {
       );
     }
 
-    // Upload to Nodus
-    try {
-      await _engine.mediaUpload(
-        uploadData,
-        contentHash,
-        1, // video
-        encrypted,
-        ttl,
+    // Upload to Nodus with tracking
+    if (recipientFp != null) {
+      await _uploadWithTracking(
+        uploadData: uploadData, contentHash: contentHash,
+        hashHex: hashHex, mediaType: 1, encrypted: encrypted,
+        ttl: ttl, recipientFp: recipientFp,
       );
+    } else {
+      await _engine.mediaUpload(uploadData, contentHash, 1, encrypted, ttl);
       log(_tag, 'Uploaded video: hash=${hashHex.substring(0, 16)}...');
-
-      if (recipientFp != null) {
-        await CacheDatabase.instance.updateUploadStatus(hashHex, 'complete');
-      }
-    } catch (e) {
-      if (recipientFp != null) {
-        await CacheDatabase.instance.updateUploadStatus(hashHex, 'failed', e.toString());
-      }
-      rethrow;
     }
 
     final ref = MediaRef(
@@ -420,25 +401,16 @@ class MediaService {
       );
     }
 
-    // Upload to Nodus
-    try {
-      await _engine.mediaUpload(
-        uploadData,
-        contentHash,
-        2, // audio
-        encrypted,
-        ttl,
+    // Upload to Nodus with tracking
+    if (recipientFp != null) {
+      await _uploadWithTracking(
+        uploadData: uploadData, contentHash: contentHash,
+        hashHex: hashHex, mediaType: 2, encrypted: encrypted,
+        ttl: ttl, recipientFp: recipientFp,
       );
+    } else {
+      await _engine.mediaUpload(uploadData, contentHash, 2, encrypted, ttl);
       log(_tag, 'Uploaded audio: hash=${hashHex.substring(0, 16)}...');
-
-      if (recipientFp != null) {
-        await CacheDatabase.instance.updateUploadStatus(hashHex, 'complete');
-      }
-    } catch (e) {
-      if (recipientFp != null) {
-        await CacheDatabase.instance.updateUploadStatus(hashHex, 'failed', e.toString());
-      }
-      rethrow;
     }
 
     final ref = MediaRef(
@@ -707,6 +679,56 @@ class MediaService {
   // OUTBOX — Persist encrypted bytes + DB row for resume
   // ---------------------------------------------------------------------------
 
+  /// Upload with DB status tracking + chunk progress.
+  /// Sets status='uploading' before, 'complete' or 'failed' after.
+  /// Also tracks chunk progress in DB for resume.
+  Future<void> _uploadWithTracking({
+    required Uint8List uploadData,
+    required Uint8List contentHash,
+    required String hashHex,
+    required int mediaType,
+    required bool encrypted,
+    required int ttl,
+    required String recipientFp,
+  }) async {
+    final db = CacheDatabase.instance;
+    await db.updateUploadStatus(hashHex, 'uploading');
+    log(_tag, 'Upload starting: ${hashHex.substring(0, 16)}... status=uploading');
+
+    // Track chunk progress via engine event stream
+    int lastChunk = -1;
+    final sub = _engine.events
+        .where((e) => e is MediaUploadProgressEvent)
+        .cast<MediaUploadProgressEvent>()
+        .listen((e) {
+      if (e.totalBytes > 0) {
+        final currentChunk = (e.bytesSent / mediaChunkSize).floor();
+        if (currentChunk > lastChunk) {
+          lastChunk = currentChunk;
+          db.updateChunksSent(hashHex, currentChunk);
+        }
+        // Update global progress
+        MediaUploadTracker.instance.update(hashHex, e.bytesSent, e.totalBytes);
+      }
+    });
+
+    try {
+      await _engine.mediaUpload(
+        uploadData, contentHash, mediaType, encrypted, ttl,
+      );
+      log(_tag, 'Upload complete: ${hashHex.substring(0, 16)}...');
+      await db.updateUploadStatus(hashHex, 'complete');
+      MediaUploadTracker.instance.clear();
+    } catch (e) {
+      log(_tag, 'Upload failed: ${hashHex.substring(0, 16)}... error=$e');
+      await db.updateUploadStatus(hashHex, 'failed', e.toString());
+      MediaUploadTracker.instance.clear();
+      rethrow;
+    } finally {
+      await sub.cancel();
+    }
+  }
+
   /// Save encrypted upload data to media_outbox/ directory.
   Future<String> _saveEncryptedToDisk(Uint8List data, String contentHashHex) async {
     final dir = await getApplicationSupportDirectory();
@@ -755,6 +777,38 @@ class MediaService {
     ));
     log(_tag, 'Created pending upload: $contentHash ($chunkCount chunks)');
   }
+}
+
+/// Global upload progress tracker — survives widget lifecycle.
+/// Chat screen reads this to show progress bar even after navigating away.
+class MediaUploadTracker {
+  static final MediaUploadTracker instance = MediaUploadTracker._();
+  MediaUploadTracker._();
+
+  final _controller = StreamController<MediaUploadProgress>.broadcast();
+  Stream<MediaUploadProgress> get stream => _controller.stream;
+
+  String? activeHash;
+  double progress = 0.0;
+  bool get isUploading => activeHash != null;
+
+  void update(String hash, int bytesSent, int totalBytes) {
+    activeHash = hash;
+    progress = totalBytes > 0 ? (bytesSent / totalBytes).clamp(0.0, 1.0) : 0.0;
+    _controller.add(MediaUploadProgress(hash, progress));
+  }
+
+  void clear() {
+    activeHash = null;
+    progress = 0.0;
+    _controller.add(MediaUploadProgress('', 0.0));
+  }
+}
+
+class MediaUploadProgress {
+  final String hash;
+  final double progress;
+  MediaUploadProgress(this.hash, this.progress);
 }
 
 /// Exception thrown by MediaService operations.

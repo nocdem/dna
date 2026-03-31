@@ -9,6 +9,7 @@ import '../ffi/dna_engine.dart';
 import '../models/media_ref.dart';
 import '../utils/logger.dart';
 import 'cache_database.dart';
+import 'media_service.dart';
 
 const String _tag = 'MEDIA_OUTBOX';
 const int _maxRetries = 5;
@@ -27,21 +28,37 @@ class MediaOutboxService {
   /// Process all pending/failed uploads. Safe to call multiple times —
   /// returns immediately if already processing.
   Future<void> processPendingUploads(DnaEngine engine) async {
-    if (_processing) return;
+    if (_processing) {
+      log(_tag, 'Already processing, skipping');
+      return;
+    }
     _processing = true;
 
     try {
       final db = CacheDatabase.instance;
+
+      // Reset any 'uploading' entries to 'failed' (app crashed mid-upload)
+      await _resetStaleUploading(db);
+
       final pending = await db.getPendingUploads();
 
-      if (pending.isEmpty) return;
+      if (pending.isEmpty) {
+        log(_tag, 'No pending uploads');
+        return;
+      }
       log(_tag, 'Processing ${pending.length} pending uploads');
 
       for (final upload in pending) {
+        final hashShort = upload.contentHash.substring(0, 16);
+
         if (upload.retryCount >= _maxRetries) {
-          log(_tag, 'Skipping ${upload.contentHash.substring(0, 16)}... (max retries)');
+          log(_tag, 'SKIP $hashShort (max retries ${upload.retryCount}/$_maxRetries)');
           continue;
         }
+
+        log(_tag, 'Processing $hashShort: status=${upload.status}, '
+            'chunks=${upload.chunksSent}/${upload.chunkCount}, '
+            'retries=${upload.retryCount}, size=${upload.totalSize}');
 
         await _processUpload(engine, upload);
       }
@@ -52,6 +69,17 @@ class MediaOutboxService {
     }
   }
 
+  /// Reset 'uploading' entries to 'failed' — these were interrupted by app crash.
+  Future<void> _resetStaleUploading(CacheDatabase db) async {
+    final dbObj = await db.database;
+    final count = await dbObj.rawUpdate(
+      "UPDATE pending_uploads SET status = 'failed' WHERE status = 'uploading'",
+    );
+    if (count > 0) {
+      log(_tag, 'Reset $count stale uploading entries to failed');
+    }
+  }
+
   Future<void> _processUpload(DnaEngine engine, PendingUpload upload) async {
     final db = CacheDatabase.instance;
     final hashShort = upload.contentHash.substring(0, 16);
@@ -59,7 +87,7 @@ class MediaOutboxService {
     // Check if encrypted file still exists on disk
     final encFile = File(upload.encryptedFilePath);
     if (!await encFile.exists()) {
-      log(_tag, 'Encrypted file missing for $hashShort, removing from outbox');
+      log(_tag, '$hashShort: encrypted file missing at ${upload.encryptedFilePath}, removing');
       await db.deletePendingUpload(upload.contentHash);
       return;
     }
@@ -68,39 +96,64 @@ class MediaOutboxService {
     try {
       final exists = await engine.mediaExists(upload.contentHash);
       if (exists) {
-        log(_tag, '$hashShort already on server, sending message');
+        log(_tag, '$hashShort: already on server, sending message only');
         _sendMediaMessage(engine, upload);
         await db.updateUploadStatus(upload.contentHash, 'complete');
         return;
       }
     } catch (e) {
-      log(_tag, 'mediaExists check failed for $hashShort: $e');
-      // Continue to upload attempt anyway
+      log(_tag, '$hashShort: mediaExists check failed: $e (continuing with upload)');
     }
 
     // Resume upload from chunks_sent
     await db.updateUploadStatus(upload.contentHash, 'uploading');
+    log(_tag, '$hashShort: starting upload from chunk ${upload.chunksSent}');
+
     try {
       final encBytes = await encFile.readAsBytes();
       final hashBytes = _hexToBytes(upload.contentHash);
 
-      log(_tag, 'Resuming $hashShort from chunk ${upload.chunksSent}/${upload.chunkCount}');
+      // Track chunk progress in DB
+      int lastChunk = upload.chunksSent;
+      final sub = engine.events
+          .where((e) => e is MediaUploadProgressEvent)
+          .cast<MediaUploadProgressEvent>()
+          .listen((e) {
+        if (e.totalBytes > 0) {
+          final currentChunk = (e.bytesSent / mediaChunkSize).floor();
+          if (currentChunk > lastChunk) {
+            lastChunk = currentChunk;
+            db.updateChunksSent(upload.contentHash, currentChunk);
+          }
+          MediaUploadTracker.instance.update(
+              upload.contentHash, e.bytesSent, e.totalBytes);
+        }
+      });
 
-      await engine.mediaUpload(
-        encBytes,
-        hashBytes,
-        upload.mediaType,
-        upload.encryptionKey != null, // encrypted
-        604800, // 7 day TTL
-        startChunk: upload.chunksSent,
-      );
+      try {
+        await engine.mediaUpload(
+          encBytes,
+          hashBytes,
+          upload.mediaType,
+          upload.encryptionKey != null,
+          604800,
+          startChunk: upload.chunksSent,
+        );
 
-      // Success — send the message and mark complete
-      log(_tag, 'Upload complete: $hashShort');
-      _sendMediaMessage(engine, upload);
-      await db.updateUploadStatus(upload.contentHash, 'complete');
+        log(_tag, '$hashShort: upload complete, sending message');
+        _sendMediaMessage(engine, upload);
+        await db.updateUploadStatus(upload.contentHash, 'complete');
+        MediaUploadTracker.instance.clear();
+      } catch (e) {
+        logError(_tag, '$hashShort: upload failed at chunk ~$lastChunk: $e');
+        await db.updateUploadStatus(upload.contentHash, 'failed', e.toString());
+        await db.incrementRetryCount(upload.contentHash);
+        MediaUploadTracker.instance.clear();
+      } finally {
+        await sub.cancel();
+      }
     } catch (e) {
-      logError(_tag, 'Upload failed for $hashShort: $e');
+      logError(_tag, '$hashShort: failed to read encrypted file: $e');
       await db.updateUploadStatus(upload.contentHash, 'failed', e.toString());
       await db.incrementRetryCount(upload.contentHash);
     }

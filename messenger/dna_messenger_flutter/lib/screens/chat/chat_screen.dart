@@ -20,7 +20,6 @@ import '../../widgets/formatted_text.dart';
 import '../../widgets/image_message_bubble.dart';
 import '../../widgets/media_message_bubble.dart';
 import '../../widgets/voice_record_sheet.dart';
-import '../../services/cache_database.dart';
 import '../../services/image_attachment_service.dart';
 import '../../services/media_service.dart';
 import 'contact_profile_dialog.dart';
@@ -52,12 +51,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _searchController = TextEditingController();
   final _searchFocusNode = FocusNode();
 
-  // Media upload state (non-blocking progress)
+  // Media upload state — driven by global MediaUploadTracker
   bool _isUploading = false;
   double _uploadProgress = 0.0;
-  StreamSubscription<DnaEvent>? _uploadProgressSub;
-  String? _uploadContentHash;
-  int _lastReportedChunk = -1;
+  StreamSubscription<MediaUploadProgress>? _uploadTrackerSub;
 
   @override
   void initState() {
@@ -66,6 +63,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _messageController.addListener(_onTextChanged);
     // Listen to scroll for loading older messages
     _scrollController.addListener(_onScroll);
+
+    // Subscribe to global upload progress (survives navigation)
+    final tracker = MediaUploadTracker.instance;
+    if (tracker.isUploading) {
+      _isUploading = true;
+      _uploadProgress = tracker.progress;
+    }
+    _uploadTrackerSub = tracker.stream.listen((p) {
+      if (!mounted) return;
+      setState(() {
+        _isUploading = p.hash.isNotEmpty;
+        _uploadProgress = p.progress;
+      });
+    });
 
     // Mark messages as read when chat opens
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -163,7 +174,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   void dispose() {
-    _uploadProgressSub?.cancel();
+    _uploadTrackerSub?.cancel();
     _messageController.removeListener(_onTextChanged);
     _scrollController.removeListener(_onScroll);
     _messageController.dispose();
@@ -1089,71 +1100,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  /// Start upload progress tracking (non-blocking)
-  void _startUploadProgress(DnaEngine engine, {String? contentHash}) {
-    _uploadProgressSub?.cancel();
-    _uploadContentHash = contentHash;
-    _lastReportedChunk = -1;
-    setState(() {
-      _isUploading = true;
-      _uploadProgress = 0.0;
-    });
-    _uploadProgressSub = engine.events
-        .where((e) => e is MediaUploadProgressEvent)
-        .cast<MediaUploadProgressEvent>()
-        .listen((e) {
-      if (mounted && e.totalBytes > 0) {
-        setState(() {
-          _uploadProgress = (e.bytesSent / e.totalBytes).clamp(0.0, 1.0);
-        });
-
-        // Track chunk progress in DB for resume capability
-        if (_uploadContentHash != null) {
-          final currentChunk = (e.bytesSent / mediaChunkSize).floor();
-          if (currentChunk > _lastReportedChunk) {
-            _lastReportedChunk = currentChunk;
-            CacheDatabase.instance.updateChunksSent(
-                _uploadContentHash!, currentChunk);
-          }
-        }
-      }
-    });
-  }
-
-  /// Finish upload progress tracking
-  void _finishUploadProgress() {
-    _uploadProgressSub?.cancel();
-    _uploadProgressSub = null;
-    _uploadContentHash = null;
-    _lastReportedChunk = -1;
-    if (mounted) {
-      setState(() {
-        _isUploading = false;
-        _uploadProgress = 0.0;
-      });
-    }
-  }
+  // Note: upload progress is now tracked globally by MediaUploadTracker
+  // (inside MediaService._uploadWithTracking). The chat screen subscribes
+  // via _uploadTrackerSub in initState. No per-upload setup needed.
 
   Future<void> _pickAndSendImage(Contact contact, ImageSource source) async {
     final imageService = ImageAttachmentService();
 
     try {
-      // Pick image
       final bytes = await imageService.pickImage(source);
-      if (bytes == null) return; // User cancelled
-
+      if (bytes == null) return;
       if (!mounted) return;
 
-      // Show caption dialog first (before uploading)
       final caption = await _showCaptionDialog(context);
       if (!mounted) return;
 
-      // Start non-blocking upload with progress
       final engine = await ref.read(engineProvider.future);
-      _startUploadProgress(engine);
-
-      // Upload via MediaService (compress + thumbnail + DHT upload)
       final mediaService = MediaService(engine);
+      // Upload + message handled by MediaService (lifecycle-independent)
       await mediaService.uploadImage(
         bytes,
         recipientFp: contact.fingerprint,
@@ -1161,35 +1125,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         caption: caption,
         ttl: 604800,
       );
-
-      // Message sent by MediaService on success (lifecycle-independent)
-      _finishUploadProgress();
     } on MediaServiceException catch (e) {
-      _finishUploadProgress();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(e.message),
-          backgroundColor: DnaColors.snackbarError,
-        ),
+        SnackBar(content: Text(e.message), backgroundColor: DnaColors.snackbarError),
       );
     } on ImageAttachmentException catch (e) {
-      _finishUploadProgress();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(e.message),
-          backgroundColor: DnaColors.snackbarError,
-        ),
+        SnackBar(content: Text(e.message), backgroundColor: DnaColors.snackbarError),
       );
     } catch (e) {
-      _finishUploadProgress();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: $e'),
-          backgroundColor: DnaColors.snackbarError,
-        ),
+        SnackBar(content: Text('Error: $e'), backgroundColor: DnaColors.snackbarError),
       );
     }
   }
@@ -1201,12 +1150,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         source: source,
         maxDuration: const Duration(minutes: 3),
       );
-      if (pickedFile == null) return; // User cancelled
+      if (pickedFile == null) return;
 
       final file = File(pickedFile.path);
       final fileSize = await file.length();
 
-      // Validate size (64MB max)
       if (fileSize > 64 * 1024 * 1024) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1219,16 +1167,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
 
       if (!mounted) return;
-
-      // Show caption dialog
       final caption = await _showCaptionDialog(context);
       if (!mounted) return;
 
-      // Start non-blocking upload with progress
       final engine = await ref.read(engineProvider.future);
-      _startUploadProgress(engine);
-
-      // Upload via MediaService
       final mediaService = MediaService(engine);
       await mediaService.uploadVideo(
         file,
@@ -1237,26 +1179,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         caption: caption,
         ttl: 604800,
       );
-
-      // Message sent by MediaService on success (lifecycle-independent)
-      _finishUploadProgress();
     } on MediaServiceException catch (e) {
-      _finishUploadProgress();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(e.message),
-          backgroundColor: DnaColors.snackbarError,
-        ),
+        SnackBar(content: Text(e.message), backgroundColor: DnaColors.snackbarError),
       );
     } catch (e) {
-      _finishUploadProgress();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: $e'),
-          backgroundColor: DnaColors.snackbarError,
-        ),
+        SnackBar(content: Text('Error: $e'), backgroundColor: DnaColors.snackbarError),
       );
     }
   }
@@ -1270,10 +1201,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (!mounted) return;
 
     try {
-      // Start non-blocking upload with progress
       final engine = await ref.read(engineProvider.future);
-      _startUploadProgress(engine);
-
       final mediaService = MediaService(engine);
       await mediaService.uploadAudio(
         result.audioBytes,
@@ -1282,26 +1210,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         encrypted: true,
         ttl: 604800,
       );
-
-      // Message sent by MediaService on success (lifecycle-independent)
-      _finishUploadProgress();
     } on MediaServiceException catch (e) {
-      _finishUploadProgress();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(e.message),
-          backgroundColor: DnaColors.snackbarError,
-        ),
+        SnackBar(content: Text(e.message), backgroundColor: DnaColors.snackbarError),
       );
     } catch (e) {
-      _finishUploadProgress();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: $e'),
-          backgroundColor: DnaColors.snackbarError,
-        ),
+        SnackBar(content: Text('Error: $e'), backgroundColor: DnaColors.snackbarError),
       );
     }
   }

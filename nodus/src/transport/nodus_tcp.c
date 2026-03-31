@@ -551,10 +551,21 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
     }
 
     size_t frame_size = NODUS_FRAME_HEADER_SIZE + len;
+
+    /* Compact: reclaim space from already-sent bytes before growing */
+    if (conn->wpos > 0) {
+        size_t remaining = conn->wlen - conn->wpos;
+        if (remaining > 0)
+            memmove(conn->wbuf, conn->wbuf + conn->wpos, remaining);
+        conn->wlen = remaining;
+        conn->wpos = 0;
+    }
+
     size_t needed = conn->wlen + frame_size;
 
     if (buf_ensure(&conn->wbuf, &conn->wcap, needed) != 0) {
-        QGP_LOG_ERROR(LOG_TAG_TCP, "send: buf_ensure failed (needed=%zu, wcap=%zu)", needed, conn->wcap);
+        QGP_LOG_ERROR(LOG_TAG_TCP, "send: buf_ensure failed (needed=%zu, wcap=%zu, wlen=%zu, wpos=%zu)",
+                      needed, conn->wcap, conn->wlen, conn->wpos);
         return -1;
     }
 
