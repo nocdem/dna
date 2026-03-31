@@ -135,10 +135,12 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 
 static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
     if (needed <= *cap) return 0;
+    const size_t max_cap = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
+    if (needed > max_cap) return -1;
     size_t new_cap = *cap;
     while (new_cap < needed) new_cap *= 2;
-    if (new_cap > NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096)
-        return -1;
+    /* Clamp to max instead of rejecting overshoot from doubling */
+    if (new_cap > max_cap) new_cap = max_cap;
     uint8_t *nb = realloc(*buf, new_cap);
     if (!nb) return -1;
     *buf = nb;
