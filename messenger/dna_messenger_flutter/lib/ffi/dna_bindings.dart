@@ -692,7 +692,8 @@ abstract class DnaEventType {
   static const int DNA_EVENT_WALL_NEW_POST = 20;  // New wall post from a contact
   static const int DNA_EVENT_CHANNEL_NEW_POST = 21;  // New post in subscribed channel
   static const int DNA_EVENT_CHANNEL_SUBS_SYNCED = 22;  // Channel subscriptions synced from DHT
-  static const int DNA_EVENT_ERROR = 23;
+  static const int DNA_EVENT_MEDIA_UPLOAD_PROGRESS = 23;  // Media upload byte progress
+  static const int DNA_EVENT_ERROR = 24;
 }
 
 /// Event data union - message received

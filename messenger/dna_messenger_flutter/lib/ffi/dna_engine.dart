@@ -1076,6 +1076,14 @@ class GeksSyncedEvent extends DnaEvent {
   GeksSyncedEvent(this.geksSynced);
 }
 
+/// Media upload progress event — byte-level upload progress from C engine
+class MediaUploadProgressEvent extends DnaEvent {
+  final int bytesSent;
+  final int totalBytes;
+  final int requestId;
+  MediaUploadProgressEvent(this.bytesSent, this.totalBytes, this.requestId);
+}
+
 // Feed event classes removed - replaced by Channel system
 
 // =============================================================================
@@ -1600,6 +1608,19 @@ class DnaEngine {
       // Channel events disabled — channels feature inactive
       case DnaEventType.DNA_EVENT_CHANNEL_NEW_POST:
       case DnaEventType.DNA_EVENT_CHANNEL_SUBS_SYNCED:
+        break;
+      case DnaEventType.DNA_EVENT_MEDIA_UPLOAD_PROGRESS:
+        // Parse: uint64_t bytes_sent (offset 0), uint64_t total_bytes (offset 8),
+        //        uint64_t request_id (offset 16) — little-endian
+        int bytesSent = 0;
+        int totalBytes = 0;
+        int requestId = 0;
+        for (int i = 0; i < 8; i++) {
+          bytesSent |= (event.data[i] & 0xFF) << (i * 8);
+          totalBytes |= (event.data[8 + i] & 0xFF) << (i * 8);
+          requestId |= (event.data[16 + i] & 0xFF) << (i * 8);
+        }
+        dartEvent = MediaUploadProgressEvent(bytesSent, totalBytes, requestId);
         break;
       case DnaEventType.DNA_EVENT_ERROR:
         dartEvent = ErrorEvent(0, 'Error occurred');

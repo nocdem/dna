@@ -525,6 +525,13 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
 
 int nodus_tcp_send(nodus_tcp_conn_t *conn,
                     const uint8_t *payload, size_t len) {
+    return nodus_tcp_send_progress(conn, payload, len, NULL, NULL);
+}
+
+int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
+                             const uint8_t *payload, size_t len,
+                             nodus_tcp_progress_cb progress_cb,
+                             void *user_data) {
     if (!conn || !payload || conn->state == NODUS_CONN_CLOSED) return -1;
     if (len > NODUS_MAX_FRAME_TCP) return -1;  /* M-02: prevent uint32_t truncation */
 
@@ -547,6 +554,8 @@ int nodus_tcp_send(nodus_tcp_conn_t *conn,
                                conn->wlen - conn->wpos);
         if (n > 0) {
             conn->wpos += (size_t)n;
+            if (progress_cb)
+                progress_cb(conn->wpos, conn->wlen, user_data);
             continue;
         }
         break;  /* Would block or error — let poll handle it */

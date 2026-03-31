@@ -113,11 +113,29 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
                                      const char *ip, uint16_t port);
 
 /**
+ * Progress callback for send operations.
+ * @param bytes_sent  cumulative bytes sent so far
+ * @param total_bytes total bytes to send (frame header + payload)
+ * @param user_data   opaque pointer passed through
+ */
+typedef void (*nodus_tcp_progress_cb)(size_t bytes_sent, size_t total_bytes,
+                                       void *user_data);
+
+/**
  * Send a framed payload (7-byte header prepended automatically).
  * Data is buffered and flushed on next poll.
  */
 int nodus_tcp_send(nodus_tcp_conn_t *conn,
                     const uint8_t *payload, size_t len);
+
+/**
+ * Send a framed payload with progress reporting.
+ * Same as nodus_tcp_send but calls progress_cb after each partial write.
+ */
+int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
+                             const uint8_t *payload, size_t len,
+                             nodus_tcp_progress_cb progress_cb,
+                             void *user_data);
 
 /**
  * Poll for events. Returns number of events processed.

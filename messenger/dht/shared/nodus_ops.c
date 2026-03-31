@@ -1357,9 +1357,36 @@ void nodus_ops_ch_disconnect(const uint8_t channel_uuid[16]) {
 
 #define LOG_TAG_MEDIA "MEDIA_OPS"
 
+/* Context for multi-chunk progress aggregation */
+typedef struct {
+    nodus_ops_media_progress_cb user_cb;
+    void                       *user_data;
+    size_t                      chunk_offset;  /* bytes from previous chunks */
+    size_t                      total_bytes;   /* total data_len */
+} _media_progress_ctx_t;
+
+/* Internal TCP-level callback → aggregates chunk offset + TCP bytes */
+static void _media_tcp_progress(size_t tcp_sent, size_t tcp_total,
+                                 void *ctx) {
+    _media_progress_ctx_t *p = (_media_progress_ctx_t *)ctx;
+    if (p && p->user_cb) {
+        /* Estimate: TCP overhead is small, use data_len ratio.
+         * tcp_sent/tcp_total gives fraction of this chunk sent. */
+        size_t chunk_data_len = p->total_bytes - p->chunk_offset;
+        if (chunk_data_len > NODUS_OPS_MEDIA_CHUNK_SIZE)
+            chunk_data_len = NODUS_OPS_MEDIA_CHUNK_SIZE;
+        size_t chunk_sent = (tcp_total > 0)
+            ? (size_t)((double)tcp_sent / tcp_total * chunk_data_len)
+            : chunk_data_len;
+        p->user_cb(p->chunk_offset + chunk_sent, p->total_bytes, p->user_data);
+    }
+}
+
 int nodus_ops_media_put(const uint8_t content_hash[64],
                         const uint8_t *data, size_t data_len,
-                        uint8_t media_type, bool encrypted, uint32_t ttl) {
+                        uint8_t media_type, bool encrypted, uint32_t ttl,
+                        nodus_ops_media_progress_cb progress_cb,
+                        void *progress_user_data) {
     if (!content_hash || !data || data_len == 0) return -1;
 
     nodus_client_t *c = nodus_singleton_get();
@@ -1373,6 +1400,8 @@ int nodus_ops_media_put(const uint8_t content_hash[64],
     int rc = nodus_client_media_exists(c, content_hash, &exists);
     if (rc == 0 && exists) {
         QGP_LOG_INFO(LOG_TAG_MEDIA, "media already uploaded, skipping");
+        /* Report 100% progress for dedup case */
+        if (progress_cb) progress_cb(data_len, data_len, progress_user_data);
         nodus_singleton_release();
         return 0;
     }
@@ -1386,6 +1415,13 @@ int nodus_ops_media_put(const uint8_t content_hash[64],
     uint32_t chunk_count = (uint32_t)((data_len + NODUS_OPS_MEDIA_CHUNK_SIZE - 1)
                                        / NODUS_OPS_MEDIA_CHUNK_SIZE);
 
+    _media_progress_ctx_t pctx = {
+        .user_cb     = progress_cb,
+        .user_data   = progress_user_data,
+        .chunk_offset = 0,
+        .total_bytes = data_len,
+    };
+
     for (uint32_t i = 0; i < chunk_count; i++) {
         size_t offset = (size_t)i * NODUS_OPS_MEDIA_CHUNK_SIZE;
         size_t chunk_len = data_len - offset;
@@ -1393,6 +1429,7 @@ int nodus_ops_media_put(const uint8_t content_hash[64],
             chunk_len = NODUS_OPS_MEDIA_CHUNK_SIZE;
 
         const uint8_t *chunk_data = data + offset;
+        pctx.chunk_offset = offset;
 
         /* Sign the chunk data */
         nodus_sig_t sig;
@@ -1407,7 +1444,9 @@ int nodus_ops_media_put(const uint8_t content_hash[64],
                                     (uint64_t)data_len, media_type,
                                     encrypted, ttl,
                                     chunk_data, chunk_len,
-                                    &sig, &complete);
+                                    &sig, &complete,
+                                    progress_cb ? _media_tcp_progress : NULL,
+                                    progress_cb ? &pctx : NULL);
         if (rc != 0) {
             QGP_LOG_ERROR(LOG_TAG_MEDIA, "media_put chunk %u/%u failed: %d",
                           i, chunk_count, rc);

@@ -47,6 +47,8 @@ static uint64_t now_ms(void);
 static nodus_pending_t *alloc_pending(nodus_client_t *client, uint32_t txn);
 static void free_pending(nodus_client_t *client, nodus_pending_t *p);
 static int send_request(nodus_client_t *client, const uint8_t *buf, size_t len);
+static int send_request_progress(nodus_client_t *client, const uint8_t *buf, size_t len,
+                                  nodus_tcp_progress_cb progress_cb, void *user_data);
 static void set_state(nodus_client_t *client, nodus_client_state_t new_state);
 static int  do_connect_one(nodus_client_t *client, int server_idx);
 static int  do_auth(nodus_client_t *client);
@@ -165,6 +167,16 @@ static int send_request(nodus_client_t *client, const uint8_t *payload, size_t l
     if (!conn) return -1;
     pthread_mutex_lock(&client->send_mutex);
     int rc = nodus_tcp_send(conn, payload, len);
+    pthread_mutex_unlock(&client->send_mutex);
+    return rc;
+}
+
+static int send_request_progress(nodus_client_t *client, const uint8_t *payload, size_t len,
+                                  nodus_tcp_progress_cb progress_cb, void *user_data) {
+    nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
+    if (!conn) return -1;
+    pthread_mutex_lock(&client->send_mutex);
+    int rc = nodus_tcp_send_progress(conn, payload, len, progress_cb, user_data);
     pthread_mutex_unlock(&client->send_mutex);
     return rc;
 }
@@ -1447,7 +1459,9 @@ int nodus_client_media_put(nodus_client_t *client,
                            bool encrypted, uint32_t ttl,
                            const uint8_t *data, size_t data_len,
                            const nodus_sig_t *sig,
-                           bool *complete_out) {
+                           bool *complete_out,
+                           nodus_media_progress_cb progress_cb,
+                           void *progress_user_data) {
     if (!nodus_client_is_ready(client) || !content_hash || !data || !sig)
         return -1;
     if (complete_out) *complete_out = false;
@@ -1468,11 +1482,20 @@ int nodus_client_media_put(nodus_client_t *client,
                       chunk_index, data_len);
         free_pending(client, req); free(buf); return -1;
     }
-    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request_progress(client, buf, len,
+                              (nodus_tcp_progress_cb)progress_cb,
+                              progress_user_data) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
     free(buf);
 
+    /* Dynamic timeout: base 30s + ~20KB/s for data payload */
+    int media_timeout = client->config.request_timeout_ms;
+    if (media_timeout < 30000) media_timeout = 30000;
+    media_timeout += (int)(data_len / 50);  /* +20ms per KB */
+
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
-    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+    if (!wait_response(client, req, media_timeout)) {
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {

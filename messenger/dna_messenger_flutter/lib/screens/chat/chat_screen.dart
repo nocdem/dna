@@ -22,7 +22,6 @@ import '../../widgets/media_message_bubble.dart';
 import '../../widgets/voice_record_sheet.dart';
 import '../../services/image_attachment_service.dart';
 import '../../services/media_service.dart';
-import '../../models/media_ref.dart';
 import 'contact_profile_dialog.dart';
 import 'widgets/message_bubble.dart';
 
@@ -51,6 +50,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   String _searchQuery = '';
   final _searchController = TextEditingController();
   final _searchFocusNode = FocusNode();
+
+  // Media upload state (non-blocking progress)
+  bool _isUploading = false;
+  double _uploadProgress = 0.0;
+  StreamSubscription<DnaEvent>? _uploadProgressSub;
 
   @override
   void initState() {
@@ -156,6 +160,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   void dispose() {
+    _uploadProgressSub?.cancel();
     _messageController.removeListener(_onTextChanged);
     _scrollController.removeListener(_onScroll);
     _messageController.dispose();
@@ -464,6 +469,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   },
                 ),
               ),
+              // Upload progress bar (non-blocking)
+              if (_isUploading)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: LinearProgressIndicator(
+                          value: _uploadProgress,
+                          minHeight: 3,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${(_uploadProgress * 100).toInt()}%',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
               // Input area
               _buildInputArea(context, contact),
             ],
@@ -1061,6 +1086,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
+  /// Start upload progress tracking (non-blocking)
+  void _startUploadProgress(DnaEngine engine) {
+    _uploadProgressSub?.cancel();
+    setState(() {
+      _isUploading = true;
+      _uploadProgress = 0.0;
+    });
+    _uploadProgressSub = engine.events
+        .where((e) => e is MediaUploadProgressEvent)
+        .cast<MediaUploadProgressEvent>()
+        .listen((e) {
+      if (mounted && e.totalBytes > 0) {
+        setState(() {
+          _uploadProgress = (e.bytesSent / e.totalBytes).clamp(0.0, 1.0);
+        });
+      }
+    });
+  }
+
+  /// Finish upload progress tracking
+  void _finishUploadProgress() {
+    _uploadProgressSub?.cancel();
+    _uploadProgressSub = null;
+    if (mounted) {
+      setState(() {
+        _isUploading = false;
+        _uploadProgress = 0.0;
+      });
+    }
+  }
+
   Future<void> _pickAndSendImage(Contact contact, ImageSource source) async {
     final imageService = ImageAttachmentService();
 
@@ -1075,15 +1131,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final caption = await _showCaptionDialog(context);
       if (!mounted) return;
 
-      // Show loading indicator
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => const Center(child: CircularProgressIndicator()),
-      );
+      // Start non-blocking upload with progress
+      final engine = await ref.read(engineProvider.future);
+      _startUploadProgress(engine);
 
       // Upload via MediaService (compress + thumbnail + DHT upload)
-      final engine = await ref.read(engineProvider.future);
       final mediaService = MediaService(engine);
       final mediaRef = await mediaService.uploadImage(
         bytes,
@@ -1092,8 +1144,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ttl: 604800,
       );
 
+      _finishUploadProgress();
       if (!mounted) return;
-      Navigator.pop(context); // Dismiss loading
 
       // Send media_ref JSON via existing message queue
       final messageJson = mediaRef.toMessageJson();
@@ -1117,10 +1169,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         );
       }
     } on MediaServiceException catch (e) {
+      _finishUploadProgress();
       if (!mounted) return;
-      if (Navigator.canPop(context)) {
-        Navigator.pop(context);
-      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(e.message),
@@ -1128,10 +1178,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       );
     } on ImageAttachmentException catch (e) {
+      _finishUploadProgress();
       if (!mounted) return;
-      if (Navigator.canPop(context)) {
-        Navigator.pop(context);
-      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(e.message),
@@ -1139,10 +1187,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       );
     } catch (e) {
+      _finishUploadProgress();
       if (!mounted) return;
-      if (Navigator.canPop(context)) {
-        Navigator.pop(context);
-      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error: $e'),
@@ -1182,15 +1228,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final caption = await _showCaptionDialog(context);
       if (!mounted) return;
 
-      // Show loading indicator
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => const Center(child: CircularProgressIndicator()),
-      );
+      // Start non-blocking upload with progress
+      final engine = await ref.read(engineProvider.future);
+      _startUploadProgress(engine);
 
       // Upload via MediaService
-      final engine = await ref.read(engineProvider.future);
       final mediaService = MediaService(engine);
       final mediaRef = await mediaService.uploadVideo(
         file,
@@ -1199,8 +1241,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ttl: 604800,
       );
 
+      _finishUploadProgress();
       if (!mounted) return;
-      Navigator.pop(context); // Dismiss loading
 
       // Send media_ref JSON via existing message queue
       final messageJson = mediaRef.toMessageJson();
@@ -1224,10 +1266,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         );
       }
     } on MediaServiceException catch (e) {
+      _finishUploadProgress();
       if (!mounted) return;
-      if (Navigator.canPop(context)) {
-        Navigator.pop(context);
-      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(e.message),
@@ -1235,10 +1275,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       );
     } catch (e) {
+      _finishUploadProgress();
       if (!mounted) return;
-      if (Navigator.canPop(context)) {
-        Navigator.pop(context);
-      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error: $e'),
@@ -1256,15 +1294,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (result == null) return;
     if (!mounted) return;
 
-    // Show loading indicator
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator()),
-    );
-
     try {
+      // Start non-blocking upload with progress
       final engine = await ref.read(engineProvider.future);
+      _startUploadProgress(engine);
+
       final mediaService = MediaService(engine);
       final mediaRef = await mediaService.uploadAudio(
         result.audioBytes,
@@ -1273,8 +1307,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ttl: 604800,
       );
 
+      _finishUploadProgress();
       if (!mounted) return;
-      Navigator.pop(context); // Dismiss loading
 
       // Send media_ref JSON
       final messageJson = mediaRef.toMessageJson();
@@ -1282,8 +1316,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           .read(conversationProvider(contact.fingerprint).notifier)
           .sendMessage(messageJson);
     } on MediaServiceException catch (e) {
+      _finishUploadProgress();
       if (!mounted) return;
-      if (Navigator.canPop(context)) Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(e.message),
@@ -1291,8 +1325,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       );
     } catch (e) {
+      _finishUploadProgress();
       if (!mounted) return;
-      if (Navigator.canPop(context)) Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error: $e'),

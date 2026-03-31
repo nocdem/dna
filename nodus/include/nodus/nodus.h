@@ -71,6 +71,10 @@ typedef void (*nodus_on_state_change_fn)(nodus_client_state_t old_state,
                                           nodus_client_state_t new_state,
                                           void *user_data);
 
+/** Progress callback for media upload/download operations. */
+typedef void (*nodus_media_progress_cb)(size_t bytes_sent, size_t total_bytes,
+                                         void *user_data);
+
 /* ── Configuration ──────────────────────────────────────────────── */
 
 typedef struct {
@@ -756,7 +760,9 @@ int nodus_client_media_put(nodus_client_t *client,
                            bool encrypted, uint32_t ttl,
                            const uint8_t *data, size_t data_len,
                            const nodus_sig_t *sig,
-                           bool *complete_out);
+                           bool *complete_out,
+                           nodus_media_progress_cb progress_cb,
+                           void *progress_user_data);
 
 /**
  * Get media metadata (chunk count, size, type, completion status).

@@ -24,12 +24,33 @@
 #define LOG_TAG "ENG_MEDIA"
 
 /* ============================================================================
+ * UPLOAD PROGRESS CALLBACK
+ * ============================================================================ */
+
+typedef struct {
+    dna_engine_t *engine;
+    uint64_t      request_id;
+} _upload_progress_ctx_t;
+
+static void _upload_progress_cb(size_t bytes_sent, size_t total_bytes,
+                                 void *user_data) {
+    _upload_progress_ctx_t *ctx = (_upload_progress_ctx_t *)user_data;
+    if (!ctx || !ctx->engine) return;
+
+    dna_event_t event;
+    memset(&event, 0, sizeof(event));
+    event.type = DNA_EVENT_MEDIA_UPLOAD_PROGRESS;
+    event.data.media_upload_progress.bytes_sent  = (uint64_t)bytes_sent;
+    event.data.media_upload_progress.total_bytes = (uint64_t)total_bytes;
+    event.data.media_upload_progress.request_id  = ctx->request_id;
+    dna_dispatch_event(ctx->engine, &event);
+}
+
+/* ============================================================================
  * TASK HANDLERS
  * ============================================================================ */
 
 void dna_handle_media_upload(dna_engine_t *engine, dna_task_t *task) {
-    (void)engine;
-
     uint8_t *data            = task->params.media_upload.data;
     size_t   data_len        = task->params.media_upload.data_len;
     uint8_t  media_type      = task->params.media_upload.media_type;
@@ -46,9 +67,15 @@ void dna_handle_media_upload(dna_engine_t *engine, dna_task_t *task) {
     QGP_LOG_INFO(LOG_TAG, "Media upload: %zu bytes, type=%u, encrypted=%d, ttl=%u",
                  data_len, media_type, encrypted, ttl);
 
+    _upload_progress_ctx_t pctx = {
+        .engine     = engine,
+        .request_id = task->request_id,
+    };
+
     int ret = nodus_ops_media_put(task->params.media_upload.content_hash,
                                   data, data_len,
-                                  media_type, encrypted, ttl);
+                                  media_type, encrypted, ttl,
+                                  _upload_progress_cb, &pctx);
 
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Media upload failed: %d", ret);

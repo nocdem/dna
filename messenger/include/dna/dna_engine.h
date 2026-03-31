@@ -774,6 +774,7 @@ typedef enum {
     DNA_EVENT_WALL_NEW_POST,             /* New wall post from a contact (v0.6.135+) */
     DNA_EVENT_CHANNEL_NEW_POST,          /* New post in subscribed channel */
     DNA_EVENT_CHANNEL_SUBS_SYNCED,       /* Channel subscriptions synced from DHT */
+    DNA_EVENT_MEDIA_UPLOAD_PROGRESS,     /* Media upload byte progress (v0.9.151+) */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -845,6 +846,11 @@ typedef struct {
         struct {
             int subscriptions_synced;
         } channel_subs_synced;
+        struct {
+            uint64_t bytes_sent;
+            uint64_t total_bytes;
+            uint64_t request_id;            /* Matches the upload request ID */
+        } media_upload_progress;
         struct {
             int code;
             char message[256];
