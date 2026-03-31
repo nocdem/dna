@@ -251,11 +251,16 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
 
     // Fetch engagement from cache immediately (C side serves stale cache first,
     // then refreshes from DHT for stale entries in the same call).
-    // This way posts + likes/comments render together on first frame.
+    // Batch in chunks of 32 (NODUS_MAX_BATCH_KEYS limit in C).
     final uuids = wallPosts.map((p) => p.uuid).toList();
     List<WallEngagement> engagements = [];
     try {
-      engagements = await engine.wallGetEngagement(uuids);
+      const batchSize = 32;
+      for (var i = 0; i < uuids.length; i += batchSize) {
+        final chunk = uuids.sublist(i, i + batchSize > uuids.length ? uuids.length : i + batchSize);
+        final batch = await engine.wallGetEngagement(chunk);
+        engagements.addAll(batch);
+      }
     } catch (_) {}
 
     // Assemble items WITH engagement data from cache
