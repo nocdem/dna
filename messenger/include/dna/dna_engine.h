@@ -3813,6 +3813,7 @@ DNA_API dna_request_id_t dna_engine_media_upload(
     const uint8_t *data, size_t data_len,
     const uint8_t content_hash[64],
     uint8_t media_type, bool encrypted, uint32_t ttl,
+    uint32_t start_chunk,
     dna_media_upload_cb callback, void *user_data);
 
 /**

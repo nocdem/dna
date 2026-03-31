@@ -1385,6 +1385,7 @@ static void _media_tcp_progress(size_t tcp_sent, size_t tcp_total,
 int nodus_ops_media_put(const uint8_t content_hash[64],
                         const uint8_t *data, size_t data_len,
                         uint8_t media_type, bool encrypted, uint32_t ttl,
+                        uint32_t start_chunk,
                         nodus_ops_media_progress_cb progress_cb,
                         void *progress_user_data) {
     if (!content_hash || !data || data_len == 0) return -1;
@@ -1424,11 +1425,22 @@ int nodus_ops_media_put(const uint8_t content_hash[64],
 
     const int max_retries = 3;
 
+    if (start_chunk > 0) {
+        QGP_LOG_INFO(LOG_TAG_MEDIA, "resuming from chunk %u/%u", start_chunk, chunk_count);
+    }
+
     for (uint32_t i = 0; i < chunk_count; i++) {
         size_t offset = (size_t)i * NODUS_OPS_MEDIA_CHUNK_SIZE;
         size_t chunk_len = data_len - offset;
         if (chunk_len > NODUS_OPS_MEDIA_CHUNK_SIZE)
             chunk_len = NODUS_OPS_MEDIA_CHUNK_SIZE;
+
+        /* Skip already-sent chunks (resume) */
+        if (i < start_chunk) {
+            size_t skip_end = offset + chunk_len;
+            if (progress_cb) progress_cb(skip_end, data_len, progress_user_data);
+            continue;
+        }
 
         const uint8_t *chunk_data = data + offset;
         pctx.chunk_offset = offset;

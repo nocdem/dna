@@ -396,12 +396,14 @@ typedef void (*nodus_ops_media_progress_cb)(size_t bytes_sent, size_t total_byte
  * Upload media to Nodus DHT. Handles chunking, signing, dedup.
  * content_hash is SHA3-512 of the data (caller computes beforehand).
  * progress_cb is called during TCP send with cumulative progress.
+ * start_chunk: skip chunks before this index (for resume after partial upload).
  *
  * @return 0 on success, -1 on error
  */
 int nodus_ops_media_put(const uint8_t content_hash[64],
                         const uint8_t *data, size_t data_len,
                         uint8_t media_type, bool encrypted, uint32_t ttl,
+                        uint32_t start_chunk,
                         nodus_ops_media_progress_cb progress_cb,
                         void *progress_user_data);
 

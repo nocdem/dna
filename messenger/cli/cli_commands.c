@@ -6771,7 +6771,7 @@ int cmd_media_upload(dna_engine_t *engine, const char *filepath, uint8_t media_t
     cli_wait_init(&wait);
 
     dna_engine_media_upload(engine, data, data_len, content_hash,
-                            media_type, false, 0, on_media_upload, &wait);
+                            media_type, false, 0, 0, on_media_upload, &wait);
     int rc = cli_wait_for(&wait);
 
     free(data);
@@ -6933,7 +6933,7 @@ int cmd_media_send(dna_engine_t *engine, const char *recipient, const char *file
     cli_wait_init(&wait);
 
     dna_engine_media_upload(engine, data, data_len, content_hash,
-                            media_type, false, 0, on_media_upload, &wait);
+                            media_type, false, 0, 0, on_media_upload, &wait);
     int rc = cli_wait_for(&wait);
     free(data);
 

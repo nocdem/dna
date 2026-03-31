@@ -4284,11 +4284,11 @@ class DnaBindings {
   late final _dna_engine_media_upload = _lib.lookupFunction<
       Uint64 Function(
           Pointer<dna_engine_t>, Pointer<Uint8>, Uint64,
-          Pointer<Uint8>, Uint8, Bool, Uint32,
+          Pointer<Uint8>, Uint8, Bool, Uint32, Uint32,
           Pointer<DnaMediaUploadCb>, Pointer<Void>),
       int Function(
           Pointer<dna_engine_t>, Pointer<Uint8>, int,
-          Pointer<Uint8>, int, bool, int,
+          Pointer<Uint8>, int, bool, int, int,
           Pointer<DnaMediaUploadCb>, Pointer<Void>)>(
       'dna_engine_media_upload');
 
@@ -4300,12 +4300,13 @@ class DnaBindings {
     int mediaType,
     bool encrypted,
     int ttl,
+    int startChunk,
     Pointer<DnaMediaUploadCb> callback,
     Pointer<Void> userData,
   ) {
     return _dna_engine_media_upload(
         engine, data, dataLen, contentHash, mediaType, encrypted, ttl,
-        callback, userData);
+        startChunk, callback, userData);
   }
 
   late final _dna_engine_media_download = _lib.lookupFunction<

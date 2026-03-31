@@ -75,6 +75,7 @@ void dna_handle_media_upload(dna_engine_t *engine, dna_task_t *task) {
     int ret = nodus_ops_media_put(task->params.media_upload.content_hash,
                                   data, data_len,
                                   media_type, encrypted, ttl,
+                                  task->params.media_upload.start_chunk,
                                   _upload_progress_cb, &pctx);
 
     if (ret != 0) {
@@ -142,6 +143,7 @@ dna_request_id_t dna_engine_media_upload(
     const uint8_t *data, size_t data_len,
     const uint8_t content_hash[64],
     uint8_t media_type, bool encrypted, uint32_t ttl,
+    uint32_t start_chunk,
     dna_media_upload_cb callback, void *user_data)
 {
     if (!engine || !data || data_len == 0 || !content_hash || !callback) return 0;
@@ -155,6 +157,7 @@ dna_request_id_t dna_engine_media_upload(
     params.media_upload.media_type = media_type;
     params.media_upload.encrypted = encrypted;
     params.media_upload.ttl = ttl;
+    params.media_upload.start_chunk = start_chunk;
 
     dna_task_callback_t cb = { .media_upload = callback };
     return dna_submit_task(engine, TASK_MEDIA_UPLOAD, &params, cb, user_data);

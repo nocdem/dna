@@ -36,7 +36,7 @@ class CachedIdentity {
 /// SQLite database for caching profiles (contacts + identities)
 class CacheDatabase {
   static const _databaseName = 'dna_cache.db';
-  static const _databaseVersion = 5; // Bumped for registered_name column
+  static const _databaseVersion = 6; // Bumped for pending_uploads table
 
   // Singleton instance
   static CacheDatabase? _instance;
@@ -130,6 +130,36 @@ class CacheDatabase {
     await db.execute(
       'CREATE INDEX idx_starred_messages_contact ON starred_messages(contact_fp)'
     );
+
+    // Pending media uploads (outbox — survives app restart)
+    await db.execute('''
+      CREATE TABLE pending_uploads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        content_hash TEXT NOT NULL UNIQUE,
+        recipient_fp TEXT NOT NULL,
+        media_type INTEGER NOT NULL,
+        mime_type TEXT NOT NULL,
+        encrypted_file_path TEXT NOT NULL,
+        encryption_key TEXT,
+        thumbnail TEXT,
+        caption TEXT,
+        width INTEGER NOT NULL DEFAULT 0,
+        height INTEGER NOT NULL DEFAULT 0,
+        duration INTEGER NOT NULL DEFAULT 0,
+        total_size INTEGER NOT NULL,
+        chunk_count INTEGER NOT NULL,
+        chunks_sent INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        error_message TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    ''');
+
+    await db.execute(
+      'CREATE INDEX idx_pending_uploads_status ON pending_uploads(status)'
+    );
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -139,6 +169,7 @@ class CacheDatabase {
       await db.execute('DROP TABLE IF EXISTS identity_profiles');
       await db.execute('DROP TABLE IF EXISTS identity_list');
       await db.execute('DROP TABLE IF EXISTS starred_messages');
+      await db.execute('DROP TABLE IF EXISTS pending_uploads');
       await _onCreate(db, newVersion);
     }
   }
@@ -533,6 +564,79 @@ class CacheDatabase {
     );
   }
 
+  // ==========================================================================
+  // Pending Upload Operations (Media Outbox)
+  // ==========================================================================
+
+  /// Insert a new pending upload
+  Future<int> insertPendingUpload(PendingUpload upload) async {
+    final db = await database;
+    return db.insert('pending_uploads', upload.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  /// Update chunks_sent for a content hash
+  Future<void> updateChunksSent(String contentHash, int chunksSent) async {
+    final db = await database;
+    await db.update(
+      'pending_uploads',
+      {'chunks_sent': chunksSent, 'updated_at': DateTime.now().millisecondsSinceEpoch},
+      where: 'content_hash = ?',
+      whereArgs: [contentHash],
+    );
+  }
+
+  /// Update upload status
+  Future<void> updateUploadStatus(String contentHash, String status, [String? errorMessage]) async {
+    final db = await database;
+    final values = <String, Object?>{
+      'status': status,
+      'updated_at': DateTime.now().millisecondsSinceEpoch,
+    };
+    if (errorMessage != null) values['error_message'] = errorMessage;
+    await db.update('pending_uploads', values,
+        where: 'content_hash = ?', whereArgs: [contentHash]);
+  }
+
+  /// Increment retry count
+  Future<void> incrementRetryCount(String contentHash) async {
+    final db = await database;
+    await db.rawUpdate(
+      'UPDATE pending_uploads SET retry_count = retry_count + 1, updated_at = ? WHERE content_hash = ?',
+      [DateTime.now().millisecondsSinceEpoch, contentHash],
+    );
+  }
+
+  /// Get all pending/failed uploads for resume
+  Future<List<PendingUpload>> getPendingUploads() async {
+    final db = await database;
+    final results = await db.query(
+      'pending_uploads',
+      where: "status IN ('pending', 'failed')",
+      orderBy: 'created_at ASC',
+    );
+    return results.map(PendingUpload.fromMap).toList();
+  }
+
+  /// Get a specific pending upload by content hash
+  Future<PendingUpload?> getPendingUpload(String contentHash) async {
+    final db = await database;
+    final results = await db.query(
+      'pending_uploads',
+      where: 'content_hash = ?',
+      whereArgs: [contentHash],
+    );
+    if (results.isEmpty) return null;
+    return PendingUpload.fromMap(results.first);
+  }
+
+  /// Delete a pending upload
+  Future<void> deletePendingUpload(String contentHash) async {
+    final db = await database;
+    await db.delete('pending_uploads',
+        where: 'content_hash = ?', whereArgs: [contentHash]);
+  }
+
   /// Close the database
   Future<void> close() async {
     if (_database != null) {
@@ -540,4 +644,96 @@ class CacheDatabase {
       _database = null;
     }
   }
+}
+
+/// Pending media upload data model
+class PendingUpload {
+  final int? id;
+  final String contentHash;
+  final String recipientFp;
+  final int mediaType;
+  final String mimeType;
+  final String encryptedFilePath;
+  final String? encryptionKey;
+  final String? thumbnail;
+  final String? caption;
+  final int width;
+  final int height;
+  final int duration;
+  final int totalSize;
+  final int chunkCount;
+  final int chunksSent;
+  final String status;
+  final String? errorMessage;
+  final int retryCount;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  PendingUpload({
+    this.id,
+    required this.contentHash,
+    required this.recipientFp,
+    required this.mediaType,
+    required this.mimeType,
+    required this.encryptedFilePath,
+    this.encryptionKey,
+    this.thumbnail,
+    this.caption,
+    this.width = 0,
+    this.height = 0,
+    this.duration = 0,
+    required this.totalSize,
+    required this.chunkCount,
+    this.chunksSent = 0,
+    this.status = 'pending',
+    this.errorMessage,
+    this.retryCount = 0,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  Map<String, Object?> toMap() => {
+        'content_hash': contentHash,
+        'recipient_fp': recipientFp,
+        'media_type': mediaType,
+        'mime_type': mimeType,
+        'encrypted_file_path': encryptedFilePath,
+        'encryption_key': encryptionKey,
+        'thumbnail': thumbnail,
+        'caption': caption,
+        'width': width,
+        'height': height,
+        'duration': duration,
+        'total_size': totalSize,
+        'chunk_count': chunkCount,
+        'chunks_sent': chunksSent,
+        'status': status,
+        'error_message': errorMessage,
+        'retry_count': retryCount,
+        'created_at': createdAt.millisecondsSinceEpoch,
+        'updated_at': updatedAt.millisecondsSinceEpoch,
+      };
+
+  factory PendingUpload.fromMap(Map<String, dynamic> map) => PendingUpload(
+        id: map['id'] as int?,
+        contentHash: map['content_hash'] as String,
+        recipientFp: map['recipient_fp'] as String,
+        mediaType: map['media_type'] as int,
+        mimeType: map['mime_type'] as String,
+        encryptedFilePath: map['encrypted_file_path'] as String,
+        encryptionKey: map['encryption_key'] as String?,
+        thumbnail: map['thumbnail'] as String?,
+        caption: map['caption'] as String?,
+        width: map['width'] as int? ?? 0,
+        height: map['height'] as int? ?? 0,
+        duration: map['duration'] as int? ?? 0,
+        totalSize: map['total_size'] as int,
+        chunkCount: map['chunk_count'] as int,
+        chunksSent: map['chunks_sent'] as int? ?? 0,
+        status: map['status'] as String,
+        errorMessage: map['error_message'] as String?,
+        retryCount: map['retry_count'] as int? ?? 0,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at'] as int),
+        updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at'] as int),
+      );
 }

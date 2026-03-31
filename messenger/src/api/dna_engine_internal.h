@@ -540,6 +540,7 @@ typedef union {
         uint8_t   media_type;       /* 0=image, 1=video, 2=audio */
         bool      encrypted;
         uint32_t  ttl;
+        uint32_t  start_chunk;      /* Resume: skip chunks before this (0=all) */
     } media_upload;
 
     /* Media: Download (v0.9.146+) */

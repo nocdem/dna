@@ -6256,7 +6256,7 @@ class DnaEngine {
   /// [ttl] TTL in seconds (0 = permanent).
   /// Returns the content hash as a hex string on success.
   Future<String> mediaUpload(Uint8List data, Uint8List contentHash,
-      int mediaType, bool encrypted, int ttl) async {
+      int mediaType, bool encrypted, int ttl, {int startChunk = 0}) async {
     if (contentHash.length != 64) {
       throw ArgumentError('contentHash must be 64 bytes (SHA3-512)');
     }
@@ -6307,6 +6307,7 @@ class DnaEngine {
       mediaType,
       encrypted,
       ttl,
+      startChunk,
       callback.nativeFunction.cast(),
       nullptr,
     );
