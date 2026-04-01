@@ -285,6 +285,200 @@ static void test_persistence(void) {
     unlink(TEST_DB);
 }
 
+/* ── EXCLUSIVE ownership tests ──────────────────────────────────── */
+
+static nodus_value_t *make_exclusive_value(const char *key_str, const char *data_str,
+                                            uint64_t vid, uint64_t seq,
+                                            nodus_identity_t *id) {
+    nodus_key_t key_hash;
+    nodus_hash((const uint8_t *)key_str, strlen(key_str), &key_hash);
+
+    nodus_value_t *val = NULL;
+    nodus_value_create(&key_hash, (const uint8_t *)data_str, strlen(data_str),
+                       NODUS_VALUE_EXCLUSIVE, 0, vid, seq, &id->pk, &val);
+    nodus_value_sign(val, &id->sk);
+    return val;
+}
+
+static nodus_value_t *make_value_with_identity(const char *key_str, const char *data_str,
+                                                nodus_value_type_t type, uint32_t ttl,
+                                                uint64_t vid, uint64_t seq,
+                                                nodus_identity_t *id) {
+    nodus_key_t key_hash;
+    nodus_hash((const uint8_t *)key_str, strlen(key_str), &key_hash);
+
+    nodus_value_t *val = NULL;
+    nodus_value_create(&key_hash, (const uint8_t *)data_str, strlen(data_str),
+                       type, ttl, vid, seq, &id->pk, &val);
+    nodus_value_sign(val, &id->sk);
+    return val;
+}
+
+static void test_exclusive_first_writer_wins(void) {
+    TEST("exclusive: first writer wins");
+
+    nodus_storage_t store;
+    nodus_storage_open(":memory:", &store);
+
+    /* Owner A */
+    uint8_t seedA[32]; memset(seedA, 0xAA, sizeof(seedA));
+    nodus_identity_t idA; nodus_identity_from_seed(seedA, &idA);
+
+    /* Owner B */
+    uint8_t seedB[32]; memset(seedB, 0xBB, sizeof(seedB));
+    nodus_identity_t idB; nodus_identity_from_seed(seedB, &idB);
+
+    /* Owner A writes EXCLUSIVE */
+    nodus_value_t *vA1 = make_exclusive_value("excl:key1", "owner_a_v1", 1, 0, &idA);
+    int rc = nodus_storage_put(&store, vA1);
+    if (rc != 0) { FAIL("owner A put failed"); goto cleanup_fww; }
+
+    /* Owner B tries EXCLUSIVE on same key → should be rejected */
+    nodus_value_t *vB = make_exclusive_value("excl:key1", "owner_b_attempt", 1, 1, &idB);
+    rc = nodus_storage_put(&store, vB);
+    if (rc != -2) { FAIL("owner B should be rejected with -2"); goto cleanup_fww; }
+
+    /* Owner A can still update */
+    nodus_value_t *vA2 = make_exclusive_value("excl:key1", "owner_a_v2", 1, 1, &idA);
+    rc = nodus_storage_put(&store, vA2);
+    if (rc != 0) { FAIL("owner A update failed"); goto cleanup_fww; }
+
+    /* GET returns owner A's latest value */
+    nodus_value_t *got = NULL;
+    nodus_storage_get(&store, &vA1->key_hash, &got);
+    if (got && got->data_len == 10 && memcmp(got->data, "owner_a_v2", 10) == 0) {
+        PASS();
+    } else {
+        FAIL("GET did not return owner A's latest value");
+    }
+    nodus_value_free(got);
+
+cleanup_fww:
+    nodus_value_free(vA1);
+    nodus_value_free(vB);
+    nodus_value_free(vA2);
+    nodus_identity_clear(&idA);
+    nodus_identity_clear(&idB);
+    nodus_storage_close(&store);
+}
+
+static void test_exclusive_blocks_permanent_bypass(void) {
+    TEST("exclusive: blocks PERMANENT bypass");
+
+    nodus_storage_t store;
+    nodus_storage_open(":memory:", &store);
+
+    uint8_t seedA[32]; memset(seedA, 0xAA, sizeof(seedA));
+    nodus_identity_t idA; nodus_identity_from_seed(seedA, &idA);
+
+    uint8_t seedB[32]; memset(seedB, 0xBB, sizeof(seedB));
+    nodus_identity_t idB; nodus_identity_from_seed(seedB, &idB);
+
+    /* Owner A writes EXCLUSIVE */
+    nodus_value_t *vA = make_exclusive_value("excl:key2", "owner_a", 1, 0, &idA);
+    int rc = nodus_storage_put(&store, vA);
+    if (rc != 0) { FAIL("owner A put failed"); goto cleanup_bp; }
+
+    /* Owner B tries PERMANENT with high seq → should be rejected */
+    nodus_value_t *vB = make_value_with_identity("excl:key2", "bypass_attempt",
+                                                  NODUS_VALUE_PERMANENT, 0,
+                                                  1, 999999, &idB);
+    rc = nodus_storage_put(&store, vB);
+    if (rc != -2) { FAIL("PERMANENT bypass should be rejected with -2"); goto cleanup_bp; }
+
+    /* GET still returns owner A */
+    nodus_value_t *got = NULL;
+    nodus_storage_get(&store, &vA->key_hash, &got);
+    if (got && got->data_len == 7 && memcmp(got->data, "owner_a", 7) == 0) {
+        PASS();
+    } else {
+        FAIL("GET did not return owner A's value");
+    }
+    nodus_value_free(got);
+
+cleanup_bp:
+    nodus_value_free(vA);
+    nodus_value_free(vB);
+    nodus_identity_clear(&idA);
+    nodus_identity_clear(&idB);
+    nodus_storage_close(&store);
+}
+
+static void test_exclusive_put_if_newer(void) {
+    TEST("exclusive: put_if_newer rejects other owner");
+
+    nodus_storage_t store;
+    nodus_storage_open(":memory:", &store);
+
+    uint8_t seedA[32]; memset(seedA, 0xAA, sizeof(seedA));
+    nodus_identity_t idA; nodus_identity_from_seed(seedA, &idA);
+
+    uint8_t seedB[32]; memset(seedB, 0xBB, sizeof(seedB));
+    nodus_identity_t idB; nodus_identity_from_seed(seedB, &idB);
+
+    /* Owner A writes EXCLUSIVE via put() */
+    nodus_value_t *vA = make_exclusive_value("excl:key3", "owner_a", 1, 0, &idA);
+    int rc = nodus_storage_put(&store, vA);
+    if (rc != 0) { FAIL("owner A put failed"); goto cleanup_pin; }
+
+    /* Owner B tries put_if_newer() → should be rejected */
+    nodus_value_t *vB = make_exclusive_value("excl:key3", "owner_b_newer", 1, 100, &idB);
+    rc = nodus_storage_put_if_newer(&store, vB);
+    if (rc != -2) { FAIL("put_if_newer should be rejected with -2"); goto cleanup_pin; }
+
+    PASS();
+
+cleanup_pin:
+    nodus_value_free(vA);
+    nodus_value_free(vB);
+    nodus_identity_clear(&idA);
+    nodus_identity_clear(&idB);
+    nodus_storage_close(&store);
+}
+
+static void test_exclusive_get_priority(void) {
+    TEST("exclusive: GET prioritizes EXCLUSIVE over PERMANENT");
+
+    nodus_storage_t store;
+    nodus_storage_open(":memory:", &store);
+
+    uint8_t seedA[32]; memset(seedA, 0xAA, sizeof(seedA));
+    nodus_identity_t idA; nodus_identity_from_seed(seedA, &idA);
+
+    uint8_t seedB[32]; memset(seedB, 0xBB, sizeof(seedB));
+    nodus_identity_t idB; nodus_identity_from_seed(seedB, &idB);
+
+    /* Owner B writes PERMANENT with high seq FIRST (pre-fix attack simulation) */
+    nodus_value_t *vB = make_value_with_identity("excl:key4", "attacker_perm",
+                                                  NODUS_VALUE_PERMANENT, 0,
+                                                  1, 999999, &idB);
+    int rc = nodus_storage_put(&store, vB);
+    if (rc != 0) { FAIL("owner B permanent put failed"); goto cleanup_gp; }
+
+    /* Owner A writes EXCLUSIVE with low seq */
+    nodus_value_t *vA = make_exclusive_value("excl:key4", "real_owner", 1, 100, &idA);
+    rc = nodus_storage_put(&store, vA);
+    if (rc != 0) { FAIL("owner A exclusive put failed"); goto cleanup_gp; }
+
+    /* GET should return owner A's EXCLUSIVE value (type priority over seq) */
+    nodus_value_t *got = NULL;
+    nodus_storage_get(&store, &vA->key_hash, &got);
+    if (got && got->data_len == 10 && memcmp(got->data, "real_owner", 10) == 0 &&
+        got->type == NODUS_VALUE_EXCLUSIVE) {
+        PASS();
+    } else {
+        FAIL("GET did not prioritize EXCLUSIVE over PERMANENT");
+    }
+    nodus_value_free(got);
+
+cleanup_gp:
+    nodus_value_free(vA);
+    nodus_value_free(vB);
+    nodus_identity_clear(&idA);
+    nodus_identity_clear(&idB);
+    nodus_storage_close(&store);
+}
+
 int main(void) {
     printf("=== Nodus Storage Tests ===\n");
     init_test_identity();
@@ -297,6 +491,10 @@ int main(void) {
     test_cleanup_expired();
     test_count();
     test_persistence();
+    test_exclusive_first_writer_wins();
+    test_exclusive_blocks_permanent_bypass();
+    test_exclusive_put_if_newer();
+    test_exclusive_get_priority();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
 
