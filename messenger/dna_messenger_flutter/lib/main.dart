@@ -288,6 +288,9 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           if (cached != null && cached.registeredName.isNotEmpty) {
             engine.debugLog('STARTUP', 'Cached registeredName: ${cached.registeredName}');
             if (mounted) {
+              // Ensure identityProfileCacheProvider has the name (gate checks this)
+              ref.read(identityProfileCacheProvider.notifier).updateIdentity(
+                fp, cached.displayName, cached.avatarBase64, registeredName: cached.registeredName);
               setState(() {
                 _nameCheckDone = true;
                 _registrationIncomplete = false;
