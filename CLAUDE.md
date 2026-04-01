@@ -361,11 +361,11 @@ These actions are NEVER permitted without explicit request:
 ## BUG TRACKING
 **ALWAYS check `BUGS.md`** at the start of a session for open bugs to fix.
 
-## BETA PROJECT - NO BREAKING CHANGES
-This project is in **BETA**. Users have real data. Breaking changes require careful handling:
-- **WARN** the user explicitly before any breaking change
-- **ASK** what the correct procedure is (migration, compat layer, hard cutover)
-- **NEVER** do a hard cutover without explicit approval
+## RC PROJECT - BREAKING CHANGES FORBIDDEN
+This project is in **RC (Release Candidate)**. Users have real data. Breaking changes are **FORBIDDEN** by default.
+- **I CANNOT make breaking changes** without explicit special permission from the user
+- If a task would require a breaking change, **STOP and state:** "This requires a breaking change. I cannot proceed without your explicit permission."
+- Even with permission: require migration path, never hard cutover
 
 ---
 
