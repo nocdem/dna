@@ -22,6 +22,7 @@
 #include "group_database.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
+#include "database/db_encryption.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -164,7 +165,7 @@ static int get_db_path(char *path_out, size_t path_len) {
  * LIFECYCLE
  * ============================================================================ */
 
-group_database_context_t* group_database_init(void) {
+group_database_context_t* group_database_init(const char *db_key) {
     /* Return existing instance if already initialized */
     if (g_instance) {
         QGP_LOG_DEBUG(LOG_TAG, "Returning existing group database instance\n");
@@ -185,12 +186,10 @@ group_database_context_t* group_database_init(void) {
 
     QGP_LOG_INFO(LOG_TAG, "Opening group database: %s\n", ctx->db_path);
 
-    /* Open SQLite database with FULLMUTEX for thread safety */
-    int rc = sqlite3_open_v2(ctx->db_path, &ctx->db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(ctx->db));
-        sqlite3_close(ctx->db);
+    /* Open SQLite database (encrypted if db_key provided) */
+    int rc = dna_db_open_encrypted(ctx->db_path, db_key, &ctx->db);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", ctx->db_path);
         free(ctx);
         return NULL;
     }

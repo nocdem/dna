@@ -152,7 +152,7 @@ int messenger_prepare_dht_from_mnemonic(const char *mnemonic) {
 // INITIALIZATION
 // ============================================================================
 
-messenger_context_t* messenger_init(const char *identity) {
+messenger_context_t* messenger_init(const char *identity, const char *db_key) {
     if (!identity) {
         QGP_LOG_ERROR(LOG_TAG, "Identity required");
         return NULL;
@@ -161,6 +161,14 @@ messenger_context_t* messenger_init(const char *identity) {
     messenger_context_t *ctx = calloc(1, sizeof(messenger_context_t));
     if (!ctx) {
         return NULL;
+    }
+
+    // Store database encryption key
+    if (db_key && db_key[0]) {
+        strncpy(ctx->db_encryption_key, db_key, sizeof(ctx->db_encryption_key) - 1);
+        ctx->db_encryption_key[sizeof(ctx->db_encryption_key) - 1] = '\0';
+    } else {
+        ctx->db_encryption_key[0] = '\0';
     }
 
     // Set identity (input name or fingerprint)
@@ -188,7 +196,7 @@ messenger_context_t* messenger_init(const char *identity) {
     // Initialize SQLite local message storage (per-identity)
     // Use fingerprint (canonical) for consistent database path regardless of login method
     const char *db_identity = ctx->fingerprint ? ctx->fingerprint : identity;
-    ctx->backup_ctx = message_backup_init(db_identity);
+    ctx->backup_ctx = message_backup_init(db_identity, db_key);
     if (!ctx->backup_ctx) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize SQLite message storage");
         free(ctx->fingerprint);
@@ -198,7 +206,7 @@ messenger_context_t* messenger_init(const char *identity) {
     }
 
     // Initialize group database (separate from messages.db)
-    if (group_database_init() == NULL) {
+    if (group_database_init(db_key) == NULL) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize group database");
         message_backup_close(ctx->backup_ctx);
         free(ctx->fingerprint);
@@ -266,7 +274,7 @@ messenger_context_t* messenger_init(const char *identity) {
     char groups_db_path[512];
     snprintf(groups_db_path, sizeof(groups_db_path), "%s/db/groups.db", qgp_platform_app_data_dir());
     QGP_LOG_WARN(LOG_TAG, ">>> dht_groups_init START path=%s", groups_db_path);
-    if (dht_groups_init(groups_db_path) != 0) {
+    if (dht_groups_init(groups_db_path, db_key) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Failed to initialize DHT groups database");
         // Non-fatal - continue without groups support
     }
@@ -320,6 +328,9 @@ void messenger_free(messenger_context_t *ctx) {
     if (ctx->fingerprint) {
         free(ctx->fingerprint);
     }
+
+    // Securely clear database encryption key
+    qgp_secure_memzero(ctx->db_encryption_key, sizeof(ctx->db_encryption_key));
 
     // Securely clear and free session password (v0.2.17+)
     if (ctx->session_password) {

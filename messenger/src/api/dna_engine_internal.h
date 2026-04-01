@@ -739,6 +739,9 @@ struct dna_engine {
     char *session_password;          /* Password for current session (NULL if unprotected) */
     bool keys_encrypted;             /* True if identity keys are password-protected */
 
+    /* Database encryption (SQLCipher) */
+    char db_encryption_key[129];     /* SHA3-512 hex key for SQLCipher (128 hex + null) */
+
     /* Wallet */
     // NOTE: wallet_list removed in v0.3.150 - was never assigned (dead code)
     blockchain_wallet_list_t *blockchain_wallets;  /* Multi-chain wallet list */

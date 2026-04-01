@@ -127,11 +127,11 @@ if(ANDROID)
             )
         endif()
 
-        # Set SQLite3 variables for CMake find (bypass find_package)
-        set(SQLite3_FOUND TRUE)
-        set(SQLite3_VERSION "3.46.0")
-        set(SQLite3_INCLUDE_DIRS "${ANDROID_DEPS_DIR}/sqlite-arm64/include")
-        set(SQLite3_LIBRARIES "${ANDROID_DEPS_DIR}/sqlite-arm64/lib/libsqlite3.a")
+        # Set SQLCipher variables (sqlite-arm64 contains SQLCipher built as drop-in replacement)
+        set(SQLCIPHER_FOUND TRUE)
+        set(SQLCIPHER_VERSION "4.6.1")
+        set(SQLCIPHER_INCLUDE_DIRS "${ANDROID_DEPS_DIR}/sqlite-arm64/include")
+        set(SQLCIPHER_LIBRARIES "${ANDROID_DEPS_DIR}/sqlite-arm64/lib/libsqlite3.a")
 
         # GnuTLS and dependencies for dna_lib linking (used in CMakeLists.txt)
         # Order matters: libraries must come AFTER libraries that depend on them

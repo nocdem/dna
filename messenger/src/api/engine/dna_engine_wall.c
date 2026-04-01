@@ -285,10 +285,10 @@ void dna_handle_wall_timeline(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Build fingerprint list: own + contacts + following */
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Timeline: contacts_db_init failed, using own wall only");
     }
-    following_db_init(engine->fingerprint);
+    following_db_init(engine->fingerprint, engine->db_encryption_key);
 
     contact_list_t *list = NULL;
     contacts_db_list(&list);
@@ -477,10 +477,10 @@ void dna_handle_wall_timeline_cached(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Open contacts DB for this fingerprint (idempotent if already open) */
-    if (contacts_db_init(fingerprint) != 0) {
+    if (contacts_db_init(fingerprint, engine->db_encryption_key) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Timeline cached: contacts_db_init failed, using own wall only");
     }
-    following_db_init(fingerprint);
+    following_db_init(fingerprint, engine->db_encryption_key);
 
     contact_list_t *list = NULL;
     contacts_db_list(&list);

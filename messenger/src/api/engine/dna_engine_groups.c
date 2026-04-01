@@ -470,7 +470,7 @@ void dna_handle_get_invitations(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Initialize invitations database for this identity */
-    if (group_invitations_init(engine->fingerprint) != 0) {
+    if (group_invitations_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }

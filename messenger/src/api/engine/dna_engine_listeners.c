@@ -402,7 +402,7 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
     QGP_LOG_DEBUG(LOG_TAG, "[LISTEN] identity=%s", engine->fingerprint);
 
     /* Initialize contacts database for current identity */
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to initialize contacts database");
         pthread_mutex_lock(&engine->background_threads_mutex);
         engine->listeners_starting = false;

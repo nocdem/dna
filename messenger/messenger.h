@@ -57,6 +57,9 @@ typedef struct {
     // Session password for encrypted keys (v0.2.17+)
     char *session_password;          // Password for encrypted keys (NULL if unencrypted)
 
+    // Database encryption key (SQLCipher, 128-char hex string or empty)
+    char db_encryption_key[129];     // Copied from engine->db_encryption_key at init
+
     // Public key cache (API fetch caching)
     pubkey_cache_entry_t cache[PUBKEY_CACHE_SIZE];
     int cache_count;
@@ -92,7 +95,7 @@ typedef struct {
  * @param identity: User's identity name
  * @return: Messenger context, or NULL on error
  */
-messenger_context_t* messenger_init(const char *identity);
+messenger_context_t* messenger_init(const char *identity, const char *db_key);
 
 /**
  * Free messenger context

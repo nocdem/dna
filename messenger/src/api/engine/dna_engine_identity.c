@@ -20,6 +20,7 @@
 
 #include "engine_includes.h"
 #include "database/channel_subscriptions_db.h"
+#include "database/db_encryption.h"
 
 /* Forward declaration — implemented in dna_engine_wall_poll.c */
 void dna_engine_start_wall_poll(dna_engine_t *engine);
@@ -143,8 +144,38 @@ int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
         }
     }
 
-    /* Initialize messenger with fingerprint */
-    engine->messenger = messenger_init(fingerprint);
+    /* Derive database encryption key from DSA secret key (SQLCipher)
+     * MUST happen BEFORE messenger_init() which opens encrypted DBs */
+    {
+        char dsa_path[512];
+        snprintf(dsa_path, sizeof(dsa_path), "%s/keys/identity.dsa", engine->data_dir);
+
+        qgp_key_t *dsa_key = NULL;
+        int load_rc;
+        if (engine->keys_encrypted && engine->session_password) {
+            load_rc = qgp_key_load_encrypted(dsa_path, engine->session_password, &dsa_key);
+        } else {
+            load_rc = qgp_key_load(dsa_path, &dsa_key);
+        }
+
+        if (load_rc == 0 && dsa_key && dsa_key->private_key) {
+            if (db_derive_encryption_key(dsa_key->private_key, dsa_key->private_key_size,
+                                         engine->db_encryption_key, sizeof(engine->db_encryption_key)) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to derive database encryption key");
+                qgp_key_free(dsa_key);
+                return DNA_ENGINE_ERROR_INIT;
+            }
+            qgp_key_free(dsa_key);
+            QGP_LOG_INFO(LOG_TAG, "Database encryption key derived successfully");
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load DSA key for DB encryption");
+            if (dsa_key) qgp_key_free(dsa_key);
+            return DNA_ENGINE_ERROR_INIT;
+        }
+    }
+
+    /* Initialize messenger with fingerprint (opens encrypted DBs using derived key) */
+    engine->messenger = messenger_init(fingerprint, engine->db_encryption_key);
     if (!engine->messenger) {
         return DNA_ENGINE_ERROR_INIT;
     }
@@ -191,20 +222,20 @@ int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
 
     /* Initialize contacts database BEFORE P2P/offline message check
      * This is required because offline message check queries contacts' outboxes */
-    if (contacts_db_init(fingerprint) != 0) {
+    if (contacts_db_init(fingerprint, engine->db_encryption_key) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize contacts database\n");
         /* Non-fatal - continue, contacts will be initialized on first access */
     }
 
     /* Initialize group invitations database BEFORE P2P message processing
      * Required for storing incoming group invitations from P2P messages */
-    if (group_invitations_init(fingerprint) != 0) {
+    if (group_invitations_init(fingerprint, engine->db_encryption_key) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize group invitations database\n");
         /* Non-fatal - continue, invitations will be initialized on first access */
     }
 
     /* Initialize channel subscriptions database */
-    if (channel_subscriptions_db_init() != 0) {
+    if (channel_subscriptions_db_init(engine->db_encryption_key) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize channel subscriptions database");
     }
 
@@ -1180,7 +1211,7 @@ int dna_engine_create_identity_sync(
     }
 
     /* Step 2: Create temporary messenger context for registration */
-    messenger_context_t *temp_ctx = messenger_init(fingerprint_out);
+    messenger_context_t *temp_ctx = messenger_init(fingerprint_out, engine->db_encryption_key);
     if (!temp_ctx) {
         /* Cleanup: v0.3.0 flat structure - delete keys/, db/, wallets/, mnemonic.enc */
         char path[512];
@@ -1223,7 +1254,7 @@ int dna_engine_create_identity_sync(
 
 #ifdef DNA_CHANNELS_ENABLED
     /* Step 6: Auto-subscribe to default channels */
-    if (channel_subscriptions_db_init() == 0) {
+    if (channel_subscriptions_db_init(engine->db_encryption_key) == 0) {
         for (int i = 0; i < DNA_DEFAULT_CHANNEL_COUNT; i++) {
             if (channel_subscriptions_db_subscribe(DNA_DEFAULT_CHANNEL_UUIDS[i]) == 0) {
                 QGP_LOG_INFO(LOG_TAG, "Auto-subscribed to default channel: %s",

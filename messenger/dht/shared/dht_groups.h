@@ -55,9 +55,10 @@ typedef struct {
  * Creates SQLite tables for local group cache
  *
  * @param db_path: Path to SQLite database file
+ * @param db_key: Database encryption key (128-char hex, NULL for unencrypted)
  * @return: 0 on success, -1 on error
  */
-int dht_groups_init(const char *db_path);
+int dht_groups_init(const char *db_path, const char *db_key);
 
 /**
  * Cleanup DHT groups subsystem

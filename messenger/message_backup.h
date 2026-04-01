@@ -92,9 +92,10 @@ typedef struct {
  * Opens connection to SQLite database.
  *
  * @param identity Current user identity (for multi-user support)
+ * @param db_key Database encryption key (128-char hex, NULL for unencrypted)
  * @return Backup context or NULL on error
  */
-message_backup_context_t* message_backup_init(const char *identity);
+message_backup_context_t* message_backup_init(const char *identity, const char *db_key);
 
 /**
  * Check if message already exists in database (v16: by content hash)

@@ -4,6 +4,7 @@
  */
 
 #include "contacts_db.h"
+#include "db_encryption.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_log.h"
 #include "dht/keyserver/keyserver_core.h"
@@ -148,7 +149,7 @@ static int ensure_directory(const char *db_path) {
 }
 
 // Initialize database (thread-safe via g_db_mutex - v0.6.43 race fix)
-int contacts_db_init(const char *owner_identity) {
+int contacts_db_init(const char *owner_identity, const char *db_key) {
     if (!owner_identity || strlen(owner_identity) == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity\n");
         return -1;
@@ -185,12 +186,9 @@ int contacts_db_init(const char *owner_identity) {
         return -1;
     }
 
-    // Open database with FULLMUTEX for thread safety (DHT callbacks + main thread)
-    int rc = sqlite3_open_v2(db_path, &g_db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(g_db));
-        sqlite3_close(g_db);
+    // Open encrypted database (SQLCipher)
+    if (dna_db_open_encrypted(db_path, db_key, &g_db) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open encrypted database\n");
         g_db = NULL;
         g_owner_identity[0] = '\0';
         pthread_mutex_unlock(&g_db_mutex);
@@ -210,7 +208,7 @@ int contacts_db_init(const char *owner_identity) {
         "PRAGMA cache_size = -2000;";     // 2MB cache
 
     char *err_msg = NULL;
-    rc = sqlite3_exec(g_db, pragmas, NULL, NULL, &err_msg);
+    int rc = sqlite3_exec(g_db, pragmas, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to set pragmas: %s\n", err_msg);
         sqlite3_free(err_msg);
@@ -943,160 +941,8 @@ void contacts_db_close(void) {
     pthread_mutex_unlock(&g_db_mutex);
 }
 
-// Migrate contacts from global database to per-identity database
-int contacts_db_migrate_from_global(const char *owner_identity) {
-    if (!owner_identity || strlen(owner_identity) == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity for migration\n");
-        return -1;
-    }
-
-    // Get old global database path
-    const char *data_dir = qgp_platform_app_data_dir();
-    if (!data_dir) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
-        return -1;
-    }
-
-    char old_db_path[512];
-    snprintf(old_db_path, sizeof(old_db_path), "%s/contacts.db", data_dir);
-
-    // Check if old database exists
-    struct stat st;
-    if (stat(old_db_path, &st) != 0) {
-        // No old database, nothing to migrate
-        return 0;
-    }
-
-    // Get new per-identity database path
-    char new_db_path[512];
-    if (get_db_path(owner_identity, new_db_path, sizeof(new_db_path)) != 0) {
-        return -1;
-    }
-
-    // Check if new database already exists
-    if (stat(new_db_path, &st) == 0) {
-        QGP_LOG_INFO(LOG_TAG, "Per-identity database already exists, skipping migration\n");
-        return 0;
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "Migrating contacts from global database to '%s'\n", owner_identity);
-
-    // Open old database with FULLMUTEX for thread safety
-    sqlite3 *old_db = NULL;
-    int rc = sqlite3_open_v2(old_db_path, &old_db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open old database: %s\n", sqlite3_errmsg(old_db));
-        if (old_db) sqlite3_close(old_db);
-        return -1;
-    }
-
-    // Query all contacts from old database
-    const char *query = "SELECT identity, added_timestamp, notes FROM contacts;";
-    sqlite3_stmt *stmt = NULL;
-    rc = sqlite3_prepare_v2(old_db, query, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(old_db));
-        sqlite3_close(old_db);
-        return -1;
-    }
-
-    // Read all contacts into memory
-    typedef struct {
-        char identity[256];
-        uint64_t timestamp;
-        char notes[512];
-    } migrate_contact_t;
-
-    migrate_contact_t *contacts = NULL;
-    size_t contact_count = 0;
-    size_t capacity = 100;
-
-    contacts = (migrate_contact_t*)malloc(capacity * sizeof(migrate_contact_t));
-    if (!contacts) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate memory for migration\n");
-        sqlite3_finalize(stmt);
-        sqlite3_close(old_db);
-        return -1;
-    }
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        if (contact_count >= capacity) {
-            capacity *= 2;
-            migrate_contact_t *new_contacts = (migrate_contact_t*)realloc(contacts, capacity * sizeof(migrate_contact_t));
-            if (!new_contacts) {
-                QGP_LOG_ERROR(LOG_TAG, "Failed to reallocate memory\n");
-                free(contacts);
-                sqlite3_finalize(stmt);
-                sqlite3_close(old_db);
-                return -1;
-            }
-            contacts = new_contacts;
-        }
-
-        const char *identity = (const char*)sqlite3_column_text(stmt, 0);
-        uint64_t timestamp = sqlite3_column_int64(stmt, 1);
-        const char *notes = (const char*)sqlite3_column_text(stmt, 2);
-
-        strncpy(contacts[contact_count].identity, identity ? identity : "", sizeof(contacts[contact_count].identity) - 1);
-        contacts[contact_count].identity[sizeof(contacts[contact_count].identity) - 1] = '\0';
-        contacts[contact_count].timestamp = timestamp;
-
-        if (notes) {
-            strncpy(contacts[contact_count].notes, notes, sizeof(contacts[contact_count].notes) - 1);
-            contacts[contact_count].notes[sizeof(contacts[contact_count].notes) - 1] = '\0';
-        } else {
-            contacts[contact_count].notes[0] = '\0';
-        }
-
-        contact_count++;
-    }
-
-    sqlite3_finalize(stmt);
-    sqlite3_close(old_db);
-
-    if (contact_count == 0) {
-        QGP_LOG_INFO(LOG_TAG, "No contacts to migrate\n");
-        free(contacts);
-        return 0;
-    }
-
-    QGP_LOG_INFO(LOG_TAG, "Found %zu contacts to migrate\n", contact_count);
-
-    // Initialize new per-identity database
-    if (contacts_db_init(owner_identity) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize new database\n");
-        free(contacts);
-        return -1;
-    }
-
-    // Insert all contacts into new database
-    size_t migrated = 0;
-    for (size_t i = 0; i < contact_count; i++) {
-        int result = contacts_db_add(contacts[i].identity,
-                                     contacts[i].notes[0] ? contacts[i].notes : NULL);
-        if (result == 0 || result == -2) {  // Success or already exists
-            migrated++;
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to migrate contact '%s'\n", contacts[i].identity);
-        }
-    }
-
-    free(contacts);
-
-    QGP_LOG_INFO(LOG_TAG, "Migration complete: %zu/%zu contacts migrated\n", migrated, contact_count);
-
-    // Rename old database to backup
-    char backup_path[512];
-    snprintf(backup_path, sizeof(backup_path), "%s.migrated", old_db_path);
-    if (rename(old_db_path, backup_path) == 0) {
-        QGP_LOG_INFO(LOG_TAG, "Old database backed up to: %s\n", backup_path);
-    } else {
-        QGP_LOG_INFO(LOG_TAG, "Warning: Could not rename old database (you can delete it manually)\n");
-    }
-
-    return (int)migrated;
-}
+/* NOTE: contacts_db_migrate_from_global() removed 2026-04-02 (SQLCipher integration).
+ * Legacy v0.3.0 global->per-identity migration is no longer needed. */
 
 /* ============================================================================
  * CONTACT REQUEST FUNCTIONS (ICQ-style approval system)

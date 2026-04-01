@@ -225,6 +225,7 @@ if(BUILD_SHARED_LIB)
         database/profile_cache.c    # Profile cache database (7-day TTL)
         database/profile_manager.c  # Smart profile fetching (cache + DHT)
         database/cache_manager.c    # Unified cache lifecycle manager
+        database/db_encryption.c    # SQLCipher key derivation + encrypted open wrapper
         database/group_invitations.c # Group invitation tracking database
         blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet derivation (seed-based)
         blockchain/cellframe/cellframe_rpc.c           # Blockchain RPC client
@@ -317,6 +318,7 @@ else()
         database/profile_cache.c    # Profile cache database (7-day TTL)
         database/profile_manager.c  # Smart profile fetching (cache + DHT)
         database/cache_manager.c    # Unified cache lifecycle manager
+        database/db_encryption.c    # SQLCipher key derivation + encrypted open wrapper
         database/group_invitations.c # Group invitation tracking database
         blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet derivation (seed-based)
         blockchain/cellframe/cellframe_rpc.c           # Blockchain RPC client
@@ -367,6 +369,7 @@ target_link_libraries(dna
     transport_lib      # Transport layer (DHT-only messaging)
     dht_lib            # Link dht_lib again to resolve circular deps with transport_lib
     transport_lib      # Link transport_lib again for static linking order
+    ${SQLCIPHER_LIBRARIES}  # SQLCipher (encrypted SQLite — database/db_encryption.c)
     ${JSONC_LIBRARIES}
     ${PLATFORM_LIBS}
 )
@@ -427,9 +430,9 @@ if(JSONC_INCLUDE_DIRS)
     target_include_directories(dna PUBLIC ${JSONC_INCLUDE_DIRS})
 endif()
 
-# Add SQLite3 include directories
-if(SQLite3_INCLUDE_DIRS)
-    target_include_directories(dna PUBLIC ${SQLite3_INCLUDE_DIRS})
+# Add SQLCipher include directories (provides sqlite3.h via -I/usr/include/sqlcipher)
+if(SQLCIPHER_INCLUDE_DIRS)
+    target_include_directories(dna PUBLIC ${SQLCIPHER_INCLUDE_DIRS})
 endif()
 
 if(WIN32)

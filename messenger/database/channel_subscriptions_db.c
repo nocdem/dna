@@ -4,6 +4,7 @@
  */
 
 #include "channel_subscriptions_db.h"
+#include "db_encryption.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_log.h"
 #include <stdio.h>
@@ -90,7 +91,7 @@ static int ensure_directory(const char *db_path) {
     return 0;
 }
 
-int channel_subscriptions_db_init(void) {
+int channel_subscriptions_db_init(const char *db_key) {
     pthread_mutex_lock(&g_db_mutex);
 
     if (g_db) {
@@ -109,11 +110,8 @@ int channel_subscriptions_db_init(void) {
         return -1;
     }
 
-    int rc = sqlite3_open_v2(db_path, &g_db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s", sqlite3_errmsg(g_db));
-        sqlite3_close(g_db);
+    if (dna_db_open_encrypted(db_path, db_key, &g_db) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open encrypted database");
         g_db = NULL;
         pthread_mutex_unlock(&g_db_mutex);
         return -1;
@@ -133,7 +131,7 @@ int channel_subscriptions_db_init(void) {
         ");";
 
     char *err_msg = NULL;
-    rc = sqlite3_exec(g_db, create_sql, NULL, NULL, &err_msg);
+    int rc = sqlite3_exec(g_db, create_sql, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to create table: %s", err_msg);
         sqlite3_free(err_msg);

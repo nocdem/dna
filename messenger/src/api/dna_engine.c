@@ -307,6 +307,13 @@ cleanup:
 }
 
 /**
+ * No-op completion callback for fire-and-forget async calls.
+ */
+static void dna_noop_completion_cb(dna_request_id_t request_id, int error, void *user_data) {
+    (void)request_id; (void)error; (void)user_data;
+}
+
+/*
  * Post-stabilization retry thread
  * Waits for DHT routing table to fill, then retries pending messages.
  * Spawned from identity load to handle the common case where DHT connects
@@ -425,6 +432,16 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
             QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: group restore failed: %d", restored);
         }
     }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
+    /* 1e. Auto-sync addressbook from DHT (SQLCipher: fresh DB needs data) */
+    dna_engine_sync_addressbook_from_dht(engine, NULL, NULL);
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
+    /* 1f. Auto-sync following list from DHT */
+    dna_engine_sync_following_from_dht(engine, dna_noop_completion_cb, NULL);
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
@@ -1852,6 +1869,9 @@ void dna_engine_destroy(dna_engine_t *engine) {
         qgp_platform_release_identity_lock(engine->identity_lock_fd);
         engine->identity_lock_fd = -1;
     }
+
+    /* Securely clear database encryption key */
+    qgp_secure_memzero(engine->db_encryption_key, sizeof(engine->db_encryption_key));
 
     /* Securely clear session password */
     if (engine->session_password) {

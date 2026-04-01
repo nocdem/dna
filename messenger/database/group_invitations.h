@@ -41,7 +41,7 @@ typedef struct {
  * @param identity: User's identity (for per-identity database)
  * @return: 0 on success, -1 on error
  */
-int group_invitations_init(const char *identity);
+int group_invitations_init(const char *identity, const char *db_key);
 
 /**
  * @brief Store a new group invitation

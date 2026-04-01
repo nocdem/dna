@@ -112,7 +112,7 @@ void dna_handle_follow(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    following_db_init(engine->fingerprint);
+    following_db_init(engine->fingerprint, engine->db_encryption_key);
 
     int ret = following_db_add(fp);
     if (ret == -2) {
@@ -142,7 +142,7 @@ void dna_handle_unfollow(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    following_db_init(engine->fingerprint);
+    following_db_init(engine->fingerprint, engine->db_encryption_key);
 
     int ret = following_db_remove(fp);
     if (ret != 0) {
@@ -164,7 +164,7 @@ void dna_handle_get_following(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    following_db_init(engine->fingerprint);
+    following_db_init(engine->fingerprint, engine->db_encryption_key);
 
     following_list_t *list = NULL;
     int ret = following_db_list(&list);
@@ -211,7 +211,7 @@ void dna_handle_sync_following_to_dht(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    following_db_init(engine->fingerprint);
+    following_db_init(engine->fingerprint, engine->db_encryption_key);
 
     /* Load follow list from local DB */
     following_list_t *list = NULL;
@@ -309,7 +309,7 @@ void dna_handle_sync_following_from_dht(dna_engine_t *engine, dna_task_t *task) 
         QGP_LOG_INFO(LOG_TAG, "No follow list found in DHT (first time user or not published)");
 
         /* If we have local entries, publish them */
-        following_db_init(engine->fingerprint);
+        following_db_init(engine->fingerprint, engine->db_encryption_key);
         int local_count = following_db_count();
         if (local_count > 0) {
             QGP_LOG_INFO(LOG_TAG, "Publishing %d local follows to DHT", local_count);
@@ -327,7 +327,7 @@ void dna_handle_sync_following_from_dht(dna_engine_t *engine, dna_task_t *task) 
     }
 
     /* REPLACE mode: DHT is source of truth */
-    following_db_init(engine->fingerprint);
+    following_db_init(engine->fingerprint, engine->db_encryption_key);
 
     int local_count = following_db_count();
 
@@ -415,7 +415,7 @@ void dna_free_following(dna_following_t *following, int count) {
 bool dna_engine_is_following(dna_engine_t *engine, const char *fingerprint) {
     if (!engine || !fingerprint || !engine->identity_loaded) return false;
 
-    if (following_db_init(engine->fingerprint) != 0) {
+    if (following_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         return false;
     }
 

@@ -32,7 +32,7 @@ typedef struct {
  *
  * @return 0 on success, negative on error
  */
-int channel_subscriptions_db_init(void);
+int channel_subscriptions_db_init(const char *db_key);
 
 /**
  * Close the channel subscriptions database

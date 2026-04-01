@@ -94,18 +94,18 @@ target_include_directories(dht_lib PUBLIC
 )
 
 if(WIN32)
-    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa nodus ${SQLite3_LIBRARIES})
+    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa nodus ${SQLCIPHER_LIBRARIES})
 elseif(ANDROID)
     target_link_libraries(dht_lib
         ${OPENSSL_LIBRARIES}
         dsa
         nodus
-        ${SQLite3_LIBRARIES}
+        ${SQLCIPHER_LIBRARIES}
         ${ANDROID_DEPS_DIR}/jsonc-arm64/lib/libjson-c.a
         z
     )
 else()
-    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa nodus ${SQLite3_LIBRARIES} json-c curl z)
+    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa nodus ${SQLCIPHER_LIBRARIES} json-c curl z)
 endif()
 
 # Note: persistent_bootstrap has been moved to bootstrap/CMakeLists.txt

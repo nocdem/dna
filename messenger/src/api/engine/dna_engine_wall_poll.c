@@ -49,8 +49,8 @@ int wall_poll_refresh(dna_engine_t *engine) {
     if (!nodus_ops_is_ready()) return 0;
 
     /* Build fingerprint list: own + contacts + following */
-    contacts_db_init(engine->fingerprint);
-    following_db_init(engine->fingerprint);
+    contacts_db_init(engine->fingerprint, engine->db_encryption_key);
+    following_db_init(engine->fingerprint, engine->db_encryption_key);
 
     contact_list_t *clist = NULL;
     contacts_db_list(&clist);

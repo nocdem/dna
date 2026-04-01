@@ -4,6 +4,7 @@
  */
 
 #include "following_db.h"
+#include "db_encryption.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_log.h"
 #include <stdio.h>
@@ -59,7 +60,7 @@ static int ensure_directory(const char *db_path) {
     return 0;
 }
 
-int following_db_init(const char *owner_identity) {
+int following_db_init(const char *owner_identity, const char *db_key) {
     if (!owner_identity || strlen(owner_identity) == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity");
         return -1;
@@ -89,11 +90,9 @@ int following_db_init(const char *owner_identity) {
         return -1;
     }
 
-    int rc = sqlite3_open_v2(db_path, &g_db,
-                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
-                             NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s", sqlite3_errmsg(g_db));
+    int rc = dna_db_open_encrypted(db_path, db_key, &g_db);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open encrypted database");
         g_db = NULL;
         pthread_mutex_unlock(&g_db_mutex);
         return -1;

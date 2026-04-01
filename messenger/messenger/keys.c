@@ -247,19 +247,9 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
     // Initialize contacts database if not already done (per-identity)
     // Use fingerprint (canonical) to ensure consistent database path regardless of login method
     const char *db_identity = ctx->fingerprint ? ctx->fingerprint : ctx->identity;
-    if (contacts_db_init(db_identity) != 0) {
+    if (contacts_db_init(db_identity, ctx->db_encryption_key) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize contacts database for '%s'", db_identity);
         return -1;
-    }
-
-    // Migrate from global contacts.db if needed (first time only)
-    static bool migration_attempted = false;
-    if (!migration_attempted) {
-        int migrated = contacts_db_migrate_from_global(db_identity);
-        if (migrated > 0) {
-            QGP_LOG_INFO(LOG_TAG, "Migrated %d contacts from global database\n", migrated);
-        }
-        migration_attempted = true;
     }
 
     // Get contact list from database

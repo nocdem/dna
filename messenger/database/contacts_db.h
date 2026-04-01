@@ -120,7 +120,7 @@ typedef struct {
  * @param owner_identity: Identity who owns this contact list (kept for API compat)
  * @return: 0 on success, -1 on error
  */
-int contacts_db_init(const char *owner_identity);
+int contacts_db_init(const char *owner_identity, const char *db_key);
 
 /**
  * Add contact to database
@@ -274,15 +274,7 @@ int contacts_db_set_dm_sync_timestamp(const char *identity, uint64_t timestamp);
  */
 void contacts_db_close(void);
 
-/**
- * Migrate contacts from global database to per-identity database
- * v0.3.0 flat structure: No longer needed (single user model)
- * Kept for backward compatibility but is a no-op
- *
- * @param owner_identity: Identity to migrate contacts to (ignored)
- * @return: Number of contacts migrated, 0 if nothing to migrate, -1 on error
- */
-int contacts_db_migrate_from_global(const char *owner_identity);
+/* NOTE: contacts_db_migrate_from_global() removed 2026-04-02 (SQLCipher integration) */
 
 /* ============================================================================
  * CONTACT REQUEST FUNCTIONS (ICQ-style approval system)

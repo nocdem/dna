@@ -30,7 +30,7 @@ static char g_current_identity[256] = {0};
  * Initialize ALL cache modules in dependency order
  * Thread-safe: Uses mutex to prevent concurrent initialization
  */
-int cache_manager_init(const char *identity) {
+int cache_manager_init(const char *identity, const char *db_key) {
     pthread_mutex_lock(&g_init_mutex);
 
     if (g_initialized) {
@@ -57,7 +57,7 @@ int cache_manager_init(const char *identity) {
         strncpy(g_current_identity, identity, sizeof(g_current_identity) - 1);
 
         QGP_LOG_INFO(LOG_TAG, "[3/4] Initializing contacts database for identity: %s\n", identity);
-        if (contacts_db_init(identity) != 0) {
+        if (contacts_db_init(identity, db_key) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to initialize contacts database\n");
             keyserver_cache_cleanup();
             pthread_mutex_unlock(&g_init_mutex);
@@ -85,7 +85,7 @@ int cache_manager_init(const char *identity) {
     }
 
     /* Wallet balance cache (global - blockchain balance data) */
-    if (wallet_cache_init() != 0) {
+    if (wallet_cache_init(db_key) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Wallet cache init failed (non-fatal)");
     }
 

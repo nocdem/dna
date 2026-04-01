@@ -56,7 +56,7 @@ int dna_engine_add_address(
     }
 
     /* Initialize address book database if needed */
-    if (addressbook_db_init(engine->fingerprint) != 0) {
+    if (addressbook_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize address book database");
         return -1;
     }
@@ -110,7 +110,7 @@ bool dna_engine_address_exists(
     }
 
     /* Initialize address book database if needed */
-    if (addressbook_db_init(engine->fingerprint) != 0) {
+    if (addressbook_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         return false;
     }
 
@@ -135,7 +135,7 @@ int dna_engine_lookup_address(
     }
 
     /* Initialize address book database if needed */
-    if (addressbook_db_init(engine->fingerprint) != 0) {
+    if (addressbook_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         return -1;
     }
 
@@ -233,7 +233,7 @@ static void task_get_addressbook(void *data) {
     int error = 0;
 
     /* Initialize address book database if needed */
-    if (addressbook_db_init(task->engine->fingerprint) != 0) {
+    if (addressbook_db_init(task->engine->fingerprint, task->engine->db_encryption_key) != 0) {
         error = -1;
     } else {
         addressbook_list_t *list = NULL;
@@ -262,7 +262,7 @@ static void task_get_addressbook_by_network(void *data) {
     int error = 0;
 
     /* Initialize address book database if needed */
-    if (addressbook_db_init(task->engine->fingerprint) != 0) {
+    if (addressbook_db_init(task->engine->fingerprint, task->engine->db_encryption_key) != 0) {
         error = -1;
     } else {
         addressbook_list_t *list = NULL;
@@ -291,7 +291,7 @@ static void task_get_recent_addresses(void *data) {
     int error = 0;
 
     /* Initialize address book database if needed */
-    if (addressbook_db_init(task->engine->fingerprint) != 0) {
+    if (addressbook_db_init(task->engine->fingerprint, task->engine->db_encryption_key) != 0) {
         error = -1;
     } else {
         addressbook_list_t *list = NULL;

@@ -47,7 +47,7 @@ typedef struct {
  * @param identity Current identity fingerprint (NULL = global caches only)
  * @return 0 on success, -1 on error
  */
-int cache_manager_init(const char *identity);
+int cache_manager_init(const char *identity, const char *db_key);
 
 /**
  * Cleanup ALL cache modules in reverse order

@@ -21,9 +21,10 @@ extern "C" {
  * Initializes SQLite database, DNA crypto context, and keyserver cache.
  *
  * @param identity: User's identity name or fingerprint
+ * @param db_key: Database encryption key (128-char hex, NULL for unencrypted)
  * @return: Messenger context on success, NULL on error
  */
-messenger_context_t* messenger_init(const char *identity);
+messenger_context_t* messenger_init(const char *identity, const char *db_key);
 
 /**
  * Free messenger context

@@ -50,7 +50,7 @@ typedef struct {
  * @param owner_identity: Identity who owns this follow list
  * @return: 0 on success, -1 on error
  */
-int following_db_init(const char *owner_identity);
+int following_db_init(const char *owner_identity, const char *db_key);
 
 /**
  * Add a user to following list

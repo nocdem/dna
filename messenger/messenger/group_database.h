@@ -46,9 +46,10 @@ typedef struct group_database_context group_database_context_t;
  * Opens connection to SQLite database.
  * Creates all group-related tables.
  *
+ * @param db_key Database encryption key (128-char hex, NULL for unencrypted)
  * @return Database context or NULL on error
  */
-group_database_context_t* group_database_init(void);
+group_database_context_t* group_database_init(const char *db_key);
 
 /**
  * Get the global group database instance

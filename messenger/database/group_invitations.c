@@ -3,6 +3,7 @@
  */
 
 #include "group_invitations.h"
+#include "db_encryption.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,7 +31,7 @@ static const char *INVITATIONS_SCHEMA =
 /**
  * Initialize group invitations database
  */
-int group_invitations_init(const char *identity) {
+int group_invitations_init(const char *identity, const char *db_key) {
     QGP_LOG_WARN(LOG_TAG, ">>> INIT START identity=%s\n", identity ? identity : "(null)");
 
     if (!identity) {
@@ -59,13 +60,9 @@ int group_invitations_init(const char *identity) {
     }
     snprintf(db_path, sizeof(db_path), "%s/db/invitations.db", data_dir);
 
-    // Open database with FULLMUTEX for thread safety (DHT callbacks + main thread)
-    int rc = sqlite3_open_v2(db_path, &g_invitations_db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n",
-                sqlite3_errmsg(g_invitations_db));
-        sqlite3_close(g_invitations_db);
+    // Open encrypted database (SQLCipher)
+    if (dna_db_open_encrypted(db_path, db_key, &g_invitations_db) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open encrypted database\n");
         g_invitations_db = NULL;
         return -1;
     }
@@ -76,7 +73,7 @@ int group_invitations_init(const char *identity) {
 
     // Create table
     char *err_msg = NULL;
-    rc = sqlite3_exec(g_invitations_db, INVITATIONS_SCHEMA, NULL, NULL, &err_msg);
+    int rc = sqlite3_exec(g_invitations_db, INVITATIONS_SCHEMA, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to create table: %s\n", err_msg);
         sqlite3_free(err_msg);

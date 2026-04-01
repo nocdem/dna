@@ -12,6 +12,7 @@
  */
 
 #include "wallet_cache.h"
+#include "db_encryption.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_log.h"
 #include <stdio.h>
@@ -119,7 +120,7 @@ static int create_schema(void) {
 
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
-int wallet_cache_init(void) {
+int wallet_cache_init(const char *db_key) {
     wallet_lock();
 
     if (g_db) {
@@ -134,15 +135,9 @@ int wallet_cache_init(void) {
     }
 
     sqlite3 *db = NULL;
-    int rc = sqlite3_open_v2(db_path, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
-        NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s",
-                      db ? sqlite3_errmsg(db) : "unknown");
-        if (db) {
-            sqlite3_close(db);
-        }
+    int rc = dna_db_open_encrypted(db_path, db_key, &db);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open encrypted database");
         wallet_unlock();
         return -1;
     }

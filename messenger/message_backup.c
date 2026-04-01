@@ -17,6 +17,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/hash/qgp_sha3.h"
+#include "database/db_encryption.h"
 
 #define LOG_TAG "MSG_BACKUP"
 
@@ -162,7 +163,7 @@ static void compute_content_hash(const char *sender_fp, const char *recipient,
 /**
  * Initialize backup system
  */
-message_backup_context_t* message_backup_init(const char *identity) {
+message_backup_context_t* message_backup_init(const char *identity, const char *db_key) {
     if (!identity) {
         QGP_LOG_ERROR(LOG_TAG, "Identity cannot be NULL\n");
         return NULL;
@@ -184,12 +185,10 @@ message_backup_context_t* message_backup_init(const char *identity) {
 
     QGP_LOG_INFO(LOG_TAG, "Opening database: %s\n", ctx->db_path);
 
-    // Open SQLite database with FULLMUTEX for thread safety (DHT callbacks + main thread)
-    int rc = sqlite3_open_v2(ctx->db_path, &ctx->db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(ctx->db));
-        sqlite3_close(ctx->db);
+    // Open SQLite database (encrypted if db_key provided)
+    int rc = dna_db_open_encrypted(ctx->db_path, db_key, &ctx->db);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", ctx->db_path);
         free(ctx);
         return NULL;
     }

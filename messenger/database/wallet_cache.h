@@ -41,7 +41,7 @@ extern "C" {
  *
  * @return 0 on success, -1 on error
  */
-int wallet_cache_init(void);
+int wallet_cache_init(const char *db_key);
 
 /**
  * Close wallet cache database

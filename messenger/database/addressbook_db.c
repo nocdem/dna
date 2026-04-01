@@ -4,6 +4,7 @@
  */
 
 #include "addressbook_db.h"
+#include "db_encryption.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_log.h"
 #include <stdio.h>
@@ -143,7 +144,7 @@ static int ensure_directory(const char *db_path) {
 }
 
 // Initialize database (thread-safe via g_db_mutex - v0.6.43 race fix)
-int addressbook_db_init(const char *owner_identity) {
+int addressbook_db_init(const char *owner_identity, const char *db_key) {
     if (!owner_identity || strlen(owner_identity) == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity\n");
         return -1;
@@ -180,12 +181,10 @@ int addressbook_db_init(const char *owner_identity) {
         return -1;
     }
 
-    // Open database with FULLMUTEX for thread safety (DHT callbacks + main thread)
-    int rc = sqlite3_open_v2(db_path, &g_db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(g_db));
-        sqlite3_close(g_db);
+    // Open database with encryption
+    int rc = dna_db_open_encrypted(db_path, db_key, &g_db);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open encrypted database\n");
         g_db = NULL;
         g_owner_identity[0] = '\0';
         pthread_mutex_unlock(&g_db_mutex);

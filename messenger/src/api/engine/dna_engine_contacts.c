@@ -41,7 +41,7 @@ void dna_handle_get_contacts(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Initialize contacts database for this identity */
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
@@ -175,7 +175,7 @@ void dna_handle_add_contact(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Initialize contacts database for this identity */
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
@@ -214,7 +214,7 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Initialize contacts database for this identity */
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
@@ -294,7 +294,7 @@ int dna_engine_set_contact_nickname_sync(
     }
 
     /* Initialize contacts DB if needed */
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         return DNA_ENGINE_ERROR_DATABASE;
     }
 
@@ -371,7 +371,7 @@ void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
         /* Store salt for this outgoing request so we can retrieve it when the
          * reciprocal approval comes back. We store it against the recipient's
          * fingerprint in the contacts table as a pending_outgoing contact. */
-        contacts_db_init(engine->fingerprint);
+        contacts_db_init(engine->fingerprint, engine->db_encryption_key);
         contacts_db_set_salt(task->params.send_contact_request.recipient, dht_salt);
 
         /* Publish salt to DHT agreement key (Kyber dual-encrypted).
@@ -423,7 +423,7 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Initialize contacts database */
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
@@ -616,7 +616,7 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
         goto done;
     }
 
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
@@ -690,7 +690,7 @@ void dna_handle_deny_contact_request(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
@@ -716,7 +716,7 @@ void dna_handle_block_user(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
@@ -758,7 +758,7 @@ void dna_handle_unblock_user(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
@@ -783,7 +783,7 @@ void dna_handle_get_blocked_users(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
@@ -909,7 +909,7 @@ dna_request_id_t dna_engine_get_contact_requests(
 int dna_engine_get_contact_request_count(dna_engine_t *engine) {
     if (!engine || !engine->identity_loaded) return -1;
 
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         return -1;
     }
 
@@ -1000,7 +1000,7 @@ dna_request_id_t dna_engine_get_blocked_users(
 bool dna_engine_is_user_blocked(dna_engine_t *engine, const char *fingerprint) {
     if (!engine || !fingerprint || !engine->identity_loaded) return false;
 
-    if (contacts_db_init(engine->fingerprint) != 0) {
+    if (contacts_db_init(engine->fingerprint, engine->db_encryption_key) != 0) {
         return false;
     }
 

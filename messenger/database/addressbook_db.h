@@ -64,7 +64,7 @@ typedef struct {
  * @param owner_identity: Identity who owns this address book (kept for API compat)
  * @return: 0 on success, -1 on error
  */
-int addressbook_db_init(const char *owner_identity);
+int addressbook_db_init(const char *owner_identity, const char *db_key);
 
 /**
  * Add address to database

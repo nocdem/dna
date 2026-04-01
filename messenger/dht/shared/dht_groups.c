@@ -13,6 +13,7 @@
 #include "nodus_ops.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_random.h"
+#include "database/db_encryption.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -300,18 +301,16 @@ error:
 }
 
 // Initialize DHT groups subsystem
-int dht_groups_init(const char *db_path) {
+int dht_groups_init(const char *db_path, const char *db_key) {
     if (g_db) {
         QGP_LOG_ERROR(LOG_TAG, "Already initialized\n");
         return 0;
     }
 
-    // Open with FULLMUTEX for thread safety (DHT callbacks + main thread)
-    int rc = sqlite3_open_v2(db_path, &g_db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
-    if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(g_db));
-        sqlite3_close(g_db);
+    // Open database (encrypted if db_key provided)
+    int rc = dna_db_open_encrypted(db_path, db_key, &g_db);
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", db_path);
         g_db = NULL;
         return -1;
     }

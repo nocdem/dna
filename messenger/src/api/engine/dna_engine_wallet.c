@@ -53,8 +53,8 @@ void derive_unlock(void) { LeaveCriticalSection(&g_derive_cs); }
 #endif
 
 /* Lazy-init wallet cache (thread-safe, wallet_cache_init has internal mutex) */
-static void ensure_wallet_cache(void) {
-    wallet_cache_init();
+static void ensure_wallet_cache(dna_engine_t *engine) {
+    wallet_cache_init(engine->db_encryption_key);
 }
 
 void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
@@ -159,7 +159,7 @@ done:
 }
 
 void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
-    ensure_wallet_cache();
+    ensure_wallet_cache(engine);
     int error = DNA_OK;
     dna_balance_t *balances = NULL;
     dna_balance_t *cached = NULL;
@@ -720,7 +720,7 @@ done:
 #define NETWORK_FEE_COLLECTOR "Rj7J7MiX2bWy8sNyX38bB86KTFUnSn7sdKDsTFa2RJyQTDWFaebrj6BucT7Wa5CSq77zwRAwevbiKy1sv1RBGTonM83D3xPDwoyGasZ7"
 
 void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
-    ensure_wallet_cache();
+    ensure_wallet_cache(engine);
     int error = DNA_OK;
     dna_transaction_t *transactions = NULL;
     int count = 0;
@@ -1300,8 +1300,7 @@ done:
 
 /* Read transactions from SQLite cache only — no network calls */
 void dna_handle_get_cached_transactions(dna_engine_t *engine, dna_task_t *task) {
-    (void)engine;
-    ensure_wallet_cache();
+    ensure_wallet_cache(engine);
 
     const char *network = task->params.get_transactions.network;
     int wallet_index = task->params.get_transactions.wallet_index;
@@ -1320,8 +1319,7 @@ void dna_handle_get_cached_transactions(dna_engine_t *engine, dna_task_t *task) 
 /* ── TX Status ─────────────────────────────────────────────────────── */
 
 void dna_handle_get_tx_status(dna_engine_t *engine, dna_task_t *task) {
-    (void)engine;
-    ensure_wallet_cache();
+    ensure_wallet_cache(engine);
     const char *tx_hash = task->params.get_tx_status.tx_hash;
     const char *chain = task->params.get_tx_status.chain;
 
