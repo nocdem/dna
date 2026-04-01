@@ -256,19 +256,19 @@ build:native-android-arm64:
         cd /tmp && rm -rf sqlcipher
         git clone --depth 1 --branch v4.6.1 https://github.com/sqlcipher/sqlcipher.git
         cd sqlcipher
-        # Generate amalgamation
-        ./configure --enable-tempstore=yes \
+        # Step 1: Generate amalgamation with HOST compiler (not cross-compiler)
+        CC=gcc ./configure --enable-tempstore=yes \
           CFLAGS="-DSQLITE_HAS_CODEC -DSQLCIPHER_CRYPTO_OPENSSL" \
           --with-crypto-lib=openssl
         make sqlite3.c
-        # Cross-compile amalgamation for ARM64
+        # Step 2: Cross-compile amalgamation for ARM64 using Android NDK
         ${CC} -c sqlite3.c -o sqlite3.o \
           -DSQLITE_HAS_CODEC \
           -DSQLCIPHER_CRYPTO_OPENSSL \
           -I${DEPS_DIR}/openssl-arm64/include \
           -DNDEBUG -O2 -fPIC
         ${AR} rcs libsqlite3.a sqlite3.o
-        # Install to sqlite-arm64 (drop-in replacement, same dir name)
+        # Step 3: Install to sqlite-arm64 (drop-in replacement, same dir name)
         mkdir -p "${DEPS_DIR}/sqlite-arm64/lib" "${DEPS_DIR}/sqlite-arm64/include"
         cp libsqlite3.a "${DEPS_DIR}/sqlite-arm64/lib/"
         cp sqlite3.h "${DEPS_DIR}/sqlite-arm64/include/"
