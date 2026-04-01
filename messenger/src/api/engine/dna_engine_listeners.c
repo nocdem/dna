@@ -51,8 +51,15 @@ static void parallel_listener_worker(void *arg) {
     parallel_listener_ctx_t *ctx = (parallel_listener_ctx_t *)arg;
     if (!ctx || !ctx->engine) return;
 
+    /* v0.9.161: Skip if engine is shutting down or nodus not ready.
+     * During leaked engine destroy, nodus is force-disconnected but
+     * worker threads may still be running — avoid pointless DHT calls. */
+    if (atomic_load(&ctx->engine->shutdown_requested)) return;
+    if (!nodus_ops_is_ready()) return;
+
     dna_engine_listen_outbox(ctx->engine, ctx->fingerprint);
     /* v0.9.0: Presence listeners removed — batch query via Nodus server */
+    if (atomic_load(&ctx->engine->shutdown_requested)) return;
     dna_engine_start_ack_listener(ctx->engine, ctx->fingerprint);
 }
 
@@ -367,11 +374,21 @@ int dna_engine_listen_all_contacts(dna_engine_t *engine)
 
     /* Wait for nodus to become ready (connected + authenticated).
      * This ensures listeners actually work instead of silently failing.
-     * v0.6.113: Reduced from 30s to 10s - listeners retry anyway. */
+     * v0.6.113: Reduced from 30s to 10s - listeners retry anyway.
+     * v0.9.161: Check shutdown_requested during wait — abort immediately
+     * if engine is being destroyed (leaked engine scenario). */
     if (!nodus_ops_is_ready()) {
         QGP_LOG_INFO(LOG_TAG, "[LISTEN] Waiting for nodus to become ready...");
         bool ready = false;
         for (int w = 0; w < 10; w++) {
+            if (atomic_load(&engine->shutdown_requested)) {
+                QGP_LOG_INFO(LOG_TAG, "[LISTEN] Shutdown during nodus wait, aborting");
+                pthread_mutex_lock(&engine->background_threads_mutex);
+                engine->listeners_starting = false;
+                pthread_cond_broadcast(&engine->background_thread_exit_cond);
+                pthread_mutex_unlock(&engine->background_threads_mutex);
+                return 0;
+            }
             if (nodus_ops_is_ready()) { ready = true; break; }
             qgp_platform_sleep(1);
         }

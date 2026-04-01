@@ -679,13 +679,25 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
                      atomic_load(&engine->initial_connect_handled));
         if (engine->identity_loaded) {
             if (!atomic_load(&engine->initial_connect_handled)) {
-                /* First connect — stabilization thread handles full setup */
+                /* First connect — stabilization thread handles full setup.
+                 * v0.9.161: But if stabilization already finished and left 0 listeners
+                 * (e.g. nodus was RECONNECTING during listener setup), spawn anyway. */
                 if (engine->stabilization_retry_running) {
                     QGP_LOG_INFO(LOG_TAG, "[LISTEN] First connect — stabilization thread active, skipping");
                 } else {
-                    /* Safety net: stabilization not running but flag not set */
-                    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Unexpected: no stabilization thread, spawning listeners");
-                    goto spawn_listeners;
+                    /* Stabilization already finished — check if listeners were set up */
+                    pthread_mutex_lock(&engine->outbox_listeners_mutex);
+                    int active = 0;
+                    for (int i = 0; i < engine->outbox_listener_count; i++) {
+                        if (engine->outbox_listeners[i].active) active++;
+                    }
+                    pthread_mutex_unlock(&engine->outbox_listeners_mutex);
+                    if (active == 0) {
+                        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Stabilization done but 0 active listeners, respawning");
+                        goto spawn_listeners;
+                    } else {
+                        QGP_LOG_INFO(LOG_TAG, "[LISTEN] Stabilization done, %d listeners active", active);
+                    }
                 }
             } else {
                 /* Reconnect — spawn listener setup thread */
