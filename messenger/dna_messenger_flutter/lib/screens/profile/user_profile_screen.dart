@@ -169,7 +169,9 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
           _isLoadingPosts = false;
         });
       }
-      return; // Already have posts with engagement — done
+      // Load full engagement in background for accurate tip totals
+      _loadTipTotals(cachedPosts.map((i) => i.post.uuid).toList());
+      return;
     }
 
     // Step 2: No cached posts — load from engine (DHT/cache)
@@ -230,6 +232,29 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     } catch (_) {
       if (mounted) setState(() => _isLoadingPosts = false);
     }
+  }
+
+  /// Fetch full engagement to compute accurate tip totals (cached path).
+  Future<void> _loadTipTotals(List<String> uuids) async {
+    if (uuids.isEmpty) return;
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final engagements = await engine.wallGetEngagement(uuids);
+      int tips = 0;
+      for (final e in engagements) {
+        for (final c in e.comments) {
+          if (c.isTip) {
+            try {
+              final data = jsonDecode(c.body) as Map<String, dynamic>;
+              tips += int.parse(data['amount'] as String? ?? '0');
+            } catch (_) {}
+          }
+        }
+      }
+      if (mounted && tips > 0) {
+        setState(() => _totalTips = tips);
+      }
+    } catch (_) {}
   }
 
   // ---------------------------------------------------------------------------
