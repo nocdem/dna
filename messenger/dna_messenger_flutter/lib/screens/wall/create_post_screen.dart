@@ -112,9 +112,15 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
         setState(() => _uploading = false);
 
         final imageJson = mediaRef.toMessageJson();
-        await notifier.createPostWithImage(text, imageJson, boost: _boost);
+        final post = await notifier.createPostWithImage(text, imageJson, boost: _boost);
+        if (_boost && !post.isBoosted && mounted) {
+          DnaSnackBar.info(context, AppLocalizations.of(context).wallBoostLimitReached);
+        }
       } else {
-        await notifier.createPost(text, boost: _boost);
+        final post = await notifier.createPost(text, boost: _boost);
+        if (_boost && !post.isBoosted && mounted) {
+          DnaSnackBar.info(context, AppLocalizations.of(context).wallBoostLimitReached);
+        }
       }
       if (mounted) Navigator.pop(context, true);
     } catch (e) {

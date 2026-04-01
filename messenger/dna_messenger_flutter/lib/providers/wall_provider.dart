@@ -601,9 +601,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     final post = boost
         ? await engine.wallBoostPost(text)
         : await engine.wallPost(text);
-    final result = boost ? post.copyWith(isBoosted: true) : post;
-    _insertPostOptimistic(result);
-    return result;
+    _insertPostOptimistic(post);
+    return post;
   }
 
   /// Create a wall post with image
@@ -613,9 +612,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     final post = boost
         ? await engine.wallBoostPostWithImage(text, imageJson)
         : await engine.wallPostWithImage(text, imageJson);
-    final result = boost ? post.copyWith(isBoosted: true) : post;
-    _insertPostOptimistic(result);
-    return result;
+    _insertPostOptimistic(post);
+    return post;
   }
 
   void _insertPostOptimistic(WallPost post) {

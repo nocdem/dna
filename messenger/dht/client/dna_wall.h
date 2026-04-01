@@ -381,7 +381,7 @@ void dna_wall_likes_free(dna_wall_like_t *likes, size_t count);
 /* Boost Constants */
 #define DNA_WALL_BOOST_KEY_PREFIX     "dna:boost:"
 #define DNA_WALL_BOOST_TTL_SECONDS    604800    /* 7 days */
-#define DNA_WALL_BOOST_MAX_PER_DAY    10        /* Max boost posts per user per day */
+#define DNA_WALL_BOOST_MAX_PER_DAY    1         /* Max boost posts per user per day */
 
 /**
  * Boost pointer — lightweight reference stored on the daily boost key.

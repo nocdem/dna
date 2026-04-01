@@ -1669,8 +1669,8 @@ void dna_handle_wall_boost_post(dna_engine_t *engine, dna_task_t *task) {
 
     /* Step 2: Write boost pointer to daily key */
     ret = dna_wall_boost_post(out_post.uuid, engine->fingerprint, out_post.timestamp);
-    if (ret != 0 && ret != -3) {
-        /* Boost pointer failed but wall post succeeded — log but don't fail */
+    bool boost_ok = (ret == 0 || ret == -3); /* -3 = already boosted (counts as success) */
+    if (!boost_ok) {
         QGP_LOG_WARN(LOG_TAG, "Wall post created but boost pointer failed (ret=%d)", ret);
     } else {
         QGP_LOG_INFO(LOG_TAG, "Boost post created: %s", out_post.uuid);
@@ -1686,6 +1686,7 @@ void dna_handle_wall_boost_post(dna_engine_t *engine, dna_task_t *task) {
     }
 
     wall_post_to_info(&out_post, info);
+    info->is_boosted = boost_ok;
     free(out_post.image_json);
 
     task->callback.wall_post(task->request_id, DNA_OK, info, task->user_data);
