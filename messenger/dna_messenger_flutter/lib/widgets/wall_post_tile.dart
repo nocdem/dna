@@ -8,6 +8,7 @@ import '../ffi/dna_engine.dart';
 import '../l10n/app_localizations.dart';
 import '../models/media_ref.dart';
 import '../providers/engine_provider.dart';
+import '../providers/event_handler.dart' show DhtConnectionState, dhtConnectionStateProvider;
 import '../providers/wall_provider.dart' show wallImageCache, wallImageCachePut;
 import '../services/media_service.dart';
 import '../utils/logger.dart';
@@ -433,6 +434,7 @@ class _LazyWallPostImageState extends ConsumerState<_LazyWallPostImage> {
   bool _loading = false;
   bool _downloading = false;
   bool _failed = false;
+  bool _retriedOnConnect = false;  // prevent infinite retry loop on DHT connect
 
   @override
   void initState() {
@@ -543,6 +545,20 @@ class _LazyWallPostImageState extends ConsumerState<_LazyWallPostImage> {
 
   @override
   Widget build(BuildContext context) {
+    // Watch DHT state — auto-retry failed media downloads when DHT connects
+    final dhtState = ref.watch(dhtConnectionStateProvider);
+    if (dhtState != DhtConnectionState.connected) {
+      _retriedOnConnect = false;  // reset on disconnect so next connect retries
+    } else if (_failed && !_downloading && !_retriedOnConnect && _mediaRef != null) {
+      _retriedOnConnect = true;
+      // Schedule retry after build completes
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _failed && !_downloading) {
+          _retryDownload();
+        }
+      });
+    }
+
     // Full image available (from any source)
     if (_imageBytes != null) {
       return _WallPostImage(imageBytes: _imageBytes!);

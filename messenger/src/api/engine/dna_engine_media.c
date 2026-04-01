@@ -18,6 +18,7 @@
 
 #include "engine_includes.h"
 #include "dht/shared/nodus_ops.h"
+#include "dht/shared/nodus_init.h"
 
 /* Override LOG_TAG for this module (engine_includes.h defines DNA_ENGINE) */
 #undef LOG_TAG
@@ -51,6 +52,15 @@ static void _upload_progress_cb(size_t bytes_sent, size_t total_bytes,
  * ============================================================================ */
 
 void dna_handle_media_upload(dna_engine_t *engine, dna_task_t *task) {
+    /* Guard: DHT must be connected before attempting upload */
+    if (!nodus_messenger_is_ready()) {
+        QGP_LOG_WARN(LOG_TAG, "Media upload: DHT not connected, skipping");
+        task->callback.media_upload(task->request_id, DNA_ENGINE_ERROR_NOT_CONNECTED,
+                                    NULL, task->user_data);
+        if (task->params.media_upload.data) free(task->params.media_upload.data);
+        return;
+    }
+
     uint8_t *data            = task->params.media_upload.data;
     size_t   data_len        = task->params.media_upload.data_len;
     uint8_t  media_type      = task->params.media_upload.media_type;
@@ -94,6 +104,14 @@ void dna_handle_media_upload(dna_engine_t *engine, dna_task_t *task) {
 void dna_handle_media_download(dna_engine_t *engine, dna_task_t *task) {
     (void)engine;
 
+    /* Guard: DHT must be connected before attempting download */
+    if (!nodus_messenger_is_ready()) {
+        QGP_LOG_WARN(LOG_TAG, "Media download: DHT not connected, skipping");
+        task->callback.media_download(task->request_id, DNA_ENGINE_ERROR_NOT_CONNECTED,
+                                      NULL, 0, task->user_data);
+        return;
+    }
+
     uint8_t *data = NULL;
     size_t data_len = 0;
 
@@ -117,6 +135,14 @@ void dna_handle_media_download(dna_engine_t *engine, dna_task_t *task) {
 
 void dna_handle_media_exists(dna_engine_t *engine, dna_task_t *task) {
     (void)engine;
+
+    /* Guard: DHT must be connected */
+    if (!nodus_messenger_is_ready()) {
+        QGP_LOG_WARN(LOG_TAG, "Media exists: DHT not connected, skipping");
+        task->callback.media_exists(task->request_id, DNA_ENGINE_ERROR_NOT_CONNECTED,
+                                    false, task->user_data);
+        return;
+    }
 
     bool exists = false;
 

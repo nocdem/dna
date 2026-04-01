@@ -2288,6 +2288,7 @@ engine.debugLogClear();
 | -101 | `DNA_ENGINE_ERROR_NOT_INITIALIZED` | Engine not initialized |
 | -102 | `DNA_ENGINE_ERROR_NETWORK` | Network error |
 | -103 | `DNA_ENGINE_ERROR_DATABASE` | Database error |
+| -104 | `DNA_ENGINE_ERROR_NOT_CONNECTED` | DHT not connected (operation attempted before bootstrap complete) |
 | -106 | `DNA_ENGINE_ERROR_NO_IDENTITY` | No identity loaded |
 | -107 | `DNA_ENGINE_ERROR_ALREADY_EXISTS` | Already exists |
 | -108 | `DNA_ENGINE_ERROR_PERMISSION` | Permission denied |
@@ -2301,7 +2302,7 @@ engine.debugLogClear();
 | -116 | `DNA_ENGINE_ERROR_KEY_UNAVAILABLE` | Recipient public key not cached and DHT lookup failed (offline) |
 | -117 | `DNA_ENGINE_ERROR_IDENTITY_LOCKED` | Identity lock held by another process (Flutter/Service) |
 
-**Note:** Error codes -104 and -105 are not defined (gap in sequence).
+**Note:** Error code -105 is not defined (gap in sequence).
 
 Use `dna_engine_error_string(error)` for human-readable messages.
 

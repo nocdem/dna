@@ -69,6 +69,7 @@ typedef uint64_t dna_request_id_t;
 #define DNA_ENGINE_ERROR_NOT_INITIALIZED (-101)
 #define DNA_ENGINE_ERROR_NETWORK        (-102)
 #define DNA_ENGINE_ERROR_DATABASE       (-103)
+#define DNA_ENGINE_ERROR_NOT_CONNECTED  (-104)  /* DHT not connected (race: operation before bootstrap complete) */
 #define DNA_ENGINE_ERROR_NO_IDENTITY    (-106)
 #define DNA_ENGINE_ERROR_ALREADY_EXISTS (-107)
 #define DNA_ENGINE_ERROR_PERMISSION     (-108)

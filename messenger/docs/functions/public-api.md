@@ -268,6 +268,8 @@ One-directional follow system. No approval needed, private to owner.
 | `dna_media_download_cb` | `void (*)(dna_request_id_t req_id, int error, const uint8_t *data, size_t data_len, void *user_data)` |
 | `dna_media_exists_cb` | `void (*)(dna_request_id_t req_id, int error, bool exists, void *user_data)` |
 
+**Error Codes:** All three media operations return `DNA_ENGINE_ERROR_NOT_CONNECTED (-104)` if DHT is not yet connected (e.g., during startup before bootstrap completes). Flutter retries failed media downloads automatically when DHT connects.
+
 ## 1.14 Backward Compatibility
 
 | Function | Description |
