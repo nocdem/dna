@@ -15,6 +15,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* SQLCipher encryption key function.
+ * Some platform headers omit this declaration — provide fallback. */
+int sqlite3_key(sqlite3 *db, const void *pKey, int nKey);
+
 /**
  * Derive database encryption key from DSA secret key.
  *
