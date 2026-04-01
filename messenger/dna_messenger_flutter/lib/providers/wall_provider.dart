@@ -144,55 +144,82 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
   @override
   Future<List<WallFeedItem>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
+    final engine = await ref.watch(engineProvider.future);
 
-    if (!identityLoaded) {
-      // Cache-first: show cached wall posts WITH engagement instantly
-      final engine = await ref.watch(engineProvider.future);
+    // Resolve fingerprint from provider or SharedPreferences
+    String fp = identityLoaded
+        ? (ref.read(currentFingerprintProvider) ?? '')
+        : '';
+    if (fp.length != 128) {
       final prefs = await SharedPreferences.getInstance();
-      final fp = prefs.getString('identity_fingerprint');
-      if (fp != null && fp.length == 128) {
-        try {
-          final posts = await engine.wallTimelineCached(fp);
+      fp = prefs.getString('identity_fingerprint') ?? '';
+    }
+
+    // Always cache-first: show cached posts instantly (no DHT, no spinner)
+    if (fp.length == 128) {
+      try {
+        final posts = await engine.wallTimelineCached(fp);
+        if (posts.isNotEmpty) {
           var items = await _assembleItems(posts, fp);
 
-          // Fetch engagement from cache (C serves stale cache immediately)
-          if (posts.isNotEmpty) {
-            try {
-              final uuids = posts.map((p) => p.uuid).toList();
-              final engagements = await engine.wallGetEngagement(uuids);
-              if (engagements.isNotEmpty) {
-                final engMap = <String, WallEngagement>{};
-                for (final e in engagements) {
-                  engMap[e.postUuid] = e;
-                }
-                items = items.map((item) {
-                  final eng = engMap[item.post.uuid];
-                  if (eng != null) {
-                    final preview = eng.comments.length <= 3
-                        ? eng.comments
-                        : eng.comments.sublist(0, 3);
-                    return item.copyWith(
-                      likeCount: eng.likeCount,
-                      isLikedByMe: eng.isLikedByMe,
-                      commentCount: eng.comments.length,
-                      previewComments: preview,
-                    );
-                  }
-                  return item;
-                }).toList();
+          // Merge engagement from cache
+          try {
+            final uuids = posts.map((p) => p.uuid).toList();
+            List<WallEngagement> engagements = [];
+            const batchSize = 32;
+            for (var i = 0; i < uuids.length; i += batchSize) {
+              final chunk = uuids.sublist(
+                  i, i + batchSize > uuids.length ? uuids.length : i + batchSize);
+              final batch = await engine.wallGetEngagement(chunk);
+              engagements.addAll(batch);
+            }
+            if (engagements.isNotEmpty) {
+              final engMap = <String, WallEngagement>{};
+              for (final e in engagements) {
+                engMap[e.postUuid] = e;
               }
-            } catch (_) {}
+              items = items.map((item) {
+                final eng = engMap[item.post.uuid];
+                if (eng != null) {
+                  final preview = eng.comments.length <= 3
+                      ? eng.comments
+                      : eng.comments.sublist(0, 3);
+                  return item.copyWith(
+                    likeCount: eng.likeCount,
+                    isLikedByMe: eng.isLikedByMe,
+                    commentCount: eng.comments.length,
+                    previewComments: preview,
+                  );
+                }
+                return item;
+              }).toList();
+            }
+          } catch (_) {}
+
+          // Schedule full DHT refresh in background (boost resolution + fresh data)
+          if (identityLoaded) {
+            final bgFp = fp;
+            Future.delayed(Duration.zero, () async {
+              try {
+                final dhtItems = await _fetchAndAssemble(engine, bgFp);
+                if (dhtItems.isNotEmpty) {
+                  state = AsyncData(dhtItems);
+                }
+              } catch (_) {}
+            });
           }
 
           return items;
-        } catch (_) {
-          return state.valueOrNull ?? [];
         }
+      } catch (_) {
+        return state.valueOrNull ?? [];
       }
-      return state.valueOrNull ?? [];
     }
 
-    final engine = await ref.watch(engineProvider.future);
+    // Cache empty — full DHT fetch if identity ready, else empty
+    if (!identityLoaded) {
+      return state.valueOrNull ?? [];
+    }
     final myFp = ref.read(currentFingerprintProvider) ?? '';
     return _fetchAndAssemble(engine, myFp);
   }
@@ -414,8 +441,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
             : post.authorFingerprint.substring(0, 16);
       }
 
-      // Only check in-memory cache (image loaded lazily by tile)
-      final decodedImage = _ImageCache.get(post.uuid);
+      // Pre-decode image from post data (avoids per-tile FFI wallGetImage calls)
+      final decodedImage = _ImageCache.decodePostImage(post.uuid, post.imageJson);
 
       items.add(WallFeedItem(
         post: post,
