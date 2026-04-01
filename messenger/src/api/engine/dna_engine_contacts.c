@@ -252,6 +252,10 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
         /* Remove keyserver cache entry */
         keyserver_cache_delete(fp);
 
+        /* Cancel any contact request we sent to this user's DHT inbox
+         * (prevents ghost re-appearance if they poll within 7-day TTL) */
+        dht_cancel_contact_request(engine->fingerprint, fp);
+
         QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Full cleanup done for %.16s...\n", fp);
     }
 
@@ -726,6 +730,12 @@ void dna_handle_block_user(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ENGINE_ERROR_ALREADY_EXISTS;
     } else if (rc != 0) {
         error = DNA_ENGINE_ERROR_DATABASE;
+    }
+
+    /* Cancel any contact request we sent to this user's DHT inbox */
+    if (error == DNA_OK) {
+        dht_cancel_contact_request(engine->fingerprint,
+            task->params.block_user.fingerprint);
     }
 
     /* Delete conversation history with blocked user (cleanup) */
