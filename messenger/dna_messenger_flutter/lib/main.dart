@@ -178,18 +178,6 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
       _nameBackfillSub?.cancel();
       doBackfill();
     }
-
-    // Timeout: if DHT never connects, force registration after 20s
-    Future.delayed(const Duration(seconds: 20), () {
-      if (done || !mounted) return;
-      _nameBackfillSub?.cancel();
-      engine.debugLog('STARTUP', 'Backfill: DHT timeout (20s) — showing registration');
-      done = true;
-      setState(() {
-        _nameCheckDone = true;
-        _registrationIncomplete = true;
-      });
-    });
   }
 
   /// Background check: if local cache has a name but DHT doesn't, re-register it.
@@ -288,9 +276,6 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           if (cached != null && cached.registeredName.isNotEmpty) {
             engine.debugLog('STARTUP', 'Cached registeredName: ${cached.registeredName}');
             if (mounted) {
-              // Ensure identityProfileCacheProvider has the name (gate checks this)
-              ref.read(identityProfileCacheProvider.notifier).updateIdentity(
-                fp, cached.displayName, cached.avatarBase64, registeredName: cached.registeredName);
               setState(() {
                 _nameCheckDone = true;
                 _registrationIncomplete = false;
@@ -362,21 +347,13 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
 
         // Identity loaded — show appropriate screen
         if (currentFingerprint != null) {
-          // Name registration gate: no name = no app access
+          // Name registration check
           final profileCache = ref.watch(identityProfileCacheProvider);
           final cached = profileCache[currentFingerprint];
           final hasName = cached != null && cached.registeredName.isNotEmpty;
-
-          if (!hasName) {
-            // Name check still in progress (DHT backfill) — show loading
-            if (!_nameCheckDone) {
-              return const _LoadingScreen();
-            }
-            // Name check done, no name found — force registration
+          if (_nameCheckDone && !hasName && _registrationIncomplete) {
             return IdentitySelectionScreen(resumeFingerprint: currentFingerprint);
           }
-
-          // Has name — proceed to app
 
           // Version check
           final versionCheck = ref.watch(versionCheckProvider);
