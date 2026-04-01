@@ -383,6 +383,11 @@ All C projects use CMake. Build from each project's `build/` directory.
 
 **Build order matters:** Messenger first, then dnac. Nodus is independent.
 
+**Required dependency:** SQLCipher is required for the messenger C library (database encryption):
+```bash
+apt install -t bookworm-backports libsqlcipher-dev
+```
+
 ## Running Tests
 
 | Project | Unit Tests | Integration Tests |

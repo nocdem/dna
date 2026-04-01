@@ -254,10 +254,19 @@ Destroys engine and releases all resources.
 
 **What it does:**
 1. Stops all worker threads
-2. Frees messenger context
-3. Releases all allocated memory
+2. Securely zeroes `db_encryption_key` with `qgp_secure_memzero`
+3. Frees messenger context
+4. Releases all allocated memory
 
 **Note:** Does NOT call `dht_singleton_cleanup()` - DHT is global.
+
+### Internal Field: db_encryption_key
+
+```c
+char db_encryption_key[129];  // 128 hex chars + NUL
+```
+
+Derived during identity load via `db_derive_encryption_key()` from the Dilithium5 DSA secret key. Used as the SQLCipher PRAGMA key for all per-identity encrypted databases. Cleared with `qgp_secure_memzero` on engine destroy. Empty string when no identity is loaded.
 
 ---
 

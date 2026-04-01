@@ -2,7 +2,16 @@
 
 **Directory:** `database/`
 
-Local SQLite databases for contacts, caching, and profiles.
+Local SQLite databases for contacts, caching, and profiles. Per-identity databases are encrypted with SQLCipher v4.6.1.
+
+---
+
+## 13.0 Database Encryption (`db_encryption.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int db_derive_encryption_key(const uint8_t*, size_t, char*, size_t)` | Derive DB encryption key from DSA secret key via SHA3-512. Output: 128 hex chars + NUL. |
+| `int dna_db_open_encrypted(const char*, const char*, sqlite3**)` | Open encrypted database with SQLCipher PRAGMA key. Detects legacy unencrypted DBs and deletes them. |
 
 ---
 
@@ -12,7 +21,7 @@ Local SQLite databases for contacts, caching, and profiles.
 
 | Function | Description |
 |----------|-------------|
-| `int contacts_db_init(const char*)` | Initialize contacts database for identity |
+| `int contacts_db_init(const char*, const char*)` | Initialize contacts database for identity (+ db_key) |
 | `int contacts_db_add(const char*, const char*)` | Add contact to database |
 | `int contacts_db_remove(const char*)` | Remove contact from database |
 | `int contacts_db_update_notes(const char*, const char*)` | Update contact notes |
@@ -22,7 +31,7 @@ Local SQLite databases for contacts, caching, and profiles.
 | `int contacts_db_clear_all(void)` | Clear all contacts |
 | `void contacts_db_free_list(contact_list_t*)` | Free contact list |
 | `void contacts_db_close(void)` | Close database |
-| `int contacts_db_migrate_from_global(const char*)` | Migrate from global database |
+| ~~`contacts_db_migrate_from_global`~~ | **Removed** — legacy migration no longer needed (SQLCipher deletes old DBs) |
 
 ### Contact Requests
 
@@ -141,7 +150,7 @@ Local SQLite databases for contacts, caching, and profiles.
 
 | Function | Description |
 |----------|-------------|
-| `group_database_context_t* group_database_init(void)` | Initialize group database (singleton) |
+| `group_database_context_t* group_database_init(const char*)` | Initialize group database (singleton, db_key) |
 | `group_database_context_t* group_database_get_instance(void)` | Get global group database instance |
 | `void* group_database_get_db(group_database_context_t*)` | Get raw SQLite handle |
 | `void group_database_close(group_database_context_t*)` | Close group database |
@@ -157,7 +166,7 @@ Local SQLite databases for contacts, caching, and profiles.
 
 | Function | Description |
 |----------|-------------|
-| `int group_invitations_init(const char*)` | Initialize invitations database |
+| `int group_invitations_init(const char*, const char*)` | Initialize invitations database (+ db_key) |
 | `int group_invitations_store(const group_invitation_t*)` | Store new invitation |
 | `int group_invitations_get_pending(group_invitation_t**, int*)` | Get pending invitations |
 | `int group_invitations_get(const char*, group_invitation_t**)` | Get invitation by UUID |
@@ -230,7 +239,7 @@ Per-identity SQLite database for channel subscriptions.
 
 | Function | Description |
 |----------|-------------|
-| `int channel_subscriptions_db_init(void)` | Initialize channel subscriptions database |
+| `int channel_subscriptions_db_init(const char*)` | Initialize channel subscriptions database (db_key) |
 | `void channel_subscriptions_db_close(void)` | Close channel subscriptions database |
 
 ### Subscription Operations
@@ -322,7 +331,7 @@ Per-identity SQLite database for channel subscriptions.
 
 | Function | Description |
 |----------|-------------|
-| `int wallet_cache_init(void)` | Initialize wallet cache database |
+| `int wallet_cache_init(const char*)` | Initialize wallet cache database (db_key) |
 | `void wallet_cache_close(void)` | Close wallet cache database |
 
 ### Balance Operations

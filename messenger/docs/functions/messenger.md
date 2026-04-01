@@ -12,7 +12,7 @@ Core messenger functionality including identity management, key generation, mess
 
 | Function | Description |
 |----------|-------------|
-| `messenger_context_t* messenger_init(const char *identity)` | Initialize messenger context |
+| `messenger_context_t* messenger_init(const char *identity, const char *db_key)` | Initialize messenger context (db_key for SQLCipher encryption) |
 | `void messenger_free(messenger_context_t *ctx)` | Free messenger context |
 | `void messenger_set_session_password(...)` | Set session password for encrypted keys |
 | `int messenger_load_dht_identity(const char *fingerprint)` | Load DHT identity and reinitialize |
@@ -182,13 +182,13 @@ fetch and import, eliminating the need for per-device IKP extraction.
 Local SQLite database for message backup. Stores **plaintext** messages per-identity at `~/.dna/db/messages.db` (v14).
 
 **v14 Schema Change:** Messages stored as plaintext (previously encrypted BLOB).
-Database-level encryption (SQLCipher) planned for future.
+Database-level encryption uses SQLCipher v4.6.1 (added in v0.9.160).
 
 ### 4.1 Initialization
 
 | Function | Description |
 |----------|-------------|
-| `message_backup_context_t* message_backup_init(const char *identity)` | Initialize message backup system |
+| `message_backup_context_t* message_backup_init(const char *identity, const char *db_key)` | Initialize message backup system (db_key for SQLCipher encryption) |
 | `void message_backup_close(message_backup_context_t *ctx)` | Close backup context |
 | `void* message_backup_get_db(message_backup_context_t *ctx)` | Get SQLite database handle |
 

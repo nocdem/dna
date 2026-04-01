@@ -962,7 +962,27 @@ int messenger_reject_group_invitation(ctx, group_uuid);
 └── <fingerprint>_groups.db            # Group GEK storage
 ```
 
-### 8.2 Message Backup
+### 8.2 Database Encryption (SQLCipher)
+
+**Added in v0.9.160** — All per-identity databases are encrypted at rest using SQLCipher v4.6.1.
+
+**Encrypted databases (9):** contacts, addressbook, messages, groups, invitations, following, wallet_cache, channel_subscriptions, dht_groups
+
+**Unencrypted databases (5):** keyserver_cache, wall_cache, channel_cache, profiles, bootstrap_cache — these contain only publicly-available DHT data and do not require encryption.
+
+**Key derivation:**
+```
+SHA3-512(DSA_secret_key || "sqlcipher-db-key") → first 128 hex chars → PRAGMA key
+```
+The 128-character hex key is derived deterministically from the identity's Dilithium5 secret key. It is held in `engine->db_encryption_key` during runtime and securely zeroed on engine destroy.
+
+**No migration path:** Existing unencrypted databases are detected and deleted on first encrypted open. Data is restored automatically via DHT sync (contacts, groups, following, addressbook, messages).
+
+**Implementation files:**
+- `database/db_encryption.h` / `database/db_encryption.c` — Key derivation + encrypted open wrapper
+- `database/dna_db_open_encrypted()` — Opens with SQLCipher PRAGMA, detects legacy unencrypted DBs
+
+### 8.3 Message Backup
 
 **Location:** `message_backup.h`
 

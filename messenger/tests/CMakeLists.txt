@@ -49,16 +49,21 @@ include_directories(
 # =============================================================================
 find_package(PkgConfig REQUIRED)
 find_package(OpenSSL REQUIRED)
+pkg_check_modules(SQLCIPHER REQUIRED sqlcipher)
 
 # =============================================================================
 # Link against the shared library (carries all internal deps)
 # =============================================================================
 set(TEST_LIBS
     ${DNA_BUILD}/libdna.so
+    ${SQLCIPHER_LIBRARIES}
     ${OPENSSL_LIBRARIES}
     pthread
     m
 )
+
+# SQLCipher include dirs (provides sqlite3.h with encryption support)
+include_directories(${SQLCIPHER_INCLUDE_DIRS})
 
 # =============================================================================
 # Compiler flags
@@ -92,6 +97,7 @@ message(STATUS "  - test_aes256_gcm      : AES-256-GCM encryption/decryption")
 message(STATUS "  - test_key_encryption  : Key encryption (PBKDF2 + AES-256-GCM)")
 message(STATUS "  - test_kyber1024       : Kyber1024 (ML-KEM-1024) post-quantum KEM")
 message(STATUS "  - test_bip39_bip32     : BIP39/BIP32 mnemonic and HD key derivation")
+message(STATUS "  - test_db_encryption   : Database encryption (SQLCipher)")
 message(STATUS "")
 
 # =============================================================================
@@ -142,6 +148,13 @@ add_test(NAME test_salt_agreement COMMAND test_salt_agreement)
 add_executable(test_group_channel test_group_channel.c)
 target_link_libraries(test_group_channel ${TEST_LIBS})
 add_test(NAME test_group_channel COMMAND test_group_channel)
+
+# =============================================================================
+# Test: Database Encryption (SQLCipher key derivation + encrypted open)
+# =============================================================================
+add_executable(test_db_encryption test_db_encryption.c)
+target_link_libraries(test_db_encryption ${TEST_LIBS})
+add_test(NAME test_db_encryption COMMAND test_db_encryption)
 
 # =============================================================================
 # CTest integration

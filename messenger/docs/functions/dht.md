@@ -163,7 +163,7 @@ Simple per-contact ACK timestamps for delivery confirmation. When recipient sync
 
 | Function | Description |
 |----------|-------------|
-| `int dht_groups_init(const char*)` | Initialize groups subsystem |
+| `int dht_groups_init(const char*, const char*)` | Initialize groups subsystem (identity, db_key) |
 | `void dht_groups_cleanup(void)` | Cleanup groups subsystem |
 | `int dht_groups_create(...)` | Create new group in DHT |
 | `int dht_groups_get(dht_context_t*, const char*, dht_group_metadata_t**)` | Get group metadata |
