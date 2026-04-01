@@ -936,6 +936,8 @@ int cmd_profile(dna_engine_t *engine, const char *field, const char *value) {
             printf("  SOL:      %s\n", wait.profile->sol);
         if (strlen(wait.profile->trx) > 0)
             printf("  TRX:      %s\n", wait.profile->trx);
+        if (strlen(wait.profile->bsc) > 0)
+            printf("  BSC:      %s\n", wait.profile->bsc);
         printf("\n");
         free(wait.profile);
     } else {
@@ -998,6 +1000,8 @@ int cmd_lookup_profile(dna_engine_t *engine, const char *identifier) {
         printf("Solana: %s\n", identity->wallets.sol);
     if (identity->wallets.trx[0])
         printf("TRON: %s\n", identity->wallets.trx);
+    if (identity->wallets.bsc[0])
+        printf("BSC: %s\n", identity->wallets.bsc);
 
     printf("\n--- Social Links ---\n");
     if (identity->socials.x[0])

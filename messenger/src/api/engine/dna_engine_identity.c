@@ -473,6 +473,7 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
     strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
     strncpy(profile->trx, identity->wallets.trx, sizeof(profile->trx) - 1);
+    strncpy(profile->bsc, identity->wallets.bsc, sizeof(profile->bsc) - 1);
 
     /* Socials */
     strncpy(profile->telegram, identity->socials.telegram, sizeof(profile->telegram) - 1);
@@ -557,6 +558,12 @@ populate_wallets:
                     case BLOCKCHAIN_TRON:
                         if (profile->trx[0] == '\0' && w->address[0]) {
                             strncpy(profile->trx, w->address, sizeof(profile->trx) - 1);
+                            wallets_changed = true;
+                        }
+                        break;
+                    case BLOCKCHAIN_BSC:
+                        if (profile->bsc[0] == '\0' && w->address[0]) {
+                            strncpy(profile->bsc, w->address, sizeof(profile->bsc) - 1);
                             wallets_changed = true;
                         }
                         break;
@@ -660,6 +667,7 @@ void dna_auto_republish_own_profile(dna_engine_t *engine) {
     strncpy(profile.eth, cached->wallets.eth, sizeof(profile.eth) - 1);
     strncpy(profile.sol, cached->wallets.sol, sizeof(profile.sol) - 1);
     strncpy(profile.trx, cached->wallets.trx, sizeof(profile.trx) - 1);
+    strncpy(profile.bsc, cached->wallets.bsc, sizeof(profile.bsc) - 1);
     strncpy(profile.telegram, cached->socials.telegram, sizeof(profile.telegram) - 1);
     strncpy(profile.twitter, cached->socials.x, sizeof(profile.twitter) - 1);
     strncpy(profile.github, cached->socials.github, sizeof(profile.github) - 1);
@@ -783,6 +791,7 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
     strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
     strncpy(profile->trx, identity->wallets.trx, sizeof(profile->trx) - 1);
+    strncpy(profile->bsc, identity->wallets.bsc, sizeof(profile->bsc) - 1);
 
     /* Socials */
     strncpy(profile->telegram, identity->socials.telegram, sizeof(profile->telegram) - 1);
@@ -869,6 +878,7 @@ void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task) 
     strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
     strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
     strncpy(profile->trx, identity->wallets.trx, sizeof(profile->trx) - 1);
+    strncpy(profile->bsc, identity->wallets.bsc, sizeof(profile->bsc) - 1);
 
     /* Socials */
     strncpy(profile->telegram, identity->socials.telegram, sizeof(profile->telegram) - 1);
@@ -953,6 +963,7 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
         memset(p->eth, 0, sizeof(p->eth));
         memset(p->sol, 0, sizeof(p->sol));
         memset(p->trx, 0, sizeof(p->trx));
+        memset(p->bsc, 0, sizeof(p->bsc));
 
         if (bc_wallets) {
             for (size_t i = 0; i < bc_wallets->count; i++) {
@@ -974,6 +985,10 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
                         if (w->address[0])
                             strncpy(p->trx, w->address, sizeof(p->trx) - 1);
                         break;
+                    case BLOCKCHAIN_BSC:
+                        if (w->address[0])
+                            strncpy(p->bsc, w->address, sizeof(p->bsc) - 1);
+                        break;
                     default:
                         break;
                 }
@@ -981,10 +996,11 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
             /* DO NOT free bc_wallets — owned by engine */
         }
 
-        QGP_LOG_INFO(LOG_TAG, "update_profile: wallets derived from seed (eth=%.10s... sol=%.10s... trx=%.10s...)",
+        QGP_LOG_INFO(LOG_TAG, "update_profile: wallets derived from seed (eth=%.10s... sol=%.10s... trx=%.10s... bsc=%.10s...)",
                      p->eth[0] ? p->eth : "(none)",
                      p->sol[0] ? p->sol : "(none)",
-                     p->trx[0] ? p->trx : "(none)");
+                     p->trx[0] ? p->trx : "(none)",
+                     p->bsc[0] ? p->bsc : "(none)");
     }
 
     /* Preserve existing avatar if new profile has none.
@@ -1050,6 +1066,7 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
             strncpy(cached->wallets.eth, p->eth, sizeof(cached->wallets.eth) - 1);
             strncpy(cached->wallets.sol, p->sol, sizeof(cached->wallets.sol) - 1);
             strncpy(cached->wallets.trx, p->trx, sizeof(cached->wallets.trx) - 1);
+            strncpy(cached->wallets.bsc, p->bsc, sizeof(cached->wallets.bsc) - 1);
 
             strncpy(cached->socials.telegram, p->telegram, sizeof(cached->socials.telegram) - 1);
             strncpy(cached->socials.x, p->twitter, sizeof(cached->socials.x) - 1);

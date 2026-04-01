@@ -51,6 +51,8 @@ static json_object* wallets_to_json(const dna_wallets_t *wallets) {
         json_object_new_string(wallets->sol));
     if (wallets->trx[0]) json_object_object_add(obj, "trx",
         json_object_new_string(wallets->trx));
+    if (wallets->bsc[0]) json_object_object_add(obj, "bsc",
+        json_object_new_string(wallets->bsc));
 
     return obj;
 }
@@ -70,6 +72,7 @@ static int wallets_from_json(json_object *obj, dna_wallets_t *wallets) {
     PARSE_WALLET(eth, "eth")
     PARSE_WALLET(sol, "sol")
     PARSE_WALLET(trx, "trx")
+    PARSE_WALLET(bsc, "bsc")
 
     #undef PARSE_WALLET
     return 0;

@@ -384,7 +384,7 @@ class TransactionsNotifier
       case 'tron':
         return profile.trx;
       case 'bsc':
-        return profile.eth;  // BSC uses same address as ETH (EVM-compatible)
+        return profile.bsc;
       default:
         return '';
     }

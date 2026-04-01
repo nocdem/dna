@@ -38,6 +38,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
   late TextEditingController _ethController;
   late TextEditingController _solController;
   late TextEditingController _trxController;
+  late TextEditingController _bscController;
 
   // Expansion state
   bool _profileExpanded = true;
@@ -55,6 +56,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     _ethController = TextEditingController();
     _solController = TextEditingController();
     _trxController = TextEditingController();
+    _bscController = TextEditingController();
   }
 
   @override
@@ -68,6 +70,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     _ethController.dispose();
     _solController.dispose();
     _trxController.dispose();
+    _bscController.dispose();
     super.dispose();
   }
 
@@ -95,6 +98,9 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     }
     if (_trxController.text != profile.trx) {
       _trxController.text = profile.trx;
+    }
+    if (_bscController.text != profile.bsc) {
+      _bscController.text = profile.bsc;
     }
   }
 
@@ -229,6 +235,11 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                         label: 'TRON (TRX)',
                         controller: _trxController,
                         icon: FontAwesomeIcons.bolt,
+                      ),
+                      _buildWalletAddressDisplay(
+                        label: 'BNB Smart Chain (BSC)',
+                        controller: _bscController,
+                        icon: FontAwesomeIcons.coins,
                       ),
                     ],
                   ),
