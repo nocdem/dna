@@ -557,6 +557,8 @@ class _RequestsTab extends ConsumerWidget {
       try {
         await ref.read(contactRequestsProvider.notifier).block(request.fingerprint, null);
         ref.invalidate(blockedUsersProvider);
+        // Refresh contacts (C engine removes contact + messages on block)
+        ref.read(contactsProvider.notifier).refresh();
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(

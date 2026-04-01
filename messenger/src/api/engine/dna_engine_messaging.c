@@ -874,6 +874,12 @@ void dna_handle_check_offline_messages_from(dna_engine_t *engine, dna_task_t *ta
 
     const char *contact_fp = task->params.check_offline_messages_from.contact_fingerprint;
 
+    /* Skip blocked users */
+    if (contacts_db_is_blocked(contact_fp)) {
+        QGP_LOG_DEBUG(LOG_TAG, "[OFFLINE] Skipping blocked user: %.20s...", contact_fp);
+        goto done;
+    }
+
     /* Check offline messages from specific contact's outbox.
      * This is faster than checking all contacts and provides
      * immediate updates when entering a specific chat.

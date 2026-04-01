@@ -95,6 +95,13 @@ static bool outbox_listen_callback(
 
     QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Contact: %.32s...", ctx->contact_fingerprint);
 
+    /* Skip messages from blocked users */
+    if (contacts_db_is_blocked(ctx->contact_fingerprint)) {
+        QGP_LOG_DEBUG(LOG_TAG, "[LISTEN-CB] Ignoring message from blocked user: %.20s...",
+                      ctx->contact_fingerprint);
+        return true;  /* Continue listening (user may be unblocked later) */
+    }
+
     /* Only fire event for new/updated values, not expirations */
     if (!expired && value && value_len > 0) {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] ✓ NEW VALUE! Firing DNA_EVENT_OUTBOX_UPDATED");

@@ -961,6 +961,8 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
                 ref
                     .read(wallTimelineProvider.notifier)
                     .removePostsByAuthor(widget.fingerprint);
+                // Refresh contacts (C engine removes contact + messages on block)
+                ref.read(contactsProvider.notifier).refresh();
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(

@@ -1569,6 +1569,9 @@ int contacts_db_block_user(const char *fingerprint, const char *reason) {
     // Also remove any pending request from this user
     contacts_db_remove_request(fingerprint);
 
+    // Remove from contacts list (blocked users should not appear as contacts)
+    contacts_db_remove(fingerprint);
+
     QGP_LOG_INFO(LOG_TAG, "Blocked user: %.20s...\n", fingerprint);
     return 0;
 }

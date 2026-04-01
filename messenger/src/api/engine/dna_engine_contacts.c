@@ -728,6 +728,12 @@ void dna_handle_block_user(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ENGINE_ERROR_DATABASE;
     }
 
+    /* Delete conversation history with blocked user (cleanup) */
+    if (error == DNA_OK && engine->messenger) {
+        messenger_delete_conversation_full(engine->messenger,
+            task->params.block_user.fingerprint);
+    }
+
 done:
     if (task->callback.completion) {
         task->callback.completion(task->request_id, error, task->user_data);
