@@ -327,6 +327,13 @@ void dna_handle_register_name(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
+    /* Wait for DHT to be ready (up to 15s) — registration is one-time, blocking OK */
+    if (!nodus_messenger_wait_for_ready(15000)) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not ready after 15s — cannot register name\n");
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
     int rc = messenger_register_name(
         engine->messenger,
         engine->fingerprint,

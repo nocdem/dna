@@ -178,6 +178,18 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
       _nameBackfillSub?.cancel();
       doBackfill();
     }
+
+    // Timeout: if DHT never connects, force registration after 20s
+    Future.delayed(const Duration(seconds: 20), () {
+      if (done || !mounted) return;
+      _nameBackfillSub?.cancel();
+      engine.debugLog('STARTUP', 'Backfill: DHT timeout (20s) — showing registration');
+      done = true;
+      setState(() {
+        _nameCheckDone = true;
+        _registrationIncomplete = true;
+      });
+    });
   }
 
   /// Background check: if local cache has a name but DHT doesn't, re-register it.
@@ -347,13 +359,21 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
 
         // Identity loaded — show appropriate screen
         if (currentFingerprint != null) {
-          // Name registration check
+          // Name registration gate: no name = no app access
           final profileCache = ref.watch(identityProfileCacheProvider);
           final cached = profileCache[currentFingerprint];
           final hasName = cached != null && cached.registeredName.isNotEmpty;
-          if (_nameCheckDone && !hasName && _registrationIncomplete) {
+
+          if (!hasName) {
+            // Name check still in progress (DHT backfill) — show loading
+            if (!_nameCheckDone) {
+              return const _LoadingScreen();
+            }
+            // Name check done, no name found — force registration
             return IdentitySelectionScreen(resumeFingerprint: currentFingerprint);
           }
+
+          // Has name — proceed to app
 
           // Version check
           final versionCheck = ref.watch(versionCheckProvider);
