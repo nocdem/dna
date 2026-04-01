@@ -10,6 +10,7 @@ import '../models/media_ref.dart';
 import '../providers/engine_provider.dart';
 import '../providers/event_handler.dart' show DhtConnectionState, dhtConnectionStateProvider;
 import '../providers/wall_provider.dart' show wallImageCache, wallImageCachePut;
+import '../services/media_cache_service.dart';
 import '../services/media_service.dart';
 import '../utils/logger.dart';
 import '../utils/time_format.dart';
@@ -515,9 +516,30 @@ class _LazyWallPostImageState extends ConsumerState<_LazyWallPostImage> {
     _downloading = true;
 
     try {
+      // Check disk cache first — avoid redundant DHT downloads
+      final diskCache = MediaCacheService.instance;
+      if (diskCache != null) {
+        final cached = await diskCache.get(ref.contentHash, ref.mimeType);
+        if (cached != null) {
+          wallImageCachePut(widget.postUuid, cached);
+          if (mounted) {
+            setState(() {
+              _imageBytes = cached;
+              _downloading = false;
+            });
+          }
+          return;
+        }
+      }
+
       final mediaService = MediaService(engine);
       final bytes = await mediaService.download(ref);
       wallImageCachePut(widget.postUuid, bytes);
+
+      // Persist to disk cache
+      if (diskCache != null) {
+        await diskCache.put(ref.contentHash, ref.mimeType, bytes);
+      }
 
       if (mounted) {
         setState(() {
@@ -525,12 +547,25 @@ class _LazyWallPostImageState extends ConsumerState<_LazyWallPostImage> {
           _downloading = false;
         });
       }
+    } on DnaEngineException catch (e) {
+      // -104 = DHT not connected yet — expected during bootstrap, not an error
+      if (e.code == -104) {
+        log(_tag, 'Media download deferred: DHT not connected yet');
+      } else {
+        logError(_tag, 'Media download failed: $e');
+      }
+      if (mounted) {
+        setState(() {
+          _downloading = false;
+          _failed = _thumbnailBytes == null;
+        });
+      }
     } catch (e) {
       logError(_tag, 'Media download failed: $e');
       if (mounted) {
         setState(() {
           _downloading = false;
-          _failed = _thumbnailBytes == null; // Only fail if no thumbnail
+          _failed = _thumbnailBytes == null;
         });
       }
     }
@@ -549,11 +584,11 @@ class _LazyWallPostImageState extends ConsumerState<_LazyWallPostImage> {
     final dhtState = ref.watch(dhtConnectionStateProvider);
     if (dhtState != DhtConnectionState.connected) {
       _retriedOnConnect = false;  // reset on disconnect so next connect retries
-    } else if (_failed && !_downloading && !_retriedOnConnect && _mediaRef != null) {
+    } else if (!_downloading && !_retriedOnConnect && _mediaRef != null && _imageBytes == null) {
       _retriedOnConnect = true;
       // Schedule retry after build completes
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _failed && !_downloading) {
+        if (mounted && !_downloading && _imageBytes == null) {
           _retryDownload();
         }
       });
