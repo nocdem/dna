@@ -102,6 +102,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   bool _updateDialogShown = false;
   StreamSubscription? _nameBackfillSub;
   StreamSubscription? _nameEnsureSub;
+  Timer? _nameCheckTimeout;
 
   @override
   void initState() {
@@ -117,6 +118,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   void dispose() {
     _nameBackfillSub?.cancel();
     _nameEnsureSub?.cancel();
+    _nameCheckTimeout?.cancel();
     if (_lifecycleObserver != null) {
       WidgetsBinding.instance.removeObserver(_lifecycleObserver!);
     }
@@ -129,9 +131,22 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   void _backfillNameFromDht(dynamic engine, String fp) {
     bool done = false;
 
+    // Timeout: if DHT doesn't connect within 15s, show registration
+    _nameCheckTimeout?.cancel();
+    _nameCheckTimeout = Timer(const Duration(seconds: 15), () {
+      if (!done && mounted && !_nameCheckDone) {
+        engine.debugLog('STARTUP', 'Backfill: timeout waiting for DHT — showing registration');
+        setState(() {
+          _nameCheckDone = true;
+          _registrationIncomplete = true;
+        });
+      }
+    });
+
     Future<void> doBackfill() async {
       if (done || !mounted) return;
       done = true;
+      _nameCheckTimeout?.cancel();
       try {
         final registeredName = await engine.getRegisteredName();
         if (registeredName != null && registeredName.isNotEmpty) {
@@ -287,6 +302,11 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
             engine.debugLog('STARTUP', 'No cached registeredName — backfilling from DHT');
             _backfillNameFromDht(engine, fp);
           }
+        } else {
+          // No fingerprint despite identity loaded — show registration
+          engine.debugLog('STARTUP', 'Fingerprint is null — showing registration');
+          _nameCheckDone = true;
+          _registrationIncomplete = true;
         }
 
         // Android: store fingerprint for background service
@@ -302,6 +322,9 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
       }
     } catch (e) {
       engine.debugLog('STARTUP', 'State sync failed: $e');
+      // Fail-open: let user through to HomeScreen rather than blocking
+      _nameCheckDone = true;
+      _registrationIncomplete = false;
     }
 
     // Wallet pre-warm (always, even without identity)
@@ -347,6 +370,9 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
 
         // Identity loaded — show appropriate screen
         if (currentFingerprint != null) {
+          // Wait for name check to complete before showing any screen
+          if (!_nameCheckDone) return const _LoadingScreen();
+
           // Name registration check
           final profileCache = ref.watch(identityProfileCacheProvider);
           final cached = profileCache[currentFingerprint];
