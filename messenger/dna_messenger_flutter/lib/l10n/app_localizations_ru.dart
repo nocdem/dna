@@ -1349,6 +1349,12 @@ class AppLocalizationsRu extends AppLocalizations {
       'Удалить это сообщение со всех ваших устройств и уведомить другого человека?';
 
   @override
+  String get chatViewProfile => 'View Profile';
+
+  @override
+  String get chatSyncMessages => 'Sync Messages';
+
+  @override
   String get chatDeleteConversation => 'Удалить переписку';
 
   @override

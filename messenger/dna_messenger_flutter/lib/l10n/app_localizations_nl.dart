@@ -1347,6 +1347,12 @@ class AppLocalizationsNl extends AppLocalizations {
       'Dit bericht verwijderen van al je apparaten en de andere persoon hiervan op de hoogte stellen?';
 
   @override
+  String get chatViewProfile => 'View Profile';
+
+  @override
+  String get chatSyncMessages => 'Sync Messages';
+
+  @override
   String get chatDeleteConversation => 'Gesprek verwijderen';
 
   @override

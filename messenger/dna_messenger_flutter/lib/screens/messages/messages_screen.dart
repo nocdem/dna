@@ -26,15 +26,6 @@ class MessagesScreen extends ConsumerWidget {
       appBar: DnaAppBar(
         title: AppLocalizations.of(context).navChats,
         leading: const SizedBox.shrink(),
-        actions: [
-          IconButton(
-            icon: const FaIcon(FontAwesomeIcons.arrowsRotate),
-            onPressed: () {
-              ref.read(contactsProvider.notifier).refresh();
-            },
-            tooltip: 'Refresh',
-          ),
-        ],
       ),
       body: Column(
         children: [

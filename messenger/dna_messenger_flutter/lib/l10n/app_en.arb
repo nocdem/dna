@@ -665,6 +665,8 @@
   "chatSenderDeletedThis": "Sender deleted this",
   "chatDeleteMessageTitle": "Delete Message",
   "chatDeleteMessageConfirm": "Delete this message from all your devices and notify the other person?",
+  "chatViewProfile": "View Profile",
+  "chatSyncMessages": "Sync Messages",
   "chatDeleteConversation": "Delete Conversation",
   "chatDeleteConversationTitle": "Delete Conversation",
   "chatDeleteConversationConfirm": "Delete all messages in this conversation? This will delete from all your devices.",

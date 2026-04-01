@@ -1346,6 +1346,12 @@ class AppLocalizationsTr extends AppLocalizations {
       'Bu mesajı tüm cihazlarınızdan silmek ve karşı tarafı bilgilendirmek istiyor musunuz?';
 
   @override
+  String get chatViewProfile => 'Profili Görüntüle';
+
+  @override
+  String get chatSyncMessages => 'Mesajları Senkronize Et';
+
+  @override
   String get chatDeleteConversation => 'Konuşmayı Sil';
 
   @override

@@ -443,6 +443,8 @@
   "chatSenderDeletedThis": "Gönderen bunu sildi",
   "chatDeleteMessageTitle": "Mesajı Sil",
   "chatDeleteMessageConfirm": "Bu mesajı tüm cihazlarınızdan silmek ve karşı tarafı bilgilendirmek istiyor musunuz?",
+  "chatViewProfile": "Profili Görüntüle",
+  "chatSyncMessages": "Mesajları Senkronize Et",
   "chatDeleteConversation": "Konuşmayı Sil",
   "chatDeleteConversationTitle": "Konuşmayı Sil",
   "chatDeleteConversationConfirm": "Bu konuşmadaki tüm mesajları silmek istediğinize emin misiniz? Tüm cihazlarınızdan silinecek.",

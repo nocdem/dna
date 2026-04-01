@@ -23,6 +23,7 @@ import '../../widgets/voice_record_sheet.dart';
 import '../../services/image_attachment_service.dart';
 import '../../services/media_service.dart';
 import 'contact_profile_dialog.dart';
+import '../profile/user_profile_screen.dart';
 import 'widgets/message_bubble.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -360,16 +361,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               )
             : Row(
                 children: [
-                  DnaAvatar(
-                    imageBytes: ref.watch(
-                      contactProfileCacheProvider.select(
-                        (cache) => cache[contact.fingerprint]?.decodeAvatar(),
+                  GestureDetector(
+                    onTap: () {
+                      final avatarBytes = ref.read(
+                        contactProfileCacheProvider.select(
+                          (cache) => cache[contact.fingerprint]?.decodeAvatar(),
+                        ),
+                      );
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => UserProfileScreen(
+                            fingerprint: contact.fingerprint,
+                            initialDisplayName: displayName,
+                            initialAvatar: avatarBytes,
+                          ),
+                        ),
+                      );
+                    },
+                    child: DnaAvatar(
+                      imageBytes: ref.watch(
+                        contactProfileCacheProvider.select(
+                          (cache) => cache[contact.fingerprint]?.decodeAvatar(),
+                        ),
                       ),
+                      name: displayName,
+                      size: DnaAvatarSize.sm,
+                      showOnlineStatus: true,
+                      isOnline: contact.isOnline,
                     ),
-                    name: displayName,
-                    size: DnaAvatarSize.sm,
-                    showOnlineStatus: true,
-                    isOnline: contact.isOnline,
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -1284,6 +1304,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _showContactOptions(BuildContext context) {
+    final contact = ref.read(selectedContactProvider);
+    if (contact == null) return;
+    final l10n = AppLocalizations.of(context);
+
     showModalBottomSheet(
       context: context,
       builder: (context) => SafeArea(
@@ -1292,44 +1316,38 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           children: [
             ListTile(
               leading: const FaIcon(FontAwesomeIcons.user),
-              title: const Text('View Profile'),
+              title: Text(l10n.chatViewProfile),
               onTap: () {
                 Navigator.pop(context);
-                final contact = ref.read(selectedContactProvider);
-                if (contact != null) {
-                  showContactProfileDialog(
-                    context,
-                    ref,
-                    contact.fingerprint,
-                    contact.displayName,
-                  );
-                }
+                final avatarBytes = ref.read(
+                  contactProfileCacheProvider.select(
+                    (cache) => cache[contact.fingerprint]?.decodeAvatar(),
+                  ),
+                );
+                Navigator.push(
+                  this.context,
+                  MaterialPageRoute(
+                    builder: (_) => UserProfileScreen(
+                      fingerprint: contact.fingerprint,
+                      initialDisplayName: contact.displayName,
+                      initialAvatar: avatarBytes,
+                    ),
+                  ),
+                );
               },
             ),
             ListTile(
-              leading: const FaIcon(FontAwesomeIcons.cloudArrowDown),
-              title: const Text('Check Offline Messages'),
-              subtitle: const Text('Fetch from DHT queue'),
+              leading: const FaIcon(FontAwesomeIcons.arrowsRotate),
+              title: Text(l10n.chatSyncMessages),
               onTap: () {
                 Navigator.pop(context);
                 _checkOfflineMessages();
               },
             ),
             ListTile(
-              leading: const FaIcon(FontAwesomeIcons.qrcode),
-              title: const Text('Show QR Code'),
-              onTap: () {
-                Navigator.pop(context);
-                final contact = ref.read(selectedContactProvider);
-                if (contact != null) {
-                  _showQrCodeDialog(contact);
-                }
-              },
-            ),
-            ListTile(
               leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.error),
               title: Text(
-                AppLocalizations.of(context).chatDeleteConversation,
+                l10n.chatDeleteConversation,
                 style: TextStyle(color: DnaColors.error),
               ),
               onTap: () {
@@ -1338,17 +1356,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               },
             ),
             ListTile(
-              leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.warning),
+              leading: FaIcon(FontAwesomeIcons.userMinus, color: DnaColors.warning),
               title: Text(
-                'Remove Contact',
+                l10n.wallUnfriend,
                 style: TextStyle(color: DnaColors.warning),
               ),
               onTap: () {
                 Navigator.pop(context);
-                final contact = ref.read(selectedContactProvider);
-                if (contact != null) {
-                  _removeContact(contact);
-                }
+                _removeContact(contact);
+              },
+            ),
+            ListTile(
+              leading: FaIcon(FontAwesomeIcons.ban, color: DnaColors.error),
+              title: Text(
+                l10n.wallBlockUser,
+                style: TextStyle(color: DnaColors.error),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _blockContact(contact);
               },
             ),
           ],
@@ -2017,6 +2043,60 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('Failed to remove contact: $e'),
+              backgroundColor: DnaColors.snackbarError,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _blockContact(Contact contact) async {
+    final l10n = AppLocalizations.of(context);
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l10n.wallBlockUser),
+        content: Text(l10n.wallBlockUserConfirm(contact.displayName)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(l10n.cancel),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: DnaColors.error,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(l10n.wallBlockUser),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        await ref.read(blockedUsersProvider.notifier).block(
+          contact.fingerprint,
+          'Blocked from chat',
+        );
+        ref.read(wallTimelineProvider.notifier).removePostsByAuthor(contact.fingerprint);
+        ref.read(contactsProvider.notifier).refresh();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(l10n.wallUserBlocked(contact.displayName)),
+              backgroundColor: DnaColors.snackbarSuccess,
+            ),
+          );
+          Navigator.pop(context); // Leave chat after block
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed: $e'),
               backgroundColor: DnaColors.snackbarError,
             ),
           );

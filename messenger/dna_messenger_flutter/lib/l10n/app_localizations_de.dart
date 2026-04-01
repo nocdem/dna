@@ -1357,6 +1357,12 @@ class AppLocalizationsDe extends AppLocalizations {
       'Diese Nachricht von allen Ihren Geräten löschen und die andere Person benachrichtigen?';
 
   @override
+  String get chatViewProfile => 'View Profile';
+
+  @override
+  String get chatSyncMessages => 'Sync Messages';
+
+  @override
   String get chatDeleteConversation => 'Gespräch löschen';
 
   @override

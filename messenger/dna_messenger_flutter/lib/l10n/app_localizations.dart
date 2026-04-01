@@ -2564,6 +2564,18 @@ abstract class AppLocalizations {
   /// **'Delete this message from all your devices and notify the other person?'**
   String get chatDeleteMessageConfirm;
 
+  /// No description provided for @chatViewProfile.
+  ///
+  /// In en, this message translates to:
+  /// **'View Profile'**
+  String get chatViewProfile;
+
+  /// No description provided for @chatSyncMessages.
+  ///
+  /// In en, this message translates to:
+  /// **'Sync Messages'**
+  String get chatSyncMessages;
+
   /// No description provided for @chatDeleteConversation.
   ///
   /// In en, this message translates to:

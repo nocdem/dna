@@ -1325,6 +1325,12 @@ class AppLocalizationsJa extends AppLocalizations {
   String get chatDeleteMessageConfirm => 'すべてのデバイスからこのメッセージを削除し、相手に通知しますか？';
 
   @override
+  String get chatViewProfile => 'View Profile';
+
+  @override
+  String get chatSyncMessages => 'Sync Messages';
+
+  @override
   String get chatDeleteConversation => '会話を削除';
 
   @override

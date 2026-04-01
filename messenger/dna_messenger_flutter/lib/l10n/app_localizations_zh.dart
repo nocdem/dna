@@ -1319,6 +1319,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get chatDeleteMessageConfirm => '从您的所有设备删除此消息并通知对方？';
 
   @override
+  String get chatViewProfile => 'View Profile';
+
+  @override
+  String get chatSyncMessages => 'Sync Messages';
+
+  @override
   String get chatDeleteConversation => '删除对话';
 
   @override

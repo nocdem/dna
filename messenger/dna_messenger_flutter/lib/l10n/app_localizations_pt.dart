@@ -1352,6 +1352,12 @@ class AppLocalizationsPt extends AppLocalizations {
       'Excluir esta mensagem de todos os seus dispositivos e notificar a outra pessoa?';
 
   @override
+  String get chatViewProfile => 'View Profile';
+
+  @override
+  String get chatSyncMessages => 'Sync Messages';
+
+  @override
   String get chatDeleteConversation => 'Excluir Conversa';
 
   @override

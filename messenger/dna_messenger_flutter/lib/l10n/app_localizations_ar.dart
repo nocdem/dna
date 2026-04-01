@@ -1336,6 +1336,12 @@ class AppLocalizationsAr extends AppLocalizations {
       'حذف هذه الرسالة من جميع أجهزتك وإخطار الطرف الآخر؟';
 
   @override
+  String get chatViewProfile => 'View Profile';
+
+  @override
+  String get chatSyncMessages => 'Sync Messages';
+
+  @override
   String get chatDeleteConversation => 'حذف المحادثة';
 
   @override
