@@ -50,6 +50,8 @@ typedef struct {
     /* Quota checks */
     sqlite3_stmt *stmt_quota_total_bytes;
     sqlite3_stmt *stmt_quota_owner_count;
+    /* EXCLUSIVE ownership check */
+    sqlite3_stmt *stmt_exclusive_owner;
     /* Hinted handoff for DHT replication */
     sqlite3_stmt *stmt_hint_insert;
     sqlite3_stmt *stmt_hint_get;
@@ -74,11 +76,12 @@ void nodus_storage_close(nodus_storage_t *store);
 
 /**
  * Store a value (INSERT OR REPLACE based on key_hash + owner_fp + value_id).
- * Conflict resolution: highest seq wins.
+ * EXCLUSIVE values enforce first-writer-owns: if the key already has an
+ * EXCLUSIVE value from a different owner, the PUT is rejected.
  *
  * @param store   Storage handle
  * @param val     Value to store (must be signed)
- * @return 0 on success, -1 on error
+ * @return 0 on success, -1 on error, -2 if EXCLUSIVE key owned by another identity
  */
 int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val);
 

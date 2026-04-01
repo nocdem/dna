@@ -40,7 +40,8 @@ static const char *PUT_SQL =
 
 static const char *GET_SQL =
     "SELECT key_hash, owner_fp, value_id, data, type, ttl, created_at, expires_at, seq, owner_pk, signature "
-    "FROM nodus_values WHERE key_hash = ? ORDER BY seq DESC LIMIT 1";
+    "FROM nodus_values WHERE key_hash = ? "
+    "ORDER BY (CASE WHEN type = 3 THEN 1 ELSE 0 END) DESC, seq DESC LIMIT 1";
 
 static const char *GET_ALL_SQL =
     "SELECT key_hash, owner_fp, value_id, data, type, ttl, created_at, expires_at, seq, owner_pk, signature "
@@ -54,6 +55,10 @@ static const char *CLEANUP_SQL =
 
 static const char *COUNT_SQL =
     "SELECT COUNT(*) FROM nodus_values";
+
+static const char *EXCLUSIVE_OWNER_SQL =
+    "SELECT owner_fp FROM nodus_values "
+    "WHERE key_hash = ? AND value_id = ? AND type = 3 LIMIT 1";
 
 static const char *PUT_IF_NEWER_SQL =
     "INSERT OR REPLACE INTO nodus_values "
@@ -230,7 +235,8 @@ int nodus_storage_open(const char *path, nodus_storage_t *store) {
         sqlite3_prepare_v2(store->db, HINT_GET_SQL, -1, &store->stmt_hint_get, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, HINT_DELETE_SQL, -1, &store->stmt_hint_delete, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(store->db, HINT_CLEANUP_SQL, -1, &store->stmt_hint_cleanup, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(store->db, HINT_COUNT_SQL, -1, &store->stmt_hint_count, NULL) != SQLITE_OK) {
+        sqlite3_prepare_v2(store->db, HINT_COUNT_SQL, -1, &store->stmt_hint_count, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(store->db, EXCLUSIVE_OWNER_SQL, -1, &store->stmt_exclusive_owner, NULL) != SQLITE_OK) {
         nodus_storage_close(store);
         return -1;
     }
@@ -250,6 +256,7 @@ void nodus_storage_close(nodus_storage_t *store) {
     if (store->stmt_fetch_batch) sqlite3_finalize(store->stmt_fetch_batch);
     if (store->stmt_quota_total_bytes) sqlite3_finalize(store->stmt_quota_total_bytes);
     if (store->stmt_quota_owner_count) sqlite3_finalize(store->stmt_quota_owner_count);
+    if (store->stmt_exclusive_owner) sqlite3_finalize(store->stmt_exclusive_owner);
     if (store->stmt_hint_insert) sqlite3_finalize(store->stmt_hint_insert);
     if (store->stmt_hint_get) sqlite3_finalize(store->stmt_hint_get);
     if (store->stmt_hint_delete) sqlite3_finalize(store->stmt_hint_delete);
@@ -266,6 +273,34 @@ int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val) {
     if (nodus_value_verify(val) != 0) {
         fprintf(stderr, "NODUS_STORE: PUT rejected — value signature verification failed\n");
         return -1;
+    }
+
+    /* EXCLUSIVE ownership enforcement:
+     * If any existing value at (key_hash, value_id) has type=EXCLUSIVE
+     * from a different owner, reject the PUT (any type). */
+    {
+        sqlite3_stmt *ex = store->stmt_exclusive_owner;
+        sqlite3_reset(ex);
+        sqlite3_bind_blob(ex, 1, val->key_hash.bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+        sqlite3_bind_int64(ex, 2, (sqlite3_int64)val->value_id);
+        int ex_rc = sqlite3_step(ex);
+        if (ex_rc == SQLITE_ROW) {
+            const void *existing_fp = sqlite3_column_blob(ex, 0);
+            int fp_len = sqlite3_column_bytes(ex, 0);
+            if (existing_fp && fp_len == NODUS_KEY_BYTES &&
+                memcmp(existing_fp, val->owner_fp.bytes, NODUS_KEY_BYTES) != 0) {
+                char kh[17], own_hex[17], new_hex[17];
+                for (int i = 0; i < 8; i++) {
+                    sprintf(kh + i*2, "%02x", val->key_hash.bytes[i]);
+                    sprintf(own_hex + i*2, "%02x", ((const uint8_t*)existing_fp)[i]);
+                    sprintf(new_hex + i*2, "%02x", val->owner_fp.bytes[i]);
+                }
+                kh[16] = own_hex[16] = new_hex[16] = '\0';
+                fprintf(stderr, "NODUS_STORE: EXCLUSIVE PUT rejected — key=%s... owned by %s..., attempted by %s...\n",
+                        kh, own_hex, new_hex);
+                return -2;  /* KEY_OWNED */
+            }
+        }
     }
 
     sqlite3_stmt *s = store->stmt_put;
@@ -434,6 +469,23 @@ int nodus_storage_has_owner(nodus_storage_t *store,
 
 int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val) {
     if (!store || !store->db || !val) return -1;
+
+    /* EXCLUSIVE ownership enforcement (same check as nodus_storage_put) */
+    {
+        sqlite3_stmt *ex = store->stmt_exclusive_owner;
+        sqlite3_reset(ex);
+        sqlite3_bind_blob(ex, 1, val->key_hash.bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+        sqlite3_bind_int64(ex, 2, (sqlite3_int64)val->value_id);
+        int ex_rc = sqlite3_step(ex);
+        if (ex_rc == SQLITE_ROW) {
+            const void *existing_fp = sqlite3_column_blob(ex, 0);
+            int fp_len = sqlite3_column_bytes(ex, 0);
+            if (existing_fp && fp_len == NODUS_KEY_BYTES &&
+                memcmp(existing_fp, val->owner_fp.bytes, NODUS_KEY_BYTES) != 0) {
+                return -2;  /* KEY_OWNED — block replication of hijacked keys */
+            }
+        }
+    }
 
     /* Compute SHA3-256 hash of value data for equal-seq tiebreaker */
     uint8_t data_hash[32];

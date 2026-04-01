@@ -64,6 +64,21 @@ int nodus_ops_put_permanent(const uint8_t *key, size_t key_len,
                             const uint8_t *data, size_t data_len,
                             uint64_t vid);
 
+/**
+ * Store an exclusive (first-writer-owns, never-expiring) value.
+ * Only the original publisher can update this key's value_id.
+ */
+int nodus_ops_put_exclusive(const uint8_t *key, size_t key_len,
+                            const uint8_t *data, size_t data_len,
+                            uint64_t vid);
+
+/**
+ * Store an exclusive value using a string key.
+ */
+int nodus_ops_put_str_exclusive(const char *str_key,
+                                const uint8_t *data, size_t data_len,
+                                uint64_t vid);
+
 /* ── GET operations ────────────────────────────────────────────── */
 
 /**

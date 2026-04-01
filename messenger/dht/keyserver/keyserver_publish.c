@@ -153,10 +153,10 @@ int dht_keyserver_publish(
 
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] Publishing to DHT key: %s\n", profile_base_key);
 
-    // Use permanent TTL (0) for identity profiles - they should never expire
-    int ret = nodus_ops_put_str(profile_base_key,
-                                (uint8_t*)json, strlen(json),
-                                0, nodus_ops_value_id());
+    // Exclusive — first writer owns this key (single-owner profile)
+    int ret = nodus_ops_put_str_exclusive(profile_base_key,
+                                          (uint8_t*)json, strlen(json),
+                                          nodus_ops_value_id());
     free(json);
 
     if (ret != 0) {
@@ -175,10 +175,10 @@ int dht_keyserver_publish(
 
     dna_identity_free(identity);
 
-    // Publish name:lookup alias - also permanent for consistent persistence
-    ret = nodus_ops_put_str(alias_base_key,
-                            (uint8_t*)fingerprint, 128,
-                            0, nodus_ops_value_id());
+    // Publish name:lookup alias — exclusive (first writer owns)
+    ret = nodus_ops_put_str_exclusive(alias_base_key,
+                                      (uint8_t*)fingerprint, 128,
+                                      nodus_ops_value_id());
 
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to publish name alias (lookups may not work)\n");
@@ -191,9 +191,9 @@ int dht_keyserver_publish(
     {
         char rname_key[256];
         snprintf(rname_key, sizeof(rname_key), "%s:rname", fingerprint);
-        ret = nodus_ops_put_str(rname_key,
-                                (uint8_t*)name, strlen(name),
-                                0, nodus_ops_value_id());
+        ret = nodus_ops_put_str_exclusive(rname_key,
+                                          (uint8_t*)name, strlen(name),
+                                          nodus_ops_value_id());
         if (ret == 0) {
             QGP_LOG_INFO(LOG_TAG, "Reverse name published: %.16s... -> %s\n", fingerprint, name);
         } else {
@@ -236,10 +236,10 @@ int dht_keyserver_publish_alias(
     QGP_LOG_INFO(LOG_TAG, "Publishing alias: '%s' -> %s\n", name, fingerprint);
     QGP_LOG_INFO(LOG_TAG, "Alias base key: %s\n", alias_base_key);
 
-    // Use permanent TTL (0) for name aliases
-    int ret = nodus_ops_put_str(alias_base_key,
-                                (uint8_t*)fingerprint, 128,
-                                0, nodus_ops_value_id());
+    // Exclusive — first writer owns name alias
+    int ret = nodus_ops_put_str_exclusive(alias_base_key,
+                                          (uint8_t*)fingerprint, 128,
+                                          nodus_ops_value_id());
 
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish alias (ret=%d)\n", ret);
@@ -316,10 +316,10 @@ int dht_keyserver_update(
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", new_fingerprint);
 
-    // Use permanent TTL (0) for identity updates
-    ret = nodus_ops_put_str(base_key,
-                            (uint8_t*)json, strlen(json),
-                            0, nodus_ops_value_id());
+    // Exclusive — first writer owns profile key
+    ret = nodus_ops_put_str_exclusive(base_key,
+                                      (uint8_t*)json, strlen(json),
+                                      nodus_ops_value_id());
     free(json);
     dna_identity_free(identity);
 

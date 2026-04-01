@@ -520,7 +520,7 @@ int dht_geks_publish(
     }
 
     // Step 6: Store in DHT using nodus_ops layer
-    int result = nodus_ops_put_str(base_key, blob, blob_size, (365*24*3600), nodus_ops_value_id());
+    int result = nodus_ops_put_str_exclusive(base_key, blob, blob_size, nodus_ops_value_id());
     free(blob);
 
     if (result != 0) {

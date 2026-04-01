@@ -463,9 +463,9 @@ int dna_wall_post(const char *fingerprint,
     wall_bucket_key(fingerprint, today, bkey, sizeof(bkey));
 
     QGP_LOG_INFO(LOG_TAG, "Publishing wall post %s to bucket %s", new_post.uuid, today);
-    ret = nodus_ops_put_str(bkey,
-                             (const uint8_t *)json_str, strlen(json_str),
-                             DNA_WALL_BUCKET_TTL_SECS, nodus_ops_value_id());
+    ret = nodus_ops_put_str_exclusive(bkey,
+                                      (const uint8_t *)json_str, strlen(json_str),
+                                      nodus_ops_value_id());
     free(json_str);
 
     if (ret != 0) {
@@ -611,9 +611,9 @@ int dna_wall_post_with_image(const char *fingerprint,
     wall_bucket_key(fingerprint, today, bkey, sizeof(bkey));
 
     QGP_LOG_INFO(LOG_TAG, "Publishing wall post %s (with image) to bucket %s", new_post.uuid, today);
-    ret = nodus_ops_put_str(bkey,
-                             (const uint8_t *)json_str, strlen(json_str),
-                             DNA_WALL_BUCKET_TTL_SECS, nodus_ops_value_id());
+    ret = nodus_ops_put_str_exclusive(bkey,
+                                      (const uint8_t *)json_str, strlen(json_str),
+                                      nodus_ops_value_id());
     free(json_str);
 
     if (ret != 0) {
@@ -696,13 +696,13 @@ int dna_wall_delete(const char *fingerprint,
             dna_wall_free(&bucket);
             return -1;
         }
-        ret = nodus_ops_put_str(bkey, (const uint8_t *)json_str, strlen(json_str),
-                                 DNA_WALL_BUCKET_TTL_SECS, nodus_ops_value_id());
+        ret = nodus_ops_put_str_exclusive(bkey, (const uint8_t *)json_str, strlen(json_str),
+                                          nodus_ops_value_id());
         free(json_str);
     } else {
         /* Empty bucket — publish empty array so DHT overwrites */
-        ret = nodus_ops_put_str(bkey, (const uint8_t *)"[]", 2,
-                                 DNA_WALL_BUCKET_TTL_SECS, nodus_ops_value_id());
+        ret = nodus_ops_put_str_exclusive(bkey, (const uint8_t *)"[]", 2,
+                                          nodus_ops_value_id());
     }
     dna_wall_free(&bucket);
 
@@ -1072,8 +1072,8 @@ int dna_wall_update_meta(const char *fingerprint, const char *date_str, int delt
     char key[512];
     wall_meta_key(fingerprint, key, sizeof(key));
 
-    int ret = nodus_ops_put_str(key, (const uint8_t *)json_str, strlen(json_str),
-                                 DNA_WALL_META_TTL_SECS, nodus_ops_value_id());
+    int ret = nodus_ops_put_str_exclusive(key, (const uint8_t *)json_str, strlen(json_str),
+                                          nodus_ops_value_id());
     free(json_str);
 
     if (ret != 0) {

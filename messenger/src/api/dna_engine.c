@@ -508,9 +508,9 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
             int rc = nodus_ops_get_str(rname_key, &existing, &existing_len);
             if (rc != 0 || !existing || existing_len == 0) {
                 /* Reverse key missing — publish it */
-                nodus_ops_put_str(rname_key,
-                                  (uint8_t*)cached_name, strlen(cached_name),
-                                  0, nodus_ops_value_id());
+                nodus_ops_put_str_exclusive(rname_key,
+                                            (uint8_t*)cached_name, strlen(cached_name),
+                                            nodus_ops_value_id());
                 QGP_LOG_INFO(LOG_TAG, "[RETRY] Published missing reverse name: %.16s... -> %s",
                              engine->fingerprint, cached_name);
             } else {

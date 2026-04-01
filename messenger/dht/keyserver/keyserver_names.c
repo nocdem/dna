@@ -101,9 +101,9 @@ int dna_register_name(
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    ret = nodus_ops_put_str(base_key,
-                           (uint8_t*)json, strlen(json),
-                           0, nodus_ops_value_id());
+    ret = nodus_ops_put_str_exclusive(base_key,
+                                      (uint8_t*)json, strlen(json),
+                                      nodus_ops_value_id());
     free(json);
 
     if (ret != 0) {
@@ -125,9 +125,9 @@ int dna_register_name(
     char name_base_key[256];
     snprintf(name_base_key, sizeof(name_base_key), "%s:lookup", normalized_name);
 
-    ret = nodus_ops_put_str(name_base_key,
-                            (uint8_t*)fingerprint, 128,
-                            0, nodus_ops_value_id());
+    ret = nodus_ops_put_str_exclusive(name_base_key,
+                                      (uint8_t*)fingerprint, 128,
+                                      nodus_ops_value_id());
 
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to store name mapping in DHT (ret=%d)\n", ret);
@@ -206,9 +206,9 @@ int dna_renew_name(
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    int ret = nodus_ops_put_str(base_key,
-                               (uint8_t*)json, strlen(json),
-                               0, nodus_ops_value_id());
+    int ret = nodus_ops_put_str_exclusive(base_key,
+                                          (uint8_t*)json, strlen(json),
+                                          nodus_ops_value_id());
     free(json);
 
     if (ret != 0) {

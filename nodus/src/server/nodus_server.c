@@ -762,9 +762,18 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
-    /* Store — client owns this key (signature verified), always overwrite.
+    /* Store — with EXCLUSIVE ownership enforcement.
      * put_if_newer is only for inter-node replication paths. */
     rc = nodus_storage_put(&srv->storage, val);
+    if (rc == -2) {
+        /* EXCLUSIVE key owned by different identity */
+        nodus_value_free(val);
+        size_t len = 0;
+        nodus_t2_error(msg->txn_id, NODUS_ERR_KEY_OWNED,
+                        "key owned by different identity", resp_buf, sizeof(resp_buf), &len);
+        nodus_tcp_send(sess->conn, resp_buf, len);
+        return;
+    }
     if (rc != 0) {
         nodus_value_free(val);
         size_t len = 0;

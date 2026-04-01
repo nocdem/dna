@@ -144,6 +144,25 @@ int nodus_ops_put_permanent(const uint8_t *key, size_t key_len,
     return do_put(&k, data, data_len, NODUS_VALUE_PERMANENT, 0, vid);
 }
 
+int nodus_ops_put_exclusive(const uint8_t *key, size_t key_len,
+                            const uint8_t *data, size_t data_len,
+                            uint64_t vid) {
+    nodus_key_t k;
+    hash_key(key, key_len, &k);
+    return do_put(&k, data, data_len, NODUS_VALUE_EXCLUSIVE, 0, vid);
+}
+
+int nodus_ops_put_str_exclusive(const char *str_key,
+                                const uint8_t *data, size_t data_len,
+                                uint64_t vid) {
+    if (!str_key) return -1;
+
+    nodus_key_t k;
+    hash_str(str_key, &k);
+
+    return do_put(&k, data, data_len, NODUS_VALUE_EXCLUSIVE, 0, vid);
+}
+
 /* ── GET operations ────────────────────────────────────────────── */
 
 int nodus_ops_get(const uint8_t *key, size_t key_len,

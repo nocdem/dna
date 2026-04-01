@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  9
-#define NODUS_VERSION_PATCH  26
-#define NODUS_VERSION_STRING "0.9.25"
+#define NODUS_VERSION_PATCH  27
+#define NODUS_VERSION_STRING "0.9.27"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -154,7 +154,8 @@ typedef struct {
 /** DHT value type */
 typedef enum {
     NODUS_VALUE_EPHEMERAL = 0x01,   /* Expires after TTL */
-    NODUS_VALUE_PERMANENT = 0x02    /* Never expires */
+    NODUS_VALUE_PERMANENT = 0x02,   /* Never expires */
+    NODUS_VALUE_EXCLUSIVE = 0x03    /* Never expires + first-writer-owns */
 } nodus_value_type_t;
 
 /** DHT value stored on Nodus */
@@ -216,7 +217,8 @@ typedef enum {
     NODUS_ERR_NOT_RESPONSIBLE   = 11,
     NODUS_ERR_RING_MISMATCH     = 12,
     NODUS_ERR_DOUBLE_SPEND      = 13,
-    NODUS_ERR_QUOTA_EXCEEDED    = 14
+    NODUS_ERR_QUOTA_EXCEEDED    = 14,
+    NODUS_ERR_KEY_OWNED         = 15   /* EXCLUSIVE key owned by different identity */
 } nodus_error_t;
 
 /** Cluster phases */

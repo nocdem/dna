@@ -115,7 +115,7 @@ int nodus_value_create(const nodus_key_t *key_hash,
 
     /* Timestamps */
     val->created_at = (uint64_t)time(NULL);
-    if (type == NODUS_VALUE_PERMANENT || ttl == 0) {
+    if (type == NODUS_VALUE_PERMANENT || type == NODUS_VALUE_EXCLUSIVE || ttl == 0) {
         val->expires_at = 0;
     } else {
         val->expires_at = val->created_at + ttl;
@@ -344,7 +344,7 @@ int nodus_value_deserialize(const uint8_t *buf, size_t len,
     }
 
     /* Compute expires_at */
-    if (val->type == NODUS_VALUE_PERMANENT || val->ttl == 0) {
+    if (val->type == NODUS_VALUE_PERMANENT || val->type == NODUS_VALUE_EXCLUSIVE || val->ttl == 0) {
         val->expires_at = 0;
     } else {
         val->expires_at = val->created_at + val->ttl;
@@ -365,7 +365,7 @@ void nodus_value_free(nodus_value_t *val) {
 bool nodus_value_is_expired(const nodus_value_t *val, uint64_t now_unix) {
     if (!val)
         return true;
-    if (val->type == NODUS_VALUE_PERMANENT || val->expires_at == 0)
+    if (val->type == NODUS_VALUE_PERMANENT || val->type == NODUS_VALUE_EXCLUSIVE || val->expires_at == 0)
         return false;
     return now_unix >= val->expires_at;
 }

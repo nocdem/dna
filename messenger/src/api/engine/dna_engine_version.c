@@ -125,8 +125,8 @@ int dna_engine_publish_version(
     QGP_LOG_INFO(LOG_TAG, "Publishing version info to DHT: lib=%s app=%s nodus=%s",
                  library_version, app_version, nodus_version);
 
-    /* Publish with signed permanent (first writer owns the key) */
-    int result = nodus_ops_put_permanent(
+    /* Publish with exclusive (first writer owns the key) */
+    int result = nodus_ops_put_exclusive(
         dht_key, sizeof(dht_key),
         (const uint8_t *)json_str, json_len,
         VERSION_VALUE_ID

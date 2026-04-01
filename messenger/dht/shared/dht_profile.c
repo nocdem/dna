@@ -326,7 +326,7 @@ int dht_profile_publish(
     QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] dht_profile_publish called for %.16s...\n", user_fingerprint);
 
     // Store in DHT via nodus_ops
-    int result = nodus_ops_put_str(base_key, blob, blob_size, (365*24*3600), nodus_ops_value_id());
+    int result = nodus_ops_put_str_exclusive(base_key, blob, blob_size, nodus_ops_value_id());
     free(blob);
 
     if (result != 0) {
