@@ -162,39 +162,9 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
         if (posts.isNotEmpty) {
           var items = await _assembleItems(posts, fp);
 
-          // Merge engagement from cache
-          try {
-            final uuids = posts.map((p) => p.uuid).toList();
-            List<WallEngagement> engagements = [];
-            const batchSize = 32;
-            for (var i = 0; i < uuids.length; i += batchSize) {
-              final chunk = uuids.sublist(
-                  i, i + batchSize > uuids.length ? uuids.length : i + batchSize);
-              final batch = await engine.wallGetEngagement(chunk);
-              engagements.addAll(batch);
-            }
-            if (engagements.isNotEmpty) {
-              final engMap = <String, WallEngagement>{};
-              for (final e in engagements) {
-                engMap[e.postUuid] = e;
-              }
-              items = items.map((item) {
-                final eng = engMap[item.post.uuid];
-                if (eng != null) {
-                  final preview = eng.comments.length <= 3
-                      ? eng.comments
-                      : eng.comments.sublist(0, 3);
-                  return item.copyWith(
-                    likeCount: eng.likeCount,
-                    isLikedByMe: eng.isLikedByMe,
-                    commentCount: eng.comments.length,
-                    previewComments: preview,
-                  );
-                }
-                return item;
-              }).toList();
-            }
-          } catch (_) {}
+          // Fetch engagement in background (non-blocking) — posts show
+          // immediately with 0 likes/comments, then update when ready
+          _refreshEngagementBg(posts, fp, engine);
 
           // Schedule full DHT refresh in background (boost resolution + fresh data)
           if (identityLoaded) {
@@ -290,11 +260,13 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     List<WallEngagement> engagements = [];
     try {
       const batchSize = 32;
+      final futures = <Future<List<WallEngagement>>>[];
       for (var i = 0; i < uuids.length; i += batchSize) {
         final chunk = uuids.sublist(i, i + batchSize > uuids.length ? uuids.length : i + batchSize);
-        final batch = await engine.wallGetEngagement(chunk);
-        engagements.addAll(batch);
+        futures.add(engine.wallGetEngagement(chunk));
       }
+      final results = await Future.wait(futures);
+      engagements = results.expand((e) => e).toList();
     } catch (_) {}
 
     // Assemble items WITH engagement data from cache
@@ -337,7 +309,16 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     () async {
       try {
         final uuids = posts.map((p) => p.uuid).toList();
-        final engagements = await engine.wallGetEngagement(uuids);
+        // Batch in chunks of 32 (NODUS_MAX_BATCH_KEYS) and fetch in parallel
+        const batchSize = 32;
+        final futures = <Future<List<WallEngagement>>>[];
+        for (var i = 0; i < uuids.length; i += batchSize) {
+          final chunk = uuids.sublist(
+              i, i + batchSize > uuids.length ? uuids.length : i + batchSize);
+          futures.add(engine.wallGetEngagement(chunk));
+        }
+        final results = await Future.wait(futures);
+        final engagements = results.expand((e) => e).toList();
 
         final current = state.valueOrNull;
         if (current == null || current.isEmpty) return;
