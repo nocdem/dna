@@ -505,8 +505,10 @@ build:windows:
     # Clean Flutter build to avoid long path issues with cached files
     - if (Test-Path messenger\dna_messenger_flutter\build) { Remove-Item -Recurse -Force messenger\dna_messenger_flutter\build -ErrorAction SilentlyContinue }
   script:
-    # Build native library with MSYS2/MinGW
+    # Install SQLCipher for Windows (MSYS2 package)
     - $env:MSYSTEM = "MINGW64"
+    - C:\tools\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm --needed mingw-w64-x86_64-sqlcipher"
+    # Build native library with MSYS2/MinGW
     - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR/messenger' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON && mingw32-make -j4 dna"
     # Copy native library to Flutter
     - mkdir -p messenger\dna_messenger_flutter\windows\libs
