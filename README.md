@@ -40,8 +40,8 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 │  identity · backup · lifecycle · version · signing   │
 ├──────────────────────────────────────────────────────┤
 │  Post-Quantum Crypto    │  Multi-Chain Wallet        │
-│  Kyber1024 · Dilithium5 │  ETH · SOL · TRON · Cell   │
-│  AES-256 · SHA3-512     │  ERC20 · SPL · TRC20       │
+│  Kyber1024 · Dilithium5 │  ETH · BSC · SOL · TRON · Cell │
+│  AES-256 · SHA3-512     │  ERC20 · BEP20 · SPL · TRC20  │
 └──────────┬───────────────────────────────────────────┘
            │ Nodus Client SDK
 ┌──────────▼───────────────────────────────────────────┐
@@ -152,8 +152,8 @@ dna/
 
 | Component | Version |
 |-----------|---------|
-| Messenger C Library | v0.9.160 |
-| Flutter App | v1.0.0-rc149 |
+| Messenger C Library | v0.9.162 |
+| Flutter App | v1.0.0-rc156 |
 | Nodus DHT | v0.9.27 |
 
 ---
