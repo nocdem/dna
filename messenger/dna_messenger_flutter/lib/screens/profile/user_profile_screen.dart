@@ -692,6 +692,8 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   // ---------------------------------------------------------------------------
 
   Widget _buildStatsRow(ThemeData theme, AppLocalizations l10n) {
+    final isDark = theme.brightness == Brightness.dark;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(
           DnaSpacing.lg, DnaSpacing.lg, DnaSpacing.lg, DnaSpacing.sm),
@@ -706,82 +708,103 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
             ),
           ),
           const SizedBox(height: DnaSpacing.sm),
-          Container(
-            padding: const EdgeInsets.symmetric(
-                vertical: DnaSpacing.md, horizontal: DnaSpacing.lg),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.onSurface.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
-            ),
-            child: _isLoadingPosts
-                ? const Center(
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(vertical: DnaSpacing.sm),
-                      child: SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    ),
-                  )
-                : Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      _buildStatItem(
-                        theme,
-                        count: _posts.length,
-                        label: l10n.userProfilePosts,
-                      ),
-                      _buildStatItem(
-                        theme,
-                        count: _totalLikes,
-                        icon: FontAwesomeIcons.fire,
-                        iconColor: Colors.orange,
-                      ),
-                      _buildStatItem(
-                        theme,
-                        count: _totalTips,
-                        label: l10n.userProfileTotalTips,
-                        suffix: ' CPUNK',
-                      ),
-                    ],
+          _isLoadingPosts
+              ? Container(
+                  padding: const EdgeInsets.symmetric(vertical: DnaSpacing.xl),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.04),
+                    borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
                   ),
-          ),
+                  child: const Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                )
+              : Row(
+                  children: [
+                    _buildStatCard(
+                      theme,
+                      isDark: isDark,
+                      count: _posts.length,
+                      icon: FontAwesomeIcons.penToSquare,
+                      color: DnaColors.info,
+                    ),
+                    const SizedBox(width: DnaSpacing.sm),
+                    _buildStatCard(
+                      theme,
+                      isDark: isDark,
+                      count: _totalLikes,
+                      icon: FontAwesomeIcons.fire,
+                      color: Colors.orange,
+                    ),
+                    const SizedBox(width: DnaSpacing.sm),
+                    _buildStatCard(
+                      theme,
+                      isDark: isDark,
+                      count: _totalTips,
+                      icon: FontAwesomeIcons.coins,
+                      color: DnaColors.success,
+                      suffix: ' CPUNK',
+                    ),
+                  ],
+                ),
         ],
       ),
     );
   }
 
-  Widget _buildStatItem(
+  Widget _buildStatCard(
     ThemeData theme, {
+    required bool isDark,
     required int count,
-    String? label,
-    IconData? icon,
-    Color? iconColor,
+    required IconData icon,
+    required Color color,
     String? suffix,
   }) {
     final countText = '$count${suffix ?? ''}';
-    return Column(
-      children: [
-        ShaderMask(
-          shaderCallback: DnaGradients.primaryShader,
-          child: Text(
-            countText,
-            style: theme.textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          vertical: DnaSpacing.md,
+          horizontal: DnaSpacing.sm,
+        ),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: isDark ? 0.08 : 0.06),
+          borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
+          border: Border.all(
+            color: color.withValues(alpha: isDark ? 0.15 : 0.12),
           ),
         ),
-        const SizedBox(height: DnaSpacing.xs),
-        if (icon != null)
-          FaIcon(icon, size: 14, color: iconColor ?? Colors.orange)
-        else if (label != null)
-          Text(label,
-              style: theme.textTheme.bodySmall?.copyWith(
-                  color:
-                      theme.colorScheme.onSurface.withValues(alpha: 0.5))),
-      ],
+        child: Column(
+          children: [
+            ShaderMask(
+              shaderCallback: DnaGradients.primaryShader,
+              child: Text(
+                countText,
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+            const SizedBox(height: DnaSpacing.xs),
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: isDark ? 0.2 : 0.15),
+                borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
+              ),
+              child: Center(
+                child: FaIcon(icon, size: 13, color: color),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
