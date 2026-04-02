@@ -317,8 +317,10 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
         }
       } else if (engine.hasIdentity()) {
         engine.debugLog('STARTUP', 'Identity exists but not loaded (encrypted keys?)');
+        _nameCheckDone = true;
       } else {
         engine.debugLog('STARTUP', 'No identity — onboarding');
+        _nameCheckDone = true;
       }
     } catch (e) {
       engine.debugLog('STARTUP', 'State sync failed: $e');
