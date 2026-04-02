@@ -725,6 +725,7 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
     dna_transaction_t *transactions = NULL;
     int count = 0;
     cellframe_rpc_response_t *resp = NULL;
+    blockchain_type_t target_type = BLOCKCHAIN_CELLFRAME; /* default */
 
     if (!engine->wallets_loaded || !engine->blockchain_wallets) {
         error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
@@ -737,7 +738,6 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
     blockchain_wallet_list_t *wallets = engine->blockchain_wallets;
 
     /* Determine target blockchain type from network parameter */
-    blockchain_type_t target_type = BLOCKCHAIN_CELLFRAME; /* default */
     if (strcasecmp(network, "Ethereum") == 0 || strcasecmp(network, "ETH") == 0) {
         target_type = BLOCKCHAIN_ETHEREUM;
     } else if (strcasecmp(network, "Solana") == 0 || strcasecmp(network, "SOL") == 0) {
@@ -884,117 +884,9 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* BSC transactions: native BNB + BEP-20 tokens */
+    /* BSC: TX history disabled — BscScan V1 deprecated Dec 2025, Blockscout BSC down.
+     * No free keyless API available. Balance still works via BSC RPC. */
     if (wallet_info->type == BLOCKCHAIN_BSC) {
-        /* Fetch native BNB transactions */
-        bsc_transaction_t *bsc_txs = NULL;
-        int bsc_count = 0;
-        int bsc_ok = (bsc_rpc_get_transactions(wallet_info->address, &bsc_txs, &bsc_count) == 0);
-
-        /* Fetch BEP-20 token transactions (USDT, USDC) */
-        static const char *bep20_tokens[] = { "USDT", "USDC", NULL };
-        bsc_transaction_t *bep20_txs[2] = {NULL, NULL};
-        int bep20_counts[2] = {0, 0};
-        int total_bep20_count = 0;
-
-        for (int t = 0; bep20_tokens[t]; t++) {
-            bsc_bep20_token_t bep20;
-            if (bsc_bep20_get_token(bep20_tokens[t], &bep20) == 0) {
-                if (bsc_rpc_get_token_transactions(wallet_info->address,
-                        bep20.contract, bep20.decimals,
-                        &bep20_txs[t], &bep20_counts[t]) == 0) {
-                    total_bep20_count += bep20_counts[t];
-                }
-            }
-        }
-
-        int native_count = bsc_ok ? bsc_count : 0;
-        int total = native_count + total_bep20_count;
-
-        if (total == 0) {
-            if (!bsc_ok) {
-                error = DNA_ENGINE_ERROR_NETWORK;
-            }
-            if (bsc_txs) bsc_rpc_free_transactions(bsc_txs, bsc_count);
-            for (int t = 0; t < 2; t++) {
-                if (bep20_txs[t]) bsc_rpc_free_transactions(bep20_txs[t], bep20_counts[t]);
-            }
-            goto done;
-        }
-
-        transactions = calloc(total, sizeof(dna_transaction_t));
-        if (!transactions) {
-            if (bsc_txs) bsc_rpc_free_transactions(bsc_txs, bsc_count);
-            for (int t = 0; t < 2; t++) {
-                if (bep20_txs[t]) bsc_rpc_free_transactions(bep20_txs[t], bep20_counts[t]);
-            }
-            error = DNA_ERROR_INTERNAL;
-            goto done;
-        }
-
-        /* Copy native BNB transactions */
-        for (int i = 0; i < native_count; i++) {
-            strncpy(transactions[count].tx_hash, bsc_txs[i].tx_hash,
-                    sizeof(transactions[count].tx_hash) - 1);
-            strncpy(transactions[count].token, "BNB", sizeof(transactions[count].token) - 1);
-            strncpy(transactions[count].amount, bsc_txs[i].value,
-                    sizeof(transactions[count].amount) - 1);
-            snprintf(transactions[count].timestamp, sizeof(transactions[count].timestamp),
-                    "%llu", (unsigned long long)bsc_txs[i].timestamp);
-
-            if (bsc_txs[i].is_outgoing) {
-                strncpy(transactions[count].direction, "sent",
-                        sizeof(transactions[count].direction) - 1);
-                strncpy(transactions[count].other_address, bsc_txs[i].to,
-                        sizeof(transactions[count].other_address) - 1);
-            } else {
-                strncpy(transactions[count].direction, "received",
-                        sizeof(transactions[count].direction) - 1);
-                strncpy(transactions[count].other_address, bsc_txs[i].from,
-                        sizeof(transactions[count].other_address) - 1);
-            }
-
-            strncpy(transactions[count].status,
-                    bsc_txs[i].is_confirmed ? "CONFIRMED" : "FAILED",
-                    sizeof(transactions[count].status) - 1);
-            count++;
-        }
-
-        /* Copy BEP-20 token transactions */
-        for (int t = 0; bep20_tokens[t]; t++) {
-            for (int i = 0; i < bep20_counts[t]; i++) {
-                strncpy(transactions[count].tx_hash, bep20_txs[t][i].tx_hash,
-                        sizeof(transactions[count].tx_hash) - 1);
-                strncpy(transactions[count].token, bep20_tokens[t],
-                        sizeof(transactions[count].token) - 1);
-                strncpy(transactions[count].amount, bep20_txs[t][i].value,
-                        sizeof(transactions[count].amount) - 1);
-                snprintf(transactions[count].timestamp, sizeof(transactions[count].timestamp),
-                        "%llu", (unsigned long long)bep20_txs[t][i].timestamp);
-
-                if (bep20_txs[t][i].is_outgoing) {
-                    strncpy(transactions[count].direction, "sent",
-                            sizeof(transactions[count].direction) - 1);
-                    strncpy(transactions[count].other_address, bep20_txs[t][i].to,
-                            sizeof(transactions[count].other_address) - 1);
-                } else {
-                    strncpy(transactions[count].direction, "received",
-                            sizeof(transactions[count].direction) - 1);
-                    strncpy(transactions[count].other_address, bep20_txs[t][i].from,
-                            sizeof(transactions[count].other_address) - 1);
-                }
-
-                strncpy(transactions[count].status,
-                        bep20_txs[t][i].is_confirmed ? "CONFIRMED" : "FAILED",
-                        sizeof(transactions[count].status) - 1);
-                count++;
-            }
-        }
-
-        if (bsc_txs) bsc_rpc_free_transactions(bsc_txs, bsc_count);
-        for (int t = 0; t < 2; t++) {
-            if (bep20_txs[t]) bsc_rpc_free_transactions(bep20_txs[t], bep20_counts[t]);
-        }
         goto done;
     }
 
@@ -1386,7 +1278,12 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
 done:
     if (resp) cellframe_rpc_response_free(resp);
 
-    /* Cache merge: save fresh results, then merge with previously cached tx */
+    /* Cache merge: save fresh results, then merge with previously cached tx.
+     * Skip for BSC — TX history disabled, no valid cache data. */
+    if (target_type == BLOCKCHAIN_BSC) {
+        task->callback.transactions(task->request_id, DNA_OK, NULL, 0, task->user_data);
+        return;
+    }
     {
         const char *cache_network = task->params.get_transactions.network;
         int cache_wallet = task->params.get_transactions.wallet_index;
