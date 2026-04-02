@@ -455,18 +455,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   tooltip: 'Send Tokens',
                   onPressed: () => _showSendTokens(context, contact),
                 ),
-                // Check offline messages button
-                IconButton(
-                  icon: _isCheckingOffline
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const FaIcon(FontAwesomeIcons.cloudArrowDown),
-                  tooltip: 'Check offline messages',
-                  onPressed: _isCheckingOffline ? null : _checkOfflineMessages,
-                ),
                 IconButton(
                   icon: const FaIcon(FontAwesomeIcons.ellipsisVertical),
                   onPressed: () => _showContactOptions(context),
@@ -1307,78 +1295,98 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final contact = ref.read(selectedContactProvider);
     if (contact == null) return;
     final l10n = AppLocalizations.of(context);
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
 
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const FaIcon(FontAwesomeIcons.user),
-              title: Text(l10n.chatViewProfile),
-              onTap: () {
-                Navigator.pop(context);
-                final avatarBytes = ref.read(
-                  contactProfileCacheProvider.select(
-                    (cache) => cache[contact.fingerprint]?.decodeAvatar(),
-                  ),
-                );
-                Navigator.push(
-                  this.context,
-                  MaterialPageRoute(
-                    builder: (_) => UserProfileScreen(
-                      fingerprint: contact.fingerprint,
-                      initialDisplayName: contact.displayName,
-                      initialAvatar: avatarBytes,
-                    ),
-                  ),
-                );
-              },
-            ),
-            ListTile(
-              leading: const FaIcon(FontAwesomeIcons.arrowsRotate),
-              title: Text(l10n.chatSyncMessages),
-              onTap: () {
-                Navigator.pop(context);
-                _checkOfflineMessages();
-              },
-            ),
-            ListTile(
-              leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.error),
-              title: Text(
-                l10n.chatDeleteConversation,
-                style: TextStyle(color: DnaColors.error),
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                _confirmDeleteConversation();
-              },
-            ),
-            ListTile(
-              leading: FaIcon(FontAwesomeIcons.userMinus, color: DnaColors.warning),
-              title: Text(
-                l10n.wallUnfriend,
-                style: TextStyle(color: DnaColors.warning),
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                _removeContact(contact);
-              },
-            ),
-            ListTile(
-              leading: FaIcon(FontAwesomeIcons.ban, color: DnaColors.error),
-              title: Text(
-                l10n.wallBlockUser,
-                style: TextStyle(color: DnaColors.error),
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                _blockContact(contact);
-              },
-            ),
-          ],
+    // Helper to build a colored icon container
+    Widget iconContainer(IconData icon, Color color) {
+      return Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: isDark ? 0.15 : 0.1),
+          borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
         ),
+        child: Center(
+          child: FaIcon(icon, size: DnaSpacing.iconSm, color: color),
+        ),
+      );
+    }
+
+    DnaBottomSheet.show(
+      context,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // ─── Normal actions ─────────────────────────
+          DnaListTile(
+            leading: iconContainer(FontAwesomeIcons.user, DnaColors.info),
+            title: l10n.chatViewProfile,
+            onTap: () {
+              Navigator.pop(context);
+              final avatarBytes = ref.read(
+                contactProfileCacheProvider.select(
+                  (cache) => cache[contact.fingerprint]?.decodeAvatar(),
+                ),
+              );
+              Navigator.push(
+                this.context,
+                MaterialPageRoute(
+                  builder: (_) => UserProfileScreen(
+                    fingerprint: contact.fingerprint,
+                    initialDisplayName: contact.displayName,
+                    initialAvatar: avatarBytes,
+                  ),
+                ),
+              );
+            },
+          ),
+          DnaListTile(
+            leading: iconContainer(FontAwesomeIcons.arrowsRotate, DnaColors.success),
+            title: l10n.chatSyncMessages,
+            onTap: () {
+              Navigator.pop(context);
+              _checkOfflineMessages();
+            },
+          ),
+          // ─── Divider before destructive actions ────
+          Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: DnaSpacing.lg,
+              vertical: DnaSpacing.xs,
+            ),
+            child: Divider(
+              height: 1,
+              color: theme.dividerColor,
+            ),
+          ),
+          // ─── Destructive actions ───────────────────
+          DnaListTile(
+            leading: iconContainer(FontAwesomeIcons.trash, DnaColors.error),
+            title: l10n.chatDeleteConversation,
+            onTap: () {
+              Navigator.pop(context);
+              _confirmDeleteConversation();
+            },
+          ),
+          DnaListTile(
+            leading: iconContainer(FontAwesomeIcons.userMinus, DnaColors.warning),
+            title: l10n.wallUnfriend,
+            onTap: () {
+              Navigator.pop(context);
+              _removeContact(contact);
+            },
+          ),
+          DnaListTile(
+            leading: iconContainer(FontAwesomeIcons.ban, DnaColors.error),
+            title: l10n.wallBlockUser,
+            onTap: () {
+              Navigator.pop(context);
+              _blockContact(contact);
+            },
+          ),
+          const SizedBox(height: DnaSpacing.sm),
+        ],
       ),
     );
   }
