@@ -410,6 +410,18 @@
   "settingsAllMessagesDeleted": "Alle Nachrichten gelöscht",
   "settingsDeleteAllMessagesFailed": "Nachrichten konnten nicht gelöscht werden",
   "settingsDeleteEverything": "Alles löschen",
+
+  "settingsGeneral": "Allgemein",
+  "settingsDataStorage": "Daten & Speicher",
+  "settingsAccount": "Konto",
+  "settingsClearCache": "Cache leeren",
+  "settingsClearCacheSubtitle": "Heruntergeladene Medien und zwischengespeicherte Daten löschen",
+  "settingsCacheSize": "Lokaler Cache: {size}",
+  "settingsClearCacheConfirm": "Cache leeren?",
+  "settingsClearCacheWarning": "Dies löscht alle zwischengespeicherten Medien (Bilder, Videos, Audio). Sie werden bei Bedarf erneut heruntergeladen.",
+  "settingsCacheCleared": "Cache geleert",
+  "settingsClearCacheButton": "Leeren",
+
   "txDetailSent": "Gesendet",
   "txDetailReceived": "Empfangen",
   "txDetailDenied": "Transaktion abgelehnt",

@@ -1396,6 +1396,40 @@ class AppLocalizationsEs extends AppLocalizations {
   String get settingsDeleteEverything => 'Eliminar todo';
 
   @override
+  String get settingsGeneral => 'General';
+
+  @override
+  String get settingsDataStorage => 'Datos y almacenamiento';
+
+  @override
+  String get settingsAccount => 'Cuenta';
+
+  @override
+  String get settingsClearCache => 'Borrar caché';
+
+  @override
+  String get settingsClearCacheSubtitle =>
+      'Eliminar medios descargados y datos en caché';
+
+  @override
+  String settingsCacheSize(String size) {
+    return 'Caché local: $size';
+  }
+
+  @override
+  String get settingsClearCacheConfirm => '¿Borrar caché?';
+
+  @override
+  String get settingsClearCacheWarning =>
+      'Esto eliminará todos los medios en caché (imágenes, videos, audio). Se volverán a descargar cuando sea necesario.';
+
+  @override
+  String get settingsCacheCleared => 'Caché borrada';
+
+  @override
+  String get settingsClearCacheButton => 'Borrar';
+
+  @override
   String get txDetailSent => 'Enviado';
 
   @override
@@ -1512,4 +1546,7 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get userProfileTotalTips => 'Tips';
+
+  @override
+  String get userProfileLastMonth => 'Last Month';
 }

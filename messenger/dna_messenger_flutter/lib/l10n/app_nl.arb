@@ -410,6 +410,18 @@
   "settingsAllMessagesDeleted": "Alle berichten verwijderd",
   "settingsDeleteAllMessagesFailed": "Berichten verwijderen mislukt",
   "settingsDeleteEverything": "Alles verwijderen",
+
+  "settingsGeneral": "Algemeen",
+  "settingsDataStorage": "Gegevens en opslag",
+  "settingsAccount": "Account",
+  "settingsClearCache": "Cache wissen",
+  "settingsClearCacheSubtitle": "Gedownloade media en gecachte gegevens verwijderen",
+  "settingsCacheSize": "Lokale cache: {size}",
+  "settingsClearCacheConfirm": "Cache wissen?",
+  "settingsClearCacheWarning": "Dit verwijdert alle gecachte media (afbeeldingen, video's, audio). Ze worden opnieuw gedownload wanneer nodig.",
+  "settingsCacheCleared": "Cache gewist",
+  "settingsClearCacheButton": "Wissen",
+
   "txDetailSent": "Verzonden",
   "txDetailReceived": "Ontvangen",
   "txDetailDenied": "Transactie geweigerd",

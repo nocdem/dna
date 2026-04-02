@@ -445,6 +445,17 @@
   "settingsDeleteAllMessagesFailed": "فشل في حذف الرسائل",
   "settingsDeleteEverything": "حذف كل شيء",
 
+  "settingsGeneral": "عام",
+  "settingsDataStorage": "البيانات والتخزين",
+  "settingsAccount": "الحساب",
+  "settingsClearCache": "مسح ذاكرة التخزين المؤقت",
+  "settingsClearCacheSubtitle": "حذف الوسائط المحملة والبيانات المخزنة مؤقتاً",
+  "settingsCacheSize": "ذاكرة التخزين المحلية: {size}",
+  "settingsClearCacheConfirm": "مسح ذاكرة التخزين المؤقت؟",
+  "settingsClearCacheWarning": "سيؤدي هذا إلى حذف جميع الوسائط المخزنة مؤقتاً (صور، فيديو، صوت). سيتم إعادة تحميلها عند الحاجة.",
+  "settingsCacheCleared": "تم مسح ذاكرة التخزين المؤقت",
+  "settingsClearCacheButton": "مسح",
+
   "txDetailSent": "مرسل",
   "txDetailReceived": "مستلم",
   "txDetailDenied": "تم رفض المعاملة",

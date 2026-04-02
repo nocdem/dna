@@ -1394,6 +1394,40 @@ class AppLocalizationsPt extends AppLocalizations {
   String get settingsDeleteEverything => 'Excluir Tudo';
 
   @override
+  String get settingsGeneral => 'Geral';
+
+  @override
+  String get settingsDataStorage => 'Dados e armazenamento';
+
+  @override
+  String get settingsAccount => 'Conta';
+
+  @override
+  String get settingsClearCache => 'Limpar cache';
+
+  @override
+  String get settingsClearCacheSubtitle =>
+      'Excluir mídia baixada e dados em cache';
+
+  @override
+  String settingsCacheSize(String size) {
+    return 'Cache local: $size';
+  }
+
+  @override
+  String get settingsClearCacheConfirm => 'Limpar cache?';
+
+  @override
+  String get settingsClearCacheWarning =>
+      'Isso excluirá toda a mídia em cache (imagens, vídeos, áudio). Eles serão baixados novamente quando necessário.';
+
+  @override
+  String get settingsCacheCleared => 'Cache limpo';
+
+  @override
+  String get settingsClearCacheButton => 'Limpar';
+
+  @override
   String get txDetailSent => 'Enviado';
 
   @override
@@ -1510,4 +1544,7 @@ class AppLocalizationsPt extends AppLocalizations {
 
   @override
   String get userProfileTotalTips => 'Tips';
+
+  @override
+  String get userProfileLastMonth => 'Last Month';
 }

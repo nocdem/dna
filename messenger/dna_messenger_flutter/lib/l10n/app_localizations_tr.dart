@@ -1388,6 +1388,40 @@ class AppLocalizationsTr extends AppLocalizations {
   String get settingsDeleteEverything => 'Her Şeyi Sil';
 
   @override
+  String get settingsGeneral => 'Genel';
+
+  @override
+  String get settingsDataStorage => 'Veri ve Depolama';
+
+  @override
+  String get settingsAccount => 'Hesap';
+
+  @override
+  String get settingsClearCache => 'Önbelleği Temizle';
+
+  @override
+  String get settingsClearCacheSubtitle =>
+      'İndirilen medya ve önbellek verilerini sil';
+
+  @override
+  String settingsCacheSize(String size) {
+    return 'Yerel Önbellek: $size';
+  }
+
+  @override
+  String get settingsClearCacheConfirm => 'Önbellek Temizlensin mi?';
+
+  @override
+  String get settingsClearCacheWarning =>
+      'Bu işlem önbelleğe alınmış tüm medyayı (resim, video, ses) silecektir. Gerektiğinde tekrar indirileceklerdir.';
+
+  @override
+  String get settingsCacheCleared => 'Önbellek temizlendi';
+
+  @override
+  String get settingsClearCacheButton => 'Temizle';
+
+  @override
   String get txDetailSent => 'Gönderildi';
 
   @override
@@ -1505,4 +1539,7 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get userProfileTotalTips => 'Bahşiş';
+
+  @override
+  String get userProfileLastMonth => 'Son 30 Gün';
 }

@@ -2642,6 +2642,66 @@ abstract class AppLocalizations {
   /// **'Delete Everything'**
   String get settingsDeleteEverything;
 
+  /// No description provided for @settingsGeneral.
+  ///
+  /// In en, this message translates to:
+  /// **'General'**
+  String get settingsGeneral;
+
+  /// No description provided for @settingsDataStorage.
+  ///
+  /// In en, this message translates to:
+  /// **'Data & Storage'**
+  String get settingsDataStorage;
+
+  /// No description provided for @settingsAccount.
+  ///
+  /// In en, this message translates to:
+  /// **'Account'**
+  String get settingsAccount;
+
+  /// No description provided for @settingsClearCache.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear Cache'**
+  String get settingsClearCache;
+
+  /// No description provided for @settingsClearCacheSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete downloaded media and cached data'**
+  String get settingsClearCacheSubtitle;
+
+  /// No description provided for @settingsCacheSize.
+  ///
+  /// In en, this message translates to:
+  /// **'Local Cache: {size}'**
+  String settingsCacheSize(String size);
+
+  /// No description provided for @settingsClearCacheConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear Cache?'**
+  String get settingsClearCacheConfirm;
+
+  /// No description provided for @settingsClearCacheWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'This will delete all cached media (images, videos, audio). They will be re-downloaded when needed.'**
+  String get settingsClearCacheWarning;
+
+  /// No description provided for @settingsCacheCleared.
+  ///
+  /// In en, this message translates to:
+  /// **'Cache cleared'**
+  String get settingsCacheCleared;
+
+  /// No description provided for @settingsClearCacheButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear'**
+  String get settingsClearCacheButton;
+
   /// No description provided for @txDetailSent.
   ///
   /// In en, this message translates to:
@@ -2869,6 +2929,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Tips'**
   String get userProfileTotalTips;
+
+  /// No description provided for @userProfileLastMonth.
+  ///
+  /// In en, this message translates to:
+  /// **'Last Month'**
+  String get userProfileLastMonth;
 }
 
 class _AppLocalizationsDelegate

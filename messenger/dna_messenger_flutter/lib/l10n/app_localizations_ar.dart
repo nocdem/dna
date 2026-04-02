@@ -1378,6 +1378,40 @@ class AppLocalizationsAr extends AppLocalizations {
   String get settingsDeleteEverything => 'حذف كل شيء';
 
   @override
+  String get settingsGeneral => 'عام';
+
+  @override
+  String get settingsDataStorage => 'البيانات والتخزين';
+
+  @override
+  String get settingsAccount => 'الحساب';
+
+  @override
+  String get settingsClearCache => 'مسح ذاكرة التخزين المؤقت';
+
+  @override
+  String get settingsClearCacheSubtitle =>
+      'حذف الوسائط المحملة والبيانات المخزنة مؤقتاً';
+
+  @override
+  String settingsCacheSize(String size) {
+    return 'ذاكرة التخزين المحلية: $size';
+  }
+
+  @override
+  String get settingsClearCacheConfirm => 'مسح ذاكرة التخزين المؤقت؟';
+
+  @override
+  String get settingsClearCacheWarning =>
+      'سيؤدي هذا إلى حذف جميع الوسائط المخزنة مؤقتاً (صور، فيديو، صوت). سيتم إعادة تحميلها عند الحاجة.';
+
+  @override
+  String get settingsCacheCleared => 'تم مسح ذاكرة التخزين المؤقت';
+
+  @override
+  String get settingsClearCacheButton => 'مسح';
+
+  @override
   String get txDetailSent => 'مرسل';
 
   @override
@@ -1494,4 +1528,7 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get userProfileTotalTips => 'Tips';
+
+  @override
+  String get userProfileLastMonth => 'Last Month';
 }

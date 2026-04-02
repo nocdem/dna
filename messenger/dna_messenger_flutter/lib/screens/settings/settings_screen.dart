@@ -19,6 +19,8 @@ import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
 import '../../providers/version_check_provider.dart';
 import '../../design_system/design_system.dart';
+import '../../services/cache_database.dart';
+import '../../services/media_cache_service.dart';
 import '../profile/profile_editor_screen.dart';
 import 'app_lock_settings_screen.dart';
 
@@ -57,28 +59,22 @@ class SettingsScreen extends ConsumerWidget {
         top: false,
         child: ListView(
           children: [
-            // Profile section
+            // Profile
             _ProfileSection(
               fingerprint: fingerprint,
               simpleProfile: simpleProfile,
               fullProfile: fullProfile,
             ),
-            // Appearance
-            const _AppearanceSection(),
-            // Language
-            const _LanguageSection(),
-            // Notifications (Android only)
-            const _NotificationsSection(),
+            // General (Appearance + Language + Notifications)
+            const _GeneralSection(),
             // Security
             _SecuritySection(),
             // Wallet
             const _WalletSection(),
-            // Data (backup/restore)
-            _DataSection(),
-            // Logs settings
-            _LogSettingsSection(),
-            // Identity
-            _IdentitySection(fingerprint: fingerprint),
+            // Data & Storage (Sync + Delete + Cache + Logs)
+            _DataStorageSection(),
+            // Account (Fingerprint + Delete Account)
+            _AccountSection(fingerprint: fingerprint),
             // About
             _AboutSection(),
           ],
@@ -243,8 +239,8 @@ class _ProfileSection extends StatelessWidget {
   }
 }
 
-class _AppearanceSection extends ConsumerWidget {
-  const _AppearanceSection();
+class _GeneralSection extends ConsumerWidget {
+  const _GeneralSection();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -253,20 +249,25 @@ class _AppearanceSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionHeader(AppLocalizations.of(context).settingsAppearance),
+        _SectionHeader(AppLocalizations.of(context).settingsGeneral),
+        // Dark mode
         DnaSwitch(
           label: AppLocalizations.of(context).settingsDarkMode,
           subtitle: AppLocalizations.of(context).settingsDarkModeSubtitle,
           value: themeMode == ThemeMode.dark,
           onChanged: (v) => ref.read(themeModeProvider.notifier).toggle(),
         ),
+        // Language
+        const _LanguageContent(),
+        // Battery optimization (Android only)
+        const _NotificationsContent(),
       ],
     );
   }
 }
 
-class _LanguageSection extends ConsumerWidget {
-  const _LanguageSection();
+class _LanguageContent extends ConsumerWidget {
+  const _LanguageContent();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -291,19 +292,13 @@ class _LanguageSection extends ConsumerWidget {
         ? l10n.settingsLanguageSystem
         : languageLabels[locale.languageCode] ?? 'English';
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _SectionHeader(AppLocalizations.of(context).settingsLanguage),
-        ListTile(
+    return ListTile(
           leading: const FaIcon(FontAwesomeIcons.language),
           title: Text(AppLocalizations.of(context).settingsLanguage),
           subtitle: Text(currentLabel),
           trailing: const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: () => _showLanguagePicker(context, ref, locale),
-        ),
-      ],
-    );
+        );
   }
 
   void _showLanguagePicker(BuildContext context, WidgetRef ref, Locale? current) {
@@ -353,14 +348,14 @@ class _LanguageSection extends ConsumerWidget {
 
 /// Battery optimization section - Android only
 /// Lets user request exemption from Doze mode via system dialog
-class _NotificationsSection extends StatefulWidget {
-  const _NotificationsSection();
+class _NotificationsContent extends StatefulWidget {
+  const _NotificationsContent();
 
   @override
-  State<_NotificationsSection> createState() => _NotificationsSectionState();
+  State<_NotificationsContent> createState() => _NotificationsContentState();
 }
 
-class _NotificationsSectionState extends State<_NotificationsSection>
+class _NotificationsContentState extends State<_NotificationsContent>
     with WidgetsBindingObserver {
   bool? _isExempt;
 
@@ -405,11 +400,7 @@ class _NotificationsSectionState extends State<_NotificationsSection>
 
     final isExempt = _isExempt;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _SectionHeader(AppLocalizations.of(context).settingsBattery),
-        ListTile(
+    return ListTile(
           leading: FaIcon(
             FontAwesomeIcons.batteryFull,
             color: isExempt == true
@@ -429,9 +420,7 @@ class _NotificationsSectionState extends State<_NotificationsSection>
                   color: Theme.of(context).colorScheme.primary)
               : const FaIcon(FontAwesomeIcons.chevronRight),
           onTap: _requestExemption,
-        ),
-      ],
-    );
+        );
   }
 }
 
@@ -801,12 +790,27 @@ class _WalletSection extends ConsumerWidget {
   }
 }
 
-class _DataSection extends ConsumerStatefulWidget {
+class _DataStorageSection extends ConsumerStatefulWidget {
   @override
-  ConsumerState<_DataSection> createState() => _DataSectionState();
+  ConsumerState<_DataStorageSection> createState() => _DataStorageSectionState();
 }
 
-class _DataSectionState extends ConsumerState<_DataSection> {
+class _DataStorageSectionState extends ConsumerState<_DataStorageSection> {
+  String? _cacheSizeString;
+  bool _isClearing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCacheSize();
+  }
+
+  Future<void> _loadCacheSize() async {
+    final mediaCache = await MediaCacheService.getInstance();
+    final size = await mediaCache.getCacheSizeString();
+    if (mounted) setState(() => _cacheSizeString = size);
+  }
+
   String _formatLastSync(DateTime? lastSync) {
     if (lastSync == null) return 'Never synced';
     final now = DateTime.now();
@@ -820,11 +824,12 @@ class _DataSectionState extends ConsumerState<_DataSection> {
   @override
   Widget build(BuildContext context) {
     final syncState = ref.watch(syncSettingsProvider);
+    final l10n = AppLocalizations.of(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionHeader(AppLocalizations.of(context).settingsData),
+        _SectionHeader(l10n.settingsDataStorage),
         // Auto-sync toggle
         SwitchListTile(
           secondary: FaIcon(
@@ -833,11 +838,11 @@ class _DataSectionState extends ConsumerState<_DataSection> {
                 ? Theme.of(context).colorScheme.primary
                 : null,
           ),
-          title: Text(AppLocalizations.of(context).settingsAutoSync),
+          title: Text(l10n.settingsAutoSync),
           subtitle: Text(
             syncState.autoSyncEnabled
-                ? AppLocalizations.of(context).settingsLastSync(_formatLastSync(syncState.lastSyncTime))
-                : AppLocalizations.of(context).settingsAutoSyncSubtitle,
+                ? l10n.settingsLastSync(_formatLastSync(syncState.lastSyncTime))
+                : l10n.settingsAutoSyncSubtitle,
           ),
           value: syncState.autoSyncEnabled,
           onChanged: (value) {
@@ -854,26 +859,86 @@ class _DataSectionState extends ConsumerState<_DataSection> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const FaIcon(FontAwesomeIcons.rotate),
-            title: Text(AppLocalizations.of(context).settingsSyncNow),
+            title: Text(l10n.settingsSyncNow),
             subtitle: syncState.lastSyncError != null
                 ? Text(
                     syncState.lastSyncError!,
                     style: TextStyle(color: DnaColors.textWarning),
                   )
-                : Text(AppLocalizations.of(context).settingsSyncNowSubtitle),
+                : Text(l10n.settingsSyncNowSubtitle),
             trailing: syncState.isSyncing ? null : const FaIcon(FontAwesomeIcons.chevronRight),
             onTap: syncState.isSyncing
                 ? null
                 : () => ref.read(syncSettingsProvider.notifier).syncNow(),
           ),
+        // Clear Cache
+        ListTile(
+          leading: _isClearing
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const FaIcon(FontAwesomeIcons.broom),
+          title: Text(l10n.settingsClearCache),
+          subtitle: Text(
+            _cacheSizeString != null
+                ? l10n.settingsCacheSize(_cacheSizeString!)
+                : l10n.settingsClearCacheSubtitle,
+          ),
+          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
+          onTap: _isClearing ? null : () => _confirmClearCache(context),
+        ),
         // Delete All Messages
         ListTile(
           leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.error),
-          title: Text(AppLocalizations.of(context).settingsDeleteAllMessages),
-          subtitle: Text(AppLocalizations.of(context).settingsDeleteAllMessagesSubtitle),
+          title: Text(l10n.settingsDeleteAllMessages),
+          subtitle: Text(l10n.settingsDeleteAllMessagesSubtitle),
           onTap: () => _confirmPurgeAll(context, ref),
         ),
+        // Logs
+        _LogsContent(onOpenOrShareLogs: _openOrShareLogs),
       ],
+    );
+  }
+
+  void _confirmClearCache(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l10n.settingsClearCacheConfirm),
+        content: Text(l10n.settingsClearCacheWarning),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(l10n.cancel),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              setState(() => _isClearing = true);
+              try {
+                // Clear media cache
+                final mediaCache = await MediaCacheService.getInstance();
+                await mediaCache.clearAll();
+                // Clear profile cache
+                await CacheDatabase.instance.clearProfiles();
+                // Reload size
+                await _loadCacheSize();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(l10n.settingsCacheCleared)),
+                  );
+                }
+              } finally {
+                if (mounted) setState(() => _isClearing = false);
+              }
+            },
+            child: Text(l10n.settingsClearCacheButton),
+          ),
+        ],
+      ),
     );
   }
 
@@ -913,26 +978,15 @@ class _DataSectionState extends ConsumerState<_DataSection> {
       ),
     );
   }
-}
 
-class _LogSettingsSection extends ConsumerStatefulWidget {
-  @override
-  ConsumerState<_LogSettingsSection> createState() => _LogSettingsSectionState();
-}
-
-class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
-  /// Get the logs directory path
   String _getLogsDir() {
     if (Platform.isLinux || Platform.isMacOS) {
       final home = Platform.environment['HOME'] ?? '/tmp';
       return '$home/.dna/logs';
     } else if (Platform.isWindows) {
-      // Match engine_provider.dart: use USERPROFILE\.dna
       final home = Platform.environment['USERPROFILE'] ?? 'C:\\Users';
       return '$home\\.dna\\logs';
     } else {
-      // Android - use app-specific directory
-      // This will be set after we get the actual path
       return '';
     }
   }
@@ -942,7 +996,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
 
     try {
       if (isDesktop) {
-        // Desktop: Open file manager at logs folder
         final logsDir = _getLogsDir();
         final dir = Directory(logsDir);
 
@@ -958,19 +1011,15 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           return;
         }
 
-        // Open file manager using platform-specific command
         ProcessResult result;
         if (Platform.isLinux) {
           result = await Process.run('xdg-open', [logsDir]);
         } else if (Platform.isWindows) {
           result = await Process.run('explorer', [logsDir]);
         } else {
-          // macOS
           result = await Process.run('open', [logsDir]);
         }
 
-        // Note: Windows explorer.exe returns exit code 1 even on success,
-        // so we only check exit code on non-Windows platforms
         if (!Platform.isWindows && result.exitCode != 0 && context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -980,13 +1029,10 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           );
         }
       } else {
-        // Mobile: Zip log files and share
-        // Use getApplicationSupportDirectory() to match engine_provider.dart
         final appDir = await getApplicationSupportDirectory();
         final logsDir = Directory('${appDir.path}/dna/logs');
 
         if (!await logsDir.exists()) {
-          // Try to list parent directory to see what's there
           final parentDir = Directory('${appDir.path}/dna');
           String debugInfo = 'Path: ${logsDir.path}';
           if (await parentDir.exists()) {
@@ -1008,14 +1054,12 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           return;
         }
 
-        // Find log files, keep only 3 most recent
         var logFiles = await logsDir
             .list()
             .where((f) => f is File && f.path.contains('dna') && f.path.endsWith('.log'))
             .cast<File>()
             .toList();
 
-        // Sort by modification time (newest first), keep last 1 for sharing
         if (logFiles.length > 1) {
           final stats = await Future.wait(
             logFiles.map((f) async => MapEntry(f, await f.stat())),
@@ -1023,7 +1067,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           stats.sort((a, b) => b.value.modified.compareTo(a.value.modified));
           logFiles = stats.take(1).map((e) => e.key).toList();
 
-          // Delete old logs beyond the most recent
           for (final old in stats.skip(1)) {
             try { await old.key.delete(); } catch (_) {}
           }
@@ -1041,7 +1084,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           return;
         }
 
-        // Create zip archive in background isolate to avoid UI freeze
         final filePaths = logFiles.map((f) => f.path).toList();
         final zipData = await compute(_zipLogFiles, filePaths);
         if (zipData == null) {
@@ -1056,7 +1098,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           return;
         }
 
-        // Save to temp and share
         final tempDir = await getTemporaryDirectory();
         final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
         final zipPath = '${tempDir.path}/dna_logs_$timestamp.zip';
@@ -1079,48 +1120,47 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
       }
     }
   }
+}
+
+class _LogsContent extends StatelessWidget {
+  final Future<void> Function(BuildContext) onOpenOrShareLogs;
+
+  const _LogsContent({required this.onOpenOrShareLogs});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _SectionHeader(AppLocalizations.of(context).settingsLogs),
-        // Open/Share Logs
-        ListTile(
-          leading: FaIcon(
-            Platform.isLinux || Platform.isWindows || Platform.isMacOS
-                ? FontAwesomeIcons.folderOpen
-                : FontAwesomeIcons.shareNodes,
-          ),
-          title: Text(
-            Platform.isLinux || Platform.isWindows || Platform.isMacOS
-                ? AppLocalizations.of(context).settingsOpenLogsFolder
-                : AppLocalizations.of(context).settingsShareLogs,
-          ),
-          subtitle: Text(
-            Platform.isLinux || Platform.isWindows || Platform.isMacOS
-                ? AppLocalizations.of(context).settingsOpenLogsFolderSubtitle
-                : AppLocalizations.of(context).settingsShareLogsSubtitle,
-          ),
-          trailing: const FaIcon(FontAwesomeIcons.chevronRight),
-          onTap: () => _openOrShareLogs(context),
-        ),
-      ],
+    return ListTile(
+      leading: FaIcon(
+        Platform.isLinux || Platform.isWindows || Platform.isMacOS
+            ? FontAwesomeIcons.folderOpen
+            : FontAwesomeIcons.shareNodes,
+      ),
+      title: Text(
+        Platform.isLinux || Platform.isWindows || Platform.isMacOS
+            ? AppLocalizations.of(context).settingsOpenLogsFolder
+            : AppLocalizations.of(context).settingsShareLogs,
+      ),
+      subtitle: Text(
+        Platform.isLinux || Platform.isWindows || Platform.isMacOS
+            ? AppLocalizations.of(context).settingsOpenLogsFolderSubtitle
+            : AppLocalizations.of(context).settingsShareLogsSubtitle,
+      ),
+      trailing: const FaIcon(FontAwesomeIcons.chevronRight),
+      onTap: () => onOpenOrShareLogs(context),
     );
   }
 }
 
-class _IdentitySection extends ConsumerStatefulWidget {
+class _AccountSection extends ConsumerStatefulWidget {
   final String? fingerprint;
 
-  const _IdentitySection({required this.fingerprint});
+  const _AccountSection({required this.fingerprint});
 
   @override
-  ConsumerState<_IdentitySection> createState() => _IdentitySectionState();
+  ConsumerState<_AccountSection> createState() => _AccountSectionState();
 }
 
-class _IdentitySectionState extends ConsumerState<_IdentitySection> {
+class _AccountSectionState extends ConsumerState<_AccountSection> {
   bool _isDeleting = false;
 
   @override
@@ -1131,7 +1171,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionHeader(AppLocalizations.of(context).settingsIdentity),
+        _SectionHeader(AppLocalizations.of(context).settingsAccount),
         if (fingerprint != null)
           ListTile(
             leading: const FaIcon(FontAwesomeIcons.fingerprint),

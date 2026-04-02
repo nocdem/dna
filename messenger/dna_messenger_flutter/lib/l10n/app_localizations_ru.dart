@@ -1391,6 +1391,40 @@ class AppLocalizationsRu extends AppLocalizations {
   String get settingsDeleteEverything => 'Удалить всё';
 
   @override
+  String get settingsGeneral => 'Основные';
+
+  @override
+  String get settingsDataStorage => 'Данные и хранилище';
+
+  @override
+  String get settingsAccount => 'Аккаунт';
+
+  @override
+  String get settingsClearCache => 'Очистить кэш';
+
+  @override
+  String get settingsClearCacheSubtitle =>
+      'Удалить загруженные медиа и кэшированные данные';
+
+  @override
+  String settingsCacheSize(String size) {
+    return 'Локальный кэш: $size';
+  }
+
+  @override
+  String get settingsClearCacheConfirm => 'Очистить кэш?';
+
+  @override
+  String get settingsClearCacheWarning =>
+      'Это удалит все кэшированные медиафайлы (изображения, видео, аудио). Они будут загружены заново при необходимости.';
+
+  @override
+  String get settingsCacheCleared => 'Кэш очищен';
+
+  @override
+  String get settingsClearCacheButton => 'Очистить';
+
+  @override
   String get txDetailSent => 'Отправлено';
 
   @override
@@ -1507,4 +1541,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get userProfileTotalTips => 'Tips';
+
+  @override
+  String get userProfileLastMonth => 'Last Month';
 }

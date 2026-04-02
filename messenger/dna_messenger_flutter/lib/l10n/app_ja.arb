@@ -410,6 +410,18 @@
   "settingsAllMessagesDeleted": "すべてのメッセージを削除しました",
   "settingsDeleteAllMessagesFailed": "メッセージの削除に失敗しました",
   "settingsDeleteEverything": "すべてを削除",
+
+  "settingsGeneral": "一般",
+  "settingsDataStorage": "データとストレージ",
+  "settingsAccount": "アカウント",
+  "settingsClearCache": "キャッシュを削除",
+  "settingsClearCacheSubtitle": "ダウンロードしたメディアとキャッシュデータを削除",
+  "settingsCacheSize": "ローカルキャッシュ: {size}",
+  "settingsClearCacheConfirm": "キャッシュを削除しますか？",
+  "settingsClearCacheWarning": "キャッシュされたすべてのメディア（画像、動画、音声）が削除されます。必要に応じて再ダウンロードされます。",
+  "settingsCacheCleared": "キャッシュを削除しました",
+  "settingsClearCacheButton": "削除",
+
   "txDetailSent": "送信済み",
   "txDetailReceived": "受信済み",
   "txDetailDenied": "取引が拒否されました",

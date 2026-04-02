@@ -410,6 +410,18 @@
   "settingsAllMessagesDeleted": "Все сообщения удалены",
   "settingsDeleteAllMessagesFailed": "Не удалось удалить сообщения",
   "settingsDeleteEverything": "Удалить всё",
+
+  "settingsGeneral": "Основные",
+  "settingsDataStorage": "Данные и хранилище",
+  "settingsAccount": "Аккаунт",
+  "settingsClearCache": "Очистить кэш",
+  "settingsClearCacheSubtitle": "Удалить загруженные медиа и кэшированные данные",
+  "settingsCacheSize": "Локальный кэш: {size}",
+  "settingsClearCacheConfirm": "Очистить кэш?",
+  "settingsClearCacheWarning": "Это удалит все кэшированные медиафайлы (изображения, видео, аудио). Они будут загружены заново при необходимости.",
+  "settingsCacheCleared": "Кэш очищен",
+  "settingsClearCacheButton": "Очистить",
+
   "txDetailSent": "Отправлено",
   "txDetailReceived": "Получено",
   "txDetailDenied": "Транзакция отклонена",

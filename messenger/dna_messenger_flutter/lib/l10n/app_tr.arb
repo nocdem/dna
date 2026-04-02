@@ -457,6 +457,17 @@
   "settingsDeleteAllMessagesFailed": "Mesajlar silinemedi",
   "settingsDeleteEverything": "Her Şeyi Sil",
 
+  "settingsGeneral": "Genel",
+  "settingsDataStorage": "Veri ve Depolama",
+  "settingsAccount": "Hesap",
+  "settingsClearCache": "Önbelleği Temizle",
+  "settingsClearCacheSubtitle": "İndirilen medya ve önbellek verilerini sil",
+  "settingsCacheSize": "Yerel Önbellek: {size}",
+  "settingsClearCacheConfirm": "Önbellek Temizlensin mi?",
+  "settingsClearCacheWarning": "Bu işlem önbelleğe alınmış tüm medyayı (resim, video, ses) silecektir. Gerektiğinde tekrar indirileceklerdir.",
+  "settingsCacheCleared": "Önbellek temizlendi",
+  "settingsClearCacheButton": "Temizle",
+
   "txDetailSent": "Gönderildi",
   "txDetailReceived": "Alındı",
   "txDetailDenied": "İşlem Reddedildi",

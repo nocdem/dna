@@ -1389,6 +1389,40 @@ class AppLocalizationsNl extends AppLocalizations {
   String get settingsDeleteEverything => 'Alles verwijderen';
 
   @override
+  String get settingsGeneral => 'Algemeen';
+
+  @override
+  String get settingsDataStorage => 'Gegevens en opslag';
+
+  @override
+  String get settingsAccount => 'Account';
+
+  @override
+  String get settingsClearCache => 'Cache wissen';
+
+  @override
+  String get settingsClearCacheSubtitle =>
+      'Gedownloade media en gecachte gegevens verwijderen';
+
+  @override
+  String settingsCacheSize(String size) {
+    return 'Lokale cache: $size';
+  }
+
+  @override
+  String get settingsClearCacheConfirm => 'Cache wissen?';
+
+  @override
+  String get settingsClearCacheWarning =>
+      'Dit verwijdert alle gecachte media (afbeeldingen, video\'s, audio). Ze worden opnieuw gedownload wanneer nodig.';
+
+  @override
+  String get settingsCacheCleared => 'Cache gewist';
+
+  @override
+  String get settingsClearCacheButton => 'Wissen';
+
+  @override
   String get txDetailSent => 'Verzonden';
 
   @override
@@ -1505,4 +1539,7 @@ class AppLocalizationsNl extends AppLocalizations {
 
   @override
   String get userProfileTotalTips => 'Tips';
+
+  @override
+  String get userProfileLastMonth => 'Last Month';
 }

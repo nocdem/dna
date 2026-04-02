@@ -410,6 +410,18 @@
   "settingsAllMessagesDeleted": "所有消息已删除",
   "settingsDeleteAllMessagesFailed": "删除消息失败",
   "settingsDeleteEverything": "删除所有内容",
+
+  "settingsGeneral": "通用",
+  "settingsDataStorage": "数据与存储",
+  "settingsAccount": "账户",
+  "settingsClearCache": "清除缓存",
+  "settingsClearCacheSubtitle": "删除已下载的媒体和缓存数据",
+  "settingsCacheSize": "本地缓存：{size}",
+  "settingsClearCacheConfirm": "清除缓存？",
+  "settingsClearCacheWarning": "这将删除所有缓存的媒体文件（图片、视频、音频）。需要时会重新下载。",
+  "settingsCacheCleared": "缓存已清除",
+  "settingsClearCacheButton": "清除",
+
   "txDetailSent": "已发送",
   "txDetailReceived": "已接收",
   "txDetailDenied": "交易被拒绝",

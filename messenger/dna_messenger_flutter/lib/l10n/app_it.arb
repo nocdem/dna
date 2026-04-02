@@ -410,6 +410,18 @@
   "settingsAllMessagesDeleted": "Tutti i messaggi eliminati",
   "settingsDeleteAllMessagesFailed": "Eliminazione messaggi fallita",
   "settingsDeleteEverything": "Elimina tutto",
+
+  "settingsGeneral": "Generale",
+  "settingsDataStorage": "Dati e archiviazione",
+  "settingsAccount": "Account",
+  "settingsClearCache": "Svuota cache",
+  "settingsClearCacheSubtitle": "Elimina media scaricati e dati memorizzati",
+  "settingsCacheSize": "Cache locale: {size}",
+  "settingsClearCacheConfirm": "Svuotare la cache?",
+  "settingsClearCacheWarning": "Questo eliminerà tutti i media nella cache (immagini, video, audio). Verranno scaricati nuovamente quando necessario.",
+  "settingsCacheCleared": "Cache svuotata",
+  "settingsClearCacheButton": "Svuota",
+
   "txDetailSent": "Inviato",
   "txDetailReceived": "Ricevuto",
   "txDetailDenied": "Transazione rifiutata",

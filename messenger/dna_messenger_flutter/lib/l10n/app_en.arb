@@ -679,6 +679,22 @@
   "settingsDeleteAllMessagesFailed": "Failed to delete messages",
   "settingsDeleteEverything": "Delete Everything",
 
+  "settingsGeneral": "General",
+  "settingsDataStorage": "Data & Storage",
+  "settingsAccount": "Account",
+  "settingsClearCache": "Clear Cache",
+  "settingsClearCacheSubtitle": "Delete downloaded media and cached data",
+  "settingsCacheSize": "Local Cache: {size}",
+  "@settingsCacheSize": {
+    "placeholders": {
+      "size": { "type": "String" }
+    }
+  },
+  "settingsClearCacheConfirm": "Clear Cache?",
+  "settingsClearCacheWarning": "This will delete all cached media (images, videos, audio). They will be re-downloaded when needed.",
+  "settingsCacheCleared": "Cache cleared",
+  "settingsClearCacheButton": "Clear",
+
   "txDetailSent": "Sent",
   "txDetailReceived": "Received",
   "txDetailDenied": "Transaction Denied",

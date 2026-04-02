@@ -1359,6 +1359,38 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsDeleteEverything => '删除所有内容';
 
   @override
+  String get settingsGeneral => '通用';
+
+  @override
+  String get settingsDataStorage => '数据与存储';
+
+  @override
+  String get settingsAccount => '账户';
+
+  @override
+  String get settingsClearCache => '清除缓存';
+
+  @override
+  String get settingsClearCacheSubtitle => '删除已下载的媒体和缓存数据';
+
+  @override
+  String settingsCacheSize(String size) {
+    return '本地缓存：$size';
+  }
+
+  @override
+  String get settingsClearCacheConfirm => '清除缓存？';
+
+  @override
+  String get settingsClearCacheWarning => '这将删除所有缓存的媒体文件（图片、视频、音频）。需要时会重新下载。';
+
+  @override
+  String get settingsCacheCleared => '缓存已清除';
+
+  @override
+  String get settingsClearCacheButton => '清除';
+
+  @override
   String get txDetailSent => '已发送';
 
   @override
@@ -1475,4 +1507,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get userProfileTotalTips => 'Tips';
+
+  @override
+  String get userProfileLastMonth => 'Last Month';
 }

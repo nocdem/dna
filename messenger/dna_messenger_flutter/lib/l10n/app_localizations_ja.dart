@@ -1366,6 +1366,39 @@ class AppLocalizationsJa extends AppLocalizations {
   String get settingsDeleteEverything => 'すべてを削除';
 
   @override
+  String get settingsGeneral => '一般';
+
+  @override
+  String get settingsDataStorage => 'データとストレージ';
+
+  @override
+  String get settingsAccount => 'アカウント';
+
+  @override
+  String get settingsClearCache => 'キャッシュを削除';
+
+  @override
+  String get settingsClearCacheSubtitle => 'ダウンロードしたメディアとキャッシュデータを削除';
+
+  @override
+  String settingsCacheSize(String size) {
+    return 'ローカルキャッシュ: $size';
+  }
+
+  @override
+  String get settingsClearCacheConfirm => 'キャッシュを削除しますか？';
+
+  @override
+  String get settingsClearCacheWarning =>
+      'キャッシュされたすべてのメディア（画像、動画、音声）が削除されます。必要に応じて再ダウンロードされます。';
+
+  @override
+  String get settingsCacheCleared => 'キャッシュを削除しました';
+
+  @override
+  String get settingsClearCacheButton => '削除';
+
+  @override
   String get txDetailSent => '送信済み';
 
   @override
@@ -1482,4 +1515,7 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get userProfileTotalTips => 'Tips';
+
+  @override
+  String get userProfileLastMonth => 'Last Month';
 }
