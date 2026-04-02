@@ -952,9 +952,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get walletReceive => '接收';
 
   @override
-  String get walletSwap => '兑换';
-
-  @override
   String get walletHistory => '历史';
 
   @override
@@ -1405,67 +1402,6 @@ class AppLocalizationsZh extends AppLocalizations {
   @override
   String txDetailFailedToAdd(String error) {
     return '添加失败：$error';
-  }
-
-  @override
-  String get swapTitle => '兑换';
-
-  @override
-  String get swapConfirm => '确认兑换';
-
-  @override
-  String get swapYouPay => '您支付';
-
-  @override
-  String get swapYouReceive => '您收到';
-
-  @override
-  String get swapGetQuote => '获取报价';
-
-  @override
-  String get swapNoQuotes => '暂无报价';
-
-  @override
-  String get swapRate => '汇率';
-
-  @override
-  String get swapSlippage => '滑点';
-
-  @override
-  String get swapFee => '手续费';
-
-  @override
-  String get swapDex => '去中心化交易所';
-
-  @override
-  String swapImpact(String value) {
-    return '影响：$value%';
-  }
-
-  @override
-  String swapFeeValue(String value) {
-    return '手续费：$value';
-  }
-
-  @override
-  String swapBestPrice(int count) {
-    return '来自 $count 个交易所的最优价格';
-  }
-
-  @override
-  String swapSuccess(
-    String amountIn,
-    String fromToken,
-    String amountOut,
-    String toToken,
-    String dex,
-  ) {
-    return '已通过 $dex 将 $amountIn $fromToken 兑换为 $amountOut $toToken';
-  }
-
-  @override
-  String swapFailed(String error) {
-    return '兑换失败：$error';
   }
 
   @override

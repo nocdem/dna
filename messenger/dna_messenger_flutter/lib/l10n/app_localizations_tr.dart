@@ -975,9 +975,6 @@ class AppLocalizationsTr extends AppLocalizations {
   String get walletReceive => 'Al';
 
   @override
-  String get walletSwap => 'Takas';
-
-  @override
   String get walletHistory => 'Geçmiş';
 
   @override
@@ -1434,67 +1431,6 @@ class AppLocalizationsTr extends AppLocalizations {
   @override
   String txDetailFailedToAdd(String error) {
     return 'Eklenemedi: $error';
-  }
-
-  @override
-  String get swapTitle => 'Takas';
-
-  @override
-  String get swapConfirm => 'Takası Onayla';
-
-  @override
-  String get swapYouPay => 'Ödediğiniz';
-
-  @override
-  String get swapYouReceive => 'Aldığınız';
-
-  @override
-  String get swapGetQuote => 'Fiyat Al';
-
-  @override
-  String get swapNoQuotes => 'Fiyat teklifi bulunamadı';
-
-  @override
-  String get swapRate => 'Kur';
-
-  @override
-  String get swapSlippage => 'Kayma';
-
-  @override
-  String get swapFee => 'Komisyon';
-
-  @override
-  String get swapDex => 'Borsa';
-
-  @override
-  String swapImpact(String value) {
-    return 'Etki: $value%';
-  }
-
-  @override
-  String swapFeeValue(String value) {
-    return 'Komisyon: $value';
-  }
-
-  @override
-  String swapBestPrice(int count) {
-    return '$count borsadan en iyi fiyat';
-  }
-
-  @override
-  String swapSuccess(
-    String amountIn,
-    String fromToken,
-    String amountOut,
-    String toToken,
-    String dex,
-  ) {
-    return '$amountIn $fromToken → $amountOut $toToken takas edildi ($dex)';
-  }
-
-  @override
-  String swapFailed(String error) {
-    return 'Takas başarısız: $error';
   }
 
   @override

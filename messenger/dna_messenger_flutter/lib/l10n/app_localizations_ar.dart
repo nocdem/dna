@@ -967,9 +967,6 @@ class AppLocalizationsAr extends AppLocalizations {
   String get walletReceive => 'استلام';
 
   @override
-  String get walletSwap => 'تبديل';
-
-  @override
   String get walletHistory => 'السجل';
 
   @override
@@ -1424,67 +1421,6 @@ class AppLocalizationsAr extends AppLocalizations {
   @override
   String txDetailFailedToAdd(String error) {
     return 'فشل في الإضافة: $error';
-  }
-
-  @override
-  String get swapTitle => 'تبديل';
-
-  @override
-  String get swapConfirm => 'تأكيد التبديل';
-
-  @override
-  String get swapYouPay => 'تدفع';
-
-  @override
-  String get swapYouReceive => 'تستلم';
-
-  @override
-  String get swapGetQuote => 'الحصول على عرض سعر';
-
-  @override
-  String get swapNoQuotes => 'لا تتوفر عروض أسعار';
-
-  @override
-  String get swapRate => 'السعر';
-
-  @override
-  String get swapSlippage => 'الانزلاق';
-
-  @override
-  String get swapFee => 'الرسوم';
-
-  @override
-  String get swapDex => 'DEX';
-
-  @override
-  String swapImpact(String value) {
-    return 'التأثير: $value%';
-  }
-
-  @override
-  String swapFeeValue(String value) {
-    return 'الرسوم: $value';
-  }
-
-  @override
-  String swapBestPrice(int count) {
-    return 'أفضل سعر من $count بورصات';
-  }
-
-  @override
-  String swapSuccess(
-    String amountIn,
-    String fromToken,
-    String amountOut,
-    String toToken,
-    String dex,
-  ) {
-    return 'تم تبديل $amountIn $fromToken → $amountOut $toToken عبر $dex';
-  }
-
-  @override
-  String swapFailed(String error) {
-    return 'فشل التبديل: $error';
   }
 
   @override

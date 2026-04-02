@@ -980,9 +980,6 @@ class AppLocalizationsPt extends AppLocalizations {
   String get walletReceive => 'Receber';
 
   @override
-  String get walletSwap => 'Trocar';
-
-  @override
   String get walletHistory => 'Histórico';
 
   @override
@@ -1440,67 +1437,6 @@ class AppLocalizationsPt extends AppLocalizations {
   @override
   String txDetailFailedToAdd(String error) {
     return 'Falha ao adicionar: $error';
-  }
-
-  @override
-  String get swapTitle => 'Trocar';
-
-  @override
-  String get swapConfirm => 'Confirmar Troca';
-
-  @override
-  String get swapYouPay => 'Você paga';
-
-  @override
-  String get swapYouReceive => 'Você recebe';
-
-  @override
-  String get swapGetQuote => 'Obter Cotação';
-
-  @override
-  String get swapNoQuotes => 'Nenhuma cotação disponível';
-
-  @override
-  String get swapRate => 'Taxa';
-
-  @override
-  String get swapSlippage => 'Deslizamento';
-
-  @override
-  String get swapFee => 'Taxa';
-
-  @override
-  String get swapDex => 'DEX';
-
-  @override
-  String swapImpact(String value) {
-    return 'Impacto: $value%';
-  }
-
-  @override
-  String swapFeeValue(String value) {
-    return 'Taxa: $value';
-  }
-
-  @override
-  String swapBestPrice(int count) {
-    return 'Melhor preço de $count exchanges';
-  }
-
-  @override
-  String swapSuccess(
-    String amountIn,
-    String fromToken,
-    String amountOut,
-    String toToken,
-    String dex,
-  ) {
-    return 'Trocado $amountIn $fromToken → $amountOut $toToken via $dex';
-  }
-
-  @override
-  String swapFailed(String error) {
-    return 'Troca falhou: $error';
   }
 
   @override

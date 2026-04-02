@@ -957,9 +957,6 @@ class AppLocalizationsJa extends AppLocalizations {
   String get walletReceive => '受け取る';
 
   @override
-  String get walletSwap => 'スワップ';
-
-  @override
   String get walletHistory => '履歴';
 
   @override
@@ -1412,67 +1409,6 @@ class AppLocalizationsJa extends AppLocalizations {
   @override
   String txDetailFailedToAdd(String error) {
     return '追加に失敗しました: $error';
-  }
-
-  @override
-  String get swapTitle => 'スワップ';
-
-  @override
-  String get swapConfirm => 'スワップを確認';
-
-  @override
-  String get swapYouPay => '支払い';
-
-  @override
-  String get swapYouReceive => '受け取り';
-
-  @override
-  String get swapGetQuote => '見積もりを取得';
-
-  @override
-  String get swapNoQuotes => '利用可能な見積もりがありません';
-
-  @override
-  String get swapRate => 'レート';
-
-  @override
-  String get swapSlippage => 'スリッページ';
-
-  @override
-  String get swapFee => '手数料';
-
-  @override
-  String get swapDex => 'DEX';
-
-  @override
-  String swapImpact(String value) {
-    return 'インパクト: $value%';
-  }
-
-  @override
-  String swapFeeValue(String value) {
-    return '手数料: $value';
-  }
-
-  @override
-  String swapBestPrice(int count) {
-    return '$count 取引所の最良価格';
-  }
-
-  @override
-  String swapSuccess(
-    String amountIn,
-    String fromToken,
-    String amountOut,
-    String toToken,
-    String dex,
-  ) {
-    return '$dex 経由で $amountIn $fromToken → $amountOut $toToken をスワップしました';
-  }
-
-  @override
-  String swapFailed(String error) {
-    return 'スワップに失敗しました: $error';
   }
 
   @override

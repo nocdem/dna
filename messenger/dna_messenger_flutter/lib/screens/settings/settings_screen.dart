@@ -796,22 +796,6 @@ class _WalletSection extends ConsumerWidget {
             ref.read(walletSettingsProvider.notifier).setHideZeroBalances(value);
           },
         ),
-        SwitchListTile(
-          secondary: FaIcon(
-            FontAwesomeIcons.triangleExclamation,
-            color: walletSettings.slippageOverride
-                ? Colors.orange
-                : null,
-          ),
-          title: const Text('High Slippage Override'),
-          subtitle: Text(walletSettings.slippageOverride
-              ? 'Swaps allowed up to 50% slippage (risky!)'
-              : 'Swaps blocked above 10% slippage (safe)'),
-          value: walletSettings.slippageOverride,
-          onChanged: (value) {
-            ref.read(walletSettingsProvider.notifier).toggleSlippageOverride();
-          },
-        ),
       ],
     );
   }

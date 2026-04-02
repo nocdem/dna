@@ -1874,12 +1874,6 @@ abstract class AppLocalizations {
   /// **'Receive'**
   String get walletReceive;
 
-  /// No description provided for @walletSwap.
-  ///
-  /// In en, this message translates to:
-  /// **'Swap'**
-  String get walletSwap;
-
   /// No description provided for @walletHistory.
   ///
   /// In en, this message translates to:
@@ -2731,102 +2725,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Failed to add: {error}'**
   String txDetailFailedToAdd(String error);
-
-  /// No description provided for @swapTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Swap'**
-  String get swapTitle;
-
-  /// No description provided for @swapConfirm.
-  ///
-  /// In en, this message translates to:
-  /// **'Confirm Swap'**
-  String get swapConfirm;
-
-  /// No description provided for @swapYouPay.
-  ///
-  /// In en, this message translates to:
-  /// **'You pay'**
-  String get swapYouPay;
-
-  /// No description provided for @swapYouReceive.
-  ///
-  /// In en, this message translates to:
-  /// **'You receive'**
-  String get swapYouReceive;
-
-  /// No description provided for @swapGetQuote.
-  ///
-  /// In en, this message translates to:
-  /// **'Get Quote'**
-  String get swapGetQuote;
-
-  /// No description provided for @swapNoQuotes.
-  ///
-  /// In en, this message translates to:
-  /// **'No quotes available'**
-  String get swapNoQuotes;
-
-  /// No description provided for @swapRate.
-  ///
-  /// In en, this message translates to:
-  /// **'Rate'**
-  String get swapRate;
-
-  /// No description provided for @swapSlippage.
-  ///
-  /// In en, this message translates to:
-  /// **'Slippage'**
-  String get swapSlippage;
-
-  /// No description provided for @swapFee.
-  ///
-  /// In en, this message translates to:
-  /// **'Fee'**
-  String get swapFee;
-
-  /// No description provided for @swapDex.
-  ///
-  /// In en, this message translates to:
-  /// **'DEX'**
-  String get swapDex;
-
-  /// No description provided for @swapImpact.
-  ///
-  /// In en, this message translates to:
-  /// **'Impact: {value}%'**
-  String swapImpact(String value);
-
-  /// No description provided for @swapFeeValue.
-  ///
-  /// In en, this message translates to:
-  /// **'Fee: {value}'**
-  String swapFeeValue(String value);
-
-  /// No description provided for @swapBestPrice.
-  ///
-  /// In en, this message translates to:
-  /// **'Best price from {count} exchanges'**
-  String swapBestPrice(int count);
-
-  /// No description provided for @swapSuccess.
-  ///
-  /// In en, this message translates to:
-  /// **'Swapped {amountIn} {fromToken} → {amountOut} {toToken} via {dex}'**
-  String swapSuccess(
-    String amountIn,
-    String fromToken,
-    String amountOut,
-    String toToken,
-    String dex,
-  );
-
-  /// No description provided for @swapFailed.
-  ///
-  /// In en, this message translates to:
-  /// **'Swap failed: {error}'**
-  String swapFailed(String error);
 
   /// No description provided for @chatVideoGallery.
   ///

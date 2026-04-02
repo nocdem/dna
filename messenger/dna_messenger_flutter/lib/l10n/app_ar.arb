@@ -304,7 +304,6 @@
   "walletTotalBalance": "الرصيد الإجمالي",
   "walletSend": "إرسال",
   "walletReceive": "استلام",
-  "walletSwap": "تبديل",
   "walletHistory": "السجل",
   "walletNoTransactions": "لا توجد معاملات بعد",
   "walletCopyAddress": "نسخ العنوان",
@@ -459,21 +458,5 @@
   "txDetailAddToAddressBook": "إضافة إلى دفتر العناوين",
   "txDetailClose": "إغلاق",
   "txDetailAddedToAddressBook": "تمت إضافة \"{label}\" إلى دفتر العناوين",
-  "txDetailFailedToAdd": "فشل في الإضافة: {error}",
-
-  "swapTitle": "تبديل",
-  "swapConfirm": "تأكيد التبديل",
-  "swapYouPay": "تدفع",
-  "swapYouReceive": "تستلم",
-  "swapGetQuote": "الحصول على عرض سعر",
-  "swapNoQuotes": "لا تتوفر عروض أسعار",
-  "swapRate": "السعر",
-  "swapSlippage": "الانزلاق",
-  "swapFee": "الرسوم",
-  "swapDex": "DEX",
-  "swapImpact": "التأثير: {value}%",
-  "swapFeeValue": "الرسوم: {value}",
-  "swapBestPrice": "أفضل سعر من {count} بورصات",
-  "swapSuccess": "تم تبديل {amountIn} {fromToken} → {amountOut} {toToken} عبر {dex}",
-  "swapFailed": "فشل التبديل: {error}"
+  "txDetailFailedToAdd": "فشل في الإضافة: {error}"
 }

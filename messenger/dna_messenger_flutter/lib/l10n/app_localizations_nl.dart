@@ -976,9 +976,6 @@ class AppLocalizationsNl extends AppLocalizations {
   String get walletReceive => 'Ontvangen';
 
   @override
-  String get walletSwap => 'Wisselen';
-
-  @override
   String get walletHistory => 'Geschiedenis';
 
   @override
@@ -1435,67 +1432,6 @@ class AppLocalizationsNl extends AppLocalizations {
   @override
   String txDetailFailedToAdd(String error) {
     return 'Toevoegen mislukt: $error';
-  }
-
-  @override
-  String get swapTitle => 'Wisselen';
-
-  @override
-  String get swapConfirm => 'Wisseling bevestigen';
-
-  @override
-  String get swapYouPay => 'Jij betaalt';
-
-  @override
-  String get swapYouReceive => 'Jij ontvangt';
-
-  @override
-  String get swapGetQuote => 'Offerte opvragen';
-
-  @override
-  String get swapNoQuotes => 'Geen offertes beschikbaar';
-
-  @override
-  String get swapRate => 'Koers';
-
-  @override
-  String get swapSlippage => 'Slippage';
-
-  @override
-  String get swapFee => 'Kosten';
-
-  @override
-  String get swapDex => 'DEX';
-
-  @override
-  String swapImpact(String value) {
-    return 'Impact: $value%';
-  }
-
-  @override
-  String swapFeeValue(String value) {
-    return 'Kosten: $value';
-  }
-
-  @override
-  String swapBestPrice(int count) {
-    return 'Beste prijs van $count beurzen';
-  }
-
-  @override
-  String swapSuccess(
-    String amountIn,
-    String fromToken,
-    String amountOut,
-    String toToken,
-    String dex,
-  ) {
-    return '$amountIn $fromToken gewisseld voor $amountOut $toToken via $dex';
-  }
-
-  @override
-  String swapFailed(String error) {
-    return 'Wisseling mislukt: $error';
   }
 
   @override
