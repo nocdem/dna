@@ -387,7 +387,8 @@ class _HubContactTile extends ConsumerWidget {
   }
 
   String _formatLastSeen(BuildContext context, DateTime lastSeen) {
-    if (lastSeen.millisecondsSinceEpoch == 0) return AppLocalizations.of(context).contactsSyncing;
+    // Epoch (0) means presence data not yet fetched — show nothing
+    if (lastSeen.millisecondsSinceEpoch == 0) return '';
     final now = DateTime.now();
     final diff = now.difference(lastSeen);
     String timeStr;
