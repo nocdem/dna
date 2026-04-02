@@ -695,34 +695,59 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(
           DnaSpacing.lg, DnaSpacing.lg, DnaSpacing.lg, DnaSpacing.sm),
-      child: Container(
-        padding: const EdgeInsets.symmetric(
-            vertical: DnaSpacing.md, horizontal: DnaSpacing.lg),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.onSurface.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            _buildStatItem(
-              theme,
-              count: _posts.length,
-              label: l10n.userProfilePosts,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Section title
+          Text(
+            l10n.userProfileLastMonth,
+            style: theme.textTheme.titleSmall?.copyWith(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
             ),
-            _buildStatItem(
-              theme,
-              count: _totalLikes,
-              icon: FontAwesomeIcons.fire,
+          ),
+          const SizedBox(height: DnaSpacing.sm),
+          Container(
+            padding: const EdgeInsets.symmetric(
+                vertical: DnaSpacing.md, horizontal: DnaSpacing.lg),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
             ),
-            _buildStatItem(
-              theme,
-              count: _totalTips,
-              label: l10n.userProfileTotalTips,
-              suffix: ' CPUNK',
-            ),
-          ],
-        ),
+            child: _isLoadingPosts
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: DnaSpacing.sm),
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                  )
+                : Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _buildStatItem(
+                        theme,
+                        count: _posts.length,
+                        label: l10n.userProfilePosts,
+                      ),
+                      _buildStatItem(
+                        theme,
+                        count: _totalLikes,
+                        icon: FontAwesomeIcons.fire,
+                        iconColor: Colors.orange,
+                      ),
+                      _buildStatItem(
+                        theme,
+                        count: _totalTips,
+                        label: l10n.userProfileTotalTips,
+                        suffix: ' CPUNK',
+                      ),
+                    ],
+                  ),
+          ),
+        ],
       ),
     );
   }
@@ -732,6 +757,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     required int count,
     String? label,
     IconData? icon,
+    Color? iconColor,
     String? suffix,
   }) {
     final countText = '$count${suffix ?? ''}';
@@ -749,10 +775,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
         ),
         const SizedBox(height: DnaSpacing.xs),
         if (icon != null)
-          ShaderMask(
-            shaderCallback: DnaGradients.primaryShader,
-            child: FaIcon(icon, size: 14, color: Colors.white),
-          )
+          FaIcon(icon, size: 14, color: iconColor ?? Colors.orange)
         else if (label != null)
           Text(label,
               style: theme.textTheme.bodySmall?.copyWith(

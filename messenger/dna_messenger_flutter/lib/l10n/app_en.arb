@@ -728,5 +728,6 @@
   "userProfileMessage": "Message",
   "userProfilePosts": "Posts",
   "userProfileNoPosts": "No posts yet",
-  "userProfileTotalTips": "Tips"
+  "userProfileTotalTips": "Tips",
+  "userProfileLastMonth": "Last Month"
 }

@@ -496,5 +496,6 @@
   "userProfileMessage": "Mesaj",
   "userProfilePosts": "Paylaşımlar",
   "userProfileNoPosts": "Henüz paylaşım yok",
-  "userProfileTotalTips": "Bahşiş"
+  "userProfileTotalTips": "Bahşiş",
+  "userProfileLastMonth": "Son 30 Gün"
 }
