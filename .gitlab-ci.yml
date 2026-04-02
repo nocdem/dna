@@ -257,9 +257,10 @@ build:native-android-arm64:
         git clone --depth 1 --branch v4.6.1 https://github.com/sqlcipher/sqlcipher.git
         cd sqlcipher
         # Step 1: Generate amalgamation with HOST compiler (not cross-compiler)
+        # Use --with-crypto-lib=none to skip link check (we only need the .c/.h)
         CC=gcc ./configure --enable-tempstore=yes \
           CFLAGS="-DSQLITE_HAS_CODEC -DSQLCIPHER_CRYPTO_OPENSSL" \
-          --with-crypto-lib=openssl
+          --with-crypto-lib=none
         make sqlite3.c
         # Step 2: Cross-compile amalgamation for ARM64 using Android NDK
         ${CC} -c sqlite3.c -o sqlite3.o \
