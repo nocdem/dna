@@ -1393,6 +1393,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _showMessageInfo(Message message) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     final contact = ref.read(selectedContactProvider);
     final contactName = contact?.displayName.isNotEmpty == true
         ? contact!.displayName
@@ -1429,165 +1430,177 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         break;
     }
 
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Header
+    Widget infoIcon(IconData icon, Color color) {
+      return Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: isDark ? 0.15 : 0.1),
+          borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
+        ),
+        child: Center(
+          child: FaIcon(icon, size: 14, color: color),
+        ),
+      );
+    }
+
+    DnaBottomSheet.show(
+      context,
+      title: 'Message Info',
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.lg),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Timestamp
+            Row(
+              children: [
+                infoIcon(FontAwesomeIcons.clock, DnaColors.info),
+                const SizedBox(width: DnaSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Time', style: theme.textTheme.bodySmall),
+                      Text(fullTimestamp, style: theme.textTheme.bodyMedium),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: DnaSpacing.lg),
+
+            // Direction
+            Row(
+              children: [
+                infoIcon(
+                  message.isOutgoing ? FontAwesomeIcons.arrowUp : FontAwesomeIcons.arrowDown,
+                  message.isOutgoing ? DnaColors.success : DnaColors.info,
+                ),
+                const SizedBox(width: DnaSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Direction', style: theme.textTheme.bodySmall),
+                      Text(
+                        message.isOutgoing ? 'Sent to $contactName' : 'Received from $contactName',
+                        style: theme.textTheme.bodyMedium,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+
+            // Status (only for outgoing)
+            if (message.isOutgoing) ...[
+              const SizedBox(height: DnaSpacing.lg),
               Row(
                 children: [
-                  FaIcon(
-                    FontAwesomeIcons.circleInfo,
-                    size: 18,
-                    color: theme.colorScheme.primary,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Message Info',
-                    style: theme.textTheme.titleMedium,
+                  infoIcon(statusIcon, statusColor),
+                  const SizedBox(width: DnaSpacing.md),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Status', style: theme.textTheme.bodySmall),
+                        Text(statusText, style: theme.textTheme.bodyMedium),
+                      ],
+                    ),
                   ),
                 ],
               ),
-              const Divider(height: 24),
-
-              // Timestamp
-              _buildInfoRow(
-                theme,
-                FontAwesomeIcons.clock,
-                'Time',
-                fullTimestamp,
-              ),
-              const SizedBox(height: 12),
-
-              // Direction
-              _buildInfoRow(
-                theme,
-                message.isOutgoing
-                    ? FontAwesomeIcons.arrowUp
-                    : FontAwesomeIcons.arrowDown,
-                'Direction',
-                message.isOutgoing ? 'Sent to $contactName' : 'Received from $contactName',
-              ),
-              const SizedBox(height: 12),
-
-              // Status (only for outgoing)
-              if (message.isOutgoing)
-                _buildInfoRow(
-                  theme,
-                  statusIcon,
-                  'Status',
-                  statusText,
-                  iconColor: statusColor,
-                ),
-              const SizedBox(height: 8),
             ],
-          ),
+            const SizedBox(height: DnaSpacing.lg),
+          ],
         ),
       ),
-    );
-  }
-
-  Widget _buildInfoRow(
-    ThemeData theme,
-    IconData icon,
-    String label,
-    String value, {
-    Color? iconColor,
-  }) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 24,
-          child: FaIcon(
-            icon,
-            size: 14,
-            color: iconColor ?? theme.textTheme.bodySmall?.color,
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: theme.textTheme.bodySmall,
-              ),
-              Text(
-                value,
-                style: theme.textTheme.bodyMedium,
-              ),
-            ],
-          ),
-        ),
-      ],
     );
   }
 
   void _showMessageActions(Message message) {
     final contact = ref.read(selectedContactProvider);
     if (contact == null) return;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final l10n = AppLocalizations.of(context);
 
     final starredIds = ref.read(starredMessagesProvider(contact.fingerprint));
     final isStarred = starredIds.contains(message.id);
 
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const FaIcon(FontAwesomeIcons.reply),
-              title: Text(AppLocalizations.of(context).messageMenuReply),
-              onTap: () {
-                Navigator.pop(context);
-                _replyMessage(message);
-              },
-            ),
-            ListTile(
-              leading: const FaIcon(FontAwesomeIcons.copy),
-              title: Text(AppLocalizations.of(context).messageMenuCopy),
-              onTap: () {
-                Navigator.pop(context);
-                _copyMessage(message);
-              },
-            ),
-            ListTile(
-              leading: const FaIcon(FontAwesomeIcons.share),
-              title: Text(AppLocalizations.of(context).messageMenuForward),
-              onTap: () {
-                Navigator.pop(context);
-                _forwardMessage(message);
-              },
-            ),
-            ListTile(
-              leading: FaIcon(
-                isStarred ? FontAwesomeIcons.solidStar : FontAwesomeIcons.star,
-                color: isStarred ? Colors.amber : null,
-              ),
-              title: Text(isStarred ? AppLocalizations.of(context).messageMenuUnstar : AppLocalizations.of(context).messageMenuStar),
-              onTap: () {
-                Navigator.pop(context);
-                _toggleStarMessage(message, contact.fingerprint);
-              },
-            ),
-            ListTile(
-              leading: FaIcon(FontAwesomeIcons.trash, color: DnaColors.error),
-              title: Text(AppLocalizations.of(context).messageMenuDelete, style: TextStyle(color: DnaColors.error)),
-              onTap: () {
-                Navigator.pop(context);
-                _confirmDeleteMessage(message);
-              },
-            ),
-          ],
+    Widget iconBox(IconData icon, Color color) {
+      return Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: isDark ? 0.15 : 0.1),
+          borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
         ),
+        child: Center(
+          child: FaIcon(icon, size: DnaSpacing.iconSm, color: color),
+        ),
+      );
+    }
+
+    DnaBottomSheet.show(
+      context,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          DnaListTile(
+            leading: iconBox(FontAwesomeIcons.reply, DnaColors.info),
+            title: l10n.messageMenuReply,
+            onTap: () {
+              Navigator.pop(context);
+              _replyMessage(message);
+            },
+          ),
+          DnaListTile(
+            leading: iconBox(FontAwesomeIcons.copy, DnaColors.info),
+            title: l10n.messageMenuCopy,
+            onTap: () {
+              Navigator.pop(context);
+              _copyMessage(message);
+            },
+          ),
+          DnaListTile(
+            leading: iconBox(FontAwesomeIcons.share, DnaColors.success),
+            title: l10n.messageMenuForward,
+            onTap: () {
+              Navigator.pop(context);
+              _forwardMessage(message);
+            },
+          ),
+          DnaListTile(
+            leading: iconBox(
+              isStarred ? FontAwesomeIcons.solidStar : FontAwesomeIcons.star,
+              isStarred ? Colors.amber : DnaColors.warning,
+            ),
+            title: isStarred ? l10n.messageMenuUnstar : l10n.messageMenuStar,
+            onTap: () {
+              Navigator.pop(context);
+              _toggleStarMessage(message, contact.fingerprint);
+            },
+          ),
+          // ─── Divider before destructive action ─────
+          Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: DnaSpacing.lg,
+              vertical: DnaSpacing.xs,
+            ),
+            child: Divider(height: 1, color: theme.dividerColor),
+          ),
+          DnaListTile(
+            leading: iconBox(FontAwesomeIcons.trash, DnaColors.error),
+            title: l10n.messageMenuDelete,
+            onTap: () {
+              Navigator.pop(context);
+              _confirmDeleteMessage(message);
+            },
+          ),
+          const SizedBox(height: DnaSpacing.sm),
+        ],
       ),
     );
   }
@@ -1756,30 +1769,47 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _showReplyForwardOptions(Message message) {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const FaIcon(FontAwesomeIcons.reply),
-              title: Text(AppLocalizations.of(context).messageMenuReply),
-              onTap: () {
-                Navigator.pop(context);
-                _replyMessage(message);
-              },
-            ),
-            ListTile(
-              leading: const FaIcon(FontAwesomeIcons.share),
-              title: Text(AppLocalizations.of(context).messageMenuForward),
-              onTap: () {
-                Navigator.pop(context);
-                _forwardMessage(message);
-              },
-            ),
-          ],
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final l10n = AppLocalizations.of(context);
+
+    Widget iconBox(IconData icon, Color color) {
+      return Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: isDark ? 0.15 : 0.1),
+          borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
         ),
+        child: Center(
+          child: FaIcon(icon, size: DnaSpacing.iconSm, color: color),
+        ),
+      );
+    }
+
+    DnaBottomSheet.show(
+      context,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          DnaListTile(
+            leading: iconBox(FontAwesomeIcons.reply, DnaColors.info),
+            title: l10n.messageMenuReply,
+            onTap: () {
+              Navigator.pop(context);
+              _replyMessage(message);
+            },
+          ),
+          DnaListTile(
+            leading: iconBox(FontAwesomeIcons.share, DnaColors.success),
+            title: l10n.messageMenuForward,
+            onTap: () {
+              Navigator.pop(context);
+              _forwardMessage(message);
+            },
+          ),
+          const SizedBox(height: DnaSpacing.sm),
+        ],
       ),
     );
   }
