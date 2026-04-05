@@ -250,6 +250,11 @@ add_executable(test_circuit_live tests/test_circuit_live.c)
 target_link_libraries(test_circuit_live nodus dsa nodus)
 add_test(NAME test_circuit_live COMMAND test_circuit_live)
 
+# Cross-nodus circuit live integration test (VPN mesh Faz 1)
+add_executable(test_circuit_cross_live tests/test_circuit_cross_live.c)
+target_link_libraries(test_circuit_cross_live nodus dsa nodus pthread)
+add_test(NAME test_circuit_cross_live COMMAND test_circuit_cross_live)
+
 # Media Tier 2 protocol test
 add_executable(test_media_tier2 tests/test_media_tier2.c)
 target_link_libraries(test_media_tier2 nodus dsa nodus)
