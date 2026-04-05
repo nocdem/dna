@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ (API 31+) data extraction rules.
+
+  DNA Connect stores post-quantum identity keys, encrypted messages,
+  contacts and wallet data locally. None of this must leave the device
+  via cloud backup or device-to-device transfer — the user's identity
+  is protected by their recovery phrase (BIP39), not Google's cloud.
+
+  Both cloud-backup and device-transfer exclude all app data domains.
+  This is consistent with android:allowBackup="false" in the manifest.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>
