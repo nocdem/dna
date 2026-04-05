@@ -74,6 +74,13 @@ int nodus_t2_circ_open_err(uint32_t txn, uint64_t cid, int code,
 int nodus_t2_circ_inbound(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp,
                            uint8_t *buf, size_t cap, size_t *out_len);
 
+int nodus_t2_circ_data(uint32_t txn, const uint8_t *token,
+                        uint64_t cid, const uint8_t *data, size_t data_len,
+                        uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_circ_close(uint32_t txn, const uint8_t *token, uint64_t cid,
+                         uint8_t *buf, size_t cap, size_t *out_len);
+
 /* ── Channel operations (Client → Nodus) ─────────────────────────── */
 
 int nodus_t2_ch_create(uint32_t txn, const uint8_t *token,
@@ -471,6 +478,8 @@ typedef struct {
     uint64_t        circ_cid;
     nodus_key_t     circ_peer_fp;
     int             circ_err_code;
+    uint8_t        *circ_data;           /* heap, may be NULL */
+    size_t          circ_data_len;
     bool            has_circ;
 
     /* Error */

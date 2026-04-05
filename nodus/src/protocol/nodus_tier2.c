@@ -241,6 +241,33 @@ int nodus_t2_circ_inbound(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp
     return finish(&enc, out_len);
 }
 
+int nodus_t2_circ_data(uint32_t txn, const uint8_t *token,
+                        uint64_t cid, const uint8_t *data, size_t data_len,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    if (data_len > NODUS_MAX_CIRCUIT_PAYLOAD) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "circ_data");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    cbor_encode_cstr(&enc, "d");   cbor_encode_bstr(&enc, data, data_len);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_circ_close(uint32_t txn, const uint8_t *token, uint64_t cid,
+                         uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "circ_close");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    return finish(&enc, out_len);
+}
+
 /* ── Media operations (Client → Nodus) ──────────────────────────── */
 
 int nodus_t2_media_put(uint32_t txn, const uint8_t *token,
@@ -1447,14 +1474,23 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
                         memcpy(msg->key.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                 }
-                /* d (put data) */
+                /* d (put data / circ_data payload) */
                 else if (akey.tstr.len == 1 && akey.tstr.ptr[0] == 'd') {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len > 0) {
-                        msg->data = malloc(val.bstr.len);
-                        if (msg->data) {
-                            memcpy(msg->data, val.bstr.ptr, val.bstr.len);
-                            msg->data_len = val.bstr.len;
+                        if (strcmp(msg->method, "circ_data") == 0) {
+                            msg->circ_data = malloc(val.bstr.len);
+                            if (msg->circ_data) {
+                                memcpy(msg->circ_data, val.bstr.ptr, val.bstr.len);
+                                msg->circ_data_len = val.bstr.len;
+                                msg->has_circ = true;
+                            }
+                        } else {
+                            msg->data = malloc(val.bstr.len);
+                            if (msg->data) {
+                                memcpy(msg->data, val.bstr.ptr, val.bstr.len);
+                                msg->data_len = val.bstr.len;
+                            }
                         }
                     }
                 }
@@ -2319,6 +2355,7 @@ void nodus_t2_msg_free(nodus_tier2_msg_t *msg) {
     if (!msg) return;
     free(msg->data);
     msg->data = NULL;
+    if (msg->circ_data) { free(msg->circ_data); msg->circ_data = NULL; msg->circ_data_len = 0; }
     if (msg->value) {
         nodus_value_free(msg->value);
         msg->value = NULL;

@@ -88,12 +88,61 @@ static void test_circ_inbound_roundtrip(void) {
     nodus_t2_msg_free(&msg);
 }
 
+static void test_circ_data_roundtrip(void) {
+    TEST("circ_data encode/decode (1KB)");
+    uint8_t token[NODUS_SESSION_TOKEN_LEN] = {0};
+    uint8_t payload[1024];
+    for (size_t i = 0; i < sizeof(payload); i++) payload[i] = (uint8_t)(i & 0xFF);
+    size_t len = 0;
+    int rc = nodus_t2_circ_data(7, token, 0xABCDEFULL, payload, sizeof(payload),
+                                 msgbuf, sizeof(msgbuf), &len);
+    if (rc != 0) { FAIL("encode"); return; }
+    nodus_tier2_msg_t msg;
+    rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && strcmp(msg.method, "circ_data") == 0 &&
+        msg.has_circ && msg.circ_cid == 0xABCDEFULL &&
+        msg.circ_data_len == sizeof(payload) && msg.circ_data != NULL &&
+        memcmp(msg.circ_data, payload, sizeof(payload)) == 0) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
+static void test_circ_data_oversized_rejected(void) {
+    TEST("circ_data oversized payload rejected");
+    uint8_t token[NODUS_SESSION_TOKEN_LEN] = {0};
+    static uint8_t big_payload[NODUS_MAX_CIRCUIT_PAYLOAD + 1];
+    size_t len = 0;
+    int rc = nodus_t2_circ_data(8, token, 0x1ULL, big_payload, sizeof(big_payload),
+                                 msgbuf, sizeof(msgbuf), &len);
+    if (rc == -1) { PASS(); } else { FAIL("should reject oversized"); }
+}
+
+static void test_circ_close_roundtrip(void) {
+    TEST("circ_close encode/decode");
+    uint8_t token[NODUS_SESSION_TOKEN_LEN] = {0};
+    size_t len = 0;
+    nodus_t2_circ_close(9, token, 0x55ULL, msgbuf, sizeof(msgbuf), &len);
+    nodus_tier2_msg_t msg;
+    int rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && strcmp(msg.method, "circ_close") == 0 &&
+        msg.has_circ && msg.circ_cid == 0x55ULL) {
+        PASS();
+    } else { FAIL("decode mismatch"); }
+    nodus_t2_msg_free(&msg);
+}
+
 int main(void) {
     printf("Circuit wire protocol tests:\n");
     test_circ_open_roundtrip();
     test_circ_open_ok_roundtrip();
     test_circ_open_err_roundtrip();
     test_circ_inbound_roundtrip();
+    test_circ_data_roundtrip();
+    test_circ_data_oversized_rejected();
+    test_circ_close_roundtrip();
     printf("\nResults: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }
