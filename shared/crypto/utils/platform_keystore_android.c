@@ -38,7 +38,30 @@ static pthread_mutex_t g_migration_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void platform_keystore_jni_init(JavaVM *jvm) {
     g_jvm = jvm;
-    QGP_LOG_INFO(LOG_TAG, "JNI initialized for platform keystore");
+
+    /* CRITICAL: Cache DnaKeyStore class GlobalRef HERE (from JNI_OnLoad thread).
+     * FindClass called from worker threads (attached via AttachCurrentThread)
+     * uses the system classloader which does NOT know about app classes.
+     * JNI_OnLoad runs on the thread that called System.loadLibrary(),
+     * which uses the app classloader that CAN find app classes. */
+    JNIEnv *env = NULL;
+    jint rc = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6);
+    if (rc == JNI_OK && env) {
+        jclass cls = (*env)->FindClass(env, "io/cpunk/dna_connect/DnaKeyStore");
+        if (cls) {
+            g_keystore_class = (*env)->NewGlobalRef(env, cls);
+            (*env)->DeleteLocalRef(env, cls);
+            QGP_LOG_INFO(LOG_TAG, "JNI initialized + DnaKeyStore class cached");
+        } else {
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionDescribe(env);
+                (*env)->ExceptionClear(env);
+            }
+            QGP_LOG_ERROR(LOG_TAG, "JNI init: FindClass failed for DnaKeyStore");
+        }
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "JNI init: GetEnv failed: %d", rc);
+    }
 }
 
 /**
