@@ -922,9 +922,7 @@ class _DataStorageSectionState extends ConsumerState<_DataStorageSection> {
           subtitle: Text(l10n.settingsDeleteAllMessagesSubtitle),
           onTap: () => _confirmPurgeAll(context, ref),
         ),
-        // Logs
-        _LogsContent(onOpenOrShareLogs: _openOrShareLogs),
-        // Send Debug Log to Developer
+        // Debug Log (unified entry — export to device OR share with punk)
         ListTile(
           leading: _isSendingLog
               ? const SizedBox(
@@ -932,14 +930,50 @@ class _DataStorageSectionState extends ConsumerState<_DataStorageSection> {
                   height: 24,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const FaIcon(FontAwesomeIcons.paperPlane),
-          title: Text(l10n.debugLogSendToDev),
-          subtitle: Text(l10n.debugLogSendToDevSubtitle),
+              : const FaIcon(FontAwesomeIcons.fileLines),
+          title: Text(l10n.settingsDebugLog),
+          subtitle: Text(l10n.settingsDebugLogSubtitle),
           trailing: _isSendingLog ? null : const FaIcon(FontAwesomeIcons.chevronRight),
-          onTap: _isSendingLog ? null : () => _confirmSendDebugLog(context),
+          onTap: _isSendingLog ? null : () => _showDebugLogOptions(context),
         ),
       ],
     );
+  }
+
+  Future<void> _showDebugLogOptions(BuildContext context) async {
+    final l10n = AppLocalizations.of(context);
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: FaIcon(
+                Platform.isLinux || Platform.isWindows || Platform.isMacOS
+                    ? FontAwesomeIcons.folderOpen
+                    : FontAwesomeIcons.shareNodes,
+              ),
+              title: Text(l10n.debugLogExportToDevice),
+              subtitle: Text(l10n.debugLogExportToDeviceSubtitle),
+              onTap: () => Navigator.pop(ctx, 'export'),
+            ),
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.paperPlane),
+              title: Text(l10n.debugLogShareWithPunk),
+              subtitle: Text(l10n.debugLogShareWithPunkSubtitle),
+              onTap: () => Navigator.pop(ctx, 'punk'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !context.mounted) return;
+    if (choice == 'export') {
+      await _openOrShareLogs(context);
+    } else if (choice == 'punk') {
+      await _confirmSendDebugLog(context);
+    }
   }
 
   Future<void> _confirmSendDebugLog(BuildContext context) async {
@@ -1279,35 +1313,6 @@ class _DataStorageSectionState extends ConsumerState<_DataStorageSection> {
         );
       }
     }
-  }
-}
-
-class _LogsContent extends StatelessWidget {
-  final Future<void> Function(BuildContext) onOpenOrShareLogs;
-
-  const _LogsContent({required this.onOpenOrShareLogs});
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      leading: FaIcon(
-        Platform.isLinux || Platform.isWindows || Platform.isMacOS
-            ? FontAwesomeIcons.folderOpen
-            : FontAwesomeIcons.shareNodes,
-      ),
-      title: Text(
-        Platform.isLinux || Platform.isWindows || Platform.isMacOS
-            ? AppLocalizations.of(context).settingsOpenLogsFolder
-            : AppLocalizations.of(context).settingsShareLogs,
-      ),
-      subtitle: Text(
-        Platform.isLinux || Platform.isWindows || Platform.isMacOS
-            ? AppLocalizations.of(context).settingsOpenLogsFolderSubtitle
-            : AppLocalizations.of(context).settingsShareLogsSubtitle,
-      ),
-      trailing: const FaIcon(FontAwesomeIcons.chevronRight),
-      onTap: () => onOpenOrShareLogs(context),
-    );
   }
 }
 

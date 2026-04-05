@@ -27,6 +27,28 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ---
 
+## Open Security Bugs (from 2026-04-02 audit)
+
+### Crypto / Key Management
+
+- [ ] **[CLI] P2 - qgp_key_load no size validation** — `shared/crypto/key/qgp_key.c:206`. `public_key_size` and `private_key_size` read from file header (attacker-controlled) used directly for malloc+fread without upper-bound validation. Expected sizes: DSA87=2592, KEM1024=1568 — but any value accepted. **Fix:** Validate sizes match expected values for declared `key_type` before malloc.
+
+- [ ] **[CLI] P3 - Mnemonic strdup not zeroed before free** — `shared/crypto/key/bip39/bip39.c:191`. `bip39_validate_mnemonic()` calls `strdup(mnemonic)` for tokenization, then `free()` without zeroing. Seed phrase persists in freed heap. **Fix:** `qgp_secure_memzero(mnemonic_copy, strlen(mnemonic_copy))` before `free()`.
+
+### Flutter App
+
+- [ ] **[FLUTTER] P2 - QR auth JSON injection** — `qr_auth_service.dart:155-183`. `_buildCanonicalSignedPayload` uses string interpolation for JSON construction. Attacker-controlled fields (`nonce`, `origin`, `sessionId`) not escaped. **Fix:** Use `jsonEncode()` or validate no JSON-breaking characters.
+
+- [ ] **[FLUTTER] P3 - App lock bypass via SharedPreferences tampering** — `app_lock_provider.dart:11-16`. `app_lock_failed_attempts`, `app_lock_lockout_until`, `app_lock_enabled` stored in unencrypted SharedPreferences. Attacker with file access can reset counters or disable lock. PIN hash is safe (FlutterSecureStorage). **Fix:** Move lockout state to FlutterSecureStorage.
+
+- [ ] **[FLUTTER] P3 - Clipboard 30s seed exposure** — `clipboard_utils.dart:7-19`. Seed phrase stays in clipboard for 30 seconds. `Future.delayed` won't fire if app killed. **Fix:** Reduce to 5-10s. On Android 10+, use `ClipDescription.EXTRA_IS_SENSITIVE`.
+
+- [ ] **[FLUTTER] P3 - No screen capture protection on seed export** — `settings_screen.dart:670-710`. Seed phrase dialog doesn't enable `FLAG_SECURE`. Lock screen already does this. **Fix:** Call `ScreenSecurity.enable()` before showing seed dialog.
+
+- [ ] **[FLUTTER] P3 - debugPrint leaks auth data in release builds** — `qr_auth_service.dart:115,254,330,368,392`. Uses `debugPrint()` instead of `DnaLogger`. Outputs session IDs, payload hashes to logcat in release. **Fix:** Replace with `DnaLogger.log()`.
+
+---
+
 ## Open Bugs
 
 - [ ] **[MIXED] P2 - Feed categories display as SHA256 hashes instead of names** - Feed screen shows 64-character hex strings (e.g., `ac3b4e3b232f9dd207067c8e7dad449e...`) instead of readable category names like "Announcements".

@@ -519,6 +519,25 @@ class AppLocalizationsPt extends AppLocalizations {
       'Compactar e compartilhar arquivos de registro';
 
   @override
+  String get settingsDebugLog => 'Share Logs';
+
+  @override
+  String get settingsDebugLogSubtitle => 'Send to cpunk or share';
+
+  @override
+  String get debugLogExportToDevice => 'Share';
+
+  @override
+  String get debugLogExportToDeviceSubtitle => 'Save or share the log file';
+
+  @override
+  String get debugLogShareWithPunk => 'Send to cpunk';
+
+  @override
+  String get debugLogShareWithPunkSubtitle =>
+      'Send the last 3 MB to the developer (secrets removed)';
+
+  @override
   String get debugLogSendToDev => 'Send Debug Log to Developer';
 
   @override

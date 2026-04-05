@@ -162,9 +162,41 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
         if (posts.isNotEmpty) {
           var items = await _assembleItems(posts, fp);
 
-          // Fetch engagement in background (non-blocking) — posts show
-          // immediately with 0 likes/comments, then update when ready
-          _refreshEngagementBg(posts, fp, engine);
+          // Synchronous cache-first engagement merge — C side serves stale
+          // cache immediately (~ms) so posts render WITH likes/comments on
+          // first frame, no 0/0 flicker. DHT refresh for stale entries is
+          // triggered by the same call on the C side.
+          try {
+            final uuids = posts.map((p) => p.uuid).toList();
+            const batchSize = 32;
+            final futures = <Future<List<WallEngagement>>>[];
+            for (var i = 0; i < uuids.length; i += batchSize) {
+              final chunk = uuids.sublist(
+                  i, i + batchSize > uuids.length ? uuids.length : i + batchSize);
+              futures.add(engine.wallGetEngagement(chunk));
+            }
+            final results = await Future.wait(futures);
+            final engagements = results.expand((e) => e).toList();
+            if (engagements.isNotEmpty) {
+              final engMap = <String, WallEngagement>{};
+              for (final e in engagements) {
+                engMap[e.postUuid] = e;
+              }
+              items = items.map((item) {
+                final eng = engMap[item.post.uuid];
+                if (eng == null) return item;
+                final preview = eng.comments.length <= 3
+                    ? eng.comments
+                    : eng.comments.sublist(0, 3);
+                return item.copyWith(
+                  likeCount: eng.likeCount,
+                  isLikedByMe: eng.isLikedByMe,
+                  commentCount: eng.comments.length,
+                  previewComments: preview,
+                );
+              }).toList();
+            }
+          } catch (_) {}
 
           // Schedule full DHT refresh in background (boost resolution + fresh data)
           if (identityLoaded) {
@@ -302,66 +334,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     return items;
   }
 
-  /// Fetch engagement in background, update state when ready.
-  /// C side serves stale cache + refreshes from DHT for stale entries.
-  void _refreshEngagementBg(
-      List<WallPost> posts, String myFp, DnaEngine engine) {
-    () async {
-      try {
-        final uuids = posts.map((p) => p.uuid).toList();
-        // Batch in chunks of 32 (NODUS_MAX_BATCH_KEYS) and fetch in parallel
-        const batchSize = 32;
-        final futures = <Future<List<WallEngagement>>>[];
-        for (var i = 0; i < uuids.length; i += batchSize) {
-          final chunk = uuids.sublist(
-              i, i + batchSize > uuids.length ? uuids.length : i + batchSize);
-          futures.add(engine.wallGetEngagement(chunk));
-        }
-        final results = await Future.wait(futures);
-        final engagements = results.expand((e) => e).toList();
-
-        final current = state.valueOrNull;
-        if (current == null || current.isEmpty) return;
-
-        final engMap = <String, WallEngagement>{};
-        for (final e in engagements) {
-          engMap[e.postUuid] = e;
-        }
-
-        bool changed = false;
-        final updated = current.map((item) {
-          final eng = engMap[item.post.uuid];
-          if (eng == null) return item;
-
-          final newPreview = eng.comments.length <= 3
-              ? eng.comments
-              : eng.comments.sublist(0, 3);
-
-          if (eng.likeCount != item.likeCount ||
-              eng.comments.length != item.commentCount ||
-              eng.isLikedByMe != item.isLikedByMe) {
-            changed = true;
-            return item.copyWith(
-              likeCount: eng.likeCount,
-              isLikedByMe: eng.isLikedByMe,
-              commentCount: eng.comments.length,
-              previewComments: newPreview,
-            );
-          }
-          return item;
-        }).toList();
-
-        if (changed) {
-          state = AsyncData(updated);
-        }
-      } catch (_) {
-        // Silent fail — engagement refresh is best-effort
-      }
-    }();
-  }
-
   /// Assemble WallFeedItems with profiles only — NO comment/like fetch.
-  /// Engagement data is loaded separately via _refreshEngagement().
+  /// Engagement data is merged separately by the caller.
   Future<List<WallFeedItem>> _assembleItems(
       List<WallPost> posts, String myFp) async {
     if (posts.isEmpty) return [];

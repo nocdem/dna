@@ -517,6 +517,26 @@ class AppLocalizationsTr extends AppLocalizations {
       'Günlük dosyalarını sıkıştır ve paylaş';
 
   @override
+  String get settingsDebugLog => 'Günlükleri Paylaş';
+
+  @override
+  String get settingsDebugLogSubtitle => 'cpunk\'a gönder veya paylaş';
+
+  @override
+  String get debugLogExportToDevice => 'Paylaş';
+
+  @override
+  String get debugLogExportToDeviceSubtitle =>
+      'Log dosyasını kaydet veya paylaş';
+
+  @override
+  String get debugLogShareWithPunk => 'cpunk\'a gönder';
+
+  @override
+  String get debugLogShareWithPunkSubtitle =>
+      'Son 3 MB\'ı geliştiriciye gönder (sırlar temizlenir)';
+
+  @override
   String get debugLogSendToDev => 'Debug Log\'u Geliştiriciye Gönder';
 
   @override

@@ -1058,6 +1058,42 @@ abstract class AppLocalizations {
   /// **'Zip and share log files'**
   String get settingsShareLogsSubtitle;
 
+  /// No description provided for @settingsDebugLog.
+  ///
+  /// In en, this message translates to:
+  /// **'Share Logs'**
+  String get settingsDebugLog;
+
+  /// No description provided for @settingsDebugLogSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Send to cpunk or share'**
+  String get settingsDebugLogSubtitle;
+
+  /// No description provided for @debugLogExportToDevice.
+  ///
+  /// In en, this message translates to:
+  /// **'Share'**
+  String get debugLogExportToDevice;
+
+  /// No description provided for @debugLogExportToDeviceSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Save or share the log file'**
+  String get debugLogExportToDeviceSubtitle;
+
+  /// No description provided for @debugLogShareWithPunk.
+  ///
+  /// In en, this message translates to:
+  /// **'Send to cpunk'**
+  String get debugLogShareWithPunk;
+
+  /// No description provided for @debugLogShareWithPunkSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Send the last 3 MB to the developer (secrets removed)'**
+  String get debugLogShareWithPunkSubtitle;
+
   /// No description provided for @debugLogSendToDev.
   ///
   /// In en, this message translates to:
