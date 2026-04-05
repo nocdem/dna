@@ -1,0 +1,19 @@
+[Unit]
+Description=DNA Connect — punk debug log inbox listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nocdem
+Group=nocdem
+Environment=HOME=/home/nocdem
+ExecStart=/opt/dna/messenger/build/cli/dna-connect-cli -i punk debug inbox listen
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
