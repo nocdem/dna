@@ -31,6 +31,10 @@
 #include <pthread.h>
 #include <time.h>
 #include <signal.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <errno.h>
+#include "src/api/engine/dna_debug_log_wire.h"
 
 #define LOG_TAG "CLI"
 
@@ -3458,6 +3462,232 @@ int cmd_debug_export(dna_engine_t *engine, const char *filepath) {
 }
 
 /* ============================================================================
+ * DEBUG INBOX LISTENER (receive encrypted debug logs from other users)
+ * ============================================================================ */
+
+#define DEBUG_INBOX_OUT_DIR "/var/log/dna-debug"
+
+static volatile bool g_debug_inbox_listening = true;
+static void debug_inbox_sig_handler(int sig) {
+    (void)sig;
+    g_debug_inbox_listening = false;
+}
+
+static void debug_inbox_ensure_dir(void) {
+    struct stat st;
+    if (stat(DEBUG_INBOX_OUT_DIR, &st) == 0) return;
+    if (mkdir(DEBUG_INBOX_OUT_DIR, 0700) != 0) {
+        fprintf(stderr, "warn: cannot create %s: %s\n",
+                DEBUG_INBOX_OUT_DIR, strerror(errno));
+    }
+}
+
+static void debug_inbox_iso8601_now(char *out, size_t cap) {
+    time_t t = time(NULL);
+    struct tm tm_buf;
+    gmtime_r(&t, &tm_buf);
+    strftime(out, cap, "%Y%m%dT%H%M%SZ", &tm_buf);
+}
+
+/* Load the current identity's Kyber1024 secret key (3168 bytes).
+ * Caller must qgp_key_free() the returned key on success.
+ * Returns 0 on success, -1 on error.
+ */
+static int debug_inbox_load_kyber_sk(const char *session_password,
+                                      qgp_key_t **key_out) {
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) return -1;
+
+    char kyber_path[1024];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
+
+    qgp_key_t *k = NULL;
+    int rc;
+    if (session_password && session_password[0] != '\0') {
+        rc = qgp_key_load_encrypted(kyber_path, session_password, &k);
+    } else {
+        rc = qgp_key_load(kyber_path, &k);
+    }
+    if (rc != 0 || !k) return -1;
+    if (k->private_key_size < 3168) {
+        qgp_key_free(k);
+        return -1;
+    }
+    *key_out = k;
+    return 0;
+}
+
+/* Listener callback — invoked when a new value appears on the inbox key. */
+static bool debug_inbox_on_value(const uint8_t *data, size_t data_len,
+                                  bool expired, void *user_data) {
+    if (expired) return true;  /* ignore expirations, keep listening */
+
+    dna_engine_t *engine = (dna_engine_t *)user_data;
+    if (!engine || !data || data_len == 0) return true;
+
+    /* --- 1. Load our Kyber secret key --- */
+    messenger_context_t *mctx =
+        (messenger_context_t *)dna_engine_get_messenger_context(engine);
+    const char *sp = mctx ? mctx->session_password : NULL;
+
+    qgp_key_t *kyber_key = NULL;
+    if (debug_inbox_load_kyber_sk(sp, &kyber_key) != 0) {
+        fprintf(stderr, "[DEBUG-LOG] error: cannot load Kyber secret key\n");
+        return true;
+    }
+
+    /* --- 2. Decode outer wire blob --- */
+    const uint8_t *kyber_ct = NULL;
+    const uint8_t *nonce = NULL;
+    const uint8_t *enc_inner = NULL;
+    size_t enc_inner_len = 0;
+    const uint8_t *gcm_tag = NULL;
+
+    int drc = dna_debug_log_decode_outer(data, data_len,
+                                          &kyber_ct, &nonce,
+                                          &enc_inner, &enc_inner_len,
+                                          &gcm_tag);
+    if (drc != DNA_DEBUG_LOG_OK) {
+        fprintf(stderr, "[DEBUG-LOG] decode_outer failed: %d\n", drc);
+        qgp_key_free(kyber_key);
+        return true;
+    }
+
+    /* --- 3. Decrypt inner plaintext --- */
+    uint8_t *inner = malloc(enc_inner_len);
+    if (!inner) {
+        qgp_key_free(kyber_key);
+        return true;
+    }
+    size_t inner_len = 0;
+    int erc = dna_debug_log_decrypt_inner(
+        (const uint8_t *)kyber_key->private_key, kyber_key->private_key_size,
+        kyber_ct, nonce, enc_inner, enc_inner_len, gcm_tag,
+        inner, enc_inner_len, &inner_len);
+    qgp_key_free(kyber_key);
+
+    if (erc != DNA_DEBUG_LOG_OK) {
+        fprintf(stderr, "[DEBUG-LOG] decrypt_inner failed: %d\n", erc);
+        free(inner);
+        return true;
+    }
+
+    /* --- 4. Decode inner (hint + body) --- */
+    char hint[129] = {0};
+    const uint8_t *body = NULL;
+    size_t body_len = 0;
+    int irc = dna_debug_log_decode_inner(inner, inner_len,
+                                          hint, sizeof(hint),
+                                          &body, &body_len);
+    if (irc != DNA_DEBUG_LOG_OK) {
+        fprintf(stderr, "[DEBUG-LOG] decode_inner failed: %d\n", irc);
+        memset(inner, 0, inner_len);
+        free(inner);
+        return true;
+    }
+
+    /* --- 5. Write body to file --- */
+    char ts[32];
+    debug_inbox_iso8601_now(ts, sizeof(ts));
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/debug_%s.log", DEBUG_INBOX_OUT_DIR, ts);
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        fprintf(stderr, "[DEBUG-LOG] cannot open %s: %s\n", path, strerror(errno));
+        memset(inner, 0, inner_len);
+        free(inner);
+        return true;
+    }
+    if (chmod(path, 0600) != 0) {
+        /* non-fatal */
+    }
+    size_t wrote = fwrite(body, 1, body_len, fp);
+    fclose(fp);
+
+    if (wrote != body_len) {
+        fprintf(stderr, "[DEBUG-LOG] short write: %zu/%zu\n", wrote, body_len);
+    }
+
+    printf("[DEBUG-LOG] hint=\"%s\" size=%zu file=%s\n", hint, body_len, path);
+    fflush(stdout);
+
+    memset(inner, 0, inner_len);
+    free(inner);
+    return true;
+}
+
+int cmd_debug_inbox_listen(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    const char *fp_hex = dna_engine_get_fingerprint(engine);
+    if (!fp_hex) {
+        printf("Error: No identity loaded. Use 'identity load <fingerprint>' first.\n");
+        return -1;
+    }
+
+    if (!nodus_ops_is_ready()) {
+        printf("Error: Nodus not ready (DHT connection not established).\n");
+        return -1;
+    }
+
+    /* Convert my fp_hex (128 chars) -> 64 raw bytes */
+    if (strlen(fp_hex) != 128) {
+        printf("Error: Invalid fingerprint length\n");
+        return -1;
+    }
+    uint8_t my_fp_raw[64];
+    for (size_t i = 0; i < 64; i++) {
+        unsigned int b = 0;
+        if (sscanf(fp_hex + (i * 2), "%2x", &b) != 1) {
+            printf("Error: Invalid fingerprint hex\n");
+            return -1;
+        }
+        my_fp_raw[i] = (uint8_t)b;
+    }
+
+    /* Derive inbox DHT key */
+    uint8_t inbox_key[64];
+    if (dna_debug_log_inbox_key(my_fp_raw, inbox_key) != DNA_DEBUG_LOG_OK) {
+        printf("Error: Failed to derive inbox key\n");
+        return -1;
+    }
+
+    /* Ensure output directory exists (non-fatal if fails) */
+    debug_inbox_ensure_dir();
+
+    /* Register listener */
+    size_t token = nodus_ops_listen(inbox_key, sizeof(inbox_key),
+                                     debug_inbox_on_value, engine, NULL);
+    if (token == 0) {
+        printf("Error: Failed to register DHT listener\n");
+        return -1;
+    }
+
+    printf("Listening on debug inbox (output: %s)\n", DEBUG_INBOX_OUT_DIR);
+    printf("Press Ctrl+C to stop.\n");
+    fflush(stdout);
+
+    /* Install signal handlers */
+    g_debug_inbox_listening = true;
+    signal(SIGINT, debug_inbox_sig_handler);
+    signal(SIGTERM, debug_inbox_sig_handler);
+
+    while (g_debug_inbox_listening) {
+        struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
+        nanosleep(&ts, NULL);
+    }
+
+    nodus_ops_cancel_listen(token);
+    printf("Listener stopped.\n");
+    return 0;
+}
+
+/* ============================================================================
  * PHASE 6: GROUP EXTENSIONS (4 commands)
  * ============================================================================ */
 
@@ -5344,10 +5574,17 @@ int dispatch_debug(dna_engine_t *engine, int argc, char **argv, int sub) {
         fprintf(stderr, "  count                      Count total log entries\n");
         fprintf(stderr, "  clear                      Clear all log entries\n");
         fprintf(stderr, "  export <filepath>          Export logs to file\n");
+        fprintf(stderr, "  inbox listen               Listen for encrypted debug logs on DHT\n");
         return 1;
     }
     const char *subcmd = argv[sub];
-    if (strcmp(subcmd, "log-level") == 0) {
+    if (strcmp(subcmd, "inbox") == 0) {
+        if (sub + 1 >= argc || strcmp(argv[sub + 1], "listen") != 0) {
+            fprintf(stderr, "Usage: debug inbox listen\n");
+            return 1;
+        }
+        return cmd_debug_inbox_listen(engine);
+    } else if (strcmp(subcmd, "log-level") == 0) {
         const char *level = (sub + 1 < argc) ? argv[sub + 1] : NULL;
         return cmd_log_level(engine, level);
     } else if (strcmp(subcmd, "log-tags") == 0) {
@@ -5949,8 +6186,16 @@ int dispatch_sign_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- debug (REPL) ---------- */
 int dispatch_debug_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Debug — log-level | log-tags | log | entries | count | clear | export\n");
+        fprintf(stderr, "Debug — log-level | log-tags | log | entries | count | clear | export | inbox\n");
         return 1;
+    }
+    if (strcmp(subcmd, "inbox") == 0) {
+        char *arg = strtok(NULL, " \t");
+        if (!arg || strcmp(arg, "listen") != 0) {
+            fprintf(stderr, "Usage: debug inbox listen\n");
+            return 1;
+        }
+        return cmd_debug_inbox_listen(engine);
     }
     if (strcmp(subcmd, "log-level") == 0) {
         char *level = strtok(NULL, " \t");

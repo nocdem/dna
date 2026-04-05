@@ -279,6 +279,12 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "debug") == 0) {
         needs_identity = 0;
+        /* 'debug inbox listen' needs identity + DHT to decrypt incoming logs */
+        if (optind + 2 < argc &&
+            strcmp(argv[optind + 1], "inbox") == 0 &&
+            strcmp(argv[optind + 2], "listen") == 0) {
+            needs_identity = 1;
+        }
     }
 
     if (needs_identity) {
