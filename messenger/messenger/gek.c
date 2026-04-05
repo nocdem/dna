@@ -763,11 +763,12 @@ int gek_generate_ratcheted(const uint8_t old_gek[GEK_KEY_SIZE],
  *
  * Common logic for both member add/remove operations.
  */
-static int gek_rotate_and_publish(const char *group_uuid, const char *owner_identity) {
+static int gek_rotate_and_publish(void *ctx_ptr, const char *group_uuid, const char *owner_identity) {
     if (!group_uuid || !owner_identity) {
         QGP_LOG_ERROR(LOG_TAG, "gek_rotate_and_publish: NULL parameter\n");
         return -1;
     }
+    messenger_context_t *ctx = (messenger_context_t *)ctx_ptr;
 
     QGP_LOG_INFO(LOG_TAG, "Rotating GEK for group %s (owner=%s)\n", group_uuid, owner_identity);
 
@@ -858,15 +859,22 @@ static int gek_rotate_and_publish(const char *group_uuid, const char *owner_iden
 
     QGP_LOG_INFO(LOG_TAG, "Found Kyber pubkeys for %zu/%u members\n", valid_members, meta->member_count);
 
-    // Step 5: Load owner's Dilithium5 private key for signing
+    // Step 5: Load owner's Dilithium5 private key for signing (via encryption-aware API)
     // v0.3.0: Flat structure - keys/identity.dsa
     const char *gek_data_dir = qgp_platform_app_data_dir();
     char privkey_path[512];
     snprintf(privkey_path, sizeof(privkey_path), "%s/keys/identity.dsa", gek_data_dir ? gek_data_dir : ".");
 
-    FILE *fp = fopen(privkey_path, "rb");
-    if (!fp) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open owner private key: %s\n", privkey_path);
+    qgp_key_t *owner_key = NULL;
+    int load_rc = -1;
+    if (ctx && ctx->session_password) {
+        load_rc = qgp_key_load_encrypted(privkey_path, ctx->session_password, &owner_key);
+    } else {
+        load_rc = qgp_key_load(privkey_path, &owner_key);
+    }
+    if (load_rc != 0 || !owner_key || !owner_key->private_key || owner_key->private_key_size != 4896) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load owner private key: %s\n", privkey_path);
+        if (owner_key) qgp_key_free(owner_key);
         for (size_t i = 0; i < valid_members; i++) {
             free(kyber_pubkeys[i]);
         }
@@ -877,18 +885,8 @@ static int gek_rotate_and_publish(const char *group_uuid, const char *owner_iden
     }
 
     uint8_t owner_privkey[4896];  // Dilithium5 private key size
-    if (fread(owner_privkey, 1, 4896, fp) != 4896) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to read owner private key\n");
-        fclose(fp);
-        for (size_t i = 0; i < valid_members; i++) {
-            free(kyber_pubkeys[i]);
-        }
-        free(kyber_pubkeys);
-        free(member_entries);
-        dht_groups_free_metadata(meta);
-        return -1;
-    }
-    fclose(fp);
+    memcpy(owner_privkey, owner_key->private_key, 4896);
+    qgp_key_free(owner_key);
 
     // Step 6: Build Initial Key Packet
     uint8_t *packet = NULL;
@@ -896,6 +894,7 @@ static int gek_rotate_and_publish(const char *group_uuid, const char *owner_iden
     if (ikp_build(group_uuid, new_version, new_gek, (const gek_member_entry_t *)member_entries, valid_members,
                   owner_privkey, &packet, &packet_size) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to build Initial Key Packet\n");
+        qgp_secure_memzero(owner_privkey, sizeof(owner_privkey));
         for (size_t i = 0; i < valid_members; i++) {
             free(kyber_pubkeys[i]);
         }
@@ -918,10 +917,12 @@ static int gek_rotate_and_publish(const char *group_uuid, const char *owner_iden
     // Step 7: Publish to DHT via chunked storage
     if (dht_gek_publish(group_uuid, new_version, packet, packet_size) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to publish Initial Key Packet to DHT\n");
+        qgp_secure_memzero(owner_privkey, sizeof(owner_privkey));
         free(packet);
         return -1;
     }
 
+    qgp_secure_memzero(owner_privkey, sizeof(owner_privkey));
     free(packet);
 
     // Step 8: Update group metadata with new GEK version
@@ -937,12 +938,12 @@ static int gek_rotate_and_publish(const char *group_uuid, const char *owner_iden
     return 0;
 }
 
-int gek_rotate_on_member_add(const char *group_uuid, const char *owner_identity) {
+int gek_rotate_on_member_add(void *ctx, const char *group_uuid, const char *owner_identity) {
     QGP_LOG_INFO(LOG_TAG, "Member added to group %s, rotating GEK...\n", group_uuid);
-    return gek_rotate_and_publish(group_uuid, owner_identity);
+    return gek_rotate_and_publish(ctx, group_uuid, owner_identity);
 }
 
-int gek_rotate_on_member_remove(const char *group_uuid, const char *owner_identity) {
+int gek_rotate_on_member_remove(void *ctx, const char *group_uuid, const char *owner_identity) {
     if (!group_uuid || !owner_identity) {
         QGP_LOG_ERROR(LOG_TAG, "gek_rotate_on_member_remove: NULL parameter\n");
         return -1;
@@ -958,7 +959,7 @@ int gek_rotate_on_member_remove(const char *group_uuid, const char *owner_identi
     if (gek_load_active(group_uuid, old_gek, &current_version) != 0) {
         QGP_LOG_WARN(LOG_TAG, "No active GEK found, falling back to random generation\n");
         /* Fallback: no old GEK to ratchet from, use standard rotation */
-        return gek_rotate_and_publish(group_uuid, owner_identity);
+        return gek_rotate_and_publish(ctx, group_uuid, owner_identity);
     }
 
     /* Step 2: Generate new version (timestamp-based, same as gek_rotate) */
@@ -1063,15 +1064,23 @@ int gek_rotate_on_member_remove(const char *group_uuid, const char *owner_identi
     QGP_LOG_INFO(LOG_TAG, "Found Kyber pubkeys for %zu/%u members\n",
                  valid_members, meta->member_count);
 
-    /* Step 7: Load owner's Dilithium5 private key for signing */
+    /* Step 7: Load owner's Dilithium5 private key for signing (encryption-aware) */
     const char *gek_data_dir = qgp_platform_app_data_dir();
     char privkey_path[512];
     snprintf(privkey_path, sizeof(privkey_path), "%s/keys/identity.dsa",
              gek_data_dir ? gek_data_dir : ".");
 
-    FILE *fp = fopen(privkey_path, "rb");
-    if (!fp) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open owner private key: %s\n", privkey_path);
+    messenger_context_t *ctx_m = (messenger_context_t *)ctx;
+    qgp_key_t *owner_key = NULL;
+    int load_rc = -1;
+    if (ctx_m && ctx_m->session_password) {
+        load_rc = qgp_key_load_encrypted(privkey_path, ctx_m->session_password, &owner_key);
+    } else {
+        load_rc = qgp_key_load(privkey_path, &owner_key);
+    }
+    if (load_rc != 0 || !owner_key || !owner_key->private_key || owner_key->private_key_size != 4896) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load owner private key: %s\n", privkey_path);
+        if (owner_key) qgp_key_free(owner_key);
         for (size_t i = 0; i < valid_members; i++) free(kyber_pubkeys[i]);
         free(kyber_pubkeys);
         free(member_entries);
@@ -1081,17 +1090,8 @@ int gek_rotate_on_member_remove(const char *group_uuid, const char *owner_identi
     }
 
     uint8_t owner_privkey[4896];
-    if (fread(owner_privkey, 1, 4896, fp) != 4896) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to read owner private key\n");
-        fclose(fp);
-        for (size_t i = 0; i < valid_members; i++) free(kyber_pubkeys[i]);
-        free(kyber_pubkeys);
-        free(member_entries);
-        dht_groups_free_metadata(meta);
-        qgp_secure_memzero(new_gek, sizeof(new_gek));
-        return -1;
-    }
-    fclose(fp);
+    memcpy(owner_privkey, owner_key->private_key, 4896);
+    qgp_key_free(owner_key);
 
     /* Step 8: Build Initial Key Packet */
     uint8_t *packet = NULL;
@@ -1100,6 +1100,7 @@ int gek_rotate_on_member_remove(const char *group_uuid, const char *owner_identi
                   (const gek_member_entry_t *)member_entries, valid_members,
                   owner_privkey, &packet, &packet_size) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to build Initial Key Packet\n");
+        qgp_secure_memzero(owner_privkey, sizeof(owner_privkey));
         for (size_t i = 0; i < valid_members; i++) free(kyber_pubkeys[i]);
         free(kyber_pubkeys);
         free(member_entries);
@@ -1111,6 +1112,7 @@ int gek_rotate_on_member_remove(const char *group_uuid, const char *owner_identi
     QGP_LOG_INFO(LOG_TAG, "Built ratcheted Initial Key Packet: %zu bytes\n", packet_size);
 
     /* Cleanup */
+    qgp_secure_memzero(owner_privkey, sizeof(owner_privkey));
     for (size_t i = 0; i < valid_members; i++) free(kyber_pubkeys[i]);
     free(kyber_pubkeys);
     free(member_entries);

@@ -127,8 +127,8 @@ GEKs are encrypted at rest using Kyber1024 KEM + AES-256-GCM.
 | `int gek_rotate(const char*, uint32_t*, uint8_t[32])` | Rotate GEK (generate new version) |
 | `int gek_get_current_version(const char*, uint32_t*)` | Get current GEK version |
 | `int gek_cleanup_expired(void)` | Delete expired GEKs |
-| `int gek_rotate_on_member_add(...)` | Rotate GEK when member added |
-| `int gek_rotate_on_member_remove(...)` | Rotate GEK when member removed |
+| `int gek_rotate_on_member_add(void *ctx, const char*, const char*)` | Rotate GEK when member added (ctx for session_password key load) |
+| `int gek_rotate_on_member_remove(void *ctx, const char*, const char*)` | Rotate GEK when member removed (ctx for session_password key load) |
 | `int gek_encrypt(const uint8_t[32], const uint8_t*, uint8_t*)` | Encrypt GEK with KEM |
 | `int gek_decrypt(const uint8_t*, size_t, const uint8_t*, uint8_t[32])` | Decrypt GEK with KEM |
 

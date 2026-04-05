@@ -333,11 +333,12 @@ int gek_generate_ratcheted(const uint8_t old_gek[GEK_KEY_SIZE],
  * Generates new GEK, builds Initial Key Packet, publishes to DHT,
  * and notifies all members.
  *
+ * @param ctx messenger context (for session_password key loading)
  * @param group_uuid Group UUID
  * @param owner_identity Owner's identity (for signing)
  * @return 0 on success, -1 on error
  */
-int gek_rotate_on_member_add(const char *group_uuid, const char *owner_identity);
+int gek_rotate_on_member_add(void *ctx, const char *group_uuid, const char *owner_identity);
 
 /**
  * Rotate GEK when a member is removed from the group
@@ -346,11 +347,12 @@ int gek_rotate_on_member_add(const char *group_uuid, const char *owner_identity)
  * Generates new GEK, builds Initial Key Packet, publishes to DHT,
  * and notifies all members.
  *
+ * @param ctx messenger context (for session_password key loading)
  * @param group_uuid Group UUID
  * @param owner_identity Owner's identity (for signing)
  * @return 0 on success, -1 on error
  */
-int gek_rotate_on_member_remove(const char *group_uuid, const char *owner_identity);
+int gek_rotate_on_member_remove(void *ctx, const char *group_uuid, const char *owner_identity);
 
 /* ============================================================================
  * IKP (Initial Key Packet) FUNCTIONS

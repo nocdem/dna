@@ -157,27 +157,26 @@ static int load_my_privkey(
     char key_path[512];
     snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
 
-    FILE *f = fopen(key_path, "rb");
-    if (!f) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open private key: %s\n", key_path);
+    qgp_key_t *dsa_key = NULL;
+    int load_rc = -1;
+    if (ctx && ctx->session_password) {
+        load_rc = qgp_key_load_encrypted(key_path, ctx->session_password, &dsa_key);
+    } else {
+        load_rc = qgp_key_load(key_path, &dsa_key);
+    }
+    if (load_rc != 0 || !dsa_key || !dsa_key->private_key || dsa_key->private_key_size != 4896) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load private key: %s\n", key_path);
+        if (dsa_key) qgp_key_free(dsa_key);
         return -1;
     }
 
     uint8_t *privkey = malloc(4896);
     if (!privkey) {
-        fclose(f);
+        qgp_key_free(dsa_key);
         return -1;
     }
-
-    fseek(f, 276 + 2592, SEEK_SET);
-    size_t read = fread(privkey, 1, 4896, f);
-    fclose(f);
-
-    if (read != 4896) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid private key size: %zu (expected 4896)\n", read);
-        free(privkey);
-        return -1;
-    }
+    memcpy(privkey, dsa_key->private_key, 4896);
+    qgp_key_free(dsa_key);
 
     *privkey_out = privkey;
     *privkey_len_out = 4896;

@@ -141,7 +141,7 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
 
     // Phase 13: Create initial GEK (version 0) and publish to DHT
     QGP_LOG_INFO(LOG_TAG, "Creating initial GEK for group %s...\n", group_uuid);
-    if (gek_rotate_on_member_add(group_uuid, ctx->identity) != 0) {
+    if (gek_rotate_on_member_add(ctx, group_uuid, ctx->identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Warning: Initial GEK creation failed (non-fatal)\n");
         // Continue - group is created, but GEK needs to be created later
     } else {
@@ -345,7 +345,7 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
 
     // Phase 5 (v0.09): Rotate GEK when member is added
     QGP_LOG_INFO(LOG_TAG, "Rotating GEK for group %s after adding member...\n", group_uuid);
-    if (gek_rotate_on_member_add(group_uuid, ctx->identity) != 0) {
+    if (gek_rotate_on_member_add(ctx, group_uuid, ctx->identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Warning: GEK rotation failed (non-fatal)\n");
         // Continue - member is still added, but GEK rotation failed
     }
@@ -403,7 +403,7 @@ int messenger_remove_group_member(messenger_context_t *ctx, int group_id, const 
 
     // Phase 5 (v0.09): Rotate GEK when member is removed
     QGP_LOG_INFO(LOG_TAG, "Rotating GEK for group %s after removing member...\n", group_uuid);
-    if (gek_rotate_on_member_remove(group_uuid, ctx->identity) != 0) {
+    if (gek_rotate_on_member_remove(ctx, group_uuid, ctx->identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Warning: GEK rotation failed (non-fatal)\n");
         // Continue - member is still removed, but GEK rotation failed
     }
@@ -1186,19 +1186,22 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
     char dilithium_path[512];
     snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir2);
 
-    FILE *fp = fopen(dilithium_path, "rb");
-    if (!fp) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open Dilithium key: %s\n", dilithium_path);
+    qgp_key_t *dilithium_key = NULL;
+    int load_rc = -1;
+    if (ctx->session_password) {
+        load_rc = qgp_key_load_encrypted(dilithium_path, ctx->session_password, &dilithium_key);
+    } else {
+        load_rc = qgp_key_load(dilithium_path, &dilithium_key);
+    }
+    if (load_rc != 0 || !dilithium_key || !dilithium_key->private_key || dilithium_key->private_key_size != 4896) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key: %s\n", dilithium_path);
+        if (dilithium_key) qgp_key_free(dilithium_key);
         return -1;
     }
 
     uint8_t dilithium_privkey[4896];  // Dilithium5 private key size
-    if (fread(dilithium_privkey, 1, 4896, fp) != 4896) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to read Dilithium private key\n");
-        fclose(fp);
-        return -1;
-    }
-    fclose(fp);
+    memcpy(dilithium_privkey, dilithium_key->private_key, 4896);
+    qgp_key_free(dilithium_key);
 
     // Step 3: Get sender fingerprint (canonical identifier)
     const char *sender_fingerprint = ctx->fingerprint ? ctx->fingerprint : ctx->identity;

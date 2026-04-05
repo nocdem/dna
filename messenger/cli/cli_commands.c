@@ -2384,9 +2384,10 @@ int cmd_group_publish_gek(dna_engine_t *engine, const char *name_or_uuid) {
      * 2. Builds IKP for all current members
      * 3. Publishes to DHT
      */
-    extern int gek_rotate_on_member_add(const char *group_uuid, const char *owner_identity);
+    extern int gek_rotate_on_member_add(void *ctx, const char *group_uuid, const char *owner_identity);
 
-    int ret = gek_rotate_on_member_add(resolved_uuid, fingerprint);
+    /* CLI path: ctx=NULL → plain key load (CLI uses engine-level key access) */
+    int ret = gek_rotate_on_member_add(NULL, resolved_uuid, fingerprint);
     if (ret != 0) {
         printf("Error: Failed to publish GEK\n");
         return -1;

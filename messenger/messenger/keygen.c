@@ -712,6 +712,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
 
     char mnemonic[BIP39_MAX_MNEMONIC_LENGTH];
     char passphrase[256];
+    char key_password[256];
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
 
@@ -776,6 +777,21 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     qgp_secure_memzero(passphrase, sizeof(passphrase));
 
     printf("  Seeds derived\n");
+
+    /* Prompt for key encryption password (empty = no encryption) */
+    printf("\nEnter password to encrypt restored keys on disk\n");
+    printf("(press Enter for no encryption):\n");
+    if (!fgets(key_password, sizeof(key_password), stdin)) {
+        fprintf(stderr, "Error: Failed to read password\n");
+        qgp_secure_memzero(signing_seed, sizeof(signing_seed));
+        qgp_secure_memzero(encryption_seed, sizeof(encryption_seed));
+        return -1;
+    }
+    size_t kplen = strlen(key_password);
+    if (kplen > 0 && key_password[kplen - 1] == '\n') {
+        key_password[kplen - 1] = '\0';
+    }
+
     printf("\nRegenerating keys from seed...\n");
 
     /* Create output directory */
@@ -843,11 +859,13 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     sign_key->private_key = dilithium_sk;
     sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
-    if (qgp_key_save(sign_key, sign_key_path) != 0) {
+    if (qgp_key_save_encrypted(sign_key, sign_key_path, key_password) != 0) {
         fprintf(stderr, "Error: Failed to save signing key\n");
         goto cleanup;
     }
-    printf("  Signing key saved: %s\n", sign_key_path);
+    printf("  Signing key saved%s: %s\n",
+           (strlen(key_password) > 0) ? " (encrypted)" : "",
+           sign_key_path);
 
     /* Verify signing key */
     const char *test_data = "verification-test";
@@ -895,11 +913,13 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     enc_key->private_key = kyber_sk;
     enc_key->private_key_size = 3168;
 
-    if (qgp_key_save(enc_key, enc_key_path) != 0) {
+    if (qgp_key_save_encrypted(enc_key, enc_key_path, key_password) != 0) {
         fprintf(stderr, "Error: Failed to save encryption key\n");
         goto cleanup;
     }
-    printf("  Encryption key saved: %s\n", enc_key_path);
+    printf("  Encryption key saved%s: %s\n",
+           (strlen(key_password) > 0) ? " (encrypted)" : "",
+           enc_key_path);
 
     printf("\nKeys successfully restored from recovery seed!\n");
     ret = 0;
@@ -907,6 +927,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
 cleanup:
     qgp_secure_memzero(signing_seed, sizeof(signing_seed));
     qgp_secure_memzero(encryption_seed, sizeof(encryption_seed));
+    qgp_secure_memzero(key_password, sizeof(key_password));
 
     if (sign_key_path) free(sign_key_path);
     if (enc_key_path) free(enc_key_path);
