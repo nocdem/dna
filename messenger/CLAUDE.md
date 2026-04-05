@@ -174,6 +174,84 @@ $CLI contacts                    # List contacts
 
 ---
 
+## Debug Log Inbox (Production Debugging)
+
+Users (including prod) can push their app log to this machine from the Flutter
+UI (Settings > Data & Storage > **Send Debug Log to Developer**) or CLI
+(`dna-connect-cli debug send <fp> <file> [hint]`). Logs are hybrid-encrypted
+(Kyber1024 + AES-256-GCM) to punk's Kyber key and delivered via DHT.
+
+**A systemd service on this machine (`dna-punk-debug-inbox.service`) decrypts
+and writes every incoming log to `/var/log/dna-debug/`.** It runs 24/7. You do
+not need to start anything.
+
+### When the user says "I sent a log" / "check my log" / similar — DO THIS
+
+1. **List newest logs:**
+   ```bash
+   ls -lat /var/log/dna-debug/ | head -10
+   ```
+2. **Watch in real time** (if user is about to send):
+   ```bash
+   journalctl -u dna-punk-debug-inbox -f
+   ```
+3. **Tail/read the log:**
+   ```bash
+   tail -200 /var/log/dna-debug/<filename>
+   grep -E "WARN|ERROR|DEBUG" /var/log/dna-debug/<filename>
+   ```
+
+### Filename format
+
+```
+<sender_fp_prefix>_YYYYMMDDTHHMMSSZ.log
+  └── 16 hex chars (first 8 bytes of Dilithium5 fingerprint)
+```
+
+Known senders (prefixes — match to identity via `operational_reference.md`):
+- `3f44435746753a68` → **punk** (this machine, for self-tests)
+- `7a145ade5e99b16f` → **nocdem** (phone)
+- `72b656d2739df074` → **alice-test** (local test identity)
+
+To identify an unknown sender: `$CLI lookup-profile <full-fp>` — but you only
+have 16 hex chars from the filename; take the sender's full fp from the
+journalctl `from=<short_fp>` line (still 16 chars) and grep contacts
+/ profile cache, or ask the user.
+
+### Journal line format
+
+```
+[DEBUG-LOG] from=<fp_short> hint="<platform-version>" size=<N> file=<path>
+```
+
+- `hint` is sender-controlled (app sends `"android-v1.0.0-rc159"` etc.).
+  Control chars are replaced with `?` before display (no terminal injection).
+- `size` is plaintext bytes of the log body.
+
+### Security notes
+
+- Logs are E2E encrypted — no intermediary (including Nodus nodes) sees
+  plaintext.
+- Sender authenticity is enforced by Nodus Dilithium5 signing layer (sender fp
+  in filename is cryptographically attested).
+- LogSanitizer on the sender side scrubs mnemonic/hex-keys/unpadded-base64/
+  credential-like values before encryption (defense in depth).
+- Files are mode 0600, owned by `nocdem`, inside `/var/log/dna-debug/` (0700).
+
+### Troubleshooting
+
+- **User says "no log files found" in the app:** They are on old build. APK
+  must be ≥ `rc159+10509` (mobile path fix shipped in `934b713e`).
+- **Service not receiving:** `systemctl status dna-punk-debug-inbox` — if not
+  running, `sudo systemctl restart dna-punk-debug-inbox.service`.
+- **1-hour TTL:** logs expire in DHT after 1h — if listener is down longer
+  than that, the log is lost.
+- **Punk identity locked:** The service holds the `punk` identity lock. Manual
+  `dna-connect-cli -i punk ...` will fail with "Identity locked". Stop the
+  service first if you need to run punk commands manually.
+
+---
+
 ## Function Reference Quick Links
 
 | Module | File | Description |
