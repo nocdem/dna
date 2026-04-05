@@ -160,6 +160,14 @@ set(COMMON_SOURCES
     ${PLATFORM_SOURCES}
 )
 
+# Platform keystore: TEE on Android, noop on desktop
+if(ANDROID)
+    set(PLATFORM_KEYSTORE_SRC ${SHARED_DIR}/crypto/utils/platform_keystore_android.c)
+else()
+    set(PLATFORM_KEYSTORE_SRC ${SHARED_DIR}/crypto/utils/platform_keystore_noop.c)
+endif()
+list(APPEND COMMON_SOURCES ${PLATFORM_KEYSTORE_SRC})
+
 # =============================================================================
 # DNA Connect Library (libdna)
 # =============================================================================

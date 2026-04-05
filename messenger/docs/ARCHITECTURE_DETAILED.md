@@ -473,8 +473,8 @@ qgp_log_enable_tag("P2P");
 
 | File | Contents | Encryption |
 |------|----------|------------|
-| `keys/identity.dsa` | Dilithium5 private key (4896 bytes) | Password-based (optional) |
-| `keys/identity.kem` | Kyber1024 private key (3168 bytes) | Password-based (optional) |
+| `keys/identity.dsa` | Dilithium5 private key (4896 bytes) | Password-based (optional) + TEE wrap (Android) |
+| `keys/identity.kem` | Kyber1024 private key (3168 bytes) | Password-based (optional) + TEE wrap (Android) |
 | `mnemonic.enc` | BIP39 mnemonic phrase | KEM + Password (optional) |
 | `db/messages.db` | Message history | Plaintext (SQLite) |
 | `db/contacts.db` | Contact list | Plaintext (SQLite) |
@@ -500,6 +500,24 @@ Private keys can be encrypted at rest using password-based encryption:
 - No plaintext wallet files stored (`.eth.json`, `.sol.json`, `.trx.json` removed)
 - Wallet addresses derived on-demand from mnemonic for balance display
 - Wallet private keys derived on-demand during transactions, then immediately cleared
+
+#### TEE Key Wrapping (Android)
+
+On Android, identity keys (`identity.dsa`, `identity.kem`) are additionally wrapped with a TEE-backed AES-256-GCM key stored in the Android Keystore (hardware-backed when available). This is the outermost encryption layer — applied after optional password encryption.
+
+**File format (DNAT):** `DNAT` magic (4 bytes) + version (1) + key version (1) + IV (12 bytes) + ciphertext + GCM tag (16 bytes)
+
+**Layering order:**
+- Save: `[raw key] → [password encrypt (optional)] → [TEE wrap] → disk`
+- Load: `disk → [TEE unwrap] → [password decrypt (optional)] → [raw key]`
+
+**Behavior:**
+- Migration is automatic on first identity load after upgrade; a `.bak` backup is created before rewriting the file
+- Migration is skipped if no `mnemonic.enc` backup exists (safety check)
+- If the TEE key is invalidated (OS update, factory reset, uninstall), the library returns `DNA_ENGINE_ERROR_TEE_FAILED` (-119) — user must restore from BIP39 mnemonic
+- Desktop platforms (Linux/Windows/macOS) use a noop passthrough — no TEE wrapping is applied
+
+See `shared/crypto/utils/platform_keystore.h` and `shared/crypto/utils/platform_keystore_android.c` (JNI → `DnaKeyStore.kt`).
 
 #### Data Directory
 
@@ -1736,7 +1754,7 @@ All messages are signed with Dilithium5 before transmission:
 
 | Data | Encryption | Location |
 |------|------------|----------|
-| Private keys | PBKDF2 + AES-256-GCM (optional password) | `<data_dir>/<fp>/keys/*.dsa`, `*.kem` |
+| Private keys | PBKDF2 + AES-256-GCM (optional password), TEE wrap on Android | `<data_dir>/<fp>/keys/*.dsa`, `*.kem` |
 | Mnemonic | KEM + PBKDF2/AES-256-GCM (optional password) | `<data_dir>/<fp>/mnemonic.enc` |
 | Messages | AES-256-GCM (encrypted at rest) | `<data_dir>/<fp>/db/messages.db` |
 | Contacts | Plaintext | Per-identity SQLite |

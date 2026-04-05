@@ -135,6 +135,34 @@ Low-level cryptographic primitives, platform abstraction, and key derivation.
 | `const char* qgp_platform_ca_bundle_path(void)` | Get CA certificate bundle path |
 | `int qgp_platform_sanitize_filename(const char *filename)` | Validate filename for path traversal safety |
 
+### 5.12b Platform Keystore / TEE Key Wrapping (`crypto/utils/platform_keystore.h`)
+
+Abstract API for hardware-backed key wrapping. Android uses TEE via Android Keystore (JNI to `DnaKeyStore.kt`). Desktop (Linux/Windows/macOS) uses noop passthrough.
+
+| Function | Description |
+|----------|-------------|
+| `bool platform_keystore_available(void)` | Check if hardware keystore (TEE) is available |
+| `int platform_keystore_wrap(const uint8_t *data, size_t data_len, uint8_t **out, size_t *out_len)` | Wrap data with TEE-backed AES-256-GCM key |
+| `int platform_keystore_unwrap(const uint8_t *data, size_t data_len, uint8_t **out, size_t *out_len)` | Unwrap data with TEE-backed AES-256-GCM key |
+| `int platform_keystore_migrate_file(const char *file_path, const char *data_dir)` | Migrate legacy key file to TEE-wrapped format (atomic, thread-safe, creates .bak backup) |
+| `bool platform_keystore_is_wrapped(const char *file_path)` | Check if file has DNAT magic (TEE-wrapped) |
+| `void platform_keystore_jni_init(JavaVM *jvm)` | (Android only) Initialize JNI state from JNI_OnLoad |
+
+**File format (DNAT):** `[4 bytes "DNAT"][1 byte version=0x01][1 byte key_ver=0x01][12 bytes IV][ciphertext + 16 bytes GCM tag]`
+
+**Return codes:**
+- `0` = success
+- `1` = already wrapped (migrate only)
+- `2` = TEE unavailable (desktop or Android without TEE)
+- `3` = no mnemonic backup (migrate only — safety check)
+- `-1` = error
+
+**Layering:** TEE is the outermost layer. `qgp_key_save_encrypted()` and `qgp_key_load_encrypted()` apply it transparently:
+- Save: `[raw key] → [password encrypt (optional)] → [TEE wrap] → disk`
+- Load: `disk → [TEE unwrap] → [password decrypt (optional)] → [raw key]`
+
+**New error code:** `DNA_ENGINE_ERROR_TEE_FAILED` (-119) — TEE key invalidated (OS update, factory reset, etc.). User must restore from mnemonic phrase.
+
 ### 5.13 QGP Types (`crypto/utils/qgp_types.h`)
 
 | Function | Description |

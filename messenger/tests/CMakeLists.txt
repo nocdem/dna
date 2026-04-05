@@ -167,6 +167,13 @@ target_link_libraries(test_debug_log_wire ${TEST_LIBS})
 add_test(NAME test_debug_log_wire COMMAND test_debug_log_wire)
 
 # =============================================================================
+# Test: Platform Keystore (TEE noop backend on desktop)
+# =============================================================================
+add_executable(test_platform_keystore test_platform_keystore.c)
+target_link_libraries(test_platform_keystore ${TEST_LIBS})
+add_test(NAME test_platform_keystore COMMAND test_platform_keystore)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()
