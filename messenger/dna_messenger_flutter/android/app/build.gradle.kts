@@ -54,7 +54,26 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
     }
+
+    // ABI restriction note:
+    //
+    // libdna.so (our C backend) is only cross-compiled for arm64-v8a
+    // (see CI build:native-android-arm64 job). We must restrict the
+    // final APK/AAB to arm64-v8a only so that armeabi-v7a or x86_64
+    // devices don't install an APK that would crash at runtime with
+    // UnsatisfiedLinkError (libdna.so missing for their architecture).
+    //
+    // Flutter's gradle plugin forces its own ndk.abiFilters
+    // (armeabi-v7a,arm64-v8a,x86_64) and rejects splits.abi configs
+    // here — so we can NOT restrict ABIs in this gradle file.
+    //
+    // Instead, ABI restriction MUST be passed via CLI:
+    //   flutter build apk       --release --target-platform=android-arm64
+    //   flutter build appbundle --release --target-platform=android-arm64
+    //
+    // CI and any release build scripts must include this flag.
 
     buildTypes {
         debug {

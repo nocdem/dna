@@ -476,17 +476,25 @@ build:flutter-android:
     # Copy native library to jniLibs
     - mkdir -p android/app/src/main/jniLibs/arm64-v8a
     - cp ${CI_PROJECT_DIR}/native-libs/android-arm64/libdna.so android/app/src/main/jniLibs/arm64-v8a/
-    # Build APK
+    # Build APK — restrict to arm64-v8a because libdna.so is only
+    # cross-compiled for that ABI. Without --target-platform, Flutter
+    # would build libapp.so for all ABIs and the APK would install on
+    # 32-bit ARM / x86_64 devices but crash (libdna.so missing).
     - flutter pub upgrade
     - flutter pub get
-    - flutter build apk --release
+    - flutter build apk --release --target-platform=android-arm64
+    # Also build AAB (Android App Bundle) — required for Play Store
+    # submissions since Aug 2021. Play Store splits per-ABI automatically.
+    - flutter build appbundle --release --target-platform=android-arm64
     # Package
     - mkdir -p ${CI_PROJECT_DIR}/dist
     - cp build/app/outputs/flutter-apk/app-release.apk ${CI_PROJECT_DIR}/dist/dna-connect-android-${CI_COMMIT_SHORT_SHA}.apk
+    - cp build/app/outputs/bundle/release/app-release.aab ${CI_PROJECT_DIR}/dist/dna-connect-android-${CI_COMMIT_SHORT_SHA}.aab
   artifacts:
     name: "dna-connect-android-${CI_COMMIT_SHORT_SHA}"
     paths:
       - dist/*.apk
+      - dist/*.aab
     expire_in: 1 day
 
 # Full Windows build (native lib + Flutter) on Windows runner
