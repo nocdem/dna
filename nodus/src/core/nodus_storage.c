@@ -529,12 +529,16 @@ int nodus_storage_fetch_batch(nodus_storage_t *store,
     sqlite3_stmt *s = store->stmt_fetch_batch;
     sqlite3_reset(s);
 
+    /* Function-scope buffer: SQLITE_STATIC requires the blob to remain
+     * valid until sqlite3_step completes (and subsequent steps). If we
+     * declared `zeros` inside the else block it would go out of scope
+     * before sqlite3_step ran — a real stack-use-after-scope bug caught
+     * by AddressSanitizer. */
+    uint8_t zeros[NODUS_KEY_BYTES] = {0};
     if (after_key) {
         sqlite3_bind_blob(s, 1, after_key->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
     } else {
         /* First batch: start from beginning (all zeros) */
-        uint8_t zeros[NODUS_KEY_BYTES];
-        memset(zeros, 0, sizeof(zeros));
         sqlite3_bind_blob(s, 1, zeros, NODUS_KEY_BYTES, SQLITE_STATIC);
     }
     sqlite3_bind_int(s, 2, batch_size);
