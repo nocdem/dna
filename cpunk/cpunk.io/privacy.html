@@ -597,6 +597,7 @@
                   <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="nav.litepaper">Litepaper</a>
                   <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="nav.legal">Legal</a>
                   <a href="/privacy.html" class="active" data-i18n="nav.privacy">Privacy Policy</a>
+                  <a href="/terms.html" data-i18n="nav.terms">Terms of Service</a>
                 </div>
               </div>
             </nav>
@@ -620,7 +621,7 @@
         <div class="page-hero-content">
           <h1 data-i18n="privacy.title">Privacy Policy</h1>
           <p class="subtitle" data-i18n="privacy.subtitle">DNA Connect &mdash; Post-Quantum Encrypted Messenger</p>
-          <p class="effective-date" data-i18n="privacy.effective_date">Effective Date: March 17, 2026 &middot; Last Updated: March 26, 2026</p>
+          <p class="effective-date" data-i18n="privacy.effective_date">Effective Date: March 17, 2026 &middot; Last Updated: April 5, 2026</p>
         </div>
       </section>
 
@@ -658,6 +659,17 @@
               <li data-i18n="privacy.s2.li7">Device fingerprints for tracking purposes</li>
               <li data-i18n="privacy.s2.li8">Browsing history or app usage patterns</li>
             </ul>
+            <p data-i18n="privacy.s2.p2">
+              <strong>One exception — opt-in debug logs.</strong> The app offers a feature at
+              <em>Settings &rarr; Data &amp; Storage &rarr; Send Debug Log to Developer</em>
+              that lets you voluntarily send your application log to the developer for
+              troubleshooting. When you use this feature: the log is scrubbed of mnemonics,
+              private keys, and credential-like values; then hybrid-encrypted (Kyber1024 +
+              AES-256-GCM) to the developer's public key; and delivered via the DHT.
+              No other party (including DHT nodes) can read the log. This feature is entirely
+              optional and only runs when you explicitly tap the button. Logs expire after
+              1 hour if not delivered.
+            </p>
           </div>
 
           <!-- 3. Data Stored Locally -->
@@ -678,12 +690,12 @@
                 <tr>
                   <td data-i18n="privacy.s3.crypto_r1_data">Dilithium5 signing key pair</td>
                   <td data-i18n="privacy.s3.crypto_r1_purpose">Identity verification and message signing</td>
-                  <td data-i18n="privacy.s3.crypto_r1_storage">Local file (identity.dsa), derived from recovery phrase</td>
+                  <td data-i18n="privacy.s3.crypto_r1_storage">Local file (identity.dsa), derived from recovery phrase. On Android, wrapped by Android Keystore TEE (hardware-backed AES-256-GCM) — the wrapping key never leaves secure hardware.</td>
                 </tr>
                 <tr>
                   <td data-i18n="privacy.s3.crypto_r2_data">Kyber1024 encryption key pair</td>
                   <td data-i18n="privacy.s3.crypto_r2_purpose">Post-quantum key encapsulation</td>
-                  <td data-i18n="privacy.s3.crypto_r2_storage">Local file (identity.kem), derived from recovery phrase</td>
+                  <td data-i18n="privacy.s3.crypto_r2_storage">Local file (identity.kem), derived from recovery phrase. On Android, wrapped by Android Keystore TEE (hardware-backed AES-256-GCM) — the wrapping key never leaves secure hardware.</td>
                 </tr>
                 <tr>
                   <td data-i18n="privacy.s3.crypto_r3_data">Recovery phrase (24 words)</td>
@@ -757,10 +769,13 @@
             </table>
 
             <p data-i18n="privacy.s3.p2">
-              Local SQLite databases are not individually encrypted. The application relies on
-              OS-level storage isolation (Android app sandbox) to protect database files.
-              Sensitive cryptographic material (recovery phrase, PIN) uses dedicated encryption
-              as described above.
+              Local SQLite databases are encrypted at rest using
+              <strong>SQLCipher</strong> (AES-256-CBC with per-page HMAC-SHA512 integrity).
+              Each database's encryption key is derived from your identity material using PBKDF2
+              and stored in the OS keystore (Android Keystore / iOS Keychain). If your device is
+              lost or stolen, database contents cannot be read even with physical access.
+              Sensitive cryptographic material (recovery phrase, PIN) uses additional dedicated
+              encryption as described above.
             </p>
           </div>
 
@@ -792,6 +807,7 @@
               <li data-i18n="privacy.s4.encrypted_li3"><strong>Contact lists and address books:</strong> Self-encrypted with your own Kyber1024 public key.</li>
               <li data-i18n="privacy.s4.encrypted_li4"><strong>Message backups:</strong> Self-encrypted with your own Kyber1024 public key.</li>
               <li data-i18n="privacy.s4.encrypted_li5"><strong>Group membership lists:</strong> Self-encrypted with your own Kyber1024 public key.</li>
+              <li data-i18n="privacy.s4.encrypted_li6"><strong>Media attachments (images, videos, voice messages):</strong> Encrypted with Kyber1024 key encapsulation + AES-256-GCM. Files are chunked and stored on the Nodus media storage layer; only the intended recipient (or group members) can decrypt them.</li>
             </ul>
 
             <p data-i18n="privacy.s4.p2">
@@ -965,6 +981,7 @@
             <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
             <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
             <a href="/privacy.html" data-i18n="footer.privacy">Privacy Policy</a>
+            <a href="/terms.html" data-i18n="footer.terms">Terms of Service</a>
           </div>
         </div>
       </div>

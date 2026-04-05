@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Terms of Service – DNA Connect | CPUNK.IO</title>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description"
+    content="Terms of Service for DNA Connect — post-quantum encrypted messaging application. User agreement, eligibility, acceptable use, decentralized service disclaimer."
+  />
+  <meta name="keywords"
+    content="CPUNK, DNA Connect, terms of service, user agreement, acceptable use, decentralized, P2P"
+  />
+  <meta name="author" content="DNA Protocol" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://cpunk.io/terms.html" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://cpunk.io/terms.html">
+  <meta property="og:title" content="Terms of Service – DNA Connect">
+  <meta property="og:description" content="Terms of Service for DNA Connect — decentralized post-quantum encrypted messenger.">
+  <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://cpunk.io/terms.html">
+  <meta name="twitter:title" content="Terms of Service – DNA Connect">
+  <meta name="twitter:description" content="Terms of Service for DNA Connect — decentralized post-quantum encrypted messenger.">
+  <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
+  <meta name="twitter:site" content="@OfficialCpunk">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <!-- Favicons -->
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="manifest" href="/site.webmanifest">
+
+  <style>
+    :root {
+      --bg: #050712;
+      --bg-alt: #080c1a;
+      --panel: #0e1225;
+      --panel-alt: #131733;
+      --teal: #06c5d2;
+      --teal-soft: rgba(6, 197, 210, 0.08);
+      --teal-glow: rgba(6, 197, 210, 0.35);
+      --teal-dim: rgba(6, 197, 210, 0.15);
+      --orange: #f26229;
+      --orange-soft: rgba(242, 98, 41, 0.08);
+      --orange-glow: rgba(242, 98, 41, 0.35);
+      --orange-dim: rgba(242, 98, 41, 0.15);
+      --pink: #e040a0;
+      --text-main: #f0f2ff;
+      --text-muted: #8a94c0;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.5);
+      --radius-lg: 20px;
+      --radius-xl: 28px;
+      --radius-pill: 999px;
+      --transition-fast: 150ms ease-out;
+      --nav-height: 72px;
+      --max-width: 1120px;
+      --font-display: 'Orbitron', sans-serif;
+      --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html {
+      height: 100%;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      height: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--text-main);
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .wrap {
+      width: 100%;
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 0 1.25rem;
+    }
+
+    /* -- Animations -- */
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(30px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* -- Header / Nav -- */
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(12px);
+      background: linear-gradient(to bottom, rgba(5,7,18,0.96), rgba(5,7,18,0.88), transparent);
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+
+    .nav {
+      height: var(--nav-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.5rem;
+      position: relative;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
+
+    .brand-name {
+      font-family: var(--font-display);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      font-size: 1rem;
+      text-transform: uppercase;
+    }
+
+    .brand-tag { font-size: 0.7rem; color: var(--text-muted); }
+
+    .nav-menu { display: flex; align-items: center; gap: 1.5rem; }
+
+    .nav-links { display: flex; align-items: center; gap: 1.5rem; font-size: 0.9rem; }
+
+    .nav-links a {
+      color: var(--text-muted);
+      padding-bottom: 2px;
+      border-bottom: 1px solid transparent;
+      transition: color var(--transition-fast), border-bottom-color var(--transition-fast);
+    }
+
+    .nav-links a.active { color: var(--text-main); border-bottom-color: var(--teal); }
+    .nav-links a:hover { color: var(--orange); border-bottom-color: var(--orange); }
+
+    .nav-cta { display: flex; align-items: center; gap: 0.8rem; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      padding: 0.5rem 1.2rem;
+      border-radius: var(--radius-pill);
+      border: 1px solid transparent;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      background: transparent;
+      color: var(--text-main);
+      transition: background var(--transition-fast), border var(--transition-fast),
+        transform var(--transition-fast), box-shadow var(--transition-fast);
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--orange);
+      border-color: rgba(242,98,41,0.5);
+      box-shadow: 0 8px 25px rgba(242,98,41,0.25);
+      color: #ffffff;
+      font-weight: 600;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 35px rgba(242,98,41,0.35);
+    }
+
+    .mobile-menu-toggle {
+      display: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(7,9,25,0.9);
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    .mobile-menu-toggle span {
+      display: block; width: 16px; height: 2px;
+      border-radius: 999px; background: #fff; position: relative;
+    }
+
+    .mobile-menu-toggle span::before,
+    .mobile-menu-toggle span::after {
+      content: ""; position: absolute; left: 0;
+      width: 16px; height: 2px; border-radius: inherit; background: inherit;
+    }
+
+    .mobile-menu-toggle span::before { top: -5px; }
+    .mobile-menu-toggle span::after { top: 5px; }
+
+    /* Dropdown */
+    .nav-item { position: relative; }
+
+    .nav-item-label {
+      display: inline-flex; align-items: center; gap: 0.25rem;
+      cursor: pointer; color: var(--text-muted);
+    }
+
+    .nav-item:hover .nav-item-label { color: var(--text-main); }
+    .nav-item .caret { border: 4px solid transparent; border-top-color: var(--text-muted); margin-top: 2px; }
+
+    .dropdown {
+      position: absolute; top: 110%; left: 0; min-width: 190px;
+      background: rgba(5,7,18,0.98); border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 14px 30px rgba(0,0,0,0.6);
+      padding: 0.4rem 0; display: none; z-index: 30;
+    }
+
+    .dropdown a { display: block; padding: 0.4rem 0.9rem; font-size: 0.85rem; color: var(--text-muted); }
+    .dropdown a:hover { background: rgba(255,255,255,0.04); color: var(--orange); }
+    .dropdown a.active { background: rgba(255,255,255,0.06); color: var(--text-main); }
+    .nav-item:hover .dropdown { display: block; }
+
+    /* -- Page Hero -- */
+
+    .page-hero {
+      padding: 4rem 0 2rem;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .page-hero-bg {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      background:
+        radial-gradient(ellipse at 50% 50%, rgba(6,197,210,0.1) 0%, transparent 55%),
+        var(--bg);
+    }
+
+    .page-hero-content {
+      position: relative;
+      z-index: 1;
+    }
+
+    .page-hero h1 {
+      font-family: var(--font-display);
+      font-size: clamp(1.6rem, 4vw, 2.4rem);
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.5rem;
+    }
+
+    .page-hero .subtitle {
+      font-size: 1rem;
+      color: var(--text-muted);
+      margin-bottom: 0.3rem;
+    }
+
+    .page-hero .effective-date {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      opacity: 0.6;
+    }
+
+    /* -- Content Sections -- */
+
+    .privacy-content {
+      padding: 2rem 0 4rem;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    .privacy-section {
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 2rem;
+      margin-bottom: 1.5rem;
+      transition: border-color 0.4s;
+    }
+
+    .privacy-section:hover {
+      border-color: rgba(6,197,210,0.15);
+    }
+
+    .privacy-section h2 {
+      font-family: var(--font-display);
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--orange);
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--orange-dim);
+      letter-spacing: 0.04em;
+    }
+
+    .privacy-section h3 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--teal);
+      margin: 1.2rem 0 0.5rem;
+    }
+
+    .privacy-section p {
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      line-height: 1.8;
+    }
+
+    .privacy-section p + p {
+      margin-top: 0.6rem;
+    }
+
+    .privacy-section ul {
+      list-style: none;
+      padding-left: 0;
+      margin: 0.5rem 0;
+    }
+
+    .privacy-section ul li {
+      padding: 0.3rem 0;
+      padding-left: 1.2rem;
+      position: relative;
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      line-height: 1.7;
+    }
+
+    .privacy-section ul li::before {
+      content: "\25B9";
+      position: absolute;
+      left: 0;
+      top: 0.3rem;
+      color: var(--teal);
+      font-size: 0.8rem;
+    }
+
+    .privacy-section ul li strong {
+      color: var(--text-main);
+      font-weight: 500;
+    }
+
+    .privacy-section a {
+      color: var(--teal);
+      transition: color 0.2s;
+    }
+
+    .privacy-section a:hover {
+      color: var(--orange);
+    }
+
+    .highlight-box {
+      background: var(--teal-soft);
+      border: 1px solid var(--teal-dim);
+      border-radius: 12px;
+      padding: 1rem 1.2rem;
+      margin: 1rem 0;
+    }
+
+    .highlight-box p {
+      color: var(--text-main) !important;
+      font-weight: 500;
+    }
+
+    .privacy-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+    }
+
+    .privacy-table th,
+    .privacy-table td {
+      padding: 0.6rem 0.8rem;
+      text-align: left;
+      font-size: 0.82rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .privacy-table th {
+      color: var(--teal);
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-family: var(--font-display);
+    }
+
+    .privacy-table td {
+      color: var(--text-muted);
+    }
+
+    /* -- Footer -- */
+
+    footer {
+      padding: 1.8rem 0 2.2rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .footer-row {
+      display: flex; flex-wrap: wrap; justify-content: space-between;
+      gap: 1rem; align-items: end;
+    }
+
+    .footer-links { display: flex; flex-wrap: wrap; gap: 0.9rem; }
+    .footer-links a { color: var(--text-muted); font-size: 0.8rem; }
+    .footer-links a:hover { color: var(--orange); }
+
+    /* -- Responsive -- */
+
+    @media (max-width: 768px) {
+      .nav-menu {
+        display: none; position: absolute; top: var(--nav-height);
+        right: 0; left: 0; padding: 0.9rem 1rem 1rem; border-radius: 14px;
+        background: rgba(5,7,18,0.98); border: 1px solid rgba(255,255,255,0.08);
+        flex-direction: column; align-items: flex-start; gap: 0.7rem; z-index: 15;
+      }
+
+      .nav-menu.active { display: flex; }
+
+      .nav-links { flex-direction: column; align-items: flex-start; width: 100%; gap: 0.75rem; }
+      .nav-links a { width: 100%; padding: 0.25rem 0; }
+      .nav-cta { width: 100%; justify-content: flex-start; margin-top: 0.4rem; }
+      .mobile-menu-toggle { display: inline-flex; }
+
+      .dropdown {
+        position: static; box-shadow: none; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.06); margin-top: 0.3rem;
+      }
+
+      .nav-item:hover .dropdown { display: none; }
+      .nav-item.open .dropdown { display: block; }
+
+      .privacy-section { padding: 1.5rem 1rem; }
+      .privacy-table th, .privacy-table td { padding: 0.4rem 0.5rem; font-size: 0.78rem; }
+    }
+
+    @media (max-width: 480px) {
+      .page-hero h1 { font-size: 1.6rem; }
+      .privacy-content { padding: 1rem 0 3rem; }
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      .reveal { opacity: 1; transform: none; }
+    }
+
+    /* ── Language selector ── */
+    #lang-selector {
+      position: relative;
+      margin-left: 0.5rem;
+    }
+    .lang-btn {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      font-family: var(--font-body);
+      font-size: 0.8rem;
+      padding: 0.35rem 0.6rem;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background var(--transition-fast);
+      white-space: nowrap;
+    }
+    .lang-btn:hover {
+      border-color: var(--teal-dim);
+      background: var(--teal-soft);
+    }
+    .lang-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 0.4rem);
+      right: 0;
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 0.4rem;
+      min-width: 160px;
+      z-index: 1000;
+      box-shadow: var(--shadow-soft);
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .lang-dropdown.open { display: block; }
+    .lang-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--font-body);
+      font-size: 0.82rem;
+      padding: 0.45rem 0.7rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background var(--transition-fast), color var(--transition-fast);
+    }
+    .lang-option:hover {
+      background: var(--teal-soft);
+      color: var(--text-main);
+    }
+    .lang-option.active {
+      color: var(--teal);
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="page">
+
+    <!-- Header / Nav -->
+    <header>
+      <div class="wrap">
+        <div class="nav">
+          <a href="/" class="brand">
+            <div class="brand-text">
+              <span class="brand-name">CPUNK.IO</span>
+              <span class="brand-tag" data-i18n="brand.tag">Privacy • Quantum Safety • Decentralization</span>
+            </div>
+          </a>
+
+          <button class="mobile-menu-toggle" aria-label="Toggle navigation">
+            <span></span>
+          </button>
+
+          <div class="nav-menu">
+            <nav class="nav-links">
+              <a href="/" data-i18n="nav.home">Home</a>
+
+              <div class="nav-item" data-dropdown="products">
+                <div class="nav-item-label">
+                  <span data-i18n="nav.dna_connect">DNA-Connect</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/DNA-Connect/identity.html" data-i18n="nav.identity">The Identity</a>
+                  <a href="/DNA-Connect/messenger.html" data-i18n="nav.messenger">The Messenger</a>
+                  <a href="/DNA-Connect/wallet.html" data-i18n="nav.wallet">The Wallet</a>
+                  <a href="/DNA-Connect/nodus.html" data-i18n="nav.nodus">The Nodus</a>
+                </div>
+              </div>
+
+              <a href="/team.html" data-i18n="nav.team">Team</a>
+
+              <div class="nav-item" data-dropdown="documents">
+                <div class="nav-item-label">
+                  <span data-i18n="nav.documents">Documents</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="dropdown">
+                  <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="nav.litepaper">Litepaper</a>
+                  <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="nav.legal">Legal</a>
+                  <a href="/privacy.html" data-i18n="nav.privacy">Privacy Policy</a>
+                  <a href="/terms.html" class="active" data-i18n="nav.terms">Terms of Service</a>
+                </div>
+              </div>
+            </nav>
+
+            <div class="nav-cta">
+              <a href="https://bitcointry.com/en/exchange/CPUNK_USDT" target="_blank" rel="noreferrer" class="btn btn-primary">
+                <span data-i18n="nav.trade">Trade CPUNK</span>
+              </a>
+              <div id="lang-selector"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main id="top">
+
+      <!-- Hero -->
+      <section class="page-hero">
+        <div class="page-hero-bg"></div>
+        <div class="page-hero-content">
+          <h1 data-i18n="terms.title">Terms of Service</h1>
+          <p class="subtitle" data-i18n="terms.subtitle">DNA Connect &mdash; Post-Quantum Encrypted Messenger</p>
+          <p class="effective-date" data-i18n="terms.effective_date">Effective Date: April 5, 2026 &middot; Last Updated: April 5, 2026</p>
+        </div>
+      </section>
+
+      <!-- Content -->
+      <div class="wrap">
+        <div class="privacy-content">
+
+          <!-- 1. Acceptance of Terms -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s1.title">1. Acceptance of Terms</h2>
+            <p data-i18n="terms.s1.p1">
+              By downloading, installing, or using DNA Connect (the &ldquo;App&rdquo;), you agree to be bound by these
+              Terms of Service. If you do not agree to these terms, do not use the App.
+            </p>
+            <div class="highlight-box">
+              <p data-i18n="terms.s1.highlight">
+                DNA Connect is a decentralized, peer-to-peer messaging application. There is no central service
+                provider to contact for account recovery, content moderation, or data access. You are fully
+                responsible for safeguarding your recovery phrase and any content you publish to the network.
+              </p>
+            </div>
+          </div>
+
+          <!-- 2. Eligibility -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s2.title">2. Eligibility</h2>
+            <p data-i18n="terms.s2.p1">
+              You must be at least 13 years old to use DNA Connect. If you are under the age of majority in your
+              jurisdiction, you must have parental or legal guardian consent. By using the App, you represent
+              and warrant that you meet these eligibility requirements.
+            </p>
+            <p data-i18n="terms.s2.p2">
+              You must comply with all applicable laws in your country or region. The App is not available for
+              use where prohibited by local law.
+            </p>
+          </div>
+
+          <!-- 3. Your Account &amp; Recovery Phrase -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s3.title">3. Your Account &amp; Recovery Phrase</h2>
+            <p data-i18n="terms.s3.p1">
+              DNA Connect does not maintain user accounts on any server. Your identity is a locally-generated,
+              post-quantum cryptographic key pair derived from a 24-word BIP39 recovery phrase.
+            </p>
+            <p data-i18n="terms.s3.p2">
+              <strong>You are solely responsible for your recovery phrase.</strong> It is the only way to
+              restore access to your identity, messages, contacts and wallets if you lose your device.
+              Never share it with anyone. We cannot recover it for you — no support team, helpdesk, or
+              centralized service has access to it.
+            </p>
+            <ul>
+              <li data-i18n="terms.s3.li1">Loss of the recovery phrase means permanent loss of access to your identity and any cryptocurrency balances associated with it.</li>
+              <li data-i18n="terms.s3.li2">Disclosure of the recovery phrase to a third party grants them complete access to your identity, messages, and wallets.</li>
+              <li data-i18n="terms.s3.li3">Store your recovery phrase offline, on paper or hardware, in multiple secure locations.</li>
+            </ul>
+          </div>
+
+          <!-- 4. License to Use -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s4.title">4. License to Use</h2>
+            <p data-i18n="terms.s4.p1">
+              DNA Connect is provided under an open-source license (see the GitHub repository for the exact
+              license terms). You are granted a personal, non-exclusive, non-transferable license to install
+              and use the App on devices you own or control, subject to these Terms.
+            </p>
+            <p data-i18n="terms.s4.p2">
+              You may not modify the App for distribution, reverse-engineer the binary to circumvent security
+              controls, or use the App to violate these Terms or applicable law.
+            </p>
+          </div>
+
+          <!-- 5. Acceptable Use -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s5.title">5. Acceptable Use</h2>
+            <p data-i18n="terms.s5.p1">You agree NOT to use DNA Connect to:</p>
+            <ul>
+              <li data-i18n="terms.s5.li1">Send unlawful, harassing, defamatory, abusive, threatening, obscene, or otherwise objectionable content.</li>
+              <li data-i18n="terms.s5.li2">Impersonate any person or entity, or falsely represent your affiliation with any person or entity.</li>
+              <li data-i18n="terms.s5.li3">Distribute malware, viruses, ransomware, or any malicious code.</li>
+              <li data-i18n="terms.s5.li4">Engage in phishing, scamming, or fraudulent activity targeting other users.</li>
+              <li data-i18n="terms.s5.li5">Publish, transmit, or solicit child sexual abuse material (CSAM) or any content involving exploitation of minors.</li>
+              <li data-i18n="terms.s5.li6">Violate any intellectual property rights, including copyright, trademark, or trade secrets.</li>
+              <li data-i18n="terms.s5.li7">Interfere with or disrupt the integrity, performance, or security of the Nodus decentralized network.</li>
+              <li data-i18n="terms.s5.li8">Attempt unauthorized access to other users' identities, messages, or wallets.</li>
+              <li data-i18n="terms.s5.li9">Use the App for money laundering, terrorist financing, sanctions evasion, or any other illegal financial activity.</li>
+            </ul>
+            <p data-i18n="terms.s5.p2">
+              Because DNA Connect is decentralized, there is no centralized enforcement body. Violations may be
+              reported to the project team (via the contact information below) but enforcement ultimately
+              depends on operators of the Nodus network and local law enforcement in the violator's jurisdiction.
+            </p>
+          </div>
+
+          <!-- 6. User-Generated Content -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s6.title">6. User-Generated Content</h2>
+            <p data-i18n="terms.s6.p1">
+              You retain full ownership of any content you publish through the App, including direct messages,
+              group messages, wall posts, comments, profile information, and media attachments.
+            </p>
+            <p data-i18n="terms.s6.p2">
+              By publishing content to the decentralized network, you grant the network operators a
+              non-exclusive, worldwide, royalty-free license to store, replicate, and transmit that content
+              for the purpose of delivering it to its intended recipients. This license ends when the content
+              expires according to its network TTL (time-to-live) or when you remove it.
+            </p>
+            <p data-i18n="terms.s6.p3">
+              <strong>You are solely responsible for the content you publish.</strong> Content published
+              publicly (wall posts, public profile) may be replicated and cached across many nodes of the
+              Nodus network and cannot be guaranteed to be fully deleted.
+            </p>
+          </div>
+
+          <!-- 7. Cryptocurrency Wallet -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s7.title">7. Cryptocurrency Wallet</h2>
+            <p data-i18n="terms.s7.p1">
+              DNA Connect includes a multi-chain cryptocurrency wallet feature (Cellframe, Ethereum, Solana,
+              TRON, BSC). You acknowledge and agree that:
+            </p>
+            <ul>
+              <li data-i18n="terms.s7.li1"><strong>Non-custodial:</strong> Private keys are derived from your recovery phrase and stored locally on your device. We never have access to your private keys or funds.</li>
+              <li data-i18n="terms.s7.li2"><strong>No reversibility:</strong> Cryptocurrency transactions are irreversible. Sending funds to an incorrect address, or entering an incorrect amount, may result in permanent loss.</li>
+              <li data-i18n="terms.s7.li3"><strong>Volatility:</strong> Cryptocurrency values fluctuate. We do not guarantee any particular value or price.</li>
+              <li data-i18n="terms.s7.li4"><strong>Tax responsibility:</strong> You are solely responsible for determining and paying any applicable taxes on your cryptocurrency transactions.</li>
+              <li data-i18n="terms.s7.li5"><strong>Regulatory compliance:</strong> Cryptocurrency regulations vary by jurisdiction. It is your responsibility to comply with all laws applicable to you.</li>
+              <li data-i18n="terms.s7.li6"><strong>No financial advice:</strong> The App does not provide financial, investment, tax, or legal advice. Price information displayed is for reference only.</li>
+              <li data-i18n="terms.s7.li7"><strong>Network fees:</strong> Blockchain transactions incur network fees (gas) that you pay to miners/validators. These fees are not retained by us.</li>
+            </ul>
+          </div>
+
+          <!-- 8. Decentralized Network Disclaimer -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s8.title">8. Decentralized Network Disclaimer</h2>
+            <p data-i18n="terms.s8.p1">
+              DNA Connect uses the Nodus decentralized peer-to-peer network for message delivery, profile
+              discovery, and content storage. You acknowledge that:
+            </p>
+            <ul>
+              <li data-i18n="terms.s8.li1">The network is operated by independent node operators, not by a single entity.</li>
+              <li data-i18n="terms.s8.li2">Message delivery is best-effort and not guaranteed. Messages may be delayed or lost due to network conditions, node outages, or TTL expiration.</li>
+              <li data-i18n="terms.s8.li3">Content published to the network may persist across multiple nodes and may be accessible for as long as nodes choose to store it.</li>
+              <li data-i18n="terms.s8.li4">The network has no central authority to moderate content, enforce policies, or reverse actions.</li>
+              <li data-i18n="terms.s8.li5">Availability of the network depends on voluntary node operators and cannot be guaranteed.</li>
+            </ul>
+          </div>
+
+          <!-- 9. Third-Party Services -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s9.title">9. Third-Party Services</h2>
+            <p data-i18n="terms.s9.p1">
+              The App connects to third-party blockchain RPC endpoints (Cellframe, Ethereum, Solana, TRON, BSC)
+              and a cryptocurrency price API (BitcoinTry) for wallet functionality. These services are operated
+              by independent providers and governed by their own terms and policies.
+            </p>
+            <p data-i18n="terms.s9.p2">
+              We do not control, warrant, or assume responsibility for third-party services. Availability,
+              accuracy, and security of third-party data are not guaranteed.
+            </p>
+          </div>
+
+          <!-- 10. No Warranty; Limitation of Liability -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s10.title">10. No Warranty; Limitation of Liability</h2>
+            <p data-i18n="terms.s10.p1">
+              DNA Connect is provided &ldquo;AS IS&rdquo; and &ldquo;AS AVAILABLE&rdquo; without warranties of any kind,
+              express or implied, including but not limited to warranties of merchantability, fitness for a
+              particular purpose, non-infringement, or uninterrupted availability.
+            </p>
+            <p data-i18n="terms.s10.p2">
+              To the maximum extent permitted by applicable law, in no event shall the DNA Protocol team, its
+              contributors, or affiliates be liable for any indirect, incidental, special, consequential,
+              or punitive damages, or any loss of profits, revenue, data, or cryptocurrency, arising out of or
+              related to your use of the App, even if advised of the possibility of such damages.
+            </p>
+            <p data-i18n="terms.s10.p3">
+              Some jurisdictions do not allow the exclusion of certain warranties or limitations on liability.
+              In such jurisdictions, liability is limited to the maximum extent permitted by law.
+            </p>
+          </div>
+
+          <!-- 11. Indemnification -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s11.title">11. Indemnification</h2>
+            <p data-i18n="terms.s11.p1">
+              You agree to indemnify and hold harmless the DNA Protocol team, its contributors, and affiliates
+              from any claims, damages, liabilities, losses, costs or expenses (including reasonable legal fees)
+              arising out of your use of the App, your violation of these Terms, your violation of any
+              applicable law, or your violation of any rights of another party.
+            </p>
+          </div>
+
+          <!-- 12. Termination -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s12.title">12. Termination</h2>
+            <p data-i18n="terms.s12.p1">
+              You may stop using the App at any time by uninstalling it. Since there is no server-side account,
+              there is no deletion process required on our end. Your public profile data on the network will
+              expire according to its TTL.
+            </p>
+            <p data-i18n="terms.s12.p2">
+              We reserve the right to discontinue development of the App, the Nodus network infrastructure,
+              or related services at any time, for any reason. Because the network is decentralized, discontinuation
+              by the core team does not necessarily mean discontinuation of the network itself.
+            </p>
+          </div>
+
+          <!-- 13. Changes to These Terms -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s13.title">13. Changes to These Terms</h2>
+            <p data-i18n="terms.s13.p1">
+              We may update these Terms from time to time. Any changes will be reflected on this page with an
+              updated &ldquo;Last Updated&rdquo; date. Material changes may be announced via in-app notifications
+              or on the project website. Continued use of the App after changes constitutes acceptance of the
+              revised Terms.
+            </p>
+          </div>
+
+          <!-- 14. Governing Law -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s14.title">14. Governing Law</h2>
+            <p data-i18n="terms.s14.p1">
+              These Terms are governed by the laws of the jurisdiction in which the DNA Protocol team is based,
+              without regard to its conflict of laws principles. Any dispute arising out of these Terms shall
+              be resolved through good-faith negotiation; if negotiation fails, through binding arbitration
+              or the competent courts of that jurisdiction.
+            </p>
+            <p data-i18n="terms.s14.p2">
+              Your use of the App may also be subject to local laws where you reside, including but not limited
+              to data protection, telecommunications, and cryptocurrency regulations. You are responsible for
+              compliance with such laws.
+            </p>
+          </div>
+
+          <!-- 15. Contact -->
+          <div class="privacy-section reveal">
+            <h2 data-i18n="terms.s15.title">15. Contact</h2>
+            <p data-i18n="terms.s15.p1">
+              If you have questions about these Terms of Service:
+            </p>
+            <ul>
+              <li data-i18n="terms.s15.li1"><strong>Email:</strong> <a href="mailto:legal@cpunk.io">legal@cpunk.io</a></li>
+              <li data-i18n="terms.s15.li2"><strong>Website:</strong> <a href="https://cpunk.io">cpunk.io</a></li>
+              <li data-i18n="terms.s15.li3"><strong>GitHub:</strong> <a href="https://github.com/nocdem/dna-messenger">github.com/nocdem/dna-messenger</a></li>
+            </ul>
+          </div>
+
+        </div>
+      </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer>
+      <div class="wrap">
+        <div class="footer-row">
+          <div data-i18n="footer.copyright">© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.</div>
+          <div class="footer-links">
+            <a href="/" data-i18n="footer.home">Home</a>
+            <a href="/DNA-Connect/identity.html" data-i18n="footer.identity">The Identity</a>
+            <a href="/DNA-Connect/messenger.html" data-i18n="footer.messenger">The Messenger</a>
+            <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">The Wallet</a>
+            <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">The Nodus</a>
+            <a href="/team.html" data-i18n="footer.team">Team</a>
+            <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
+            <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
+            <a href="/privacy.html" data-i18n="footer.privacy">Privacy Policy</a>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- JS: Mobile Nav + Scroll Reveal -->
+  <!-- i18n -->
+  <script src="/i18n/i18n.js"></script>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var mobileToggle = document.querySelector('.mobile-menu-toggle');
+      var navMenu = document.querySelector('.nav-menu');
+
+      if (mobileToggle && navMenu) {
+        mobileToggle.addEventListener('click', function() {
+          navMenu.classList.toggle('active');
+        });
+      }
+
+      document.querySelectorAll('.nav-item').forEach(function(item) {
+        var label = item.querySelector('.nav-item-label');
+        if (!label) return;
+        label.addEventListener('click', function(e) {
+          if (window.innerWidth <= 768) {
+            e.stopPropagation();
+            item.classList.toggle('open');
+          }
+        });
+      });
+
+      /* Scroll Reveal (IntersectionObserver) */
+      var revealElements = document.querySelectorAll('.reveal');
+
+      if ('IntersectionObserver' in window) {
+        var observer = new IntersectionObserver(function(entries) {
+          entries.forEach(function(entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('visible');
+              observer.unobserve(entry.target);
+            }
+          });
+        }, {
+          threshold: 0.12,
+          rootMargin: '0px 0px -40px 0px'
+        });
+
+        revealElements.forEach(function(el) {
+          observer.observe(el);
+        });
+      } else {
+        revealElements.forEach(function(el) {
+          el.classList.add('visible');
+        });
+      }
+    });
+  </script>
+</body>
+</html>
