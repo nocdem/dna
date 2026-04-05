@@ -116,6 +116,10 @@ extern "C" {
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
 #define NODUS_T3_BFT_PROTOCOL_VER   2
 
+/* Circuit (VPN mesh) — Faz 1 */
+#define NODUS_MAX_CIRCUITS_PER_SESSION   16
+#define NODUS_MAX_CIRCUIT_PAYLOAD        (64 * 1024)
+
 /* TCP keepalive */
 #define NODUS_TCP_KEEPIDLE       30
 #define NODUS_TCP_KEEPINTVL      10
@@ -218,7 +222,11 @@ typedef enum {
     NODUS_ERR_RING_MISMATCH     = 12,
     NODUS_ERR_DOUBLE_SPEND      = 13,
     NODUS_ERR_QUOTA_EXCEEDED    = 14,
-    NODUS_ERR_KEY_OWNED         = 15   /* EXCLUSIVE key owned by different identity */
+    NODUS_ERR_KEY_OWNED         = 15,  /* EXCLUSIVE key owned by different identity */
+    NODUS_ERR_CIRCUIT_LIMIT     = 16,  /* Per-session circuit cap reached */
+    NODUS_ERR_CIRCUIT_NOT_FOUND = 17,  /* Unknown circuit_id */
+    NODUS_ERR_PEER_OFFLINE      = 18,  /* Target peer not connected to any nodus */
+    NODUS_ERR_CIRCUIT_CLOSED    = 19   /* Peer torn down circuit */
 } nodus_error_t;
 
 /** Cluster phases */
