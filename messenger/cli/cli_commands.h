@@ -449,6 +449,7 @@ int cmd_debug_count(dna_engine_t *engine);
 int cmd_debug_clear(dna_engine_t *engine);
 int cmd_debug_export(dna_engine_t *engine, const char *filepath);
 int cmd_debug_inbox_listen(dna_engine_t *engine);
+int cmd_debug_send(dna_engine_t *engine, const char *receiver_fp, const char *file_path, const char *hint);
 
 /* ============================================================================
  * PHASE 6: GROUP EXTENSIONS (4 commands)

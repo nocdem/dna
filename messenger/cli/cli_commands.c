@@ -3687,6 +3687,86 @@ int cmd_debug_inbox_listen(dna_engine_t *engine) {
     return 0;
 }
 
+int cmd_debug_send(dna_engine_t *engine, const char *receiver_fp, const char *file_path, const char *hint) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+    if (!receiver_fp || strlen(receiver_fp) != 128) {
+        printf("Error: receiver fingerprint must be 128 hex chars\n");
+        return -1;
+    }
+    if (!file_path) {
+        printf("Error: file path required\n");
+        return -1;
+    }
+
+    /* Read file into a buffer (cap 3 MB) */
+    FILE *f = fopen(file_path, "rb");
+    if (!f) {
+        printf("Error: cannot open file: %s\n", file_path);
+        return -1;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        printf("Error: fseek failed\n");
+        fclose(f);
+        return -1;
+    }
+    long sz = ftell(f);
+    if (sz < 0) {
+        printf("Error: ftell failed\n");
+        fclose(f);
+        return -1;
+    }
+    const long MAX_LOG = 3L * 1024L * 1024L;
+    if (sz > MAX_LOG) {
+        printf("Error: file too large (%ld bytes, max %ld)\n", sz, MAX_LOG);
+        fclose(f);
+        return -1;
+    }
+    rewind(f);
+    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
+    if (!buf) {
+        printf("Error: out of memory\n");
+        fclose(f);
+        return -1;
+    }
+    size_t nread = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (nread != (size_t)sz) {
+        printf("Error: short read (%zu of %ld)\n", nread, sz);
+        free(buf);
+        return -1;
+    }
+
+    printf("Sending debug log: %ld bytes to %.16s...\n", sz, receiver_fp);
+
+    cli_wait_t wait;
+    cli_wait_init(&wait);
+
+    dna_request_id_t req = dna_engine_debug_log_send(engine, receiver_fp,
+                                                     buf, (size_t)sz,
+                                                     hint, on_completion, &wait);
+    if (req == 0) {
+        printf("Error: failed to submit debug log send task\n");
+        cli_wait_destroy(&wait);
+        free(buf);
+        return -1;
+    }
+
+    int result = cli_wait_for(&wait);
+    cli_wait_destroy(&wait);
+    free(buf);
+
+    if (result != 0) {
+        printf("Error: debug log send failed: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Log sent: %ld bytes\n", sz);
+    return 0;
+}
+
 /* ============================================================================
  * PHASE 6: GROUP EXTENSIONS (4 commands)
  * ============================================================================ */
@@ -5575,10 +5655,18 @@ int dispatch_debug(dna_engine_t *engine, int argc, char **argv, int sub) {
         fprintf(stderr, "  clear                      Clear all log entries\n");
         fprintf(stderr, "  export <filepath>          Export logs to file\n");
         fprintf(stderr, "  inbox listen               Listen for encrypted debug logs on DHT\n");
+        fprintf(stderr, "  send <fp> <file> [hint]    Send encrypted debug log to receiver\n");
         return 1;
     }
     const char *subcmd = argv[sub];
-    if (strcmp(subcmd, "inbox") == 0) {
+    if (strcmp(subcmd, "send") == 0) {
+        if (sub + 2 >= argc) {
+            fprintf(stderr, "Usage: debug send <receiver_fp_hex> <file> [hint]\n");
+            return 1;
+        }
+        const char *hint = (sub + 3 < argc) ? argv[sub + 3] : NULL;
+        return cmd_debug_send(engine, argv[sub + 1], argv[sub + 2], hint);
+    } else if (strcmp(subcmd, "inbox") == 0) {
         if (sub + 1 >= argc || strcmp(argv[sub + 1], "listen") != 0) {
             fprintf(stderr, "Usage: debug inbox listen\n");
             return 1;
@@ -6186,8 +6274,18 @@ int dispatch_sign_repl(dna_engine_t *engine, const char *subcmd) {
 /* ---------- debug (REPL) ---------- */
 int dispatch_debug_repl(dna_engine_t *engine, const char *subcmd) {
     if (!subcmd || strcmp(subcmd, "help") == 0) {
-        fprintf(stderr, "Debug — log-level | log-tags | log | entries | count | clear | export | inbox\n");
+        fprintf(stderr, "Debug — log-level | log-tags | log | entries | count | clear | export | inbox | send\n");
         return 1;
+    }
+    if (strcmp(subcmd, "send") == 0) {
+        char *fp = strtok(NULL, " \t");
+        char *file = strtok(NULL, " \t");
+        char *hint = strtok(NULL, "");
+        if (!fp || !file) {
+            fprintf(stderr, "Usage: debug send <receiver_fp_hex> <file> [hint]\n");
+            return 1;
+        }
+        return cmd_debug_send(engine, fp, file, hint);
     }
     if (strcmp(subcmd, "inbox") == 0) {
         char *arg = strtok(NULL, " \t");

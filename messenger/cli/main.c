@@ -285,6 +285,11 @@ int main(int argc, char *argv[]) {
             strcmp(argv[optind + 2], "listen") == 0) {
             needs_identity = 1;
         }
+        /* 'debug send' needs identity + DHT to encrypt+publish logs */
+        if (optind + 1 < argc &&
+            strcmp(argv[optind + 1], "send") == 0) {
+            needs_identity = 1;
+        }
     }
 
     if (needs_identity) {
