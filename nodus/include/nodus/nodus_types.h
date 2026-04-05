@@ -119,6 +119,7 @@ extern "C" {
 /* Circuit (VPN mesh) — Faz 1 */
 #define NODUS_MAX_CIRCUITS_PER_SESSION   16
 #define NODUS_MAX_CIRCUIT_PAYLOAD        (64 * 1024)
+#define NODUS_INTER_CIRCUITS_MAX         256
 
 /* TCP keepalive */
 #define NODUS_TCP_KEEPIDLE       30
