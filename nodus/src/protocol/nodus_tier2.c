@@ -206,6 +206,41 @@ int nodus_t2_circ_open(uint32_t txn, const uint8_t *token,
     return finish(&enc, out_len);
 }
 
+int nodus_t2_circ_open_ok(uint32_t txn, uint64_t cid,
+                           uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "circ_open");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_circ_open_err(uint32_t txn, uint64_t cid, int code,
+                            uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "circ_open_err");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "cid");  cbor_encode_uint(&enc, cid);
+    cbor_encode_cstr(&enc, "code"); cbor_encode_uint(&enc, (uint64_t)code);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_circ_inbound(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp,
+                           uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "circ_inbound");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    cbor_encode_cstr(&enc, "fp");  cbor_encode_bstr(&enc, peer_fp->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
 /* ── Media operations (Client → Nodus) ──────────────────────────── */
 
 int nodus_t2_media_put(uint32_t txn, const uint8_t *token,
@@ -1367,11 +1402,12 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES)
                         memcpy(msg->pk.bytes, val.bstr.ptr, NODUS_PK_BYTES);
                 }
-                /* fp (hello / circ_open peer fp) */
+                /* fp (hello / circ_open / circ_inbound peer fp) */
                 else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "fp", 2) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES) {
-                        if (strcmp(msg->method, "circ_open") == 0) {
+                        if (strcmp(msg->method, "circ_open") == 0 ||
+                            strcmp(msg->method, "circ_inbound") == 0) {
                             memcpy(msg->circ_peer_fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                             msg->has_circ = true;
                         } else {
@@ -1379,12 +1415,24 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                         }
                     }
                 }
-                /* cid (circ_open: circuit id) */
+                /* cid (circ_*: circuit id) */
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "cid", 3) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_UINT) {
                         msg->circ_cid = val.uint_val;
-                        msg->has_circ = true;
+                        if (strncmp(msg->method, "circ_", 5) == 0) {
+                            msg->has_circ = true;
+                        }
+                    }
+                }
+                /* code (circ_open_err: error code) */
+                else if (akey.tstr.len == 4 && memcmp(akey.tstr.ptr, "code", 4) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        if (strncmp(msg->method, "circ_", 5) == 0) {
+                            msg->circ_err_code = (int)val.uint_val;
+                            msg->has_circ = true;
+                        }
                     }
                 }
                 /* sig (auth) */

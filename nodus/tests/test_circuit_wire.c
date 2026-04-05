@@ -39,9 +39,61 @@ static void test_circ_open_roundtrip(void) {
     nodus_t2_msg_free(&msg);
 }
 
+static void test_circ_open_ok_roundtrip(void) {
+    TEST("circ_open_ok encode/decode");
+    size_t len = 0;
+    nodus_t2_circ_open_ok(11, 0x99ULL, msgbuf, sizeof(msgbuf), &len);
+    nodus_tier2_msg_t msg;
+    int rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && msg.type == 'r' && strcmp(msg.method, "circ_open") == 0 &&
+        msg.has_circ && msg.circ_cid == 0x99ULL) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
+static void test_circ_open_err_roundtrip(void) {
+    TEST("circ_open_err encode/decode");
+    size_t len = 0;
+    nodus_t2_circ_open_err(12, 0xAAULL, NODUS_ERR_PEER_OFFLINE,
+                            msgbuf, sizeof(msgbuf), &len);
+    nodus_tier2_msg_t msg;
+    int rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && msg.type == 'r' && strcmp(msg.method, "circ_open_err") == 0 &&
+        msg.circ_cid == 0xAAULL && msg.circ_err_code == NODUS_ERR_PEER_OFFLINE) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
+static void test_circ_inbound_roundtrip(void) {
+    TEST("circ_inbound encode/decode");
+    nodus_key_t peer_fp;
+    for (int i = 0; i < NODUS_KEY_BYTES; i++) peer_fp.bytes[i] = (uint8_t)(0x80 + i);
+    size_t len = 0;
+    nodus_t2_circ_inbound(13, 0xBEEFULL, &peer_fp, msgbuf, sizeof(msgbuf), &len);
+    nodus_tier2_msg_t msg;
+    int rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && msg.type == 'q' && strcmp(msg.method, "circ_inbound") == 0 &&
+        msg.circ_cid == 0xBEEFULL &&
+        nodus_key_cmp(&msg.circ_peer_fp, &peer_fp) == 0) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
 int main(void) {
     printf("Circuit wire protocol tests:\n");
     test_circ_open_roundtrip();
+    test_circ_open_ok_roundtrip();
+    test_circ_open_err_roundtrip();
+    test_circ_inbound_roundtrip();
     printf("\nResults: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }
