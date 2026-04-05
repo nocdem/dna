@@ -20,6 +20,7 @@
 #include "dht/shared/nodus_ops.h"
 #include "crypto/utils/qgp_platform.h"  /* v0.6.0+: For identity lock check */
 #include "crypto/utils/qgp_log.h"       /* v0.7.9: Route JNI logs to dna.log + ring buffer */
+#include "crypto/utils/platform_keystore.h"
 
 #define LOG_TAG "DNA-JNI"
 /* v0.7.9: JNI logs now go to logcat + ring buffer + dna.log file */
@@ -95,6 +96,10 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
 
     g_jvm = vm;
     LOGI("DNA JNI loaded (fresh state)");
+
+    /* Initialize TEE keystore JNI bridge */
+    platform_keystore_jni_init(vm);
+
     return JNI_VERSION_1_6;
 }
 
