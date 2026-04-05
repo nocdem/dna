@@ -233,6 +233,10 @@ add_executable(test_circuit_wire tests/test_circuit_wire.c)
 target_link_libraries(test_circuit_wire nodus dsa nodus)
 add_test(NAME test_circuit_wire COMMAND test_circuit_wire)
 
+add_executable(test_circuit_ri_wire tests/test_circuit_ri_wire.c)
+target_link_libraries(test_circuit_ri_wire nodus dsa nodus)
+add_test(NAME test_circuit_ri_wire COMMAND test_circuit_ri_wire)
+
 # Media Tier 2 protocol test
 add_executable(test_media_tier2 tests/test_media_tier2.c)
 target_link_libraries(test_media_tier2 nodus dsa nodus)
