@@ -30,7 +30,8 @@
 typedef struct {
     size_t                      token;
     nodus_key_t                 key;
-    nodus_ops_listen_cb_t       callback;
+    nodus_ops_listen_cb_t       callback;       /* v1 — NULL if v2 listener */
+    nodus_ops_listen_cb_v2_t    callback_v2;    /* v2 — NULL if v1 listener */
     void                       *user_data;
     nodus_ops_listen_cleanup_t  cleanup;
     bool                        active;
@@ -481,9 +482,10 @@ void nodus_ops_dispatch(const nodus_key_t *key,
     /* Snapshot matching listeners under lock, invoke outside lock.
      * This prevents deadlock if a callback calls cancel_listen. */
     typedef struct {
-        int                     idx;
-        nodus_ops_listen_cb_t   callback;
-        void                   *user_data;
+        int                        idx;
+        nodus_ops_listen_cb_t      callback;
+        nodus_ops_listen_cb_v2_t   callback_v2;
+        void                      *user_data;
     } match_t;
     match_t matches[32];
     int match_count = 0;
@@ -494,6 +496,7 @@ void nodus_ops_dispatch(const nodus_key_t *key,
         if (nodus_key_cmp(&g_listeners[i].key, key) != 0) continue;
         matches[match_count].idx = i;
         matches[match_count].callback = g_listeners[i].callback;
+        matches[match_count].callback_v2 = g_listeners[i].callback_v2;
         matches[match_count].user_data = g_listeners[i].user_data;
         match_count++;
     }
@@ -501,12 +504,23 @@ void nodus_ops_dispatch(const nodus_key_t *key,
 
     /* Invoke callbacks outside lock */
     for (int m = 0; m < match_count; m++) {
-        bool keep = matches[m].callback(
-            val ? val->data : NULL,
-            val ? val->data_len : 0,
-            false,
-            matches[m].user_data
-        );
+        bool keep;
+        if (matches[m].callback_v2) {
+            keep = matches[m].callback_v2(
+                val ? val->data : NULL,
+                val ? val->data_len : 0,
+                false,
+                val ? val->owner_fp.bytes : NULL,
+                matches[m].user_data
+            );
+        } else {
+            keep = matches[m].callback(
+                val ? val->data : NULL,
+                val ? val->data_len : 0,
+                false,
+                matches[m].user_data
+            );
+        }
         if (!keep) {
             nodus_ops_listen_cleanup_t cleanup_fn = NULL;
             void *cleanup_data = NULL;
@@ -552,6 +566,43 @@ size_t nodus_ops_listen(const uint8_t *key, size_t key_len,
             g_listeners[i].token = g_next_token++;
             g_listeners[i].key = k;
             g_listeners[i].callback = callback;
+            g_listeners[i].callback_v2 = NULL;
+            g_listeners[i].user_data = user_data;
+            g_listeners[i].cleanup = cleanup;
+            g_listeners[i].active = true;
+            token = g_listeners[i].token;
+            break;
+        }
+    }
+    listener_unlock();
+    return token;
+}
+
+size_t nodus_ops_listen_v2(const uint8_t *key, size_t key_len,
+                           nodus_ops_listen_cb_v2_t callback,
+                           void *user_data,
+                           nodus_ops_listen_cleanup_t cleanup) {
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c || !nodus_client_is_ready(c) || !key || !callback) {
+        if (c) nodus_singleton_release();
+        return 0;
+    }
+
+    nodus_key_t k;
+    hash_key(key, key_len, &k);
+
+    int rc = nodus_client_listen(c, &k);
+    nodus_singleton_release();
+    if (rc != 0) return 0;
+
+    size_t token = 0;
+    listener_lock();
+    for (int i = 0; i < MAX_OPS_LISTENERS; i++) {
+        if (!g_listeners[i].active) {
+            g_listeners[i].token = g_next_token++;
+            g_listeners[i].key = k;
+            g_listeners[i].callback = NULL;
+            g_listeners[i].callback_v2 = callback;
             g_listeners[i].user_data = user_data;
             g_listeners[i].cleanup = cleanup;
             g_listeners[i].active = true;

@@ -3518,9 +3518,12 @@ static int debug_inbox_load_kyber_sk(const char *session_password,
     return 0;
 }
 
-/* Listener callback — invoked when a new value appears on the inbox key. */
+/* Listener callback (v2) — invoked when a new value appears on the inbox key.
+ * owner_fp is the 64-byte Dilithium5 fingerprint of whoever PUT the value. */
 static bool debug_inbox_on_value(const uint8_t *data, size_t data_len,
-                                  bool expired, void *user_data) {
+                                  bool expired,
+                                  const uint8_t owner_fp[64],
+                                  void *user_data) {
     if (expired) return true;  /* ignore expirations, keep listening */
 
     dna_engine_t *engine = (dna_engine_t *)user_data;
@@ -3591,8 +3594,21 @@ static bool debug_inbox_on_value(const uint8_t *data, size_t data_len,
     char ts[32];
     debug_inbox_iso8601_now(ts, sizeof(ts));
 
+    /* Short fp prefix (first 16 hex chars = 8 bytes) for filename. */
+    char fp_short[17] = {0};
+    if (owner_fp) {
+        static const char H[] = "0123456789abcdef";
+        for (int i = 0; i < 8; i++) {
+            fp_short[i * 2]     = H[(owner_fp[i] >> 4) & 0xF];
+            fp_short[i * 2 + 1] = H[owner_fp[i] & 0xF];
+        }
+    } else {
+        memcpy(fp_short, "unknown_________", 16);
+    }
+
     char path[512];
-    snprintf(path, sizeof(path), "%s/debug_%s.log", DEBUG_INBOX_OUT_DIR, ts);
+    snprintf(path, sizeof(path), "%s/%s_%s.log",
+             DEBUG_INBOX_OUT_DIR, fp_short, ts);
 
     /* Create file with mode 0600 atomically, no race window. */
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
@@ -3627,7 +3643,8 @@ static bool debug_inbox_on_value(const uint8_t *data, size_t data_len,
     }
     hint_safe[hi] = 0;
 
-    printf("[DEBUG-LOG] hint=\"%s\" size=%zu file=%s\n", hint_safe, body_len, path);
+    printf("[DEBUG-LOG] from=%s hint=\"%s\" size=%zu file=%s\n",
+           fp_short, hint_safe, body_len, path);
     fflush(stdout);
 
     memset(inner, 0, inner_len);
@@ -3678,7 +3695,7 @@ int cmd_debug_inbox_listen(dna_engine_t *engine) {
     debug_inbox_ensure_dir();
 
     /* Register listener */
-    size_t token = nodus_ops_listen(inbox_key, sizeof(inbox_key),
+    size_t token = nodus_ops_listen_v2(inbox_key, sizeof(inbox_key),
                                      debug_inbox_on_value, engine, NULL);
     if (token == 0) {
         printf("Error: Failed to register DHT listener\n");

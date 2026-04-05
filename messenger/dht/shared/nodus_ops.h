@@ -30,6 +30,14 @@ extern "C" {
 
 typedef bool (*nodus_ops_listen_cb_t)(const uint8_t *data, size_t data_len,
                                       bool expired, void *user_data);
+
+/* v2 callback adds owner_fp (sender's Dilithium5 fingerprint, 64 bytes).
+ * Same return semantics as v1. */
+typedef bool (*nodus_ops_listen_cb_v2_t)(const uint8_t *data, size_t data_len,
+                                         bool expired,
+                                         const uint8_t owner_fp[64],
+                                         void *user_data);
+
 typedef void (*nodus_ops_listen_cleanup_t)(void *user_data);
 
 /* ── PUT operations ────────────────────────────────────────────── */
@@ -188,6 +196,15 @@ size_t nodus_ops_listen(const uint8_t *key, size_t key_len,
                         nodus_ops_listen_cb_t callback,
                         void *user_data,
                         nodus_ops_listen_cleanup_t cleanup);
+
+/**
+ * Register a listener with the v2 callback (owner_fp exposed).
+ * Same semantics as nodus_ops_listen() otherwise.
+ */
+size_t nodus_ops_listen_v2(const uint8_t *key, size_t key_len,
+                           nodus_ops_listen_cb_v2_t callback,
+                           void *user_data,
+                           nodus_ops_listen_cleanup_t cleanup);
 
 /**
  * Cancel a listener by token.
