@@ -1,5 +1,8 @@
 #include "dna_debug_log_wire.h"
 #include <string.h>
+#include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/qgp_aes.h"
+#include "crypto/utils/qgp_random.h"
 
 static void write_be16(uint8_t *dst, uint16_t v) {
     dst[0] = (uint8_t)(v >> 8);
@@ -106,5 +109,66 @@ int dna_debug_log_decode_outer(
     *enc_inner_ptr = outer + 1 + DNA_DEBUG_LOG_KYBER_CT_LEN + DNA_DEBUG_LOG_GCM_NONCE_LEN;
     *enc_inner_len_out = outer_len - fixed;
     *gcm_tag_ptr  = outer + outer_len - DNA_DEBUG_LOG_GCM_TAG_LEN;
+    return DNA_DEBUG_LOG_OK;
+}
+
+int dna_debug_log_encrypt_inner(
+    const uint8_t receiver_kyber_pub[1568],
+    const uint8_t *inner, size_t inner_len,
+    uint8_t kyber_ct_out[DNA_DEBUG_LOG_KYBER_CT_LEN],
+    uint8_t nonce_out[DNA_DEBUG_LOG_GCM_NONCE_LEN],
+    uint8_t *enc_inner_out, size_t enc_inner_cap,
+    uint8_t gcm_tag_out[DNA_DEBUG_LOG_GCM_TAG_LEN])
+{
+    if (!receiver_kyber_pub || !inner || !kyber_ct_out || !nonce_out ||
+        !enc_inner_out || !gcm_tag_out) return DNA_DEBUG_LOG_ERR_NULL;
+    if (enc_inner_cap < inner_len) return DNA_DEBUG_LOG_ERR_TRUNCATED;
+
+    uint8_t shared_secret[QGP_KEM1024_SHAREDSECRET_BYTES];
+    if (qgp_kem1024_encapsulate(kyber_ct_out, shared_secret, receiver_kyber_pub) != 0) {
+        memset(shared_secret, 0, sizeof(shared_secret));
+        return DNA_DEBUG_LOG_ERR_KEM_FAIL;
+    }
+
+    /* qgp_aes256_encrypt generates a random 12-byte nonce and writes it to nonce_out. */
+    size_t ct_len = 0;
+    int rc = qgp_aes256_encrypt(shared_secret,
+                                inner, inner_len,
+                                NULL, 0,
+                                enc_inner_out, &ct_len,
+                                nonce_out, gcm_tag_out);
+    memset(shared_secret, 0, sizeof(shared_secret));
+    if (rc != 0 || ct_len != inner_len) return DNA_DEBUG_LOG_ERR_GCM_FAIL;
+    return DNA_DEBUG_LOG_OK;
+}
+
+int dna_debug_log_decrypt_inner(
+    const uint8_t *receiver_kyber_sk, size_t receiver_kyber_sk_len,
+    const uint8_t kyber_ct[DNA_DEBUG_LOG_KYBER_CT_LEN],
+    const uint8_t nonce[DNA_DEBUG_LOG_GCM_NONCE_LEN],
+    const uint8_t *enc_inner, size_t enc_inner_len,
+    const uint8_t gcm_tag[DNA_DEBUG_LOG_GCM_TAG_LEN],
+    uint8_t *inner_out, size_t inner_cap, size_t *inner_len_out)
+{
+    if (!receiver_kyber_sk || !kyber_ct || !nonce || !enc_inner || !gcm_tag ||
+        !inner_out || !inner_len_out) return DNA_DEBUG_LOG_ERR_NULL;
+    if (receiver_kyber_sk_len < QGP_KEM1024_SECRETKEYBYTES) return DNA_DEBUG_LOG_ERR_TRUNCATED;
+    if (inner_cap < enc_inner_len) return DNA_DEBUG_LOG_ERR_TRUNCATED;
+
+    uint8_t shared_secret[QGP_KEM1024_SHAREDSECRET_BYTES];
+    if (qgp_kem1024_decapsulate(shared_secret, kyber_ct, receiver_kyber_sk) != 0) {
+        memset(shared_secret, 0, sizeof(shared_secret));
+        return DNA_DEBUG_LOG_ERR_KEM_FAIL;
+    }
+
+    size_t pt_len = 0;
+    int rc = qgp_aes256_decrypt(shared_secret,
+                                enc_inner, enc_inner_len,
+                                NULL, 0,
+                                nonce, gcm_tag,
+                                inner_out, &pt_len);
+    memset(shared_secret, 0, sizeof(shared_secret));
+    if (rc != 0) return DNA_DEBUG_LOG_ERR_GCM_FAIL;
+    *inner_len_out = pt_len;
     return DNA_DEBUG_LOG_OK;
 }

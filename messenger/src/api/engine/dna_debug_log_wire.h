@@ -35,6 +35,8 @@
 #define DNA_DEBUG_LOG_ERR_TRUNCATED      -4
 #define DNA_DEBUG_LOG_ERR_HINT_INVALID   -5
 #define DNA_DEBUG_LOG_ERR_BODY_INVALID   -6
+#define DNA_DEBUG_LOG_ERR_KEM_FAIL       -7
+#define DNA_DEBUG_LOG_ERR_GCM_FAIL       -8
 
 /* Encode inner plaintext (does NOT encrypt) — caller passes this to AES-GCM.
  * inner_out buffer must be >= DNA_DEBUG_LOG_INNER_HDR_LEN + hint_len + log_len.
@@ -69,5 +71,30 @@ int dna_debug_log_decode_outer(
     const uint8_t **nonce_ptr,
     const uint8_t **enc_inner_ptr, size_t *enc_inner_len_out,
     const uint8_t **gcm_tag_ptr);
+
+/* ============================================================================
+ * Hybrid encryption helpers (Kyber1024 + AES-256-GCM)
+ * ============================================================================ */
+
+/* Encrypt inner plaintext for a receiver's Kyber1024 public key.
+ * enc_inner_out capacity: >= inner_len (GCM tag is separate, 16 bytes).
+ * Outputs: kyber_ct (1568), nonce (12), enc_inner_out (inner_len), gcm_tag (16).
+ */
+int dna_debug_log_encrypt_inner(
+    const uint8_t receiver_kyber_pub[1568],
+    const uint8_t *inner, size_t inner_len,
+    uint8_t kyber_ct_out[DNA_DEBUG_LOG_KYBER_CT_LEN],
+    uint8_t nonce_out[DNA_DEBUG_LOG_GCM_NONCE_LEN],
+    uint8_t *enc_inner_out, size_t enc_inner_cap,
+    uint8_t gcm_tag_out[DNA_DEBUG_LOG_GCM_TAG_LEN]);
+
+/* Decrypt. Returns DNA_DEBUG_LOG_ERR_* on MAC failure or bad inputs. */
+int dna_debug_log_decrypt_inner(
+    const uint8_t *receiver_kyber_sk, size_t receiver_kyber_sk_len,
+    const uint8_t kyber_ct[DNA_DEBUG_LOG_KYBER_CT_LEN],
+    const uint8_t nonce[DNA_DEBUG_LOG_GCM_NONCE_LEN],
+    const uint8_t *enc_inner, size_t enc_inner_len,
+    const uint8_t gcm_tag[DNA_DEBUG_LOG_GCM_TAG_LEN],
+    uint8_t *inner_out, size_t inner_cap, size_t *inner_len_out);
 
 #endif /* DNA_DEBUG_LOG_WIRE_H */

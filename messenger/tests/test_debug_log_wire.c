@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../src/api/engine/dna_debug_log_wire.h"
+#include "crypto/enc/qgp_kyber.h"
 
 static void test_encode_decode_inner_roundtrip(void) {
     const char *hint = "alice-android-rc158";
@@ -101,6 +102,45 @@ static void test_encode_decode_outer_roundtrip(void) {
     printf("  OK: outer roundtrip\n");
 }
 
+static void test_encrypt_decrypt_roundtrip(void) {
+    uint8_t pub[QGP_KEM1024_PUBLICKEYBYTES], sk[QGP_KEM1024_SECRETKEYBYTES];
+    int rc = qgp_kem1024_keypair(pub, sk);
+    assert(rc == 0);
+
+    const char *hint = "test-hint";
+    const uint8_t body[] = "the quick brown fox";
+    uint8_t inner[256];
+    size_t inner_len = 0;
+    rc = dna_debug_log_encode_inner(hint, strlen(hint), body, sizeof(body) - 1,
+                                     inner, sizeof(inner), &inner_len);
+    assert(rc == DNA_DEBUG_LOG_OK);
+
+    uint8_t kyber_ct[DNA_DEBUG_LOG_KYBER_CT_LEN];
+    uint8_t nonce[DNA_DEBUG_LOG_GCM_NONCE_LEN];
+    uint8_t enc[256];
+    uint8_t tag[DNA_DEBUG_LOG_GCM_TAG_LEN];
+    rc = dna_debug_log_encrypt_inner(pub, inner, inner_len,
+                                      kyber_ct, nonce, enc, sizeof(enc), tag);
+    assert(rc == DNA_DEBUG_LOG_OK);
+
+    uint8_t decrypted[256];
+    size_t decrypted_len = 0;
+    rc = dna_debug_log_decrypt_inner(sk, sizeof(sk), kyber_ct, nonce,
+                                      enc, inner_len, tag,
+                                      decrypted, sizeof(decrypted), &decrypted_len);
+    assert(rc == DNA_DEBUG_LOG_OK);
+    assert(decrypted_len == inner_len);
+    assert(memcmp(decrypted, inner, inner_len) == 0);
+
+    /* Tamper test */
+    enc[0] ^= 0x01;
+    rc = dna_debug_log_decrypt_inner(sk, sizeof(sk), kyber_ct, nonce,
+                                      enc, inner_len, tag,
+                                      decrypted, sizeof(decrypted), &decrypted_len);
+    assert(rc == DNA_DEBUG_LOG_ERR_GCM_FAIL);
+    printf("  OK: encrypt/decrypt roundtrip + tamper\n");
+}
+
 int main(void) {
     printf("test_debug_log_wire:\n");
     test_encode_decode_inner_roundtrip();
@@ -109,6 +149,7 @@ int main(void) {
     test_decode_outer_bad_version();
     test_decode_outer_truncated();
     test_encode_decode_outer_roundtrip();
+    test_encrypt_decrypt_roundtrip();
     printf("ALL PASS\n");
     return 0;
 }
