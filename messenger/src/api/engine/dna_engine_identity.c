@@ -258,13 +258,14 @@ int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
         snprintf(kem_mig_path, sizeof(kem_mig_path), "%s/keys/identity.kem", engine->data_dir);
         snprintf(dsa_mig_path, sizeof(dsa_mig_path), "%s/keys/identity.dsa", engine->data_dir);
 
+        bool tee_ok = platform_keystore_available();
+        QGP_LOG_INFO(LOG_TAG, "TEE migration probe: available=%d", tee_ok ? 1 : 0);
+
         int rc_kem = platform_keystore_migrate_file(kem_mig_path, engine->data_dir);
         int rc_dsa = platform_keystore_migrate_file(dsa_mig_path, engine->data_dir);
 
-        if (rc_kem == PLATFORM_KEYSTORE_OK)
-            QGP_LOG_INFO(LOG_TAG, "identity.kem migrated to TEE-wrapped format");
-        if (rc_dsa == PLATFORM_KEYSTORE_OK)
-            QGP_LOG_INFO(LOG_TAG, "identity.dsa migrated to TEE-wrapped format");
+        QGP_LOG_INFO(LOG_TAG, "TEE migration results: kem=%d dsa=%d (0=ok 1=wrapped 2=noTEE 3=noMnemonic -1=err)",
+                     rc_kem, rc_dsa);
     }
 
     /* Initialize contacts database BEFORE P2P/offline message check
