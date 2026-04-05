@@ -27,6 +27,12 @@ static char *portable_strndup(const char *s, size_t n) {
 #define strndup portable_strndup
 #endif
 
+/* Circuit / inter-node method-prefix checks (for decoder dispatch on
+ * shared keys like "cid", "d", "code" that appear in both circ_* and
+ * ri_* methods as well as legacy methods like put). */
+#define IS_CIRC_METHOD(m) (strncmp((m), "circ_", 5) == 0)
+#define IS_RI_METHOD(m)   (strncmp((m), "ri_", 3) == 0)
+
 /* ── Common helpers ──────────────────────────────────────────────── */
 
 static void enc_query_header(cbor_encoder_t *enc, size_t map_count,
@@ -1432,6 +1438,11 @@ int nodus_t2_ch_ring_rejoin(uint32_t txn,
 
 /* ── Decode ──────────────────────────────────────────────────────── */
 
+/* IMPORTANT: This decoder dispatches on msg->method for shared keys
+ * ("cid", "d", "code", "fp", "src", "dst"). This relies on the encoder
+ * writing the "q" (method) field BEFORE "a" (args) in the top-level map.
+ * All encoders in this file follow that order via enc_query_header /
+ * enc_response_header — do not reorder them. */
 int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
     if (!buf || !msg) return -1;
     memset(msg, 0, sizeof(*msg));
@@ -1517,7 +1528,7 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                             msg->has_ri = true;
                         } else {
                             msg->circ_cid = val.uint_val;
-                            if (strncmp(msg->method, "circ_", 5) == 0) {
+                            if (IS_CIRC_METHOD(msg->method)) {
                                 msg->has_circ = true;
                             }
                         }
@@ -1530,7 +1541,7 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                         if (strcmp(msg->method, "ri_open_err") == 0) {
                             msg->ri_err_code = (int)val.uint_val;
                             msg->has_ri = true;
-                        } else if (strncmp(msg->method, "circ_", 5) == 0) {
+                        } else if (IS_CIRC_METHOD(msg->method)) {
                             msg->circ_err_code = (int)val.uint_val;
                             msg->has_circ = true;
                         }
@@ -1556,7 +1567,7 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "src", 3) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES &&
-                        strncmp(msg->method, "ri_", 3) == 0) {
+                        IS_RI_METHOD(msg->method)) {
                         memcpy(msg->ri_src_fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                         msg->has_ri = true;
                     }
@@ -1565,7 +1576,7 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "dst", 3) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES &&
-                        strncmp(msg->method, "ri_", 3) == 0) {
+                        IS_RI_METHOD(msg->method)) {
                         memcpy(msg->ri_dst_fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                         msg->has_ri = true;
                     }
