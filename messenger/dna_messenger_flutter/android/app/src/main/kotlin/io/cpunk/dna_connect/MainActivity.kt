@@ -23,6 +23,20 @@ class MainActivity : FlutterFragmentActivity() {
         private const val TAG = "MainActivity"
         private const val CAMERA_PERMISSION_REQUEST_CODE = 1003
         private const val CHANNEL = "io.cpunk.dna_connect/screen_security"
+
+        init {
+            // Load libdna.so via System.loadLibrary BEFORE dart:ffi.
+            // This triggers JNI_OnLoad, which caches the JavaVM pointer needed
+            // for TEE key wrapping (platform_keystore_jni_init).
+            // dart:ffi's DynamicLibrary.open("libdna.so") will reuse the already-
+            // loaded .so since dlopen is idempotent per path.
+            try {
+                System.loadLibrary("dna")
+                android.util.Log.i(TAG, "libdna.so loaded via System.loadLibrary (JNI_OnLoad fired)")
+            } catch (e: UnsatisfiedLinkError) {
+                android.util.Log.e(TAG, "Failed to load libdna.so: ${e.message}")
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
