@@ -25,6 +25,7 @@
 #include "crypto/nodus_identity.h"
 #include "witness/nodus_witness.h"
 #include "server/nodus_presence.h"
+#include "circuit/nodus_circuit.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -106,6 +107,9 @@ typedef struct {
     /* Rate limiting */
     uint64_t            rate_window_start;
     int                 puts_in_window;
+
+    /* Circuit table (VPN mesh Faz 1) */
+    nodus_circuit_table_t   circuits;
 } nodus_session_t;
 
 /* ── FIND_VALUE async state machine ──────────────────────────────── */
