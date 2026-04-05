@@ -636,7 +636,7 @@ int key_load_from_buffer(
     size_t key_out_size,
     size_t *key_size
 ) {
-    if (!encrypted_data || !key_out || !key_size || encrypted_size == 0) {
+    if (!encrypted_data || !key_out || !key_size || encrypted_size == 0 || key_out_size == 0) {
         QGP_LOG_ERROR(LOG_TAG, "key_load_from_buffer: Invalid arguments");
         return -1;
     }
@@ -646,8 +646,14 @@ int key_load_from_buffer(
                          memcmp(encrypted_data, KEY_ENC_MAGIC, KEY_ENC_MAGIC_SIZE) == 0);
 
     if (is_encrypted) {
-        if (!password) {
+        if (!password || strlen(password) == 0) {
             QGP_LOG_ERROR(LOG_TAG, "key_load_from_buffer: Data is encrypted but no password provided");
+            return -1;
+        }
+        size_t expected_decrypted_size = encrypted_size - KEY_ENC_HEADER_SIZE;
+        if (expected_decrypted_size > key_out_size) {
+            QGP_LOG_ERROR(LOG_TAG, "key_load_from_buffer: Output buffer too small for decryption (%zu < %zu)",
+                          key_out_size, expected_decrypted_size);
             return -1;
         }
         return key_decrypt(encrypted_data, encrypted_size, password, key_out, key_size);

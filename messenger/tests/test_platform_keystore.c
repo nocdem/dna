@@ -125,6 +125,70 @@ static void test_key_load_from_buffer_invalid_args(void) {
     printf("OK\n");
 }
 
+static void test_key_load_from_buffer_encrypted_roundtrip(void) {
+    printf("  test_key_load_from_buffer_encrypted_roundtrip... ");
+    /* Encrypt some data with a password, then decrypt via key_load_from_buffer */
+    uint8_t plaintext[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78};
+    const char *password = "test_password_123";
+
+    /* Encrypt */
+    uint8_t encrypted[KEY_ENC_HEADER_SIZE + sizeof(plaintext)];
+    size_t encrypted_len = 0;
+    int rc = key_encrypt(plaintext, sizeof(plaintext), password, encrypted, &encrypted_len);
+    assert(rc == 0);
+    assert(encrypted_len > 0);
+
+    /* Verify DNAK magic present */
+    assert(memcmp(encrypted, KEY_ENC_MAGIC, KEY_ENC_MAGIC_SIZE) == 0);
+
+    /* Decrypt via key_load_from_buffer */
+    uint8_t decrypted[32] = {0};
+    size_t decrypted_len = 0;
+    rc = key_load_from_buffer(encrypted, encrypted_len, password,
+                               decrypted, sizeof(decrypted), &decrypted_len);
+    assert(rc == 0);
+    assert(decrypted_len == sizeof(plaintext));
+    assert(memcmp(decrypted, plaintext, sizeof(plaintext)) == 0);
+    printf("OK\n");
+}
+
+static void test_key_load_from_buffer_wrong_password(void) {
+    printf("  test_key_load_from_buffer_wrong_password... ");
+    uint8_t plaintext[] = {0xAA, 0xBB, 0xCC};
+    uint8_t encrypted[KEY_ENC_HEADER_SIZE + sizeof(plaintext)];
+    size_t encrypted_len = 0;
+    int rc = key_encrypt(plaintext, sizeof(plaintext), "correct_pw", encrypted, &encrypted_len);
+    assert(rc == 0);
+
+    uint8_t decrypted[32] = {0};
+    size_t decrypted_len = 0;
+    rc = key_load_from_buffer(encrypted, encrypted_len, "wrong_pw",
+                               decrypted, sizeof(decrypted), &decrypted_len);
+    assert(rc == -1);  /* Should fail with wrong password */
+    printf("OK\n");
+}
+
+static void test_key_load_from_buffer_encrypted_no_password(void) {
+    printf("  test_key_load_from_buffer_encrypted_no_password... ");
+    uint8_t plaintext[] = {0x11, 0x22};
+    uint8_t encrypted[KEY_ENC_HEADER_SIZE + sizeof(plaintext)];
+    size_t encrypted_len = 0;
+    int rc = key_encrypt(plaintext, sizeof(plaintext), "any_pw", encrypted, &encrypted_len);
+    assert(rc == 0);
+
+    uint8_t decrypted[32] = {0};
+    size_t decrypted_len = 0;
+    /* NULL password */
+    rc = key_load_from_buffer(encrypted, encrypted_len, NULL,
+                               decrypted, sizeof(decrypted), &decrypted_len);
+    assert(rc == -1);
+    /* Empty password */
+    rc = key_load_from_buffer(encrypted, encrypted_len, "",
+                               decrypted, sizeof(decrypted), &decrypted_len);
+    assert(rc == -1);
+    printf("OK\n");
+}
+
 int main(void) {
     printf("test_platform_keystore:\n");
     test_noop_unavailable();
@@ -139,6 +203,9 @@ int main(void) {
     test_key_load_from_buffer_raw();
     test_key_load_from_buffer_too_small();
     test_key_load_from_buffer_invalid_args();
+    test_key_load_from_buffer_encrypted_roundtrip();
+    test_key_load_from_buffer_wrong_password();
+    test_key_load_from_buffer_encrypted_no_password();
     printf("All platform_keystore tests passed!\n");
     return 0;
 }
