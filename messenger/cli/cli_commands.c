@@ -33,6 +33,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <errno.h>
 #include "src/api/engine/dna_debug_log_wire.h"
 
@@ -3593,15 +3594,21 @@ static bool debug_inbox_on_value(const uint8_t *data, size_t data_len,
     char path[512];
     snprintf(path, sizeof(path), "%s/debug_%s.log", DEBUG_INBOX_OUT_DIR, ts);
 
-    FILE *fp = fopen(path, "wb");
-    if (!fp) {
+    /* Create file with mode 0600 atomically, no race window. */
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) {
         fprintf(stderr, "[DEBUG-LOG] cannot open %s: %s\n", path, strerror(errno));
         memset(inner, 0, inner_len);
         free(inner);
         return true;
     }
-    if (chmod(path, 0600) != 0) {
-        /* non-fatal */
+    FILE *fp = fdopen(fd, "wb");
+    if (!fp) {
+        close(fd);
+        fprintf(stderr, "[DEBUG-LOG] fdopen %s failed: %s\n", path, strerror(errno));
+        memset(inner, 0, inner_len);
+        free(inner);
+        return true;
     }
     size_t wrote = fwrite(body, 1, body_len, fp);
     fclose(fp);
@@ -3610,7 +3617,17 @@ static bool debug_inbox_on_value(const uint8_t *data, size_t data_len,
         fprintf(stderr, "[DEBUG-LOG] short write: %zu/%zu\n", wrote, body_len);
     }
 
-    printf("[DEBUG-LOG] hint=\"%s\" size=%zu file=%s\n", hint, body_len, path);
+    /* Sanitize hint for terminal output: replace control chars with '?' so
+     * a malicious sender cannot inject terminal escapes via journalctl. */
+    char hint_safe[129];
+    size_t hi = 0;
+    for (; hint[hi] && hi + 1 < sizeof(hint_safe); hi++) {
+        unsigned char c = (unsigned char)hint[hi];
+        hint_safe[hi] = (c < 0x20 || c == 0x7F) ? '?' : hint[hi];
+    }
+    hint_safe[hi] = 0;
+
+    printf("[DEBUG-LOG] hint=\"%s\" size=%zu file=%s\n", hint_safe, body_len, path);
     fflush(stdout);
 
     memset(inner, 0, inner_len);
