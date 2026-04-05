@@ -157,6 +157,16 @@ target_link_libraries(test_db_encryption ${TEST_LIBS})
 add_test(NAME test_db_encryption COMMAND test_db_encryption)
 
 # =============================================================================
+# Test: Debug Log Wire Format (encode/decode)
+# =============================================================================
+add_executable(test_debug_log_wire
+    test_debug_log_wire.c
+    ${DNA_ROOT}/src/api/engine/dna_debug_log_wire.c)
+target_include_directories(test_debug_log_wire PRIVATE ${DNA_ROOT}/src/api/engine)
+target_link_libraries(test_debug_log_wire ${TEST_LIBS})
+add_test(NAME test_debug_log_wire COMMAND test_debug_log_wire)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()
