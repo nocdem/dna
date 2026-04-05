@@ -151,6 +151,7 @@ set(COMMON_SOURCES
     # SDK Independence: Infrastructure modules
     ${SHARED_DIR}/crypto/key/qgp_key.c
     ${SHARED_DIR}/crypto/key/key_encryption.c
+    ${SHARED_DIR}/crypto/utils/platform_keystore_noop.c
     ${SHARED_DIR}/crypto/sign/qgp_signature.c
     ${SHARED_DIR}/crypto/sign/secp256k1_sign.c        # secp256k1 ECDSA recoverable signing
     ${SHARED_DIR}/crypto/sign/ed25519_sign.c           # Ed25519 signing (Solana)
