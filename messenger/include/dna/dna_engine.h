@@ -83,6 +83,7 @@ typedef uint64_t dna_request_id_t;
 #define DNA_ENGINE_ERROR_KEY_UNAVAILABLE (-116)  /* Recipient public key not cached and DHT lookup failed */
 #define DNA_ENGINE_ERROR_IDENTITY_LOCKED (-117)  /* v0.6.0+: Identity lock held by another process (Flutter/Service) */
 #define DNA_ENGINE_ERROR_LIMIT_REACHED (-118)   /* v0.9.52+: Maximum limit reached (e.g., max likes per post) */
+#define DNA_ENGINE_ERROR_TEE_FAILED (-119)  /* TEE/hardware keystore key unavailable — restore from mnemonic */
 
 /**
  * Get human-readable error message for engine errors

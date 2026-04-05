@@ -10,10 +10,14 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_compiler.h"
+#include "crypto/utils/platform_keystore.h"
 #include "crypto/key/key_encryption.h"
 #include "qgp.h"  /* For write_armored_file */
 
@@ -391,6 +395,10 @@ int qgp_key_save_encrypted(const qgp_key_t *key, const char *path, const char *p
     int result = -1;
     uint8_t *raw_data = NULL;
     size_t raw_size = 0;
+    uint8_t *inner_data = NULL;
+    size_t inner_size = 0;
+    uint8_t *wrapped = NULL;
+    size_t wrapped_len = 0;
 
     /* Calculate total size: header + public_key + private_key */
     raw_size = sizeof(qgp_privkey_file_header_t) + key->public_key_size + key->private_key_size;
@@ -419,18 +427,86 @@ int qgp_key_save_encrypted(const qgp_key_t *key, const char *path, const char *p
     offset += key->public_key_size;
     memcpy(raw_data + offset, key->private_key, key->private_key_size);
 
-    /* Save with optional encryption */
-    if (key_save_encrypted(raw_data, raw_size, password, path) != 0) {
-        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Failed to save encrypted key");
+    /* Check if TEE is available */
+    bool tee_available = platform_keystore_available();
+
+    if (!tee_available) {
+        /* No TEE - use existing path (key_save_encrypted handles password encryption + write) */
+        if (key_save_encrypted(raw_data, raw_size, password, path) != 0) {
+            QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Failed to save encrypted key");
+            goto cleanup;
+        }
+        result = 0;
         goto cleanup;
     }
 
+    /* TEE path: produce inner data (password-encrypted or raw), then TEE wrap it */
+    if (password && strlen(password) > 0) {
+        /* Password encrypt first (inner layer) */
+        size_t inner_buf_size = raw_size + KEY_ENC_HEADER_SIZE;
+        inner_data = malloc(inner_buf_size);
+        if (!inner_data) {
+            QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Memory allocation failed for inner buffer");
+            goto cleanup;
+        }
+        if (key_encrypt(raw_data, raw_size, password, inner_data, &inner_size) != 0) {
+            QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Password encryption failed");
+            goto cleanup;
+        }
+    } else {
+        /* No password — inner is just raw_data (no allocation, just point) */
+        inner_data = raw_data;
+        inner_size = raw_size;
+    }
+
+    /* TEE wrap the inner data */
+    if (platform_keystore_wrap(inner_data, inner_size, &wrapped, &wrapped_len) != 0) {
+        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: TEE wrap failed");
+        goto cleanup;
+    }
+
+    /* Write DNAT file: 6-byte header + wrapped data */
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Cannot open file for writing: %s", path);
+        goto cleanup;
+    }
+
+    uint8_t dnat_header[PLATFORM_KEYSTORE_HEADER_SIZE];
+    memcpy(dnat_header, PLATFORM_KEYSTORE_MAGIC, PLATFORM_KEYSTORE_MAGIC_SIZE);
+    dnat_header[4] = PLATFORM_KEYSTORE_VERSION;
+    dnat_header[5] = PLATFORM_KEYSTORE_KEY_VER;
+
+    size_t written = 0;
+    written += fwrite(dnat_header, 1, PLATFORM_KEYSTORE_HEADER_SIZE, fp);
+    written += fwrite(wrapped, 1, wrapped_len, fp);
+    fflush(fp);
+#ifndef _WIN32
+    fsync(fileno(fp));
+#endif
+    fclose(fp);
+
+    if (written != PLATFORM_KEYSTORE_HEADER_SIZE + wrapped_len) {
+        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Short write to file");
+        goto cleanup;
+    }
+
+    chmod(path, S_IRUSR | S_IWUSR);  /* 0600 */
     result = 0;
 
 cleanup:
+    /* inner_data only needs free if it's a separate allocation (password path) */
+    if (inner_data && inner_data != raw_data) {
+        qgp_secure_memzero(inner_data, inner_size);
+        free(inner_data);
+    }
     if (raw_data) {
         qgp_secure_memzero(raw_data, raw_size);
         free(raw_data);
+    }
+    if (wrapped) {
+        qgp_secure_memzero(wrapped, wrapped_len);
+        free(wrapped);
     }
 
     return result;
@@ -451,25 +527,74 @@ int qgp_key_load_encrypted(const char *path, const char *password, qgp_key_t **k
     }
 
     int result = -1;
-    uint8_t *raw_data = NULL;
+    uint8_t *file_data = NULL;
+    size_t file_size = 0;
+    uint8_t *inner_data = NULL;
+    size_t inner_size = 0;
+    bool inner_allocated = false;
+    uint8_t raw_buffer[16384];
     size_t raw_size = 0;
     qgp_key_t *key = NULL;
 
-    /* Allocate buffer for largest possible key
-     * Dilithium5: pubkey=2592, privkey=4896 + header ~280 = ~7800
-     * Kyber1024: pubkey=1568, privkey=3168 + header ~280 = ~5000
-     * Use 16KB to be safe
-     */
-    size_t buffer_size = 16384;
-    raw_data = malloc(buffer_size);
-    if (!raw_data) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: Memory allocation failed");
+    /* Read file into memory */
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: Cannot open file: %s", path);
         return -1;
     }
 
-    /* Load and decrypt */
-    if (key_load_encrypted(path, password, raw_data, buffer_size, &raw_size) != 0) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: Failed to load key (wrong password?)");
+    fseek(fp, 0, SEEK_END);
+    long fs = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    if (fs <= 0 || fs > PLATFORM_KEYSTORE_MAX_FILE) {
+        QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: Invalid file size: %ld", fs);
+        fclose(fp);
+        return -1;
+    }
+    file_size = (size_t)fs;
+
+    file_data = malloc(file_size);
+    if (!file_data) {
+        fclose(fp);
+        return -1;
+    }
+    if (fread(file_data, 1, file_size, fp) != file_size) {
+        fclose(fp);
+        free(file_data);
+        return -1;
+    }
+    fclose(fp);
+
+    /* Detect DNAT magic */
+    if (file_size > PLATFORM_KEYSTORE_HEADER_SIZE &&
+        memcmp(file_data, PLATFORM_KEYSTORE_MAGIC, PLATFORM_KEYSTORE_MAGIC_SIZE) == 0) {
+        /* TEE-wrapped — unwrap */
+        uint8_t *wrapped_payload = file_data + PLATFORM_KEYSTORE_HEADER_SIZE;
+        size_t wrapped_len = file_size - PLATFORM_KEYSTORE_HEADER_SIZE;
+
+        if (!platform_keystore_available()) {
+            QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: File is TEE-wrapped but TEE unavailable");
+            goto cleanup;
+        }
+
+        if (platform_keystore_unwrap(wrapped_payload, wrapped_len,
+                                      &inner_data, &inner_size) != 0) {
+            QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: TEE unwrap failed (key invalidated?)");
+            result = -2;  /* Special code: TEE failure — caller maps to DNA_ENGINE_ERROR_TEE_FAILED */
+            goto cleanup;
+        }
+        inner_allocated = true;
+    } else {
+        /* Legacy format (DNAK or QGPK) — use file_data directly */
+        inner_data = file_data;
+        inner_size = file_size;
+    }
+
+    /* Decrypt/parse inner data using key_load_from_buffer */
+    if (key_load_from_buffer(inner_data, inner_size, password,
+                              raw_buffer, sizeof(raw_buffer), &raw_size) != 0) {
+        QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: Failed to decrypt key data (wrong password?)");
         goto cleanup;
     }
 
@@ -481,7 +606,7 @@ int qgp_key_load_encrypted(const char *path, const char *password, qgp_key_t **k
 
     /* Parse header */
     qgp_privkey_file_header_t header;
-    memcpy(&header, raw_data, sizeof(header));
+    memcpy(&header, raw_buffer, sizeof(header));
 
     /* Validate magic */
     if (memcmp(header.magic, QGP_PRIVKEY_MAGIC, 8) != 0) {
@@ -519,7 +644,7 @@ int qgp_key_load_encrypted(const char *path, const char *password, qgp_key_t **k
         key = NULL;
         goto cleanup;
     }
-    memcpy(key->public_key, raw_data + sizeof(header), key->public_key_size);
+    memcpy(key->public_key, raw_buffer + sizeof(header), key->public_key_size);
 
     /* Allocate and copy private key */
     key->private_key_size = header.private_key_size;
@@ -530,17 +655,21 @@ int qgp_key_load_encrypted(const char *path, const char *password, qgp_key_t **k
         key = NULL;
         goto cleanup;
     }
-    memcpy(key->private_key, raw_data + sizeof(header) + header.public_key_size, key->private_key_size);
+    memcpy(key->private_key, raw_buffer + sizeof(header) + header.public_key_size, key->private_key_size);
 
     *key_out = key;
     result = 0;
 
 cleanup:
-    if (raw_data) {
-        qgp_secure_memzero(raw_data, buffer_size);
-        free(raw_data);
+    if (inner_allocated && inner_data) {
+        qgp_secure_memzero(inner_data, inner_size);
+        free(inner_data);
     }
-
+    if (file_data) {
+        qgp_secure_memzero(file_data, file_size);
+        free(file_data);
+    }
+    qgp_secure_memzero(raw_buffer, sizeof(raw_buffer));
     return result;
 }
 
