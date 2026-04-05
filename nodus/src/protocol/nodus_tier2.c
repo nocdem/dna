@@ -192,6 +192,20 @@ int nodus_t2_servers(uint32_t txn, const uint8_t *token,
     return finish(&enc, out_len);
 }
 
+int nodus_t2_circ_open(uint32_t txn, const uint8_t *token,
+                        uint64_t cid, const nodus_key_t *peer_fp,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "circ_open");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    cbor_encode_cstr(&enc, "fp");  cbor_encode_bstr(&enc, peer_fp->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
 /* ── Media operations (Client → Nodus) ──────────────────────────── */
 
 int nodus_t2_media_put(uint32_t txn, const uint8_t *token,
@@ -1353,11 +1367,25 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES)
                         memcpy(msg->pk.bytes, val.bstr.ptr, NODUS_PK_BYTES);
                 }
-                /* fp (hello) */
+                /* fp (hello / circ_open peer fp) */
                 else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "fp", 2) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
-                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
-                        memcpy(msg->fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES) {
+                        if (strcmp(msg->method, "circ_open") == 0) {
+                            memcpy(msg->circ_peer_fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                            msg->has_circ = true;
+                        } else {
+                            memcpy(msg->fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                        }
+                    }
+                }
+                /* cid (circ_open: circuit id) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "cid", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->circ_cid = val.uint_val;
+                        msg->has_circ = true;
+                    }
                 }
                 /* sig (auth) */
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "sig", 3) == 0) {

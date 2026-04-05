@@ -228,6 +228,11 @@ add_executable(test_tier2 tests/test_tier2.c)
 target_link_libraries(test_tier2 nodus dsa nodus)
 add_test(NAME test_tier2 COMMAND test_tier2)
 
+# Circuit wire protocol test (VPN mesh Faz 1)
+add_executable(test_circuit_wire tests/test_circuit_wire.c)
+target_link_libraries(test_circuit_wire nodus dsa nodus)
+add_test(NAME test_circuit_wire COMMAND test_circuit_wire)
+
 # Media Tier 2 protocol test
 add_executable(test_media_tier2 tests/test_media_tier2.c)
 target_link_libraries(test_media_tier2 nodus dsa nodus)

@@ -60,6 +60,11 @@ int nodus_t2_ping(uint32_t txn, const uint8_t *token,
 int nodus_t2_servers(uint32_t txn, const uint8_t *token,
                       uint8_t *buf, size_t cap, size_t *out_len);
 
+/* Circuit (VPN mesh) — Faz 1 */
+int nodus_t2_circ_open(uint32_t txn, const uint8_t *token,
+                        uint64_t cid, const nodus_key_t *peer_fp,
+                        uint8_t *buf, size_t cap, size_t *out_len);
+
 /* ── Channel operations (Client → Nodus) ─────────────────────────── */
 
 int nodus_t2_ch_create(uint32_t txn, const uint8_t *token,
@@ -452,6 +457,11 @@ typedef struct {
     bool            media_encrypted;      /* true=DM/group, false=wall */
     bool            media_complete;       /* put_ok: all chunks received? */
     bool            has_media;            /* true if media fields present */
+
+    /* Circuit fields (Faz 1) */
+    uint64_t        circ_cid;
+    nodus_key_t     circ_peer_fp;
+    bool            has_circ;
 
     /* Error */
     int             error_code;
