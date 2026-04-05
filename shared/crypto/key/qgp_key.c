@@ -397,6 +397,7 @@ int qgp_key_save_encrypted(const qgp_key_t *key, const char *path, const char *p
     size_t raw_size = 0;
     uint8_t *inner_data = NULL;
     size_t inner_size = 0;
+    size_t inner_alloc_size = 0;
     uint8_t *wrapped = NULL;
     size_t wrapped_len = 0;
 
@@ -449,6 +450,7 @@ int qgp_key_save_encrypted(const qgp_key_t *key, const char *path, const char *p
             QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Memory allocation failed for inner buffer");
             goto cleanup;
         }
+        inner_alloc_size = inner_buf_size;
         if (key_encrypt(raw_data, raw_size, password, inner_data, &inner_size) != 0) {
             QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Password encryption failed");
             goto cleanup;
@@ -465,10 +467,17 @@ int qgp_key_save_encrypted(const qgp_key_t *key, const char *path, const char *p
         goto cleanup;
     }
 
-    /* Write DNAT file: 6-byte header + wrapped data */
-    FILE *fp = fopen(path, "wb");
+    /* Write DNAT file: 6-byte header + wrapped data (ATOMIC: temp + fsync + rename) */
+    char tmp_path[1024];
+    int tmp_ret = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    if (tmp_ret < 0 || (size_t)tmp_ret >= sizeof(tmp_path)) {
+        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Path too long");
+        goto cleanup;
+    }
+
+    FILE *fp = fopen(tmp_path, "wb");
     if (!fp) {
-        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Cannot open file for writing: %s", path);
+        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Cannot create temp file: %s", tmp_path);
         goto cleanup;
     }
 
@@ -477,17 +486,44 @@ int qgp_key_save_encrypted(const qgp_key_t *key, const char *path, const char *p
     dnat_header[4] = PLATFORM_KEYSTORE_VERSION;
     dnat_header[5] = PLATFORM_KEYSTORE_KEY_VER;
 
+    size_t expected = PLATFORM_KEYSTORE_HEADER_SIZE + wrapped_len;
     size_t written = 0;
     written += fwrite(dnat_header, 1, PLATFORM_KEYSTORE_HEADER_SIZE, fp);
     written += fwrite(wrapped, 1, wrapped_len, fp);
-    fflush(fp);
-#ifndef _WIN32
-    fsync(fileno(fp));
-#endif
-    fclose(fp);
 
-    if (written != PLATFORM_KEYSTORE_HEADER_SIZE + wrapped_len) {
-        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Short write to file");
+    if (written != expected) {
+        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: Short write to temp file (%zu/%zu)", written, expected);
+        fclose(fp);
+        unlink(tmp_path);
+        goto cleanup;
+    }
+
+    if (fflush(fp) != 0) {
+        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: fflush failed");
+        fclose(fp);
+        unlink(tmp_path);
+        goto cleanup;
+    }
+
+#ifndef _WIN32
+    if (fsync(fileno(fp)) != 0) {
+        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: fsync failed");
+        fclose(fp);
+        unlink(tmp_path);
+        goto cleanup;
+    }
+#endif
+
+    if (fclose(fp) != 0) {
+        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: fclose failed");
+        unlink(tmp_path);
+        goto cleanup;
+    }
+
+    /* Atomic rename — on success, old file replaced; on failure, old file intact */
+    if (rename(tmp_path, path) != 0) {
+        QGP_LOG_ERROR("KEY", "qgp_key_save_encrypted: rename failed: %s -> %s", tmp_path, path);
+        unlink(tmp_path);
         goto cleanup;
     }
 
@@ -497,7 +533,7 @@ int qgp_key_save_encrypted(const qgp_key_t *key, const char *path, const char *p
 cleanup:
     /* inner_data only needs free if it's a separate allocation (password path) */
     if (inner_data && inner_data != raw_data) {
-        qgp_secure_memzero(inner_data, inner_size);
+        qgp_secure_memzero(inner_data, inner_alloc_size);
         free(inner_data);
     }
     if (raw_data) {
@@ -523,7 +559,7 @@ cleanup:
 int qgp_key_load_encrypted(const char *path, const char *password, qgp_key_t **key_out) {
     if (!path || !key_out) {
         QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: Invalid arguments");
-        return -1;
+        return -1;  /* No allocations yet — safe to return directly */
     }
 
     int result = -1;
@@ -535,12 +571,15 @@ int qgp_key_load_encrypted(const char *path, const char *password, qgp_key_t **k
     uint8_t raw_buffer[16384];
     size_t raw_size = 0;
     qgp_key_t *key = NULL;
+    FILE *fp = NULL;
+
+    memset(raw_buffer, 0, sizeof(raw_buffer));
 
     /* Read file into memory */
-    FILE *fp = fopen(path, "rb");
+    fp = fopen(path, "rb");
     if (!fp) {
         QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: Cannot open file: %s", path);
-        return -1;
+        goto cleanup;
     }
 
     fseek(fp, 0, SEEK_END);
@@ -549,22 +588,21 @@ int qgp_key_load_encrypted(const char *path, const char *password, qgp_key_t **k
 
     if (fs <= 0 || fs > PLATFORM_KEYSTORE_MAX_FILE) {
         QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: Invalid file size: %ld", fs);
-        fclose(fp);
-        return -1;
+        goto cleanup;
     }
     file_size = (size_t)fs;
 
     file_data = malloc(file_size);
     if (!file_data) {
-        fclose(fp);
-        return -1;
+        QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: Memory allocation failed");
+        goto cleanup;
     }
     if (fread(file_data, 1, file_size, fp) != file_size) {
-        fclose(fp);
-        free(file_data);
-        return -1;
+        QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: fread failed");
+        goto cleanup;
     }
     fclose(fp);
+    fp = NULL;
 
     /* Detect DNAT magic */
     if (file_size > PLATFORM_KEYSTORE_HEADER_SIZE &&
@@ -661,6 +699,8 @@ int qgp_key_load_encrypted(const char *path, const char *password, qgp_key_t **k
     result = 0;
 
 cleanup:
+    if (fp) fclose(fp);
+    /* inner_data may alias file_data — only free if allocated by unwrap */
     if (inner_allocated && inner_data) {
         qgp_secure_memzero(inner_data, inner_size);
         free(inner_data);
