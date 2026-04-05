@@ -991,7 +991,9 @@ class _DataStorageSectionState extends ConsumerState<_DataStorageSection> {
           }
         }
       } else {
-        final appDir = await getApplicationDocumentsDirectory();
+        // Mobile: use ApplicationSupport dir (where C library writes logs)
+        // — matches the existing _openOrShareLogs() path discovery.
+        final appDir = await getApplicationSupportDirectory();
         final dir = Directory('${appDir.path}/dna/logs');
         if (await dir.exists()) {
           final files = await dir
