@@ -21,6 +21,7 @@
 #include "engine_includes.h"
 #include "database/channel_subscriptions_db.h"
 #include "database/db_encryption.h"
+#include "crypto/utils/platform_keystore.h"
 
 /* Forward declaration — implemented in dna_engine_wall_poll.c */
 void dna_engine_start_wall_poll(dna_engine_t *engine);
@@ -130,8 +131,36 @@ int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
             /* Verify password by attempting to load key */
             qgp_key_t *test_key = NULL;
             int load_rc = qgp_key_load_encrypted(kem_path, password, &test_key);
+            if (load_rc == -2) {
+                /* TEE unwrap failure — attempt recovery from .bak */
+                char bak_path[600];
+                snprintf(bak_path, sizeof(bak_path), "%s.bak", kem_path);
+                if (qgp_platform_file_exists(bak_path)) {
+                    QGP_LOG_WARN(LOG_TAG, "TEE unwrap failed, recovering identity.kem from backup");
+                    FILE *src = fopen(bak_path, "rb");
+                    FILE *dst = fopen(kem_path, "wb");
+                    if (src && dst) {
+                        uint8_t buf[4096];
+                        size_t n;
+                        while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+                            fwrite(buf, 1, n, dst);
+                        }
+                    }
+                    if (src) fclose(src);
+                    if (dst) fclose(dst);
+                    /* Retry load with legacy (restored) format */
+                    if (test_key) { qgp_key_free(test_key); test_key = NULL; }
+                    load_rc = qgp_key_load_encrypted(kem_path, password, &test_key);
+                }
+                if (load_rc == -2) {
+                    QGP_LOG_ERROR(LOG_TAG, "TEE key unavailable - restore from mnemonic required");
+                    if (test_key) qgp_key_free(test_key);
+                    return DNA_ENGINE_ERROR_TEE_FAILED;
+                }
+            }
             if (load_rc != 0 || !test_key) {
                 QGP_LOG_ERROR(LOG_TAG, "Failed to decrypt keys - incorrect password");
+                if (test_key) qgp_key_free(test_key);
                 return DNA_ENGINE_ERROR_WRONG_PASSWORD;
             }
             qgp_key_free(test_key);
@@ -218,6 +247,24 @@ int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
             QGP_LOG_WARN(LOG_TAG, "Warning: Failed to load KEM keys for GEK encryption");
             if (kem_key) qgp_key_free(kem_key);
         }
+    }
+
+    /* TEE key wrapping migration (Android only, noop on desktop).
+     * Runs AFTER keys are successfully loaded — migrates from legacy
+     * password-encrypted format to DNAT (TEE-wrapped) format.
+     * On desktop this returns PLATFORM_KEYSTORE_UNAVAILABLE (no-op). */
+    {
+        char kem_mig_path[512], dsa_mig_path[512];
+        snprintf(kem_mig_path, sizeof(kem_mig_path), "%s/keys/identity.kem", engine->data_dir);
+        snprintf(dsa_mig_path, sizeof(dsa_mig_path), "%s/keys/identity.dsa", engine->data_dir);
+
+        int rc_kem = platform_keystore_migrate_file(kem_mig_path, engine->data_dir);
+        int rc_dsa = platform_keystore_migrate_file(dsa_mig_path, engine->data_dir);
+
+        if (rc_kem == PLATFORM_KEYSTORE_OK)
+            QGP_LOG_INFO(LOG_TAG, "identity.kem migrated to TEE-wrapped format");
+        if (rc_dsa == PLATFORM_KEYSTORE_OK)
+            QGP_LOG_INFO(LOG_TAG, "identity.dsa migrated to TEE-wrapped format");
     }
 
     /* Initialize contacts database BEFORE P2P/offline message check
