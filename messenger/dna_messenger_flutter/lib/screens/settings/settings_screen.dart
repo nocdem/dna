@@ -1,4 +1,5 @@
 // Settings Screen - App settings and profile management
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:archive/archive.dart';
@@ -11,8 +12,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../config/app_config.dart';
 import '../../l10n/app_localizations.dart';
 import '../../utils/clipboard_utils.dart';
+import '../../utils/log_sanitizer.dart';
 import '../../utils/screen_security.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
@@ -28,6 +31,28 @@ import 'app_lock_settings_screen.dart';
 final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
   return await PackageInfo.fromPlatform();
 });
+
+class _DebugLogPayload {
+  final Uint8List bytes;
+  final bool truncated;
+  _DebugLogPayload(this.bytes, this.truncated);
+}
+
+/// Background isolate: read log file, sanitize secrets, truncate to last 3 MB.
+_DebugLogPayload _readAndSanitizeLog(String path) {
+  const maxBytes = 3 * 1024 * 1024;
+  final file = File(path);
+  final raw = file.readAsStringSync();
+  final safe = LogSanitizer.scrub(raw);
+  final encoded = Uint8List.fromList(utf8.encode(safe));
+  if (encoded.length > maxBytes) {
+    final tail = Uint8List.fromList(
+      encoded.sublist(encoded.length - maxBytes),
+    );
+    return _DebugLogPayload(tail, true);
+  }
+  return _DebugLogPayload(encoded, false);
+}
 
 /// Background isolate function for zipping log files (avoids UI freeze)
 List<int>? _zipLogFiles(List<String> filePaths) {
@@ -798,6 +823,7 @@ class _DataStorageSection extends ConsumerStatefulWidget {
 class _DataStorageSectionState extends ConsumerState<_DataStorageSection> {
   String? _cacheSizeString;
   bool _isClearing = false;
+  bool _isSendingLog = false;
 
   @override
   void initState() {
@@ -898,8 +924,140 @@ class _DataStorageSectionState extends ConsumerState<_DataStorageSection> {
         ),
         // Logs
         _LogsContent(onOpenOrShareLogs: _openOrShareLogs),
+        // Send Debug Log to Developer
+        ListTile(
+          leading: _isSendingLog
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const FaIcon(FontAwesomeIcons.paperPlane),
+          title: Text(l10n.debugLogSendToDev),
+          subtitle: Text(l10n.debugLogSendToDevSubtitle),
+          trailing: _isSendingLog ? null : const FaIcon(FontAwesomeIcons.chevronRight),
+          onTap: _isSendingLog ? null : () => _confirmSendDebugLog(context),
+        ),
       ],
     );
+  }
+
+  Future<void> _confirmSendDebugLog(BuildContext context) async {
+    final l10n = AppLocalizations.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l10n.debugLogSendConfirmTitle),
+        content: Text(l10n.debugLogSendConfirmBody),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l10n.debugLogSendToDev),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    if (!context.mounted) return;
+    await _sendDebugLog(context);
+  }
+
+  Future<void> _sendDebugLog(BuildContext context) async {
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _isSendingLog = true);
+    try {
+      // 1. Locate the most recent log file
+      File? logFile;
+      if (Platform.isLinux || Platform.isMacOS || Platform.isWindows) {
+        final dir = Directory(_getLogsDir());
+        if (await dir.exists()) {
+          final files = await dir
+              .list()
+              .where((f) =>
+                  f is File && f.path.contains('dna') && f.path.endsWith('.log'))
+              .cast<File>()
+              .toList();
+          if (files.isNotEmpty) {
+            final stats = await Future.wait(
+              files.map((f) async => MapEntry(f, await f.stat())),
+            );
+            stats.sort((a, b) => b.value.modified.compareTo(a.value.modified));
+            logFile = stats.first.key;
+          }
+        }
+      } else {
+        final appDir = await getApplicationDocumentsDirectory();
+        final dir = Directory('${appDir.path}/dna/logs');
+        if (await dir.exists()) {
+          final files = await dir
+              .list()
+              .where((f) =>
+                  f is File && f.path.contains('dna') && f.path.endsWith('.log'))
+              .cast<File>()
+              .toList();
+          if (files.isNotEmpty) {
+            final stats = await Future.wait(
+              files.map((f) async => MapEntry(f, await f.stat())),
+            );
+            stats.sort((a, b) => b.value.modified.compareTo(a.value.modified));
+            logFile = stats.first.key;
+          }
+        }
+      }
+
+      if (logFile == null) {
+        messenger.showSnackBar(
+          SnackBar(content: Text(l10n.settingsNoLogFiles)),
+        );
+        return;
+      }
+
+      // 2. Read + sanitize on a background isolate
+      final payloadData = await compute(_readAndSanitizeLog, logFile.path);
+
+      // 3. Engine
+      final eng = ref.read(engineProvider).valueOrNull;
+      if (eng == null) {
+        messenger.showSnackBar(
+          SnackBar(content: Text(l10n.debugLogSendFailed('engine not ready'))),
+        );
+        return;
+      }
+
+      // 4. Building hint (platform + app version)
+      final pkg = await PackageInfo.fromPlatform();
+      final hint = '${Platform.operatingSystem}-v${pkg.version}';
+
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(l10n.debugLogSendSending),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+
+      // 5. Send via FFI
+      await eng.sendDebugLog(
+        receiverFpHex: AppConfig.devDebugFingerprint,
+        logBody: payloadData.bytes,
+        hint: hint,
+      );
+
+      final msg = payloadData.truncated
+          ? '${l10n.debugLogSendSuccess} · ${l10n.debugLogSendTruncated}'
+          : l10n.debugLogSendSuccess;
+      messenger.showSnackBar(SnackBar(content: Text(msg)));
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(l10n.debugLogSendFailed(e.toString()))),
+      );
+    } finally {
+      if (mounted) setState(() => _isSendingLog = false);
+    }
   }
 
   void _confirmClearCache(BuildContext context) {

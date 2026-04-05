@@ -238,6 +238,19 @@
   "settingsOpenLogsFolderSubtitle": "Open file manager at logs directory",
   "settingsShareLogs": "Share Logs",
   "settingsShareLogsSubtitle": "Zip and share log files",
+  "debugLogSendToDev": "Send Debug Log to Developer",
+  "debugLogSendToDevSubtitle": "Send the last 3 MB of the log (secrets removed)",
+  "debugLogSendConfirmTitle": "Send debug log?",
+  "debugLogSendConfirmBody": "Send the last 3 MB of the debug log to the developer? Secrets (passwords, keys, mnemonics) are automatically removed before sending.",
+  "debugLogSendSending": "Sending debug log…",
+  "debugLogSendSuccess": "Debug log sent",
+  "debugLogSendFailed": "Send failed: {error}",
+  "@debugLogSendFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "debugLogSendTruncated": "Log was truncated to 3 MB",
   "settingsLogsFolderNotExist": "Logs folder does not exist yet",
   "settingsNoLogFiles": "No log files found",
   "settingsFailedCreateZip": "Failed to create zip archive",

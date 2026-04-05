@@ -518,6 +518,34 @@ class AppLocalizationsEs extends AppLocalizations {
       'Comprimir y compartir archivos de registro';
 
   @override
+  String get debugLogSendToDev => 'Send Debug Log to Developer';
+
+  @override
+  String get debugLogSendToDevSubtitle =>
+      'Send the last 3 MB of the log (secrets removed)';
+
+  @override
+  String get debugLogSendConfirmTitle => 'Send debug log?';
+
+  @override
+  String get debugLogSendConfirmBody =>
+      'Send the last 3 MB of the debug log to the developer? Secrets (passwords, keys, mnemonics) are automatically removed before sending.';
+
+  @override
+  String get debugLogSendSending => 'Sending debug log…';
+
+  @override
+  String get debugLogSendSuccess => 'Debug log sent';
+
+  @override
+  String debugLogSendFailed(String error) {
+    return 'Send failed: $error';
+  }
+
+  @override
+  String get debugLogSendTruncated => 'Log was truncated to 3 MB';
+
+  @override
   String get settingsLogsFolderNotExist =>
       'La carpeta de registros aún no existe';
 

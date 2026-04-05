@@ -1058,6 +1058,54 @@ abstract class AppLocalizations {
   /// **'Zip and share log files'**
   String get settingsShareLogsSubtitle;
 
+  /// No description provided for @debugLogSendToDev.
+  ///
+  /// In en, this message translates to:
+  /// **'Send Debug Log to Developer'**
+  String get debugLogSendToDev;
+
+  /// No description provided for @debugLogSendToDevSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Send the last 3 MB of the log (secrets removed)'**
+  String get debugLogSendToDevSubtitle;
+
+  /// No description provided for @debugLogSendConfirmTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Send debug log?'**
+  String get debugLogSendConfirmTitle;
+
+  /// No description provided for @debugLogSendConfirmBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Send the last 3 MB of the debug log to the developer? Secrets (passwords, keys, mnemonics) are automatically removed before sending.'**
+  String get debugLogSendConfirmBody;
+
+  /// No description provided for @debugLogSendSending.
+  ///
+  /// In en, this message translates to:
+  /// **'Sending debug log…'**
+  String get debugLogSendSending;
+
+  /// No description provided for @debugLogSendSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Debug log sent'**
+  String get debugLogSendSuccess;
+
+  /// No description provided for @debugLogSendFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Send failed: {error}'**
+  String debugLogSendFailed(String error);
+
+  /// No description provided for @debugLogSendTruncated.
+  ///
+  /// In en, this message translates to:
+  /// **'Log was truncated to 3 MB'**
+  String get debugLogSendTruncated;
+
   /// No description provided for @settingsLogsFolderNotExist.
   ///
   /// In en, this message translates to:

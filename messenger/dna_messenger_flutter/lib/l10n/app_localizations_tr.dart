@@ -517,6 +517,34 @@ class AppLocalizationsTr extends AppLocalizations {
       'Günlük dosyalarını sıkıştır ve paylaş';
 
   @override
+  String get debugLogSendToDev => 'Debug Log\'u Geliştiriciye Gönder';
+
+  @override
+  String get debugLogSendToDevSubtitle =>
+      'Log\'un son 3 MB\'ı gönderilir (sırlar temizlenir)';
+
+  @override
+  String get debugLogSendConfirmTitle => 'Debug log gönderilsin mi?';
+
+  @override
+  String get debugLogSendConfirmBody =>
+      'Debug log\'un son 3 MB\'ı geliştiriciye gönderilecek. Sırlar (parolalar, anahtarlar, kurtarma cümleleri) gönderilmeden önce otomatik temizlenir.';
+
+  @override
+  String get debugLogSendSending => 'Debug log gönderiliyor…';
+
+  @override
+  String get debugLogSendSuccess => 'Debug log gönderildi';
+
+  @override
+  String debugLogSendFailed(String error) {
+    return 'Gönderim başarısız: $error';
+  }
+
+  @override
+  String get debugLogSendTruncated => 'Log 3 MB\'a kısaltıldı';
+
+  @override
   String get settingsLogsFolderNotExist => 'Günlük klasörü henüz mevcut değil';
 
   @override
