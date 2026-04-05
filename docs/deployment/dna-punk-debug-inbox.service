@@ -13,7 +13,17 @@ Restart=on-failure
 RestartSec=5s
 StandardOutput=journal
 StandardError=journal
+
+# Hardening
 NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log/dna-debug /home/nocdem/.dna
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
 
 [Install]
 WantedBy=default.target
