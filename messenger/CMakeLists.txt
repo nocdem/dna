@@ -151,7 +151,6 @@ set(COMMON_SOURCES
     # SDK Independence: Infrastructure modules
     ${SHARED_DIR}/crypto/key/qgp_key.c
     ${SHARED_DIR}/crypto/key/key_encryption.c
-    ${SHARED_DIR}/crypto/utils/platform_keystore_noop.c
     ${SHARED_DIR}/crypto/sign/qgp_signature.c
     ${SHARED_DIR}/crypto/sign/secp256k1_sign.c        # secp256k1 ECDSA recoverable signing
     ${SHARED_DIR}/crypto/sign/ed25519_sign.c           # Ed25519 signing (Solana)
@@ -160,6 +159,14 @@ set(COMMON_SOURCES
     # Cross-platform abstraction layer
     ${PLATFORM_SOURCES}
 )
+
+# Platform keystore: TEE on Android, noop on desktop
+if(ANDROID)
+    set(PLATFORM_KEYSTORE_SRC ${SHARED_DIR}/crypto/utils/platform_keystore_android.c)
+else()
+    set(PLATFORM_KEYSTORE_SRC ${SHARED_DIR}/crypto/utils/platform_keystore_noop.c)
+endif()
+list(APPEND COMMON_SOURCES ${PLATFORM_KEYSTORE_SRC})
 
 # =============================================================================
 # DNA Connect Library (libdna)
