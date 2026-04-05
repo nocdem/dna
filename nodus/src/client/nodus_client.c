@@ -3470,7 +3470,15 @@ int nodus_circuit_open(nodus_client_t *client, const nodus_key_t *peer_fp,
     }
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
-    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+    /* Circuit open uses a shorter bounded timeout than request_timeout_ms:
+     * a slow/malicious peer nodus could otherwise hold the pending slot for
+     * the full request_timeout_ms (potentially 60s). */
+    int timeout_ms = NODUS_CIRCUIT_OPEN_TIMEOUT_MS;
+    if (client->config.request_timeout_ms > 0 &&
+        client->config.request_timeout_ms < timeout_ms) {
+        timeout_ms = client->config.request_timeout_ms;
+    }
+    if (!wait_response(client, req, timeout_ms)) {
         free_pending(client, req);
         pthread_mutex_lock(&client->circuits_mutex);
         h->in_use = false;

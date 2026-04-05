@@ -120,6 +120,7 @@ extern "C" {
 #define NODUS_MAX_CIRCUITS_PER_SESSION   16
 #define NODUS_MAX_CIRCUIT_PAYLOAD        (64 * 1024)
 #define NODUS_INTER_CIRCUITS_MAX         256
+#define NODUS_CIRCUIT_OPEN_TIMEOUT_MS    5000   /* Bounded wait for circ_open ack */
 
 /* TCP keepalive */
 #define NODUS_TCP_KEEPIDLE       30
