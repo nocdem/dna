@@ -384,28 +384,11 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
 
     if (atomic_load(&engine->shutdown_requested)) goto cleanup;
 
-    /* 1c. Sync GEKs from DHT (restore group encryption keys on new device)
-     * v0.6.54+: Moved from blocking identity load to background thread. */
-    if (engine->messenger) {
-        int gek_sync_result = messenger_gek_auto_sync(engine->messenger);
-        if (gek_sync_result == 0) {
-            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: synced GEKs from DHT");
-
-            /* Notify Flutter that GEKs are ready */
-            dna_event_t event = {0};
-            event.type = DNA_EVENT_GEKS_SYNCED;
-            event.data.geks_synced.geks_synced = 1;
-            dna_dispatch_event(engine, &event);
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: GEK sync failed: %d (non-fatal)", gek_sync_result);
-        }
-    }
-
-    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
-
-    /* 1d. Restore groups from DHT to local cache (Android startup fix)
+    /* 1c. Restore groups from DHT to local cache (Android startup fix)
      * On fresh startup, local SQLite cache is empty. Fetch group list from DHT
-     * and sync each group to local cache so they appear in the UI. */
+     * and sync each group to local cache so they appear in the UI.
+     * v0.9.165: Moved BEFORE GEK sync so we can skip GEK fetch when user has
+     * zero groups (saves ~4s DHT timeout on every cold start for group-less users). */
     if (engine->messenger) {
         int restored = messenger_restore_groups_from_dht(engine->messenger);
         if (restored > 0) {
@@ -430,6 +413,39 @@ void *dna_engine_stabilization_retry_thread(void *arg) {
             }
         } else {
             QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: group restore failed: %d", restored);
+        }
+    }
+
+    if (atomic_load(&engine->shutdown_requested)) goto cleanup;
+
+    /* 1d. Sync GEKs from DHT (restore group encryption keys on new device).
+     * v0.9.165: Skip when local cache has zero groups — GEKs only decrypt
+     * group messages, so no groups means no GEKs needed. This avoids the
+     * ~4s DHT miss timeout on every cold start for users with no groups. */
+    if (engine->messenger) {
+        dht_group_cache_entry_t *local_groups = NULL;
+        int local_group_count = 0;
+        int list_ret = dht_groups_list_for_user(engine->fingerprint,
+                                                 &local_groups, &local_group_count);
+        if (local_groups) {
+            dht_groups_free_cache_entries(local_groups, local_group_count);
+        }
+
+        if (list_ret == 0 && local_group_count == 0) {
+            QGP_LOG_INFO(LOG_TAG, "[RETRY] Skipping GEK sync: local cache has zero groups");
+        } else {
+            int gek_sync_result = messenger_gek_auto_sync(engine->messenger);
+            if (gek_sync_result == 0) {
+                QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: synced GEKs from DHT");
+
+                /* Notify Flutter that GEKs are ready */
+                dna_event_t event = {0};
+                event.type = DNA_EVENT_GEKS_SYNCED;
+                event.data.geks_synced.geks_synced = 1;
+                dna_dispatch_event(engine, &event);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "[RETRY] Post-stabilization: GEK sync failed: %d (non-fatal)", gek_sync_result);
+            }
         }
     }
 
