@@ -97,4 +97,12 @@ int dna_debug_log_decrypt_inner(
     const uint8_t gcm_tag[DNA_DEBUG_LOG_GCM_TAG_LEN],
     uint8_t *inner_out, size_t inner_cap, size_t *inner_len_out);
 
+/* Compute DHT inbox key: SHA3-512("dna-debug-inbox" || receiver_fp_raw_64).
+ * receiver_fp_raw is the 64-byte Dilithium5 fingerprint (raw bytes).
+ * Output: 64-byte SHA3-512 digest in key_out.
+ */
+int dna_debug_log_inbox_key(
+    const uint8_t receiver_fp_raw[64],
+    uint8_t key_out[64]);
+
 #endif /* DNA_DEBUG_LOG_WIRE_H */

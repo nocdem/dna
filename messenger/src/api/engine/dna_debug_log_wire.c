@@ -2,6 +2,7 @@
 #include <string.h>
 #include "crypto/enc/qgp_kyber.h"
 #include "crypto/enc/qgp_aes.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_random.h"
 
 static void write_be16(uint8_t *dst, uint16_t v) {
@@ -170,5 +171,15 @@ int dna_debug_log_decrypt_inner(
     memset(shared_secret, 0, sizeof(shared_secret));
     if (rc != 0) return DNA_DEBUG_LOG_ERR_GCM_FAIL;
     *inner_len_out = pt_len;
+    return DNA_DEBUG_LOG_OK;
+}
+
+int dna_debug_log_inbox_key(const uint8_t receiver_fp_raw[64], uint8_t key_out[64]) {
+    if (!receiver_fp_raw || !key_out) return DNA_DEBUG_LOG_ERR_NULL;
+    static const char PREFIX[] = "dna-debug-inbox";
+    uint8_t buf[sizeof(PREFIX) - 1 + 64];
+    memcpy(buf, PREFIX, sizeof(PREFIX) - 1);
+    memcpy(buf + sizeof(PREFIX) - 1, receiver_fp_raw, 64);
+    if (qgp_sha3_512(buf, sizeof(buf), key_out) != 0) return DNA_DEBUG_LOG_ERR_GCM_FAIL;
     return DNA_DEBUG_LOG_OK;
 }

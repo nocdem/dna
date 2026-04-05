@@ -141,6 +141,22 @@ static void test_encrypt_decrypt_roundtrip(void) {
     printf("  OK: encrypt/decrypt roundtrip + tamper\n");
 }
 
+static void test_inbox_key_determinism(void) {
+    uint8_t fp[64];
+    for (size_t i = 0; i < 64; i++) fp[i] = (uint8_t)i;
+    uint8_t k1[64], k2[64];
+    assert(dna_debug_log_inbox_key(fp, k1) == DNA_DEBUG_LOG_OK);
+    assert(dna_debug_log_inbox_key(fp, k2) == DNA_DEBUG_LOG_OK);
+    assert(memcmp(k1, k2, 64) == 0);
+
+    /* Different fp -> different key */
+    fp[0] ^= 1;
+    uint8_t k3[64];
+    assert(dna_debug_log_inbox_key(fp, k3) == DNA_DEBUG_LOG_OK);
+    assert(memcmp(k1, k3, 64) != 0);
+    printf("  OK: inbox key derivation deterministic + unique\n");
+}
+
 int main(void) {
     printf("test_debug_log_wire:\n");
     test_encode_decode_inner_roundtrip();
@@ -150,6 +166,7 @@ int main(void) {
     test_decode_outer_truncated();
     test_encode_decode_outer_roundtrip();
     test_encrypt_decrypt_roundtrip();
+    test_inbox_key_determinism();
     printf("ALL PASS\n");
     return 0;
 }
