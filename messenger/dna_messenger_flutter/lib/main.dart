@@ -30,11 +30,22 @@ import 'utils/logger.dart';
 /// Used by QrScannerScreen to stop camera when covered by another route
 final RouteObserver<ModalRoute<void>> routeObserver = RouteObserver<ModalRoute<void>>();
 
+/// Startup profiling stopwatch — tracks Dart-side cold-start latency.
+/// Started at main() entry, used to attribute the 5s gap between engine
+/// ready and first frame. Logs are buffered by DnaLogger until engine set.
+final Stopwatch _startupStopwatch = Stopwatch()..start();
+
+void _profileLog(String stage) {
+  log('STARTUP_PROFILE', '+${_startupStopwatch.elapsedMilliseconds}ms $stage');
+}
+
 void main() {
   // Run app with error zone to capture uncaught exceptions
   // All initialization must be inside the zone to avoid zone mismatch
   runAppWithErrorLogging(() async {
+    _profileLog('main() entry');
     WidgetsFlutterBinding.ensureInitialized();
+    _profileLog('WidgetsFlutterBinding.ensureInitialized done');
 
     // Setup error handlers to capture exceptions to log file
     setupErrorHandlers();
@@ -52,6 +63,7 @@ void main() {
 
     // Initialize local notification service
     await NotificationService.instance.init();
+    _profileLog('NotificationService init done, calling runApp()');
 
     runApp(
       const ProviderScope(
@@ -66,8 +78,10 @@ class DnaMessengerApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    _profileLog('DnaMessengerApp.build() entry');
     final themeMode = ref.watch(themeModeProvider);
     final locale = ref.watch(localeProvider);
+    _profileLog('DnaMessengerApp.build() theme+locale watched, returning MaterialApp');
     return MaterialApp(
       title: 'DNA Connect',
       debugShowCheckedModeBanner: false,
@@ -107,8 +121,10 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   @override
   void initState() {
     super.initState();
+    _profileLog('_AppLoaderState.initState() entry');
     // Set up lifecycle observer after first frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _profileLog('_AppLoaderState initState post-frame fired');
       _lifecycleObserver = AppLifecycleObserver(ref);
       WidgetsBinding.instance.addObserver(_lifecycleObserver!);
     });
@@ -345,6 +361,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
 
   @override
   Widget build(BuildContext context) {
+    _profileLog('_AppLoaderState.build() entry (startupDone=$_startupDone)');
     final engine = ref.watch(engineProvider);
     final currentFingerprint = ref.watch(currentFingerprintProvider);
     // Watch appFullyReadyProvider to wait for DHT operations (presence lookups) to complete
@@ -364,7 +381,9 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
 
         // Trigger state sync once
         if (!_startupDone) {
+          _profileLog('engine.when(data:) fired, scheduling post-frame _syncIdentityState');
           WidgetsBinding.instance.addPostFrameCallback((_) {
+            _profileLog('post-frame fired, calling _syncIdentityState');
             _syncIdentityState(eng);
           });
           return const _LoadingScreen();
