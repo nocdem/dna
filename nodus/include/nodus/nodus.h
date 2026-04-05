@@ -110,13 +110,43 @@ typedef struct {
     bool        in_use;
 } nodus_pending_t;
 
+/* ── Circuit (VPN mesh Faz 1) ───────────────────────────────────── */
+
+struct nodus_client;
+
+typedef struct nodus_circuit_handle nodus_circuit_handle_t;
+
+typedef void (*nodus_circuit_data_cb)(nodus_circuit_handle_t *h,
+                                       const uint8_t *data, size_t len,
+                                       void *user);
+
+typedef void (*nodus_circuit_close_cb)(nodus_circuit_handle_t *h,
+                                        int reason, void *user);
+
+typedef void (*nodus_circuit_inbound_cb)(struct nodus_client *client,
+                                          const nodus_key_t *peer_fp,
+                                          nodus_circuit_handle_t *h,
+                                          void *user);
+
+struct nodus_circuit_handle {
+    struct nodus_client       *client;
+    uint64_t                   cid;             /* Locally-known cid */
+    bool                       in_use;
+    bool                       closed;
+    nodus_circuit_data_cb      on_data;
+    nodus_circuit_close_cb     on_close;
+    void                      *user;
+};
+
+#define NODUS_CLIENT_MAX_CIRCUITS  16
+
 /* ── Client ─────────────────────────────────────────────────────── */
 
 /* Forward declarations for internal types */
 struct nodus_tcp;
 struct nodus_tcp_conn;
 
-typedef struct {
+typedef struct nodus_client {
     nodus_client_config_t  config;
     nodus_identity_t       identity;
     nodus_client_state_t   state;
@@ -158,6 +188,13 @@ typedef struct {
 
     /* App lifecycle — suspend prevents auto-reconnect while in background */
     _Atomic bool           suspended;
+
+    /* Circuit handles (VPN mesh Faz 1) */
+    nodus_circuit_handle_t    circuits[NODUS_CLIENT_MAX_CIRCUITS];
+    nodus_circuit_inbound_cb  on_circuit_inbound;
+    void                     *circuit_inbound_user;
+    _Atomic uint32_t          next_client_cid;
+    pthread_mutex_t           circuits_mutex;
 
 } nodus_client_t;
 
@@ -805,6 +842,35 @@ const char *nodus_client_fingerprint(const nodus_client_t *client);
  * Free a posts array returned by nodus_client_ch_get_posts().
  */
 void nodus_client_free_posts(nodus_channel_post_t *posts, size_t count);
+
+/* ── Circuit operations (Faz 1) ─────────────────────────────────── */
+
+/**
+ * Open outbound circuit to a peer by fingerprint. Blocks until ack or error.
+ * Returns 0 on success (out handle populated), or a NODUS_ERR_* code.
+ */
+int nodus_circuit_open(nodus_client_t *client, const nodus_key_t *peer_fp,
+                        nodus_circuit_data_cb on_data,
+                        nodus_circuit_close_cb on_close,
+                        void *user,
+                        nodus_circuit_handle_t **out);
+
+/** Register global callback for inbound circuits from peers. */
+void nodus_circuit_set_inbound_cb(nodus_client_t *client,
+                                    nodus_circuit_inbound_cb cb, void *user);
+
+/** Attach data/close callbacks to an inbound circuit handle. */
+int nodus_circuit_attach(nodus_circuit_handle_t *h,
+                          nodus_circuit_data_cb on_data,
+                          nodus_circuit_close_cb on_close,
+                          void *user);
+
+/** Send data through circuit. Returns 0 on success. */
+int nodus_circuit_send(nodus_circuit_handle_t *h,
+                        const uint8_t *data, size_t len);
+
+/** Close circuit. Notifies peer and releases handle. */
+int nodus_circuit_close(nodus_circuit_handle_t *h);
 
 #ifdef __cplusplus
 }

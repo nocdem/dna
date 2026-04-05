@@ -27,6 +27,12 @@ static char *portable_strndup(const char *s, size_t n) {
 #define strndup portable_strndup
 #endif
 
+/* Circuit / inter-node method-prefix checks (for decoder dispatch on
+ * shared keys like "cid", "d", "code" that appear in both circ_* and
+ * ri_* methods as well as legacy methods like put). */
+#define IS_CIRC_METHOD(m) (strncmp((m), "circ_", 5) == 0)
+#define IS_RI_METHOD(m)   (strncmp((m), "ri_", 3) == 0)
+
 /* ── Common helpers ──────────────────────────────────────────────── */
 
 static void enc_query_header(cbor_encoder_t *enc, size_t map_count,
@@ -189,6 +195,147 @@ int nodus_t2_servers(uint32_t txn, const uint8_t *token,
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 4, txn, "servers");
     enc_token(&enc, token);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_circ_open(uint32_t txn, const uint8_t *token,
+                        uint64_t cid, const nodus_key_t *peer_fp,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "circ_open");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    cbor_encode_cstr(&enc, "fp");  cbor_encode_bstr(&enc, peer_fp->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_circ_open_ok(uint32_t txn, uint64_t cid,
+                           uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "circ_open");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_circ_open_err(uint32_t txn, uint64_t cid, int code,
+                            uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "circ_open_err");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "cid");  cbor_encode_uint(&enc, cid);
+    cbor_encode_cstr(&enc, "code"); cbor_encode_uint(&enc, (uint64_t)code);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_circ_inbound(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp,
+                           uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "circ_inbound");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    cbor_encode_cstr(&enc, "fp");  cbor_encode_bstr(&enc, peer_fp->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_circ_data(uint32_t txn, const uint8_t *token,
+                        uint64_t cid, const uint8_t *data, size_t data_len,
+                        uint8_t *buf, size_t cap, size_t *out_len) {
+    if (data_len > NODUS_MAX_CIRCUIT_PAYLOAD) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "circ_data");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    cbor_encode_cstr(&enc, "d");   cbor_encode_bstr(&enc, data, data_len);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_circ_close(uint32_t txn, const uint8_t *token, uint64_t cid,
+                         uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "circ_close");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    return finish(&enc, out_len);
+}
+
+/* ── Inter-node circuit forwarding (Faz 1, TCP 4002) ────────────── */
+
+int nodus_t2_ri_open(uint32_t txn, uint64_t ups_cid,
+                      const nodus_key_t *src_fp, const nodus_key_t *dst_fp,
+                      uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ri_open");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 3);
+    cbor_encode_cstr(&enc, "ups"); cbor_encode_uint(&enc, ups_cid);
+    cbor_encode_cstr(&enc, "src"); cbor_encode_bstr(&enc, src_fp->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "dst"); cbor_encode_bstr(&enc, dst_fp->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ri_open_ok(uint32_t txn, uint64_t ups_cid, uint64_t dns_cid,
+                         uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ri_open_ok");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ups"); cbor_encode_uint(&enc, ups_cid);
+    cbor_encode_cstr(&enc, "dns"); cbor_encode_uint(&enc, dns_cid);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ri_open_err(uint32_t txn, uint64_t ups_cid, int code,
+                          uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "ri_open_err");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ups");  cbor_encode_uint(&enc, ups_cid);
+    cbor_encode_cstr(&enc, "code"); cbor_encode_uint(&enc, (uint64_t)code);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ri_data(uint32_t txn, uint64_t cid,
+                      const uint8_t *data, size_t data_len,
+                      uint8_t *buf, size_t cap, size_t *out_len) {
+    if (data_len > NODUS_MAX_CIRCUIT_PAYLOAD) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ri_data");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    cbor_encode_cstr(&enc, "d");   cbor_encode_bstr(&enc, data, data_len);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ri_close(uint32_t txn, uint64_t cid,
+                       uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ri_close");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
     return finish(&enc, out_len);
 }
 
@@ -1291,6 +1438,11 @@ int nodus_t2_ch_ring_rejoin(uint32_t txn,
 
 /* ── Decode ──────────────────────────────────────────────────────── */
 
+/* IMPORTANT: This decoder dispatches on msg->method for shared keys
+ * ("cid", "d", "code", "fp", "src", "dst"). This relies on the encoder
+ * writing the "q" (method) field BEFORE "a" (args) in the top-level map.
+ * All encoders in this file follow that order via enc_query_header /
+ * enc_response_header — do not reorder them. */
 int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
     if (!buf || !msg) return -1;
     memset(msg, 0, sizeof(*msg));
@@ -1353,11 +1505,81 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES)
                         memcpy(msg->pk.bytes, val.bstr.ptr, NODUS_PK_BYTES);
                 }
-                /* fp (hello) */
+                /* fp (hello / circ_open / circ_inbound peer fp) */
                 else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "fp", 2) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
-                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
-                        memcpy(msg->fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES) {
+                        if (strcmp(msg->method, "circ_open") == 0 ||
+                            strcmp(msg->method, "circ_inbound") == 0) {
+                            memcpy(msg->circ_peer_fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                            msg->has_circ = true;
+                        } else {
+                            memcpy(msg->fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                        }
+                    }
+                }
+                /* cid (circ_*: circuit id; ri_data/ri_close: inter-node cid) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "cid", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        if (strcmp(msg->method, "ri_data") == 0 ||
+                            strcmp(msg->method, "ri_close") == 0) {
+                            msg->ri_cid = val.uint_val;
+                            msg->has_ri = true;
+                        } else {
+                            msg->circ_cid = val.uint_val;
+                            if (IS_CIRC_METHOD(msg->method)) {
+                                msg->has_circ = true;
+                            }
+                        }
+                    }
+                }
+                /* code (circ_open_err / ri_open_err: error code) */
+                else if (akey.tstr.len == 4 && memcmp(akey.tstr.ptr, "code", 4) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        if (strcmp(msg->method, "ri_open_err") == 0) {
+                            msg->ri_err_code = (int)val.uint_val;
+                            msg->has_ri = true;
+                        } else if (IS_CIRC_METHOD(msg->method)) {
+                            msg->circ_err_code = (int)val.uint_val;
+                            msg->has_circ = true;
+                        }
+                    }
+                }
+                /* ups (ri_open / ri_open_ok / ri_open_err: upstream cid) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "ups", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->ri_ups_cid = val.uint_val;
+                        msg->has_ri = true;
+                    }
+                }
+                /* dns (ri_open_ok: downstream cid) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "dns", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT) {
+                        msg->ri_dns_cid = val.uint_val;
+                        msg->has_ri = true;
+                    }
+                }
+                /* src (ri_open: source user fp) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "src", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES &&
+                        IS_RI_METHOD(msg->method)) {
+                        memcpy(msg->ri_src_fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                        msg->has_ri = true;
+                    }
+                }
+                /* dst (ri_open: target user fp) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "dst", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES &&
+                        IS_RI_METHOD(msg->method)) {
+                        memcpy(msg->ri_dst_fp.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
+                        msg->has_ri = true;
+                    }
                 }
                 /* sig (auth) */
                 else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "sig", 3) == 0) {
@@ -1371,14 +1593,30 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KEY_BYTES)
                         memcpy(msg->key.bytes, val.bstr.ptr, NODUS_KEY_BYTES);
                 }
-                /* d (put data) */
+                /* d (put data / circ_data / ri_data payload) */
                 else if (akey.tstr.len == 1 && akey.tstr.ptr[0] == 'd') {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len > 0) {
-                        msg->data = malloc(val.bstr.len);
-                        if (msg->data) {
-                            memcpy(msg->data, val.bstr.ptr, val.bstr.len);
-                            msg->data_len = val.bstr.len;
+                        if (strcmp(msg->method, "circ_data") == 0) {
+                            msg->circ_data = malloc(val.bstr.len);
+                            if (msg->circ_data) {
+                                memcpy(msg->circ_data, val.bstr.ptr, val.bstr.len);
+                                msg->circ_data_len = val.bstr.len;
+                                msg->has_circ = true;
+                            }
+                        } else if (strcmp(msg->method, "ri_data") == 0) {
+                            msg->ri_data = malloc(val.bstr.len);
+                            if (msg->ri_data) {
+                                memcpy(msg->ri_data, val.bstr.ptr, val.bstr.len);
+                                msg->ri_data_len = val.bstr.len;
+                                msg->has_ri = true;
+                            }
+                        } else {
+                            msg->data = malloc(val.bstr.len);
+                            if (msg->data) {
+                                memcpy(msg->data, val.bstr.ptr, val.bstr.len);
+                                msg->data_len = val.bstr.len;
+                            }
                         }
                     }
                 }
@@ -2243,6 +2481,8 @@ void nodus_t2_msg_free(nodus_tier2_msg_t *msg) {
     if (!msg) return;
     free(msg->data);
     msg->data = NULL;
+    if (msg->circ_data) { free(msg->circ_data); msg->circ_data = NULL; msg->circ_data_len = 0; }
+    if (msg->ri_data) { free(msg->ri_data); msg->ri_data = NULL; msg->ri_data_len = 0; }
     if (msg->value) {
         nodus_value_free(msg->value);
         msg->value = NULL;

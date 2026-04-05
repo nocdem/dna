@@ -65,6 +65,68 @@ static void inter_session_clear(nodus_inter_session_t *sess) {
 
 static void session_clear(nodus_session_t *sess) {
     memset(sess, 0, sizeof(*sess));
+    nodus_circuit_table_init(&sess->circuits);
+}
+
+/* Find an authenticated session by client fingerprint (for local circuit bridge) */
+static nodus_session_t *find_session_by_fp(nodus_server_t *srv, const nodus_key_t *fp) {
+    for (int i = 0; i < NODUS_MAX_SESSIONS; i++) {
+        nodus_session_t *s = &srv->sessions[i];
+        if (s->authenticated && s->conn != NULL &&
+            nodus_key_cmp(&s->client_fp, fp) == 0) {
+            return s;
+        }
+    }
+    return NULL;
+}
+
+/* Find a cluster peer by IP-hash peer_idx (inverse of p_sync peer_idx formula).
+ * peer_idx is computed as: h=5381; for each char c in ip: h=h*33+c; pi=(h%254)+1
+ * Returns NULL if no ALIVE peer matches. */
+static nodus_cluster_peer_t *find_cluster_peer_by_idx(nodus_server_t *srv, uint8_t peer_idx) {
+    for (int i = 0; i < srv->cluster.peer_count; i++) {
+        nodus_cluster_peer_t *p = &srv->cluster.peers[i];
+        if (p->state != NODUS_NODE_ALIVE) continue;
+        uint32_t h = 5381;
+        for (const char *c = p->ip; *c; c++) h = h * 33 + (uint8_t)*c;
+        uint8_t pi = (uint8_t)(h % 254 + 1);
+        if (pi == peer_idx) return p;
+    }
+    return NULL;
+}
+
+/* Tear down all circuits owned by this session: notify bridge peers,
+ * free peer-side entries. Called before session_clear on disconnect. */
+static void session_teardown_circuits(nodus_server_t *srv, nodus_session_t *sess) {
+    for (int i = 0; i < NODUS_MAX_CIRCUITS_PER_SESSION; i++) {
+        nodus_circuit_t *c = &sess->circuits.entries[i];
+        if (!c->in_use) continue;
+        if (c->is_local_bridge && c->bridge_peer_sess) {
+            nodus_session_t *peer = (nodus_session_t *)c->bridge_peer_sess;
+            uint64_t peer_cid = c->bridge_peer_cid;
+            /* Send circ_close to peer */
+            if (peer->conn) {
+                uint8_t buf[256];
+                size_t blen = 0;
+                if (nodus_t2_circ_close(0, peer->token, peer_cid,
+                                         buf, sizeof(buf), &blen) == 0) {
+                    nodus_tcp_send(peer->conn, buf, blen);
+                }
+            }
+            /* Free peer's entry (clears back-pointer on peer side) */
+            nodus_circuit_free(&peer->circuits, peer_cid);
+        } else if (c->inter) {
+            /* Cross-nodus — notify peer nodus and free global inter entry */
+            if (c->inter->peer_conn) {
+                uint8_t buf[256]; size_t blen = 0;
+                if (nodus_t2_ri_close(0, c->inter->peer_cid,
+                                       buf, sizeof(buf), &blen) == 0) {
+                    nodus_tcp_send(c->inter->peer_conn, buf, blen);
+                }
+            }
+            nodus_inter_circuit_free(&srv->inter_circuits, c->inter->our_cid);
+        }
+    }
 }
 
 static bool session_check_token(nodus_session_t *sess, const uint8_t *token) {
@@ -1868,6 +1930,386 @@ static void handle_t2_count_batch(nodus_server_t *srv, nodus_session_t *sess,
     free(has_mine);
 }
 
+/* ── Circuit handlers (VPN mesh Faz 1) ────────────────────────────── */
+
+static void handle_t2_circ_open(nodus_server_t *srv, nodus_session_t *sess,
+                                 nodus_tier2_msg_t *msg) {
+    uint8_t resp[256];
+    size_t rlen = 0;
+
+    /* Reject if originator would collide with existing cid in this session */
+    if (nodus_circuit_lookup(&sess->circuits, msg->circ_cid) != NULL) {
+        nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_CIRCUIT_LIMIT,
+                                resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+
+    /* Check circuit capacity on originator side */
+    if (nodus_circuit_count(&sess->circuits) >= NODUS_MAX_CIRCUITS_PER_SESSION) {
+        nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_CIRCUIT_LIMIT,
+                                resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+
+    /* Presence lookup */
+    uint8_t peer_idx = 0;
+    bool online = nodus_presence_is_online(srv, &msg->circ_peer_fp, &peer_idx);
+    if (!online) {
+        nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_PEER_OFFLINE,
+                                resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+
+    if (peer_idx != 0) {
+        /* Cross-nodus — find peer nodus by peer_idx (IP-hash reverse lookup) */
+        nodus_cluster_peer_t *peer_node = find_cluster_peer_by_idx(srv, peer_idx);
+        if (!peer_node) {
+            nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_PEER_OFFLINE,
+                                    resp, sizeof(resp), &rlen);
+            nodus_tcp_send(sess->conn, resp, rlen);
+            return;
+        }
+
+        /* Check inter-circuit capacity */
+        if (nodus_inter_circuit_count(&srv->inter_circuits) >= NODUS_INTER_CIRCUITS_MAX) {
+            nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_CIRCUIT_LIMIT,
+                                    resp, sizeof(resp), &rlen);
+            nodus_tcp_send(sess->conn, resp, rlen);
+            return;
+        }
+
+        /* Allocate circuit on originator's session; overwrite with client-provided cid */
+        nodus_circuit_t *c = nodus_circuit_alloc(&sess->circuits);
+        if (!c) {
+            nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_CIRCUIT_LIMIT,
+                                    resp, sizeof(resp), &rlen);
+            nodus_tcp_send(sess->conn, resp, rlen);
+            return;
+        }
+        c->local_cid = msg->circ_cid;
+
+        /* Allocate global inter-circuit entry */
+        nodus_inter_circuit_t *ic = nodus_inter_circuit_alloc(&srv->inter_circuits);
+        if (!ic) {
+            nodus_circuit_free(&sess->circuits, c->local_cid);
+            nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_CIRCUIT_LIMIT,
+                                    resp, sizeof(resp), &rlen);
+            nodus_tcp_send(sess->conn, resp, rlen);
+            return;
+        }
+
+        /* Open or reuse inter-node TCP 4002 connection to peer nodus */
+        nodus_tcp_conn_t *pconn = nodus_tcp_find_by_addr(
+            (nodus_tcp_t *)&srv->inter_tcp, peer_node->ip, peer_node->tcp_port);
+        if (!pconn) {
+            pconn = nodus_tcp_connect(
+                (nodus_tcp_t *)&srv->inter_tcp, peer_node->ip, peer_node->tcp_port);
+            if (pconn) pconn->is_nodus = true;
+        }
+        if (!pconn) {
+            nodus_inter_circuit_free(&srv->inter_circuits, ic->our_cid);
+            nodus_circuit_free(&sess->circuits, c->local_cid);
+            nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_INTERNAL_ERROR,
+                                    resp, sizeof(resp), &rlen);
+            nodus_tcp_send(sess->conn, resp, rlen);
+            return;
+        }
+
+        /* Link inter entry <-> local session circuit */
+        ic->peer_conn = pconn;
+        ic->local_sess = (struct nodus_session *)sess;
+        ic->local_cid = c->local_cid;
+        ic->is_originator = true;
+        ic->pending_open = true;
+        ic->client_txn_id = msg->txn_id;
+        ic->created_at_ms = nodus_time_now_ms();
+        c->is_local_bridge = false;
+        c->inter = ic;
+
+        /* Send ri_open to peer nodus; reply to client arrives async via ri_open_ok/err */
+        uint8_t obuf[512]; size_t olen = 0;
+        if (nodus_t2_ri_open(msg->txn_id, ic->our_cid, &sess->client_fp, &msg->circ_peer_fp,
+                              obuf, sizeof(obuf), &olen) != 0) {
+            nodus_inter_circuit_free(&srv->inter_circuits, ic->our_cid);
+            nodus_circuit_free(&sess->circuits, c->local_cid);
+            nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_INTERNAL_ERROR,
+                                    resp, sizeof(resp), &rlen);
+            nodus_tcp_send(sess->conn, resp, rlen);
+            return;
+        }
+        nodus_tcp_send(pconn, obuf, olen);
+        /* Do NOT reply to client yet — wait for ri_open_ok/err */
+        return;
+    }
+
+    /* Local bridge case — find peer session */
+    nodus_session_t *peer_sess = find_session_by_fp(srv, &msg->circ_peer_fp);
+    if (!peer_sess) {
+        nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_PEER_OFFLINE,
+                                resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+    if (nodus_circuit_count(&peer_sess->circuits) >= NODUS_MAX_CIRCUITS_PER_SESSION) {
+        nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_CIRCUIT_LIMIT,
+                                resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+
+    nodus_circuit_t *c_src = nodus_circuit_alloc(&sess->circuits);
+    nodus_circuit_t *c_dst = nodus_circuit_alloc(&peer_sess->circuits);
+    if (!c_src || !c_dst) {
+        if (c_src) nodus_circuit_free(&sess->circuits, c_src->local_cid);
+        if (c_dst) nodus_circuit_free(&peer_sess->circuits, c_dst->local_cid);
+        nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_INTERNAL_ERROR,
+                                resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+
+    /* Originator side: override auto-generated cid with client-provided cid
+     * so future circ_data(C1) from originator is looked up by C1. */
+    c_src->local_cid = msg->circ_cid;
+
+    /* Link both sides */
+    c_src->is_local_bridge = true;
+    c_src->bridge_peer_sess = (struct nodus_session *)peer_sess;
+    c_src->bridge_peer_cid = c_dst->local_cid;
+
+    c_dst->is_local_bridge = true;
+    c_dst->bridge_peer_sess = (struct nodus_session *)sess;
+    c_dst->bridge_peer_cid = c_src->local_cid;
+
+    /* Reply to originator: echo their cid */
+    nodus_t2_circ_open_ok(msg->txn_id, msg->circ_cid, resp, sizeof(resp), &rlen);
+    nodus_tcp_send(sess->conn, resp, rlen);
+
+    /* Push circ_inbound to target with server-assigned cid for target's side */
+    uint8_t ibuf[256];
+    size_t ilen = 0;
+    nodus_t2_circ_inbound(0, c_dst->local_cid, &sess->client_fp,
+                           ibuf, sizeof(ibuf), &ilen);
+    nodus_tcp_send(peer_sess->conn, ibuf, ilen);
+}
+
+static void handle_t2_circ_data(nodus_server_t *srv, nodus_session_t *sess,
+                                 nodus_tier2_msg_t *msg) {
+    (void)srv;
+    nodus_circuit_t *c = nodus_circuit_lookup(&sess->circuits, msg->circ_cid);
+    if (!c) {
+        /* Unknown cid — silently drop */
+        return;
+    }
+    if (c->is_local_bridge && c->bridge_peer_sess) {
+        nodus_session_t *peer = (nodus_session_t *)c->bridge_peer_sess;
+        if (!peer->conn) return;
+        size_t cap = msg->circ_data_len + 256;
+        uint8_t *buf = malloc(cap);
+        if (!buf) return;
+        size_t blen = 0;
+        if (nodus_t2_circ_data(0, peer->token, c->bridge_peer_cid,
+                                msg->circ_data, msg->circ_data_len,
+                                buf, cap, &blen) == 0) {
+            nodus_tcp_send(peer->conn, buf, blen);
+        }
+        free(buf);
+    } else if (c->inter && c->inter->peer_conn) {
+        /* Cross-nodus — forward to peer nodus via ri_data */
+        size_t cap = msg->circ_data_len + 256;
+        uint8_t *buf = malloc(cap);
+        if (!buf) return;
+        size_t blen = 0;
+        if (nodus_t2_ri_data(0, c->inter->peer_cid,
+                              msg->circ_data, msg->circ_data_len,
+                              buf, cap, &blen) == 0) {
+            nodus_tcp_send(c->inter->peer_conn, buf, blen);
+        }
+        free(buf);
+    }
+}
+
+static void handle_t2_circ_close(nodus_server_t *srv, nodus_session_t *sess,
+                                  nodus_tier2_msg_t *msg) {
+    nodus_circuit_t *c = nodus_circuit_lookup(&sess->circuits, msg->circ_cid);
+    if (!c) return;
+    if (c->is_local_bridge && c->bridge_peer_sess) {
+        nodus_session_t *peer = (nodus_session_t *)c->bridge_peer_sess;
+        uint64_t peer_cid = c->bridge_peer_cid;
+        if (peer->conn) {
+            uint8_t buf[256];
+            size_t blen = 0;
+            if (nodus_t2_circ_close(0, peer->token, peer_cid,
+                                     buf, sizeof(buf), &blen) == 0) {
+                nodus_tcp_send(peer->conn, buf, blen);
+            }
+        }
+        nodus_circuit_free(&peer->circuits, peer_cid);
+    } else if (c->inter) {
+        /* Cross-nodus — propagate ri_close to peer nodus, free inter entry */
+        if (c->inter->peer_conn) {
+            uint8_t buf[256]; size_t blen = 0;
+            if (nodus_t2_ri_close(0, c->inter->peer_cid,
+                                   buf, sizeof(buf), &blen) == 0) {
+                nodus_tcp_send(c->inter->peer_conn, buf, blen);
+            }
+        }
+        nodus_inter_circuit_free(&srv->inter_circuits, c->inter->our_cid);
+    }
+    nodus_circuit_free(&sess->circuits, msg->circ_cid);
+}
+
+/* ── Inter-node ri_* handlers (VPN mesh Faz 1) ────────────────────── */
+
+static void handle_inter_ri_open(nodus_server_t *srv, nodus_inter_session_t *sess,
+                                  nodus_tier2_msg_t *msg) {
+    uint8_t resp[256]; size_t rlen = 0;
+
+    /* Validate dst is locally connected */
+    uint8_t peer_idx = 0;
+    bool online = nodus_presence_is_online(srv, &msg->ri_dst_fp, &peer_idx);
+    if (!online || peer_idx != 0) {
+        nodus_t2_ri_open_err(msg->txn_id, msg->ri_ups_cid, NODUS_ERR_PEER_OFFLINE,
+                              resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+
+    nodus_session_t *target = find_session_by_fp(srv, &msg->ri_dst_fp);
+    if (!target) {
+        nodus_t2_ri_open_err(msg->txn_id, msg->ri_ups_cid, NODUS_ERR_PEER_OFFLINE,
+                              resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+    if (nodus_circuit_count(&target->circuits) >= NODUS_MAX_CIRCUITS_PER_SESSION) {
+        nodus_t2_ri_open_err(msg->txn_id, msg->ri_ups_cid, NODUS_ERR_CIRCUIT_LIMIT,
+                              resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+
+    /* Allocate global inter-circuit entry */
+    nodus_inter_circuit_t *ic = nodus_inter_circuit_alloc(&srv->inter_circuits);
+    if (!ic) {
+        nodus_t2_ri_open_err(msg->txn_id, msg->ri_ups_cid, NODUS_ERR_INTERNAL_ERROR,
+                              resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+    /* Allocate circuit on target user's session */
+    nodus_circuit_t *c = nodus_circuit_alloc(&target->circuits);
+    if (!c) {
+        nodus_inter_circuit_free(&srv->inter_circuits, ic->our_cid);
+        nodus_t2_ri_open_err(msg->txn_id, msg->ri_ups_cid, NODUS_ERR_CIRCUIT_LIMIT,
+                              resp, sizeof(resp), &rlen);
+        nodus_tcp_send(sess->conn, resp, rlen);
+        return;
+    }
+
+    /* Link inter entry */
+    ic->peer_cid = msg->ri_ups_cid;
+    ic->peer_conn = sess->conn;
+    ic->local_sess = (struct nodus_session *)target;
+    ic->local_cid = c->local_cid;
+    ic->is_originator = false;
+
+    /* Link target's session circuit to inter entry */
+    c->is_local_bridge = false;
+    c->inter = ic;
+
+    /* Reply ri_open_ok */
+    nodus_t2_ri_open_ok(msg->txn_id, msg->ri_ups_cid, ic->our_cid,
+                         resp, sizeof(resp), &rlen);
+    nodus_tcp_send(sess->conn, resp, rlen);
+
+    /* Push circ_inbound to target user */
+    uint8_t ibuf[256]; size_t ilen = 0;
+    nodus_t2_circ_inbound(0, c->local_cid, &msg->ri_src_fp, ibuf, sizeof(ibuf), &ilen);
+    nodus_tcp_send(target->conn, ibuf, ilen);
+}
+
+static void handle_inter_ri_open_ok(nodus_server_t *srv, nodus_inter_session_t *sess,
+                                     nodus_tier2_msg_t *msg) {
+    (void)sess;
+    nodus_inter_circuit_t *ic = nodus_inter_circuit_lookup(&srv->inter_circuits, msg->ri_ups_cid);
+    if (!ic || !ic->is_originator || !ic->pending_open || !ic->local_sess) return;
+    ic->peer_cid = msg->ri_dns_cid;
+    ic->pending_open = false;
+
+    nodus_session_t *client = (nodus_session_t *)ic->local_sess;
+    if (!client->conn) return;
+    uint8_t buf[256]; size_t blen = 0;
+    if (nodus_t2_circ_open_ok(ic->client_txn_id, ic->local_cid,
+                                buf, sizeof(buf), &blen) == 0) {
+        nodus_tcp_send(client->conn, buf, blen);
+    }
+}
+
+static void handle_inter_ri_open_err(nodus_server_t *srv, nodus_inter_session_t *sess,
+                                      nodus_tier2_msg_t *msg) {
+    (void)sess;
+    nodus_inter_circuit_t *ic = nodus_inter_circuit_lookup(&srv->inter_circuits, msg->ri_ups_cid);
+    if (!ic || !ic->is_originator || !ic->local_sess) return;
+
+    nodus_session_t *client = (nodus_session_t *)ic->local_sess;
+    if (client->conn) {
+        uint8_t buf[256]; size_t blen = 0;
+        if (nodus_t2_circ_open_err(ic->client_txn_id, ic->local_cid, msg->ri_err_code,
+                                    buf, sizeof(buf), &blen) == 0) {
+            nodus_tcp_send(client->conn, buf, blen);
+        }
+    }
+    /* Free client's session circuit entry and inter entry */
+    nodus_circuit_free(&client->circuits, ic->local_cid);
+    nodus_inter_circuit_free(&srv->inter_circuits, ic->our_cid);
+}
+
+static void handle_inter_ri_data(nodus_server_t *srv, nodus_inter_session_t *sess,
+                                  nodus_tier2_msg_t *msg) {
+    (void)sess;
+    nodus_inter_circuit_t *ic = nodus_inter_circuit_lookup(&srv->inter_circuits, msg->ri_cid);
+    if (!ic || !ic->local_sess) return;  /* Drop silently */
+
+    nodus_session_t *target = (nodus_session_t *)ic->local_sess;
+    if (!target->conn) return;
+    /* Forward payload to local user via circ_data push */
+    size_t cap = msg->ri_data_len + 256;
+    uint8_t *buf = malloc(cap);
+    if (!buf) return;
+    size_t blen = 0;
+    if (nodus_t2_circ_data(0, target->token, ic->local_cid,
+                            msg->ri_data, msg->ri_data_len,
+                            buf, cap, &blen) == 0) {
+        nodus_tcp_send(target->conn, buf, blen);
+    }
+    free(buf);
+}
+
+static void handle_inter_ri_close(nodus_server_t *srv, nodus_inter_session_t *sess,
+                                   nodus_tier2_msg_t *msg) {
+    (void)sess;
+    nodus_inter_circuit_t *ic = nodus_inter_circuit_lookup(&srv->inter_circuits, msg->ri_cid);
+    if (!ic) return;
+
+    /* Propagate close to local user, free local circuit entry */
+    if (ic->local_sess) {
+        nodus_session_t *target = (nodus_session_t *)ic->local_sess;
+        if (target->conn) {
+            uint8_t buf[256]; size_t blen = 0;
+            if (nodus_t2_circ_close(0, target->token, ic->local_cid,
+                                     buf, sizeof(buf), &blen) == 0) {
+                nodus_tcp_send(target->conn, buf, blen);
+            }
+        }
+        nodus_circuit_free(&target->circuits, ic->local_cid);
+    }
+    nodus_inter_circuit_free(&srv->inter_circuits, ic->our_cid);
+}
+
 static void handle_t2_listen(nodus_server_t *srv, nodus_session_t *sess,
                               nodus_tier2_msg_t *msg) {
     if (session_add_listen(sess, &msg->key) != 0) {
@@ -2145,6 +2587,11 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
         if (now - c->last_activity > IDLE_TIMEOUT_AUTH)
             nodus_tcp_disconnect(&srv->inter_tcp, c);
     }
+
+    /* Sweep orphaned pending_open inter-circuits (peer nodus never responded).
+     * 10s matches NODUS_CIRCUIT_OPEN_TIMEOUT_MS with margin for scheduling. */
+    nodus_inter_circuit_sweep_orphans(&srv->inter_circuits,
+                                        nodus_time_now_ms(), 10000);
 }
 
 /* ── Inter-node frame dispatch (peer port) ──────────────────────── */
@@ -2358,6 +2805,33 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     }
                 }
             }
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+
+        /* Inter-node circuit forwarding (VPN mesh Faz 1) */
+        if (strcmp(msg.method, "ri_open") == 0 && msg.has_ri) {
+            handle_inter_ri_open(srv, sess, &msg);
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+        if (strcmp(msg.method, "ri_open_ok") == 0 && msg.has_ri) {
+            handle_inter_ri_open_ok(srv, sess, &msg);
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+        if (strcmp(msg.method, "ri_open_err") == 0 && msg.has_ri) {
+            handle_inter_ri_open_err(srv, sess, &msg);
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+        if (strcmp(msg.method, "ri_data") == 0 && msg.has_ri) {
+            handle_inter_ri_data(srv, sess, &msg);
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+        if (strcmp(msg.method, "ri_close") == 0 && msg.has_ri) {
+            handle_inter_ri_close(srv, sess, &msg);
             nodus_t2_msg_free(&msg);
             return;
         }
@@ -2683,6 +3157,12 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         handle_t2_media_get_meta(srv, sess, &msg);
     else if (strcmp(msg.method, "m_chunk") == 0)
         handle_t2_media_get_chunk(srv, sess, &msg);
+    else if (strcmp(msg.method, "circ_open") == 0)
+        handle_t2_circ_open(srv, sess, &msg);
+    else if (strcmp(msg.method, "circ_data") == 0)
+        handle_t2_circ_data(srv, sess, &msg);
+    else if (strcmp(msg.method, "circ_close") == 0)
+        handle_t2_circ_close(srv, sess, &msg);
     else {
         size_t rlen = 0;
         nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
@@ -2940,6 +3420,8 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
                     conn->slot, conn->ip,
                     (unsigned long)(nodus_time_now() - conn->last_activity));
         }
+        /* Tear down circuits (notify bridge peers) before clearing session */
+        session_teardown_circuits(srv, sess);
         session_clear(sess);
     }
 
@@ -3260,6 +3742,9 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     const char *self_ip = config->external_ip[0] ? config->external_ip : config->bind_ip;
     nodus_hashring_add(&srv->ring, &srv->identity.node_id,
                         self_ip, self_peer_port);
+
+    /* Init inter-node circuit table (VPN mesh Faz 1) */
+    nodus_inter_circuit_table_init(&srv->inter_circuits);
 
     /* Init cluster membership (heartbeat, leader election) */
     nodus_cluster_init(&srv->cluster, srv);

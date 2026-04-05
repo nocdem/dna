@@ -1,0 +1,148 @@
+/**
+ * Circuit wire protocol encode/decode roundtrip tests (Faz 1)
+ */
+#include "protocol/nodus_tier2.h"
+#include <stdio.h>
+#include <string.h>
+
+#define TEST(name) do { printf("  %-50s", name); } while(0)
+#define PASS()     do { printf("PASS\n"); passed++; } while(0)
+#define FAIL(msg)  do { printf("FAIL: %s\n", msg); failed++; } while(0)
+
+static int passed = 0;
+static int failed = 0;
+static uint8_t msgbuf[4096];
+
+static void test_circ_open_roundtrip(void) {
+    TEST("circ_open encode/decode");
+    uint8_t token[NODUS_SESSION_TOKEN_LEN];
+    memset(token, 0xAB, sizeof(token));
+    nodus_key_t peer_fp;
+    for (int i = 0; i < NODUS_KEY_BYTES; i++) peer_fp.bytes[i] = (uint8_t)(0x40 + i);
+
+    size_t len = 0;
+    int rc = nodus_t2_circ_open(42, token, 0x1234567890ABCDEFULL, &peer_fp,
+                                 msgbuf, sizeof(msgbuf), &len);
+    if (rc != 0) { FAIL("encode"); return; }
+
+    nodus_tier2_msg_t msg;
+    rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && msg.txn_id == 42 && msg.type == 'q' &&
+        strcmp(msg.method, "circ_open") == 0 &&
+        msg.has_circ &&
+        msg.circ_cid == 0x1234567890ABCDEFULL &&
+        nodus_key_cmp(&msg.circ_peer_fp, &peer_fp) == 0) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
+static void test_circ_open_ok_roundtrip(void) {
+    TEST("circ_open_ok encode/decode");
+    size_t len = 0;
+    nodus_t2_circ_open_ok(11, 0x99ULL, msgbuf, sizeof(msgbuf), &len);
+    nodus_tier2_msg_t msg;
+    int rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && msg.type == 'r' && strcmp(msg.method, "circ_open") == 0 &&
+        msg.has_circ && msg.circ_cid == 0x99ULL) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
+static void test_circ_open_err_roundtrip(void) {
+    TEST("circ_open_err encode/decode");
+    size_t len = 0;
+    nodus_t2_circ_open_err(12, 0xAAULL, NODUS_ERR_PEER_OFFLINE,
+                            msgbuf, sizeof(msgbuf), &len);
+    nodus_tier2_msg_t msg;
+    int rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && msg.type == 'r' && strcmp(msg.method, "circ_open_err") == 0 &&
+        msg.circ_cid == 0xAAULL && msg.circ_err_code == NODUS_ERR_PEER_OFFLINE) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
+static void test_circ_inbound_roundtrip(void) {
+    TEST("circ_inbound encode/decode");
+    nodus_key_t peer_fp;
+    for (int i = 0; i < NODUS_KEY_BYTES; i++) peer_fp.bytes[i] = (uint8_t)(0x80 + i);
+    size_t len = 0;
+    nodus_t2_circ_inbound(13, 0xBEEFULL, &peer_fp, msgbuf, sizeof(msgbuf), &len);
+    nodus_tier2_msg_t msg;
+    int rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && msg.type == 'q' && strcmp(msg.method, "circ_inbound") == 0 &&
+        msg.circ_cid == 0xBEEFULL &&
+        nodus_key_cmp(&msg.circ_peer_fp, &peer_fp) == 0) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
+static void test_circ_data_roundtrip(void) {
+    TEST("circ_data encode/decode (1KB)");
+    uint8_t token[NODUS_SESSION_TOKEN_LEN] = {0};
+    uint8_t payload[1024];
+    for (size_t i = 0; i < sizeof(payload); i++) payload[i] = (uint8_t)(i & 0xFF);
+    size_t len = 0;
+    int rc = nodus_t2_circ_data(7, token, 0xABCDEFULL, payload, sizeof(payload),
+                                 msgbuf, sizeof(msgbuf), &len);
+    if (rc != 0) { FAIL("encode"); return; }
+    nodus_tier2_msg_t msg;
+    rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && strcmp(msg.method, "circ_data") == 0 &&
+        msg.has_circ && msg.circ_cid == 0xABCDEFULL &&
+        msg.circ_data_len == sizeof(payload) && msg.circ_data != NULL &&
+        memcmp(msg.circ_data, payload, sizeof(payload)) == 0) {
+        PASS();
+    } else {
+        FAIL("decode mismatch");
+    }
+    nodus_t2_msg_free(&msg);
+}
+
+static void test_circ_data_oversized_rejected(void) {
+    TEST("circ_data oversized payload rejected");
+    uint8_t token[NODUS_SESSION_TOKEN_LEN] = {0};
+    static uint8_t big_payload[NODUS_MAX_CIRCUIT_PAYLOAD + 1];
+    size_t len = 0;
+    int rc = nodus_t2_circ_data(8, token, 0x1ULL, big_payload, sizeof(big_payload),
+                                 msgbuf, sizeof(msgbuf), &len);
+    if (rc == -1) { PASS(); } else { FAIL("should reject oversized"); }
+}
+
+static void test_circ_close_roundtrip(void) {
+    TEST("circ_close encode/decode");
+    uint8_t token[NODUS_SESSION_TOKEN_LEN] = {0};
+    size_t len = 0;
+    nodus_t2_circ_close(9, token, 0x55ULL, msgbuf, sizeof(msgbuf), &len);
+    nodus_tier2_msg_t msg;
+    int rc = nodus_t2_decode(msgbuf, len, &msg);
+    if (rc == 0 && strcmp(msg.method, "circ_close") == 0 &&
+        msg.has_circ && msg.circ_cid == 0x55ULL) {
+        PASS();
+    } else { FAIL("decode mismatch"); }
+    nodus_t2_msg_free(&msg);
+}
+
+int main(void) {
+    printf("Circuit wire protocol tests:\n");
+    test_circ_open_roundtrip();
+    test_circ_open_ok_roundtrip();
+    test_circ_open_err_roundtrip();
+    test_circ_inbound_roundtrip();
+    test_circ_data_roundtrip();
+    test_circ_data_oversized_rejected();
+    test_circ_close_roundtrip();
+    printf("\nResults: %d passed, %d failed\n", passed, failed);
+    return failed == 0 ? 0 : 1;
+}

@@ -60,6 +60,45 @@ int nodus_t2_ping(uint32_t txn, const uint8_t *token,
 int nodus_t2_servers(uint32_t txn, const uint8_t *token,
                       uint8_t *buf, size_t cap, size_t *out_len);
 
+/* Circuit (VPN mesh) — Faz 1 */
+int nodus_t2_circ_open(uint32_t txn, const uint8_t *token,
+                        uint64_t cid, const nodus_key_t *peer_fp,
+                        uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_circ_open_ok(uint32_t txn, uint64_t cid,
+                           uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_circ_open_err(uint32_t txn, uint64_t cid, int code,
+                            uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_circ_inbound(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp,
+                           uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_circ_data(uint32_t txn, const uint8_t *token,
+                        uint64_t cid, const uint8_t *data, size_t data_len,
+                        uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_circ_close(uint32_t txn, const uint8_t *token, uint64_t cid,
+                         uint8_t *buf, size_t cap, size_t *out_len);
+
+/* Inter-node circuit forwarding (Faz 1, TCP 4002) */
+int nodus_t2_ri_open(uint32_t txn, uint64_t ups_cid,
+                      const nodus_key_t *src_fp, const nodus_key_t *dst_fp,
+                      uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ri_open_ok(uint32_t txn, uint64_t ups_cid, uint64_t dns_cid,
+                         uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ri_open_err(uint32_t txn, uint64_t ups_cid, int code,
+                          uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ri_data(uint32_t txn, uint64_t cid,
+                      const uint8_t *data, size_t data_len,
+                      uint8_t *buf, size_t cap, size_t *out_len);
+
+int nodus_t2_ri_close(uint32_t txn, uint64_t cid,
+                       uint8_t *buf, size_t cap, size_t *out_len);
+
 /* ── Channel operations (Client → Nodus) ─────────────────────────── */
 
 int nodus_t2_ch_create(uint32_t txn, const uint8_t *token,
@@ -452,6 +491,25 @@ typedef struct {
     bool            media_encrypted;      /* true=DM/group, false=wall */
     bool            media_complete;       /* put_ok: all chunks received? */
     bool            has_media;            /* true if media fields present */
+
+    /* Circuit fields (Faz 1) */
+    uint64_t        circ_cid;
+    nodus_key_t     circ_peer_fp;
+    int             circ_err_code;
+    uint8_t        *circ_data;           /* heap, may be NULL */
+    size_t          circ_data_len;
+    bool            has_circ;
+
+    /* Inter-node circuit fields (Faz 1) */
+    uint64_t        ri_ups_cid;
+    uint64_t        ri_dns_cid;
+    uint64_t        ri_cid;              /* for ri_data / ri_close */
+    nodus_key_t     ri_src_fp;
+    nodus_key_t     ri_dst_fp;
+    int             ri_err_code;
+    uint8_t        *ri_data;             /* heap, for ri_data */
+    size_t          ri_data_len;
+    bool            has_ri;
 
     /* Error */
     int             error_code;

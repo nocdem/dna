@@ -300,6 +300,65 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         return;
     }
 
+    /* Circuit push notifications (Faz 1) */
+    if (strcmp(tmp.method, "circ_inbound") == 0 && tmp.has_circ) {
+        pthread_mutex_lock(&client->circuits_mutex);
+        nodus_circuit_handle_t *h = NULL;
+        for (int i = 0; i < NODUS_CLIENT_MAX_CIRCUITS; i++) {
+            if (!client->circuits[i].in_use) {
+                h = &client->circuits[i];
+                memset(h, 0, sizeof(*h));
+                h->client = client;
+                h->cid = tmp.circ_cid;
+                h->in_use = true;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&client->circuits_mutex);
+        if (h && client->on_circuit_inbound) {
+            client->on_circuit_inbound(client, &tmp.circ_peer_fp, h,
+                                        client->circuit_inbound_user);
+        }
+        nodus_t2_msg_free(&tmp);
+        return;
+    }
+    if (strcmp(tmp.method, "circ_data") == 0 && tmp.has_circ) {
+        pthread_mutex_lock(&client->circuits_mutex);
+        nodus_circuit_handle_t *h = NULL;
+        for (int i = 0; i < NODUS_CLIENT_MAX_CIRCUITS; i++) {
+            if (client->circuits[i].in_use && client->circuits[i].cid == tmp.circ_cid) {
+                h = &client->circuits[i];
+                break;
+            }
+        }
+        nodus_circuit_data_cb cb = h ? h->on_data : NULL;
+        void *user = h ? h->user : NULL;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        if (cb) cb(h, tmp.circ_data, tmp.circ_data_len, user);
+        nodus_t2_msg_free(&tmp);
+        return;
+    }
+    if (strcmp(tmp.method, "circ_close") == 0 && tmp.has_circ) {
+        pthread_mutex_lock(&client->circuits_mutex);
+        nodus_circuit_handle_t *h = NULL;
+        nodus_circuit_close_cb cb = NULL;
+        void *user = NULL;
+        for (int i = 0; i < NODUS_CLIENT_MAX_CIRCUITS; i++) {
+            if (client->circuits[i].in_use && client->circuits[i].cid == tmp.circ_cid) {
+                h = &client->circuits[i];
+                cb = h->on_close;
+                user = h->user;
+                h->closed = true;
+                h->in_use = false;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&client->circuits_mutex);
+        if (cb) cb(h, 0, user);
+        nodus_t2_msg_free(&tmp);
+        return;
+    }
+
     /* Find pending slot by txn ID */
     pthread_mutex_lock(&client->pending_mutex);
     nodus_pending_t *slot = NULL;
@@ -400,6 +459,13 @@ int nodus_client_init(nodus_client_t *client,
     pthread_mutex_init(&client->pending_mutex, NULL);
     pthread_mutex_init(&client->send_mutex, NULL);
     pthread_mutex_init(&client->poll_mutex, NULL);
+    pthread_mutex_init(&client->circuits_mutex, NULL);
+
+    /* Initialize circuit state (Faz 1) */
+    memset(client->circuits, 0, sizeof(client->circuits));
+    client->on_circuit_inbound = NULL;
+    client->circuit_inbound_user = NULL;
+    atomic_store(&client->next_client_cid, 1);
     atomic_store(&client->read_thread_running, false);
     atomic_store(&client->read_thread_stop, false);
 
@@ -409,6 +475,7 @@ int nodus_client_init(nodus_client_t *client,
         pthread_mutex_destroy(&client->pending_mutex);
         pthread_mutex_destroy(&client->send_mutex);
         pthread_mutex_destroy(&client->poll_mutex);
+        pthread_mutex_destroy(&client->circuits_mutex);
         return -1;
     }
     nodus_tcp_init(tcp, -1);
@@ -769,6 +836,7 @@ void nodus_client_close(nodus_client_t *client) {
     pthread_mutex_destroy(&client->pending_mutex);
     pthread_mutex_destroy(&client->send_mutex);
     pthread_mutex_destroy(&client->poll_mutex);
+    pthread_mutex_destroy(&client->circuits_mutex);
 
     client->state = NODUS_CLIENT_DISCONNECTED;
     client->listen_count = 0;
@@ -3342,5 +3410,156 @@ int nodus_ch_conn_unsubscribe(nodus_ch_conn_t *ch,
         }
     }
     ch_conn_free_pending(ch, req);
+    return 0;
+}
+
+/* ── Circuit operations (Faz 1) ─────────────────────────────────── */
+
+int nodus_circuit_open(nodus_client_t *client, const nodus_key_t *peer_fp,
+                        nodus_circuit_data_cb on_data,
+                        nodus_circuit_close_cb on_close,
+                        void *user,
+                        nodus_circuit_handle_t **out) {
+    if (!client || !peer_fp || !out) return -1;
+    if (!nodus_client_is_ready(client)) return -1;
+
+    /* Allocate handle */
+    uint64_t cid = (uint64_t)atomic_fetch_add(&client->next_client_cid, 1);
+    pthread_mutex_lock(&client->circuits_mutex);
+    nodus_circuit_handle_t *h = NULL;
+    for (int i = 0; i < NODUS_CLIENT_MAX_CIRCUITS; i++) {
+        if (!client->circuits[i].in_use) {
+            h = &client->circuits[i];
+            memset(h, 0, sizeof(*h));
+            h->client = client;
+            h->cid = cid;
+            h->in_use = true;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&client->circuits_mutex);
+    if (!h) return NODUS_ERR_CIRCUIT_LIMIT;
+    h->on_data = on_data;
+    h->on_close = on_close;
+    h->user = user;
+
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) {
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        return -1;
+    }
+
+    uint8_t buf[4096]; size_t blen = 0;
+    if (nodus_t2_circ_open(txn, client->token, cid, peer_fp,
+                            buf, sizeof(buf), &blen) != 0) {
+        free_pending(client, req);
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        return -1;
+    }
+    if (send_request(client, buf, blen) != 0) {
+        free_pending(client, req);
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        return -1;
+    }
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    /* Circuit open uses a shorter bounded timeout than request_timeout_ms:
+     * a slow/malicious peer nodus could otherwise hold the pending slot for
+     * the full request_timeout_ms (potentially 60s). */
+    int timeout_ms = NODUS_CIRCUIT_OPEN_TIMEOUT_MS;
+    if (client->config.request_timeout_ms > 0 &&
+        client->config.request_timeout_ms < timeout_ms) {
+        timeout_ms = client->config.request_timeout_ms;
+    }
+    if (!wait_response(client, req, timeout_ms)) {
+        free_pending(client, req);
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        return NODUS_ERR_TIMEOUT;
+    }
+
+    int rc = 0;
+    if (strcmp(resp->method, "circ_open_err") == 0) {
+        rc = resp->circ_err_code ? resp->circ_err_code : NODUS_ERR_INTERNAL_ERROR;
+    } else if (strcmp(resp->method, "circ_open") != 0) {
+        rc = NODUS_ERR_PROTOCOL_ERROR;
+    }
+    free_pending(client, req);
+
+    if (rc != 0) {
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        return rc;
+    }
+
+    *out = h;
+    return 0;
+}
+
+void nodus_circuit_set_inbound_cb(nodus_client_t *client,
+                                    nodus_circuit_inbound_cb cb, void *user) {
+    if (!client) return;
+    client->on_circuit_inbound = cb;
+    client->circuit_inbound_user = user;
+}
+
+int nodus_circuit_attach(nodus_circuit_handle_t *h,
+                          nodus_circuit_data_cb on_data,
+                          nodus_circuit_close_cb on_close,
+                          void *user) {
+    if (!h || !h->in_use) return -1;
+    h->on_data = on_data;
+    h->on_close = on_close;
+    h->user = user;
+    return 0;
+}
+
+int nodus_circuit_send(nodus_circuit_handle_t *h, const uint8_t *data, size_t len) {
+    if (!h || !h->in_use || h->closed) return -1;
+    if (len > NODUS_MAX_CIRCUIT_PAYLOAD) return NODUS_ERR_TOO_LARGE;
+    nodus_client_t *client = h->client;
+    if (!client) return -1;
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    size_t cap = len + 256;
+    uint8_t *buf = malloc(cap);
+    if (!buf) return -1;
+    size_t blen = 0;
+    int rc = nodus_t2_circ_data(txn, client->token, h->cid, data, len,
+                                  buf, cap, &blen);
+    if (rc == 0) {
+        rc = send_request(client, buf, blen);
+    }
+    free(buf);
+    return rc;
+}
+
+int nodus_circuit_close(nodus_circuit_handle_t *h) {
+    if (!h || !h->in_use) return -1;
+    nodus_client_t *client = h->client;
+    if (client && !h->closed) {
+        uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+        uint8_t buf[256]; size_t blen = 0;
+        if (nodus_t2_circ_close(txn, client->token, h->cid,
+                                 buf, sizeof(buf), &blen) == 0) {
+            send_request(client, buf, blen);
+        }
+        h->closed = true;
+    }
+    if (client) {
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+    } else {
+        h->in_use = false;
+    }
     return 0;
 }

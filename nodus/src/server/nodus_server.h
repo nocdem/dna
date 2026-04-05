@@ -25,6 +25,8 @@
 #include "crypto/nodus_identity.h"
 #include "witness/nodus_witness.h"
 #include "server/nodus_presence.h"
+#include "circuit/nodus_circuit.h"
+#include "circuit/nodus_inter_circuit.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -106,6 +108,9 @@ typedef struct {
     /* Rate limiting */
     uint64_t            rate_window_start;
     int                 puts_in_window;
+
+    /* Circuit table (VPN mesh Faz 1) */
+    nodus_circuit_table_t   circuits;
 } nodus_session_t;
 
 /* ── FIND_VALUE async state machine ──────────────────────────────── */
@@ -315,6 +320,9 @@ typedef struct nodus_server {
 
     /* Presence tracking (connected clients, cluster-wide) */
     nodus_presence_table_t  presence;
+
+    /* Inter-node circuit forwarding (VPN mesh Faz 1) */
+    nodus_inter_circuit_table_t inter_circuits;
 
     /* New channel system (TCP 4003) */
     nodus_channel_server_t      ch_server;

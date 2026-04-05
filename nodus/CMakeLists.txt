@@ -68,6 +68,10 @@ set(NODUS_SOURCES
     src/core/nodus_storage.c
     src/core/nodus_media_storage.c
 
+    # Circuit (VPN mesh)
+    src/circuit/nodus_circuit.c
+    src/circuit/nodus_inter_circuit.c
+
     # Protocol
     src/protocol/nodus_cbor.c
     src/protocol/nodus_wire.c
@@ -227,6 +231,29 @@ add_test(NAME test_tier1 COMMAND test_tier1)
 add_executable(test_tier2 tests/test_tier2.c)
 target_link_libraries(test_tier2 nodus dsa nodus)
 add_test(NAME test_tier2 COMMAND test_tier2)
+
+# Circuit wire protocol test (VPN mesh Faz 1)
+add_executable(test_circuit_wire tests/test_circuit_wire.c)
+target_link_libraries(test_circuit_wire nodus dsa nodus)
+add_test(NAME test_circuit_wire COMMAND test_circuit_wire)
+
+add_executable(test_circuit_ri_wire tests/test_circuit_ri_wire.c)
+target_link_libraries(test_circuit_ri_wire nodus dsa nodus)
+add_test(NAME test_circuit_ri_wire COMMAND test_circuit_ri_wire)
+
+add_executable(test_circuit_table tests/test_circuit_table.c)
+target_link_libraries(test_circuit_table nodus dsa nodus)
+add_test(NAME test_circuit_table COMMAND test_circuit_table)
+
+# Circuit live integration test (same-nodus bridge, VPN mesh Faz 1)
+add_executable(test_circuit_live tests/test_circuit_live.c)
+target_link_libraries(test_circuit_live nodus dsa nodus)
+add_test(NAME test_circuit_live COMMAND test_circuit_live)
+
+# Cross-nodus circuit live integration test (VPN mesh Faz 1)
+add_executable(test_circuit_cross_live tests/test_circuit_cross_live.c)
+target_link_libraries(test_circuit_cross_live nodus dsa nodus pthread)
+add_test(NAME test_circuit_cross_live COMMAND test_circuit_cross_live)
 
 # Media Tier 2 protocol test
 add_executable(test_media_tier2 tests/test_media_tier2.c)
