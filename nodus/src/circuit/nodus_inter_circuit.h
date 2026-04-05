@@ -30,6 +30,9 @@ typedef struct nodus_inter_circuit {
     uint64_t              local_cid;       /* cid on local session */
     bool                  is_originator;   /* true = we opened the circuit outbound */
     bool                  in_use;
+    /* Originator-side pending state (T8b) */
+    bool                  pending_open;    /* true while awaiting ri_open_ok */
+    uint32_t              client_txn_id;   /* client's txn_id for the circ_open */
 } nodus_inter_circuit_t;
 
 typedef struct {
