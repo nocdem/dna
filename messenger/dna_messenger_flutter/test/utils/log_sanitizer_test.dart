@@ -46,5 +46,30 @@ void main() {
       final out = LogSanitizer.scrub(input);
       expect(out, contains('[B64-'));
     });
+
+    test('redacts unpadded base64 (PQ key, no = padding)', () {
+      // Simulate 3168-byte Kyber SK base64-encoded: 4224 chars, 0 padding.
+      // Use length > 120 with mix of + / A-Za-z0-9 to ensure base64 alphabet.
+      final payload = 'AbCdEfGhIjKl+/${"XyZ0123456789" * 20}';
+      final input = 'pq_sk=$payload end';
+      final out = LogSanitizer.scrub(input);
+      expect(out, contains('[B64-'));
+      expect(out, isNot(contains(payload)));
+      expect(out, contains('end'));
+    });
+
+    test('redacts quoted password value', () {
+      const input = 'config: password="hunter2 with spaces" ok';
+      final out = LogSanitizer.scrub(input);
+      expect(out, contains('password=[REDACTED]'));
+      expect(out, isNot(contains('hunter2')));
+    });
+
+    test('redacts single-quoted secret value', () {
+      const input = "auth: secret='s3cr3t!' tail";
+      final out = LogSanitizer.scrub(input);
+      expect(out, contains('secret=[REDACTED]'));
+      expect(out, isNot(contains('s3cr3t!')));
+    });
   });
 }
