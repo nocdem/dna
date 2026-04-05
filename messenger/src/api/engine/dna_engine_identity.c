@@ -1745,27 +1745,53 @@ int dna_engine_change_password_sync(
 
     QGP_LOG_INFO(LOG_TAG, "Changing password for identity %s", engine->fingerprint);
 
-    /* Change password on DSA key */
-    if (key_change_password(dsa_path, old_password, new_password) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to change password on DSA key");
-        return DNA_ERROR_CRYPTO;
+    /* Change password on DSA key (TEE-aware: handles DNAT transparently) */
+    {
+        qgp_key_t *dsa_tmp = NULL;
+        if (qgp_key_load_encrypted(dsa_path, old_password, &dsa_tmp) != 0 ||
+            qgp_key_save_encrypted(dsa_tmp, dsa_path, new_password) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to change password on DSA key");
+            if (dsa_tmp) qgp_key_free(dsa_tmp);
+            return DNA_ERROR_CRYPTO;
+        }
+        qgp_key_free(dsa_tmp);
     }
 
-    /* Change password on KEM key */
-    if (key_change_password(kem_path, old_password, new_password) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to change password on KEM key");
-        /* Try to rollback DSA key */
-        key_change_password(dsa_path, new_password, old_password);
-        return DNA_ERROR_CRYPTO;
+    /* Change password on KEM key (TEE-aware: handles DNAT transparently) */
+    {
+        qgp_key_t *kem_tmp = NULL;
+        if (qgp_key_load_encrypted(kem_path, old_password, &kem_tmp) != 0 ||
+            qgp_key_save_encrypted(kem_tmp, kem_path, new_password) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to change password on KEM key");
+            if (kem_tmp) qgp_key_free(kem_tmp);
+            /* Rollback DSA key */
+            qgp_key_t *dsa_rollback = NULL;
+            if (qgp_key_load_encrypted(dsa_path, new_password, &dsa_rollback) == 0) {
+                qgp_key_save_encrypted(dsa_rollback, dsa_path, old_password);
+                qgp_key_free(dsa_rollback);
+            }
+            return DNA_ERROR_CRYPTO;
+        }
+        qgp_key_free(kem_tmp);
     }
 
-    /* Change password on mnemonic file if it exists */
+    /* Change password on mnemonic file if it exists.
+     * mnemonic.enc is NOT in DNAK format and NOT TEE-wrapped — leave using
+     * key_change_password (legacy path handles mnemonic blob as-is). */
     if (qgp_platform_file_exists(mnemonic_path)) {
         if (key_change_password(mnemonic_path, old_password, new_password) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to change password on mnemonic file");
-            /* Try to rollback DSA and KEM keys */
-            key_change_password(dsa_path, new_password, old_password);
-            key_change_password(kem_path, new_password, old_password);
+            /* Try to rollback DSA and KEM keys via TEE-aware path */
+            qgp_key_t *dsa_rollback = NULL;
+            if (qgp_key_load_encrypted(dsa_path, new_password, &dsa_rollback) == 0) {
+                qgp_key_save_encrypted(dsa_rollback, dsa_path, old_password);
+                qgp_key_free(dsa_rollback);
+            }
+            qgp_key_t *kem_rollback = NULL;
+            if (qgp_key_load_encrypted(kem_path, new_password, &kem_rollback) == 0) {
+                qgp_key_save_encrypted(kem_rollback, kem_path, old_password);
+                qgp_key_free(kem_rollback);
+            }
             return DNA_ERROR_CRYPTO;
         }
     }
