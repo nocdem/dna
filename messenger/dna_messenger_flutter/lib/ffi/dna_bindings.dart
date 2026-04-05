@@ -2156,6 +2156,27 @@ class DnaBindings {
         engine, recipient_fingerprint, message, callback, user_data);
   }
 
+  // Send debug log to a receiver's debug inbox
+  late final _dna_engine_debug_log_send = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Uint8>,
+          Size, Pointer<Utf8>, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Uint8>, int,
+          Pointer<Utf8>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_debug_log_send');
+
+  int dna_engine_debug_log_send(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> receiver_fp_hex,
+    Pointer<Uint8> log_body,
+    int log_len,
+    Pointer<Utf8> hint,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_debug_log_send(
+        engine, receiver_fp_hex, log_body, log_len, hint, callback, user_data);
+  }
+
   // Queue message for async sending (returns immediately)
   late final _dna_engine_queue_message = _lib.lookupFunction<
       Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>),

@@ -2577,6 +2577,69 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Send a sanitized debug log to a receiver's debug inbox.
+  ///
+  /// [receiverFpHex] must be the 128-char hex fingerprint of the receiver.
+  /// [logBody] is the UTF-8 encoded sanitized log (<= 3 MB).
+  /// [hint] is an optional short tag describing the log context.
+  Future<void> sendDebugLog({
+    required String receiverFpHex,
+    required Uint8List logBody,
+    String? hint,
+  }) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final fpPtr = receiverFpHex.toNativeUtf8();
+    final bodyPtr = calloc<Uint8>(logBody.isNotEmpty ? logBody.length : 1);
+    if (logBody.isNotEmpty) {
+      bodyPtr.asTypedList(logBody.length).setAll(0, logBody);
+    }
+    final hintPtr = (hint != null && hint.isNotEmpty)
+        ? hint.toNativeUtf8()
+        : nullptr;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(fpPtr);
+      calloc.free(bodyPtr);
+      if (hintPtr != nullptr) {
+        calloc.free(hintPtr);
+      }
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_debug_log_send(
+      _engine,
+      fpPtr.cast(),
+      bodyPtr,
+      logBody.length,
+      hintPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      calloc.free(bodyPtr);
+      if (hintPtr != nullptr) {
+        calloc.free(hintPtr);
+      }
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit debug log request');
+    }
+
+    return completer.future;
+  }
+
   /// Queue message for async sending (returns immediately)
   ///
   /// Returns:
