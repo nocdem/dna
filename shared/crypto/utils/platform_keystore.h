@@ -47,6 +47,11 @@ bool platform_keystore_available(void);
  * Output format: [12-byte IV][ciphertext + 16-byte GCM tag]
  * The 6-byte DNAT header is passed as GCM AAD (authenticated but not encrypted).
  *
+ * Precondition: Callers MUST check platform_keystore_available() first.
+ *               This function does not return UNAVAILABLE — it expects TEE to be ready.
+ *
+ * On failure, *out is set to NULL and *out_len is set to 0.
+ *
  * @param data      Input data to wrap
  * @param data_len  Input data length (must be <= PLATFORM_KEYSTORE_MAX_FILE)
  * @param out       Output: allocated buffer (caller must free)
@@ -62,6 +67,11 @@ int platform_keystore_wrap(
  *
  * Input format: [12-byte IV][ciphertext + 16-byte GCM tag]
  * The 6-byte DNAT header is passed as GCM AAD for verification.
+ *
+ * Precondition: Callers MUST check platform_keystore_available() first.
+ *               This function does not return UNAVAILABLE — it expects TEE to be ready.
+ *
+ * On failure, *out is set to NULL and *out_len is set to 0.
  *
  * @param data      Wrapped data (IV + ciphertext + tag)
  * @param data_len  Wrapped data length
@@ -97,13 +107,14 @@ int platform_keystore_migrate_file(const char *file_path,
 bool platform_keystore_is_wrapped(const char *file_path);
 
 #ifdef __ANDROID__
+#include <jni.h>
 /**
  * Initialize JNI state for platform keystore.
  * Called from JNI_OnLoad in dna_jni.c.
  *
- * @param jvm  JavaVM pointer
+ * @param jvm  JavaVM pointer (cached globally for later JNI calls)
  */
-void platform_keystore_jni_init(void *jvm);
+void platform_keystore_jni_init(JavaVM *jvm);
 #endif
 
 #ifdef __cplusplus
