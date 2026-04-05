@@ -2025,6 +2025,7 @@ static void handle_t2_circ_open(nodus_server_t *srv, nodus_session_t *sess,
         ic->is_originator = true;
         ic->pending_open = true;
         ic->client_txn_id = msg->txn_id;
+        ic->created_at_ms = nodus_time_now_ms();
         c->is_local_bridge = false;
         c->inter = ic;
 
@@ -2586,6 +2587,11 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
         if (now - c->last_activity > IDLE_TIMEOUT_AUTH)
             nodus_tcp_disconnect(&srv->inter_tcp, c);
     }
+
+    /* Sweep orphaned pending_open inter-circuits (peer nodus never responded).
+     * 10s matches NODUS_CIRCUIT_OPEN_TIMEOUT_MS with margin for scheduling. */
+    nodus_inter_circuit_sweep_orphans(&srv->inter_circuits,
+                                        nodus_time_now_ms(), 10000);
 }
 
 /* ── Inter-node frame dispatch (peer port) ──────────────────────── */

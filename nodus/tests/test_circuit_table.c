@@ -86,6 +86,32 @@ static void test_inter_limit(void) {
     PASS();
 }
 
+static void test_inter_sweep_orphans(void) {
+    TEST("inter: sweep orphaned pending_open entries");
+    nodus_inter_circuit_table_t t;
+    nodus_inter_circuit_table_init(&t);
+
+    /* 3 entries: one fresh pending, one stale pending, one non-pending stale */
+    nodus_inter_circuit_t *fresh = nodus_inter_circuit_alloc(&t);
+    fresh->pending_open = true; fresh->created_at_ms = 1800;       /* age 200 */
+
+    nodus_inter_circuit_t *stale = nodus_inter_circuit_alloc(&t);
+    stale->pending_open = true; stale->created_at_ms = 100;        /* age 1900 */
+
+    nodus_inter_circuit_t *established = nodus_inter_circuit_alloc(&t);
+    established->pending_open = false; established->created_at_ms = 100;
+
+    /* Sweep at t=2000 with max_age=500: only "stale" (age 1900) should be freed */
+    int freed = nodus_inter_circuit_sweep_orphans(&t, 2000, 500);
+    if (freed != 1) { FAIL("wrong freed count"); return; }
+    if (nodus_inter_circuit_count(&t) != 2) { FAIL("count after sweep"); return; }
+    /* Established circuit (non-pending) must remain even if old */
+    if (!established->in_use) { FAIL("established wrongly freed"); return; }
+    /* Fresh pending circuit (within age) must remain */
+    if (!fresh->in_use) { FAIL("fresh wrongly freed"); return; }
+    PASS();
+}
+
 int main(void) {
     printf("Circuit table tests:\n");
     test_session_alloc_lookup_free();
@@ -93,6 +119,7 @@ int main(void) {
     test_session_limit();
     test_inter_alloc_lookup_free();
     test_inter_limit();
+    test_inter_sweep_orphans();
     printf("\nResults: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }

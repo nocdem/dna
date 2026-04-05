@@ -33,6 +33,7 @@ typedef struct nodus_inter_circuit {
     /* Originator-side pending state (T8b) */
     bool                  pending_open;    /* true while awaiting ri_open_ok */
     uint32_t              client_txn_id;   /* client's txn_id for the circ_open */
+    uint64_t              created_at_ms;   /* For orphan sweep (pending_open stuck) */
 } nodus_inter_circuit_t;
 
 typedef struct {
@@ -54,6 +55,11 @@ nodus_inter_circuit_t *nodus_inter_circuit_lookup(nodus_inter_circuit_table_t *t
 void nodus_inter_circuit_free(nodus_inter_circuit_table_t *t, uint64_t our_cid);
 
 int nodus_inter_circuit_count(const nodus_inter_circuit_table_t *t);
+
+/** Sweep pending_open entries older than max_age_ms (orphans from peer
+ *  nodus that never responded). Returns number of entries freed. */
+int nodus_inter_circuit_sweep_orphans(nodus_inter_circuit_table_t *t,
+                                        uint64_t now_ms, uint64_t max_age_ms);
 
 #ifdef __cplusplus
 }

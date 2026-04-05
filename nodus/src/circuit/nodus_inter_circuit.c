@@ -51,3 +51,19 @@ void nodus_inter_circuit_free(nodus_inter_circuit_table_t *t, uint64_t our_cid) 
 int nodus_inter_circuit_count(const nodus_inter_circuit_table_t *t) {
     return t ? t->count : 0;
 }
+
+int nodus_inter_circuit_sweep_orphans(nodus_inter_circuit_table_t *t,
+                                        uint64_t now_ms, uint64_t max_age_ms) {
+    if (!t) return 0;
+    int freed = 0;
+    for (int i = 0; i < NODUS_INTER_CIRCUITS_MAX; i++) {
+        nodus_inter_circuit_t *c = &t->entries[i];
+        if (!c->in_use || !c->pending_open) continue;
+        if (c->created_at_ms == 0) continue;  /* missing timestamp — skip */
+        if (now_ms - c->created_at_ms < max_age_ms) continue;
+        memset(c, 0, sizeof(*c));
+        t->count--;
+        freed++;
+    }
+    return freed;
+}
