@@ -2605,6 +2605,30 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
      * Pre-auth: only hello and auth messages allowed.
      * Enforcement controlled by require_peer_auth config flag. */
     if (nodus_t2_decode(payload, len, &msg) == 0) {
+        /* Handle auth RESPONSES for outgoing inter-node connections (this
+         * node opened the conn, sent hello, now receives challenge/auth_ok).
+         * These must be handled regardless of require_peer_auth — they
+         * complete auth initiated by us. */
+        if (strcmp(msg.method, "challenge") == 0) {
+            nodus_sig_t sig;
+            nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN, &srv->identity.sk);
+            uint8_t buf[8192];
+            size_t rlen = 0;
+            nodus_t2_auth(msg.txn_id, &sig, buf, sizeof(buf), &rlen);
+            nodus_tcp_send(sess->conn, buf, rlen);
+            nodus_t2_msg_free(&msg);
+            return;
+        } else if (strcmp(msg.method, "auth_ok") == 0) {
+            sess->conn->authenticated = true;
+            sess->authenticated = true;
+            nodus_t2_msg_free(&msg);
+            return;
+        } else if (strcmp(msg.method, "error") == 0) {
+            /* Auth or other error from peer — just ignore */
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+
         if (srv->config.require_peer_auth && !sess->authenticated) {
             if (strcmp(msg.method, "hello") == 0) {
                 /* Reuse client auth handler — same Dilithium5 challenge-response.
