@@ -134,6 +134,31 @@ int key_load_encrypted(
 );
 
 /**
+ * Decrypt key data from memory buffer (instead of file).
+ * Used after TEE unwrap when data is already in memory.
+ *
+ * Detects DNAK magic in the buffer:
+ *  - DNAK: decrypts with password (password must be non-NULL)
+ *  - Otherwise: treats as raw key data (copies directly)
+ *
+ * @param encrypted_data  Input buffer (may be DNAK-encrypted or raw)
+ * @param encrypted_size  Size of input
+ * @param password        Password for decryption (NULL if raw)
+ * @param key_out         Output buffer for decrypted key
+ * @param key_out_size    Size of output buffer
+ * @param key_size        Output: actual decrypted size
+ * @return                0 on success, -1 on error (wrong password, buffer too small, etc.)
+ */
+int key_load_from_buffer(
+    const uint8_t *encrypted_data,
+    size_t encrypted_size,
+    const char *password,
+    uint8_t *key_out,
+    size_t key_out_size,
+    size_t *key_size
+);
+
+/**
  * Check if a key file is password-protected
  *
  * @param file_path         Key file path

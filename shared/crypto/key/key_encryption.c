@@ -627,3 +627,39 @@ int key_verify_password(
 
     return result;
 }
+
+int key_load_from_buffer(
+    const uint8_t *encrypted_data,
+    size_t encrypted_size,
+    const char *password,
+    uint8_t *key_out,
+    size_t key_out_size,
+    size_t *key_size
+) {
+    if (!encrypted_data || !key_out || !key_size || encrypted_size == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "key_load_from_buffer: Invalid arguments");
+        return -1;
+    }
+
+    /* Check if data is password-encrypted (DNAK magic) */
+    bool is_encrypted = (encrypted_size >= KEY_ENC_HEADER_SIZE &&
+                         memcmp(encrypted_data, KEY_ENC_MAGIC, KEY_ENC_MAGIC_SIZE) == 0);
+
+    if (is_encrypted) {
+        if (!password) {
+            QGP_LOG_ERROR(LOG_TAG, "key_load_from_buffer: Data is encrypted but no password provided");
+            return -1;
+        }
+        return key_decrypt(encrypted_data, encrypted_size, password, key_out, key_size);
+    } else {
+        /* Raw data - copy directly */
+        if (encrypted_size > key_out_size) {
+            QGP_LOG_ERROR(LOG_TAG, "key_load_from_buffer: Output buffer too small (%zu < %zu)",
+                          key_out_size, encrypted_size);
+            return -1;
+        }
+        memcpy(key_out, encrypted_data, encrypted_size);
+        *key_size = encrypted_size;
+        return 0;
+    }
+}

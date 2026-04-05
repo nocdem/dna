@@ -3,6 +3,7 @@
 #include <string.h>
 #include <assert.h>
 #include "crypto/utils/platform_keystore.h"
+#include "crypto/key/key_encryption.h"
 
 static void test_noop_unavailable(void) {
     printf("  test_noop_unavailable... ");
@@ -87,6 +88,43 @@ static void test_is_wrapped_file_too_short(void) {
     printf("OK\n");
 }
 
+static void test_key_load_from_buffer_raw(void) {
+    printf("  test_key_load_from_buffer_raw... ");
+    /* Raw data (no DNAK magic) should be copied directly */
+    uint8_t raw_data[] = {0x01, 0x02, 0x03, 0x04, 0x05};
+    uint8_t out[32] = {0};
+    size_t out_len = 0;
+
+    int rc = key_load_from_buffer(raw_data, sizeof(raw_data), NULL,
+                                   out, sizeof(out), &out_len);
+    assert(rc == 0);
+    assert(out_len == sizeof(raw_data));
+    assert(memcmp(out, raw_data, sizeof(raw_data)) == 0);
+    printf("OK\n");
+}
+
+static void test_key_load_from_buffer_too_small(void) {
+    printf("  test_key_load_from_buffer_too_small... ");
+    uint8_t raw_data[100] = {0};
+    uint8_t out[10] = {0};
+    size_t out_len = 0;
+
+    int rc = key_load_from_buffer(raw_data, sizeof(raw_data), NULL,
+                                   out, sizeof(out), &out_len);
+    assert(rc == -1);  /* Output buffer too small */
+    printf("OK\n");
+}
+
+static void test_key_load_from_buffer_invalid_args(void) {
+    printf("  test_key_load_from_buffer_invalid_args... ");
+    uint8_t out[32] = {0};
+    size_t out_len = 0;
+
+    assert(key_load_from_buffer(NULL, 10, NULL, out, sizeof(out), &out_len) == -1);
+    assert(key_load_from_buffer((uint8_t *)"data", 0, NULL, out, sizeof(out), &out_len) == -1);
+    printf("OK\n");
+}
+
 int main(void) {
     printf("test_platform_keystore:\n");
     test_noop_unavailable();
@@ -98,6 +136,9 @@ int main(void) {
     test_is_wrapped_legacy_qgpk();
     test_is_wrapped_dnat_file();
     test_is_wrapped_file_too_short();
+    test_key_load_from_buffer_raw();
+    test_key_load_from_buffer_too_small();
+    test_key_load_from_buffer_invalid_args();
     printf("All platform_keystore tests passed!\n");
     return 0;
 }
