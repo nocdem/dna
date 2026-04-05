@@ -3895,6 +3895,38 @@ DNA_API int dna_engine_get_signing_public_key(
     size_t pubkey_out_len
 );
 
+/* ============================================================================
+ * DEBUG LOG INBOX (v0.9.164+)
+ * ============================================================================ */
+
+/**
+ * Send an encrypted debug log blob to a receiver's DHT inbox.
+ *
+ * The log body is encrypted with Kyber1024 + AES-256-GCM using the receiver's
+ * Kyber public key (fetched from DHT/profile cache), then PUT to the receiver's
+ * debug inbox DHT key (SHA3-512("dna-debug-inbox" || receiver_fp_raw_64)).
+ *
+ * Max log size: 3 MB. Hint is an optional short user-visible label (max 128 B).
+ *
+ * @param engine            Engine instance (must have identity loaded)
+ * @param receiver_fp_hex   128-char hex Dilithium5 fingerprint of the receiver
+ * @param log_body          Raw log bytes (plaintext)
+ * @param log_len           Length of log body (1 .. DNA_DEBUG_LOG_MAX_BODY_LEN)
+ * @param hint              Optional short label (NUL-terminated, may be NULL)
+ * @param callback          Completion callback (error == 0 on success)
+ * @param user_data         User data for callback
+ * @return                  Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_debug_log_send(
+    dna_engine_t *engine,
+    const char *receiver_fp_hex,
+    const uint8_t *log_body,
+    size_t log_len,
+    const char *hint,
+    dna_completion_cb callback,
+    void *user_data
+);
+
 #ifdef __cplusplus
 }
 #endif

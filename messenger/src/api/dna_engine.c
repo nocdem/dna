@@ -945,6 +945,14 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_MEDIA_UPLOAD:
             free(task->params.media_upload.data);
             break;
+        case TASK_DEBUG_LOG_SEND:
+            if (task->params.debug_log_send.log_body) {
+                qgp_secure_memzero(task->params.debug_log_send.log_body,
+                                   task->params.debug_log_send.log_len);
+                free(task->params.debug_log_send.log_body);
+                task->params.debug_log_send.log_body = NULL;
+            }
+            break;
         default:
             break;
     }
@@ -1382,6 +1390,11 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_MEDIA_EXISTS:
             dna_handle_media_exists(engine, task);
+            break;
+
+        /* Debug log inbox */
+        case TASK_DEBUG_LOG_SEND:
+            dna_handle_debug_log_send(engine, task);
             break;
     }
 }

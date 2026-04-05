@@ -196,6 +196,8 @@ if(BUILD_SHARED_LIB)
         src/api/engine/dna_engine_workers.c
         src/api/engine/dna_engine_version.c
         src/api/engine/dna_engine_signing.c
+        src/api/engine/dna_engine_debug_log.c
+        src/api/engine/dna_debug_log_wire.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c
@@ -289,6 +291,8 @@ else()
         src/api/engine/dna_engine_workers.c
         src/api/engine/dna_engine_version.c
         src/api/engine/dna_engine_signing.c
+        src/api/engine/dna_engine_debug_log.c
+        src/api/engine/dna_debug_log_wire.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c

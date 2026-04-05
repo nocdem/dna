@@ -186,7 +186,10 @@ typedef enum {
     /* Media operations (v0.9.146+) */
     TASK_MEDIA_UPLOAD,
     TASK_MEDIA_DOWNLOAD,
-    TASK_MEDIA_EXISTS
+    TASK_MEDIA_EXISTS,
+
+    /* Debug log inbox (v0.9.164+) */
+    TASK_DEBUG_LOG_SEND
 } dna_task_type_t;
 
 /* ============================================================================
@@ -552,6 +555,14 @@ typedef union {
     struct {
         uint8_t   content_hash[64];
     } media_exists;
+
+    /* Debug log: Send encrypted log to receiver inbox (v0.9.164+) */
+    struct {
+        char      receiver_fp_hex[129];     /* 128 hex chars + NUL */
+        uint8_t  *log_body;                 /* Heap, task owns */
+        size_t    log_len;
+        char      hint[129];                /* Optional short label */
+    } debug_log_send;
 
 } dna_task_params_t;
 
@@ -1031,6 +1042,9 @@ void dna_handle_unfollow(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_following(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_following_to_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_following_from_dht(dna_engine_t *engine, dna_task_t *task);
+
+/* Debug log handlers (dna_engine_debug_log.c) */
+void dna_handle_debug_log_send(dna_engine_t *engine, dna_task_t *task);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS - Helpers
