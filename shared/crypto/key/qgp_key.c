@@ -164,85 +164,12 @@ int qgp_key_save(const qgp_key_t *key, const char *path) {
  * @return: 0 on success, -1 on error
  */
 int qgp_key_load(const char *path, qgp_key_t **key_out) {
-    if (!path || !key_out) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load: Invalid arguments");
-        return -1;
-    }
-
-    FILE *fp = fopen(path, "rb");
-    if (!fp) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load: Cannot open file: %s", path);
-        return -1;
-    }
-
-    // Read header
-    qgp_privkey_file_header_t header;
-    if (fread(&header, sizeof(header), 1, fp) != 1) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load: Failed to read header");
-        fclose(fp);
-        return -1;
-    }
-
-    // Validate header
-    if (memcmp(header.magic, QGP_PRIVKEY_MAGIC, 8) != 0) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load: Invalid magic (not a QGP private key file)");
-        fclose(fp);
-        return -1;
-    }
-
-    if (header.version != QGP_PRIVKEY_VERSION) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load: Unsupported version: %d", header.version);
-        fclose(fp);
-        return -1;
-    }
-
-    // Create key structure
-    qgp_key_t *key = qgp_key_new((qgp_key_type_t)header.key_type, (qgp_key_purpose_t)header.purpose);
-    if (!key) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load: Memory allocation failed");
-        fclose(fp);
-        return -1;
-    }
-
-    strncpy(key->name, header.name, sizeof(key->name) - 1);
-
-    // Allocate and read public key
-    key->public_key_size = header.public_key_size;
-    key->public_key = QGP_MALLOC(key->public_key_size);
-    if (!key->public_key) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load: Memory allocation failed for public key");
-        qgp_key_free(key);
-        fclose(fp);
-        return -1;
-    }
-
-    if (fread(key->public_key, 1, key->public_key_size, fp) != key->public_key_size) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load: Failed to read public key");
-        qgp_key_free(key);
-        fclose(fp);
-        return -1;
-    }
-
-    // Allocate and read private key
-    key->private_key_size = header.private_key_size;
-    key->private_key = QGP_MALLOC(key->private_key_size);
-    if (!key->private_key) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load: Memory allocation failed for private key");
-        qgp_key_free(key);
-        fclose(fp);
-        return -1;
-    }
-
-    if (fread(key->private_key, 1, key->private_key_size, fp) != key->private_key_size) {
-        QGP_LOG_ERROR("KEY", "qgp_key_load: Failed to read private key");
-        qgp_key_free(key);
-        fclose(fp);
-        return -1;
-    }
-
-    fclose(fp);
-    *key_out = key;
-    return 0;
+    /* Delegate to qgp_key_load_encrypted with NULL password.
+     * This makes qgp_key_load TEE-aware: DNAT-wrapped files are unwrapped
+     * transparently, DNAK (password-encrypted) files fail with NULL password
+     * (expected — caller must use qgp_key_load_encrypted with actual password),
+     * and plain QGPK files load as before. */
+    return qgp_key_load_encrypted(path, NULL, key_out);
 }
 
 /**
@@ -720,6 +647,67 @@ cleanup:
  * @return: true if encrypted, false if unencrypted or error
  */
 bool qgp_key_file_is_encrypted(const char *path) {
+    if (!path) return false;
+
+    /* Check if file is TEE-wrapped (DNAT magic) — if so, unwrap and check inner */
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return false;
+
+    uint8_t magic[PLATFORM_KEYSTORE_MAGIC_SIZE];
+    size_t n = fread(magic, 1, PLATFORM_KEYSTORE_MAGIC_SIZE, fp);
+
+    if (n == PLATFORM_KEYSTORE_MAGIC_SIZE &&
+        memcmp(magic, PLATFORM_KEYSTORE_MAGIC, PLATFORM_KEYSTORE_MAGIC_SIZE) == 0) {
+        /* DNAT-wrapped: unwrap and check inner magic */
+        fseek(fp, 0, SEEK_END);
+        long fs = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+
+        if (fs <= 0 || fs > PLATFORM_KEYSTORE_MAX_FILE) {
+            fclose(fp);
+            return false;
+        }
+
+        uint8_t *file_data = malloc((size_t)fs);
+        if (!file_data) {
+            fclose(fp);
+            return false;
+        }
+        if (fread(file_data, 1, (size_t)fs, fp) != (size_t)fs) {
+            free(file_data);
+            fclose(fp);
+            return false;
+        }
+        fclose(fp);
+
+        if (!platform_keystore_available()) {
+            /* Can't unwrap without TEE — can't determine encryption state */
+            qgp_secure_memzero(file_data, (size_t)fs);
+            free(file_data);
+            return false;
+        }
+
+        uint8_t *inner = NULL;
+        size_t inner_len = 0;
+        int rc = platform_keystore_unwrap(
+            file_data + PLATFORM_KEYSTORE_HEADER_SIZE,
+            (size_t)fs - PLATFORM_KEYSTORE_HEADER_SIZE,
+            &inner, &inner_len);
+        qgp_secure_memzero(file_data, (size_t)fs);
+        free(file_data);
+
+        if (rc != 0 || !inner) return false;
+
+        /* Check inner magic: DNAK = password-encrypted, anything else = not */
+        bool is_dnak = (inner_len >= KEY_ENC_MAGIC_SIZE &&
+                        memcmp(inner, KEY_ENC_MAGIC, KEY_ENC_MAGIC_SIZE) == 0);
+        qgp_secure_memzero(inner, inner_len);
+        free(inner);
+        return is_dnak;
+    }
+
+    fclose(fp);
+    /* Legacy (non-DNAT): use original check */
     return key_file_is_encrypted(path);
 }
 
