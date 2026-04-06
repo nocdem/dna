@@ -215,23 +215,14 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
                         dispatch_payload = dec_buf;
                         dispatch_len = pt_len;
                     } else {
-                        /* Decrypt failed — log details and disconnect */
-                        QGP_LOG_ERROR(LOG_TAG_TCP, "decrypt failed: conn=%s:%d slot=%d frame_len=%zu is_nodus=%d",
-                                      conn->ip, conn->port, conn->slot,
-                                      frame.payload_len, conn->is_nodus);
-                        /* Hex dump first 16 bytes of frame payload for diagnosis */
-                        if (frame.payload_len >= 16) {
-                            QGP_LOG_ERROR(LOG_TAG_TCP, "  frame_head: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                                frame.payload[0], frame.payload[1], frame.payload[2], frame.payload[3],
-                                frame.payload[4], frame.payload[5], frame.payload[6], frame.payload[7],
-                                frame.payload[8], frame.payload[9], frame.payload[10], frame.payload[11],
-                                frame.payload[12], frame.payload[13], frame.payload[14], frame.payload[15]);
-                        }
+                        /* Decrypt failed — might be a plaintext frame that was
+                         * in-flight before crypto was activated. Try dispatching
+                         * as plaintext instead of disconnecting. */
+                        QGP_LOG_WARN(LOG_TAG_TCP, "decrypt failed, treating as plaintext: conn=%s:%d frame_len=%zu",
+                                      conn->ip, conn->port, frame.payload_len);
                         free(dec_buf);
-                        if (tcp->on_disconnect)
-                            tcp->on_disconnect(conn, tcp->cb_ctx);
-                        conn_free(tcp, conn);
-                        return true;
+                        dec_buf = NULL;
+                        /* Fall through to dispatch as plaintext */
                     }
                 }
             }
