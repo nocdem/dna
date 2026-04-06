@@ -2,31 +2,31 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>DNA Wallet – One Seed, Every Chain | CPUNK.IO</title>
+  <title>DNA VPN — Post-Quantum Encrypted Transport | CPUNK.IO</title>
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description"
-    content="DNA Wallet is the multi-chain wallet built into DNA Connect. One BIP-39 seed phrase derives wallets for Cellframe, Ethereum, BSC, Solana, and TRON. Send tokens in-chat with post-quantum security."
+    content="DNA VPN provides post-quantum encrypted peer-to-peer circuits over the Nodus network. Authenticated transport for file transfer, voice signalling, and general-purpose tunneling between DNA identities."
   />
   <meta name="keywords"
-    content="DNA Wallet, CPUNK, CPUNK.IO, multi-chain wallet, BIP-39, post-quantum wallet, Cellframe, Ethereum, BSC, BNB, Solana, TRON, in-chat transfers, Dilithium, Kyber1024, DEX swap"
+    content="DNA VPN, CPUNK, post-quantum VPN, encrypted transport, peer-to-peer circuit, Nodus, Dilithium5, Kyber1024, decentralized VPN, quantum-safe transport"
   />
   <meta name="author" content="DNA Protocol" />
   <meta name="robots" content="index, follow" />
-  <link rel="canonical" href="https://cpunk.io/DNA-Connect/wallet.html" />
+  <link rel="canonical" href="https://cpunk.io/DNA-Connect/vpn.html" />
 
   <!-- Open Graph / Social -->
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://cpunk.io/DNA-Connect/wallet.html">
-  <meta property="og:title" content="DNA Wallet — One Seed, Every Chain | CPUNK.IO">
-  <meta property="og:description" content="Multi-chain wallet with post-quantum security. One seed phrase, five blockchains. Send tokens directly in chat. Cellframe, Ethereum, BSC, Solana, TRON.">
+  <meta property="og:url" content="https://cpunk.io/DNA-Connect/vpn.html">
+  <meta property="og:title" content="DNA VPN — Post-Quantum Encrypted Transport">
+  <meta property="og:description" content="DNA VPN provides post-quantum encrypted peer-to-peer circuits over the Nodus network. Authenticated transport for file transfer, voice signalling, and general-purpose tunneling between DNA identities.">
   <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:url" content="https://cpunk.io/DNA-Connect/wallet.html">
-  <meta name="twitter:title" content="DNA Wallet — One Seed, Every Chain | CPUNK.IO">
-  <meta name="twitter:description" content="Multi-chain wallet with post-quantum security. One seed phrase, five blockchains. Send tokens directly in chat.">
+  <meta name="twitter:url" content="https://cpunk.io/DNA-Connect/vpn.html">
+  <meta name="twitter:title" content="DNA VPN — Post-Quantum Encrypted Transport">
+  <meta name="twitter:description" content="DNA VPN provides post-quantum encrypted peer-to-peer circuits over the Nodus network. Authenticated transport for file transfer, voice signalling, and general-purpose tunneling between DNA identities.">
   <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
   <meta name="twitter:site" content="@OfficialCpunk">
 
@@ -56,7 +56,6 @@
       --orange-soft: rgba(242, 98, 41, 0.08);
       --orange-glow: rgba(242, 98, 41, 0.35);
       --orange-dim: rgba(242, 98, 41, 0.15);
-      --pink: #e040a0;
       --text-main: #f0f2ff;
       --text-muted: #8a94c0;
       --border-subtle: rgba(255, 255, 255, 0.06);
@@ -102,7 +101,7 @@
       padding: 0 1.25rem;
     }
 
-    /* -- Animations -- */
+    /* ── Animations ── */
 
     @keyframes fadeInUp {
       from { opacity: 0; transform: translateY(30px); }
@@ -119,39 +118,15 @@
       to   { opacity: 1; transform: translateX(0); }
     }
 
-    @keyframes scaleIn {
-      from { opacity: 0; transform: scale(0.92); }
-      to   { opacity: 1; transform: scale(1); }
-    }
-
-    @keyframes float {
-      0%, 100% { transform: translateY(0); }
-      50%      { transform: translateY(-12px); }
-    }
-
     @keyframes pulseGlow {
       0%, 100% { opacity: 0.4; }
       50%      { opacity: 0.8; }
     }
 
-    @keyframes shimmer {
-      0%   { background-position: -200% center; }
-      100% { background-position: 200% center; }
-    }
-
-    @keyframes titleGlow {
-      0%, 100% {
-        text-shadow:
-          0 0 40px rgba(6,197,210,0.35),
-          0 0 80px rgba(6,197,210,0.12),
-          0 0 120px rgba(6,197,210,0.08);
-      }
-      50% {
-        text-shadow:
-          0 0 60px rgba(6,197,210,0.5),
-          0 0 110px rgba(6,197,210,0.2),
-          0 0 160px rgba(6,197,210,0.14);
-      }
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
     }
 
     /* Scroll reveal */
@@ -190,7 +165,7 @@
     .stagger > *:nth-child(3) { transition-delay: 0.2s; }
     .stagger > *:nth-child(4) { transition-delay: 0.3s; }
 
-    /* -- Header / Nav -- */
+    /* ── Header / Nav ── */
 
     header {
       position: sticky;
@@ -214,13 +189,6 @@
       display: flex;
       align-items: center;
       gap: 0.75rem;
-    }
-
-    .brand-logo {
-      width: 38px;
-      height: 38px;
-      object-fit: contain;
-      filter: drop-shadow(0 0 8px rgba(6,197,210,0.5));
     }
 
     .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
@@ -346,9 +314,9 @@
     .dropdown a.active { background: rgba(255,255,255,0.06); color: var(--text-main); }
     .nav-item:hover .dropdown { display: block; }
 
-    /* ====================================== */
-    /* -- HERO (Split layout)              -- */
-    /* ====================================== */
+    /* ══════════════════════════════════════════ */
+    /* ── HERO (Split layout)                  ── */
+    /* ══════════════════════════════════════════ */
 
     .hero-split {
       position: relative;
@@ -417,10 +385,13 @@
       line-height: 1.1;
       margin-bottom: 0.8rem;
       letter-spacing: 0.04em;
+      color: #ffffff;
     }
 
-    .gradient-text {
-      background: linear-gradient(130deg, #ffffff, var(--teal), var(--orange));
+    .hero-split-text h1 .accent {
+      background: linear-gradient(130deg, var(--teal), #4dd9e0, var(--orange));
+      background-size: 200% 200%;
+      animation: gradientShift 6s ease infinite;
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
@@ -435,7 +406,7 @@
     }
 
     .hero-split-text .subtitle strong {
-      color: var(--text-main);
+      color: var(--teal);
       font-weight: 500;
     }
 
@@ -474,74 +445,39 @@
       background: radial-gradient(circle at top, var(--panel-alt), var(--bg) 70%);
       border: 1px solid var(--border-subtle);
       box-shadow: var(--shadow-soft);
-      padding: 1.5rem;
+      padding: 1rem;
       overflow: hidden;
     }
 
-    /* Hero wallet visual */
-    .hero-wallet-visual {
-      display: flex;
-      flex-direction: column;
-      gap: 0.8rem;
+    .hero-split-media a {
+      display: block;
+      border-radius: 18px;
+      overflow: hidden;
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
     }
 
-    .wallet-chain-row {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      padding: 0.7rem 0.9rem;
-      border-radius: 14px;
-      background: var(--panel);
-      border: 1px solid var(--border-subtle);
-      transition: border-color 0.3s, transform 0.3s;
+    .hero-split-media a:hover {
+      transform: scale(1.02);
+      box-shadow: 0 0 24px var(--teal-glow);
     }
 
-    .wallet-chain-row:hover {
-      border-color: rgba(6,197,210,0.3);
-      transform: translateX(4px);
+    .hero-split-media img {
+      width: 100%;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.1);
+      display: block;
     }
 
-    .chain-icon {
-      width: 36px;
-      height: 36px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.75rem;
-      font-weight: 700;
-      font-family: var(--font-display);
-      flex-shrink: 0;
-    }
-
-    .chain-icon.cf { background: rgba(6,197,210,0.15); color: var(--teal); border: 1px solid rgba(6,197,210,0.3); }
-    .chain-icon.eth { background: rgba(136,136,255,0.15); color: #8888ff; border: 1px solid rgba(136,136,255,0.3); }
-    .chain-icon.sol { background: rgba(153,69,255,0.15); color: #9945ff; border: 1px solid rgba(153,69,255,0.3); }
-    .chain-icon.trx { background: rgba(255,6,10,0.12); color: #ff060a; border: 1px solid rgba(255,6,10,0.25); }
-    .chain-icon.bsc { background: rgba(243,186,47,0.15); color: #f3ba2f; border: 1px solid rgba(243,186,47,0.3); }
-
-    .chain-info { flex: 1; min-width: 0; }
-    .chain-name { font-size: 0.8rem; font-weight: 600; color: var(--text-main); }
-    .chain-addr { font-size: 0.68rem; color: var(--text-muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-    .chain-bal { font-size: 0.78rem; font-weight: 500; color: var(--text-main); text-align: right; white-space: nowrap; }
-
-    .wallet-seed-label {
-      text-align: center;
-      font-size: 0.72rem;
+    .image-caption {
+      font-size: 0.78rem;
       color: var(--text-muted);
-      padding: 0.5rem 0 0.2rem;
-      border-top: 1px solid var(--border-subtle);
+      margin-top: 0.5rem;
+      text-align: center;
     }
 
-    .wallet-seed-label strong {
-      color: var(--teal);
-      font-weight: 600;
-    }
-
-    /* ====================================== */
-    /* -- SECTIONS                         -- */
-    /* ====================================== */
+    /* ══════════════════════════════════════════ */
+    /* ── SECTIONS                             ── */
+    /* ══════════════════════════════════════════ */
 
     .s-section {
       padding: 5rem 0;
@@ -549,9 +485,7 @@
       overflow: hidden;
     }
 
-    .s-dark {
-      background: var(--bg);
-    }
+    .s-dark { background: var(--bg); }
 
     .s-panel {
       background:
@@ -615,27 +549,11 @@
       margin-right: auto;
     }
 
-    .section-header {
-      margin-bottom: 2.5rem;
-    }
+    /* ── Token Cards Grid ── */
 
-    /* -- Token Cards Grid -- */
-
-    .card-grid-3 {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 1.2rem;
-    }
-
-    .card-grid-4 {
+    .token-grid {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
-      gap: 1.2rem;
-    }
-
-    .card-grid-5 {
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
       gap: 1.2rem;
     }
 
@@ -644,6 +562,7 @@
       background: var(--panel);
       border: 1px solid var(--border-subtle);
       padding: 1.5rem 1.2rem;
+      text-align: center;
       transition: border-color 0.4s, transform 0.4s, box-shadow 0.4s;
       position: relative;
       overflow: hidden;
@@ -660,9 +579,7 @@
       transition: left 0.6s ease;
     }
 
-    .token-card:hover::after {
-      left: 100%;
-    }
+    .token-card:hover::after { left: 100%; }
 
     .token-card:hover {
       border-color: rgba(242,98,41,0.4);
@@ -694,13 +611,9 @@
       filter: drop-shadow(0 0 10px rgba(242,98,41,0.7)) drop-shadow(0 0 28px rgba(242,98,41,0.4));
     }
 
-    .token-card:hover .token-card-icon {
-      transform: scale(1.15) rotate(5deg);
-    }
+    .token-card:hover .token-card-icon { transform: scale(1.15) rotate(5deg); }
 
-    .token-card:hover h3 {
-      color: var(--orange);
-    }
+    .token-card:hover h3 { color: var(--orange); }
 
     .token-card h3 {
       font-family: var(--font-display);
@@ -711,43 +624,31 @@
       color: var(--teal);
       position: relative;
       z-index: 1;
-      text-align: center;
     }
 
     .token-card p {
       font-size: 0.82rem;
       color: var(--text-muted);
-      line-height: 1.55;
-      position: relative;
-      z-index: 1;
-    }
-
-    .token-card ul {
-      list-style: none;
-      margin-top: 0.5rem;
-      position: relative;
-      z-index: 1;
-    }
-
-    .token-card ul li {
-      margin-bottom: 0.3rem;
-      padding-left: 1rem;
-      position: relative;
-      font-size: 0.82rem;
-      color: var(--text-muted);
       line-height: 1.5;
+      position: relative;
+      z-index: 1;
     }
 
-    .token-card ul li::before {
-      content: "\25B9";
-      position: absolute;
-      left: 0;
-      top: 0;
-      color: var(--orange);
-      font-size: 0.75rem;
+    /* ── Card Grids ── */
+
+    .card-grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.2rem;
     }
 
-    /* -- DNA Row (split layout) -- */
+    .card-grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1.2rem;
+    }
+
+    /* ── DNA Row (split layout) ── */
 
     .dna-row {
       display: grid;
@@ -812,90 +713,52 @@
       justify-content: center;
     }
 
-    .dna-visual a {
-      display: block;
-      border-radius: 18px;
-      overflow: hidden;
-      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    .dna-icon {
+      width: 180px;
+      height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 24px;
+      transition: transform 0.5s ease, box-shadow 0.5s ease;
     }
 
-    .dna-visual a:hover {
-      transform: scale(1.02);
-      box-shadow: 0 0 24px var(--teal-glow);
+    .dna-icon:hover { transform: scale(1.06); }
+
+    .dna-icon.glow-teal {
+      background: radial-gradient(circle, rgba(6,197,210,0.08) 0%, transparent 70%);
+      border: 1px solid rgba(6,197,210,0.15);
+      box-shadow: 0 0 30px rgba(6,197,210,0.06);
     }
 
-    .dna-visual img {
-      width: 100%;
-      height: auto;
-      display: block;
-      border-radius: 18px;
-      border: 1px solid rgba(255,255,255,0.12);
-      box-shadow: 0 0 16px rgba(6,197,210,0.2);
+    .dna-icon.glow-teal:hover {
+      box-shadow: 0 0 50px rgba(242,98,41,0.15);
+      border-color: rgba(242,98,41,0.2);
     }
 
-    /* -- Derivation Diagram -- */
-
-    .derivation-diagram {
-      width: 100%;
-      border-radius: var(--radius-lg);
-      background: var(--panel);
-      border: 1px solid var(--border-subtle);
-      padding: 1.5rem;
+    .dna-icon.glow-orange {
+      background: radial-gradient(circle, rgba(242,98,41,0.08) 0%, transparent 70%);
+      border: 1px solid rgba(242,98,41,0.15);
+      box-shadow: 0 0 30px rgba(242,98,41,0.06);
     }
 
-    .derivation-title {
-      font-family: var(--font-display);
-      font-size: 0.78rem;
-      font-weight: 600;
-      color: var(--teal);
-      text-align: center;
-      margin-bottom: 1rem;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
+    .dna-icon.glow-orange:hover {
+      box-shadow: 0 0 50px rgba(242,98,41,0.15);
+      border-color: rgba(242,98,41,0.2);
     }
 
-    .derivation-seed {
-      text-align: center;
-      padding: 0.6rem 1rem;
-      border-radius: 10px;
-      background: rgba(6,197,210,0.08);
-      border: 1px solid rgba(6,197,210,0.2);
-      margin-bottom: 0.8rem;
+    .dna-icon svg {
+      width: 80px;
+      height: 80px;
+      stroke: var(--teal);
+      stroke-width: 1.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      filter: drop-shadow(0 0 12px rgba(6,197,210,0.4));
     }
 
-    .derivation-seed .label { font-size: 0.7rem; color: var(--teal); font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }
-    .derivation-seed .value { font-size: 0.78rem; color: var(--text-main); font-family: monospace; margin-top: 0.2rem; }
-
-    .derivation-arrow {
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 1.2rem;
-      margin: 0.4rem 0;
-    }
-
-    .derivation-paths {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0.6rem;
-    }
-
-    .derivation-path {
-      padding: 0.55rem 0.7rem;
-      border-radius: 10px;
-      background: rgba(255,255,255,0.02);
-      border: 1px solid var(--border-subtle);
-    }
-
-    .derivation-path .chain-label { font-size: 0.7rem; font-weight: 600; margin-bottom: 0.15rem; }
-    .derivation-path .chain-label.cf-label { color: var(--teal); }
-    .derivation-path .chain-label.eth-label { color: #8888ff; }
-    .derivation-path .chain-label.sol-label { color: #9945ff; }
-    .derivation-path .chain-label.trx-label { color: #ff060a; }
-    .derivation-path .chain-label.bsc-label { color: #f3ba2f; }
-    .derivation-path .path-value { font-size: 0.68rem; color: var(--text-muted); font-family: monospace; }
-    .derivation-path .algo-value { font-size: 0.65rem; color: rgba(138,148,192,0.7); margin-top: 0.1rem; }
-
-    /* -- CTA -- */
+    /* ── CTA ── */
 
     .cta-section { padding: 4rem 0; }
 
@@ -937,7 +800,7 @@
       display: flex; flex-wrap: wrap; gap: 0.7rem; justify-content: center;
     }
 
-    /* -- Footer -- */
+    /* ── Footer ── */
 
     footer {
       padding: 1.8rem 0 2.2rem;
@@ -954,18 +817,14 @@
     .footer-links a { color: var(--text-muted); font-size: 0.8rem; }
     .footer-links a:hover { color: var(--orange); }
 
-    /* -- Responsive -- */
+    /* ── Responsive ── */
 
     @media (max-width: 900px) {
-      .hero-split-grid {
-        grid-template-columns: 1fr;
-      }
+      .hero-split-grid { grid-template-columns: 1fr; }
       .hero-split-media { order: -1; }
-
+      .token-grid { grid-template-columns: repeat(2, 1fr); }
       .card-grid-3 { grid-template-columns: 1fr; }
       .card-grid-4 { grid-template-columns: 1fr 1fr; }
-      .card-grid-5 { grid-template-columns: 1fr 1fr; }
-
       .dna-row,
       .dna-row.reverse {
         grid-template-columns: 1fr;
@@ -1003,10 +862,11 @@
 
     @media (max-width: 480px) {
       .hero-split-text h1 { font-size: 1.9rem; }
+      .token-grid { grid-template-columns: 1fr 1fr; }
       .card-grid-3 { grid-template-columns: 1fr; }
       .card-grid-4 { grid-template-columns: 1fr; }
-      .card-grid-5 { grid-template-columns: 1fr; }
-      .derivation-paths { grid-template-columns: 1fr; }
+      .dna-icon { width: 140px; height: 140px; }
+      .dna-icon svg { width: 60px; height: 60px; }
     }
 
     /* Reduced motion */
@@ -1122,6 +982,49 @@
     }
     .dl-source a:hover { color: var(--teal); }
 
+    /* ── Specs table ── */
+    .security-table-wrap {
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      border: 1px solid var(--border-subtle);
+      overflow: hidden;
+      margin-top: 1.5rem;
+    }
+    .security-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    .security-table th,
+    .security-table td {
+      padding: 0.7rem 1.2rem;
+      text-align: left;
+    }
+    .security-table th {
+      font-family: var(--font-display);
+      font-size: 0.68rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--teal);
+      font-weight: 600;
+      background: rgba(6,197,210,0.04);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .security-table td {
+      color: var(--text-muted);
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .security-table tr:last-child td { border-bottom: none; }
+    .security-table td strong { color: var(--text-main); font-weight: 500; }
+    .security-table tr:hover td { background: rgba(255,255,255,0.015); }
+    .security-table .algo {
+      color: var(--orange);
+      font-weight: 600;
+      font-family: var(--font-display);
+      font-size: 0.78rem;
+      letter-spacing: 0.02em;
+    }
+
     /* ── Language selector ── */
     #lang-selector {
       position: relative;
@@ -1190,7 +1093,7 @@
     <header>
       <div class="wrap">
         <div class="nav">
-          <a href="/hometest.html" class="brand">
+          <a href="/" class="brand">
             <div class="brand-text">
               <span class="brand-name">CPUNK.IO</span>
               <span class="brand-tag" data-i18n="brand.tag">Privacy • Quantum Safety • Decentralization</span>
@@ -1213,9 +1116,9 @@
                 <div class="dropdown">
                   <a href="/DNA-Connect/identity.html" data-i18n="nav.identity">Identity</a>
                   <a href="/DNA-Connect/messenger.html" data-i18n="nav.messenger">Messenger</a>
-                  <a href="/DNA-Connect/wallet.html" class="active" data-i18n="nav.wallet">Wallet</a>
+                  <a href="/DNA-Connect/wallet.html" data-i18n="nav.wallet">Wallet</a>
                   <a href="/DNA-Connect/nodus.html" data-i18n="nav.nodus">Nodus</a>
-                  <a href="/DNA-Connect/vpn.html" data-i18n="nav.vpn">VPN</a>
+                  <a href="/DNA-Connect/vpn.html" class="active" data-i18n="nav.vpn">VPN</a>
                 </div>
               </div>
 
@@ -1248,7 +1151,7 @@
 
     <main id="top">
 
-      <!-- == Hero (Split layout) == -->
+      <!-- ══ Hero (Split layout) ══ -->
       <section class="hero-split">
         <div class="hero-split-bg"></div>
         <div class="wrap">
@@ -1256,346 +1159,276 @@
             <div class="hero-split-text">
               <div class="eyebrow">
                 <span class="eyebrow-dot"></span>
-                <span class="eyebrow-label" data-i18n="wallet.hero.eyebrowLabel">Product</span>
-                <span data-i18n="wallet.hero.eyebrowText">DNA Wallet multi-chain layer</span>
+                <span class="eyebrow-label" data-i18n="vpn_page.hero.eyebrow_label">Transport</span>
+                <span data-i18n="vpn_page.hero.eyebrow_text">Post-quantum encrypted circuits</span>
               </div>
 
-              <h1 style="color:#ffffff;" data-i18n="wallet.hero.title">
-                DNA Wallet<br>
-                One Seed, Every Chain
+              <h1 data-i18n="vpn_page.hero.title">
+                DNA <span class="accent">VPN</span>
               </h1>
 
-              <p class="subtitle" data-i18n="wallet.hero.subtitle">
-                DNA Wallet is the <strong>multi-chain wallet built into DNA Connect</strong>.
-                A single BIP-39 seed phrase derives wallets across <strong>five blockchains</strong> &mdash;
-                Cellframe, Ethereum, BSC, Solana, and TRON. Send and receive tokens without leaving the chat.
+              <p class="subtitle" data-i18n="vpn_page.hero.subtitle1">
+                DNA VPN is a <strong>post-quantum encrypted transport layer</strong> built on the Nodus network. It creates peer-to-peer circuits between authenticated users &mdash; routing data through the distributed infrastructure without exposing endpoints to each other.
+              </p>
+              <p class="subtitle" data-i18n="vpn_page.hero.subtitle2">
+                Unlike consumer VPNs that route traffic through centralized servers, DNA VPN establishes direct encrypted circuits between peers using Nodus as the routing fabric. All circuit authentication uses Dilithium5 signatures, with Kyber1024 onion encryption planned for future releases.
               </p>
 
               <div class="hero-actions">
-                <a href="#downloads" class="btn btn-primary" data-i18n="wallet.hero.btnDownload">Download</a>
-                <a href="#overview" class="btn btn-ghost" data-i18n="wallet.hero.btnHowItWorks">How it works</a>
-                <a href="#chains" class="btn btn-ghost" data-i18n="wallet.hero.btnSupportedChains">Supported chains</a>
+                <a href="#architecture" class="btn btn-ghost" data-i18n="vpn_page.hero.btn_architecture">Architecture</a>
+                <a href="#use-cases" class="btn btn-ghost" data-i18n="vpn_page.hero.btn_use_cases">Use Cases</a>
+                <a href="#downloads" class="btn btn-primary" data-i18n="vpn_page.hero.btn_download">Downloads</a>
               </div>
 
               <div class="hero-meta">
                 <span>
                   <span class="hero-meta-dot"></span>
-                  <span data-i18n="wallet.hero.metaBlockchains">5 blockchains, 1 seed phrase, 0 third parties.</span>
+                  <span data-i18n="vpn_page.hero.meta1">Post-quantum authenticated transport. No centralized relay.</span>
                 </span>
-                <span data-i18n="wallet.hero.metaIntegrated">
-                  Integrated in: <strong style="color:var(--text-main);font-weight:500;">DNA Connect</strong> &middot; Android, Linux, Windows
+                <span data-i18n="vpn_page.hero.meta2">
+                  Open infrastructure &middot; <strong style="color:var(--text-main);font-weight:500;">Built on Nodus</strong>
                 </span>
               </div>
             </div>
 
-            <aside class="hero-split-media" aria-label="DNA Wallet multi-chain preview">
-              <div class="hero-wallet-visual">
-                <div class="wallet-chain-row">
-                  <div class="chain-icon cf">CF</div>
-                  <div class="chain-info">
-                    <div class="chain-name">Cellframe</div>
-                    <div class="chain-addr">mJUoWGb...Yk5Tz4hPQV</div>
-                  </div>
-                  <div class="chain-bal">1,250 CPUNK</div>
-                </div>
-                <div class="wallet-chain-row">
-                  <div class="chain-icon eth">ETH</div>
-                  <div class="chain-info">
-                    <div class="chain-name">Ethereum</div>
-                    <div class="chain-addr">0x7a3B...e91F</div>
-                  </div>
-                  <div class="chain-bal">0.42 ETH</div>
-                </div>
-                <div class="wallet-chain-row">
-                  <div class="chain-icon sol">SOL</div>
-                  <div class="chain-info">
-                    <div class="chain-name">Solana</div>
-                    <div class="chain-addr">7Xf9p...mK2v</div>
-                  </div>
-                  <div class="chain-bal">12.8 SOL</div>
-                </div>
-                <div class="wallet-chain-row">
-                  <div class="chain-icon trx">TRX</div>
-                  <div class="chain-info">
-                    <div class="chain-name">TRON</div>
-                    <div class="chain-addr">TJx5n...Rp4Q</div>
-                  </div>
-                  <div class="chain-bal">500 TRX</div>
-                </div>
-                <div class="wallet-chain-row">
-                  <div class="chain-icon bsc">BSC</div>
-                  <div class="chain-info">
-                    <div class="chain-name">BNB Smart Chain</div>
-                    <div class="chain-addr">0x7a3B...e91F</div>
-                  </div>
-                  <div class="chain-bal">25.0 USDT</div>
-                </div>
-                <div class="wallet-seed-label">
-                  <span data-i18n="wallet.hero.seedLabel">All wallets derived from <strong>one BIP-39 seed phrase</strong></span>
-                </div>
-              </div>
+            <aside class="hero-split-media" aria-label="DNA VPN circuit routing">
+              <img
+                src="../images/distributed-network-nodes.png"
+                alt="DNA VPN peer-to-peer circuit routing through Nodus network"
+              />
             </aside>
           </div>
         </div>
       </section>
 
-      <!-- == Overview Section == -->
-      <section id="overview" class="s-section s-dark">
+      <!-- ══ Architecture ══ -->
+      <section id="architecture" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label" data-i18n="wallet.overview.label">Overview</div>
-            <h2 class="section-title" data-i18n="wallet.overview.title">Multi-chain, built into the messenger</h2>
-            <p class="section-desc" style="max-width: 38rem;" data-i18n="wallet.overview.desc">
-              DNA Wallet is not a separate app. It lives inside DNA Connect &mdash; every conversation is also a payment channel. No address copying, no app switching, no friction.
-            </p>
+            <div class="section-label" data-i18n="vpn_page.arch.label">Architecture</div>
+            <h2 class="section-title" data-i18n="vpn_page.arch.title">Circuit Routing</h2>
           </div>
 
-          <div class="card-grid-3 stagger">
+          <div class="token-grid stagger" style="grid-template-columns: repeat(2, 1fr);">
             <article class="token-card reveal">
               <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"/></svg>
+                <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><circle cx="12" cy="12" r="3"/><line x1="7.5" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="16.5" y2="12"/></svg>
               </span>
-              <h3 data-i18n="wallet.overview.multiChainTitle">Multi-Chain Portfolio</h3>
-              <p data-i18n="wallet.overview.multiChainDesc">
-                One wallet interface, five blockchains managed from a single unified view. Each chain uses its native signing algorithm &mdash; see <a href="#chains" style="color:var(--teal);border-bottom:1px solid var(--teal-dim);">supported chains</a> for details.
+              <div style="display:flex; gap:0.4rem; justify-content:center; margin-bottom:0.6rem;">
+                <span style="font-family:var(--font-display); font-size:0.68rem; letter-spacing:0.08em; color:var(--teal); background:var(--teal-soft); padding:0.15rem 0.5rem; border-radius:var(--radius-pill); border:1px solid var(--teal-dim);">TCP</span>
+                <span style="font-family:var(--font-display); font-size:0.68rem; letter-spacing:0.08em; color:var(--orange); background:var(--orange-soft); padding:0.15rem 0.5rem; border-radius:var(--radius-pill); border:1px solid var(--orange-dim);">4001</span>
+              </div>
+              <h3 data-i18n="vpn_page.arch.same_title">Same-Nodus &mdash; 2 Hops</h3>
+              <p data-i18n="vpn_page.arch.same_desc1">
+                When both peers are connected to the same Nodus node, the circuit is bridged locally with minimal latency.
+              </p>
+              <p style="margin-top: 0.6rem;" data-i18n="vpn_page.arch.same_desc2">
+                Data flows: Client A &rarr; Nodus &rarr; Client B. The Nodus node acts as a local relay, forwarding circuit frames between the two authenticated sessions.
               </p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h.01"/><path d="M12 10h.01"/><path d="M16 10h.01"/></svg>
+                <svg viewBox="0 0 24 24"><circle cx="3" cy="12" r="2"/><circle cx="12" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><circle cx="21" cy="12" r="2"/><line x1="5" y1="12" x2="9.5" y2="7"/><line x1="14.5" y1="7" x2="19" y2="12"/><line x1="5" y1="12" x2="9.5" y2="17"/><line x1="14.5" y1="17" x2="19" y2="12"/></svg>
               </span>
-              <h3 data-i18n="wallet.overview.inChatTitle">In-Chat Transfers</h3>
-              <p data-i18n="wallet.overview.inChatDesc">
-                Send tokens to any <strong style="color:var(--text-main)">DNA contact directly inside a conversation</strong>. The recipient's wallet address is resolved automatically from their DNA identity &mdash; no raw addresses needed.
+              <div style="display:flex; gap:0.4rem; justify-content:center; margin-bottom:0.6rem;">
+                <span style="font-family:var(--font-display); font-size:0.68rem; letter-spacing:0.08em; color:var(--teal); background:var(--teal-soft); padding:0.15rem 0.5rem; border-radius:var(--radius-pill); border:1px solid var(--teal-dim);">TCP</span>
+                <span style="font-family:var(--font-display); font-size:0.68rem; letter-spacing:0.08em; color:var(--orange); background:var(--orange-soft); padding:0.15rem 0.5rem; border-radius:var(--radius-pill); border:1px solid var(--orange-dim);">4002</span>
+              </div>
+              <h3 data-i18n="vpn_page.arch.cross_title">Cross-Nodus &mdash; 3 Hops</h3>
+              <p data-i18n="vpn_page.arch.cross_desc1">
+                When peers are on different Nodus nodes, the circuit is routed through the inter-node transport layer.
               </p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-              </span>
-              <h3 data-i18n="wallet.overview.swapTitle">Integrated Swaps</h3>
-              <p data-i18n="wallet.overview.swapDesc">
-                Trade tokens across multiple <strong style="color:var(--text-main)">DEX aggregators</strong> directly inside DNA Connect. Best-price routing across Uniswap, PancakeSwap, Jupiter, and Cellframe DEX.
+              <p style="margin-top: 0.6rem;" data-i18n="vpn_page.arch.cross_desc2">
+                Data flows: Client A &rarr; Nodus A &rarr; Nodus B &rarr; Client B. Inter-node links use Dilithium5 mutual authentication on TCP 4002. Peer discovery happens automatically via the DHT.
               </p>
             </article>
           </div>
         </div>
       </section>
 
-      <!-- == Key Derivation Section == -->
-      <section id="derivation" class="s-section s-panel">
+      <!-- ══ Capabilities ══ -->
+      <section id="use-cases" class="s-section s-panel">
         <div class="wrap">
-          <div class="section-header reveal">
-            <div class="section-label" data-i18n="wallet.derivation.label">Architecture</div>
-            <h2 class="section-title" data-i18n="wallet.derivation.title">How key derivation works</h2>
+          <div class="section-header-center reveal">
+            <div class="section-label" data-i18n="vpn_page.capabilities.label">Capabilities</div>
+            <h2 class="section-title" data-i18n="vpn_page.capabilities.title">What DNA VPN enables</h2>
           </div>
 
+          <div class="card-grid-4 stagger">
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+              </span>
+              <h3 data-i18n="vpn_page.capabilities.file_title">File Transfer</h3>
+              <p data-i18n="vpn_page.capabilities.file_desc">Send files of any size directly to another DNA user through encrypted circuits. Data is chunked into 64 KiB frames and streamed over the circuit &mdash; no central file server involved.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+              </span>
+              <h3 data-i18n="vpn_page.capabilities.voice_title">Voice Signalling</h3>
+              <p data-i18n="vpn_page.capabilities.voice_desc">Circuit infrastructure provides the control channel for future voice and video calls. Media transport over UDP is planned for a future release.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><polyline points="4 8 4 3 8 3"/><line x1="3" y1="4" x2="9" y2="10"/></svg>
+              </span>
+              <h3 data-i18n="vpn_page.capabilities.tunnel_title">Peer-to-Peer Tunneling</h3>
+              <p data-i18n="vpn_page.capabilities.tunnel_desc">Any application can establish an authenticated, bidirectional byte-stream between two DNA identities. The circuit layer is a general-purpose transport primitive.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+              </span>
+              <h3 data-i18n="vpn_page.capabilities.routing_title">Automatic Routing</h3>
+              <p data-i18n="vpn_page.capabilities.routing_desc">No manual configuration needed. Circuits are established by DNA identity &mdash; the network automatically resolves which Nodus node the peer is connected to and routes accordingly.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ Security ══ -->
+      <section id="security" class="s-section s-gradient">
+        <div class="wrap">
           <div class="dna-row">
             <div class="dna-text reveal-left">
-              <h3 data-i18n="wallet.derivation.heading"><span class="teal">One Mnemonic</span>, Five Derivation Paths</h3>
-              <p data-i18n="wallet.derivation.desc1">
-                Each blockchain uses its own derivation method to produce keys from the same BIP-39 seed material. The diagram shows the full flow from mnemonic to chain-specific wallets.
+              <h3 data-i18n="vpn_page.security.title"><span class="teal">Post-quantum</span> authenticated transport</h3>
+              <p data-i18n="vpn_page.security.desc">
+                Every circuit is authenticated through DNA identity. Inter-node links use Dilithium5 mutual authentication. End-to-end payload encryption is applied at the application layer.
               </p>
-              <p data-i18n="wallet.derivation.desc2">
-                When new blockchain support is added, <strong style="color:var(--text-main)">missing wallets are created automatically</strong> on identity load &mdash; no user action required.
-              </p>
+              <ul>
+                <li data-i18n="vpn_page.security.li1"><strong>Dilithium5 authentication</strong> &mdash; all inter-node transports are mutually authenticated with ML-DSA-87</li>
+                <li data-i18n="vpn_page.security.li2"><strong>Per-circuit isolation</strong> &mdash; each circuit has an independent 64-bit session ID, isolated from other circuits</li>
+                <li data-i18n="vpn_page.security.li3"><strong>Frame size limit</strong> &mdash; 64 KiB maximum per frame, preventing memory exhaustion attacks</li>
+                <li data-i18n="vpn_page.security.li4"><strong>Circuit limits</strong> &mdash; 16 circuits per session, 256 inter-node circuits per server</li>
+                <li data-i18n="vpn_page.security.li5"><strong>Open timeout</strong> &mdash; 5-second circuit establishment timeout prevents slow-peer denial of service</li>
+                <li data-i18n="vpn_page.security.li6"><strong>Kyber1024 onion encryption</strong> &mdash; planned for future release, adding per-hop post-quantum encryption</li>
+              </ul>
             </div>
-            <div class="dna-visual reveal-right" style="align-items: flex-start;">
-              <div class="derivation-diagram">
-                <div class="derivation-title" data-i18n="wallet.derivation.diagramTitle">Key Derivation Flow</div>
-                <div class="derivation-seed">
-                  <div class="label" data-i18n="wallet.derivation.diagramMnemonic">BIP-39 Mnemonic</div>
-                  <div class="value" data-i18n="wallet.derivation.diagramMnemonicValue">ocean wine grape ... harvest moon</div>
-                </div>
-                <div class="derivation-arrow">&darr;</div>
-                <div class="derivation-seed" style="background:rgba(242,98,41,0.06);border-color:rgba(242,98,41,0.15);">
-                  <div class="label" style="color:var(--orange);" data-i18n="wallet.derivation.diagramMasterSeed">64-byte Master Seed</div>
-                  <div class="value" style="font-size:0.7rem;" data-i18n="wallet.derivation.diagramMasterSeedValue">PBKDF2-HMAC-SHA512 &middot; 2048 rounds</div>
-                </div>
-                <div class="derivation-arrow">&darr;</div>
-                <div class="derivation-paths">
-                  <div class="derivation-path">
-                    <div class="chain-label cf-label">Cellframe</div>
-                    <div class="path-value">SHA3-256(mnemonic)</div>
-                    <div class="algo-value">Dilithium &middot; 1184B pubkey</div>
-                  </div>
-                  <div class="derivation-path">
-                    <div class="chain-label eth-label">Ethereum</div>
-                    <div class="path-value">m/44'/60'/0'/0/0</div>
-                    <div class="algo-value">secp256k1 &middot; BIP-44</div>
-                  </div>
-                  <div class="derivation-path">
-                    <div class="chain-label sol-label">Solana</div>
-                    <div class="path-value">SLIP-10 Ed25519</div>
-                    <div class="algo-value">Ed25519 &middot; 32B pubkey</div>
-                  </div>
-                  <div class="derivation-path">
-                    <div class="chain-label trx-label">TRON</div>
-                    <div class="path-value">secp256k1 derive</div>
-                    <div class="algo-value">secp256k1 &middot; Base58Check</div>
-                  </div>
-                  <div class="derivation-path">
-                    <div class="chain-label bsc-label">BSC</div>
-                    <div class="path-value">m/44'/60'/0'/0/0</div>
-                    <div class="algo-value">secp256k1 &middot; EVM-compatible</div>
-                  </div>
-                </div>
+            <div class="dna-visual reveal-right">
+              <div class="dna-icon glow-teal">
+                <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
               </div>
             </div>
           </div>
         </div>
       </section>
 
-      <!-- == Supported Chains Section == -->
-      <section id="chains" class="s-section s-gradient">
+      <!-- ══ Specifications ══ -->
+      <section id="specs" class="s-section s-panel">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label" data-i18n="wallet.chains.label">Chains</div>
-            <h2 class="section-title" data-i18n="wallet.chains.title">Supported blockchains</h2>
-            <p class="section-desc" style="max-width: 38rem;" data-i18n="wallet.chains.desc">
-              Each chain is a first-class citizen with native transaction building, token support, and RPC integration. No wrapped tokens, no bridges &mdash; real on-chain transactions.
-            </p>
+            <div class="section-label" data-i18n="vpn_page.specs.label">Specifications</div>
+            <h2 class="section-title" data-i18n="vpn_page.specs.title">Technical specifications</h2>
           </div>
 
-          <div class="card-grid-5 stagger">
+          <div class="security-table-wrap reveal">
+            <table class="security-table">
+              <thead>
+                <tr>
+                  <th data-i18n="vpn_page.specs.th_parameter">Parameter</th>
+                  <th data-i18n="vpn_page.specs.th_value">Value</th>
+                  <th data-i18n="vpn_page.specs.th_purpose">Purpose</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="algo" data-i18n="vpn_page.specs.hops">Circuit Hops</td>
+                  <td><strong>2&ndash;3</strong></td>
+                  <td data-i18n="vpn_page.specs.hops_purpose">Same-nodus (2) or cross-nodus (3) routing</td>
+                </tr>
+                <tr>
+                  <td class="algo" data-i18n="vpn_page.specs.frame">Frame Size</td>
+                  <td><strong>64 KiB max</strong></td>
+                  <td data-i18n="vpn_page.specs.frame_purpose">Maximum payload per circuit data frame</td>
+                </tr>
+                <tr>
+                  <td class="algo" data-i18n="vpn_page.specs.session_circuits">Session Circuits</td>
+                  <td><strong>16 max</strong></td>
+                  <td data-i18n="vpn_page.specs.session_circuits_purpose">Concurrent circuits per client session</td>
+                </tr>
+                <tr>
+                  <td class="algo" data-i18n="vpn_page.specs.server_circuits">Server Circuits</td>
+                  <td><strong>256 max</strong></td>
+                  <td data-i18n="vpn_page.specs.server_circuits_purpose">Global inter-node circuit limit per server</td>
+                </tr>
+                <tr>
+                  <td class="algo" data-i18n="vpn_page.specs.timeout">Open Timeout</td>
+                  <td><strong>5 seconds</strong></td>
+                  <td data-i18n="vpn_page.specs.timeout_purpose">Circuit establishment timeout</td>
+                </tr>
+                <tr>
+                  <td class="algo" data-i18n="vpn_page.specs.auth">Authentication</td>
+                  <td><strong>ML-DSA-87</strong> (Dilithium5)</td>
+                  <td data-i18n="vpn_page.specs.auth_purpose">Inter-node mutual authentication</td>
+                </tr>
+                <tr>
+                  <td class="algo" data-i18n="vpn_page.specs.wire">Wire Protocol</td>
+                  <td><strong>CBOR</strong></td>
+                  <td data-i18n="vpn_page.specs.wire_purpose">Tier 2 framed protocol over TCP</td>
+                </tr>
+                <tr>
+                  <td class="algo" data-i18n="vpn_page.specs.future_enc">Future Encryption</td>
+                  <td><strong>ML-KEM-1024</strong> (Kyber1024)</td>
+                  <td data-i18n="vpn_page.specs.future_enc_purpose">Per-hop onion encryption (planned)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="dl-source" style="margin-top: 1.5rem;" data-i18n="vpn_page.specs.opensource">
+            Circuit protocol, routing layer, and client SDK are open source under Apache 2.0.
+          </p>
+        </div>
+      </section>
+
+      <!-- ══ Roadmap ══ -->
+      <section id="roadmap" class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label" data-i18n="vpn_page.roadmap.label">Roadmap</div>
+            <h2 class="section-title" data-i18n="vpn_page.roadmap.title">What's coming next</h2>
+          </div>
+
+          <div class="card-grid-3 stagger">
             <article class="token-card reveal">
               <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+                <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
               </span>
-              <h3 data-i18n="wallet.chains.cellframeTitle">Cellframe</h3>
-              <p data-i18n="wallet.chains.cellframeDesc">
-                Post-quantum blockchain with <strong style="color:var(--text-main)">Dilithium signatures</strong> (NIST Category 5). Native CPUNK token and CF20 standard. Wallet files use the <code>.dwallet</code> format.
-              </p>
-              <ul>
-                <li data-i18n="wallet.chains.cellframeLi1">Dilithium Mode 1 &mdash; 1,184B public key</li>
-                <li data-i18n="wallet.chains.cellframeLi2">SHA3-256 seed derivation</li>
-                <li data-i18n="wallet.chains.cellframeLi3">Native CPUNK &amp; CELL tokens</li>
-              </ul>
+              <h3 data-i18n="vpn_page.roadmap.kyber_title">Kyber1024 Onion Encryption</h3>
+              <p data-i18n="vpn_page.roadmap.kyber_desc">Per-hop post-quantum key encapsulation wrapping each circuit frame. Nodus operators will not be able to inspect circuit payload &mdash; only forward encrypted blobs.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+              </span>
+              <h3 data-i18n="vpn_page.roadmap.accept_title">Accept / Reject UX</h3>
+              <p data-i18n="vpn_page.roadmap.accept_desc">Incoming circuit requests will present a user-facing accept or reject dialog in DNA Connect, giving recipients control before data flows.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
               </span>
-              <h3 data-i18n="wallet.chains.ethereumTitle">Ethereum</h3>
-              <p data-i18n="wallet.chains.ethereumDesc">
-                Full Ethereum mainnet support with <strong style="color:var(--text-main)">ERC-20 token transfers</strong>, RLP encoding, and dynamic gas estimation with slow/normal/fast presets.
-              </p>
-              <ul>
-                <li data-i18n="wallet.chains.ethereumLi1">BIP-44 path m/44'/60'/0'/0/0</li>
-                <li data-i18n="wallet.chains.ethereumLi2">EIP-55 checksum addresses</li>
-                <li data-i18n="wallet.chains.ethereumLi3">ERC-20 token support</li>
-              </ul>
+              <h3 data-i18n="vpn_page.roadmap.udp_title">UDP Fast Path</h3>
+              <p data-i18n="vpn_page.roadmap.udp_desc">Lossy-tolerant media transport for voice and video calls over UDP/QUIC, bypassing TCP overhead for real-time communication.</p>
             </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 8h2"/><path d="M15 8h2"/><path d="M7 12h10"/></svg>
-              </span>
-              <h3 data-i18n="wallet.chains.solanaTitle">Solana</h3>
-              <p data-i18n="wallet.chains.solanaDesc">
-                High-throughput chain with <strong style="color:var(--text-main)">Ed25519 signatures</strong> and SPL token standard. SLIP-10 derivation ensures compatibility with the Solana ecosystem.
-              </p>
-              <ul>
-                <li data-i18n="wallet.chains.solanaLi1">SLIP-10 Ed25519 derivation</li>
-                <li data-i18n="wallet.chains.solanaLi2">SPL token transfers</li>
-                <li data-i18n="wallet.chains.solanaLi3">Native SOL transactions</li>
-              </ul>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M12 2L2 19.5h20L12 2z"/><path d="M12 8v5"/><circle cx="12" cy="16" r="0.5" fill="var(--orange)" stroke="none"/></svg>
-              </span>
-              <h3 data-i18n="wallet.chains.tronTitle">TRON</h3>
-              <p data-i18n="wallet.chains.tronDesc">
-                TRON mainnet with <strong style="color:var(--text-main)">TRC-20 token support</strong>. Uses secp256k1 signing with Base58Check address encoding. Full RPC integration for balance queries and transfers.
-              </p>
-              <ul>
-                <li data-i18n="wallet.chains.tronLi1">secp256k1 key derivation</li>
-                <li data-i18n="wallet.chains.tronLi2">Base58Check addresses</li>
-                <li data-i18n="wallet.chains.tronLi3">TRC-20 token transfers</li>
-              </ul>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-              </span>
-              <h3 data-i18n="wallet.chains.bscTitle">BNB Smart Chain</h3>
-              <p data-i18n="wallet.chains.bscDesc">
-                EVM-compatible chain with <strong style="color:var(--text-main)">BEP-20 token support</strong>. Shares Ethereum's secp256k1 derivation path for seamless multi-chain compatibility.
-              </p>
-              <ul>
-                <li data-i18n="wallet.chains.bscLi1">EVM-compatible (shared ETH derivation)</li>
-                <li data-i18n="wallet.chains.bscLi2">BEP-20 token transfers (USDT, USDC)</li>
-                <li data-i18n="wallet.chains.bscLi3">Native BNB transactions</li>
-              </ul>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <!-- == Security Section == -->
-      <section id="security" class="s-section s-panel">
-        <div class="wrap">
-          <div class="section-header reveal">
-            <div class="section-label" data-i18n="wallet.security.label">Security</div>
-            <h2 class="section-title" data-i18n="wallet.security.title">Post-quantum seed protection</h2>
-          </div>
-
-          <div class="dna-row reverse">
-            <div class="dna-text reveal-right">
-              <h3 data-i18n="wallet.security.heading"><span class="teal">Kyber1024</span> Encrypted Seed Storage</h3>
-              <p data-i18n="wallet.security.desc">
-                Your master seed is encrypted at rest using <strong style="color:var(--text-main)">Kyber1024</strong> &mdash; a NIST-standardized post-quantum key encapsulation mechanism. Even if your device storage is compromised, the seed remains protected against both classical and quantum attacks.
-              </p>
-              <ul>
-                <li data-i18n="wallet.security.li1"><strong>Encrypted storage:</strong> Kyber1024 private key (3,168 bytes) &mdash; quantum-safe at rest</li>
-                <li data-i18n="wallet.security.li2"><strong>Secure memory:</strong> Private keys wiped after signing via <code style="color:var(--teal);">secure_memzero()</code></li>
-                <li data-i18n="wallet.security.li3"><strong>On-demand derivation:</strong> Keys derived, used, and cleared without ever touching disk</li>
-                <li data-i18n="wallet.security.li4"><strong>Local only:</strong> All signing happens on your device &mdash; private keys never leave the client</li>
-              </ul>
-            </div>
-            <div class="dna-visual reveal-left" style="align-items: flex-start;">
-              <div class="derivation-diagram">
-                <div class="derivation-title" data-i18n="wallet.security.diagramTitle">Security Model</div>
-                <div class="derivation-seed" style="background:rgba(242,98,41,0.06);border-color:rgba(242,98,41,0.15);">
-                  <div class="label" style="color:var(--orange);" data-i18n="wallet.security.diagramMasterSeed">Master Seed (64 bytes)</div>
-                  <div class="value" style="font-size:0.72rem;" data-i18n="wallet.security.diagramMasterSeedValue">Generated once at identity creation</div>
-                </div>
-                <div class="derivation-arrow">&darr;</div>
-                <div class="derivation-seed">
-                  <div class="label" data-i18n="wallet.security.diagramEncrypted">Encrypted with Kyber1024</div>
-                  <div class="value" style="font-size:0.72rem;" data-i18n="wallet.security.diagramEncryptedValue">master_seed.enc &middot; quantum-safe at rest</div>
-                </div>
-                <div class="derivation-arrow">&darr;</div>
-                <div class="derivation-paths" style="grid-template-columns: 1fr;">
-                  <div class="derivation-path" style="text-align:center;">
-                    <div class="chain-label cf-label" data-i18n="wallet.security.diagramOnDemand">On-Demand Key Derivation</div>
-                    <div class="path-value" data-i18n="wallet.security.diagramOnDemandFlow">Decrypt &rarr; Derive &rarr; Sign &rarr; Wipe</div>
-                    <div class="algo-value" data-i18n="wallet.security.diagramOnDemandNote">Private keys never persist in memory or on disk longer than needed</div>
-                  </div>
-                </div>
-                <div style="margin-top:0.8rem; padding:0.5rem 0.7rem; border-radius:10px; background:rgba(6,197,210,0.05); border:1px solid var(--border-subtle); text-align:center;">
-                  <div style="font-size:0.7rem; color:var(--teal); font-weight:600; text-transform:uppercase; letter-spacing:0.06em;" data-i18n="wallet.security.diagramFilePerms">File Permissions</div>
-                  <div style="font-size:0.72rem; color:var(--text-muted); margin-top:0.15rem; font-family:monospace;" data-i18n="wallet.security.diagramFilePermsValue">chmod 0600 &middot; owner-only read/write</div>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </section>
 
       <!-- ══ Downloads ══ -->
-      <section id="downloads" class="s-section s-dark">
+      <section id="downloads" class="s-section s-panel">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label" data-i18n="wallet.downloads.label">Downloads</div>
-            <h2 class="section-title" data-i18n="wallet.downloads.title">Get DNA Connect</h2>
-            <p class="section-desc" style="max-width:34rem;" data-i18n="wallet.downloads.desc">
+            <div class="section-label" data-i18n="vpn_page.downloads.label">Downloads</div>
+            <h2 class="section-title" data-i18n="vpn_page.downloads.title">Get DNA Connect</h2>
+            <p class="section-desc" style="max-width:34rem;" data-i18n="vpn_page.downloads.desc">
               Encrypted messaging, multi-chain wallet, and decentralized identity &mdash; one app, three platforms.
             </p>
           </div>
@@ -1607,10 +1440,10 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17.523 2.476l1.5-2.6a.5.5 0 0 0-.87-.5l-1.52 2.63A8.3 8.3 0 0 0 12 1.07a8.3 8.3 0 0 0-4.63.936L5.85-.594a.5.5 0 0 0-.87.5l1.5 2.6A7.9 7.9 0 0 0 2 9.5h20a7.9 7.9 0 0 0-4.477-7.024zM7 7.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm10 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2zM3 11h1v7a2 2 0 0 0 2 2h1v3.5a1.5 1.5 0 0 0 3 0V20h4v3.5a1.5 1.5 0 0 0 3 0V20h1a2 2 0 0 0 2-2v-7h1a1.5 1.5 0 0 0 0-3H3a1.5 1.5 0 0 0 0 3z"/></svg>
               </div>
-              <div class="dl-card-name" data-i18n="wallet.downloads.android">Android</div>
-              <a id="dl-android" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
+              <div class="dl-card-name" data-i18n="vpn_page.downloads.android">Android</div>
+              <a id="dl-android" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn" data-i18n="vpn_page.downloads.android_btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                <span data-i18n="wallet.downloads.downloadApk">Download APK</span>
+                Download APK
               </a>
             </div>
 
@@ -1619,13 +1452,13 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M8.996 4.497c.104-.076.1-.168.186-.158s.022.102-.098.207c-.12.104-.308.243-.46.323-.291.152-.631.336-.993.336s-.647-.167-.853-.33c-.102-.082-.186-.162-.248-.221-.11-.086-.096-.207-.052-.204.075.01.087.109.134.153.064.06.144.137.241.214.195.154.454.304.778.304s.702-.19.932-.32c.13-.073.297-.204.433-.304M7.34 3.781c.055-.02.123-.031.174-.003.011.006.024.021.02.034-.012.038-.074.032-.11.05-.032.017-.057.052-.093.054-.034 0-.086-.012-.09-.046-.007-.044.058-.072.1-.089m.581-.003c.05-.028.119-.018.173.003.041.017.106.045.1.09-.004.033-.057.046-.09.045-.036-.002-.062-.037-.093-.053-.036-.019-.098-.013-.11-.051-.004-.013.008-.028.02-.034"/><path fill-rule="evenodd" d="M8.446.019c2.521.003 2.38 2.66 2.364 4.093-.01.939.509 1.574 1.04 2.244.474.56 1.095 1.38 1.45 2.32.29.765.402 1.613.115 2.465a.8.8 0 0 1 .254.152l.001.002c.207.175.271.447.329.698.058.252.112.488.224.615.344.382.494.667.48.922-.015.254-.203.43-.435.57-.465.28-1.164.491-1.586 1.002-.443.527-.99.83-1.505.871a1.25 1.25 0 0 1-1.256-.716v-.001a1 1 0 0 1-.078-.21c-.67.038-1.252-.165-1.718-.128-.687.038-1.116.204-1.506.206-.151.331-.445.547-.808.63-.5.114-1.126 0-1.743-.324-.577-.306-1.31-.278-1.85-.39-.27-.057-.51-.157-.626-.384-.116-.226-.095-.538.07-.988.051-.16.012-.398-.026-.648a2.5 2.5 0 0 1-.037-.369c0-.133.022-.265.087-.386v-.002c.14-.266.368-.377.577-.451s.397-.125.53-.258c.143-.15.27-.374.443-.56q.036-.037.073-.07c-.081-.538.007-1.105.192-1.662.393-1.18 1.223-2.314 1.811-3.014.502-.713.65-1.287.701-2.016.042-.997-.705-3.974 2.112-4.2q.168-.015.321-.013"/></svg>
               </div>
-              <div class="dl-card-name" data-i18n="wallet.downloads.linux">Linux</div>
-              <a id="dl-linux" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
+              <div class="dl-card-name" data-i18n="vpn_page.downloads.linux">Linux</div>
+              <a id="dl-linux" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn" data-i18n="vpn_page.downloads.linux_btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                <span data-i18n="wallet.downloads.downloadAppImage">Download AppImage</span>
+                Download AppImage
               </a>
               <div class="dl-card-extra">
-                <a id="dl-linux-tar" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" data-i18n="wallet.downloads.alsoTarGz">Also available as tar.gz</a>
+                <a id="dl-linux-tar" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" data-i18n="vpn_page.downloads.linux_tar">Also available as tar.gz</a>
               </div>
             </div>
 
@@ -1634,10 +1467,10 @@
               <div class="dl-card-icon">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 5.548l7.195-0.984v6.948H3V5.548zm0 12.904l7.195 0.984v-6.948H3v5.964zm8.019 1.097L22 21v-8.512H11.019v8.061zm0-14.098v8.061H22V3L11.019 5.451z"/></svg>
               </div>
-              <div class="dl-card-name" data-i18n="wallet.downloads.windows">Windows</div>
-              <a id="dl-windows" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn">
+              <div class="dl-card-name" data-i18n="vpn_page.downloads.windows">Windows</div>
+              <a id="dl-windows" href="https://artifacts.cpunk.io/dna-messenger/" target="_blank" rel="noopener" class="dl-card-btn" data-i18n="vpn_page.downloads.windows_btn">
                 <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                <span data-i18n="wallet.downloads.downloadExe">Download EXE</span>
+                Download EXE
               </a>
             </div>
 
@@ -1646,7 +1479,7 @@
           <!-- Hidden widget for JS to populate links -->
           <div class="downloads-widget" id="dna-downloads"></div>
 
-          <p class="dl-source" data-i18n="wallet.downloads.openSource">
+          <p class="dl-source" data-i18n="vpn_page.downloads.source">
             Open source &mdash;
             <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noopener">GitLab</a> &middot;
             <a href="https://github.com/nocdem/dna" target="_blank" rel="noopener">GitHub</a>
@@ -1654,19 +1487,19 @@
         </div>
       </section>
 
-      <!-- == CTA Section == -->
+      <!-- ══ CTA ══ -->
       <section class="cta-section">
         <div class="wrap">
           <div class="cta-box reveal">
-            <h2 class="cta-title" data-i18n="wallet.cta.title">Join the CPUNK ecosystem</h2>
-            <p class="cta-text" data-i18n="wallet.cta.text">
-              Download DNA Messenger, join the conversation, and find a piece of the project
+            <h2 class="cta-title" data-i18n="vpn_page.cta.title">Join the CPUNK ecosystem</h2>
+            <p class="cta-text" data-i18n="vpn_page.cta.text">
+              Download DNA Connect, join the conversation, and find a piece of the project
               you want to improve. Every meaningful contributor once started as a community member.
             </p>
             <div class="cta-actions">
-              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-primary btn-lg" data-i18n="wallet.cta.btnTelegram">Join Telegram</a>
-              <a href="https://gitlab.cpunk.io/cpunk/" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="wallet.cta.btnCode">Explore Code</a>
-              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="wallet.cta.btnX">Follow on X</a>
+              <a href="https://t.me/chippunk_official" target="_blank" rel="noreferrer" class="btn btn-primary btn-lg" data-i18n="vpn_page.cta.btn_telegram">Join Telegram</a>
+              <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="vpn_page.cta.btn_code">Explore Code</a>
+              <a href="https://x.com/OfficialCpunk" target="_blank" rel="noreferrer" class="btn btn-ghost btn-lg" data-i18n="vpn_page.cta.btn_x">Follow on X</a>
             </div>
           </div>
         </div>
@@ -1678,7 +1511,7 @@
     <footer>
       <div class="wrap">
         <div class="footer-row">
-          <div data-i18n="footer.copyright">© 2026 CPUNK Project — Privacy, Quantum Safety, Decentralization.</div>
+          <div data-i18n="footer.copyright">&copy; 2026 CPUNK Project — Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
             <a href="/" data-i18n="footer.home">Home</a>
             <a href="/DNA-Connect/identity.html" data-i18n="footer.identity">Identity</a>
@@ -1697,7 +1530,6 @@
     </footer>
   </div>
 
-  <!-- JS: Mobile Nav + Scroll Reveal -->
   <!-- i18n -->
   <script src="/i18n/i18n.js"></script>
 
@@ -1723,7 +1555,7 @@
         });
       });
 
-      /* -- Scroll Reveal (IntersectionObserver) -- */
+      /* ── Scroll Reveal ── */
       var revealElements = document.querySelectorAll('.reveal, .reveal-left, .reveal-right');
 
       if ('IntersectionObserver' in window) {
