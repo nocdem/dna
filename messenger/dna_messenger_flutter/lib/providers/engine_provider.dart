@@ -83,9 +83,11 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
 
     // Initialize logger with engine for Flutter -> dna.log logging
     logSetEngine(engine);
+    engine.debugLog('STARTUP_DIAG', 'engineProvider: logSetEngine done');
 
     // Initialize media disk cache (must be ready before messages load)
     await MediaCacheService.getInstance();
+    engine.debugLog('STARTUP_DIAG', 'engineProvider: MediaCacheService done');
 
     // Resume any pending media uploads from previous session
     MediaOutboxService.instance.processPendingUploads(engine);
@@ -93,6 +95,7 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
     // Log version info at startup (Lib from C library, App from pubspec.yaml)
     final packageInfo = await PackageInfo.fromPlatform();
     engine.debugLog('STARTUP', 'Lib v${engine.version} | App v${packageInfo.version}');
+    engine.debugLog('STARTUP_DIAG', 'engineProvider: about to return engine');
 
     if (Platform.isAndroid) {
       // Cache for Activity recreation. Do NOT dispose on provider teardown —

@@ -1366,12 +1366,15 @@ class DnaEngine {
     }
 
     engine._setupEventCallback();
+    engine.debugLog('STARTUP_DIAG', 'DnaEngine.create: engine created, event callback set');
 
     // v0.10.0: Auto-load identity if exists (non-blocking DHT, ~80ms)
     if (engine.hasIdentity() && !engine.isIdentityLoaded()) {
+      engine.debugLog('STARTUP_DIAG', 'DnaEngine.create: calling loadIdentity...');
       try {
         await engine.loadIdentity();
         engine.debugLog('STARTUP', 'Identity auto-loaded in create()');
+        engine.debugLog('STARTUP_DIAG', 'DnaEngine.create: loadIdentity returned');
       } on DnaEngineException catch (e) {
         if (e.code == -111) {
           // DNA_ENGINE_ERROR_PASSWORD_REQUIRED — keys encrypted, skip auto-load
@@ -1384,6 +1387,7 @@ class DnaEngine {
       }
     }
 
+    engine.debugLog('STARTUP_DIAG', 'DnaEngine.create: about to return engine to caller');
     return engine;
   }
 

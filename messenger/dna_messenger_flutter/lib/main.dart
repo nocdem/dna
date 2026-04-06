@@ -363,6 +363,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   Widget build(BuildContext context) {
     _profileLog('_AppLoaderState.build() entry (startupDone=$_startupDone)');
     final engine = ref.watch(engineProvider);
+    _profileLog('_AppLoaderState.build() engineProvider=${engine.isLoading ? "LOADING" : engine.hasValue ? "DATA" : "ERROR"}');
     final currentFingerprint = ref.watch(currentFingerprintProvider);
     // Watch appFullyReadyProvider to wait for DHT operations (presence lookups) to complete
     // ignore: unused_local_variable
@@ -371,11 +372,13 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     // App lock state
     final appLock = ref.watch(appLockProvider);
     final isLocked = ref.watch(appLockedProvider);
+    _profileLog('_AppLoaderState.build() appLock.enabled=${appLock.enabled} isLocked=$isLocked');
 
     return engine.when(
       data: (eng) {
         // App lock check
         if (appLock.enabled && isLocked) {
+          _profileLog('engine.when(data:) → LockScreen (appLock=$appLock.enabled, isLocked=$isLocked)');
           return const LockScreen();
         }
 
