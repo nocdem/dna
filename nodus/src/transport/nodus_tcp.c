@@ -508,6 +508,14 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
     conn->fd = fd;
     conn->state = NODUS_CONN_CONNECTING;
     conn->port = port;
+
+    /* Inherit auth requirement from transport IMMEDIATELY so gated send
+     * queues frames even before TCP handshake completes. Without this,
+     * callers would bypass the gate (auth_required=false default) and
+     * write data to wbuf before hello, causing peer to reject. */
+    conn->auth_required = tcp->auth_required;
+    if (tcp->auth_required)
+        conn->auth_state = NODUS_CONN_AUTH_NONE;  /* Will transition to HELLO_SENT in on_connect */
     strncpy(conn->ip, ip, sizeof(conn->ip) - 1);
 
     int rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
