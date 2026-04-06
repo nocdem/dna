@@ -2554,7 +2554,6 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "error") == 0) {
-            /* Auth or other error from peer — just ignore */
             nodus_t2_msg_free(&msg);
             return;
         }
@@ -2838,6 +2837,16 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
 
 static void on_inter_connect(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
+
+    /* Initialize inter session for outgoing connection (on_inter_accept
+     * does this for incoming, but outgoing connections need it too —
+     * dispatch_inter uses sess->conn for auth response handling). */
+    nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
+    if (sess) {
+        inter_session_clear(sess);
+        sess->conn = conn;
+    }
+
     conn->is_nodus = true;
     conn->auth_required = srv->inter_tcp.auth_required;
 
