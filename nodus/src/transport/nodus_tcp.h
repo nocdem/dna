@@ -78,6 +78,9 @@ typedef struct nodus_tcp_conn {
     uint64_t            connected_at;
     uint64_t            last_activity;
     int                 slot;        /* Index in pool */
+
+    /* Channel encryption (set after Kyber handshake, NULL = plaintext) */
+    void               *crypto;     /* nodus_channel_crypto_t*, opaque to avoid circular include */
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */

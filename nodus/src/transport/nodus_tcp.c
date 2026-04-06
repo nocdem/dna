@@ -8,6 +8,7 @@
 
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_wire.h"
+#include "crypto/nodus_channel_crypto.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG_TCP "NODUS_TCP"
@@ -190,10 +191,38 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             return true;
         }
 
-        /* Valid frame */
+        /* Valid frame — decrypt if channel crypto active */
         size_t consumed = (size_t)rc;
+        const uint8_t *dispatch_payload = frame.payload;
+        size_t dispatch_len = frame.payload_len;
+        uint8_t *dec_buf = NULL;
+
+        if (conn->crypto) {
+            nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
+            if (cc->established && frame.payload_len > NODUS_CHANNEL_OVERHEAD) {
+                size_t pt_max = frame.payload_len - NODUS_CHANNEL_OVERHEAD;
+                dec_buf = malloc(pt_max > 0 ? pt_max : 1);
+                if (dec_buf) {
+                    size_t pt_len = 0;
+                    if (nodus_channel_decrypt(cc, frame.payload, frame.payload_len,
+                                              dec_buf, pt_max, &pt_len) == 0) {
+                        dispatch_payload = dec_buf;
+                        dispatch_len = pt_len;
+                    } else {
+                        /* Decrypt failed — disconnect (tampered frame) */
+                        free(dec_buf);
+                        if (tcp->on_disconnect)
+                            tcp->on_disconnect(conn, tcp->cb_ctx);
+                        conn_free(tcp, conn);
+                        return true;
+                    }
+                }
+            }
+        }
+
         if (tcp->on_frame)
-            tcp->on_frame(conn, frame.payload, frame.payload_len, tcp->cb_ctx);
+            tcp->on_frame(conn, dispatch_payload, dispatch_len, tcp->cb_ctx);
+        free(dec_buf);
 
         /* Shift remaining data */
         size_t remaining = conn->rlen - consumed;
@@ -266,7 +295,7 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         conn->wpos = 0;
         conn->wlen = 0;
 #ifndef _WIN32
-        uint32_t ev = EPOLLIN | (tcp->level_triggered ? 0 : EPOLLET);
+        uint32_t ev = EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET);
         epoll_mod(tcp->epoll_fd, conn->fd, ev, conn);
 #endif
     }
@@ -297,7 +326,7 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 #ifndef _WIN32
     /* Switch to read mode */
     uint32_t et = tcp->level_triggered ? 0 : EPOLLET;
-    uint32_t events = EPOLLIN | et;
+    uint32_t events = EPOLLIN | EPOLLRDHUP | et;
     if (conn->wlen > conn->wpos) events |= EPOLLOUT;
     epoll_mod(tcp->epoll_fd, conn->fd, events, conn);
 #endif
@@ -309,7 +338,7 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     /* on_connect callback may have queued data (e.g. hello for auth).
      * Re-check wbuf and ensure EPOLLOUT is set so it gets flushed. */
     if (conn->wlen > conn->wpos) {
-        uint32_t ev2 = EPOLLIN | EPOLLOUT | et;
+        uint32_t ev2 = EPOLLIN | EPOLLOUT | EPOLLRDHUP | et;
         epoll_mod(tcp->epoll_fd, conn->fd, ev2, conn);
     }
 
@@ -363,7 +392,7 @@ static void handle_accept(nodus_tcp_t *tcp) {
     conn->connected_at = nodus_time_now();
     conn->last_activity = conn->connected_at;
 
-    epoll_add(tcp->epoll_fd, fd, EPOLLIN | (tcp->level_triggered ? 0 : EPOLLET), conn);
+    epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
 
     if (tcp->on_accept)
         tcp->on_accept(conn, tcp->cb_ctx);
@@ -527,14 +556,14 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
         set_keepalive(fd);
         set_nodelay(fd);
 #ifndef _WIN32
-        epoll_add(tcp->epoll_fd, fd, EPOLLIN | (tcp->level_triggered ? 0 : EPOLLET), conn);
+        epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
 #endif
         if (tcp->on_connect)
             tcp->on_connect(conn, tcp->cb_ctx);
     } else if (IS_EINPROGRESS(get_socket_error())) {
         /* Connecting — wait for writable */
 #ifndef _WIN32
-        epoll_add(tcp->epoll_fd, fd, EPOLLOUT | (tcp->level_triggered ? 0 : EPOLLET), conn);
+        epoll_add(tcp->epoll_fd, fd, EPOLLOUT | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
 #endif
     } else {
         conn_free(tcp, conn);
@@ -649,7 +678,28 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
         return -1;
     }
 
-    size_t frame_size = NODUS_FRAME_HEADER_SIZE + len;
+    /* Encrypt payload if channel crypto is established */
+    uint8_t *enc_buf = NULL;
+    const uint8_t *send_payload = payload;
+    size_t send_len = len;
+
+    if (conn->crypto) {
+        nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
+        if (cc->established) {
+            size_t enc_needed = len + NODUS_CHANNEL_OVERHEAD;
+            enc_buf = malloc(enc_needed);
+            if (!enc_buf) return -1;
+            size_t enc_out = 0;
+            if (nodus_channel_encrypt(cc, payload, len, enc_buf, enc_needed, &enc_out) != 0) {
+                free(enc_buf);
+                return -1;
+            }
+            send_payload = enc_buf;
+            send_len = enc_out;
+        }
+    }
+
+    size_t frame_size = NODUS_FRAME_HEADER_SIZE + send_len;
 
     /* Compact: reclaim space from already-sent bytes before growing */
     if (conn->wpos > 0) {
@@ -671,12 +721,14 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
     /* Write frame directly into write buffer */
     size_t written = nodus_frame_encode(conn->wbuf + conn->wlen,
                                          conn->wcap - conn->wlen,
-                                         payload, (uint32_t)len);
+                                         send_payload, (uint32_t)send_len);
     if (written == 0) {
-        QGP_LOG_ERROR(LOG_TAG_TCP, "send: frame_encode failed (len=%zu)", len);
+        QGP_LOG_ERROR(LOG_TAG_TCP, "send: frame_encode failed (len=%zu)", send_len);
+        free(enc_buf);
         return -1;
     }
     conn->wlen += written;
+    free(enc_buf);  /* NULL-safe */
 
     /* Try immediate send */
     while (conn->wpos < conn->wlen) {
@@ -780,7 +832,7 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = tcp->pool[i];
         if (c && c->state == NODUS_CONN_CONNECTED && c->wlen > c->wpos) {
-            uint32_t ev = EPOLLIN | EPOLLOUT | (tcp->level_triggered ? 0 : EPOLLET);
+            uint32_t ev = EPOLLIN | EPOLLOUT | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET);
             epoll_mod(tcp->epoll_fd, c->fd, ev, c);
         }
     }
@@ -824,8 +876,10 @@ int nodus_tcp_poll(nodus_tcp_t *tcp, int timeout_ms) {
             continue;
 
         /* Read data before handling HUP — sender may close immediately
-         * after sending, producing EPOLLIN|EPOLLHUP in the same event. */
-        if (events[i].events & EPOLLIN)
+         * after sending, producing EPOLLIN|EPOLLHUP in the same event.
+         * EPOLLRDHUP detects peer FIN even when EPOLLET edge is missed
+         * by epoll_mod race — prevents CLOSE_WAIT socket accumulation. */
+        if (events[i].events & (EPOLLIN | EPOLLRDHUP))
             handle_read(tcp, conn);
         else if (events[i].events & EPOLLHUP) {
             if (tcp->on_disconnect)

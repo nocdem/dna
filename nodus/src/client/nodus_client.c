@@ -13,6 +13,8 @@
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_wire.h"
 #include "crypto/nodus_sign.h"
+#include "crypto/nodus_channel_crypto.h"
+#include "crypto/enc/qgp_kyber.h"
 #include "crypto/nodus_identity.h"
 #include "core/nodus_value.h"
 
@@ -36,6 +38,8 @@
  * Previous 256KB CLIENT_BUF_SIZE was too small for PUT with >245KB data. */
 #define CLIENT_BUF_SIZE       (256 * 1024)
 #define CLIENT_BUF_SIZE_PUT   (NODUS_MAX_VALUE_SIZE + 65536)
+
+extern void qgp_secure_memzero(void *ptr, size_t len);
 
 /* ── Forward declarations ───────────────────────────────────────── */
 
@@ -642,9 +646,87 @@ static int do_auth(nodus_client_t *client) {
 
     QGP_LOG_INFO(LOG_TAG, "Auth: success");
     memcpy(client->token, resp->token, NODUS_SESSION_TOKEN_LEN);
-    result = 0;
+
+    /* Channel encryption: if server sent Kyber pubkey, negotiate encrypted channel */
+    bool has_kpk = resp->has_kyber_pk;
+    uint8_t server_kyber_pk[NODUS_KYBER_PK_BYTES];
+    if (has_kpk)
+        memcpy(server_kyber_pk, resp->kyber_pk, NODUS_KYBER_PK_BYTES);
 
     free_pending(client, req);
+
+    if (has_kpk) {
+        QGP_LOG_INFO(LOG_TAG, "Auth: server supports channel encryption, initiating Kyber handshake");
+
+        /* Encapsulate: shared_secret = Kyber_encap(ct, server_pk) */
+        uint8_t ct[NODUS_KYBER_CT_BYTES];
+        uint8_t shared_secret[NODUS_KYBER_SS_BYTES];
+        if (qgp_kem1024_encapsulate(ct, shared_secret, server_kyber_pk) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Auth: Kyber encapsulation failed");
+            free(buf);
+            return -1;
+        }
+
+        /* Generate client nonce */
+        uint8_t nonce_c[NODUS_NONCE_LEN];
+        nodus_random(nonce_c, NODUS_NONCE_LEN);
+
+        /* Send KEY_INIT */
+        len = 0;
+        txn = atomic_fetch_add(&client->next_txn, 1);
+        req = alloc_pending(client, txn);
+        if (!req) {
+            qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+            free(buf);
+            return -1;
+        }
+
+        nodus_t2_key_init(txn, ct, nonce_c, buf, CLIENT_BUF_SIZE, &len);
+        if (send_request(client, buf, len) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Auth: KEY_INIT send failed");
+            qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+            free_pending(client, req);
+            free(buf);
+            return -1;
+        }
+
+        if (!wait_response(client, req, client->config.connect_timeout_ms)) {
+            QGP_LOG_ERROR(LOG_TAG, "Auth: no response to KEY_INIT");
+            qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+            free_pending(client, req);
+            free(buf);
+            return -1;
+        }
+
+        resp = (nodus_tier2_msg_t *)req->response;
+        if (strcmp(resp->method, "key_ack") != 0 || !resp->has_key_nonce) {
+            QGP_LOG_ERROR(LOG_TAG, "Auth: expected 'key_ack', got '%s'", resp->method);
+            qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+            free_pending(client, req);
+            free(buf);
+            return -1;
+        }
+
+        /* Init channel crypto */
+        if (nodus_channel_crypto_init(&client->channel_crypto, shared_secret,
+                                       nonce_c, resp->key_nonce) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Auth: channel crypto init failed");
+            qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+            free_pending(client, req);
+            free(buf);
+            return -1;
+        }
+
+        qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+        free_pending(client, req);
+
+        /* Attach crypto to connection */
+        ((nodus_tcp_conn_t *)client->conn)->crypto = &client->channel_crypto;
+
+        QGP_LOG_INFO(LOG_TAG, "Auth: channel encrypted (Kyber1024+AES-256-GCM)");
+    }
+
+    result = 0;
     free(buf);
     return result;
 }

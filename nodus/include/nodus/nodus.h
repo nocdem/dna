@@ -22,6 +22,7 @@
 #include "nodus/nodus_types.h"
 #include "core/nodus_media_storage.h"
 #include "channel/nodus_channel_store.h"
+#include "crypto/nodus_channel_crypto.h"
 #include <pthread.h>
 #include <stdatomic.h>
 
@@ -195,6 +196,9 @@ typedef struct nodus_client {
     void                     *circuit_inbound_user;
     _Atomic uint32_t          next_client_cid;
     pthread_mutex_t           circuits_mutex;
+
+    /* Channel encryption (Kyber handshake result) */
+    nodus_channel_crypto_t    channel_crypto;
 
 } nodus_client_t;
 

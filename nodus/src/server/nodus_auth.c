@@ -11,9 +11,13 @@
 #include "server/nodus_server.h"
 #include "protocol/nodus_tier2.h"
 #include "crypto/nodus_sign.h"
+#include "crypto/nodus_channel_crypto.h"
+#include "crypto/enc/qgp_kyber.h"
 
 #include <string.h>
 #include <stdio.h>
+
+extern void qgp_secure_memzero(void *ptr, size_t len);
 
 int nodus_auth_handle_hello(nodus_server_t *srv, nodus_session_t *sess,
                              const nodus_pubkey_t *pk, const nodus_key_t *fp,
@@ -118,11 +122,64 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
         fprintf(stderr, "AUTH_OK: client %s... authenticated (presence added)\n", fp_hex);
     }
 
-    /* Send AUTH_OK with session token */
+    /* Send AUTH_OK with session token (+ Kyber pubkey if available) */
     size_t len = 0;
-    nodus_t2_auth_ok(txn_id, sess->token,
-                      buf, sizeof(buf), &len);
+    if (srv->identity.has_kyber) {
+        nodus_t2_auth_ok_kyber(txn_id, sess->token, srv->identity.kyber_pk,
+                                buf, sizeof(buf), &len);
+    } else {
+        nodus_t2_auth_ok(txn_id, sess->token,
+                          buf, sizeof(buf), &len);
+    }
     nodus_tcp_send(sess->conn, buf, len);
+
+    return 0;
+}
+
+int nodus_auth_handle_key_init(nodus_server_t *srv, nodus_session_t *sess,
+                                const uint8_t *kyber_ct, const uint8_t *nonce_c,
+                                uint32_t txn_id) {
+    if (!srv || !sess || !kyber_ct || !nonce_c) return -1;
+    if (!srv->identity.has_kyber) return -1;
+
+    uint8_t buf[8192];
+
+    /* Decapsulate: shared_secret = Kyber_decap(ct, server_sk) */
+    uint8_t shared_secret[32];
+    int rc = qgp_kem1024_decapsulate(shared_secret, kyber_ct, srv->identity.kyber_sk);
+    if (rc != 0) {
+        size_t len = 0;
+        nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "KEM decapsulation failed", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return -1;
+    }
+
+    /* Generate server nonce */
+    uint8_t nonce_s[NODUS_NONCE_LEN];
+    nodus_random(nonce_s, NODUS_NONCE_LEN);
+
+    /* Init channel crypto */
+    rc = nodus_channel_crypto_init(&sess->channel_crypto, shared_secret, nonce_c, nonce_s);
+    qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+    if (rc != 0) {
+        size_t len = 0;
+        nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "channel crypto init failed", buf, sizeof(buf), &len);
+        nodus_tcp_send(sess->conn, buf, len);
+        return -1;
+    }
+
+    /* Send KEY_ACK BEFORE enabling encryption (must arrive plaintext) */
+    size_t len = 0;
+    nodus_t2_key_ack(txn_id, nonce_s, buf, sizeof(buf), &len);
+    nodus_tcp_send_raw(sess->conn, buf, len);
+
+    /* NOW attach crypto to connection — all subsequent frames will be encrypted */
+    sess->conn->crypto = &sess->channel_crypto;
+
+    fprintf(stderr, "CHANNEL_CRYPTO: session slot=%d encrypted (Kyber1024+AES-256-GCM)\n",
+            sess->conn->slot);
 
     return 0;
 }

@@ -27,6 +27,7 @@
 #include "server/nodus_presence.h"
 #include "circuit/nodus_circuit.h"
 #include "circuit/nodus_inter_circuit.h"
+#include "crypto/nodus_channel_crypto.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -111,6 +112,9 @@ typedef struct {
 
     /* Circuit table (VPN mesh Faz 1) */
     nodus_circuit_table_t   circuits;
+
+    /* Channel encryption (Kyber handshake) */
+    nodus_channel_crypto_t  channel_crypto;
 } nodus_session_t;
 
 /* ── FIND_VALUE async state machine ──────────────────────────────── */
@@ -394,6 +398,14 @@ int nodus_auth_handle_hello(nodus_server_t *srv, nodus_session_t *sess,
  */
 int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
                             const nodus_sig_t *sig, uint32_t txn_id);
+
+/**
+ * Handle KEY_INIT message (Kyber ciphertext + client nonce).
+ * Decapsulates, derives AES key, sends KEY_ACK.
+ */
+int nodus_auth_handle_key_init(nodus_server_t *srv, nodus_session_t *sess,
+                                const uint8_t *kyber_ct, const uint8_t *nonce_c,
+                                uint32_t txn_id);
 
 #ifdef __cplusplus
 }

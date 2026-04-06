@@ -3057,6 +3057,13 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         return;
     }
 
+    /* Post-auth key exchange: key_init has no token (transition message) */
+    if (strcmp(msg.method, "key_init") == 0 && msg.has_kyber_ct && msg.has_key_nonce) {
+        nodus_auth_handle_key_init(srv, sess, msg.kyber_ct, msg.key_nonce, msg.txn_id);
+        nodus_t2_msg_free(&msg);
+        return;
+    }
+
     /* Post-auth: verify session token */
     if (!msg.has_token || !session_check_token(sess, msg.token)) {
         size_t rlen = 0;
