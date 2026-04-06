@@ -306,6 +306,13 @@ static void handle_connect_complete(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         tcp->on_connect(conn, tcp->cb_ctx);
 
 #ifndef _WIN32
+    /* on_connect callback may have queued data (e.g. hello for auth).
+     * Re-check wbuf and ensure EPOLLOUT is set so it gets flushed. */
+    if (conn->wlen > conn->wpos) {
+        uint32_t ev2 = EPOLLIN | EPOLLOUT | et;
+        epoll_mod(tcp->epoll_fd, conn->fd, ev2, conn);
+    }
+
     /* Edge-triggered: on_connect callback may have sent data (e.g. node_hello)
      * and the peer may have already responded before we return to epoll_wait.
      * Do an immediate read to avoid missing the initial EPOLLIN edge —
