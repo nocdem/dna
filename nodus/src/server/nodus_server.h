@@ -84,6 +84,12 @@ typedef struct {
     int                 cr_count;
     uint64_t            w_window_start;
     int                 w_count;
+
+    /* Channel encryption (Kyber handshake for inter-node) */
+    nodus_channel_crypto_t  channel_crypto;
+    uint8_t             pending_ss[32];     /* shared secret awaiting key_ack */
+    uint8_t             pending_nc[32];     /* client nonce awaiting key_ack */
+    bool                pending_kyber;
 } nodus_inter_session_t;
 
 #define NODUS_MAX_INTER_SESSIONS  NODUS_TCP_MAX_CONNS

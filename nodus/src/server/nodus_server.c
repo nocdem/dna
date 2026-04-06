@@ -16,6 +16,10 @@
 #include "protocol/nodus_wire.h"
 #include "protocol/nodus_cbor.h"
 #include "crypto/nodus_sign.h"
+#include "crypto/nodus_channel_crypto.h"
+#include "crypto/enc/qgp_kyber.h"
+
+extern void qgp_secure_memzero(void *ptr, size_t len);
 
 #include <stdio.h>
 #include <string.h>
@@ -2551,6 +2555,39 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             sess->conn->auth_state = NODUS_CONN_AUTH_OK;
             sess->authenticated = true;
             nodus_tcp_pending_flush(sess->conn);
+
+            /* Inter-node Kyber handshake (connecting side) */
+            if (msg.has_kyber_pk && srv->identity.has_kyber) {
+                uint8_t ct[NODUS_KYBER_CT_BYTES], ss_buf[NODUS_KYBER_SS_BYTES];
+                if (qgp_kem1024_encapsulate(ct, ss_buf, msg.kyber_pk) == 0) {
+                    uint8_t nc[NODUS_NONCE_LEN];
+                    nodus_random(nc, NODUS_NONCE_LEN);
+                    uint8_t ki_buf[4096];
+                    size_t ki_len = 0;
+                    nodus_t2_key_init(msg.txn_id, ct, nc, ki_buf, sizeof(ki_buf), &ki_len);
+                    nodus_tcp_send_raw(sess->conn, ki_buf, ki_len);
+                    /* Store shared secret + nonce for key_ack */
+                    memcpy(sess->pending_ss, ss_buf, 32);
+                    memcpy(sess->pending_nc, nc, 32);
+                    sess->pending_kyber = true;
+                }
+                qgp_secure_memzero(ss_buf, sizeof(ss_buf));
+            }
+
+            nodus_t2_msg_free(&msg);
+            return;
+        } else if (strcmp(msg.method, "key_ack") == 0 && sess->pending_kyber) {
+            /* Complete inter-node Kyber handshake */
+            if (msg.has_key_nonce) {
+                nodus_channel_crypto_init(&sess->channel_crypto,
+                                           sess->pending_ss, sess->pending_nc, msg.key_nonce);
+                sess->conn->crypto = &sess->channel_crypto;
+                qgp_secure_memzero(sess->pending_ss, sizeof(sess->pending_ss));
+                qgp_secure_memzero(sess->pending_nc, sizeof(sess->pending_nc));
+                sess->pending_kyber = false;
+                fprintf(stderr, "INTER_CRYPTO: outgoing conn to %s:%d encrypted\n",
+                        sess->conn->ip, sess->conn->port);
+            }
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "error") == 0) {
@@ -2596,8 +2633,13 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     uint8_t token[NODUS_SESSION_TOKEN_LEN];
                     nodus_random(token, NODUS_SESSION_TOKEN_LEN);
                     size_t rlen = 0;
-                    nodus_t2_auth_ok(msg.txn_id, token,
-                                      resp_buf, sizeof(resp_buf), &rlen);
+                    if (srv->identity.has_kyber && msg.proto_version >= 2) {
+                        nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
+                                               resp_buf, sizeof(resp_buf), &rlen);
+                    } else {
+                        nodus_t2_auth_ok(msg.txn_id, token,
+                                          resp_buf, sizeof(resp_buf), &rlen);
+                    }
                     nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
                     char fp_hex[33];
                     for (int k = 0; k < 16; k++)
@@ -2610,6 +2652,28 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                 nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                                 "authenticate first", resp_buf, sizeof(resp_buf), &rlen);
                 nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
+            }
+            nodus_t2_msg_free(&msg);
+            return;
+        }
+
+        /* Inter-node key_init: accepting side Kyber handshake */
+        if (strcmp(msg.method, "key_init") == 0 && msg.has_kyber_ct && msg.has_key_nonce) {
+            if (srv->identity.has_kyber) {
+                uint8_t ss_buf[NODUS_KYBER_SS_BYTES];
+                if (qgp_kem1024_decapsulate(ss_buf, msg.kyber_ct, srv->identity.kyber_sk) == 0) {
+                    uint8_t ns[NODUS_NONCE_LEN];
+                    nodus_random(ns, NODUS_NONCE_LEN);
+                    uint8_t ka_buf[4096];
+                    size_t ka_len = 0;
+                    nodus_t2_key_ack(msg.txn_id, ns, ka_buf, sizeof(ka_buf), &ka_len);
+                    nodus_tcp_send_raw(sess->conn, ka_buf, ka_len);
+                    nodus_channel_crypto_init(&sess->channel_crypto, ss_buf, msg.key_nonce, ns);
+                    sess->conn->crypto = &sess->channel_crypto;
+                    qgp_secure_memzero(ss_buf, sizeof(ss_buf));
+                    fprintf(stderr, "INTER_CRYPTO: incoming conn from %s:%d encrypted\n",
+                            sess->conn->ip, sess->conn->port);
+                }
             }
             nodus_t2_msg_free(&msg);
             return;
@@ -2959,8 +3023,13 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 uint8_t token[NODUS_SESSION_TOKEN_LEN];
                 nodus_random(token, NODUS_SESSION_TOKEN_LEN);
                 size_t rlen = 0;
-                nodus_t2_auth_ok(msg.txn_id, token,
-                                  resp_buf, sizeof(resp_buf), &rlen);
+                if (srv->identity.has_kyber && msg.proto_version >= 2) {
+                    nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
+                                           resp_buf, sizeof(resp_buf), &rlen);
+                } else {
+                    nodus_t2_auth_ok(msg.txn_id, token,
+                                      resp_buf, sizeof(resp_buf), &rlen);
+                }
                 nodus_tcp_send_raw(conn, resp_buf, rlen);
                 fprintf(stderr, "WITNESS_AUTH_OK: peer authenticated on port 4004\n");
             }
