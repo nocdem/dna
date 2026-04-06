@@ -1,9 +1,22 @@
-# Inter-Node Peer Authentication — Unfinished Feature
+# Inter-Node Peer Authentication — FIXED
 
-**Status:** INCOMPLETE — `require_peer_auth=true` breaks cluster inter-node communication. Must remain disabled in production until proper architectural fix.
+**Status:** FIXED (2026-04-06) — Auth state machine + gated send + republish pool migration.
 
-**Last updated:** 2026-04-05
+**Last updated:** 2026-04-06
 **Investigation:** nocdem + Claude
+
+## Fix Summary
+
+- Added auth state machine to `nodus_tcp_conn_t` (NONE → HELLO_SENT → AUTH_OK/FAILED)
+- Gated `nodus_tcp_send` queues frames while auth in progress, flushes on AUTH_OK
+- Auto-hello on connect for inter-node (TCP 4002) and witness (TCP 4004) connections
+- Migrated DHT replication from fire-and-forget raw sockets to `inter_tcp` persistent pool
+- Removed `rp_epoll_fd`, `dht_republish_conn_t`, and entire fire-and-forget subsystem
+- Simplified presence_tick — auth handled transparently by gated send
+- 10s auth timeout sweep in idle_sweep
+- Witness port refactored to use shared state machine
+- Removed silent-drop workaround (ea17c86a)
+- `require_peer_auth=true` ready for production deployment
 
 ---
 
