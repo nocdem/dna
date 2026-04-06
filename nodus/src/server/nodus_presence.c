@@ -245,48 +245,26 @@ void nodus_presence_tick(struct nodus_server *srv) {
     /* Send to all peers in routing table using persistent connections.
      * Non-blocking connect: data is buffered in write buffer and flushed
      * by the event loop once the connection completes (handle_connect_complete
-     * sets EPOLLOUT when wlen > wpos). Connection stays in pool for reuse. */
-    /* Build HELLO frame once for reuse on new connections */
-    uint8_t hello_buf[8192];
-    size_t hello_len = 0;
-    bool have_hello = (nodus_t2_hello(0, &srv->identity.pk, &srv->identity.node_id,
-                                       hello_buf, sizeof(hello_buf), &hello_len) == 0);
-
+     * sets EPOLLOUT when wlen > wpos). Connection stays in pool for reuse.
+     *
+     * Auth is handled automatically: on_inter_connect sends hello,
+     * nodus_tcp_send gates messages until auth completes (AUTH_OK). */
     int sent = 0;
     for (int i = 0; i < peer_count; i++) {
         nodus_peer_t *peer = &peers[i];
         if (peer->tcp_port == 0) continue;
 
-        /* Reuse existing persistent connection */
         nodus_tcp_conn_t *pconn = nodus_tcp_find_by_addr(
             (nodus_tcp_t *)&srv->inter_tcp, peer->ip, peer->tcp_port);
-        if (pconn) {
-            /* If require_peer_auth=true and conn not authed yet, skip p_sync.
-             * Conn may still be completing auth handshake. */
-            if (srv->config.require_peer_auth && !pconn->authenticated)
-                continue;
-            nodus_tcp_send(pconn, sync_buf, sync_len);
-            sent++;
-            continue;
+        if (!pconn) {
+            pconn = nodus_tcp_connect(
+                (nodus_tcp_t *)&srv->inter_tcp, peer->ip, peer->tcp_port);
+            if (!pconn) continue;
+            pconn->is_nodus = true;
         }
 
-        /* Open new persistent connection — do NOT disconnect.
-         * Event loop flushes buffered data once connect completes. */
-        pconn = nodus_tcp_connect(
-            (nodus_tcp_t *)&srv->inter_tcp, peer->ip, peer->tcp_port);
-        if (!pconn) continue;
-        pconn->is_nodus = true;  /* Mark as inter-node connection */
-
-        /* With peer auth enforced: send hello first, skip p_sync this cycle.
-         * Auth completes async (challenge → auth → auth_ok); next tick
-         * finds conn authenticated and sends p_sync. Without auth: just
-         * send p_sync directly (legacy behavior). */
-        if (srv->config.require_peer_auth && have_hello) {
-            nodus_tcp_send(pconn, hello_buf, hello_len);
-        } else {
-            nodus_tcp_send(pconn, sync_buf, sync_len);
+        if (nodus_tcp_send(pconn, sync_buf, sync_len) == 0)
             sent++;
-        }
     }
 
     if (sent > 0 || peer_count > 0)

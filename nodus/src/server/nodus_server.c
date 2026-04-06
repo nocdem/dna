@@ -2502,6 +2502,30 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
             nodus_tcp_disconnect(&srv->inter_tcp, c);
     }
 
+    /* Auth timeout: connections stuck in HELLO_SENT for >10s */
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
+        if (!c || c->auth_state != NODUS_CONN_AUTH_HELLO_SENT) continue;
+        if (now - c->connected_at > 10) {
+            fprintf(stderr, "INTER_AUTH: auth timeout for %s:%d, disconnecting\n",
+                    c->ip, c->port);
+            c->auth_state = NODUS_CONN_AUTH_FAILED;
+            nodus_tcp_disconnect(&srv->inter_tcp, c);
+        }
+    }
+
+    /* Same for witness TCP */
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = srv->witness_tcp.pool[i];
+        if (!c || c->auth_state != NODUS_CONN_AUTH_HELLO_SENT) continue;
+        if (now - c->connected_at > 10) {
+            fprintf(stderr, "INTER_AUTH: witness auth timeout for %s:%d, disconnecting\n",
+                    c->ip, c->port);
+            c->auth_state = NODUS_CONN_AUTH_FAILED;
+            nodus_tcp_disconnect(&srv->witness_tcp, c);
+        }
+    }
+
     /* Sweep orphaned pending_open inter-circuits (peer nodus never responded).
      * 10s matches NODUS_CIRCUIT_OPEN_TIMEOUT_MS with margin for scheduling. */
     nodus_inter_circuit_sweep_orphans(&srv->inter_circuits,
