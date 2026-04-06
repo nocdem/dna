@@ -1092,14 +1092,14 @@
 
               <div class="nav-item" data-dropdown="products">
                 <div class="nav-item-label">
-                  <span data-i18n="nav.dna_connect">DNA-Connect</span>
+                  <span data-i18n="nav.dna_connect">DNA Connect</span>
                   <span class="caret"></span>
                 </div>
                 <div class="dropdown">
-                  <a href="/DNA-Connect/identity.html" data-i18n="nav.identity">The Identity</a>
-                  <a href="/DNA-Connect/messenger.html" data-i18n="nav.messenger">The Messenger</a>
-                  <a href="/DNA-Connect/wallet.html" data-i18n="nav.wallet">The Wallet</a>
-                  <a href="/DNA-Connect/nodus.html" class="active" data-i18n="nav.nodus">The Nodus</a>
+                  <a href="/DNA-Connect/identity.html" data-i18n="nav.identity">Identity</a>
+                  <a href="/DNA-Connect/messenger.html" data-i18n="nav.messenger">Messenger</a>
+                  <a href="/DNA-Connect/wallet.html" data-i18n="nav.wallet">Wallet</a>
+                  <a href="/DNA-Connect/nodus.html" class="active" data-i18n="nav.nodus">Nodus</a>
                 </div>
               </div>
 
@@ -1171,7 +1171,7 @@
                   <span data-i18n="nodus_page.hero.meta1">No central servers. No single point of failure.</span>
                 </span>
                 <span data-i18n="nodus_page.hero.meta2">
-                  Community-operated &middot; <strong style="color:var(--text-main);font-weight:500;">Post-quantum secure</strong>
+                  Open infrastructure &middot; <strong style="color:var(--text-main);font-weight:500;">Post-quantum secure</strong>
                 </span>
               </div>
             </div>
@@ -1191,13 +1191,13 @@
         <div class="wrap">
           <div class="section-header-center reveal">
             <div class="section-label" data-i18n="nodus_page.arch.label">Architecture</div>
-            <h2 class="section-title" data-i18n="nodus_page.arch.title">Two-Tier Architecture</h2>
+            <h2 class="section-title" data-i18n="nodus_page.arch.title">Three-Tier Architecture</h2>
             <p class="section-desc" style="max-width: 38rem;" data-i18n="nodus_page.arch.desc">
-              The Nodus network operates using a two-tier architecture designed to separate core network operations from client access.
+              The Nodus network operates using a three-tier architecture designed to separate core network operations, client access, and validation.
             </p>
           </div>
 
-          <div class="token-grid stagger" style="grid-template-columns: repeat(2, 1fr);">
+          <div class="token-grid stagger" style="grid-template-columns: repeat(3, 1fr);">
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><line x1="8" y1="12" x2="16" y2="12"/><circle cx="12" cy="5" r="3"/><circle cx="12" cy="19" r="3"/><line x1="12" y1="8" x2="12" y2="16"/></svg></span>
               <h3 data-i18n="nodus_page.arch.tier1_title">Tier 1 &mdash; Nodus to Nodus</h3>
@@ -1217,6 +1217,17 @@
               </p>
               <p style="margin-top: 0.6rem;" data-i18n="nodus_page.arch.tier2_desc2">
                 Through this connection, clients can resolve DNA identities, send encrypted messages, retrieve offline messages, publish or fetch distributed data, and communicate with other peers through the network. Clients do not communicate directly with each other &mdash; they interact with the Nodus network through connected nodes.
+              </p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></span>
+              <h3 data-i18n="nodus_page.arch.tier3_title">Tier 3 &mdash; Witness Layer</h3>
+              <p data-i18n="nodus_page.arch.tier3_desc1">
+                A higher-trust validation layer built on <strong style="color:var(--text-main)">BFT</strong> consensus with <strong style="color:var(--text-main)">PQ</strong> cryptographic proofs.
+              </p>
+              <p style="margin-top: 0.6rem;" data-i18n="nodus_page.arch.tier3_desc2">
+                Tier 3 nodes provide transaction witnessing, attestation, and trust anchoring for operations requiring stronger guarantees than DHT storage alone &mdash; such as financial transactions and identity verification.
               </p>
             </article>
           </div>
@@ -1298,7 +1309,7 @@
                 <li data-i18n="nodus_page.offline.li4"><strong>Multi-node replication</strong> &mdash; messages stored on k closest nodes for redundancy</li>
               </ul>
               <p data-i18n="nodus_page.offline.desc2">
-                This enables asynchronous communication while maintaining full decentralization &mdash; no central inbox server, no metadata leakage.
+                This enables asynchronous communication while maintaining full decentralization &mdash; no central inbox server, minimal routing metadata.
               </p>
             </div>
             <div class="dna-visual reveal-right">
@@ -1323,8 +1334,8 @@
               <ul>
                 <li data-i18n="nodus_page.design.li1"><strong>Resilience</strong> &mdash; no single point of failure</li>
                 <li data-i18n="nodus_page.design.li2"><strong>Censorship resistance</strong> &mdash; no central authority to block</li>
-                <li data-i18n="nodus_page.design.li3"><strong>Availability</strong> &mdash; the network is always on</li>
-                <li data-i18n="nodus_page.design.li4"><strong>Privacy</strong> &mdash; nodes only see encrypted blobs</li>
+                <li data-i18n="nodus_page.design.li3"><strong>Availability</strong> &mdash; high availability through distributed architecture</li>
+                <li data-i18n="nodus_page.design.li4"><strong>Privacy</strong> &mdash; private messages are stored as encrypted blobs that nodes cannot read</li>
               </ul>
               <p data-i18n="nodus_page.design.desc3">
                 The network continues to function as long as nodes remain connected.
@@ -1366,7 +1377,7 @@
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg></span>
               <h3 data-i18n="nodus_page.ecosystem.future_title">Future Applications</h3>
-              <p data-i18n="nodus_page.ecosystem.future_desc">Any decentralized application can build on Nodus &mdash; forming a post-quantum capable decentralized communication stack.</p>
+              <p data-i18n="nodus_page.ecosystem.future_desc">DNA VPN, DNAC digital cash, and any future decentralized application can build on Nodus &mdash; forming a post-quantum capable infrastructure stack.</p>
             </article>
           </div>
         </div>
@@ -1544,13 +1555,13 @@
     <footer>
       <div class="wrap">
         <div class="footer-row">
-          <div data-i18n="footer.copyright">© 2026 DNA Protocol — Privacy, Quantum Safety, Decentralization.</div>
+          <div data-i18n="footer.copyright">© 2026 CPUNK Project — Privacy, Quantum Safety, Decentralization.</div>
           <div class="footer-links">
             <a href="/" data-i18n="footer.home">Home</a>
-            <a href="/DNA-Connect/identity.html" data-i18n="footer.identity">The Identity</a>
-            <a href="/DNA-Connect/messenger.html" data-i18n="footer.messenger">The Messenger</a>
-            <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">The Wallet</a>
-            <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">The Nodus</a>
+            <a href="/DNA-Connect/identity.html" data-i18n="footer.identity">Identity</a>
+            <a href="/DNA-Connect/messenger.html" data-i18n="footer.messenger">Messenger</a>
+            <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">Wallet</a>
+            <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">Nodus</a>
             <a href="/team.html" data-i18n="footer.team">Team</a>
             <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
             <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
