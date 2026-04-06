@@ -6,10 +6,10 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description"
-    content="DNA Wallet is the multi-chain wallet built into DNA Connect. One BIP-39 seed phrase derives wallets for Cellframe, Ethereum, Solana, and TRON. Send tokens in-chat with post-quantum security."
+    content="DNA Wallet is the multi-chain wallet built into DNA Connect. One BIP-39 seed phrase derives wallets for Cellframe, Ethereum, BSC, Solana, and TRON. Send tokens in-chat with post-quantum security."
   />
   <meta name="keywords"
-    content="DNA Wallet, CPUNK, CPUNK.IO, multi-chain wallet, BIP-39, post-quantum wallet, Cellframe, Ethereum, Solana, TRON, in-chat transfers, Dilithium, Kyber1024"
+    content="DNA Wallet, CPUNK, CPUNK.IO, multi-chain wallet, BIP-39, post-quantum wallet, Cellframe, Ethereum, BSC, BNB, Solana, TRON, in-chat transfers, Dilithium, Kyber1024, DEX swap"
   />
   <meta name="author" content="DNA Protocol" />
   <meta name="robots" content="index, follow" />
@@ -19,14 +19,14 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://cpunk.io/DNA-Connect/wallet.html">
   <meta property="og:title" content="DNA Wallet — One Seed, Every Chain | CPUNK.IO">
-  <meta property="og:description" content="Multi-chain wallet with post-quantum security. One seed phrase, four blockchains. Send tokens directly in chat. Cellframe, Ethereum, Solana, TRON.">
+  <meta property="og:description" content="Multi-chain wallet with post-quantum security. One seed phrase, five blockchains. Send tokens directly in chat. Cellframe, Ethereum, BSC, Solana, TRON.">
   <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="https://cpunk.io/DNA-Connect/wallet.html">
   <meta name="twitter:title" content="DNA Wallet — One Seed, Every Chain | CPUNK.IO">
-  <meta name="twitter:description" content="Multi-chain wallet with post-quantum security. One seed phrase, four blockchains. Send tokens directly in chat.">
+  <meta name="twitter:description" content="Multi-chain wallet with post-quantum security. One seed phrase, five blockchains. Send tokens directly in chat.">
   <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
   <meta name="twitter:site" content="@OfficialCpunk">
 
@@ -518,6 +518,7 @@
     .chain-icon.eth { background: rgba(136,136,255,0.15); color: #8888ff; border: 1px solid rgba(136,136,255,0.3); }
     .chain-icon.sol { background: rgba(153,69,255,0.15); color: #9945ff; border: 1px solid rgba(153,69,255,0.3); }
     .chain-icon.trx { background: rgba(255,6,10,0.12); color: #ff060a; border: 1px solid rgba(255,6,10,0.25); }
+    .chain-icon.bsc { background: rgba(243,186,47,0.15); color: #f3ba2f; border: 1px solid rgba(243,186,47,0.3); }
 
     .chain-info { flex: 1; min-width: 0; }
     .chain-name { font-size: 0.8rem; font-weight: 600; color: var(--text-main); }
@@ -629,6 +630,12 @@
     .card-grid-4 {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
+      gap: 1.2rem;
+    }
+
+    .card-grid-5 {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
       gap: 1.2rem;
     }
 
@@ -884,6 +891,7 @@
     .derivation-path .chain-label.eth-label { color: #8888ff; }
     .derivation-path .chain-label.sol-label { color: #9945ff; }
     .derivation-path .chain-label.trx-label { color: #ff060a; }
+    .derivation-path .chain-label.bsc-label { color: #f3ba2f; }
     .derivation-path .path-value { font-size: 0.68rem; color: var(--text-muted); font-family: monospace; }
     .derivation-path .algo-value { font-size: 0.65rem; color: rgba(138,148,192,0.7); margin-top: 0.1rem; }
 
@@ -956,6 +964,7 @@
 
       .card-grid-3 { grid-template-columns: 1fr; }
       .card-grid-4 { grid-template-columns: 1fr 1fr; }
+      .card-grid-5 { grid-template-columns: 1fr 1fr; }
 
       .dna-row,
       .dna-row.reverse {
@@ -996,6 +1005,7 @@
       .hero-split-text h1 { font-size: 1.9rem; }
       .card-grid-3 { grid-template-columns: 1fr; }
       .card-grid-4 { grid-template-columns: 1fr; }
+      .card-grid-5 { grid-template-columns: 1fr; }
       .derivation-paths { grid-template-columns: 1fr; }
     }
 
@@ -1256,8 +1266,8 @@
 
               <p class="subtitle" data-i18n="wallet.hero.subtitle">
                 DNA Wallet is the <strong>multi-chain wallet built into DNA Connect</strong>.
-                A single BIP-39 seed phrase derives wallets across <strong>four blockchains</strong> &mdash;
-                Cellframe, Ethereum, Solana, and TRON. Send and receive tokens without leaving the chat.
+                A single BIP-39 seed phrase derives wallets across <strong>five blockchains</strong> &mdash;
+                Cellframe, Ethereum, BSC, Solana, and TRON. Send and receive tokens without leaving the chat.
               </p>
 
               <div class="hero-actions">
@@ -1269,7 +1279,7 @@
               <div class="hero-meta">
                 <span>
                   <span class="hero-meta-dot"></span>
-                  <span data-i18n="wallet.hero.metaBlockchains">4 blockchains, 1 seed phrase, 0 third parties.</span>
+                  <span data-i18n="wallet.hero.metaBlockchains">5 blockchains, 1 seed phrase, 0 third parties.</span>
                 </span>
                 <span data-i18n="wallet.hero.metaIntegrated">
                   Integrated in: <strong style="color:var(--text-main);font-weight:500;">DNA Connect</strong> &middot; Android, Linux, Windows
@@ -1311,6 +1321,14 @@
                   </div>
                   <div class="chain-bal">500 TRX</div>
                 </div>
+                <div class="wallet-chain-row">
+                  <div class="chain-icon bsc">BSC</div>
+                  <div class="chain-info">
+                    <div class="chain-name">BNB Smart Chain</div>
+                    <div class="chain-addr">0x7a3B...e91F</div>
+                  </div>
+                  <div class="chain-bal">25.0 USDT</div>
+                </div>
                 <div class="wallet-seed-label">
                   <span data-i18n="wallet.hero.seedLabel">All wallets derived from <strong>one BIP-39 seed phrase</strong></span>
                 </div>
@@ -1336,9 +1354,9 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10A15.3 15.3 0 0 1 12 2z"/></svg>
               </span>
-              <h3 data-i18n="wallet.overview.multiChainTitle">Multi-Chain Architecture</h3>
+              <h3 data-i18n="wallet.overview.multiChainTitle">Multi-Chain Portfolio</h3>
               <p data-i18n="wallet.overview.multiChainDesc">
-                One wallet interface, four blockchains managed from a single unified view. Each chain uses its native signing algorithm &mdash; see <a href="#chains" style="color:var(--teal);border-bottom:1px solid var(--teal-dim);">supported chains</a> for details.
+                One wallet interface, five blockchains managed from a single unified view. Each chain uses its native signing algorithm &mdash; see <a href="#chains" style="color:var(--teal);border-bottom:1px solid var(--teal-dim);">supported chains</a> for details.
               </p>
             </article>
 
@@ -1356,9 +1374,9 @@
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
               </span>
-              <h3 data-i18n="wallet.overview.oneSeedTitle">One Seed Phrase</h3>
-              <p data-i18n="wallet.overview.oneSeedDesc">
-                A single <strong style="color:var(--text-main)">BIP-39 mnemonic</strong> is the master key. Back up one seed phrase &mdash; recover all your wallets. New chains are added automatically with no re-backup needed.
+              <h3 data-i18n="wallet.overview.swapTitle">Integrated Swaps</h3>
+              <p data-i18n="wallet.overview.swapDesc">
+                Trade tokens across multiple <strong style="color:var(--text-main)">DEX aggregators</strong> directly inside DNA Connect. Best-price routing across Uniswap, PancakeSwap, Jupiter, and Cellframe DEX.
               </p>
             </article>
           </div>
@@ -1375,7 +1393,7 @@
 
           <div class="dna-row">
             <div class="dna-text reveal-left">
-              <h3 data-i18n="wallet.derivation.heading"><span class="teal">One Mnemonic</span>, Four Derivation Paths</h3>
+              <h3 data-i18n="wallet.derivation.heading"><span class="teal">One Mnemonic</span>, Five Derivation Paths</h3>
               <p data-i18n="wallet.derivation.desc1">
                 Each blockchain uses its own derivation method to produce keys from the same BIP-39 seed material. The diagram shows the full flow from mnemonic to chain-specific wallets.
               </p>
@@ -1417,6 +1435,11 @@
                     <div class="path-value">secp256k1 derive</div>
                     <div class="algo-value">secp256k1 &middot; Base58Check</div>
                   </div>
+                  <div class="derivation-path">
+                    <div class="chain-label bsc-label">BSC</div>
+                    <div class="path-value">m/44'/60'/0'/0/0</div>
+                    <div class="algo-value">secp256k1 &middot; EVM-compatible</div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1435,7 +1458,7 @@
             </p>
           </div>
 
-          <div class="card-grid-4 stagger">
+          <div class="card-grid-5 stagger">
             <article class="token-card reveal">
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
@@ -1493,6 +1516,21 @@
                 <li data-i18n="wallet.chains.tronLi1">secp256k1 key derivation</li>
                 <li data-i18n="wallet.chains.tronLi2">Base58Check addresses</li>
                 <li data-i18n="wallet.chains.tronLi3">TRC-20 token transfers</li>
+              </ul>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              </span>
+              <h3 data-i18n="wallet.chains.bscTitle">BNB Smart Chain</h3>
+              <p data-i18n="wallet.chains.bscDesc">
+                EVM-compatible chain with <strong style="color:var(--text-main)">BEP-20 token support</strong>. Shares Ethereum's secp256k1 derivation path for seamless multi-chain compatibility.
+              </p>
+              <ul>
+                <li data-i18n="wallet.chains.bscLi1">EVM-compatible (shared ETH derivation)</li>
+                <li data-i18n="wallet.chains.bscLi2">BEP-20 token transfers (USDT, USDC)</li>
+                <li data-i18n="wallet.chains.bscLi3">Native BNB transactions</li>
               </ul>
             </article>
           </div>
