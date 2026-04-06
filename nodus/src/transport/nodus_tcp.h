@@ -19,6 +19,7 @@ extern "C" {
 
 #define NODUS_TCP_MAX_CONNS   1024
 #define NODUS_TCP_BUF_INIT    (64 * 1024)    /* Initial read/write buffer */
+#define NODUS_TCP_PENDING_MAX  (5 * 1024 * 1024)   /* 5MB auth pending queue cap */
 
 /* ── Connection ──────────────────────────────────────────────────── */
 
@@ -27,6 +28,13 @@ typedef enum {
     NODUS_CONN_CONNECTING,
     NODUS_CONN_CONNECTED
 } nodus_conn_state_t;
+
+typedef enum {
+    NODUS_CONN_AUTH_NONE = 0,
+    NODUS_CONN_AUTH_HELLO_SENT,
+    NODUS_CONN_AUTH_OK,
+    NODUS_CONN_AUTH_FAILED
+} nodus_conn_auth_state_t;
 
 typedef struct nodus_tcp_conn {
     int                 fd;
@@ -56,6 +64,15 @@ typedef struct nodus_tcp_conn {
     uint8_t             auth_nonce[NODUS_NONCE_LEN];
     bool                auth_nonce_pending;
     bool                authenticated;   /* Dilithium5 challenge-response completed */
+
+    /* Auth state machine (inter-node / witness connections) */
+    nodus_conn_auth_state_t auth_state;
+    bool                    auth_required;
+
+    /* Pending frame queue (buffered while auth in progress) */
+    uint8_t                *pending_buf;
+    size_t                  pending_len;
+    size_t                  pending_cap;
 
     void               *user_data;
     uint64_t            connected_at;
@@ -96,6 +113,9 @@ typedef struct {
 
     uint16_t            port;
     bool                level_triggered; /* disable EPOLLET when true */
+
+    bool                auth_required;     /* New conns inherit this */
+    void               *auth_ctx;          /* nodus_identity_t* for hello/sign */
 } nodus_tcp_t;
 
 /**
@@ -136,6 +156,13 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                              const uint8_t *payload, size_t len,
                              nodus_tcp_progress_cb progress_cb,
                              void *user_data);
+
+/** Internal: send bypassing auth gate. For hello/auth frames only. */
+int nodus_tcp_send_raw(nodus_tcp_conn_t *conn,
+                        const uint8_t *payload, size_t len);
+
+/** Flush pending auth queue to write buffer. Called when auth completes. */
+int nodus_tcp_pending_flush(nodus_tcp_conn_t *conn);
 
 /**
  * Poll for events. Returns number of events processed.

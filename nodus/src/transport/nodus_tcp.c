@@ -128,6 +128,7 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         tcp->pool[conn->slot] = NULL;
 
     tcp->count--;
+    free(conn->pending_buf);
     free(conn->rbuf);
     free(conn->wbuf);
     free(conn);
@@ -528,8 +529,91 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
     return conn;
 }
 
+/* ── Auth pending queue ─────────────────────────────────────────── */
+
+static int pending_queue_append(nodus_tcp_conn_t *conn,
+                                 const uint8_t *payload, size_t len) {
+    size_t frame_size = NODUS_FRAME_HEADER_SIZE + len;
+
+    /* Lazy init */
+    if (!conn->pending_buf) {
+        conn->pending_cap = NODUS_TCP_BUF_INIT;
+        conn->pending_buf = malloc(conn->pending_cap);
+        if (!conn->pending_buf) return -1;
+        conn->pending_len = 0;
+    }
+
+    /* Cap check */
+    if (conn->pending_len + frame_size > NODUS_TCP_PENDING_MAX) {
+        QGP_LOG_WARN(LOG_TAG_TCP, "pending queue full (%zu + %zu > %d), dropping frame",
+                     conn->pending_len, frame_size, NODUS_TCP_PENDING_MAX);
+        return -1;
+    }
+
+    /* Grow if needed */
+    if (conn->pending_len + frame_size > conn->pending_cap) {
+        size_t new_cap = conn->pending_cap;
+        while (new_cap < conn->pending_len + frame_size) new_cap *= 2;
+        if (new_cap > NODUS_TCP_PENDING_MAX) new_cap = NODUS_TCP_PENDING_MAX;
+        uint8_t *nb = realloc(conn->pending_buf, new_cap);
+        if (!nb) return -1;
+        conn->pending_buf = nb;
+        conn->pending_cap = new_cap;
+    }
+
+    /* Encode frame into pending buffer */
+    size_t written = nodus_frame_encode(conn->pending_buf + conn->pending_len,
+                                         conn->pending_cap - conn->pending_len,
+                                         payload, (uint32_t)len);
+    if (written == 0) return -1;
+    conn->pending_len += written;
+    return 0;
+}
+
+int nodus_tcp_pending_flush(nodus_tcp_conn_t *conn) {
+    if (!conn->pending_buf || conn->pending_len == 0) return 0;
+
+    if (conn->wpos > 0) {
+        size_t remaining = conn->wlen - conn->wpos;
+        if (remaining > 0)
+            memmove(conn->wbuf, conn->wbuf + conn->wpos, remaining);
+        conn->wlen = remaining;
+        conn->wpos = 0;
+    }
+
+    size_t needed = conn->wlen + conn->pending_len;
+    if (buf_ensure(&conn->wbuf, &conn->wcap, needed) != 0) {
+        QGP_LOG_ERROR(LOG_TAG_TCP, "pending flush: buf_ensure failed (needed=%zu)", needed);
+        return -1;
+    }
+
+    memcpy(conn->wbuf + conn->wlen, conn->pending_buf, conn->pending_len);
+    conn->wlen += conn->pending_len;
+
+    QGP_LOG_INFO(LOG_TAG_TCP, "pending queue flushed: %zu bytes", conn->pending_len);
+
+    free(conn->pending_buf);
+    conn->pending_buf = NULL;
+    conn->pending_len = 0;
+    conn->pending_cap = 0;
+
+    return 0;
+}
+
 int nodus_tcp_send(nodus_tcp_conn_t *conn,
                     const uint8_t *payload, size_t len) {
+    /* Auth gate: queue frames while auth in progress */
+    if (conn && conn->auth_required) {
+        if (conn->auth_state == NODUS_CONN_AUTH_FAILED)
+            return -1;
+        if (conn->auth_state != NODUS_CONN_AUTH_OK)
+            return pending_queue_append(conn, payload, len);
+    }
+    return nodus_tcp_send_progress(conn, payload, len, NULL, NULL);
+}
+
+int nodus_tcp_send_raw(nodus_tcp_conn_t *conn,
+                        const uint8_t *payload, size_t len) {
     return nodus_tcp_send_progress(conn, payload, len, NULL, NULL);
 }
 
