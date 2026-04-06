@@ -85,7 +85,6 @@ extern "C" {
 #define NODUS_BUCKET_REFRESH_SEC   900     /* 15 min — bucket refresh via FIND_NODE */
 #define NODUS_REPUBLISH_SEC        3600    /* 60 min — periodic republish cycle */
 #define NODUS_REPUBLISH_BATCH      5       /* Values per main loop tick during republish */
-#define NODUS_REPUBLISH_MAX_FDS    64      /* Max concurrent outgoing republish connections */
 #define NODUS_CLEANUP_SEC          3600    /* 1 hour — storage cleanup interval */
 #define NODUS_FV_MAX_INFLIGHT      16      /* Max concurrent FIND_VALUE lookups */
 #define NODUS_FV_TIMEOUT_MS        5000    /* Per-lookup overall timeout */

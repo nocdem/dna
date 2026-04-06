@@ -250,17 +250,6 @@ typedef struct {
 
 #define NODUS_BF_FD_TABLE_SIZE  256
 
-/** One non-blocking republish TCP connection (fire-and-forget) */
-typedef struct {
-    int      fd;
-    uint8_t *frame;       /**< malloc'd copy of frame data */
-    size_t   frame_len;
-    size_t   send_pos;    /**< Bytes sent so far */
-    uint64_t started_at;  /**< For timeout detection (ms) */
-    bool     active;
-    bool     connected;   /**< connect() completed */
-} dht_republish_conn_t;
-
 /** Pending eviction entry for ping-before-evict (Kademlia spec) */
 #define NODUS_MAX_PENDING_EVICTIONS 32
 #define NODUS_EVICT_PING_TIMEOUT    10   /* seconds */
@@ -278,8 +267,6 @@ typedef struct {
     bool        active;         /**< Republish cycle in progress */
     bool        first_batch;    /**< First batch of cycle (no bookmark yet) */
     uint64_t    cycle_start;    /**< When current cycle began */
-    int         pending_fds;    /**< Outgoing connections in flight */
-    dht_republish_conn_t conns[NODUS_REPUBLISH_MAX_FDS];
 } dht_republish_state_t;
 
 /** Media republish state (persistent across ticks) */
@@ -346,7 +333,6 @@ typedef struct nodus_server {
     /* Periodic republish */
     dht_republish_state_t   republish;
     dht_media_republish_state_t media_republish;
-    int                     rp_epoll_fd;
 
     /* Ping-before-evict pending entries */
     nodus_pending_eviction_t pending_evictions[NODUS_MAX_PENDING_EVICTIONS];

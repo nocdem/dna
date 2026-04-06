@@ -38,10 +38,10 @@ static uint8_t resp_buf[RESP_BUF_SIZE];
 
 /* Channel post signature verification is now in nodus_channel_primary.c */
 
-/* Forward declaration for async send (used in replicate_value and hinted_retry) */
-static void dht_republish_send_async(nodus_server_t *srv, const char *ip,
-                                       uint16_t port, const uint8_t *frame,
-                                       size_t flen);
+/* Forward declaration for inter_tcp pool send (used in replicate_value and hinted_retry) */
+static int dht_republish_send(nodus_server_t *srv, const char *ip,
+                               uint16_t port, const uint8_t *frame,
+                               size_t flen);
 
 /* ── Session management ──────────────────────────────────────────── */
 
@@ -204,18 +204,17 @@ static void notify_listeners(nodus_server_t *srv, const nodus_key_t *key,
 
 /* Channel session helpers are now in nodus_channel_server.c */
 
-/* Forward declaration for async replication */
-static void dht_republish_send_async(nodus_server_t *srv, const char *ip,
-                                      uint16_t port, const uint8_t *frame,
-                                      size_t flen);
+/* Forward declaration for inter_tcp pool replication */
+static int dht_republish_send(nodus_server_t *srv, const char *ip,
+                               uint16_t port, const uint8_t *frame,
+                               size_t flen);
 
 /* ── Server-to-server TCP STORE (with hinted handoff on failure) ── */
 
 /**
  * Send a pre-encoded wire frame to a peer. Returns 0 on success, -1 on failure.
  */
-/* HIGH-13: Blocking send replaced by dht_republish_send_async() in all callers.
- * Kept for potential future use (e.g., synchronous fallback paths). */
+/* Legacy blocking send — kept for potential future use (e.g., synchronous fallback paths). */
 static int __attribute__((unused)) send_frame_to_peer(const char *peer_ip, uint16_t peer_tcp_port,
                                const uint8_t *frame, size_t flen) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -304,12 +303,8 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
         if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0)
             continue;
 
-        /* HIGH-13 fix: use non-blocking async send instead of blocking TCP.
-         * Falls back to hinted handoff if all async slots are full. */
-        if (srv->republish.pending_fds < NODUS_REPUBLISH_MAX_FDS) {
-            dht_republish_send_async(srv, closest[i].ip, closest[i].tcp_port, frame, flen);
-        } else {
-            /* All async slots full — queue for later retry */
+        /* Send via inter_tcp pool. Falls back to hinted handoff on failure. */
+        if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen) != 0) {
             nodus_storage_hinted_insert(&srv->storage,
                                          &closest[i].node_id,
                                          closest[i].ip, closest[i].tcp_port,
@@ -358,9 +353,7 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
         if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0)
             continue;
 
-        if (srv->republish.pending_fds < NODUS_REPUBLISH_MAX_FDS) {
-            dht_republish_send_async(srv, closest[i].ip, closest[i].tcp_port, frame, flen);
-        } else {
+        if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen) != 0) {
             nodus_storage_hinted_insert(&srv->storage,
                                          &closest[i].node_id,
                                          closest[i].ip, closest[i].tcp_port,
@@ -422,15 +415,12 @@ static void dht_hinted_retry(nodus_server_t *srv) {
             continue;
 
         for (size_t j = 0; j < count; j++) {
-            /* HIGH-13 fix: use async send for hinted handoff retry too */
-            if (srv->republish.pending_fds >= NODUS_REPUBLISH_MAX_FDS)
-                break;  /* Async slots full — try remaining next cycle */
-            dht_republish_send_async(srv, ip, tcp_port,
-                                      entries[j].frame_data,
-                                      entries[j].frame_len);
-            /* Delete hint optimistically — async send will either succeed
-             * or the value will be re-queued on next replication cycle */
-            nodus_storage_hinted_delete(&srv->storage, entries[j].id);
+            if (dht_republish_send(srv, ip, tcp_port,
+                                    entries[j].frame_data,
+                                    entries[j].frame_len) == 0) {
+                nodus_storage_hinted_delete(&srv->storage, entries[j].id);
+            }
+            /* If send fails, hint stays in DB for next retry cycle */
         }
 
         nodus_storage_hinted_free(entries, count);
@@ -500,153 +490,83 @@ static void dht_storage_cleanup(nodus_server_t *srv) {
     nodus_media_cleanup(&srv->media_storage);
 }
 
-/* ── Periodic republish (non-blocking) ───────────────────────────── */
+/* ── Periodic republish (via inter_tcp pool) ────────────────────── */
 
-/** Clean up a single republish connection */
-static void rp_conn_cleanup(nodus_server_t *srv, dht_republish_conn_t *rc) {
-    if (!rc->active) return;
-    if (rc->fd >= 0) {
-        epoll_ctl(srv->rp_epoll_fd, EPOLL_CTL_DEL, rc->fd, NULL);
-        close(rc->fd);
-        rc->fd = -1;
+/** Send a pre-framed replication payload via persistent inter_tcp pool.
+ *  Frame is already wire-encoded (nodus_frame_encode already called by caller).
+ *  Returns 0 on success, -1 on failure (caller should use hinted handoff). */
+static int dht_republish_send(nodus_server_t *srv, const char *ip,
+                               uint16_t port, const uint8_t *frame,
+                               size_t flen) {
+    nodus_tcp_conn_t *conn = nodus_tcp_find_by_addr(&srv->inter_tcp, ip, port);
+    if (!conn) {
+        conn = nodus_tcp_connect(&srv->inter_tcp, ip, port);
+        if (!conn) return -1;
+        conn->is_nodus = true;
+        /* on_inter_connect callback handles auth_required + hello */
     }
-    free(rc->frame);
-    rc->frame = NULL;
-    rc->active = false;
-    srv->republish.pending_fds--;
-}
 
-/** Handle epoll events for republish connections */
-static void dht_republish_handle_events(nodus_server_t *srv) {
-    if (srv->rp_epoll_fd < 0) return;
-
-    struct epoll_event events[32];
-    int n = epoll_wait(srv->rp_epoll_fd, events, 32, 0);
-
-    for (int i = 0; i < n; i++) {
-        int fd = events[i].data.fd;
-        /* Find the connection entry */
-        dht_republish_conn_t *rc = NULL;
-        for (int j = 0; j < NODUS_REPUBLISH_MAX_FDS; j++) {
-            if (srv->republish.conns[j].active && srv->republish.conns[j].fd == fd) {
-                rc = &srv->republish.conns[j];
-                break;
-            }
+    /* Auth gate for pre-framed data */
+    if (conn->auth_required && conn->auth_state != NODUS_CONN_AUTH_OK) {
+        if (conn->auth_state == NODUS_CONN_AUTH_FAILED) return -1;
+        /* Queue raw pre-framed bytes in pending buffer */
+        if (!conn->pending_buf) {
+            conn->pending_cap = NODUS_TCP_BUF_INIT;
+            conn->pending_buf = malloc(conn->pending_cap);
+            if (!conn->pending_buf) return -1;
+            conn->pending_len = 0;
         }
-        if (!rc) continue;
-
-        if (events[i].events & (EPOLLERR | EPOLLHUP)) {
-            rp_conn_cleanup(srv, rc);
-            continue;
+        if (conn->pending_len + flen > NODUS_TCP_PENDING_MAX) return -1;
+        if (conn->pending_len + flen > conn->pending_cap) {
+            size_t new_cap = conn->pending_cap;
+            while (new_cap < conn->pending_len + flen) new_cap *= 2;
+            if (new_cap > NODUS_TCP_PENDING_MAX) new_cap = NODUS_TCP_PENDING_MAX;
+            uint8_t *nb = realloc(conn->pending_buf, new_cap);
+            if (!nb) return -1;
+            conn->pending_buf = nb;
+            conn->pending_cap = new_cap;
         }
-
-        if (events[i].events & EPOLLOUT) {
-            if (!rc->connected) {
-                /* Check connect result */
-                int err = 0;
-                socklen_t elen = sizeof(err);
-                getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen);
-                if (err != 0) {
-                    rp_conn_cleanup(srv, rc);
-                    continue;
-                }
-                rc->connected = true;
-            }
-
-            /* Send remaining data */
-            while (rc->send_pos < rc->frame_len) {
-                ssize_t sent = send(fd, rc->frame + rc->send_pos,
-                                     rc->frame_len - rc->send_pos, MSG_NOSIGNAL);
-                if (sent < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                    rp_conn_cleanup(srv, rc);
-                    goto next_event;
-                }
-                rc->send_pos += (size_t)sent;
-            }
-
-            if (rc->send_pos >= rc->frame_len) {
-                /* Send complete — fire and forget */
-                rp_conn_cleanup(srv, rc);
-            }
-        }
-        next_event:;
-    }
-}
-
-/** Check for timed-out republish connections (2s timeout) */
-static void dht_republish_timeout_check(nodus_server_t *srv) {
-    uint64_t now_ms = nodus_time_now_ms();
-    for (int i = 0; i < NODUS_REPUBLISH_MAX_FDS; i++) {
-        dht_republish_conn_t *rc = &srv->republish.conns[i];
-        if (rc->active && now_ms - rc->started_at > 2000)
-            rp_conn_cleanup(srv, rc);
-    }
-}
-
-/** Start a non-blocking fire-and-forget send to a peer */
-static void dht_republish_send_async(nodus_server_t *srv, const char *ip,
-                                       uint16_t port, const uint8_t *frame,
-                                       size_t flen) {
-    /* Find free connection slot */
-    dht_republish_conn_t *rc = NULL;
-    for (int i = 0; i < NODUS_REPUBLISH_MAX_FDS; i++) {
-        if (!srv->republish.conns[i].active) {
-            rc = &srv->republish.conns[i];
-            break;
-        }
-    }
-    if (!rc) return;  /* All slots full */
-
-    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    if (fd < 0) return;
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, ip, &addr.sin_addr);
-
-    int ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
-    if (ret == 0) {
-        /* Immediate connect (localhost) — send and close */
-        send(fd, frame, flen, MSG_NOSIGNAL);
-        close(fd);
-        return;
-    }
-    if (errno != EINPROGRESS) {
-        close(fd);
-        return;
+        memcpy(conn->pending_buf + conn->pending_len, frame, flen);
+        conn->pending_len += flen;
+        return 0;
     }
 
-    /* Set up connection tracking */
-    memset(rc, 0, sizeof(*rc));
-    rc->fd = fd;
-    rc->frame = malloc(flen);
-    if (!rc->frame) { close(fd); return; }
-    memcpy(rc->frame, frame, flen);
-    rc->frame_len = flen;
-    rc->send_pos = 0;
-    rc->started_at = nodus_time_now_ms();
-    rc->active = true;
-    rc->connected = false;
-    srv->republish.pending_fds++;
+    /* Auth OK or not required — write pre-framed data directly to wbuf */
+    if (conn->wpos > 0) {
+        size_t remaining = conn->wlen - conn->wpos;
+        if (remaining > 0)
+            memmove(conn->wbuf, conn->wbuf + conn->wpos, remaining);
+        conn->wlen = remaining;
+        conn->wpos = 0;
+    }
+    size_t needed = conn->wlen + flen;
+    if (needed > conn->wcap) {
+        size_t new_cap = conn->wcap;
+        while (new_cap < needed) new_cap *= 2;
+        uint8_t *nb = realloc(conn->wbuf, new_cap);
+        if (!nb) return -1;
+        conn->wbuf = nb;
+        conn->wcap = new_cap;
+    }
+    memcpy(conn->wbuf + conn->wlen, frame, flen);
+    conn->wlen += flen;
 
-    /* Register with republish epoll */
-    struct epoll_event ev;
-    ev.events = EPOLLOUT | EPOLLET;
-    ev.data.fd = fd;
-    epoll_ctl(srv->rp_epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+#ifndef _WIN32
+    /* Ensure EPOLLOUT so data gets flushed */
+    if (conn->fd >= 0 && srv->inter_tcp.epoll_fd >= 0) {
+        uint32_t et = srv->inter_tcp.level_triggered ? 0 : EPOLLET;
+        struct epoll_event ev = { .events = EPOLLIN | EPOLLOUT | et, .data.ptr = conn };
+        epoll_ctl(srv->inter_tcp.epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+    }
+#endif
+
+    return 0;
 }
 
 /** Main republish tick — fetch batch, send to K-closest, manage connections */
 static void dht_republish(nodus_server_t *srv) {
     dht_republish_state_t *rs = &srv->republish;
     uint64_t now = nodus_time_now();
-
-    /* Handle in-flight connections */
-    dht_republish_handle_events(srv);
-    dht_republish_timeout_check(srv);
 
     if (!rs->active) {
         /* Start new cycle every NODUS_REPUBLISH_SEC */
@@ -656,9 +576,6 @@ static void dht_republish(nodus_server_t *srv) {
         rs->first_batch = true;
         rs->cycle_start = now;
     }
-
-    /* Don't fetch more if too many sends in flight */
-    if (rs->pending_fds >= NODUS_REPUBLISH_MAX_FDS) return;
 
     /* Fetch BATCH values using bookmark pagination */
     nodus_value_t *batch[NODUS_REPUBLISH_BATCH];
@@ -689,8 +606,12 @@ static void dht_republish(nodus_server_t *srv) {
 
         for (int j = 0; j < n; j++) {
             if (nodus_key_cmp(&closest[j].node_id, &srv->identity.node_id) == 0) continue;
-            if (rs->pending_fds >= NODUS_REPUBLISH_MAX_FDS) break;
-            dht_republish_send_async(srv, closest[j].ip, closest[j].tcp_port, frame, flen);
+            if (dht_republish_send(srv, closest[j].ip, closest[j].tcp_port, frame, flen) != 0) {
+                nodus_storage_hinted_insert(&srv->storage,
+                                             &closest[j].node_id,
+                                             closest[j].ip, closest[j].tcp_port,
+                                             frame, flen);
+            }
         }
 
         rs->last_key = val->key_hash;
@@ -708,7 +629,6 @@ static void dht_republish(nodus_server_t *srv) {
 /** Periodic media republish — send stored media chunks to K-closest */
 static void dht_media_republish(nodus_server_t *srv) {
     dht_media_republish_state_t *mrs = &srv->media_republish;
-    dht_republish_state_t *rs = &srv->republish;
     uint64_t now = nodus_time_now();
 
     if (!mrs->active) {
@@ -719,9 +639,6 @@ static void dht_media_republish(nodus_server_t *srv) {
         mrs->first_batch = true;
         mrs->cycle_start = now;
     }
-
-    /* Don't fetch more if too many sends in flight */
-    if (rs->pending_fds >= NODUS_REPUBLISH_MAX_FDS) return;
 
     /* Fetch batch of complete media entries */
     nodus_media_meta_t batch[NODUS_REPUBLISH_BATCH];
@@ -743,9 +660,6 @@ static void dht_media_republish(nodus_server_t *srv) {
 
             nodus_server_replicate_media_chunk(srv, meta, ci, chunk_data, chunk_len);
             free(chunk_data);
-
-            /* Bail if too many in flight */
-            if (rs->pending_fds >= NODUS_REPUBLISH_MAX_FDS) break;
         }
 
         /* Update bookmark */
@@ -3734,13 +3648,6 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         srv->bf_fd_table[i].forward_idx = -1;
     }
 
-    /* Create republish epoll fd for non-blocking sends */
-    srv->rp_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    if (srv->rp_epoll_fd < 0) {
-        fprintf(stderr, "Failed to create republish epoll fd\n");
-        return -1;
-    }
-
     /* Load or generate identity */
     if (config->identity_path[0]) {
         if (nodus_identity_load(config->identity_path, &srv->identity) != 0) {
@@ -4071,16 +3978,6 @@ void nodus_server_close(nodus_server_t *srv) {
     if (srv->bf_state.bf_epoll_fd >= 0) {
         close(srv->bf_state.bf_epoll_fd);
         srv->bf_state.bf_epoll_fd = -1;
-    }
-
-    /* Clean up republish connections */
-    for (int i = 0; i < NODUS_REPUBLISH_MAX_FDS; i++) {
-        if (srv->republish.conns[i].active)
-            rp_conn_cleanup(srv, &srv->republish.conns[i]);
-    }
-    if (srv->rp_epoll_fd >= 0) {
-        close(srv->rp_epoll_fd);
-        srv->rp_epoll_fd = -1;
     }
 
     if (srv->witness) {
