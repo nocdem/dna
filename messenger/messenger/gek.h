@@ -302,12 +302,7 @@ int gek_decrypt(
  * @param okm_len   Desired output length (must be <= 32)
  * @return          0 on success, -1 on error
  */
-int gek_hkdf_sha3_256(
-    const uint8_t *salt, size_t salt_len,
-    const uint8_t *ikm, size_t ikm_len,
-    const uint8_t *info, size_t info_len,
-    uint8_t *okm, size_t okm_len
-);
+/* HKDF-SHA3-256 moved to shared/crypto/hash/hkdf_sha3.h — use hkdf_sha3_256() */
 
 /**
  * Generate a ratcheted GEK for member removal

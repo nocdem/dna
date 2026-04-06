@@ -47,6 +47,12 @@ extern "C" {
 #define NODUS_SIG_BYTES         4627        /* Signature */
 #define NODUS_SEED_BYTES        32          /* Identity seed */
 
+/* Crypto sizes (Kyber1024 / ML-KEM-1024) — channel encryption */
+#define NODUS_KYBER_PK_BYTES    1568        /* Kyber public key */
+#define NODUS_KYBER_SK_BYTES    3168        /* Kyber secret key */
+#define NODUS_KYBER_CT_BYTES    1568        /* Kyber ciphertext */
+#define NODUS_KYBER_SS_BYTES    32          /* Kyber shared secret */
+
 /* Networking */
 #define NODUS_DEFAULT_UDP_PORT  4000
 #define NODUS_DEFAULT_TCP_PORT  4001
@@ -154,6 +160,10 @@ typedef struct {
     nodus_seckey_t sk;
     nodus_key_t    node_id;     /* SHA3-512(pk) */
     char           fingerprint[NODUS_KEY_HEX_LEN];
+    /* Kyber1024 for channel encryption (optional — backward compat) */
+    uint8_t        kyber_pk[NODUS_KYBER_PK_BYTES];
+    uint8_t        kyber_sk[NODUS_KYBER_SK_BYTES];
+    bool           has_kyber;
 } nodus_identity_t;
 
 /** DHT value type */

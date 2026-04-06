@@ -9,6 +9,9 @@
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/sign/qgp_dilithium.h"
+#include "crypto/enc/qgp_kyber.h"
+#include "crypto/enc/kyber_deterministic.h"
+#include "crypto/hash/hkdf_sha3.h"
 #include "crypto/utils/qgp_platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -29,7 +32,7 @@ int nodus_identity_from_seed(const uint8_t *seed, nodus_identity_t *id_out) {
 
     memset(id_out, 0, sizeof(*id_out));
 
-    /* Deterministic keypair from seed — same algorithm as OpenDHT-PQ */
+    /* Deterministic Dilithium5 keypair from seed — same algorithm as OpenDHT-PQ */
     int rc = qgp_dsa87_keypair_derand(id_out->pk.bytes, id_out->sk.bytes, seed);
     if (rc != 0)
         return -1;
@@ -44,6 +47,23 @@ int nodus_identity_from_seed(const uint8_t *seed, nodus_identity_t *id_out) {
     if (rc != 0)
         return -1;
 
+    /* Derive Kyber1024 keypair from seed via HKDF */
+    uint8_t kyber_seed[64];
+    static const uint8_t hkdf_salt[] = "nodus-kyber-v1";
+    static const uint8_t hkdf_info[] = "kyber-identity";
+    rc = hkdf_sha3_256(hkdf_salt, sizeof(hkdf_salt) - 1,
+                       seed, NODUS_SEED_BYTES,
+                       hkdf_info, sizeof(hkdf_info) - 1,
+                       kyber_seed, 32);
+    if (rc != 0)
+        return -1;
+
+    rc = crypto_kem_keypair_derand(id_out->kyber_pk, id_out->kyber_sk, kyber_seed);
+    qgp_secure_memzero(kyber_seed, sizeof(kyber_seed));
+    if (rc != 0)
+        return -1;
+
+    id_out->has_kyber = true;
     return 0;
 }
 
@@ -53,7 +73,7 @@ int nodus_identity_generate(nodus_identity_t *id_out) {
 
     memset(id_out, 0, sizeof(*id_out));
 
-    /* Random keypair */
+    /* Random Dilithium5 keypair */
     int rc = qgp_dsa87_keypair(id_out->pk.bytes, id_out->sk.bytes);
     if (rc != 0)
         return -1;
@@ -68,6 +88,12 @@ int nodus_identity_generate(nodus_identity_t *id_out) {
     if (rc != 0)
         return -1;
 
+    /* Random Kyber1024 keypair */
+    rc = qgp_kem1024_keypair(id_out->kyber_pk, id_out->kyber_sk);
+    if (rc != 0)
+        return -1;
+
+    id_out->has_kyber = true;
     return 0;
 }
 
@@ -107,6 +133,30 @@ int nodus_identity_save(const nodus_identity_t *id, const char *path) {
     if (!f) return -1;
     fprintf(f, "%s\n", id->fingerprint);
     fclose(f);
+
+    /* Write Kyber keypair (if available) */
+    if (id->has_kyber) {
+        snprintf(filepath, sizeof(filepath), "%s/nodus.kyber_pk", path);
+        f = fopen(filepath, "wb");
+        if (!f) return -1;
+        if (fwrite(id->kyber_pk, 1, NODUS_KYBER_PK_BYTES, f) != NODUS_KYBER_PK_BYTES) {
+            fclose(f);
+            return -1;
+        }
+        fclose(f);
+
+        snprintf(filepath, sizeof(filepath), "%s/nodus.kyber_sk", path);
+        f = fopen(filepath, "wb");
+        if (!f) return -1;
+        if (fwrite(id->kyber_sk, 1, NODUS_KYBER_SK_BYTES, f) != NODUS_KYBER_SK_BYTES) {
+            fclose(f);
+            return -1;
+        }
+        fclose(f);
+#ifndef _WIN32
+        chmod(filepath, 0600);
+#endif
+    }
 
     return 0;
 }
@@ -148,6 +198,23 @@ int nodus_identity_load(const char *path, nodus_identity_t *id_out) {
     rc = nodus_fingerprint_hex(&id_out->pk, id_out->fingerprint);
     if (rc != 0)
         return -1;
+
+    /* Load Kyber keypair (optional — backward compat with old identities) */
+    snprintf(filepath, sizeof(filepath), "%s/nodus.kyber_pk", path);
+    f = fopen(filepath, "rb");
+    if (f) {
+        if (fread(id_out->kyber_pk, 1, NODUS_KYBER_PK_BYTES, f) == NODUS_KYBER_PK_BYTES) {
+            fclose(f);
+            snprintf(filepath, sizeof(filepath), "%s/nodus.kyber_sk", path);
+            f = fopen(filepath, "rb");
+            if (f && fread(id_out->kyber_sk, 1, NODUS_KYBER_SK_BYTES, f) == NODUS_KYBER_SK_BYTES) {
+                id_out->has_kyber = true;
+            }
+            if (f) fclose(f);
+        } else {
+            fclose(f);
+        }
+    }
 
     return 0;
 }

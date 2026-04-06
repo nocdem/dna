@@ -147,6 +147,7 @@ set(COMMON_SOURCES
     ${SHARED_DIR}/crypto/sign/qgp_dilithium.c
     ${SHARED_DIR}/crypto/key/seed_storage.c
     ${SHARED_DIR}/crypto/hash/qgp_sha3.c         # SHA3-512 for Category 5 security
+    ${SHARED_DIR}/crypto/hash/hkdf_sha3.c        # HKDF-SHA3-256 key derivation
     # NOTE: qgp_log.c is ONLY in dht_lib to ensure single copy of static vars
     # SDK Independence: Infrastructure modules
     ${SHARED_DIR}/crypto/key/qgp_key.c

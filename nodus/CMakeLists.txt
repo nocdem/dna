@@ -39,11 +39,20 @@ endif()
 # are already provided by dht_lib. Set NODUS_STANDALONE=OFF to skip them.
 option(NODUS_STANDALONE "Include shared crypto sources and log shim" ON)
 
+# ── ML-KEM-1024 (Kyber) ────────────────────────────────────────────
+if(NOT TARGET kem)
+    add_subdirectory(${SHARED_DIR}/crypto/enc/kem ${CMAKE_BINARY_DIR}/crypto/kem)
+endif()
+
 # ── Shared crypto utility sources (standalone only) ──────────────────
 set(SHARED_CRYPTO_SOURCES "")
 if(NODUS_STANDALONE)
     list(APPEND SHARED_CRYPTO_SOURCES
         ${SHARED_DIR}/crypto/hash/qgp_sha3.c
+        ${SHARED_DIR}/crypto/hash/hkdf_sha3.c
+        ${SHARED_DIR}/crypto/enc/qgp_aes.c
+        ${SHARED_DIR}/crypto/enc/qgp_kyber.c
+        ${SHARED_DIR}/crypto/enc/kyber_deterministic.c
         ${SHARED_DIR}/crypto/sign/qgp_dilithium.c
         ${SHARED_DIR}/crypto/utils/qgp_random.c
         # qgp_log.c depends on dna_config.h — use nodus_log_shim.c instead
@@ -85,6 +94,7 @@ set(NODUS_SOURCES
     # Crypto
     src/crypto/nodus_sign.c
     src/crypto/nodus_identity.c
+    src/crypto/nodus_channel_crypto.c
 
     # Client SDK
     src/client/nodus_client.c
@@ -145,6 +155,7 @@ endif()
 if(NODUS_STANDALONE OR NOT DEFINED NODUS_STANDALONE)
     target_link_libraries(nodus PUBLIC
         dsa
+        kem
         OpenSSL::Crypto
         ${SQLite3_LIBRARIES}
     )
@@ -356,6 +367,10 @@ add_test(NAME test_channel_ring COMMAND test_channel_ring)
 add_executable(test_channel_encrypted tests/test_channel_encrypted.c)
 target_link_libraries(test_channel_encrypted nodus dsa nodus)
 add_test(NAME test_channel_encrypted COMMAND test_channel_encrypted)
+
+add_executable(test_channel_crypto tests/test_channel_crypto.c)
+target_link_libraries(test_channel_crypto nodus dsa kem nodus)
+add_test(NAME test_channel_crypto COMMAND test_channel_crypto)
 
 # ── Tools ────────────────────────────────────────────────────────────
 add_executable(nodus-cli tools/nodus-cli.c)
