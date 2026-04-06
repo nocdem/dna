@@ -2628,6 +2628,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                 } else {
                     sess->client_pk = msg.pk;
                     sess->client_fp = msg.fp;
+                    sess->proto_version = msg.proto_version;
                     nodus_random(sess->nonce, NODUS_NONCE_LEN);
                     sess->nonce_pending = true;
                     size_t rlen = 0;
@@ -2652,7 +2653,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     uint8_t token[NODUS_SESSION_TOKEN_LEN];
                     nodus_random(token, NODUS_SESSION_TOKEN_LEN);
                     size_t rlen = 0;
-                    if (srv->identity.has_kyber && msg.proto_version >= 2) {
+                    if (srv->identity.has_kyber && sess->proto_version >= 2) {
                         nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
                                                resp_buf, sizeof(resp_buf), &rlen);
                     } else {
@@ -2664,7 +2665,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     for (int k = 0; k < 16; k++)
                         sprintf(fp_hex + k*2, "%02x", sess->client_fp.bytes[k]);
                     fp_hex[32] = '\0';
-                    fprintf(stderr, "INTER_AUTH_OK: node %s... authenticated on port 4002\n", fp_hex);
+                    fprintf(stderr, "INTER_AUTH_OK: node %s... authenticated on port 4002 (v=%u)\n",
+                            fp_hex, sess->proto_version);
                 }
             } else {
                 size_t rlen = 0;

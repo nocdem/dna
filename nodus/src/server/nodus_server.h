@@ -85,6 +85,9 @@ typedef struct {
     uint64_t            w_window_start;
     int                 w_count;
 
+    /* Peer protocol version (from hello) */
+    uint32_t            proto_version;
+
     /* Channel encryption (Kyber handshake for inter-node) */
     nodus_channel_crypto_t  channel_crypto;
     uint8_t             pending_ss[32];     /* shared secret awaiting key_ack */
