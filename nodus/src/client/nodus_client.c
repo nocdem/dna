@@ -319,6 +319,20 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
             }
         }
         pthread_mutex_unlock(&client->circuits_mutex);
+        /* E2E: if circ_inbound has e2e_ct, decapsulate and init per-circuit crypto */
+        if (h && tmp.has_e2e_ct && client->identity.has_kyber) {
+            uint8_t e2e_ss[NODUS_KYBER_SS_BYTES];
+            if (qgp_kem1024_decapsulate(e2e_ss, tmp.e2e_ct, client->identity.kyber_sk) == 0) {
+                uint8_t nc[32], ns[32];
+                memcpy(nc, tmp.circ_peer_fp.bytes, 32);  /* src = peer */
+                memcpy(ns, client->identity.node_id.bytes, 32);  /* dst = us */
+                nodus_channel_crypto_init(&h->e2e_crypto, e2e_ss, nc, ns);
+                h->e2e_active = true;
+                QGP_LOG_INFO(LOG_TAG, "Circuit E2E: inbound onion layer active (cid=%llu)",
+                             (unsigned long long)h->cid);
+            }
+            qgp_secure_memzero(e2e_ss, sizeof(e2e_ss));
+        }
         if (h && client->on_circuit_inbound) {
             client->on_circuit_inbound(client, &tmp.circ_peer_fp, h,
                                         client->circuit_inbound_user);
@@ -337,8 +351,27 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         }
         nodus_circuit_data_cb cb = h ? h->on_data : NULL;
         void *user = h ? h->user : NULL;
+        bool e2e = h ? h->e2e_active : false;
         pthread_mutex_unlock(&client->circuits_mutex);
-        if (cb) cb(h, tmp.circ_data, tmp.circ_data_len, user);
+
+        /* E2E decrypt if onion layer active */
+        if (cb && e2e && tmp.circ_data && tmp.circ_data_len > NODUS_CHANNEL_OVERHEAD) {
+            size_t pt_cap = tmp.circ_data_len - NODUS_CHANNEL_OVERHEAD;
+            uint8_t *pt = malloc(pt_cap > 0 ? pt_cap : 1);
+            if (pt) {
+                size_t pt_len = 0;
+                if (nodus_channel_decrypt(&h->e2e_crypto, tmp.circ_data, tmp.circ_data_len,
+                                           pt, pt_cap, &pt_len) == 0) {
+                    cb(h, pt, pt_len, user);
+                } else {
+                    QGP_LOG_ERROR(LOG_TAG, "Circuit E2E decrypt failed (cid=%llu)",
+                                 (unsigned long long)h->cid);
+                }
+                free(pt);
+            }
+        } else if (cb) {
+            cb(h, tmp.circ_data, tmp.circ_data_len, user);
+        }
         nodus_t2_msg_free(&tmp);
         return;
     }
@@ -3597,6 +3630,120 @@ int nodus_circuit_open(nodus_client_t *client, const nodus_key_t *peer_fp,
     return 0;
 }
 
+int nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
+                            const uint8_t *peer_kyber_pk,
+                            nodus_circuit_data_cb on_data,
+                            nodus_circuit_close_cb on_close,
+                            void *user,
+                            nodus_circuit_handle_t **out) {
+    if (!client || !peer_fp || !peer_kyber_pk || !out) return -1;
+    if (!nodus_client_is_ready(client)) return -1;
+
+    /* Kyber encapsulate → per-circuit shared secret */
+    uint8_t e2e_ct[NODUS_KYBER_CT_BYTES];
+    uint8_t e2e_ss[NODUS_KYBER_SS_BYTES];
+    if (qgp_kem1024_encapsulate(e2e_ct, e2e_ss, peer_kyber_pk) != 0)
+        return -1;
+
+    /* Allocate handle */
+    uint64_t cid = (uint64_t)atomic_fetch_add(&client->next_client_cid, 1);
+    pthread_mutex_lock(&client->circuits_mutex);
+    nodus_circuit_handle_t *h = NULL;
+    for (int i = 0; i < NODUS_CLIENT_MAX_CIRCUITS; i++) {
+        if (!client->circuits[i].in_use) {
+            h = &client->circuits[i];
+            memset(h, 0, sizeof(*h));
+            h->client = client;
+            h->cid = cid;
+            h->in_use = true;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&client->circuits_mutex);
+    if (!h) {
+        qgp_secure_memzero(e2e_ss, sizeof(e2e_ss));
+        return NODUS_ERR_CIRCUIT_LIMIT;
+    }
+    h->on_data = on_data;
+    h->on_close = on_close;
+    h->user = user;
+
+    /* Init per-circuit E2E crypto — use src_fp||dst_fp as nonces (deterministic) */
+    uint8_t nc[32], ns[32];
+    memcpy(nc, client->identity.node_id.bytes, 32);
+    memcpy(ns, peer_fp->bytes, 32);
+    if (nodus_channel_crypto_init(&h->e2e_crypto, e2e_ss, nc, ns) != 0) {
+        qgp_secure_memzero(e2e_ss, sizeof(e2e_ss));
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        return -1;
+    }
+    h->e2e_active = true;
+    qgp_secure_memzero(e2e_ss, sizeof(e2e_ss));
+
+    /* Send circ_open with e2e_ct */
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) {
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        return -1;
+    }
+
+    uint8_t buf[4096]; size_t blen = 0;
+    if (nodus_t2_circ_open_e2e(txn, client->token, cid, peer_fp, e2e_ct,
+                                buf, sizeof(buf), &blen) != 0) {
+        free_pending(client, req);
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        return -1;
+    }
+    if (send_request(client, buf, blen) != 0) {
+        free_pending(client, req);
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        return -1;
+    }
+
+    int timeout_ms = NODUS_CIRCUIT_OPEN_TIMEOUT_MS;
+    if (client->config.request_timeout_ms > 0 &&
+        client->config.request_timeout_ms < timeout_ms) {
+        timeout_ms = client->config.request_timeout_ms;
+    }
+    if (!wait_response(client, req, timeout_ms)) {
+        free_pending(client, req);
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        return NODUS_ERR_TIMEOUT;
+    }
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    int rc = 0;
+    if (strcmp(resp->method, "circ_open_err") == 0) {
+        rc = resp->circ_err_code ? resp->circ_err_code : NODUS_ERR_INTERNAL_ERROR;
+    } else if (strcmp(resp->method, "circ_open") != 0) {
+        rc = NODUS_ERR_PROTOCOL_ERROR;
+    }
+    free_pending(client, req);
+
+    if (rc != 0) {
+        pthread_mutex_lock(&client->circuits_mutex);
+        h->in_use = false;
+        pthread_mutex_unlock(&client->circuits_mutex);
+        return rc;
+    }
+
+    *out = h;
+    QGP_LOG_INFO(LOG_TAG, "Circuit E2E opened (cid=%llu, onion layer active)",
+                 (unsigned long long)cid);
+    return 0;
+}
+
 void nodus_circuit_set_inbound_cb(nodus_client_t *client,
                                     nodus_circuit_inbound_cb cb, void *user) {
     if (!client) return;
@@ -3620,17 +3767,37 @@ int nodus_circuit_send(nodus_circuit_handle_t *h, const uint8_t *data, size_t le
     if (len > NODUS_MAX_CIRCUIT_PAYLOAD) return NODUS_ERR_TOO_LARGE;
     nodus_client_t *client = h->client;
     if (!client) return -1;
+
+    const uint8_t *send_data = data;
+    size_t send_len = len;
+    uint8_t *enc_data = NULL;
+
+    /* E2E encrypt if onion layer active */
+    if (h->e2e_active) {
+        size_t enc_cap = len + NODUS_CHANNEL_OVERHEAD;
+        enc_data = malloc(enc_cap);
+        if (!enc_data) return -1;
+        size_t enc_out = 0;
+        if (nodus_channel_encrypt(&h->e2e_crypto, data, len, enc_data, enc_cap, &enc_out) != 0) {
+            free(enc_data);
+            return -1;
+        }
+        send_data = enc_data;
+        send_len = enc_out;
+    }
+
     uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
-    size_t cap = len + 256;
+    size_t cap = send_len + 256;
     uint8_t *buf = malloc(cap);
-    if (!buf) return -1;
+    if (!buf) { free(enc_data); return -1; }
     size_t blen = 0;
-    int rc = nodus_t2_circ_data(txn, client->token, h->cid, data, len,
+    int rc = nodus_t2_circ_data(txn, client->token, h->cid, send_data, send_len,
                                   buf, cap, &blen);
     if (rc == 0) {
         rc = send_request(client, buf, blen);
     }
     free(buf);
+    free(enc_data);
     return rc;
 }
 

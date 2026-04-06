@@ -137,6 +137,9 @@ struct nodus_circuit_handle {
     nodus_circuit_data_cb      on_data;
     nodus_circuit_close_cb     on_close;
     void                      *user;
+    /* E2E encryption (onion layer — relay-blind) */
+    nodus_channel_crypto_t     e2e_crypto;
+    bool                       e2e_active;
 };
 
 #define NODUS_CLIENT_MAX_CIRCUITS  16
@@ -862,6 +865,18 @@ int nodus_circuit_open(nodus_client_t *client, const nodus_key_t *peer_fp,
                         nodus_circuit_close_cb on_close,
                         void *user,
                         nodus_circuit_handle_t **out);
+
+/**
+ * Open outbound circuit with E2E encryption (onion layer).
+ * peer_kyber_pk: target's Kyber1024 pubkey (1568 bytes, from DHT keyserver).
+ * Circuit payload is encrypted with per-circuit AES key — relay nodes blind.
+ */
+int nodus_circuit_open_e2e(nodus_client_t *client, const nodus_key_t *peer_fp,
+                            const uint8_t *peer_kyber_pk,
+                            nodus_circuit_data_cb on_data,
+                            nodus_circuit_close_cb on_close,
+                            void *user,
+                            nodus_circuit_handle_t **out);
 
 /** Register global callback for inbound circuits from peers. */
 void nodus_circuit_set_inbound_cb(nodus_client_t *client,

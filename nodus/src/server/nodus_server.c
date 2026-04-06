@@ -1947,10 +1947,18 @@ static void handle_t2_circ_open(nodus_server_t *srv, nodus_session_t *sess,
         c->is_local_bridge = false;
         c->inter = ic;
 
-        /* Send ri_open to peer nodus; reply to client arrives async via ri_open_ok/err */
-        uint8_t obuf[512]; size_t olen = 0;
-        if (nodus_t2_ri_open(msg->txn_id, ic->our_cid, &sess->client_fp, &msg->circ_peer_fp,
-                              obuf, sizeof(obuf), &olen) != 0) {
+        /* Send ri_open to peer nodus (pass e2e_ct opaquely for onion layer) */
+        uint8_t obuf[2048]; size_t olen = 0;
+        int ri_rc;
+        if (msg->has_e2e_ct) {
+            ri_rc = nodus_t2_ri_open_e2e(msg->txn_id, ic->our_cid, &sess->client_fp,
+                                          &msg->circ_peer_fp, msg->e2e_ct,
+                                          obuf, sizeof(obuf), &olen);
+        } else {
+            ri_rc = nodus_t2_ri_open(msg->txn_id, ic->our_cid, &sess->client_fp,
+                                      &msg->circ_peer_fp, obuf, sizeof(obuf), &olen);
+        }
+        if (ri_rc != 0) {
             nodus_inter_circuit_free(&srv->inter_circuits, ic->our_cid);
             nodus_circuit_free(&sess->circuits, c->local_cid);
             nodus_t2_circ_open_err(msg->txn_id, msg->circ_cid, NODUS_ERR_INTERNAL_ERROR,
@@ -2006,11 +2014,17 @@ static void handle_t2_circ_open(nodus_server_t *srv, nodus_session_t *sess,
     nodus_t2_circ_open_ok(msg->txn_id, msg->circ_cid, resp, sizeof(resp), &rlen);
     nodus_tcp_send(sess->conn, resp, rlen);
 
-    /* Push circ_inbound to target with server-assigned cid for target's side */
-    uint8_t ibuf[256];
+    /* Push circ_inbound to target with server-assigned cid for target's side.
+     * Pass e2e_ct opaquely (onion layer — server cannot decrypt). */
+    uint8_t ibuf[2048];
     size_t ilen = 0;
-    nodus_t2_circ_inbound(0, c_dst->local_cid, &sess->client_fp,
-                           ibuf, sizeof(ibuf), &ilen);
+    if (msg->has_e2e_ct) {
+        nodus_t2_circ_inbound_e2e(0, c_dst->local_cid, &sess->client_fp,
+                                   msg->e2e_ct, ibuf, sizeof(ibuf), &ilen);
+    } else {
+        nodus_t2_circ_inbound(0, c_dst->local_cid, &sess->client_fp,
+                               ibuf, sizeof(ibuf), &ilen);
+    }
     nodus_tcp_send(peer_sess->conn, ibuf, ilen);
 }
 
@@ -2144,9 +2158,14 @@ static void handle_inter_ri_open(nodus_server_t *srv, nodus_inter_session_t *ses
                          resp, sizeof(resp), &rlen);
     nodus_tcp_send(sess->conn, resp, rlen);
 
-    /* Push circ_inbound to target user */
-    uint8_t ibuf[256]; size_t ilen = 0;
-    nodus_t2_circ_inbound(0, c->local_cid, &msg->ri_src_fp, ibuf, sizeof(ibuf), &ilen);
+    /* Push circ_inbound to target user (pass e2e_ct opaquely for onion layer) */
+    uint8_t ibuf[2048]; size_t ilen = 0;
+    if (msg->has_e2e_ct) {
+        nodus_t2_circ_inbound_e2e(0, c->local_cid, &msg->ri_src_fp,
+                                   msg->e2e_ct, ibuf, sizeof(ibuf), &ilen);
+    } else {
+        nodus_t2_circ_inbound(0, c->local_cid, &msg->ri_src_fp, ibuf, sizeof(ibuf), &ilen);
+    }
     nodus_tcp_send(target->conn, ibuf, ilen);
 }
 
