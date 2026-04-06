@@ -660,6 +660,6 @@
   "wallet.security.li3": "İhtiyaç anında türetim: Anahtarlar türetilir, kullanılır ve diske hiç dokunmadan temizlenir",
   "wallet.security.li4": "Yalnızca yerel: Tüm imzalama işlemleri cihazınızda gerçekleşir — özel anahtarlar istemciden asla çıkmaz",
   "wallet.security.title": "Post-kuantum seed koruması",
-  "nav.vpn": "VPN",
-  "footer.vpn": "VPN"
+  "nav.transport": "Transport",
+  "footer.transport": "Transport"
 }

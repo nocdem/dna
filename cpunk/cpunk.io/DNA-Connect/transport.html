@@ -2,31 +2,31 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>DNA VPN — Post-Quantum Encrypted Transport | CPUNK.IO</title>
+  <title>DNA Transport — Post-Quantum Encrypted Circuits | CPUNK.IO</title>
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description"
-    content="DNA VPN provides post-quantum encrypted peer-to-peer circuits over the Nodus network. Authenticated transport for file transfer, voice signalling, and general-purpose tunneling between DNA identities."
+    content="DNA Transport provides post-quantum authenticated peer-to-peer circuits over the Nodus network. File transfer, voice signalling, and general-purpose tunneling between DNA identities."
   />
   <meta name="keywords"
-    content="DNA VPN, CPUNK, post-quantum VPN, encrypted transport, peer-to-peer circuit, Nodus, Dilithium5, Kyber1024, decentralized VPN, quantum-safe transport"
+    content="DNA Transport, CPUNK, post-quantum transport, encrypted circuits, peer-to-peer, Nodus, Dilithium5, Kyber1024, decentralized transport, quantum-safe"
   />
   <meta name="author" content="DNA Protocol" />
   <meta name="robots" content="index, follow" />
-  <link rel="canonical" href="https://cpunk.io/DNA-Connect/vpn.html" />
+  <link rel="canonical" href="https://cpunk.io/DNA-Connect/transport.html" />
 
   <!-- Open Graph / Social -->
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://cpunk.io/DNA-Connect/vpn.html">
-  <meta property="og:title" content="DNA VPN — Post-Quantum Encrypted Transport">
-  <meta property="og:description" content="DNA VPN provides post-quantum encrypted peer-to-peer circuits over the Nodus network. Authenticated transport for file transfer, voice signalling, and general-purpose tunneling between DNA identities.">
+  <meta property="og:url" content="https://cpunk.io/DNA-Connect/transport.html">
+  <meta property="og:title" content="DNA Transport — Post-Quantum Encrypted Circuits">
+  <meta property="og:description" content="Post-quantum authenticated peer-to-peer circuits over the Nodus network. File transfer, voice signalling, and tunneling between DNA identities.">
   <meta property="og:image" content="https://cpunk.io/images/cpunk_card.jpg">
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:url" content="https://cpunk.io/DNA-Connect/vpn.html">
-  <meta name="twitter:title" content="DNA VPN — Post-Quantum Encrypted Transport">
-  <meta name="twitter:description" content="DNA VPN provides post-quantum encrypted peer-to-peer circuits over the Nodus network. Authenticated transport for file transfer, voice signalling, and general-purpose tunneling between DNA identities.">
+  <meta name="twitter:url" content="https://cpunk.io/DNA-Connect/transport.html">
+  <meta name="twitter:title" content="DNA Transport — Post-Quantum Encrypted Circuits">
+  <meta name="twitter:description" content="Post-quantum authenticated peer-to-peer circuits over the Nodus network. File transfer, voice signalling, and tunneling between DNA identities.">
   <meta name="twitter:image" content="https://cpunk.io/images/cpunk_card.jpg">
   <meta name="twitter:site" content="@OfficialCpunk">
 
@@ -1118,7 +1118,7 @@
                   <a href="/DNA-Connect/messenger.html" data-i18n="nav.messenger">Messenger</a>
                   <a href="/DNA-Connect/wallet.html" data-i18n="nav.wallet">Wallet</a>
                   <a href="/DNA-Connect/nodus.html" data-i18n="nav.nodus">Nodus</a>
-                  <a href="/DNA-Connect/vpn.html" class="active" data-i18n="nav.vpn">VPN</a>
+                  <a href="/DNA-Connect/transport.html" class="active" data-i18n="nav.transport">Transport</a>
                 </div>
               </div>
 
@@ -1151,7 +1151,7 @@
 
     <main id="top">
 
-      <!-- ══ Hero (Split layout) ══ -->
+      <!-- ══ Hero ══ -->
       <section class="hero-split">
         <div class="hero-split-bg"></div>
         <div class="wrap">
@@ -1159,266 +1159,132 @@
             <div class="hero-split-text">
               <div class="eyebrow">
                 <span class="eyebrow-dot"></span>
-                <span class="eyebrow-label" data-i18n="vpn_page.hero.eyebrow_label">Transport</span>
-                <span data-i18n="vpn_page.hero.eyebrow_text">Post-quantum encrypted circuits</span>
+                <span class="eyebrow-label">Transport</span>
+                <span>Post-quantum encrypted circuits</span>
               </div>
 
-              <h1 data-i18n="vpn_page.hero.title">
-                DNA <span class="accent">VPN</span>
+              <h1>
+                DNA <span class="accent">Transport</span>
               </h1>
 
-              <p class="subtitle" data-i18n="vpn_page.hero.subtitle1">
-                DNA VPN is a <strong>post-quantum encrypted transport layer</strong> built on the Nodus network. It creates peer-to-peer circuits between authenticated users &mdash; routing data through the distributed infrastructure without exposing endpoints to each other.
-              </p>
-              <p class="subtitle" data-i18n="vpn_page.hero.subtitle2">
-                Unlike consumer VPNs that route traffic through centralized servers, DNA VPN establishes direct encrypted circuits between peers using Nodus as the routing fabric. All circuit authentication uses Dilithium5 signatures, with Kyber1024 onion encryption planned for future releases.
+              <p class="subtitle">
+                Post-quantum authenticated <strong>peer-to-peer circuits</strong> over the Nodus network.
+                Establish direct encrypted connections between DNA identities for file transfer, voice signalling, and general-purpose data tunneling &mdash; routed automatically through the distributed infrastructure.
               </p>
 
               <div class="hero-actions">
-                <a href="#architecture" class="btn btn-ghost" data-i18n="vpn_page.hero.btn_architecture">Architecture</a>
-                <a href="#use-cases" class="btn btn-ghost" data-i18n="vpn_page.hero.btn_use_cases">Use Cases</a>
-                <a href="#downloads" class="btn btn-primary" data-i18n="vpn_page.hero.btn_download">Downloads</a>
+                <a href="#capabilities" class="btn btn-ghost">Capabilities</a>
+                <a href="#specs" class="btn btn-ghost">Specs</a>
+                <a href="#downloads" class="btn btn-primary">Downloads</a>
               </div>
 
               <div class="hero-meta">
                 <span>
                   <span class="hero-meta-dot"></span>
-                  <span data-i18n="vpn_page.hero.meta1">Post-quantum authenticated transport. No centralized relay.</span>
+                  Post-quantum authenticated. No centralized relay.
                 </span>
-                <span data-i18n="vpn_page.hero.meta2">
-                  Open infrastructure &middot; <strong style="color:var(--text-main);font-weight:500;">Built on Nodus</strong>
+                <span>
+                  Kyber1024 client encryption &middot; Dilithium5 inter-node auth &middot; <strong style="color:var(--text-main);font-weight:500;">Built on Nodus</strong>
                 </span>
               </div>
             </div>
 
-            <aside class="hero-split-media" aria-label="DNA VPN circuit routing">
-              <img
-                src="../images/distributed-network-nodes.png"
-                alt="DNA VPN peer-to-peer circuit routing through Nodus network"
-              />
+            <aside class="hero-split-media" aria-label="DNA Transport circuit routing">
+              <div style="background:var(--panel);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);padding:1.5rem;text-align:center;">
+                <div style="font-family:var(--font-display);font-size:0.7rem;color:var(--teal);letter-spacing:0.1em;margin-bottom:1rem;">CIRCUIT ROUTING</div>
+                <div style="font-size:0.82rem;color:var(--text-muted);line-height:1.8;">
+                  <div><strong style="color:var(--text-main);">Same-Nodus (2 hops)</strong></div>
+                  <div style="font-family:monospace;font-size:0.75rem;">Client A &rarr; Nodus &rarr; Client B</div>
+                  <div style="margin:0.8rem 0;border-top:1px solid var(--border-subtle);"></div>
+                  <div><strong style="color:var(--text-main);">Cross-Nodus (3 hops)</strong></div>
+                  <div style="font-family:monospace;font-size:0.75rem;">Client A &rarr; Nodus A &rarr; Nodus B &rarr; Client B</div>
+                </div>
+                <div style="margin-top:1rem;font-size:0.7rem;color:var(--text-muted);">
+                  Client&harr;Nodus: <span style="color:var(--teal);">Kyber1024 + AES-256-GCM</span><br>
+                  Nodus&harr;Nodus: <span style="color:var(--orange);">Dilithium5 mutual auth</span>
+                </div>
+              </div>
             </aside>
           </div>
         </div>
       </section>
 
-      <!-- ══ Architecture ══ -->
-      <section id="architecture" class="s-section s-dark">
-        <div class="wrap">
-          <div class="section-header-center reveal">
-            <div class="section-label" data-i18n="vpn_page.arch.label">Architecture</div>
-            <h2 class="section-title" data-i18n="vpn_page.arch.title">Circuit Routing</h2>
-          </div>
-
-          <div class="token-grid stagger" style="grid-template-columns: repeat(2, 1fr);">
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><circle cx="12" cy="12" r="3"/><line x1="7.5" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="16.5" y2="12"/></svg>
-              </span>
-              <div style="display:flex; gap:0.4rem; justify-content:center; margin-bottom:0.6rem;">
-                <span style="font-family:var(--font-display); font-size:0.68rem; letter-spacing:0.08em; color:var(--teal); background:var(--teal-soft); padding:0.15rem 0.5rem; border-radius:var(--radius-pill); border:1px solid var(--teal-dim);">TCP</span>
-                <span style="font-family:var(--font-display); font-size:0.68rem; letter-spacing:0.08em; color:var(--orange); background:var(--orange-soft); padding:0.15rem 0.5rem; border-radius:var(--radius-pill); border:1px solid var(--orange-dim);">4001</span>
-              </div>
-              <h3 data-i18n="vpn_page.arch.same_title">Same-Nodus &mdash; 2 Hops</h3>
-              <p data-i18n="vpn_page.arch.same_desc1">
-                When both peers are connected to the same Nodus node, the circuit is bridged locally with minimal latency.
-              </p>
-              <p style="margin-top: 0.6rem;" data-i18n="vpn_page.arch.same_desc2">
-                Data flows: Client A &rarr; Nodus &rarr; Client B. The Nodus node acts as a local relay, forwarding circuit frames between the two authenticated sessions.
-              </p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><circle cx="3" cy="12" r="2"/><circle cx="12" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><circle cx="21" cy="12" r="2"/><line x1="5" y1="12" x2="9.5" y2="7"/><line x1="14.5" y1="7" x2="19" y2="12"/><line x1="5" y1="12" x2="9.5" y2="17"/><line x1="14.5" y1="17" x2="19" y2="12"/></svg>
-              </span>
-              <div style="display:flex; gap:0.4rem; justify-content:center; margin-bottom:0.6rem;">
-                <span style="font-family:var(--font-display); font-size:0.68rem; letter-spacing:0.08em; color:var(--teal); background:var(--teal-soft); padding:0.15rem 0.5rem; border-radius:var(--radius-pill); border:1px solid var(--teal-dim);">TCP</span>
-                <span style="font-family:var(--font-display); font-size:0.68rem; letter-spacing:0.08em; color:var(--orange); background:var(--orange-soft); padding:0.15rem 0.5rem; border-radius:var(--radius-pill); border:1px solid var(--orange-dim);">4002</span>
-              </div>
-              <h3 data-i18n="vpn_page.arch.cross_title">Cross-Nodus &mdash; 3 Hops</h3>
-              <p data-i18n="vpn_page.arch.cross_desc1">
-                When peers are on different Nodus nodes, the circuit is routed through the inter-node transport layer.
-              </p>
-              <p style="margin-top: 0.6rem;" data-i18n="vpn_page.arch.cross_desc2">
-                Data flows: Client A &rarr; Nodus A &rarr; Nodus B &rarr; Client B. Inter-node links use Dilithium5 mutual authentication on TCP 4002. Peer discovery happens automatically via the DHT.
-              </p>
-            </article>
-          </div>
-        </div>
-      </section>
-
       <!-- ══ Capabilities ══ -->
-      <section id="use-cases" class="s-section s-panel">
+      <section id="capabilities" class="s-section s-dark">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label" data-i18n="vpn_page.capabilities.label">Capabilities</div>
-            <h2 class="section-title" data-i18n="vpn_page.capabilities.title">What DNA VPN enables</h2>
+            <div class="section-label">Capabilities</div>
+            <h2 class="section-title">What DNA Transport enables</h2>
+            <p class="section-desc" style="max-width:38rem;">
+              A general-purpose circuit layer for any application that needs authenticated, bidirectional byte-streams between two DNA identities.
+            </p>
           </div>
 
           <div class="card-grid-4 stagger">
             <article class="token-card reveal">
               <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
               </span>
-              <h3 data-i18n="vpn_page.capabilities.file_title">File Transfer</h3>
-              <p data-i18n="vpn_page.capabilities.file_desc">Send files of any size directly to another DNA user through encrypted circuits. Data is chunked into 64 KiB frames and streamed over the circuit &mdash; no central file server involved.</p>
+              <h3>File Transfer</h3>
+              <p>Send files directly to another DNA user. Data is chunked into 64 KiB frames and streamed over the circuit &mdash; no central file server.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
               </span>
-              <h3 data-i18n="vpn_page.capabilities.voice_title">Voice Signalling</h3>
-              <p data-i18n="vpn_page.capabilities.voice_desc">Circuit infrastructure provides the control channel for future voice and video calls. Media transport over UDP is planned for a future release.</p>
+              <h3>Voice &amp; Video</h3>
+              <p>Circuit infrastructure provides the signalling channel for future voice and video calls. Media transport over UDP is planned.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><polyline points="4 8 4 3 8 3"/><line x1="3" y1="4" x2="9" y2="10"/></svg>
               </span>
-              <h3 data-i18n="vpn_page.capabilities.tunnel_title">Peer-to-Peer Tunneling</h3>
-              <p data-i18n="vpn_page.capabilities.tunnel_desc">Any application can establish an authenticated, bidirectional byte-stream between two DNA identities. The circuit layer is a general-purpose transport primitive.</p>
+              <h3>P2P Tunneling</h3>
+              <p>Any application can open an authenticated bidirectional byte-stream between two DNA identities. General-purpose transport primitive.</p>
             </article>
 
             <article class="token-card reveal">
               <span class="token-card-icon">
                 <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
               </span>
-              <h3 data-i18n="vpn_page.capabilities.routing_title">Automatic Routing</h3>
-              <p data-i18n="vpn_page.capabilities.routing_desc">No manual configuration needed. Circuits are established by DNA identity &mdash; the network automatically resolves which Nodus node the peer is connected to and routes accordingly.</p>
+              <h3>Auto Routing</h3>
+              <p>Circuits are addressed by DNA identity. The network resolves peer location and routes automatically &mdash; no manual configuration.</p>
             </article>
           </div>
         </div>
       </section>
 
-      <!-- ══ Security ══ -->
-      <section id="security" class="s-section s-gradient">
-        <div class="wrap">
-          <div class="dna-row">
-            <div class="dna-text reveal-left">
-              <h3 data-i18n="vpn_page.security.title"><span class="teal">Post-quantum</span> authenticated transport</h3>
-              <p data-i18n="vpn_page.security.desc">
-                Every circuit is authenticated through DNA identity. Inter-node links use Dilithium5 mutual authentication. End-to-end payload encryption is applied at the application layer.
-              </p>
-              <ul>
-                <li data-i18n="vpn_page.security.li1"><strong>Dilithium5 authentication</strong> &mdash; all inter-node transports are mutually authenticated with ML-DSA-87</li>
-                <li data-i18n="vpn_page.security.li2"><strong>Per-circuit isolation</strong> &mdash; each circuit has an independent 64-bit session ID, isolated from other circuits</li>
-                <li data-i18n="vpn_page.security.li3"><strong>Frame size limit</strong> &mdash; 64 KiB maximum per frame, preventing memory exhaustion attacks</li>
-                <li data-i18n="vpn_page.security.li4"><strong>Circuit limits</strong> &mdash; 16 circuits per session, 256 inter-node circuits per server</li>
-                <li data-i18n="vpn_page.security.li5"><strong>Open timeout</strong> &mdash; 5-second circuit establishment timeout prevents slow-peer denial of service</li>
-                <li data-i18n="vpn_page.security.li6"><strong>Kyber1024 onion encryption</strong> &mdash; planned for future release, adding per-hop post-quantum encryption</li>
-              </ul>
-            </div>
-            <div class="dna-visual reveal-right">
-              <div class="dna-icon glow-teal">
-                <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ══ Specifications ══ -->
+      <!-- ══ Specs ══ -->
       <section id="specs" class="s-section s-panel">
         <div class="wrap">
           <div class="section-header-center reveal">
-            <div class="section-label" data-i18n="vpn_page.specs.label">Specifications</div>
-            <h2 class="section-title" data-i18n="vpn_page.specs.title">Technical specifications</h2>
+            <div class="section-label">Specifications</div>
+            <h2 class="section-title">Technical details</h2>
           </div>
 
           <div class="security-table-wrap reveal">
             <table class="security-table">
               <thead>
-                <tr>
-                  <th data-i18n="vpn_page.specs.th_parameter">Parameter</th>
-                  <th data-i18n="vpn_page.specs.th_value">Value</th>
-                  <th data-i18n="vpn_page.specs.th_purpose">Purpose</th>
-                </tr>
+                <tr><th>Parameter</th><th>Value</th><th>Purpose</th></tr>
               </thead>
               <tbody>
-                <tr>
-                  <td class="algo" data-i18n="vpn_page.specs.hops">Circuit Hops</td>
-                  <td><strong>2&ndash;3</strong></td>
-                  <td data-i18n="vpn_page.specs.hops_purpose">Same-nodus (2) or cross-nodus (3) routing</td>
-                </tr>
-                <tr>
-                  <td class="algo" data-i18n="vpn_page.specs.frame">Frame Size</td>
-                  <td><strong>64 KiB max</strong></td>
-                  <td data-i18n="vpn_page.specs.frame_purpose">Maximum payload per circuit data frame</td>
-                </tr>
-                <tr>
-                  <td class="algo" data-i18n="vpn_page.specs.session_circuits">Session Circuits</td>
-                  <td><strong>16 max</strong></td>
-                  <td data-i18n="vpn_page.specs.session_circuits_purpose">Concurrent circuits per client session</td>
-                </tr>
-                <tr>
-                  <td class="algo" data-i18n="vpn_page.specs.server_circuits">Server Circuits</td>
-                  <td><strong>256 max</strong></td>
-                  <td data-i18n="vpn_page.specs.server_circuits_purpose">Global inter-node circuit limit per server</td>
-                </tr>
-                <tr>
-                  <td class="algo" data-i18n="vpn_page.specs.timeout">Open Timeout</td>
-                  <td><strong>5 seconds</strong></td>
-                  <td data-i18n="vpn_page.specs.timeout_purpose">Circuit establishment timeout</td>
-                </tr>
-                <tr>
-                  <td class="algo" data-i18n="vpn_page.specs.auth">Authentication</td>
-                  <td><strong>ML-DSA-87</strong> (Dilithium5)</td>
-                  <td data-i18n="vpn_page.specs.auth_purpose">Inter-node mutual authentication</td>
-                </tr>
-                <tr>
-                  <td class="algo" data-i18n="vpn_page.specs.wire">Wire Protocol</td>
-                  <td><strong>CBOR</strong></td>
-                  <td data-i18n="vpn_page.specs.wire_purpose">Tier 2 framed protocol over TCP</td>
-                </tr>
-                <tr>
-                  <td class="algo" data-i18n="vpn_page.specs.future_enc">Future Encryption</td>
-                  <td><strong>ML-KEM-1024</strong> (Kyber1024)</td>
-                  <td data-i18n="vpn_page.specs.future_enc_purpose">Per-hop onion encryption (planned)</td>
-                </tr>
+                <tr><td class="algo">Circuit Hops</td><td><strong>2&ndash;3</strong></td><td>Same-nodus (2) or cross-nodus (3) routing</td></tr>
+                <tr><td class="algo">Frame Size</td><td><strong>64 KiB max</strong></td><td>Maximum payload per circuit data frame</td></tr>
+                <tr><td class="algo">Session Circuits</td><td><strong>16 max</strong></td><td>Concurrent circuits per client session</td></tr>
+                <tr><td class="algo">Server Circuits</td><td><strong>256 max</strong></td><td>Global inter-node circuit limit per server</td></tr>
+                <tr><td class="algo">Open Timeout</td><td><strong>5 seconds</strong></td><td>Circuit establishment timeout</td></tr>
+                <tr><td class="algo">Client Encryption</td><td><strong>ML-KEM-1024</strong> + AES-256-GCM</td><td>Kyber1024 channel encryption (client&harr;nodus)</td></tr>
+                <tr><td class="algo">Inter-node Auth</td><td><strong>ML-DSA-87</strong> (Dilithium5)</td><td>Mutual authentication between Nodus nodes</td></tr>
+                <tr><td class="algo">Wire Protocol</td><td><strong>CBOR</strong></td><td>Tier 2 framed protocol over TCP</td></tr>
               </tbody>
             </table>
           </div>
 
-          <p class="dl-source" style="margin-top: 1.5rem;" data-i18n="vpn_page.specs.opensource">
-            Circuit protocol, routing layer, and client SDK are open source under Apache 2.0.
+          <p class="dl-source" style="margin-top: 1.5rem;">
+            Open source under Apache 2.0. See <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noopener" style="color:var(--teal);">source code</a> for the full circuit protocol specification.
           </p>
-        </div>
-      </section>
-
-      <!-- ══ Roadmap ══ -->
-      <section id="roadmap" class="s-section s-dark">
-        <div class="wrap">
-          <div class="section-header-center reveal">
-            <div class="section-label" data-i18n="vpn_page.roadmap.label">Roadmap</div>
-            <h2 class="section-title" data-i18n="vpn_page.roadmap.title">What's coming next</h2>
-          </div>
-
-          <div class="card-grid-3 stagger">
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
-              </span>
-              <h3 data-i18n="vpn_page.roadmap.kyber_title">Kyber1024 Onion Encryption</h3>
-              <p data-i18n="vpn_page.roadmap.kyber_desc">Per-hop post-quantum key encapsulation wrapping each circuit frame. Nodus operators will not be able to inspect circuit payload &mdash; only forward encrypted blobs.</p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-              </span>
-              <h3 data-i18n="vpn_page.roadmap.accept_title">Accept / Reject UX</h3>
-              <p data-i18n="vpn_page.roadmap.accept_desc">Incoming circuit requests will present a user-facing accept or reject dialog in DNA Connect, giving recipients control before data flows.</p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-              </span>
-              <h3 data-i18n="vpn_page.roadmap.udp_title">UDP Fast Path</h3>
-              <p data-i18n="vpn_page.roadmap.udp_desc">Lossy-tolerant media transport for voice and video calls over UDP/QUIC, bypassing TCP overhead for real-time communication.</p>
-            </article>
-          </div>
         </div>
       </section>
 
@@ -1518,7 +1384,7 @@
             <a href="/DNA-Connect/messenger.html" data-i18n="footer.messenger">Messenger</a>
             <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">Wallet</a>
             <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">Nodus</a>
-            <a href="/DNA-Connect/vpn.html" data-i18n="footer.vpn">VPN</a>
+            <a href="/DNA-Connect/transport.html" data-i18n="footer.transport">Transport</a>
             <a href="/team.html" data-i18n="footer.team">Team</a>
             <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
             <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
