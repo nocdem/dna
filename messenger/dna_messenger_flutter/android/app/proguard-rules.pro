@@ -67,9 +67,10 @@
 }
 
 # ── Flutter engine (belt-and-suspenders — Flutter normally handles this) ──
--keep class io.flutter.embedding.** { *; }
--keep class io.flutter.plugin.common.** { *; }
--dontwarn io.flutter.embedding.**
+# Keep ALL Flutter engine classes: embedding, util (PathUtils), plugin, view, etc.
+# R8 with AGP 8.11+ aggressively strips io.flutter.util.* causing ClassNotFoundException.
+-keep class io.flutter.** { *; }
+-dontwarn io.flutter.**
 
 # ── Plugins with known R8 gotchas ─────────────────────────────────
 
