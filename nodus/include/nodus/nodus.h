@@ -200,6 +200,10 @@ typedef struct nodus_client {
     /* Channel encryption (Kyber handshake result) */
     nodus_channel_crypto_t    channel_crypto;
 
+    /* Cached server Kyber pubkey (survives reconnect, prep for anonymous hello) */
+    uint8_t                   cached_server_kyber_pk[1568];
+    bool                      has_cached_server_kyber;
+
 } nodus_client_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */

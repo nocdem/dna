@@ -647,11 +647,17 @@ static int do_auth(nodus_client_t *client) {
     QGP_LOG_INFO(LOG_TAG, "Auth: success");
     memcpy(client->token, resp->token, NODUS_SESSION_TOKEN_LEN);
 
-    /* Channel encryption: if server sent Kyber pubkey, negotiate encrypted channel */
+    /* Channel encryption: use server Kyber pubkey (from auth_ok or cache) */
     bool has_kpk = resp->has_kyber_pk;
     uint8_t server_kyber_pk[NODUS_KYBER_PK_BYTES];
-    if (has_kpk)
+    if (has_kpk) {
         memcpy(server_kyber_pk, resp->kyber_pk, NODUS_KYBER_PK_BYTES);
+    } else if (client->has_cached_server_kyber) {
+        /* Reconnect: server didn't send kpk (old proto?) but we have cache */
+        memcpy(server_kyber_pk, client->cached_server_kyber_pk, NODUS_KYBER_PK_BYTES);
+        has_kpk = true;
+        QGP_LOG_INFO(LOG_TAG, "Auth: using cached server Kyber pubkey");
+    }
 
     free_pending(client, req);
 
@@ -722,6 +728,10 @@ static int do_auth(nodus_client_t *client) {
 
         /* Attach crypto to connection */
         ((nodus_tcp_conn_t *)client->conn)->crypto = &client->channel_crypto;
+
+        /* Cache server Kyber pubkey for reconnect */
+        memcpy(client->cached_server_kyber_pk, server_kyber_pk, NODUS_KYBER_PK_BYTES);
+        client->has_cached_server_kyber = true;
 
         QGP_LOG_INFO(LOG_TAG, "Auth: channel encrypted (Kyber1024+AES-256-GCM)");
     }
