@@ -215,14 +215,21 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
                         dispatch_payload = dec_buf;
                         dispatch_len = pt_len;
                     } else {
-                        /* Decrypt failed — disconnect */
-                        QGP_LOG_ERROR(LOG_TAG_TCP, "decrypt failed: conn=%s:%d slot=%d frame_len=%zu",
-                                      conn->ip, conn->port, conn->slot, frame.payload_len);
+                        /* Decrypt failed — likely a plaintext frame that was
+                         * in the TCP pipe before crypto activated. Drop it
+                         * silently (periodic data will be re-sent). Only
+                         * disconnect on repeated failures (real attack). */
+                        cc->rx_counter = 0;  /* Reset counter for next valid frame */
+                        QGP_LOG_WARN(LOG_TAG_TCP, "decrypt skip: conn=%s:%d frame_len=%zu (in-flight plaintext)",
+                                     conn->ip, conn->port, frame.payload_len);
                         free(dec_buf);
-                        if (tcp->on_disconnect)
-                            tcp->on_disconnect(conn, tcp->cb_ctx);
-                        conn_free(tcp, conn);
-                        return true;
+                        dec_buf = NULL;
+                        /* Skip this frame, continue processing */
+                        size_t remaining = conn->rlen - consumed;
+                        if (remaining > 0)
+                            memmove(conn->rbuf, conn->rbuf + consumed, remaining);
+                        conn->rlen = remaining;
+                        continue;
                     }
                 }
             }
