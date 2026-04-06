@@ -154,7 +154,7 @@ dna/
 |-----------|---------|
 | Messenger C Library | v0.9.168 |
 | Flutter App | v1.0.0-rc158 |
-| Nodus | v0.10.0 |
+| Nodus | v0.10.1 |
 
 ---
 
