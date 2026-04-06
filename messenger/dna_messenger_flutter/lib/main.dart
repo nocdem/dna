@@ -374,21 +374,27 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     final isLocked = ref.watch(appLockedProvider);
     _profileLog('_AppLoaderState.build() appLock.enabled=${appLock.enabled} isLocked=$isLocked');
 
+    // Trigger state sync as soon as engine is ready (even while locked)
+    // This pre-loads caches so HomeScreen data is ready when user unlocks
+    engine.whenData((eng) {
+      if (!_startupDone && !_syncStarted) {
+        _profileLog('engine DATA: starting _syncIdentityState (locked=$isLocked)');
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _syncIdentityState(eng);
+        });
+      }
+    });
+
     // Show LockScreen immediately (while engine loads in parallel)
     if (appLock.enabled && isLocked) {
-      _profileLog('LockScreen shown (engine ${engine.isLoading ? "LOADING" : "DATA"})');
+      _profileLog('LockScreen shown (engine ${engine.isLoading ? "LOADING" : "DATA"}, syncStarted=$_syncStarted)');
       return const LockScreen();
     }
 
     return engine.when(
       data: (eng) {
-        // Trigger state sync once
+        // Wait for state sync to complete
         if (!_startupDone) {
-          _profileLog('engine.when(data:) fired, scheduling post-frame _syncIdentityState');
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            _profileLog('post-frame fired, calling _syncIdentityState');
-            _syncIdentityState(eng);
-          });
           return const _LoadingScreen();
         }
 
