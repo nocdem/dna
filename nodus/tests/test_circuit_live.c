@@ -213,6 +213,52 @@ int main(void) {
     if (!wait_for(&ctx_u2.got_close, 2000)) { FAIL("no close"); goto cleanup; }
     PASS();
 
+    /* ══════════════════════════════════════════════════════════════
+     * E2E CIRCUIT ENCRYPTION (Onion Layer)
+     * ══════════════════════════════════════════════════════════════ */
+
+    /* Reset inbound state for user2 */
+    ctx_u2.got_inbound = false;
+    ctx_u2.inbound_handle = NULL;
+
+    TEST("E2E: user1 opens encrypted circuit to user2");
+    nodus_circuit_handle_t *h_e2e = NULL;
+    memset(&ctx_u1, 0, sizeof(ctx_u1));
+    rc = nodus_circuit_open_e2e(&client_u1, &id_u2.node_id, id_u2.kyber_pk,
+                                 on_data_cb, on_close_cb, &ctx_u1, &h_e2e);
+    if (rc != 0 || !h_e2e) { FAIL("e2e open"); goto cleanup; }
+    if (!h_e2e->e2e_active) { FAIL("e2e not active"); goto cleanup; }
+    PASS();
+
+    TEST("E2E: user2 receives inbound with E2E");
+    if (!wait_for(&ctx_u2.got_inbound, 2000)) { FAIL("no inbound"); goto cleanup; }
+    if (!ctx_u2.inbound_handle || !ctx_u2.inbound_handle->e2e_active) {
+        FAIL("inbound e2e not active"); goto cleanup;
+    }
+    PASS();
+
+    TEST("E2E: u1->u2 encrypted 1KB");
+    ctx_u2.got_data = false; ctx_u2.received_len = 0;
+    if (nodus_circuit_send(h_e2e, payload1, sizeof(payload1)) != 0) { FAIL("send"); goto cleanup; }
+    if (!wait_for(&ctx_u2.got_data, 2000)) { FAIL("no data"); goto cleanup; }
+    if (ctx_u2.received_len != sizeof(payload1) ||
+        memcmp(ctx_u2.received_data, payload1, sizeof(payload1)) != 0) { FAIL("mismatch"); goto cleanup; }
+    PASS();
+
+    TEST("E2E: u2->u1 encrypted 2KB");
+    ctx_u1.got_data = false; ctx_u1.received_len = 0;
+    if (nodus_circuit_send(ctx_u2.inbound_handle, payload2, sizeof(payload2)) != 0) { FAIL("send"); goto cleanup; }
+    if (!wait_for(&ctx_u1.got_data, 2000)) { FAIL("no data"); goto cleanup; }
+    if (ctx_u1.received_len != sizeof(payload2) ||
+        memcmp(ctx_u1.received_data, payload2, sizeof(payload2)) != 0) { FAIL("mismatch"); goto cleanup; }
+    PASS();
+
+    TEST("E2E: close encrypted circuit");
+    ctx_u2.got_close = false;
+    nodus_circuit_close(h_e2e);
+    if (!wait_for(&ctx_u2.got_close, 2000)) { FAIL("no close"); goto cleanup; }
+    PASS();
+
     final_rc = 0;
 
 cleanup:
