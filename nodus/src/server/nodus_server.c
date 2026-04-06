@@ -2571,12 +2571,11 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             return;
         } else if (strcmp(msg.method, "auth_ok") == 0) {
             sess->conn->authenticated = true;
-            sess->conn->auth_state = NODUS_CONN_AUTH_OK;
             sess->authenticated = true;
 
             /* Inter-node Kyber handshake (connecting side).
-             * If Kyber available: delay pending flush until key_ack (encrypted).
-             * If no Kyber: flush immediately (plaintext). */
+             * Keep auth gate CLOSED (auth_state != AUTH_OK) during handshake
+             * so no plaintext frames leak through. Open after key_ack. */
             if (msg.has_kyber_pk && srv->identity.has_kyber) {
                 uint8_t ct[NODUS_KYBER_CT_BYTES], ss_buf[NODUS_KYBER_SS_BYTES];
                 if (qgp_kem1024_encapsulate(ct, ss_buf, msg.kyber_pk) == 0) {
@@ -2593,7 +2592,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                 }
                 qgp_secure_memzero(ss_buf, sizeof(ss_buf));
             } else {
-                /* No Kyber — flush pending queue immediately (plaintext) */
+                /* No Kyber — open auth gate + flush immediately (plaintext) */
+                sess->conn->auth_state = NODUS_CONN_AUTH_OK;
                 nodus_tcp_pending_flush(sess->conn);
             }
 
@@ -2608,7 +2608,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                 qgp_secure_memzero(sess->pending_ss, sizeof(sess->pending_ss));
                 qgp_secure_memzero(sess->pending_nc, sizeof(sess->pending_nc));
                 sess->pending_kyber = false;
-                /* NOW flush pending queue — all frames go encrypted */
+                /* NOW open auth gate + flush — all frames go encrypted */
+                sess->conn->auth_state = NODUS_CONN_AUTH_OK;
                 nodus_tcp_pending_flush(sess->conn);
                 fprintf(stderr, "INTER_CRYPTO: outgoing conn to %s:%d encrypted\n",
                         sess->conn->ip, sess->conn->port);
