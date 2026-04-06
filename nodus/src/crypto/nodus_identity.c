@@ -199,7 +199,7 @@ int nodus_identity_load(const char *path, nodus_identity_t *id_out) {
     if (rc != 0)
         return -1;
 
-    /* Load Kyber keypair (optional — backward compat with old identities) */
+    /* Load Kyber keypair, or auto-generate if missing (migration from pre-Kyber identity) */
     snprintf(filepath, sizeof(filepath), "%s/nodus.kyber_pk", path);
     f = fopen(filepath, "rb");
     if (f) {
@@ -213,6 +213,15 @@ int nodus_identity_load(const char *path, nodus_identity_t *id_out) {
             if (f) fclose(f);
         } else {
             fclose(f);
+        }
+    }
+
+    /* Auto-generate Kyber keypair if not found (first run with new binary) */
+    if (!id_out->has_kyber) {
+        if (qgp_kem1024_keypair(id_out->kyber_pk, id_out->kyber_sk) == 0) {
+            id_out->has_kyber = true;
+            /* Save for next startup */
+            nodus_identity_save(id_out, path);
         }
     }
 
