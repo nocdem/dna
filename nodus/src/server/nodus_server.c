@@ -535,7 +535,19 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
         return 0;
     }
 
-    /* Auth OK or not required — write pre-framed data directly to wbuf */
+    /* Auth OK or not required.
+     * If crypto is active, we must go through nodus_tcp_send() so the
+     * payload gets encrypted. Extract payload from pre-framed data and
+     * send via the normal path. */
+    if (conn->crypto) {
+        /* frame = [7-byte header][payload]. Extract payload. */
+        if (flen <= NODUS_FRAME_HEADER_SIZE) return -1;
+        const uint8_t *payload = frame + NODUS_FRAME_HEADER_SIZE;
+        size_t payload_len = flen - NODUS_FRAME_HEADER_SIZE;
+        return nodus_tcp_send_progress(conn, payload, payload_len, NULL, NULL);
+    }
+
+    /* No crypto — write pre-framed data directly to wbuf (fast path) */
     if (conn->wpos > 0) {
         size_t remaining = conn->wlen - conn->wpos;
         if (remaining > 0)
