@@ -2573,9 +2573,10 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             sess->conn->authenticated = true;
             sess->conn->auth_state = NODUS_CONN_AUTH_OK;
             sess->authenticated = true;
-            nodus_tcp_pending_flush(sess->conn);
 
-            /* Inter-node Kyber handshake (connecting side) */
+            /* Inter-node Kyber handshake (connecting side).
+             * If Kyber available: delay pending flush until key_ack (encrypted).
+             * If no Kyber: flush immediately (plaintext). */
             if (msg.has_kyber_pk && srv->identity.has_kyber) {
                 uint8_t ct[NODUS_KYBER_CT_BYTES], ss_buf[NODUS_KYBER_SS_BYTES];
                 if (qgp_kem1024_encapsulate(ct, ss_buf, msg.kyber_pk) == 0) {
@@ -2591,6 +2592,9 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     sess->pending_kyber = true;
                 }
                 qgp_secure_memzero(ss_buf, sizeof(ss_buf));
+            } else {
+                /* No Kyber — flush pending queue immediately (plaintext) */
+                nodus_tcp_pending_flush(sess->conn);
             }
 
             nodus_t2_msg_free(&msg);
@@ -2604,6 +2608,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                 qgp_secure_memzero(sess->pending_ss, sizeof(sess->pending_ss));
                 qgp_secure_memzero(sess->pending_nc, sizeof(sess->pending_nc));
                 sess->pending_kyber = false;
+                /* NOW flush pending queue — all frames go encrypted */
+                nodus_tcp_pending_flush(sess->conn);
                 fprintf(stderr, "INTER_CRYPTO: outgoing conn to %s:%d encrypted\n",
                         sess->conn->ip, sess->conn->port);
             }
