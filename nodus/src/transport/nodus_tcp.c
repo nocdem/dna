@@ -171,6 +171,12 @@ static void epoll_mod(int epoll_fd, int fd, uint32_t events, void *ptr) {
  */
 static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     while (conn->rlen >= NODUS_FRAME_HEADER_SIZE) {
+        /* Snapshot crypto state before dispatching — if it changes mid-loop
+         * (e.g., key_init handler activates crypto), remaining buffered frames
+         * are plaintext but crypto would try to decrypt them. Break and let
+         * the next poll iteration handle them correctly. */
+        void *crypto_before = conn->crypto;
+
         nodus_frame_t frame;
         int rc = nodus_frame_decode(conn->rbuf, conn->rlen, &frame);
 
@@ -234,6 +240,16 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         if (tcp->on_frame)
             tcp->on_frame(conn, dispatch_payload, dispatch_len, tcp->cb_ctx);
         free(dec_buf);
+
+        /* If crypto state changed during dispatch (Kyber handshake completed),
+         * stop processing — remaining frames in rbuf need different handling */
+        if (conn->crypto != crypto_before) {
+            size_t remaining = conn->rlen - consumed;
+            if (remaining > 0)
+                memmove(conn->rbuf, conn->rbuf + consumed, remaining);
+            conn->rlen = remaining;
+            break;
+        }
 
         /* Shift remaining data */
         size_t remaining = conn->rlen - consumed;
