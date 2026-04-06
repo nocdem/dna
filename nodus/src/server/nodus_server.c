@@ -2620,7 +2620,9 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             return;
         } else if (strcmp(msg.method, "auth_ok") == 0) {
             sess->conn->authenticated = true;
+            sess->conn->auth_state = NODUS_CONN_AUTH_OK;
             sess->authenticated = true;
+            nodus_tcp_pending_flush(sess->conn);
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "error") == 0) {
@@ -2659,6 +2661,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     nodus_tcp_send(sess->conn, resp_buf, rlen);
                 } else {
                     sess->authenticated = true;
+                    sess->conn->auth_state = NODUS_CONN_AUTH_OK;
                     sess->nonce_pending = false;
                     sess->conn->peer_id = sess->client_fp;
                     sess->conn->peer_pk = sess->client_pk;
@@ -2905,6 +2908,27 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
 
 /* ── Inter-node TCP callbacks ───────────────────────────────────── */
 
+static void on_inter_connect(nodus_tcp_conn_t *conn, void *ctx) {
+    nodus_server_t *srv = (nodus_server_t *)ctx;
+    conn->is_nodus = true;
+    conn->auth_required = srv->inter_tcp.auth_required;
+
+    if (conn->auth_required) {
+        /* Auto-send hello to initiate auth */
+        uint8_t hello_buf[8192];
+        size_t hello_len = 0;
+        if (nodus_t2_hello(0, &srv->identity.pk, &srv->identity.node_id,
+                            hello_buf, sizeof(hello_buf), &hello_len) == 0) {
+            nodus_tcp_send_raw(conn, hello_buf, hello_len);
+            conn->auth_state = NODUS_CONN_AUTH_HELLO_SENT;
+        } else {
+            conn->auth_state = NODUS_CONN_AUTH_FAILED;
+        }
+    } else {
+        conn->auth_state = NODUS_CONN_AUTH_OK;
+    }
+}
+
 static void on_inter_accept(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
@@ -2912,7 +2936,8 @@ static void on_inter_accept(nodus_tcp_conn_t *conn, void *ctx) {
         inter_session_clear(sess);
         sess->conn = conn;
     }
-    conn->is_nodus = true;  /* All connections on peer port are inter-node */
+    conn->is_nodus = true;
+    conn->auth_required = srv->inter_tcp.auth_required;
 }
 
 static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
@@ -3798,9 +3823,12 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     if (nodus_tcp_init(&srv->inter_tcp, -1) != 0)
         return -1;
     srv->inter_tcp.on_accept     = on_inter_accept;
+    srv->inter_tcp.on_connect    = on_inter_connect;
     srv->inter_tcp.on_frame      = on_inter_frame;
     srv->inter_tcp.on_disconnect = on_inter_disconnect;
     srv->inter_tcp.cb_ctx        = srv;
+    srv->inter_tcp.auth_required = srv->config.require_peer_auth;
+    srv->inter_tcp.auth_ctx      = &srv->identity;
 
     /* Bind TCP (client port) */
     if (nodus_tcp_listen(&srv->tcp, config->bind_ip, config->tcp_port) != 0) {
@@ -3870,6 +3898,8 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     srv->witness_tcp.on_frame      = on_witness_frame;
     srv->witness_tcp.on_disconnect = on_witness_disconnect;
     srv->witness_tcp.cb_ctx        = srv;
+    srv->witness_tcp.auth_required = true;
+    srv->witness_tcp.auth_ctx      = &srv->identity;
 
     if (nodus_tcp_listen(&srv->witness_tcp, config->bind_ip, witness_port) != 0) {
         fprintf(stderr, "Failed to listen on witness TCP %s:%d\n",
