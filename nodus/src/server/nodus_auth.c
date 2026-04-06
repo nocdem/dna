@@ -122,9 +122,9 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
         fprintf(stderr, "AUTH_OK: client %s... authenticated (presence added)\n", fp_hex);
     }
 
-    /* Send AUTH_OK with session token (+ Kyber pubkey if available) */
+    /* Send AUTH_OK with session token (+ Kyber pubkey if client supports v2+) */
     size_t len = 0;
-    if (srv->identity.has_kyber) {
+    if (srv->identity.has_kyber && sess->proto_version >= 2) {
         nodus_t2_auth_ok_kyber(txn_id, sess->token, srv->identity.kyber_pk,
                                 buf, sizeof(buf), &len);
     } else {

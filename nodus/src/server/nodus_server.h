@@ -113,6 +113,9 @@ typedef struct {
     /* Circuit table (VPN mesh Faz 1) */
     nodus_circuit_table_t   circuits;
 
+    /* Client protocol version (0=legacy, 2=channel encryption support) */
+    uint32_t                proto_version;
+
     /* Channel encryption (Kyber handshake) */
     nodus_channel_crypto_t  channel_crypto;
 } nodus_session_t;

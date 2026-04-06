@@ -75,11 +75,13 @@ int nodus_t2_hello(uint32_t txn, const nodus_pubkey_t *pk,
     cbor_encoder_init(&enc, buf, cap);
     enc_query_header(&enc, 4, txn, "hello");
     cbor_encode_cstr(&enc, "a");
-    cbor_encode_map(&enc, 2);
+    cbor_encode_map(&enc, 3);
     cbor_encode_cstr(&enc, "pk");
     cbor_encode_bstr(&enc, pk->bytes, NODUS_PK_BYTES);
     cbor_encode_cstr(&enc, "fp");
     cbor_encode_bstr(&enc, fp->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "v");
+    cbor_encode_uint(&enc, 2);   /* v=2: supports channel encryption */
     return finish(&enc, out_len);
 }
 
@@ -799,7 +801,7 @@ int nodus_t2_key_init(uint32_t txn, const uint8_t *kyber_ct,
                        uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
-    enc_query_header(&enc, 3, txn, "key_init");
+    enc_query_header(&enc, 4, txn, "key_init");
     cbor_encode_cstr(&enc, "a");
     cbor_encode_map(&enc, 2);
     cbor_encode_cstr(&enc, "ct");
@@ -813,7 +815,7 @@ int nodus_t2_key_ack(uint32_t txn, const uint8_t *nonce_s,
                       uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
-    enc_response_header(&enc, 3, txn, "key_ack");
+    enc_response_header(&enc, 4, txn, "key_ack");
     cbor_encode_cstr(&enc, "r");
     cbor_encode_map(&enc, 1);
     cbor_encode_cstr(&enc, "ns");
@@ -1628,6 +1630,12 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
                         memcpy(msg->sig.bytes, val.bstr.ptr, NODUS_SIG_BYTES);
+                }
+                /* v (hello: protocol version) */
+                else if (akey.tstr.len == 1 && akey.tstr.ptr[0] == 'v') {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_UINT)
+                        msg->proto_version = (uint32_t)val.uint_val;
                 }
                 /* ct (key_init: Kyber ciphertext) */
                 else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "ct", 2) == 0) {

@@ -525,6 +525,9 @@ typedef struct {
     size_t          ri_data_len;
     bool            has_ri;
 
+    /* Protocol version (hello: v field, 0 = legacy, 2 = channel encryption) */
+    uint32_t        proto_version;
+
     /* Channel encryption (Kyber handshake) */
     uint8_t         kyber_pk[1568];     /* auth_ok: server's Kyber pubkey */
     bool            has_kyber_pk;

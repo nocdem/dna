@@ -3044,6 +3044,7 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
     /* Pre-auth: ONLY hello and auth allowed on client port */
     if (!sess->authenticated) {
         if (strcmp(msg.method, "hello") == 0) {
+            sess->proto_version = msg.proto_version;
             nodus_auth_handle_hello(srv, sess, &msg.pk, &msg.fp, msg.txn_id);
         } else if (strcmp(msg.method, "auth") == 0) {
             nodus_auth_handle_auth(srv, sess, &msg.sig, msg.txn_id);
