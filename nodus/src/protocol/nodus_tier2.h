@@ -60,10 +60,16 @@ int nodus_t2_ping(uint32_t txn, const uint8_t *token,
 int nodus_t2_servers(uint32_t txn, const uint8_t *token,
                       uint8_t *buf, size_t cap, size_t *out_len);
 
-/* Circuit (VPN mesh) — Faz 1 */
+/* Circuit (VPN mesh) — Faz 1 + E2E encryption */
 int nodus_t2_circ_open(uint32_t txn, const uint8_t *token,
                         uint64_t cid, const nodus_key_t *peer_fp,
                         uint8_t *buf, size_t cap, size_t *out_len);
+
+/** circ_open with E2E Kyber ciphertext (onion layer) */
+int nodus_t2_circ_open_e2e(uint32_t txn, const uint8_t *token,
+                            uint64_t cid, const nodus_key_t *peer_fp,
+                            const uint8_t *e2e_ct,
+                            uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_circ_open_ok(uint32_t txn, uint64_t cid,
                            uint8_t *buf, size_t cap, size_t *out_len);
@@ -73,6 +79,11 @@ int nodus_t2_circ_open_err(uint32_t txn, uint64_t cid, int code,
 
 int nodus_t2_circ_inbound(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp,
                            uint8_t *buf, size_t cap, size_t *out_len);
+
+/** circ_inbound with E2E Kyber ciphertext (relayed from circ_open) */
+int nodus_t2_circ_inbound_e2e(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp,
+                               const uint8_t *e2e_ct,
+                               uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_circ_data(uint32_t txn, const uint8_t *token,
                         uint64_t cid, const uint8_t *data, size_t data_len,
@@ -85,6 +96,12 @@ int nodus_t2_circ_close(uint32_t txn, const uint8_t *token, uint64_t cid,
 int nodus_t2_ri_open(uint32_t txn, uint64_t ups_cid,
                       const nodus_key_t *src_fp, const nodus_key_t *dst_fp,
                       uint8_t *buf, size_t cap, size_t *out_len);
+
+/** ri_open with E2E ciphertext (relayed opaquely) */
+int nodus_t2_ri_open_e2e(uint32_t txn, uint64_t ups_cid,
+                          const nodus_key_t *src_fp, const nodus_key_t *dst_fp,
+                          const uint8_t *e2e_ct,
+                          uint8_t *buf, size_t cap, size_t *out_len);
 
 int nodus_t2_ri_open_ok(uint32_t txn, uint64_t ups_cid, uint64_t dns_cid,
                          uint8_t *buf, size_t cap, size_t *out_len);
@@ -513,6 +530,10 @@ typedef struct {
     uint8_t        *circ_data;           /* heap, may be NULL */
     size_t          circ_data_len;
     bool            has_circ;
+
+    /* Circuit E2E encryption (onion layer) */
+    uint8_t         e2e_ct[1568];       /* Kyber ciphertext for per-circuit E2E */
+    bool            has_e2e_ct;
 
     /* Inter-node circuit fields (Faz 1) */
     uint64_t        ri_ups_cid;

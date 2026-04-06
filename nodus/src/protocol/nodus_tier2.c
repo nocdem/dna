@@ -214,6 +214,22 @@ int nodus_t2_circ_open(uint32_t txn, const uint8_t *token,
     return finish(&enc, out_len);
 }
 
+int nodus_t2_circ_open_e2e(uint32_t txn, const uint8_t *token,
+                            uint64_t cid, const nodus_key_t *peer_fp,
+                            const uint8_t *e2e_ct,
+                            uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 5, txn, "circ_open");
+    enc_token(&enc, token);
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 3);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    cbor_encode_cstr(&enc, "fp");  cbor_encode_bstr(&enc, peer_fp->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "ect"); cbor_encode_bstr(&enc, e2e_ct, NODUS_KYBER_CT_BYTES);
+    return finish(&enc, out_len);
+}
+
 int nodus_t2_circ_open_ok(uint32_t txn, uint64_t cid,
                            uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
@@ -246,6 +262,20 @@ int nodus_t2_circ_inbound(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp
     cbor_encode_map(&enc, 2);
     cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
     cbor_encode_cstr(&enc, "fp");  cbor_encode_bstr(&enc, peer_fp->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_circ_inbound_e2e(uint32_t txn, uint64_t cid, const nodus_key_t *peer_fp,
+                               const uint8_t *e2e_ct,
+                               uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "circ_inbound");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 3);
+    cbor_encode_cstr(&enc, "cid"); cbor_encode_uint(&enc, cid);
+    cbor_encode_cstr(&enc, "fp");  cbor_encode_bstr(&enc, peer_fp->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "ect"); cbor_encode_bstr(&enc, e2e_ct, NODUS_KYBER_CT_BYTES);
     return finish(&enc, out_len);
 }
 
@@ -289,6 +319,22 @@ int nodus_t2_ri_open(uint32_t txn, uint64_t ups_cid,
     cbor_encode_cstr(&enc, "ups"); cbor_encode_uint(&enc, ups_cid);
     cbor_encode_cstr(&enc, "src"); cbor_encode_bstr(&enc, src_fp->bytes, NODUS_KEY_BYTES);
     cbor_encode_cstr(&enc, "dst"); cbor_encode_bstr(&enc, dst_fp->bytes, NODUS_KEY_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_ri_open_e2e(uint32_t txn, uint64_t ups_cid,
+                          const nodus_key_t *src_fp, const nodus_key_t *dst_fp,
+                          const uint8_t *e2e_ct,
+                          uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "ri_open");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 4);
+    cbor_encode_cstr(&enc, "ups"); cbor_encode_uint(&enc, ups_cid);
+    cbor_encode_cstr(&enc, "src"); cbor_encode_bstr(&enc, src_fp->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "dst"); cbor_encode_bstr(&enc, dst_fp->bytes, NODUS_KEY_BYTES);
+    cbor_encode_cstr(&enc, "ect"); cbor_encode_bstr(&enc, e2e_ct, NODUS_KYBER_CT_BYTES);
     return finish(&enc, out_len);
 }
 
@@ -1630,6 +1676,14 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     cbor_item_t val = cbor_decode_next(&dec);
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
                         memcpy(msg->sig.bytes, val.bstr.ptr, NODUS_SIG_BYTES);
+                }
+                /* ect (circ_open/circ_inbound/ri_open: E2E Kyber ciphertext) */
+                else if (akey.tstr.len == 3 && memcmp(akey.tstr.ptr, "ect", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KYBER_CT_BYTES) {
+                        memcpy(msg->e2e_ct, val.bstr.ptr, NODUS_KYBER_CT_BYTES);
+                        msg->has_e2e_ct = true;
+                    }
                 }
                 /* v (hello: protocol version) */
                 else if (akey.tstr.len == 1 && akey.tstr.ptr[0] == 'v') {
