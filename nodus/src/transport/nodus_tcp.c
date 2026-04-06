@@ -215,14 +215,14 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
                         dispatch_payload = dec_buf;
                         dispatch_len = pt_len;
                     } else {
-                        /* Decrypt failed — might be a plaintext frame that was
-                         * in-flight before crypto was activated. Try dispatching
-                         * as plaintext instead of disconnecting. */
-                        QGP_LOG_WARN(LOG_TAG_TCP, "decrypt failed, treating as plaintext: conn=%s:%d frame_len=%zu",
-                                      conn->ip, conn->port, frame.payload_len);
+                        /* Decrypt failed — disconnect */
+                        QGP_LOG_ERROR(LOG_TAG_TCP, "decrypt failed: conn=%s:%d slot=%d frame_len=%zu",
+                                      conn->ip, conn->port, conn->slot, frame.payload_len);
                         free(dec_buf);
-                        dec_buf = NULL;
-                        /* Fall through to dispatch as plaintext */
+                        if (tcp->on_disconnect)
+                            tcp->on_disconnect(conn, tcp->cb_ctx);
+                        conn_free(tcp, conn);
+                        return true;
                     }
                 }
             }

@@ -2608,9 +2608,17 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                 qgp_secure_memzero(sess->pending_ss, sizeof(sess->pending_ss));
                 qgp_secure_memzero(sess->pending_nc, sizeof(sess->pending_nc));
                 sess->pending_kyber = false;
-                /* NOW open auth gate + flush — all frames go encrypted */
+                /* Open auth gate. DISCARD pending queue — it contains
+                 * pre-framed plaintext that would bypass encryption.
+                 * Inter-node queued frames are periodic (heartbeat/repl)
+                 * and will be re-sent on next cycle. */
                 sess->conn->auth_state = NODUS_CONN_AUTH_OK;
-                nodus_tcp_pending_flush(sess->conn);
+                if (sess->conn->pending_buf) {
+                    free(sess->conn->pending_buf);
+                    sess->conn->pending_buf = NULL;
+                    sess->conn->pending_len = 0;
+                    sess->conn->pending_cap = 0;
+                }
                 fprintf(stderr, "INTER_CRYPTO: outgoing conn to %s:%d encrypted\n",
                         sess->conn->ip, sess->conn->port);
             }
