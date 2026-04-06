@@ -2514,17 +2514,7 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
         }
     }
 
-    /* Same for witness TCP */
-    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
-        nodus_tcp_conn_t *c = srv->witness_tcp.pool[i];
-        if (!c || c->auth_state != NODUS_CONN_AUTH_HELLO_SENT) continue;
-        if (now - c->connected_at > 10) {
-            fprintf(stderr, "INTER_AUTH: witness auth timeout for %s:%d, disconnecting\n",
-                    c->ip, c->port);
-            c->auth_state = NODUS_CONN_AUTH_FAILED;
-            nodus_tcp_disconnect(&srv->witness_tcp, c);
-        }
-    }
+    /* Witness TCP uses T3 w_ident auth — not covered by this sweep. */
 
     /* Sweep orphaned pending_open inter-circuits (peer nodus never responded).
      * 10s matches NODUS_CIRCUIT_OPEN_TIMEOUT_MS with margin for scheduling. */
@@ -2901,25 +2891,15 @@ static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
 /* ── Witness TCP callbacks (dedicated port 4004) ─────────────────── */
 
 static void on_witness_connect(nodus_tcp_conn_t *conn, void *ctx) {
-    nodus_server_t *srv = (nodus_server_t *)ctx;
+    (void)ctx;
     conn->is_nodus = true;
-    conn->auth_required = true;
-
-    uint8_t hello_buf[8192];
-    size_t hello_len = 0;
-    if (nodus_t2_hello(0, &srv->identity.pk, &srv->identity.node_id,
-                        hello_buf, sizeof(hello_buf), &hello_len) == 0) {
-        nodus_tcp_send_raw(conn, hello_buf, hello_len);
-        conn->auth_state = NODUS_CONN_AUTH_HELLO_SENT;
-    } else {
-        conn->auth_state = NODUS_CONN_AUTH_FAILED;
-    }
+    /* Witness port uses T3 protocol with its own w_ident auth cycle.
+     * Do NOT send T2 hello here — it would be rejected by T3 decoder. */
 }
 
 static void on_witness_accept(nodus_tcp_conn_t *conn, void *ctx) {
     (void)ctx;
-    conn->is_nodus = true;  /* All witness port connections are inter-node */
-    conn->auth_required = true;
+    conn->is_nodus = true;
 }
 
 static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
@@ -3849,7 +3829,8 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     srv->witness_tcp.on_frame      = on_witness_frame;
     srv->witness_tcp.on_disconnect = on_witness_disconnect;
     srv->witness_tcp.cb_ctx        = srv;
-    srv->witness_tcp.auth_required = true;
+    /* Witness uses T3 protocol with its own w_ident auth — NOT T2 hello.
+     * Do not set auth_required on witness transport. */
     srv->witness_tcp.auth_ctx      = &srv->identity;
 
     if (nodus_tcp_listen(&srv->witness_tcp, config->bind_ip, witness_port) != 0) {
