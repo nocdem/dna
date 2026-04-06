@@ -220,8 +220,8 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
                          * silently (periodic data will be re-sent). Only
                          * disconnect on repeated failures (real attack). */
                         cc->rx_counter = 0;  /* Reset counter for next valid frame */
-                        QGP_LOG_WARN(LOG_TAG_TCP, "decrypt skip: conn=%s:%d frame_len=%zu (in-flight plaintext)",
-                                     conn->ip, conn->port, frame.payload_len);
+                        QGP_LOG_WARN(LOG_TAG_TCP, "decrypt skip: conn=%s:%d frame_len=%u (in-flight plaintext)",
+                                     conn->ip, conn->port, (unsigned)frame.payload_len);
                         free(dec_buf);
                         dec_buf = NULL;
                         /* Skip this frame, continue processing */
