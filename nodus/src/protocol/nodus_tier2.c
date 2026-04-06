@@ -779,6 +779,48 @@ int nodus_t2_auth_ok(uint32_t txn, const uint8_t *token,
     return finish(&enc, out_len);
 }
 
+int nodus_t2_auth_ok_kyber(uint32_t txn, const uint8_t *token,
+                            const uint8_t *kyber_pk,
+                            uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "auth_ok");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "tok");
+    cbor_encode_bstr(&enc, token, NODUS_SESSION_TOKEN_LEN);
+    cbor_encode_cstr(&enc, "kpk");
+    cbor_encode_bstr(&enc, kyber_pk, NODUS_KYBER_PK_BYTES);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_key_init(uint32_t txn, const uint8_t *kyber_ct,
+                       const uint8_t *nonce_c,
+                       uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 3, txn, "key_init");
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 2);
+    cbor_encode_cstr(&enc, "ct");
+    cbor_encode_bstr(&enc, kyber_ct, NODUS_KYBER_CT_BYTES);
+    cbor_encode_cstr(&enc, "nc");
+    cbor_encode_bstr(&enc, nonce_c, NODUS_NONCE_LEN);
+    return finish(&enc, out_len);
+}
+
+int nodus_t2_key_ack(uint32_t txn, const uint8_t *nonce_s,
+                      uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 3, txn, "key_ack");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 1);
+    cbor_encode_cstr(&enc, "ns");
+    cbor_encode_bstr(&enc, nonce_s, NODUS_NONCE_LEN);
+    return finish(&enc, out_len);
+}
+
 int nodus_t2_result(uint32_t txn, const nodus_value_t *val,
                      uint8_t *buf, size_t cap, size_t *out_len) {
     uint8_t *vbuf = NULL;
@@ -1587,6 +1629,22 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
                         memcpy(msg->sig.bytes, val.bstr.ptr, NODUS_SIG_BYTES);
                 }
+                /* ct (key_init: Kyber ciphertext) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "ct", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KYBER_CT_BYTES) {
+                        memcpy(msg->kyber_ct, val.bstr.ptr, NODUS_KYBER_CT_BYTES);
+                        msg->has_kyber_ct = true;
+                    }
+                }
+                /* nc (key_init: client nonce) */
+                else if (akey.tstr.len == 2 && memcmp(akey.tstr.ptr, "nc", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_NONCE_LEN) {
+                        memcpy(msg->key_nonce, val.bstr.ptr, NODUS_NONCE_LEN);
+                        msg->has_key_nonce = true;
+                    }
+                }
                 /* k (put/get/listen key) */
                 else if (akey.tstr.len == 1 && akey.tstr.ptr[0] == 'k') {
                     cbor_item_t val = cbor_decode_next(&dec);
@@ -1903,6 +1961,22 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SESSION_TOKEN_LEN) {
                         memcpy(msg->token, val.bstr.ptr, NODUS_SESSION_TOKEN_LEN);
                         msg->has_token = true;
+                    }
+                }
+                /* kpk (auth_ok: server Kyber pubkey) */
+                else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "kpk", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_KYBER_PK_BYTES) {
+                        memcpy(msg->kyber_pk, val.bstr.ptr, NODUS_KYBER_PK_BYTES);
+                        msg->has_kyber_pk = true;
+                    }
+                }
+                /* ns (key_ack: server nonce) */
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "ns", 2) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_NONCE_LEN) {
+                        memcpy(msg->key_nonce, val.bstr.ptr, NODUS_NONCE_LEN);
+                        msg->has_key_nonce = true;
                     }
                 }
                 /* val (result single) */

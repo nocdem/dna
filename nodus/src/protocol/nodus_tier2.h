@@ -225,6 +225,20 @@ int nodus_t2_challenge(uint32_t txn, const uint8_t *nonce,
 int nodus_t2_auth_ok(uint32_t txn, const uint8_t *token,
                       uint8_t *buf, size_t cap, size_t *out_len);
 
+/** auth_ok with Kyber pubkey for channel encryption handshake */
+int nodus_t2_auth_ok_kyber(uint32_t txn, const uint8_t *token,
+                            const uint8_t *kyber_pk,
+                            uint8_t *buf, size_t cap, size_t *out_len);
+
+/** Client → Nodus: initiate channel encryption after auth_ok */
+int nodus_t2_key_init(uint32_t txn, const uint8_t *kyber_ct,
+                       const uint8_t *nonce_c,
+                       uint8_t *buf, size_t cap, size_t *out_len);
+
+/** Nodus → Client: acknowledge channel encryption setup */
+int nodus_t2_key_ack(uint32_t txn, const uint8_t *nonce_s,
+                      uint8_t *buf, size_t cap, size_t *out_len);
+
 int nodus_t2_result(uint32_t txn, const nodus_value_t *val,
                      uint8_t *buf, size_t cap, size_t *out_len);
 
@@ -510,6 +524,14 @@ typedef struct {
     uint8_t        *ri_data;             /* heap, for ri_data */
     size_t          ri_data_len;
     bool            has_ri;
+
+    /* Channel encryption (Kyber handshake) */
+    uint8_t         kyber_pk[1568];     /* auth_ok: server's Kyber pubkey */
+    bool            has_kyber_pk;
+    uint8_t         kyber_ct[1568];     /* key_init: Kyber ciphertext */
+    bool            has_kyber_ct;
+    uint8_t         key_nonce[32];      /* key_init: nonce_c / key_ack: nonce_s */
+    bool            has_key_nonce;
 
     /* Error */
     int             error_code;
