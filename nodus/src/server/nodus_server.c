@@ -2553,7 +2553,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             uint8_t buf[8192];
             size_t rlen = 0;
             nodus_t2_auth(msg.txn_id, &sig, buf, sizeof(buf), &rlen);
-            nodus_tcp_send(sess->conn, buf, rlen);
+            nodus_tcp_send_raw(sess->conn, buf, rlen);
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "auth_ok") == 0) {
@@ -2579,7 +2579,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     size_t rlen = 0;
                     nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
                                     "fingerprint mismatch", resp_buf, sizeof(resp_buf), &rlen);
-                    nodus_tcp_send(sess->conn, resp_buf, rlen);
+                    nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
                 } else {
                     sess->client_pk = msg.pk;
                     sess->client_fp = msg.fp;
@@ -2588,7 +2588,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     size_t rlen = 0;
                     nodus_t2_challenge(msg.txn_id, sess->nonce,
                                         resp_buf, sizeof(resp_buf), &rlen);
-                    nodus_tcp_send(sess->conn, resp_buf, rlen);
+                    nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
                 }
             } else if (strcmp(msg.method, "auth") == 0 && sess->nonce_pending) {
                 int rc = nodus_verify(&msg.sig, sess->nonce, NODUS_NONCE_LEN, &sess->client_pk);
@@ -2596,7 +2596,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     size_t rlen = 0;
                     nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
                                     "auth failed", resp_buf, sizeof(resp_buf), &rlen);
-                    nodus_tcp_send(sess->conn, resp_buf, rlen);
+                    nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
                 } else {
                     sess->authenticated = true;
                     sess->conn->auth_state = NODUS_CONN_AUTH_OK;
@@ -2609,7 +2609,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     size_t rlen = 0;
                     nodus_t2_auth_ok(msg.txn_id, token,
                                       resp_buf, sizeof(resp_buf), &rlen);
-                    nodus_tcp_send(sess->conn, resp_buf, rlen);
+                    nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
                     char fp_hex[33];
                     for (int k = 0; k < 16; k++)
                         sprintf(fp_hex + k*2, "%02x", sess->client_fp.bytes[k]);
@@ -2620,7 +2620,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                 size_t rlen = 0;
                 nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                                 "authenticate first", resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send(sess->conn, resp_buf, rlen);
+                nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
             }
             nodus_t2_msg_free(&msg);
             return;
@@ -2900,9 +2900,26 @@ static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
 
 /* ── Witness TCP callbacks (dedicated port 4004) ─────────────────── */
 
+static void on_witness_connect(nodus_tcp_conn_t *conn, void *ctx) {
+    nodus_server_t *srv = (nodus_server_t *)ctx;
+    conn->is_nodus = true;
+    conn->auth_required = true;
+
+    uint8_t hello_buf[8192];
+    size_t hello_len = 0;
+    if (nodus_t2_hello(0, &srv->identity.pk, &srv->identity.node_id,
+                        hello_buf, sizeof(hello_buf), &hello_len) == 0) {
+        nodus_tcp_send_raw(conn, hello_buf, hello_len);
+        conn->auth_state = NODUS_CONN_AUTH_HELLO_SENT;
+    } else {
+        conn->auth_state = NODUS_CONN_AUTH_FAILED;
+    }
+}
+
 static void on_witness_accept(nodus_tcp_conn_t *conn, void *ctx) {
     (void)ctx;
     conn->is_nodus = true;  /* All witness port connections are inter-node */
+    conn->auth_required = true;
 }
 
 static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
@@ -2927,7 +2944,7 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 size_t rlen = 0;
                 nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
                                 "fingerprint mismatch", resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send(conn, resp_buf, rlen);
+                nodus_tcp_send_raw(conn, resp_buf, rlen);
             } else {
                 conn->peer_pk = msg.pk;
                 conn->peer_id = msg.fp;
@@ -2936,7 +2953,7 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 size_t rlen = 0;
                 nodus_t2_challenge(msg.txn_id, conn->auth_nonce,
                                     resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send(conn, resp_buf, rlen);
+                nodus_tcp_send_raw(conn, resp_buf, rlen);
             }
         } else if (strcmp(msg.method, "auth") == 0 && conn->auth_nonce_pending) {
             int rc = nodus_verify(&msg.sig, conn->auth_nonce, NODUS_NONCE_LEN, &conn->peer_pk);
@@ -2944,9 +2961,10 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 size_t rlen = 0;
                 nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
                                 "auth failed", resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send(conn, resp_buf, rlen);
+                nodus_tcp_send_raw(conn, resp_buf, rlen);
             } else {
                 conn->authenticated = true;
+                conn->auth_state = NODUS_CONN_AUTH_OK;
                 conn->auth_nonce_pending = false;
                 conn->peer_id_set = true;
                 uint8_t token[NODUS_SESSION_TOKEN_LEN];
@@ -2954,14 +2972,14 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 size_t rlen = 0;
                 nodus_t2_auth_ok(msg.txn_id, token,
                                   resp_buf, sizeof(resp_buf), &rlen);
-                nodus_tcp_send(conn, resp_buf, rlen);
+                nodus_tcp_send_raw(conn, resp_buf, rlen);
                 fprintf(stderr, "WITNESS_AUTH_OK: peer authenticated on port 4004\n");
             }
         } else {
             size_t rlen = 0;
             nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
                             "authenticate first", resp_buf, sizeof(resp_buf), &rlen);
-            nodus_tcp_send(conn, resp_buf, rlen);
+            nodus_tcp_send_raw(conn, resp_buf, rlen);
         }
         nodus_t2_msg_free(&msg);
         return;
@@ -2981,12 +2999,13 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 uint8_t buf[8192];
                 size_t rlen = 0;
                 nodus_t2_auth(msg.txn_id, &sig, buf, sizeof(buf), &rlen);
-                nodus_tcp_send(conn, buf, rlen);
+                nodus_tcp_send_raw(conn, buf, rlen);
                 nodus_t2_msg_free(&msg);
                 return;
             } else if (strcmp(msg.method, "auth_ok") == 0) {
                 /* Auth succeeded — mark peer as authenticated */
                 conn->authenticated = true;
+                conn->auth_state = NODUS_CONN_AUTH_OK;
                 conn->peer_id_set = true;
                 /* Find and update peer auth_state */
                 if (srv->witness) {
@@ -3826,6 +3845,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     if (nodus_tcp_init(&srv->witness_tcp, -1) != 0)
         return -1;
     srv->witness_tcp.on_accept     = on_witness_accept;
+    srv->witness_tcp.on_connect    = on_witness_connect;
     srv->witness_tcp.on_frame      = on_witness_frame;
     srv->witness_tcp.on_disconnect = on_witness_disconnect;
     srv->witness_tcp.cb_ctx        = srv;

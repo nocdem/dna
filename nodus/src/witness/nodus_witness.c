@@ -9,7 +9,6 @@
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_handlers.h"
-#include "protocol/nodus_tier2.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
 #include "crypto/nodus_identity.h"
@@ -371,21 +370,7 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
     memset(&msg, 0, sizeof(msg));
 
     if (nodus_t3_decode(payload, len, &msg) != 0) {
-        /* Known issue: T2 inter-node frames (notably p_sync) sometimes land
-         * here via witness_tcp pool. Root cause under investigation — likely
-         * inter_tcp pool stale-conn / fd-reuse collision. Detect and drop
-         * silently to avoid log spam. Legitimate malformed T3 frames are
-         * still logged with sender + hex head for diagnosis. */
-        nodus_tier2_msg_t t2msg;
-        memset(&t2msg, 0, sizeof(t2msg));
-        if (nodus_t2_decode(payload, len, &t2msg) == 0 && t2msg.method[0]) {
-            /* Valid T2 frame misrouted to witness port — silent drop */
-            nodus_t2_msg_free(&t2msg);
-            return;
-        }
-        nodus_t2_msg_free(&t2msg);
-
-        /* Truly malformed frame — log with context for diagnosis */
+        /* Malformed T3 frame — log with context for diagnosis */
         char hex[49] = {0};
         size_t dump_len = len < 24 ? len : 24;
         for (size_t i = 0; i < dump_len; i++)
