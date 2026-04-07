@@ -21,6 +21,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/hash/qgp_sha3.h"
+#include "transport/nodus_tcp.h"
 #include "dna_config.h"
 /* #include "bootstrap_cache.h" — disabled, stale port data caused startup delay */
 
@@ -368,11 +369,14 @@ static void on_state_change(nodus_client_state_t old_state,
         /* Cache connected server's keys (TOFU) */
         nodus_client_t *client = nodus_singleton_get();
         if (client) {
-            /* Get connected server IP:port */
-            int idx = client->server_idx;
-            if (idx >= 0 && idx < client->config.server_count) {
-                const char *srv_ip = client->config.servers[idx].ip;
-                uint16_t srv_port = client->config.servers[idx].port;
+            /* Get connected server IP:port directly from the TCP connection,
+             * NOT from config.servers[server_idx] — the index can be stale
+             * after reconnect/failover, causing hash to be stored against
+             * the wrong IP (the bug that caused duplicate TOFU hashes). */
+            nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
+            if (conn && conn->ip[0] && conn->port > 0) {
+                const char *srv_ip = conn->ip;
+                uint16_t srv_port = conn->port;
 
                 /* Compute Kyber PK hash if we have it */
                 char kyber_hash[KNOWN_NODES_FP_HEX + 1] = {0};
