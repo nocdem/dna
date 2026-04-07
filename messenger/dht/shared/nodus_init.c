@@ -139,6 +139,10 @@ static int load_known_nodes(void) {
         n->last_seen = (uint64_t)strtoull(p3, NULL, 10);
         n->rtt_ms = atoi(p4);
 
+        QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] loaded node[%d]: %s:%d dil=%s kyber=%s",
+                     g_known_node_count, n->ip, n->port,
+                     n->dil_fp[0] ? n->dil_fp : "(empty)",
+                     n->kyber_hash[0] ? n->kyber_hash : "(empty)");
         g_known_node_count++;
     }
 
@@ -189,11 +193,13 @@ static int known_nodes_upsert(const char *ip, uint16_t port,
 
             /* TOFU check: keys must not change */
             if (n->dil_fp[0] && dil_fp[0] && strcmp(n->dil_fp, dil_fp) != 0) {
-                QGP_LOG_WARN(LOG_TAG, "⚠ TOFU: Dilithium key CHANGED for %s:%d", ip, port);
+                QGP_LOG_WARN(LOG_TAG, "⚠ TOFU: Dilithium key CHANGED for %s:%d "
+                             "stored=%s new=%s", ip, port, n->dil_fp, dil_fp);
                 key_changed = 1;
             }
             if (n->kyber_hash[0] && kyber_hash[0] && strcmp(n->kyber_hash, kyber_hash) != 0) {
-                QGP_LOG_WARN(LOG_TAG, "⚠ TOFU: Kyber key CHANGED for %s:%d", ip, port);
+                QGP_LOG_WARN(LOG_TAG, "⚠ TOFU: Kyber key CHANGED for %s:%d "
+                             "stored=%s new=%s", ip, port, n->kyber_hash, kyber_hash);
                 key_changed = 1;
             }
 
@@ -376,13 +382,41 @@ static void on_state_change(nodus_client_state_t old_state,
                                          kyber_hash, sizeof(kyber_hash));
                 }
 
-                /* Dilithium fingerprint not available directly from client struct,
-                 * pass empty — will be filled when nodus:pk registry is fetched */
+                QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] server=%s:%d has_cached_kyber=%d kyber_hash=%s",
+                             srv_ip, srv_port, client->has_cached_server_kyber,
+                             kyber_hash[0] ? kyber_hash : "(empty)");
+
+                /* Check what's stored in known_nodes for this server */
+                known_node_t *existing = known_nodes_find(srv_ip, srv_port);
+                if (existing) {
+                    QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] existing entry: dil_fp=%s kyber_hash=%s last_seen=%llu",
+                                 existing->dil_fp[0] ? existing->dil_fp : "(empty)",
+                                 existing->kyber_hash[0] ? existing->kyber_hash : "(empty)",
+                                 (unsigned long long)existing->last_seen);
+                } else {
+                    QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] no existing entry for %s:%d (new node)",
+                                 srv_ip, srv_port);
+                }
+
+                /* Dilithium fingerprint from server's signed AUTH_OK */
+                char dil_fp_hex[KNOWN_NODES_FP_HEX + 1] = {0};
+                if (client->has_server_dil_pk) {
+                    compute_key_hash_hex(client->server_dil_pk.bytes,
+                                         NODUS_PK_BYTES,
+                                         dil_fp_hex, sizeof(dil_fp_hex));
+                    QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] server dil_pk available, fp_hash=%s", dil_fp_hex);
+                } else {
+                    QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] server dil_pk NOT available (legacy server)");
+                }
+
                 int tofu_rc = known_nodes_upsert(srv_ip, srv_port,
-                                                  "", kyber_hash, -1);
+                                                  dil_fp_hex, kyber_hash, -1);
                 if (tofu_rc == 1) {
                     QGP_LOG_ERROR(LOG_TAG, "⚠ TOFU VIOLATION: Server %s:%d key changed! "
                                   "Possible MITM attack.", srv_ip, srv_port);
+                } else if (tofu_rc == 0) {
+                    QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] upsert OK (no key change) for %s:%d",
+                                 srv_ip, srv_port);
                 }
             }
             nodus_singleton_release();
