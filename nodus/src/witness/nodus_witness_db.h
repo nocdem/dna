@@ -92,6 +92,7 @@ typedef struct {
     uint8_t     tx_type;
     uint64_t    timestamp;
     uint8_t     proposer_id[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t     prev_hash[NODUS_T3_TX_HASH_LEN];  /* SHA3-512 of previous block */
 } nodus_witness_block_t;
 
 int  nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
@@ -144,6 +145,15 @@ int  nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
 int  nodus_witness_tx_get(nodus_witness_t *w, const uint8_t *tx_hash,
                             uint8_t *tx_type_out, uint8_t **tx_data_out,
                             uint32_t *tx_len_out, uint64_t *block_height_out);
+
+/* ── Commit certificate operations ──────────────────────────────── */
+
+int  nodus_witness_cert_store(nodus_witness_t *w, uint64_t block_height,
+                                const nodus_witness_vote_record_t *votes,
+                                int vote_count);
+int  nodus_witness_cert_get(nodus_witness_t *w, uint64_t block_height,
+                              nodus_witness_vote_record_t *votes_out,
+                              int max_votes, int *count_out);
 
 /* ── DB transaction wrappers ─────────────────────────────────────── */
 

@@ -707,7 +707,7 @@ static void handle_dnac_block(nodus_witness_t *w,
         cbor_encode_cstr(&enc, "found");
         cbor_encode_bool(&enc, false);
     } else {
-        enc_dnac_response(&enc, txn_id, "dnac_block", 6);
+        enc_dnac_response(&enc, txn_id, "dnac_block", 7);
         cbor_encode_cstr(&enc, "found");
         cbor_encode_bool(&enc, true);
         cbor_encode_cstr(&enc, "height");
@@ -720,6 +720,8 @@ static void handle_dnac_block(nodus_witness_t *w,
         cbor_encode_uint(&enc, blk.timestamp);
         cbor_encode_cstr(&enc, "proposer");
         cbor_encode_bstr(&enc, blk.proposer_id, NODUS_T3_WITNESS_ID_LEN);
+        cbor_encode_cstr(&enc, "prev_hash");
+        cbor_encode_bstr(&enc, blk.prev_hash, NODUS_T3_TX_HASH_LEN);
     }
 
     size_t rlen = cbor_encoder_len(&enc);
@@ -786,8 +788,8 @@ static void handle_dnac_block_range(nodus_witness_t *w,
 
     uint64_t total = nodus_witness_block_height(w);
 
-    /* Encode response */
-    size_t buf_size = 512 + ((size_t)count * 256);
+    /* Encode response (320 per block to fit prev_hash) */
+    size_t buf_size = 512 + ((size_t)count * 320);
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
@@ -809,7 +811,7 @@ static void handle_dnac_block_range(nodus_witness_t *w,
     cbor_encode_array(&enc, (size_t)count);
 
     for (int i = 0; i < count; i++) {
-        cbor_encode_map(&enc, 5);
+        cbor_encode_map(&enc, 6);
         cbor_encode_cstr(&enc, "height");
         cbor_encode_uint(&enc, blocks[i].height);
         cbor_encode_cstr(&enc, "hash");
@@ -821,6 +823,8 @@ static void handle_dnac_block_range(nodus_witness_t *w,
         cbor_encode_cstr(&enc, "proposer");
         cbor_encode_bstr(&enc, blocks[i].proposer_id,
                           NODUS_T3_WITNESS_ID_LEN);
+        cbor_encode_cstr(&enc, "prev_hash");
+        cbor_encode_bstr(&enc, blocks[i].prev_hash, NODUS_T3_TX_HASH_LEN);
     }
 
     size_t rlen = cbor_encoder_len(&enc);

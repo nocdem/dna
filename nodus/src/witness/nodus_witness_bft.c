@@ -1056,6 +1056,11 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
         fprintf(stderr, "%s: commit to DB failed!\n", LOG_TAG);
     }
 
+    /* Store commit certificate (2f+1 precommit signatures) */
+    uint64_t cert_bh = nodus_witness_block_height(w);
+    nodus_witness_cert_store(w, cert_bh, w->round_state.precommits,
+                              w->round_state.precommit_count);
+
     /* Compute UTXO set checksum for cross-witness validation */
     uint8_t utxo_cksum[NODUS_KEY_BYTES];
     bool have_cksum = (nodus_witness_utxo_checksum(w, utxo_cksum) == 0);

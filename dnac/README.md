@@ -1,6 +1,6 @@
 # DNAC - Post-Quantum Zero-Knowledge Cash over DHT
 
-**Version:** v0.11.1 | **Protocol:** v1 (Transparent Amounts)
+**Version:** v0.12.0 | **Protocol:** v1 (Transparent Amounts)
 
 DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](https://github.com/nocdem/dna). It lives in the DNA monorepo at `/opt/dna/dnac/`.
 
@@ -8,14 +8,15 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](h
 
 - **UTXO Model** - Unspent Transaction Output model for privacy
 - **Dilithium5 Signatures** - Post-quantum digital signatures (NIST Category 5)
-- **Nodus DHT Transport** - Payments delivered via Nodus DHT network (nodus_ops API)
-- **Permanent Storage** - All data stored permanently on DHT
+- **Witness-Only Architecture** - All state stored on BFT witnesses, no DHT dependency (v0.12.0)
 - **BFT Consensus** - Byzantine Fault Tolerant witness consensus (PBFT-like)
 - **PBFT Witnessing** - Transactions require PBFT quorum (2f+1) witness attestations
 - **Memo Support** - Optional transaction memos up to 255 bytes (v0.6.0)
 - **Replay Prevention** - Nonce and timestamp-based replay attack prevention (v0.6.0)
 - **Merkle Proofs** - Transaction inclusion proofs via Merkle tree (v0.7.0)
 - **BFT-Signed Epochs** - Epoch roots signed by BFT consensus (v0.7.1)
+- **Block Hash Linking** - Blocks chained via prev_hash (SHA3-512) for chain integrity (v0.12.0)
+- **Commit Certificates** - 2f+1 PRECOMMIT signatures stored per block for trustless verification (v0.12.0)
 - **Shared UTXO Set** - Validators maintain shared UTXO state, preventing counterfeiting (v0.8.0)
 - **Cross-Identity Sends** - Full TX data through BFT consensus for multi-party transfers (v0.8.0)
 - **Fee Burn Model** - Fees burned (removed from circulation) instead of sent to witnesses (v0.8.1)
@@ -44,15 +45,18 @@ v1 uses transparent amounts for simplicity. v2 will add STARK-based zero-knowled
            ▼                              ▼
 ┌─────────────────────┐        ┌─────────────────────┐
 │      libdna         │◀───────│      libdnac        │
-│  (identity, DHT,    │ links  │  (cash system)      │
-│   crypto, transport)│        │                     │
+│  (identity, crypto, │ links  │  (cash system)      │
+│   transport)        │        │                     │
 └─────────────────────┘        └─────────────────────┘
                                          │
+                                    TCP 4004
                                          ▼
                                ┌─────────────────────┐
                                │  WITNESS SERVERS    │
                                │ (dynamic roster)    │
                                │ (PBFT 2f+1 quorum)  │
+                               │ (authoritative UTXO │
+                               │  + block storage)   │
                                └─────────────────────┘
 ```
 
@@ -226,13 +230,13 @@ PROPOSE → PREVOTE → PRECOMMIT → COMMIT
 - **Nullifier Database** - SQLite-based persistent storage
 - **Request Forwarding** - Non-leaders forward to current leader
 
-### DHT Storage via Nodus
+### Witness-Only Storage (v0.12.0)
 
-All DHT data is stored via Nodus (the `nodus_ops` convenience API). OpenDHT has been completely removed from the codebase. Data is stored permanently on the Nodus network:
-- **Payments**
-- **Witness attestations**
-- **Nullifier replication**
-- **Witness announcements**
+All blockchain state is stored on BFT witnesses. DHT inbox delivery was removed in v0.12.0 — witnesses are the authoritative source for all data:
+- **UTXO set** — maintained by witnesses, clients poll via `dnac_sync_wallet()`
+- **Blocks** — hash-linked chain with commit certificates
+- **Nullifiers** — double-spend prevention
+- **Transaction data** — full serialized TX for client queries
 
 ## Security
 
@@ -282,6 +286,9 @@ All DHT data is stored via Nodus (the `nodus_ops` convenience API). OpenDHT has 
 - [x] P0 Security audit fixes — 3 CRITICAL + 3 HIGH vulnerabilities resolved (v0.10.2)
 - [x] Dead code cleanup — removed ~10K lines of old standalone witness code (v0.10.3)
 - [x] BFT cleanup — removed client-side BFT code (serialize/roster/replay), dynamic witness discovery (v0.11.1)
+- [x] Witness-only architecture — removed DHT inbox dependency, wallet syncs from witnesses (v0.12.0)
+- [x] Block hash linking — prev_hash chain integrity via SHA3-512 (v0.12.0)
+- [x] Commit certificates — 2f+1 PRECOMMIT signatures stored per block (v0.12.0)
 
 ### Tested
 

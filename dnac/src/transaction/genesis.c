@@ -36,19 +36,8 @@
 
 #define LOG_TAG "GENESIS"
 
-#include "nodus_ops.h"
 #include "nodus_init.h"
 
-/**
- * Derive value_id from tx_hash for unique payment storage
- */
-static uint64_t derive_value_id(const uint8_t *tx_hash) {
-    uint64_t value_id = 0;
-    for (int i = 0; i < 8; i++) {
-        value_id |= ((uint64_t)tx_hash[i]) << (i * 8);
-    }
-    return value_id ? value_id : 1;
-}
 
 /**
  * Derive nullifier from owner fingerprint and seed
@@ -281,27 +270,11 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
         return rc;
     }
 
-    /* Send payment to each recipient via DHT */
-    uint64_t payment_value_id = derive_value_id(tx->tx_hash);
+    /* Store genesis outputs locally */
     uint64_t total_supply = 0;
 
     for (int i = 0; i < tx->output_count; i++) {
         total_supply += tx->outputs[i].amount;
-
-        /* Build inbox DHT key for recipient */
-        uint8_t inbox_key[64];
-        if (dnac_build_inbox_key(tx->outputs[i].owner_fingerprint, dnac_get_chain_id(ctx), inbox_key) != 0) {
-            continue;
-        }
-
-        /* PUT payment to recipient's inbox (permanent) */
-        rc = nodus_ops_put(inbox_key, 64, tx_buffer, tx_len,
-                           0, payment_value_id);
-        if (rc != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to send genesis to recipient %d: %d", i, rc);
-            free(tx_buffer);
-            return DNAC_ERROR_NETWORK;
-        }
 
         /* If output is for our own wallet, store UTXO immediately */
         if (our_fp && strcmp(tx->outputs[i].owner_fingerprint, our_fp) == 0) {

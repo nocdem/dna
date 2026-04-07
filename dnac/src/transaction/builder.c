@@ -22,7 +22,6 @@
 #include <limits.h>
 #include <openssl/evp.h>
 
-#include "nodus_ops.h"
 #include "nodus_init.h"
 #include "dnac/safe_math.h"
 #include "crypto/sign/qgp_dilithium.h"
@@ -208,18 +207,6 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
     return DNAC_SUCCESS;
 }
 
-/**
- * Derive value_id from tx_hash for unique payment storage
- * Takes first 8 bytes of tx_hash as little-endian uint64
- */
-static uint64_t derive_value_id(const uint8_t *tx_hash) {
-    uint64_t value_id = 0;
-    for (int i = 0; i < 8; i++) {
-        value_id |= ((uint64_t)tx_hash[i]) << (i * 8);
-    }
-    /* Ensure non-zero */
-    return value_id ? value_id : 1;
-}
 
 int dnac_tx_broadcast(dnac_context_t *ctx,
                       dnac_transaction_t *tx,
@@ -332,31 +319,7 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
         return rc;
     }
 
-    /* Step 6: Send payment to each recipient via DHT */
-    uint64_t payment_value_id = derive_value_id(tx->tx_hash);
-
-    for (int i = 0; i < tx->output_count; i++) {
-        /* Skip change outputs (back to ourselves) */
-        if (strcmp(tx->outputs[i].owner_fingerprint, owner_fp) == 0) {
-            continue;
-        }
-
-        /* Build inbox DHT key for recipient */
-        uint8_t inbox_key[64];
-        if (dnac_build_inbox_key(tx->outputs[i].owner_fingerprint, dnac_get_chain_id(ctx), inbox_key) != 0) {
-            continue;
-        }
-
-        /* PUT payment to recipient's inbox (permanent) */
-        rc = nodus_ops_put(inbox_key, 64, tx_buffer, tx_len,
-                           0, payment_value_id);
-        if (rc != 0) {
-            free(tx_buffer);
-            return DNAC_ERROR_NETWORK;
-        }
-    }
-
-    /* Step 6b: Store change outputs locally (immediate, no DHT round-trip) */
+    /* Step 6: Store change outputs locally */
     for (int i = 0; i < tx->output_count; i++) {
         /* Only process change outputs (to ourselves) */
         if (strcmp(tx->outputs[i].owner_fingerprint, owner_fp) != 0) {

@@ -72,6 +72,7 @@ include_directories(
     ${DNA_MESSENGER_DIR}
     ${DNA_MESSENGER_DIR}/dht/shared
     ${NODUS_DIR}/include
+    ${NODUS_DIR}/src
     ${SHARED_DIR}
     ${SHARED_DIR}/crypto
     ${SHARED_DIR}/crypto/utils

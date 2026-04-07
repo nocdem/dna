@@ -422,10 +422,30 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
                                const uint8_t *proposer_id) {
     if (!w || !w->db || !tx_hash) return -1;
 
+    /* Compute prev_hash = SHA3-512(height || tx_hash || timestamp || prev_hash) of latest block */
+    uint8_t prev_hash[NODUS_T3_TX_HASH_LEN] = {0};
+    nodus_witness_block_t prev_block;
+    if (nodus_witness_block_get_latest(w, &prev_block) == 0) {
+        uint8_t hash_input[8 + NODUS_T3_TX_HASH_LEN + 8 + NODUS_T3_TX_HASH_LEN];
+        size_t off = 0;
+        memcpy(hash_input + off, &prev_block.height, 8);    off += 8;
+        memcpy(hash_input + off, prev_block.tx_hash, NODUS_T3_TX_HASH_LEN); off += NODUS_T3_TX_HASH_LEN;
+        memcpy(hash_input + off, &prev_block.timestamp, 8); off += 8;
+        memcpy(hash_input + off, prev_block.prev_hash, NODUS_T3_TX_HASH_LEN); off += NODUS_T3_TX_HASH_LEN;
+
+        unsigned int hash_len = 0;
+        EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+        EVP_DigestInit_ex(mdctx, EVP_sha3_512(), NULL);
+        EVP_DigestUpdate(mdctx, hash_input, off);
+        EVP_DigestFinal_ex(mdctx, prev_hash, &hash_len);
+        EVP_MD_CTX_free(mdctx);
+    }
+    /* Genesis block: prev_hash stays all zeros */
+
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "INSERT INTO blocks (tx_hash, tx_type, timestamp, proposer_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?)", -1, &stmt, NULL);
+        "INSERT INTO blocks (tx_hash, tx_type, timestamp, proposer_id, prev_hash, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: block add prepare failed: %s\n",
                 LOG_TAG, sqlite3_errmsg(w->db));
@@ -439,7 +459,8 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
         sqlite3_bind_blob(stmt, 4, proposer_id, NODUS_T3_WITNESS_ID_LEN, SQLITE_STATIC);
     else
         sqlite3_bind_null(stmt, 4);
-    sqlite3_bind_int64(stmt, 5, (int64_t)time(NULL));
+    sqlite3_bind_blob(stmt, 5, prev_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 6, (int64_t)time(NULL));
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -469,6 +490,11 @@ static int block_from_row(sqlite3_stmt *stmt, nodus_witness_block_t *out) {
     if (blob && blen == NODUS_T3_WITNESS_ID_LEN)
         memcpy(out->proposer_id, blob, NODUS_T3_WITNESS_ID_LEN);
 
+    blob = sqlite3_column_blob(stmt, 5);
+    blen = sqlite3_column_bytes(stmt, 5);
+    if (blob && blen == NODUS_T3_TX_HASH_LEN)
+        memcpy(out->prev_hash, blob, NODUS_T3_TX_HASH_LEN);
+
     return 0;
 }
 
@@ -478,7 +504,7 @@ int nodus_witness_block_get(nodus_witness_t *w, uint64_t height,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT height, tx_hash, tx_type, timestamp, proposer_id "
+        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash "
         "FROM blocks WHERE height = ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
@@ -501,7 +527,7 @@ int nodus_witness_block_get_latest(nodus_witness_t *w,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT height, tx_hash, tx_type, timestamp, proposer_id "
+        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash "
         "FROM blocks ORDER BY height DESC LIMIT 1", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
@@ -525,7 +551,7 @@ int nodus_witness_block_get_range(nodus_witness_t *w,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT height, tx_hash, tx_type, timestamp, proposer_id "
+        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash "
         "FROM blocks WHERE height >= ? AND height <= ? "
         "ORDER BY height ASC LIMIT ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
@@ -784,6 +810,73 @@ int nodus_witness_tx_get(nodus_witness_t *w, const uint8_t *tx_hash,
         *block_height_out = (uint64_t)sqlite3_column_int64(stmt, 3);
 
     sqlite3_finalize(stmt);
+    return 0;
+}
+
+/* ── Commit certificate operations ──────────────────────────────── */
+
+int nodus_witness_cert_store(nodus_witness_t *w, uint64_t block_height,
+                               const nodus_witness_vote_record_t *votes,
+                               int vote_count) {
+    if (!w || !w->db || !votes) return -1;
+
+    for (int i = 0; i < vote_count; i++) {
+        if (votes[i].vote != NODUS_W_VOTE_APPROVE) continue;
+
+        sqlite3_stmt *stmt;
+        int rc = sqlite3_prepare_v2(w->db,
+            "INSERT OR IGNORE INTO commit_certificates "
+            "(block_height, voter_id, vote, signature) VALUES (?, ?, ?, ?)",
+            -1, &stmt, NULL);
+        if (rc != SQLITE_OK) return -1;
+
+        sqlite3_bind_int64(stmt, 1, (int64_t)block_height);
+        sqlite3_bind_blob(stmt, 2, votes[i].voter_id,
+                          NODUS_T3_WITNESS_ID_LEN, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 3, votes[i].vote);
+        sqlite3_bind_blob(stmt, 4, votes[i].signature,
+                          NODUS_SIG_BYTES, SQLITE_STATIC);
+
+        rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        if (rc != SQLITE_DONE) return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_cert_get(nodus_witness_t *w, uint64_t block_height,
+                             nodus_witness_vote_record_t *votes_out,
+                             int max_votes, int *count_out) {
+    if (!w || !w->db || !votes_out || !count_out) return -1;
+    *count_out = 0;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT voter_id, vote, signature FROM commit_certificates "
+        "WHERE block_height = ?", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int64(stmt, 1, (int64_t)block_height);
+
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && count < max_votes) {
+        const void *vid = sqlite3_column_blob(stmt, 0);
+        int vid_len = sqlite3_column_bytes(stmt, 0);
+        if (vid && vid_len == NODUS_T3_WITNESS_ID_LEN)
+            memcpy(votes_out[count].voter_id, vid, NODUS_T3_WITNESS_ID_LEN);
+
+        votes_out[count].vote = (nodus_witness_vote_t)sqlite3_column_int(stmt, 1);
+
+        const void *sig = sqlite3_column_blob(stmt, 2);
+        int sig_len = sqlite3_column_bytes(stmt, 2);
+        if (sig && sig_len == NODUS_SIG_BYTES)
+            memcpy(votes_out[count].signature, sig, NODUS_SIG_BYTES);
+
+        count++;
+    }
+
+    sqlite3_finalize(stmt);
+    *count_out = count;
     return 0;
 }
 

@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines
 
-**Last Updated:** 2026-03-15 | **Status:** DESIGN | **Version:** v0.11.2
+**Last Updated:** 2026-04-07 | **Status:** DESIGN | **Version:** v0.12.0
 
 **Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains DNAC-specific guidelines only.
 

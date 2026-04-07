@@ -17,7 +17,6 @@
 #include <time.h>
 #include <openssl/evp.h>
 
-#include "nodus_ops.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "dnac/crypto_helpers.h"
@@ -33,8 +32,7 @@ struct dnac_context {
     char owner_fingerprint[129];         /* Owner's fingerprint */
     dnac_payment_cb_t payment_cb;
     void *payment_cb_data;
-    size_t inbox_listen_token;           /* DHT listener token for inbox */
-    uint8_t chain_id[32];               /* Chain ID from witness (for inbox keys) */
+    uint8_t chain_id[32];               /* Chain ID from witness */
     bool chain_id_loaded;               /* Whether chain_id has been fetched */
     int initialized;
 };
@@ -95,12 +93,6 @@ dnac_context_t* dnac_init(void *dna_engine) {
 void dnac_shutdown(dnac_context_t *ctx) {
     if (!ctx) return;
 
-    /* Cancel inbox listener if active */
-    if (ctx->inbox_listen_token != 0) {
-        nodus_ops_cancel_listen(ctx->inbox_listen_token);
-        ctx->inbox_listen_token = 0;
-    }
-
     if (ctx->db) {
         sqlite3_close(ctx->db);
         ctx->db = NULL;
@@ -147,114 +139,16 @@ const uint8_t *dnac_get_chain_id(dnac_context_t *ctx) {
 }
 
 /* ============================================================================
- * Inbox Listener Functions
+ * Listener Functions (no-op: witness-based polling replaces DHT listener)
  * ========================================================================== */
 
-/* Forward declarations for inbox listener */
-static int derive_nullifier(const char *owner_fp, const uint8_t *seed, uint8_t *nullifier_out);
-static bool utxo_exists(sqlite3 *db, const uint8_t *tx_hash, uint32_t output_index);
-
-/**
- * DHT inbox listener callback - invoked when payments arrive
- */
-static bool inbox_listener_callback(const uint8_t *value, size_t value_len,
-                                    bool expired, void *user_data) {
-    dnac_context_t *ctx = (dnac_context_t *)user_data;
-    if (!ctx || !ctx->initialized) return false;
-    if (expired || !value || value_len == 0) return true;
-
-    /* Deserialize transaction */
-    dnac_transaction_t *tx = NULL;
-    int rc = dnac_tx_deserialize(value, value_len, &tx);
-    if (rc != DNAC_SUCCESS || !tx) {
-        return true;  /* Continue listening */
-    }
-
-    /* Verify transaction */
-    rc = dnac_tx_verify(tx);
-    if (rc != DNAC_SUCCESS) {
-        dnac_free_transaction(tx);
-        return true;
-    }
-
-    /* Extract outputs addressed to us */
-    for (int j = 0; j < tx->output_count; j++) {
-        if (strcmp(tx->outputs[j].owner_fingerprint, ctx->owner_fingerprint) != 0) {
-            continue;
-        }
-
-        /* Check if UTXO already exists */
-        if (utxo_exists(ctx->db, tx->tx_hash, (uint32_t)j)) {
-            continue;
-        }
-
-        /* Create UTXO from output */
-        dnac_utxo_t utxo = {0};
-        utxo.version = tx->outputs[j].version;
-        memcpy(utxo.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
-        utxo.output_index = (uint32_t)j;
-        utxo.amount = tx->outputs[j].amount;
-        snprintf(utxo.owner_fingerprint, sizeof(utxo.owner_fingerprint),
-                 "%s", ctx->owner_fingerprint);
-        utxo.status = DNAC_UTXO_UNSPENT;
-        utxo.received_at = (uint64_t)time(NULL);
-
-        /* Derive nullifier from seed */
-        if (derive_nullifier(ctx->owner_fingerprint,
-                             tx->outputs[j].nullifier_seed,
-                             utxo.nullifier) != 0) {
-            continue;
-        }
-
-        /* Store UTXO in database */
-        rc = dnac_db_store_utxo(ctx->db, &utxo);
-        if (rc != DNAC_SUCCESS) {
-            continue;
-        }
-
-        /* Fire payment callback if set */
-        if (ctx->payment_cb) {
-            ctx->payment_cb(&utxo, NULL, ctx->payment_cb_data);
-        }
-    }
-
-    dnac_free_transaction(tx);
-    return true;  /* Continue listening */
-}
-
 int dnac_start_listening(dnac_context_t *ctx) {
-    if (!ctx || !ctx->initialized) return DNAC_ERROR_INVALID_PARAM;
-
-    /* Already listening? */
-    if (ctx->inbox_listen_token != 0) {
-        return DNAC_SUCCESS;
-    }
-
-    /* Build inbox key */
-    uint8_t inbox_key[64];
-    if (dnac_build_inbox_key(ctx->owner_fingerprint, dnac_get_chain_id(ctx), inbox_key) != 0) {
-        return DNAC_ERROR_CRYPTO;
-    }
-
-    /* Start listening */
-    size_t token = nodus_ops_listen(inbox_key, 64, inbox_listener_callback, ctx, NULL);
-    if (token == 0) {
-        return DNAC_ERROR_NETWORK;
-    }
-
-    ctx->inbox_listen_token = token;
+    (void)ctx;
     return DNAC_SUCCESS;
 }
 
 int dnac_stop_listening(dnac_context_t *ctx) {
-    if (!ctx) return DNAC_ERROR_INVALID_PARAM;
-
-    if (ctx->inbox_listen_token == 0) {
-        return DNAC_SUCCESS;  /* Not listening */
-    }
-
-    nodus_ops_cancel_listen(ctx->inbox_listen_token);
-    ctx->inbox_listen_token = 0;
+    (void)ctx;
     return DNAC_SUCCESS;
 }
 
@@ -306,37 +200,17 @@ static int derive_nullifier(const char *owner_fp, const uint8_t *seed,
     return qgp_sha3_512(data, offset, nullifier_out);
 }
 
-/**
- * Check if UTXO already exists in database (by tx_hash + output_index)
- */
-static bool utxo_exists(sqlite3 *db, const uint8_t *tx_hash, uint32_t output_index) {
-    const char *sql = "SELECT 1 FROM dnac_utxos WHERE tx_hash = ? AND output_index = ? LIMIT 1";
-    sqlite3_stmt *stmt = NULL;
-
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-        return false;
-    }
-
-    sqlite3_bind_blob(stmt, 1, tx_hash, DNAC_TX_HASH_SIZE, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 2, (int)output_index);
-
-    bool exists = (sqlite3_step(stmt) == SQLITE_ROW);
-    sqlite3_finalize(stmt);
-
-    return exists;
-}
-
 int dnac_sync_wallet(dnac_context_t *ctx) {
     if (!ctx || !ctx->initialized) return DNAC_ERROR_INVALID_PARAM;
 
-    /* Step 1: Clear existing UTXOs (fresh start from authoritative sources) */
+    /* Clear existing UTXOs (fresh start from authoritative source) */
     int rc = dnac_db_clear_utxos(ctx->db, ctx->owner_fingerprint);
     if (rc != DNAC_SUCCESS) {
         QGP_LOG_ERROR(LOG_TAG, "sync: failed to clear local UTXOs: %d", rc);
         return rc;
     }
 
-    /* Step 2: Recover authoritative UTXO state from witnesses */
+    /* Recover UTXO state from witnesses (authoritative source) */
     int witness_recovered = 0;
     uint64_t witness_total = 0;
     rc = dnac_wallet_recover_from_witnesses(ctx, &witness_recovered, &witness_total);
@@ -345,162 +219,7 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
                      witness_recovered, (unsigned long long)witness_total);
     }
 
-    /* Step 3: Build inbox key */
-    uint8_t inbox_key[64];
-    if (dnac_build_inbox_key(ctx->owner_fingerprint, dnac_get_chain_id(ctx), inbox_key) != 0) {
-        return DNAC_ERROR_CRYPTO;
-    }
-
-    /* Step 4: Query DHT for all payments in our inbox */
-    uint8_t **values = NULL;
-    size_t *values_len = NULL;
-    size_t count = 0;
-
-    int rc2 = nodus_ops_get_all(inbox_key, 64, &values, &values_len, &count);
-    if (rc2 != 0 || count == 0) {
-        /* No payments or error - not fatal */
-        QGP_LOG_DEBUG(LOG_TAG, "sync: no payments found (rc=%d, count=%zu)", rc2, count);
-        return DNAC_SUCCESS;
-    }
-
-    int new_payments = 0;
-
-    /* Step 3: Process each payment */
-    for (size_t i = 0; i < count; i++) {
-        QGP_LOG_DEBUG(LOG_TAG, "sync: processing value %zu: %zu bytes", i, values_len[i]);
-        if (!values[i] || values_len[i] == 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "sync:   skipping empty value");
-            continue;
-        }
-
-        /* Deserialize transaction */
-        dnac_transaction_t *tx = NULL;
-        rc = dnac_tx_deserialize(values[i], values_len[i], &tx);
-        if (rc != DNAC_SUCCESS || !tx) {
-            QGP_LOG_WARN(LOG_TAG, "sync:   deserialize failed: rc=%d", rc);
-            continue;
-        }
-        QGP_LOG_DEBUG(LOG_TAG, "sync:   deserialized TX: %d inputs, %d outputs", tx->input_count, tx->output_count);
-
-        /* Verify transaction (optional - trust witnessed transactions) */
-        rc = dnac_tx_verify(tx);
-        if (rc != DNAC_SUCCESS) {
-            QGP_LOG_WARN(LOG_TAG, "sync:   verify failed: rc=%d", rc);
-            dnac_free_transaction(tx);
-            continue;
-        }
-        QGP_LOG_DEBUG(LOG_TAG, "sync:   TX verified OK");
-
-        /* v0.9.0: Validate TX exists on current witness ledger.
-         * Prevents storing stale UTXOs from old DHT data (previous deployments). */
-        dnac_ledger_entry_t ledger_entry;
-        rc = dnac_ledger_query_tx(ctx, tx->tx_hash, &ledger_entry, NULL);
-        if (rc == DNAC_ERROR_NOT_FOUND) {
-            QGP_LOG_DEBUG(LOG_TAG, "sync:   TX not in witness ledger, skipping (stale)");
-            dnac_free_transaction(tx);
-            continue;
-        }
-        if (rc != DNAC_SUCCESS) {
-            QGP_LOG_DEBUG(LOG_TAG, "sync:   ledger check failed (rc=%d), skipping", rc);
-            dnac_free_transaction(tx);
-            continue;
-        }
-        QGP_LOG_DEBUG(LOG_TAG, "sync:   TX confirmed in witness ledger (seq=%llu)",
-                     (unsigned long long)ledger_entry.sequence_number);
-
-        /* Track if we stored any outputs from this transaction */
-        bool stored_from_this_tx = false;
-        uint64_t received_amount = 0;
-        const char *sender_fp = NULL;
-
-        /* Step 4: Extract outputs addressed to us */
-        for (int j = 0; j < tx->output_count; j++) {
-            QGP_LOG_DEBUG(LOG_TAG, "sync:   output %d: owner=%.16s... amount=%llu",
-                         j, tx->outputs[j].owner_fingerprint, (unsigned long long)tx->outputs[j].amount);
-            /* Check if output is for us */
-            if (strcmp(tx->outputs[j].owner_fingerprint, ctx->owner_fingerprint) != 0) {
-                QGP_LOG_DEBUG(LOG_TAG, "sync:     not for us, skipping");
-                continue;
-            }
-
-            /* Check if UTXO already exists */
-            if (utxo_exists(ctx->db, tx->tx_hash, (uint32_t)j)) {
-                QGP_LOG_DEBUG(LOG_TAG, "sync:     already exists, skipping");
-                continue;
-            }
-            QGP_LOG_INFO(LOG_TAG, "sync:     new UTXO, storing...");
-
-            /* Create UTXO from output */
-            dnac_utxo_t utxo = {0};
-            utxo.version = tx->outputs[j].version;
-            memcpy(utxo.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
-            utxo.output_index = (uint32_t)j;
-            utxo.amount = tx->outputs[j].amount;
-            snprintf(utxo.owner_fingerprint, sizeof(utxo.owner_fingerprint),
-                     "%s", ctx->owner_fingerprint);
-            utxo.status = DNAC_UTXO_UNSPENT;
-            utxo.received_at = (uint64_t)time(NULL);
-
-            /* Derive nullifier from seed */
-            if (derive_nullifier(ctx->owner_fingerprint,
-                                 tx->outputs[j].nullifier_seed,
-                                 utxo.nullifier) != 0) {
-                continue;
-            }
-
-            /* Step 5: Store UTXO in database */
-            rc = dnac_db_store_utxo(ctx->db, &utxo);
-            if (rc != DNAC_SUCCESS) {
-                continue;
-            }
-
-            /* Track for transaction history */
-            stored_from_this_tx = true;
-            received_amount += utxo.amount;
-
-            new_payments++;
-
-            /* Step 6: Call payment callback if set */
-            if (ctx->payment_cb) {
-                ctx->payment_cb(&utxo, NULL, ctx->payment_cb_data);
-            }
-        }
-
-        /* Step 7: Store transaction in history if we received from it */
-        if (stored_from_this_tx) {
-            /* Find sender fingerprint from an output not addressed to us */
-            for (int j = 0; j < tx->output_count && !sender_fp; j++) {
-                if (strcmp(tx->outputs[j].owner_fingerprint, ctx->owner_fingerprint) != 0) {
-                    sender_fp = tx->outputs[j].owner_fingerprint;
-                }
-            }
-
-            /* Serialize transaction for storage */
-            uint8_t *tx_buffer = malloc(65536);
-            if (tx_buffer) {
-                size_t tx_len = 0;
-                rc = dnac_tx_serialize(tx, tx_buffer, 65536, &tx_len);
-                if (rc == DNAC_SUCCESS) {
-                    /* For received transactions: amount_in = received_amount, amount_out = 0, fee = 0 */
-                    dnac_db_store_transaction(ctx->db, tx->tx_hash, tx_buffer, tx_len,
-                                              tx->type, sender_fp,
-                                              received_amount, 0, 0);
-                }
-                free(tx_buffer);
-            }
-        }
-
-        dnac_free_transaction(tx);
-    }
-
-    /* Free DHT results */
-    for (size_t i = 0; i < count; i++) {
-        free(values[i]);
-    }
-    free(values);
-    free(values_len);
-
-    return DNAC_SUCCESS;
+    return rc;
 }
 
 int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
