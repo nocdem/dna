@@ -282,26 +282,48 @@ static void nodus_witness_propose_batch(nodus_witness_t *w) {
 
     /* Re-verify each TX (mempool entries may be stale due to
      * double-spend from a concurrent batch on another view) */
+    /* Track all nullifiers seen in this batch to prevent intra-batch double-spend.
+     * Max: NODUS_W_MAX_BLOCK_TXS(10) * NODUS_T3_MAX_TX_INPUTS(16) = 160 entries */
+    uint8_t seen_nullifiers[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS]
+                           [NODUS_T3_NULLIFIER_LEN];
+    int seen_count = 0;
+
     int valid = 0;
     for (int i = 0; i < count; i++) {
-        /* Quick nullifier check — full verification done in start_round_batch */
-        bool stale = false;
+        bool reject = false;
+
         for (int j = 0; j < batch[i]->nullifier_count; j++) {
+            /* Check against DB (already committed) */
             if (nodus_witness_nullifier_exists(w, batch[i]->nullifiers[j])) {
-                stale = true;
+                QGP_LOG_WARN(LOG_TAG, "mempool TX stale (DB double-spend), dropping");
+                reject = true;
                 break;
             }
+            /* Check against other TXs in this batch (intra-batch double-spend) */
+            for (int k = 0; k < seen_count; k++) {
+                if (memcmp(seen_nullifiers[k], batch[i]->nullifiers[j],
+                           NODUS_T3_NULLIFIER_LEN) == 0) {
+                    QGP_LOG_WARN(LOG_TAG, "intra-batch double-spend detected, "
+                                 "dropping TX %d", i);
+                    reject = true;
+                    break;
+                }
+            }
+            if (reject) break;
         }
 
-        if (stale) {
-            QGP_LOG_WARN(LOG_TAG, "mempool TX stale (double-spend), dropping");
-            /* Send error to client if connected */
-            if (batch[i]->client_conn) {
-                /* Simple error — no CBOR helpers available here */
-            }
+        if (reject) {
             nodus_witness_mempool_entry_free(batch[i]);
             batch[i] = NULL;
         } else {
+            /* Record this TX's nullifiers as seen */
+            for (int j = 0; j < batch[i]->nullifier_count; j++) {
+                if (seen_count < NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS) {
+                    memcpy(seen_nullifiers[seen_count], batch[i]->nullifiers[j],
+                           NODUS_T3_NULLIFIER_LEN);
+                    seen_count++;
+                }
+            }
             if (valid != i)
                 batch[valid] = batch[i];
             valid++;

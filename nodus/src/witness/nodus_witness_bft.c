@@ -1035,7 +1035,12 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                      "block_hash mismatch");
         }
 
-        /* Allocate batch entries from proposal data */
+        /* Allocate batch entries from proposal data.
+         * Track nullifiers across TXs to prevent intra-batch double-spend. */
+        uint8_t batch_seen_nuls[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS]
+                               [NODUS_T3_NULLIFIER_LEN];
+        int batch_seen_count = 0;
+
         w->round_state.batch_count = prop->batch_count;
         for (int i = 0; i < prop->batch_count && !tx_invalid; i++) {
             const nodus_t3_batch_tx_t *btx = &prop->batch_txs[i];
@@ -1082,6 +1087,36 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                 nodus_witness_mempool_entry_free(entry);
                 tx_invalid = true;
                 break;
+            }
+
+            /* Intra-batch double-spend check: reject if any nullifier
+             * was already seen in an earlier TX in this batch */
+            for (int j = 0; j < entry->nullifier_count && !tx_invalid; j++) {
+                for (int k = 0; k < batch_seen_count; k++) {
+                    if (memcmp(batch_seen_nuls[k], entry->nullifiers[j],
+                               NODUS_T3_NULLIFIER_LEN) == 0) {
+                        fprintf(stderr, "%s: batch TX %d intra-batch "
+                                "double-spend — REJECTING batch\n",
+                                LOG_TAG, i);
+                        snprintf(reject_reason, sizeof(reject_reason),
+                                 "intra-batch double-spend");
+                        nodus_witness_mempool_entry_free(entry);
+                        entry = NULL;
+                        tx_invalid = true;
+                        break;
+                    }
+                }
+            }
+            if (tx_invalid) break;
+
+            /* Record nullifiers as seen */
+            for (int j = 0; j < entry->nullifier_count; j++) {
+                if (batch_seen_count <
+                    NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS) {
+                    memcpy(batch_seen_nuls[batch_seen_count],
+                           entry->nullifiers[j], NODUS_T3_NULLIFIER_LEN);
+                    batch_seen_count++;
+                }
             }
 
             w->round_state.batch_entries[i] = entry;
