@@ -1364,18 +1364,18 @@
           <!-- Circuit routing diagram -->
           <div class="reveal" style="max-width:32rem;margin:0 auto 2.5rem;">
             <div style="background:var(--panel);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);padding:1.5rem;text-align:center;">
-              <div style="font-family:var(--font-display);font-size:0.7rem;color:var(--teal);letter-spacing:0.1em;margin-bottom:1rem;">CIRCUIT ROUTING</div>
+              <div style="font-family:var(--font-display);font-size:0.7rem;color:var(--teal);letter-spacing:0.1em;margin-bottom:1rem;" data-i18n="nodus_page.transport.circuit_label">CIRCUIT ROUTING</div>
               <div style="font-size:0.82rem;color:var(--text-muted);line-height:1.8;">
-                <div><strong style="color:var(--text-main);">Same-Nodus (2 hops)</strong></div>
-                <div style="font-family:monospace;font-size:0.75rem;">Client A &rarr; Nodus &rarr; Client B</div>
+                <div data-i18n="nodus_page.transport.circuit_same"><strong style="color:var(--text-main);">Same-Nodus (2 hops)</strong></div>
+                <div style="font-family:monospace;font-size:0.75rem;" data-i18n="nodus_page.transport.circuit_same_path">Client A &rarr; Nodus &rarr; Client B</div>
                 <div style="margin:0.8rem 0;border-top:1px solid var(--border-subtle);"></div>
-                <div><strong style="color:var(--text-main);">Cross-Nodus (3 hops)</strong></div>
-                <div style="font-family:monospace;font-size:0.75rem;">Client A &rarr; Nodus A &rarr; Nodus B &rarr; Client B</div>
+                <div data-i18n="nodus_page.transport.circuit_cross"><strong style="color:var(--text-main);">Cross-Nodus (3 hops)</strong></div>
+                <div style="font-family:monospace;font-size:0.75rem;" data-i18n="nodus_page.transport.circuit_cross_path">Client A &rarr; Nodus A &rarr; Nodus B &rarr; Client B</div>
               </div>
               <div style="margin-top:1rem;font-size:0.7rem;color:var(--text-muted);text-align:left;">
-                <div style="margin-bottom:0.3rem;"><span style="color:var(--teal);">Layer 1</span> &mdash; Client&harr;Nodus: Kyber1024 + AES-256-GCM</div>
-                <div style="margin-bottom:0.3rem;"><span style="color:var(--orange);">Layer 2</span> &mdash; Nodus&harr;Nodus: Kyber1024 + AES-256-GCM</div>
-                <div><span style="color:var(--teal);">Layer 3</span> &mdash; Circuit E2E: Kyber1024 + AES-256-GCM (onion)</div>
+                <div style="margin-bottom:0.3rem;" data-i18n="nodus_page.transport.circuit_layer1"><span style="color:var(--teal);">Layer 1</span> &mdash; Client&harr;Nodus: Kyber1024 + AES-256-GCM</div>
+                <div style="margin-bottom:0.3rem;" data-i18n="nodus_page.transport.circuit_layer2"><span style="color:var(--orange);">Layer 2</span> &mdash; Nodus&harr;Nodus: Kyber1024 + AES-256-GCM</div>
+                <div data-i18n="nodus_page.transport.circuit_layer3"><span style="color:var(--teal);">Layer 3</span> &mdash; Circuit E2E: Kyber1024 + AES-256-GCM (onion)</div>
               </div>
             </div>
           </div>
@@ -1419,14 +1419,14 @@
           <div class="security-table-wrap reveal" style="margin-top:2rem;">
             <table class="security-table">
               <thead>
-                <tr><th>Parameter</th><th>Value</th><th>Purpose</th></tr>
+                <tr><th data-i18n="nodus_page.transport.th_parameter">Parameter</th><th data-i18n="nodus_page.transport.th_value">Value</th><th data-i18n="nodus_page.transport.th_purpose">Purpose</th></tr>
               </thead>
               <tbody>
-                <tr><td class="algo">Circuit Hops</td><td><strong>2&ndash;3</strong></td><td>Same-nodus (2) or cross-nodus (3) routing</td></tr>
-                <tr><td class="algo">Frame Size</td><td><strong>64 KiB max</strong></td><td>Maximum payload per circuit data frame</td></tr>
-                <tr><td class="algo">Session Circuits</td><td><strong>16 max</strong></td><td>Concurrent circuits per client session</td></tr>
-                <tr><td class="algo">Server Circuits</td><td><strong>256 max</strong></td><td>Global inter-node circuit limit per server</td></tr>
-                <tr><td class="algo">Open Timeout</td><td><strong>5 seconds</strong></td><td>Circuit establishment timeout</td></tr>
+                <tr><td class="algo" data-i18n="nodus_page.transport.spec_hops">Circuit Hops</td><td data-i18n="nodus_page.transport.spec_hops_value"><strong>2&ndash;3</strong></td><td data-i18n="nodus_page.transport.spec_hops_purpose">Same-nodus (2) or cross-nodus (3) routing</td></tr>
+                <tr><td class="algo" data-i18n="nodus_page.transport.spec_frame">Frame Size</td><td data-i18n="nodus_page.transport.spec_frame_value"><strong>64 KiB max</strong></td><td data-i18n="nodus_page.transport.spec_frame_purpose">Maximum payload per circuit data frame</td></tr>
+                <tr><td class="algo" data-i18n="nodus_page.transport.spec_session">Session Circuits</td><td data-i18n="nodus_page.transport.spec_session_value"><strong>16 max</strong></td><td data-i18n="nodus_page.transport.spec_session_purpose">Concurrent circuits per client session</td></tr>
+                <tr><td class="algo" data-i18n="nodus_page.transport.spec_server">Server Circuits</td><td data-i18n="nodus_page.transport.spec_server_value"><strong>256 max</strong></td><td data-i18n="nodus_page.transport.spec_server_purpose">Global inter-node circuit limit per server</td></tr>
+                <tr><td class="algo" data-i18n="nodus_page.transport.spec_timeout">Open Timeout</td><td data-i18n="nodus_page.transport.spec_timeout_value"><strong>5 seconds</strong></td><td data-i18n="nodus_page.transport.spec_timeout_purpose">Circuit establishment timeout</td></tr>
               </tbody>
             </table>
           </div>
