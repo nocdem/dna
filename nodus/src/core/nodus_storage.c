@@ -212,7 +212,24 @@ int nodus_storage_open(const char *path, nodus_storage_t *store) {
     /* WAL mode for better concurrency */
     sqlite3_exec(store->db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
     sqlite3_exec(store->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(store->db, "PRAGMA auto_vacuum=INCREMENTAL", NULL, NULL, NULL);
+
+    /* Enable incremental auto_vacuum. On existing DBs this requires VACUUM
+     * to take effect (one-time migration, skipped on subsequent starts). */
+    {
+        sqlite3_stmt *av = NULL;
+        int cur_av = 0;
+        if (sqlite3_prepare_v2(store->db, "PRAGMA auto_vacuum", -1, &av, NULL) == SQLITE_OK) {
+            if (sqlite3_step(av) == SQLITE_ROW)
+                cur_av = sqlite3_column_int(av, 0);
+            sqlite3_finalize(av);
+        }
+        if (cur_av != 2) {  /* 2 = INCREMENTAL */
+            fprintf(stderr, "STORAGE: migrating auto_vacuum to INCREMENTAL (one-time VACUUM)...\n");
+            sqlite3_exec(store->db, "PRAGMA auto_vacuum=INCREMENTAL", NULL, NULL, NULL);
+            sqlite3_exec(store->db, "VACUUM", NULL, NULL, NULL);
+            fprintf(stderr, "STORAGE: auto_vacuum migration complete\n");
+        }
+    }
 
     /* Schema migration: add data_hash column if missing.
      * Existing rows get NULL — NULL >= X evaluates to NULL (not TRUE),
