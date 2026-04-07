@@ -198,6 +198,12 @@ void nodus_witness_sync_check(nodus_witness_t *w) {
 
     if (peer_height <= local_height) return;
 
+    /* Don't sync until roster has quorum — cert verification needs roster peers */
+    if (w->bft_config.quorum == 0) {
+        fprintf(stderr, "%s: sync deferred — roster quorum not yet established\n", LOG_TAG);
+        return;
+    }
+
     fprintf(stderr, "%s: sync needed: local=%llu peer=%llu (peer_idx=%d)\n",
             LOG_TAG, (unsigned long long)local_height,
             (unsigned long long)peer_height, peer_idx);
@@ -208,14 +214,10 @@ void nodus_witness_sync_check(nodus_witness_t *w) {
     w->sync_state.sync_target_height = peer_height;
     w->sync_state.last_sync_attempt = now;
 
-    /* Phase 1: Fork detection — start checking from block 1 if we have blocks */
-    if (local_height > 0) {
-        /* Start fork check from block 1 */
-        w->sync_state.sync_current_height = 1;
-    } else {
-        /* Pre-genesis or DB-dropped: start from block 0 (genesis) */
-        w->sync_state.sync_current_height = 0;
-    }
+    /* Start from block 1 (genesis is height=1 in DB).
+     * If local_height > 0: fork detection from block 1.
+     * If local_height == 0: full sync from genesis (block 1). */
+    w->sync_state.sync_current_height = 1;
 
     nodus_witness_sync_request_next(w);
 }
@@ -414,8 +416,8 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
                     return -1;
                 }
 
-                /* Reset sync to start from genesis */
-                w->sync_state.sync_current_height = 0;
+                /* Reset sync to start from genesis (height=1 in DB) */
+                w->sync_state.sync_current_height = 1;
                 return nodus_witness_sync_request_next(w);
             }
 
