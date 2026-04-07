@@ -418,10 +418,21 @@ static int update_utxo_set(nodus_witness_t *w,
         return -1;
     }
 
-    /* Skip inputs */
+    /* Parse inputs and sum their amounts (for fee calculation) */
     uint8_t input_count = tx_data[offset++];
-    size_t input_skip = (size_t)input_count * (NODUS_T3_NULLIFIER_LEN + 8);
-    offset += input_skip;
+    uint64_t total_input = 0;
+    for (int i = 0; i < input_count; i++) {
+        offset += NODUS_T3_NULLIFIER_LEN;  /* skip nullifier */
+        if (offset + 8 > tx_len) {
+            fprintf(stderr, "%s: update_utxo_set: input %d truncated at amount\n",
+                    LOG_TAG, i);
+            return -1;
+        }
+        uint64_t in_amt;
+        memcpy(&in_amt, tx_data + offset, 8);
+        total_input += in_amt;
+        offset += 8;
+    }
 
     /* Read output count */
     if (offset >= tx_len) {
@@ -438,6 +449,7 @@ static int update_utxo_set(nodus_witness_t *w,
 
     uint64_t block_height = nodus_witness_block_height(w) + 1;
     int stored = 0;
+    uint64_t total_output = 0;
 
     for (int i = 0; i < output_count; i++) {
         /* Minimum output: version(1) + fp(129) + amount(8) + seed(32) + memo_len(1) = 171 */
@@ -455,6 +467,7 @@ static int update_utxo_set(nodus_witness_t *w,
         uint64_t amount;
         memcpy(&amount, tx_data + offset, 8);
         offset += 8;
+        total_output += amount;
 
         const uint8_t *nullifier_seed = tx_data + offset;
         offset += 32;
@@ -486,10 +499,38 @@ static int update_utxo_set(nodus_witness_t *w,
         }
     }
 
-    fprintf(stderr, "%s: UTXO set updated: -%d spent, +%d/%d outputs (block %llu)\n",
+    /* ── Burn UTXO for fee ──────────────────────────────────────── */
+    uint64_t fee = 0;
+    if (tx_type != NODUS_W_TX_GENESIS && total_input > total_output) {
+        fee = total_input - total_output;
+    }
+
+    if (fee > 0) {
+        /* Nullifier = SHA3-512(BURN_ADDRESS + tx_hash + "burn")
+         * Unique per TX, unspendable (no private key for burn address) */
+        uint8_t burn_nul_input[128 + NODUS_T3_TX_HASH_LEN + 4];
+        memcpy(burn_nul_input, DNAC_BURN_ADDRESS, 128);
+        memcpy(burn_nul_input + 128, tx_hash, NODUS_T3_TX_HASH_LEN);
+        memcpy(burn_nul_input + 128 + NODUS_T3_TX_HASH_LEN, "burn", 4);
+
+        nodus_key_t burn_nul;
+        if (nodus_hash(burn_nul_input, sizeof(burn_nul_input), &burn_nul) == 0) {
+            if (nodus_witness_utxo_add(w, burn_nul.bytes, DNAC_BURN_ADDRESS,
+                                          fee, tx_hash, (uint32_t)output_count,
+                                          block_height) == 0) {
+                stored++;
+                fprintf(stderr, "%s: burn UTXO: fee=%llu → %s (block %llu)\n",
+                        LOG_TAG, (unsigned long long)fee,
+                        "burn_address", (unsigned long long)block_height);
+            }
+        }
+    }
+
+    fprintf(stderr, "%s: UTXO set updated: -%d spent, +%d/%d outputs, fee=%llu (block %llu)\n",
             LOG_TAG,
             (tx_type != NODUS_W_TX_GENESIS) ? nullifier_count : 0,
-            stored, output_count,
+            stored, output_count + (fee > 0 ? 1 : 0),
+            (unsigned long long)fee,
             (unsigned long long)block_height);
     return 0;
 }
@@ -552,6 +593,13 @@ static int commit_block_inner(nodus_witness_t *w,
             fprintf(stderr, "%s: genesis record failed: %d\n", LOG_TAG, rc);
             failed = true;
         }
+        /* Initialize supply tracking table for invariant checks */
+        if (!failed) {
+            int src = nodus_witness_supply_init(w, supply, tx_hash);
+            if (src != 0 && src != -2) {
+                fprintf(stderr, "%s: supply_init failed: %d\n", LOG_TAG, src);
+            }
+        }
     } else {
         for (int i = 0; i < nullifier_count; i++) {
             int rc = nodus_witness_nullifier_add(w, nullifiers[i], tx_hash);
@@ -568,6 +616,23 @@ static int commit_block_inner(nodus_witness_t *w,
                                tx_data, tx_len) != 0) {
             fprintf(stderr, "%s: UTXO set update failed\n", LOG_TAG);
             failed = true;
+        }
+    }
+
+    /* ── Supply invariant check ─────────────────────────────────── */
+    if (!failed && w->db) {
+        nodus_witness_supply_t sup;
+        uint64_t utxo_total = 0;
+        if (nodus_witness_supply_get(w, &sup) == 0 &&
+            nodus_witness_utxo_sum(w, &utxo_total) == 0) {
+            if (sup.genesis_supply != utxo_total) {
+                QGP_LOG_ERROR(LOG_TAG,
+                    "SUPPLY INVARIANT VIOLATION: genesis=%llu != utxo_sum=%llu "
+                    "(delta=%lld)",
+                    (unsigned long long)sup.genesis_supply,
+                    (unsigned long long)utxo_total,
+                    (long long)(sup.genesis_supply - utxo_total));
+            }
         }
     }
 

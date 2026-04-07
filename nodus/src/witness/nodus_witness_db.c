@@ -177,6 +177,21 @@ int nodus_witness_utxo_count(nodus_witness_t *w, uint64_t *count_out) {
     return 0;
 }
 
+int nodus_witness_utxo_sum(nodus_witness_t *w, uint64_t *sum_out) {
+    if (!w || !w->db || !sum_out) return -1;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT COALESCE(SUM(amount), 0) FROM utxo_set", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        *sum_out = (uint64_t)sqlite3_column_int64(stmt, 0);
+
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
 int nodus_witness_utxo_checksum(nodus_witness_t *w, uint8_t *checksum_out) {
     if (!w || !w->db || !checksum_out) return -1;
 

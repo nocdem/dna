@@ -131,6 +131,12 @@ extern "C" {
 #define NODUS_W_MAX_BLOCK_TXS       10      /* max TXs per batch/block */
 #define NODUS_W_MAX_PENDING_FWD     16      /* max pending forward slots */
 
+/* Burn address: all-zero fingerprint (128 hex zero = 64 bytes zero)
+ * Fee UTXOs are recorded here. Unspendable — no private key exists. */
+#define DNAC_BURN_ADDRESS \
+    "0000000000000000000000000000000000000000000000000000000000000000" \
+    "0000000000000000000000000000000000000000000000000000000000000000"
+
 /* Circuit (VPN mesh) — Faz 1 */
 #define NODUS_MAX_CIRCUITS_PER_SESSION   16
 #define NODUS_MAX_CIRCUIT_PAYLOAD        (64 * 1024)

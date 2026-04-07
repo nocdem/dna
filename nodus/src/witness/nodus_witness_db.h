@@ -37,6 +37,7 @@ int  nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
                               uint64_t block_height);
 int  nodus_witness_utxo_remove(nodus_witness_t *w, const uint8_t *nullifier);
 int  nodus_witness_utxo_count(nodus_witness_t *w, uint64_t *count_out);
+int  nodus_witness_utxo_sum(nodus_witness_t *w, uint64_t *sum_out);
 
 /**
  * Compute SHA3-512 checksum of the entire UTXO set.

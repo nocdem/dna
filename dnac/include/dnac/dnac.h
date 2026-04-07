@@ -101,6 +101,12 @@ extern "C" {
 /** Fingerprint size (128 hex chars + null) */
 #define DNAC_FINGERPRINT_SIZE       129
 
+/** Burn address: all-zero fingerprint (128 hex zero = 64 bytes zero)
+ *  Fee UTXOs are recorded here. Unspendable — no private key exists. */
+#define DNAC_BURN_ADDRESS \
+    "0000000000000000000000000000000000000000000000000000000000000000" \
+    "0000000000000000000000000000000000000000000000000000000000000000"
+
 /* ============================================================================
  * Forward Declarations
  * ========================================================================== */
