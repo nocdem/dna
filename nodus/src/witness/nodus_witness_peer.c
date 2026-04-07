@@ -326,13 +326,14 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
     snprintf(msg.ident.address, sizeof(msg.ident.address),
              "%s:%u", ident_ip, ident_wport);
 
-    /* Block height and UTXO checksum for sync detection */
+    /* Block height, UTXO checksum, and view for sync/leader detection */
     msg.ident.block_height = nodus_witness_block_height(w);
     if (w->cached_utxo_checksum_valid) {
         memcpy(msg.ident.utxo_checksum, w->cached_utxo_checksum, NODUS_KEY_BYTES);
     } else {
         nodus_witness_utxo_checksum(w, msg.ident.utxo_checksum);
     }
+    msg.ident.current_view = w->current_view;
     msg.ident.has_block_height = true;
 
     /* Fill header */
@@ -447,6 +448,14 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
             w->peers[pi].remote_height = ident->block_height;
             memcpy(w->peers[pi].remote_checksum, ident->utxo_checksum,
                    NODUS_KEY_BYTES);
+
+            /* View sync: adopt higher view from peer.
+             * Prevents leader election mismatch after restart. */
+            if (ident->current_view > w->current_view) {
+                fprintf(stderr, "WITNESS-PEER: adopting higher view %u from peer "
+                        "(was %u)\n", ident->current_view, w->current_view);
+                w->current_view = ident->current_view;
+            }
         }
     }
 

@@ -176,7 +176,8 @@ typedef struct {
     char            address[256];
     uint64_t        block_height;                       /* current chain height */
     uint8_t         utxo_checksum[NODUS_KEY_BYTES];     /* SHA3-512 of UTXO set */
-    bool            has_block_height;                    /* true if bh/uck present */
+    uint32_t        current_view;                       /* BFT view number */
+    bool            has_block_height;                    /* true if bh/uck/view present */
 } nodus_t3_ident_t;
 
 /** w_sync_req: Request block at height N for sync */
