@@ -635,6 +635,7 @@ static int commit_block_inner(nodus_witness_t *w,
         if (nodus_witness_supply_add_burned(w, committed_fee, tx_hash) != 0) {
             fprintf(stderr, "%s: supply_add_burned failed (fee=%llu)\n",
                     LOG_TAG, (unsigned long long)committed_fee);
+            failed = true;
         }
     }
 
