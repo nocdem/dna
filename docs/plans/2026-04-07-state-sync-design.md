@@ -76,7 +76,52 @@ w_ident args (existing + new):
 
 ## Sync Flow
 
-### Block-by-Block Sync
+### Phase 1: Fork Detection
+
+Before syncing blocks, check if local chain agrees with peer's chain. Compare block hashes starting from genesis:
+
+```
+Node A (height=3, diverged)          Node B (height=4, correct)
+    |                                    |
+    |--- w_ident (bh=3) --------------->|
+    |<-- w_ident (bh=4) ----------------|
+    |                                    |
+    |  detect: local=3, peer=4, need sync
+    |                                    |
+    |--- w_sync_req {h=1} ------------->|  (verify genesis matches)
+    |<-- w_sync_rsp {block 1} ---------|
+    |  local block 1 tx_hash == peer block 1 tx_hash? YES ✓
+    |                                    |
+    |--- w_sync_req {h=2} ------------->|  (check block 2)
+    |<-- w_sync_rsp {block 2} ---------|
+    |  local block 2 tx_hash == peer block 2 tx_hash?
+    |  LOCAL: D8CE64D4  PEER: 5A1ED7A1
+    |  DIFFERENT → FORK DETECTED at height 2
+    |                                    |
+    |  Peer chain longer (4 > 3) + valid certs
+    |  → DROP local witness DB
+    |  → Full resync from genesis
+```
+
+### Phase 2: DB Rebuild on Fork
+
+When fork is detected:
+
+```
+1. Close witness DB
+2. Delete witness_<chain_id>.db file
+3. Set w->db = NULL (back to pre-genesis state)
+4. Start full sync from height 0 (genesis)
+```
+
+This is safe because:
+- `do_commit_db()` with genesis TX + `w->db == NULL` automatically creates new DB
+- All blocks replayed in order rebuild complete state
+- prev_hash chain verified at each step
+
+### Phase 3: Block-by-Block Sync (Normal Case)
+
+When no fork detected (just missing blocks):
 
 ```
 Node A (height=1)                    Node B (height=4)
@@ -84,7 +129,8 @@ Node A (height=1)                    Node B (height=4)
     |--- w_ident (bh=1) --------------->|
     |<-- w_ident (bh=4) ----------------|
     |                                    |
-    |  detect: local=1, peer=4, need blocks 2,3,4
+    |  Fork check: block 1 matches ✓
+    |  No fork, just missing blocks 2,3,4
     |                                    |
     |--- w_sync_req {h=2} ------------->|
     |<-- w_sync_rsp {block 2 data} -----|
@@ -95,16 +141,71 @@ Node A (height=1)                    Node B (height=4)
     |                                    |
     |--- w_sync_req {h=3} ------------->|
     |<-- w_sync_rsp {block 3 data} -----|
-    |  verify prev_hash(3) chains from block 2 ✓
-    |  verify 2f+1 commit certs ✓
-    |  do_commit_db() replay ✓
-    |  cert_store() ✓
+    |  verify ✓, replay ✓
     |                                    |
     |--- w_sync_req {h=4} ------------->|
     |<-- w_sync_rsp {block 4 data} -----|
     |  verify ✓, replay ✓
     |                                    |
     |  SYNCED: height=4, chain consistent
+```
+
+### Full Sync Algorithm
+
+```
+sync_from_peer(peer):
+    local_height = nodus_witness_block_height(w)
+    peer_height  = peer->remote_height
+
+    if peer_height <= local_height:
+        return  // nothing to sync
+
+    // Phase 1: Fork detection (compare existing blocks)
+    fork_height = -1
+    for h = 1 to min(local_height, peer_height):
+        local_block = nodus_witness_block_get(w, h)
+        peer_block  = w_sync_req(peer, h)
+        verify_certs(peer_block)  // always verify even during fork check
+
+        if local_block.tx_hash != peer_block.tx_hash:
+            fork_height = h
+            break
+
+    // Phase 2: Handle fork
+    if fork_height > 0:
+        log("FORK DETECTED at height %d, rebuilding", fork_height)
+        close_and_delete_witness_db(w)
+        // Now local_height = 0, resync everything
+        local_height = 0
+
+    // Phase 3: Sync missing blocks
+    for h = (local_height + 1) to peer_height:
+        block = w_sync_req(peer, h)
+
+        // Verify prev_hash
+        if h == 1:
+            assert block.prev_hash == all_zeros  // genesis
+        else:
+            expected = compute_prev_hash(local_latest_block)
+            assert block.prev_hash == expected
+
+        // Verify commit certificates (2f+1 Dilithium5 sigs)
+        verified = verify_certs(block)
+        if h == 1 (genesis):
+            assert verified == n_witnesses  // unanimous
+        else:
+            assert verified >= 2f+1  // quorum
+
+        // Replay
+        do_commit_db(w, block.tx_hash, block.tx_type,
+                     block.nullifiers, block.nullifier_count,
+                     block.total_supply, block.timestamp,
+                     block.proposer_id, block.tx_data, block.tx_len)
+
+        // Store commit certificates
+        cert_store(w, h, block.certs, block.cert_count)
+
+    log("SYNCED: height %d → %d", original_height, peer_height)
 ```
 
 ### Genesis Sync (height=0)
@@ -217,12 +318,34 @@ uint64_t    remote_height;            // peer's block height from w_ident
 
 | Scenario | Action |
 |----------|--------|
-| Peer disconnects mid-sync | Resume with another peer |
-| prev_hash mismatch | Reject block, try another peer |
+| Peer disconnects mid-sync | Resume with another peer from last synced height |
+| prev_hash mismatch (no fork) | Reject block, try another peer |
 | Cert verification fails | Reject block, try another peer |
 | All peers fail | Wait for next epoch tick retry |
 | Sync during active BFT round | Defer sync until IDLE phase |
 | Block already exists locally | Skip, move to next height |
+| **Fork detected** | Drop witness DB, full resync from genesis |
+| Fork at genesis (different chain) | Reject — chain_id mismatch, do not sync |
+| DB delete fails | Abort sync, log error, retry next epoch |
+
+## Fork Detection Rules
+
+```
+1. Genesis block (height 1) tx_hash MUST match
+   → If different: chain_id mismatch, different chain, ABORT
+   → This prevents syncing from a node on a completely different chain
+
+2. Any other block tx_hash differs:
+   → Fork detected
+   → Peer chain must be LONGER to trigger rebuild
+   → Peer blocks must have VALID commit certificates
+   → If both conditions met: drop local DB, full resync
+
+3. Fork rebuild is atomic:
+   → Close DB → Delete file → Resync from genesis
+   → If resync fails midway: node is in pre-genesis state
+   → Next epoch tick will retry sync
+```
 
 ## Files
 
