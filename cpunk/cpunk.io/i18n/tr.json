@@ -670,5 +670,5 @@
   "wallet.security.li2": "Güvenli bellek: Özel anahtarlar secure_memzero() ile imzalamadan sonra silinir",
   "wallet.security.li3": "İhtiyaç anında türetim: Anahtarlar türetilir, kullanılır ve diske hiç dokunmadan temizlenir",
   "wallet.security.li4": "Yalnızca yerel: Tüm imzalama işlemleri cihazınızda gerçekleşir — özel anahtarlar istemciden asla çıkmaz",
-  "wallet.security.title": "Post-kuantum seed koruması",
+  "wallet.security.title": "Post-kuantum seed koruması"
 }
