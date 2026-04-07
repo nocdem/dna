@@ -3078,10 +3078,22 @@ static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
 /* ── Witness TCP callbacks (dedicated port 4004) ─────────────────── */
 
 static void on_witness_connect(nodus_tcp_conn_t *conn, void *ctx) {
-    (void)ctx;
+    nodus_server_t *srv = (nodus_server_t *)ctx;
     conn->is_nodus = true;
-    /* Witness port uses T3 protocol with its own w_ident auth cycle.
-     * Do NOT send T2 hello here — it would be rejected by T3 decoder. */
+
+    /* When require_peer_auth is enabled, send T2 hello to initiate
+     * Dilithium5 auth before T3 w_ident exchange can proceed. */
+    if (srv->config.require_peer_auth) {
+        uint8_t hello_buf[8192];
+        size_t hello_len = 0;
+        if (nodus_t2_hello(0, &srv->identity.pk, &srv->identity.node_id,
+                            hello_buf, sizeof(hello_buf), &hello_len) == 0) {
+            nodus_tcp_send_raw(conn, hello_buf, hello_len);
+            conn->auth_state = NODUS_CONN_AUTH_HELLO_SENT;
+        } else {
+            conn->auth_state = NODUS_CONN_AUTH_FAILED;
+        }
+    }
 }
 
 static void on_witness_accept(nodus_tcp_conn_t *conn, void *ctx) {
