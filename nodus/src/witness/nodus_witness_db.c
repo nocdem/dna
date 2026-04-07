@@ -750,6 +750,27 @@ int nodus_witness_supply_get(nodus_witness_t *w,
     return 0;
 }
 
+int nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,
+                                       const uint8_t *tx_hash) {
+    if (!w || !w->db || fee == 0) return 0;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "UPDATE supply_tracking SET total_burned = total_burned + ?, "
+        "current_supply = current_supply - ?, last_tx_hash = ?, "
+        "last_sequence = last_sequence + 1 WHERE id = 1",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int64(stmt, 1, (int64_t)fee);
+    sqlite3_bind_int64(stmt, 2, (int64_t)fee);
+    sqlite3_bind_blob(stmt, 3, tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
 /* ── Committed transaction storage ───────────────────────────────── */
 
 int nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,

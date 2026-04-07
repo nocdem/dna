@@ -137,6 +137,8 @@ int  nodus_witness_supply_init(nodus_witness_t *w, uint64_t total_supply,
                                  const uint8_t *genesis_tx_hash);
 int  nodus_witness_supply_get(nodus_witness_t *w,
                                 nodus_witness_supply_t *out);
+int  nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,
+                                       const uint8_t *tx_hash);
 
 /* ── Committed transaction storage ───────────────────────────────── */
 

@@ -395,7 +395,8 @@ static int update_utxo_set(nodus_witness_t *w,
                               const uint8_t *const *nullifiers,
                               uint8_t nullifier_count,
                               const uint8_t *tx_data,
-                              uint32_t tx_len) {
+                              uint32_t tx_len,
+                              uint64_t *fee_out) {
     if (!tx_data || tx_len < 75) {
         fprintf(stderr, "%s: update_utxo_set: invalid tx_data (ptr=%p len=%u)\n",
                 LOG_TAG, (void *)tx_data, tx_len);
@@ -514,17 +515,25 @@ static int update_utxo_set(nodus_witness_t *w,
         memcpy(burn_nul_input + 128 + NODUS_T3_TX_HASH_LEN, "burn", 4);
 
         nodus_key_t burn_nul;
-        if (nodus_hash(burn_nul_input, sizeof(burn_nul_input), &burn_nul) == 0) {
-            if (nodus_witness_utxo_add(w, burn_nul.bytes, DNAC_BURN_ADDRESS,
-                                          fee, tx_hash, (uint32_t)output_count,
-                                          block_height) == 0) {
-                stored++;
-                fprintf(stderr, "%s: burn UTXO: fee=%llu → %s (block %llu)\n",
-                        LOG_TAG, (unsigned long long)fee,
-                        "burn_address", (unsigned long long)block_height);
-            }
+        if (nodus_hash(burn_nul_input, sizeof(burn_nul_input), &burn_nul) != 0) {
+            fprintf(stderr, "%s: burn UTXO hash failed (fee=%llu)\n",
+                    LOG_TAG, (unsigned long long)fee);
+            return -1;
         }
+        if (nodus_witness_utxo_add(w, burn_nul.bytes, DNAC_BURN_ADDRESS,
+                                      fee, tx_hash, (uint32_t)output_count,
+                                      block_height) != 0) {
+            fprintf(stderr, "%s: burn UTXO insert failed (fee=%llu)\n",
+                    LOG_TAG, (unsigned long long)fee);
+            return -1;
+        }
+        stored++;
+        fprintf(stderr, "%s: burn UTXO: fee=%llu → burn_address (block %llu)\n",
+                LOG_TAG, (unsigned long long)fee,
+                (unsigned long long)block_height);
     }
+
+    if (fee_out) *fee_out = fee;
 
     fprintf(stderr, "%s: UTXO set updated: -%d spent, +%d/%d outputs, fee=%llu (block %llu)\n",
             LOG_TAG,
@@ -598,6 +607,7 @@ static int commit_block_inner(nodus_witness_t *w,
             int src = nodus_witness_supply_init(w, supply, tx_hash);
             if (src != 0 && src != -2) {
                 fprintf(stderr, "%s: supply_init failed: %d\n", LOG_TAG, src);
+                failed = true;
             }
         }
     } else {
@@ -611,11 +621,20 @@ static int commit_block_inner(nodus_witness_t *w,
         }
     }
 
+    uint64_t committed_fee = 0;
     if (!failed && tx_data && tx_len > 0) {
         if (update_utxo_set(w, tx_hash, tx_type, nullifiers, nullifier_count,
-                               tx_data, tx_len) != 0) {
+                               tx_data, tx_len, &committed_fee) != 0) {
             fprintf(stderr, "%s: UTXO set update failed\n", LOG_TAG);
             failed = true;
+        }
+    }
+
+    /* ── Update supply tracking (burned fees) ─────────────────── */
+    if (!failed && committed_fee > 0 && w->db) {
+        if (nodus_witness_supply_add_burned(w, committed_fee, tx_hash) != 0) {
+            fprintf(stderr, "%s: supply_add_burned failed (fee=%llu)\n",
+                    LOG_TAG, (unsigned long long)committed_fee);
         }
     }
 
