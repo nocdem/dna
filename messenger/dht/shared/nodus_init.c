@@ -20,6 +20,7 @@
 #include "nodus/nodus.h"
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "dna_config.h"
 /* #include "bootstrap_cache.h" — disabled, stale port data caused startup delay */
 
@@ -58,6 +59,218 @@ static dna_config_t g_config = {0};
 /* Status callback */
 static nodus_messenger_status_cb_t g_status_cb = NULL;
 static void *g_status_cb_data = NULL;
+
+/* ── Known Nodes Cache ─────────────────────────────────────────── */
+
+#define KNOWN_NODES_FILE     "known_nodes"
+#define KNOWN_NODES_MAX      16
+#define KNOWN_NODES_FP_HEX   32   /* first 16 bytes of fingerprint = 32 hex chars */
+
+typedef struct {
+    char        ip[64];
+    uint16_t    port;
+    char        dil_fp[KNOWN_NODES_FP_HEX + 1];     /* first 16 bytes of Dilithium fingerprint hex */
+    char        kyber_hash[KNOWN_NODES_FP_HEX + 1];  /* first 16 bytes of SHA3-512(kyber_pk) hex */
+    uint64_t    last_seen;                             /* unix timestamp */
+    int         rtt_ms;
+} known_node_t;
+
+static known_node_t g_known_nodes[KNOWN_NODES_MAX];
+static int g_known_node_count = 0;
+
+static int get_known_nodes_path(char *path, size_t path_size) {
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) return -1;
+    snprintf(path, path_size, "%s/%s", data_dir, KNOWN_NODES_FILE);
+    return 0;
+}
+
+/**
+ * Load known nodes from file. Format per line:
+ *   ip:port|dil_fp_hex|kyber_hash_hex|last_seen|rtt_ms
+ */
+static int load_known_nodes(void) {
+    char path[512];
+    if (get_known_nodes_path(path, sizeof(path)) != 0) return -1;
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    g_known_node_count = 0;
+    char line[256];
+    while (fgets(line, sizeof(line), f) && g_known_node_count < KNOWN_NODES_MAX) {
+        /* Strip newline */
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') line[--len] = '\0';
+        if (len == 0) continue;
+
+        /* Parse: ip:port|dil_fp|kyber_hash|last_seen|rtt */
+        char *p1 = strchr(line, '|');
+        if (!p1) continue;
+        *p1++ = '\0';
+
+        char *p2 = strchr(p1, '|');
+        if (!p2) continue;
+        *p2++ = '\0';
+
+        char *p3 = strchr(p2, '|');
+        if (!p3) continue;
+        *p3++ = '\0';
+
+        char *p4 = strchr(p3, '|');
+        if (!p4) continue;
+        *p4++ = '\0';
+
+        /* line = "ip:port", p1 = dil_fp, p2 = kyber_hash, p3 = last_seen, p4 = rtt */
+        char *colon = strrchr(line, ':');
+        if (!colon) continue;
+        *colon = '\0';
+        uint16_t port = (uint16_t)atoi(colon + 1);
+        if (port == 0) continue;
+
+        known_node_t *n = &g_known_nodes[g_known_node_count];
+        memset(n, 0, sizeof(*n));
+        strncpy(n->ip, line, sizeof(n->ip) - 1);
+        n->port = port;
+        strncpy(n->dil_fp, p1, KNOWN_NODES_FP_HEX);
+        n->dil_fp[KNOWN_NODES_FP_HEX] = '\0';
+        strncpy(n->kyber_hash, p2, KNOWN_NODES_FP_HEX);
+        n->kyber_hash[KNOWN_NODES_FP_HEX] = '\0';
+        n->last_seen = (uint64_t)strtoull(p3, NULL, 10);
+        n->rtt_ms = atoi(p4);
+
+        g_known_node_count++;
+    }
+
+    fclose(f);
+    QGP_LOG_INFO(LOG_TAG, "Loaded %d known nodes from %s", g_known_node_count, path);
+    return 0;
+}
+
+/**
+ * Save all known nodes to file.
+ */
+static int save_known_nodes(void) {
+    char path[512];
+    if (get_known_nodes_path(path, sizeof(path)) != 0) return -1;
+
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        QGP_LOG_WARN(LOG_TAG, "Cannot write known_nodes: %s", strerror(errno));
+        return -1;
+    }
+
+    for (int i = 0; i < g_known_node_count; i++) {
+        known_node_t *n = &g_known_nodes[i];
+        fprintf(f, "%s:%d|%s|%s|%llu|%d\n",
+                n->ip, n->port, n->dil_fp, n->kyber_hash,
+                (unsigned long long)n->last_seen, n->rtt_ms);
+    }
+
+    fclose(f);
+    QGP_LOG_INFO(LOG_TAG, "Saved %d known nodes", g_known_node_count);
+    return 0;
+}
+
+/**
+ * Update or add a node to the known nodes list.
+ * If ip:port already exists, update keys + last_seen.
+ * Otherwise add new entry (evict oldest if full).
+ * Returns: 0 = updated/added, 1 = key changed (TOFU warning), -1 = error
+ */
+static int known_nodes_upsert(const char *ip, uint16_t port,
+                               const char *dil_fp, const char *kyber_hash,
+                               int rtt_ms) {
+    /* Find existing entry by ip:port */
+    for (int i = 0; i < g_known_node_count; i++) {
+        known_node_t *n = &g_known_nodes[i];
+        if (strcmp(n->ip, ip) == 0 && n->port == port) {
+            int key_changed = 0;
+
+            /* TOFU check: keys must not change */
+            if (n->dil_fp[0] && dil_fp[0] && strcmp(n->dil_fp, dil_fp) != 0) {
+                QGP_LOG_WARN(LOG_TAG, "⚠ TOFU: Dilithium key CHANGED for %s:%d", ip, port);
+                key_changed = 1;
+            }
+            if (n->kyber_hash[0] && kyber_hash[0] && strcmp(n->kyber_hash, kyber_hash) != 0) {
+                QGP_LOG_WARN(LOG_TAG, "⚠ TOFU: Kyber key CHANGED for %s:%d", ip, port);
+                key_changed = 1;
+            }
+
+            /* Update */
+            if (dil_fp[0]) {
+                strncpy(n->dil_fp, dil_fp, KNOWN_NODES_FP_HEX);
+                n->dil_fp[KNOWN_NODES_FP_HEX] = '\0';
+            }
+            if (kyber_hash[0]) {
+                strncpy(n->kyber_hash, kyber_hash, KNOWN_NODES_FP_HEX);
+                n->kyber_hash[KNOWN_NODES_FP_HEX] = '\0';
+            }
+            n->last_seen = (uint64_t)time(NULL);
+            if (rtt_ms >= 0) n->rtt_ms = rtt_ms;
+
+            save_known_nodes();
+            return key_changed;
+        }
+    }
+
+    /* New entry */
+    known_node_t *n;
+    if (g_known_node_count < KNOWN_NODES_MAX) {
+        n = &g_known_nodes[g_known_node_count++];
+    } else {
+        /* Evict oldest (lowest last_seen) */
+        int oldest = 0;
+        for (int i = 1; i < KNOWN_NODES_MAX; i++) {
+            if (g_known_nodes[i].last_seen < g_known_nodes[oldest].last_seen)
+                oldest = i;
+        }
+        n = &g_known_nodes[oldest];
+    }
+
+    memset(n, 0, sizeof(*n));
+    strncpy(n->ip, ip, sizeof(n->ip) - 1);
+    n->port = port;
+    if (dil_fp[0]) {
+        strncpy(n->dil_fp, dil_fp, KNOWN_NODES_FP_HEX);
+        n->dil_fp[KNOWN_NODES_FP_HEX] = '\0';
+    }
+    if (kyber_hash[0]) {
+        strncpy(n->kyber_hash, kyber_hash, KNOWN_NODES_FP_HEX);
+        n->kyber_hash[KNOWN_NODES_FP_HEX] = '\0';
+    }
+    n->last_seen = (uint64_t)time(NULL);
+    n->rtt_ms = rtt_ms;
+
+    save_known_nodes();
+    QGP_LOG_INFO(LOG_TAG, "New known node: %s:%d", ip, port);
+    return 0;
+}
+
+/**
+ * Find a known node by ip:port. Returns pointer or NULL.
+ */
+static known_node_t *known_nodes_find(const char *ip, uint16_t port) {
+    for (int i = 0; i < g_known_node_count; i++) {
+        if (strcmp(g_known_nodes[i].ip, ip) == 0 && g_known_nodes[i].port == port)
+            return &g_known_nodes[i];
+    }
+    return NULL;
+}
+
+/**
+ * Compute hex hash prefix from raw key bytes (first 16 bytes of SHA3-512).
+ */
+static void compute_key_hash_hex(const uint8_t *key, size_t key_len,
+                                  char *hex_out, size_t hex_size) {
+    uint8_t hash[64]; /* SHA3-512 */
+    qgp_sha3_512(key, key_len, hash);
+    size_t hex_bytes = (hex_size - 1) / 2;
+    if (hex_bytes > 16) hex_bytes = 16;
+    for (size_t i = 0; i < hex_bytes; i++)
+        snprintf(hex_out + i * 2, 3, "%02x", hash[i]);
+    hex_out[hex_bytes * 2] = '\0';
+}
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
@@ -145,15 +358,42 @@ static void on_state_change(nodus_client_state_t old_state,
 
     QGP_LOG_INFO(LOG_TAG, "[STATE] %s → %s", state_name(old_state), state_name(new_state));
 
-    if (!g_status_cb) return;
-
     if (new_state == NODUS_CLIENT_READY) {
+        /* Cache connected server's keys (TOFU) */
+        nodus_client_t *client = nodus_singleton_get();
+        if (client) {
+            /* Get connected server IP:port */
+            int idx = client->server_idx;
+            if (idx >= 0 && idx < client->config.server_count) {
+                const char *srv_ip = client->config.servers[idx].ip;
+                uint16_t srv_port = client->config.servers[idx].port;
+
+                /* Compute Kyber PK hash if we have it */
+                char kyber_hash[KNOWN_NODES_FP_HEX + 1] = {0};
+                if (client->has_cached_server_kyber) {
+                    compute_key_hash_hex(client->cached_server_kyber_pk,
+                                         NODUS_KYBER_PK_BYTES,
+                                         kyber_hash, sizeof(kyber_hash));
+                }
+
+                /* Dilithium fingerprint not available directly from client struct,
+                 * pass empty — will be filled when nodus:pk registry is fetched */
+                int tofu_rc = known_nodes_upsert(srv_ip, srv_port,
+                                                  "", kyber_hash, -1);
+                if (tofu_rc == 1) {
+                    QGP_LOG_ERROR(LOG_TAG, "⚠ TOFU VIOLATION: Server %s:%d key changed! "
+                                  "Possible MITM attack.", srv_ip, srv_port);
+                }
+            }
+            nodus_singleton_release();
+        }
+
         /* Actual connection established */
-        g_status_cb(true, g_status_cb_data);
+        if (g_status_cb) g_status_cb(true, g_status_cb_data);
     } else if (old_state == NODUS_CLIENT_READY) {
         /* Actual disconnect — was connected, now lost connection */
         QGP_LOG_WARN(LOG_TAG, "[DISCONNECT] Connection lost (was READY → %s)", state_name(new_state));
-        g_status_cb(false, g_status_cb_data);
+        if (g_status_cb) g_status_cb(false, g_status_cb_data);
     }
     /* Ignore non-READY → non-READY transitions (DISCONNECTED→CONNECTING,
      * CONNECTING→AUTHENTICATING, etc.) to avoid false "DHT disconnected"
@@ -522,20 +762,63 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
     nconfig.on_value_changed = nodus_ops_dispatch;
     nconfig.on_state_change = on_state_change;
 
-    /* ── Try sources in order: config → hardcoded fallback ── */
-    /* Note: bootstrap_cache disabled — nobody writes to it, and stale entries
-       with wrong port (4000 instead of 4001) caused ~1.5s startup delay. */
+    /* ── Try sources in order: known_nodes → config → hardcoded fallback ── */
 
-    /* Source 1: Config file nodes */
-    if (g_config.bootstrap_count > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Using %d config bootstrap nodes", g_config.bootstrap_count);
-        load_config_nodes(&nconfig);
+    /* Source 1: Known nodes cache (persisted from previous sessions) */
+    load_known_nodes();
+    if (g_known_node_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Using %d known nodes from cache", g_known_node_count);
+        for (int i = 0; i < g_known_node_count && nconfig.server_count < NODUS_CLIENT_MAX_SERVERS; i++) {
+            if (is_invalid_server_ip(g_known_nodes[i].ip)) continue;
+            strncpy(nconfig.servers[nconfig.server_count].ip,
+                    g_known_nodes[i].ip, sizeof(nconfig.servers[0].ip) - 1);
+            nconfig.servers[nconfig.server_count].port = g_known_nodes[i].port;
+            nconfig.server_count++;
+        }
     }
 
-    /* Source 2: Hardcoded fallback (if no config) */
-    if (nconfig.server_count == 0) {
-        QGP_LOG_INFO(LOG_TAG, "Using %d hardcoded fallback nodes", g_fallback_count);
-        load_fallback_nodes(&nconfig);
+    /* Source 2: Config file nodes (merge, dedup) */
+    if (g_config.bootstrap_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Merging %d config bootstrap nodes", g_config.bootstrap_count);
+        /* Only add config nodes not already in the list */
+        nodus_client_config_t tmp;
+        memset(&tmp, 0, sizeof(tmp));
+        load_config_nodes(&tmp);
+        for (int i = 0; i < tmp.server_count && nconfig.server_count < NODUS_CLIENT_MAX_SERVERS; i++) {
+            bool dup = false;
+            for (int j = 0; j < nconfig.server_count; j++) {
+                if (strcmp(nconfig.servers[j].ip, tmp.servers[i].ip) == 0 &&
+                    nconfig.servers[j].port == tmp.servers[i].port) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                nconfig.servers[nconfig.server_count] = tmp.servers[i];
+                nconfig.server_count++;
+            }
+        }
+    }
+
+    /* Source 3: Hardcoded fallback (merge remaining) */
+    {
+        nodus_client_config_t tmp;
+        memset(&tmp, 0, sizeof(tmp));
+        load_fallback_nodes(&tmp);
+        for (int i = 0; i < tmp.server_count && nconfig.server_count < NODUS_CLIENT_MAX_SERVERS; i++) {
+            bool dup = false;
+            for (int j = 0; j < nconfig.server_count; j++) {
+                if (strcmp(nconfig.servers[j].ip, tmp.servers[i].ip) == 0 &&
+                    nconfig.servers[j].port == tmp.servers[i].port) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                nconfig.servers[nconfig.server_count] = tmp.servers[i];
+                nconfig.server_count++;
+            }
+        }
     }
 
     if (nconfig.server_count == 0) {

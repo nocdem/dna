@@ -644,9 +644,12 @@ static int do_auth(nodus_client_t *client) {
         return -1;
     }
 
-    /* Step 2: Sign nonce and send AUTH */
+    /* Step 2: Sign nonce and send AUTH.
+     * Save nonce for later verification of server's kpk_sig. */
+    uint8_t auth_nonce[NODUS_NONCE_LEN];
+    memcpy(auth_nonce, resp->nonce, NODUS_NONCE_LEN);
     nodus_sig_t sig;
-    nodus_sign(&sig, resp->nonce, NODUS_NONCE_LEN, &client->identity.sk);
+    nodus_sign(&sig, auth_nonce, NODUS_NONCE_LEN, &client->identity.sk);
     free_pending(client, req);
 
     len = 0;
@@ -685,6 +688,29 @@ static int do_auth(nodus_client_t *client) {
     uint8_t server_kyber_pk[NODUS_KYBER_PK_BYTES];
     if (has_kpk) {
         memcpy(server_kyber_pk, resp->kyber_pk, NODUS_KYBER_PK_BYTES);
+
+        /* Verify server's Kyber PK signature (MITM protection).
+         * Server signs (kyber_pk || nonce) with its Dilithium5 key. */
+        if (resp->has_kpk_sig && resp->has_server_pk) {
+            uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
+            memcpy(sign_data, resp->kyber_pk, NODUS_KYBER_PK_BYTES);
+            memcpy(sign_data + NODUS_KYBER_PK_BYTES, auth_nonce, NODUS_NONCE_LEN);
+
+            if (nodus_verify(&resp->kpk_sig, sign_data, sizeof(sign_data),
+                              &resp->server_pk) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Auth: ⚠ Kyber PK signature INVALID — possible MITM!");
+                free_pending(client, req);
+                free(buf);
+                return -1;
+            }
+            QGP_LOG_INFO(LOG_TAG, "Auth: server Kyber PK signature verified ✓");
+
+            /* Cache server's Dilithium PK for TOFU */
+            client->server_dil_pk = resp->server_pk;
+            client->has_server_dil_pk = true;
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Auth: server did not sign Kyber PK (legacy server)");
+        }
     } else if (client->has_cached_server_kyber) {
         /* Reconnect: server didn't send kpk (old proto?) but we have cache */
         memcpy(server_kyber_pk, client->cached_server_kyber_pk, NODUS_KYBER_PK_BYTES);

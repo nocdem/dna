@@ -2464,6 +2464,9 @@ static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
         memset(&infos[count], 0, sizeof(infos[0]));
         snprintf(infos[count].ip, sizeof(infos[0].ip), "%s", self_ip);
         infos[count].tcp_port = srv->config.tcp_port;
+        /* Include first 16 bytes of our Dilithium fingerprint */
+        memcpy(infos[count].dil_fp, srv->identity.node_id.bytes, 16);
+        infos[count].has_dil_fp = true;
         count++;
     }
 
@@ -2759,8 +2762,18 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     nodus_random(token, NODUS_SESSION_TOKEN_LEN);
                     size_t rlen = 0;
                     if (srv->identity.has_kyber && sess->proto_version >= 2) {
-                        nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
-                                               resp_buf, sizeof(resp_buf), &rlen);
+                        uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
+                        memcpy(sign_data, srv->identity.kyber_pk, NODUS_KYBER_PK_BYTES);
+                        memcpy(sign_data + NODUS_KYBER_PK_BYTES, sess->nonce, NODUS_NONCE_LEN);
+                        nodus_sig_t kpk_sig;
+                        if (nodus_sign(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) == 0) {
+                            nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
+                                                    &srv->identity.pk, &kpk_sig,
+                                                    resp_buf, sizeof(resp_buf), &rlen);
+                        } else {
+                            nodus_t2_auth_ok(msg.txn_id, token,
+                                              resp_buf, sizeof(resp_buf), &rlen);
+                        }
                     } else {
                         nodus_t2_auth_ok(msg.txn_id, token,
                                           resp_buf, sizeof(resp_buf), &rlen);
@@ -3162,8 +3175,18 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 nodus_random(token, NODUS_SESSION_TOKEN_LEN);
                 size_t rlen = 0;
                 if (srv->identity.has_kyber && msg.proto_version >= 2) {
-                    nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
-                                           resp_buf, sizeof(resp_buf), &rlen);
+                    uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
+                    memcpy(sign_data, srv->identity.kyber_pk, NODUS_KYBER_PK_BYTES);
+                    memcpy(sign_data + NODUS_KYBER_PK_BYTES, conn->auth_nonce, NODUS_NONCE_LEN);
+                    nodus_sig_t kpk_sig;
+                    if (nodus_sign(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) == 0) {
+                        nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
+                                                &srv->identity.pk, &kpk_sig,
+                                                resp_buf, sizeof(resp_buf), &rlen);
+                    } else {
+                        nodus_t2_auth_ok(msg.txn_id, token,
+                                          resp_buf, sizeof(resp_buf), &rlen);
+                    }
                 } else {
                     nodus_t2_auth_ok(msg.txn_id, token,
                                       resp_buf, sizeof(resp_buf), &rlen);
@@ -3712,11 +3735,11 @@ static int nodus_server_publish_identity(nodus_server_t *srv) {
     nodus_key_t key;
     nodus_hash((const uint8_t *)key_str, sizeof(key_str) - 1, &key);
 
-    /* Encode payload: CBOR { "id": node_id, "pk": pubkey, "ip": ip, "port": port } */
-    uint8_t payload[4096];
+    /* Encode payload: CBOR { "id": node_id, "pk": pubkey, "ip": ip, "port": port, "kpk": kyber_pk } */
+    uint8_t payload[8192];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, payload, sizeof(payload));
-    cbor_encode_map(&enc, 4);
+    cbor_encode_map(&enc, srv->identity.has_kyber ? 5 : 4);
 
     cbor_encode_cstr(&enc, "id");
     cbor_encode_bstr(&enc, srv->identity.node_id.bytes, NODUS_KEY_BYTES);
@@ -3735,6 +3758,11 @@ static int nodus_server_publish_identity(nodus_server_t *srv) {
                        ? srv->config.witness_port
                        : NODUS_DEFAULT_WITNESS_PORT;
     cbor_encode_uint(&enc, pub_wport);
+
+    if (srv->identity.has_kyber) {
+        cbor_encode_cstr(&enc, "kpk");
+        cbor_encode_bstr(&enc, srv->identity.kyber_pk, NODUS_KYBER_PK_BYTES);
+    }
 
     size_t payload_len = cbor_encoder_len(&enc);
     if (payload_len == 0) return -1;

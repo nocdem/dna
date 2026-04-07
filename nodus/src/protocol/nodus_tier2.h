@@ -242,9 +242,13 @@ int nodus_t2_challenge(uint32_t txn, const uint8_t *nonce,
 int nodus_t2_auth_ok(uint32_t txn, const uint8_t *token,
                       uint8_t *buf, size_t cap, size_t *out_len);
 
-/** auth_ok with Kyber pubkey for channel encryption handshake */
+/** auth_ok with Kyber pubkey for channel encryption handshake.
+ *  Includes server's Dilithium5 pubkey and signature over (kyber_pk || nonce)
+ *  so the client can verify the server's identity and detect MITM. */
 int nodus_t2_auth_ok_kyber(uint32_t txn, const uint8_t *token,
                             const uint8_t *kyber_pk,
+                            const nodus_pubkey_t *server_pk,
+                            const nodus_sig_t *kpk_sig,
                             uint8_t *buf, size_t cap, size_t *out_len);
 
 /** Client → Nodus: initiate channel encryption after auth_ok */
@@ -307,6 +311,8 @@ int nodus_t2_ch_post_notify(uint32_t txn,
 typedef struct {
     char        ip[64];
     uint16_t    tcp_port;
+    uint8_t     dil_fp[16];     /* First 16 bytes of Dilithium5 fingerprint */
+    bool        has_dil_fp;
 } nodus_t2_server_info_t;
 
 int nodus_t2_servers_result(uint32_t txn,
@@ -489,6 +495,8 @@ typedef struct {
     struct {
         char        ip[64];
         uint16_t    tcp_port;
+        uint8_t     dil_fp[16];     /* First 16 bytes of Dilithium5 fingerprint */
+        bool        has_dil_fp;
     } servers[17];  /* NODUS_CLUSTER_MAX_PEERS(16) + 1 for self */
     int             server_count;
 
@@ -552,6 +560,10 @@ typedef struct {
     /* Channel encryption (Kyber handshake) */
     uint8_t         kyber_pk[1568];     /* auth_ok: server's Kyber pubkey */
     bool            has_kyber_pk;
+    nodus_pubkey_t  server_pk;          /* auth_ok: server's Dilithium5 pubkey */
+    bool            has_server_pk;
+    nodus_sig_t     kpk_sig;            /* auth_ok: Dilithium5 sig over (kyber_pk || nonce) */
+    bool            has_kpk_sig;
     uint8_t         kyber_ct[1568];     /* key_init: Kyber ciphertext */
     bool            has_kyber_ct;
     uint8_t         key_nonce[32];      /* key_init: nonce_c / key_ack: nonce_s */

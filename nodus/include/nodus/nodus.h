@@ -207,6 +207,10 @@ typedef struct nodus_client {
     uint8_t                   cached_server_kyber_pk[1568];
     bool                      has_cached_server_kyber;
 
+    /* Cached server Dilithium5 pubkey (TOFU — set on first auth_ok with sig) */
+    nodus_pubkey_t             server_dil_pk;
+    bool                       has_server_dil_pk;
+
 } nodus_client_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */

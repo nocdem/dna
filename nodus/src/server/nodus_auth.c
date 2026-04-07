@@ -58,7 +58,7 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
                             const nodus_sig_t *sig, uint32_t txn_id) {
     if (!srv || !sess || !sig) return -1;
 
-    uint8_t buf[8192];
+    uint8_t buf[16384];  /* Large enough for AUTH_OK with spk(2592) + kpk_sig(4627) */
 
     if (!sess->nonce_pending) {
         size_t len = 0;
@@ -125,7 +125,23 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
     /* Send AUTH_OK with session token (+ Kyber pubkey if client supports v2+) */
     size_t len = 0;
     if (srv->identity.has_kyber && sess->proto_version >= 2) {
+        /* Sign kyber_pk || nonce with server's Dilithium5 key.
+         * This binds the Kyber public key to this specific auth session,
+         * preventing MITM replacement of the Kyber PK. */
+        uint8_t sign_data[NODUS_KYBER_PK_BYTES + NODUS_NONCE_LEN];
+        memcpy(sign_data, srv->identity.kyber_pk, NODUS_KYBER_PK_BYTES);
+        memcpy(sign_data + NODUS_KYBER_PK_BYTES, sess->nonce, NODUS_NONCE_LEN);
+
+        nodus_sig_t kpk_sig;
+        if (nodus_sign(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) != 0) {
+            fprintf(stderr, "AUTH: Failed to sign Kyber PK for AUTH_OK\n");
+            nodus_t2_auth_ok(txn_id, sess->token, buf, sizeof(buf), &len);
+            nodus_tcp_send(sess->conn, buf, len);
+            return 0;
+        }
+
         nodus_t2_auth_ok_kyber(txn_id, sess->token, srv->identity.kyber_pk,
+                                &srv->identity.pk, &kpk_sig,
                                 buf, sizeof(buf), &len);
     } else {
         nodus_t2_auth_ok(txn_id, sess->token,

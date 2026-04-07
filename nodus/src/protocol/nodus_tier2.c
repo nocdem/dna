@@ -829,16 +829,22 @@ int nodus_t2_auth_ok(uint32_t txn, const uint8_t *token,
 
 int nodus_t2_auth_ok_kyber(uint32_t txn, const uint8_t *token,
                             const uint8_t *kyber_pk,
+                            const nodus_pubkey_t *server_pk,
+                            const nodus_sig_t *kpk_sig,
                             uint8_t *buf, size_t cap, size_t *out_len) {
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, cap);
     enc_response_header(&enc, 4, txn, "auth_ok");
     cbor_encode_cstr(&enc, "r");
-    cbor_encode_map(&enc, 2);
+    cbor_encode_map(&enc, 4);
     cbor_encode_cstr(&enc, "tok");
     cbor_encode_bstr(&enc, token, NODUS_SESSION_TOKEN_LEN);
     cbor_encode_cstr(&enc, "kpk");
     cbor_encode_bstr(&enc, kyber_pk, NODUS_KYBER_PK_BYTES);
+    cbor_encode_cstr(&enc, "spk");
+    cbor_encode_bstr(&enc, server_pk->bytes, NODUS_PK_BYTES);
+    cbor_encode_cstr(&enc, "kpk_sig");
+    cbor_encode_bstr(&enc, kpk_sig->bytes, NODUS_SIG_BYTES);
     return finish(&enc, out_len);
 }
 
@@ -1147,11 +1153,16 @@ int nodus_t2_servers_result(uint32_t txn,
     cbor_encode_array(&enc, (size_t)server_count);
 
     for (int i = 0; i < server_count; i++) {
-        cbor_encode_map(&enc, 2);
+        int fields = servers[i].has_dil_fp ? 3 : 2;
+        cbor_encode_map(&enc, (size_t)fields);
         cbor_encode_cstr(&enc, "ip");
         cbor_encode_cstr(&enc, servers[i].ip);
         cbor_encode_cstr(&enc, "tp");
         cbor_encode_uint(&enc, servers[i].tcp_port);
+        if (servers[i].has_dil_fp) {
+            cbor_encode_cstr(&enc, "fp");
+            cbor_encode_bstr(&enc, servers[i].dil_fp, 16);
+        }
     }
 
     return finish(&enc, out_len);
@@ -2033,6 +2044,22 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                         msg->has_kyber_pk = true;
                     }
                 }
+                /* spk (auth_ok: server Dilithium5 pubkey) */
+                else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "spk", 3) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES) {
+                        memcpy(msg->server_pk.bytes, val.bstr.ptr, NODUS_PK_BYTES);
+                        msg->has_server_pk = true;
+                    }
+                }
+                /* kpk_sig (auth_ok: Dilithium5 sig over kyber_pk || nonce) */
+                else if (rkey.tstr.len == 7 && memcmp(rkey.tstr.ptr, "kpk_sig", 7) == 0) {
+                    cbor_item_t val = cbor_decode_next(&dec);
+                    if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES) {
+                        memcpy(msg->kpk_sig.bytes, val.bstr.ptr, NODUS_SIG_BYTES);
+                        msg->has_kpk_sig = true;
+                    }
+                }
                 /* ns (key_ack: server nonce) */
                 else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "ns", 2) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
@@ -2444,6 +2471,12 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                                     cbor_item_t sv = cbor_decode_next(&dec);
                                     if (sv.type == CBOR_ITEM_UINT)
                                         msg->servers[idx].tcp_port = (uint16_t)sv.uint_val;
+                                } else if (sk.tstr.len == 2 && memcmp(sk.tstr.ptr, "fp", 2) == 0) {
+                                    cbor_item_t sv = cbor_decode_next(&dec);
+                                    if (sv.type == CBOR_ITEM_BSTR && sv.bstr.len == 16) {
+                                        memcpy(msg->servers[idx].dil_fp, sv.bstr.ptr, 16);
+                                        msg->servers[idx].has_dil_fp = true;
+                                    }
                                 } else {
                                     cbor_decode_skip(&dec);
                                 }
