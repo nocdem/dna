@@ -661,6 +661,22 @@ int nodus_witness_bft_start_round(nodus_witness_t *w,
                                     uint64_t fee) {
     if (!w || !tx_hash) return -1;
 
+    /* Force roster swap if pending — don't wait for epoch tick.
+     * After restart, roster builds via w_ident but swap is deferred
+     * to IDLE phase in epoch tick. Force it here so consensus has
+     * the latest roster with correct quorum. */
+    if (w->pending_roster_ready &&
+        w->pending_roster.n_witnesses > w->roster.n_witnesses) {
+        memcpy(&w->roster, &w->pending_roster, sizeof(nodus_witness_roster_t));
+        memcpy(&w->bft_config, &w->pending_bft_config,
+               sizeof(nodus_witness_bft_config_t));
+        w->pending_roster_ready = false;
+        w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
+        fprintf(stderr, "%s: force roster swap before round: %u witnesses, "
+                "quorum=%u, my_index=%d\n", LOG_TAG,
+                w->roster.n_witnesses, w->bft_config.quorum, w->my_index);
+    }
+
     if (!nodus_witness_bft_consensus_active(w)) {
         fprintf(stderr, "%s: consensus disabled (n=%u < %d)\n",
                 LOG_TAG, w->bft_config.n_witnesses, NODUS_T3_MIN_WITNESSES);
@@ -681,8 +697,8 @@ int nodus_witness_bft_start_round(nodus_witness_t *w,
     if (nullifier_count > NODUS_T3_MAX_TX_INPUTS)
         return -1;
 
-    /* Verify we are leader (skip for forwarded requests — peer selected us) */
-    if (!nodus_witness_bft_is_leader(w) && !w->round_state.is_forwarded) {
+    /* Verify we are leader */
+    if (!nodus_witness_bft_is_leader(w)) {
         fprintf(stderr, "%s: start_round but not leader\n", LOG_TAG);
         return -1;
     }

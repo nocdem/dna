@@ -984,6 +984,18 @@ static void handle_dnac_spend(nodus_witness_t *w,
         }
     }
 
+    /* Force roster swap if pending — ensures leader calculation uses latest roster */
+    if (w->pending_roster_ready &&
+        w->pending_roster.n_witnesses > w->roster.n_witnesses) {
+        memcpy(&w->roster, &w->pending_roster, sizeof(w->roster));
+        memcpy(&w->bft_config, &w->pending_bft_config, sizeof(w->bft_config));
+        w->pending_roster_ready = false;
+        w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
+        fprintf(stderr, "%s: force roster swap on spend: %u witnesses, "
+                "quorum=%u, my_index=%d\n", LOG_TAG,
+                w->roster.n_witnesses, w->bft_config.quorum, w->my_index);
+    }
+
     /* Check if we are leader */
     bool is_leader = nodus_witness_bft_is_leader(w);
 
