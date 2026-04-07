@@ -619,7 +619,16 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
         if (flen <= NODUS_FRAME_HEADER_SIZE) return -1;
         const uint8_t *payload = frame + NODUS_FRAME_HEADER_SIZE;
         size_t payload_len = flen - NODUS_FRAME_HEADER_SIZE;
-        return nodus_tcp_send_progress(conn, payload, payload_len, NULL, NULL);
+        int rc = nodus_tcp_send_progress(conn, payload, payload_len, NULL, NULL);
+        if (rc != 0) {
+            /* Send failed (buffer full / slow consumer) — disconnect so
+             * next retry opens a fresh connection instead of hammering
+             * the same stalled conn with buf_ensure errors. */
+            fprintf(stderr, "REPL_SEND: slow consumer %s:%d, disconnecting\n",
+                    conn->ip, conn->port);
+            nodus_tcp_disconnect(&srv->inter_tcp, conn);
+        }
+        return rc;
     }
 
     /* No crypto — write pre-framed data directly to wbuf (fast path) */
@@ -631,9 +640,18 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
         conn->wpos = 0;
     }
     size_t needed = conn->wlen + flen;
+    const size_t max_wbuf = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
+    if (needed > max_wbuf) {
+        /* Buffer full — slow consumer, disconnect */
+        fprintf(stderr, "REPL_SEND: slow consumer %s:%d (wlen=%zu), disconnecting\n",
+                conn->ip, conn->port, conn->wlen);
+        nodus_tcp_disconnect(&srv->inter_tcp, conn);
+        return -1;
+    }
     if (needed > conn->wcap) {
         size_t new_cap = conn->wcap;
         while (new_cap < needed) new_cap *= 2;
+        if (new_cap > max_wbuf) new_cap = max_wbuf;
         uint8_t *nb = realloc(conn->wbuf, new_cap);
         if (!nb) return -1;
         conn->wbuf = nb;
