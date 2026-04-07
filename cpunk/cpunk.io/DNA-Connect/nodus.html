@@ -1100,7 +1100,6 @@
                   <a href="/DNA-Connect/messenger.html" data-i18n="nav.messenger">Messenger</a>
                   <a href="/DNA-Connect/wallet.html" data-i18n="nav.wallet">Wallet</a>
                   <a href="/DNA-Connect/nodus.html" class="active" data-i18n="nav.nodus">Nodus</a>
-                  <a href="/DNA-Connect/transport.html" data-i18n="nav.transport">Transport</a>
                 </div>
               </div>
 
@@ -1351,8 +1350,91 @@
         </div>
       </section>
 
+      <!-- ══ Transport Layer ══ -->
+      <section id="transport" class="s-section s-dark">
+        <div class="wrap">
+          <div class="section-header-center reveal">
+            <div class="section-label" data-i18n="nodus_page.transport.label">Transport</div>
+            <h2 class="section-title" data-i18n="nodus_page.transport.title">Transport Layer</h2>
+            <p class="section-desc" style="max-width:38rem;" data-i18n="nodus_page.transport.desc">
+              Post-quantum authenticated peer-to-peer circuits over the Nodus network. Establish direct encrypted connections between DNA identities for file transfer, voice signalling, and general-purpose data tunneling.
+            </p>
+          </div>
+
+          <!-- Circuit routing diagram -->
+          <div class="reveal" style="max-width:32rem;margin:0 auto 2.5rem;">
+            <div style="background:var(--panel);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);padding:1.5rem;text-align:center;">
+              <div style="font-family:var(--font-display);font-size:0.7rem;color:var(--teal);letter-spacing:0.1em;margin-bottom:1rem;">CIRCUIT ROUTING</div>
+              <div style="font-size:0.82rem;color:var(--text-muted);line-height:1.8;">
+                <div><strong style="color:var(--text-main);">Same-Nodus (2 hops)</strong></div>
+                <div style="font-family:monospace;font-size:0.75rem;">Client A &rarr; Nodus &rarr; Client B</div>
+                <div style="margin:0.8rem 0;border-top:1px solid var(--border-subtle);"></div>
+                <div><strong style="color:var(--text-main);">Cross-Nodus (3 hops)</strong></div>
+                <div style="font-family:monospace;font-size:0.75rem;">Client A &rarr; Nodus A &rarr; Nodus B &rarr; Client B</div>
+              </div>
+              <div style="margin-top:1rem;font-size:0.7rem;color:var(--text-muted);text-align:left;">
+                <div style="margin-bottom:0.3rem;"><span style="color:var(--teal);">Layer 1</span> &mdash; Client&harr;Nodus: Kyber1024 + AES-256-GCM</div>
+                <div style="margin-bottom:0.3rem;"><span style="color:var(--orange);">Layer 2</span> &mdash; Nodus&harr;Nodus: Kyber1024 + AES-256-GCM</div>
+                <div><span style="color:var(--teal);">Layer 3</span> &mdash; Circuit E2E: Kyber1024 + AES-256-GCM (onion)</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Capabilities -->
+          <div class="token-grid stagger">
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              </span>
+              <h3 data-i18n="nodus_page.transport.file_title">File Transfer</h3>
+              <p data-i18n="nodus_page.transport.file_desc">Send files directly to another DNA user. Data is chunked into 64 KiB frames and streamed over the circuit &mdash; no central file server.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+              </span>
+              <h3 data-i18n="nodus_page.transport.voice_title">Voice &amp; Video</h3>
+              <p data-i18n="nodus_page.transport.voice_desc">Circuit infrastructure provides the signalling channel for future voice and video calls. Media transport over UDP is planned.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><polyline points="4 8 4 3 8 3"/><line x1="3" y1="4" x2="9" y2="10"/></svg>
+              </span>
+              <h3 data-i18n="nodus_page.transport.tunnel_title">P2P Tunneling</h3>
+              <p data-i18n="nodus_page.transport.tunnel_desc">Any application can open an authenticated bidirectional byte-stream between two DNA identities. General-purpose transport primitive.</p>
+            </article>
+
+            <article class="token-card reveal">
+              <span class="token-card-icon">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+              </span>
+              <h3 data-i18n="nodus_page.transport.route_title">Auto Routing</h3>
+              <p data-i18n="nodus_page.transport.route_desc">Circuits are addressed by DNA identity. The network resolves peer location and routes automatically &mdash; no manual configuration.</p>
+            </article>
+          </div>
+
+          <!-- Transport specs table -->
+          <div class="security-table-wrap reveal" style="margin-top:2rem;">
+            <table class="security-table">
+              <thead>
+                <tr><th>Parameter</th><th>Value</th><th>Purpose</th></tr>
+              </thead>
+              <tbody>
+                <tr><td class="algo">Circuit Hops</td><td><strong>2&ndash;3</strong></td><td>Same-nodus (2) or cross-nodus (3) routing</td></tr>
+                <tr><td class="algo">Frame Size</td><td><strong>64 KiB max</strong></td><td>Maximum payload per circuit data frame</td></tr>
+                <tr><td class="algo">Session Circuits</td><td><strong>16 max</strong></td><td>Concurrent circuits per client session</td></tr>
+                <tr><td class="algo">Server Circuits</td><td><strong>256 max</strong></td><td>Global inter-node circuit limit per server</td></tr>
+                <tr><td class="algo">Open Timeout</td><td><strong>5 seconds</strong></td><td>Circuit establishment timeout</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <!-- ══ Role in DNA Ecosystem ══ -->
-      <section id="ecosystem" class="s-section s-dark">
+      <section id="ecosystem" class="s-section s-gradient">
         <div class="wrap">
           <div class="section-header-center reveal">
             <div class="section-label" data-i18n="nodus_page.ecosystem.label">Ecosystem</div>
@@ -1378,7 +1460,7 @@
             <article class="token-card reveal">
               <span class="token-card-icon"><svg viewBox="0 0 24 24"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg></span>
               <h3 data-i18n="nodus_page.ecosystem.future_title">Future Applications</h3>
-              <p data-i18n="nodus_page.ecosystem.future_desc">DNA Transport, DNAC digital cash, and any future decentralized application can build on Nodus &mdash; forming a post-quantum capable infrastructure stack.</p>
+              <p data-i18n="nodus_page.ecosystem.future_desc">DNAC digital cash and any future decentralized application can build on Nodus &mdash; forming a post-quantum capable infrastructure stack.</p>
             </article>
           </div>
         </div>
@@ -1563,7 +1645,6 @@
             <a href="/DNA-Connect/messenger.html" data-i18n="footer.messenger">Messenger</a>
             <a href="/DNA-Connect/wallet.html" data-i18n="footer.wallet">Wallet</a>
             <a href="/DNA-Connect/nodus.html" data-i18n="footer.nodus">Nodus</a>
-            <a href="/DNA-Connect/transport.html" data-i18n="footer.transport">Transport</a>
             <a href="/team.html" data-i18n="footer.team">Team</a>
             <a href="/doc/cpunk-litepaper.pdf" target="_blank" data-i18n="footer.litepaper">Litepaper</a>
             <a href="/doc/cpunk-legal.pdf" target="_blank" data-i18n="footer.legal">Legal</a>
