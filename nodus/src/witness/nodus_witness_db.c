@@ -185,8 +185,12 @@ int nodus_witness_utxo_sum(nodus_witness_t *w, uint64_t *sum_out) {
         "SELECT COALESCE(SUM(amount), 0) FROM utxo_set", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
-    if (sqlite3_step(stmt) == SQLITE_ROW)
-        *sum_out = (uint64_t)sqlite3_column_int64(stmt, 0);
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+    *sum_out = (uint64_t)sqlite3_column_int64(stmt, 0);
 
     sqlite3_finalize(stmt);
     return 0;
@@ -769,7 +773,9 @@ int nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    return (rc == SQLITE_DONE) ? 0 : -1;
+    if (rc != SQLITE_DONE) return -1;
+    if (sqlite3_changes(w->db) != 1) return -1;  /* supply_tracking row missing */
+    return 0;
 }
 
 /* ── Committed transaction storage ───────────────────────────────── */

@@ -457,7 +457,7 @@ static int update_utxo_set(nodus_witness_t *w,
         if (offset + 171 > tx_len) {
             fprintf(stderr, "%s: update_utxo_set: output %d truncated (need %zu, have %u)\n",
                     LOG_TAG, i, offset + 171, tx_len);
-            break;
+            return -1;
         }
 
         offset += 1;  /* output version */
@@ -477,7 +477,7 @@ static int update_utxo_set(nodus_witness_t *w,
         if (offset + memo_len > tx_len) {
             fprintf(stderr, "%s: update_utxo_set: memo truncated at output %d\n",
                     LOG_TAG, i);
-            break;
+            return -1;
         }
         offset += memo_len;
 
