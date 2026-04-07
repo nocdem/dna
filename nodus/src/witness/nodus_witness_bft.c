@@ -681,8 +681,8 @@ int nodus_witness_bft_start_round(nodus_witness_t *w,
     if (nullifier_count > NODUS_T3_MAX_TX_INPUTS)
         return -1;
 
-    /* Verify we are leader */
-    if (!nodus_witness_bft_is_leader(w)) {
+    /* Verify we are leader (skip for forwarded requests — peer selected us) */
+    if (!nodus_witness_bft_is_leader(w) && !w->round_state.is_forwarded) {
         fprintf(stderr, "%s: start_round but not leader\n", LOG_TAG);
         return -1;
     }
@@ -1534,11 +1534,25 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     if (!w) return;
 
-    if (w->round_state.phase == NODUS_W_PHASE_IDLE ||
-        w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE)
+    if (w->round_state.phase == NODUS_W_PHASE_IDLE)
         return;
 
     uint64_t elapsed = time_ms() - w->round_state.phase_start_time;
+
+    /* View change stuck: if quorum not reached within viewchg_timeout,
+     * abort and return to IDLE. Prevents node from being permanently stuck. */
+    if (w->round_state.phase == NODUS_W_PHASE_VIEW_CHANGE) {
+        if (elapsed > w->bft_config.viewchg_timeout_ms) {
+            fprintf(stderr, "%s: view change timeout (%lu ms), "
+                    "returning to IDLE (view stays %u)\n",
+                    LOG_TAG, (unsigned long)elapsed, w->current_view);
+            w->round_state.phase = NODUS_W_PHASE_IDLE;
+            w->view_change_in_progress = false;
+            w->view_change_count = 0;
+            memset(&w->round_state, 0, sizeof(w->round_state));
+        }
+        return;
+    }
 
     if (elapsed > w->bft_config.round_timeout_ms) {
         /* Transition to VIEW_CHANGE immediately to stop further timeout checks.

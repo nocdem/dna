@@ -473,10 +473,13 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
 
     const nodus_t3_fwd_req_t *fwd = &msg->fwd_req;
 
-    /* Only leader handles forward requests */
+    /* Accept forward requests even if we don't think we're leader.
+     * The sender calculated us as leader — epoch boundary or clock skew
+     * can cause different leader calculations. Rejecting would cause
+     * forward loops where no node accepts the TX. */
     if (!nodus_witness_bft_is_leader(w)) {
-        fprintf(stderr, "%s: w_fwd_req but not leader\n", LOG_TAG);
-        return -1;
+        fprintf(stderr, "%s: w_fwd_req — not leader but accepting "
+                "(peer selected us)\n", LOG_TAG);
     }
 
     if (!fwd->tx_data || fwd->tx_len == 0 ||
