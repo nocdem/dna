@@ -1473,7 +1473,7 @@
             <div class="section-label" data-i18n="nodus_page.specs.label">Specifications</div>
             <h2 class="section-title" data-i18n="nodus_page.specs.title">Technical specifications</h2>
             <p class="section-desc" style="max-width: 38rem;" data-i18n="nodus_page.specs.desc">
-              Nodus is a pure C implementation with no C++ dependencies. Every protocol operation is cryptographically signed and verified.
+              Every protocol operation is cryptographically signed and verified.
             </p>
           </div>
 
@@ -1521,31 +1521,9 @@
             </table>
           </div>
 
-          <div class="card-grid-3 stagger" style="margin-top: 2rem;">
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-              </span>
-              <h3 data-i18n="nodus_page.specs.tier1_title">Tier 1 &mdash; UDP</h3>
-              <p data-i18n="nodus_page.specs.tier1_desc">Kademlia peer discovery: ping, find_node, put, get. Lightweight node-to-node protocol for maintaining the distributed routing table.</p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="6" rx="1.5"/><path d="M6 6h.01"/><path d="M12 9v3"/><path d="M8 15h8v5H8z"/></svg>
-              </span>
-              <h3 data-i18n="nodus_page.specs.tier2_title">Tier 2 &mdash; TCP</h3>
-              <p data-i18n="nodus_page.specs.tier2_desc">Client access layer: authentication, DHT operations, listen/subscribe, channels, and witness BFT. Full-duplex framed connections.</p>
-            </article>
-
-            <article class="token-card reveal">
-              <span class="token-card-icon">
-                <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
-              </span>
-              <h3 data-i18n="nodus_page.specs.opensource_title">Open Source</h3>
-              <p data-i18n="nodus_page.specs.opensource_desc">Pure C codebase under Apache 2.0. No external crypto dependencies &mdash; all post-quantum primitives are implemented in the shared crypto layer.</p>
-            </article>
-          </div>
+          <p class="dl-source reveal" style="margin-top: 1.5rem;" data-i18n="nodus_page.specs.opensource_desc">
+            Open source under Apache 2.0 &mdash; all post-quantum cryptographic primitives are built in-house with no external dependencies. See <a href="https://gitlab.cpunk.io/cpunk/dna" target="_blank" rel="noopener" style="color:var(--teal);">source code</a>.
+          </p>
         </div>
       </section>
 
