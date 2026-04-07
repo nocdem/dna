@@ -297,10 +297,10 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
     free(cbor_buf);
     if (flen == 0) { free(frame); return; }
 
-    /* Replicate to K-closest nodes via Kademlia routing table */
-    nodus_peer_t closest[NODUS_K];
+    /* Replicate to R-closest nodes via Kademlia routing table */
+    nodus_peer_t closest[NODUS_R];
     int count = nodus_routing_find_closest(&srv->routing, &val->key_hash,
-                                            closest, NODUS_K);
+                                            closest, NODUS_R);
 
     for (int i = 0; i < count; i++) {
         /* Skip self */
@@ -347,10 +347,10 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
     nodus_key_t media_key;
     memcpy(media_key.bytes, meta->content_hash, NODUS_KEY_BYTES);
 
-    /* Replicate to K-closest nodes via Kademlia routing table */
-    nodus_peer_t closest[NODUS_K];
+    /* Replicate to R-closest nodes via Kademlia routing table */
+    nodus_peer_t closest[NODUS_R];
     int count = nodus_routing_find_closest(&srv->routing, &media_key,
-                                            closest, NODUS_K);
+                                            closest, NODUS_R);
 
     for (int i = 0; i < count; i++) {
         /* Skip self */
@@ -494,6 +494,40 @@ static void dht_storage_cleanup(nodus_server_t *srv) {
     nodus_media_cleanup(&srv->media_storage);
 }
 
+/* ── WAL checkpoint + incremental vacuum ─────────────────────────── */
+
+static void dht_wal_checkpoint(nodus_server_t *srv) {
+    uint64_t now = nodus_time_now();
+    if (now - srv->last_wal_checkpoint < NODUS_WAL_CHECKPOINT_SEC) return;
+    srv->last_wal_checkpoint = now;
+
+    int nlog = 0, nckpt = 0;
+    sqlite3_wal_checkpoint_v2(srv->storage.db, NULL,
+                               SQLITE_CHECKPOINT_TRUNCATE, &nlog, &nckpt);
+    if (nlog > 0)
+        fprintf(stderr, "WAL-CKPT: nodus.db truncated (%d pages checkpointed)\n", nckpt);
+
+    /* channels.db has its own DB handle */
+    if (srv->ch_server.ch_store && srv->ch_server.ch_store->db) {
+        sqlite3_wal_checkpoint_v2(srv->ch_server.ch_store->db, NULL,
+                                   SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+    }
+}
+
+static void dht_incremental_vacuum(nodus_server_t *srv) {
+    uint64_t now = nodus_time_now();
+    if (now - srv->last_vacuum < NODUS_VACUUM_SEC) return;
+    srv->last_vacuum = now;
+
+    sqlite3_exec(srv->storage.db, "PRAGMA incremental_vacuum(500)",
+                 NULL, NULL, NULL);
+    if (srv->ch_server.ch_store && srv->ch_server.ch_store->db) {
+        sqlite3_exec(srv->ch_server.ch_store->db, "PRAGMA incremental_vacuum(500)",
+                     NULL, NULL, NULL);
+    }
+    fprintf(stderr, "VACUUM: incremental vacuum completed\n");
+}
+
 /* ── Periodic republish (via inter_tcp pool) ────────────────────── */
 
 /** Send a pre-framed replication payload via persistent inter_tcp pool.
@@ -617,8 +651,8 @@ static void dht_republish(nodus_server_t *srv) {
 
         if (flen == 0) { free(frame); nodus_value_free(val); continue; }
 
-        nodus_peer_t closest[NODUS_K];
-        int n = nodus_routing_find_closest(&srv->routing, &val->key_hash, closest, NODUS_K);
+        nodus_peer_t closest[NODUS_R];
+        int n = nodus_routing_find_closest(&srv->routing, &val->key_hash, closest, NODUS_R);
 
         for (int j = 0; j < n; j++) {
             if (nodus_key_cmp(&closest[j].node_id, &srv->identity.node_id) == 0) continue;
@@ -648,8 +682,8 @@ static void dht_media_republish(nodus_server_t *srv) {
     uint64_t now = nodus_time_now();
 
     if (!mrs->active) {
-        /* Start new cycle every NODUS_REPUBLISH_SEC (same interval as value republish) */
-        if (now - mrs->cycle_start < NODUS_REPUBLISH_SEC) return;
+        /* Start new cycle every NODUS_MEDIA_REPUBLISH_SEC (24h — media is immutable) */
+        if (now - mrs->cycle_start < NODUS_MEDIA_REPUBLISH_SEC) return;
         memset(mrs->last_hash, 0, sizeof(mrs->last_hash));
         mrs->active = true;
         mrs->first_batch = true;
@@ -4102,11 +4136,17 @@ int nodus_server_run(nodus_server_t *srv) {
         /* Storage cleanup — remove expired values (every 1 hour) */
         dht_storage_cleanup(srv);
 
-        /* Periodic republish — send stored values to K-closest (every 1 hour) */
+        /* Periodic republish — send stored values to R-closest (every 1 hour) */
         dht_republish(srv);
 
-        /* Periodic media republish — send stored media to K-closest (every 1 hour) */
+        /* Periodic media republish — send stored media to R-closest (every 24 hours) */
         dht_media_republish(srv);
+
+        /* WAL checkpoint — truncate WAL file (every 5 min) */
+        dht_wal_checkpoint(srv);
+
+        /* Incremental vacuum — reclaim freelist pages (every 24 hours) */
+        dht_incremental_vacuum(srv);
     }
 
     return 0;

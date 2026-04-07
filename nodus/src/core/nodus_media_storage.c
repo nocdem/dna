@@ -45,7 +45,7 @@ static const char *PUT_META_SQL =
     "VALUES (?,?,?,?,?,?,?,?,?,?)";
 
 static const char *PUT_CHUNK_SQL =
-    "INSERT OR REPLACE INTO media_chunks "
+    "INSERT OR IGNORE INTO media_chunks "
     "(content_hash, chunk_index, data) VALUES (?,?,?)";
 
 static const char *GET_META_SQL =

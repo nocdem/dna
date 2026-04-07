@@ -356,6 +356,10 @@ typedef struct nodus_server {
     /* CRIT-4: TCP idle connection sweep (every 30s) */
     uint64_t                last_idle_sweep;
 
+    /* DB maintenance timers */
+    uint64_t                last_wal_checkpoint;
+    uint64_t                last_vacuum;
+
     bool                    running;
 } nodus_server_t;
 

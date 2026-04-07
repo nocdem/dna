@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  10
-#define NODUS_VERSION_PATCH  5
-#define NODUS_VERSION_STRING "0.10.5"
+#define NODUS_VERSION_PATCH  6
+#define NODUS_VERSION_STRING "0.10.6"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -90,8 +90,11 @@ extern "C" {
 #define NODUS_ROUTING_STALE_SEC    3600    /* 1 hour — filter stale entries in find_closest */
 #define NODUS_BUCKET_REFRESH_SEC   900     /* 15 min — bucket refresh via FIND_NODE */
 #define NODUS_REPUBLISH_SEC        3600    /* 60 min — periodic republish cycle */
+#define NODUS_MEDIA_REPUBLISH_SEC  86400   /* 24 hours — media republish (immutable, less frequent) */
 #define NODUS_REPUBLISH_BATCH      5       /* Values per main loop tick during republish */
 #define NODUS_CLEANUP_SEC          3600    /* 1 hour — storage cleanup interval */
+#define NODUS_WAL_CHECKPOINT_SEC   300     /* 5 min — WAL checkpoint interval */
+#define NODUS_VACUUM_SEC           86400   /* 24 hours — incremental vacuum interval */
 #define NODUS_FV_MAX_INFLIGHT      16      /* Max concurrent FIND_VALUE lookups */
 #define NODUS_FV_TIMEOUT_MS        5000    /* Per-lookup overall timeout */
 #define NODUS_FV_QUERY_TIMEOUT_MS  3000    /* Per-query connect+recv timeout */

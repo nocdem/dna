@@ -35,8 +35,8 @@ static const char *SCHEMA_SQL =
 
 static const char *PUT_SQL =
     "INSERT OR REPLACE INTO nodus_values "
-    "(key_hash, owner_fp, value_id, data, type, ttl, created_at, expires_at, seq, owner_pk, signature) "
-    "VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+    "(key_hash, owner_fp, value_id, data, type, ttl, created_at, expires_at, seq, owner_pk, signature, data_hash) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
 
 static const char *GET_SQL =
     "SELECT key_hash, owner_fp, value_id, data, type, ttl, created_at, expires_at, seq, owner_pk, signature "
@@ -212,6 +212,7 @@ int nodus_storage_open(const char *path, nodus_storage_t *store) {
     /* WAL mode for better concurrency */
     sqlite3_exec(store->db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
     sqlite3_exec(store->db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+    sqlite3_exec(store->db, "PRAGMA auto_vacuum=INCREMENTAL", NULL, NULL, NULL);
 
     /* Schema migration: add data_hash column if missing.
      * Existing rows get NULL — NULL >= X evaluates to NULL (not TRUE),
@@ -303,6 +304,17 @@ int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val) {
         }
     }
 
+    /* Compute SHA3-256 hash of value data for put_if_newer tiebreaker */
+    uint8_t data_hash[32];
+    if (!val->data || val->data_len == 0) {
+        memset(data_hash, 0, sizeof(data_hash));
+    } else {
+        if (qgp_sha3_256(val->data, val->data_len, data_hash) != 0) {
+            fprintf(stderr, "NODUS_STORE: data_hash computation failed\n");
+            return -1;
+        }
+    }
+
     sqlite3_stmt *s = store->stmt_put;
     sqlite3_reset(s);
 
@@ -317,6 +329,7 @@ int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val) {
     sqlite3_bind_int64(s, 9, (sqlite3_int64)val->seq);
     sqlite3_bind_blob(s, 10, val->owner_pk.bytes, NODUS_PK_BYTES, SQLITE_STATIC);
     sqlite3_bind_blob(s, 11, val->signature.bytes, NODUS_SIG_BYTES, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 12, data_hash, 32, SQLITE_STATIC);
 
     int rc = sqlite3_step(s);
     return (rc == SQLITE_DONE) ? 0 : -1;
