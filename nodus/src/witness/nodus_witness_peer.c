@@ -497,13 +497,7 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
     fprintf(stderr, "%s: w_fwd_req (tx_len=%u, fee=%lu)\n",
             LOG_TAG, fwd->tx_len, (unsigned long)fwd->fee);
 
-    /* Track forwarder for response routing */
-    w->round_state.is_forwarded = true;
-    memcpy(w->round_state.forwarder_id, fwd->forwarder_id,
-           NODUS_T3_WITNESS_ID_LEN);
-    w->round_state.client_conn = NULL;  /* No direct client conn */
-
-    /* Extract nullifiers from tx_data (same format as dnac_spend handler).
+    /* Extract nullifiers from tx_data for mempool entry.
      * DNAC serialization: [version(1)] [type(1)] [timestamp(8)] [tx_hash(64)]
      *                     [input_count(1)] [inputs...]
      * Each input: [nullifier(64)] [amount(8)] */
@@ -525,25 +519,36 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
                 return -1;
             memcpy(nullifiers[i], fwd->tx_data + offset,
                    NODUS_T3_NULLIFIER_LEN);
-            /* Skip rest of input: nullifier(64) + amount(8) */
             offset += NODUS_T3_NULLIFIER_LEN + 8;
         }
     }
 
-    /* Start BFT consensus round */
-    int rc = nodus_witness_bft_start_round(w, fwd->tx_hash,
-                                              nullifiers,
-                                              nullifier_count,
-                                              tx_type,
-                                              fwd->tx_data,
-                                              fwd->tx_len,
-                                              fwd->client_pubkey,
-                                              fwd->client_sig,
-                                              fwd->fee);
+    /* Add forwarded TX to mempool instead of immediate BFT round */
+    nodus_witness_mempool_entry_t *entry = calloc(1, sizeof(*entry));
+    if (!entry) return -1;
 
+    memcpy(entry->tx_hash, fwd->tx_hash, NODUS_T3_TX_HASH_LEN);
+    entry->nullifier_count = nullifier_count;
+    for (int i = 0; i < nullifier_count; i++)
+        memcpy(entry->nullifiers[i], nullifiers[i], NODUS_T3_NULLIFIER_LEN);
+    entry->tx_type = tx_type;
+    entry->tx_data = malloc(fwd->tx_len);
+    if (!entry->tx_data) { free(entry); return -1; }
+    memcpy(entry->tx_data, fwd->tx_data, fwd->tx_len);
+    entry->tx_len = fwd->tx_len;
+    if (fwd->client_pubkey)
+        memcpy(entry->client_pubkey, fwd->client_pubkey, NODUS_PK_BYTES);
+    if (fwd->client_sig)
+        memcpy(entry->client_sig, fwd->client_sig, NODUS_SIG_BYTES);
+    entry->fee = fwd->fee;
+    entry->client_conn = NULL;  /* No direct client conn for forwarded TX */
+    entry->is_forwarded = true;
+    memcpy(entry->forwarder_id, fwd->forwarder_id, NODUS_T3_WITNESS_ID_LEN);
+
+    int rc = nodus_witness_mempool_add(&w->mempool, entry);
     if (rc != 0) {
-        fprintf(stderr, "%s: fwd_req consensus start failed: %d\n",
-                LOG_TAG, rc);
+        fprintf(stderr, "%s: fwd_req mempool add failed: %d\n", LOG_TAG, rc);
+        nodus_witness_mempool_entry_free(entry);
     }
 
     return rc;
@@ -946,6 +951,17 @@ void nodus_witness_peer_conn_closed(nodus_witness_t *w,
             w->pending_forwards[pfi].active = false;
             w->pending_forwards[pfi].client_conn = NULL;
             if (w->pending_forward_count > 0) w->pending_forward_count--;
+        }
+    }
+
+    /* Remove mempool entries for this connection */
+    nodus_witness_mempool_remove_by_conn(&w->mempool, conn);
+
+    /* Clear batch_entries refs to this conn (active round) */
+    for (int bi = 0; bi < w->round_state.batch_count; bi++) {
+        if (w->round_state.batch_entries[bi] &&
+            w->round_state.batch_entries[bi]->client_conn == conn) {
+            w->round_state.batch_entries[bi]->client_conn = NULL;
         }
     }
 }

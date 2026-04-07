@@ -15,6 +15,8 @@
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_peer.h"
+#include "witness/nodus_witness_verify.h"
+#include "witness/nodus_witness_mempool.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
 #include "transport/nodus_tcp.h"
@@ -1000,33 +1002,64 @@ static void handle_dnac_spend(nodus_witness_t *w,
     bool is_leader = nodus_witness_bft_is_leader(w);
 
     if (is_leader) {
-        fprintf(stderr, "%s: dnac_spend — we are leader, starting BFT\n",
+        fprintf(stderr, "%s: dnac_spend — we are leader, adding to mempool\n",
                 LOG_TAG);
 
-        /* Store client connection for async response */
-        w->round_state.client_conn = conn;
-        w->round_state.client_txn_id = txn_id;
-        w->round_state.is_forwarded = false;
-
-        int rc = nodus_witness_bft_start_round(w, tx_hash,
-                                                  nullifiers,
-                                                  nullifier_count,
-                                                  tx_type,
-                                                  tx_data,
-                                                  (uint32_t)tx_len,
-                                                  client_pk,
-                                                  client_sig,
-                                                  fee);
-
-        if (rc == -2) {
-            /* Double-spend: send immediate error */
+        /* Pre-verify TX before adding to mempool */
+        char reject_reason[256] = {0};
+        int vrc = nodus_witness_verify_transaction(w, tx_data, (uint32_t)tx_len,
+                      tx_hash, tx_type,
+                      (const uint8_t *)nullifiers, nullifier_count,
+                      client_pk, client_sig, fee,
+                      reject_reason, sizeof(reject_reason));
+        if (vrc == -2) {
             send_error(conn, txn_id, NODUS_ERR_DOUBLE_SPEND,
                         "nullifier already spent (double-spend)");
-        } else if (rc != 0) {
-            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "transaction verification failed");
+            return;
         }
-        /* If rc == 0: response sent asynchronously on COMMIT */
+        if (vrc != 0) {
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR, reject_reason);
+            return;
+        }
+
+        /* Create mempool entry */
+        nodus_witness_mempool_entry_t *entry = calloc(1, sizeof(*entry));
+        if (!entry) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "allocation failed");
+            return;
+        }
+
+        memcpy(entry->tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
+        entry->nullifier_count = nullifier_count;
+        for (int i = 0; i < nullifier_count; i++)
+            memcpy(entry->nullifiers[i], nullifiers[i], NODUS_T3_NULLIFIER_LEN);
+        entry->tx_type = tx_type;
+        entry->tx_data = malloc(tx_len);
+        if (!entry->tx_data) {
+            free(entry);
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "allocation failed");
+            return;
+        }
+        memcpy(entry->tx_data, tx_data, tx_len);
+        entry->tx_len = (uint32_t)tx_len;
+        if (client_pk)
+            memcpy(entry->client_pubkey, client_pk, NODUS_PK_BYTES);
+        if (client_sig)
+            memcpy(entry->client_sig, client_sig, NODUS_SIG_BYTES);
+        entry->fee = fee;
+        entry->client_conn = conn;
+        entry->client_txn_id = txn_id;
+        entry->is_forwarded = false;
+
+        int rc = nodus_witness_mempool_add(&w->mempool, entry);
+        if (rc != 0) {
+            const char *msg = (rc == -2) ? "duplicate transaction" : "mempool full";
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, msg);
+            nodus_witness_mempool_entry_free(entry);
+        }
+        /* Response sent asynchronously when block timer fires and COMMIT completes */
     } else {
         fprintf(stderr, "%s: dnac_spend — forwarding to leader\n", LOG_TAG);
 

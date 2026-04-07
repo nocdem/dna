@@ -7,9 +7,11 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_bft.h"
+#include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_sync.h"
+#include "witness/nodus_witness_mempool.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
 #include "crypto/nodus_identity.h"
@@ -266,6 +268,68 @@ int nodus_witness_init(nodus_witness_t *witness,
     return 0;
 }
 
+/* ── Block timer: propose batch from mempool ────────────────────── */
+
+static void nodus_witness_propose_batch(nodus_witness_t *w) {
+    if (!w || w->mempool.count == 0) return;
+
+    /* Pop batch from mempool (highest fee first) */
+    nodus_witness_mempool_entry_t *batch[NODUS_W_MAX_BLOCK_TXS];
+    int count = nodus_witness_mempool_pop_batch(&w->mempool, batch,
+                                                  NODUS_W_MAX_BLOCK_TXS);
+    if (count <= 0) return;
+
+    /* Re-verify each TX (mempool entries may be stale due to
+     * double-spend from a concurrent batch on another view) */
+    int valid = 0;
+    for (int i = 0; i < count; i++) {
+        /* Quick nullifier check — full verification done in start_round_batch */
+        bool stale = false;
+        for (int j = 0; j < batch[i]->nullifier_count; j++) {
+            if (nodus_witness_nullifier_exists(w, batch[i]->nullifiers[j])) {
+                stale = true;
+                break;
+            }
+        }
+
+        if (stale) {
+            fprintf(stderr, "WITNESS: mempool TX stale (double-spend), dropping\n");
+            /* Send error to client if connected */
+            if (batch[i]->client_conn) {
+                /* Simple error — no CBOR helpers available here */
+            }
+            nodus_witness_mempool_entry_free(batch[i]);
+            batch[i] = NULL;
+        } else {
+            if (valid != i)
+                batch[valid] = batch[i];
+            valid++;
+        }
+    }
+
+    if (valid == 0) {
+        fprintf(stderr, "WITNESS: all batch TXs stale, skipping\n");
+        w->mempool.last_block_time_ms = nodus_time_now() * 1000ULL;
+        return;
+    }
+
+    /* Start batch BFT round */
+    int rc = nodus_witness_bft_start_round_batch(w, batch, valid);
+    if (rc != 0) {
+        fprintf(stderr, "WITNESS: batch start_round failed: %d\n", rc);
+        /* Put entries back into mempool or free them */
+        for (int i = 0; i < valid; i++) {
+            if (batch[i]) {
+                int add_rc = nodus_witness_mempool_add(&w->mempool, batch[i]);
+                if (add_rc != 0)
+                    nodus_witness_mempool_entry_free(batch[i]);
+            }
+        }
+    }
+
+    w->mempool.last_block_time_ms = nodus_time_now() * 1000ULL;
+}
+
 #define WITNESS_EPOCH_SECS  60
 
 void nodus_witness_tick(nodus_witness_t *witness) {
@@ -288,6 +352,18 @@ void nodus_witness_tick(nodus_witness_t *witness) {
                 witness->pending_forwards[pfi].active = false;
                 witness->pending_forwards[pfi].client_conn = NULL;
             }
+        }
+    }
+
+    /* Block timer: propose batch if mempool has TXs and interval elapsed */
+    if (nodus_witness_bft_is_leader(witness) &&
+        witness->round_state.phase == NODUS_W_PHASE_IDLE &&
+        witness->mempool.count > 0) {
+
+        uint64_t now_ms = nodus_time_now() * 1000ULL;
+        if (now_ms - witness->mempool.last_block_time_ms >=
+            NODUS_W_BLOCK_INTERVAL_MS) {
+            nodus_witness_propose_batch(witness);
         }
     }
 
@@ -492,6 +568,9 @@ void nodus_witness_close(nodus_witness_t *witness) {
     if (!witness) return;
 
     witness->running = false;
+
+    /* Clear mempool */
+    nodus_witness_mempool_clear(&witness->mempool);
 
     /* Close peer mesh (clears conn references) */
     nodus_witness_peer_close(witness);
