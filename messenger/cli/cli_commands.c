@@ -7473,6 +7473,10 @@ bool execute_command(dna_engine_t *engine, const char *line) {
         char *subcmd = strtok(NULL, " \t");
         dispatch_channel_repl(engine, subcmd);
     }
+    else if (strcmp(cmd, "dna") == 0) {
+        char *subcmd = strtok(NULL, "");  /* rest of line (dna_chain_repl tokenizes internally) */
+        dispatch_dna_chain_repl(engine, subcmd);
+    }
     else if (strcmp(cmd, "wallet") == 0) {
         char *subcmd = strtok(NULL, " \t");
         dispatch_wallet_repl(engine, subcmd);

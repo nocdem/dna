@@ -74,6 +74,7 @@ static void print_usage(const char *prog_name) {
     printf("  channel     Public broadcast channels (create, post, subscribe)\n");
     printf("  wall        Social wall — posts, timeline, comments, likes\n");
     printf("  media       Upload, download, and send media via DHT\n");
+    printf("  dna         DNA Chain — post-quantum blockchain wallet\n");
     printf("  wallet      Multi-chain wallet (Backbone, ETH, SOL, TRX)\n");
     printf("  dex         Decentralized exchange (quotes, swaps, pairs)\n");
     printf("  network     DHT status, presence, bootstrap registry\n");
@@ -205,7 +206,7 @@ int main(int argc, char *argv[]) {
     int bare_group = (optind + 1 >= argc) ||
                      (optind + 1 < argc && strcmp(argv[optind + 1], "help") == 0);
     const char *known_groups[] = {"identity", "contact", "message", "group", "channel",
-                                  "wallet", "dex", "network", "version", "sign", "debug", "wall", "follow", "media", NULL};
+                                  "dna", "wallet", "dex", "network", "version", "sign", "debug", "wall", "follow", "media", NULL};
     if (bare_group) {
         for (int i = 0; known_groups[i]; i++) {
             if (strcmp(command, known_groups[i]) == 0) {
@@ -215,6 +216,7 @@ int main(int argc, char *argv[]) {
                 else if (strcmp(command, "message") == 0) dispatch_message(NULL, argc, argv, optind + 1);
                 else if (strcmp(command, "group") == 0) dispatch_group(NULL, argc, argv, optind + 1);
                 else if (strcmp(command, "channel") == 0) dispatch_channel(NULL, argc, argv, optind + 1);
+                else if (strcmp(command, "dna") == 0) dispatch_dna_chain(NULL, argc, argv, optind + 1);
                 else if (strcmp(command, "wallet") == 0) dispatch_wallet(NULL, argc, argv, optind + 1);
                 else if (strcmp(command, "dex") == 0) dispatch_dex(NULL, argc, argv, optind + 1);
                 else if (strcmp(command, "network") == 0) dispatch_network(NULL, argc, argv, optind + 1);
@@ -324,6 +326,9 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "channel") == 0) {
         result = dispatch_channel(g_engine, argc, argv, optind + 1);
+    }
+    else if (strcmp(command, "dna") == 0) {
+        result = dispatch_dna_chain(g_engine, argc, argv, optind + 1);
     }
     else if (strcmp(command, "wallet") == 0) {
         result = dispatch_wallet(g_engine, argc, argv, optind + 1);

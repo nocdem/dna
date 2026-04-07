@@ -544,6 +544,7 @@ int dispatch_debug(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_wall(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_follow(dna_engine_t *engine, int argc, char **argv, int sub);
 int dispatch_media(dna_engine_t *engine, int argc, char **argv, int sub);
+int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub);
 
 int dispatch_identity_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_contact_repl(dna_engine_t *engine, const char *subcmd);
@@ -559,6 +560,7 @@ int dispatch_debug_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_wall_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_follow_repl(dna_engine_t *engine, const char *subcmd);
 int dispatch_media_repl(dna_engine_t *engine, const char *subcmd);
+int dispatch_dna_chain_repl(dna_engine_t *engine, const char *subcmd);
 
 /* ============================================================================
  * MEDIA COMMANDS (upload/download/exists/send)
