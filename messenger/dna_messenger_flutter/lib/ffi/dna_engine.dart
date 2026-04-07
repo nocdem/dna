@@ -1247,6 +1247,110 @@ class WallNewPostEvent extends DnaEvent {
 }
 
 // =============================================================================
+// DNAC (DIGITAL CASH) MODELS
+// =============================================================================
+
+/// 1 token = 100,000,000 raw units (8 decimals, like Bitcoin satoshis)
+const int dnacRawPerToken = 100000000;
+
+/// Format raw amount to human-readable token string
+String formatDnacAmount(int rawAmount) {
+  final whole = rawAmount ~/ dnacRawPerToken;
+  final frac = (rawAmount % dnacRawPerToken).abs();
+  if (frac == 0) return whole.toString();
+  // Remove trailing zeros
+  var fracStr = frac.toString().padLeft(8, '0');
+  fracStr = fracStr.replaceAll(RegExp(r'0+$'), '');
+  return '$whole.$fracStr';
+}
+
+/// Parse human-readable amount to raw units
+int parseDnacAmount(String amount) {
+  final parts = amount.split('.');
+  final whole = int.parse(parts[0]) * dnacRawPerToken;
+  if (parts.length == 1) return whole;
+  var fracStr = parts[1];
+  if (fracStr.length > 8) fracStr = fracStr.substring(0, 8);
+  fracStr = fracStr.padRight(8, '0');
+  return whole + int.parse(fracStr);
+}
+
+class DnacBalance {
+  final int confirmed;
+  final int pending;
+  final int locked;
+  final int utxoCount;
+
+  DnacBalance({
+    required this.confirmed,
+    required this.pending,
+    required this.locked,
+    required this.utxoCount,
+  });
+
+  String get confirmedFormatted => formatDnacAmount(confirmed);
+  String get pendingFormatted => formatDnacAmount(pending);
+  String get lockedFormatted => formatDnacAmount(locked);
+  int get total => confirmed + pending + locked;
+  String get totalFormatted => formatDnacAmount(total);
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DnacBalance &&
+          confirmed == other.confirmed &&
+          pending == other.pending &&
+          locked == other.locked &&
+          utxoCount == other.utxoCount;
+
+  @override
+  int get hashCode => Object.hash(confirmed, pending, locked, utxoCount);
+}
+
+class DnacTxHistory {
+  final Uint8List txHash;
+  final int type; // 0=genesis, 1=spend, 2=burn
+  final String counterparty;
+  final int amountDelta; // signed, raw units
+  final int fee;
+  final DateTime timestamp;
+  final String memo;
+
+  DnacTxHistory({
+    required this.txHash,
+    required this.type,
+    required this.counterparty,
+    required this.amountDelta,
+    required this.fee,
+    required this.timestamp,
+    required this.memo,
+  });
+
+  bool get isReceived => amountDelta > 0;
+  bool get isSent => amountDelta < 0;
+  String get amountFormatted => formatDnacAmount(amountDelta.abs());
+  String get feeFormatted => formatDnacAmount(fee);
+}
+
+class DnacUtxo {
+  final Uint8List txHash;
+  final int outputIndex;
+  final int amount;
+  final int status; // 0=unspent, 1=pending, 2=spent
+  final DateTime receivedAt;
+
+  DnacUtxo({
+    required this.txHash,
+    required this.outputIndex,
+    required this.amount,
+    required this.status,
+    required this.receivedAt,
+  });
+
+  String get amountFormatted => formatDnacAmount(amount);
+}
+
+// =============================================================================
 // EXCEPTIONS
 // =============================================================================
 
@@ -6530,6 +6634,240 @@ class DnaEngine {
       _eventCallback!.nativeFunction.cast(),
       nullptr,
     );
+  }
+
+  // ===========================================================================
+  // DNAC (Digital Cash) Methods
+  // ===========================================================================
+
+  /// Get DNAC wallet balance
+  Future<DnacBalance> dnacGetBalance() async {
+    final completer = Completer<DnacBalance>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+                    Pointer<dna_dnac_balance_t> balance,
+                    Pointer<Void> userData) {
+      if (error == 0 && balance != nullptr) {
+        final b = balance.ref;
+        completer.complete(DnacBalance(
+          confirmed: b.confirmed,
+          pending: b.pending,
+          locked: b.locked,
+          utxoCount: b.utxo_count,
+        ));
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDnacBalanceCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_dnac_get_balance(
+      _engine, callback.nativeFunction.cast(), nullptr);
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit DNAC balance request');
+    }
+
+    return completer.future;
+  }
+
+  /// Send DNAC payment
+  Future<void> dnacSend({
+    required String recipientFingerprint,
+    required int amount,
+    String? memo,
+  }) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final recipientPtr = recipientFingerprint.toNativeUtf8();
+    final memoPtr = memo?.toNativeUtf8() ?? nullptr;
+
+    final requestId = _bindings.dna_engine_dnac_send(
+      _engine,
+      recipientPtr.cast(),
+      amount,
+      memoPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    calloc.free(recipientPtr);
+    if (memoPtr != nullptr) calloc.free(memoPtr);
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit DNAC send request');
+    }
+
+    return completer.future;
+  }
+
+  /// Sync DNAC wallet from witnesses
+  Future<void> dnacSync() async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_dnac_sync(
+      _engine, callback.nativeFunction.cast(), nullptr);
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit DNAC sync request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get DNAC transaction history
+  Future<List<DnacTxHistory>> dnacGetHistory() async {
+    final completer = Completer<List<DnacTxHistory>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+                    Pointer<dna_dnac_history_t> history,
+                    int count, Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <DnacTxHistory>[];
+        for (var i = 0; i < count; i++) {
+          final h = (history + i).ref;
+          final txHash = Uint8List(64);
+          for (var j = 0; j < 64; j++) txHash[j] = h.tx_hash[j];
+          result.add(DnacTxHistory(
+            txHash: txHash,
+            type: h.type,
+            counterparty: h.counterparty.toDartString(129),
+            amountDelta: h.amount_delta,
+            fee: h.fee,
+            timestamp: DateTime.fromMillisecondsSinceEpoch(h.timestamp * 1000),
+            memo: h.memo.toDartString(256),
+          ));
+        }
+        if (count > 0) {
+          _bindings.dna_engine_dnac_free_history(history, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDnacHistoryCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_dnac_get_history(
+      _engine, callback.nativeFunction.cast(), nullptr);
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit DNAC history request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get DNAC UTXO list
+  Future<List<DnacUtxo>> dnacGetUtxos() async {
+    final completer = Completer<List<DnacUtxo>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+                    Pointer<dna_dnac_utxo_t> utxos,
+                    int count, Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <DnacUtxo>[];
+        for (var i = 0; i < count; i++) {
+          final u = (utxos + i).ref;
+          final txHash = Uint8List(64);
+          for (var j = 0; j < 64; j++) txHash[j] = u.tx_hash[j];
+          result.add(DnacUtxo(
+            txHash: txHash,
+            outputIndex: u.output_index,
+            amount: u.amount,
+            status: u.status,
+            receivedAt: DateTime.fromMillisecondsSinceEpoch(u.received_at * 1000),
+          ));
+        }
+        if (count > 0) {
+          _bindings.dna_engine_dnac_free_utxos(utxos, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDnacUtxosCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_dnac_get_utxos(
+      _engine, callback.nativeFunction.cast(), nullptr);
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit DNAC UTXOs request');
+    }
+
+    return completer.future;
+  }
+
+  /// Estimate fee for DNAC transaction
+  Future<int> dnacEstimateFee(int amount) async {
+    final completer = Completer<int>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, int fee, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete(fee);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDnacFeeCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_dnac_estimate_fee(
+      _engine, amount, callback.nativeFunction.cast(), nullptr);
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit DNAC fee estimate request');
+    }
+
+    return completer.future;
   }
 
   /// Dispose the engine and release all resources

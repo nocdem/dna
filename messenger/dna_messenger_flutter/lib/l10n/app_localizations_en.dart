@@ -1581,4 +1581,141 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get userProfileLastMonth => 'Last Month';
+
+  @override
+  String get dnacTitle => 'Digital Cash';
+
+  @override
+  String get dnacBalance => 'Balance';
+
+  @override
+  String get dnacConfirmed => 'Available';
+
+  @override
+  String get dnacPending => 'Pending';
+
+  @override
+  String get dnacLocked => 'Locked';
+
+  @override
+  String get dnacSend => 'Send';
+
+  @override
+  String get dnacReceive => 'Receive';
+
+  @override
+  String get dnacSync => 'Sync';
+
+  @override
+  String get dnacSyncing => 'Syncing...';
+
+  @override
+  String get dnacSyncSuccess => 'Wallet synced successfully';
+
+  @override
+  String get dnacSyncFailed => 'Sync failed';
+
+  @override
+  String get dnacHistory => 'History';
+
+  @override
+  String get dnacUtxos => 'Coins';
+
+  @override
+  String get dnacNoTransactions => 'No transactions yet';
+
+  @override
+  String get dnacNoUtxos => 'No coins yet';
+
+  @override
+  String get dnacSendTitle => 'Send Payment';
+
+  @override
+  String get dnacRecipient => 'Recipient';
+
+  @override
+  String get dnacRecipientHint => 'Name or address';
+
+  @override
+  String get dnacAmount => 'Amount';
+
+  @override
+  String get dnacAmountHint => '0.00';
+
+  @override
+  String get dnacMemo => 'Memo (optional)';
+
+  @override
+  String get dnacMemoHint => 'What is this for?';
+
+  @override
+  String get dnacFee => 'Fee';
+
+  @override
+  String get dnacEstimatingFee => 'Estimating fee...';
+
+  @override
+  String get dnacTotal => 'Total';
+
+  @override
+  String get dnacConfirmSend => 'Confirm Payment';
+
+  @override
+  String get dnacSending => 'Sending...';
+
+  @override
+  String get dnacSendSuccess => 'Payment sent successfully';
+
+  @override
+  String get dnacSendFailed => 'Payment failed';
+
+  @override
+  String get dnacInsufficientFunds => 'Insufficient funds';
+
+  @override
+  String get dnacInvalidRecipient => 'Invalid recipient';
+
+  @override
+  String get dnacInvalidAmount => 'Invalid amount';
+
+  @override
+  String get dnacPickContact => 'Choose from contacts';
+
+  @override
+  String get dnacHistoryTitle => 'Transaction History';
+
+  @override
+  String get dnacHistoryReceived => 'Received';
+
+  @override
+  String get dnacHistorySent => 'Sent';
+
+  @override
+  String get dnacHistoryGenesis => 'Genesis';
+
+  @override
+  String get dnacHistoryBurn => 'Burned';
+
+  @override
+  String get dnacUtxosTitle => 'Coin Details';
+
+  @override
+  String get dnacUtxoUnspent => 'Available';
+
+  @override
+  String get dnacUtxoPending => 'Pending';
+
+  @override
+  String get dnacUtxoSpent => 'Spent';
+
+  @override
+  String get dnacNotInitialized => 'Wallet is loading...';
+
+  @override
+  String get dnacToken => 'DNA';
+
+  @override
+  String dnacAmountWithToken(String amount) {
+    return '$amount DNA';
+  }
 }

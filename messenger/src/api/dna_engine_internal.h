@@ -189,7 +189,15 @@ typedef enum {
     TASK_MEDIA_EXISTS,
 
     /* Debug log inbox (v0.9.164+) */
-    TASK_DEBUG_LOG_SEND
+    TASK_DEBUG_LOG_SEND,
+
+    /* DNAC digital cash (v0.9.173+) */
+    TASK_DNAC_GET_BALANCE,
+    TASK_DNAC_SEND,
+    TASK_DNAC_SYNC,
+    TASK_DNAC_GET_HISTORY,
+    TASK_DNAC_GET_UTXOS,
+    TASK_DNAC_ESTIMATE_FEE
 } dna_task_type_t;
 
 /* ============================================================================
@@ -564,6 +572,18 @@ typedef union {
         char      hint[129];                /* Optional short label */
     } debug_log_send;
 
+    /* DNAC: Send payment (v0.9.173+) */
+    struct {
+        char recipient_fingerprint[129];    /* 128 hex chars + NUL */
+        uint64_t amount;                    /* Amount in raw units */
+        char memo[256];                     /* Optional memo */
+    } dnac_send;
+
+    /* DNAC: Estimate fee (v0.9.173+) */
+    struct {
+        uint64_t amount;                    /* Amount in raw units */
+    } dnac_estimate_fee;
+
 } dna_task_params_t;
 
 /**
@@ -610,6 +630,10 @@ typedef union {
     dna_media_upload_cb media_upload;
     dna_media_download_cb media_download;
     dna_media_exists_cb media_exists;
+    dna_dnac_balance_cb dnac_balance;
+    dna_dnac_history_cb dnac_history;
+    dna_dnac_utxos_cb dnac_utxos;
+    dna_dnac_fee_cb dnac_fee;
 } dna_task_callback_t;
 
 /**
@@ -745,6 +769,9 @@ struct dna_engine {
     bool listeners_starting;         /* True if listener setup in progress (race prevention) */
     bool dm_full_sync_done;          /* True after first full DM sync (prevents double sync on startup) */
     time_t profile_published_at;     /* Timestamp when profile was last published (0 = never) */
+
+    /* DNAC digital cash (lazy init on first wallet access) */
+    void *dnac_ctx;                  /* dnac_context_t* (NULL until first use) */
 
     /* Password protection (session state) */
     char *session_password;          /* Password for current session (NULL if unprotected) */

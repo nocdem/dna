@@ -239,6 +239,14 @@ int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
 void derive_lock(void);
 void derive_unlock(void);
 
+/* From dna_engine_dnac.c */
+void dna_handle_dnac_get_balance(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_send(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_sync(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_get_utxos(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_estimate_fee(dna_engine_t *engine, dna_task_t *task);
+
 /* Global engine accessors (thread-safe) */
 extern dna_engine_t *g_dht_callback_engine;
 extern pthread_mutex_t g_engine_global_mutex;
