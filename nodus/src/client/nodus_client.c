@@ -446,7 +446,9 @@ static void client_on_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
                  conn && conn->ip[0] ? conn->ip : "?",
                  conn ? conn->port : 0,
                  sock_err,
-                 conn ? (unsigned long)(now_ms() - conn->last_activity * 1000) : 0);
+                 (conn && conn->last_activity > 0)
+                     ? (unsigned long)(now_ms() - conn->last_activity * 1000)
+                     : 0UL);
     client->conn = NULL;
 
     if (client->state == NODUS_CLIENT_READY ||
