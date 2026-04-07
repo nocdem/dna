@@ -1002,6 +1002,26 @@ static void handle_dnac_spend(nodus_witness_t *w,
     bool is_leader = nodus_witness_bft_is_leader(w);
 
     if (is_leader) {
+        /* Genesis TX must go through legacy single-TX path (needs chain DB creation).
+         * Batch commit path cannot handle genesis — bypass mempool. */
+        if (tx_type == NODUS_W_TX_GENESIS) {
+            fprintf(stderr, "%s: dnac_spend — genesis TX, using legacy BFT path\n",
+                    LOG_TAG);
+            w->round_state.client_conn = conn;
+            w->round_state.client_txn_id = txn_id;
+            w->round_state.is_forwarded = false;
+            int rc = nodus_witness_bft_start_round(w, tx_hash,
+                          nullifiers, nullifier_count, tx_type,
+                          tx_data, (uint32_t)tx_len, client_pk, client_sig, fee);
+            if (rc == -2)
+                send_error(conn, txn_id, NODUS_ERR_DOUBLE_SPEND,
+                            "nullifier already spent (double-spend)");
+            else if (rc != 0)
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "transaction verification failed");
+            return;
+        }
+
         fprintf(stderr, "%s: dnac_spend — we are leader, adding to mempool\n",
                 LOG_TAG);
 

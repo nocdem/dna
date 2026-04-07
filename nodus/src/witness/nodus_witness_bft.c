@@ -36,6 +36,9 @@
 
 #define LOG_TAG "WITNESS-BFT"
 
+/* Forward declaration — defined near bft_check_timeout */
+static void round_state_free_batch(nodus_witness_round_state_t *rs);
+
 /* ── Time helper ─────────────────────────────────────────────────── */
 
 static uint64_t time_ms(void) {
@@ -745,6 +748,7 @@ int nodus_witness_bft_start_round(nodus_witness_t *w,
 
     /* Initialize round state */
     w->current_round++;
+    round_state_free_batch(&w->round_state);
     memset(&w->round_state, 0, sizeof(w->round_state));
 
     /* Restore client connection info */
@@ -879,6 +883,7 @@ int nodus_witness_bft_start_round_batch(nodus_witness_t *w,
 
     /* Initialize round state */
     w->current_round++;
+    round_state_free_batch(&w->round_state);
     memset(&w->round_state, 0, sizeof(w->round_state));
 
     w->round_state.round = w->current_round;
@@ -986,6 +991,7 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     w->current_round = hdr->round;
     w->current_view = hdr->view;
 
+    round_state_free_batch(&w->round_state);
     memset(&w->round_state, 0, sizeof(w->round_state));
     w->round_state.client_conn = NULL;
     w->round_state.round = hdr->round;
@@ -1148,7 +1154,8 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     memset(&vote_msg, 0, sizeof(vote_msg));
     vote_msg.type = NODUS_T3_PREVOTE;
     vote_msg.txn_id = ++w->next_txn_id;
-    memcpy(vote_msg.vote.tx_hash, prop->tx_hash, NODUS_T3_TX_HASH_LEN);
+    /* Use round_state.tx_hash — set to block_hash in batch mode */
+    memcpy(vote_msg.vote.tx_hash, w->round_state.tx_hash, NODUS_T3_TX_HASH_LEN);
     vote_msg.vote.vote = (uint32_t)my_vote;
     if (tx_invalid)
         snprintf(vote_msg.vote.reason, sizeof(vote_msg.vote.reason),
@@ -1339,24 +1346,26 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             if (nodus_witness_db_commit(w) != 0) {
                 nodus_witness_db_rollback(w);
                 fprintf(stderr, "%s: batch db commit failed\n", LOG_TAG);
+                batch_failed = true;
             }
-            /* block_add now inside commit_block_inner */
         }
 
-        /* Store commit certificates for EACH block in the batch.
-         * State sync verifies certs per block — missing certs would fail sync. */
-        {
+        if (!batch_failed) {
+            /* Store commit certificates for EACH block in the batch.
+             * State sync verifies certs per block. */
             uint64_t top_bh = nodus_witness_block_height(w);
-            uint64_t base_bh = top_bh - (uint64_t)w->round_state.batch_count + 1;
-            for (uint64_t bh = base_bh; bh <= top_bh; bh++) {
-                nodus_witness_cert_store(w, bh, w->round_state.precommits,
-                                          w->round_state.precommit_count);
+            if (top_bh >= (uint64_t)w->round_state.batch_count) {
+                uint64_t base_bh = top_bh - (uint64_t)w->round_state.batch_count + 1;
+                for (uint64_t bh = base_bh; bh <= top_bh; bh++) {
+                    nodus_witness_cert_store(w, bh, w->round_state.precommits,
+                                              w->round_state.precommit_count);
+                }
             }
-        }
 
-        fprintf(stderr, "%s: BATCH COMMITTED round %lu (%d TXs)\n",
-                LOG_TAG, (unsigned long)w->round_state.round,
-                w->round_state.batch_count);
+            fprintf(stderr, "%s: BATCH COMMITTED round %lu (%d TXs)\n",
+                    LOG_TAG, (unsigned long)w->round_state.round,
+                    w->round_state.batch_count);
+        }
     } else {
         /* ── Legacy single-TX commit ─────────────────────────────── */
         const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
@@ -1925,6 +1934,7 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
     if (nv->new_view > w->current_view) {
         w->current_view = nv->new_view;
         w->view_change_in_progress = false;
+        round_state_free_batch(&w->round_state);
         w->round_state.phase = NODUS_W_PHASE_IDLE;
 
         fprintf(stderr, "%s: accepted NEW_VIEW %u from leader %d\n",
