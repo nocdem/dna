@@ -747,7 +747,6 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
                       count: _totalTips,
                       icon: FontAwesomeIcons.coins,
                       color: DnaColors.success,
-                      suffix: ' CPUNK',
                     ),
                   ],
                 ),

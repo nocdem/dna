@@ -1,8 +1,8 @@
 # DNA Connect - Messenger Development Guidelines
 
-**Last Updated:** 2026-04-01 | **Status:** RC (Release Candidate) | **Phase:** 7 (Flutter UI)
+**Last Updated:** 2026-04-07 | **Status:** RC (Release Candidate) | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.9.170 | Flutter v1.0.0-rc165 | Nodus v0.10.4
+**Versions:** Library v0.9.172 | Flutter v1.0.0-rc168 | Nodus v0.10.11
 
 **Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains messenger-specific guidelines only.
 
