@@ -80,22 +80,53 @@ static void enc_wh(cbor_encoder_t *enc, const nodus_t3_header_t *hdr) {
 
 /* ── Per-type args encode ────────────────────────────────────────── */
 
-static void enc_propose_args(cbor_encoder_t *enc, const nodus_t3_propose_t *p) {
+/* Encode a single batch TX entry into CBOR (shared by propose + commit) */
+static void enc_batch_tx(cbor_encoder_t *enc, const nodus_t3_batch_tx_t *tx) {
     cbor_encode_map(enc, 8);
-    cbor_encode_cstr(enc, "txh");  cbor_encode_bstr(enc, p->tx_hash,
+    cbor_encode_cstr(enc, "txh");  cbor_encode_bstr(enc, tx->tx_hash,
                                                      NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "nlc");  cbor_encode_uint(enc, p->nullifier_count);
+    cbor_encode_cstr(enc, "nlc");  cbor_encode_uint(enc, tx->nullifier_count);
     cbor_encode_cstr(enc, "nls");
-    cbor_encode_array(enc, p->nullifier_count);
-    for (int i = 0; i < p->nullifier_count; i++)
-        cbor_encode_bstr(enc, p->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
-    cbor_encode_cstr(enc, "tty");  cbor_encode_uint(enc, p->tx_type);
-    cbor_encode_cstr(enc, "txd");  cbor_encode_bstr(enc, p->tx_data, p->tx_len);
-    cbor_encode_cstr(enc, "pk");   cbor_encode_bstr(enc, p->client_pubkey,
+    cbor_encode_array(enc, tx->nullifier_count);
+    for (int i = 0; i < tx->nullifier_count; i++)
+        cbor_encode_bstr(enc, tx->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
+    cbor_encode_cstr(enc, "tty");  cbor_encode_uint(enc, tx->tx_type);
+    cbor_encode_cstr(enc, "txd");  cbor_encode_bstr(enc, tx->tx_data, tx->tx_len);
+    cbor_encode_cstr(enc, "pk");   cbor_encode_bstr(enc, tx->client_pubkey,
                                                      NODUS_PK_BYTES);
-    cbor_encode_cstr(enc, "csig"); cbor_encode_bstr(enc, p->client_sig,
+    cbor_encode_cstr(enc, "csig"); cbor_encode_bstr(enc, tx->client_sig,
                                                      NODUS_SIG_BYTES);
-    cbor_encode_cstr(enc, "fee");  cbor_encode_uint(enc, p->fee);
+    cbor_encode_cstr(enc, "fee");  cbor_encode_uint(enc, tx->fee);
+}
+
+static void enc_propose_args(cbor_encoder_t *enc, const nodus_t3_propose_t *p) {
+    if (p->batch_count > 0) {
+        /* Batch mode: encode btx array + block_hash */
+        cbor_encode_map(enc, 2);
+        cbor_encode_cstr(enc, "bh");
+        cbor_encode_bstr(enc, p->block_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(enc, "btx");
+        cbor_encode_array(enc, (size_t)p->batch_count);
+        for (int i = 0; i < p->batch_count; i++)
+            enc_batch_tx(enc, &p->batch_txs[i]);
+    } else {
+        /* Legacy single-TX mode */
+        cbor_encode_map(enc, 8);
+        cbor_encode_cstr(enc, "txh");  cbor_encode_bstr(enc, p->tx_hash,
+                                                         NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(enc, "nlc");  cbor_encode_uint(enc, p->nullifier_count);
+        cbor_encode_cstr(enc, "nls");
+        cbor_encode_array(enc, p->nullifier_count);
+        for (int i = 0; i < p->nullifier_count; i++)
+            cbor_encode_bstr(enc, p->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
+        cbor_encode_cstr(enc, "tty");  cbor_encode_uint(enc, p->tx_type);
+        cbor_encode_cstr(enc, "txd");  cbor_encode_bstr(enc, p->tx_data, p->tx_len);
+        cbor_encode_cstr(enc, "pk");   cbor_encode_bstr(enc, p->client_pubkey,
+                                                         NODUS_PK_BYTES);
+        cbor_encode_cstr(enc, "csig"); cbor_encode_bstr(enc, p->client_sig,
+                                                         NODUS_SIG_BYTES);
+        cbor_encode_cstr(enc, "fee");  cbor_encode_uint(enc, p->fee);
+    }
 }
 
 static void enc_vote_args(cbor_encoder_t *enc, const nodus_t3_vote_t *v) {
@@ -106,24 +137,14 @@ static void enc_vote_args(cbor_encoder_t *enc, const nodus_t3_vote_t *v) {
     cbor_encode_cstr(enc, "rsn"); cbor_encode_cstr(enc, v->reason);
 }
 
-static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
-    cbor_encode_map(enc, 10);
-    cbor_encode_cstr(enc, "txh");  cbor_encode_bstr(enc, c->tx_hash,
-                                                     NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "nlc");  cbor_encode_uint(enc, c->nullifier_count);
-    cbor_encode_cstr(enc, "nls");
-    cbor_encode_array(enc, c->nullifier_count);
-    for (int i = 0; i < c->nullifier_count; i++)
-        cbor_encode_bstr(enc, c->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
-    cbor_encode_cstr(enc, "tty");  cbor_encode_uint(enc, c->tx_type);
-    cbor_encode_cstr(enc, "txd");  cbor_encode_bstr(enc, c->tx_data, c->tx_len);
+/* Encode commit cert array (shared between batch and legacy) */
+static void enc_commit_certs(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
     cbor_encode_cstr(enc, "pts");  cbor_encode_uint(enc, c->proposal_timestamp);
     cbor_encode_cstr(enc, "pid");  cbor_encode_bstr(enc, c->proposer_id,
                                                      NODUS_T3_WITNESS_ID_LEN);
     cbor_encode_cstr(enc, "npc");  cbor_encode_uint(enc, c->n_precommits);
     cbor_encode_cstr(enc, "uck");  cbor_encode_bstr(enc, c->utxo_checksum,
                                                      NODUS_KEY_BYTES);
-    /* Commit certificates: array of [voter_id, signature] pairs */
     cbor_encode_cstr(enc, "cer");
     cbor_encode_array(enc, c->n_precommits);
     for (uint32_t i = 0; i < c->n_precommits; i++) {
@@ -132,6 +153,33 @@ static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
         cbor_encode_bstr(enc, c->certs[i].voter_id, NODUS_T3_WITNESS_ID_LEN);
         cbor_encode_cstr(enc, "sig");
         cbor_encode_bstr(enc, c->certs[i].signature, NODUS_SIG_BYTES);
+    }
+}
+
+static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
+    if (c->batch_count > 0) {
+        /* Batch mode: block_hash + btx array + certs */
+        cbor_encode_map(enc, 7);
+        cbor_encode_cstr(enc, "bh");
+        cbor_encode_bstr(enc, c->block_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(enc, "btx");
+        cbor_encode_array(enc, (size_t)c->batch_count);
+        for (int i = 0; i < c->batch_count; i++)
+            enc_batch_tx(enc, &c->batch_txs[i]);
+        enc_commit_certs(enc, c);
+    } else {
+        /* Legacy single-TX mode */
+        cbor_encode_map(enc, 10);
+        cbor_encode_cstr(enc, "txh");  cbor_encode_bstr(enc, c->tx_hash,
+                                                         NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(enc, "nlc");  cbor_encode_uint(enc, c->nullifier_count);
+        cbor_encode_cstr(enc, "nls");
+        cbor_encode_array(enc, c->nullifier_count);
+        for (int i = 0; i < c->nullifier_count; i++)
+            cbor_encode_bstr(enc, c->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
+        cbor_encode_cstr(enc, "tty");  cbor_encode_uint(enc, c->tx_type);
+        cbor_encode_cstr(enc, "txd");  cbor_encode_bstr(enc, c->tx_data, c->tx_len);
+        enc_commit_certs(enc, c);
     }
 }
 
@@ -382,13 +430,105 @@ static void dec_wh(cbor_decoder_t *dec, size_t count, nodus_t3_header_t *hdr) {
 
 /* ── Per-type args decode ────────────────────────────────────────── */
 
+/* Decode a single batch TX entry from CBOR map */
+static void dec_batch_tx_entry(cbor_decoder_t *dec, size_t count,
+                                nodus_t3_batch_tx_t *tx) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+
+        if (KEY_IS(key, "txh")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(tx->tx_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        }
+        else if (KEY_IS(key, "nlc")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) {
+                tx->nullifier_count = (uint8_t)val.uint_val;
+                if (tx->nullifier_count > NODUS_T3_MAX_TX_INPUTS)
+                    tx->nullifier_count = NODUS_T3_MAX_TX_INPUTS;
+            }
+        }
+        else if (KEY_IS(key, "nls")) {
+            cbor_item_t arr = cbor_decode_next(dec);
+            if (arr.type == CBOR_ITEM_ARRAY) {
+                size_t max = arr.count < NODUS_T3_MAX_TX_INPUTS ?
+                             arr.count : NODUS_T3_MAX_TX_INPUTS;
+                for (size_t j = 0; j < max; j++) {
+                    cbor_item_t val = cbor_decode_next(dec);
+                    if (val.type == CBOR_ITEM_BSTR &&
+                        val.bstr.len == NODUS_T3_NULLIFIER_LEN)
+                        tx->nullifiers[j] = val.bstr.ptr;
+                }
+                for (size_t j = max; j < arr.count; j++)
+                    cbor_decode_skip(dec);
+            }
+        }
+        else if (KEY_IS(key, "tty")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) tx->tx_type = (uint8_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "txd")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len <= NODUS_T3_MAX_TX_SIZE) {
+                tx->tx_data = val.bstr.ptr;
+                tx->tx_len = (uint32_t)val.bstr.len;
+            }
+        }
+        else if (KEY_IS(key, "pk")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES)
+                tx->client_pubkey = val.bstr.ptr;
+        }
+        else if (KEY_IS(key, "csig")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
+                tx->client_sig = val.bstr.ptr;
+        }
+        else if (KEY_IS(key, "fee")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) tx->fee = val.uint_val;
+        }
+        else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
 static void dec_propose_args(cbor_decoder_t *dec, size_t count,
                               nodus_t3_propose_t *p) {
     for (size_t i = 0; i < count; i++) {
         cbor_item_t key = cbor_decode_next(dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
 
-        if (KEY_IS(key, "txh")) {
+        /* Batch mode detection: "btx" key */
+        if (KEY_IS(key, "btx")) {
+            cbor_item_t arr = cbor_decode_next(dec);
+            if (arr.type == CBOR_ITEM_ARRAY) {
+                int max = (int)arr.count;
+                if (max > NODUS_W_MAX_BLOCK_TXS) max = NODUS_W_MAX_BLOCK_TXS;
+                p->batch_count = max;
+                for (int j = 0; j < max; j++) {
+                    cbor_item_t entry = cbor_decode_next(dec);
+                    if (entry.type == CBOR_ITEM_MAP)
+                        dec_batch_tx_entry(dec, entry.count, &p->batch_txs[j]);
+                }
+                /* Skip excess entries */
+                for (int j = max; j < (int)arr.count; j++)
+                    cbor_decode_skip(dec);
+            }
+        }
+        else if (KEY_IS(key, "bh")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(p->block_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        }
+        /* Legacy single-TX fields */
+        else if (KEY_IS(key, "txh")) {
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_BSTR &&
                 val.bstr.len == NODUS_T3_TX_HASH_LEN)
@@ -480,13 +620,96 @@ static void dec_vote_args(cbor_decoder_t *dec, size_t count,
     }
 }
 
+/* Helper: decode commit-specific fields (certs, timestamps) — shared */
+static void dec_commit_field(cbor_decoder_t *dec, const cbor_item_t *key,
+                               nodus_t3_commit_t *c) {
+    if (KEY_IS(*key, "pts")) {
+        cbor_item_t val = cbor_decode_next(dec);
+        if (val.type == CBOR_ITEM_UINT) c->proposal_timestamp = val.uint_val;
+    }
+    else if (KEY_IS(*key, "pid")) {
+        cbor_item_t val = cbor_decode_next(dec);
+        if (val.type == CBOR_ITEM_BSTR &&
+            val.bstr.len == NODUS_T3_WITNESS_ID_LEN)
+            memcpy(c->proposer_id, val.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
+    }
+    else if (KEY_IS(*key, "npc")) {
+        cbor_item_t val = cbor_decode_next(dec);
+        if (val.type == CBOR_ITEM_UINT) c->n_precommits = (uint32_t)val.uint_val;
+    }
+    else if (KEY_IS(*key, "uck")) {
+        cbor_item_t val = cbor_decode_next(dec);
+        if (val.type == CBOR_ITEM_BSTR &&
+            val.bstr.len == NODUS_KEY_BYTES)
+            memcpy(c->utxo_checksum, val.bstr.ptr, NODUS_KEY_BYTES);
+    }
+    else if (KEY_IS(*key, "cer")) {
+        cbor_item_t arr = cbor_decode_next(dec);
+        if (arr.type == CBOR_ITEM_ARRAY) {
+            size_t max = arr.count < NODUS_T3_MAX_WITNESSES ?
+                         arr.count : NODUS_T3_MAX_WITNESSES;
+            for (size_t j = 0; j < max; j++) {
+                cbor_item_t m = cbor_decode_next(dec);
+                if (m.type != CBOR_ITEM_MAP) { cbor_decode_skip(dec); continue; }
+                for (size_t k = 0; k < m.count; k++) {
+                    cbor_item_t mk = cbor_decode_next(dec);
+                    if (mk.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+                    if (KEY_IS(mk, "vid")) {
+                        cbor_item_t v = cbor_decode_next(dec);
+                        if (v.type == CBOR_ITEM_BSTR &&
+                            v.bstr.len == NODUS_T3_WITNESS_ID_LEN)
+                            memcpy(c->certs[j].voter_id, v.bstr.ptr,
+                                   NODUS_T3_WITNESS_ID_LEN);
+                    } else if (KEY_IS(mk, "sig")) {
+                        cbor_item_t v = cbor_decode_next(dec);
+                        if (v.type == CBOR_ITEM_BSTR &&
+                            v.bstr.len == NODUS_SIG_BYTES)
+                            memcpy(c->certs[j].signature, v.bstr.ptr,
+                                   NODUS_SIG_BYTES);
+                    } else {
+                        cbor_decode_skip(dec);
+                    }
+                }
+            }
+            for (size_t j = max; j < arr.count; j++)
+                cbor_decode_skip(dec);
+        }
+    }
+    else {
+        cbor_decode_skip(dec);
+    }
+}
+
 static void dec_commit_args(cbor_decoder_t *dec, size_t count,
                               nodus_t3_commit_t *c) {
     for (size_t i = 0; i < count; i++) {
         cbor_item_t key = cbor_decode_next(dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
 
-        if (KEY_IS(key, "txh")) {
+        /* Batch mode detection */
+        if (KEY_IS(key, "btx")) {
+            cbor_item_t arr = cbor_decode_next(dec);
+            if (arr.type == CBOR_ITEM_ARRAY) {
+                int max = (int)arr.count;
+                if (max > NODUS_W_MAX_BLOCK_TXS) max = NODUS_W_MAX_BLOCK_TXS;
+                c->batch_count = max;
+                for (int j = 0; j < max; j++) {
+                    cbor_item_t entry = cbor_decode_next(dec);
+                    if (entry.type == CBOR_ITEM_MAP)
+                        dec_batch_tx_entry(dec, entry.count, &c->batch_txs[j]);
+                }
+                for (int j = max; j < (int)arr.count; j++)
+                    cbor_decode_skip(dec);
+            }
+        }
+        else if (KEY_IS(key, "bh")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(c->block_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        }
+        /* Legacy single-TX fields */
+        else if (KEY_IS(key, "txh")) {
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_BSTR &&
                 val.bstr.len == NODUS_T3_TX_HASH_LEN)
@@ -527,60 +750,9 @@ static void dec_commit_args(cbor_decoder_t *dec, size_t count,
                 c->tx_len = (uint32_t)val.bstr.len;
             }
         }
-        else if (KEY_IS(key, "pts")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) c->proposal_timestamp = val.uint_val;
-        }
-        else if (KEY_IS(key, "pid")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_WITNESS_ID_LEN)
-                memcpy(c->proposer_id, val.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
-        }
-        else if (KEY_IS(key, "npc")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) c->n_precommits = (uint32_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "uck")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_KEY_BYTES)
-                memcpy(c->utxo_checksum, val.bstr.ptr, NODUS_KEY_BYTES);
-        }
-        else if (KEY_IS(key, "cer")) {
-            cbor_item_t arr = cbor_decode_next(dec);
-            if (arr.type == CBOR_ITEM_ARRAY) {
-                size_t max = arr.count < NODUS_T3_MAX_WITNESSES ?
-                             arr.count : NODUS_T3_MAX_WITNESSES;
-                for (size_t j = 0; j < max; j++) {
-                    cbor_item_t m = cbor_decode_next(dec);
-                    if (m.type != CBOR_ITEM_MAP) { cbor_decode_skip(dec); continue; }
-                    for (size_t k = 0; k < m.count; k++) {
-                        cbor_item_t mk = cbor_decode_next(dec);
-                        if (mk.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
-                        if (KEY_IS(mk, "vid")) {
-                            cbor_item_t v = cbor_decode_next(dec);
-                            if (v.type == CBOR_ITEM_BSTR &&
-                                v.bstr.len == NODUS_T3_WITNESS_ID_LEN)
-                                memcpy(c->certs[j].voter_id, v.bstr.ptr,
-                                       NODUS_T3_WITNESS_ID_LEN);
-                        } else if (KEY_IS(mk, "sig")) {
-                            cbor_item_t v = cbor_decode_next(dec);
-                            if (v.type == CBOR_ITEM_BSTR &&
-                                v.bstr.len == NODUS_SIG_BYTES)
-                                memcpy(c->certs[j].signature, v.bstr.ptr,
-                                       NODUS_SIG_BYTES);
-                        } else {
-                            cbor_decode_skip(dec);
-                        }
-                    }
-                }
-                for (size_t j = max; j < arr.count; j++)
-                    cbor_decode_skip(dec);
-            }
-        }
         else {
-            cbor_decode_skip(dec);
+            /* Try commit-specific fields (certs, timestamps) */
+            dec_commit_field(dec, &key, c);
         }
     }
 }

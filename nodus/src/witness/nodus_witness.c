@@ -7,9 +7,12 @@
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_bft.h"
+#include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_sync.h"
+#include "witness/nodus_witness_mempool.h"
+#include "crypto/utils/qgp_log.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
 #include "crypto/nodus_identity.h"
@@ -266,6 +269,90 @@ int nodus_witness_init(nodus_witness_t *witness,
     return 0;
 }
 
+/* ── Block timer: propose batch from mempool ────────────────────── */
+
+static void nodus_witness_propose_batch(nodus_witness_t *w) {
+    if (!w || w->mempool.count == 0) return;
+
+    /* Pop batch from mempool (highest fee first) */
+    nodus_witness_mempool_entry_t *batch[NODUS_W_MAX_BLOCK_TXS];
+    int count = nodus_witness_mempool_pop_batch(&w->mempool, batch,
+                                                  NODUS_W_MAX_BLOCK_TXS);
+    if (count <= 0) return;
+
+    /* Re-verify each TX (mempool entries may be stale due to
+     * double-spend from a concurrent batch on another view) */
+    /* Track all nullifiers seen in this batch to prevent intra-batch double-spend.
+     * Max: NODUS_W_MAX_BLOCK_TXS(10) * NODUS_T3_MAX_TX_INPUTS(16) = 160 entries */
+    uint8_t seen_nullifiers[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS]
+                           [NODUS_T3_NULLIFIER_LEN];
+    int seen_count = 0;
+
+    int valid = 0;
+    for (int i = 0; i < count; i++) {
+        bool reject = false;
+
+        for (int j = 0; j < batch[i]->nullifier_count; j++) {
+            /* Check against DB (already committed) */
+            if (nodus_witness_nullifier_exists(w, batch[i]->nullifiers[j])) {
+                QGP_LOG_WARN(LOG_TAG, "mempool TX stale (DB double-spend), dropping");
+                reject = true;
+                break;
+            }
+            /* Check against other TXs in this batch (intra-batch double-spend) */
+            for (int k = 0; k < seen_count; k++) {
+                if (memcmp(seen_nullifiers[k], batch[i]->nullifiers[j],
+                           NODUS_T3_NULLIFIER_LEN) == 0) {
+                    QGP_LOG_WARN(LOG_TAG, "intra-batch double-spend detected, "
+                                 "dropping TX %d", i);
+                    reject = true;
+                    break;
+                }
+            }
+            if (reject) break;
+        }
+
+        if (reject) {
+            nodus_witness_mempool_entry_free(batch[i]);
+            batch[i] = NULL;
+        } else {
+            /* Record this TX's nullifiers as seen */
+            for (int j = 0; j < batch[i]->nullifier_count; j++) {
+                if (seen_count < NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS) {
+                    memcpy(seen_nullifiers[seen_count], batch[i]->nullifiers[j],
+                           NODUS_T3_NULLIFIER_LEN);
+                    seen_count++;
+                }
+            }
+            if (valid != i)
+                batch[valid] = batch[i];
+            valid++;
+        }
+    }
+
+    if (valid == 0) {
+        QGP_LOG_WARN(LOG_TAG, "all batch TXs stale, skipping");
+        w->mempool.last_block_time_ms = nodus_time_now() * 1000ULL;
+        return;
+    }
+
+    /* Start batch BFT round */
+    int rc = nodus_witness_bft_start_round_batch(w, batch, valid);
+    if (rc != 0) {
+        QGP_LOG_WARN(LOG_TAG, "batch start_round failed: %d", rc);
+        /* Put entries back into mempool or free them */
+        for (int i = 0; i < valid; i++) {
+            if (batch[i]) {
+                int add_rc = nodus_witness_mempool_add(&w->mempool, batch[i]);
+                if (add_rc != 0)
+                    nodus_witness_mempool_entry_free(batch[i]);
+            }
+        }
+    }
+
+    w->mempool.last_block_time_ms = nodus_time_now() * 1000ULL;
+}
+
 #define WITNESS_EPOCH_SECS  60
 
 void nodus_witness_tick(nodus_witness_t *witness) {
@@ -279,13 +366,41 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     nodus_witness_bft_check_timeout(witness);
 
     /* H-15: Pending forward timeout (30s) */
-    if (witness->pending_forward.active) {
+    {
         uint64_t now_s = nodus_time_now();
-        if (now_s - witness->pending_forward.started_at > 30) {
-            fprintf(stderr, "WITNESS: pending_forward timed out after 30s\n");
-            witness->pending_forward.active = false;
-            witness->pending_forward.client_conn = NULL;
+        for (int pfi = 0; pfi < NODUS_W_MAX_PENDING_FWD; pfi++) {
+            if (!witness->pending_forwards[pfi].active) continue;
+            if (now_s - witness->pending_forwards[pfi].started_at > 30) {
+                fprintf(stderr, "WITNESS: pending_forward[%d] timed out after 30s\n", pfi);
+                witness->pending_forwards[pfi].active = false;
+                witness->pending_forwards[pfi].client_conn = NULL;
+            }
         }
+    }
+
+    /* Block timer: propose batch if mempool has TXs and interval elapsed */
+    if (nodus_witness_bft_is_leader(witness) &&
+        witness->round_state.phase == NODUS_W_PHASE_IDLE &&
+        witness->mempool.count > 0) {
+
+        uint64_t now_ms = nodus_time_now() * 1000ULL;
+        if (now_ms - witness->mempool.last_block_time_ms >=
+            NODUS_W_BLOCK_INTERVAL_MS) {
+            nodus_witness_propose_batch(witness);
+        }
+    }
+
+    /* Drain stale mempool entries when no longer leader.
+     * Only check once per epoch (60s) to avoid flap-induced drops.
+     * Forwarded entries (client_conn == NULL) would be stranded forever
+     * since no client disconnect would trigger remove_by_conn. */
+    if (!nodus_witness_bft_is_leader(witness) &&
+        witness->mempool.count > 0 &&
+        nodus_time_now() - witness->last_epoch < 2) {
+        /* Runs once right after epoch tick rebuilds roster */
+        fprintf(stderr, "WITNESS: not leader, draining %d mempool entries\n",
+                witness->mempool.count);
+        nodus_witness_mempool_clear(&witness->mempool);
     }
 
     /* Peer mesh: reconnection, IDENT exchange */
@@ -489,6 +604,9 @@ void nodus_witness_close(nodus_witness_t *witness) {
     if (!witness) return;
 
     witness->running = false;
+
+    /* Clear mempool */
+    nodus_witness_mempool_clear(&witness->mempool);
 
     /* Close peer mesh (clears conn references) */
     nodus_witness_peer_close(witness);

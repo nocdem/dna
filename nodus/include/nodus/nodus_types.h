@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  10
-#define NODUS_VERSION_PATCH  13
-#define NODUS_VERSION_STRING "0.10.13"
+#define NODUS_VERSION_PATCH  14
+#define NODUS_VERSION_STRING "0.10.14"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -124,6 +124,12 @@ extern "C" {
 #define NODUS_T3_MAX_VIEW_CHANGES   3
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
 #define NODUS_T3_BFT_PROTOCOL_VER   2
+
+/* Block production (mempool + batch) */
+#define NODUS_W_BLOCK_INTERVAL_MS   5000    /* 5s between block proposals */
+#define NODUS_W_MAX_MEMPOOL         64      /* max pending TXs in mempool */
+#define NODUS_W_MAX_BLOCK_TXS       10      /* max TXs per batch/block */
+#define NODUS_W_MAX_PENDING_FWD     16      /* max pending forward slots */
 
 /* Circuit (VPN mesh) — Faz 1 */
 #define NODUS_MAX_CIRCUITS_PER_SESSION   16

@@ -36,6 +36,9 @@
 
 #define LOG_TAG "WITNESS-BFT"
 
+/* Forward declaration — defined near bft_check_timeout */
+static void round_state_free_batch(nodus_witness_round_state_t *rs);
+
 /* ── Time helper ─────────────────────────────────────────────────── */
 
 static uint64_t time_ms(void) {
@@ -503,67 +506,27 @@ static int update_utxo_set(nodus_witness_t *w,
  *   - Add ledger entry (audit trail)
  *   - Create block
  */
-int nodus_witness_commit_block(nodus_witness_t *w,
-                          const uint8_t *tx_hash,
-                          uint8_t tx_type,
-                          const uint8_t *const *nullifiers,
-                          uint8_t nullifier_count,
-                          uint64_t total_supply,
-                          uint64_t proposal_timestamp,
-                          const uint8_t *proposer_id,
-                          const uint8_t *tx_data,
-                          uint32_t tx_len) {
-    /* For genesis: derive chain_id from fingerprint + tx_hash, then create DB
-     * (db_begin requires w->db to be open) */
-    if (tx_type == NODUS_W_TX_GENESIS && !w->db) {
-        /* Parse genesis fingerprint from first output in tx_data:
-         * Header(74) + input_count(1) + output_count(1) + out_version(1) = 77
-         * Then fingerprint is 129 bytes (128 hex + null) */
-        if (!tx_data || tx_len < 77 + 129) {
-            fprintf(stderr, "%s: genesis tx_data too short for fingerprint (len=%u)\n",
-                    LOG_TAG, tx_len);
-            return -1;
-        }
-
-        size_t fp_offset = 74;                         /* end of header */
-        uint8_t in_count = tx_data[fp_offset++];       /* input_count (should be 0) */
-        fp_offset += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8);  /* skip inputs */
-        if (fp_offset >= tx_len) {
-            fprintf(stderr, "%s: genesis tx_data truncated at outputs\n", LOG_TAG);
-            return -1;
-        }
-        uint8_t out_count = tx_data[fp_offset++];      /* output_count */
-        if (out_count == 0 || fp_offset + 1 + 129 > tx_len) {
-            fprintf(stderr, "%s: genesis has no outputs or truncated\n", LOG_TAG);
-            return -1;
-        }
-        fp_offset += 1;                                /* output version byte */
-        const char *genesis_fp = (const char *)(tx_data + fp_offset);
-
-        /* Derive chain_id = SHA3-256(fp_bytes || tx_hash) */
-        uint8_t derived_chain_id[32];
-        if (nodus_derive_chain_id(genesis_fp, tx_hash, derived_chain_id) != 0) {
-            fprintf(stderr, "%s: failed to derive chain_id from genesis\n", LOG_TAG);
-            return -1;
-        }
-
-        if (nodus_witness_create_chain_db(w, derived_chain_id) != 0) {
-            fprintf(stderr, "%s: failed to create chain DB\n", LOG_TAG);
-            return -1;
-        }
-    }
-
-    /* Begin atomic transaction */
-    if (nodus_witness_db_begin(w) != 0) {
-        fprintf(stderr, "%s: db begin failed\n", LOG_TAG);
-        return -1;
-    }
-
+/**
+ * Inner commit logic: nullifiers, UTXO, TX store, ledger.
+ * Does NOT manage DB transaction (caller handles begin/commit).
+ * Does NOT create blocks (caller handles block_add).
+ * Used by both single-TX commit_block() and batch commit path.
+ *
+ * @return 0 on success, -1 on failure (caller should rollback)
+ */
+static int commit_block_inner(nodus_witness_t *w,
+                                const uint8_t *tx_hash,
+                                uint8_t tx_type,
+                                const uint8_t *const *nullifiers,
+                                uint8_t nullifier_count,
+                                uint64_t total_supply,
+                                uint64_t proposal_timestamp,
+                                const uint8_t *proposer_id,
+                                const uint8_t *tx_data,
+                                uint32_t tx_len) {
     bool failed = false;
 
     if (tx_type == NODUS_W_TX_GENESIS) {
-
-        /* Derive genesis supply from tx outputs if not provided */
         uint64_t supply = total_supply;
         if (supply == 0 && tx_data && tx_len > 75) {
             size_t off = 74;
@@ -592,7 +555,7 @@ int nodus_witness_commit_block(nodus_witness_t *w,
     } else {
         for (int i = 0; i < nullifier_count; i++) {
             int rc = nodus_witness_nullifier_add(w, nullifiers[i], tx_hash);
-            if (rc != 0 && rc != -2) {  /* -2 = already exists, ok */
+            if (rc != 0 && rc != -2) {
                 fprintf(stderr, "%s: nullifier add %d failed\n", LOG_TAG, i);
                 failed = true;
                 break;
@@ -600,7 +563,6 @@ int nodus_witness_commit_block(nodus_witness_t *w,
         }
     }
 
-    /* Update UTXO set within the same atomic transaction */
     if (!failed && tx_data && tx_len > 0) {
         if (update_utxo_set(w, tx_hash, tx_type, nullifiers, nullifier_count,
                                tx_data, tx_len) != 0) {
@@ -609,30 +571,86 @@ int nodus_witness_commit_block(nodus_witness_t *w,
         }
     }
 
-    /* Store full transaction data for client retrieval */
     if (!failed && tx_data && tx_len > 0) {
         uint64_t bh = nodus_witness_block_height(w) + 1;
         nodus_witness_tx_store(w, tx_hash, tx_type, tx_data, tx_len, bh);
     }
 
-    if (failed) {
-        nodus_witness_db_rollback(w);
+    if (failed) return -1;
+
+    nodus_witness_ledger_add(w, tx_hash, tx_type, nullifier_count);
+
+    /* Block creation inside caller's DB transaction for crash atomicity */
+    if (proposer_id) {
+        nodus_witness_block_add(w, tx_hash, tx_type,
+                                  proposal_timestamp, proposer_id);
+    }
+
+    return 0;
+}
+
+int nodus_witness_commit_block(nodus_witness_t *w,
+                          const uint8_t *tx_hash,
+                          uint8_t tx_type,
+                          const uint8_t *const *nullifiers,
+                          uint8_t nullifier_count,
+                          uint64_t total_supply,
+                          uint64_t proposal_timestamp,
+                          const uint8_t *proposer_id,
+                          const uint8_t *tx_data,
+                          uint32_t tx_len) {
+    /* For genesis: derive chain_id from fingerprint + tx_hash, then create DB */
+    if (tx_type == NODUS_W_TX_GENESIS && !w->db) {
+        if (!tx_data || tx_len < 77 + 129) {
+            fprintf(stderr, "%s: genesis tx_data too short for fingerprint (len=%u)\n",
+                    LOG_TAG, tx_len);
+            return -1;
+        }
+
+        size_t fp_offset = 74;
+        uint8_t in_count = tx_data[fp_offset++];
+        fp_offset += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8);
+        if (fp_offset >= tx_len) {
+            fprintf(stderr, "%s: genesis tx_data truncated at outputs\n", LOG_TAG);
+            return -1;
+        }
+        uint8_t out_count = tx_data[fp_offset++];
+        if (out_count == 0 || fp_offset + 1 + 129 > tx_len) {
+            fprintf(stderr, "%s: genesis has no outputs or truncated\n", LOG_TAG);
+            return -1;
+        }
+        fp_offset += 1;
+        const char *genesis_fp = (const char *)(tx_data + fp_offset);
+
+        uint8_t derived_chain_id[32];
+        if (nodus_derive_chain_id(genesis_fp, tx_hash, derived_chain_id) != 0) {
+            fprintf(stderr, "%s: failed to derive chain_id from genesis\n", LOG_TAG);
+            return -1;
+        }
+
+        if (nodus_witness_create_chain_db(w, derived_chain_id) != 0) {
+            fprintf(stderr, "%s: failed to create chain DB\n", LOG_TAG);
+            return -1;
+        }
+    }
+
+    /* Single-TX: own transaction */
+    if (nodus_witness_db_begin(w) != 0) {
+        fprintf(stderr, "%s: db begin failed\n", LOG_TAG);
         return -1;
     }
 
-    /* H-16: Ledger entry INSIDE atomic transaction (before COMMIT) */
-    nodus_witness_ledger_add(w, tx_hash, tx_type, nullifier_count);
+    if (commit_block_inner(w, tx_hash, tx_type, nullifiers, nullifier_count,
+                             total_supply, proposal_timestamp, proposer_id,
+                             tx_data, tx_len) != 0) {
+        nodus_witness_db_rollback(w);
+        return -1;
+    }
 
     if (nodus_witness_db_commit(w) != 0) {
         fprintf(stderr, "%s: db commit failed\n", LOG_TAG);
         nodus_witness_db_rollback(w);
         return -1;
-    }
-
-    /* Block creation */
-    if (proposer_id) {
-        nodus_witness_block_add(w, tx_hash, tx_type,
-                                  proposal_timestamp, proposer_id);
     }
 
     return 0;
@@ -730,6 +748,7 @@ int nodus_witness_bft_start_round(nodus_witness_t *w,
 
     /* Initialize round state */
     w->current_round++;
+    round_state_free_batch(&w->round_state);
     memset(&w->round_state, 0, sizeof(w->round_state));
 
     /* Restore client connection info */
@@ -806,6 +825,132 @@ int nodus_witness_bft_start_round(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * Start batch round (leader only)
+ * ════════════════════════════════════════════════════════════════════ */
+
+int nodus_witness_bft_start_round_batch(nodus_witness_t *w,
+                                          nodus_witness_mempool_entry_t **entries,
+                                          int count) {
+    if (!w || !entries || count <= 0) return -1;
+
+    /* Force roster swap if pending */
+    if (w->pending_roster_ready &&
+        w->pending_roster.n_witnesses > w->roster.n_witnesses) {
+        memcpy(&w->roster, &w->pending_roster, sizeof(nodus_witness_roster_t));
+        memcpy(&w->bft_config, &w->pending_bft_config,
+               sizeof(nodus_witness_bft_config_t));
+        w->pending_roster_ready = false;
+        w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
+        fprintf(stderr, "%s: force roster swap before batch: %u witnesses, "
+                "quorum=%u, my_index=%d\n", LOG_TAG,
+                w->roster.n_witnesses, w->bft_config.quorum, w->my_index);
+    }
+
+    if (!nodus_witness_bft_consensus_active(w)) {
+        fprintf(stderr, "%s: consensus disabled (n=%u < %d)\n",
+                LOG_TAG, w->bft_config.n_witnesses, NODUS_T3_MIN_WITNESSES);
+        return -1;
+    }
+
+    if (!nodus_witness_bft_is_leader(w)) {
+        fprintf(stderr, "%s: batch start_round but not leader\n", LOG_TAG);
+        return -1;
+    }
+
+    if (w->round_state.phase != NODUS_W_PHASE_IDLE) {
+        fprintf(stderr, "%s: batch round rejected — round active (phase=%d)\n",
+                LOG_TAG, w->round_state.phase);
+        return -1;
+    }
+
+    /* Compute block_hash = SHA3-512(tx_hash_1 || tx_hash_2 || ... || tx_hash_n) */
+    uint8_t block_hash[NODUS_T3_TX_HASH_LEN];
+    {
+        uint8_t hash_input[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_TX_HASH_LEN];
+        size_t total_len = 0;
+        for (int i = 0; i < count; i++) {
+            memcpy(hash_input + total_len, entries[i]->tx_hash,
+                   NODUS_T3_TX_HASH_LEN);
+            total_len += NODUS_T3_TX_HASH_LEN;
+        }
+        nodus_key_t bh;
+        if (nodus_hash(hash_input, total_len, &bh) != 0) {
+            fprintf(stderr, "%s: block_hash computation failed\n", LOG_TAG);
+            return -1;
+        }
+        memcpy(block_hash, bh.bytes, NODUS_T3_TX_HASH_LEN);
+    }
+
+    /* Initialize round state */
+    w->current_round++;
+    round_state_free_batch(&w->round_state);
+    memset(&w->round_state, 0, sizeof(w->round_state));
+
+    w->round_state.round = w->current_round;
+    w->round_state.view = w->current_view;
+    w->round_state.phase = NODUS_W_PHASE_PREVOTE;
+    memcpy(w->round_state.block_hash, block_hash, NODUS_T3_TX_HASH_LEN);
+    memcpy(w->round_state.tx_hash, block_hash, NODUS_T3_TX_HASH_LEN);
+    w->round_state.proposal_timestamp = (uint64_t)time(NULL);
+    memcpy(w->round_state.proposer_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
+    w->round_state.phase_start_time = time_ms();
+
+    /* Store batch entries */
+    w->round_state.batch_count = count;
+    for (int i = 0; i < count; i++)
+        w->round_state.batch_entries[i] = entries[i];
+
+    /* Record our own PREVOTE */
+    memcpy(w->round_state.prevotes[0].voter_id, w->my_id,
+           NODUS_T3_WITNESS_ID_LEN);
+    w->round_state.prevotes[0].vote = NODUS_W_VOTE_APPROVE;
+    w->round_state.prevote_count = 1;
+    w->round_state.prevote_approve_count = 1;
+
+    /* Build batch PROPOSAL */
+    nodus_t3_msg_t proposal;
+    memset(&proposal, 0, sizeof(proposal));
+    proposal.type = NODUS_T3_PROPOSE;
+    proposal.txn_id = ++w->next_txn_id;
+
+    proposal.propose.batch_count = count;
+    memcpy(proposal.propose.block_hash, block_hash, NODUS_T3_TX_HASH_LEN);
+
+    for (int i = 0; i < count; i++) {
+        nodus_t3_batch_tx_t *btx = &proposal.propose.batch_txs[i];
+        nodus_witness_mempool_entry_t *e = entries[i];
+        memcpy(btx->tx_hash, e->tx_hash, NODUS_T3_TX_HASH_LEN);
+        btx->nullifier_count = e->nullifier_count;
+        for (int j = 0; j < e->nullifier_count; j++)
+            btx->nullifiers[j] = e->nullifiers[j];
+        btx->tx_type = e->tx_type;
+        btx->tx_data = e->tx_data;
+        btx->tx_len = e->tx_len;
+        btx->client_pubkey = e->client_pubkey;
+        btx->client_sig = e->client_sig;
+        btx->fee = e->fee;
+    }
+
+    int sent = nodus_witness_bft_broadcast(w, &proposal);
+
+    /* Broadcast own PREVOTE */
+    nodus_t3_msg_t prevote;
+    memset(&prevote, 0, sizeof(prevote));
+    prevote.type = NODUS_T3_PREVOTE;
+    prevote.txn_id = ++w->next_txn_id;
+    memcpy(prevote.vote.tx_hash, block_hash, NODUS_T3_TX_HASH_LEN);
+    prevote.vote.vote = NODUS_W_VOTE_APPROVE;
+    nodus_witness_bft_broadcast(w, &prevote);
+
+    fprintf(stderr, "%s: batch proposal broadcast to %d peers "
+            "(round %lu, %d TXs, block_hash=%.16s...)\n",
+            LOG_TAG, sent, (unsigned long)w->current_round, count,
+            "computed");
+
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * Handle PROPOSAL (follower receives from leader)
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -842,54 +987,192 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
         return -1;
     }
 
-    /* Initialize round state from proposal (needed before verification) */
+    /* Initialize round state from proposal */
     w->current_round = hdr->round;
     w->current_view = hdr->view;
 
+    round_state_free_batch(&w->round_state);
     memset(&w->round_state, 0, sizeof(w->round_state));
     w->round_state.client_conn = NULL;
     w->round_state.round = hdr->round;
     w->round_state.view = hdr->view;
     w->round_state.phase = NODUS_W_PHASE_PREVOTE;
-    memcpy(w->round_state.tx_hash, prop->tx_hash, NODUS_T3_TX_HASH_LEN);
-    w->round_state.tx_type = prop->tx_type;
-
-    w->round_state.nullifier_count = prop->nullifier_count;
-    for (int i = 0; i < prop->nullifier_count; i++)
-        memcpy(w->round_state.nullifiers[i], prop->nullifiers[i],
-               NODUS_T3_NULLIFIER_LEN);
-
-    if (prop->tx_data && prop->tx_len > 0 &&
-        prop->tx_len <= NODUS_T3_MAX_TX_SIZE) {
-        memcpy(w->round_state.tx_data, prop->tx_data, prop->tx_len);
-        w->round_state.tx_len = prop->tx_len;
-    }
-
-    if (prop->client_pubkey)
-        memcpy(w->round_state.client_pubkey, prop->client_pubkey,
-               NODUS_PK_BYTES);
-    if (prop->client_sig)
-        memcpy(w->round_state.client_signature, prop->client_sig,
-               NODUS_SIG_BYTES);
-    w->round_state.fee_amount = prop->fee;
     w->round_state.phase_start_time = time_ms();
     w->round_state.proposal_timestamp = hdr->timestamp;
     memcpy(w->round_state.proposer_id, hdr->sender_id,
            NODUS_T3_WITNESS_ID_LEN);
 
-    /* Full transaction verification */
+    bool tx_invalid = false;
     char reject_reason[256] = {0};
-    int vrc = nodus_witness_verify_transaction(w,
-                  w->round_state.tx_data, w->round_state.tx_len,
-                  prop->tx_hash, prop->tx_type,
-                  (const uint8_t *)w->round_state.nullifiers,
-                  w->round_state.nullifier_count,
-                  w->round_state.client_pubkey,
-                  w->round_state.client_signature,
-                  w->round_state.fee_amount,
-                  reject_reason, sizeof(reject_reason));
 
-    bool tx_invalid = (vrc != 0);
+    if (prop->batch_count > 0) {
+        /* ── Batch mode ──────────────────────────────────────────── */
+        memcpy(w->round_state.block_hash, prop->block_hash,
+               NODUS_T3_TX_HASH_LEN);
+        memcpy(w->round_state.tx_hash, prop->block_hash,
+               NODUS_T3_TX_HASH_LEN);
+
+        /* Verify block_hash = SHA3-512(all tx_hashes) */
+        uint8_t computed_bh[NODUS_T3_TX_HASH_LEN];
+        {
+            uint8_t hash_input[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_TX_HASH_LEN];
+            size_t total_len = 0;
+            for (int i = 0; i < prop->batch_count; i++) {
+                memcpy(hash_input + total_len,
+                       prop->batch_txs[i].tx_hash, NODUS_T3_TX_HASH_LEN);
+                total_len += NODUS_T3_TX_HASH_LEN;
+            }
+            nodus_key_t bh;
+            nodus_hash(hash_input, total_len, &bh);
+            memcpy(computed_bh, bh.bytes, NODUS_T3_TX_HASH_LEN);
+        }
+
+        if (memcmp(computed_bh, prop->block_hash, NODUS_T3_TX_HASH_LEN) != 0) {
+            fprintf(stderr, "%s: batch block_hash mismatch — rejecting\n",
+                    LOG_TAG);
+            tx_invalid = true;
+            snprintf(reject_reason, sizeof(reject_reason),
+                     "block_hash mismatch");
+        }
+
+        /* Allocate batch entries from proposal data.
+         * Track nullifiers across TXs to prevent intra-batch double-spend. */
+        uint8_t batch_seen_nuls[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS]
+                               [NODUS_T3_NULLIFIER_LEN];
+        int batch_seen_count = 0;
+
+        w->round_state.batch_count = prop->batch_count;
+        for (int i = 0; i < prop->batch_count && !tx_invalid; i++) {
+            const nodus_t3_batch_tx_t *btx = &prop->batch_txs[i];
+            nodus_witness_mempool_entry_t *entry = calloc(1, sizeof(*entry));
+            if (!entry) { tx_invalid = true; break; }
+
+            memcpy(entry->tx_hash, btx->tx_hash, NODUS_T3_TX_HASH_LEN);
+            entry->nullifier_count = btx->nullifier_count;
+            for (int j = 0; j < btx->nullifier_count; j++) {
+                if (btx->nullifiers[j])
+                    memcpy(entry->nullifiers[j], btx->nullifiers[j],
+                           NODUS_T3_NULLIFIER_LEN);
+            }
+            entry->tx_type = btx->tx_type;
+            if (btx->tx_data && btx->tx_len > 0 &&
+                btx->tx_len <= NODUS_T3_MAX_TX_SIZE) {
+                entry->tx_data = malloc(btx->tx_len);
+                if (!entry->tx_data) {
+                    free(entry);
+                    tx_invalid = true;
+                    break;
+                }
+                memcpy(entry->tx_data, btx->tx_data, btx->tx_len);
+                entry->tx_len = btx->tx_len;
+            }
+            if (btx->client_pubkey)
+                memcpy(entry->client_pubkey, btx->client_pubkey, NODUS_PK_BYTES);
+            if (btx->client_sig)
+                memcpy(entry->client_sig, btx->client_sig, NODUS_SIG_BYTES);
+            entry->fee = btx->fee;
+            entry->client_conn = NULL;  /* Follower has no client conn */
+
+            /* Verify this TX independently */
+            int vrc = nodus_witness_verify_transaction(w,
+                          entry->tx_data, entry->tx_len,
+                          entry->tx_hash, entry->tx_type,
+                          (const uint8_t *)entry->nullifiers,
+                          entry->nullifier_count,
+                          entry->client_pubkey, entry->client_sig,
+                          entry->fee, reject_reason, sizeof(reject_reason));
+            if (vrc != 0) {
+                fprintf(stderr, "%s: batch TX %d rejected: %s\n",
+                        LOG_TAG, i, reject_reason);
+                nodus_witness_mempool_entry_free(entry);
+                tx_invalid = true;
+                break;
+            }
+
+            /* Intra-batch double-spend check: reject if any nullifier
+             * was already seen in an earlier TX in this batch */
+            for (int j = 0; j < entry->nullifier_count && !tx_invalid; j++) {
+                for (int k = 0; k < batch_seen_count; k++) {
+                    if (memcmp(batch_seen_nuls[k], entry->nullifiers[j],
+                               NODUS_T3_NULLIFIER_LEN) == 0) {
+                        fprintf(stderr, "%s: batch TX %d intra-batch "
+                                "double-spend — REJECTING batch\n",
+                                LOG_TAG, i);
+                        snprintf(reject_reason, sizeof(reject_reason),
+                                 "intra-batch double-spend");
+                        nodus_witness_mempool_entry_free(entry);
+                        entry = NULL;
+                        tx_invalid = true;
+                        break;
+                    }
+                }
+            }
+            if (tx_invalid) break;
+
+            /* Record nullifiers as seen */
+            for (int j = 0; j < entry->nullifier_count; j++) {
+                if (batch_seen_count <
+                    NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS) {
+                    memcpy(batch_seen_nuls[batch_seen_count],
+                           entry->nullifiers[j], NODUS_T3_NULLIFIER_LEN);
+                    batch_seen_count++;
+                }
+            }
+
+            w->round_state.batch_entries[i] = entry;
+        }
+
+        /* Cleanup on invalid batch */
+        if (tx_invalid) {
+            for (int i = 0; i < w->round_state.batch_count; i++) {
+                if (w->round_state.batch_entries[i]) {
+                    nodus_witness_mempool_entry_free(
+                        w->round_state.batch_entries[i]);
+                    w->round_state.batch_entries[i] = NULL;
+                }
+            }
+        }
+
+        fprintf(stderr, "%s: batch proposal from leader: %d TXs, %s\n",
+                LOG_TAG, prop->batch_count,
+                tx_invalid ? "REJECTED" : "APPROVED");
+    } else {
+        /* ── Legacy single-TX mode ───────────────────────────────── */
+        memcpy(w->round_state.tx_hash, prop->tx_hash, NODUS_T3_TX_HASH_LEN);
+        w->round_state.tx_type = prop->tx_type;
+
+        w->round_state.nullifier_count = prop->nullifier_count;
+        for (int i = 0; i < prop->nullifier_count; i++)
+            memcpy(w->round_state.nullifiers[i], prop->nullifiers[i],
+                   NODUS_T3_NULLIFIER_LEN);
+
+        if (prop->tx_data && prop->tx_len > 0 &&
+            prop->tx_len <= NODUS_T3_MAX_TX_SIZE) {
+            memcpy(w->round_state.tx_data, prop->tx_data, prop->tx_len);
+            w->round_state.tx_len = prop->tx_len;
+        }
+
+        if (prop->client_pubkey)
+            memcpy(w->round_state.client_pubkey, prop->client_pubkey,
+                   NODUS_PK_BYTES);
+        if (prop->client_sig)
+            memcpy(w->round_state.client_signature, prop->client_sig,
+                   NODUS_SIG_BYTES);
+        w->round_state.fee_amount = prop->fee;
+
+        int vrc = nodus_witness_verify_transaction(w,
+                      w->round_state.tx_data, w->round_state.tx_len,
+                      prop->tx_hash, prop->tx_type,
+                      (const uint8_t *)w->round_state.nullifiers,
+                      w->round_state.nullifier_count,
+                      w->round_state.client_pubkey,
+                      w->round_state.client_signature,
+                      w->round_state.fee_amount,
+                      reject_reason, sizeof(reject_reason));
+
+        tx_invalid = (vrc != 0);
+    }
+
     nodus_witness_vote_t my_vote =
         tx_invalid ? NODUS_W_VOTE_REJECT : NODUS_W_VOTE_APPROVE;
 
@@ -906,7 +1189,8 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     memset(&vote_msg, 0, sizeof(vote_msg));
     vote_msg.type = NODUS_T3_PREVOTE;
     vote_msg.txn_id = ++w->next_txn_id;
-    memcpy(vote_msg.vote.tx_hash, prop->tx_hash, NODUS_T3_TX_HASH_LEN);
+    /* Use round_state.tx_hash — set to block_hash in batch mode */
+    memcpy(vote_msg.vote.tx_hash, w->round_state.tx_hash, NODUS_T3_TX_HASH_LEN);
     vote_msg.vote.vote = (uint32_t)my_vote;
     if (tx_invalid)
         snprintf(vote_msg.vote.reason, sizeof(vote_msg.vote.reason),
@@ -1056,28 +1340,95 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
 
     /* next_phase == NODUS_W_PHASE_COMMIT: PRECOMMIT quorum → COMMIT */
 
-    /* Write to database */
-    const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
-    round_state_nullifier_ptrs(&w->round_state, nul_ptrs);
+    if (w->round_state.batch_count > 0) {
+        /* ── Batch commit: N TXs → N blocks (ATOMIC) ────────────── */
+        bool batch_failed = false;
 
-    if (nodus_witness_commit_block(w, w->round_state.tx_hash,
-                       w->round_state.tx_type,
-                       nul_ptrs,
-                       w->round_state.nullifier_count,
-                       w->round_state.fee_amount,
-                       w->round_state.proposal_timestamp,
-                       w->round_state.proposer_id,
-                       w->round_state.tx_data,
-                       w->round_state.tx_len) != 0) {
-        fprintf(stderr, "%s: commit to DB failed!\n", LOG_TAG);
+        if (nodus_witness_db_begin(w) != 0) {
+            fprintf(stderr, "%s: batch db begin failed\n", LOG_TAG);
+            batch_failed = true;
+        }
+
+        if (!batch_failed) {
+            for (int bi = 0; bi < w->round_state.batch_count; bi++) {
+                nodus_witness_mempool_entry_t *e =
+                    w->round_state.batch_entries[bi];
+                if (!e) continue;
+
+                const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
+                for (int j = 0; j < e->nullifier_count; j++)
+                    nul_ptrs[j] = e->nullifiers[j];
+
+                if (commit_block_inner(w, e->tx_hash, e->tx_type,
+                                         nul_ptrs, e->nullifier_count,
+                                         0, /* total_supply: N/A for batch spends */
+                                         w->round_state.proposal_timestamp,
+                                         w->round_state.proposer_id,
+                                         e->tx_data, e->tx_len) != 0) {
+                    fprintf(stderr, "%s: batch TX %d inner commit failed!\n",
+                            LOG_TAG, bi);
+                    batch_failed = true;
+                    break;
+                }
+            }
+        }
+
+        if (batch_failed) {
+            nodus_witness_db_rollback(w);
+            fprintf(stderr, "%s: BATCH COMMIT ROLLED BACK round %lu\n",
+                    LOG_TAG, (unsigned long)w->round_state.round);
+        } else {
+            if (nodus_witness_db_commit(w) != 0) {
+                nodus_witness_db_rollback(w);
+                fprintf(stderr, "%s: batch db commit failed\n", LOG_TAG);
+                batch_failed = true;
+            }
+        }
+
+        if (!batch_failed) {
+            /* Store commit certificates for EACH block in the batch.
+             * State sync verifies certs per block. */
+            uint64_t top_bh = nodus_witness_block_height(w);
+            if (top_bh >= (uint64_t)w->round_state.batch_count) {
+                uint64_t base_bh = top_bh - (uint64_t)w->round_state.batch_count + 1;
+                for (uint64_t bh = base_bh; bh <= top_bh; bh++) {
+                    nodus_witness_cert_store(w, bh, w->round_state.precommits,
+                                              w->round_state.precommit_count);
+                }
+            }
+
+            fprintf(stderr, "%s: BATCH COMMITTED round %lu (%d TXs)\n",
+                    LOG_TAG, (unsigned long)w->round_state.round,
+                    w->round_state.batch_count);
+        }
+    } else {
+        /* ── Legacy single-TX commit ─────────────────────────────── */
+        const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
+        round_state_nullifier_ptrs(&w->round_state, nul_ptrs);
+
+        if (nodus_witness_commit_block(w, w->round_state.tx_hash,
+                           w->round_state.tx_type,
+                           nul_ptrs,
+                           w->round_state.nullifier_count,
+                           w->round_state.fee_amount,
+                           w->round_state.proposal_timestamp,
+                           w->round_state.proposer_id,
+                           w->round_state.tx_data,
+                           w->round_state.tx_len) != 0) {
+            fprintf(stderr, "%s: commit to DB failed!\n", LOG_TAG);
+        }
+
+        /* Store commit certificate */
+        uint64_t cert_bh = nodus_witness_block_height(w);
+        nodus_witness_cert_store(w, cert_bh, w->round_state.precommits,
+                                  w->round_state.precommit_count);
+
+        fprintf(stderr, "%s: COMMITTED round %lu (tx_type=%u)\n",
+                LOG_TAG, (unsigned long)w->round_state.round,
+                w->round_state.tx_type);
     }
 
-    /* Store commit certificate (2f+1 precommit signatures) */
-    uint64_t cert_bh = nodus_witness_block_height(w);
-    nodus_witness_cert_store(w, cert_bh, w->round_state.precommits,
-                              w->round_state.precommit_count);
-
-    /* Compute UTXO set checksum for cross-witness validation */
+    /* Compute UTXO set checksum */
     uint8_t utxo_cksum[NODUS_KEY_BYTES];
     bool have_cksum = (nodus_witness_utxo_checksum(w, utxo_cksum) == 0);
     if (have_cksum) {
@@ -1086,8 +1437,6 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             snprintf(hex + i * 2, 3, "%02x", utxo_cksum[i]);
         fprintf(stderr, "%s: UTXO checksum after round %llu: %s\n",
                 LOG_TAG, (unsigned long long)w->round_state.round, hex);
-    }
-    if (have_cksum) {
         memcpy(w->cached_utxo_checksum, utxo_cksum, NODUS_KEY_BYTES);
         w->cached_utxo_checksum_valid = true;
     }
@@ -1100,14 +1449,38 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     c_msg.type = NODUS_T3_COMMIT;
     c_msg.txn_id = ++w->next_txn_id;
 
-    memcpy(c_msg.commit.tx_hash, w->round_state.tx_hash,
-           NODUS_T3_TX_HASH_LEN);
-    c_msg.commit.nullifier_count = w->round_state.nullifier_count;
-    for (int i = 0; i < w->round_state.nullifier_count; i++)
-        c_msg.commit.nullifiers[i] = w->round_state.nullifiers[i];
-    c_msg.commit.tx_type = w->round_state.tx_type;
-    c_msg.commit.tx_data = w->round_state.tx_data;
-    c_msg.commit.tx_len = w->round_state.tx_len;
+    if (w->round_state.batch_count > 0) {
+        /* Batch commit message */
+        c_msg.commit.batch_count = w->round_state.batch_count;
+        memcpy(c_msg.commit.block_hash, w->round_state.block_hash,
+               NODUS_T3_TX_HASH_LEN);
+        for (int i = 0; i < w->round_state.batch_count; i++) {
+            nodus_witness_mempool_entry_t *e = w->round_state.batch_entries[i];
+            if (!e) continue;
+            nodus_t3_batch_tx_t *btx = &c_msg.commit.batch_txs[i];
+            memcpy(btx->tx_hash, e->tx_hash, NODUS_T3_TX_HASH_LEN);
+            btx->nullifier_count = e->nullifier_count;
+            for (int j = 0; j < e->nullifier_count; j++)
+                btx->nullifiers[j] = e->nullifiers[j];
+            btx->tx_type = e->tx_type;
+            btx->tx_data = e->tx_data;
+            btx->tx_len = e->tx_len;
+            btx->client_pubkey = e->client_pubkey;
+            btx->client_sig = e->client_sig;
+            btx->fee = e->fee;
+        }
+    } else {
+        /* Legacy single-TX commit message */
+        memcpy(c_msg.commit.tx_hash, w->round_state.tx_hash,
+               NODUS_T3_TX_HASH_LEN);
+        c_msg.commit.nullifier_count = w->round_state.nullifier_count;
+        for (int i = 0; i < w->round_state.nullifier_count; i++)
+            c_msg.commit.nullifiers[i] = w->round_state.nullifiers[i];
+        c_msg.commit.tx_type = w->round_state.tx_type;
+        c_msg.commit.tx_data = w->round_state.tx_data;
+        c_msg.commit.tx_len = w->round_state.tx_len;
+    }
+
     c_msg.commit.proposal_timestamp = w->round_state.proposal_timestamp;
     memcpy(c_msg.commit.proposer_id, w->round_state.proposer_id,
            NODUS_T3_WITNESS_ID_LEN);
@@ -1126,71 +1499,99 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
 
     nodus_witness_bft_broadcast(w, &c_msg);
 
-    fprintf(stderr, "%s: COMMITTED round %lu (tx_type=%u)\n",
-            LOG_TAG, (unsigned long)w->round_state.round,
-            w->round_state.tx_type);
+    /* Send client responses */
+    if (w->round_state.batch_count > 0) {
+        /* Batch: send result per TX */
+        for (int bi = 0; bi < w->round_state.batch_count; bi++) {
+            nodus_witness_mempool_entry_t *e = w->round_state.batch_entries[bi];
+            if (!e) continue;
 
-    /* Send spend result to client (before resetting round state) */
-    if (w->round_state.client_conn && !w->round_state.is_forwarded) {
-        /* Direct client request — send spend result */
-        nodus_witness_send_spend_result(w, 0, NULL);
-    } else if (w->round_state.is_forwarded) {
-        /* Forwarded request — send w_fwd_rsp to forwarder */
-        int fwd_pi = -1;
-        for (int i = 0; i < w->peer_count; i++) {
-            if (memcmp(w->peers[i].witness_id,
-                       w->round_state.forwarder_id,
-                       NODUS_T3_WITNESS_ID_LEN) == 0 &&
-                w->peers[i].conn && w->peers[i].identified) {
-                fwd_pi = i;
-                break;
+            if (e->client_conn && !e->is_forwarded) {
+                /* Direct client — send spend result */
+                struct nodus_tcp_conn *saved_conn = w->round_state.client_conn;
+                uint32_t saved_txn = w->round_state.client_txn_id;
+                memcpy(w->round_state.tx_hash, e->tx_hash,
+                       NODUS_T3_TX_HASH_LEN);
+                w->round_state.client_conn = e->client_conn;
+                w->round_state.client_txn_id = e->client_txn_id;
+                nodus_witness_send_spend_result(w, 0, NULL);
+                w->round_state.client_conn = saved_conn;
+                w->round_state.client_txn_id = saved_txn;
+            } else if (e->is_forwarded) {
+                /* Send w_fwd_rsp per forwarded TX */
+                int fwd_pi = -1;
+                for (int pi = 0; pi < w->peer_count; pi++) {
+                    if (memcmp(w->peers[pi].witness_id,
+                               e->forwarder_id,
+                               NODUS_T3_WITNESS_ID_LEN) == 0 &&
+                        w->peers[pi].conn && w->peers[pi].identified) {
+                        fwd_pi = pi;
+                        break;
+                    }
+                }
+                if (fwd_pi >= 0) {
+                    nodus_t3_msg_t fwd_rsp;
+                    memset(&fwd_rsp, 0, sizeof(fwd_rsp));
+                    fwd_rsp.type = NODUS_T3_FWD_RSP;
+                    fwd_rsp.txn_id = ++w->next_txn_id;
+                    snprintf(fwd_rsp.method, sizeof(fwd_rsp.method),
+                             "w_fwd_rsp");
+                    fwd_rsp.fwd_rsp.status = 0;
+                    memcpy(fwd_rsp.fwd_rsp.tx_hash, e->tx_hash,
+                           NODUS_T3_TX_HASH_LEN);
+                    fill_header(w, &fwd_rsp.header);
+                    uint8_t fwd_buf[NODUS_T3_MAX_MSG_SIZE];
+                    size_t fwd_len = 0;
+                    if (nodus_t3_encode(&fwd_rsp, &w->server->identity.sk,
+                                         fwd_buf, sizeof(fwd_buf),
+                                         &fwd_len) == 0) {
+                        nodus_tcp_send(w->peers[fwd_pi].conn, fwd_buf, fwd_len);
+                    }
+                }
             }
         }
 
-        if (fwd_pi < 0) {
-            fprintf(stderr, "%s: w_fwd_rsp: forwarder not found "
-                    "(peers=%d, searching fid=",
-                    LOG_TAG, w->peer_count);
-            for (int k = 0; k < 8; k++)
-                fprintf(stderr, "%02x", w->round_state.forwarder_id[k]);
-            fprintf(stderr, ")\n");
+        /* Free batch entries */
+        for (int bi = 0; bi < w->round_state.batch_count; bi++) {
+            if (w->round_state.batch_entries[bi]) {
+                nodus_witness_mempool_entry_free(
+                    w->round_state.batch_entries[bi]);
+                w->round_state.batch_entries[bi] = NULL;
+            }
+        }
+        w->round_state.batch_count = 0;
+    } else {
+        /* Legacy single-TX client response */
+        if (w->round_state.client_conn && !w->round_state.is_forwarded) {
+            nodus_witness_send_spend_result(w, 0, NULL);
+        } else if (w->round_state.is_forwarded) {
+            int fwd_pi = -1;
             for (int i = 0; i < w->peer_count; i++) {
-                fprintf(stderr, "%s:   peer %d: id=", LOG_TAG, i);
-                for (int k = 0; k < 8; k++)
-                    fprintf(stderr, "%02x", w->peers[i].witness_id[k]);
-                fprintf(stderr, " conn=%p ident=%d\n",
-                        (void *)w->peers[i].conn, w->peers[i].identified);
+                if (memcmp(w->peers[i].witness_id,
+                           w->round_state.forwarder_id,
+                           NODUS_T3_WITNESS_ID_LEN) == 0 &&
+                    w->peers[i].conn && w->peers[i].identified) {
+                    fwd_pi = i;
+                    break;
+                }
             }
-        }
-
-        if (fwd_pi >= 0) {
-            nodus_t3_msg_t fwd_rsp;
-            memset(&fwd_rsp, 0, sizeof(fwd_rsp));
-            fwd_rsp.type = NODUS_T3_FWD_RSP;
-            fwd_rsp.txn_id = ++w->next_txn_id;
-            snprintf(fwd_rsp.method, sizeof(fwd_rsp.method), "w_fwd_rsp");
-
-            fwd_rsp.fwd_rsp.status = 0;  /* approved */
-            memcpy(fwd_rsp.fwd_rsp.tx_hash, w->round_state.tx_hash,
-                   NODUS_T3_TX_HASH_LEN);
-            fwd_rsp.fwd_rsp.witness_count = 0;  /* forwarder doesn't use sigs */
-
-            fwd_rsp.header.version = NODUS_T3_BFT_PROTOCOL_VER;
-            fwd_rsp.header.round = w->current_round;
-            fwd_rsp.header.view = w->current_view;
-            memcpy(fwd_rsp.header.sender_id, w->my_id,
-                   NODUS_T3_WITNESS_ID_LEN);
-            fwd_rsp.header.timestamp = (uint64_t)time(NULL);
-            nodus_random((uint8_t *)&fwd_rsp.header.nonce,
-                          sizeof(fwd_rsp.header.nonce));
-            memcpy(fwd_rsp.header.chain_id, w->chain_id, 32);
-
-            uint8_t fwd_buf[NODUS_T3_MAX_MSG_SIZE];
-            size_t fwd_len = 0;
-            if (nodus_t3_encode(&fwd_rsp, &w->server->identity.sk,
-                                 fwd_buf, sizeof(fwd_buf), &fwd_len) == 0) {
-                nodus_tcp_send(w->peers[fwd_pi].conn, fwd_buf, fwd_len);
-                QGP_LOG_DEBUG(LOG_TAG, "sent w_fwd_rsp to forwarder");
+            if (fwd_pi >= 0) {
+                nodus_t3_msg_t fwd_rsp;
+                memset(&fwd_rsp, 0, sizeof(fwd_rsp));
+                fwd_rsp.type = NODUS_T3_FWD_RSP;
+                fwd_rsp.txn_id = ++w->next_txn_id;
+                snprintf(fwd_rsp.method, sizeof(fwd_rsp.method), "w_fwd_rsp");
+                fwd_rsp.fwd_rsp.status = 0;
+                memcpy(fwd_rsp.fwd_rsp.tx_hash, w->round_state.tx_hash,
+                       NODUS_T3_TX_HASH_LEN);
+                fill_header(w, &fwd_rsp.header);
+                uint8_t fwd_buf[NODUS_T3_MAX_MSG_SIZE];
+                size_t fwd_len = 0;
+                if (nodus_t3_encode(&fwd_rsp, &w->server->identity.sk,
+                                     fwd_buf, sizeof(fwd_buf), &fwd_len) == 0) {
+                    nodus_tcp_send(w->peers[fwd_pi].conn, fwd_buf, fwd_len);
+                    QGP_LOG_DEBUG(LOG_TAG, "sent w_fwd_rsp to forwarder");
+                }
             }
         }
     }
@@ -1228,57 +1629,91 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
         return 0;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "received COMMIT for round %lu (%d nullifiers)",
-                 (unsigned long)hdr->round, cmt->nullifier_count);
+    if (cmt->batch_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "received batch COMMIT for round %lu (%d TXs)",
+                     (unsigned long)hdr->round, cmt->batch_count);
 
-    /* HIGH-1: Verify tx_hash integrity before committing.
-     * Recompute tx_hash from tx_data and compare with the claimed hash. */
-    if (cmt->tx_data && cmt->tx_len > 0) {
-        /* Determine pubkey for hash: use round_state if we participated,
-         * else use all-zeros for genesis (tx_type 0). For spends where
-         * we missed PROPOSE, round_state.client_pubkey will be all-zero
-         * if we didn't participate — skip verification in that case since
-         * the leader already verified during PROPOSE. */
-        const uint8_t *hash_pubkey = w->round_state.client_pubkey;
-        uint8_t zero_pk[NODUS_PK_BYTES];
-        memset(zero_pk, 0, NODUS_PK_BYTES);
-
-        if (cmt->tx_type == NODUS_W_TX_GENESIS) {
-            hash_pubkey = zero_pk;
+        /* Atomic batch commit */
+        bool rmt_batch_failed = false;
+        if (nodus_witness_db_begin(w) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "batch remote db begin failed");
+            return -1;
         }
 
-        bool have_pubkey = (cmt->tx_type == NODUS_W_TX_GENESIS) ||
-                           (memcmp(hash_pubkey, zero_pk, NODUS_PK_BYTES) != 0);
+        for (int bi = 0; bi < cmt->batch_count; bi++) {
+            const nodus_t3_batch_tx_t *btx = &cmt->batch_txs[bi];
+            const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
+            for (int j = 0; j < btx->nullifier_count; j++)
+                nul_ptrs[j] = btx->nullifiers[j];
 
-        if (have_pubkey) {
-            uint8_t computed_hash[NODUS_KEY_BYTES];
-            if (nodus_witness_recompute_tx_hash(cmt->tx_data, cmt->tx_len,
-                    hash_pubkey, computed_hash) != 0 ||
-                memcmp(computed_hash, cmt->tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
-                QGP_LOG_WARN(LOG_TAG, "COMMIT tx_hash mismatch — rejecting round %lu",
-                             (unsigned long)hdr->round);
-                return -1;
+            if (commit_block_inner(w, btx->tx_hash, btx->tx_type,
+                               nul_ptrs, btx->nullifier_count,
+                               0, /* total_supply: N/A */
+                               cmt->proposal_timestamp,
+                               cmt->proposer_id,
+                               btx->tx_data, btx->tx_len) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "batch remote TX %d inner commit failed!", bi);
+                rmt_batch_failed = true;
+                break;
             }
-        } else {
-            QGP_LOG_DEBUG(LOG_TAG, "COMMIT: no client_pubkey available, "
-                          "skipping tx_hash re-verification (missed PROPOSE)");
         }
-    }
 
-    /* Build nullifier pointer array from T3 message */
-    const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
-    for (int i = 0; i < cmt->nullifier_count; i++)
-        nul_ptrs[i] = cmt->nullifiers[i];
+        if (rmt_batch_failed) {
+            nodus_witness_db_rollback(w);
+            QGP_LOG_ERROR(LOG_TAG, "batch remote commit ROLLED BACK");
+            return -1;
+        }
 
-    /* Write to database */
-    if (nodus_witness_commit_block(w, cmt->tx_hash, cmt->tx_type,
-                       nul_ptrs, cmt->nullifier_count,
-                       0, /* total_supply not in commit */
-                       cmt->proposal_timestamp,
-                       cmt->proposer_id,
-                       cmt->tx_data, cmt->tx_len) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "remote commit to DB failed!");
-        return -1;
+        if (nodus_witness_db_commit(w) != 0) {
+            nodus_witness_db_rollback(w);
+            QGP_LOG_ERROR(LOG_TAG, "batch remote db commit failed");
+            return -1;
+        }
+        /* block_add now inside commit_block_inner */
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "received COMMIT for round %lu (%d nullifiers)",
+                     (unsigned long)hdr->round, cmt->nullifier_count);
+
+        /* HIGH-1: Verify tx_hash integrity before committing */
+        if (cmt->tx_data && cmt->tx_len > 0) {
+            const uint8_t *hash_pubkey = w->round_state.client_pubkey;
+            uint8_t zero_pk[NODUS_PK_BYTES];
+            memset(zero_pk, 0, NODUS_PK_BYTES);
+
+            if (cmt->tx_type == NODUS_W_TX_GENESIS)
+                hash_pubkey = zero_pk;
+
+            bool have_pubkey = (cmt->tx_type == NODUS_W_TX_GENESIS) ||
+                               (memcmp(hash_pubkey, zero_pk, NODUS_PK_BYTES) != 0);
+
+            if (have_pubkey) {
+                uint8_t computed_hash[NODUS_KEY_BYTES];
+                if (nodus_witness_recompute_tx_hash(cmt->tx_data, cmt->tx_len,
+                        hash_pubkey, computed_hash) != 0 ||
+                    memcmp(computed_hash, cmt->tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
+                    QGP_LOG_WARN(LOG_TAG, "COMMIT tx_hash mismatch — "
+                                 "rejecting round %lu",
+                                 (unsigned long)hdr->round);
+                    return -1;
+                }
+            }
+        }
+
+        /* Build nullifier pointer array from T3 message */
+        const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
+        for (int i = 0; i < cmt->nullifier_count; i++)
+            nul_ptrs[i] = cmt->nullifiers[i];
+
+        /* Write to database */
+        if (nodus_witness_commit_block(w, cmt->tx_hash, cmt->tx_type,
+                           nul_ptrs, cmt->nullifier_count,
+                           0,
+                           cmt->proposal_timestamp,
+                           cmt->proposer_id,
+                           cmt->tx_data, cmt->tx_len) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "remote commit to DB failed!");
+            return -1;
+        }
     }
 
     /* Store commit certificates from leader's COMMIT message */
@@ -1534,6 +1969,7 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
     if (nv->new_view > w->current_view) {
         w->current_view = nv->new_view;
         w->view_change_in_progress = false;
+        round_state_free_batch(&w->round_state);
         w->round_state.phase = NODUS_W_PHASE_IDLE;
 
         fprintf(stderr, "%s: accepted NEW_VIEW %u from leader %d\n",
@@ -1546,6 +1982,17 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
 /* ════════════════════════════════════════════════════════════════════
  * Timeout check (called from nodus_witness_tick)
  * ════════════════════════════════════════════════════════════════════ */
+
+/* Free any heap-allocated batch entries in round_state */
+static void round_state_free_batch(nodus_witness_round_state_t *rs) {
+    for (int i = 0; i < rs->batch_count; i++) {
+        if (rs->batch_entries[i]) {
+            nodus_witness_mempool_entry_free(rs->batch_entries[i]);
+            rs->batch_entries[i] = NULL;
+        }
+    }
+    rs->batch_count = 0;
+}
 
 void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     if (!w) return;
@@ -1562,6 +2009,7 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
             fprintf(stderr, "%s: view change timeout (%lu ms), "
                     "returning to IDLE (view stays %u)\n",
                     LOG_TAG, (unsigned long)elapsed, w->current_view);
+            round_state_free_batch(&w->round_state);
             w->round_state.phase = NODUS_W_PHASE_IDLE;
             w->view_change_in_progress = false;
             w->view_change_count = 0;
@@ -1571,10 +2019,9 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     }
 
     if (elapsed > w->bft_config.round_timeout_ms) {
-        /* Transition to VIEW_CHANGE immediately to stop further timeout checks.
-         * Must happen here, not inside initiate_view_change, because a remote
-         * VIEW_CHANGE message may have set view_change_in_progress=true without
-         * changing the phase — causing initiate to return early. */
+        /* Free batch entries before transitioning — they won't be committed */
+        round_state_free_batch(&w->round_state);
+
         w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
 
         fprintf(stderr, "%s: round timeout (%lu ms), initiating view change\n",

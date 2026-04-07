@@ -127,6 +127,7 @@ if(NOT WIN32)
         src/witness/nodus_witness_peer.c
         src/witness/nodus_witness_handlers.c
         src/witness/nodus_witness_sync.c
+        src/witness/nodus_witness_mempool.c
     )
 endif()
 

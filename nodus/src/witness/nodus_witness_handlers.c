@@ -15,6 +15,8 @@
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_peer.h"
+#include "witness/nodus_witness_verify.h"
+#include "witness/nodus_witness_mempool.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
 #include "transport/nodus_tcp.h"
@@ -1000,42 +1002,108 @@ static void handle_dnac_spend(nodus_witness_t *w,
     bool is_leader = nodus_witness_bft_is_leader(w);
 
     if (is_leader) {
-        fprintf(stderr, "%s: dnac_spend — we are leader, starting BFT\n",
+        /* Genesis TX must go through legacy single-TX path (needs chain DB creation).
+         * Batch commit path cannot handle genesis — bypass mempool. */
+        if (tx_type == NODUS_W_TX_GENESIS) {
+            fprintf(stderr, "%s: dnac_spend — genesis TX, using legacy BFT path\n",
+                    LOG_TAG);
+            w->round_state.client_conn = conn;
+            w->round_state.client_txn_id = txn_id;
+            w->round_state.is_forwarded = false;
+            int rc = nodus_witness_bft_start_round(w, tx_hash,
+                          nullifiers, nullifier_count, tx_type,
+                          tx_data, (uint32_t)tx_len, client_pk, client_sig, fee);
+            if (rc == -2)
+                send_error(conn, txn_id, NODUS_ERR_DOUBLE_SPEND,
+                            "nullifier already spent (double-spend)");
+            else if (rc != 0)
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "transaction verification failed");
+            return;
+        }
+
+        fprintf(stderr, "%s: dnac_spend — we are leader, adding to mempool\n",
                 LOG_TAG);
 
-        /* Store client connection for async response */
-        w->round_state.client_conn = conn;
-        w->round_state.client_txn_id = txn_id;
-        w->round_state.is_forwarded = false;
-
-        int rc = nodus_witness_bft_start_round(w, tx_hash,
-                                                  nullifiers,
-                                                  nullifier_count,
-                                                  tx_type,
-                                                  tx_data,
-                                                  (uint32_t)tx_len,
-                                                  client_pk,
-                                                  client_sig,
-                                                  fee);
-
-        if (rc == -2) {
-            /* Double-spend: send immediate error */
+        /* Pre-verify TX before adding to mempool */
+        char reject_reason[256] = {0};
+        int vrc = nodus_witness_verify_transaction(w, tx_data, (uint32_t)tx_len,
+                      tx_hash, tx_type,
+                      (const uint8_t *)nullifiers, nullifier_count,
+                      client_pk, client_sig, fee,
+                      reject_reason, sizeof(reject_reason));
+        if (vrc == -2) {
             send_error(conn, txn_id, NODUS_ERR_DOUBLE_SPEND,
                         "nullifier already spent (double-spend)");
-        } else if (rc != 0) {
-            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "transaction verification failed");
+            return;
         }
-        /* If rc == 0: response sent asynchronously on COMMIT */
+        if (vrc != 0) {
+            send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR, reject_reason);
+            return;
+        }
+
+        /* Create mempool entry */
+        nodus_witness_mempool_entry_t *entry = calloc(1, sizeof(*entry));
+        if (!entry) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "allocation failed");
+            return;
+        }
+
+        memcpy(entry->tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
+        entry->nullifier_count = nullifier_count;
+        for (int i = 0; i < nullifier_count; i++)
+            memcpy(entry->nullifiers[i], nullifiers[i], NODUS_T3_NULLIFIER_LEN);
+        entry->tx_type = tx_type;
+        entry->tx_data = malloc(tx_len);
+        if (!entry->tx_data) {
+            free(entry);
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "allocation failed");
+            return;
+        }
+        memcpy(entry->tx_data, tx_data, tx_len);
+        entry->tx_len = (uint32_t)tx_len;
+        if (client_pk)
+            memcpy(entry->client_pubkey, client_pk, NODUS_PK_BYTES);
+        if (client_sig)
+            memcpy(entry->client_sig, client_sig, NODUS_SIG_BYTES);
+        entry->fee = fee;
+        entry->client_conn = conn;
+        entry->client_txn_id = txn_id;
+        entry->is_forwarded = false;
+
+        int rc = nodus_witness_mempool_add(&w->mempool, entry);
+        if (rc != 0) {
+            const char *msg = (rc == -2) ? "duplicate transaction" : "mempool full";
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, msg);
+            nodus_witness_mempool_entry_free(entry);
+        }
+        /* Response sent asynchronously when block timer fires and COMMIT completes */
     } else {
         fprintf(stderr, "%s: dnac_spend — forwarding to leader\n", LOG_TAG);
 
+        /* Find a free pending_forward slot */
+        int pf_slot = -1;
+        for (int i = 0; i < NODUS_W_MAX_PENDING_FWD; i++) {
+            if (!w->pending_forwards[i].active) {
+                pf_slot = i;
+                break;
+            }
+        }
+        if (pf_slot < 0) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "too many pending forwards");
+            return;
+        }
+
         /* Track pending forward so we can route response back */
-        w->pending_forward.active = true;
-        memcpy(w->pending_forward.tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
-        w->pending_forward.client_conn = conn;
-        w->pending_forward.client_txn_id = txn_id;
-        w->pending_forward.started_at = (uint64_t)time(NULL);  /* H-15 */
+        w->pending_forwards[pf_slot].active = true;
+        memcpy(w->pending_forwards[pf_slot].tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
+        w->pending_forwards[pf_slot].client_conn = conn;
+        w->pending_forwards[pf_slot].client_txn_id = txn_id;
+        w->pending_forwards[pf_slot].started_at = (uint64_t)time(NULL);
+        w->pending_forward_count++;
 
         /* Find leader peer */
         uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
@@ -1045,7 +1113,8 @@ static void handle_dnac_spend(nodus_witness_t *w,
         if (leader_idx < 0 || leader_idx == w->my_index) {
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "no leader available");
-            w->pending_forward.active = false;
+            w->pending_forwards[pf_slot].active = false;
+            w->pending_forward_count--;
             return;
         }
 
@@ -1064,7 +1133,8 @@ static void handle_dnac_spend(nodus_witness_t *w,
         if (!leader_conn) {
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "leader not connected");
-            w->pending_forward.active = false;
+            w->pending_forwards[pf_slot].active = false;
+            w->pending_forward_count--;
             return;
         }
 
@@ -1101,19 +1171,21 @@ static void handle_dnac_spend(nodus_witness_t *w,
                              fwd_buf, sizeof(fwd_buf), &fwd_len) != 0) {
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "failed to encode forward request");
-            w->pending_forward.active = false;
+            w->pending_forwards[pf_slot].active = false;
+            w->pending_forward_count--;
             return;
         }
 
         if (nodus_tcp_send(leader_conn, fwd_buf, fwd_len) != 0) {
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "failed to send to leader");
-            w->pending_forward.active = false;
+            w->pending_forwards[pf_slot].active = false;
+            w->pending_forward_count--;
             return;
         }
 
-        fprintf(stderr, "%s: forwarded spend to leader (roster %d)\n",
-                LOG_TAG, leader_idx);
+        fprintf(stderr, "%s: forwarded spend to leader (roster %d, slot %d)\n",
+                LOG_TAG, leader_idx, pf_slot);
         /* Response will arrive via w_fwd_rsp */
     }
 }

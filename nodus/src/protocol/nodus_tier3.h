@@ -67,7 +67,7 @@ typedef struct {
 
 /* ── Per-type argument structs ───────────────────────────────────── */
 
-/** w_propose: Leader proposes a transaction for consensus */
+/** Single TX entry in a batch proposal/commit */
 typedef struct {
     uint8_t         tx_hash[NODUS_T3_TX_HASH_LEN];
     uint8_t         nullifier_count;
@@ -78,6 +78,25 @@ typedef struct {
     const uint8_t  *client_pubkey;                        /* ptr, NODUS_PK_BYTES */
     const uint8_t  *client_sig;                           /* ptr, NODUS_SIG_BYTES */
     uint64_t        fee;
+} nodus_t3_batch_tx_t;
+
+/** w_propose: Leader proposes a transaction (or batch) for consensus */
+typedef struct {
+    /* Legacy single-TX fields (used when batch_count == 0) */
+    uint8_t         tx_hash[NODUS_T3_TX_HASH_LEN];
+    uint8_t         nullifier_count;
+    const uint8_t  *nullifiers[NODUS_T3_MAX_TX_INPUTS];  /* ptrs to 64-byte each */
+    uint8_t         tx_type;
+    const uint8_t  *tx_data;                              /* ptr, tx_len bytes */
+    uint32_t        tx_len;
+    const uint8_t  *client_pubkey;                        /* ptr, NODUS_PK_BYTES */
+    const uint8_t  *client_sig;                           /* ptr, NODUS_SIG_BYTES */
+    uint64_t        fee;
+
+    /* Batch mode (when batch_count > 0, legacy fields above are unused) */
+    int             batch_count;
+    nodus_t3_batch_tx_t batch_txs[NODUS_W_MAX_BLOCK_TXS];
+    uint8_t         block_hash[NODUS_T3_TX_HASH_LEN];    /* SHA3-512(all tx_hashes) */
 } nodus_t3_propose_t;
 
 /** w_prevote / w_precommit: Witness votes on a proposal */
@@ -95,6 +114,7 @@ typedef struct {
 
 /** w_commit: Leader broadcasts commit after quorum */
 typedef struct {
+    /* Legacy single-TX fields (used when batch_count == 0) */
     uint8_t         tx_hash[NODUS_T3_TX_HASH_LEN];
     uint8_t         nullifier_count;
     const uint8_t  *nullifiers[NODUS_T3_MAX_TX_INPUTS];
@@ -106,6 +126,11 @@ typedef struct {
     uint32_t        n_precommits;
     uint8_t         utxo_checksum[NODUS_KEY_BYTES]; /* UTXO set hash for cross-validation */
     nodus_t3_cert_entry_t certs[NODUS_T3_MAX_WITNESSES]; /* Precommit signatures */
+
+    /* Batch mode (when batch_count > 0, legacy TX fields above are unused) */
+    int             batch_count;
+    nodus_t3_batch_tx_t batch_txs[NODUS_W_MAX_BLOCK_TXS];
+    uint8_t         block_hash[NODUS_T3_TX_HASH_LEN];    /* SHA3-512(all tx_hashes) */
 } nodus_t3_commit_t;
 
 /** w_viewchg: Witness requests view change */

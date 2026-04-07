@@ -74,6 +74,18 @@ int nodus_witness_bft_start_round(nodus_witness_t *w,
                                     const uint8_t *client_sig,
                                     uint64_t fee);
 
+/**
+ * Start a batch BFT consensus round (leader only).
+ * Takes pre-verified mempool entries and proposes them as a batch.
+ * Computes block_hash = SHA3-512(tx_hash_1 || ... || tx_hash_n).
+ * Entries ownership is transferred to round_state.batch_entries.
+ *
+ * @return 0 success, -1 error
+ */
+int nodus_witness_bft_start_round_batch(nodus_witness_t *w,
+                                          nodus_witness_mempool_entry_t **entries,
+                                          int count);
+
 /** Handle decoded PROPOSAL message. */
 int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                                        const nodus_t3_msg_t *msg);
