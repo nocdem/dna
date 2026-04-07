@@ -753,6 +753,7 @@ int nodus_witness_supply_get(nodus_witness_t *w,
 int nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,
                                        const uint8_t *tx_hash) {
     if (!w || !w->db || fee == 0) return 0;
+    if (!tx_hash) return -1;
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
