@@ -1092,6 +1092,15 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     memcpy(c_msg.commit.proposer_id, w->round_state.proposer_id,
            NODUS_T3_WITNESS_ID_LEN);
     c_msg.commit.n_precommits = w->round_state.precommit_count;
+    for (int i = 0; i < w->round_state.precommit_count &&
+                    i < NODUS_T3_MAX_WITNESSES; i++) {
+        memcpy(c_msg.commit.certs[i].voter_id,
+               w->round_state.precommits[i].voter_id,
+               NODUS_T3_WITNESS_ID_LEN);
+        memcpy(c_msg.commit.certs[i].signature,
+               w->round_state.precommits[i].signature,
+               NODUS_SIG_BYTES);
+    }
     if (have_cksum)
         memcpy(c_msg.commit.utxo_checksum, utxo_cksum, NODUS_KEY_BYTES);
 
@@ -1250,6 +1259,20 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                        cmt->tx_data, cmt->tx_len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "remote commit to DB failed!");
         return -1;
+    }
+
+    /* Store commit certificates from leader's COMMIT message */
+    if (cmt->n_precommits > 0) {
+        uint64_t bh = nodus_witness_block_height(w);
+        nodus_witness_vote_record_t votes[NODUS_T3_MAX_WITNESSES];
+        for (uint32_t i = 0; i < cmt->n_precommits && i < NODUS_T3_MAX_WITNESSES; i++) {
+            memcpy(votes[i].voter_id, cmt->certs[i].voter_id,
+                   NODUS_T3_WITNESS_ID_LEN);
+            votes[i].vote = NODUS_W_VOTE_APPROVE;
+            memcpy(votes[i].signature, cmt->certs[i].signature,
+                   NODUS_SIG_BYTES);
+        }
+        nodus_witness_cert_store(w, bh, votes, (int)cmt->n_precommits);
     }
 
     /* Compute UTXO set checksum and compare with leader's */

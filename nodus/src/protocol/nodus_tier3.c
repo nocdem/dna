@@ -103,7 +103,7 @@ static void enc_vote_args(cbor_encoder_t *enc, const nodus_t3_vote_t *v) {
 }
 
 static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
-    cbor_encode_map(enc, 9);
+    cbor_encode_map(enc, 10);
     cbor_encode_cstr(enc, "txh");  cbor_encode_bstr(enc, c->tx_hash,
                                                      NODUS_T3_TX_HASH_LEN);
     cbor_encode_cstr(enc, "nlc");  cbor_encode_uint(enc, c->nullifier_count);
@@ -119,6 +119,16 @@ static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
     cbor_encode_cstr(enc, "npc");  cbor_encode_uint(enc, c->n_precommits);
     cbor_encode_cstr(enc, "uck");  cbor_encode_bstr(enc, c->utxo_checksum,
                                                      NODUS_KEY_BYTES);
+    /* Commit certificates: array of [voter_id, signature] pairs */
+    cbor_encode_cstr(enc, "cer");
+    cbor_encode_array(enc, c->n_precommits);
+    for (uint32_t i = 0; i < c->n_precommits; i++) {
+        cbor_encode_map(enc, 2);
+        cbor_encode_cstr(enc, "vid");
+        cbor_encode_bstr(enc, c->certs[i].voter_id, NODUS_T3_WITNESS_ID_LEN);
+        cbor_encode_cstr(enc, "sig");
+        cbor_encode_bstr(enc, c->certs[i].signature, NODUS_SIG_BYTES);
+    }
 }
 
 static void enc_viewchg_args(cbor_encoder_t *enc, const nodus_t3_viewchg_t *v) {
@@ -489,6 +499,38 @@ static void dec_commit_args(cbor_decoder_t *dec, size_t count,
             if (val.type == CBOR_ITEM_BSTR &&
                 val.bstr.len == NODUS_KEY_BYTES)
                 memcpy(c->utxo_checksum, val.bstr.ptr, NODUS_KEY_BYTES);
+        }
+        else if (KEY_IS(key, "cer")) {
+            cbor_item_t arr = cbor_decode_next(dec);
+            if (arr.type == CBOR_ITEM_ARRAY) {
+                size_t max = arr.count < NODUS_T3_MAX_WITNESSES ?
+                             arr.count : NODUS_T3_MAX_WITNESSES;
+                for (size_t j = 0; j < max; j++) {
+                    cbor_item_t m = cbor_decode_next(dec);
+                    if (m.type != CBOR_ITEM_MAP) { cbor_decode_skip(dec); continue; }
+                    for (size_t k = 0; k < m.count; k++) {
+                        cbor_item_t mk = cbor_decode_next(dec);
+                        if (mk.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+                        if (KEY_IS(mk, "vid")) {
+                            cbor_item_t v = cbor_decode_next(dec);
+                            if (v.type == CBOR_ITEM_BSTR &&
+                                v.bstr.len == NODUS_T3_WITNESS_ID_LEN)
+                                memcpy(c->certs[j].voter_id, v.bstr.ptr,
+                                       NODUS_T3_WITNESS_ID_LEN);
+                        } else if (KEY_IS(mk, "sig")) {
+                            cbor_item_t v = cbor_decode_next(dec);
+                            if (v.type == CBOR_ITEM_BSTR &&
+                                v.bstr.len == NODUS_SIG_BYTES)
+                                memcpy(c->certs[j].signature, v.bstr.ptr,
+                                       NODUS_SIG_BYTES);
+                        } else {
+                            cbor_decode_skip(dec);
+                        }
+                    }
+                }
+                for (size_t j = max; j < arr.count; j++)
+                    cbor_decode_skip(dec);
+            }
         }
         else {
             cbor_decode_skip(dec);

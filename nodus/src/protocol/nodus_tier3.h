@@ -85,6 +85,12 @@ typedef struct {
     char        reason[256];
 } nodus_t3_vote_t;
 
+/** Precommit certificate entry (voter_id + signature) */
+typedef struct {
+    uint8_t     voter_id[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t     signature[NODUS_SIG_BYTES];
+} nodus_t3_cert_entry_t;
+
 /** w_commit: Leader broadcasts commit after quorum */
 typedef struct {
     uint8_t         tx_hash[NODUS_T3_TX_HASH_LEN];
@@ -97,6 +103,7 @@ typedef struct {
     uint8_t         proposer_id[NODUS_T3_WITNESS_ID_LEN];
     uint32_t        n_precommits;
     uint8_t         utxo_checksum[NODUS_KEY_BYTES]; /* UTXO set hash for cross-validation */
+    nodus_t3_cert_entry_t certs[NODUS_T3_MAX_WITNESSES]; /* Precommit signatures */
 } nodus_t3_commit_t;
 
 /** w_viewchg: Witness requests view change */
