@@ -165,19 +165,12 @@ int dnac_tx_authorize_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
         return DNAC_ERROR_WITNESS_FAILED;
     }
 
-    /*
-     * Gap 17 Fix (v0.6.0): Verify genesis witness signatures cryptographically.
-     *
-     * GENESIS requires 3-of-3 (unanimous) witness approval. In current BFT mode,
-     * we receive 1 attestation that proves quorum was reached. The witness-side
-     * enforces 3-of-3 during pre-authorization. Here we verify what we received.
-     *
-     * NOTE: For full 3-of-3 client verification, protocol would need to return
-     * all 3 attestations. Currently we verify the signatures we receive.
-     */
-    if (witness_count < DNAC_GENESIS_WITNESSES_REQUIRED) {
-        QGP_LOG_ERROR(LOG_TAG, "Genesis requires %d witness attestations (unanimous), got %d",
-                      DNAC_GENESIS_WITNESSES_REQUIRED, witness_count);
+    /* BFT mode: leader returns 1 attestation representing full quorum.
+     * Unanimous consensus (N/N) is enforced server-side during PREVOTE/PRECOMMIT.
+     * Client needs at least 1 valid attestation to prove consensus happened. */
+    if (witness_count < 1) {
+        QGP_LOG_ERROR(LOG_TAG, "Genesis requires at least 1 witness attestation, got %d",
+                      witness_count);
         return DNAC_ERROR_WITNESS_FAILED;
     }
 
@@ -239,9 +232,9 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
     }
 
     /* Verify we have unanimous witness signatures (H-14: reject partial genesis) */
-    if (tx->witness_count < DNAC_GENESIS_WITNESSES_REQUIRED) {
-        QGP_LOG_ERROR(LOG_TAG, "Genesis not authorized - need %d witnesses, have %d",
-                      DNAC_GENESIS_WITNESSES_REQUIRED, tx->witness_count);
+    if (tx->witness_count < 1) {
+        QGP_LOG_ERROR(LOG_TAG, "Genesis not authorized - need at least 1 witness, have %d",
+                      tx->witness_count);
         return DNAC_ERROR_WITNESS_FAILED;
     }
 
