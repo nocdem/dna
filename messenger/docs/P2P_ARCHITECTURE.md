@@ -1,6 +1,6 @@
 # P2P Architecture - Transport Layer
 
-**Current Version:** Nodus v0.5.6, Messenger v0.9.12
+**Current Version:** Nodus v0.10.11, Messenger v0.9.172
 
 ## Overview
 
@@ -87,7 +87,7 @@ With the internal read thread, push notifications for new offline messages arriv
 | `messenger/transport/transport.c` | Transport layer core (DHT bootstrap, offline queue) |
 | `messenger/transport/messenger_transport.c` | Messenger-transport integration |
 | `messenger/dht/shared/nodus_ops.c` | Nodus singleton convenience wrappers |
-| `messenger/dht/shared/nodus_init.c` | Nodus lifecycle management |
+| `messenger/dht/shared/nodus_init.c` | Nodus lifecycle, known_nodes TOFU cache, bootstrap order |
 | `nodus/src/client/nodus_client.c` | Client SDK with internal read thread |
 | `nodus/include/nodus/nodus.h` | Client SDK public API |
 
@@ -99,3 +99,17 @@ With the internal read thread, push notifications for new offline messages arriv
 | ICE/STUN/TURN | v0.4.61 | Privacy (no IP disclosure) |
 | OpenDHT-PQ | v0.8.0 | Replaced by Nodus |
 | Manual `nodus_client_poll()` cycling | v0.5.6 | Replaced by internal read thread |
+
+## Server Discovery & TOFU Key Cache (v0.9.172+)
+
+Client bootstrap order: **known_nodes → config → hardcoded fallback**.
+
+1. **`data_dir/known_nodes`** — persistent file with previously connected servers (IP, port, Dilithium fingerprint, Kyber PK hash, RTT). Populated automatically on successful connection.
+2. **Config file** — `bootstrap_nodes=` in dna_config (merged, dedup)
+3. **Hardcoded fallback** — 7 IPs compiled into `nodus_init.c` (last resort)
+
+**TOFU (Trust On First Use):** On each successful auth, the connected server's Kyber PK hash is cached. If the key changes on a subsequent connection, a warning is logged (possible MITM). The server's Kyber PK is Dilithium5-signed in AUTH_OK since v0.10.10, and the client verifies this signature before establishing the encrypted channel.
+
+## Transport Encryption (v0.10.10+)
+
+After Dilithium5 authentication, the server sends its Kyber1024 public key signed with its Dilithium5 identity key: `sig = Dilithium5_sign(kyber_pk || challenge_nonce)`. The client verifies this signature before performing KEM encapsulation, preventing MITM key substitution. The resulting shared secret is used to establish an AES-256-GCM encrypted channel with counter-based nonces.

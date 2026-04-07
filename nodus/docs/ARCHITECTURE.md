@@ -1,6 +1,6 @@
 # Nodus — Architecture Documentation
 
-**Version:** 0.8.1 | **Language:** C (pure) | **License:** Proprietary
+**Version:** 0.10.11 | **Language:** C (pure) | **License:** Proprietary
 
 ---
 
@@ -329,15 +329,22 @@ Dilithium5 challenge-response authentication handshake.
 ```
 Client                              Server
   │                                    │
-  │─── HELLO(pk, fp) ────────────────►│  1. Client sends Dilithium5 public key
-  │                                    │     and fingerprint (SHA3-512 of pk)
+  │─── HELLO(pk, fp, v=2) ───────────►│  1. Client sends Dilithium5 public key,
+  │                                    │     fingerprint (SHA3-512 of pk), proto version
   │                                    │     Server verifies fp == SHA3-512(pk)
   │◄── CHALLENGE(nonce) ──────────────│  2. Server generates 32-byte random nonce
   │                                    │
   │─── AUTH(SIGN(nonce, sk)) ─────────►│  3. Client signs nonce with secret key
   │                                    │     Server verifies signature with pk
-  │◄── AUTH_OK(token) ────────────────│  4. Server returns 32-byte session token
-  │                                    │     All subsequent requests include token
+  │◄── AUTH_OK(token, kpk, spk, sig) ─│  4. Server returns:
+  │                                    │     - 32-byte session token
+  │                                    │     - Kyber1024 public key (kpk)
+  │                                    │     - Server Dilithium5 public key (spk)
+  │                                    │     - Dilithium5 signature over (kpk || nonce)
+  │                                    │     Client verifies sig with spk (MITM protection)
+  │─── KEY_INIT(ct, nonce_c) ─────────►│  5. Client encapsulates to server's Kyber PK
+  │◄── KEY_ACK(nonce_s) ──────────────│  6. Shared secret established
+  │    ═══ AES-256-GCM channel ═══    │     All subsequent traffic encrypted
 ```
 
 **HELLO** (`"q": "hello"`):
@@ -357,8 +364,16 @@ Client                              Server
 
 **AUTH_OK** (`"q": "auth_ok"`):
 ```
-{"t": txn, "y": "r", "q": "auth_ok", "r": {"tok": <bytes[32]>}}
+{"t": txn, "y": "r", "q": "auth_ok", "r": {
+    "tok": <bytes[32]>,
+    "kpk": <bytes[1568]>,       // Server's Kyber1024 public key
+    "spk": <bytes[2592]>,       // Server's Dilithium5 public key
+    "kpk_sig": <bytes[4627]>    // Dilithium5 sign(kpk || nonce, server_sk)
+}}
 ```
+The `kpk_sig` binds the Kyber public key to this auth session via the challenge nonce,
+preventing MITM key substitution. Client MUST verify this signature before encapsulating.
+Legacy servers (proto < v0.10.10) omit `spk` and `kpk_sig` — client logs a warning.
 
 ### Authenticated DHT Operations
 
@@ -612,6 +627,7 @@ NIST Category 5 post-quantum digital signature scheme. Used for:
 - **Value signing** — every DHT value carries a Dilithium5 signature that proves ownership
 - **Client authentication** — 3-step challenge-response handshake
 - **Channel post signing** — authors sign their posts
+- **Kyber PK binding** — server signs its Kyber public key in AUTH_OK to prevent MITM
 
 | Parameter | Size |
 |-----------|------|
@@ -710,6 +726,15 @@ PONG, the cluster module:
 Every nodus server publishes its identity to the DHT key `"nodus:pk"` with a 10-minute TTL.
 This allows any node or client to discover all active servers via `GET_ALL("nodus:pk")`.
 The witness roster for DNAC BFT consensus is built from this registry.
+
+**Published payload** (CBOR map, Dilithium5-signed):
+```
+{ "id": <node_id[64]>, "pk": <dilithium5_pk[2592]>, "ip": "x.x.x.x",
+  "port": <witness_port>, "kpk": <kyber1024_pk[1568]> }
+```
+
+The `get_servers()` response also includes a 16-byte Dilithium fingerprint prefix
+per server (`"fp"` field), enabling TOFU key caching on the client side.
 
 ---
 
