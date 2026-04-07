@@ -318,9 +318,40 @@ uint8_t     remote_checksum[64];      // peer's UTXO checksum from w_ident
 
 - Max 1 sync session at a time (syncing flag)
 - Min 30s between sync attempts to same peer
-- Sync does NOT block BFT rounds — if new COMMIT arrives during sync, process it normally (height will jump, sync fills the gap)
+- **Sync ONLY during IDLE phase** — defer if BFT round in progress (same pattern as roster swap)
+- If new COMMIT arrives during sync, `last_committed_round` check prevents duplicate
 - If peer sends invalid data (bad prev_hash, bad certs) → abort, try next peer
 - Max 1000 blocks per sync session (prevent infinite loop)
+- **Before replay:** check `nodus_witness_block_height(w) < block.height` to prevent duplicate blocks (blocks table has no tx_hash unique constraint)
+
+## Implementation Notes (from code review)
+
+### UTXO Checksum Performance
+`nodus_witness_utxo_checksum()` does full table scan + sort + SHA3-512. Too expensive for every 60s epoch tick.
+**Solution:** Cache the checksum after each BFT commit (already computed at commit time). Store in `w->cached_utxo_checksum[64]`. Epoch tick uses cached value. w_ident sends cached value.
+
+### Message Size Constraint
+`NODUS_T3_MAX_MSG_SIZE = 131072` (128KB). With 128 max witnesses, certs alone = 577KB.
+**Solution:** Sync response uses direct CBOR encoding + `nodus_tcp_send_raw()` (5MB TCP frame limit), bypassing T3 encode. Or increase `NODUS_T3_MAX_MSG_SIZE` for sync messages only.
+**Practical note:** Current cluster has 7 witnesses. 7 * 4659 = 32KB certs + 64KB max TX = ~96KB. Fits in 128KB. Only becomes an issue at >14 witnesses.
+
+### DB File Deletion for Fork Rebuild
+`nodus_witness_create_chain_db()` closes old DB but does NOT delete the file.
+**Solution:** Add `unlink(db_path)` before `nodus_witness_create_chain_db()` in the fork rebuild path. Need to construct path from chain_id: `{data_path}/witness_{chain_id_hex_16}.db`.
+
+### Single-Threaded Safety
+Everything runs in epoll event loop — no mutexes needed. But sync must respect IDLE phase:
+- `do_commit_db()` can be called in any phase (remote COMMIT handler does this)
+- But sync should only run during IDLE to avoid interfering with active consensus
+- `last_committed_round` prevents duplicate commits if COMMIT arrives during sync
+
+### Block Duplicate Prevention
+`blocks` table uses `height INTEGER PRIMARY KEY AUTOINCREMENT` — no unique constraint on tx_hash.
+**Solution:** Before calling `do_commit_db()` for replay, check:
+```c
+if (nodus_witness_block_height(w) >= target_height)
+    skip;  // already have this block
+```
 
 ## Error Handling
 
