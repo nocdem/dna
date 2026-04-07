@@ -502,10 +502,15 @@ static void dht_wal_checkpoint(nodus_server_t *srv) {
     srv->last_wal_checkpoint = now;
 
     int nlog = 0, nckpt = 0;
-    sqlite3_wal_checkpoint_v2(srv->storage.db, NULL,
-                               SQLITE_CHECKPOINT_TRUNCATE, &nlog, &nckpt);
-    if (nlog > 0)
-        fprintf(stderr, "WAL-CKPT: nodus.db truncated (%d pages checkpointed)\n", nckpt);
+    int rc = sqlite3_wal_checkpoint_v2(srv->storage.db, NULL,
+                                        SQLITE_CHECKPOINT_TRUNCATE, &nlog, &nckpt);
+    if (rc == SQLITE_OK && nlog > 0)
+        fprintf(stderr, "WAL-CKPT: nodus.db truncated (%d frames)\n", nckpt);
+    else if (rc == SQLITE_BUSY && nlog > 0)
+        fprintf(stderr, "WAL-CKPT: nodus.db BUSY (%d/%d frames), retrying PASSIVE\n", nckpt, nlog);
+    if (rc == SQLITE_BUSY)
+        sqlite3_wal_checkpoint_v2(srv->storage.db, NULL,
+                                   SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
 
     /* channels.db has its own DB handle */
     if (srv->ch_server.ch_store && srv->ch_server.ch_store->db) {

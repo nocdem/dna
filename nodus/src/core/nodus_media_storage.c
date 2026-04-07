@@ -425,5 +425,6 @@ int nodus_media_fetch_batch(nodus_media_storage_t *ms,
         fetched++;
     }
 
+    sqlite3_reset(s);  /* Release read snapshot — allows WAL checkpoint */
     return fetched;
 }
