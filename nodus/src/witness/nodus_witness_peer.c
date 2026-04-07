@@ -561,20 +561,28 @@ int nodus_witness_peer_handle_fwd_rsp(nodus_witness_t *w,
             LOG_TAG, rsp->status, rsp->witness_count);
 
     /* Match pending forward by tx_hash */
-    if (!w->pending_forward.active ||
-        memcmp(w->pending_forward.tx_hash, rsp->tx_hash,
-               NODUS_T3_TX_HASH_LEN) != 0) {
+    int pf_idx = -1;
+    for (int i = 0; i < NODUS_W_MAX_PENDING_FWD; i++) {
+        if (w->pending_forwards[i].active &&
+            memcmp(w->pending_forwards[i].tx_hash, rsp->tx_hash,
+                   NODUS_T3_TX_HASH_LEN) == 0) {
+            pf_idx = i;
+            break;
+        }
+    }
+    if (pf_idx < 0) {
         fprintf(stderr, "%s: w_fwd_rsp no matching pending forward\n",
                 LOG_TAG);
         return -1;
     }
 
-    struct nodus_tcp_conn *client_conn = w->pending_forward.client_conn;
-    uint32_t client_txn_id = w->pending_forward.client_txn_id;
+    struct nodus_tcp_conn *client_conn = w->pending_forwards[pf_idx].client_conn;
+    uint32_t client_txn_id = w->pending_forwards[pf_idx].client_txn_id;
 
-    /* Clear pending forward */
-    w->pending_forward.active = false;
-    w->pending_forward.client_conn = NULL;
+    /* Clear pending forward slot */
+    w->pending_forwards[pf_idx].active = false;
+    w->pending_forwards[pf_idx].client_conn = NULL;
+    if (w->pending_forward_count > 0) w->pending_forward_count--;
 
     if (!client_conn) {
         fprintf(stderr, "%s: w_fwd_rsp client conn gone\n", LOG_TAG);
@@ -931,10 +939,14 @@ void nodus_witness_peer_conn_closed(nodus_witness_t *w,
     if (w->round_state.client_conn == conn)
         w->round_state.client_conn = NULL;
 
-    /* H-15: Clear pending forward if it references this connection */
-    if (w->pending_forward.active && w->pending_forward.client_conn == conn) {
-        w->pending_forward.active = false;
-        w->pending_forward.client_conn = NULL;
+    /* H-15: Clear pending forwards referencing this connection */
+    for (int pfi = 0; pfi < NODUS_W_MAX_PENDING_FWD; pfi++) {
+        if (w->pending_forwards[pfi].active &&
+            w->pending_forwards[pfi].client_conn == conn) {
+            w->pending_forwards[pfi].active = false;
+            w->pending_forwards[pfi].client_conn = NULL;
+            if (w->pending_forward_count > 0) w->pending_forward_count--;
+        }
     }
 }
 

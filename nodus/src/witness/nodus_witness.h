@@ -21,6 +21,7 @@
 #define NODUS_WITNESS_H
 
 #include "nodus/nodus_types.h"
+#include "witness/nodus_witness_mempool.h"
 #include <sqlite3.h>
 #include <stdbool.h>
 
@@ -144,9 +145,14 @@ typedef struct {
     bool        is_forwarded;
     uint8_t     forwarder_id[NODUS_T3_WITNESS_ID_LEN];
 
-    /* Client session (for direct response) */
+    /* Client session (for direct response — single-TX legacy) */
     struct nodus_tcp_conn *client_conn;
     uint32_t    client_txn_id;
+
+    /* Batch mode (multi-TX block) */
+    int                                batch_count;
+    nodus_witness_mempool_entry_t     *batch_entries[NODUS_W_MAX_BLOCK_TXS];
+    uint8_t     block_hash[NODUS_T3_TX_HASH_LEN];  /* SHA3-512(all tx_hashes) */
 } nodus_witness_round_state_t;
 
 /* ── View change record ──────────────────────────────────────────── */
@@ -226,14 +232,18 @@ typedef struct nodus_witness {
     nodus_witness_peer_t    peers[NODUS_T3_MAX_WITNESSES];
     int                     peer_count;
 
-    /* Pending forward (non-leader → client response routing) */
+    /* Pending forwards (non-leader → client response routing) */
     struct {
         bool        active;
         uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
         struct nodus_tcp_conn *client_conn;
         uint32_t    client_txn_id;
         uint64_t    started_at;     /* H-15: timestamp for timeout (seconds) */
-    } pending_forward;
+    } pending_forwards[NODUS_W_MAX_PENDING_FWD];
+    int pending_forward_count;
+
+    /* Transaction mempool (leader: fee-sorted pending TX queue) */
+    nodus_witness_mempool_t mempool;
 
     /* State sync (block replay from peers) */
     struct {

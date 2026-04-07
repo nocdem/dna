@@ -125,6 +125,12 @@ extern "C" {
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
 #define NODUS_T3_BFT_PROTOCOL_VER   2
 
+/* Block production (mempool + batch) */
+#define NODUS_W_BLOCK_INTERVAL_MS   5000    /* 5s between block proposals */
+#define NODUS_W_MAX_MEMPOOL         64      /* max pending TXs in mempool */
+#define NODUS_W_MAX_BLOCK_TXS       10      /* max TXs per batch/block */
+#define NODUS_W_MAX_PENDING_FWD     16      /* max pending forward slots */
+
 /* Circuit (VPN mesh) — Faz 1 */
 #define NODUS_MAX_CIRCUITS_PER_SESSION   16
 #define NODUS_MAX_CIRCUIT_PAYLOAD        (64 * 1024)

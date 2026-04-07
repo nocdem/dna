@@ -1030,12 +1030,27 @@ static void handle_dnac_spend(nodus_witness_t *w,
     } else {
         fprintf(stderr, "%s: dnac_spend — forwarding to leader\n", LOG_TAG);
 
+        /* Find a free pending_forward slot */
+        int pf_slot = -1;
+        for (int i = 0; i < NODUS_W_MAX_PENDING_FWD; i++) {
+            if (!w->pending_forwards[i].active) {
+                pf_slot = i;
+                break;
+            }
+        }
+        if (pf_slot < 0) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "too many pending forwards");
+            return;
+        }
+
         /* Track pending forward so we can route response back */
-        w->pending_forward.active = true;
-        memcpy(w->pending_forward.tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
-        w->pending_forward.client_conn = conn;
-        w->pending_forward.client_txn_id = txn_id;
-        w->pending_forward.started_at = (uint64_t)time(NULL);  /* H-15 */
+        w->pending_forwards[pf_slot].active = true;
+        memcpy(w->pending_forwards[pf_slot].tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
+        w->pending_forwards[pf_slot].client_conn = conn;
+        w->pending_forwards[pf_slot].client_txn_id = txn_id;
+        w->pending_forwards[pf_slot].started_at = (uint64_t)time(NULL);
+        w->pending_forward_count++;
 
         /* Find leader peer */
         uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
@@ -1045,7 +1060,8 @@ static void handle_dnac_spend(nodus_witness_t *w,
         if (leader_idx < 0 || leader_idx == w->my_index) {
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "no leader available");
-            w->pending_forward.active = false;
+            w->pending_forwards[pf_slot].active = false;
+            w->pending_forward_count--;
             return;
         }
 
@@ -1064,7 +1080,8 @@ static void handle_dnac_spend(nodus_witness_t *w,
         if (!leader_conn) {
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "leader not connected");
-            w->pending_forward.active = false;
+            w->pending_forwards[pf_slot].active = false;
+            w->pending_forward_count--;
             return;
         }
 
@@ -1101,19 +1118,21 @@ static void handle_dnac_spend(nodus_witness_t *w,
                              fwd_buf, sizeof(fwd_buf), &fwd_len) != 0) {
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "failed to encode forward request");
-            w->pending_forward.active = false;
+            w->pending_forwards[pf_slot].active = false;
+            w->pending_forward_count--;
             return;
         }
 
         if (nodus_tcp_send(leader_conn, fwd_buf, fwd_len) != 0) {
             send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                         "failed to send to leader");
-            w->pending_forward.active = false;
+            w->pending_forwards[pf_slot].active = false;
+            w->pending_forward_count--;
             return;
         }
 
-        fprintf(stderr, "%s: forwarded spend to leader (roster %d)\n",
-                LOG_TAG, leader_idx);
+        fprintf(stderr, "%s: forwarded spend to leader (roster %d, slot %d)\n",
+                LOG_TAG, leader_idx, pf_slot);
         /* Response will arrive via w_fwd_rsp */
     }
 }

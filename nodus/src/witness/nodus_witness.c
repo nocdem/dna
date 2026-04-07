@@ -279,12 +279,15 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     nodus_witness_bft_check_timeout(witness);
 
     /* H-15: Pending forward timeout (30s) */
-    if (witness->pending_forward.active) {
+    {
         uint64_t now_s = nodus_time_now();
-        if (now_s - witness->pending_forward.started_at > 30) {
-            fprintf(stderr, "WITNESS: pending_forward timed out after 30s\n");
-            witness->pending_forward.active = false;
-            witness->pending_forward.client_conn = NULL;
+        for (int pfi = 0; pfi < NODUS_W_MAX_PENDING_FWD; pfi++) {
+            if (!witness->pending_forwards[pfi].active) continue;
+            if (now_s - witness->pending_forwards[pfi].started_at > 30) {
+                fprintf(stderr, "WITNESS: pending_forward[%d] timed out after 30s\n", pfi);
+                witness->pending_forwards[pfi].active = false;
+                witness->pending_forwards[pfi].client_conn = NULL;
+            }
         }
     }
 
