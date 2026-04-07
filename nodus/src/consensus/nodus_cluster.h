@@ -98,6 +98,13 @@ bool nodus_cluster_is_leader(const nodus_cluster_t *cluster);
  */
 int nodus_cluster_alive_count(const nodus_cluster_t *cluster);
 
+/**
+ * Get seconds since a peer was last seen (by node_id).
+ * Returns 0 if peer is unknown or never seen.
+ */
+uint64_t nodus_cluster_peer_offline_secs(const nodus_cluster_t *cluster,
+                                          const nodus_key_t *node_id);
+
 #ifdef __cplusplus
 }
 #endif

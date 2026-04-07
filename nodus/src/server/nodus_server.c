@@ -7,6 +7,7 @@
 
 #include "server/nodus_server.h"
 #include "server/nodus_media_handler.h"
+#include "witness/nodus_witness_peer.h"
 #include "channel/nodus_channel_server.h"
 #include "channel/nodus_channel_replication.h"
 #include "channel/nodus_channel_ring.h"
@@ -309,10 +310,15 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
 
         /* Send via inter_tcp pool. Falls back to hinted handoff on failure. */
         if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen) != 0) {
-            nodus_storage_hinted_insert(&srv->storage,
-                                         &closest[i].node_id,
-                                         closest[i].ip, closest[i].tcp_port,
-                                         frame, flen);
+            /* Skip hinted handoff if peer has been offline > 1 hour —
+             * republish will deliver data when peer comes back alive */
+            uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[i].node_id);
+            if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
+                nodus_storage_hinted_insert(&srv->storage,
+                                             &closest[i].node_id,
+                                             closest[i].ip, closest[i].tcp_port,
+                                             frame, flen);
+            }
         }
     }
 
@@ -358,10 +364,13 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
             continue;
 
         if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen) != 0) {
-            nodus_storage_hinted_insert(&srv->storage,
-                                         &closest[i].node_id,
-                                         closest[i].ip, closest[i].tcp_port,
-                                         frame, flen);
+            uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[i].node_id);
+            if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
+                nodus_storage_hinted_insert(&srv->storage,
+                                             &closest[i].node_id,
+                                             closest[i].ip, closest[i].tcp_port,
+                                             frame, flen);
+            }
         }
     }
 
@@ -551,10 +560,10 @@ static void dht_incremental_vacuum(nodus_server_t *srv) {
     if (now - srv->last_vacuum < NODUS_VACUUM_SEC) return;
     srv->last_vacuum = now;
 
-    sqlite3_exec(srv->storage.db, "PRAGMA incremental_vacuum(500)",
+    sqlite3_exec(srv->storage.db, "PRAGMA incremental_vacuum(10000)",
                  NULL, NULL, NULL);
     if (srv->ch_server.ch_store && srv->ch_server.ch_store->db) {
-        sqlite3_exec(srv->ch_server.ch_store->db, "PRAGMA incremental_vacuum(500)",
+        sqlite3_exec(srv->ch_server.ch_store->db, "PRAGMA incremental_vacuum(10000)",
                      NULL, NULL, NULL);
     }
     fprintf(stderr, "VACUUM: incremental vacuum completed\n");
@@ -689,10 +698,13 @@ static void dht_republish(nodus_server_t *srv) {
         for (int j = 0; j < n; j++) {
             if (nodus_key_cmp(&closest[j].node_id, &srv->identity.node_id) == 0) continue;
             if (dht_republish_send(srv, closest[j].ip, closest[j].tcp_port, frame, flen) != 0) {
-                nodus_storage_hinted_insert(&srv->storage,
-                                             &closest[j].node_id,
-                                             closest[j].ip, closest[j].tcp_port,
-                                             frame, flen);
+                uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[j].node_id);
+                if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
+                    nodus_storage_hinted_insert(&srv->storage,
+                                                 &closest[j].node_id,
+                                                 closest[j].ip, closest[j].tcp_port,
+                                                 frame, flen);
+                }
             }
         }
 
@@ -3157,8 +3169,35 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                                       resp_buf, sizeof(resp_buf), &rlen);
                 }
                 nodus_tcp_send_raw(conn, resp_buf, rlen);
-                fprintf(stderr, "WITNESS_AUTH_OK: peer authenticated on port 4004\n");
+                /* Send w_ident after auth completes */
+                nodus_witness_peer_send_ident(srv->witness, conn);
+                fprintf(stderr, "WITNESS_AUTH_OK: inbound peer authenticated on port 4004\n");
             }
+        } else if (strcmp(msg.method, "challenge") == 0) {
+            /* Outbound auth: sign the nonce and send auth response */
+            nodus_sig_t sig;
+            nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN, &srv->identity.sk);
+            size_t rlen = 0;
+            nodus_t2_auth(msg.txn_id, &sig, resp_buf, sizeof(resp_buf), &rlen);
+            nodus_tcp_send_raw(conn, resp_buf, rlen);
+        } else if (strcmp(msg.method, "auth_ok") == 0) {
+            /* Outbound auth complete — send w_ident immediately */
+            conn->authenticated = true;
+            conn->auth_state = NODUS_CONN_AUTH_OK;
+            conn->peer_id_set = true;
+            if (srv->witness) {
+                for (int i = 0; i < srv->witness->peer_count; i++) {
+                    if (srv->witness->peers[i].conn == conn) {
+                        srv->witness->peers[i].auth_state = PEER_AUTH_OK;
+                        srv->witness->peers[i].identified = true;
+                        nodus_witness_peer_send_ident(srv->witness, conn);
+                        break;
+                    }
+                }
+            }
+            fprintf(stderr, "WITNESS_AUTH_OK: outbound peer authenticated on port 4004\n");
+        } else if (strcmp(msg.method, "error") == 0) {
+            /* Auth error from peer — ignore */
         } else {
             size_t rlen = 0;
             nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
@@ -3169,15 +3208,15 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         return;
     }
 
-    /* C-02: Handle auth responses for OUTGOING connections (client-side auth).
-     * When we connect to another witness, we send hello and receive challenge/auth_ok.
-     * These are T2 messages that arrive on the witness port. */
+    /* C-02: Handle auth responses for OUTGOING connections (fallback).
+     * This path is reached when conn->authenticated is already true
+     * but a stale T2 message arrives. */
     {
         nodus_tier2_msg_t msg;
         memset(&msg, 0, sizeof(msg));
         if (nodus_t2_decode(payload, len, &msg) == 0) {
             if (strcmp(msg.method, "challenge") == 0) {
-                /* Sign the nonce and send auth response */
+                /* Late challenge on already-authenticated connection */
                 nodus_sig_t sig;
                 nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN, &srv->identity.sk);
                 uint8_t buf[8192];
@@ -3187,19 +3226,7 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 nodus_t2_msg_free(&msg);
                 return;
             } else if (strcmp(msg.method, "auth_ok") == 0) {
-                /* Auth succeeded — mark peer as authenticated */
-                conn->authenticated = true;
-                conn->auth_state = NODUS_CONN_AUTH_OK;
-                conn->peer_id_set = true;
-                /* Find and update peer auth_state */
-                if (srv->witness) {
-                    for (int i = 0; i < srv->witness->peer_count; i++) {
-                        if (srv->witness->peers[i].conn == conn) {
-                            srv->witness->peers[i].auth_state = PEER_AUTH_OK;
-                            break;
-                        }
-                    }
-                }
+                /* Already authenticated — ignore */
                 nodus_t2_msg_free(&msg);
                 return;
             } else if (strcmp(msg.method, "error") == 0) {

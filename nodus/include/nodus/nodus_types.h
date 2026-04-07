@@ -94,7 +94,8 @@ extern "C" {
 #define NODUS_REPUBLISH_BATCH      5       /* Values per main loop tick during republish */
 #define NODUS_CLEANUP_SEC          3600    /* 1 hour — storage cleanup interval */
 #define NODUS_WAL_CHECKPOINT_SEC   300     /* 5 min — WAL checkpoint interval */
-#define NODUS_VACUUM_SEC           86400   /* 24 hours — incremental vacuum interval */
+#define NODUS_VACUUM_SEC           3600    /* 1 hour — incremental vacuum interval */
+#define NODUS_HINT_OFFLINE_SKIP_SEC 3600   /* 1 hour — skip hinted handoff for long-offline peers */
 #define NODUS_FV_MAX_INFLIGHT      16      /* Max concurrent FIND_VALUE lookups */
 #define NODUS_FV_TIMEOUT_MS        5000    /* Per-lookup overall timeout */
 #define NODUS_FV_QUERY_TIMEOUT_MS  3000    /* Per-query connect+recv timeout */

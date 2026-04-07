@@ -237,3 +237,18 @@ int nodus_cluster_alive_count(const nodus_cluster_t *cluster) {
     }
     return count;
 }
+
+uint64_t nodus_cluster_peer_offline_secs(const nodus_cluster_t *cluster,
+                                          const nodus_key_t *node_id) {
+    if (!cluster || !node_id) return 0;
+    for (int i = 0; i < cluster->peer_count; i++) {
+        if (nodus_key_cmp(&cluster->peers[i].node_id, node_id) == 0) {
+            if (cluster->peers[i].last_seen == 0) return 0;
+            uint64_t now = nodus_time_now();
+            if (now > cluster->peers[i].last_seen)
+                return now - cluster->peers[i].last_seen;
+            return 0;
+        }
+    }
+    return 0;  /* Unknown peer */
+}
