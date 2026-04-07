@@ -969,6 +969,16 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     if (!verify_chain_id(w, hdr->chain_id))
         return -1;
 
+    /* Force roster swap if pending — ensures consistent leader calculation */
+    if (w->pending_roster_ready &&
+        w->pending_roster.n_witnesses > w->roster.n_witnesses) {
+        memcpy(&w->roster, &w->pending_roster, sizeof(nodus_witness_roster_t));
+        memcpy(&w->bft_config, &w->pending_bft_config,
+               sizeof(nodus_witness_bft_config_t));
+        w->pending_roster_ready = false;
+        w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
+    }
+
     /* Check for existing round in progress */
     if (w->round_state.phase != NODUS_W_PHASE_IDLE) {
         fprintf(stderr, "%s: proposal rejected — round in progress (phase=%d)\n",
@@ -1528,6 +1538,13 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
                         fwd_pi = pi;
                         break;
                     }
+                }
+                if (fwd_pi < 0) {
+                    fprintf(stderr, "%s: batch fwd_rsp: forwarder not found "
+                            "(peers=%d, fid=", LOG_TAG, w->peer_count);
+                    for (int k = 0; k < 4; k++)
+                        fprintf(stderr, "%02x", e->forwarder_id[k]);
+                    fprintf(stderr, ")\n");
                 }
                 if (fwd_pi >= 0) {
                     nodus_t3_msg_t fwd_rsp;
