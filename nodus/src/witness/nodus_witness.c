@@ -12,6 +12,7 @@
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_sync.h"
 #include "witness/nodus_witness_mempool.h"
+#include "crypto/utils/qgp_log.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
 #include "crypto/nodus_identity.h"
@@ -293,7 +294,7 @@ static void nodus_witness_propose_batch(nodus_witness_t *w) {
         }
 
         if (stale) {
-            fprintf(stderr, "WITNESS: mempool TX stale (double-spend), dropping\n");
+            QGP_LOG_WARN(LOG_TAG, "mempool TX stale (double-spend), dropping");
             /* Send error to client if connected */
             if (batch[i]->client_conn) {
                 /* Simple error — no CBOR helpers available here */
@@ -308,7 +309,7 @@ static void nodus_witness_propose_batch(nodus_witness_t *w) {
     }
 
     if (valid == 0) {
-        fprintf(stderr, "WITNESS: all batch TXs stale, skipping\n");
+        QGP_LOG_WARN(LOG_TAG, "all batch TXs stale, skipping");
         w->mempool.last_block_time_ms = nodus_time_now() * 1000ULL;
         return;
     }
@@ -316,7 +317,7 @@ static void nodus_witness_propose_batch(nodus_witness_t *w) {
     /* Start batch BFT round */
     int rc = nodus_witness_bft_start_round_batch(w, batch, valid);
     if (rc != 0) {
-        fprintf(stderr, "WITNESS: batch start_round failed: %d\n", rc);
+        QGP_LOG_WARN(LOG_TAG, "batch start_round failed: %d", rc);
         /* Put entries back into mempool or free them */
         for (int i = 0; i < valid; i++) {
             if (batch[i]) {
@@ -368,10 +369,13 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     }
 
     /* Drain stale mempool entries when no longer leader.
+     * Only check once per epoch (60s) to avoid flap-induced drops.
      * Forwarded entries (client_conn == NULL) would be stranded forever
      * since no client disconnect would trigger remove_by_conn. */
     if (!nodus_witness_bft_is_leader(witness) &&
-        witness->mempool.count > 0) {
+        witness->mempool.count > 0 &&
+        nodus_time_now() - witness->last_epoch < 2) {
+        /* Runs once right after epoch tick rebuilds roster */
         fprintf(stderr, "WITNESS: not leader, draining %d mempool entries\n",
                 witness->mempool.count);
         nodus_witness_mempool_clear(&witness->mempool);

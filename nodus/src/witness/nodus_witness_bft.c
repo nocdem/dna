@@ -517,6 +517,8 @@ static int commit_block_inner(nodus_witness_t *w,
                                 const uint8_t *const *nullifiers,
                                 uint8_t nullifier_count,
                                 uint64_t total_supply,
+                                uint64_t proposal_timestamp,
+                                const uint8_t *proposer_id,
                                 const uint8_t *tx_data,
                                 uint32_t tx_len) {
     bool failed = false;
@@ -574,6 +576,13 @@ static int commit_block_inner(nodus_witness_t *w,
     if (failed) return -1;
 
     nodus_witness_ledger_add(w, tx_hash, tx_type, nullifier_count);
+
+    /* Block creation inside caller's DB transaction for crash atomicity */
+    if (proposer_id) {
+        nodus_witness_block_add(w, tx_hash, tx_type,
+                                  proposal_timestamp, proposer_id);
+    }
+
     return 0;
 }
 
@@ -629,7 +638,8 @@ int nodus_witness_commit_block(nodus_witness_t *w,
     }
 
     if (commit_block_inner(w, tx_hash, tx_type, nullifiers, nullifier_count,
-                             total_supply, tx_data, tx_len) != 0) {
+                             total_supply, proposal_timestamp, proposer_id,
+                             tx_data, tx_len) != 0) {
         nodus_witness_db_rollback(w);
         return -1;
     }
@@ -638,12 +648,6 @@ int nodus_witness_commit_block(nodus_witness_t *w,
         fprintf(stderr, "%s: db commit failed\n", LOG_TAG);
         nodus_witness_db_rollback(w);
         return -1;
-    }
-
-    /* Block creation (outside transaction) */
-    if (proposer_id) {
-        nodus_witness_block_add(w, tx_hash, tx_type,
-                                  proposal_timestamp, proposer_id);
     }
 
     return 0;
@@ -1315,7 +1319,10 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
 
                 if (commit_block_inner(w, e->tx_hash, e->tx_type,
                                          nul_ptrs, e->nullifier_count,
-                                         e->fee, e->tx_data, e->tx_len) != 0) {
+                                         0, /* total_supply: N/A for batch spends */
+                                         w->round_state.proposal_timestamp,
+                                         w->round_state.proposer_id,
+                                         e->tx_data, e->tx_len) != 0) {
                     fprintf(stderr, "%s: batch TX %d inner commit failed!\n",
                             LOG_TAG, bi);
                     batch_failed = true;
@@ -1332,23 +1339,20 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             if (nodus_witness_db_commit(w) != 0) {
                 nodus_witness_db_rollback(w);
                 fprintf(stderr, "%s: batch db commit failed\n", LOG_TAG);
-            } else {
-                /* Block creation (outside atomic TX) */
-                for (int bi = 0; bi < w->round_state.batch_count; bi++) {
-                    nodus_witness_mempool_entry_t *e =
-                        w->round_state.batch_entries[bi];
-                    if (!e) continue;
-                    nodus_witness_block_add(w, e->tx_hash, e->tx_type,
-                                              w->round_state.proposal_timestamp,
-                                              w->round_state.proposer_id);
-                }
             }
+            /* block_add now inside commit_block_inner */
         }
 
-        /* Store commit certificate for last block height */
-        uint64_t cert_bh = nodus_witness_block_height(w);
-        nodus_witness_cert_store(w, cert_bh, w->round_state.precommits,
-                                  w->round_state.precommit_count);
+        /* Store commit certificates for EACH block in the batch.
+         * State sync verifies certs per block — missing certs would fail sync. */
+        {
+            uint64_t top_bh = nodus_witness_block_height(w);
+            uint64_t base_bh = top_bh - (uint64_t)w->round_state.batch_count + 1;
+            for (uint64_t bh = base_bh; bh <= top_bh; bh++) {
+                nodus_witness_cert_store(w, bh, w->round_state.precommits,
+                                          w->round_state.precommit_count);
+            }
+        }
 
         fprintf(stderr, "%s: BATCH COMMITTED round %lu (%d TXs)\n",
                 LOG_TAG, (unsigned long)w->round_state.round,
@@ -1600,7 +1604,9 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
 
             if (commit_block_inner(w, btx->tx_hash, btx->tx_type,
                                nul_ptrs, btx->nullifier_count,
-                               btx->fee,
+                               0, /* total_supply: N/A */
+                               cmt->proposal_timestamp,
+                               cmt->proposer_id,
                                btx->tx_data, btx->tx_len) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "batch remote TX %d inner commit failed!", bi);
                 rmt_batch_failed = true;
@@ -1619,14 +1625,7 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
             QGP_LOG_ERROR(LOG_TAG, "batch remote db commit failed");
             return -1;
         }
-
-        /* Block creation */
-        for (int bi = 0; bi < cmt->batch_count; bi++) {
-            const nodus_t3_batch_tx_t *btx = &cmt->batch_txs[bi];
-            nodus_witness_block_add(w, btx->tx_hash, btx->tx_type,
-                                      cmt->proposal_timestamp,
-                                      cmt->proposer_id);
-        }
+        /* block_add now inside commit_block_inner */
     } else {
         QGP_LOG_INFO(LOG_TAG, "received COMMIT for round %lu (%d nullifiers)",
                      (unsigned long)hdr->round, cmt->nullifier_count);
