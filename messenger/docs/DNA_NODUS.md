@@ -1,6 +1,6 @@
 # DNA Nodus - Post-Quantum DHT Network
 
-**Current Version:** Nodus (v0.8.1)
+**Current Version:** Nodus v0.10.14
 **Security:** FIPS 204 / ML-DSA-87 (Dilithium5) - NIST Category 5
 
 ## Overview
@@ -56,10 +56,22 @@ DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Connect. It
 ### Protocol
 
 - **Wire format:** CBOR over wire frames with 7-byte header (magic `0x4E44` + version + length)
-- **Three transport layers:**
+- **Transport layers:**
   - **Tier 1 (Kademlia):** ping, find_node, put, get (UDP 4000, inter-node)
   - **Tier 2 (Client DHT):** auth, dht_put, dht_get, listen (TCP 4001, client-facing)
   - **Channel (TCP 4003):** ch_create, ch_post, ch_get, ch_sub, ch_rep (dedicated port)
+  - **Witness BFT (TCP 4004):** DNAC consensus — propose, prevote, precommit, commit
+
+### DNAC Witness (Block Production)
+
+- **Block time:** 5 seconds (no empty blocks — only when mempool has TXs)
+- **Mempool:** Fee-ordered queue (max 64 TXs), leader accumulates and batches
+- **Batch size:** Up to 10 TXs per BFT round (128KB wire limit)
+- **Consensus:** PBFT-style (PROPOSE → PREVOTE → PRECOMMIT → COMMIT)
+- **Atomic commit:** All TXs in batch committed in single SQLite transaction
+- **Genesis:** Bypasses mempool, uses legacy single-TX BFT path
+- **State sync:** Compatible — each TX produces its own block with commit certificates
+- See: `nodus/docs/MEMPOOL_BLOCK_TIME.md` for full design
 
 ### Messenger Integration
 
