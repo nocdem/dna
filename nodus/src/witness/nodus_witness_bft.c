@@ -503,67 +503,25 @@ static int update_utxo_set(nodus_witness_t *w,
  *   - Add ledger entry (audit trail)
  *   - Create block
  */
-int nodus_witness_commit_block(nodus_witness_t *w,
-                          const uint8_t *tx_hash,
-                          uint8_t tx_type,
-                          const uint8_t *const *nullifiers,
-                          uint8_t nullifier_count,
-                          uint64_t total_supply,
-                          uint64_t proposal_timestamp,
-                          const uint8_t *proposer_id,
-                          const uint8_t *tx_data,
-                          uint32_t tx_len) {
-    /* For genesis: derive chain_id from fingerprint + tx_hash, then create DB
-     * (db_begin requires w->db to be open) */
-    if (tx_type == NODUS_W_TX_GENESIS && !w->db) {
-        /* Parse genesis fingerprint from first output in tx_data:
-         * Header(74) + input_count(1) + output_count(1) + out_version(1) = 77
-         * Then fingerprint is 129 bytes (128 hex + null) */
-        if (!tx_data || tx_len < 77 + 129) {
-            fprintf(stderr, "%s: genesis tx_data too short for fingerprint (len=%u)\n",
-                    LOG_TAG, tx_len);
-            return -1;
-        }
-
-        size_t fp_offset = 74;                         /* end of header */
-        uint8_t in_count = tx_data[fp_offset++];       /* input_count (should be 0) */
-        fp_offset += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8);  /* skip inputs */
-        if (fp_offset >= tx_len) {
-            fprintf(stderr, "%s: genesis tx_data truncated at outputs\n", LOG_TAG);
-            return -1;
-        }
-        uint8_t out_count = tx_data[fp_offset++];      /* output_count */
-        if (out_count == 0 || fp_offset + 1 + 129 > tx_len) {
-            fprintf(stderr, "%s: genesis has no outputs or truncated\n", LOG_TAG);
-            return -1;
-        }
-        fp_offset += 1;                                /* output version byte */
-        const char *genesis_fp = (const char *)(tx_data + fp_offset);
-
-        /* Derive chain_id = SHA3-256(fp_bytes || tx_hash) */
-        uint8_t derived_chain_id[32];
-        if (nodus_derive_chain_id(genesis_fp, tx_hash, derived_chain_id) != 0) {
-            fprintf(stderr, "%s: failed to derive chain_id from genesis\n", LOG_TAG);
-            return -1;
-        }
-
-        if (nodus_witness_create_chain_db(w, derived_chain_id) != 0) {
-            fprintf(stderr, "%s: failed to create chain DB\n", LOG_TAG);
-            return -1;
-        }
-    }
-
-    /* Begin atomic transaction */
-    if (nodus_witness_db_begin(w) != 0) {
-        fprintf(stderr, "%s: db begin failed\n", LOG_TAG);
-        return -1;
-    }
-
+/**
+ * Inner commit logic: nullifiers, UTXO, TX store, ledger.
+ * Does NOT manage DB transaction (caller handles begin/commit).
+ * Does NOT create blocks (caller handles block_add).
+ * Used by both single-TX commit_block() and batch commit path.
+ *
+ * @return 0 on success, -1 on failure (caller should rollback)
+ */
+static int commit_block_inner(nodus_witness_t *w,
+                                const uint8_t *tx_hash,
+                                uint8_t tx_type,
+                                const uint8_t *const *nullifiers,
+                                uint8_t nullifier_count,
+                                uint64_t total_supply,
+                                const uint8_t *tx_data,
+                                uint32_t tx_len) {
     bool failed = false;
 
     if (tx_type == NODUS_W_TX_GENESIS) {
-
-        /* Derive genesis supply from tx outputs if not provided */
         uint64_t supply = total_supply;
         if (supply == 0 && tx_data && tx_len > 75) {
             size_t off = 74;
@@ -592,7 +550,7 @@ int nodus_witness_commit_block(nodus_witness_t *w,
     } else {
         for (int i = 0; i < nullifier_count; i++) {
             int rc = nodus_witness_nullifier_add(w, nullifiers[i], tx_hash);
-            if (rc != 0 && rc != -2) {  /* -2 = already exists, ok */
+            if (rc != 0 && rc != -2) {
                 fprintf(stderr, "%s: nullifier add %d failed\n", LOG_TAG, i);
                 failed = true;
                 break;
@@ -600,7 +558,6 @@ int nodus_witness_commit_block(nodus_witness_t *w,
         }
     }
 
-    /* Update UTXO set within the same atomic transaction */
     if (!failed && tx_data && tx_len > 0) {
         if (update_utxo_set(w, tx_hash, tx_type, nullifiers, nullifier_count,
                                tx_data, tx_len) != 0) {
@@ -609,19 +566,73 @@ int nodus_witness_commit_block(nodus_witness_t *w,
         }
     }
 
-    /* Store full transaction data for client retrieval */
     if (!failed && tx_data && tx_len > 0) {
         uint64_t bh = nodus_witness_block_height(w) + 1;
         nodus_witness_tx_store(w, tx_hash, tx_type, tx_data, tx_len, bh);
     }
 
-    if (failed) {
-        nodus_witness_db_rollback(w);
+    if (failed) return -1;
+
+    nodus_witness_ledger_add(w, tx_hash, tx_type, nullifier_count);
+    return 0;
+}
+
+int nodus_witness_commit_block(nodus_witness_t *w,
+                          const uint8_t *tx_hash,
+                          uint8_t tx_type,
+                          const uint8_t *const *nullifiers,
+                          uint8_t nullifier_count,
+                          uint64_t total_supply,
+                          uint64_t proposal_timestamp,
+                          const uint8_t *proposer_id,
+                          const uint8_t *tx_data,
+                          uint32_t tx_len) {
+    /* For genesis: derive chain_id from fingerprint + tx_hash, then create DB */
+    if (tx_type == NODUS_W_TX_GENESIS && !w->db) {
+        if (!tx_data || tx_len < 77 + 129) {
+            fprintf(stderr, "%s: genesis tx_data too short for fingerprint (len=%u)\n",
+                    LOG_TAG, tx_len);
+            return -1;
+        }
+
+        size_t fp_offset = 74;
+        uint8_t in_count = tx_data[fp_offset++];
+        fp_offset += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8);
+        if (fp_offset >= tx_len) {
+            fprintf(stderr, "%s: genesis tx_data truncated at outputs\n", LOG_TAG);
+            return -1;
+        }
+        uint8_t out_count = tx_data[fp_offset++];
+        if (out_count == 0 || fp_offset + 1 + 129 > tx_len) {
+            fprintf(stderr, "%s: genesis has no outputs or truncated\n", LOG_TAG);
+            return -1;
+        }
+        fp_offset += 1;
+        const char *genesis_fp = (const char *)(tx_data + fp_offset);
+
+        uint8_t derived_chain_id[32];
+        if (nodus_derive_chain_id(genesis_fp, tx_hash, derived_chain_id) != 0) {
+            fprintf(stderr, "%s: failed to derive chain_id from genesis\n", LOG_TAG);
+            return -1;
+        }
+
+        if (nodus_witness_create_chain_db(w, derived_chain_id) != 0) {
+            fprintf(stderr, "%s: failed to create chain DB\n", LOG_TAG);
+            return -1;
+        }
+    }
+
+    /* Single-TX: own transaction */
+    if (nodus_witness_db_begin(w) != 0) {
+        fprintf(stderr, "%s: db begin failed\n", LOG_TAG);
         return -1;
     }
 
-    /* H-16: Ledger entry INSIDE atomic transaction (before COMMIT) */
-    nodus_witness_ledger_add(w, tx_hash, tx_type, nullifier_count);
+    if (commit_block_inner(w, tx_hash, tx_type, nullifiers, nullifier_count,
+                             total_supply, tx_data, tx_len) != 0) {
+        nodus_witness_db_rollback(w);
+        return -1;
+    }
 
     if (nodus_witness_db_commit(w) != 0) {
         fprintf(stderr, "%s: db commit failed\n", LOG_TAG);
@@ -629,7 +640,7 @@ int nodus_witness_commit_block(nodus_witness_t *w,
         return -1;
     }
 
-    /* Block creation */
+    /* Block creation (outside transaction) */
     if (proposer_id) {
         nodus_witness_block_add(w, tx_hash, tx_type,
                                   proposal_timestamp, proposer_id);
@@ -1284,23 +1295,53 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     /* next_phase == NODUS_W_PHASE_COMMIT: PRECOMMIT quorum → COMMIT */
 
     if (w->round_state.batch_count > 0) {
-        /* ── Batch commit: N TXs → N blocks ─────────────────────── */
-        for (int bi = 0; bi < w->round_state.batch_count; bi++) {
-            nodus_witness_mempool_entry_t *e = w->round_state.batch_entries[bi];
-            if (!e) continue;
+        /* ── Batch commit: N TXs → N blocks (ATOMIC) ────────────── */
+        bool batch_failed = false;
 
-            const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
-            for (int j = 0; j < e->nullifier_count; j++)
-                nul_ptrs[j] = e->nullifiers[j];
+        if (nodus_witness_db_begin(w) != 0) {
+            fprintf(stderr, "%s: batch db begin failed\n", LOG_TAG);
+            batch_failed = true;
+        }
 
-            if (nodus_witness_commit_block(w, e->tx_hash,
-                               e->tx_type, nul_ptrs, e->nullifier_count,
-                               e->fee,
-                               w->round_state.proposal_timestamp,
-                               w->round_state.proposer_id,
-                               e->tx_data, e->tx_len) != 0) {
-                fprintf(stderr, "%s: batch commit TX %d failed!\n",
-                        LOG_TAG, bi);
+        if (!batch_failed) {
+            for (int bi = 0; bi < w->round_state.batch_count; bi++) {
+                nodus_witness_mempool_entry_t *e =
+                    w->round_state.batch_entries[bi];
+                if (!e) continue;
+
+                const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
+                for (int j = 0; j < e->nullifier_count; j++)
+                    nul_ptrs[j] = e->nullifiers[j];
+
+                if (commit_block_inner(w, e->tx_hash, e->tx_type,
+                                         nul_ptrs, e->nullifier_count,
+                                         e->fee, e->tx_data, e->tx_len) != 0) {
+                    fprintf(stderr, "%s: batch TX %d inner commit failed!\n",
+                            LOG_TAG, bi);
+                    batch_failed = true;
+                    break;
+                }
+            }
+        }
+
+        if (batch_failed) {
+            nodus_witness_db_rollback(w);
+            fprintf(stderr, "%s: BATCH COMMIT ROLLED BACK round %lu\n",
+                    LOG_TAG, (unsigned long)w->round_state.round);
+        } else {
+            if (nodus_witness_db_commit(w) != 0) {
+                nodus_witness_db_rollback(w);
+                fprintf(stderr, "%s: batch db commit failed\n", LOG_TAG);
+            } else {
+                /* Block creation (outside atomic TX) */
+                for (int bi = 0; bi < w->round_state.batch_count; bi++) {
+                    nodus_witness_mempool_entry_t *e =
+                        w->round_state.batch_entries[bi];
+                    if (!e) continue;
+                    nodus_witness_block_add(w, e->tx_hash, e->tx_type,
+                                              w->round_state.proposal_timestamp,
+                                              w->round_state.proposer_id);
+                }
             }
         }
 
@@ -1544,21 +1585,47 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
         QGP_LOG_INFO(LOG_TAG, "received batch COMMIT for round %lu (%d TXs)",
                      (unsigned long)hdr->round, cmt->batch_count);
 
-        /* Commit each TX in the batch */
+        /* Atomic batch commit */
+        bool rmt_batch_failed = false;
+        if (nodus_witness_db_begin(w) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "batch remote db begin failed");
+            return -1;
+        }
+
         for (int bi = 0; bi < cmt->batch_count; bi++) {
             const nodus_t3_batch_tx_t *btx = &cmt->batch_txs[bi];
             const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
             for (int j = 0; j < btx->nullifier_count; j++)
                 nul_ptrs[j] = btx->nullifiers[j];
 
-            if (nodus_witness_commit_block(w, btx->tx_hash, btx->tx_type,
+            if (commit_block_inner(w, btx->tx_hash, btx->tx_type,
                                nul_ptrs, btx->nullifier_count,
                                btx->fee,
-                               cmt->proposal_timestamp,
-                               cmt->proposer_id,
                                btx->tx_data, btx->tx_len) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "batch remote commit TX %d failed!", bi);
+                QGP_LOG_ERROR(LOG_TAG, "batch remote TX %d inner commit failed!", bi);
+                rmt_batch_failed = true;
+                break;
             }
+        }
+
+        if (rmt_batch_failed) {
+            nodus_witness_db_rollback(w);
+            QGP_LOG_ERROR(LOG_TAG, "batch remote commit ROLLED BACK");
+            return -1;
+        }
+
+        if (nodus_witness_db_commit(w) != 0) {
+            nodus_witness_db_rollback(w);
+            QGP_LOG_ERROR(LOG_TAG, "batch remote db commit failed");
+            return -1;
+        }
+
+        /* Block creation */
+        for (int bi = 0; bi < cmt->batch_count; bi++) {
+            const nodus_t3_batch_tx_t *btx = &cmt->batch_txs[bi];
+            nodus_witness_block_add(w, btx->tx_hash, btx->tx_type,
+                                      cmt->proposal_timestamp,
+                                      cmt->proposer_id);
         }
     } else {
         QGP_LOG_INFO(LOG_TAG, "received COMMIT for round %lu (%d nullifiers)",
@@ -1872,6 +1939,17 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
  * Timeout check (called from nodus_witness_tick)
  * ════════════════════════════════════════════════════════════════════ */
 
+/* Free any heap-allocated batch entries in round_state */
+static void round_state_free_batch(nodus_witness_round_state_t *rs) {
+    for (int i = 0; i < rs->batch_count; i++) {
+        if (rs->batch_entries[i]) {
+            nodus_witness_mempool_entry_free(rs->batch_entries[i]);
+            rs->batch_entries[i] = NULL;
+        }
+    }
+    rs->batch_count = 0;
+}
+
 void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     if (!w) return;
 
@@ -1887,6 +1965,7 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
             fprintf(stderr, "%s: view change timeout (%lu ms), "
                     "returning to IDLE (view stays %u)\n",
                     LOG_TAG, (unsigned long)elapsed, w->current_view);
+            round_state_free_batch(&w->round_state);
             w->round_state.phase = NODUS_W_PHASE_IDLE;
             w->view_change_in_progress = false;
             w->view_change_count = 0;
@@ -1896,10 +1975,9 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
     }
 
     if (elapsed > w->bft_config.round_timeout_ms) {
-        /* Transition to VIEW_CHANGE immediately to stop further timeout checks.
-         * Must happen here, not inside initiate_view_change, because a remote
-         * VIEW_CHANGE message may have set view_change_in_progress=true without
-         * changing the phase — causing initiate to return early. */
+        /* Free batch entries before transitioning — they won't be committed */
+        round_state_free_batch(&w->round_state);
+
         w->round_state.phase = NODUS_W_PHASE_VIEW_CHANGE;
 
         fprintf(stderr, "%s: round timeout (%lu ms), initiating view change\n",

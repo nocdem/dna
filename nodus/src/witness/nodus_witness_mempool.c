@@ -9,6 +9,8 @@
 
 #include "witness/nodus_witness_mempool.h"
 
+#include "crypto/utils/qgp_log.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,8 +40,8 @@ int nodus_witness_mempool_add(nodus_witness_mempool_t *mp,
     if (!mp || !entry) return -1;
 
     if (mp->count >= NODUS_W_MAX_MEMPOOL) {
-        fprintf(stderr, "%s: mempool full (%d/%d)\n",
-                LOG_TAG, mp->count, NODUS_W_MAX_MEMPOOL);
+        QGP_LOG_WARN(LOG_TAG, "mempool full (%d/%d)",
+                     mp->count, NODUS_W_MAX_MEMPOOL);
         return -1;
     }
 
@@ -47,7 +49,7 @@ int nodus_witness_mempool_add(nodus_witness_mempool_t *mp,
     for (int i = 0; i < mp->count; i++) {
         if (memcmp(mp->entries[i]->tx_hash, entry->tx_hash,
                    NODUS_T3_TX_HASH_LEN) == 0) {
-            fprintf(stderr, "%s: duplicate tx_hash rejected\n", LOG_TAG);
+            QGP_LOG_DEBUG(LOG_TAG, "duplicate tx_hash rejected");
             return -2;
         }
     }
@@ -68,8 +70,8 @@ int nodus_witness_mempool_add(nodus_witness_mempool_t *mp,
     mp->entries[pos] = entry;
     mp->count++;
 
-    fprintf(stderr, "%s: added TX (fee=%llu, pos=%d, count=%d)\n",
-            LOG_TAG, (unsigned long long)entry->fee, pos, mp->count);
+    QGP_LOG_DEBUG(LOG_TAG, "added TX (fee=%llu, pos=%d, count=%d)",
+                  (unsigned long long)entry->fee, pos, mp->count);
     return 0;
 }
 
@@ -98,8 +100,8 @@ int nodus_witness_mempool_pop_batch(nodus_witness_mempool_t *mp,
     mp->count = remaining;
 
     if (count > 0) {
-        fprintf(stderr, "%s: popped %d TXs (remaining=%d)\n",
-                LOG_TAG, count, mp->count);
+        QGP_LOG_DEBUG(LOG_TAG, "popped %d TXs (remaining=%d)",
+                      count, mp->count);
     }
 
     return count;
@@ -131,8 +133,8 @@ void nodus_witness_mempool_remove_by_conn(nodus_witness_mempool_t *mp,
     mp->count = write_idx;
 
     if (removed > 0) {
-        fprintf(stderr, "%s: removed %d entries for closed conn (remaining=%d)\n",
-                LOG_TAG, removed, mp->count);
+        QGP_LOG_DEBUG(LOG_TAG, "removed %d entries for closed conn (remaining=%d)",
+                      removed, mp->count);
     }
 }
 
@@ -150,6 +152,6 @@ void nodus_witness_mempool_clear(nodus_witness_mempool_t *mp) {
     mp->count = 0;
 
     if (old_count > 0) {
-        fprintf(stderr, "%s: cleared %d entries\n", LOG_TAG, old_count);
+        QGP_LOG_DEBUG(LOG_TAG, "cleared %d entries", old_count);
     }
 }

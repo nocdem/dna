@@ -367,6 +367,16 @@ void nodus_witness_tick(nodus_witness_t *witness) {
         }
     }
 
+    /* Drain stale mempool entries when no longer leader.
+     * Forwarded entries (client_conn == NULL) would be stranded forever
+     * since no client disconnect would trigger remove_by_conn. */
+    if (!nodus_witness_bft_is_leader(witness) &&
+        witness->mempool.count > 0) {
+        fprintf(stderr, "WITNESS: not leader, draining %d mempool entries\n",
+                witness->mempool.count);
+        nodus_witness_mempool_clear(&witness->mempool);
+    }
+
     /* Peer mesh: reconnection, IDENT exchange */
     nodus_witness_peer_tick(witness);
 
