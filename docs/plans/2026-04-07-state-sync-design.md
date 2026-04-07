@@ -62,7 +62,7 @@ Size estimate per block: ~10KB TX + ~33KB certs (7 * 4659) = ~43KB. Well within 
 
 ## w_ident Extension
 
-Add block height to w_ident args so peers can detect height mismatch:
+Add block height and UTXO checksum to w_ident args:
 
 ```
 w_ident args (existing + new):
@@ -70,9 +70,12 @@ w_ident args (existing + new):
     "wid":  bstr(32),       // witness_id (existing)
     "pk":   bstr(2592),     // pubkey (existing)
     "addr": tstr,           // address (existing)
-    "bh":   uint            // NEW: local block height
+    "bh":   uint,           // NEW: local block height
+    "uck":  bstr(64)        // NEW: UTXO set checksum (SHA3-512)
 }
 ```
+
+UTXO checksum: `nodus_witness_utxo_checksum()` already exists — hashes all nullifiers in sorted order. Computed after each BFT commit.
 
 ## Sync Flow
 
@@ -281,6 +284,10 @@ nodus_witness_peer_init() or first epoch tick:
 nodus_witness_tick() → epoch handler:
   - Check all identified peers' heights
   - If local < max(peer heights) → sync from highest peer
+  - If local == peer heights but checksums differ:
+      - Count peers per checksum
+      - If majority (>= quorum) disagrees with us → we forked
+      - Drop DB + resync from majority peer
 ```
 
 ### 3. Missed Round Detection
@@ -304,6 +311,7 @@ struct {
 
 // In nodus_witness_peer_t:
 uint64_t    remote_height;            // peer's block height from w_ident
+uint8_t     remote_checksum[64];      // peer's UTXO checksum from w_ident
 ```
 
 ## Rate Limiting & Safety
@@ -330,21 +338,66 @@ uint64_t    remote_height;            // peer's block height from w_ident
 
 ## Fork Detection Rules
 
+### Case 1: Peer has more blocks (peer_height > local_height)
+
 ```
-1. Genesis block (height 1) tx_hash MUST match
+Compare block hashes from genesis forward.
+First mismatch = fork point.
+
+1. Genesis (height 1) tx_hash MUST match
    → If different: chain_id mismatch, different chain, ABORT
-   → This prevents syncing from a node on a completely different chain
 
 2. Any other block tx_hash differs:
    → Fork detected
-   → Peer chain must be LONGER to trigger rebuild
-   → Peer blocks must have VALID commit certificates
-   → If both conditions met: drop local DB, full resync
+   → Peer chain is LONGER + has VALID commit certificates
+   → Drop local DB, full resync from genesis
+```
 
-3. Fork rebuild is atomic:
-   → Close DB → Delete file → Resync from genesis
-   → If resync fails midway: node is in pre-genesis state
-   → Next epoch tick will retry sync
+### Case 2: Same height, different state (peer_height == local_height)
+
+```
+Detected via UTXO checksum comparison in w_ident:
+
+1. Collect checksums from all identified peers
+2. Group by checksum → find majority (quorum)
+3. If local checksum matches majority → we are correct, no action
+4. If local checksum differs from majority:
+   → We are on wrong fork
+   → Drop local DB, full resync from a majority peer
+5. If no clear majority → do nothing, wait for more peers
+```
+
+Example (EU-6 scenario with same height):
+```
+EU-1: uck=076e6598  ─┐
+EU-2: uck=076e6598   │ majority (6 nodes)
+EU-3: uck=076e6598   │
+EU-4: uck=076e6598   │
+EU-5: uck=076e6598   │
+US-1: uck=076e6598  ─┘
+EU-6: uck=a3f21b44  ← minority (1 node) → DROP DB + RESYNC
+```
+
+Quorum threshold: `2f+1` (same as BFT). If `>= quorum` peers agree on a checksum and local differs → local is wrong.
+
+### Case 3: Pre-genesis node (no witness DB)
+
+```
+Peer has bh > 0 and valid chain_id → full sync from genesis.
+No fork detection needed — just download everything.
+```
+
+### Fork rebuild procedure
+
+```
+1. Close witness DB connection (sqlite3_close)
+2. Delete witness_<chain_id>.db file
+3. Set w->db = NULL (back to pre-genesis state)
+4. Clear local chain_id
+5. Full sync from genesis (height 0)
+   → do_commit_db() recreates DB automatically
+6. If resync fails midway: node is in pre-genesis state
+   → Next epoch tick will retry
 ```
 
 ## Files
