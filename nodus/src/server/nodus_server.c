@@ -501,6 +501,33 @@ static void dht_wal_checkpoint(nodus_server_t *srv) {
     if (now - srv->last_wal_checkpoint < NODUS_WAL_CHECKPOINT_SEC) return;
     srv->last_wal_checkpoint = now;
 
+    /* Reset all prepared statements to release read snapshots.
+     * Without this, stepped-but-not-reset cursors hold implicit
+     * read transactions that block WAL checkpoint. */
+    sqlite3_stmt *stmts[] = {
+        srv->storage.stmt_put, srv->storage.stmt_get,
+        srv->storage.stmt_get_all, srv->storage.stmt_delete,
+        srv->storage.stmt_cleanup, srv->storage.stmt_count,
+        srv->storage.stmt_put_if_newer, srv->storage.stmt_fetch_batch,
+        srv->storage.stmt_quota_total_bytes, srv->storage.stmt_quota_owner_count,
+        srv->storage.stmt_exclusive_owner,
+        srv->storage.stmt_hint_insert, srv->storage.stmt_hint_get,
+        srv->storage.stmt_hint_delete, srv->storage.stmt_hint_cleanup,
+        srv->storage.stmt_hint_count,
+        srv->media_storage.stmt_put_meta, srv->media_storage.stmt_put_chunk,
+        srv->media_storage.stmt_get_meta, srv->media_storage.stmt_get_chunk,
+        srv->media_storage.stmt_exists, srv->media_storage.stmt_mark_complete,
+        srv->media_storage.stmt_count_chunks,
+        srv->media_storage.stmt_cleanup_expired,
+        srv->media_storage.stmt_cleanup_incomplete,
+        srv->media_storage.stmt_cleanup_orphan_chunks,
+        srv->media_storage.stmt_count_per_owner,
+        srv->media_storage.stmt_fetch_batch,
+    };
+    for (size_t i = 0; i < sizeof(stmts)/sizeof(stmts[0]); i++) {
+        if (stmts[i]) sqlite3_reset(stmts[i]);
+    }
+
     int nlog = 0, nckpt = 0;
     int rc = sqlite3_wal_checkpoint_v2(srv->storage.db, NULL,
                                         SQLITE_CHECKPOINT_TRUNCATE, &nlog, &nckpt);
