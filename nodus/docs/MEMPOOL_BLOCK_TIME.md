@@ -156,8 +156,10 @@ Same `btx`/`bh` extension, plus existing cert/timestamp fields.
 ### Round 4
 No new issues found. All 6 verification items passed.
 
-### Round 5
-Pending (adversarial security review).
+### Round 5 (adversarial security review)
+| # | Issue | Fix |
+|---|-------|-----|
+| 19 | **CRITICAL**: Intra-batch double-spend — two TXs spending same nullifier both pass individual verification | Added cross-TX nullifier tracking in propose_batch (leader) and handle_propose (follower) |
 
 ---
 
