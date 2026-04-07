@@ -170,6 +170,10 @@ typedef struct {
 
     /* C-02: Outgoing auth state (client-side hello/auth on port 4004) */
     enum { PEER_AUTH_NONE, PEER_AUTH_HELLO_SENT, PEER_AUTH_OK } auth_state;
+
+    /* State sync: peer's chain state from w_ident */
+    uint64_t    remote_height;              /* peer's block height */
+    uint8_t     remote_checksum[64];        /* peer's UTXO checksum */
 } nodus_witness_peer_t;
 
 /* ── Main witness context ────────────────────────────────────────── */
@@ -230,6 +234,19 @@ typedef struct nodus_witness {
         uint32_t    client_txn_id;
         uint64_t    started_at;     /* H-15: timestamp for timeout (seconds) */
     } pending_forward;
+
+    /* State sync (block replay from peers) */
+    struct {
+        bool        syncing;              /* sync in progress */
+        int         sync_peer_idx;        /* which peer we're syncing from */
+        uint64_t    sync_target_height;   /* peer's height */
+        uint64_t    sync_current_height;  /* next block to request */
+        uint64_t    last_sync_attempt;    /* rate limit (timestamp) */
+    } sync_state;
+
+    /* Cached UTXO checksum (avoid full table scan on every epoch tick) */
+    uint8_t         cached_utxo_checksum[64];  /* NODUS_KEY_BYTES */
+    bool            cached_utxo_checksum_valid;
 
     /* Witness database (separate from DHT storage) */
     sqlite3     *db;

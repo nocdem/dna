@@ -556,6 +556,141 @@ static void test_ident(void) {
     TEST_PASS(name);
 }
 
+/* ── Test: w_sync_req round-trip ─────────────────────────────────── */
+
+static void test_sync_req(void) {
+    const char *name = "w_sync_req";
+    nodus_t3_msg_t in, out;
+    memset(&in, 0, sizeof(in));
+
+    in.type = NODUS_T3_SYNC_REQ;
+    in.txn_id = 42;
+    fill_header(&in.header);
+    in.sync_req.height = 7;
+
+    int rc = roundtrip(&in, &out);
+    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
+
+    check_header(&in.header, &out.header, name);
+    if (out.type != NODUS_T3_SYNC_REQ) { TEST_FAIL(name, "type"); return; }
+    if (out.sync_req.height != 7) { TEST_FAIL(name, "height"); return; }
+    if (out.txn_id != 42) { TEST_FAIL(name, "txn_id"); return; }
+    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
+        TEST_FAIL(name, "wsig verify"); return;
+    }
+
+    TEST_PASS(name);
+}
+
+/* ── Test: w_sync_rsp round-trip ────────────────────────────────── */
+
+static void test_sync_rsp(void) {
+    const char *name = "w_sync_rsp";
+
+    ensure_identity();
+
+    /* Test 1: not-found response */
+    {
+        nodus_t3_msg_t in, out;
+        memset(&in, 0, sizeof(in));
+
+        in.type = NODUS_T3_SYNC_RSP;
+        in.txn_id = 50;
+        fill_header(&in.header);
+        in.sync_rsp.found = false;
+        in.sync_rsp.height = 99;
+
+        int rc = roundtrip(&in, &out);
+        if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed (not-found)"); return; }
+
+        if (out.type != NODUS_T3_SYNC_RSP) { TEST_FAIL(name, "type (not-found)"); return; }
+        if (out.sync_rsp.found != false) { TEST_FAIL(name, "found should be false"); return; }
+        if (out.sync_rsp.height != 99) { TEST_FAIL(name, "height (not-found)"); return; }
+        if (nodus_t3_verify(&out, &test_id.pk) != 0) {
+            TEST_FAIL(name, "wsig verify (not-found)"); return;
+        }
+    }
+
+    /* Test 2: found response with full block data */
+    {
+        nodus_t3_msg_t in, out;
+        memset(&in, 0, sizeof(in));
+
+        in.type = NODUS_T3_SYNC_RSP;
+        in.txn_id = 99;
+        fill_header(&in.header);
+
+        in.sync_rsp.found = true;
+        in.sync_rsp.height = 3;
+
+        /* Fill tx_hash with deterministic data */
+        memset(in.sync_rsp.tx_hash, 0xAA, NODUS_T3_TX_HASH_LEN);
+        in.sync_rsp.tx_type = 1;  /* SPEND */
+
+        uint8_t fake_tx[128];
+        memset(fake_tx, 0xBB, sizeof(fake_tx));
+        in.sync_rsp.tx_data = fake_tx;
+        in.sync_rsp.tx_len = sizeof(fake_tx);
+
+        in.sync_rsp.timestamp = 1700000001;
+        memset(in.sync_rsp.proposer_id, 0xCC, NODUS_T3_WITNESS_ID_LEN);
+        memset(in.sync_rsp.prev_hash, 0xDD, NODUS_T3_TX_HASH_LEN);
+
+        /* One nullifier */
+        uint8_t nul[NODUS_T3_NULLIFIER_LEN];
+        memset(nul, 0xEE, NODUS_T3_NULLIFIER_LEN);
+        in.sync_rsp.nullifiers[0] = nul;
+        in.sync_rsp.nullifier_count = 1;
+
+        /* One cert */
+        in.sync_rsp.cert_count = 1;
+        memset(in.sync_rsp.certs[0].voter_id, 0x11, NODUS_T3_WITNESS_ID_LEN);
+        memset(in.sync_rsp.certs[0].signature, 0x22, NODUS_SIG_BYTES);
+
+        int rc = roundtrip(&in, &out);
+        if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed (found)"); return; }
+
+        if (out.type != NODUS_T3_SYNC_RSP) { TEST_FAIL(name, "type (found)"); return; }
+        if (out.sync_rsp.found != true) { TEST_FAIL(name, "found should be true"); return; }
+        if (out.sync_rsp.height != 3) { TEST_FAIL(name, "height"); return; }
+        if (out.sync_rsp.tx_type != 1) { TEST_FAIL(name, "tx_type"); return; }
+        if (out.sync_rsp.tx_len != 128) { TEST_FAIL(name, "tx_len"); return; }
+        if (memcmp(out.sync_rsp.tx_hash, in.sync_rsp.tx_hash,
+                   NODUS_T3_TX_HASH_LEN) != 0) {
+            TEST_FAIL(name, "tx_hash"); return;
+        }
+        if (memcmp(out.sync_rsp.proposer_id, in.sync_rsp.proposer_id,
+                   NODUS_T3_WITNESS_ID_LEN) != 0) {
+            TEST_FAIL(name, "proposer_id"); return;
+        }
+        if (memcmp(out.sync_rsp.prev_hash, in.sync_rsp.prev_hash,
+                   NODUS_T3_TX_HASH_LEN) != 0) {
+            TEST_FAIL(name, "prev_hash"); return;
+        }
+        if (out.sync_rsp.nullifier_count != 1) { TEST_FAIL(name, "nullifier_count"); return; }
+        if (!out.sync_rsp.nullifiers[0] ||
+            memcmp(out.sync_rsp.nullifiers[0], nul, NODUS_T3_NULLIFIER_LEN) != 0) {
+            TEST_FAIL(name, "nullifier data"); return;
+        }
+        if (out.sync_rsp.cert_count != 1) { TEST_FAIL(name, "cert_count"); return; }
+        if (memcmp(out.sync_rsp.certs[0].voter_id,
+                   in.sync_rsp.certs[0].voter_id,
+                   NODUS_T3_WITNESS_ID_LEN) != 0) {
+            TEST_FAIL(name, "cert voter_id"); return;
+        }
+        /* cert signatures are large (4627 bytes), just check first byte */
+        if (out.sync_rsp.certs[0].signature[0] != 0x22) {
+            TEST_FAIL(name, "cert signature"); return;
+        }
+
+        if (nodus_t3_verify(&out, &test_id.pk) != 0) {
+            TEST_FAIL(name, "wsig verify (found)"); return;
+        }
+    }
+
+    TEST_PASS(name);
+}
+
 /* ── Test: verify with wrong key fails ───────────────────────────── */
 
 static void test_verify_wrong_key(void) {
@@ -637,6 +772,8 @@ int main(void) {
     test_rost_q();
     test_rost_r();
     test_ident();
+    test_sync_req();
+    test_sync_rsp();
     test_verify_wrong_key();
     test_propose_zero_nullifiers();
 

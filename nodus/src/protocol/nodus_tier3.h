@@ -49,6 +49,8 @@ typedef enum {
     NODUS_T3_ROST_Q     = 9,
     NODUS_T3_ROST_R     = 10,
     NODUS_T3_IDENT      = 11,
+    NODUS_T3_SYNC_REQ   = 12,
+    NODUS_T3_SYNC_RSP   = 13,
 } nodus_t3_msg_type_t;
 
 /* ── Common witness header ───────────────────────────────────────── */
@@ -172,7 +174,38 @@ typedef struct {
     const uint8_t  *witness_id;     /* ptr, 32 bytes */
     const uint8_t  *pubkey;         /* ptr, NODUS_PK_BYTES */
     char            address[256];
+    uint64_t        block_height;                       /* current chain height */
+    uint8_t         utxo_checksum[NODUS_KEY_BYTES];     /* SHA3-512 of UTXO set */
+    bool            has_block_height;                    /* true if bh/uck present */
 } nodus_t3_ident_t;
+
+/** w_sync_req: Request block at height N for sync */
+typedef struct {
+    uint64_t    height;         /* requested block height (0 = genesis) */
+} nodus_t3_sync_req_t;
+
+/** Sync response certificate entry */
+typedef struct {
+    uint8_t     voter_id[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t     signature[NODUS_SIG_BYTES];
+} nodus_t3_sync_cert_t;
+
+/** w_sync_rsp: Full block data for sync */
+typedef struct {
+    bool        found;
+    uint64_t    height;
+    uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
+    uint8_t     tx_type;
+    const uint8_t *tx_data;             /* ptr, tx_len bytes */
+    uint32_t    tx_len;
+    uint64_t    timestamp;
+    uint8_t     proposer_id[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t     prev_hash[NODUS_T3_TX_HASH_LEN];
+    uint8_t     nullifier_count;
+    const uint8_t *nullifiers[NODUS_T3_MAX_TX_INPUTS]; /* ptrs to 64-byte each */
+    uint32_t    cert_count;
+    nodus_t3_sync_cert_t certs[NODUS_T3_MAX_WITNESSES];
+} nodus_t3_sync_rsp_t;
 
 /* ── Full decoded message ────────────────────────────────────────── */
 
@@ -194,6 +227,8 @@ typedef struct {
         nodus_t3_rost_q_t   rost_q;
         nodus_t3_rost_r_t   rost_r;
         nodus_t3_ident_t    ident;
+        nodus_t3_sync_req_t sync_req;
+        nodus_t3_sync_rsp_t sync_rsp;
     };
 } nodus_t3_msg_t;
 

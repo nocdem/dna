@@ -503,7 +503,7 @@ static int update_utxo_set(nodus_witness_t *w,
  *   - Add ledger entry (audit trail)
  *   - Create block
  */
-static int do_commit_db(nodus_witness_t *w,
+int nodus_witness_commit_block(nodus_witness_t *w,
                           const uint8_t *tx_hash,
                           uint8_t tx_type,
                           const uint8_t *const *nullifiers,
@@ -1044,7 +1044,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
     round_state_nullifier_ptrs(&w->round_state, nul_ptrs);
 
-    if (do_commit_db(w, w->round_state.tx_hash,
+    if (nodus_witness_commit_block(w, w->round_state.tx_hash,
                        w->round_state.tx_type,
                        nul_ptrs,
                        w->round_state.nullifier_count,
@@ -1070,6 +1070,10 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             snprintf(hex + i * 2, 3, "%02x", utxo_cksum[i]);
         fprintf(stderr, "%s: UTXO checksum after round %llu: %s\n",
                 LOG_TAG, (unsigned long long)w->round_state.round, hex);
+    }
+    if (have_cksum) {
+        memcpy(w->cached_utxo_checksum, utxo_cksum, NODUS_KEY_BYTES);
+        w->cached_utxo_checksum_valid = true;
     }
 
     w->last_committed_round = w->round_state.round;
@@ -1251,7 +1255,7 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
         nul_ptrs[i] = cmt->nullifiers[i];
 
     /* Write to database */
-    if (do_commit_db(w, cmt->tx_hash, cmt->tx_type,
+    if (nodus_witness_commit_block(w, cmt->tx_hash, cmt->tx_type,
                        nul_ptrs, cmt->nullifier_count,
                        0, /* total_supply not in commit */
                        cmt->proposal_timestamp,
@@ -1295,6 +1299,8 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                                  (unsigned long long)hdr->round);
                 }
             }
+            memcpy(w->cached_utxo_checksum, utxo_cksum, NODUS_KEY_BYTES);
+            w->cached_utxo_checksum_valid = true;
         }
     }
 

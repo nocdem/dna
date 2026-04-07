@@ -1,7 +1,7 @@
 /**
  * Nodus — Tier 3 Protocol (Witness BFT Consensus)
  *
- * CBOR encode/decode for all 11 BFT message types.
+ * CBOR encode/decode for all 13 BFT message types.
  * Sign payload = canonical CBOR of {method + header + args}.
  * Wire format  = {t, y, q, wh, a, wsig}.
  */
@@ -35,6 +35,8 @@ const char *nodus_t3_type_to_method(nodus_t3_msg_type_t type) {
         case NODUS_T3_ROST_Q:    return "w_rost_q";
         case NODUS_T3_ROST_R:    return "w_rost_r";
         case NODUS_T3_IDENT:     return "w_ident";
+        case NODUS_T3_SYNC_REQ:  return "w_sync_req";
+        case NODUS_T3_SYNC_RSP:  return "w_sync_rsp";
         default:                 return NULL;
     }
 }
@@ -52,6 +54,8 @@ nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
     if (strcmp(method, "w_rost_q") == 0)     return NODUS_T3_ROST_Q;
     if (strcmp(method, "w_rost_r") == 0)     return NODUS_T3_ROST_R;
     if (strcmp(method, "w_ident") == 0)      return NODUS_T3_IDENT;
+    if (strcmp(method, "w_sync_req") == 0)  return NODUS_T3_SYNC_REQ;
+    if (strcmp(method, "w_sync_rsp") == 0)  return NODUS_T3_SYNC_RSP;
     return 0;
 }
 
@@ -205,12 +209,52 @@ static void enc_rost_r_args(cbor_encoder_t *enc, const nodus_t3_rost_r_t *r) {
 }
 
 static void enc_ident_args(cbor_encoder_t *enc, const nodus_t3_ident_t *id) {
-    cbor_encode_map(enc, 3);
+    cbor_encode_map(enc, id->has_block_height ? 5 : 3);
     cbor_encode_cstr(enc, "wid");  cbor_encode_bstr(enc, id->witness_id,
                                                      NODUS_T3_WITNESS_ID_LEN);
     cbor_encode_cstr(enc, "pk");   cbor_encode_bstr(enc, id->pubkey,
                                                      NODUS_PK_BYTES);
     cbor_encode_cstr(enc, "addr"); cbor_encode_cstr(enc, id->address);
+    if (id->has_block_height) {
+        cbor_encode_cstr(enc, "bh");  cbor_encode_uint(enc, id->block_height);
+        cbor_encode_cstr(enc, "uck"); cbor_encode_bstr(enc, id->utxo_checksum,
+                                                        NODUS_KEY_BYTES);
+    }
+}
+
+static void enc_sync_req_args(cbor_encoder_t *enc, const nodus_t3_sync_req_t *r) {
+    cbor_encode_map(enc, 1);
+    cbor_encode_cstr(enc, "h"); cbor_encode_uint(enc, r->height);
+}
+
+static void enc_sync_rsp_args(cbor_encoder_t *enc, const nodus_t3_sync_rsp_t *r) {
+    cbor_encode_map(enc, r->found ? 11 : 2);
+    cbor_encode_cstr(enc, "f");  cbor_encode_bool(enc, r->found);
+    cbor_encode_cstr(enc, "h");  cbor_encode_uint(enc, r->height);
+    if (!r->found) return;
+    cbor_encode_cstr(enc, "txh"); cbor_encode_bstr(enc, r->tx_hash,
+                                                    NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "tty"); cbor_encode_uint(enc, r->tx_type);
+    cbor_encode_cstr(enc, "txd"); cbor_encode_bstr(enc, r->tx_data, r->tx_len);
+    cbor_encode_cstr(enc, "ts");  cbor_encode_uint(enc, r->timestamp);
+    cbor_encode_cstr(enc, "pid"); cbor_encode_bstr(enc, r->proposer_id,
+                                                    NODUS_T3_WITNESS_ID_LEN);
+    cbor_encode_cstr(enc, "ph");  cbor_encode_bstr(enc, r->prev_hash,
+                                                    NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "nlc"); cbor_encode_uint(enc, r->nullifier_count);
+    cbor_encode_cstr(enc, "nls");
+    cbor_encode_array(enc, r->nullifier_count);
+    for (int i = 0; i < r->nullifier_count; i++)
+        cbor_encode_bstr(enc, r->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
+    cbor_encode_cstr(enc, "cer");
+    cbor_encode_array(enc, r->cert_count);
+    for (uint32_t i = 0; i < r->cert_count; i++) {
+        cbor_encode_map(enc, 2);
+        cbor_encode_cstr(enc, "vid");
+        cbor_encode_bstr(enc, r->certs[i].voter_id, NODUS_T3_WITNESS_ID_LEN);
+        cbor_encode_cstr(enc, "sig");
+        cbor_encode_bstr(enc, r->certs[i].signature, NODUS_SIG_BYTES);
+    }
 }
 
 /* ── Args dispatch ───────────────────────────────────────────────── */
@@ -229,6 +273,8 @@ static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
         case NODUS_T3_ROST_Q:    enc_rost_q_args(enc, &msg->rost_q);     break;
         case NODUS_T3_ROST_R:    enc_rost_r_args(enc, &msg->rost_r);     break;
         case NODUS_T3_IDENT:     enc_ident_args(enc, &msg->ident);       break;
+        case NODUS_T3_SYNC_REQ:  enc_sync_req_args(enc, &msg->sync_req); break;
+        case NODUS_T3_SYNC_RSP:  enc_sync_rsp_args(enc, &msg->sync_rsp); break;
         default: return -1;
     }
     return 0;
@@ -830,6 +876,147 @@ static void dec_ident_args(cbor_decoder_t *dec, size_t count,
                 id->address[clen] = '\0';
             }
         }
+        else if (KEY_IS(key, "bh")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) {
+                id->block_height = val.uint_val;
+                id->has_block_height = true;
+            }
+        }
+        else if (KEY_IS(key, "uck")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_KEY_BYTES)
+                memcpy(id->utxo_checksum, val.bstr.ptr, NODUS_KEY_BYTES);
+        }
+        else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
+/* ── Sync decode ────────────────────────────────────────────────── */
+
+static void dec_sync_req_args(cbor_decoder_t *dec, size_t count,
+                               nodus_t3_sync_req_t *r) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+
+        if (KEY_IS(key, "h")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) r->height = val.uint_val;
+        }
+        else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
+static void dec_sync_rsp_args(cbor_decoder_t *dec, size_t count,
+                               nodus_t3_sync_rsp_t *r) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+
+        if (KEY_IS(key, "f")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BOOL) r->found = val.bool_val;
+        }
+        else if (KEY_IS(key, "h")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) r->height = val.uint_val;
+        }
+        else if (KEY_IS(key, "txh")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(r->tx_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        }
+        else if (KEY_IS(key, "tty")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) r->tx_type = (uint8_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "txd")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len <= NODUS_T3_MAX_TX_SIZE) {
+                r->tx_data = val.bstr.ptr;
+                r->tx_len = (uint32_t)val.bstr.len;
+            }
+        }
+        else if (KEY_IS(key, "ts")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) r->timestamp = val.uint_val;
+        }
+        else if (KEY_IS(key, "pid")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_WITNESS_ID_LEN)
+                memcpy(r->proposer_id, val.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
+        }
+        else if (KEY_IS(key, "ph")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(r->prev_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        }
+        else if (KEY_IS(key, "nlc")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) {
+                r->nullifier_count = (uint8_t)val.uint_val;
+                if (r->nullifier_count > NODUS_T3_MAX_TX_INPUTS)
+                    r->nullifier_count = NODUS_T3_MAX_TX_INPUTS;
+            }
+        }
+        else if (KEY_IS(key, "nls")) {
+            cbor_item_t arr = cbor_decode_next(dec);
+            if (arr.type == CBOR_ITEM_ARRAY) {
+                size_t max = arr.count < NODUS_T3_MAX_TX_INPUTS ?
+                             arr.count : NODUS_T3_MAX_TX_INPUTS;
+                for (size_t j = 0; j < max; j++) {
+                    cbor_item_t val = cbor_decode_next(dec);
+                    if (val.type == CBOR_ITEM_BSTR &&
+                        val.bstr.len == NODUS_T3_NULLIFIER_LEN)
+                        r->nullifiers[j] = val.bstr.ptr;
+                }
+                for (size_t j = max; j < arr.count; j++)
+                    cbor_decode_skip(dec);
+            }
+        }
+        else if (KEY_IS(key, "cer")) {
+            cbor_item_t arr = cbor_decode_next(dec);
+            if (arr.type == CBOR_ITEM_ARRAY) {
+                size_t max = arr.count < NODUS_T3_MAX_WITNESSES ?
+                             arr.count : NODUS_T3_MAX_WITNESSES;
+                r->cert_count = (uint32_t)max;
+                for (size_t j = 0; j < max; j++) {
+                    cbor_item_t m = cbor_decode_next(dec);
+                    if (m.type != CBOR_ITEM_MAP) { cbor_decode_skip(dec); continue; }
+                    for (size_t k = 0; k < m.count; k++) {
+                        cbor_item_t mk = cbor_decode_next(dec);
+                        if (mk.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+                        if (KEY_IS(mk, "vid")) {
+                            cbor_item_t v = cbor_decode_next(dec);
+                            if (v.type == CBOR_ITEM_BSTR &&
+                                v.bstr.len == NODUS_T3_WITNESS_ID_LEN)
+                                memcpy(r->certs[j].voter_id, v.bstr.ptr,
+                                       NODUS_T3_WITNESS_ID_LEN);
+                        } else if (KEY_IS(mk, "sig")) {
+                            cbor_item_t v = cbor_decode_next(dec);
+                            if (v.type == CBOR_ITEM_BSTR &&
+                                v.bstr.len == NODUS_SIG_BYTES)
+                                memcpy(r->certs[j].signature, v.bstr.ptr,
+                                       NODUS_SIG_BYTES);
+                        } else {
+                            cbor_decode_skip(dec);
+                        }
+                    }
+                }
+                for (size_t j = max; j < arr.count; j++)
+                    cbor_decode_skip(dec);
+            }
+        }
         else {
             cbor_decode_skip(dec);
         }
@@ -935,6 +1122,12 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
                     break;
                 case NODUS_T3_IDENT:
                     dec_ident_args(&dec, args.count, &msg->ident);
+                    break;
+                case NODUS_T3_SYNC_REQ:
+                    dec_sync_req_args(&dec, args.count, &msg->sync_req);
+                    break;
+                case NODUS_T3_SYNC_RSP:
+                    dec_sync_rsp_args(&dec, args.count, &msg->sync_rsp);
                     break;
                 default:
                     break;

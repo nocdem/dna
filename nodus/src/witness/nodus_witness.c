@@ -9,6 +9,7 @@
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_handlers.h"
+#include "witness/nodus_witness_sync.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
 #include "crypto/nodus_identity.h"
@@ -364,6 +365,9 @@ void nodus_witness_tick(nodus_witness_t *witness) {
                 witness->bft_config.quorum,
                 witness->my_index);
     }
+
+    /* State sync: check if behind peers and need to catch up */
+    nodus_witness_sync_check(witness);
 }
 
 /* ── Tier 3 dispatch (BFT message routing) ───────────────────────── */
@@ -452,6 +456,14 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
         break;
     case NODUS_T3_IDENT:
         nodus_witness_peer_handle_ident(witness, conn, &msg);
+        break;
+
+    /* State sync messages */
+    case NODUS_T3_SYNC_REQ:
+        nodus_witness_sync_handle_req(witness, conn, &msg);
+        break;
+    case NODUS_T3_SYNC_RSP:
+        nodus_witness_sync_handle_rsp(witness, &msg);
         break;
 
     default:

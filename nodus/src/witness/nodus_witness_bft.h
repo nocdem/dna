@@ -115,6 +115,24 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w);
  */
 int nodus_witness_bft_broadcast(nodus_witness_t *w, nodus_t3_msg_t *msg);
 
+/**
+ * Write committed block to witness database (replay-safe).
+ * Used by BFT COMMIT path and state sync replay.
+ * Handles genesis (DB creation) and non-genesis (nullifiers, UTXO).
+ *
+ * @return 0 on success, -1 on failure
+ */
+int nodus_witness_commit_block(nodus_witness_t *w,
+                                const uint8_t *tx_hash,
+                                uint8_t tx_type,
+                                const uint8_t *const *nullifiers,
+                                uint8_t nullifier_count,
+                                uint64_t total_supply,
+                                uint64_t proposal_timestamp,
+                                const uint8_t *proposer_id,
+                                const uint8_t *tx_data,
+                                uint32_t tx_len);
+
 #ifdef __cplusplus
 }
 #endif

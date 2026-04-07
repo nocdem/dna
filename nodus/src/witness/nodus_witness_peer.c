@@ -14,6 +14,7 @@
 
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_bft.h"
+#include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_handlers.h"
 #include "protocol/nodus_tier3.h"
 #include "protocol/nodus_tier2.h"
@@ -23,6 +24,7 @@
 #include "protocol/nodus_cbor.h"
 #include "core/nodus_storage.h"
 #include "core/nodus_value.h"
+#include "witness/nodus_witness_sync.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -324,6 +326,15 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
     snprintf(msg.ident.address, sizeof(msg.ident.address),
              "%s:%u", ident_ip, ident_wport);
 
+    /* Block height and UTXO checksum for sync detection */
+    msg.ident.block_height = nodus_witness_block_height(w);
+    if (w->cached_utxo_checksum_valid) {
+        memcpy(msg.ident.utxo_checksum, w->cached_utxo_checksum, NODUS_KEY_BYTES);
+    } else {
+        nodus_witness_utxo_checksum(w, msg.ident.utxo_checksum);
+    }
+    msg.ident.has_block_height = true;
+
     /* Fill header */
     msg.header.version = NODUS_T3_BFT_PROTOCOL_VER;
     msg.header.round = 0;
@@ -430,7 +441,17 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
             w->peers[pi].conn = conn;
         w->peers[pi].identified = true;
         w->peers[pi].connect_failures = 0;
+
+        /* Store peer's chain state for sync decisions */
+        if (ident->has_block_height) {
+            w->peers[pi].remote_height = ident->block_height;
+            memcpy(w->peers[pi].remote_checksum, ident->utxo_checksum,
+                   NODUS_KEY_BYTES);
+        }
     }
+
+    /* Trigger sync check — peer may be ahead of us */
+    nodus_witness_sync_check(w);
 
     return 0;
 }
