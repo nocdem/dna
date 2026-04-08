@@ -1487,11 +1487,16 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                      * not proof that no comments exist.  Caching "[]" would
                      * poison the cache for WALL_CACHE_TTL_SECONDS. */
                     if (total_comments > 0 && all_infos) {
+                        QGP_LOG_DEBUG(LOG_TAG, "Engagement: post %.8s... got %d comments from DHT, caching",
+                                      post_uuids[i], total_comments);
                         char *json = NULL;
                         if (wall_comment_infos_to_json(all_infos, total_comments, &json) == 0) {
                             wall_cache_store_comments(post_uuids[i], json, total_comments);
                             free(json);
                         }
+                    } else if (need_dht_comments[i]) {
+                        QGP_LOG_DEBUG(LOG_TAG, "Engagement: post %.8s... DHT returned 0 comments, NOT caching",
+                                      post_uuids[i]);
                     }
                 }
                 nodus_ops_free_batch_result(results, result_count);
@@ -1526,10 +1531,15 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                     /* Only cache when we got real data — do NOT cache
                      * count=0 results as they may be replication misses */
                     if (results[i].count > 0) {
+                        QGP_LOG_DEBUG(LOG_TAG, "Engagement: post %.8s... got %zu likes from DHT, caching",
+                                      post_uuids[i], results[i].count);
                         char count_json[32];
                         snprintf(count_json, sizeof(count_json), "[]");
                         wall_cache_store_likes(post_uuids[i], count_json,
                                                (int)results[i].count);
+                    } else if (need_dht_likes[i]) {
+                        QGP_LOG_DEBUG(LOG_TAG, "Engagement: post %.8s... DHT returned 0 likes, NOT caching",
+                                      post_uuids[i]);
                     }
                 }
                 nodus_ops_free_count_result(results, result_count);

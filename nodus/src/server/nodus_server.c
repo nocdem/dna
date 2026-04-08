@@ -1343,7 +1343,13 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     size_t count = 0;
     int rc = nodus_storage_get_all(&srv->storage, &msg->key, &vals, &count);
 
+    /* Key hash prefix for logging */
+    char ga_kh[17];
+    for (int kk = 0; kk < 8; kk++) sprintf(ga_kh + kk*2, "%02x", msg->key.bytes[kk]);
+    ga_kh[16] = '\0';
+
     if (rc == 0 && count > 0) {
+        fprintf(stderr, "GET_ALL: key=%s... local_hit %zu values\n", ga_kh, count);
         size_t len = 0;
         if (nodus_t2_result_multi(msg->txn_id, vals, count,
                                    resp_buf, sizeof(resp_buf), &len) == 0) {
@@ -1365,12 +1371,16 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     nodus_peer_t closest[1];
     int found = nodus_routing_find_closest(&srv->routing, &msg->key, closest, 1);
     if (found == 0 || nodus_key_cmp(&closest[0].node_id, &srv->identity.node_id) == 0) {
-        /* No peers or we ARE the closest — return empty */
+        fprintf(stderr, "GET_ALL: key=%s... local_miss, no_forward (self_closest=%d peers=%d)\n",
+                ga_kh, found > 0 ? 1 : 0, found);
         size_t len = 0;
         nodus_t2_result_empty(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
         nodus_tcp_send(sess->conn, resp_buf, len);
         return;
     }
+
+    fprintf(stderr, "GET_ALL: key=%s... local_miss, forwarding to %s:%d\n",
+            ga_kh, closest[0].ip, closest[0].tcp_port);
 
     /* Find a free BF batch slot */
     int bi = -1;
@@ -1378,7 +1388,7 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
         if (!srv->bf_state.batches[i].active) { bi = i; break; }
     }
     if (bi < 0) {
-        /* No slots — return empty */
+        fprintf(stderr, "GET_ALL: key=%s... forward FAILED (no BF slots)\n", ga_kh);
         size_t len = 0;
         nodus_t2_result_empty(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
         nodus_tcp_send(sess->conn, resp_buf, len);
@@ -1413,6 +1423,9 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
         b->pending_forwards = 1;
         return;  /* Response deferred — bf_tick will send when forward completes */
     }
+
+    fprintf(stderr, "GET_ALL: key=%s... forward START_FAILED to %s:%d\n",
+            ga_kh, closest[0].ip, closest[0].tcp_port);
 
     /* Forward failed to start — clean up and return empty */
     b->vals_per_key = NULL;
@@ -1476,12 +1489,18 @@ static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
         size_t len = 0;
         if (b->is_get_all && b->key_count == 1) {
             /* get_all forward: respond with result_multi (all values for 1 key) */
+            char bfkh[17];
+            for (int kk = 0; kk < 8; kk++) sprintf(bfkh + kk*2, "%02x", b->keys[0].bytes[kk]);
+            bfkh[16] = '\0';
             if (b->counts_per_key[0] > 0 && b->vals_per_key[0]) {
+                fprintf(stderr, "GET_ALL: key=%s... forward_result %zu values\n",
+                        bfkh, b->counts_per_key[0]);
                 if (nodus_t2_result_multi(b->txn_id, b->vals_per_key[0],
                                            b->counts_per_key[0],
                                            buf, buf_cap, &len) == 0)
                     nodus_tcp_send(sess->conn, buf, len);
             } else {
+                fprintf(stderr, "GET_ALL: key=%s... forward_result EMPTY\n", bfkh);
                 nodus_t2_result_empty(b->txn_id, buf, buf_cap, &len);
                 nodus_tcp_send(sess->conn, buf, len);
             }
