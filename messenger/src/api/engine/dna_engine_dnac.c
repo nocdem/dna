@@ -92,13 +92,20 @@ void dna_handle_dnac_get_balance(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    /* Convert to engine API type */
-    dna_dnac_balance_t result = {
-        .confirmed = bal.confirmed,
-        .pending = bal.pending,
-        .locked = bal.locked,
-        .utxo_count = bal.utxo_count
-    };
+    /* Convert to engine API type — heap-allocated so pointer survives
+     * async NativeCallable.listener dispatch to Dart isolate.
+     * Dart side frees via malloc.free() after reading. */
+    dna_dnac_balance_t *result = calloc(1, sizeof(dna_dnac_balance_t));
+    if (!result) {
+        task->callback.dnac_balance(task->request_id,
+                                     DNA_ERROR_INTERNAL,
+                                     NULL, task->user_data);
+        return;
+    }
+    result->confirmed = bal.confirmed;
+    result->pending = bal.pending;
+    result->locked = bal.locked;
+    result->utxo_count = bal.utxo_count;
 
     QGP_LOG_DEBUG(LOG_TAG, "Balance: confirmed=%llu pending=%llu locked=%llu utxos=%d",
                   (unsigned long long)bal.confirmed,
@@ -106,7 +113,7 @@ void dna_handle_dnac_get_balance(dna_engine_t *engine, dna_task_t *task) {
                   (unsigned long long)bal.locked,
                   bal.utxo_count);
 
-    task->callback.dnac_balance(task->request_id, 0, &result, task->user_data);
+    task->callback.dnac_balance(task->request_id, 0, result, task->user_data);
 }
 
 void dna_handle_dnac_send(dna_engine_t *engine, dna_task_t *task) {

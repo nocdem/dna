@@ -6662,7 +6662,9 @@ class DnaEngine {
           locked: b.locked,
           utxoCount: b.utxo_count,
         ));
+        malloc.free(balance); // C heap-allocated via calloc
       } else {
+        if (balance != nullptr) malloc.free(balance);
         completer.completeError(DnaEngineException.fromCode(error, _bindings));
       }
       _cleanupRequest(localId);
