@@ -1736,4 +1736,11 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get walletContacts => 'Kişiler';
+
+  @override
+  String get settingsActiveChains => 'Aktif Ağlar';
+
+  @override
+  String get settingsActiveChainsSubtitle =>
+      'Cüzdanınızda hangi ağları görmek istediğinizi seçin';
 }

@@ -3307,6 +3307,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Contacts'**
   String get walletContacts;
+
+  /// No description provided for @settingsActiveChains.
+  ///
+  /// In en, this message translates to:
+  /// **'Active Chains'**
+  String get settingsActiveChains;
+
+  /// No description provided for @settingsActiveChainsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose which networks to show in your wallet'**
+  String get settingsActiveChainsSubtitle;
 }
 
 class _AppLocalizationsDelegate

@@ -531,5 +531,7 @@
   "dnacAmountWithToken": "{amount} DNA",
   "dnacNetworkLabel": "DNA Zinciri",
   "dnacDetailTitle": "CPUNK Detayları",
-  "walletContacts": "Kişiler"
+  "walletContacts": "Kişiler",
+  "settingsActiveChains": "Aktif Ağlar",
+  "settingsActiveChainsSubtitle": "Cüzdanınızda hangi ağları görmek istediğinizi seçin"
 }

@@ -788,28 +788,62 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
 class _WalletSection extends ConsumerWidget {
   const _WalletSection();
 
+  static const _chainLabels = <String, String>{
+    'dnac': 'DNA Chain (DNAC)',
+    'bsc': 'BNB Smart Chain (BEP20)',
+    'cellframe': 'Cellframe (CF20)',
+    'ethereum': 'Ethereum (ERC20)',
+    'solana': 'Solana (SPL)',
+    'tron': 'TRON (TRC20)',
+  };
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final walletSettings = ref.watch(walletSettingsProvider);
+    final l10n = AppLocalizations.of(context);
+    final theme = Theme.of(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionHeader(AppLocalizations.of(context).settingsWallet),
+        _SectionHeader(l10n.settingsWallet),
         SwitchListTile(
           secondary: FaIcon(
             FontAwesomeIcons.eyeSlash,
             color: walletSettings.hideZeroBalances
-                ? Theme.of(context).colorScheme.primary
+                ? theme.colorScheme.primary
                 : null,
           ),
-          title: Text(AppLocalizations.of(context).settingsHideZeroBalance),
-          subtitle: Text(AppLocalizations.of(context).settingsHideZeroBalanceSubtitle),
+          title: Text(l10n.settingsHideZeroBalance),
+          subtitle: Text(l10n.settingsHideZeroBalanceSubtitle),
           value: walletSettings.hideZeroBalances,
           onChanged: (value) {
             ref.read(walletSettingsProvider.notifier).setHideZeroBalances(value);
           },
         ),
+        const SizedBox(height: 8),
+        // Active Chains
+        ListTile(
+          leading: FaIcon(FontAwesomeIcons.link, color: theme.colorScheme.primary),
+          title: Text(l10n.settingsActiveChains),
+          subtitle: Text(l10n.settingsActiveChainsSubtitle),
+        ),
+        // DNAC — always active, not toggleable
+        SwitchListTile(
+          contentPadding: const EdgeInsets.only(left: 56, right: 16),
+          title: Text(_chainLabels['dnac']!),
+          value: true,
+          onChanged: null, // disabled — always active
+        ),
+        // Toggleable chains
+        ...allToggleableChains.map((chain) => SwitchListTile(
+          contentPadding: const EdgeInsets.only(left: 56, right: 16),
+          title: Text(_chainLabels[chain] ?? chain),
+          value: walletSettings.isChainActive(chain),
+          onChanged: (value) {
+            ref.read(walletSettingsProvider.notifier).setChainActive(chain, value);
+          },
+        )),
       ],
     );
   }

@@ -876,5 +876,7 @@
   },
   "dnacNetworkLabel": "DNA Chain",
   "dnacDetailTitle": "CPUNK Details",
-  "walletContacts": "Contacts"
+  "walletContacts": "Contacts",
+  "settingsActiveChains": "Active Chains",
+  "settingsActiveChainsSubtitle": "Choose which networks to show in your wallet"
 }

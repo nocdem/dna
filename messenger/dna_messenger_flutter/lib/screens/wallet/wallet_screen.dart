@@ -1357,13 +1357,15 @@ class _ChainFilterBar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final activeFilter = ref.watch(walletNetworkFilterProvider);
+    final walletSettings = ref.watch(walletSettingsProvider);
     final theme = Theme.of(context);
+    final visibleChains = _chains.where((e) => walletSettings.isChainActive(e.$1)).toList();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.lg, vertical: DnaSpacing.xs),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(
-          children: _chains.map((entry) {
+          children: visibleChains.map((entry) {
             final (network, label, iconPath) = entry;
             final isSelected = activeFilter == network;
 
@@ -1463,6 +1465,22 @@ class _AllBalancesSection extends ConsumerWidget {
   Widget _buildGroupedList(List<GroupedToken> groups, String? networkFilter,
       WalletSettingsState walletSettings, DnacBalance? dnacBalance, ThemeData theme) {
     var filteredGroups = groups.toList();
+
+    // Filter out inactive chains first
+    filteredGroups = filteredGroups
+      .map((g) {
+        final active = g.chains.where((wb) =>
+          walletSettings.isChainActive(wb.balance.network.toLowerCase())).toList();
+        if (active.isEmpty) return null;
+        if (active.length == g.chains.length) return g;
+        double total = 0;
+        for (final wb in active) {
+          total += double.tryParse(wb.balance.balance) ?? 0.0;
+        }
+        return GroupedToken(token: g.token, totalBalance: total, chains: active);
+      })
+      .whereType<GroupedToken>()
+      .toList();
 
     // Filter by network if active — also trim grouped token chains
     if (networkFilter != null && networkFilter != 'dnac') {

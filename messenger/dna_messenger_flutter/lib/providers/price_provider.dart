@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../utils/logger.dart';
 import 'wallet_provider.dart';
+import 'wallet_settings_provider.dart';
 
 /// Simple data class for price information
 class PriceData {
@@ -215,14 +216,17 @@ final tokenUsdValueProvider =
 
 /// Sums up (balance * price) across all wallets / tokens.
 /// Returns null if prices are not loaded yet.
+/// Only includes balances from active chains (per wallet settings).
 final totalPortfolioValueProvider = Provider<double?>((ref) {
   final prices = ref.watch(priceProvider);
   final allBalances = ref.watch(allBalancesProvider);
+  final walletSettings = ref.watch(walletSettingsProvider);
 
   return prices.whenOrNull(data: (priceMap) {
     return allBalances.whenOrNull(data: (balances) {
       double total = 0.0;
       for (final wb in balances) {
+        if (!walletSettings.isChainActive(wb.balance.network.toLowerCase())) continue;
         final token = wb.balance.token.toUpperCase();
         final priceData = priceMap[token];
         if (priceData == null) continue;
@@ -262,6 +266,7 @@ final cachedPortfolioTotalProvider = FutureProvider<double>((ref) async {
 final portfolioChange24hProvider = Provider<double?>((ref) {
   final prices = ref.watch(priceProvider);
   final allBalances = ref.watch(allBalancesProvider);
+  final walletSettings = ref.watch(walletSettingsProvider);
 
   return prices.whenOrNull(data: (priceMap) {
     return allBalances.whenOrNull(data: (balances) {
@@ -269,6 +274,7 @@ final portfolioChange24hProvider = Provider<double?>((ref) {
       double previousTotal = 0.0;
 
       for (final wb in balances) {
+        if (!walletSettings.isChainActive(wb.balance.network.toLowerCase())) continue;
         final token = wb.balance.token.toUpperCase();
         final priceData = priceMap[token];
         if (priceData == null) continue;

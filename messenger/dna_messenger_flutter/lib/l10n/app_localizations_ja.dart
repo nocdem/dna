@@ -1711,4 +1711,11 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get walletContacts => 'Contacts';
+
+  @override
+  String get settingsActiveChains => 'Active Chains';
+
+  @override
+  String get settingsActiveChainsSubtitle =>
+      'Choose which networks to show in your wallet';
 }
