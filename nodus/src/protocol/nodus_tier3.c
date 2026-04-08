@@ -252,8 +252,14 @@ static void enc_rost_r_args(cbor_encoder_t *enc, const nodus_t3_rost_r_t *r) {
         cbor_encode_cstr(enc, "je");   cbor_encode_uint(enc, e->joined_epoch);
         cbor_encode_cstr(enc, "act");  cbor_encode_bool(enc, e->active);
     }
-    cbor_encode_cstr(enc, "rsig"); cbor_encode_bstr(enc, r->roster_sig,
-                                                     NODUS_SIG_BYTES);
+    cbor_encode_cstr(enc, "rsig");
+    if (r->roster_sig)
+        cbor_encode_bstr(enc, r->roster_sig, NODUS_SIG_BYTES);
+    else {
+        uint8_t zero_sig[NODUS_SIG_BYTES];
+        memset(zero_sig, 0, NODUS_SIG_BYTES);
+        cbor_encode_bstr(enc, zero_sig, NODUS_SIG_BYTES);
+    }
 }
 
 static void enc_ident_args(cbor_encoder_t *enc, const nodus_t3_ident_t *id) {
