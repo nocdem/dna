@@ -247,6 +247,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           log('OFFLINE', 'Check completed in ${elapsed.inMilliseconds}ms');
 
           // Refresh conversation to show any new messages
+          if (!mounted) return;
           final contact = ref.read(selectedContactProvider);
           if (contact != null) {
             log('OFFLINE', 'Refreshing conversation for ${contact.fingerprint.substring(0, 16)}...');
