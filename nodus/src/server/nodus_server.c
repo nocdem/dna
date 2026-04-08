@@ -3901,6 +3901,7 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
 
 /* ── Channel post replication callback ────────────────────────── */
 
+#ifndef NODUS_CHANNELS_DISABLED
 /** Callback: PRIMARY stored a post, replicate to BACKUPs */
 static void ch_on_post_callback(nodus_channel_server_t *cs,
                                   const uint8_t channel_uuid[NODUS_UUID_BYTES],
@@ -3942,6 +3943,7 @@ static int ch_dht_put_signed(const uint8_t *key_hash, size_t key_len,
     nodus_value_free(val);
     return 0;
 }
+#endif /* !NODUS_CHANNELS_DISABLED — ch callbacks */
 
 /* ── Identity publish to DHT ──────────────────────────────────────
  * Every nodus server publishes its pubkey to a well-known DHT key.
@@ -4015,6 +4017,7 @@ static int nodus_server_publish_identity(nodus_server_t *srv) {
  * 3. Send ring_rejoin to authenticated peer sessions
  * 4. Send ch_sync_request to PRIMARY for each tracked channel
  */
+#ifndef NODUS_CHANNELS_DISABLED
 static void ch_startup_rejoin(nodus_server_t *srv)
 {
     /* 1. List all channels in local store */
@@ -4127,6 +4130,7 @@ static void ch_startup_rejoin(nodus_server_t *srv)
 
     free(uuids);
 }
+#endif /* !NODUS_CHANNELS_DISABLED */
 
 /* ── Public API ──────────────────────────────────────────────────── */
 
@@ -4262,7 +4266,10 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         return -1;
     }
 
-    /* Init new channel server (TCP 4003) */
+    /* Channel server (TCP 4003) — DISABLED: heap corruption in ring/replication.
+     * Channel system has known memory safety issues causing SIGABRT crashes.
+     * Disabled until root cause is fixed. See commit history for re-enable. */
+#ifndef NODUS_CHANNELS_DISABLED
     if (nodus_channel_server_init(&srv->ch_server) != 0)
         return -1;
 
@@ -4284,32 +4291,36 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         return -1;
     }
 
-    /* Init channel replication */
     nodus_ch_replication_init(&srv->ch_replication, &srv->ch_server);
-
-    /* Init channel ring management */
     nodus_ch_ring_init(&srv->ch_ring, &srv->ch_server);
 
-    /* Wire replication callback: PRIMARY -> after post stored, trigger replicate to BACKUPs */
     srv->ch_server.on_post = ch_on_post_callback;
     srv->ch_server.cb_ctx = srv;
-
-    /* Wire DHT put callback: channel server announces node list to DHT */
     srv->ch_server.dht_put_signed = ch_dht_put_signed;
     srv->ch_server.dht_ctx = srv;
-
-    /* Wire cross-module pointers so dispatch handlers can call real implementations */
     srv->ch_server.ch_ring_ptr = &srv->ch_ring;
     srv->ch_server.ch_replication_ptr = &srv->ch_replication;
+#else
+    fprintf(stderr, "  Channels: DISABLED (NODUS_CHANNELS_DISABLED)\n");
+#endif
 
     /* Init witness BFT TCP transport (dedicated port 4004) */
     uint16_t witness_port = config->witness_port ? config->witness_port : NODUS_DEFAULT_WITNESS_PORT;
+#ifndef NODUS_CHANNELS_DISABLED
     if (witness_port == config->tcp_port || witness_port == peer_port || witness_port == ch_port) {
         fprintf(stderr, "ERROR: witness_port (%d) must differ from tcp_port (%d), "
                 "peer_port (%d), and ch_port (%d)\n",
                 witness_port, config->tcp_port, peer_port, ch_port);
         return -1;
     }
+#else
+    if (witness_port == config->tcp_port || witness_port == peer_port) {
+        fprintf(stderr, "ERROR: witness_port (%d) must differ from tcp_port (%d) "
+                "and peer_port (%d)\n",
+                witness_port, config->tcp_port, peer_port);
+        return -1;
+    }
+#endif
     if (nodus_tcp_init(&srv->witness_tcp, -1) != 0)
         return -1;
     srv->witness_tcp.on_accept     = on_witness_accept;
@@ -4378,7 +4389,9 @@ int nodus_server_run(nodus_server_t *srv) {
     fprintf(stderr, "  TCP port: %d\n", srv->tcp.port);
     fprintf(stderr, "  Peer port: %d\n", srv->inter_tcp.port);
     fprintf(stderr, "  Witness port: %d\n", srv->witness_tcp.port);
+#ifndef NODUS_CHANNELS_DISABLED
     fprintf(stderr, "  Channel port: %d\n", srv->ch_server.port);
+#endif
     fprintf(stderr, "  UDP port: %d\n", srv->udp.port);
 
     while (srv->running) {
@@ -4390,8 +4403,10 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Witness BFT TCP (port 4004) is polled inside nodus_witness_tick() */
 
+#ifndef NODUS_CHANNELS_DISABLED
         /* Poll new channel server (TCP 4003) */
         nodus_channel_server_poll(&srv->ch_server, 50);
+#endif
 
         /* Process any pending UDP datagrams */
         nodus_udp_poll(&srv->udp);
@@ -4419,6 +4434,7 @@ int nodus_server_run(nodus_server_t *srv) {
         if (srv->witness)
             nodus_witness_tick(srv->witness);
 
+#ifndef NODUS_CHANNELS_DISABLED
         /* Channel server tick: heartbeat send/check */
         {
             uint64_t now_ms = nodus_time_now_ms();
@@ -4437,6 +4453,7 @@ int nodus_server_run(nodus_server_t *srv) {
                 ch_startup_rejoin(srv);
             }
         }
+#endif
 
         /* Presence: expire stale entries + broadcast local list to peers */
         nodus_presence_tick(srv);
@@ -4505,7 +4522,9 @@ void nodus_server_close(nodus_server_t *srv) {
         srv->witness = NULL;
     }
 
+#ifndef NODUS_CHANNELS_DISABLED
     nodus_channel_server_close(&srv->ch_server);
+#endif
     nodus_tcp_close(&srv->tcp);
     nodus_tcp_close(&srv->inter_tcp);
     nodus_tcp_close(&srv->witness_tcp);
