@@ -218,6 +218,21 @@ void nodus_cluster_on_pong(nodus_cluster_t *cluster,
         peer->state = NODUS_NODE_ALIVE;
         sync_ring(cluster, peer, old_state);
         elect_leader(cluster);
+
+        /* Inject into Kademlia routing table so replication can find this peer
+         * immediately (otherwise routing table stays empty until UDP discovery
+         * completes, causing PUT replication to silently drop data) */
+        nodus_server_t *s = (nodus_server_t *)cluster->srv;
+        nodus_peer_t rpeer;
+        memset(&rpeer, 0, sizeof(rpeer));
+        rpeer.node_id = peer->node_id;
+        snprintf(rpeer.ip, sizeof(rpeer.ip), "%s", peer->ip);
+        rpeer.udp_port = peer->udp_port;
+        rpeer.tcp_port = peer->tcp_port;
+        rpeer.last_seen = nodus_time_now();
+        nodus_routing_insert(&s->routing, &rpeer);
+        fprintf(stderr, "CLUSTER: injected %s:%d into routing table\n",
+                peer->ip, peer->udp_port);
     }
 }
 
