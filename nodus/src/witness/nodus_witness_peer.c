@@ -913,12 +913,21 @@ int nodus_witness_peer_handle_rost_r(nodus_witness_t *w,
                                        r->witnesses[i].witness_id) >= 0)
             continue;
 
-        /* Verify: entry must be attested in DHT or have an active peer conn */
+        /* Verify: entry must be attested in DHT, have an active peer conn,
+         * or come from a Dilithium5-authenticated gossip source (the w_rost_r
+         * message itself is wsig-signed by the sender). */
         if (!dht_verified_set_contains(&dht_set, r->witnesses[i].witness_id,
                                         r->witnesses[i].pubkey) &&
             !verify_witness_has_peer(w, r->witnesses[i].witness_id)) {
-            rejected++;
-            continue;
+            /* Fallback: if the gossip sender is in our roster (authenticated),
+             * trust their roster entries. The sender's message is Dilithium5
+             * signed — they vouch for these entries. */
+            int sender_idx = nodus_witness_roster_find(&w->roster,
+                                                         msg->header.sender_id);
+            if (sender_idx < 0) {
+                rejected++;
+                continue;
+            }
         }
 
         nodus_witness_roster_entry_t entry;
