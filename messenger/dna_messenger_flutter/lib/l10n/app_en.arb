@@ -839,7 +839,7 @@
   "dnacNoUtxos": "No coins yet",
   "dnacSendTitle": "Send Payment",
   "dnacRecipient": "Recipient",
-  "dnacRecipientHint": "Fingerprint (128 hex characters)",
+  "dnacRecipientHint": "Recipient ID",
   "dnacAmount": "Amount",
   "dnacAmountHint": "0.00",
   "dnacMemo": "Memo (optional)",

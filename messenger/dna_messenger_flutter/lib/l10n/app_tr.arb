@@ -501,7 +501,7 @@
   "dnacNoUtxos": "Henüz para yok",
   "dnacSendTitle": "Ödeme Gönder",
   "dnacRecipient": "Alıcı",
-  "dnacRecipientHint": "Parmak izi (128 hex karakter)",
+  "dnacRecipientHint": "Alıcı kimliği",
   "dnacAmount": "Tutar",
   "dnacAmountHint": "0,00",
   "dnacMemo": "Not (isteğe bağlı)",
