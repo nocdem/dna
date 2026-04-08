@@ -2191,12 +2191,12 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
                              int max_results,
                              nodus_dnac_utxo_result_t *result_out) {
     if (!nodus_client_is_ready(client) || !owner || !result_out) {
-        fprintf(stderr, "[DNAC_UTXO] precondition fail: ready=%d owner=%p result=%p\n",
+        QGP_LOG_ERROR(LOG_TAG, "dnac_utxo: precondition fail: ready=%d owner=%p result=%p",
                 client ? nodus_client_is_ready(client) : 0, (void*)owner, (void*)result_out);
         return -1;
     }
 
-    fprintf(stderr, "[DNAC_UTXO] querying owner=%.16s... max=%d\n", owner, max_results);
+    QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: querying owner=%.16s... max=%d", owner, max_results);
 
     memset(result_out, 0, sizeof(*result_out));
     if (max_results <= 0) max_results = NODUS_DNAC_MAX_UTXO_RESULTS;
@@ -2226,22 +2226,22 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') {
-        fprintf(stderr, "[DNAC_UTXO] error response: code=%d\n", resp->error_code);
+        QGP_LOG_ERROR(LOG_TAG, "dnac_utxo: error response code=%d", resp->error_code);
         int rc = resp->error_code; free_pending(client, req); return rc;
     }
 
-    fprintf(stderr, "[DNAC_UTXO] got response, raw_len=%zu\n", req->raw_response_len);
+    QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: got response raw_len=%zu", req->raw_response_len);
 
     cbor_decoder_t dec;
     size_t mc;
     if (find_response_map(req->raw_response, req->raw_response_len,
                            &dec, &mc) != 0) {
-        fprintf(stderr, "[DNAC_UTXO] find_response_map failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "dnac_utxo: find_response_map failed");
         free_pending(client, req);
         return NODUS_ERR_PROTOCOL_ERROR;
     }
 
-    fprintf(stderr, "[DNAC_UTXO] response map has %zu entries\n", mc);
+    QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: response map entries=%zu", mc);
 
     int count = 0;
     for (size_t i = 0; i < mc; i++) {
@@ -2324,8 +2324,8 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
         }
     }
 
-    fprintf(stderr, "[DNAC_UTXO] parsed: server_count=%d, result_count=%d\n",
-            count, result_out->count);
+    QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: parsed server_count=%d result_count=%d",
+                  count, result_out->count);
 
     (void)count;  /* Server count for cross-check, not used */
     free_pending(client, req);
