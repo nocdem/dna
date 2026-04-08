@@ -1,8 +1,8 @@
 # DNA Connect - Messenger Development Guidelines
 
-**Last Updated:** 2026-04-07 | **Status:** RC (Release Candidate) | **Phase:** 7 (Flutter UI)
+**Last Updated:** 2026-04-08 | **Status:** RC (Release Candidate) | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.9.172 | Flutter v1.0.0-rc168 | Nodus v0.10.11
+**Versions:** Library v0.9.175 | Flutter v1.0.0-rc171 | Nodus v0.10.11
 
 **Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains messenger-specific guidelines only.
 
@@ -31,6 +31,7 @@ The DNA Engine (`src/api/dna_engine.c`) is a modular async C library with 18 dom
 | `dna_engine_wall.c` | Personal wall posts |
 | `dna_engine_follow.c` | Follow/unfollow, list, DHT sync |
 | `dna_engine_wallet.c` | Multi-chain wallet (Cellframe, ETH, SOL, TRON, BSC) |
+| `dna_engine_dnac.c` | DNAC digital cash (balance, send, sync, history, UTXOs) |
 | `dna_engine_workers.c` | Background thread pool |
 
 **Directory layout:**
@@ -89,8 +90,8 @@ Flutter connects to the C library via `dart:ffi`:
 
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
-| C Library | `include/dna/version.h` | v0.9.170 | C code changes |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc165+10515 | Flutter/Dart changes |
+| C Library | `include/dna/version.h` | v0.9.175 | C code changes |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc171+10521 | Flutter/Dart changes |
 | Nodus | `../nodus/include/nodus/nodus_types.h` | v0.10.4 | Nodus changes |
 
 Flutter app displays **both versions** in Settings:

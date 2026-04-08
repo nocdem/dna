@@ -154,6 +154,17 @@ Internal DNA engine implementation with async task queue.
 | `void dna_engine_start_wall_poll(dna_engine_t*)` | Start 5-minute poll timer thread |
 | `void dna_engine_stop_wall_poll(dna_engine_t*)` | Stop poll timer thread |
 
+### DNAC Digital Cash (`dna_engine_dnac.c`)
+
+| Function | Description |
+|----------|-------------|
+| `void dna_handle_dnac_get_balance(dna_engine_t*, dna_task_t*)` | Get balance handler |
+| `void dna_handle_dnac_send(dna_engine_t*, dna_task_t*)` | Send payment handler |
+| `void dna_handle_dnac_sync(dna_engine_t*, dna_task_t*)` | Wallet sync handler |
+| `void dna_handle_dnac_get_history(dna_engine_t*, dna_task_t*)` | Transaction history handler |
+| `void dna_handle_dnac_get_utxos(dna_engine_t*, dna_task_t*)` | UTXO list handler |
+| `void dna_handle_dnac_estimate_fee(dna_engine_t*, dna_task_t*)` | Fee estimate handler |
+
 ### Helpers
 
 | Function | Description |
