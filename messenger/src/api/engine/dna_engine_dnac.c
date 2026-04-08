@@ -37,16 +37,11 @@
  * ============================================================================ */
 
 /**
- * Ensure DNAC context is initialized. Thread-safe via double-checked locking.
+ * Ensure DNAC context is initialized. Thread-safe via mutex.
+ * Init happens once — no fast path needed, lock cost is negligible.
  * Returns dnac_context_t* or NULL on failure.
  */
 static dnac_context_t* ensure_dnac_init(dna_engine_t *engine) {
-    /* Fast path: already initialized (no lock needed) */
-    if (engine->dnac_ctx) {
-        return (dnac_context_t *)engine->dnac_ctx;
-    }
-
-    /* Slow path: acquire lock, double-check, then init */
     pthread_mutex_lock(&engine->task_mutex);
 
     if (engine->dnac_ctx) {

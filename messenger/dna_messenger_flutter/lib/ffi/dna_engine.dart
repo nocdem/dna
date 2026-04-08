@@ -1268,13 +1268,17 @@ String formatDnacAmount(int rawAmount) {
 
 /// Parse human-readable amount to raw units
 int parseDnacAmount(String amount) {
-  final parts = amount.split('.');
-  final whole = int.parse(parts[0]) * dnacRawPerToken;
-  if (parts.length == 1) return whole;
-  var fracStr = parts[1];
-  if (fracStr.length > 8) fracStr = fracStr.substring(0, 8);
-  fracStr = fracStr.padRight(8, '0');
-  return whole + int.parse(fracStr);
+  final isNegative = amount.startsWith('-');
+  final abs = isNegative ? amount.substring(1) : amount;
+  final parts = abs.split('.');
+  var result = int.parse(parts[0]) * dnacRawPerToken;
+  if (parts.length > 1) {
+    var fracStr = parts[1];
+    if (fracStr.length > 8) fracStr = fracStr.substring(0, 8);
+    fracStr = fracStr.padRight(8, '0');
+    result += int.parse(fracStr);
+  }
+  return isNegative ? -result : result;
 }
 
 class DnacBalance {

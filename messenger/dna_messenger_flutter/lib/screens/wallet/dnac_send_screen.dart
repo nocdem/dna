@@ -96,7 +96,7 @@ class _DnacSendScreenState extends ConsumerState<DnacSendScreen> {
     final memo = _memoController.text.trim();
 
     // Must be 128-char hex fingerprint
-    final fpValid = RegExp(r'^[0-9a-fA-F]{128}\$').hasMatch(recipient);
+    final fpValid = RegExp(r'^[0-9a-fA-F]{128}$').hasMatch(recipient);
     if (recipient.isEmpty || !fpValid) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(l10n.dnacInvalidRecipient)),
