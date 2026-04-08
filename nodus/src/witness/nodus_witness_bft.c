@@ -491,7 +491,7 @@ static int update_utxo_set(nodus_witness_t *w,
         if (nodus_hash(nul_input, fp_len + 32, &nul_hash) != 0) {
             fprintf(stderr, "%s: update_utxo_set: hash failed for output %d\n",
                     LOG_TAG, i);
-            continue;
+            return -1;
         }
 
         if (nodus_witness_utxo_add(w, nul_hash.bytes, fingerprint,

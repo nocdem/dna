@@ -67,3 +67,7 @@ for this amount to restore the invariant.
 | 3 | `supply_init` failure non-fatal | fda6f94d |
 | 4 | `supply_add_burned` failure non-fatal | 1d577105 |
 | 5 | `tx_hash` NULL guard missing in `supply_add_burned` | 8d90d740 |
+| 6 | Output truncation `break` → `return -1` (inflated fee) | f218a6b7 |
+| 6 | `utxo_sum` returns 0 on step failure with uninitialized output | f218a6b7 |
+| 6 | `supply_add_burned` silent no-op when row missing (sqlite3_changes) | f218a6b7 |
+| 7 | Output nullifier hash failure `continue` → `return -1` (coins lost) | pending |
