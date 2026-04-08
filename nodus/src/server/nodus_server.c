@@ -282,11 +282,17 @@ static int __attribute__((unused)) send_frame_to_peer(const char *peer_ip, uint1
 }
 
 void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
+    /* Key hash prefix for logging */
+    char rpl_kh[17];
+    for (int kk = 0; kk < 8; kk++) sprintf(rpl_kh + kk*2, "%02x", val->key_hash.bytes[kk]);
+    rpl_kh[16] = '\0';
+
     /* Encode T1 STORE_VALUE once for all peers */
     uint8_t *cbor_buf = malloc(RESP_BUF_SIZE);
     if (!cbor_buf) return;
     size_t clen = 0;
     if (nodus_t1_store_value(0, val, cbor_buf, RESP_BUF_SIZE, &clen) != 0) {
+        fprintf(stderr, "REPL: key=%s... encode FAILED\n", rpl_kh);
         free(cbor_buf);
         return;
     }
@@ -303,13 +309,22 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
     int count = nodus_routing_find_closest(&srv->routing, &val->key_hash,
                                             closest, NODUS_R);
 
+    fprintf(stderr, "REPL: key=%s... vid=%llu found %d closest (R=%d)\n",
+            rpl_kh, (unsigned long long)val->value_id, count, NODUS_R);
+
+    int sent = 0, skipped_self = 0, failed = 0, hinted = 0;
     for (int i = 0; i < count; i++) {
         /* Skip self */
-        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0)
+        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) {
+            skipped_self++;
             continue;
+        }
 
         /* Send via inter_tcp pool. Falls back to hinted handoff on failure. */
         if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen) != 0) {
+            failed++;
+            fprintf(stderr, "REPL: key=%s... SEND_FAIL to %s:%d\n",
+                    rpl_kh, closest[i].ip, closest[i].tcp_port);
             /* Skip hinted handoff if peer has been offline > 1 hour —
              * republish will deliver data when peer comes back alive */
             uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[i].node_id);
@@ -318,9 +333,15 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
                                              &closest[i].node_id,
                                              closest[i].ip, closest[i].tcp_port,
                                              frame, flen);
+                hinted++;
             }
+        } else {
+            sent++;
         }
     }
+
+    fprintf(stderr, "REPL: key=%s... done: sent=%d self=%d fail=%d hint=%d\n",
+            rpl_kh, sent, skipped_self, failed, hinted);
 
     free(frame);
 }
