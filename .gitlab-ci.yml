@@ -523,6 +523,8 @@ build:windows:
     - copy messenger\build-windows\libdna.dll messenger\dna_messenger_flutter\windows\libs\dna.dll
     # Build Flutter Windows app (requires LongPathsEnabled in registry)
     - cd messenger\dna_messenger_flutter
+    # Ensure NuGet.exe is available (required by flutter_local_notifications etc.)
+    - if (-not (Get-Command nuget -ErrorAction SilentlyContinue)) { choco install nuget.commandline -y --no-progress; refreshenv }
     - flutter pub upgrade
     - flutter pub get
     - flutter build windows --release
