@@ -387,13 +387,24 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
 
     /* Get our owner fingerprint */
     const char *fingerprint = dnac_get_owner_fingerprint(ctx);
-    if (!fingerprint) return DNAC_ERROR_NOT_INITIALIZED;
+    if (!fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "recover: owner fingerprint is NULL");
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
 
     sqlite3 *db = dnac_get_db(ctx);
-    if (!db) return DNAC_ERROR_NOT_INITIALIZED;
+    if (!db) {
+        QGP_LOG_ERROR(LOG_TAG, "recover: db is NULL");
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
 
     nodus_client_t *client = nodus_singleton_get();
-    if (!client) return DNAC_ERROR_NOT_INITIALIZED;
+    if (!client) {
+        QGP_LOG_ERROR(LOG_TAG, "recover: nodus singleton is NULL");
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "recover: querying witness UTXOs for %.16s...", fingerprint);
 
     nodus_singleton_lock();
 
@@ -402,6 +413,9 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
                                       NODUS_DNAC_MAX_UTXO_RESULTS, &result);
 
     nodus_singleton_unlock();
+
+    QGP_LOG_DEBUG(LOG_TAG, "recover: nodus_client_dnac_utxo rc=%d, result.count=%d",
+                  rc, rc == 0 ? result.count : -1);
 
     if (rc != 0) {
         QGP_LOG_ERROR(LOG_TAG, "UTXO recovery failed: %d", rc);
