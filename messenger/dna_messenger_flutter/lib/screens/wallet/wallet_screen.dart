@@ -1675,11 +1675,19 @@ class _DnacAssetTile extends ConsumerWidget {
   }
 
   void _showDnacDetail(BuildContext context, WidgetRef ref) {
+    ref.invalidate(dnacBalanceProvider);
+    ref.invalidate(dnacHistoryProvider);
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => const _DnacDetailSheet(),
+      builder: (context) => const _TokenDetailSheet(
+        walletIndex: 0,
+        walletAddress: '',
+        token: 'XXX',
+        network: 'dnac',
+        initialBalance: '0',
+        isDnac: true,
+      ),
     );
   }
 }
@@ -2977,6 +2985,7 @@ class _TokenDetailSheet extends ConsumerWidget {
   final String token;
   final String network;
   final String initialBalance;
+  final bool isDnac;
 
   const _TokenDetailSheet({
     required this.walletIndex,
@@ -2984,21 +2993,25 @@ class _TokenDetailSheet extends ConsumerWidget {
     required this.token,
     required this.network,
     required this.initialBalance,
+    this.isDnac = false,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final transactionsAsync = ref.watch(
-      transactionsProvider((walletIndex: walletIndex, network: network)),
-    );
-    // Watch balances to get updated value after refresh
-    final balancesAsync = ref.watch(balancesProvider(walletIndex));
-    final balance = balancesAsync.whenOrNull(
-      data: (balances) => balances
-          .where((b) => b.token == token && b.network == network)
-          .map((b) => b.balance)
-          .firstOrNull,
-    ) ?? initialBalance;
+    // DNAC mode: use DNAC providers instead of multi-chain wallet providers
+    final String balance;
+    if (isDnac) {
+      final dnacBal = ref.watch(dnacBalanceProvider).valueOrNull;
+      balance = dnacBal != null ? formatDnacAmount(dnacBal.confirmed) : '0';
+    } else {
+      final balancesAsync = ref.watch(balancesProvider(walletIndex));
+      balance = balancesAsync.whenOrNull(
+        data: (balances) => balances
+            .where((b) => b.token == token && b.network == network)
+            .map((b) => b.balance)
+            .firstOrNull,
+      ) ?? initialBalance;
+    }
     final theme = Theme.of(context);
 
     return DraggableScrollableSheet(
@@ -3061,8 +3074,13 @@ class _TokenDetailSheet extends ConsumerWidget {
                         IconButton(
                           icon: const FaIcon(FontAwesomeIcons.arrowsRotate, color: Colors.white70),
                           onPressed: () {
-                            ref.invalidate(balancesProvider(walletIndex));
-                            ref.invalidate(transactionsProvider((walletIndex: walletIndex, network: network)));
+                            if (isDnac) {
+                              ref.invalidate(dnacBalanceProvider);
+                              ref.invalidate(dnacHistoryProvider);
+                            } else {
+                              ref.invalidate(balancesProvider(walletIndex));
+                              ref.invalidate(transactionsProvider((walletIndex: walletIndex, network: network)));
+                            }
                           },
                           tooltip: 'Refresh',
                         ),
@@ -3073,9 +3091,18 @@ class _TokenDetailSheet extends ConsumerWidget {
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
-                        onPressed: () => _showSend(context, ref, balance),
-                        icon: const FaIcon(FontAwesomeIcons.arrowUp, size: 16, color: Colors.white),
-                        label: Text(AppLocalizations.of(context).walletSendTitle(token), style: const TextStyle(color: Colors.white)),
+                        onPressed: isDnac
+                            ? () {
+                                Navigator.pop(context);
+                                Navigator.push(context,
+                                  MaterialPageRoute(builder: (_) => const DnacSendScreen()));
+                              }
+                            : () => _showSend(context, ref, balance),
+                        icon: const FaIcon(FontAwesomeIcons.paperPlane, size: 16, color: Colors.white),
+                        label: Text(
+                          isDnac ? AppLocalizations.of(context).dnacSend : AppLocalizations.of(context).walletSendTitle(token),
+                          style: const TextStyle(color: Colors.white),
+                        ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white.withValues(alpha: 0.2),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(DnaSpacing.radiusMd)),
@@ -3086,52 +3113,53 @@ class _TokenDetailSheet extends ConsumerWidget {
                   ],
                 ),
               ),
-              // Address section
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: DnaCard(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Address', style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.primary)),
-                            const SizedBox(height: 4),
-                            Text(walletAddress, style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'), maxLines: 2, overflow: TextOverflow.ellipsis),
-                          ],
+              // Address section (not for DNAC — fingerprint-based)
+              if (!isDnac)
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: DnaCard(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Address', style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.primary)),
+                              const SizedBox(height: 4),
+                              Text(walletAddress, style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'), maxLines: 2, overflow: TextOverflow.ellipsis),
+                            ],
+                          ),
                         ),
-                      ),
-                      IconButton(
-                        icon: const FaIcon(FontAwesomeIcons.copy, size: 18),
-                        onPressed: () {
-                          Clipboard.setData(ClipboardData(text: walletAddress));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Row(
-                                children: [
-                                  FaIcon(FontAwesomeIcons.circleCheck,
-                                      size: 18, color: Colors.white),
-                                  const SizedBox(width: 10),
-                                  Text(AppLocalizations.of(context).walletAddressCopied,
-                                      style: const TextStyle(fontSize: 15)),
-                                ],
+                        IconButton(
+                          icon: const FaIcon(FontAwesomeIcons.copy, size: 18),
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: walletAddress));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Row(
+                                  children: [
+                                    FaIcon(FontAwesomeIcons.circleCheck,
+                                        size: 18, color: Colors.white),
+                                    const SizedBox(width: 10),
+                                    Text(AppLocalizations.of(context).walletAddressCopied,
+                                        style: const TextStyle(fontSize: 15)),
+                                  ],
+                                ),
+                                duration: const Duration(seconds: 2),
+                                behavior: SnackBarBehavior.floating,
+                                margin: const EdgeInsets.all(16),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(10)),
                               ),
-                              duration: const Duration(seconds: 2),
-                              behavior: SnackBarBehavior.floating,
-                              margin: const EdgeInsets.all(16),
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10)),
-                            ),
-                          );
-                        },
-                        tooltip: 'Copy address',
-                      ),
-                    ],
+                            );
+                          },
+                          tooltip: 'Copy address',
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
               const Divider(height: 1),
               // Transaction history header
               Padding(
@@ -3139,78 +3167,115 @@ class _TokenDetailSheet extends ConsumerWidget {
                 child: Row(
                   children: [
                     Text(
-                      'Transaction History',
+                      AppLocalizations.of(context).dnacHistory,
                       style: theme.textTheme.titleSmall?.copyWith(
                         color: theme.colorScheme.primary,
                       ),
                     ),
+                    if (isDnac) ...[
+                      const Spacer(),
+                      TextButton.icon(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          Navigator.push(context,
+                            MaterialPageRoute(builder: (_) => const DnacUtxosScreen()));
+                        },
+                        icon: FaIcon(FontAwesomeIcons.layerGroup, size: 14, color: theme.colorScheme.primary),
+                        label: Text(AppLocalizations.of(context).dnacUtxos, style: TextStyle(color: theme.colorScheme.primary, fontSize: 12)),
+                      ),
+                    ],
                   ],
                 ),
               ),
               // Transaction list
               Expanded(
-                child: transactionsAsync.when(
-                  data: (list) {
-                    final filtered = list.where((tx) => tx.token.toUpperCase() == token.toUpperCase()).toList();
-
-                    if (filtered.isEmpty) {
-                      return Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            FaIcon(
-                              FontAwesomeIcons.receipt,
-                              size: 48,
-                              color: theme.colorScheme.primary.withAlpha(128),
-                            ),
-                            const SizedBox(height: 12),
-                            Text(
-                              AppLocalizations.of(context).walletNoTransactions,
-                              style: theme.textTheme.bodyMedium,
-                            ),
-                          ],
-                        ),
-                      );
-                    }
-
-                    // Build grouped list with date separators
-                    final groupedItems = _buildDateGroupedItems(filtered, context);
-                    return ListView.builder(
-                      controller: scrollController,
-                      itemCount: groupedItems.length,
-                      itemBuilder: (context, index) {
-                        final item = groupedItems[index];
-                        if (item is String) {
-                          // Date separator
-                          return Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                            child: Text(
-                              item,
-                              style: theme.textTheme.labelMedium?.copyWith(
-                                color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          );
-                        }
-                        final tx = item as Transaction;
-                        return _TransactionTile(transaction: tx, network: network);
-                      },
-                    );
-                  },
-                  loading: () => const Center(child: CircularProgressIndicator()),
-                  error: (error, _) => Center(
-                    child: Text(
-                      'Failed to load: $error',
-                      style: TextStyle(color: DnaColors.textWarning),
-                    ),
-                  ),
-                ),
+                child: isDnac
+                    ? _buildDnacHistory(ref, theme, scrollController, context)
+                    : _buildMultiChainHistory(ref, theme, scrollController, context),
               ),
             ],
           ),
         );
       },
+    );
+  }
+
+  Widget _buildMultiChainHistory(WidgetRef ref, ThemeData theme,
+      ScrollController scrollController, BuildContext context) {
+    final transactionsAsync = ref.watch(
+      transactionsProvider((walletIndex: walletIndex, network: network)),
+    );
+    return transactionsAsync.when(
+      data: (list) {
+        final filtered = list.where((tx) => tx.token.toUpperCase() == token.toUpperCase()).toList();
+        if (filtered.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FaIcon(FontAwesomeIcons.receipt, size: 48,
+                  color: theme.colorScheme.primary.withAlpha(128)),
+                const SizedBox(height: 12),
+                Text(AppLocalizations.of(context).walletNoTransactions,
+                  style: theme.textTheme.bodyMedium),
+              ],
+            ),
+          );
+        }
+        final groupedItems = _buildDateGroupedItems(filtered, context);
+        return ListView.builder(
+          controller: scrollController,
+          itemCount: groupedItems.length,
+          itemBuilder: (context, index) {
+            final item = groupedItems[index];
+            if (item is String) {
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                child: Text(item,
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                    fontWeight: FontWeight.w600)),
+              );
+            }
+            final tx = item as Transaction;
+            return _TransactionTile(transaction: tx, network: network);
+          },
+        );
+      },
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, _) => Center(
+        child: Text('Failed to load: $error', style: TextStyle(color: DnaColors.textWarning))),
+    );
+  }
+
+  Widget _buildDnacHistory(WidgetRef ref, ThemeData theme,
+      ScrollController scrollController, BuildContext context) {
+    final historyAsync = ref.watch(dnacHistoryProvider);
+    final l10n = AppLocalizations.of(context);
+    return historyAsync.when(
+      data: (history) {
+        if (history.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FaIcon(FontAwesomeIcons.receipt, size: 48,
+                  color: theme.colorScheme.primary.withAlpha(128)),
+                const SizedBox(height: 12),
+                Text(l10n.dnacNoTransactions, style: theme.textTheme.bodyMedium),
+              ],
+            ),
+          );
+        }
+        return ListView.builder(
+          controller: scrollController,
+          itemCount: history.length,
+          itemBuilder: (context, index) => _DnacTxTile(tx: history[index]),
+        );
+      },
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, _) => Center(
+        child: Text('Failed to load: $error', style: TextStyle(color: DnaColors.textWarning))),
     );
   }
 
@@ -3732,196 +3797,7 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
-// =============================================================================
-// DNAC Detail Sheet — matches _TokenDetailSheet pattern
-// =============================================================================
-
-class _DnacDetailSheet extends ConsumerWidget {
-  const _DnacDetailSheet();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final balanceAsync = ref.watch(dnacBalanceProvider);
-    final historyAsync = ref.watch(dnacHistoryProvider);
-    final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
-    final theme = Theme.of(context);
-    final l10n = AppLocalizations.of(context);
-
-    final balance = balanceAsync.valueOrNull;
-    final balanceStr = balance != null
-        ? formatDnacAmount(balance.confirmed)
-        : '0';
-
-    return DraggableScrollableSheet(
-      initialChildSize: 0.85,
-      minChildSize: 0.5,
-      maxChildSize: 0.95,
-      expand: false,
-      builder: (context, scrollController) {
-        return SafeArea(
-          child: Column(
-            children: [
-              // Handle bar
-              Container(
-                margin: const EdgeInsets.only(top: 8),
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: theme.dividerColor,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              // Gradient header (charcoal like hero card)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(20),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xFF2D3436), Color(0xFF1E272E)],
-                  ),
-                ),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        SizedBox(
-                          width: 48, height: 48,
-                          child: buildCryptoIcon('assets/icons/crypto/cpunk.png'),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                hideBalances ? '*****' : '$balanceStr XXX',
-                                style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-                              ),
-                              if (balance != null && (balance.pending > 0 || balance.locked > 0))
-                                Row(
-                                  children: [
-                                    if (balance.pending > 0)
-                                      Text(
-                                        '${l10n.dnacPending}: ${hideBalances ? "*****" : formatDnacAmount(balance.pending)}',
-                                        style: const TextStyle(color: Colors.orange, fontSize: 12),
-                                      ),
-                                    if (balance.pending > 0 && balance.locked > 0)
-                                      const SizedBox(width: 8),
-                                    if (balance.locked > 0)
-                                      Text(
-                                        '${l10n.dnacLocked}: ${hideBalances ? "*****" : formatDnacAmount(balance.locked)}',
-                                        style: const TextStyle(color: Colors.redAccent, fontSize: 12),
-                                      ),
-                                  ],
-                                ),
-                              Text(
-                                l10n.dnacNetworkLabel,
-                                style: const TextStyle(color: Colors.white70, fontSize: 13),
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const FaIcon(FontAwesomeIcons.arrowsRotate, color: Colors.white70),
-                          onPressed: () {
-                            ref.invalidate(dnacBalanceProvider);
-                            ref.invalidate(dnacHistoryProvider);
-                          },
-                          tooltip: l10n.dnacSync,
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    // Send button on gradient
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: () {
-                          Navigator.pop(context);
-                          Navigator.push(context,
-                            MaterialPageRoute(builder: (_) => const DnacSendScreen()));
-                        },
-                        icon: const FaIcon(FontAwesomeIcons.paperPlane, size: 16, color: Colors.white),
-                        label: Text(l10n.dnacSend, style: const TextStyle(color: Colors.white)),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white.withValues(alpha: 0.2),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(DnaSpacing.radiusMd)),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(height: 1),
-              // Transaction history header + UTXOs link
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Row(
-                  children: [
-                    Text(
-                      l10n.dnacHistory,
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        color: theme.colorScheme.primary,
-                      ),
-                    ),
-                    const Spacer(),
-                    TextButton.icon(
-                      onPressed: () {
-                        Navigator.pop(context);
-                        Navigator.push(context,
-                          MaterialPageRoute(builder: (_) => const DnacUtxosScreen()));
-                      },
-                      icon: FaIcon(FontAwesomeIcons.layerGroup, size: 14, color: theme.colorScheme.primary),
-                      label: Text(l10n.dnacUtxos, style: TextStyle(color: theme.colorScheme.primary, fontSize: 12)),
-                    ),
-                  ],
-                ),
-              ),
-              // Transaction list
-              Expanded(
-                child: historyAsync.when(
-                  data: (history) {
-                    if (history.isEmpty) {
-                      return Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            FaIcon(FontAwesomeIcons.receipt, size: 48,
-                              color: theme.colorScheme.primary.withAlpha(128)),
-                            const SizedBox(height: 12),
-                            Text(l10n.dnacNoTransactions, style: theme.textTheme.bodyMedium),
-                          ],
-                        ),
-                      );
-                    }
-                    return ListView.builder(
-                      controller: scrollController,
-                      itemCount: history.length,
-                      itemBuilder: (context, index) {
-                        final tx = history[index];
-                        return _DnacTxTile(tx: tx);
-                      },
-                    );
-                  },
-                  loading: () => const Center(child: CircularProgressIndicator()),
-                  error: (error, _) => Center(
-                    child: Text('Failed to load: $error',
-                      style: TextStyle(color: DnaColors.textWarning)),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// DNAC transaction tile — inline in detail sheet (replaces standalone DnacHistoryScreen)
+/// DNAC transaction tile — used by _TokenDetailSheet in DNAC mode
 class _DnacTxTile extends StatelessWidget {
   final DnacTxHistory tx;
   const _DnacTxTile({required this.tx});
