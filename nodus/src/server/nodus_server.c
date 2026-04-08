@@ -3251,8 +3251,15 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         }
     } else if (nodus_t1_decode(payload, len, &t1msg) != 0) {
         /* T1 decode also failed — unknown frame on inter-node port */
-        fprintf(stderr, "REPL_TCP: T1 decode failed (len=%zu), slot=%d\n",
-                len, sess->conn ? sess->conn->slot : -1);
+        char hexdump[65] = {0};
+        size_t dumplen = len < 32 ? len : 32;
+        for (size_t i = 0; i < dumplen; i++)
+            snprintf(hexdump + i * 2, 3, "%02x", payload[i]);
+        fprintf(stderr, "REPL_TCP: T1 decode failed (len=%zu) slot=%d src=%s:%u head=%s\n",
+                len, sess->conn ? sess->conn->slot : -1,
+                sess->conn ? sess->conn->ip : "?",
+                sess->conn ? (unsigned)sess->conn->port : 0,
+                hexdump);
     }
     nodus_t1_msg_free(&t1msg);
 }
