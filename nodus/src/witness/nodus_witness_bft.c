@@ -980,7 +980,8 @@ int nodus_witness_bft_start_round_batch(nodus_witness_t *w,
     memcpy(w->round_state.proposer_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
     w->round_state.phase_start_time = time_ms();
 
-    /* Store batch entries */
+    /* Store batch entries — batches are always SPEND (genesis is single-TX) */
+    w->round_state.tx_type = NODUS_W_TX_SPEND;
     w->round_state.batch_count = count;
     for (int i = 0; i < count; i++)
         w->round_state.batch_entries[i] = entries[i];
@@ -1136,6 +1137,7 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                                [NODUS_T3_NULLIFIER_LEN];
         int batch_seen_count = 0;
 
+        w->round_state.tx_type = NODUS_W_TX_SPEND;
         w->round_state.batch_count = prop->batch_count;
         for (int i = 0; i < prop->batch_count && !tx_invalid; i++) {
             const nodus_t3_batch_tx_t *btx = &prop->batch_txs[i];
