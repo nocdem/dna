@@ -23,6 +23,7 @@
 #include "channel/nodus_channel_ring.h"
 #include "consensus/nodus_cluster.h"
 #include "crypto/nodus_identity.h"
+#include "crypto/nodus_channel_crypto.h"
 #include "witness/nodus_witness.h"
 #include "server/nodus_presence.h"
 #include "circuit/nodus_circuit.h"
@@ -199,14 +200,16 @@ typedef struct {
 
 /** Batch forward connection states */
 enum {
-    BF_CONNECTING   = 0,
-    BF_SEND_HELLO   = 1,
-    BF_RECV_CHALL   = 2,
-    BF_SEND_AUTH    = 3,
-    BF_RECV_AUTHOK  = 4,
-    BF_SEND_BATCH   = 5,
-    BF_RECV_RESULT  = 6,
-    BF_DONE         = 7,
+    BF_CONNECTING      = 0,
+    BF_SEND_HELLO      = 1,
+    BF_RECV_CHALL      = 2,
+    BF_SEND_AUTH       = 3,
+    BF_RECV_AUTHOK     = 4,
+    BF_SEND_KEY_INIT   = 5,
+    BF_RECV_KEY_ACK    = 6,
+    BF_SEND_BATCH      = 7,
+    BF_RECV_RESULT     = 8,
+    BF_DONE            = 9,
 };
 
 /** One outgoing batch forward connection to a peer */
@@ -224,6 +227,11 @@ typedef struct {
     size_t      recv_len;
     /* Auth state */
     uint8_t     token[NODUS_SESSION_TOKEN_LEN]; /**< Session token from auth_ok */
+    /* Kyber handshake state */
+    nodus_channel_crypto_t crypto;  /**< AES-256-GCM session (after Kyber handshake) */
+    bool        encrypted;          /**< true after successful Kyber key exchange */
+    uint8_t     pending_ss[32];     /**< Shared secret (cleared after key_ack) */
+    uint8_t     pending_nc[32];     /**< Local nonce (cleared after key_ack) */
     /* Batch keys (stored for sending after auth) */
     nodus_key_t *batch_keys;     /**< Keys to query (heap, freed on cleanup) */
     int         batch_key_count;

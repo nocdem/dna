@@ -1520,6 +1520,10 @@ static void bf_conn_cleanup(nodus_server_t *srv, dht_bf_conn_t *c) {
     free(c->recv_buf); c->recv_buf = NULL;
     free(c->key_indices); c->key_indices = NULL;
     free(c->batch_keys); c->batch_keys = NULL;
+    if (c->encrypted) nodus_channel_crypto_clear(&c->crypto);
+    c->encrypted = false;
+    qgp_secure_memzero(c->pending_ss, sizeof(c->pending_ss));
+    qgp_secure_memzero(c->pending_nc, sizeof(c->pending_nc));
     c->state = BF_DONE;
 }
 
@@ -1648,9 +1652,10 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         /* send_buf already has HELLO frame from bf_start_forward */
     }
 
-    /* ── Send states (HELLO / AUTH / BATCH) ── */
+    /* ── Send states (HELLO / AUTH / KEY_INIT / BATCH) ── */
     if ((c->state == BF_SEND_HELLO || c->state == BF_SEND_AUTH ||
-         c->state == BF_SEND_BATCH) && (events & EPOLLOUT)) {
+         c->state == BF_SEND_KEY_INIT || c->state == BF_SEND_BATCH) &&
+        (events & EPOLLOUT)) {
         if (!c->send_buf) { bf_forward_fail(srv, b, c); return; }
         ssize_t n = send(fd, c->send_buf + c->send_pos,
                          c->send_len - c->send_pos, MSG_NOSIGNAL);
@@ -1658,9 +1663,10 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         if (n > 0) c->send_pos += (size_t)n;
         if (c->send_pos >= c->send_len) {
             /* Send complete → switch to recv for response */
-            if (c->state == BF_SEND_HELLO)  c->state = BF_RECV_CHALL;
-            else if (c->state == BF_SEND_AUTH) c->state = BF_RECV_AUTHOK;
-            else if (c->state == BF_SEND_BATCH) c->state = BF_RECV_RESULT;
+            if (c->state == BF_SEND_HELLO)      c->state = BF_RECV_CHALL;
+            else if (c->state == BF_SEND_AUTH)   c->state = BF_RECV_AUTHOK;
+            else if (c->state == BF_SEND_KEY_INIT) c->state = BF_RECV_KEY_ACK;
+            else if (c->state == BF_SEND_BATCH)  c->state = BF_RECV_RESULT;
             bf_reset_buffers(c);
             bf_switch_to_recv(srv, c);
         }
@@ -1703,13 +1709,13 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         return;
     }
 
-    /* ── State 4: Recv AUTH_OK → extract token → send get_batch ── */
+    /* ── State 4: Recv AUTH_OK → Kyber key_init → key exchange ── */
     if (c->state == BF_RECV_AUTHOK && (events & EPOLLIN)) {
         int rc = bf_recv_frame(c, fd);
         if (rc < 0) { bf_forward_fail(srv, b, c); return; }
         if (rc == 0) return;
 
-        /* Parse auth_ok → get token */
+        /* Parse auth_ok → get token + kyber_pk */
         nodus_tier2_msg_t msg;
         memset(&msg, 0, sizeof(msg));
         if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &msg) != 0 ||
@@ -1718,16 +1724,86 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
             bf_forward_fail(srv, b, c); return;
         }
         memcpy(c->token, msg.token, NODUS_SESSION_TOKEN_LEN);
+        uint32_t authok_txn = msg.txn_id;
+
+        /* Kyber encapsulate → shared secret + ciphertext */
+        uint8_t ct[NODUS_KYBER_CT_BYTES], ss[NODUS_KYBER_SS_BYTES];
+        if (!msg.has_kyber_pk ||
+            qgp_kem1024_encapsulate(ct, ss, msg.kyber_pk) != 0) {
+            nodus_t2_msg_free(&msg);
+            bf_forward_fail(srv, b, c); return;
+        }
         nodus_t2_msg_free(&msg);
 
-        /* Build get_batch frame WITH token */
+        /* Generate local nonce, store pending state */
+        uint8_t nc[NODUS_NONCE_LEN];
+        nodus_random(nc, NODUS_NONCE_LEN);
+        memcpy(c->pending_ss, ss, 32);
+        memcpy(c->pending_nc, nc, 32);
+        qgp_secure_memzero(ss, sizeof(ss));
+
+        /* Build key_init frame */
+        uint8_t ki_buf[4096];
+        size_t ki_len = 0;
+        if (nodus_t2_key_init(authok_txn, ct, nc, ki_buf, sizeof(ki_buf), &ki_len) != 0 ||
+            bf_build_frame(&c->send_buf, &c->send_len, ki_buf, ki_len) != 0) {
+            bf_forward_fail(srv, b, c); return;
+        }
+        c->send_pos = 0;
+        c->recv_len = 0;
+        c->state = BF_SEND_KEY_INIT;
+        bf_switch_to_send(srv, c);
+        return;
+    }
+
+    /* ── State 5: Send KEY_INIT (handled by generic send block above) ── */
+
+    /* ── State 6: Recv KEY_ACK → init crypto → send encrypted batch ── */
+    if (c->state == BF_RECV_KEY_ACK && (events & EPOLLIN)) {
+        int rc = bf_recv_frame(c, fd);
+        if (rc < 0) { bf_forward_fail(srv, b, c); return; }
+        if (rc == 0) return;
+
+        /* Parse key_ack → get server nonce */
+        nodus_tier2_msg_t msg;
+        memset(&msg, 0, sizeof(msg));
+        if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &msg) != 0 ||
+            !msg.has_key_nonce) {
+            nodus_t2_msg_free(&msg);
+            bf_forward_fail(srv, b, c); return;
+        }
+
+        /* Derive AES-256-GCM session key */
+        nodus_channel_crypto_init(&c->crypto, c->pending_ss,
+                                    c->pending_nc, msg.key_nonce);
+        c->encrypted = true;
+        qgp_secure_memzero(c->pending_ss, sizeof(c->pending_ss));
+        qgp_secure_memzero(c->pending_nc, sizeof(c->pending_nc));
+        nodus_t2_msg_free(&msg);
+
+        /* Build get_batch CBOR, encrypt, frame, send */
         uint8_t cbor[4096];
         size_t clen = 0;
         if (nodus_t2_get_batch(3, c->token, c->batch_keys, c->batch_key_count,
-                                cbor, sizeof(cbor), &clen) != 0 ||
-            bf_build_frame(&c->send_buf, &c->send_len, cbor, clen) != 0) {
+                                cbor, sizeof(cbor), &clen) != 0) {
             bf_forward_fail(srv, b, c); return;
         }
+        /* Encrypt the CBOR payload */
+        size_t enc_cap = clen + NODUS_CHANNEL_OVERHEAD;
+        uint8_t *enc_buf = malloc(enc_cap);
+        if (!enc_buf) { bf_forward_fail(srv, b, c); return; }
+        size_t enc_len = 0;
+        if (nodus_channel_encrypt(&c->crypto, cbor, clen,
+                                    enc_buf, enc_cap, &enc_len) != 0) {
+            free(enc_buf);
+            bf_forward_fail(srv, b, c); return;
+        }
+        /* Frame the encrypted payload */
+        if (bf_build_frame(&c->send_buf, &c->send_len, enc_buf, enc_len) != 0) {
+            free(enc_buf);
+            bf_forward_fail(srv, b, c); return;
+        }
+        free(enc_buf);
         c->send_pos = 0;
         c->recv_len = 0;
         c->state = BF_SEND_BATCH;
@@ -1735,18 +1811,37 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
         return;
     }
 
-    /* ── State 6: Recv batch result → merge → done ── */
+    /* ── State 8: Recv batch result → decrypt if needed → merge → done ── */
     if (c->state == BF_RECV_RESULT && (events & EPOLLIN)) {
         int rc = bf_recv_frame(c, fd);
         if (rc < 0) goto merge_and_done;
         if (rc == 0) return;
 
     merge_and_done:
-        /* Parse batch response from peer */
+        /* Parse batch response from peer (decrypt if Kyber session active) */
         if (c->recv_len > 7) {
+            const uint8_t *payload = c->recv_buf + 7;
+            size_t payload_len = c->recv_len - 7;
+
+            /* Decrypt if encrypted */
+            uint8_t *dec_buf = NULL;
+            if (c->encrypted) {
+                size_t dec_cap = payload_len;  /* decrypted is smaller */
+                dec_buf = malloc(dec_cap);
+                if (!dec_buf) { bf_forward_fail(srv, b, c); return; }
+                size_t dec_len = 0;
+                if (nodus_channel_decrypt(&c->crypto, payload, payload_len,
+                                            dec_buf, dec_cap, &dec_len) != 0) {
+                    free(dec_buf);
+                    bf_forward_fail(srv, b, c); return;
+                }
+                payload = dec_buf;
+                payload_len = dec_len;
+            }
+
             nodus_tier2_msg_t resp;
             memset(&resp, 0, sizeof(resp));
-            if (nodus_t2_decode(c->recv_buf + 7, c->recv_len - 7, &resp) == 0 &&
+            if (nodus_t2_decode(payload, payload_len, &resp) == 0 &&
                 resp.batch_keys && resp.batch_key_count > 0) {
                 for (int r = 0; r < resp.batch_key_count && r < c->key_count; r++) {
                     int ki = c->key_indices[r];
@@ -1797,6 +1892,7 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
                 }
                 nodus_t2_msg_free(&resp);
             }
+            free(dec_buf);  /* NULL-safe */
         }
         bf_conn_cleanup(srv, c);
         if (--b->pending_forwards <= 0) bf_send_result(srv, b);
@@ -1888,10 +1984,8 @@ static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
     if (fd < 0) goto fail;
     if (fd >= NODUS_BF_FD_TABLE_SIZE) { close(fd); goto fail; }
 
-    /* Connect to client port (4001) instead of inter-node port (4002).
-     * Inter-node port requires Kyber encryption which BF doesn't support.
-     * Client port accepts plaintext T2 auth and has get_batch handler. */
-    uint16_t inter_port = peer->udp_port ? (peer->udp_port + 1) : 4001;
+    /* Inter-node port = UDP port + 2 (convention: 4000→4002) */
+    uint16_t inter_port = peer->udp_port ? (peer->udp_port + 2) : 4002;
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
