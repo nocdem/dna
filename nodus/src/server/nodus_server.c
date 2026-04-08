@@ -1330,6 +1330,13 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
     }
 }
 
+/* Forward declarations for BF infrastructure (used by get_all forwarding) */
+static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b);
+static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
+                              int fi, const nodus_peer_t *peer,
+                              const nodus_key_t *keys, const int *key_indices,
+                              int key_count);
+
 static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
                                nodus_tier2_msg_t *msg) {
     nodus_value_t **vals = NULL;
@@ -1351,7 +1358,69 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
         for (size_t i = 0; i < count; i++)
             nodus_value_free(vals[i]);
         free(vals);
-    } else {
+        return;
+    }
+
+    /* Local miss — try forwarding to closest peer via BF infrastructure */
+    nodus_peer_t closest[1];
+    int found = nodus_routing_find_closest(&srv->routing, &msg->key, closest, 1);
+    if (found == 0 || nodus_key_cmp(&closest[0].node_id, &srv->identity.node_id) == 0) {
+        /* No peers or we ARE the closest — return empty */
+        size_t len = 0;
+        nodus_t2_result_empty(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
+        nodus_tcp_send(sess->conn, resp_buf, len);
+        return;
+    }
+
+    /* Find a free BF batch slot */
+    int bi = -1;
+    for (int i = 0; i < NODUS_BF_MAX_BATCHES; i++) {
+        if (!srv->bf_state.batches[i].active) { bi = i; break; }
+    }
+    if (bi < 0) {
+        /* No slots — return empty */
+        size_t len = 0;
+        nodus_t2_result_empty(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
+        nodus_tcp_send(sess->conn, resp_buf, len);
+        return;
+    }
+
+    /* Set up 1-key BF batch with is_get_all flag */
+    dht_bf_batch_t *b = &srv->bf_state.batches[bi];
+    memset(b, 0, sizeof(*b));
+    b->active = true;
+    b->is_get_all = true;
+    b->txn_id = msg->txn_id;
+    b->session_slot = (int)(sess - srv->sessions);
+    b->started_at = nodus_time_now_ms();
+    b->key_count = 1;
+    b->keys = malloc(sizeof(nodus_key_t));
+    if (!b->keys) { b->active = false; goto ga_empty; }
+    b->keys[0] = msg->key;
+    b->vals_per_key = calloc(1, sizeof(nodus_value_t **));
+    b->counts_per_key = calloc(1, sizeof(size_t));
+    if (!b->vals_per_key || !b->counts_per_key) {
+        b->active = false;
+        free(b->keys); b->keys = NULL;
+        free(b->vals_per_key); b->vals_per_key = NULL;
+        free(b->counts_per_key); b->counts_per_key = NULL;
+        goto ga_empty;
+    }
+    b->pending_forwards = 0;
+
+    int key_idx = 0;
+    if (bf_start_forward(srv, b, 0, &closest[0], &msg->key, &key_idx, 1) == 0) {
+        b->pending_forwards = 1;
+        return;  /* Response deferred — bf_tick will send when forward completes */
+    }
+
+    /* Forward failed to start — clean up and return empty */
+    b->vals_per_key = NULL;
+    b->counts_per_key = NULL;
+    bf_batch_cleanup(srv, b);
+
+ga_empty:
+    {
         size_t len = 0;
         nodus_t2_result_empty(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
         nodus_tcp_send(sess->conn, resp_buf, len);
@@ -1405,10 +1474,23 @@ static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
     uint8_t *buf = malloc(buf_cap);
     if (buf) {
         size_t len = 0;
-        if (nodus_t2_result_get_batch(b->txn_id, b->keys, b->key_count,
-                                       b->vals_per_key, b->counts_per_key,
-                                       buf, buf_cap, &len) == 0)
-            nodus_tcp_send(sess->conn, buf, len);
+        if (b->is_get_all && b->key_count == 1) {
+            /* get_all forward: respond with result_multi (all values for 1 key) */
+            if (b->counts_per_key[0] > 0 && b->vals_per_key[0]) {
+                if (nodus_t2_result_multi(b->txn_id, b->vals_per_key[0],
+                                           b->counts_per_key[0],
+                                           buf, buf_cap, &len) == 0)
+                    nodus_tcp_send(sess->conn, buf, len);
+            } else {
+                nodus_t2_result_empty(b->txn_id, buf, buf_cap, &len);
+                nodus_tcp_send(sess->conn, buf, len);
+            }
+        } else {
+            if (nodus_t2_result_get_batch(b->txn_id, b->keys, b->key_count,
+                                           b->vals_per_key, b->counts_per_key,
+                                           buf, buf_cap, &len) == 0)
+                nodus_tcp_send(sess->conn, buf, len);
+        }
         free(buf);
     }
     bf_batch_cleanup(srv, b);

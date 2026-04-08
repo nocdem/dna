@@ -71,7 +71,7 @@ int dnac_tx_add_output_with_memo(dnac_transaction_t *tx,
         return DNAC_ERROR_INVALID_PARAM;
     }
     if (tx->output_count >= DNAC_TX_MAX_OUTPUTS) return DNAC_ERROR_INVALID_PARAM;
-    if (memo_len > DNAC_MEMO_MAX_SIZE) return DNAC_ERROR_INVALID_PARAM;
+    /* memo_len is uint8_t (max 255), buffer is DNAC_MEMO_MAX_SIZE (256) — always fits */
 
     dnac_tx_output_internal_t *output = &tx->outputs[tx->output_count];
     output->version = tx->version;

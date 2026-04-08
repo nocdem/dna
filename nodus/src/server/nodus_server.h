@@ -250,6 +250,9 @@ typedef struct {
     /* Active forwards */
     dht_bf_conn_t   forwards[NODUS_BF_MAX_FORWARDS];
     int             pending_forwards;  /**< Countdown: when 0 → send response */
+
+    bool            is_get_all;        /**< True if this BF serves a get_all request
+                                        *   (1 key, respond with result_multi not batch) */
 } dht_bf_batch_t;
 
 /** Batch forward state (part of nodus_server_t) */

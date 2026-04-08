@@ -192,10 +192,7 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         /* Gap 25: v0.6.0 - read memo */
         READ_U8(ptr, tx->outputs[i].memo_len);
         if (tx->outputs[i].memo_len > 0) {
-            if (tx->outputs[i].memo_len > DNAC_MEMO_MAX_SIZE) {
-                free(tx);
-                return DNAC_ERROR_INVALID_PARAM;
-            }
+            /* memo_len is uint8_t (max 255), buffer is DNAC_MEMO_MAX_SIZE (256) — always fits */
             if (ptr + tx->outputs[i].memo_len > end) {
                 free(tx);
                 return DNAC_ERROR_INVALID_PARAM;

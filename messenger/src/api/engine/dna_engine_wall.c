@@ -1481,15 +1481,17 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                     engagements[i].comments = all_infos;
                     engagements[i].comment_count = total_comments;
 
-                    /* Update cache with fresh DHT data */
+                    /* Update cache with fresh DHT data.
+                     * Do NOT cache empty results — a DHT miss may be a
+                     * replication miss (connected node doesn't hold the key),
+                     * not proof that no comments exist.  Caching "[]" would
+                     * poison the cache for WALL_CACHE_TTL_SECONDS. */
                     if (total_comments > 0 && all_infos) {
                         char *json = NULL;
                         if (wall_comment_infos_to_json(all_infos, total_comments, &json) == 0) {
                             wall_cache_store_comments(post_uuids[i], json, total_comments);
                             free(json);
                         }
-                    } else {
-                        wall_cache_store_comments(post_uuids[i], "[]", 0);
                     }
                 }
                 nodus_ops_free_batch_result(results, result_count);
@@ -1521,11 +1523,14 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
                     engagements[i].like_count = (int)results[i].count;
                     engagements[i].is_liked_by_me = results[i].has_mine;
 
-                    /* Cache the count so next call skips DHT */
-                    char count_json[32];
-                    snprintf(count_json, sizeof(count_json), "[]");
-                    wall_cache_store_likes(post_uuids[i], count_json,
-                                           (int)results[i].count);
+                    /* Only cache when we got real data — do NOT cache
+                     * count=0 results as they may be replication misses */
+                    if (results[i].count > 0) {
+                        char count_json[32];
+                        snprintf(count_json, sizeof(count_json), "[]");
+                        wall_cache_store_likes(post_uuids[i], count_json,
+                                               (int)results[i].count);
+                    }
                 }
                 nodus_ops_free_count_result(results, result_count);
             }
