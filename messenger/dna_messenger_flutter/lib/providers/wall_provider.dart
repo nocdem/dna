@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../ffi/dna_engine.dart';
+import '../utils/logger.dart' as logger;
 import 'engine_provider.dart';
 import 'contact_profile_cache_provider.dart';
 import 'contact_requests_provider.dart';
@@ -145,6 +146,7 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
   Future<List<WallFeedItem>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
     final engine = await ref.watch(engineProvider.future);
+    engine.debugLog('WALL_SCROLL', 'BUILD identityLoaded=$identityLoaded');
 
     // Resolve fingerprint from provider or SharedPreferences
     String fp = identityLoaded
@@ -201,28 +203,41 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
           // Schedule full DHT refresh in background (boost resolution + fresh data)
           if (identityLoaded) {
             final bgFp = fp;
+            final cacheCount = items.length;
+            final cacheFirst = items.isNotEmpty ? items.first.post.uuid.substring(0, 8) : 'empty';
+            engine.debugLog('WALL_SCROLL', 'BG_REFRESH_START cache=$cacheCount first=$cacheFirst');
             Future.delayed(Duration.zero, () async {
               try {
                 final dhtItems = await _fetchAndAssemble(engine, bgFp);
                 if (dhtItems.isNotEmpty) {
+                  final oldItems = state.valueOrNull ?? [];
+                  final oldCount = oldItems.length;
+                  final oldFirst = oldItems.isNotEmpty ? oldItems.first.post.uuid.substring(0, 8) : 'empty';
+                  final newCount = dhtItems.length;
+                  final newFirst = dhtItems.first.post.uuid.substring(0, 8);
+                  engine.debugLog('WALL_SCROLL', 'BG_REFRESH_DONE old=$oldCount($oldFirst) new=$newCount($newFirst) changed=${oldCount != newCount || oldFirst != newFirst}');
                   state = AsyncData(dhtItems);
                 }
               } catch (_) {}
             });
           }
 
+          engine.debugLog('WALL_SCROLL', 'BUILD_RETURN cache=${items.length} first=${items.isNotEmpty ? items.first.post.uuid.substring(0, 8) : "empty"}');
           return items;
         }
-      } catch (_) {
+      } catch (e) {
+        engine.debugLog('WALL_SCROLL', 'BUILD_CACHE_ERROR $e');
         return state.valueOrNull ?? [];
       }
     }
 
     // Cache empty — full DHT fetch if identity ready, else empty
     if (!identityLoaded) {
+      engine.debugLog('WALL_SCROLL', 'BUILD_NOT_LOADED');
       return state.valueOrNull ?? [];
     }
     final myFp = ref.read(currentFingerprintProvider) ?? '';
+    engine.debugLog('WALL_SCROLL', 'BUILD_DHT_FETCH');
     return _fetchAndAssemble(engine, myFp);
   }
 
@@ -257,8 +272,12 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
           }
           return item;
         }).toList();
+        final oldCount = current.length;
+        final oldFirst = current.isNotEmpty ? current.first.post.uuid.substring(0, 8) : 'empty';
+        engine.debugLog('WALL_SCROLL', 'REFRESH_CACHE old=$oldCount($oldFirst) new=${merged.length}(${merged.isNotEmpty ? merged.first.post.uuid.substring(0, 8) : "empty"})');
         state = AsyncValue.data(merged);
       } else {
+        engine.debugLog('WALL_SCROLL', 'REFRESH_CACHE fresh=${items.length}');
         state = AsyncValue.data(items);
       }
     } catch (_) {
@@ -484,16 +503,23 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     }
 
     merged.sort((a, b) => b.post.timestamp.compareTo(a.post.timestamp));
+    logger.log('WALL_SCROLL', 'MERGE_BOOSTS count=${merged.length}');
     state = AsyncData(merged);
   }
 
   Future<void> refresh() async {
     _loadedDays = 2;
     _hasMore = true;
+    final oldItems = state.valueOrNull ?? [];
+    final oldCount = oldItems.length;
+    final oldFirst = oldItems.isNotEmpty ? oldItems.first.post.uuid.substring(0, 8) : 'empty';
+    logger.log('WALL_SCROLL', 'REFRESH_START old=$oldCount($oldFirst)');
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       final myFp = ref.read(currentFingerprintProvider) ?? '';
-      return _fetchAndAssemble(engine, myFp);
+      final items = await _fetchAndAssemble(engine, myFp);
+      engine.debugLog('WALL_SCROLL', 'REFRESH_DONE new=${items.length}(${items.isNotEmpty ? items.first.post.uuid.substring(0, 8) : "empty"})');
+      return items;
     });
   }
 
@@ -569,6 +595,7 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
           final merged = [...existing, ...deduped];
           merged.sort(
               (a, b) => b.post.timestamp.compareTo(a.post.timestamp));
+          engine.debugLog('WALL_SCROLL', 'LOAD_MORE existing=${existing.length} added=${deduped.length} total=${merged.length}');
           state = AsyncData(merged);
         }
       }
@@ -599,6 +626,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
   }
 
   void _insertPostOptimistic(WallPost post) {
+    final oldItems = state.valueOrNull ?? [];
+    logger.log('WALL_SCROLL', 'INSERT_OPTIMISTIC uuid=${post.uuid.substring(0, 8)} old=${oldItems.length}');
     final myFp = ref.read(currentFingerprintProvider) ?? '';
     Uint8List? ownAvatar;
     final ownIdentityCache = ref.read(identityProfileCacheProvider);
@@ -627,6 +656,7 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     final engine = await ref.read(engineProvider.future);
     await engine.wallDelete(postUuid);
     final current = state.valueOrNull ?? [];
+    logger.log('WALL_SCROLL', 'DELETE uuid=${postUuid.substring(0, 8)} old=${current.length}');
     state = AsyncData(
         current.where((item) => item.post.uuid != postUuid).toList());
   }
@@ -634,6 +664,7 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
   /// Remove all posts by a specific author (used after blocking)
   void removePostsByAuthor(String authorFingerprint) {
     final current = state.valueOrNull ?? [];
+    logger.log('WALL_SCROLL', 'BLOCK_REMOVE fp=${authorFingerprint.substring(0, 16)} old=${current.length}');
     state = AsyncData(
         current.where((item) => item.post.authorFingerprint != authorFingerprint).toList());
   }
@@ -645,6 +676,7 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     final myFp = ref.read(currentFingerprintProvider) ?? '';
 
     final current = state.valueOrNull ?? [];
+    logger.log('WALL_SCROLL', 'LIKE uuid=${postUuid.substring(0, 8)} count=${likes.length}');
     state = AsyncData(current.map((item) {
       if (item.post.uuid == postUuid) {
         return item.copyWith(

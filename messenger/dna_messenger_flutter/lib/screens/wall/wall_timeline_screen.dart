@@ -11,6 +11,7 @@ import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../services/image_attachment_service.dart';
 import '../../l10n/app_localizations.dart';
+import '../../utils/logger.dart' as logger;
 import '../../widgets/wall_post_tile.dart';
 import '../profile/user_profile_screen.dart';
 import 'create_post_screen.dart';
@@ -43,8 +44,9 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
   }
 
   void _onScroll() {
-    if (_scrollController.position.pixels >=
-        _scrollController.position.maxScrollExtent - 200) {
+    final pos = _scrollController.position;
+    if (pos.pixels >= pos.maxScrollExtent - 200) {
+      logger.log('WALL_SCROLL', 'SCROLL_BOTTOM pixels=${pos.pixels.toInt()} max=${pos.maxScrollExtent.toInt()}');
       ref.read(wallTimelineProvider.notifier).loadMoreDays();
     }
   }
@@ -94,7 +96,11 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
         ],
       ),
       body: timeline.when(
-        data: (items) => items.isEmpty
+        data: (items) {
+            final scrollPx = _scrollController.hasClients ? _scrollController.position.pixels.toInt() : -1;
+            final scrollMax = _scrollController.hasClients ? _scrollController.position.maxScrollExtent.toInt() : -1;
+            logger.log('WALL_SCROLL', 'BUILD_DATA items=${items.length} scroll=$scrollPx/$scrollMax first=${items.isNotEmpty ? items.first.post.uuid.substring(0, 8) : "empty"}');
+            return items.isEmpty
             ? _buildEmptyState(context)
             : RefreshIndicator(
                 onRefresh: () =>
@@ -161,8 +167,10 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                     );
                   },
                 ),
-              ),
+              );
+        },
         loading: () {
+          logger.log('WALL_SCROLL', 'BUILD_LOADING');
           final cached = timeline.valueOrNull;
           if (cached != null && cached.isNotEmpty) {
             return ListView.separated(
