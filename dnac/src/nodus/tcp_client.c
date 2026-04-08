@@ -404,7 +404,7 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
         return DNAC_ERROR_NOT_INITIALIZED;
     }
 
-    QGP_LOG_DEBUG(LOG_TAG, "recover: querying witness UTXOs for %.16s...", fingerprint);
+    QGP_LOG_DEBUG(LOG_TAG, "recover: querying UTXOs for fp=%s (len=%zu)", fingerprint, strlen(fingerprint));
 
     nodus_singleton_lock();
 

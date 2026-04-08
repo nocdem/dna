@@ -2196,7 +2196,7 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
         return -1;
     }
 
-    QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: querying owner=%.16s... max=%d", owner, max_results);
+    QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: owner=%s len=%zu max=%d", owner, strlen(owner), max_results);
 
     memset(result_out, 0, sizeof(*result_out));
     if (max_results <= 0) max_results = NODUS_DNAC_MAX_UTXO_RESULTS;
