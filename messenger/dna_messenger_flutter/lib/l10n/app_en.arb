@@ -873,5 +873,8 @@
         "type": "String"
       }
     }
-  }
+  },
+  "dnacNetworkLabel": "DNA Chain",
+  "dnacDetailTitle": "CPUNK Details",
+  "walletContacts": "Contacts"
 }

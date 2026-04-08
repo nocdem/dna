@@ -1643,7 +1643,7 @@ class AppLocalizationsTr extends AppLocalizations {
   String get dnacRecipient => 'Alıcı';
 
   @override
-  String get dnacRecipientHint => 'Parmak izi (128 hex karakter)';
+  String get dnacRecipientHint => 'Alıcı kimliği';
 
   @override
   String get dnacAmount => 'Tutar';
@@ -1727,4 +1727,13 @@ class AppLocalizationsTr extends AppLocalizations {
   String dnacAmountWithToken(String amount) {
     return '$amount DNA';
   }
+
+  @override
+  String get dnacNetworkLabel => 'DNA Zinciri';
+
+  @override
+  String get dnacDetailTitle => 'CPUNK Detayları';
+
+  @override
+  String get walletContacts => 'Kişiler';
 }

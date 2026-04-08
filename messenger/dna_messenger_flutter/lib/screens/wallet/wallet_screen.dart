@@ -97,6 +97,8 @@ String getNetworkDisplayLabel(String network) {
   switch (network.toLowerCase()) {
     case 'cellframe':
       return 'CF20';
+    case 'dnac':
+      return 'DNA Chain';
     case 'ethereum':
       return 'ERC20';
     case 'solana':
@@ -241,8 +243,6 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
       },
       child: ListView(
         children: [
-          const _DnacSection(),
-          const SizedBox(height: 16),
           const _WalletHeroCard(),
           const _ActionButtonsRow(),
           const _ChainFilterBar(),
@@ -290,244 +290,68 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
   }
 }
 
-// =============================================================================
-// DNAC (Digital Cash) Section
-// =============================================================================
-
-class _DnacSection extends ConsumerStatefulWidget {
-  const _DnacSection();
+class _ActionButtonsRow extends ConsumerWidget {
+  const _ActionButtonsRow();
 
   @override
-  ConsumerState<_DnacSection> createState() => _DnacSectionState();
-}
-
-class _DnacSectionState extends ConsumerState<_DnacSection> {
-  bool _isSyncing = false;
-
-  Future<void> _sync() async {
-    if (_isSyncing) return;
-    setState(() => _isSyncing = true);
-    try {
-      await ref.read(dnacBalanceProvider.notifier).sync();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(AppLocalizations.of(context).dnacSyncSuccess)),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(AppLocalizations.of(context).dnacSyncFailed)),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isSyncing = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+  Widget build(BuildContext context, WidgetRef ref) {
+    final walletsAsync = ref.watch(walletsProvider);
     final l10n = AppLocalizations.of(context);
-    final balanceAsync = ref.watch(dnacBalanceProvider);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
         children: [
-          // Header
-          Row(
-            children: [
-              FaIcon(FontAwesomeIcons.coins,
-                  size: 18, color: theme.colorScheme.primary),
-              const SizedBox(width: 8),
-              Text(l10n.dnacTitle,
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  )),
-              const Spacer(),
-              // Sync button with loading indicator
-              _isSyncing
-                  ? const Padding(
-                      padding: EdgeInsets.all(12),
-                      child: SizedBox(
-                        width: 16, height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    )
-                  : IconButton(
-                      icon: const FaIcon(FontAwesomeIcons.arrowsRotate,
-                          size: 16),
-                      onPressed: _sync,
-                      tooltip: l10n.dnacSync,
-                      visualDensity: VisualDensity.compact,
-                    ),
-            ],
-          ),
-          const SizedBox(height: 12),
-
-          // Balance card
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  theme.colorScheme.primary.withAlpha(30),
-                  theme.colorScheme.primary.withAlpha(10),
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: theme.colorScheme.primary.withAlpha(40),
-              ),
-            ),
-            child: balanceAsync.when(
-              data: (balance) => _buildBalanceContent(context, balance, l10n),
-              loading: () => const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(20),
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-              error: (e, _) => Text(l10n.dnacNotInitialized,
-                  style: theme.textTheme.bodyMedium),
+          Expanded(
+            child: _ActionButton(
+              icon: FontAwesomeIcons.paperPlane,
+              label: l10n.walletSend,
+              onPressed: () {
+                showModalBottomSheet(
+                  context: context,
+                  isScrollControlled: true,
+                  builder: (context) => const _SendSheet(walletIndex: 0),
+                );
+              },
             ),
           ),
-
-          const SizedBox(height: 12),
-
-          // Action buttons
-          Row(
-            children: [
-              Expanded(
-                child: _DnacActionButton(
-                  icon: FontAwesomeIcons.paperPlane,
-                  label: l10n.dnacSend,
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const DnacSendScreen()),
-                  ),
-                ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _ActionButton(
+              icon: FontAwesomeIcons.arrowDown,
+              label: l10n.walletReceive,
+              onPressed: () {
+                final wallets = walletsAsync.valueOrNull ?? [];
+                showModalBottomSheet(
+                  context: context,
+                  builder: (context) => _ReceiveSheet(wallets: wallets),
+                );
+              },
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _ActionButton(
+              icon: FontAwesomeIcons.addressBook,
+              label: l10n.walletContacts,
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AddressBookScreen()),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _DnacActionButton(
-                  icon: FontAwesomeIcons.clockRotateLeft,
-                  label: l10n.dnacHistory,
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const DnacHistoryScreen()),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _DnacActionButton(
-                  icon: FontAwesomeIcons.layerGroup,
-                  label: l10n.dnacUtxos,
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const DnacUtxosScreen()),
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
         ],
       ),
     );
   }
-
-  Widget _buildBalanceContent(
-      BuildContext context, DnacBalance? balance, AppLocalizations l10n) {
-    final theme = Theme.of(context);
-
-    if (balance == null) {
-      return Text(l10n.dnacNotInitialized,
-          style: theme.textTheme.bodyMedium);
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(l10n.dnacBalance,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurface.withAlpha(150),
-            )),
-        const SizedBox(height: 4),
-        Text(
-          l10n.dnacAmountWithToken(formatDnacAmount(balance.confirmed)),
-          style: theme.textTheme.headlineMedium?.copyWith(
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        if (balance.pending > 0 || balance.locked > 0) ...[
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              if (balance.pending > 0)
-                _BalanceChip(
-                  label: l10n.dnacPending,
-                  value: formatDnacAmount(balance.pending),
-                  color: Colors.orange,
-                ),
-              if (balance.pending > 0 && balance.locked > 0)
-                const SizedBox(width: 8),
-              if (balance.locked > 0)
-                _BalanceChip(
-                  label: l10n.dnacLocked,
-                  value: formatDnacAmount(balance.locked),
-                  color: Colors.red,
-                ),
-            ],
-          ),
-        ],
-      ],
-    );
-  }
 }
 
-class _BalanceChip extends StatelessWidget {
-  final String label;
-  final String value;
-  final Color color;
-
-  const _BalanceChip({
-    required this.label,
-    required this.value,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withAlpha(25),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        '$label: $value',
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-          color: color,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-    );
-  }
-}
-
-class _DnacActionButton extends StatelessWidget {
+class _ActionButton extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onPressed;
 
-  const _DnacActionButton({
+  const _ActionButton({
     required this.icon,
     required this.label,
     required this.onPressed,
@@ -552,106 +376,6 @@ class _DnacActionButton extends StatelessWidget {
               Text(label, style: theme.textTheme.bodySmall),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ActionButtonsRow extends ConsumerWidget {
-  const _ActionButtonsRow();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final walletsAsync = ref.watch(walletsProvider);
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 24),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          _PillAction(
-            icon: FontAwesomeIcons.arrowUp,
-            label: AppLocalizations.of(context).walletSend,
-            onTap: () {
-              showModalBottomSheet(
-                context: context,
-                isScrollControlled: true,
-                builder: (context) => const _SendSheet(walletIndex: 0),
-              );
-            },
-          ),
-          const SizedBox(width: 16),
-          _PillAction(
-            icon: FontAwesomeIcons.arrowDown,
-            label: AppLocalizations.of(context).walletReceive,
-            onTap: () {
-              final wallets = walletsAsync.valueOrNull ?? [];
-              showModalBottomSheet(
-                context: context,
-                builder: (context) => _ReceiveSheet(wallets: wallets),
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PillAction extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  const _PillAction({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 110,
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        decoration: BoxDecoration(
-          gradient: DnaGradients.primary,
-          borderRadius: BorderRadius.circular(DnaSpacing.radiusFull),
-          boxShadow: [
-            BoxShadow(
-              color: DnaColors.gradientStart.withValues(alpha: 0.25),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 26,
-              height: 26,
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.2),
-                shape: BoxShape.circle,
-              ),
-              child: Center(
-                child: FaIcon(icon, color: Colors.white, size: 12),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
         ),
       ),
     );
@@ -865,11 +589,18 @@ class _WalletHeroCard extends ConsumerWidget {
       ),
       child: Stack(
         children: [
-          // Gradient background
+          // Gradient background — slate/charcoal tones
           Positioned.fill(
             child: Container(
               decoration: const BoxDecoration(
-                gradient: DnaGradients.primaryVertical,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xFF2D3436),  // charcoal
+                    Color(0xFF1E272E),  // deep slate
+                  ],
+                ),
               ),
             ),
           ),
@@ -882,7 +613,7 @@ class _WalletHeroCard extends ConsumerWidget {
               height: 120,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: Colors.white.withValues(alpha: 0.06),
+                color: Colors.white.withValues(alpha: 0.04),
               ),
             ),
           ),
@@ -894,7 +625,7 @@ class _WalletHeroCard extends ConsumerWidget {
               height: 140,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: Colors.white.withValues(alpha: 0.04),
+                color: Colors.white.withValues(alpha: 0.03),
               ),
             ),
           ),
@@ -904,10 +635,10 @@ class _WalletHeroCard extends ConsumerWidget {
               filter: ImageFilter.blur(sigmaX: 1.5, sigmaY: 1.5),
               child: Container(
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.05),
+                  color: Colors.white.withValues(alpha: 0.03),
                   borderRadius: BorderRadius.circular(DnaSpacing.radiusXl),
                   border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.15),
+                    color: Colors.white.withValues(alpha: 0.08),
                     width: 1,
                   ),
                 ),
@@ -1617,6 +1348,7 @@ class _ChainFilterBar extends ConsumerWidget {
   static const _chains = [
     ('bsc', 'BNB', 'assets/icons/crypto/bnb.svg'),
     ('cellframe', 'CELL', 'assets/icons/crypto/cell.svg'),
+    ('dnac', 'DNA', 'assets/icons/crypto/cpunk.png'),
     ('ethereum', 'ETH', 'assets/icons/crypto/eth.svg'),
     ('solana', 'SOL', 'assets/icons/crypto/sol.svg'),
     ('tron', 'TRX', 'assets/icons/crypto/trx.svg'),
@@ -1699,16 +1431,17 @@ class _AllBalancesSection extends ConsumerWidget {
     final grouped = ref.watch(groupedBalancesProvider);
     final walletSettings = ref.watch(walletSettingsProvider);
     final networkFilter = ref.watch(walletNetworkFilterProvider);
+    final dnacBalance = ref.watch(dnacBalanceProvider).valueOrNull;
     final theme = Theme.of(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         allBalances.when(
-          data: (_) => _buildGroupedList(grouped, networkFilter, walletSettings, theme),
+          data: (_) => _buildGroupedList(grouped, networkFilter, walletSettings, dnacBalance, theme),
           loading: () {
             if (grouped.isNotEmpty) {
-              return _buildGroupedList(grouped, networkFilter, walletSettings, theme);
+              return _buildGroupedList(grouped, networkFilter, walletSettings, dnacBalance, theme);
             }
             return const Padding(
               padding: EdgeInsets.all(16),
@@ -1728,11 +1461,11 @@ class _AllBalancesSection extends ConsumerWidget {
   }
 
   Widget _buildGroupedList(List<GroupedToken> groups, String? networkFilter,
-      WalletSettingsState walletSettings, ThemeData theme) {
+      WalletSettingsState walletSettings, DnacBalance? dnacBalance, ThemeData theme) {
     var filteredGroups = groups.toList();
 
     // Filter by network if active — also trim grouped token chains
-    if (networkFilter != null) {
+    if (networkFilter != null && networkFilter != 'dnac') {
       filteredGroups = filteredGroups
         .where((g) => g.chains.any((wb) =>
           wb.balance.network.toLowerCase() == networkFilter))
@@ -1751,6 +1484,9 @@ class _AllBalancesSection extends ConsumerWidget {
           );
         })
         .toList();
+    } else if (networkFilter == 'dnac') {
+      // DNA filter active — hide all multi-chain tokens
+      filteredGroups = [];
     }
 
     // Filter zero balances if setting enabled
@@ -1758,7 +1494,15 @@ class _AllBalancesSection extends ConsumerWidget {
       filteredGroups = filteredGroups.where((g) => g.totalBalance > 0).toList();
     }
 
-    return filteredGroups.isEmpty
+    // Determine if DNAC tile should be shown
+    final showDnac = networkFilter == null || networkFilter == 'dnac';
+    final dnacConfirmed = dnacBalance?.confirmed ?? 0;
+    final hideDnacZero = walletSettings.hideZeroBalances && dnacConfirmed == 0;
+    final showDnacTile = showDnac && !hideDnacZero;
+
+    final assetCount = filteredGroups.length + (showDnacTile ? 1 : 0);
+
+    return assetCount == 0
         ? Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
             child: Center(
@@ -1790,10 +1534,13 @@ class _AllBalancesSection extends ConsumerWidget {
                       style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(width: 8),
-                    DnaChip(label: '${filteredGroups.length}'),
+                    DnaChip(label: '$assetCount'),
                   ],
                 ),
               ),
+              // DNAC tile at the top of the list
+              if (showDnacTile)
+                _DnacAssetTile(balance: dnacBalance),
               ...filteredGroups.map((group) {
                 if (group.isMultiChain) {
                   return _GroupedTokenTile(groupedToken: group);
@@ -1803,6 +1550,117 @@ class _AllBalancesSection extends ConsumerWidget {
               }),
             ],
           );
+  }
+}
+
+/// DNAC asset tile — matches the style of _BalanceTile but reads from dnacBalanceProvider
+class _DnacAssetTile extends ConsumerWidget {
+  final DnacBalance? balance;
+
+  const _DnacAssetTile({required this.balance});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
+    final confirmed = balance?.confirmed ?? 0;
+    final balanceStr = formatDnacAmount(confirmed);
+    const tokenColor = Color(0xFF00E5A0); // CPUNK cyan-green
+
+    return DnaCard(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      onTap: () => _showDnacDetail(context, ref),
+      child: Row(
+        children: [
+          // Token icon with glow ring
+          Container(
+            width: 44,
+            height: 44,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Color(0x3300E5A0),
+                  blurRadius: 8,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+            child: Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: tokenColor.withValues(alpha: 0.3),
+                  width: 1.5,
+                ),
+                color: tokenColor.withValues(alpha: 0.08),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: buildCryptoIcon('assets/icons/crypto/cpunk.png'),
+              ),
+            ),
+          ),
+          const SizedBox(width: 14),
+          // Token name + network
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'CPUNK',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 15,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'DNA Chain',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.4),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Balance + chevron
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                hideBalances ? '*****' : balanceStr,
+                style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              Text(
+                'DNA',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.4),
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 8),
+          FaIcon(
+            FontAwesomeIcons.chevronRight,
+            size: 14,
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.3),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDnacDetail(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => const _DnacDetailSheet(),
+    );
   }
 }
 
@@ -3848,6 +3706,258 @@ class _StatusChip extends StatelessWidget {
           color: color,
           fontSize: 11,
           fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// DNAC Detail Bottom Sheet
+// =============================================================================
+
+class _DnacDetailSheet extends ConsumerStatefulWidget {
+  const _DnacDetailSheet();
+
+  @override
+  ConsumerState<_DnacDetailSheet> createState() => _DnacDetailSheetState();
+}
+
+class _DnacDetailSheetState extends ConsumerState<_DnacDetailSheet> {
+  bool _isSyncing = false;
+
+  Future<void> _sync() async {
+    if (_isSyncing) return;
+    setState(() => _isSyncing = true);
+    try {
+      await ref.read(dnacBalanceProvider.notifier).sync();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AppLocalizations.of(context).dnacSyncSuccess)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AppLocalizations.of(context).dnacSyncFailed)),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSyncing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
+    final balanceAsync = ref.watch(dnacBalanceProvider);
+    final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Drag handle
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // Header row: icon + title + sync button
+              Row(
+                children: [
+                  Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFF00E5A0).withValues(alpha: 0.1),
+                      border: Border.all(
+                        color: const Color(0xFF00E5A0).withValues(alpha: 0.3),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: buildCryptoIcon('assets/icons/crypto/cpunk.png'),
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          l10n.dnacDetailTitle,
+                          style: theme.textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          l10n.dnacNetworkLabel,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  _isSyncing
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: SizedBox(
+                            width: 16, height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      : IconButton(
+                          icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 16),
+                          onPressed: _sync,
+                          tooltip: l10n.dnacSync,
+                        ),
+                ],
+              ),
+              const SizedBox(height: 24),
+
+              // Balance display
+              balanceAsync.when(
+                data: (balance) {
+                  if (balance == null) {
+                    return Text(l10n.dnacNotInitialized, style: theme.textTheme.bodyMedium);
+                  }
+                  return Column(
+                    children: [
+                      Text(
+                        hideBalances
+                            ? '*****'
+                            : l10n.dnacAmountWithToken(formatDnacAmount(balance.confirmed)),
+                        style: theme.textTheme.headlineMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      if (balance.pending > 0 || balance.locked > 0)
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            if (balance.pending > 0)
+                              _DnacStatusChip(
+                                label: l10n.dnacPending,
+                                value: hideBalances ? '*****' : formatDnacAmount(balance.pending),
+                                color: Colors.orange,
+                              ),
+                            if (balance.pending > 0 && balance.locked > 0)
+                              const SizedBox(width: 8),
+                            if (balance.locked > 0)
+                              _DnacStatusChip(
+                                label: l10n.dnacLocked,
+                                value: hideBalances ? '*****' : formatDnacAmount(balance.locked),
+                                color: Colors.red,
+                              ),
+                          ],
+                        ),
+                    ],
+                  );
+                },
+                loading: () => const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                error: (e, _) => Text(l10n.dnacNotInitialized, style: theme.textTheme.bodyMedium),
+              ),
+              const SizedBox(height: 24),
+
+              // Action buttons
+              Row(
+                children: [
+                  Expanded(
+                    child: _ActionButton(
+                      icon: FontAwesomeIcons.paperPlane,
+                      label: l10n.dnacSend,
+                      onPressed: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const DnacSendScreen()),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _ActionButton(
+                      icon: FontAwesomeIcons.clockRotateLeft,
+                      label: l10n.dnacHistory,
+                      onPressed: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const DnacHistoryScreen()),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _ActionButton(
+                      icon: FontAwesomeIcons.layerGroup,
+                      label: l10n.dnacUtxos,
+                      onPressed: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const DnacUtxosScreen()),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DnacStatusChip extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _DnacStatusChip({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withAlpha(25),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        '$label: $value',
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: color,
+          fontWeight: FontWeight.w500,
         ),
       ),
     );

@@ -528,5 +528,8 @@
   "dnacUtxoSpent": "Harcandı",
   "dnacNotInitialized": "Cüzdan yükleniyor...",
   "dnacToken": "DNA",
-  "dnacAmountWithToken": "{amount} DNA"
+  "dnacAmountWithToken": "{amount} DNA",
+  "dnacNetworkLabel": "DNA Zinciri",
+  "dnacDetailTitle": "CPUNK Detayları",
+  "walletContacts": "Kişiler"
 }

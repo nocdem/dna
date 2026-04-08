@@ -3125,7 +3125,7 @@ abstract class AppLocalizations {
   /// No description provided for @dnacRecipientHint.
   ///
   /// In en, this message translates to:
-  /// **'Fingerprint (128 hex characters)'**
+  /// **'Recipient ID'**
   String get dnacRecipientHint;
 
   /// No description provided for @dnacAmount.
@@ -3289,6 +3289,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{amount} DNA'**
   String dnacAmountWithToken(String amount);
+
+  /// No description provided for @dnacNetworkLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'DNA Chain'**
+  String get dnacNetworkLabel;
+
+  /// No description provided for @dnacDetailTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'CPUNK Details'**
+  String get dnacDetailTitle;
+
+  /// No description provided for @walletContacts.
+  ///
+  /// In en, this message translates to:
+  /// **'Contacts'**
+  String get walletContacts;
 }
 
 class _AppLocalizationsDelegate
