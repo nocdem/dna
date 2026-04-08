@@ -27,6 +27,11 @@ extern "C" {
 int dnac_cli_balance(dnac_context_t *ctx);
 
 /**
+ * @brief Query balance of any fingerprint via witness UTXO query
+ */
+int dnac_cli_balance_of(dnac_context_t *ctx, const char *fingerprint);
+
+/**
  * @brief List UTXOs
  * @param ctx DNAC context
  * @return 0 on success, non-zero on failure

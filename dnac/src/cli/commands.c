@@ -12,6 +12,7 @@
 #include "dnac/version.h"
 #include <dna/dna_engine.h>
 #include "nodus_ops.h"
+#include <nodus/nodus.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -98,6 +99,57 @@ int dnac_cli_balance(dnac_context_t *ctx) {
     printf("Locked:     %s\n", locked_str);
     printf("UTXOs:      %d\n", balance.utxo_count);
 
+    return 0;
+}
+
+int dnac_cli_balance_of(dnac_context_t *ctx, const char *fingerprint) {
+    (void)ctx;  /* only need nodus singleton */
+    if (!fingerprint || strlen(fingerprint) != 128) {
+        fprintf(stderr, "Error: fingerprint must be exactly 128 hex chars\n");
+        return 1;
+    }
+
+    extern nodus_client_t *nodus_singleton_get(void);
+    extern void nodus_singleton_lock(void);
+    extern void nodus_singleton_unlock(void);
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        fprintf(stderr, "Error: nodus not connected\n");
+        return 1;
+    }
+
+    nodus_singleton_lock();
+    nodus_dnac_utxo_result_t result;
+    int rc = nodus_client_dnac_utxo(client, fingerprint, 100, &result);
+    nodus_singleton_unlock();
+
+    if (rc != 0) {
+        fprintf(stderr, "Error: nodus_client_dnac_utxo failed: %d\n", rc);
+        return 1;
+    }
+
+    uint64_t total = 0;
+    for (int i = 0; i < result.count; i++) {
+        total += result.entries[i].amount;
+    }
+
+    char total_str[64];
+    format_amount(total, total_str, sizeof(total_str));
+
+    printf("Balance of %.16s...\n", fingerprint);
+    printf("-------------------\n");
+    printf("Total:      %s\n", total_str);
+    printf("UTXOs:      %d\n", result.count);
+    for (int i = 0; i < result.count; i++) {
+        char amt_str[64];
+        format_amount(result.entries[i].amount, amt_str, sizeof(amt_str));
+        printf("  UTXO[%d]: %s (idx=%u, block=%llu)\n",
+               i, amt_str, result.entries[i].output_index,
+               (unsigned long long)result.entries[i].block_height);
+    }
+
+    nodus_client_free_utxo_result(&result);
     return 0;
 }
 

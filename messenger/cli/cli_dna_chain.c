@@ -97,6 +97,14 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
     else if (strcmp(cmd, "balance") == 0) {
         result = dnac_cli_balance(ctx);
     }
+    else if (strcmp(cmd, "balance-of") == 0) {
+        if (sub + 1 >= argc) {
+            fprintf(stderr, "Usage: dna-connect-cli dna balance-of <fingerprint>\n");
+            result = 1;
+        } else {
+            result = dnac_cli_balance_of(ctx, argv[sub + 1]);
+        }
+    }
     else if (strcmp(cmd, "utxos") == 0) {
         result = dnac_cli_utxos(ctx);
     }

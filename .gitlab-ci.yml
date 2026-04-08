@@ -476,6 +476,14 @@ build:flutter-android:
     # Copy native library to jniLibs
     - mkdir -p android/app/src/main/jniLibs/arm64-v8a
     - cp ${CI_PROJECT_DIR}/native-libs/android-arm64/libdna.so android/app/src/main/jniLibs/arm64-v8a/
+    # Ensure NDK is installed (fix corrupt cache / missing NDK)
+    - |
+      NDK_VER=$(grep -oP 'ndkVersion\s*=\s*"\K[^"]+' android/app/build.gradle.kts 2>/dev/null || flutter --version | head -1)
+      if [ -d "${ANDROID_SDK_ROOT}/ndk" ]; then
+        # Remove any corrupt NDK downloads
+        find "${ANDROID_SDK_ROOT}/ndk" -name "*.zip" -size -1M -delete 2>/dev/null || true
+      fi
+      yes | sdkmanager --install "ndk;$(sdkmanager --list 2>/dev/null | grep -oP 'ndk;\K[0-9.]+' | sort -V | tail -1)" 2>/dev/null || true
     # Build APK — restrict to arm64-v8a because libdna.so is only
     # cross-compiled for that ABI. Without --target-platform, Flutter
     # would build libapp.so for all ABIs and the APK would install on
