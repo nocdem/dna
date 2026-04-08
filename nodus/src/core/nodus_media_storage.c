@@ -387,11 +387,11 @@ int nodus_media_fetch_batch(nodus_media_storage_t *ms,
     sqlite3_stmt *s = ms->stmt_fetch_batch;
     sqlite3_reset(s);
 
+    uint8_t zeros[64];
     if (after_hash) {
         sqlite3_bind_blob(s, 1, after_hash, 64, SQLITE_STATIC);
     } else {
         /* First batch: start from beginning (all zeros) */
-        uint8_t zeros[64];
         memset(zeros, 0, sizeof(zeros));
         sqlite3_bind_blob(s, 1, zeros, 64, SQLITE_STATIC);
     }
