@@ -3928,6 +3928,162 @@ DNA_API dna_request_id_t dna_engine_debug_log_send(
     void *user_data
 );
 
+/* ============================================================================
+ * DNAC - DIGITAL CASH (v0.9.173+)
+ * ============================================================================ */
+
+/**
+ * DNAC balance information
+ * Amounts are in raw units (1 token = 100,000,000 raw)
+ */
+typedef struct {
+    uint64_t confirmed;         /**< Confirmed spendable balance */
+    uint64_t pending;           /**< Pending incoming */
+    uint64_t locked;            /**< Locked in pending spends */
+    int utxo_count;             /**< Number of UTXOs */
+} dna_dnac_balance_t;
+
+/**
+ * DNAC transaction history entry
+ */
+typedef struct {
+    uint8_t tx_hash[64];        /**< Transaction hash (SHA3-512) */
+    int type;                   /**< 0=genesis, 1=spend, 2=burn */
+    char counterparty[129];     /**< Other party fingerprint (if known) */
+    int64_t amount_delta;       /**< Change in balance (+/-) in raw units */
+    uint64_t fee;               /**< Fee paid (if sender) */
+    uint64_t timestamp;         /**< Unix timestamp */
+    char memo[256];             /**< Memo (if any) */
+} dna_dnac_history_t;
+
+/**
+ * DNAC UTXO entry
+ */
+typedef struct {
+    uint8_t tx_hash[64];        /**< Transaction that created this UTXO */
+    uint32_t output_index;      /**< Index within transaction */
+    uint64_t amount;            /**< Amount in raw units */
+    int status;                 /**< 0=unspent, 1=pending, 2=spent */
+    uint64_t received_at;       /**< Unix timestamp when received */
+} dna_dnac_utxo_t;
+
+/**
+ * DNAC balance callback
+ */
+typedef void (*dna_dnac_balance_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const dna_dnac_balance_t *balance,
+    void *user_data
+);
+
+/**
+ * DNAC transaction history callback
+ */
+typedef void (*dna_dnac_history_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const dna_dnac_history_t *history,
+    int count,
+    void *user_data
+);
+
+/**
+ * DNAC UTXO list callback
+ */
+typedef void (*dna_dnac_utxos_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const dna_dnac_utxo_t *utxos,
+    int count,
+    void *user_data
+);
+
+/**
+ * DNAC fee estimate callback
+ */
+typedef void (*dna_dnac_fee_cb)(
+    dna_request_id_t request_id,
+    int error,
+    uint64_t fee,
+    void *user_data
+);
+
+/**
+ * Get DNAC wallet balance
+ * Lazy-initializes DNAC context on first call.
+ */
+DNA_API dna_request_id_t dna_engine_dnac_get_balance(
+    dna_engine_t *engine,
+    dna_dnac_balance_cb callback,
+    void *user_data
+);
+
+/**
+ * Send DNAC payment
+ *
+ * @param recipient_fingerprint  128-char hex fingerprint
+ * @param amount                 Amount in raw units (1 token = 100,000,000 raw)
+ * @param memo                   Optional memo (NULL for none)
+ */
+DNA_API dna_request_id_t dna_engine_dnac_send(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    uint64_t amount,
+    const char *memo,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Sync DNAC wallet from witnesses
+ */
+DNA_API dna_request_id_t dna_engine_dnac_sync(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get DNAC transaction history
+ */
+DNA_API dna_request_id_t dna_engine_dnac_get_history(
+    dna_engine_t *engine,
+    dna_dnac_history_cb callback,
+    void *user_data
+);
+
+/**
+ * Get DNAC UTXO list
+ */
+DNA_API dna_request_id_t dna_engine_dnac_get_utxos(
+    dna_engine_t *engine,
+    dna_dnac_utxos_cb callback,
+    void *user_data
+);
+
+/**
+ * Estimate fee for DNAC transaction
+ *
+ * @param amount  Amount to send (raw units)
+ */
+DNA_API dna_request_id_t dna_engine_dnac_estimate_fee(
+    dna_engine_t *engine,
+    uint64_t amount,
+    dna_dnac_fee_cb callback,
+    void *user_data
+);
+
+/**
+ * Free DNAC history array returned by callback
+ */
+DNA_API void dna_engine_dnac_free_history(dna_dnac_history_t *history, int count);
+
+/**
+ * Free DNAC UTXO array returned by callback
+ */
+DNA_API void dna_engine_dnac_free_utxos(dna_dnac_utxo_t *utxos, int count);
+
 #ifdef __cplusplus
 }
 #endif

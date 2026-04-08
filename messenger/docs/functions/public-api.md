@@ -393,3 +393,29 @@ One-directional follow system. No approval needed, private to owner.
 - Address book stores wallet addresses for all supported networks (backbone, ethereum, solana, tron)
 - Entries track usage count for "recently used" sorting
 - DHT sync allows address book recovery across devices
+
+---
+
+### DNAC Digital Cash (v0.9.175+)
+
+| Function | Description |
+|----------|-------------|
+| `dna_request_id_t dna_engine_dnac_get_balance(dna_engine_t *engine, dna_dnac_balance_cb callback, void *user_data)` | Get DNAC wallet balance (confirmed/pending/locked) |
+| `dna_request_id_t dna_engine_dnac_send(dna_engine_t *engine, const char *recipient_fingerprint, uint64_t amount, const char *memo, dna_completion_cb callback, void *user_data)` | Send DNAC payment |
+| `dna_request_id_t dna_engine_dnac_sync(dna_engine_t *engine, dna_completion_cb callback, void *user_data)` | Sync wallet from witnesses |
+| `dna_request_id_t dna_engine_dnac_get_history(dna_engine_t *engine, dna_dnac_history_cb callback, void *user_data)` | Get transaction history |
+| `dna_request_id_t dna_engine_dnac_get_utxos(dna_engine_t *engine, dna_dnac_utxos_cb callback, void *user_data)` | Get UTXO list |
+| `dna_request_id_t dna_engine_dnac_estimate_fee(dna_engine_t *engine, uint64_t amount, dna_dnac_fee_cb callback, void *user_data)` | Estimate transaction fee |
+| `void dna_engine_dnac_free_history(dna_dnac_history_t *history, int count)` | Free history array from callback |
+| `void dna_engine_dnac_free_utxos(dna_dnac_utxo_t *utxos, int count)` | Free UTXO array from callback |
+
+**Data types:**
+- `dna_dnac_balance_t` — `{uint64_t confirmed, pending, locked; int utxo_count}`
+- `dna_dnac_history_t` — `{tx_hash[64], int type, counterparty[129], int64_t amount_delta, uint64_t fee/timestamp, memo[256]}`
+- `dna_dnac_utxo_t` — `{tx_hash[64], uint32_t output_index, uint64_t amount, int status, uint64_t received_at}`
+
+**Notes:**
+- Amounts are in raw units (1 token = 100,000,000 raw, 8 decimal places)
+- DNAC context is lazy-initialized on first API call (no startup cost)
+- Wallet syncs from witness servers (no DHT dependency)
+- Thread-safe init via mutex

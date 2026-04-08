@@ -1,22 +1,18 @@
 {
   "@@locale": "en",
-
   "appTitle": "DNA Connect",
   "initializing": "Initializing...",
   "failedToInitialize": "Failed to initialize",
   "makeSureNativeLibrary": "Make sure the native library is available.",
-
   "navHome": "Home",
   "navChats": "Chats",
   "navWallet": "Wallet",
   "navMore": "More",
-
   "messagesAll": "All",
   "messagesUnread": "Unread",
   "messagesAllCaughtUp": "All caught up!",
   "messagesNoUnread": "No unread messages",
   "messagesSearchHint": "Search chats...",
-
   "contactsTitle": "Contacts",
   "contactsEmpty": "No contacts yet",
   "contactsTapToAdd": "Tap + to add a contact",
@@ -24,14 +20,15 @@
   "contactsLastSeen": "Last seen {time}",
   "@contactsLastSeen": {
     "placeholders": {
-      "time": { "type": "String" }
+      "time": {
+        "type": "String"
+      }
     }
   },
   "contactsOffline": "Offline",
   "contactsSyncing": "Syncing...",
   "contactsFailedToLoad": "Failed to load contacts",
   "contactsRetry": "Retry",
-
   "contactsHubContacts": "Contacts",
   "contactsHubRequests": "Requests",
   "contactsHubBlocked": "Blocked",
@@ -39,12 +36,13 @@
   "contactsHubRemoveMessage": "Are you sure you want to remove {name} from your contacts?",
   "@contactsHubRemoveMessage": {
     "placeholders": {
-      "name": { "type": "String" }
+      "name": {
+        "type": "String"
+      }
     }
   },
   "contactsHubRemove": "Remove",
   "contactsHubFingerprintCopied": "Fingerprint copied",
-
   "contactRequestsTitle": "Contact Requests",
   "contactRequestsEmpty": "No pending requests",
   "contactRequestsAccept": "Accept",
@@ -52,7 +50,6 @@
   "contactRequestsBlock": "Block User",
   "contactRequestsSent": "Sent",
   "contactRequestsReceived": "Received",
-
   "addContactTitle": "Add Contact",
   "addContactHint": "Enter a name or ID",
   "addContactSearching": "Searching...",
@@ -62,7 +59,6 @@
   "addContactRequestSent": "Contact request sent",
   "addContactAlreadyContact": "Already in your contacts",
   "addContactCannotAddSelf": "You cannot add yourself",
-
   "chatSearchMessages": "Search messages",
   "chatOnline": "Online",
   "chatOffline": "Offline",
@@ -77,7 +73,9 @@
   "chatImageTooLarge": "Image too large (max {maxSize})",
   "@chatImageTooLarge": {
     "placeholders": {
-      "maxSize": { "type": "String" }
+      "maxSize": {
+        "type": "String"
+      }
     }
   },
   "chatMessageDeleted": "Message deleted",
@@ -85,14 +83,18 @@
   "chatLastSeen": "Last seen {time}",
   "@chatLastSeen": {
     "placeholders": {
-      "time": { "type": "String" }
+      "time": {
+        "type": "String"
+      }
     }
   },
   "chatSendTokens": "Send Tokens",
   "chatSendTokensTo": "to {name}",
   "@chatSendTokensTo": {
     "placeholders": {
-      "name": { "type": "String" }
+      "name": {
+        "type": "String"
+      }
     }
   },
   "chatLookingUpWallets": "Looking up wallet addresses...",
@@ -102,29 +104,41 @@
   "chatSendAvailable": "Available: {balance} {token}",
   "@chatSendAvailable": {
     "placeholders": {
-      "balance": { "type": "String" },
-      "token": { "type": "String" }
+      "balance": {
+        "type": "String"
+      },
+      "token": {
+        "type": "String"
+      }
     }
   },
   "chatSendMax": "Max",
   "chatSendButton": "Send {token}",
   "@chatSendButton": {
     "placeholders": {
-      "token": { "type": "String" }
+      "token": {
+        "type": "String"
+      }
     }
   },
   "chatSentSuccess": "Sent {amount} {token}",
   "@chatSentSuccess": {
     "placeholders": {
-      "amount": { "type": "String" },
-      "token": { "type": "String" }
+      "amount": {
+        "type": "String"
+      },
+      "token": {
+        "type": "String"
+      }
     }
   },
   "chatInvalidAmount": "Please enter a valid amount",
   "chatInsufficientBalance": "Insufficient {token} balance",
   "@chatInsufficientBalance": {
     "placeholders": {
-      "token": { "type": "String" }
+      "token": {
+        "type": "String"
+      }
     }
   },
   "chatNoWalletForNetwork": "Contact has no wallet for this network",
@@ -134,11 +148,14 @@
   "chatStepOf": "Step {current} of {total}",
   "@chatStepOf": {
     "placeholders": {
-      "current": { "type": "String" },
-      "total": { "type": "String" }
+      "current": {
+        "type": "String"
+      },
+      "total": {
+        "type": "String"
+      }
     }
   },
-
   "messageMenuReply": "Reply",
   "messageMenuCopy": "Copy",
   "messageMenuForward": "Forward",
@@ -146,7 +163,6 @@
   "messageMenuUnstar": "Unstar",
   "messageMenuRetry": "Retry",
   "messageMenuDelete": "Delete",
-
   "groupsTitle": "Groups",
   "groupsCreate": "Create Group",
   "groupsEmpty": "No groups yet",
@@ -170,19 +186,18 @@
   "groupsKickConfirm": "Remove {name} from the group?",
   "@groupsKickConfirm": {
     "placeholders": {
-      "name": { "type": "String" }
+      "name": {
+        "type": "String"
+      }
     }
   },
-
   "settingsTitle": "Settings",
   "settingsAnonymous": "Anonymous",
   "settingsNotLoaded": "Not loaded",
   "settingsTapToEditProfile": "Tap to edit profile",
-
   "settingsAppearance": "Appearance",
   "settingsDarkMode": "Dark Mode",
   "settingsDarkModeSubtitle": "Switch between dark and light theme",
-
   "settingsLanguage": "Language",
   "settingsLanguageSubtitle": "Choose app language",
   "settingsLanguageSystem": "System default",
@@ -197,13 +212,11 @@
   "settingsLanguageJapanese": "日本語",
   "settingsLanguagePortuguese": "Português",
   "settingsLanguageArabic": "العربية",
-
   "settingsBattery": "Battery",
   "settingsDisableBatteryOpt": "Disable Battery Optimization",
   "settingsBatteryChecking": "Checking...",
   "settingsBatteryDisabled": "Disabled — app can run in background",
   "settingsBatteryTapToKeep": "Tap to keep app alive in background",
-
   "settingsSecurity": "Security",
   "settingsExportSeedPhrase": "Export Seed Phrase",
   "settingsExportSeedSubtitle": "Back up your recovery phrase",
@@ -216,23 +229,22 @@
   "settingsSeedCopied": "Seed phrase copied to clipboard",
   "settingsSeedNotAvailable": "Seed phrase not available for this identity. It was created before this feature was added.",
   "settingsSeedError": "Unable to retrieve seed phrase",
-
   "settingsWallet": "Wallet",
   "settingsHideZeroBalance": "Hide 0 Balance",
   "settingsHideZeroBalanceSubtitle": "Hide coins with zero balance",
-
   "settingsData": "Data",
   "settingsAutoSync": "Auto Sync",
   "settingsAutoSyncSubtitle": "Sync messages automatically every 15 minutes",
   "settingsLastSync": "Last sync: {time}",
   "@settingsLastSync": {
     "placeholders": {
-      "time": { "type": "String" }
+      "time": {
+        "type": "String"
+      }
     }
   },
   "settingsSyncNow": "Sync Now",
   "settingsSyncNowSubtitle": "Force immediate sync",
-
   "settingsLogs": "Logs",
   "settingsOpenLogsFolder": "Open Logs Folder",
   "settingsOpenLogsFolderSubtitle": "Open file manager at logs directory",
@@ -253,7 +265,9 @@
   "debugLogSendFailed": "Send failed: {error}",
   "@debugLogSendFailed": {
     "placeholders": {
-      "error": { "type": "String" }
+      "error": {
+        "type": "String"
+      }
     }
   },
   "debugLogSendTruncated": "Log was truncated to 3 MB",
@@ -263,10 +277,11 @@
   "settingsNoLogsYet": "No logs yet. {debugInfo}",
   "@settingsNoLogsYet": {
     "placeholders": {
-      "debugInfo": { "type": "String" }
+      "debugInfo": {
+        "type": "String"
+      }
     }
   },
-
   "settingsIdentity": "Identity",
   "settingsFingerprint": "Fingerprint",
   "settingsFingerprintCopied": "Fingerprint copied",
@@ -284,28 +299,32 @@
   "settingsDeleteFailed": "Failed to delete account: {error}",
   "@settingsDeleteFailed": {
     "placeholders": {
-      "error": { "type": "String" }
+      "error": {
+        "type": "String"
+      }
     }
   },
-
   "settingsAbout": "About",
   "settingsUpdateAvailable": "Update Available",
   "settingsTapToDownload": "Tap to download",
   "settingsAppVersion": "DNA Connect v{version}",
   "@settingsAppVersion": {
     "placeholders": {
-      "version": { "type": "String" }
+      "version": {
+        "type": "String"
+      }
     }
   },
   "settingsLibVersion": "Library v{version}",
   "@settingsLibVersion": {
     "placeholders": {
-      "version": { "type": "String" }
+      "version": {
+        "type": "String"
+      }
     }
   },
   "settingsPostQuantumMessenger": "Post-Quantum Encrypted Communication",
   "settingsCryptoStack": "CRYPTO STACK",
-
   "profileTitle": "Edit Profile",
   "profileInfo": "Profile Info",
   "profileBio": "Bio",
@@ -321,12 +340,13 @@
   "profileSaveFailed": "Failed to save profile: {error}",
   "@profileSaveFailed": {
     "placeholders": {
-      "error": { "type": "String" }
+      "error": {
+        "type": "String"
+      }
     }
   },
   "profileCropTitle": "Crop Avatar",
   "profileCropSave": "Save",
-
   "contactProfileFailed": "Failed to load profile",
   "contactProfileUnknownError": "Unknown error",
   "contactProfileNickname": "Nickname",
@@ -334,14 +354,18 @@
   "contactProfileOriginal": "Original: {name}",
   "@contactProfileOriginal": {
     "placeholders": {
-      "name": { "type": "String" }
+      "name": {
+        "type": "String"
+      }
     }
   },
   "contactProfileSetNickname": "Set Nickname",
   "contactProfileOriginalName": "Original name: {name}",
   "@contactProfileOriginalName": {
     "placeholders": {
-      "name": { "type": "String" }
+      "name": {
+        "type": "String"
+      }
     }
   },
   "contactProfileNicknameLabel": "Nickname",
@@ -351,13 +375,17 @@
   "contactProfileNicknameSet": "Nickname set to \"{name}\"",
   "@contactProfileNicknameSet": {
     "placeholders": {
-      "name": { "type": "String" }
+      "name": {
+        "type": "String"
+      }
     }
   },
   "contactProfileNicknameFailed": "Failed to set nickname: {error}",
   "@contactProfileNicknameFailed": {
     "placeholders": {
-      "error": { "type": "String" }
+      "error": {
+        "type": "String"
+      }
     }
   },
   "contactProfileCopyFingerprint": "Copy fingerprint",
@@ -366,7 +394,6 @@
   "contactProfileBio": "Bio",
   "contactProfileInfo": "Info",
   "contactProfileWebsite": "Website",
-
   "identityTitle": "DNA Connect",
   "identityWelcome": "Welcome to DNA Connect",
   "identityGenerateSeed": "Generate New Seed",
@@ -384,7 +411,6 @@
   "identityNameInvalid": "Name must be 3-20 characters",
   "identityCreating": "Creating your identity...",
   "identityRestoring": "Restoring your identity...",
-
   "wallTitle": "Home",
   "wallWelcome": "Welcome to your timeline!",
   "wallWelcomeSubtitle": "Follow people and channels to see their posts here.",
@@ -401,7 +427,9 @@
   "wallViewAllComments": "View all {count} comments",
   "@wallViewAllComments": {
     "placeholders": {
-      "count": { "type": "int" }
+      "count": {
+        "type": "int"
+      }
     }
   },
   "wallPostDetail": "Post",
@@ -412,20 +440,26 @@
   "wallBlockUserConfirm": "Block {name}? You will no longer see their posts or messages.",
   "@wallBlockUserConfirm": {
     "placeholders": {
-      "name": {"type": "String"}
+      "name": {
+        "type": "String"
+      }
     }
   },
   "wallUserBlocked": "{name} has been blocked",
   "@wallUserBlocked": {
     "placeholders": {
-      "name": {"type": "String"}
+      "name": {
+        "type": "String"
+      }
     }
   },
   "wallSendContactRequest": "Send Contact Request",
   "wallContactRequestSent": "Contact request sent to {name}",
   "@wallContactRequestSent": {
     "placeholders": {
-      "name": {"type": "String"}
+      "name": {
+        "type": "String"
+      }
     }
   },
   "wallContactRequestMessage": "Message (optional)",
@@ -433,13 +467,17 @@
   "wallUnfriendConfirm": "Remove {name} from your contacts?",
   "@wallUnfriendConfirm": {
     "placeholders": {
-      "name": {"type": "String"}
+      "name": {
+        "type": "String"
+      }
     }
   },
   "wallUnfriended": "{name} removed from contacts",
   "@wallUnfriended": {
     "placeholders": {
-      "name": {"type": "String"}
+      "name": {
+        "type": "String"
+      }
     }
   },
   "wallFollow": "Follow",
@@ -447,13 +485,17 @@
   "wallFollowed": "Now following {name}",
   "@wallFollowed": {
     "placeholders": {
-      "name": {"type": "String"}
+      "name": {
+        "type": "String"
+      }
     }
   },
   "wallUnfollowed": "Unfollowed {name}",
   "@wallUnfollowed": {
     "placeholders": {
-      "name": {"type": "String"}
+      "name": {
+        "type": "String"
+      }
     }
   },
   "wallTip": "Tip",
@@ -461,7 +503,9 @@
   "wallTipAmount": "{amount} CPUNK",
   "@wallTipAmount": {
     "placeholders": {
-      "amount": {"type": "String"}
+      "amount": {
+        "type": "String"
+      }
     }
   },
   "wallTipConfirm": "Send Tip",
@@ -470,7 +514,9 @@
   "wallTipFailed": "Tip failed: {error}",
   "@wallTipFailed": {
     "placeholders": {
-      "error": {"type": "String"}
+      "error": {
+        "type": "String"
+      }
     }
   },
   "wallTipNoWallet": "This user has no wallet address in their profile",
@@ -479,7 +525,9 @@
   "wallTippedAmount": "Tipped {amount} CPUNK",
   "@wallTippedAmount": {
     "placeholders": {
-      "amount": {"type": "String"}
+      "amount": {
+        "type": "String"
+      }
     }
   },
   "wallTipPending": "Pending",
@@ -495,7 +543,6 @@
   "wallBoostLimitReached": "Daily boost limit reached",
   "wallAddComment": "Add a comment (optional)",
   "wallCreatePostTitle": "Create Post",
-
   "walletTitle": "Wallet",
   "walletTotalBalance": "Total Balance",
   "walletSend": "Send",
@@ -507,7 +554,9 @@
   "walletSendTitle": "Send {coin}",
   "@walletSendTitle": {
     "placeholders": {
-      "coin": { "type": "String" }
+      "coin": {
+        "type": "String"
+      }
     }
   },
   "walletRecipientAddress": "Recipient Address",
@@ -519,13 +568,17 @@
   "walletSendFailed": "Transaction failed: {error}",
   "@walletSendFailed": {
     "placeholders": {
-      "error": { "type": "String" }
+      "error": {
+        "type": "String"
+      }
     }
   },
   "walletReceiveTitle": "Receive {coin}",
   "@walletReceiveTitle": {
     "placeholders": {
-      "coin": { "type": "String" }
+      "coin": {
+        "type": "String"
+      }
     }
   },
   "walletAddressBook": "Address Book",
@@ -545,7 +598,6 @@
   "walletTxEarlier": "Earlier",
   "walletNoNonZeroBalances": "No non-zero balances",
   "walletNoBalances": "No balances",
-
   "qrScannerTitle": "QR Scanner",
   "qrAddContact": "Add Contact",
   "qrAuthRequest": "Authorization Request",
@@ -555,7 +607,6 @@
   "qrCopyFingerprint": "Copy",
   "qrRequestSent": "Contact request sent",
   "qrInvalidCode": "Invalid QR code",
-
   "moreTitle": "More",
   "moreWallet": "Wallet",
   "moreQRScanner": "QR Scanner",
@@ -573,7 +624,6 @@
       }
     }
   },
-
   "lockTitle": "DNA Connect",
   "lockEnterPIN": "Enter PIN to unlock",
   "lockIncorrectPIN": "Incorrect PIN",
@@ -586,7 +636,6 @@
     }
   },
   "lockUseBiometrics": "Use biometrics to unlock",
-
   "appLockTitle": "App Lock",
   "appLockEnable": "Enable App Lock",
   "appLockUseBiometrics": "Use Biometrics",
@@ -598,27 +647,25 @@
   "appLockPINChanged": "PIN changed",
   "appLockEnterCurrentPIN": "Enter current PIN",
   "appLockEnterNewPIN": "Enter new PIN",
-
   "starredTitle": "Starred Messages",
   "starredEmpty": "No starred messages",
-
   "blockedTitle": "Blocked Users",
   "blockedEmpty": "No blocked users",
   "blockedUnblock": "Unblock",
   "blockedUnblockConfirm": "Unblock {name}?",
   "@blockedUnblockConfirm": {
     "placeholders": {
-      "name": { "type": "String" }
+      "name": {
+        "type": "String"
+      }
     }
   },
-
   "updateTitle": "Update Required",
   "updateMessage": "A newer version is required to continue using DNA Connect.",
   "updateDownload": "Download Update",
   "updateAvailableTitle": "New Version Available",
   "updateAvailableMessage": "A new version of DNA Connect is available. Update now for the latest features and improvements.",
   "updateLater": "Later",
-
   "cancel": "Cancel",
   "save": "Save",
   "delete": "Delete",
@@ -635,10 +682,11 @@
   "failed": "Failed: {error}",
   "@failed": {
     "placeholders": {
-      "error": { "type": "String" }
+      "error": {
+        "type": "String"
+      }
     }
   },
-
   "retry": "Retry",
   "continueButton": "Continue",
   "approve": "Approve",
@@ -658,28 +706,35 @@
   "approvedContact": "Approved {name}",
   "@approvedContact": {
     "placeholders": {
-      "name": { "type": "String" }
+      "name": {
+        "type": "String"
+      }
     }
   },
   "deniedContact": "Denied {name}",
   "@deniedContact": {
     "placeholders": {
-      "name": { "type": "String" }
+      "name": {
+        "type": "String"
+      }
     }
   },
   "blockedContact": "Blocked {name}",
   "@blockedContact": {
     "placeholders": {
-      "name": { "type": "String" }
+      "name": {
+        "type": "String"
+      }
     }
   },
   "unsubscribeFrom": "Unsubscribe from {name}",
   "@unsubscribeFrom": {
     "placeholders": {
-      "name": { "type": "String" }
+      "name": {
+        "type": "String"
+      }
     }
   },
-
   "chatSenderDeletedThis": "Sender deleted this",
   "chatDeleteMessageTitle": "Delete Message",
   "chatDeleteMessageConfirm": "Delete this message from all your devices and notify the other person?",
@@ -697,7 +752,6 @@
   "settingsAllMessagesDeleted": "All messages deleted",
   "settingsDeleteAllMessagesFailed": "Failed to delete messages",
   "settingsDeleteEverything": "Delete Everything",
-
   "settingsGeneral": "General",
   "settingsDataStorage": "Data & Storage",
   "settingsAccount": "Account",
@@ -706,14 +760,15 @@
   "settingsCacheSize": "Local Cache: {size}",
   "@settingsCacheSize": {
     "placeholders": {
-      "size": { "type": "String" }
+      "size": {
+        "type": "String"
+      }
     }
   },
   "settingsClearCacheConfirm": "Clear Cache?",
   "settingsClearCacheWarning": "This will delete all cached media (images, videos, audio). They will be re-downloaded when needed.",
   "settingsCacheCleared": "Cache cleared",
   "settingsClearCacheButton": "Clear",
-
   "txDetailSent": "Sent",
   "txDetailReceived": "Received",
   "txDetailDenied": "Transaction Denied",
@@ -729,16 +784,19 @@
   "txDetailAddedToAddressBook": "Added \"{label}\" to address book",
   "@txDetailAddedToAddressBook": {
     "placeholders": {
-      "label": { "type": "String" }
+      "label": {
+        "type": "String"
+      }
     }
   },
   "txDetailFailedToAdd": "Failed to add: {error}",
   "@txDetailFailedToAdd": {
     "placeholders": {
-      "error": { "type": "String" }
+      "error": {
+        "type": "String"
+      }
     }
   },
-
   "chatVideoGallery": "Video from Library",
   "chatRecordVideo": "Record Video",
   "chatVideoTooLarge": "Video exceeds 64MB limit",
@@ -757,12 +815,63 @@
   "chatTapToPlay": "Tap to play",
   "chatVideoError": "Video playback error",
   "chatAudioError": "Audio playback error",
-
   "userProfileTitle": "Profile",
   "userProfileEditProfile": "Edit Profile",
   "userProfileMessage": "Message",
   "userProfilePosts": "Posts",
   "userProfileNoPosts": "No posts yet",
   "userProfileTotalTips": "Tips",
-  "userProfileLastMonth": "Last Month"
+  "userProfileLastMonth": "Last Month",
+  "dnacTitle": "Digital Cash",
+  "dnacBalance": "Balance",
+  "dnacConfirmed": "Available",
+  "dnacPending": "Pending",
+  "dnacLocked": "Locked",
+  "dnacSend": "Send",
+  "dnacReceive": "Receive",
+  "dnacSync": "Sync",
+  "dnacSyncing": "Syncing...",
+  "dnacSyncSuccess": "Wallet synced successfully",
+  "dnacSyncFailed": "Sync failed",
+  "dnacHistory": "History",
+  "dnacUtxos": "Coins",
+  "dnacNoTransactions": "No transactions yet",
+  "dnacNoUtxos": "No coins yet",
+  "dnacSendTitle": "Send Payment",
+  "dnacRecipient": "Recipient",
+  "dnacRecipientHint": "Recipient ID",
+  "dnacAmount": "Amount",
+  "dnacAmountHint": "0.00",
+  "dnacMemo": "Memo (optional)",
+  "dnacMemoHint": "What is this for?",
+  "dnacFee": "Fee",
+  "dnacEstimatingFee": "Estimating fee...",
+  "dnacTotal": "Total",
+  "dnacConfirmSend": "Confirm Payment",
+  "dnacSending": "Sending...",
+  "dnacSendSuccess": "Payment sent successfully",
+  "dnacSendFailed": "Payment failed",
+  "dnacInsufficientFunds": "Insufficient funds",
+  "dnacInvalidRecipient": "Invalid recipient",
+  "dnacInvalidAmount": "Invalid amount",
+  "dnacPickContact": "Choose from contacts",
+  "dnacHistoryTitle": "Transaction History",
+  "dnacHistoryReceived": "Received",
+  "dnacHistorySent": "Sent",
+  "dnacHistoryGenesis": "Genesis",
+  "dnacHistoryBurn": "Burned",
+  "dnacUtxosTitle": "Coin Details",
+  "dnacUtxoUnspent": "Available",
+  "dnacUtxoPending": "Pending",
+  "dnacUtxoSpent": "Spent",
+  "dnacNotInitialized": "Wallet is loading...",
+  "dnacToken": "DNA",
+  "dnacAmountWithToken": "{amount} DNA",
+  "@dnacAmountWithToken": {
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  }
 }

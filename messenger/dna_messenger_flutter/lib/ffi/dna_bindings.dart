@@ -4370,7 +4370,230 @@ class DnaBindings {
     return _dna_engine_media_exists(
         engine, contentHash, callback, userData);
   }
+
+  // ===========================================================================
+  // DNAC (Digital Cash) Functions
+  // ===========================================================================
+
+  late final _dna_engine_dnac_get_balance = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaDnacBalanceCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaDnacBalanceCb>,
+          Pointer<Void>)>('dna_engine_dnac_get_balance');
+
+  int dna_engine_dnac_get_balance(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaDnacBalanceCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_get_balance(engine, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_send = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Uint64,
+          Pointer<Utf8>, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, int,
+          Pointer<Utf8>, Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_dnac_send');
+
+  int dna_engine_dnac_send(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> recipient_fingerprint,
+    int amount,
+    Pointer<Utf8> memo,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_send(engine, recipient_fingerprint, amount, memo, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_sync = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_dnac_sync');
+
+  int dna_engine_dnac_sync(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_sync(engine, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_get_history = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaDnacHistoryCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaDnacHistoryCb>,
+          Pointer<Void>)>('dna_engine_dnac_get_history');
+
+  int dna_engine_dnac_get_history(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaDnacHistoryCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_get_history(engine, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_get_utxos = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaDnacUtxosCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaDnacUtxosCb>,
+          Pointer<Void>)>('dna_engine_dnac_get_utxos');
+
+  int dna_engine_dnac_get_utxos(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaDnacUtxosCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_get_utxos(engine, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_estimate_fee = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Uint64, Pointer<DnaDnacFeeCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, int, Pointer<DnaDnacFeeCb>,
+          Pointer<Void>)>('dna_engine_dnac_estimate_fee');
+
+  int dna_engine_dnac_estimate_fee(
+    Pointer<dna_engine_t> engine,
+    int amount,
+    Pointer<DnaDnacFeeCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_estimate_fee(engine, amount, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_free_history = _lib.lookupFunction<
+      Void Function(Pointer<dna_dnac_history_t>, Int32),
+      void Function(Pointer<dna_dnac_history_t>, int)>('dna_engine_dnac_free_history');
+
+  void dna_engine_dnac_free_history(Pointer<dna_dnac_history_t> history, int count) {
+    _dna_engine_dnac_free_history(history, count);
+  }
+
+  late final _dna_engine_dnac_free_utxos = _lib.lookupFunction<
+      Void Function(Pointer<dna_dnac_utxo_t>, Int32),
+      void Function(Pointer<dna_dnac_utxo_t>, int)>('dna_engine_dnac_free_utxos');
+
+  void dna_engine_dnac_free_utxos(Pointer<dna_dnac_utxo_t> utxos, int count) {
+    _dna_engine_dnac_free_utxos(utxos, count);
+  }
 }
+
+// =============================================================================
+// DNAC (DIGITAL CASH) STRUCTS
+// =============================================================================
+
+/// DNAC balance information
+final class dna_dnac_balance_t extends Struct {
+  @Uint64()
+  external int confirmed;
+
+  @Uint64()
+  external int pending;
+
+  @Uint64()
+  external int locked;
+
+  @Int32()
+  external int utxo_count;
+}
+
+/// DNAC transaction history entry
+final class dna_dnac_history_t extends Struct {
+  @Array(64)
+  external Array<Uint8> tx_hash;
+
+  @Int32()
+  external int type;
+
+  @Array(129)
+  external Array<Char> counterparty;
+
+  // 3 bytes padding to align int64_t
+  @Array(3)
+  external Array<Uint8> _padding1;
+
+  @Int64()
+  external int amount_delta;
+
+  @Uint64()
+  external int fee;
+
+  @Uint64()
+  external int timestamp;
+
+  @Array(256)
+  external Array<Char> memo;
+}
+
+/// DNAC UTXO entry
+final class dna_dnac_utxo_t extends Struct {
+  @Array(64)
+  external Array<Uint8> tx_hash;
+
+  @Uint32()
+  external int output_index;
+
+  // 4 bytes padding to align uint64_t
+  @Array(4)
+  external Array<Uint8> _padding1;
+
+  @Uint64()
+  external int amount;
+
+  @Int32()
+  external int status;
+
+  // 4 bytes padding to align uint64_t
+  @Array(4)
+  external Array<Uint8> _padding2;
+
+  @Uint64()
+  external int received_at;
+}
+
+// =============================================================================
+// DNAC CALLBACK TYPES
+// =============================================================================
+
+/// DNAC balance callback - Native
+typedef DnaDnacBalanceCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_dnac_balance_t> balance,
+  Pointer<Void> user_data,
+);
+typedef DnaDnacBalanceCb = NativeFunction<DnaDnacBalanceCbNative>;
+
+/// DNAC history callback - Native
+typedef DnaDnacHistoryCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_dnac_history_t> history,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaDnacHistoryCb = NativeFunction<DnaDnacHistoryCbNative>;
+
+/// DNAC UTXOs callback - Native
+typedef DnaDnacUtxosCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_dnac_utxo_t> utxos,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaDnacUtxosCb = NativeFunction<DnaDnacUtxosCbNative>;
+
+/// DNAC fee callback - Native
+typedef DnaDnacFeeCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Uint64 fee,
+  Pointer<Void> user_data,
+);
+typedef DnaDnacFeeCb = NativeFunction<DnaDnacFeeCbNative>;
 
 // =============================================================================
 // HELPER EXTENSIONS

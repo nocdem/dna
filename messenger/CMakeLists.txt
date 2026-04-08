@@ -207,6 +207,24 @@ if(BUILD_SHARED_LIB)
         src/api/engine/dna_engine_signing.c
         src/api/engine/dna_engine_debug_log.c
         src/api/engine/dna_debug_log_wire.c
+        src/api/engine/dna_engine_dnac.c
+        # DNAC (digital cash) — compiled into libdna for single .so
+        ${CMAKE_SOURCE_DIR}/../dnac/src/version.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/wallet.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/utxo.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/balance.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/selection.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/transaction.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/builder.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/serialize.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/verify.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/genesis.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/nullifier.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/client.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/discovery.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/tcp_client.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/db/db.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/utils/crypto_helpers.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c
@@ -302,6 +320,24 @@ else()
         src/api/engine/dna_engine_signing.c
         src/api/engine/dna_engine_debug_log.c
         src/api/engine/dna_debug_log_wire.c
+        src/api/engine/dna_engine_dnac.c
+        # DNAC (digital cash) — compiled into libdna for single .so
+        ${CMAKE_SOURCE_DIR}/../dnac/src/version.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/wallet.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/utxo.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/balance.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/selection.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/transaction.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/builder.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/serialize.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/verify.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/genesis.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/nullifier.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/client.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/discovery.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/tcp_client.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/db/db.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/utils/crypto_helpers.c
         # Modular messenger components
         messenger/identity.c
         messenger/init.c
@@ -434,6 +470,8 @@ target_include_directories(dna PUBLIC
     ${CMAKE_SOURCE_DIR}/blockchain/cellframe  # Cellframe blockchain headers
     ${CMAKE_SOURCE_DIR}/blockchain/solana     # Solana blockchain headers
     ${CMAKE_SOURCE_DIR}/blockchain/tron       # TRON blockchain headers
+    ${CMAKE_SOURCE_DIR}/../dnac/include       # DNAC (digital cash) headers
+    ${CMAKE_SOURCE_DIR}/../dnac/src           # DNAC internal headers
     ${OPENSSL_INCLUDE_DIR}
     # JUICE_INCLUDE_DIRS removed in v0.4.61 - libjuice no longer used
 )

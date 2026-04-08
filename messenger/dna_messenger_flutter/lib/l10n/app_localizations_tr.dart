@@ -1590,4 +1590,141 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get userProfileLastMonth => 'Son 30 Gün';
+
+  @override
+  String get dnacTitle => 'Dijital Para';
+
+  @override
+  String get dnacBalance => 'Bakiye';
+
+  @override
+  String get dnacConfirmed => 'Kullanılabilir';
+
+  @override
+  String get dnacPending => 'Beklemede';
+
+  @override
+  String get dnacLocked => 'Kilitli';
+
+  @override
+  String get dnacSend => 'Gönder';
+
+  @override
+  String get dnacReceive => 'Al';
+
+  @override
+  String get dnacSync => 'Senkronize Et';
+
+  @override
+  String get dnacSyncing => 'Senkronize ediliyor...';
+
+  @override
+  String get dnacSyncSuccess => 'Cüzdan senkronize edildi';
+
+  @override
+  String get dnacSyncFailed => 'Senkronizasyon başarısız';
+
+  @override
+  String get dnacHistory => 'Geçmiş';
+
+  @override
+  String get dnacUtxos => 'Paralar';
+
+  @override
+  String get dnacNoTransactions => 'Henüz işlem yok';
+
+  @override
+  String get dnacNoUtxos => 'Henüz para yok';
+
+  @override
+  String get dnacSendTitle => 'Ödeme Gönder';
+
+  @override
+  String get dnacRecipient => 'Alıcı';
+
+  @override
+  String get dnacRecipientHint => 'Parmak izi (128 hex karakter)';
+
+  @override
+  String get dnacAmount => 'Tutar';
+
+  @override
+  String get dnacAmountHint => '0,00';
+
+  @override
+  String get dnacMemo => 'Not (isteğe bağlı)';
+
+  @override
+  String get dnacMemoHint => 'Ne için?';
+
+  @override
+  String get dnacFee => 'İşlem Ücreti';
+
+  @override
+  String get dnacEstimatingFee => 'Ücret hesaplanıyor...';
+
+  @override
+  String get dnacTotal => 'Toplam';
+
+  @override
+  String get dnacConfirmSend => 'Ödemeyi Onayla';
+
+  @override
+  String get dnacSending => 'Gönderiliyor...';
+
+  @override
+  String get dnacSendSuccess => 'Ödeme başarıyla gönderildi';
+
+  @override
+  String get dnacSendFailed => 'Ödeme başarısız';
+
+  @override
+  String get dnacInsufficientFunds => 'Yetersiz bakiye';
+
+  @override
+  String get dnacInvalidRecipient => 'Geçersiz alıcı';
+
+  @override
+  String get dnacInvalidAmount => 'Geçersiz tutar';
+
+  @override
+  String get dnacPickContact => 'Kişilerden seç';
+
+  @override
+  String get dnacHistoryTitle => 'İşlem Geçmişi';
+
+  @override
+  String get dnacHistoryReceived => 'Alındı';
+
+  @override
+  String get dnacHistorySent => 'Gönderildi';
+
+  @override
+  String get dnacHistoryGenesis => 'Oluşum';
+
+  @override
+  String get dnacHistoryBurn => 'Yakıldı';
+
+  @override
+  String get dnacUtxosTitle => 'Para Detayları';
+
+  @override
+  String get dnacUtxoUnspent => 'Kullanılabilir';
+
+  @override
+  String get dnacUtxoPending => 'Beklemede';
+
+  @override
+  String get dnacUtxoSpent => 'Harcandı';
+
+  @override
+  String get dnacNotInitialized => 'Cüzdan yükleniyor...';
+
+  @override
+  String get dnacToken => 'DNA';
+
+  @override
+  String dnacAmountWithToken(String amount) {
+    return '$amount DNA';
+  }
 }

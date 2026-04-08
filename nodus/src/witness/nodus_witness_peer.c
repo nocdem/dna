@@ -25,6 +25,7 @@
 #include "core/nodus_storage.h"
 #include "core/nodus_value.h"
 #include "witness/nodus_witness_sync.h"
+#include "crypto/utils/qgp_log.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -32,6 +33,9 @@
 #include <time.h>
 
 #define LOG_TAG "WITNESS-PEER"
+
+/* Forward declarations */
+static int send_rost_q(nodus_witness_t *w, struct nodus_tcp_conn *conn);
 
 /* Reconnect timing */
 #define RECONNECT_BASE_SEC   5
@@ -334,6 +338,7 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
         nodus_witness_utxo_checksum(w, msg.ident.utxo_checksum);
     }
     msg.ident.current_view = w->current_view;
+    msg.ident.roster_size = w->roster.n_witnesses;
     msg.ident.has_block_height = true;
 
     /* Fill header */
@@ -376,10 +381,21 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
                                                  ident->witness_id);
 
     if (roster_idx < 0 && ident->address[0]) {
-        /* Not in roster by ID — check by address (placeholder entry) */
+        /* Not in roster by ID — check by address (placeholder entry only).
+         * Only overwrite if pubkey is zero (placeholder). Never overwrite
+         * an established identity — prevents address-based impersonation. */
+        static const uint8_t zero_pk[NODUS_PK_BYTES] = {0};
         for (uint32_t i = 0; i < w->roster.n_witnesses; i++) {
             if (strcmp(w->roster.witnesses[i].address,
                        ident->address) == 0) {
+                if (memcmp(w->roster.witnesses[i].pubkey, zero_pk,
+                           NODUS_PK_BYTES) != 0) {
+                    /* Entry already has a real identity — don't overwrite */
+                    QGP_LOG_WARN(LOG_TAG, "address match at %s but pubkey "
+                            "already set, skipping overwrite",
+                            ident->address);
+                    break;
+                }
                 roster_idx = (int)i;
                 /* Update placeholder ID and pubkey with real identity */
                 memcpy(w->roster.witnesses[i].witness_id,
@@ -450,17 +466,54 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
                    NODUS_KEY_BYTES);
 
             /* View sync: adopt higher view from peer.
-             * Prevents leader election mismatch after restart. */
+             * Prevents leader election mismatch after restart.
+             * Bounded: reject jumps > 10000 to prevent manipulation.
+             * current_view is not persisted — resets to 0 on restart.
+             * 10000 ~= 14 hours of continuous leader failure at 5s intervals. */
             if (ident->current_view > w->current_view) {
-                fprintf(stderr, "WITNESS-PEER: adopting higher view %u from peer "
-                        "(was %u)\n", ident->current_view, w->current_view);
-                w->current_view = ident->current_view;
+                uint32_t delta = ident->current_view - w->current_view;
+                if (delta <= 10000) {
+                    QGP_LOG_INFO(LOG_TAG, "adopting higher view %u from peer "
+                            "(was %u)", ident->current_view, w->current_view);
+                    w->current_view = ident->current_view;
+                } else {
+                    QGP_LOG_WARN(LOG_TAG, "rejecting view jump "
+                            "%u -> %u (delta=%u > 10000)",
+                            w->current_view, ident->current_view, delta);
+                }
             }
         }
     }
 
     /* Trigger sync check — peer may be ahead of us */
     nodus_witness_sync_check(w);
+
+    /* Roster gossip: request peer's roster if their roster size differs.
+     * This is the root cause fix for roster inconsistency after restart:
+     * DHT R=3 replication means not all nodes see all nodus:pk entries.
+     * By requesting the full roster from each identified peer, we converge
+     * to a consistent roster across all nodes.
+     * Rate limited: max one w_rost_q per peer per 60 seconds. */
+    bool need_gossip = false;
+    if (ident->has_block_height &&
+        ident->roster_size > 0 &&
+        ident->roster_size != w->roster.n_witnesses) {
+        need_gossip = true;
+    } else if (w->roster.n_witnesses <= 1) {
+        need_gossip = true;
+    }
+
+    if (need_gossip && pi >= 0) {
+        uint64_t now_rost = nodus_time_now();
+        if (now_rost - w->peers[pi].last_rost_q_time >= 60) {
+            w->peers[pi].last_rost_q_time = now_rost;
+            QGP_LOG_INFO(LOG_TAG, "roster mismatch (local=%u, peer=%u) — "
+                    "requesting roster via w_rost_q",
+                    w->roster.n_witnesses,
+                    ident->roster_size);
+            send_rost_q(w, conn);
+        }
+    }
 
     return 0;
 }
@@ -627,6 +680,43 @@ int nodus_witness_peer_handle_fwd_rsp(nodus_witness_t *w,
     return 0;
 }
 
+/* ── Send roster query ──────────────────────────────────────────── */
+
+/**
+ * Send w_rost_q to a peer to request their roster.
+ * Called after w_ident exchange to activate roster gossip.
+ */
+static int send_rost_q(nodus_witness_t *w, struct nodus_tcp_conn *conn) {
+    if (!w || !conn) return -1;
+
+    nodus_t3_msg_t msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = NODUS_T3_ROST_Q;
+    msg.txn_id = ++w->next_txn_id;
+    snprintf(msg.method, sizeof(msg.method), "w_rost_q");
+
+    msg.rost_q.version = w->roster.version;
+
+    /* Fill header */
+    msg.header.version = NODUS_T3_BFT_PROTOCOL_VER;
+    memcpy(msg.header.sender_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
+    msg.header.timestamp = (uint64_t)time(NULL);
+    nodus_random((uint8_t *)&msg.header.nonce, sizeof(msg.header.nonce));
+    memcpy(msg.header.chain_id, w->chain_id, 32);
+
+    /* Encode and sign */
+    uint8_t buf[NODUS_T3_MAX_MSG_SIZE];
+    size_t len = 0;
+
+    if (nodus_t3_encode(&msg, &w->server->identity.sk,
+                         buf, sizeof(buf), &len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "failed to encode w_rost_q");
+        return -1;
+    }
+
+    return nodus_tcp_send(conn, buf, len);
+}
+
 /* ── Roster query ────────────────────────────────────────────────── */
 
 int nodus_witness_peer_handle_rost_q(nodus_witness_t *w,
@@ -678,6 +768,118 @@ int nodus_witness_peer_handle_rost_q(nodus_witness_t *w,
     return nodus_tcp_send(conn, buf, len);
 }
 
+/* ── DHT-verified witness identity set ──────────────────────────── */
+
+/** Pre-built lookup table of verified (witness_id, pubkey) pairs from DHT. */
+typedef struct {
+    uint8_t witness_id[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t pubkey[NODUS_PK_BYTES];
+} dht_verified_entry_t;
+
+typedef struct {
+    dht_verified_entry_t entries[NODUS_T3_MAX_WITNESSES];
+    uint32_t count;
+} dht_verified_set_t;
+
+/**
+ * Build a verified set of (witness_id, pubkey) pairs from the DHT nodus:pk
+ * registry. Each entry is Dilithium5-signed — a single DHT scan + verify
+ * pass, then O(1) lookups per roster candidate. Reduces verify cost from
+ * O(N*M) to O(M) where M = DHT entries.
+ */
+static void build_dht_verified_set(nodus_witness_t *w,
+                                    dht_verified_set_t *out) {
+    memset(out, 0, sizeof(*out));
+
+    nodus_key_t pk_key;
+    nodus_hash((const uint8_t *)NODUS_PK_REGISTRY_KEY,
+               sizeof(NODUS_PK_REGISTRY_KEY) - 1, &pk_key);
+
+    nodus_value_t **vals = NULL;
+    size_t val_count = 0;
+    if (nodus_storage_get_all(&w->server->storage, &pk_key,
+                                &vals, &val_count) != 0 || !vals)
+        return;
+
+    uint64_t now = (uint64_t)time(NULL);
+    for (size_t vi = 0; vi < val_count && out->count < NODUS_T3_MAX_WITNESSES; vi++) {
+        nodus_value_t *val = vals[vi];
+        if (!val || !val->data || val->data_len == 0) continue;
+        if (nodus_value_verify(val) != 0) continue;
+        if (nodus_value_is_expired(val, now)) continue;
+
+        /* Decode CBOR to extract node_id and pk */
+        cbor_decoder_t dec;
+        cbor_decoder_init(&dec, val->data, val->data_len);
+        cbor_item_t top = cbor_decode_next(&dec);
+        if (top.type != CBOR_ITEM_MAP) continue;
+
+        uint8_t dht_id[NODUS_KEY_BYTES] = {0};
+        uint8_t dht_pk[NODUS_PK_BYTES] = {0};
+        bool has_id = false, has_pk = false;
+
+        for (size_t m = 0; m < top.count; m++) {
+            cbor_item_t k = cbor_decode_next(&dec);
+            if (k.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+            if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "id", 2) == 0) {
+                cbor_item_t v = cbor_decode_next(&dec);
+                if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_KEY_BYTES) {
+                    memcpy(dht_id, v.bstr.ptr, NODUS_KEY_BYTES);
+                    has_id = true;
+                }
+            } else if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "pk", 2) == 0) {
+                cbor_item_t v = cbor_decode_next(&dec);
+                if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_PK_BYTES) {
+                    memcpy(dht_pk, v.bstr.ptr, NODUS_PK_BYTES);
+                    has_pk = true;
+                }
+            } else {
+                cbor_decode_skip(&dec);
+            }
+        }
+
+        if (has_id && has_pk) {
+            dht_verified_entry_t *e = &out->entries[out->count++];
+            memcpy(e->witness_id, dht_id, NODUS_T3_WITNESS_ID_LEN);
+            memcpy(e->pubkey, dht_pk, NODUS_PK_BYTES);
+        }
+    }
+
+    for (size_t vi = 0; vi < val_count; vi++)
+        nodus_value_free(vals[vi]);
+    free(vals);
+}
+
+/** Check if a witness_id+pubkey pair exists in the pre-built verified set. */
+static bool dht_verified_set_contains(const dht_verified_set_t *set,
+                                       const uint8_t *witness_id,
+                                       const uint8_t *pubkey) {
+    for (uint32_t i = 0; i < set->count; i++) {
+        if (memcmp(set->entries[i].witness_id, witness_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0 &&
+            memcmp(set->entries[i].pubkey, pubkey, NODUS_PK_BYTES) == 0)
+            return true;
+    }
+    return false;
+}
+
+/**
+ * Check if a witness_id has an active, authenticated peer connection.
+ * Fallback for entries not yet in DHT (e.g. fresh joins).
+ */
+static bool verify_witness_has_peer(const nodus_witness_t *w,
+                                     const uint8_t *witness_id) {
+    for (int i = 0; i < w->peer_count; i++) {
+        if (!w->peers[i].identified) continue;
+        if (!w->peers[i].conn) continue;
+        if (w->peers[i].conn->state != NODUS_CONN_CONNECTED) continue;
+        if (memcmp(w->peers[i].witness_id, witness_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0)
+            return true;
+    }
+    return false;
+}
+
 /* ── Roster response ─────────────────────────────────────────────── */
 
 int nodus_witness_peer_handle_rost_r(nodus_witness_t *w,
@@ -686,30 +888,73 @@ int nodus_witness_peer_handle_rost_r(nodus_witness_t *w,
 
     const nodus_t3_rost_r_t *r = &msg->rost_r;
 
-    /* Only accept if newer version */
-    if (r->version <= w->roster.version) {
-        return 0;
-    }
+    QGP_LOG_INFO(LOG_TAG, "received roster v%u with %u witnesses (local=%u)",
+            r->version, r->n_witnesses, w->roster.n_witnesses);
 
-    fprintf(stderr, "%s: received roster v%u with %u witnesses\n",
-            LOG_TAG, r->version, r->n_witnesses);
+    /* Build verified identity set from DHT once (O(M) Dilithium5 verifies),
+     * then O(1) lookup per candidate entry — avoids O(N*M) repeated scans. */
+    dht_verified_set_t dht_set;
+    build_dht_verified_set(w, &dht_set);
 
-    /* Merge entries we don't have */
+    /* Merge entries we don't have — only if verified against DHT or peer mesh */
+    uint32_t old_count = w->roster.n_witnesses;
+    uint32_t rejected = 0;
     for (uint32_t i = 0; i < r->n_witnesses; i++) {
         if (!r->witnesses[i].witness_id) continue;
+        if (!r->witnesses[i].pubkey) { rejected++; continue; }
+
+        /* Skip self */
+        if (memcmp(r->witnesses[i].witness_id, w->my_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0)
+            continue;
+
+        /* Skip entries already in roster */
+        if (nodus_witness_roster_find(&w->roster,
+                                       r->witnesses[i].witness_id) >= 0)
+            continue;
+
+        /* Verify: entry must be attested in DHT or have an active peer conn */
+        if (!dht_verified_set_contains(&dht_set, r->witnesses[i].witness_id,
+                                        r->witnesses[i].pubkey) &&
+            !verify_witness_has_peer(w, r->witnesses[i].witness_id)) {
+            rejected++;
+            continue;
+        }
 
         nodus_witness_roster_entry_t entry;
         memset(&entry, 0, sizeof(entry));
         memcpy(entry.witness_id, r->witnesses[i].witness_id,
                NODUS_T3_WITNESS_ID_LEN);
-        if (r->witnesses[i].pubkey)
-            memcpy(entry.pubkey, r->witnesses[i].pubkey, NODUS_PK_BYTES);
+        memcpy(entry.pubkey, r->witnesses[i].pubkey, NODUS_PK_BYTES);
         snprintf(entry.address, sizeof(entry.address),
                  "%s", r->witnesses[i].address);
         entry.joined_epoch = r->witnesses[i].joined_epoch;
         entry.active = r->witnesses[i].active;
 
         nodus_witness_roster_add(w, &entry);
+    }
+
+    if (rejected > 0) {
+        QGP_LOG_WARN(LOG_TAG, "roster gossip rejected %u unverified entries",
+                rejected);
+    }
+
+    /* If roster grew, sort deterministically and recalculate my_index */
+    if (w->roster.n_witnesses > old_count) {
+        if (w->roster.n_witnesses > 1) {
+            qsort(w->roster.witnesses, w->roster.n_witnesses,
+                  sizeof(nodus_witness_roster_entry_t), roster_cmp);
+        }
+        w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
+
+        /* Recompute BFT config for new roster size */
+        nodus_witness_bft_config_init(&w->bft_config,
+                                       w->roster.n_witnesses);
+
+        QGP_LOG_INFO(LOG_TAG, "roster gossip merged: %u -> %u witnesses, "
+                "quorum=%u, my_index=%d",
+                old_count, w->roster.n_witnesses,
+                w->bft_config.quorum, w->my_index);
     }
 
     return 0;

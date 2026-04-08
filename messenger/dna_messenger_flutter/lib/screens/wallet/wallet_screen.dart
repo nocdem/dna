@@ -17,8 +17,13 @@ import '../../providers/portfolio_history_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
 import '../../providers/price_provider.dart';
+import '../../providers/dnac_provider.dart';
+import '../../ffi/dna_engine.dart' show DnacBalance, formatDnacAmount;
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
+import 'dnac_send_screen.dart';
+import 'dnac_history_screen.dart';
+import 'dnac_utxos_screen.dart';
 import '../../l10n/app_localizations.dart';
 
 /// Network filter for the wallet assets list (null = show all)
@@ -236,6 +241,8 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
       },
       child: ListView(
         children: [
+          const _DnacSection(),
+          const SizedBox(height: 16),
           const _WalletHeroCard(),
           const _ActionButtonsRow(),
           const _ChainFilterBar(),
@@ -277,6 +284,274 @@ class _WalletScreenState extends ConsumerState<WalletScreen> {
               child: const Text('Retry'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// DNAC (Digital Cash) Section
+// =============================================================================
+
+class _DnacSection extends ConsumerStatefulWidget {
+  const _DnacSection();
+
+  @override
+  ConsumerState<_DnacSection> createState() => _DnacSectionState();
+}
+
+class _DnacSectionState extends ConsumerState<_DnacSection> {
+  bool _isSyncing = false;
+
+  Future<void> _sync() async {
+    if (_isSyncing) return;
+    setState(() => _isSyncing = true);
+    try {
+      await ref.read(dnacBalanceProvider.notifier).sync();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AppLocalizations.of(context).dnacSyncSuccess)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AppLocalizations.of(context).dnacSyncFailed)),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSyncing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
+    final balanceAsync = ref.watch(dnacBalanceProvider);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Row(
+            children: [
+              FaIcon(FontAwesomeIcons.coins,
+                  size: 18, color: theme.colorScheme.primary),
+              const SizedBox(width: 8),
+              Text(l10n.dnacTitle,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  )),
+              const Spacer(),
+              // Sync button with loading indicator
+              _isSyncing
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: SizedBox(
+                        width: 16, height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : IconButton(
+                      icon: const FaIcon(FontAwesomeIcons.arrowsRotate,
+                          size: 16),
+                      onPressed: _sync,
+                      tooltip: l10n.dnacSync,
+                      visualDensity: VisualDensity.compact,
+                    ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Balance card
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  theme.colorScheme.primary.withAlpha(30),
+                  theme.colorScheme.primary.withAlpha(10),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: theme.colorScheme.primary.withAlpha(40),
+              ),
+            ),
+            child: balanceAsync.when(
+              data: (balance) => _buildBalanceContent(context, balance, l10n),
+              loading: () => const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+              error: (e, _) => Text(l10n.dnacNotInitialized,
+                  style: theme.textTheme.bodyMedium),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // Action buttons
+          Row(
+            children: [
+              Expanded(
+                child: _DnacActionButton(
+                  icon: FontAwesomeIcons.paperPlane,
+                  label: l10n.dnacSend,
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const DnacSendScreen()),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _DnacActionButton(
+                  icon: FontAwesomeIcons.clockRotateLeft,
+                  label: l10n.dnacHistory,
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const DnacHistoryScreen()),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _DnacActionButton(
+                  icon: FontAwesomeIcons.layerGroup,
+                  label: l10n.dnacUtxos,
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const DnacUtxosScreen()),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBalanceContent(
+      BuildContext context, DnacBalance? balance, AppLocalizations l10n) {
+    final theme = Theme.of(context);
+
+    if (balance == null) {
+      return Text(l10n.dnacNotInitialized,
+          style: theme.textTheme.bodyMedium);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(l10n.dnacBalance,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurface.withAlpha(150),
+            )),
+        const SizedBox(height: 4),
+        Text(
+          l10n.dnacAmountWithToken(formatDnacAmount(balance.confirmed)),
+          style: theme.textTheme.headlineMedium?.copyWith(
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        if (balance.pending > 0 || balance.locked > 0) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              if (balance.pending > 0)
+                _BalanceChip(
+                  label: l10n.dnacPending,
+                  value: formatDnacAmount(balance.pending),
+                  color: Colors.orange,
+                ),
+              if (balance.pending > 0 && balance.locked > 0)
+                const SizedBox(width: 8),
+              if (balance.locked > 0)
+                _BalanceChip(
+                  label: l10n.dnacLocked,
+                  value: formatDnacAmount(balance.locked),
+                  color: Colors.red,
+                ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _BalanceChip extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _BalanceChip({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withAlpha(25),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        '$label: $value',
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: color,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    );
+  }
+}
+
+class _DnacActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+
+  const _DnacActionButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Material(
+      color: theme.colorScheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Column(
+            children: [
+              FaIcon(icon, size: 18, color: theme.colorScheme.primary),
+              const SizedBox(height: 4),
+              Text(label, style: theme.textTheme.bodySmall),
+            ],
+          ),
         ),
       ),
     );

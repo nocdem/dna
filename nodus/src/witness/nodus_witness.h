@@ -180,6 +180,9 @@ typedef struct {
     /* State sync: peer's chain state from w_ident */
     uint64_t    remote_height;              /* peer's block height */
     uint8_t     remote_checksum[64];        /* peer's UTXO checksum */
+
+    /* Gossip rate limit */
+    uint64_t    last_rost_q_time;           /* last w_rost_q sent to this peer */
 } nodus_witness_peer_t;
 
 /* ── Main witness context ────────────────────────────────────────── */

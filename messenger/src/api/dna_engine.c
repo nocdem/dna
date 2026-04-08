@@ -111,6 +111,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/key/key_encryption.h"
+#include "dnac/dnac.h"              /* DNAC shutdown in engine destroy */
 #include "crypto/sign/qgp_dilithium.h"
 /* nodus_republish.h removed — migration loop eliminated in v0.9.58 */
 
@@ -1100,6 +1101,14 @@ void dna_handle_refresh_contact_profile(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_add_group_member(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_restore_groups_from_dht(dna_engine_t *engine, dna_task_t *task);
 
+/* DNAC handlers (dna_engine_dnac.c) */
+void dna_handle_dnac_get_balance(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_send(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_sync(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_get_utxos(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_estimate_fee(dna_engine_t *engine, dna_task_t *task);
+
 void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
     switch (task->type) {
         /* Identity */
@@ -1411,6 +1420,26 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         /* Debug log inbox */
         case TASK_DEBUG_LOG_SEND:
             dna_handle_debug_log_send(engine, task);
+            break;
+
+        /* DNAC digital cash */
+        case TASK_DNAC_GET_BALANCE:
+            dna_handle_dnac_get_balance(engine, task);
+            break;
+        case TASK_DNAC_SEND:
+            dna_handle_dnac_send(engine, task);
+            break;
+        case TASK_DNAC_SYNC:
+            dna_handle_dnac_sync(engine, task);
+            break;
+        case TASK_DNAC_GET_HISTORY:
+            dna_handle_dnac_get_history(engine, task);
+            break;
+        case TASK_DNAC_GET_UTXOS:
+            dna_handle_dnac_get_utxos(engine, task);
+            break;
+        case TASK_DNAC_ESTIMATE_FEE:
+            dna_handle_dnac_estimate_fee(engine, task);
             break;
     }
 }
@@ -1857,6 +1886,12 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Free messenger context (now safe after all listeners cancelled) */
     if (engine->messenger) {
         messenger_free(engine->messenger);
+    }
+
+    /* Shutdown DNAC context */
+    if (engine->dnac_ctx) {
+        dnac_shutdown((dnac_context_t *)engine->dnac_ctx);
+        engine->dnac_ctx = NULL;
     }
 
     /* Free wallet list */

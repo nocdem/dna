@@ -3019,6 +3019,276 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Last Month'**
   String get userProfileLastMonth;
+
+  /// No description provided for @dnacTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Digital Cash'**
+  String get dnacTitle;
+
+  /// No description provided for @dnacBalance.
+  ///
+  /// In en, this message translates to:
+  /// **'Balance'**
+  String get dnacBalance;
+
+  /// No description provided for @dnacConfirmed.
+  ///
+  /// In en, this message translates to:
+  /// **'Available'**
+  String get dnacConfirmed;
+
+  /// No description provided for @dnacPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending'**
+  String get dnacPending;
+
+  /// No description provided for @dnacLocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Locked'**
+  String get dnacLocked;
+
+  /// No description provided for @dnacSend.
+  ///
+  /// In en, this message translates to:
+  /// **'Send'**
+  String get dnacSend;
+
+  /// No description provided for @dnacReceive.
+  ///
+  /// In en, this message translates to:
+  /// **'Receive'**
+  String get dnacReceive;
+
+  /// No description provided for @dnacSync.
+  ///
+  /// In en, this message translates to:
+  /// **'Sync'**
+  String get dnacSync;
+
+  /// No description provided for @dnacSyncing.
+  ///
+  /// In en, this message translates to:
+  /// **'Syncing...'**
+  String get dnacSyncing;
+
+  /// No description provided for @dnacSyncSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Wallet synced successfully'**
+  String get dnacSyncSuccess;
+
+  /// No description provided for @dnacSyncFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Sync failed'**
+  String get dnacSyncFailed;
+
+  /// No description provided for @dnacHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'History'**
+  String get dnacHistory;
+
+  /// No description provided for @dnacUtxos.
+  ///
+  /// In en, this message translates to:
+  /// **'Coins'**
+  String get dnacUtxos;
+
+  /// No description provided for @dnacNoTransactions.
+  ///
+  /// In en, this message translates to:
+  /// **'No transactions yet'**
+  String get dnacNoTransactions;
+
+  /// No description provided for @dnacNoUtxos.
+  ///
+  /// In en, this message translates to:
+  /// **'No coins yet'**
+  String get dnacNoUtxos;
+
+  /// No description provided for @dnacSendTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Send Payment'**
+  String get dnacSendTitle;
+
+  /// No description provided for @dnacRecipient.
+  ///
+  /// In en, this message translates to:
+  /// **'Recipient'**
+  String get dnacRecipient;
+
+  /// No description provided for @dnacRecipientHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Fingerprint (128 hex characters)'**
+  String get dnacRecipientHint;
+
+  /// No description provided for @dnacAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Amount'**
+  String get dnacAmount;
+
+  /// No description provided for @dnacAmountHint.
+  ///
+  /// In en, this message translates to:
+  /// **'0.00'**
+  String get dnacAmountHint;
+
+  /// No description provided for @dnacMemo.
+  ///
+  /// In en, this message translates to:
+  /// **'Memo (optional)'**
+  String get dnacMemo;
+
+  /// No description provided for @dnacMemoHint.
+  ///
+  /// In en, this message translates to:
+  /// **'What is this for?'**
+  String get dnacMemoHint;
+
+  /// No description provided for @dnacFee.
+  ///
+  /// In en, this message translates to:
+  /// **'Fee'**
+  String get dnacFee;
+
+  /// No description provided for @dnacEstimatingFee.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimating fee...'**
+  String get dnacEstimatingFee;
+
+  /// No description provided for @dnacTotal.
+  ///
+  /// In en, this message translates to:
+  /// **'Total'**
+  String get dnacTotal;
+
+  /// No description provided for @dnacConfirmSend.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirm Payment'**
+  String get dnacConfirmSend;
+
+  /// No description provided for @dnacSending.
+  ///
+  /// In en, this message translates to:
+  /// **'Sending...'**
+  String get dnacSending;
+
+  /// No description provided for @dnacSendSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Payment sent successfully'**
+  String get dnacSendSuccess;
+
+  /// No description provided for @dnacSendFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Payment failed'**
+  String get dnacSendFailed;
+
+  /// No description provided for @dnacInsufficientFunds.
+  ///
+  /// In en, this message translates to:
+  /// **'Insufficient funds'**
+  String get dnacInsufficientFunds;
+
+  /// No description provided for @dnacInvalidRecipient.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid recipient'**
+  String get dnacInvalidRecipient;
+
+  /// No description provided for @dnacInvalidAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid amount'**
+  String get dnacInvalidAmount;
+
+  /// No description provided for @dnacPickContact.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose from contacts'**
+  String get dnacPickContact;
+
+  /// No description provided for @dnacHistoryTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Transaction History'**
+  String get dnacHistoryTitle;
+
+  /// No description provided for @dnacHistoryReceived.
+  ///
+  /// In en, this message translates to:
+  /// **'Received'**
+  String get dnacHistoryReceived;
+
+  /// No description provided for @dnacHistorySent.
+  ///
+  /// In en, this message translates to:
+  /// **'Sent'**
+  String get dnacHistorySent;
+
+  /// No description provided for @dnacHistoryGenesis.
+  ///
+  /// In en, this message translates to:
+  /// **'Genesis'**
+  String get dnacHistoryGenesis;
+
+  /// No description provided for @dnacHistoryBurn.
+  ///
+  /// In en, this message translates to:
+  /// **'Burned'**
+  String get dnacHistoryBurn;
+
+  /// No description provided for @dnacUtxosTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Coin Details'**
+  String get dnacUtxosTitle;
+
+  /// No description provided for @dnacUtxoUnspent.
+  ///
+  /// In en, this message translates to:
+  /// **'Available'**
+  String get dnacUtxoUnspent;
+
+  /// No description provided for @dnacUtxoPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending'**
+  String get dnacUtxoPending;
+
+  /// No description provided for @dnacUtxoSpent.
+  ///
+  /// In en, this message translates to:
+  /// **'Spent'**
+  String get dnacUtxoSpent;
+
+  /// No description provided for @dnacNotInitialized.
+  ///
+  /// In en, this message translates to:
+  /// **'Wallet is loading...'**
+  String get dnacNotInitialized;
+
+  /// No description provided for @dnacToken.
+  ///
+  /// In en, this message translates to:
+  /// **'DNA'**
+  String get dnacToken;
+
+  /// No description provided for @dnacAmountWithToken.
+  ///
+  /// In en, this message translates to:
+  /// **'{amount} DNA'**
+  String dnacAmountWithToken(String amount);
 }
 
 class _AppLocalizationsDelegate

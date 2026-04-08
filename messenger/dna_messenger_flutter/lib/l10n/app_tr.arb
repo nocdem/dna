@@ -1,22 +1,18 @@
 {
   "@@locale": "tr",
-
   "appTitle": "DNA Connect",
   "initializing": "Başlatılıyor...",
   "failedToInitialize": "Başlatma başarısız",
   "makeSureNativeLibrary": "Yerel kütüphanenin mevcut olduğundan emin olun.",
-
   "navHome": "Ana Sayfa",
   "navChats": "Sohbetler",
   "navWallet": "Cüzdan",
   "navMore": "Diğer",
-
   "messagesAll": "Tümü",
   "messagesUnread": "Okunmamış",
   "messagesAllCaughtUp": "Hepsi tamam!",
   "messagesNoUnread": "Okunmamış mesaj yok",
   "messagesSearchHint": "Sohbetlerde ara...",
-
   "contactsTitle": "Kişiler",
   "contactsEmpty": "Henüz kişi yok",
   "contactsTapToAdd": "Kişi eklemek için + simgesine dokunun",
@@ -26,7 +22,6 @@
   "contactsSyncing": "Eşitleniyor...",
   "contactsFailedToLoad": "Kişiler yüklenemedi",
   "contactsRetry": "Tekrar Dene",
-
   "contactsHubContacts": "Kişiler",
   "contactsHubRequests": "İstekler",
   "contactsHubBlocked": "Engellenen",
@@ -34,7 +29,6 @@
   "contactsHubRemoveMessage": "{name} adlı kişiyi kişilerinizden kaldırmak istediğinizden emin misiniz?",
   "contactsHubRemove": "Kaldır",
   "contactsHubFingerprintCopied": "Kimlik kopyalandı",
-
   "contactRequestsTitle": "Kişi İstekleri",
   "contactRequestsEmpty": "Bekleyen istek yok",
   "contactRequestsAccept": "Kabul Et",
@@ -42,7 +36,6 @@
   "contactRequestsBlock": "Kullanıcıyı Engelle",
   "contactRequestsSent": "Gönderilen",
   "contactRequestsReceived": "Alınan",
-
   "addContactTitle": "Kişi Ekle",
   "addContactHint": "Bir ad veya kimlik girin",
   "addContactSearching": "Aranıyor...",
@@ -52,7 +45,6 @@
   "addContactRequestSent": "Kişi isteği gönderildi",
   "addContactAlreadyContact": "Zaten kişilerinizde",
   "addContactCannotAddSelf": "Kendinizi ekleyemezsiniz",
-
   "chatSearchMessages": "Mesajlarda ara",
   "chatOnline": "Çevrimiçi",
   "chatOffline": "Çevrimdışı",
@@ -85,7 +77,6 @@
   "chatSelectNetwork": "Ağ Seç",
   "chatEnterAmount": "Miktar Gir",
   "chatStepOf": "Adım {current} / {total}",
-
   "messageMenuReply": "Yanıtla",
   "messageMenuCopy": "Kopyala",
   "messageMenuForward": "İlet",
@@ -93,7 +84,6 @@
   "messageMenuUnstar": "Yıldızı Kaldır",
   "messageMenuRetry": "Tekrar Dene",
   "messageMenuDelete": "Sil",
-
   "groupsTitle": "Gruplar",
   "groupsCreate": "Grup Oluştur",
   "groupsEmpty": "Henüz grup yok",
@@ -115,16 +105,13 @@
   "groupsAdmin": "Yönetici",
   "groupsRemoveMember": "Üyeyi Çıkar",
   "groupsKickConfirm": "{name} gruptan çıkarılsın mı?",
-
   "settingsTitle": "Ayarlar",
   "settingsAnonymous": "Anonim",
   "settingsNotLoaded": "Yüklenmedi",
   "settingsTapToEditProfile": "Profili düzenlemek için dokunun",
-
   "settingsAppearance": "Görünüm",
   "settingsDarkMode": "Karanlık Mod",
   "settingsDarkModeSubtitle": "Karanlık ve açık tema arasında geçiş yap",
-
   "settingsLanguage": "Dil",
   "settingsLanguageSubtitle": "Uygulama dilini seçin",
   "settingsLanguageSystem": "Sistem varsayılanı",
@@ -139,13 +126,11 @@
   "settingsLanguageJapanese": "日本語",
   "settingsLanguagePortuguese": "Português",
   "settingsLanguageArabic": "العربية",
-
   "settingsBattery": "Pil",
   "settingsDisableBatteryOpt": "Pil Optimizasyonunu Kapat",
   "settingsBatteryChecking": "Kontrol ediliyor...",
   "settingsBatteryDisabled": "Kapalı — uygulama arka planda çalışabilir",
   "settingsBatteryTapToKeep": "Uygulamayı arka planda canlı tutmak için dokunun",
-
   "settingsSecurity": "Güvenlik",
   "settingsExportSeedPhrase": "Kurtarma İfadesini Dışa Aktar",
   "settingsExportSeedSubtitle": "Kurtarma ifadenizi yedekleyin",
@@ -158,18 +143,15 @@
   "settingsSeedCopied": "Kurtarma ifadesi panoya kopyalandı",
   "settingsSeedNotAvailable": "Bu kimlik için kurtarma ifadesi mevcut değil. Bu özellik eklenmeden önce oluşturulmuş.",
   "settingsSeedError": "Kurtarma ifadesi alınamadı",
-
   "settingsWallet": "Cüzdan",
   "settingsHideZeroBalance": "Sıfır Bakiyeyi Gizle",
   "settingsHideZeroBalanceSubtitle": "Bakiyesi sıfır olan koinleri gizle",
-
   "settingsData": "Veri",
   "settingsAutoSync": "Otomatik Eşitleme",
   "settingsAutoSyncSubtitle": "Mesajları her 15 dakikada otomatik eşitle",
   "settingsLastSync": "Son eşitleme: {time}",
   "settingsSyncNow": "Şimdi Eşitle",
   "settingsSyncNowSubtitle": "Hemen eşitlemeyi başlat",
-
   "settingsLogs": "Günlükler",
   "settingsOpenLogsFolder": "Günlük Klasörünü Aç",
   "settingsOpenLogsFolderSubtitle": "Günlük dizininde dosya yöneticisini aç",
@@ -193,7 +175,6 @@
   "settingsNoLogFiles": "Günlük dosyası bulunamadı",
   "settingsFailedCreateZip": "Sıkıştırılmış arşiv oluşturulamadı",
   "settingsNoLogsYet": "Henüz günlük yok. {debugInfo}",
-
   "settingsIdentity": "Kimlik",
   "settingsFingerprint": "Kimlik",
   "settingsFingerprintCopied": "Kimlik kopyalandı",
@@ -209,7 +190,6 @@
   "settingsDeleteSeedWarning": "Silmeden önce kurtarma ifadenizi yedeklediğinizden emin olun!",
   "settingsDeleteSuccess": "Hesap başarıyla silindi",
   "settingsDeleteFailed": "Hesap silinemedi: {error}",
-
   "settingsAbout": "Hakkında",
   "settingsUpdateAvailable": "Güncelleme Mevcut",
   "settingsTapToDownload": "İndirmek için dokunun",
@@ -217,7 +197,6 @@
   "settingsLibVersion": "Kütüphane v{version}",
   "settingsPostQuantumMessenger": "Kuantum Sonrası Şifreli İletişim",
   "settingsCryptoStack": "KRİPTO ALTYAPISI",
-
   "profileTitle": "Profili Düzenle",
   "profileInfo": "Profil Bilgisi",
   "profileBio": "Hakkımda",
@@ -233,7 +212,6 @@
   "profileSaveFailed": "Profil kaydedilemedi: {error}",
   "profileCropTitle": "Fotoğrafı Kırp",
   "profileCropSave": "Kaydet",
-
   "contactProfileFailed": "Profil yüklenemedi",
   "contactProfileUnknownError": "Bilinmeyen hata",
   "contactProfileNickname": "Takma Ad",
@@ -253,7 +231,6 @@
   "contactProfileBio": "Hakkında",
   "contactProfileInfo": "Bilgi",
   "contactProfileWebsite": "Web Sitesi",
-
   "identityTitle": "DNA Connect",
   "identityWelcome": "DNA Connect'e Hoş Geldiniz",
   "identityGenerateSeed": "Yeni Kurtarma İfadesi Oluştur",
@@ -271,7 +248,6 @@
   "identityNameInvalid": "Ad 3-20 karakter olmalıdır",
   "identityCreating": "Kimliğiniz oluşturuluyor...",
   "identityRestoring": "Kimliğiniz geri yükleniyor...",
-
   "wallTitle": "Ana Sayfa",
   "wallWelcome": "Zaman tünelinize hoş geldiniz!",
   "wallWelcomeSubtitle": "Gönderilerini burada görmek için kişileri ve kanalları takip edin.",
@@ -327,7 +303,6 @@
   "wallBoostLimitReached": "Günlük boost limiti doldu",
   "wallAddComment": "Yorum ekle (isteğe bağlı)",
   "wallCreatePostTitle": "Gönderi Oluştur",
-
   "walletTitle": "Cüzdan",
   "walletTotalBalance": "Toplam Bakiye",
   "walletSend": "Gönder",
@@ -362,7 +337,6 @@
   "walletTxEarlier": "Daha Önce",
   "walletNoNonZeroBalances": "Bakiyesi olan varlık yok",
   "walletNoBalances": "Bakiye yok",
-
   "qrScannerTitle": "QR Tarayıcı",
   "qrAddContact": "Kişi Ekle",
   "qrAuthRequest": "Yetkilendirme İsteği",
@@ -372,7 +346,6 @@
   "qrCopyFingerprint": "Kopyala",
   "qrRequestSent": "Kişi isteği gönderildi",
   "qrInvalidCode": "Geçersiz QR kodu",
-
   "moreTitle": "Diğer",
   "moreWallet": "Cüzdan",
   "moreQRScanner": "QR Tarayıcı",
@@ -383,13 +356,11 @@
   "moreAppLock": "Uygulama Kilidi",
   "moreInviteFriends": "Arkadaşlarını Davet Et",
   "inviteFriendsMessage": "Selam! DNA Connect'i dene — kuantum güvenli şifreli mesajlaşma. Beni ekle: {username} — İndir: https://cpunk.io/download",
-
   "lockTitle": "DNA Connect",
   "lockEnterPIN": "Kilit açmak için PIN girin",
   "lockIncorrectPIN": "Yanlış PIN",
   "lockTooManyAttempts": "Çok fazla deneme. {seconds} saniye sonra tekrar deneyin",
   "lockUseBiometrics": "Kilit açmak için biyometrik kullanın",
-
   "appLockTitle": "Uygulama Kilidi",
   "appLockEnable": "Uygulama Kilidini Etkinleştir",
   "appLockUseBiometrics": "Biyometrik Kullan",
@@ -401,22 +372,18 @@
   "appLockPINChanged": "PIN değiştirildi",
   "appLockEnterCurrentPIN": "Mevcut PIN'inizi girin",
   "appLockEnterNewPIN": "Yeni PIN girin",
-
   "starredTitle": "Yıldızlı Mesajlar",
   "starredEmpty": "Yıldızlı mesaj yok",
-
   "blockedTitle": "Engellenen Kullanıcılar",
   "blockedEmpty": "Engellenen kullanıcı yok",
   "blockedUnblock": "Engeli Kaldır",
   "blockedUnblockConfirm": "{name} engellensin mi?",
-
   "updateTitle": "Güncelleme Gerekli",
   "updateMessage": "DNA Connect'i kullanmaya devam etmek için daha yeni bir sürüm gereklidir.",
   "updateDownload": "Güncellemeyi İndir",
   "updateAvailableTitle": "Yeni Sürüm Mevcut",
   "updateAvailableMessage": "DNA Connect'in yeni bir sürümü mevcut. En son özellikler ve iyileştirmeler için şimdi güncelleyin.",
   "updateLater": "Sonra",
-
   "cancel": "İptal",
   "save": "Kaydet",
   "delete": "Sil",
@@ -431,7 +398,6 @@
   "pleaseWait": "Lütfen bekleyin...",
   "copied": "Kopyalandı",
   "failed": "Başarısız: {error}",
-
   "retry": "Tekrar Dene",
   "continueButton": "Devam",
   "approve": "Onayla",
@@ -452,7 +418,6 @@
   "deniedContact": "{name} reddedildi",
   "blockedContact": "{name} engellendi",
   "unsubscribeFrom": "{name} aboneliğinden çık",
-
   "chatSenderDeletedThis": "Gönderen bunu sildi",
   "chatDeleteMessageTitle": "Mesajı Sil",
   "chatDeleteMessageConfirm": "Bu mesajı tüm cihazlarınızdan silmek ve karşı tarafı bilgilendirmek istiyor musunuz?",
@@ -470,7 +435,6 @@
   "settingsAllMessagesDeleted": "Tüm mesajlar silindi",
   "settingsDeleteAllMessagesFailed": "Mesajlar silinemedi",
   "settingsDeleteEverything": "Her Şeyi Sil",
-
   "settingsGeneral": "Genel",
   "settingsDataStorage": "Veri ve Depolama",
   "settingsAccount": "Hesap",
@@ -481,7 +445,6 @@
   "settingsClearCacheWarning": "Bu işlem önbelleğe alınmış tüm medyayı (resim, video, ses) silecektir. Gerektiğinde tekrar indirileceklerdir.",
   "settingsCacheCleared": "Önbellek temizlendi",
   "settingsClearCacheButton": "Temizle",
-
   "txDetailSent": "Gönderildi",
   "txDetailReceived": "Alındı",
   "txDetailDenied": "İşlem Reddedildi",
@@ -496,7 +459,6 @@
   "txDetailClose": "Kapat",
   "txDetailAddedToAddressBook": "\"{label}\" adres defterine eklendi",
   "txDetailFailedToAdd": "Eklenemedi: {error}",
-
   "chatVideoGallery": "Kütüphaneden Video",
   "chatRecordVideo": "Video Çek",
   "chatVideoTooLarge": "Video 64MB limitini aşıyor",
@@ -515,12 +477,56 @@
   "chatTapToPlay": "Oynatmak için dokunun",
   "chatVideoError": "Video oynatma hatası",
   "chatAudioError": "Ses oynatma hatası",
-
   "userProfileTitle": "Profil",
   "userProfileEditProfile": "Profili Düzenle",
   "userProfileMessage": "Mesaj",
   "userProfilePosts": "Paylaşımlar",
   "userProfileNoPosts": "Henüz paylaşım yok",
   "userProfileTotalTips": "Bahşiş",
-  "userProfileLastMonth": "Son 30 Gün"
+  "userProfileLastMonth": "Son 30 Gün",
+  "dnacTitle": "Dijital Para",
+  "dnacBalance": "Bakiye",
+  "dnacConfirmed": "Kullanılabilir",
+  "dnacPending": "Beklemede",
+  "dnacLocked": "Kilitli",
+  "dnacSend": "Gönder",
+  "dnacReceive": "Al",
+  "dnacSync": "Senkronize Et",
+  "dnacSyncing": "Senkronize ediliyor...",
+  "dnacSyncSuccess": "Cüzdan senkronize edildi",
+  "dnacSyncFailed": "Senkronizasyon başarısız",
+  "dnacHistory": "Geçmiş",
+  "dnacUtxos": "Paralar",
+  "dnacNoTransactions": "Henüz işlem yok",
+  "dnacNoUtxos": "Henüz para yok",
+  "dnacSendTitle": "Ödeme Gönder",
+  "dnacRecipient": "Alıcı",
+  "dnacRecipientHint": "Alıcı kimliği",
+  "dnacAmount": "Tutar",
+  "dnacAmountHint": "0,00",
+  "dnacMemo": "Not (isteğe bağlı)",
+  "dnacMemoHint": "Ne için?",
+  "dnacFee": "İşlem Ücreti",
+  "dnacEstimatingFee": "Ücret hesaplanıyor...",
+  "dnacTotal": "Toplam",
+  "dnacConfirmSend": "Ödemeyi Onayla",
+  "dnacSending": "Gönderiliyor...",
+  "dnacSendSuccess": "Ödeme başarıyla gönderildi",
+  "dnacSendFailed": "Ödeme başarısız",
+  "dnacInsufficientFunds": "Yetersiz bakiye",
+  "dnacInvalidRecipient": "Geçersiz alıcı",
+  "dnacInvalidAmount": "Geçersiz tutar",
+  "dnacPickContact": "Kişilerden seç",
+  "dnacHistoryTitle": "İşlem Geçmişi",
+  "dnacHistoryReceived": "Alındı",
+  "dnacHistorySent": "Gönderildi",
+  "dnacHistoryGenesis": "Oluşum",
+  "dnacHistoryBurn": "Yakıldı",
+  "dnacUtxosTitle": "Para Detayları",
+  "dnacUtxoUnspent": "Kullanılabilir",
+  "dnacUtxoPending": "Beklemede",
+  "dnacUtxoSpent": "Harcandı",
+  "dnacNotInitialized": "Cüzdan yükleniyor...",
+  "dnacToken": "DNA",
+  "dnacAmountWithToken": "{amount} DNA"
 }
