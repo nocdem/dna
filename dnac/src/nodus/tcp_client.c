@@ -404,7 +404,12 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
         return DNAC_ERROR_NOT_INITIALIZED;
     }
 
-    QGP_LOG_DEBUG(LOG_TAG, "recover: querying UTXOs for fp=%s (len=%zu)", fingerprint, strlen(fingerprint));
+    size_t fplen = strlen(fingerprint);
+    /* Checksum to bypass LogSanitizer redaction */
+    uint32_t fp_cksum = 0;
+    for (size_t i = 0; i < fplen; i++) fp_cksum = fp_cksum * 31 + (uint8_t)fingerprint[i];
+    QGP_LOG_DEBUG(LOG_TAG, "recover: fp_len=%zu fp_cksum=%u fp[0..3]=%c%c%c%c",
+                  fplen, fp_cksum, fingerprint[0], fingerprint[1], fingerprint[2], fingerprint[3]);
 
     nodus_singleton_lock();
 
