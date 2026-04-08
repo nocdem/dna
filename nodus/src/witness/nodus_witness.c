@@ -605,6 +605,15 @@ void nodus_witness_close(nodus_witness_t *witness) {
 
     witness->running = false;
 
+    /* Free any in-flight batch entries (prevents leak / corruption on shutdown) */
+    for (int i = 0; i < witness->round_state.batch_count; i++) {
+        if (witness->round_state.batch_entries[i]) {
+            nodus_witness_mempool_entry_free(witness->round_state.batch_entries[i]);
+            witness->round_state.batch_entries[i] = NULL;
+        }
+    }
+    witness->round_state.batch_count = 0;
+
     /* Clear mempool */
     nodus_witness_mempool_clear(&witness->mempool);
 
