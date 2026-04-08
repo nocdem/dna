@@ -1938,9 +1938,9 @@ int nodus_client_dnac_spend(nodus_client_t *client,
     if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
     free(buf);
 
-    /* BFT consensus can take up to 30s */
+    /* Mempool block timer (5s) + BFT round + mesh stabilization */
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
-    if (!wait_response(client, req, 30000)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (!wait_response(client, req, 60000)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
 
     /* Decode spend result from raw response */

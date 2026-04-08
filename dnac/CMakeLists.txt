@@ -149,62 +149,7 @@ target_link_libraries(dnac
 )
 
 
-# ============================================================================
-# CLI Executable
-# ============================================================================
-
-option(DNAC_BUILD_CLI "Build dnac-cli executable" ON)
-
-if(DNAC_BUILD_CLI)
-    set(DNAC_CLI_SOURCES
-        src/cli/main.c
-        src/cli/commands.c
-    )
-
-    add_executable(dnac-cli ${DNAC_CLI_SOURCES})
-
-    target_link_libraries(dnac-cli
-        dnac
-    )
-
-    # Link libdna directly for dna_engine functions
-    if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
-        target_link_libraries(dnac-cli ${DNA_BUILD_DIR}/libdna.so)
-    else()
-        target_link_libraries(dnac-cli ${DNA_BUILD_DIR}/libdna.a)
-    endif()
-
-    target_link_libraries(dnac-cli
-        OpenSSL::SSL
-        OpenSSL::Crypto
-        ${SQLITE3_LIBRARIES}
-        pthread
-        m
-    )
-
-    install(TARGETS dnac-cli RUNTIME DESTINATION bin)
-
-    # Genesis standalone tool
-    add_executable(dnac-genesis src/cli/genesis_main.c)
-
-    target_link_libraries(dnac-genesis dnac)
-
-    if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
-        target_link_libraries(dnac-genesis ${DNA_BUILD_DIR}/libdna.so)
-    else()
-        target_link_libraries(dnac-genesis ${DNA_BUILD_DIR}/libdna.a)
-    endif()
-
-    target_link_libraries(dnac-genesis
-        OpenSSL::SSL
-        OpenSSL::Crypto
-        ${SQLITE3_LIBRARIES}
-        pthread
-        m
-    )
-
-    install(TARGETS dnac-genesis RUNTIME DESTINATION bin)
-endif()
+# CLI removed — all DNAC commands are now in dna-connect-cli (messenger/cli/cli_dna_chain.c)
 
 # ============================================================================
 # Tests
