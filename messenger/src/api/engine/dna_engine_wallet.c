@@ -1492,17 +1492,24 @@ void dna_handle_estimate_gas(dna_engine_t *engine, dna_task_t *task) {
     uint64_t base_gas_price = bc_estimate.gas_price;
     uint64_t gas_limit = bc_estimate.gas_limit;
 
-    dna_gas_estimates_t estimates;
-    memset(&estimates, 0, sizeof(estimates));
-    fill_gas_estimate(&estimates.slow,   base_gas_price, ENGINE_GAS_MULTIPLIERS[0], gas_limit);
-    fill_gas_estimate(&estimates.normal, base_gas_price, ENGINE_GAS_MULTIPLIERS[1], gas_limit);
-    fill_gas_estimate(&estimates.fast,   base_gas_price, ENGINE_GAS_MULTIPLIERS[2], gas_limit);
+    /* Heap-allocated so pointer survives async NativeCallable.listener
+     * dispatch to Dart isolate. Dart side frees via malloc.free(). */
+    dna_gas_estimates_t *estimates = calloc(1, sizeof(dna_gas_estimates_t));
+    if (!estimates) {
+        if (task->callback.gas_estimates) {
+            task->callback.gas_estimates(task->request_id, -1, NULL, task->user_data);
+        }
+        return;
+    }
+    fill_gas_estimate(&estimates->slow,   base_gas_price, ENGINE_GAS_MULTIPLIERS[0], gas_limit);
+    fill_gas_estimate(&estimates->normal, base_gas_price, ENGINE_GAS_MULTIPLIERS[1], gas_limit);
+    fill_gas_estimate(&estimates->fast,   base_gas_price, ENGINE_GAS_MULTIPLIERS[2], gas_limit);
 
     QGP_LOG_DEBUG(LOG_TAG, "estimate_gas: slow=%s normal=%s fast=%s ETH",
-                  estimates.slow.fee_eth, estimates.normal.fee_eth, estimates.fast.fee_eth);
+                  estimates->slow.fee_eth, estimates->normal.fee_eth, estimates->fast.fee_eth);
 
     if (task->callback.gas_estimates) {
-        task->callback.gas_estimates(task->request_id, 0, &estimates, task->user_data);
+        task->callback.gas_estimates(task->request_id, 0, estimates, task->user_data);
     }
 }
 

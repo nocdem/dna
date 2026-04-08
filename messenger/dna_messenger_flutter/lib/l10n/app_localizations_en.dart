@@ -1712,18 +1712,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get dnacNotInitialized => 'Wallet is loading...';
 
   @override
-  String get dnacToken => 'DNA';
+  String get dnacToken => 'XXX';
 
   @override
   String dnacAmountWithToken(String amount) {
-    return '$amount DNA';
+    return '$amount XXX';
   }
 
   @override
   String get dnacNetworkLabel => 'DNA Chain';
 
   @override
-  String get dnacDetailTitle => 'CPUNK Details';
+  String get dnacDetailTitle => 'XXX Details';
 
   @override
   String get walletContacts => 'Contacts';

@@ -3307,7 +3307,9 @@ class DnaEngine {
           normal: GasEstimate.fromNative(est.normal),
           fast: GasEstimate.fromNative(est.fast),
         ));
+        malloc.free(estimatesPtr); // C heap-allocated via calloc
       } else {
+        if (estimatesPtr != nullptr) malloc.free(estimatesPtr);
         completer.completeError(
             DnaEngineException.fromCode(error, _bindings));
       }

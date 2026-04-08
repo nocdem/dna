@@ -865,8 +865,8 @@
   "dnacUtxoPending": "Pending",
   "dnacUtxoSpent": "Spent",
   "dnacNotInitialized": "Wallet is loading...",
-  "dnacToken": "DNA",
-  "dnacAmountWithToken": "{amount} DNA",
+  "dnacToken": "XXX",
+  "dnacAmountWithToken": "{amount} XXX",
   "@dnacAmountWithToken": {
     "placeholders": {
       "amount": {
@@ -875,7 +875,7 @@
     }
   },
   "dnacNetworkLabel": "DNA Chain",
-  "dnacDetailTitle": "CPUNK Details",
+  "dnacDetailTitle": "XXX Details",
   "walletContacts": "Contacts",
   "settingsActiveChains": "Active Chains",
   "settingsActiveChainsSubtitle": "Choose which networks to show in your wallet"

@@ -18,11 +18,10 @@ import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
 import '../../providers/price_provider.dart';
 import '../../providers/dnac_provider.dart';
-import '../../ffi/dna_engine.dart' show DnacBalance, formatDnacAmount;
+import '../../ffi/dna_engine.dart' show DnacBalance, DnacTxHistory, formatDnacAmount;
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
 import 'dnac_send_screen.dart';
-import 'dnac_history_screen.dart';
 import 'dnac_utxos_screen.dart';
 import '../../l10n/app_localizations.dart';
 
@@ -56,6 +55,8 @@ String? getTokenIconPath(String token) {
       return 'assets/icons/crypto/nys.png';
     case 'CPUNK':
       return 'assets/icons/crypto/cpunk.png';
+    case 'XXX':
+      return 'assets/icons/crypto/cpunk.png';  // DNAC token (DNA Chain)
     case 'CELL':
     case 'QEVM':
       return 'assets/icons/crypto/cell.svg';  // CF20 tokens use Cellframe icon
@@ -762,7 +763,8 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
 
   // Official brand colors — maximum contrast, globally recognizable
   static const _tokenColors = <String, Color>{
-    'CPUNK': Color(0xFF00E5A0),  // CPUNK vibrant cyan-green (brand)
+    'CPUNK': Color(0xFF00E5A0),  // CPUNK vibrant cyan-green (Cellframe)
+    'XXX': Color(0xFF00E5A0),    // XXX DNAC token (DNA Chain)
     'CELL': Color(0xFF7B3FE4),   // Cellframe purple (official)
     'ETH': Color(0xFF627EEA),    // Ethereum blue (official)
     'SOL': Color(0xFF14F195),    // Solana green (official brand)
@@ -1583,7 +1585,7 @@ class _DnacAssetTile extends ConsumerWidget {
     final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
     final confirmed = balance?.confirmed ?? 0;
     final balanceStr = formatDnacAmount(confirmed);
-    const tokenColor = Color(0xFF00E5A0); // CPUNK cyan-green
+    const tokenColor = Color(0xFF00E5A0); // XXX (DNAC) cyan-green
 
     return DnaCard(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -1627,7 +1629,7 @@ class _DnacAssetTile extends ConsumerWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'CPUNK',
+                  'XXX',
                   style: theme.textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.w600,
                     fontSize: 15,
@@ -3731,252 +3733,263 @@ class _StatusChip extends StatelessWidget {
 }
 
 // =============================================================================
-// DNAC Detail Bottom Sheet
+// DNAC Detail Sheet — matches _TokenDetailSheet pattern
 // =============================================================================
 
-class _DnacDetailSheet extends ConsumerStatefulWidget {
+class _DnacDetailSheet extends ConsumerWidget {
   const _DnacDetailSheet();
 
   @override
-  ConsumerState<_DnacDetailSheet> createState() => _DnacDetailSheetState();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final balanceAsync = ref.watch(dnacBalanceProvider);
+    final historyAsync = ref.watch(dnacHistoryProvider);
+    final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
+    final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
+
+    final balance = balanceAsync.valueOrNull;
+    final balanceStr = balance != null
+        ? formatDnacAmount(balance.confirmed)
+        : '0';
+
+    return DraggableScrollableSheet(
+      initialChildSize: 0.85,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      expand: false,
+      builder: (context, scrollController) {
+        return SafeArea(
+          child: Column(
+            children: [
+              // Handle bar
+              Container(
+                margin: const EdgeInsets.only(top: 8),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: theme.dividerColor,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              // Gradient header (charcoal like hero card)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(20),
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF2D3436), Color(0xFF1E272E)],
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 48, height: 48,
+                          child: buildCryptoIcon('assets/icons/crypto/cpunk.png'),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                hideBalances ? '*****' : '$balanceStr XXX',
+                                style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+                              ),
+                              if (balance != null && (balance.pending > 0 || balance.locked > 0))
+                                Row(
+                                  children: [
+                                    if (balance.pending > 0)
+                                      Text(
+                                        '${l10n.dnacPending}: ${hideBalances ? "*****" : formatDnacAmount(balance.pending)}',
+                                        style: const TextStyle(color: Colors.orange, fontSize: 12),
+                                      ),
+                                    if (balance.pending > 0 && balance.locked > 0)
+                                      const SizedBox(width: 8),
+                                    if (balance.locked > 0)
+                                      Text(
+                                        '${l10n.dnacLocked}: ${hideBalances ? "*****" : formatDnacAmount(balance.locked)}',
+                                        style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+                                      ),
+                                  ],
+                                ),
+                              Text(
+                                l10n.dnacNetworkLabel,
+                                style: const TextStyle(color: Colors.white70, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: const FaIcon(FontAwesomeIcons.arrowsRotate, color: Colors.white70),
+                          onPressed: () {
+                            ref.invalidate(dnacBalanceProvider);
+                            ref.invalidate(dnacHistoryProvider);
+                          },
+                          tooltip: l10n.dnacSync,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    // Send button on gradient
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          Navigator.push(context,
+                            MaterialPageRoute(builder: (_) => const DnacSendScreen()));
+                        },
+                        icon: const FaIcon(FontAwesomeIcons.paperPlane, size: 16, color: Colors.white),
+                        label: Text(l10n.dnacSend, style: const TextStyle(color: Colors.white)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white.withValues(alpha: 0.2),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(DnaSpacing.radiusMd)),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              // Transaction history header + UTXOs link
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    Text(
+                      l10n.dnacHistory,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                    const Spacer(),
+                    TextButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        Navigator.push(context,
+                          MaterialPageRoute(builder: (_) => const DnacUtxosScreen()));
+                      },
+                      icon: FaIcon(FontAwesomeIcons.layerGroup, size: 14, color: theme.colorScheme.primary),
+                      label: Text(l10n.dnacUtxos, style: TextStyle(color: theme.colorScheme.primary, fontSize: 12)),
+                    ),
+                  ],
+                ),
+              ),
+              // Transaction list
+              Expanded(
+                child: historyAsync.when(
+                  data: (history) {
+                    if (history.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            FaIcon(FontAwesomeIcons.receipt, size: 48,
+                              color: theme.colorScheme.primary.withAlpha(128)),
+                            const SizedBox(height: 12),
+                            Text(l10n.dnacNoTransactions, style: theme.textTheme.bodyMedium),
+                          ],
+                        ),
+                      );
+                    }
+                    return ListView.builder(
+                      controller: scrollController,
+                      itemCount: history.length,
+                      itemBuilder: (context, index) {
+                        final tx = history[index];
+                        return _DnacTxTile(tx: tx);
+                      },
+                    );
+                  },
+                  loading: () => const Center(child: CircularProgressIndicator()),
+                  error: (error, _) => Center(
+                    child: Text('Failed to load: $error',
+                      style: TextStyle(color: DnaColors.textWarning)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 }
 
-class _DnacDetailSheetState extends ConsumerState<_DnacDetailSheet> {
-  bool _isSyncing = false;
-
-  Future<void> _sync() async {
-    if (_isSyncing) return;
-    setState(() => _isSyncing = true);
-    try {
-      await ref.read(dnacBalanceProvider.notifier).sync();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(AppLocalizations.of(context).dnacSyncSuccess)),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(AppLocalizations.of(context).dnacSyncFailed)),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isSyncing = false);
-    }
-  }
+/// DNAC transaction tile — inline in detail sheet (replaces standalone DnacHistoryScreen)
+class _DnacTxTile extends StatelessWidget {
+  final DnacTxHistory tx;
+  const _DnacTxTile({required this.tx});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final l10n = AppLocalizations.of(context);
-    final balanceAsync = ref.watch(dnacBalanceProvider);
-    final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+    final isGenesis = tx.type == 0;
+    final isBurn = tx.type == 2;
+    final isPositive = tx.amountDelta >= 0;
+
+    final IconData icon;
+    final Color color;
+    final String typeLabel;
+
+    if (isGenesis) {
+      icon = FontAwesomeIcons.seedling;
+      color = Colors.purple;
+      typeLabel = l10n.dnacHistoryGenesis;
+    } else if (isBurn) {
+      icon = FontAwesomeIcons.fire;
+      color = Colors.orange;
+      typeLabel = l10n.dnacHistoryBurn;
+    } else if (isPositive) {
+      icon = FontAwesomeIcons.arrowDown;
+      color = Colors.green;
+      typeLabel = l10n.dnacHistoryReceived;
+    } else {
+      icon = FontAwesomeIcons.arrowUp;
+      color = Colors.red;
+      typeLabel = l10n.dnacHistorySent;
+    }
+
+    final sign = isPositive ? '+' : '-';
+    final cpLen = tx.counterparty.length;
+    final counterparty = cpLen > 0
+        ? '${tx.counterparty.substring(0, cpLen < 12 ? cpLen : 12)}...'
+        : '';
+
+    return ListTile(
+      leading: Container(
+        width: 40, height: 40,
+        decoration: BoxDecoration(color: color.withAlpha(25), shape: BoxShape.circle),
+        child: Center(child: FaIcon(icon, size: 16, color: color)),
       ),
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Drag handle
-              Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              // Header row: icon + title + sync button
-              Row(
-                children: [
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: const Color(0xFF00E5A0).withValues(alpha: 0.1),
-                      border: Border.all(
-                        color: const Color(0xFF00E5A0).withValues(alpha: 0.3),
-                        width: 1.5,
-                      ),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(10),
-                      child: buildCryptoIcon('assets/icons/crypto/cpunk.png'),
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          l10n.dnacDetailTitle,
-                          style: theme.textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Text(
-                          l10n.dnacNetworkLabel,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  _isSyncing
-                      ? const Padding(
-                          padding: EdgeInsets.all(12),
-                          child: SizedBox(
-                            width: 16, height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        )
-                      : IconButton(
-                          icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 16),
-                          onPressed: _sync,
-                          tooltip: l10n.dnacSync,
-                        ),
-                ],
-              ),
-              const SizedBox(height: 24),
-
-              // Balance display
-              balanceAsync.when(
-                data: (balance) {
-                  if (balance == null) {
-                    return Text(l10n.dnacNotInitialized, style: theme.textTheme.bodyMedium);
-                  }
-                  return Column(
-                    children: [
-                      Text(
-                        hideBalances
-                            ? '*****'
-                            : l10n.dnacAmountWithToken(formatDnacAmount(balance.confirmed)),
-                        style: theme.textTheme.headlineMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      if (balance.pending > 0 || balance.locked > 0)
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            if (balance.pending > 0)
-                              _DnacStatusChip(
-                                label: l10n.dnacPending,
-                                value: hideBalances ? '*****' : formatDnacAmount(balance.pending),
-                                color: Colors.orange,
-                              ),
-                            if (balance.pending > 0 && balance.locked > 0)
-                              const SizedBox(width: 8),
-                            if (balance.locked > 0)
-                              _DnacStatusChip(
-                                label: l10n.dnacLocked,
-                                value: hideBalances ? '*****' : formatDnacAmount(balance.locked),
-                                color: Colors.red,
-                              ),
-                          ],
-                        ),
-                    ],
-                  );
-                },
-                loading: () => const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                error: (e, _) => Text(l10n.dnacNotInitialized, style: theme.textTheme.bodyMedium),
-              ),
-              const SizedBox(height: 24),
-
-              // Action buttons
-              Row(
-                children: [
-                  Expanded(
-                    child: _ActionButton(
-                      icon: FontAwesomeIcons.paperPlane,
-                      label: l10n.dnacSend,
-                      onPressed: () {
-                        Navigator.pop(context);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const DnacSendScreen()),
-                        );
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _ActionButton(
-                      icon: FontAwesomeIcons.clockRotateLeft,
-                      label: l10n.dnacHistory,
-                      onPressed: () {
-                        Navigator.pop(context);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const DnacHistoryScreen()),
-                        );
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _ActionButton(
-                      icon: FontAwesomeIcons.layerGroup,
-                      label: l10n.dnacUtxos,
-                      onPressed: () {
-                        Navigator.pop(context);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const DnacUtxosScreen()),
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
+      title: Row(
+        children: [
+          Text(typeLabel, style: theme.textTheme.bodyMedium),
+          if (counterparty.isNotEmpty) ...[
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(counterparty,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withAlpha(120)),
+                overflow: TextOverflow.ellipsis),
+            ),
+          ],
+        ],
       ),
-    );
-  }
-}
-
-class _DnacStatusChip extends StatelessWidget {
-  final String label;
-  final String value;
-  final Color color;
-
-  const _DnacStatusChip({
-    required this.label,
-    required this.value,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withAlpha(25),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        '$label: $value',
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-          color: color,
-          fontWeight: FontWeight.w500,
-        ),
+      subtitle: tx.memo.isNotEmpty
+          ? Text(tx.memo, style: theme.textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
+              maxLines: 1, overflow: TextOverflow.ellipsis)
+          : null,
+      trailing: Text(
+        '$sign${tx.amountFormatted}',
+        style: theme.textTheme.titleSmall?.copyWith(color: color, fontWeight: FontWeight.bold),
       ),
     );
   }

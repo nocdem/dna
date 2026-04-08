@@ -3281,13 +3281,13 @@ abstract class AppLocalizations {
   /// No description provided for @dnacToken.
   ///
   /// In en, this message translates to:
-  /// **'DNA'**
+  /// **'XXX'**
   String get dnacToken;
 
   /// No description provided for @dnacAmountWithToken.
   ///
   /// In en, this message translates to:
-  /// **'{amount} DNA'**
+  /// **'{amount} XXX'**
   String dnacAmountWithToken(String amount);
 
   /// No description provided for @dnacNetworkLabel.
@@ -3299,7 +3299,7 @@ abstract class AppLocalizations {
   /// No description provided for @dnacDetailTitle.
   ///
   /// In en, this message translates to:
-  /// **'CPUNK Details'**
+  /// **'XXX Details'**
   String get dnacDetailTitle;
 
   /// No description provided for @walletContacts.

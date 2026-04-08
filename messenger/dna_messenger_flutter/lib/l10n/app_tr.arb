@@ -527,10 +527,10 @@
   "dnacUtxoPending": "Beklemede",
   "dnacUtxoSpent": "Harcandı",
   "dnacNotInitialized": "Cüzdan yükleniyor...",
-  "dnacToken": "DNA",
-  "dnacAmountWithToken": "{amount} DNA",
+  "dnacToken": "XXX",
+  "dnacAmountWithToken": "{amount} XXX",
   "dnacNetworkLabel": "DNA Zinciri",
-  "dnacDetailTitle": "CPUNK Detayları",
+  "dnacDetailTitle": "XXX Detayları",
   "walletContacts": "Kişiler",
   "settingsActiveChains": "Aktif Ağlar",
   "settingsActiveChainsSubtitle": "Cüzdanınızda hangi ağları görmek istediğinizi seçin"
