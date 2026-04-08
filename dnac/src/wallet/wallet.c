@@ -59,14 +59,18 @@ dnac_context_t* dnac_init(void *dna_engine) {
     ctx->dna_engine = engine;
     strncpy(ctx->owner_fingerprint, fp, sizeof(ctx->owner_fingerprint) - 1);
 
-    /* Open database in ~/.dna/ directory */
-    /* For now, use current directory - TODO: get data_dir from engine */
+    /* Open database in engine's data directory (works on all platforms) */
     char db_path[512];
-    const char *home = getenv("HOME");
-    if (home) {
-        snprintf(db_path, sizeof(db_path), "%s/.dna/%s", home, DNAC_DB_FILENAME);
+    const char *data_dir = dna_engine_get_data_dir(engine);
+    if (data_dir) {
+        snprintf(db_path, sizeof(db_path), "%s/%s", data_dir, DNAC_DB_FILENAME);
     } else {
-        snprintf(db_path, sizeof(db_path), "./%s", DNAC_DB_FILENAME);
+        const char *home = getenv("HOME");
+        if (home) {
+            snprintf(db_path, sizeof(db_path), "%s/.dna/%s", home, DNAC_DB_FILENAME);
+        } else {
+            snprintf(db_path, sizeof(db_path), "./%s", DNAC_DB_FILENAME);
+        }
     }
 
     int rc = sqlite3_open(db_path, &ctx->db);

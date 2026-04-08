@@ -1200,6 +1200,11 @@ const char* dna_engine_get_fingerprint(dna_engine_t *engine) {
     return engine->fingerprint;
 }
 
+const char* dna_engine_get_data_dir(dna_engine_t *engine) {
+    if (!engine) return NULL;
+    return engine->data_dir;
+}
+
 /* v0.3.0: dna_engine_list_identities() removed - single-user model
  * Use dna_engine_has_identity() instead */
 

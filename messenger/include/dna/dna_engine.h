@@ -1037,6 +1037,13 @@ DNA_API bool dna_engine_is_paused(dna_engine_t *engine);
  */
 DNA_API const char* dna_engine_get_fingerprint(dna_engine_t *engine);
 
+/**
+ * @brief Get the engine's data directory path
+ * @param engine Engine instance
+ * @return Data directory path (e.g., "/data/data/app/.dna" on Android, "~/.dna" on desktop)
+ */
+DNA_API const char* dna_engine_get_data_dir(dna_engine_t *engine);
+
 /* ============================================================================
  * 2. IDENTITY (v0.3.0: single-user model)
  * ============================================================================ */
