@@ -1352,6 +1352,7 @@ static void handle_t2_get(nodus_server_t *srv, nodus_session_t *sess,
 }
 
 /* Forward declarations for BF infrastructure (used by get_all forwarding) */
+static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b);
 static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b);
 static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
                               int fi, const nodus_peer_t *peer,
@@ -1369,39 +1370,47 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
     for (int kk = 0; kk < 8; kk++) sprintf(ga_kh + kk*2, "%02x", msg->key.bytes[kk]);
     ga_kh[16] = '\0';
 
-    if (rc == 0 && count > 0) {
-        fprintf(stderr, "GET_ALL: key=%s... local_hit %zu values\n", ga_kh, count);
+    /* Find R closest peers for potential forwarding (needed even on local hit
+     * because multi-owner keys may have different value_ids on different nodes) */
+    nodus_peer_t closest[NODUS_R];
+    int peer_count = nodus_routing_find_closest(&srv->routing, &msg->key,
+                                                  closest, NODUS_R);
+
+    /* Filter out self */
+    int fwd_count = 0;
+    nodus_peer_t fwd_peers[NODUS_R];
+    for (int i = 0; i < peer_count; i++) {
+        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) != 0) {
+            fwd_peers[fwd_count++] = closest[i];
+        }
+    }
+
+    /* If we have local data AND no peers to forward to, return local data */
+    if (rc == 0 && count > 0 && fwd_count == 0) {
+        fprintf(stderr, "GET_ALL: key=%s... local_hit %zu values, no peers to forward\n", ga_kh, count);
         size_t len = 0;
         if (nodus_t2_result_multi(msg->txn_id, vals, count,
                                    resp_buf, sizeof(resp_buf), &len) == 0) {
             nodus_tcp_send(sess->conn, resp_buf, len);
-        } else {
-            fprintf(stderr, "NODUS_SRV: GET_ALL result encode failed (values too large?)\n");
-            nodus_t2_error(msg->txn_id, NODUS_ERR_INTERNAL_ERROR,
-                            "value encode failed", resp_buf, sizeof(resp_buf), &len);
-            nodus_tcp_send(sess->conn, resp_buf, len);
         }
-
-        for (size_t i = 0; i < count; i++)
-            nodus_value_free(vals[i]);
+        for (size_t i = 0; i < count; i++) nodus_value_free(vals[i]);
         free(vals);
         return;
     }
 
-    /* Local miss — try forwarding to closest peer via BF infrastructure */
-    nodus_peer_t closest[1];
-    int found = nodus_routing_find_closest(&srv->routing, &msg->key, closest, 1);
-    if (found == 0 || nodus_key_cmp(&closest[0].node_id, &srv->identity.node_id) == 0) {
-        fprintf(stderr, "GET_ALL: key=%s... local_miss, no_forward (self_closest=%d peers=%d)\n",
-                ga_kh, found > 0 ? 1 : 0, found);
+    /* No local data AND no peers → empty */
+    if ((rc != 0 || count == 0) && fwd_count == 0) {
+        fprintf(stderr, "GET_ALL: key=%s... local_miss, no peers\n", ga_kh);
         size_t len = 0;
         nodus_t2_result_empty(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
         nodus_tcp_send(sess->conn, resp_buf, len);
         return;
     }
 
-    fprintf(stderr, "GET_ALL: key=%s... local_miss, forwarding to %s:%d\n",
-            ga_kh, closest[0].ip, closest[0].tcp_port);
+    /* We have peers to forward to — use BF infrastructure to gather all value_ids
+     * from multiple nodes and merge with local data */
+    fprintf(stderr, "GET_ALL: key=%s... local=%zu values, forwarding to %d peers\n",
+            ga_kh, count, fwd_count);
 
     /* Find a free BF batch slot */
     int bi = -1;
@@ -1409,10 +1418,20 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
         if (!srv->bf_state.batches[i].active) { bi = i; break; }
     }
     if (bi < 0) {
-        fprintf(stderr, "GET_ALL: key=%s... forward FAILED (no BF slots)\n", ga_kh);
-        size_t len = 0;
-        nodus_t2_result_empty(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
-        nodus_tcp_send(sess->conn, resp_buf, len);
+        /* No slots — return local data or empty */
+        fprintf(stderr, "GET_ALL: key=%s... no BF slots, returning local\n", ga_kh);
+        if (rc == 0 && count > 0) {
+            size_t len = 0;
+            if (nodus_t2_result_multi(msg->txn_id, vals, count,
+                                       resp_buf, sizeof(resp_buf), &len) == 0)
+                nodus_tcp_send(sess->conn, resp_buf, len);
+            for (size_t i = 0; i < count; i++) nodus_value_free(vals[i]);
+            free(vals);
+        } else {
+            size_t len = 0;
+            nodus_t2_result_empty(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
+            nodus_tcp_send(sess->conn, resp_buf, len);
+        }
         return;
     }
 
@@ -1437,18 +1456,42 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
         free(b->counts_per_key); b->counts_per_key = NULL;
         goto ga_empty;
     }
-    b->pending_forwards = 0;
 
-    int key_idx = 0;
-    if (bf_start_forward(srv, b, 0, &closest[0], &msg->key, &key_idx, 1) == 0) {
-        b->pending_forwards = 1;
-        return;  /* Response deferred — bf_tick will send when forward completes */
+    /* Seed with local data if any */
+    if (rc == 0 && count > 0 && vals) {
+        b->vals_per_key[0] = vals;
+        b->counts_per_key[0] = count;
+        vals = NULL;  /* Ownership transferred to batch */
     }
 
-    fprintf(stderr, "GET_ALL: key=%s... forward START_FAILED to %s:%d\n",
-            ga_kh, closest[0].ip, closest[0].tcp_port);
+    /* Start forwards to up to R closest peers */
+    b->pending_forwards = 0;
+    int key_idx = 0;
+    int fwd_limit = fwd_count < NODUS_BF_MAX_FORWARDS ? fwd_count : NODUS_BF_MAX_FORWARDS;
+    for (int f = 0; f < fwd_limit; f++) {
+        if (bf_start_forward(srv, b, f, &fwd_peers[f], &msg->key, &key_idx, 1) == 0) {
+            b->pending_forwards++;
+        } else {
+            fprintf(stderr, "GET_ALL: key=%s... forward START_FAILED to %s:%d\n",
+                    ga_kh, fwd_peers[f].ip, fwd_peers[f].tcp_port);
+        }
+    }
 
-    /* Forward failed to start — clean up and return empty */
+    /* Clean up local vals if not transferred */
+    if (vals) {
+        for (size_t i = 0; i < count; i++) nodus_value_free(vals[i]);
+        free(vals);
+    }
+
+    if (b->pending_forwards > 0) {
+        return;  /* Response deferred — bf_tick will send when all forwards complete */
+    }
+
+    /* All forwards failed — return whatever we have (local data or empty) */
+    if (b->counts_per_key[0] > 0) {
+        bf_send_result(srv, b);
+        return;
+    }
     b->vals_per_key = NULL;
     b->counts_per_key = NULL;
     bf_batch_cleanup(srv, b);
@@ -1708,11 +1751,49 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
                 for (int r = 0; r < resp.batch_key_count && r < c->key_count; r++) {
                     int ki = c->key_indices[r];
                     if (ki < 0 || ki >= b->key_count) continue;
-                    if (b->counts_per_key[ki] > 0) continue;
-                    b->vals_per_key[ki] = resp.batch_vals ? resp.batch_vals[r] : NULL;
-                    b->counts_per_key[ki] = resp.batch_val_counts ? resp.batch_val_counts[r] : 0;
-                    if (resp.batch_vals) resp.batch_vals[r] = NULL;
-                    if (resp.batch_val_counts) resp.batch_val_counts[r] = 0;
+
+                    size_t new_count = resp.batch_val_counts ? resp.batch_val_counts[r] : 0;
+                    nodus_value_t **new_vals = resp.batch_vals ? resp.batch_vals[r] : NULL;
+
+                    if (b->is_get_all && b->counts_per_key[ki] > 0 && new_count > 0 && new_vals) {
+                        /* get_all merge: append new values, dedup by value_id */
+                        size_t existing = b->counts_per_key[ki];
+                        size_t merged = existing;
+                        nodus_value_t **arr = realloc(b->vals_per_key[ki],
+                            (existing + new_count) * sizeof(nodus_value_t *));
+                        if (arr) {
+                            b->vals_per_key[ki] = arr;
+                            for (size_t v = 0; v < new_count; v++) {
+                                if (!new_vals[v]) continue;
+                                /* Dedup: skip if value_id already present */
+                                bool dup = false;
+                                for (size_t e = 0; e < merged; e++) {
+                                    if (arr[e] && arr[e]->value_id == new_vals[v]->value_id) {
+                                        dup = true; break;
+                                    }
+                                }
+                                if (!dup) {
+                                    arr[merged++] = new_vals[v];
+                                    new_vals[v] = NULL;  /* Transfer ownership */
+                                }
+                            }
+                            b->counts_per_key[ki] = merged;
+                        }
+                        /* Free remaining non-transferred values */
+                        for (size_t v = 0; v < new_count; v++)
+                            if (new_vals[v]) nodus_value_free(new_vals[v]);
+                        free(new_vals);
+                        if (resp.batch_vals) resp.batch_vals[r] = NULL;
+                        if (resp.batch_val_counts) resp.batch_val_counts[r] = 0;
+                    } else if (b->counts_per_key[ki] > 0) {
+                        continue;  /* Normal batch: first result wins */
+                    } else {
+                        /* No existing data — take ownership */
+                        b->vals_per_key[ki] = new_vals;
+                        b->counts_per_key[ki] = new_count;
+                        if (resp.batch_vals) resp.batch_vals[r] = NULL;
+                        if (resp.batch_val_counts) resp.batch_val_counts[r] = 0;
+                    }
                 }
                 nodus_t2_msg_free(&resp);
             }
