@@ -257,7 +257,7 @@ static void enc_rost_r_args(cbor_encoder_t *enc, const nodus_t3_rost_r_t *r) {
 }
 
 static void enc_ident_args(cbor_encoder_t *enc, const nodus_t3_ident_t *id) {
-    cbor_encode_map(enc, id->has_block_height ? 6 : 3);
+    cbor_encode_map(enc, id->has_block_height ? 7 : 3);
     cbor_encode_cstr(enc, "wid");  cbor_encode_bstr(enc, id->witness_id,
                                                      NODUS_T3_WITNESS_ID_LEN);
     cbor_encode_cstr(enc, "pk");   cbor_encode_bstr(enc, id->pubkey,
@@ -268,6 +268,7 @@ static void enc_ident_args(cbor_encoder_t *enc, const nodus_t3_ident_t *id) {
         cbor_encode_cstr(enc, "uck"); cbor_encode_bstr(enc, id->utxo_checksum,
                                                         NODUS_KEY_BYTES);
         cbor_encode_cstr(enc, "vw");  cbor_encode_uint(enc, id->current_view);
+        cbor_encode_cstr(enc, "rn");  cbor_encode_uint(enc, id->roster_size);
     }
 }
 
@@ -1066,6 +1067,11 @@ static void dec_ident_args(cbor_decoder_t *dec, size_t count,
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_UINT)
                 id->current_view = (uint32_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "rn")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                id->roster_size = (uint32_t)val.uint_val;
         }
         else {
             cbor_decode_skip(dec);

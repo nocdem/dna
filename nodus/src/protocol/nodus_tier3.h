@@ -202,6 +202,7 @@ typedef struct {
     uint64_t        block_height;                       /* current chain height */
     uint8_t         utxo_checksum[NODUS_KEY_BYTES];     /* SHA3-512 of UTXO set */
     uint32_t        current_view;                       /* BFT view number */
+    uint32_t        roster_size;                        /* sender's roster n_witnesses */
     bool            has_block_height;                    /* true if bh/uck/view present */
 } nodus_t3_ident_t;
 
