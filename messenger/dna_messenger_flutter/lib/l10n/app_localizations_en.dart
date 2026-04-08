@@ -1634,7 +1634,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get dnacRecipient => 'Recipient';
 
   @override
-  String get dnacRecipientHint => 'Name or address';
+  String get dnacRecipientHint => 'Fingerprint (128 hex characters)';
 
   @override
   String get dnacAmount => 'Amount';

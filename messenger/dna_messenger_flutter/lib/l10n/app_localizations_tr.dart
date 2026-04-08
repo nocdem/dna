@@ -1643,7 +1643,7 @@ class AppLocalizationsTr extends AppLocalizations {
   String get dnacRecipient => 'Alıcı';
 
   @override
-  String get dnacRecipientHint => 'İsim veya adres';
+  String get dnacRecipientHint => 'Parmak izi (128 hex karakter)';
 
   @override
   String get dnacAmount => 'Tutar';
@@ -1700,7 +1700,7 @@ class AppLocalizationsTr extends AppLocalizations {
   String get dnacHistorySent => 'Gönderildi';
 
   @override
-  String get dnacHistoryGenesis => 'Genesis';
+  String get dnacHistoryGenesis => 'Oluşum';
 
   @override
   String get dnacHistoryBurn => 'Yakıldı';

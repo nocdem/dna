@@ -58,8 +58,20 @@ class DnacUtxosScreen extends ConsumerWidget {
         },
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(
-          child: Text(l10n.dnacSyncFailed,
-              style: Theme.of(context).textTheme.bodyLarge),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(l10n.dnacSyncFailed,
+                  style: Theme.of(context).textTheme.bodyLarge),
+              const SizedBox(height: 12),
+              ElevatedButton.icon(
+                onPressed: () =>
+                    ref.read(dnacUtxosProvider.notifier).refresh(),
+                icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 14),
+                label: Text(l10n.dnacSync),
+              ),
+            ],
+          ),
         ),
       ),
     );

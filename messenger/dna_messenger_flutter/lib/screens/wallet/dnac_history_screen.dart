@@ -59,8 +59,20 @@ class DnacHistoryScreen extends ConsumerWidget {
         },
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(
-          child: Text(l10n.dnacSyncFailed,
-              style: Theme.of(context).textTheme.bodyLarge),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(l10n.dnacSyncFailed,
+                  style: Theme.of(context).textTheme.bodyLarge),
+              const SizedBox(height: 12),
+              ElevatedButton.icon(
+                onPressed: () =>
+                    ref.read(dnacHistoryProvider.notifier).refresh(),
+                icon: const FaIcon(FontAwesomeIcons.arrowsRotate, size: 14),
+                label: Text(l10n.dnacSync),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -107,8 +119,9 @@ class _HistoryTile extends StatelessWidget {
     final sign = isPositive ? '+' : '-';
 
     final dateStr = DateFormat.MMMd().add_Hm().format(tx.timestamp);
-    final counterparty = tx.counterparty.isNotEmpty
-        ? '${tx.counterparty.substring(0, 12)}...'
+    final cpLen = tx.counterparty.length;
+    final counterparty = cpLen > 0
+        ? '${tx.counterparty.substring(0, cpLen < 12 ? cpLen : 12)}...'
         : '';
 
     return ListTile(

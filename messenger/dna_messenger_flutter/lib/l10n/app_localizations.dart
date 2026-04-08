@@ -3125,7 +3125,7 @@ abstract class AppLocalizations {
   /// No description provided for @dnacRecipientHint.
   ///
   /// In en, this message translates to:
-  /// **'Name or address'**
+  /// **'Fingerprint (128 hex characters)'**
   String get dnacRecipientHint;
 
   /// No description provided for @dnacAmount.

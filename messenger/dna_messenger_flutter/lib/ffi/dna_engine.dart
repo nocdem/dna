@@ -1255,13 +1255,15 @@ const int dnacRawPerToken = 100000000;
 
 /// Format raw amount to human-readable token string
 String formatDnacAmount(int rawAmount) {
-  final whole = rawAmount ~/ dnacRawPerToken;
-  final frac = (rawAmount % dnacRawPerToken).abs();
-  if (frac == 0) return whole.toString();
-  // Remove trailing zeros
+  final isNegative = rawAmount < 0;
+  final abs = rawAmount.abs();
+  final whole = abs ~/ dnacRawPerToken;
+  final frac = abs % dnacRawPerToken;
+  final sign = isNegative ? '-' : '';
+  if (frac == 0) return '$sign$whole';
   var fracStr = frac.toString().padLeft(8, '0');
   fracStr = fracStr.replaceAll(RegExp(r'0+$'), '');
-  return '$whole.$fracStr';
+  return '$sign$whole.$fracStr';
 }
 
 /// Parse human-readable amount to raw units
