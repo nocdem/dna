@@ -89,7 +89,7 @@ extern "C" {
 /* DHT replication */
 #define NODUS_ROUTING_STALE_SEC    3600    /* 1 hour — filter stale entries in find_closest */
 #define NODUS_BUCKET_REFRESH_SEC   900     /* 15 min — bucket refresh via FIND_NODE */
-#define NODUS_REPUBLISH_SEC        3600    /* 60 min — periodic republish cycle */
+#define NODUS_REPUBLISH_SEC        600     /* 10 min — periodic republish cycle */
 #define NODUS_MEDIA_REPUBLISH_SEC  86400   /* 24 hours — media republish (immutable, less frequent) */
 #define NODUS_REPUBLISH_BATCH      5       /* Values per main loop tick during republish */
 #define NODUS_CLEANUP_SEC          3600    /* 1 hour — storage cleanup interval */
