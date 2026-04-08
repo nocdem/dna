@@ -1888,8 +1888,10 @@ static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
     if (fd < 0) goto fail;
     if (fd >= NODUS_BF_FD_TABLE_SIZE) { close(fd); goto fail; }
 
-    /* Inter-node port = UDP port + 2 (convention: 4000→4002) */
-    uint16_t inter_port = peer->udp_port ? (peer->udp_port + 2) : 4002;
+    /* Connect to client port (4001) instead of inter-node port (4002).
+     * Inter-node port requires Kyber encryption which BF doesn't support.
+     * Client port accepts plaintext T2 auth and has get_batch handler. */
+    uint16_t inter_port = peer->udp_port ? (peer->udp_port + 1) : 4001;
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
