@@ -769,7 +769,7 @@ int nodus_witness_bft_start_round(nodus_witness_t *w,
      * to IDLE phase in epoch tick. Force it here so consensus has
      * the latest roster with correct quorum. */
     if (w->pending_roster_ready &&
-        w->pending_roster.n_witnesses > w->roster.n_witnesses) {
+        w->pending_roster.n_witnesses != w->roster.n_witnesses) {
         memcpy(&w->roster, &w->pending_roster, sizeof(nodus_witness_roster_t));
         memcpy(&w->bft_config, &w->pending_bft_config,
                sizeof(nodus_witness_bft_config_t));
@@ -920,7 +920,7 @@ int nodus_witness_bft_start_round_batch(nodus_witness_t *w,
 
     /* Force roster swap if pending */
     if (w->pending_roster_ready &&
-        w->pending_roster.n_witnesses > w->roster.n_witnesses) {
+        w->pending_roster.n_witnesses != w->roster.n_witnesses) {
         memcpy(&w->roster, &w->pending_roster, sizeof(nodus_witness_roster_t));
         memcpy(&w->bft_config, &w->pending_bft_config,
                sizeof(nodus_witness_bft_config_t));
@@ -1056,7 +1056,7 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
 
     /* Force roster swap if pending — ensures consistent leader calculation */
     if (w->pending_roster_ready &&
-        w->pending_roster.n_witnesses > w->roster.n_witnesses) {
+        w->pending_roster.n_witnesses != w->roster.n_witnesses) {
         memcpy(&w->roster, &w->pending_roster, sizeof(nodus_witness_roster_t));
         memcpy(&w->bft_config, &w->pending_bft_config,
                sizeof(nodus_witness_bft_config_t));

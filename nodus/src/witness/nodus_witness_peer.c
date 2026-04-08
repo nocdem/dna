@@ -528,7 +528,7 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
 
     /* Force roster swap if pending */
     if (w->pending_roster_ready &&
-        w->pending_roster.n_witnesses > w->roster.n_witnesses) {
+        w->pending_roster.n_witnesses != w->roster.n_witnesses) {
         memcpy(&w->roster, &w->pending_roster, sizeof(w->roster));
         memcpy(&w->bft_config, &w->pending_bft_config, sizeof(w->bft_config));
         w->pending_roster_ready = false;
