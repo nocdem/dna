@@ -87,6 +87,27 @@ int dnac_wallet_select_utxos(dnac_context_t *ctx,
                              uint64_t *change_amount);
 
 /**
+ * @brief Select UTXOs for spending a specific token
+ *
+ * Filters unspent UTXOs by token_id before selection.
+ * If token_id is NULL or all-zeros, selects native DNAC UTXOs only.
+ *
+ * @param ctx DNAC context
+ * @param target_amount Amount needed (including fee)
+ * @param token_id Token ID to filter by (DNAC_TOKEN_ID_SIZE bytes), or NULL for native
+ * @param selected Output: selected UTXOs (caller must free)
+ * @param selected_count Output: number of selected UTXOs
+ * @param change_amount Output change amount (if any)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_wallet_select_utxos_token(dnac_context_t *ctx,
+                                    uint64_t target_amount,
+                                    const uint8_t *token_id,
+                                    dnac_utxo_t **selected,
+                                    int *selected_count,
+                                    uint64_t *change_amount);
+
+/**
  * @brief Calculate total balance
  *
  * @param ctx DNAC context

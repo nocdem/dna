@@ -447,6 +447,19 @@ dnac_tx_builder_t* dnac_tx_builder_create(dnac_context_t *ctx);
 int dnac_tx_builder_add_output(dnac_tx_builder_t *builder, const dnac_tx_output_t *output);
 
 /**
+ * @brief Set token for the transaction
+ *
+ * When set, the builder will select only UTXOs matching this token_id
+ * and stamp all inputs/outputs with it. If not called (or all-zeros),
+ * builds a native DNAC transaction.
+ *
+ * @param builder Transaction builder
+ * @param token_id Token ID (DNAC_TOKEN_ID_SIZE bytes)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_tx_builder_set_token(dnac_tx_builder_t *builder, const uint8_t *token_id);
+
+/**
  * @brief Build and sign transaction
  *
  * @param builder Transaction builder

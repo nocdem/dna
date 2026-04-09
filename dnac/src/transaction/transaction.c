@@ -48,6 +48,7 @@ int dnac_tx_add_input(dnac_transaction_t *tx, const dnac_utxo_t *utxo) {
     dnac_tx_input_t *input = &tx->inputs[tx->input_count];
     memcpy(input->nullifier, utxo->nullifier, DNAC_NULLIFIER_SIZE);
     input->amount = utxo->amount;  /* v1: store amount for verification */
+    memcpy(input->token_id, utxo->token_id, DNAC_TOKEN_ID_SIZE);
 
     tx->input_count++;
     return DNAC_SUCCESS;

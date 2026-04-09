@@ -37,6 +37,7 @@ struct dnac_tx_builder {
     dnac_tx_output_t outputs[DNAC_TX_MAX_OUTPUTS];
     int output_count;
     uint64_t total_output_amount;
+    uint8_t token_id[DNAC_TOKEN_ID_SIZE];  /* Token to send (zeros = native DNAC) */
 };
 
 dnac_tx_builder_t* dnac_tx_builder_create(dnac_context_t *ctx) {
@@ -78,6 +79,13 @@ int dnac_tx_builder_add_output(dnac_tx_builder_t *builder,
     return DNAC_SUCCESS;
 }
 
+int dnac_tx_builder_set_token(dnac_tx_builder_t *builder,
+                               const uint8_t *token_id) {
+    if (!builder || !token_id) return DNAC_ERROR_INVALID_PARAM;
+    memcpy(builder->token_id, token_id, DNAC_TOKEN_ID_SIZE);
+    return DNAC_SUCCESS;
+}
+
 int dnac_tx_builder_build(dnac_tx_builder_t *builder,
                           dnac_transaction_t **tx_out) {
     if (!builder || !tx_out) return DNAC_ERROR_INVALID_PARAM;
@@ -101,8 +109,9 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
     int selected_count = 0;
     uint64_t change_amount = 0;
 
-    rc = dnac_wallet_select_utxos(builder->ctx, total_needed,
-                                   &selected, &selected_count, &change_amount);
+    rc = dnac_wallet_select_utxos_token(builder->ctx, total_needed,
+                                        builder->token_id,
+                                        &selected, &selected_count, &change_amount);
     if (rc != DNAC_SUCCESS) return rc;
 
     /* Calculate fee based on send amount (0.1% of transfer, not input).
@@ -153,6 +162,9 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
             free(selected);
             return rc;
         }
+        /* Set token_id on the just-added output */
+        memcpy(builder->tx->outputs[builder->tx->output_count - 1].token_id,
+               builder->token_id, DNAC_TOKEN_ID_SIZE);
     }
 
     /* Add change output if needed */
@@ -169,6 +181,9 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
             free(selected);
             return rc;
         }
+        /* Set token_id on change output */
+        memcpy(builder->tx->outputs[builder->tx->output_count - 1].token_id,
+               builder->token_id, DNAC_TOKEN_ID_SIZE);
     }
 
     /* v0.8.0: Fees are burned (removed from circulation).
@@ -339,6 +354,7 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
         memcpy(utxo.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
         utxo.output_index = (uint32_t)i;
         utxo.amount = tx->outputs[i].amount;
+        memcpy(utxo.token_id, tx->outputs[i].token_id, DNAC_TOKEN_ID_SIZE);
         strncpy(utxo.owner_fingerprint, owner_fp, sizeof(utxo.owner_fingerprint) - 1);
         utxo.status = DNAC_UTXO_UNSPENT;
         utxo.received_at = (uint64_t)time(NULL);
