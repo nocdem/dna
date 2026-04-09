@@ -101,6 +101,7 @@ set(DNAC_SOURCES
     src/transaction/verify.c
     src/transaction/genesis.c
     src/transaction/nullifier.c
+    src/transaction/token_create.c
 
     # Nodus
     src/nodus/client.c

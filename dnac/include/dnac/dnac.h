@@ -595,6 +595,48 @@ int dnac_query_block_range(dnac_context_t *ctx,
                             uint64_t *total_out);
 
 /* ============================================================================
+ * Token Functions
+ * ========================================================================== */
+
+/**
+ * @brief Create a new token
+ *
+ * Burns TOKEN_CREATE_FEE (1 DNAC) and creates a new custom token.
+ * On success, the full supply is assigned to the creator as a genesis UTXO.
+ *
+ * @param ctx DNAC context
+ * @param name Token name (max 32 chars)
+ * @param symbol Token symbol (max 8 chars)
+ * @param decimals Decimal places (0-18)
+ * @param supply Total supply in smallest units
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_token_create(dnac_context_t *ctx,
+                      const char *name, const char *symbol,
+                      uint8_t decimals, uint64_t supply);
+
+/**
+ * @brief Query all tokens from witness
+ *
+ * @param ctx DNAC context
+ * @param out Output array (caller-allocated)
+ * @param max Maximum entries to return
+ * @param count Output count of entries written
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_token_list(dnac_context_t *ctx, dnac_token_t *out, int max, int *count);
+
+/**
+ * @brief Query single token by ID from witness
+ *
+ * @param ctx DNAC context
+ * @param token_id Token ID (DNAC_TOKEN_ID_SIZE bytes)
+ * @param out Output token struct
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_token_info(dnac_context_t *ctx, const uint8_t *token_id, dnac_token_t *out);
+
+/* ============================================================================
  * Utility Functions
  * ========================================================================== */
 
