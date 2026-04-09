@@ -1757,6 +1757,8 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             nodus_witness_mempool_entry_t *e = w->round_state.batch_entries[bi];
             if (!e) continue;
 
+            fprintf(stderr, "%s: batch[%d] client_conn=%p is_forwarded=%d\n",
+                    LOG_TAG, bi, (void*)e->client_conn, e->is_forwarded);
             if (e->client_conn && !e->is_forwarded) {
                 /* Direct client — send spend result */
                 struct nodus_tcp_conn *saved_conn = w->round_state.client_conn;
