@@ -21,6 +21,7 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 |---------|-------------|--------|
 | [**DNA Connect**](messenger/) | End-to-end encrypted communication with multi-chain crypto wallet | RC |
 | [**Nodus**](nodus/) | Post-quantum Kademlia DHT server with cluster management | RC |
+| [**DNAC**](dnac/) | Post-quantum digital cash with BFT witness consensus | Development |
 | [**CPUNK Platform**](cpunk/) | Quantum-safe community platform | Live |
 
 ---
@@ -35,9 +36,10 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 └──────────┬───────────────────────────────────────────┘
            │ dart:ffi
 ┌──────────▼───────────────────────────────────────────┐
-│  DNA Engine (C) — 17 modular handlers                │
+│  DNA Engine (C) — 23 engine modules                  │
 │  messaging · contacts · groups · wallet · presence   │
 │  identity · backup · lifecycle · version · signing   │
+│  wall · media · follow · dnac · channels + more      │
 ├──────────────────────────────────────────────────────┤
 │  Post-Quantum Crypto    │  Multi-Chain Wallet        │
 │  Kyber1024 · Dilithium5 │  ETH · BSC · SOL · TRON · Cell │
@@ -47,6 +49,11 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 ┌──────────▼───────────────────────────────────────────┐
 │  Nodus DHT Network                                   │
 │  Distributed storage · Real-time subscriptions       │
+└──────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────┐
+│  DNAC (C) — Links against libdna                     │
+│  UTXO wallet · BFT witness consensus · Nullifiers    │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -63,12 +70,15 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
      │    Replication   │                  │
 ┌────▼─────┐       ┌────▼─────┐       ┌────▼─────┐
 │  EU-3    │◄─────►│  EU-4    │◄─────►│  EU-5    │
-└──────────┘       └──────────┘       └──────────┘
+└────┬─────┘       └──────────┘       └──────────┘
+     │
+┌────▼─────┐
+│  EU-6    │
+└──────────┘
 
     All values signed with Dilithium5 · 7-day TTL
     Tier 1 (UDP 4000): Kademlia — ping, find_node, store, find_value
     Tier 2 (TCP 4001): Client — auth, put, get, listen, presence
-```
 ```
 
 ---
@@ -94,6 +104,8 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 sudo apt install git cmake gcc g++ libssl-dev libsqlite3-dev \
                  libcurl4-openssl-dev libjson-c-dev libargon2-dev \
                  libreadline-dev
+# SQLCipher is required for the messenger C library (database encryption)
+sudo apt install -t bookworm-backports libsqlcipher-dev
 ```
 
 ### Clone & Build
@@ -108,6 +120,9 @@ cd messenger/build && cmake .. && make -j$(nproc)
 # Nodus DHT server
 cd ../../nodus/build && cmake .. && make -j$(nproc)
 
+# DNAC (requires messenger C library built first)
+cd ../../dnac/build && cmake .. && make -j$(nproc)
+
 # Flutter app (requires C library)
 cd ../../messenger/dna_messenger_flutter
 flutter pub get && flutter build linux
@@ -120,7 +135,7 @@ flutter pub get && flutter build linux
 ```
 dna/
 ├── messenger/                 # DNA Connect
-│   ├── src/api/               #   DNA Engine (17 modular handlers)
+│   ├── src/api/               #   DNA Engine (23 engine modules)
 │   ├── messenger/             #   Messaging core (identity, keys, contacts)
 │   ├── dht/                   #   DHT operations
 │   ├── transport/             #   P2P transport layer
@@ -142,6 +157,10 @@ dna/
 │       ├── hash/              #   SHA3-512, Keccak-256
 │       ├── key/               #   BIP32, BIP39, PBKDF2
 │       └── utils/             #   Logging, platform abstraction, CSPRNG
+├── dnac/                      # DNA Cash
+│   ├── src/                   #   Wallet, transactions, witness client, CLI
+│   ├── include/               #   Public headers
+│   └── tests/                 #   Unit tests
 ├── cpunk/                     # cpunk.io web platform
 └── docs/                      # Top-level project documentation
 ```
@@ -165,6 +184,7 @@ dna/
 |----------|-------------|
 | [Messenger README](messenger/README.md) | Messenger overview, features, build |
 | [Nodus README](nodus/README.md) | DHT server architecture and deployment |
+| [DNAC README](dnac/README.md) | Digital cash architecture, CLI commands, transaction format |
 | [Architecture](messenger/docs/ARCHITECTURE_DETAILED.md) | Detailed system design |
 | [Protocol Specs](messenger/docs/PROTOCOL.md) | Wire formats (Seal, Spillway, Anchor, Atlas, Nexus) |
 | [DNA Engine API](messenger/docs/DNA_ENGINE_API.md) | Core C API reference |
@@ -182,11 +202,12 @@ DNA uses the Nodus DHT network. Anyone can run a Nodus node — the network is o
 | Node | Location | IP | UDP | TCP |
 |------|----------|----|-----|-----|
 | US-1 | USA | 154.38.182.161 | 4000 | 4001 |
-| EU-1 | Europe | 164.68.105.227 | 4000 | 4001 |
-| EU-2 | Europe | 164.68.116.180 | 4000 | 4001 |
-| EU-3 | Europe | 161.97.85.25 | 4000 | 4001 |
-| EU-4 | Europe | 156.67.24.125 | 4000 | 4001 |
-| EU-5 | Europe | 156.67.25.251 | 4000 | 4001 |
+| EU-1 | Europe | 161.97.85.25 | 4000 | 4001 |
+| EU-2 | Europe | 156.67.24.125 | 4000 | 4001 |
+| EU-3 | Europe | 156.67.25.251 | 4000 | 4001 |
+| EU-4 | Europe | 164.68.105.227 | 4000 | 4001 |
+| EU-5 | Europe | 164.68.116.180 | 4000 | 4001 |
+| EU-6 | Europe | 75.119.141.51 | 4000 | 4001 |
 
 ---
 
@@ -205,6 +226,7 @@ DNA uses the Nodus DHT network. Anyone can run a Nodus node — the network is o
 |-----------|---------|
 | Messenger C Library | [Apache License 2.0](messenger/LICENSE) |
 | Nodus DHT Server | [Apache License 2.0](nodus/LICENSE) |
+| DNAC | [MIT License](dnac/LICENSE) |
 | Shared Crypto | [Apache License 2.0](LICENSE) |
 | CPUNK Platform | [Apache License 2.0](cpunk/LICENSE) |
 | Flutter App | [Source-Available (Proprietary)](messenger/dna_messenger_flutter/LICENSE) |

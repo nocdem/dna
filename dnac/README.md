@@ -1,6 +1,6 @@
 # DNAC - Post-Quantum Zero-Knowledge Cash over DHT
 
-**Version:** v0.12.0 | **Protocol:** v1 (Transparent Amounts)
+**Version:** v0.13.0 | **Protocol:** v1 (Transparent Amounts)
 
 DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](https://github.com/nocdem/dna). It lives in the DNA monorepo at `/opt/dna/dnac/`.
 
@@ -24,6 +24,10 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](h
 - **Hub/Spoke TX Storage** - Witnesses store full serialized transactions during BFT commit (v0.10.0)
 - **TX Query Protocol** - Clients retrieve full transaction data by hash from witnesses (v0.10.0)
 - **Block Query Protocol** - Clients query blocks by height or range from witnesses (v0.10.0)
+- **Multi-Token Support** - Custom token creation with per-token UTXO tracking (v0.13.0)
+- **Token Creation** - TX_TOKEN_CREATE transaction type with 1 DNAC fee burn (v0.13.0)
+- **Per-Token Balances** - Wallet tracks separate UTXO sets per token_id (v0.13.0)
+- **Name Resolution** - CLI send accepts DNA name, auto-resolves to fingerprint (v0.13.0)
 
 ## Protocol Versions
 
@@ -45,7 +49,7 @@ v1 uses transparent amounts for simplicity. v2 will add STARK-based zero-knowled
            ▼                              ▼
 ┌─────────────────────┐        ┌─────────────────────┐
 │      libdna         │◀───────│      libdnac        │
-│  (identity, crypto, │ links  │  (cash system)      │
+│  (identity, crypto, │ links  │  (cash + tokens)    │
 │   transport)        │        │                     │
 └─────────────────────┘        └─────────────────────┘
                                          │
@@ -98,7 +102,7 @@ dnac-cli query <name|fp>         # Lookup identity by name or fingerprint
 # Wallet
 dnac-cli balance                 # Show wallet balance
 dnac-cli utxos                   # List UTXOs
-dnac-cli send <fp> <amount>      # Send payment
+dnac-cli send <name|fp> <amount> [memo]  # Send payment (accepts DNA name or fingerprint)
 dnac-cli genesis <fp> <amount>   # Create genesis TX (3-of-3 witness auth)
 dnac-cli sync                    # Sync wallet from network
 dnac-cli recover                 # Recover wallet from seed
@@ -106,6 +110,15 @@ dnac-cli recover                 # Recover wallet from seed
 # History
 dnac-cli history [n]             # Transaction history (optional: last n)
 dnac-cli tx <hash>               # Show transaction details
+
+# Token Management
+dnac-cli token-create <name> <symbol> <supply>  # Create new token (burns 1 DNAC fee)
+dnac-cli token-list                              # List all known tokens
+dnac-cli token-info <token_id|symbol>            # Show token details
+
+# Token-Aware Operations
+dnac-cli balance --token <token_id>              # Show balance for a specific token
+dnac-cli send --token <token_id> <name|fp> <amount> [memo]  # Send token payment
 
 # Network
 dnac-cli nodus-list              # Show witness servers
@@ -183,13 +196,14 @@ DNAC TRANSACTION v1:
 ┌─────────────────────────────────────────────────────────────┐
 │ HEADER                                                      │
 │   version: u8 = 1                                           │
-│   type: u8 = TX_SPEND                                       │
+│   type: u8 = TX_SPEND | TX_TOKEN_CREATE                     │
 │   timestamp: u64                                            │
 │   tx_hash: bytes[64] (SHA3-512)                             │
 ├─────────────────────────────────────────────────────────────┤
-│ INPUTS: nullifier[64] + amount (plaintext)                  │
+│ INPUTS: nullifier[64] + amount + token_id[64]               │
 ├─────────────────────────────────────────────────────────────┤
-│ OUTPUTS: recipient_fingerprint[64] + amount (plaintext)     │
+│ OUTPUTS: recipient_fingerprint[64] + amount + token_id[64]  │
+│   (token_id = zeros for native DNAC)                        │
 ├─────────────────────────────────────────────────────────────┤
 │ BALANCE: sum(inputs) >= sum(outputs), difference = burned fee│
 ├─────────────────────────────────────────────────────────────┤
@@ -255,9 +269,9 @@ All blockchain state is stored on BFT witnesses. DHT inbox delivery was removed 
 
 ## Status
 
-**Development Phase** - v0.11.1. Not for production use.
+**Development Phase** - v0.13.0. Not for production use.
 
-### Implemented (v0.8.1)
+### Implemented
 
 - [x] Core wallet functionality (UTXO management, balance tracking)
 - [x] Send/receive transactions via DHT
@@ -289,6 +303,11 @@ All blockchain state is stored on BFT witnesses. DHT inbox delivery was removed 
 - [x] Witness-only architecture — removed DHT inbox dependency, wallet syncs from witnesses (v0.12.0)
 - [x] Block hash linking — prev_hash chain integrity via SHA3-512 (v0.12.0)
 - [x] Commit certificates — 2f+1 PRECOMMIT signatures stored per block (v0.12.0)
+- [x] Remote transaction history via witnesses (v0.12.1)
+- [x] Multi-token UTXO tracking — per-token balances and UTXO sets (v0.13.0)
+- [x] TX_TOKEN_CREATE — custom token creation with 1 DNAC fee burn (v0.13.0)
+- [x] Token-aware TX builder — UTXO selection by token_id (v0.13.0)
+- [x] CLI send by DNA name — auto-resolve to fingerprint (v0.13.0)
 
 ### Tested
 

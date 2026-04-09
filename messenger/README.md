@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc168-blue" alt="RC"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v1.0.0--rc187-blue" alt="RC"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-green" alt="Apache 2.0"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/Platforms-Android%20|%20Linux%20|%20Windows-orange" alt="Platforms"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Security-NIST%20Category%205-red" alt="NIST Cat 5"></a>
@@ -37,16 +37,23 @@ DNA Connect is a **fully decentralized** communication platform and **multi-chai
 - **Offline message queue** — Messages wait up to 7 days if you're offline
 - **Group encryption (GEK)** — 200x faster than encrypting per-recipient
 - **Cross-device sync** — Messages and groups sync across all your devices
+- **Voice messages** with waveform visualization
+- **Video and image sharing** via DHT media storage
+- **Media outbox** with persistent upload queue and resume
 
 ### User Profiles
 - **Customizable profiles** — Avatar, bio, location, website
 - **Social links** — Telegram, Twitter/X, GitHub, and more
 - **Social wall** — Public posts visible to anyone who views your profile
 - **Name registration** — Reserve your unique username on the DHT
+- **Follow/unfollow system** with DHT sync
+- **Profile stats** — Likes and tips
+- **Boost system** — 1 per day limit
 
 ### Integrated Multi-Chain Wallet
-- **4 Networks:** Cellframe (CF20), Ethereum (ERC20), TRON (TRC20), Solana (SPL)
-- **9+ Tokens:** CPUNK, CELL, KEL, NYS, QEVM, ETH, SOL, TRX, USDT
+- **5 Networks:** Cellframe (CF20), Ethereum (ERC20), BNB Smart Chain (BEP20), TRON (TRC20), Solana (SPL)
+- **9+ Tokens:** CPUNK, CELL, KEL, NYS, QEVM, ETH, BNB, SOL, TRX, USDT
+- **DNAC (DNA Cash)** — Post-quantum digital cash with BFT witness consensus
 - **Send crypto from chat** — Auto-resolves contact's wallet address
 - **Token swaps** — DEX integration with MEV protection
 - **QR codes** — Easy send/receive
@@ -58,6 +65,10 @@ DNA Connect is a **fully decentralized** communication platform and **multi-chai
 - **Dilithium5 signatures** — All DHT data cryptographically signed
 - **BIP39 recovery** — 24-word seed phrase backup
 - **Native presence** — Server-side presence tracking
+- **SQLCipher database encryption** — 9 encrypted databases at rest
+- **TEE key wrapping** on Android (AES-256-GCM via Android Keystore)
+- **Kyber1024 channel encryption** — All DHT connections encrypted
+- **Debug log system** with hybrid encryption (Kyber1024 + AES-256-GCM)
 
 ---
 
@@ -73,6 +84,9 @@ DNA Connect is a **fully decentralized** communication platform and **multi-chai
 | **SHA3-512** | NIST | Hashing |
 
 Your keys never leave your device. Recovery via BIP39 seed phrase.
+
+**Additional protections:**
+- Signed Kyber handshake with TOFU cache for known nodes
 
 ---
 
@@ -91,6 +105,7 @@ DNA Connect is part of the [DNA monorepo](https://github.com/nocdem/dna).
 sudo apt install git cmake gcc g++ libssl-dev libsqlite3-dev \
                  libcurl4-openssl-dev libjson-c-dev libargon2-dev \
                  libreadline-dev
+sudo apt install -t bookworm-backports libsqlcipher-dev
 
 # Clone
 git clone https://github.com/nocdem/dna.git
@@ -142,22 +157,35 @@ cd messenger
 
 **Components:**
 - **Flutter App** — Cross-platform UI (Android, Linux, Windows)
-- **C Library** — Core engine with 17 modular handlers (`libdna.so`)
+- **C Library** — Core engine with 22 modular handlers (`libdna.so`)
 - **Nodus** — Pure C Kademlia DHT with cluster replication ([details](../nodus/README.md))
 
 **Engine Modules** (`src/api/engine/`):
 
 | Module | Domain |
 |--------|--------|
-| `dna_engine_messaging.c` | Send/receive, conversations, retry |
-| `dna_engine_contacts.c` | Contact requests, blocking |
-| `dna_engine_groups.c` | Group CRUD, GEK encryption, invitations |
-| `dna_engine_identity.c` | Identity create/load, profiles |
-| `dna_engine_presence.c` | Heartbeat, presence lookup |
-| `dna_engine_wallet.c` | Multi-chain wallet, balances, swaps |
+| `dna_engine_addressbook.c` | Address book management |
 | `dna_engine_backup.c` | DHT sync for all data types |
+| `dna_engine_channels.c` | Channel CRUD, posts, subscriptions |
+| `dna_engine_contacts.c` | Contact requests, blocking |
+| `dna_engine_debug_log.c` | Debug log send/receive |
+| `dna_engine_dnac.c` | DNAC digital cash (balance, send, sync, history) |
+| `dna_engine_follow.c` | Follow/unfollow, list, DHT sync |
+| `dna_engine_groups.c` | Group CRUD, GEK encryption, invitations |
+| `dna_engine_helpers.c` | Shared utility functions |
+| `dna_engine_identity.c` | Identity create/load, profiles |
 | `dna_engine_lifecycle.c` | Engine pause/resume (mobile) |
+| `dna_engine_listeners.c` | DHT key subscriptions |
+| `dna_engine_logging.c` | Debug log control |
+| `dna_engine_media.c` | Media upload/download, outbox queue |
+| `dna_engine_messaging.c` | Send/receive, conversations, retry |
+| `dna_engine_presence.c` | Heartbeat, presence lookup |
+| `dna_engine_signing.c` | Data signing operations |
 | `dna_engine_version.c` | Version info and OTA checking |
+| `dna_engine_wall.c` | Personal wall posts |
+| `dna_engine_wall_poll.c` | Wall feed polling |
+| `dna_engine_wallet.c` | Multi-chain wallet, balances, swaps |
+| `dna_engine_workers.c` | Background thread pool |
 
 **Local Storage:**
 - Messages: `~/.dna/messages.db`
@@ -170,9 +198,10 @@ cd messenger
 
 | Component | Version |
 |-----------|---------|
-| C Library | v0.9.186 |
-| Flutter App | v1.0.0-rc186 |
-| Nodus | v0.10.29 |
+| C Library | v0.9.187 |
+| Flutter App | v1.0.0-rc187 |
+| Nodus | v0.10.30 |
+| DNAC | v0.13.0 |
 
 ---
 
@@ -188,6 +217,7 @@ cd messenger
 | [Message System](docs/MESSAGE_SYSTEM.md) | Message handling |
 | [Protocol Specs](docs/PROTOCOL.md) | Wire formats |
 | [Nodus](../nodus/README.md) | DHT server |
+| [DNAC](../dnac/README.md) | Digital cash system |
 
 ---
 
