@@ -659,43 +659,48 @@ static int commit_block_inner(nodus_witness_t *w,
     if (!failed && tx_data && tx_len > 0) {
         uint64_t bh = nodus_witness_block_height(w) + 1;
 
-        /* Extract sender_fp, receiver_fp, total amount from TX binary.
-         * Wire format: header(74) → inputs(1+N*(64+8)) → outputs(1+...) → witnesses → sender(pk+sig)
-         * Sender pubkey is at the end: skip inputs, outputs, witnesses to find it.
-         * First output's owner_fingerprint is the receiver. */
+        /* Extract sender_fp and per-output data from TX binary.
+         * Wire format: header(74) → inputs(1+N*(64+8)) → outputs(1+...)
+         *              → witnesses(1+N*7259) → sender(pk(2592)+sig(4627)) */
         char sender_fp[129] = {0};
-        char receiver_fp[129] = {0};
-        uint64_t total_amount = 0;
+
+        /* Temporary output storage for tx_outputs table */
+        char   out_fps[NODUS_WITNESS_MAX_TX_OUTPUTS][129];
+        uint64_t out_amts[NODUS_WITNESS_MAX_TX_OUTPUTS];
+        int    out_total = 0;
 
         if (tx_len > 75) {
             size_t off = 74; /* skip header: version(1)+type(1)+timestamp(8)+tx_hash(64) */
             uint8_t in_count = tx_data[off++];
             off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8);
 
-            /* Parse outputs — first output owner is receiver */
+            /* Parse outputs — store each separately */
             if (off < tx_len) {
                 uint8_t out_count = tx_data[off++];
                 for (int oi = 0; oi < out_count && off + 171 <= tx_len; oi++) {
                     off += 1;  /* version */
-                    if (oi == 0) {
-                        memcpy(receiver_fp, tx_data + off, 128);
-                        receiver_fp[128] = '\0';
+                    if (oi < NODUS_WITNESS_MAX_TX_OUTPUTS) {
+                        memcpy(out_fps[oi], tx_data + off, 128);
+                        out_fps[oi][128] = '\0';
                     }
                     off += 129; /* fingerprint */
                     uint64_t amt;
                     memcpy(&amt, tx_data + off, 8);
-                    total_amount += amt;
+                    if (oi < NODUS_WITNESS_MAX_TX_OUTPUTS) {
+                        out_amts[oi] = amt;
+                    }
                     off += 8;   /* amount */
                     off += 32;  /* seed */
                     uint8_t ml = tx_data[off++]; /* memo_len */
                     off += ml;
+                    if (oi < NODUS_WITNESS_MAX_TX_OUTPUTS)
+                        out_total = oi + 1;
                 }
             }
 
             /* Skip witness signatures to reach sender pubkey */
             if (off < tx_len) {
                 uint8_t wit_count = tx_data[off++];
-                /* Each witness: id(32)+sig(4627)+ts(8)+pubkey(2592) = 7259 bytes */
                 off += (size_t)wit_count * (32 + 4627 + 8 + 2592);
             }
 
@@ -706,8 +711,13 @@ static int commit_block_inner(nodus_witness_t *w,
         }
 
         nodus_witness_tx_store(w, tx_hash, tx_type, tx_data, tx_len, bh,
-                               sender_fp, receiver_fp, total_amount,
-                               committed_fee);
+                               sender_fp, committed_fee);
+
+        /* Insert each output into tx_outputs table */
+        for (int oi = 0; oi < out_total; oi++) {
+            nodus_witness_tx_output_add(w, tx_hash, (uint32_t)oi,
+                                          out_fps[oi], out_amts[oi]);
+        }
     }
 
     if (failed) return -1;

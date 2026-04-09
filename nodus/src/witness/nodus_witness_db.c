@@ -788,13 +788,16 @@ int nodus_witness_tx_by_owner(nodus_witness_t *w, const char *owner_fp,
 
     *count_out = 0;
 
+    /* Step 1: Find distinct TX hashes where owner is sender or output owner.
+     * JOIN committed_transactions with tx_outputs to match on either side. */
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT tx_hash, tx_type, sender_fp, receiver_fp, amount, fee, "
-        "block_height, timestamp "
-        "FROM committed_transactions "
-        "WHERE sender_fp = ? OR receiver_fp = ? "
-        "ORDER BY timestamp DESC LIMIT ?", -1, &stmt, NULL);
+        "SELECT DISTINCT t.tx_hash, t.tx_type, t.sender_fp, t.fee, "
+        "t.block_height, t.timestamp "
+        "FROM committed_transactions t "
+        "LEFT JOIN tx_outputs o ON o.tx_hash = t.tx_hash "
+        "WHERE t.sender_fp = ? OR o.owner_fp = ? "
+        "ORDER BY t.timestamp DESC LIMIT ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
     sqlite3_bind_text(stmt, 1, owner_fp, -1, SQLITE_STATIC);
@@ -816,19 +819,64 @@ int nodus_witness_tx_by_owner(nodus_witness_t *w, const char *owner_fp,
         const char *sfp = (const char *)sqlite3_column_text(stmt, 2);
         if (sfp) strncpy(e->sender_fp, sfp, 128);
 
-        const char *rfp = (const char *)sqlite3_column_text(stmt, 3);
-        if (rfp) strncpy(e->receiver_fp, rfp, 128);
-
-        e->amount       = (uint64_t)sqlite3_column_int64(stmt, 4);
-        e->fee          = (uint64_t)sqlite3_column_int64(stmt, 5);
-        e->block_height = (uint64_t)sqlite3_column_int64(stmt, 6);
-        e->timestamp    = (uint64_t)sqlite3_column_int64(stmt, 7);
+        e->fee          = (uint64_t)sqlite3_column_int64(stmt, 3);
+        e->block_height = (uint64_t)sqlite3_column_int64(stmt, 4);
+        e->timestamp    = (uint64_t)sqlite3_column_int64(stmt, 5);
         count++;
     }
-
     sqlite3_finalize(stmt);
+
+    /* Step 2: For each TX, fetch its outputs from tx_outputs */
+    for (int i = 0; i < count; i++) {
+        sqlite3_stmt *ostmt;
+        rc = sqlite3_prepare_v2(w->db,
+            "SELECT output_index, owner_fp, amount FROM tx_outputs "
+            "WHERE tx_hash = ? ORDER BY output_index ASC", -1, &ostmt, NULL);
+        if (rc != SQLITE_OK) continue;
+
+        sqlite3_bind_blob(ostmt, 1, out[i].tx_hash,
+                           NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
+
+        int oc = 0;
+        while (sqlite3_step(ostmt) == SQLITE_ROW &&
+               oc < NODUS_WITNESS_MAX_TX_OUTPUTS) {
+            nodus_witness_tx_output_t *o = &out[i].outputs[oc];
+            o->output_index = (uint32_t)sqlite3_column_int(ostmt, 0);
+            const char *ofp = (const char *)sqlite3_column_text(ostmt, 1);
+            if (ofp) strncpy(o->owner_fp, ofp, 128);
+            o->amount = (uint64_t)sqlite3_column_int64(ostmt, 2);
+            oc++;
+        }
+        out[i].output_count = oc;
+        sqlite3_finalize(ostmt);
+    }
+
     *count_out = count;
     return 0;
+}
+
+/* ── TX output storage ──────────────────────────────────────────── */
+
+int nodus_witness_tx_output_add(nodus_witness_t *w, const uint8_t *tx_hash,
+                                   uint32_t output_index, const char *owner_fp,
+                                   uint64_t amount) {
+    if (!w || !w->db || !tx_hash || !owner_fp) return -1;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "INSERT OR IGNORE INTO tx_outputs "
+        "(tx_hash, output_index, owner_fp, amount) "
+        "VALUES (?, ?, ?, ?)", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_blob(stmt, 1, tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 2, (int)output_index);
+    sqlite3_bind_text(stmt, 3, owner_fp, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 4, (int64_t)amount);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
 /* ── Committed transaction storage ───────────────────────────────── */
@@ -836,16 +884,15 @@ int nodus_witness_tx_by_owner(nodus_witness_t *w, const char *owner_fp,
 int nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
                               uint8_t tx_type, const uint8_t *tx_data,
                               uint32_t tx_len, uint64_t block_height,
-                              const char *sender_fp, const char *receiver_fp,
-                              uint64_t amount, uint64_t fee) {
+                              const char *sender_fp, uint64_t fee) {
     if (!w || !w->db || !tx_hash || !tx_data || tx_len == 0) return -1;
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
         "INSERT OR IGNORE INTO committed_transactions "
         "(tx_hash, tx_type, tx_data, tx_len, block_height, timestamp, "
-        "sender_fp, receiver_fp, amount, fee) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
+        "sender_fp, fee) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: tx_store prepare failed: %s\n",
                 LOG_TAG, sqlite3_errmsg(w->db));
@@ -864,13 +911,7 @@ int nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
     else
         sqlite3_bind_null(stmt, 7);
 
-    if (receiver_fp && receiver_fp[0])
-        sqlite3_bind_text(stmt, 8, receiver_fp, -1, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(stmt, 8);
-
-    sqlite3_bind_int64(stmt, 9, (int64_t)amount);
-    sqlite3_bind_int64(stmt, 10, (int64_t)fee);
+    sqlite3_bind_int64(stmt, 8, (int64_t)fee);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

@@ -687,20 +687,45 @@ int dnac_get_remote_history(dnac_context_t *ctx,
             h->fee = e->fee;
             h->timestamp = e->timestamp;
 
-            /* Determine counterparty and amount direction */
+            /* Compute send_amount and counterparty from per-output data.
+             * send_amount = sum of outputs NOT owned by us (transfer)
+             * counterparty = first non-us output owner (recipient)
+             * If we are receiver: amount = sum of our outputs */
             bool is_sender = (e->sender_fp[0] &&
                               strcmp(e->sender_fp, fingerprint) == 0);
 
+            uint64_t send_amount = 0;
+            uint64_t recv_amount = 0;
+
+            for (int oi = 0; oi < e->output_count; oi++) {
+                bool output_is_mine = (strcmp(e->outputs[oi].owner_fp,
+                                              fingerprint) == 0);
+                if (is_sender) {
+                    if (!output_is_mine) {
+                        /* Output to someone else = transferred amount */
+                        send_amount += e->outputs[oi].amount;
+                        if (h->counterparty[0] == '\0') {
+                            strncpy(h->counterparty,
+                                    e->outputs[oi].owner_fp,
+                                    DNAC_FINGERPRINT_SIZE - 1);
+                        }
+                    }
+                    /* output_is_mine = change, ignore */
+                } else {
+                    if (output_is_mine) {
+                        recv_amount += e->outputs[oi].amount;
+                    }
+                }
+            }
+
             if (is_sender) {
-                /* We sent — counterparty is receiver, delta is negative */
-                strncpy(h->counterparty, e->receiver_fp,
-                        DNAC_FINGERPRINT_SIZE - 1);
-                h->amount_delta = -(int64_t)e->amount;
+                h->amount_delta = -(int64_t)send_amount;
+                /* If no non-self output found (genesis?), counterparty = empty */
             } else {
-                /* We received — counterparty is sender, delta is positive */
+                h->amount_delta = (int64_t)recv_amount;
+                /* Counterparty is the sender */
                 strncpy(h->counterparty, e->sender_fp,
                         DNAC_FINGERPRINT_SIZE - 1);
-                h->amount_delta = (int64_t)e->amount;
             }
         }
 

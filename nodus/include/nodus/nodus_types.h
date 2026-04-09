@@ -354,16 +354,25 @@ typedef struct {
     nodus_dnac_range_entry_t *entries;  /* Heap-allocated, caller frees */
 } nodus_dnac_range_result_t;
 
+/** Transaction output in history entry */
+typedef struct {
+    char     owner_fp[129];
+    uint64_t amount;
+    uint32_t output_index;
+} nodus_dnac_history_output_t;
+
+#define NODUS_DNAC_MAX_TX_OUTPUTS 8
+
 /** Transaction history entry (per-owner query) */
 typedef struct {
     uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
     uint8_t  tx_type;
     char     sender_fp[129];
-    char     receiver_fp[129];
-    uint64_t amount;
     uint64_t fee;
     uint64_t block_height;
     uint64_t timestamp;
+    nodus_dnac_history_output_t outputs[NODUS_DNAC_MAX_TX_OUTPUTS];
+    int      output_count;
 } nodus_dnac_history_entry_t;
 
 /** Transaction history query result */

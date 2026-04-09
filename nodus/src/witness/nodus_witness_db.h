@@ -142,28 +142,41 @@ int  nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,
 
 /* ── Transaction history by owner ────────────────────────────────── */
 
+#define NODUS_WITNESS_MAX_TX_OUTPUTS 8
+
+typedef struct {
+    char        owner_fp[129];
+    uint64_t    amount;
+    uint32_t    output_index;
+} nodus_witness_tx_output_t;
+
 typedef struct {
     uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
     uint8_t     tx_type;
     char        sender_fp[129];
-    char        receiver_fp[129];
-    uint64_t    amount;
     uint64_t    fee;
     uint64_t    block_height;
     uint64_t    timestamp;
+    nodus_witness_tx_output_t outputs[NODUS_WITNESS_MAX_TX_OUTPUTS];
+    int         output_count;
 } nodus_witness_tx_history_entry_t;
 
 int  nodus_witness_tx_by_owner(nodus_witness_t *w, const char *owner_fp,
                                  nodus_witness_tx_history_entry_t *out,
                                  int max_entries, int *count_out);
 
+/* ── TX output storage ──────────────────────────────────────────── */
+
+int  nodus_witness_tx_output_add(nodus_witness_t *w, const uint8_t *tx_hash,
+                                   uint32_t output_index, const char *owner_fp,
+                                   uint64_t amount);
+
 /* ── Committed transaction storage ───────────────────────────────── */
 
 int  nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
                               uint8_t tx_type, const uint8_t *tx_data,
                               uint32_t tx_len, uint64_t block_height,
-                              const char *sender_fp, const char *receiver_fp,
-                              uint64_t amount, uint64_t fee);
+                              const char *sender_fp, uint64_t fee);
 int  nodus_witness_tx_get(nodus_witness_t *w, const uint8_t *tx_hash,
                             uint8_t *tx_type_out, uint8_t **tx_data_out,
                             uint32_t *tx_len_out, uint64_t *block_height_out);

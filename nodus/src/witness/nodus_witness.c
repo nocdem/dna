@@ -74,9 +74,14 @@ static const char *WITNESS_DB_SCHEMA =
     "  block_height INTEGER NOT NULL DEFAULT 0,"
     "  timestamp INTEGER NOT NULL DEFAULT (strftime('%%s','now')),"
     "  sender_fp TEXT,"
-    "  receiver_fp TEXT,"
-    "  amount INTEGER NOT NULL DEFAULT 0,"
     "  fee INTEGER NOT NULL DEFAULT 0"
+    ");"
+    "CREATE TABLE IF NOT EXISTS tx_outputs ("
+    "  tx_hash BLOB NOT NULL,"
+    "  output_index INTEGER NOT NULL,"
+    "  owner_fp TEXT NOT NULL,"
+    "  amount INTEGER NOT NULL,"
+    "  PRIMARY KEY (tx_hash, output_index)"
     ");"
     "CREATE TABLE IF NOT EXISTS commit_certificates ("
     "  block_height INTEGER NOT NULL,"
@@ -90,7 +95,7 @@ static const char *WITNESS_DB_SCHEMA =
     "CREATE INDEX IF NOT EXISTS idx_ledger_tx ON ledger_entries(tx_hash);"
     "CREATE INDEX IF NOT EXISTS idx_ctx_height ON committed_transactions(block_height);"
     "CREATE INDEX IF NOT EXISTS idx_ctx_sender ON committed_transactions(sender_fp);"
-    "CREATE INDEX IF NOT EXISTS idx_ctx_receiver ON committed_transactions(receiver_fp);";
+    "CREATE INDEX IF NOT EXISTS idx_txout_owner ON tx_outputs(owner_fp);";
 
 /* ── Set chain ID ────────────────────────────────────────────────── */
 
@@ -118,20 +123,21 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
     sqlite3_exec(witness->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
     sqlite3_exec(witness->db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
 
-    /* ── Migration: add sender_fp/receiver_fp/amount/fee columns ────
-     * Must run BEFORE schema exec because the schema includes indexes
-     * on sender_fp/receiver_fp which would fail on old DBs. */
+    /* ── Migration: add sender_fp/fee columns to committed_transactions.
+     * Must run BEFORE schema exec because indexes reference these columns.
+     * ALTER errors (duplicate column) are silently ignored. */
     sqlite3_exec(witness->db,
         "ALTER TABLE committed_transactions ADD COLUMN sender_fp TEXT;",
         NULL, NULL, NULL);
+    sqlite3_exec(witness->db,
+        "ALTER TABLE committed_transactions ADD COLUMN fee INTEGER NOT NULL DEFAULT 0;",
+        NULL, NULL, NULL);
+    /* Legacy columns from v0.10.25 — kept for backwards compat, unused */
     sqlite3_exec(witness->db,
         "ALTER TABLE committed_transactions ADD COLUMN receiver_fp TEXT;",
         NULL, NULL, NULL);
     sqlite3_exec(witness->db,
         "ALTER TABLE committed_transactions ADD COLUMN amount INTEGER NOT NULL DEFAULT 0;",
-        NULL, NULL, NULL);
-    sqlite3_exec(witness->db,
-        "ALTER TABLE committed_transactions ADD COLUMN fee INTEGER NOT NULL DEFAULT 0;",
         NULL, NULL, NULL);
 
     char *err_msg = NULL;

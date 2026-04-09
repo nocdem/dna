@@ -2683,15 +2683,6 @@ int nodus_client_dnac_history(nodus_client_t *client,
                             memcpy(e->sender_fp, ev.tstr.ptr, ev.tstr.len);
                             e->sender_fp[ev.tstr.len] = '\0';
                         }
-                    } else if (ek.tstr.len == 8 && memcmp(ek.tstr.ptr, "receiver", 8) == 0) {
-                        cbor_item_t ev = cbor_decode_next(&dec);
-                        if (ev.type == CBOR_ITEM_TSTR && ev.tstr.len < 129) {
-                            memcpy(e->receiver_fp, ev.tstr.ptr, ev.tstr.len);
-                            e->receiver_fp[ev.tstr.len] = '\0';
-                        }
-                    } else if (ek.tstr.len == 6 && memcmp(ek.tstr.ptr, "amount", 6) == 0) {
-                        cbor_item_t ev = cbor_decode_next(&dec);
-                        if (ev.type == CBOR_ITEM_UINT) e->amount = ev.uint_val;
                     } else if (ek.tstr.len == 3 && memcmp(ek.tstr.ptr, "fee", 3) == 0) {
                         cbor_item_t ev = cbor_decode_next(&dec);
                         if (ev.type == CBOR_ITEM_UINT) e->fee = ev.uint_val;
@@ -2701,6 +2692,38 @@ int nodus_client_dnac_history(nodus_client_t *client,
                     } else if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "ts", 2) == 0) {
                         cbor_item_t ev = cbor_decode_next(&dec);
                         if (ev.type == CBOR_ITEM_UINT) e->timestamp = ev.uint_val;
+                    } else if (ek.tstr.len == 7 && memcmp(ek.tstr.ptr, "outputs", 7) == 0) {
+                        cbor_item_t oarr = cbor_decode_next(&dec);
+                        if (oarr.type != CBOR_ITEM_ARRAY) continue;
+                        for (size_t oi = 0; oi < oarr.count; oi++) {
+                            cbor_item_t omap = cbor_decode_next(&dec);
+                            if (omap.type != CBOR_ITEM_MAP) continue;
+                            nodus_dnac_history_output_t *o = NULL;
+                            if (e->output_count < NODUS_DNAC_MAX_TX_OUTPUTS)
+                                o = &e->outputs[e->output_count];
+                            for (size_t om = 0; om < omap.count; om++) {
+                                cbor_item_t ok = cbor_decode_next(&dec);
+                                if (ok.type != CBOR_ITEM_TSTR) {
+                                    cbor_decode_skip(&dec); continue;
+                                }
+                                if (ok.tstr.len == 2 && memcmp(ok.tstr.ptr, "fp", 2) == 0) {
+                                    cbor_item_t ov = cbor_decode_next(&dec);
+                                    if (o && ov.type == CBOR_ITEM_TSTR && ov.tstr.len < 129) {
+                                        memcpy(o->owner_fp, ov.tstr.ptr, ov.tstr.len);
+                                        o->owner_fp[ov.tstr.len] = '\0';
+                                    }
+                                } else if (ok.tstr.len == 3 && memcmp(ok.tstr.ptr, "amt", 3) == 0) {
+                                    cbor_item_t ov = cbor_decode_next(&dec);
+                                    if (o && ov.type == CBOR_ITEM_UINT) o->amount = ov.uint_val;
+                                } else if (ok.tstr.len == 3 && memcmp(ok.tstr.ptr, "idx", 3) == 0) {
+                                    cbor_item_t ov = cbor_decode_next(&dec);
+                                    if (o && ov.type == CBOR_ITEM_UINT) o->output_index = (uint32_t)ov.uint_val;
+                                } else {
+                                    cbor_decode_skip(&dec);
+                                }
+                            }
+                            if (o) e->output_count++;
+                        }
                     } else {
                         cbor_decode_skip(&dec);
                     }

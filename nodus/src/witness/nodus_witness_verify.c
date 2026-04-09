@@ -18,6 +18,7 @@
 #include "witness/nodus_witness_verify.h"
 #include "witness/nodus_witness_db.h"
 #include "crypto/nodus_sign.h"
+#include "crypto/hash/qgp_sha3.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -138,8 +139,16 @@ int nodus_witness_recompute_tx_hash(const uint8_t *tx_data, uint32_t tx_len,
  * Parse output amounts from tx_data (for balance check)
  * ════════════════════════════════════════════════════════════════════ */
 
+/**
+ * Parse outputs: compute total and optionally the "send amount"
+ * (sum of outputs NOT owned by sender_fp).
+ *
+ * @param sender_fp   If non-NULL, compute send_amount (non-sender outputs)
+ * @param send_out    Output: sum of non-sender outputs (if sender_fp provided)
+ */
 static int parse_output_total(const uint8_t *tx_data, uint32_t tx_len,
-                               uint64_t *total_out, uint8_t *output_count_out) {
+                               uint64_t *total_out, uint8_t *output_count_out,
+                               const char *sender_fp, uint64_t *send_out) {
     if (tx_len < TX_HEADER_SIZE + 1) return -1;
 
     const uint8_t *p = tx_data + TX_INPUTS_OFF;
@@ -166,14 +175,23 @@ static int parse_output_total(const uint8_t *tx_data, uint32_t tx_len,
 
     /* Sum output amounts */
     uint64_t total = 0;
+    uint64_t send_total = 0;
     for (int i = 0; i < output_count; i++) {
         if (remaining < OUTPUT_FIXED_SIZE) return -1;
+
+        /* fingerprint at offset version(1), 129 bytes */
+        const char *out_fp = (const char *)(p + OUTPUT_VERSION_LEN);
 
         /* amount is at offset version(1) + fingerprint(129) = 130 */
         uint64_t amount;
         memcpy(&amount, p + OUTPUT_VERSION_LEN + OUTPUT_FP_LEN, sizeof(uint64_t));
         if (total + amount < total) return -1;  /* Overflow */
         total += amount;
+
+        /* Non-sender output = transfer amount */
+        if (sender_fp && strncmp(out_fp, sender_fp, 128) != 0) {
+            send_total += amount;
+        }
 
         uint8_t memo_len = p[OUTPUT_FIXED_SIZE - 1];
         size_t output_total = OUTPUT_FIXED_SIZE + memo_len;
@@ -183,6 +201,7 @@ static int parse_output_total(const uint8_t *tx_data, uint32_t tx_len,
     }
 
     *total_out = total;
+    if (send_out) *send_out = send_total;
     return 0;
 }
 
@@ -327,7 +346,10 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
     }
 
     uint64_t total_output = 0;
-    if (parse_output_total(tx_data, tx_len, &total_output, NULL) != 0) {
+    uint64_t send_amount = 0;
+    if (parse_output_total(tx_data, tx_len, &total_output, NULL,
+                            sender_fp[0] ? sender_fp : NULL,
+                            &send_amount) != 0) {
         snprintf(reject_reason, reason_size, "failed to parse outputs from tx_data");
         return -1;
     }
@@ -341,8 +363,9 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
 
     /* ── Check 5: Fee ──────────────────────────────────────────── */
     uint64_t actual_fee = total_input - total_output;
-    /* H-17: Fee = total_input / 1000 (0.1%), min 1 — aligned with client builder */
-    uint64_t min_fee = total_input / 1000;
+    /* Fee = 0.1% of send amount (non-change outputs), min 1 */
+    uint64_t fee_basis = (send_amount > 0) ? send_amount : total_output;
+    uint64_t min_fee = fee_basis / 1000;
     if (min_fee == 0) min_fee = 1;
 
     if (actual_fee < min_fee) {

@@ -924,23 +924,32 @@ static void handle_dnac_history(nodus_witness_t *w,
     cbor_encode_array(&enc, (size_t)count);
 
     for (int i = 0; i < count; i++) {
-        cbor_encode_map(&enc, 8);
+        cbor_encode_map(&enc, 7);
         cbor_encode_cstr(&enc, "hash");
         cbor_encode_bstr(&enc, entries[i].tx_hash, NODUS_T3_TX_HASH_LEN);
         cbor_encode_cstr(&enc, "type");
         cbor_encode_uint(&enc, entries[i].tx_type);
         cbor_encode_cstr(&enc, "sender");
         cbor_encode_cstr(&enc, entries[i].sender_fp);
-        cbor_encode_cstr(&enc, "receiver");
-        cbor_encode_cstr(&enc, entries[i].receiver_fp);
-        cbor_encode_cstr(&enc, "amount");
-        cbor_encode_uint(&enc, entries[i].amount);
         cbor_encode_cstr(&enc, "fee");
         cbor_encode_uint(&enc, entries[i].fee);
         cbor_encode_cstr(&enc, "bh");
         cbor_encode_uint(&enc, entries[i].block_height);
         cbor_encode_cstr(&enc, "ts");
         cbor_encode_uint(&enc, entries[i].timestamp);
+
+        /* Per-output array */
+        cbor_encode_cstr(&enc, "outputs");
+        cbor_encode_array(&enc, (size_t)entries[i].output_count);
+        for (int j = 0; j < entries[i].output_count; j++) {
+            cbor_encode_map(&enc, 3);
+            cbor_encode_cstr(&enc, "fp");
+            cbor_encode_cstr(&enc, entries[i].outputs[j].owner_fp);
+            cbor_encode_cstr(&enc, "amt");
+            cbor_encode_uint(&enc, entries[i].outputs[j].amount);
+            cbor_encode_cstr(&enc, "idx");
+            cbor_encode_uint(&enc, entries[i].outputs[j].output_index);
+        }
     }
 
     size_t rlen = cbor_encoder_len(&enc);

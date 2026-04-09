@@ -105,8 +105,8 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
                                    &selected, &selected_count, &change_amount);
     if (rc != DNAC_SUCCESS) return rc;
 
-    /* Recalculate fee based on total_input.
-     * H-17: Aligned with witness — both use total_input / 1000 (0.1%), min 1.
+    /* Calculate fee based on send amount (0.1% of transfer, not input).
+     * H-17: Aligned with witness — both use send_amount / 1000 (0.1%), min 1.
      */
     uint64_t total_input = 0;
     for (int i = 0; i < selected_count; i++) {
@@ -115,7 +115,7 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
             return DNAC_ERROR_OVERFLOW;
         }
     }
-    fee = total_input / 1000;
+    fee = builder->total_output_amount / 1000;
     if (fee < 1) fee = 1;
 
     if (builder->total_output_amount + fee > total_input) {
