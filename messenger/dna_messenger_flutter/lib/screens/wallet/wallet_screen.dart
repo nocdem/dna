@@ -2755,44 +2755,29 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                       decoration: InputDecoration(
                         labelText: widget.isDnac ? l10n.dnacRecipient : l10n.walletRecipientAddress,
                         hintText: widget.isDnac ? l10n.dnacRecipientHint : 'Address or DNA fingerprint',
-                        prefixIcon: widget.isDnac
+                        suffixIcon: _isResolving
                             ? const Padding(
                                 padding: EdgeInsets.all(12),
-                                child: FaIcon(FontAwesomeIcons.user, size: 18),
+                                child: SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
                               )
                             : null,
-                        suffixIcon: widget.isDnac
-                            ? IconButton(
-                                icon: const FaIcon(FontAwesomeIcons.addressBook, size: 18),
-                                onPressed: _pickDnacContact,
-                                tooltip: l10n.dnacPickContact,
-                              )
-                            : _isResolving
-                                ? const Padding(
-                                    padding: EdgeInsets.all(12),
-                                    child: SizedBox(
-                                      width: 20,
-                                      height: 20,
-                                      child: CircularProgressIndicator(strokeWidth: 2),
-                                    ),
-                                  )
-                                : null,
                       ),
-                      style: widget.isDnac ? const TextStyle(fontSize: 14) : null,
                       onChanged: widget.isDnac ? null : _onRecipientChanged,
                     ),
                   ),
-                  if (!widget.isDnac) ...[
-                    const SizedBox(width: 8),
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: IconButton(
-                        icon: const FaIcon(FontAwesomeIcons.addressBook),
-                        tooltip: 'Select contact',
-                        onPressed: _showContactPicker,
-                      ),
+                  const SizedBox(width: 8),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: IconButton(
+                      icon: const FaIcon(FontAwesomeIcons.addressBook),
+                      tooltip: widget.isDnac ? l10n.dnacPickContact : 'Select contact',
+                      onPressed: widget.isDnac ? _pickDnacContact : _showContactPicker,
                     ),
-                  ],
+                  ),
                 ],
               ),
               // Resolution status indicator (multi-chain only)
@@ -2842,13 +2827,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                       controller: _amountController,
                       decoration: InputDecoration(
                         labelText: widget.isDnac ? l10n.dnacAmount : l10n.walletAmount,
-                        hintText: widget.isDnac ? l10n.dnacAmountHint : '0.00',
-                        prefixIcon: widget.isDnac
-                            ? const Padding(
-                                padding: EdgeInsets.all(12),
-                                child: FaIcon(FontAwesomeIcons.coins, size: 18),
-                              )
-                            : null,
+                        hintText: '0.00',
                         suffixText: widget.isDnac ? l10n.dnacToken : _selectedToken,
                       ),
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -2897,11 +2876,6 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   decoration: InputDecoration(
                     labelText: l10n.dnacMemo,
                     hintText: l10n.dnacMemoHint,
-                    prefixIcon: const Padding(
-                      padding: EdgeInsets.all(12),
-                      child: FaIcon(FontAwesomeIcons.noteSticky, size: 18),
-                    ),
-                    border: const OutlineInputBorder(),
                   ),
                   maxLength: 255,
                 ),
@@ -3075,32 +3049,18 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
               ],
               // ── Send button ──
               const SizedBox(height: 16),
-              if (widget.isDnac)
-                SizedBox(
-                  height: 48,
-                  child: ElevatedButton.icon(
-                    onPressed: _canSendDnac() ? _sendDnac : null,
-                    icon: _isSending
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const FaIcon(FontAwesomeIcons.paperPlane, size: 18),
-                    label: Text(_isSending ? l10n.dnacSending : l10n.dnacConfirmSend),
-                  ),
-                )
-              else
-                ElevatedButton(
-                  onPressed: _canSend() ? _send : null,
-                  child: _isSending
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Text(l10n.walletSend),
-                ),
+              ElevatedButton(
+                onPressed: widget.isDnac
+                    ? (_canSendDnac() ? _sendDnac : null)
+                    : (_canSend() ? _send : null),
+                child: _isSending
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text(l10n.walletSend),
+              ),
             ],
           ),
         ),
