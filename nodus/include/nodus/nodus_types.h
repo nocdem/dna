@@ -74,7 +74,7 @@ extern "C" {
 #define NODUS_CHANNEL_RETENTION (7 * 86400) /* 7 days */
 #define NODUS_MAX_HINTED_POSTS  1000
 #define NODUS_HINTED_RETRY_SEC  60
-#define NODUS_HINT_MAX_RETRIES  3       /* Delete hint after N failed delivery attempts */
+#define NODUS_HINT_MAX_RETRIES  1       /* Delete hint after N failed delivery attempts */
 #define NODUS_HINTED_TTL_SEC    86400       /* 24h */
 #define NODUS_MAX_CH_SESSIONS   1024        /* Max channel TCP 4003 connections (must match NODUS_TCP_MAX_CONNS) */
 
