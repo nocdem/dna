@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  10
-#define NODUS_VERSION_PATCH  23
-#define NODUS_VERSION_STRING "0.10.23"
+#define NODUS_VERSION_PATCH  24
+#define NODUS_VERSION_STRING "0.10.24"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -37,7 +37,7 @@ extern "C" {
 #define NODUS_KEY_HEX_LEN      129         /* 128 hex chars + NUL */
 #define NODUS_KEYSPACE_BITS     512
 #define NODUS_K                 8           /* Bucket size */
-#define NODUS_R                 3           /* Replication factor */
+#define NODUS_R                 8           /* Replication factor (= K, Kademlia spec) */
 #define NODUS_BUCKETS           512         /* One per key-space bit */
 #define NODUS_ALPHA             3           /* Parallel lookups */
 
