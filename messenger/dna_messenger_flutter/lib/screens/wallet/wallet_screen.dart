@@ -1558,9 +1558,6 @@ class _AllBalancesSection extends ConsumerWidget {
                   ],
                 ),
               ),
-              // DNAC tile at the top of the list
-              if (showDnacTile)
-                _DnacAssetTile(balance: dnacBalance),
               ...filteredGroups.map((group) {
                 if (group.isMultiChain) {
                   return _GroupedTokenTile(groupedToken: group);
@@ -1568,6 +1565,9 @@ class _AllBalancesSection extends ConsumerWidget {
                   return _BalanceTile(walletBalance: group.chains.first);
                 }
               }),
+              // DNAC tile after other assets
+              if (showDnacTile)
+                _DnacAssetTile(balance: dnacBalance),
             ],
           );
   }
