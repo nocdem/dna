@@ -4314,6 +4314,19 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     memset(srv, 0, sizeof(*srv));
     srv->config = *config;
 
+    /* Jitter republish start to avoid thundering herd across cluster.
+     * Each node delays its first republish cycle by a random offset
+     * (0 to REPUBLISH_SEC), spreading replication traffic over time. */
+    {
+        uint64_t now = nodus_time_now();
+        uint32_t jitter_seed;
+        nodus_random((uint8_t *)&jitter_seed, sizeof(jitter_seed));
+        uint64_t value_jitter = jitter_seed % NODUS_REPUBLISH_SEC;
+        uint64_t media_jitter = (jitter_seed >> 16) % NODUS_MEDIA_REPUBLISH_SEC;
+        srv->republish.cycle_start = now - NODUS_REPUBLISH_SEC + value_jitter;
+        srv->media_republish.cycle_start = now - NODUS_MEDIA_REPUBLISH_SEC + media_jitter;
+    }
+
     /* Initialize FV fd mapping table (all entries invalid) */
     for (int i = 0; i < NODUS_FV_FD_TABLE_SIZE; i++) {
         srv->fv_fd_table[i].lookup_idx = -1;
