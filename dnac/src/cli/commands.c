@@ -1202,6 +1202,14 @@ int dnac_cli_send_token(dnac_context_t *ctx, const char *recipient,
         return 1;
     }
 
+    /* Broadcast to witnesses */
+    rc = dnac_tx_broadcast(ctx, tx, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        dnac_free_transaction(tx);
+        return 1;
+    }
+
     printf("Token payment sent successfully!\n");
     printf("TX Hash: ");
     for (int i = 0; i < DNAC_TX_HASH_SIZE; i++)

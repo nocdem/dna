@@ -508,7 +508,37 @@ static int update_utxo_set(nodus_witness_t *w,
 
     /* ── Burn UTXO for fee ──────────────────────────────────────── */
     uint64_t fee = 0;
-    if (tx_type != NODUS_W_TX_GENESIS && total_input > total_output) {
+    if (tx_type == NODUS_W_TX_TOKEN_CREATE) {
+        /* TOKEN_CREATE: fee = input DNAC - change DNAC output.
+         * total_output includes token genesis supply (different token),
+         * so we sum only native DNAC outputs for fee calculation. */
+        uint8_t zeros[64];
+        memset(zeros, 0, sizeof(zeros));
+        uint64_t dnac_output = 0;
+        /* Re-parse outputs to sum only native DNAC amounts */
+        size_t foff = 74; /* header */
+        uint8_t ic = tx_data[foff++];
+        for (int i = 0; i < ic; i++)
+            foff += 64 + 8 + 64; /* nullifier + amount + token_id */
+        uint8_t oc = tx_data[foff++];
+        for (int i = 0; i < oc; i++) {
+            foff += 1; /* version */
+            foff += 129; /* fingerprint */
+            uint64_t oamt;
+            memcpy(&oamt, tx_data + foff, 8);
+            foff += 8;
+            uint8_t otid[64];
+            memcpy(otid, tx_data + foff, 64);
+            foff += 64;
+            foff += 32; /* nullifier_seed */
+            uint8_t mlen = tx_data[foff++];
+            foff += mlen;
+            if (memcmp(otid, zeros, 64) == 0)
+                dnac_output += oamt;
+        }
+        if (total_input > dnac_output)
+            fee = total_input - dnac_output;
+    } else if (tx_type != NODUS_W_TX_GENESIS && total_input > total_output) {
         fee = total_input - total_output;
     }
 
@@ -1757,8 +1787,6 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             nodus_witness_mempool_entry_t *e = w->round_state.batch_entries[bi];
             if (!e) continue;
 
-            fprintf(stderr, "%s: batch[%d] client_conn=%p is_forwarded=%d\n",
-                    LOG_TAG, bi, (void*)e->client_conn, e->is_forwarded);
             if (e->client_conn && !e->is_forwarded) {
                 /* Direct client — send spend result */
                 struct nodus_tcp_conn *saved_conn = w->round_state.client_conn;
