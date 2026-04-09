@@ -38,6 +38,7 @@ extern "C" {
 typedef struct {
     uint8_t nullifier[DNAC_NULLIFIER_SIZE];     /**< Nullifier (SHA3-512 hash) */
     uint64_t amount;                             /**< Amount (v1 only, for verification) */
+    uint8_t token_id[DNAC_TOKEN_ID_SIZE];       /**< Token ID (zeros = native DNAC) */
 } dnac_tx_input_t;
 
 /**
@@ -50,6 +51,7 @@ typedef struct {
     uint8_t version;                             /**< Output version */
     char owner_fingerprint[DNAC_FINGERPRINT_SIZE]; /**< Recipient's fingerprint */
     uint64_t amount;                             /**< Amount in smallest units */
+    uint8_t token_id[DNAC_TOKEN_ID_SIZE];        /**< Token ID (zeros = native DNAC) */
     uint8_t nullifier_seed[32];                  /**< Seed for recipient to derive nullifier */
     char memo[DNAC_MEMO_MAX_SIZE];               /**< Optional memo (Gap 25: v0.6.0) */
     uint8_t memo_len;                            /**< Memo length */

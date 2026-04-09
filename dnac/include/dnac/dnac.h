@@ -86,6 +86,9 @@ extern "C" {
 /** Transaction hash size (SHA3-512) */
 #define DNAC_TX_HASH_SIZE           64
 
+/** Token ID size (SHA3-512 hash) */
+#define DNAC_TOKEN_ID_SIZE          64
+
 /** Dilithium5 signature size */
 #define DNAC_SIGNATURE_SIZE         4627
 
@@ -136,9 +139,10 @@ typedef enum {
  * v0.5.0: DNAC_TX_MINT removed. All tokens created via one-time genesis.
  */
 typedef enum {
-    DNAC_TX_GENESIS = 0,        /**< One-time token creation (replaces MINT) */
-    DNAC_TX_SPEND   = 1,        /**< Standard spend transaction */
-    DNAC_TX_BURN    = 2         /**< Destroy coins (optional) */
+    DNAC_TX_GENESIS      = 0,   /**< One-time token creation (replaces MINT) */
+    DNAC_TX_SPEND        = 1,   /**< Standard spend transaction */
+    DNAC_TX_BURN         = 2,   /**< Destroy coins (optional) */
+    DNAC_TX_TOKEN_CREATE = 3    /**< Create a new custom token */
 } dnac_tx_type_t;
 
 /**
@@ -154,10 +158,24 @@ struct dnac_utxo {
     uint64_t amount;                             /**< Amount in smallest units */
     uint8_t nullifier[DNAC_NULLIFIER_SIZE];      /**< Nullifier for spending */
     char owner_fingerprint[DNAC_FINGERPRINT_SIZE]; /**< Owner's identity fingerprint */
+    uint8_t token_id[DNAC_TOKEN_ID_SIZE];        /**< Token ID (zeros = native DNAC) */
     dnac_utxo_status_t status;                   /**< Current status */
     uint64_t received_at;                        /**< Unix timestamp when received */
     uint64_t spent_at;                           /**< Unix timestamp when spent (0 if unspent) */
 };
+
+/** Token registry entry */
+typedef struct {
+    uint8_t  token_id[DNAC_TOKEN_ID_SIZE];  /**< SHA3-512(creator_fp + name + nonce) */
+    char     name[33];                       /**< Token name, max 32 chars */
+    char     symbol[9];                      /**< Token symbol, max 8 chars */
+    uint8_t  decimals;                       /**< Decimal places, 0-18 */
+    uint64_t initial_supply;                 /**< Total supply at creation */
+    char     creator_fp[DNAC_FINGERPRINT_SIZE]; /**< Creator's fingerprint */
+    uint8_t  flags;                          /**< bit 0: mintable (future) */
+    uint64_t block_height;                   /**< Block where created */
+    uint64_t timestamp;                      /**< Creation timestamp */
+} dnac_token_t;
 
 /**
  * @brief Transaction output (for building transactions)
@@ -165,6 +183,7 @@ struct dnac_utxo {
 typedef struct {
     char recipient_fingerprint[DNAC_FINGERPRINT_SIZE]; /**< Recipient's fingerprint */
     uint64_t amount;                                    /**< Amount to send */
+    uint8_t token_id[DNAC_TOKEN_ID_SIZE];              /**< Token ID (zeros = native DNAC) */
     char memo[DNAC_MEMO_MAX_SIZE];                     /**< Optional memo */
 } dnac_tx_output_t;
 
