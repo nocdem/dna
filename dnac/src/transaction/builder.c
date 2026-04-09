@@ -118,7 +118,12 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
     fee = builder->total_output_amount / 1000;
     if (fee < 1) fee = 1;
 
-    if (builder->total_output_amount + fee > total_input) {
+    uint64_t output_plus_fee;
+    if (safe_add_u64(builder->total_output_amount, fee, &output_plus_fee) != 0) {
+        free(selected);
+        return DNAC_ERROR_OVERFLOW;
+    }
+    if (output_plus_fee > total_input) {
         free(selected);
         return DNAC_ERROR_INSUFFICIENT_FUNDS;
     }
@@ -319,6 +324,9 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
         return rc;
     }
 
+    /* Wrap local DB updates in a transaction for crash consistency */
+    sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, NULL);
+
     /* Step 6: Store change outputs locally */
     for (int i = 0; i < tx->output_count; i++) {
         /* Only process change outputs (to ourselves) */
@@ -380,6 +388,8 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
     if (rc != DNAC_SUCCESS) {
         /* Non-fatal */
     }
+
+    sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
 
     /* Call completion callback if provided */
     if (callback) {
