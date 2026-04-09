@@ -302,6 +302,21 @@ void dnac_set_payment_callback(dnac_context_t *ctx, dnac_payment_cb_t callback, 
 int dnac_get_balance(dnac_context_t *ctx, dnac_balance_t *balance);
 
 /**
+ * @brief Get wallet balance for a specific token
+ *
+ * If token_id is NULL or all-zeros, returns native DNAC balance.
+ * Otherwise returns balance for the specified token only.
+ *
+ * @param ctx DNAC context
+ * @param token_id Token ID (DNAC_TOKEN_ID_SIZE bytes), or NULL for native
+ * @param balance Output balance structure
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_wallet_get_balance_token(dnac_context_t *ctx,
+                                   const uint8_t *token_id,
+                                   dnac_balance_t *balance);
+
+/**
  * @brief Get list of UTXOs
  *
  * @param ctx DNAC context
@@ -328,6 +343,18 @@ void dnac_free_utxos(dnac_utxo_t *utxos, int count);
  * @return DNAC_SUCCESS or error code
  */
 int dnac_sync_wallet(dnac_context_t *ctx);
+
+/**
+ * @brief Sync token registry from witnesses
+ *
+ * Refreshes the local token registry by querying known tokens
+ * from Nodus witnesses. Can be called from wallet sync flow
+ * or independently.
+ *
+ * @param ctx DNAC context
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_sync_tokens(dnac_context_t *ctx);
 
 /**
  * @brief Start listening for incoming payments

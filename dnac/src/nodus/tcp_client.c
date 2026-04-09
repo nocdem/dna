@@ -471,6 +471,7 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
         memcpy(utxo.nullifier, e->nullifier, DNAC_NULLIFIER_SIZE);
         snprintf(utxo.owner_fingerprint, sizeof(utxo.owner_fingerprint),
                  "%s", fingerprint);
+        memcpy(utxo.token_id, e->token_id, DNAC_TOKEN_ID_SIZE);
         utxo.status = DNAC_UTXO_UNSPENT;
         utxo.received_at = (uint64_t)time(NULL);
 

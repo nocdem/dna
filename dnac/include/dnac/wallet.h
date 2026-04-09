@@ -95,6 +95,21 @@ int dnac_wallet_select_utxos(dnac_context_t *ctx,
  */
 int dnac_wallet_calculate_balance(dnac_context_t *ctx, dnac_balance_t *balance);
 
+/**
+ * @brief Calculate balance for a specific token
+ *
+ * If token_id is NULL or all-zeros, returns native DNAC balance.
+ * Otherwise sums only UTXOs matching the given token_id.
+ *
+ * @param ctx DNAC context
+ * @param token_id Token ID (DNAC_TOKEN_ID_SIZE bytes), or NULL for native
+ * @param balance Output balance
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_wallet_get_balance_token(dnac_context_t *ctx,
+                                   const uint8_t *token_id,
+                                   dnac_balance_t *balance);
+
 /* ============================================================================
  * Context Accessors (internal use)
  * ========================================================================== */

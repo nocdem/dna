@@ -226,6 +226,23 @@ int dnac_sync_wallet(dnac_context_t *ctx) {
     return rc;
 }
 
+int dnac_sync_tokens(dnac_context_t *ctx) {
+    if (!ctx || !ctx->initialized) return DNAC_ERROR_INVALID_PARAM;
+
+    /* Refresh local token registry from witnesses */
+    dnac_token_t tokens[128];
+    int token_count = 0;
+    int rc = dnac_token_list(ctx, tokens, 128, &token_count);
+    if (rc != DNAC_SUCCESS) {
+        QGP_LOG_WARN(LOG_TAG, "sync_tokens: failed to fetch token list: %d", rc);
+        return rc;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "sync_tokens: refreshed %d tokens from witnesses",
+                 token_count);
+    return DNAC_SUCCESS;
+}
+
 int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
     if (!ctx || !ctx->initialized) return DNAC_ERROR_INVALID_PARAM;
 
