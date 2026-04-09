@@ -389,12 +389,14 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
     int count = nodus_routing_find_closest(&srv->routing, &media_key,
                                             closest, NODUS_R);
 
-    int sent = 0, failed = 0;
+    int sent = 0, failed = 0, skipped_self = 0;
     int fail_indices[NODUS_R];
     for (int i = 0; i < count; i++) {
         /* Skip self */
-        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0)
+        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) {
+            skipped_self++;
             continue;
+        }
 
         if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen) != 0) {
             fail_indices[failed] = i;
@@ -405,6 +407,7 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
     }
 
     /* Only queue hints when critically few copies delivered */
+    int hinted = 0;
     if (sent < NODUS_REPLICATION_MIN && failed > 0) {
         for (int f = 0; f < failed; f++) {
             int i = fail_indices[f];
@@ -414,9 +417,15 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
                                              &closest[i].node_id,
                                              closest[i].ip, closest[i].tcp_port,
                                              frame, flen);
+                hinted++;
             }
         }
     }
+
+    char kh[33];
+    for (int x = 0; x < 16; x++) sprintf(kh + x*2, "%02x", meta->content_hash[x]);
+    fprintf(stderr, "MEDIA-REPL: hash=%s... chunk=%u sent=%d self=%d fail=%d hint=%d\n",
+            kh, chunk_index, sent, skipped_self, failed, hinted);
 
     free(frame);
 }
@@ -434,7 +443,11 @@ static void dht_hinted_retry(nodus_server_t *srv) {
     last_retry = now;
 
     /* Cleanup expired entries first */
-    nodus_storage_hinted_cleanup(&srv->storage);
+    int cleaned = nodus_storage_hinted_cleanup(&srv->storage);
+    int total_hints = nodus_storage_hinted_count(&srv->storage);
+    if (total_hints > 0 || cleaned > 0)
+        fprintf(stderr, "HINT-RETRY: tick start — %d pending, %d expired-cleaned\n",
+                total_hints, cleaned > 0 ? cleaned : 0);
 
     /* Query distinct node_ids with pending hints */
     sqlite3_stmt *stmt = NULL;
@@ -471,20 +484,28 @@ static void dht_hinted_retry(nodus_server_t *srv) {
                                        100, &entries, &count) != 0 || count == 0)
             continue;
 
+        int h_sent = 0, h_bumped = 0, h_expired = 0;
         for (size_t j = 0; j < count; j++) {
             if (dht_republish_send(srv, ip, tcp_port,
                                     entries[j].frame_data,
                                     entries[j].frame_len) == 0) {
                 nodus_storage_hinted_delete(&srv->storage, entries[j].id);
+                h_sent++;
             } else {
                 /* Increment retry count; delete after max retries.
                  * Republish (every 10 min) will handle delivery. */
                 int retries = nodus_storage_hinted_bump_retry(
                     &srv->storage, entries[j].id);
-                if (retries >= NODUS_HINT_MAX_RETRIES)
+                if (retries >= NODUS_HINT_MAX_RETRIES) {
                     nodus_storage_hinted_delete(&srv->storage, entries[j].id);
+                    h_expired++;
+                } else {
+                    h_bumped++;
+                }
             }
         }
+        fprintf(stderr, "HINT-RETRY: peer=%s:%d batch=%zu delivered=%d bumped=%d maxretry=%d\n",
+                ip, tcp_port, count, h_sent, h_bumped, h_expired);
 
         nodus_storage_hinted_free(entries, count);
     }
