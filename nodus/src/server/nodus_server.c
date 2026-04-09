@@ -332,11 +332,13 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
         }
     }
 
-    /* Only queue hinted handoff when insufficient copies were delivered.
-     * With periodic republish (every 10 min) from all nodes that hold the
-     * value, gaps are filled naturally — hints are only needed when the
-     * copy count is critically low. */
-    if (sent < NODUS_REPLICATION_MIN && failed > 0) {
+    /* Only queue hinted handoff when:
+     * 1. Enough peers were found (routing table is ready)
+     * 2. Not enough copies were delivered
+     * If routing table only has 1-2 peers, don't hint — it's a startup
+     * condition, not a real failure. Republish will handle it. */
+    int peers_tried = count - skipped_self;
+    if (sent < NODUS_REPLICATION_MIN && peers_tried >= NODUS_REPLICATION_MIN && failed > 0) {
         for (int f = 0; f < failed; f++) {
             int i = fail_indices[f];
             uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[i].node_id);
@@ -350,8 +352,8 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
         }
     }
 
-    fprintf(stderr, "REPL: key=%s... done: sent=%d self=%d fail=%d hint=%d\n",
-            rpl_kh, sent, skipped_self, failed, hinted);
+    fprintf(stderr, "REPL: key=%s... done: sent=%d self=%d fail=%d hint=%d (peers=%d)\n",
+            rpl_kh, sent, skipped_self, failed, hinted, peers_tried);
 
     free(frame);
 }
@@ -406,9 +408,10 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
         }
     }
 
-    /* Only queue hints when critically few copies delivered */
+    /* Only queue hints when enough peers were tried and too few succeeded */
     int hinted = 0;
-    if (sent < NODUS_REPLICATION_MIN && failed > 0) {
+    int peers_tried = count - skipped_self;
+    if (sent < NODUS_REPLICATION_MIN && peers_tried >= NODUS_REPLICATION_MIN && failed > 0) {
         for (int f = 0; f < failed; f++) {
             int i = fail_indices[f];
             uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[i].node_id);
@@ -424,8 +427,8 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
 
     char kh[33];
     for (int x = 0; x < 16; x++) sprintf(kh + x*2, "%02x", meta->content_hash[x]);
-    fprintf(stderr, "MEDIA-REPL: hash=%s... chunk=%u sent=%d self=%d fail=%d hint=%d\n",
-            kh, chunk_index, sent, skipped_self, failed, hinted);
+    fprintf(stderr, "MEDIA-REPL: hash=%s... chunk=%u sent=%d self=%d fail=%d hint=%d (peers=%d)\n",
+            kh, chunk_index, sent, skipped_self, failed, hinted, peers_tried);
 
     free(frame);
 }
@@ -751,6 +754,8 @@ static void dht_republish(nodus_server_t *srv) {
     if (!rs->active) {
         /* Start new cycle every NODUS_REPUBLISH_SEC */
         if (now - rs->cycle_start < NODUS_REPUBLISH_SEC) return;
+        /* Wait for routing table to have enough peers */
+        if (nodus_routing_count(&srv->routing) < NODUS_REPLICATION_MIN) return;
         memset(&rs->last_key, 0, sizeof(rs->last_key));
         rs->active = true;
         rs->first_batch = true;
@@ -817,6 +822,10 @@ static void dht_media_republish(nodus_server_t *srv) {
     if (!mrs->active) {
         /* Start new cycle every NODUS_MEDIA_REPUBLISH_SEC (24h — media is immutable) */
         if (now - mrs->cycle_start < NODUS_MEDIA_REPUBLISH_SEC) return;
+        /* Don't start cycle until routing table has enough peers —
+         * otherwise we "complete" the cycle sending to 0 peers and
+         * wait 24h before trying again */
+        if (nodus_routing_count(&srv->routing) < NODUS_REPLICATION_MIN) return;
         memset(mrs->last_hash, 0, sizeof(mrs->last_hash));
         mrs->active = true;
         mrs->first_batch = true;
