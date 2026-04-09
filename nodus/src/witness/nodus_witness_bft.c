@@ -495,7 +495,8 @@ static int update_utxo_set(nodus_witness_t *w,
         }
 
         if (nodus_witness_utxo_add(w, nul_hash.bytes, fingerprint,
-                                      amount, tx_hash, (uint32_t)i, block_height) == 0) {
+                                      amount, tx_hash, (uint32_t)i, block_height,
+                                      NULL) == 0) {
             stored++;
         }
     }
@@ -522,7 +523,7 @@ static int update_utxo_set(nodus_witness_t *w,
         }
         if (nodus_witness_utxo_add(w, burn_nul.bytes, DNAC_BURN_ADDRESS,
                                       fee, tx_hash, (uint32_t)output_count,
-                                      block_height) != 0) {
+                                      block_height, NULL) != 0) {
             fprintf(stderr, "%s: burn UTXO insert failed (fee=%llu)\n",
                     LOG_TAG, (unsigned long long)fee);
             return -1;

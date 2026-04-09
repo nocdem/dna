@@ -110,14 +110,19 @@ int nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
 int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
                               const char *owner, uint64_t amount,
                               const uint8_t *tx_hash, uint32_t index,
-                              uint64_t block_height) {
+                              uint64_t block_height,
+                              const uint8_t *token_id) {
     if (!w || !w->db || !nullifier || !owner || !tx_hash) return -1;
+
+    /* Default to native DNAC (64 zero bytes) when token_id is NULL */
+    static const uint8_t zero_token[64] = {0};
+    const uint8_t *tid = token_id ? token_id : zero_token;
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
         "INSERT OR IGNORE INTO utxo_set "
-        "(nullifier, owner, amount, tx_hash, output_index, block_height, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
+        "(nullifier, owner, amount, token_id, tx_hash, output_index, block_height, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: utxo add prepare failed: %s\n",
                 LOG_TAG, sqlite3_errmsg(w->db));
@@ -127,10 +132,11 @@ int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
     sqlite3_bind_blob(stmt, 1, nullifier, NODUS_T3_NULLIFIER_LEN, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 2, owner, -1, SQLITE_STATIC);
     sqlite3_bind_int64(stmt, 3, (int64_t)amount);
-    sqlite3_bind_blob(stmt, 4, tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 5, (int)index);
-    sqlite3_bind_int64(stmt, 6, (int64_t)block_height);
-    sqlite3_bind_int64(stmt, 7, (int64_t)time(NULL));
+    sqlite3_bind_blob(stmt, 4, tid, 64, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 5, tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 6, (int)index);
+    sqlite3_bind_int64(stmt, 7, (int64_t)block_height);
+    sqlite3_bind_int64(stmt, 8, (int64_t)time(NULL));
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -252,7 +258,7 @@ int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT nullifier, owner, amount, tx_hash, output_index, block_height "
+        "SELECT nullifier, owner, amount, token_id, tx_hash, output_index, block_height "
         "FROM utxo_set WHERE owner = ? LIMIT ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
@@ -279,11 +285,16 @@ int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
 
         blob = sqlite3_column_blob(stmt, 3);
         blen = sqlite3_column_bytes(stmt, 3);
+        if (blob && blen == 64)
+            memcpy(e->token_id, blob, 64);
+
+        blob = sqlite3_column_blob(stmt, 4);
+        blen = sqlite3_column_bytes(stmt, 4);
         if (blob && blen == NODUS_T3_TX_HASH_LEN)
             memcpy(e->tx_hash, blob, NODUS_T3_TX_HASH_LEN);
 
-        e->output_index = (uint32_t)sqlite3_column_int(stmt, 4);
-        e->block_height = (uint64_t)sqlite3_column_int64(stmt, 5);
+        e->output_index = (uint32_t)sqlite3_column_int(stmt, 5);
+        e->block_height = (uint64_t)sqlite3_column_int64(stmt, 6);
         count++;
     }
 
@@ -1030,6 +1041,104 @@ int nodus_witness_cert_get(nodus_witness_t *w, uint64_t block_height,
 
     sqlite3_finalize(stmt);
     *count_out = count;
+    return 0;
+}
+
+/* ── Token registry operations ──────────────────────────────────── */
+
+int nodus_witness_token_add(nodus_witness_t *w, const uint8_t *token_id,
+                               const char *name, const char *symbol,
+                               uint8_t decimals, uint64_t supply,
+                               const char *creator_fp, uint8_t flags,
+                               uint64_t block_height) {
+    if (!w || !w->db || !token_id || !name || !symbol || !creator_fp)
+        return -1;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "INSERT OR IGNORE INTO tokens "
+        "(token_id, name, symbol, decimals, supply, creator_fp, flags, "
+        "block_height, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: token add prepare failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    sqlite3_bind_blob(stmt, 1, token_id, 64, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, name, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, symbol, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 4, decimals);
+    sqlite3_bind_int64(stmt, 5, (int64_t)supply);
+    sqlite3_bind_text(stmt, 6, creator_fp, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 7, flags);
+    sqlite3_bind_int64(stmt, 8, (int64_t)block_height);
+    sqlite3_bind_int64(stmt, 9, (int64_t)time(NULL));
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "%s: token add failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_token_exists(nodus_witness_t *w, const uint8_t *token_id) {
+    if (!w || !w->db || !token_id) return 0;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT 1 FROM tokens WHERE token_id = ?", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return 0;
+
+    sqlite3_bind_blob(stmt, 1, token_id, 64, SQLITE_STATIC);
+    int exists = (sqlite3_step(stmt) == SQLITE_ROW) ? 1 : 0;
+    sqlite3_finalize(stmt);
+    return exists;
+}
+
+int nodus_witness_token_get(nodus_witness_t *w, const uint8_t *token_id,
+                               char *name_out, char *symbol_out,
+                               uint8_t *decimals_out, uint64_t *supply_out,
+                               char *creator_fp_out) {
+    if (!w || !w->db || !token_id) return -1;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT name, symbol, decimals, supply, creator_fp "
+        "FROM tokens WHERE token_id = ?", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_blob(stmt, 1, token_id, 64, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -1;  /* Not found */
+    }
+
+    if (name_out) {
+        const char *n = (const char *)sqlite3_column_text(stmt, 0);
+        if (n) { strncpy(name_out, n, 63); name_out[63] = '\0'; }
+    }
+    if (symbol_out) {
+        const char *s = (const char *)sqlite3_column_text(stmt, 1);
+        if (s) { strncpy(symbol_out, s, 15); symbol_out[15] = '\0'; }
+    }
+    if (decimals_out)
+        *decimals_out = (uint8_t)sqlite3_column_int(stmt, 2);
+    if (supply_out)
+        *supply_out = (uint64_t)sqlite3_column_int64(stmt, 3);
+    if (creator_fp_out) {
+        const char *c = (const char *)sqlite3_column_text(stmt, 4);
+        if (c) { strncpy(creator_fp_out, c, 128); creator_fp_out[128] = '\0'; }
+    }
+
+    sqlite3_finalize(stmt);
     return 0;
 }
 

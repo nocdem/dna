@@ -155,7 +155,7 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
 static int add_utxo(nodus_witness_t *w, const uint8_t *nullifier,
                      const char *owner, uint64_t amount) {
     uint8_t fake_hash[64] = {0};
-    return nodus_witness_utxo_add(w, nullifier, owner, amount, fake_hash, 0, 0);
+    return nodus_witness_utxo_add(w, nullifier, owner, amount, fake_hash, 0, 0, NULL);
 }
 
 /* Add a spent nullifier to the witness DB */

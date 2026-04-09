@@ -34,7 +34,8 @@ int  nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
 int  nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
                               const char *owner, uint64_t amount,
                               const uint8_t *tx_hash, uint32_t index,
-                              uint64_t block_height);
+                              uint64_t block_height,
+                              const uint8_t *token_id);
 int  nodus_witness_utxo_remove(nodus_witness_t *w, const uint8_t *nullifier);
 int  nodus_witness_utxo_count(nodus_witness_t *w, uint64_t *count_out);
 int  nodus_witness_utxo_sum(nodus_witness_t *w, uint64_t *sum_out);
@@ -54,6 +55,7 @@ typedef struct {
     uint8_t     nullifier[NODUS_T3_NULLIFIER_LEN];
     char        owner[129];     /* fingerprint */
     uint64_t    amount;
+    uint8_t     token_id[64];   /* 64 bytes — zeros = native DNAC */
     uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
     uint32_t    output_index;
     uint64_t    block_height;
@@ -62,6 +64,19 @@ typedef struct {
 int  nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
                                    nodus_witness_utxo_entry_t *out,
                                    int max_entries, int *count_out);
+
+/* ── Token registry operations ──────────────────────────────────── */
+
+int  nodus_witness_token_add(nodus_witness_t *w, const uint8_t *token_id,
+                               const char *name, const char *symbol,
+                               uint8_t decimals, uint64_t supply,
+                               const char *creator_fp, uint8_t flags,
+                               uint64_t block_height);
+int  nodus_witness_token_exists(nodus_witness_t *w, const uint8_t *token_id);
+int  nodus_witness_token_get(nodus_witness_t *w, const uint8_t *token_id,
+                               char *name_out, char *symbol_out,
+                               uint8_t *decimals_out, uint64_t *supply_out,
+                               char *creator_fp_out);
 
 /* ── Ledger operations ───────────────────────────────────────────── */
 
