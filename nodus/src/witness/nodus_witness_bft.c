@@ -651,7 +651,7 @@ static int commit_block_inner(nodus_witness_t *w,
         nodus_witness_supply_t sup;
         uint64_t utxo_total = 0;
         if (nodus_witness_supply_get(w, &sup) == 0 &&
-            nodus_witness_utxo_sum(w, &utxo_total) == 0) {
+            nodus_witness_utxo_sum_by_token(w, NULL, &utxo_total) == 0) {
             if (sup.genesis_supply != utxo_total) {
                 QGP_LOG_ERROR(LOG_TAG,
                     "SUPPLY INVARIANT VIOLATION: genesis=%llu != utxo_sum=%llu "
