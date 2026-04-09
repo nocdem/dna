@@ -193,26 +193,109 @@ int dnac_cli_utxos(dnac_context_t *ctx) {
     return 0;
 }
 
-int dnac_cli_send(dnac_context_t *ctx, const char *recipient,
-                  uint64_t amount, const char *memo) {
-    /* Validate fingerprint early */
-    size_t fp_len = strlen(recipient);
-    if (fp_len != 128) {
-        fprintf(stderr, "Error: Invalid fingerprint length %zu (expected 128 hex chars)\n", fp_len);
+/* Callback context for name lookup */
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    bool done;
+    int result;
+    char fingerprint[129];
+} name_lookup_ctx_t;
+
+static void on_name_lookup(uint64_t request_id, int error,
+                           const char *fingerprint, void *user_data) {
+    (void)request_id;
+    name_lookup_ctx_t *lctx = (name_lookup_ctx_t *)user_data;
+    pthread_mutex_lock(&lctx->mutex);
+    lctx->result = error;
+    if (fingerprint && error == 0) {
+        strncpy(lctx->fingerprint, fingerprint, 128);
+        lctx->fingerprint[128] = '\0';
+    }
+    lctx->done = true;
+    pthread_cond_signal(&lctx->cond);
+    pthread_mutex_unlock(&lctx->mutex);
+
+    /* Free the strdup'd string from dna_handle_lookup_name */
+    if (fingerprint) {
+        free((void*)fingerprint);
+    }
+}
+
+/**
+ * Resolve recipient: if 128 hex chars → use as fingerprint,
+ * otherwise treat as DNA name and resolve via DHT lookup.
+ * Returns 0 on success (fp_out filled), 1 on failure.
+ */
+static int resolve_recipient(dnac_context_t *ctx, const char *recipient,
+                             char *fp_out) {
+    size_t len = strlen(recipient);
+
+    /* Check if it's already a fingerprint (128 lowercase hex) */
+    bool is_fp = (len == 128);
+    if (is_fp) {
+        for (size_t i = 0; i < 128; i++) {
+            char c = recipient[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+                is_fp = false;
+                break;
+            }
+        }
+    }
+
+    if (is_fp) {
+        memcpy(fp_out, recipient, 128);
+        fp_out[128] = '\0';
+        return 0;
+    }
+
+    /* Name lookup */
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) {
+        fprintf(stderr, "Error: Engine not initialized\n");
         return 1;
     }
-    for (size_t i = 0; i < 128; i++) {
-        char c = recipient[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
-            fprintf(stderr, "Error: Invalid character '%c' at position %zu in fingerprint\n", c, i);
-            return 1;
-        }
+
+    printf("Resolving name '%s'...\n", recipient);
+
+    name_lookup_ctx_t lookup = {0};
+    pthread_mutex_init(&lookup.mutex, NULL);
+    pthread_cond_init(&lookup.cond, NULL);
+
+    dna_engine_lookup_name(engine, recipient, on_name_lookup, &lookup);
+
+    pthread_mutex_lock(&lookup.mutex);
+    while (!lookup.done) {
+        pthread_cond_wait(&lookup.cond, &lookup.mutex);
+    }
+    int result = lookup.result;
+    pthread_mutex_unlock(&lookup.mutex);
+
+    pthread_mutex_destroy(&lookup.mutex);
+    pthread_cond_destroy(&lookup.cond);
+
+    if (result != 0 || lookup.fingerprint[0] == '\0') {
+        fprintf(stderr, "Error: Name '%s' not found\n", recipient);
+        return 1;
+    }
+
+    memcpy(fp_out, lookup.fingerprint, 128);
+    fp_out[128] = '\0';
+    printf("Resolved: %s → %.16s...\n", recipient, fp_out);
+    return 0;
+}
+
+int dnac_cli_send(dnac_context_t *ctx, const char *recipient,
+                  uint64_t amount, const char *memo) {
+    char resolved_fp[129];
+    if (resolve_recipient(ctx, recipient, resolved_fp) != 0) {
+        return 1;
     }
 
     char amount_str[64];
     format_amount(amount, amount_str, sizeof(amount_str));
 
-    printf("Sending %s to %s...\n", amount_str, recipient);
+    printf("Sending %s to %s...\n", amount_str, resolved_fp);
 
     /* Estimate fee */
     uint64_t fee = 0;
@@ -227,7 +310,7 @@ int dnac_cli_send(dnac_context_t *ctx, const char *recipient,
     printf("Fee: %s\n", fee_str);
 
     /* Send payment */
-    rc = dnac_send(ctx, recipient, amount, memo, NULL, NULL);
+    rc = dnac_send(ctx, resolved_fp, amount, memo, NULL, NULL);
     if (rc != DNAC_SUCCESS) {
         fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
         return 1;
@@ -490,34 +573,6 @@ int dnac_cli_address(dnac_context_t *ctx) {
     return 0;
 }
 
-/* Callback context for name lookup */
-typedef struct {
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;
-    bool done;
-    int result;
-    char fingerprint[129];
-} name_lookup_ctx_t;
-
-static void on_name_lookup(uint64_t request_id, int error,
-                           const char *fingerprint, void *user_data) {
-    (void)request_id;
-    name_lookup_ctx_t *lctx = (name_lookup_ctx_t *)user_data;
-    pthread_mutex_lock(&lctx->mutex);
-    lctx->result = error;
-    if (fingerprint && error == 0) {
-        strncpy(lctx->fingerprint, fingerprint, 128);
-        lctx->fingerprint[128] = '\0';
-    }
-    lctx->done = true;
-    pthread_cond_signal(&lctx->cond);
-    pthread_mutex_unlock(&lctx->mutex);
-
-    /* Free the strdup'd string from dna_handle_lookup_name */
-    if (fingerprint) {
-        free((void*)fingerprint);
-    }
-}
 
 int dnac_cli_query(dnac_context_t *ctx, const char *query) {
     dna_engine_t *engine = dnac_get_engine(ctx);
@@ -1086,11 +1141,8 @@ int dnac_cli_balance_token(dnac_context_t *ctx, const char *token_id_hex) {
 int dnac_cli_send_token(dnac_context_t *ctx, const char *recipient,
                         uint64_t amount, const char *token_id_hex,
                         const char *memo) {
-    /* Validate fingerprint */
-    size_t fp_len = strlen(recipient);
-    if (fp_len != 128) {
-        fprintf(stderr, "Error: Invalid fingerprint length %zu (expected 128 hex chars)\n",
-                fp_len);
+    char resolved_fp[129];
+    if (resolve_recipient(ctx, recipient, resolved_fp) != 0) {
         return 1;
     }
 
@@ -1110,7 +1162,7 @@ int dnac_cli_send_token(dnac_context_t *ctx, const char *recipient,
     char amount_str[64];
     format_amount(amount, amount_str, sizeof(amount_str));
     printf("Sending %s (token %.16s...) to %.16s...\n",
-           amount_str, token_id_hex, recipient);
+           amount_str, token_id_hex, resolved_fp);
 
     /* Build transaction with token */
     dnac_tx_builder_t *builder = dnac_tx_builder_create(ctx);
@@ -1127,7 +1179,7 @@ int dnac_cli_send_token(dnac_context_t *ctx, const char *recipient,
     }
 
     dnac_tx_output_t output = {0};
-    strncpy(output.recipient_fingerprint, recipient,
+    strncpy(output.recipient_fingerprint, resolved_fp,
             sizeof(output.recipient_fingerprint) - 1);
     output.amount = amount;
     if (memo) {
