@@ -218,6 +218,7 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
     for (int i = 0; i < tx->input_count; i++) {
         EVP_DigestUpdate(ctx, tx->inputs[i].nullifier, DNAC_NULLIFIER_SIZE);
         EVP_DigestUpdate(ctx, &tx->inputs[i].amount, sizeof(uint64_t));
+        EVP_DigestUpdate(ctx, tx->inputs[i].token_id, DNAC_TOKEN_ID_SIZE);
     }
 
     /* Hash outputs (Gap 25: v0.6.0 - includes memo) */
@@ -225,6 +226,7 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
         EVP_DigestUpdate(ctx, &tx->outputs[i].version, sizeof(uint8_t));
         EVP_DigestUpdate(ctx, tx->outputs[i].owner_fingerprint, DNAC_FINGERPRINT_SIZE);
         EVP_DigestUpdate(ctx, &tx->outputs[i].amount, sizeof(uint64_t));
+        EVP_DigestUpdate(ctx, tx->outputs[i].token_id, DNAC_TOKEN_ID_SIZE);
         EVP_DigestUpdate(ctx, tx->outputs[i].nullifier_seed, 32);
         EVP_DigestUpdate(ctx, &tx->outputs[i].memo_len, sizeof(uint8_t));
         if (tx->outputs[i].memo_len > 0) {

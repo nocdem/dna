@@ -49,12 +49,12 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
 
     /* Inputs */
     size += 1;  /* input_count */
-    size += tx->input_count * (DNAC_NULLIFIER_SIZE + 8);  /* nullifier(64) + amount(8) */
+    size += tx->input_count * (DNAC_NULLIFIER_SIZE + 8 + DNAC_TOKEN_ID_SIZE);  /* nullifier(64) + amount(8) + token_id(64) */
 
     /* Outputs (Gap 25: v0.6.0 - now includes memo) */
     size += 1;  /* output_count */
     for (int i = 0; i < tx->output_count; i++) {
-        size += 1 + DNAC_FINGERPRINT_SIZE + 8 + 32;  /* version(1) + fp(129) + amount(8) + seed(32) */
+        size += 1 + DNAC_FINGERPRINT_SIZE + 8 + DNAC_TOKEN_ID_SIZE + 32;  /* version(1) + fp(129) + amount(8) + token_id(64) + seed(32) */
         size += 1;  /* memo_len */
         size += tx->outputs[i].memo_len;  /* memo data */
     }
@@ -95,6 +95,7 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
     for (int i = 0; i < tx->input_count; i++) {
         WRITE_BLOB(ptr, tx->inputs[i].nullifier, DNAC_NULLIFIER_SIZE);
         WRITE_U64(ptr, tx->inputs[i].amount);
+        WRITE_BLOB(ptr, tx->inputs[i].token_id, DNAC_TOKEN_ID_SIZE);
     }
 
     /* Outputs (Gap 25: v0.6.0 - now includes memo) */
@@ -103,6 +104,7 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         WRITE_U8(ptr, tx->outputs[i].version);
         WRITE_BLOB(ptr, tx->outputs[i].owner_fingerprint, DNAC_FINGERPRINT_SIZE);
         WRITE_U64(ptr, tx->outputs[i].amount);
+        WRITE_BLOB(ptr, tx->outputs[i].token_id, DNAC_TOKEN_ID_SIZE);
         WRITE_BLOB(ptr, tx->outputs[i].nullifier_seed, 32);
         WRITE_U8(ptr, tx->outputs[i].memo_len);
         if (tx->outputs[i].memo_len > 0) {
@@ -161,12 +163,13 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     tx->input_count = input_count;
 
     for (int i = 0; i < input_count; i++) {
-        if (ptr + DNAC_NULLIFIER_SIZE + 8 > end) {
+        if (ptr + DNAC_NULLIFIER_SIZE + 8 + DNAC_TOKEN_ID_SIZE > end) {
             free(tx);
             return DNAC_ERROR_INVALID_PARAM;
         }
         READ_BLOB(ptr, tx->inputs[i].nullifier, DNAC_NULLIFIER_SIZE);
         READ_U64(ptr, tx->inputs[i].amount);
+        READ_BLOB(ptr, tx->inputs[i].token_id, DNAC_TOKEN_ID_SIZE);
     }
 
     /* Outputs */
@@ -180,7 +183,7 @@ int dnac_tx_deserialize(const uint8_t *buffer,
 
     for (int i = 0; i < output_count; i++) {
         /* Check minimum output size (without memo) */
-        size_t out_size = 1 + DNAC_FINGERPRINT_SIZE + 8 + 32 + 1;  /* +1 for memo_len */
+        size_t out_size = 1 + DNAC_FINGERPRINT_SIZE + 8 + DNAC_TOKEN_ID_SIZE + 32 + 1;  /* +1 for memo_len */
         if (ptr + out_size > end) {
             free(tx);
             return DNAC_ERROR_INVALID_PARAM;
@@ -188,6 +191,7 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         READ_U8(ptr, tx->outputs[i].version);
         READ_BLOB(ptr, tx->outputs[i].owner_fingerprint, DNAC_FINGERPRINT_SIZE);
         READ_U64(ptr, tx->outputs[i].amount);
+        READ_BLOB(ptr, tx->outputs[i].token_id, DNAC_TOKEN_ID_SIZE);
         READ_BLOB(ptr, tx->outputs[i].nullifier_seed, 32);
         /* Gap 25: v0.6.0 - read memo */
         READ_U8(ptr, tx->outputs[i].memo_len);
