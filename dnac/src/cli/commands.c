@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <strings.h>
 
 /* ============================================================================
  * Helper Functions
@@ -925,6 +926,245 @@ int dnac_cli_genesis_submit(dnac_context_t *ctx, const char *tx_file) {
     return 0;
 }
 
+/* ============================================================================
+ * Token CLI Commands
+ * ========================================================================== */
+
+int dnac_cli_token_create(dnac_context_t *ctx, const char *name,
+                          const char *symbol, uint64_t supply) {
+    printf("Creating token '%s' (%s) with supply %" PRIu64 "...\n",
+           name, symbol, supply);
+
+    int rc = dnac_token_create(ctx, name, symbol, 8, supply);  /* default 8 decimals */
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: Failed to create token: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+
+    printf("Token created successfully!\n");
+    printf("Run 'token-list' to see the token ID.\n");
+    return 0;
+}
+
+int dnac_cli_token_list(dnac_context_t *ctx) {
+    dnac_token_t tokens[64];
+    int count = 0;
+
+    int rc = dnac_token_list(ctx, tokens, 64, &count);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+
+    if (count == 0) {
+        printf("No tokens found.\n");
+        return 0;
+    }
+
+    printf("Tokens (%d total)\n", count);
+    printf("%-8s  %-20s  %-16s  %s\n", "SYMBOL", "NAME", "SUPPLY", "TOKEN ID");
+    printf("--------  --------------------  ----------------  ----------------\n");
+
+    for (int i = 0; i < count; i++) {
+        char id_short[17] = {0};
+        for (int j = 0; j < 8 && j < DNAC_TOKEN_ID_SIZE; j++)
+            snprintf(id_short + j * 2, 3, "%02x", tokens[i].token_id[j]);
+
+        char supply_str[64];
+        format_amount(tokens[i].initial_supply, supply_str, sizeof(supply_str));
+
+        printf("%-8s  %-20s  %16s  %s...\n",
+               tokens[i].symbol, tokens[i].name, supply_str, id_short);
+    }
+
+    return 0;
+}
+
+int dnac_cli_token_info(dnac_context_t *ctx, const char *id_or_symbol) {
+    size_t len = strlen(id_or_symbol);
+
+    /* If it looks like a hex token_id (128 hex chars = 64 bytes) */
+    if (len == DNAC_TOKEN_ID_SIZE * 2) {
+        uint8_t token_id[DNAC_TOKEN_ID_SIZE];
+        if (hex_to_bytes(id_or_symbol, token_id, DNAC_TOKEN_ID_SIZE) != 0) {
+            fprintf(stderr, "Error: Invalid hex in token ID\n");
+            return 1;
+        }
+
+        dnac_token_t token;
+        int rc = dnac_token_info(ctx, token_id, &token);
+        if (rc != DNAC_SUCCESS) {
+            fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+            return 1;
+        }
+
+        printf("Token Info\n");
+        printf("----------\n");
+        printf("Name:      %s\n", token.name);
+        printf("Symbol:    %s\n", token.symbol);
+        printf("Decimals:  %u\n", token.decimals);
+
+        char supply_str[64];
+        format_amount(token.initial_supply, supply_str, sizeof(supply_str));
+        printf("Supply:    %s\n", supply_str);
+
+        printf("Creator:   %.16s...\n", token.creator_fp);
+        printf("Token ID:  ");
+        for (int i = 0; i < DNAC_TOKEN_ID_SIZE; i++)
+            printf("%02x", token.token_id[i]);
+        printf("\n");
+
+        if (token.block_height > 0) {
+            printf("Block:     %" PRIu64 "\n", token.block_height);
+        }
+        if (token.timestamp > 0) {
+            char time_str[32];
+            format_timestamp(token.timestamp, time_str, sizeof(time_str));
+            printf("Created:   %s\n", time_str);
+        }
+        return 0;
+    }
+
+    /* Otherwise treat as symbol — list all tokens and find matching symbol */
+    dnac_token_t tokens[64];
+    int count = 0;
+    int rc = dnac_token_list(ctx, tokens, 64, &count);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (strcasecmp(tokens[i].symbol, id_or_symbol) == 0) {
+            /* Found — recurse with full token_id hex */
+            char id_hex[DNAC_TOKEN_ID_SIZE * 2 + 1];
+            for (int j = 0; j < DNAC_TOKEN_ID_SIZE; j++)
+                snprintf(id_hex + j * 2, 3, "%02x", tokens[i].token_id[j]);
+            return dnac_cli_token_info(ctx, id_hex);
+        }
+    }
+
+    fprintf(stderr, "Token '%s' not found.\n", id_or_symbol);
+    return 1;
+}
+
+int dnac_cli_balance_token(dnac_context_t *ctx, const char *token_id_hex) {
+    if (strlen(token_id_hex) != DNAC_TOKEN_ID_SIZE * 2) {
+        fprintf(stderr, "Error: Token ID must be %d hex chars\n",
+                DNAC_TOKEN_ID_SIZE * 2);
+        return 1;
+    }
+
+    uint8_t token_id[DNAC_TOKEN_ID_SIZE];
+    if (hex_to_bytes(token_id_hex, token_id, DNAC_TOKEN_ID_SIZE) != 0) {
+        fprintf(stderr, "Error: Invalid hex in token ID\n");
+        return 1;
+    }
+
+    dnac_balance_t balance;
+    int rc = dnac_wallet_get_balance_token(ctx, token_id, &balance);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+
+    char confirmed_str[64], pending_str[64], locked_str[64];
+    format_amount(balance.confirmed, confirmed_str, sizeof(confirmed_str));
+    format_amount(balance.pending, pending_str, sizeof(pending_str));
+    format_amount(balance.locked, locked_str, sizeof(locked_str));
+
+    printf("Token Balance (%.16s...)\n", token_id_hex);
+    printf("-------------------\n");
+    printf("Confirmed:  %s\n", confirmed_str);
+    printf("Pending:    %s\n", pending_str);
+    printf("Locked:     %s\n", locked_str);
+    printf("UTXOs:      %d\n", balance.utxo_count);
+
+    return 0;
+}
+
+int dnac_cli_send_token(dnac_context_t *ctx, const char *recipient,
+                        uint64_t amount, const char *token_id_hex,
+                        const char *memo) {
+    /* Validate fingerprint */
+    size_t fp_len = strlen(recipient);
+    if (fp_len != 128) {
+        fprintf(stderr, "Error: Invalid fingerprint length %zu (expected 128 hex chars)\n",
+                fp_len);
+        return 1;
+    }
+
+    /* Parse token_id */
+    if (strlen(token_id_hex) != DNAC_TOKEN_ID_SIZE * 2) {
+        fprintf(stderr, "Error: Token ID must be %d hex chars\n",
+                DNAC_TOKEN_ID_SIZE * 2);
+        return 1;
+    }
+
+    uint8_t token_id[DNAC_TOKEN_ID_SIZE];
+    if (hex_to_bytes(token_id_hex, token_id, DNAC_TOKEN_ID_SIZE) != 0) {
+        fprintf(stderr, "Error: Invalid hex in token ID\n");
+        return 1;
+    }
+
+    char amount_str[64];
+    format_amount(amount, amount_str, sizeof(amount_str));
+    printf("Sending %s (token %.16s...) to %.16s...\n",
+           amount_str, token_id_hex, recipient);
+
+    /* Build transaction with token */
+    dnac_tx_builder_t *builder = dnac_tx_builder_create(ctx);
+    if (!builder) {
+        fprintf(stderr, "Error: Failed to create transaction builder\n");
+        return 1;
+    }
+
+    int rc = dnac_tx_builder_set_token(builder, token_id);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error setting token: %s\n", dnac_error_string(rc));
+        dnac_tx_builder_free(builder);
+        return 1;
+    }
+
+    dnac_tx_output_t output = {0};
+    strncpy(output.recipient_fingerprint, recipient,
+            sizeof(output.recipient_fingerprint) - 1);
+    output.amount = amount;
+    if (memo) {
+        strncpy(output.memo, memo, sizeof(output.memo) - 1);
+    }
+
+    rc = dnac_tx_builder_add_output(builder, &output);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error adding output: %s\n", dnac_error_string(rc));
+        dnac_tx_builder_free(builder);
+        return 1;
+    }
+
+    dnac_transaction_t *tx = NULL;
+    rc = dnac_tx_builder_build(builder, &tx);
+    dnac_tx_builder_free(builder);
+
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error building transaction: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+
+    printf("Token payment sent successfully!\n");
+    printf("TX Hash: ");
+    for (int i = 0; i < DNAC_TX_HASH_SIZE; i++)
+        printf("%02x", tx->tx_hash[i]);
+    printf("\n");
+
+    dnac_free_transaction(tx);
+
+    /* Allow DHT time to replicate */
+    printf("Waiting for DHT propagation...\n");
+    sleep(5);
+
+    return 0;
+}
+
 void dnac_cli_print_help(void) {
     printf("dnac-cli - DNAC Wallet Command Line Interface\n\n");
     printf("Usage: dnac-cli [options] <command> [arguments]\n\n");
@@ -945,6 +1185,12 @@ void dnac_cli_print_help(void) {
     printf("  nodus-list       List Nodus servers\n");
     printf("  genesis-create <fp> <amount>   Create genesis TX locally (Phase 1)\n");
     printf("  genesis-submit [tx_file]       Submit genesis TX to network (Phase 2)\n\n");
+    printf("Token Commands:\n");
+    printf("  token-create <name> <symbol> <supply>  Create a new token\n");
+    printf("  token-list                             List all known tokens\n");
+    printf("  token-info <id|symbol>                 Show token details\n");
+    printf("  balance --token <id>                   Show balance for a specific token\n");
+    printf("  send --token <id> <fp> <amt> [memo]    Send token payment\n\n");
     printf("Examples:\n");
     printf("  dnac-cli balance\n");
     printf("  dnac-cli send abc123...def 1000000\n");

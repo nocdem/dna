@@ -211,26 +211,52 @@ int main(int argc, char **argv) {
         }
     }
     else if (strcmp(command, "balance") == 0) {
-        result = dnac_cli_balance(ctx);
+        /* Check for --token flag */
+        if (cmd_start + 2 < argc && strcmp(argv[cmd_start + 1], "--token") == 0) {
+            result = dnac_cli_balance_token(ctx, argv[cmd_start + 2]);
+        } else {
+            result = dnac_cli_balance(ctx);
+        }
     }
     else if (strcmp(command, "utxos") == 0) {
         result = dnac_cli_utxos(ctx);
     }
     else if (strcmp(command, "send") == 0) {
-        if (cmd_start + 2 >= argc) {
-            fprintf(stderr, "Usage: dnac-cli send <fingerprint> <amount> [memo]\n");
-            result = 1;
-        } else {
-            const char *recipient = argv[cmd_start + 1];
-            char *endptr = NULL;
-            errno = 0;
-            uint64_t amount = strtoull(argv[cmd_start + 2], &endptr, 10);
-            if (errno == ERANGE || !endptr || *endptr != '\0' || amount == 0) {
-                fprintf(stderr, "Error: Invalid amount '%s'\n", argv[cmd_start + 2]);
+        /* Check for --token flag: send --token <id> <fp> <amount> [memo] */
+        if (cmd_start + 1 < argc && strcmp(argv[cmd_start + 1], "--token") == 0) {
+            if (cmd_start + 4 >= argc) {
+                fprintf(stderr, "Usage: dnac-cli send --token <token_id> <fingerprint> <amount> [memo]\n");
                 result = 1;
             } else {
-            const char *memo = (cmd_start + 3 < argc) ? argv[cmd_start + 3] : NULL;
-            result = dnac_cli_send(ctx, recipient, amount, memo);
+                const char *token_id_hex = argv[cmd_start + 2];
+                const char *recipient = argv[cmd_start + 3];
+                char *endptr = NULL;
+                errno = 0;
+                uint64_t amount = strtoull(argv[cmd_start + 4], &endptr, 10);
+                if (errno == ERANGE || !endptr || *endptr != '\0' || amount == 0) {
+                    fprintf(stderr, "Error: Invalid amount '%s'\n", argv[cmd_start + 4]);
+                    result = 1;
+                } else {
+                    const char *memo = (cmd_start + 5 < argc) ? argv[cmd_start + 5] : NULL;
+                    result = dnac_cli_send_token(ctx, recipient, amount, token_id_hex, memo);
+                }
+            }
+        } else {
+            if (cmd_start + 2 >= argc) {
+                fprintf(stderr, "Usage: dnac-cli send <fingerprint> <amount> [memo]\n");
+                result = 1;
+            } else {
+                const char *recipient = argv[cmd_start + 1];
+                char *endptr = NULL;
+                errno = 0;
+                uint64_t amount = strtoull(argv[cmd_start + 2], &endptr, 10);
+                if (errno == ERANGE || !endptr || *endptr != '\0' || amount == 0) {
+                    fprintf(stderr, "Error: Invalid amount '%s'\n", argv[cmd_start + 2]);
+                    result = 1;
+                } else {
+                    const char *memo = (cmd_start + 3 < argc) ? argv[cmd_start + 3] : NULL;
+                    result = dnac_cli_send(ctx, recipient, amount, memo);
+                }
             }
         }
     }
@@ -275,6 +301,35 @@ int main(int argc, char **argv) {
     else if (strcmp(command, "genesis-submit") == 0) {
         const char *tx_file = (cmd_start + 1 < argc) ? argv[cmd_start + 1] : NULL;
         result = dnac_cli_genesis_submit(ctx, tx_file);
+    }
+    else if (strcmp(command, "token-create") == 0) {
+        if (cmd_start + 3 >= argc) {
+            fprintf(stderr, "Usage: dnac-cli token-create <name> <symbol> <supply>\n");
+            result = 1;
+        } else {
+            const char *name = argv[cmd_start + 1];
+            const char *symbol = argv[cmd_start + 2];
+            char *endptr = NULL;
+            errno = 0;
+            uint64_t supply = strtoull(argv[cmd_start + 3], &endptr, 10);
+            if (errno == ERANGE || !endptr || *endptr != '\0' || supply == 0) {
+                fprintf(stderr, "Error: Invalid supply '%s' (must be > 0)\n", argv[cmd_start + 3]);
+                result = 1;
+            } else {
+                result = dnac_cli_token_create(ctx, name, symbol, supply);
+            }
+        }
+    }
+    else if (strcmp(command, "token-list") == 0) {
+        result = dnac_cli_token_list(ctx);
+    }
+    else if (strcmp(command, "token-info") == 0) {
+        if (cmd_start + 1 >= argc) {
+            fprintf(stderr, "Usage: dnac-cli token-info <token_id_hex|symbol>\n");
+            result = 1;
+        } else {
+            result = dnac_cli_token_info(ctx, argv[cmd_start + 1]);
+        }
     }
     else {
         fprintf(stderr, "Error: Unknown command '%s'\n\n", command);

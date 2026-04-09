@@ -54,7 +54,13 @@ static void print_dna_chain_help(void) {
     printf("  tx <hash>                     Show transaction details\n");
     printf("  witnesses                     List witness servers\n");
     printf("  genesis-create <fp> <amount>  Create genesis TX locally (Phase 1)\n");
-    printf("  genesis-submit [tx_file]      Submit genesis TX to network (Phase 2)\n");
+    printf("  genesis-submit [tx_file]      Submit genesis TX to network (Phase 2)\n\n");
+    printf("Token Commands:\n");
+    printf("  token-create <name> <sym> <supply>  Create a new token\n");
+    printf("  token-list                          List all known tokens\n");
+    printf("  token-info <id|symbol>              Show token details\n");
+    printf("  balance --token <id>                Show balance for a specific token\n");
+    printf("  send --token <id> <fp> <amt> [memo] Send token payment\n");
 }
 
 /* ============================================================================
@@ -95,7 +101,12 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
         }
     }
     else if (strcmp(cmd, "balance") == 0) {
-        result = dnac_cli_balance(ctx);
+        /* Check for --token flag */
+        if (sub + 2 < argc && strcmp(argv[sub + 1], "--token") == 0) {
+            result = dnac_cli_balance_token(ctx, argv[sub + 2]);
+        } else {
+            result = dnac_cli_balance(ctx);
+        }
     }
     else if (strcmp(cmd, "balance-of") == 0) {
         if (sub + 1 >= argc) {
@@ -109,20 +120,41 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
         result = dnac_cli_utxos(ctx);
     }
     else if (strcmp(cmd, "send") == 0) {
-        if (sub + 2 >= argc) {
-            fprintf(stderr, "Usage: dna-connect-cli dna send <fingerprint> <amount> [memo]\n");
-            result = 1;
-        } else {
-            const char *recipient = argv[sub + 1];
-            char *endptr = NULL;
-            errno = 0;
-            uint64_t amount = strtoull(argv[sub + 2], &endptr, 10);
-            if (errno == ERANGE || !endptr || *endptr != '\0' || amount == 0) {
-                fprintf(stderr, "Error: Invalid amount '%s'\n", argv[sub + 2]);
+        /* Check for --token flag: send --token <id> <fp> <amount> [memo] */
+        if (sub + 1 < argc && strcmp(argv[sub + 1], "--token") == 0) {
+            if (sub + 4 >= argc) {
+                fprintf(stderr, "Usage: dna-connect-cli dna send --token <token_id> <fingerprint> <amount> [memo]\n");
                 result = 1;
             } else {
-                const char *memo = (sub + 3 < argc) ? argv[sub + 3] : NULL;
-                result = dnac_cli_send(ctx, recipient, amount, memo);
+                const char *token_id_hex = argv[sub + 2];
+                const char *recipient = argv[sub + 3];
+                char *endptr = NULL;
+                errno = 0;
+                uint64_t amount = strtoull(argv[sub + 4], &endptr, 10);
+                if (errno == ERANGE || !endptr || *endptr != '\0' || amount == 0) {
+                    fprintf(stderr, "Error: Invalid amount '%s'\n", argv[sub + 4]);
+                    result = 1;
+                } else {
+                    const char *memo = (sub + 5 < argc) ? argv[sub + 5] : NULL;
+                    result = dnac_cli_send_token(ctx, recipient, amount, token_id_hex, memo);
+                }
+            }
+        } else {
+            if (sub + 2 >= argc) {
+                fprintf(stderr, "Usage: dna-connect-cli dna send <fingerprint> <amount> [memo]\n");
+                result = 1;
+            } else {
+                const char *recipient = argv[sub + 1];
+                char *endptr = NULL;
+                errno = 0;
+                uint64_t amount = strtoull(argv[sub + 2], &endptr, 10);
+                if (errno == ERANGE || !endptr || *endptr != '\0' || amount == 0) {
+                    fprintf(stderr, "Error: Invalid amount '%s'\n", argv[sub + 2]);
+                    result = 1;
+                } else {
+                    const char *memo = (sub + 3 < argc) ? argv[sub + 3] : NULL;
+                    result = dnac_cli_send(ctx, recipient, amount, memo);
+                }
             }
         }
     }
@@ -167,6 +199,35 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
     else if (strcmp(cmd, "genesis-submit") == 0) {
         const char *tx_file = (sub + 1 < argc) ? argv[sub + 1] : NULL;
         result = dnac_cli_genesis_submit(ctx, tx_file);
+    }
+    else if (strcmp(cmd, "token-create") == 0) {
+        if (sub + 3 >= argc) {
+            fprintf(stderr, "Usage: dna-connect-cli dna token-create <name> <symbol> <supply>\n");
+            result = 1;
+        } else {
+            const char *name = argv[sub + 1];
+            const char *symbol = argv[sub + 2];
+            char *endptr = NULL;
+            errno = 0;
+            uint64_t supply = strtoull(argv[sub + 3], &endptr, 10);
+            if (errno == ERANGE || !endptr || *endptr != '\0' || supply == 0) {
+                fprintf(stderr, "Error: Invalid supply '%s' (must be > 0)\n", argv[sub + 3]);
+                result = 1;
+            } else {
+                result = dnac_cli_token_create(ctx, name, symbol, supply);
+            }
+        }
+    }
+    else if (strcmp(cmd, "token-list") == 0) {
+        result = dnac_cli_token_list(ctx);
+    }
+    else if (strcmp(cmd, "token-info") == 0) {
+        if (sub + 1 >= argc) {
+            fprintf(stderr, "Usage: dna-connect-cli dna token-info <token_id_hex|symbol>\n");
+            result = 1;
+        } else {
+            result = dnac_cli_token_info(ctx, argv[sub + 1]);
+        }
     }
     else {
         fprintf(stderr, "Unknown dna command: '%s'\n", cmd);

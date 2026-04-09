@@ -126,6 +126,53 @@ int dnac_cli_genesis_create(dnac_context_t *ctx, const char *fingerprint,
 int dnac_cli_genesis_submit(dnac_context_t *ctx, const char *tx_file);
 
 /**
+ * @brief Create a new token
+ * @param ctx DNAC context
+ * @param name Token name
+ * @param symbol Token symbol
+ * @param supply Total supply in smallest units
+ * @return 0 on success, non-zero on failure
+ */
+int dnac_cli_token_create(dnac_context_t *ctx, const char *name,
+                          const char *symbol, uint64_t supply);
+
+/**
+ * @brief List all known tokens
+ * @param ctx DNAC context
+ * @return 0 on success, non-zero on failure
+ */
+int dnac_cli_token_list(dnac_context_t *ctx);
+
+/**
+ * @brief Show token info by ID (hex) or symbol
+ * @param ctx DNAC context
+ * @param id_or_symbol Token ID hex string or symbol to look up
+ * @return 0 on success, non-zero on failure
+ */
+int dnac_cli_token_info(dnac_context_t *ctx, const char *id_or_symbol);
+
+/**
+ * @brief Show balance for a specific token
+ * @param ctx DNAC context
+ * @param token_id_hex Token ID as hex string
+ * @return 0 on success, non-zero on failure
+ */
+int dnac_cli_balance_token(dnac_context_t *ctx, const char *token_id_hex);
+
+/**
+ * @brief Send token payment
+ * @param ctx DNAC context
+ * @param recipient Recipient fingerprint
+ * @param amount Amount to send
+ * @param token_id_hex Token ID as hex string
+ * @param memo Optional memo (can be NULL)
+ * @return 0 on success, non-zero on failure
+ */
+int dnac_cli_send_token(dnac_context_t *ctx, const char *recipient,
+                        uint64_t amount, const char *token_id_hex,
+                        const char *memo);
+
+/**
  * @brief Print CLI help
  */
 void dnac_cli_print_help(void);
