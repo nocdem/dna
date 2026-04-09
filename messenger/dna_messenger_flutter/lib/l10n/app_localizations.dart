@@ -3302,6 +3302,78 @@ abstract class AppLocalizations {
   /// **'XXX Details'**
   String get dnacDetailTitle;
 
+  /// No description provided for @dnacTokens.
+  ///
+  /// In en, this message translates to:
+  /// **'Tokens'**
+  String get dnacTokens;
+
+  /// No description provided for @dnacNoTokens.
+  ///
+  /// In en, this message translates to:
+  /// **'No tokens on this chain'**
+  String get dnacNoTokens;
+
+  /// No description provided for @dnacTokenCreate.
+  ///
+  /// In en, this message translates to:
+  /// **'Create Token'**
+  String get dnacTokenCreate;
+
+  /// No description provided for @dnacTokenBalance.
+  ///
+  /// In en, this message translates to:
+  /// **'Token Balance'**
+  String get dnacTokenBalance;
+
+  /// No description provided for @dnacTokenCreateName.
+  ///
+  /// In en, this message translates to:
+  /// **'Token Name'**
+  String get dnacTokenCreateName;
+
+  /// No description provided for @dnacTokenCreateSymbol.
+  ///
+  /// In en, this message translates to:
+  /// **'Symbol'**
+  String get dnacTokenCreateSymbol;
+
+  /// No description provided for @dnacTokenCreateDecimals.
+  ///
+  /// In en, this message translates to:
+  /// **'Decimals'**
+  String get dnacTokenCreateDecimals;
+
+  /// No description provided for @dnacTokenCreateSupply.
+  ///
+  /// In en, this message translates to:
+  /// **'Total Supply'**
+  String get dnacTokenCreateSupply;
+
+  /// No description provided for @dnacTokenCreating.
+  ///
+  /// In en, this message translates to:
+  /// **'Creating token...'**
+  String get dnacTokenCreating;
+
+  /// No description provided for @dnacTokenCreateSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Token created successfully'**
+  String get dnacTokenCreateSuccess;
+
+  /// No description provided for @dnacTokenCreateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Token creation failed'**
+  String get dnacTokenCreateFailed;
+
+  /// No description provided for @dnacTokenCreateFee.
+  ///
+  /// In en, this message translates to:
+  /// **'Creating a token costs 1 DNAC'**
+  String get dnacTokenCreateFee;
+
   /// No description provided for @walletContacts.
   ///
   /// In en, this message translates to:

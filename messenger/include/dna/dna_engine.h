@@ -4091,6 +4091,28 @@ DNA_API void dna_engine_dnac_free_history(dna_dnac_history_t *history, int count
  */
 DNA_API void dna_engine_dnac_free_utxos(dna_dnac_utxo_t *utxos, int count);
 
+/* DNAC Multi-Token (v0.9.188+) */
+typedef struct {
+    uint8_t  token_id[64];
+    char     name[33];
+    char     symbol[9];
+    uint8_t  decimals;
+    int64_t  supply;
+    char     creator_fp[129];
+} dna_dnac_token_t;
+
+typedef void (*dna_dnac_token_list_cb)(dna_request_id_t request_id, int error,
+    const dna_dnac_token_t *tokens, int count, void *user_data);
+
+DNA_API dna_request_id_t dna_engine_dnac_token_list(dna_engine_t *engine,
+    dna_dnac_token_list_cb callback, void *user_data);
+DNA_API dna_request_id_t dna_engine_dnac_token_create(dna_engine_t *engine,
+    const char *name, const char *symbol, uint8_t decimals, uint64_t supply,
+    dna_completion_cb callback, void *user_data);
+DNA_API dna_request_id_t dna_engine_dnac_token_balance(dna_engine_t *engine,
+    const uint8_t *token_id, dna_dnac_balance_cb callback, void *user_data);
+DNA_API void dna_engine_dnac_free_tokens(dna_dnac_token_t *tokens, int count);
+
 #ifdef __cplusplus
 }
 #endif

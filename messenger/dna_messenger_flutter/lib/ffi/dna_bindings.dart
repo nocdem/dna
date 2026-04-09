@@ -4478,6 +4478,40 @@ class DnaBindings {
   void dna_engine_dnac_free_utxos(Pointer<dna_dnac_utxo_t> utxos, int count) {
     _dna_engine_dnac_free_utxos(utxos, count);
   }
+
+  // DNAC Multi-Token Functions
+
+  late final _dna_engine_dnac_token_list = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaDnacTokenListCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaDnacTokenListCb>, Pointer<Void>)>('dna_engine_dnac_token_list');
+
+  int dna_engine_dnac_token_list(Pointer<dna_engine_t> engine, Pointer<DnaDnacTokenListCb> callback, Pointer<Void> user_data) {
+    return _dna_engine_dnac_token_list(engine, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_token_create = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>, Uint8, Uint64, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>, int, int, Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_dnac_token_create');
+
+  int dna_engine_dnac_token_create(Pointer<dna_engine_t> engine, Pointer<Utf8> name, Pointer<Utf8> symbol, int decimals, int supply, Pointer<DnaCompletionCb> callback, Pointer<Void> user_data) {
+    return _dna_engine_dnac_token_create(engine, name, symbol, decimals, supply, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_token_balance = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Uint8>, Pointer<DnaDnacBalanceCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Uint8>, Pointer<DnaDnacBalanceCb>, Pointer<Void>)>('dna_engine_dnac_token_balance');
+
+  int dna_engine_dnac_token_balance(Pointer<dna_engine_t> engine, Pointer<Uint8> token_id, Pointer<DnaDnacBalanceCb> callback, Pointer<Void> user_data) {
+    return _dna_engine_dnac_token_balance(engine, token_id, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_free_tokens = _lib.lookupFunction<
+      Void Function(Pointer<dna_dnac_token_t>, Int32),
+      void Function(Pointer<dna_dnac_token_t>, int)>('dna_engine_dnac_free_tokens');
+
+  void dna_engine_dnac_free_tokens(Pointer<dna_dnac_token_t> tokens, int count) {
+    _dna_engine_dnac_free_tokens(tokens, count);
+  }
 }
 
 // =============================================================================
@@ -4553,6 +4587,26 @@ final class dna_dnac_utxo_t extends Struct {
   external int received_at;
 }
 
+/// DNAC token information
+final class dna_dnac_token_t extends Struct {
+  @Array(64)
+  external Array<Uint8> token_id;
+  @Array(33)
+  external Array<Char> name;
+  @Array(9)
+  external Array<Char> symbol;
+  @Uint8()
+  external int decimals;
+  @Array(5)
+  external Array<Uint8> _padding1;
+  @Int64()
+  external int supply;
+  @Array(129)
+  external Array<Char> creator_fp;
+  @Array(7)
+  external Array<Uint8> _padding2;
+}
+
 // =============================================================================
 // DNAC CALLBACK TYPES
 // =============================================================================
@@ -4594,6 +4648,10 @@ typedef DnaDnacFeeCbNative = Void Function(
   Pointer<Void> user_data,
 );
 typedef DnaDnacFeeCb = NativeFunction<DnaDnacFeeCbNative>;
+
+/// DNAC token list callback
+typedef DnaDnacTokenListCbNative = Void Function(Uint64 request_id, Int32 error, Pointer<dna_dnac_token_t> tokens, Int32 count, Pointer<Void> user_data);
+typedef DnaDnacTokenListCb = NativeFunction<DnaDnacTokenListCbNative>;
 
 // =============================================================================
 // HELPER EXTENSIONS

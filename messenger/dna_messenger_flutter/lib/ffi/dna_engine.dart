@@ -1356,6 +1356,38 @@ class DnacUtxo {
   String get amountFormatted => formatDnacAmount(amount);
 }
 
+class DnacToken {
+  final Uint8List tokenId;
+  final String name;
+  final String symbol;
+  final int decimals;
+  final int supply;
+  final String creatorFp;
+  DnacToken({required this.tokenId, required this.name, required this.symbol, required this.decimals, required this.supply, required this.creatorFp});
+  String formatAmount(int rawAmount) => formatTokenAmount(rawAmount, decimals);
+  @override
+  bool operator ==(Object other) => identical(this, other) || other is DnacToken && _listEquals(tokenId, other.tokenId);
+  @override
+  int get hashCode => Object.hashAll(tokenId);
+}
+
+String formatTokenAmount(int rawAmount, int decimals) {
+  if (decimals == 0) return rawAmount.toString();
+  final isNegative = rawAmount < 0;
+  final abs = rawAmount.abs();
+  final divisor = _pow10(decimals);
+  final whole = abs ~/ divisor;
+  final frac = abs % divisor;
+  final sign = isNegative ? '-' : '';
+  if (frac == 0) return '$sign$whole';
+  var fracStr = frac.toString().padLeft(decimals, '0');
+  fracStr = fracStr.replaceAll(RegExp(r'0+$'), '');
+  return '$sign$whole.$fracStr';
+}
+
+int _pow10(int exp) { int r = 1; for (int i = 0; i < exp; i++) r *= 10; return r; }
+bool _listEquals(Uint8List a, Uint8List b) { if (a.length != b.length) return false; for (int i = 0; i < a.length; i++) { if (a[i] != b[i]) return false; } return true; }
+
 // =============================================================================
 // EXCEPTIONS
 // =============================================================================
@@ -6875,6 +6907,146 @@ class DnaEngine {
     if (requestId == 0) {
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit DNAC fee estimate request');
+    }
+
+    return completer.future;
+  }
+
+  // ===========================================================================
+  // DNAC Multi-Token Methods
+  // ===========================================================================
+
+  /// List all custom tokens from witnesses
+  Future<List<DnacToken>> dnacTokenList() async {
+    final completer = Completer<List<DnacToken>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+                    Pointer<dna_dnac_token_t> tokens,
+                    int count, Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <DnacToken>[];
+        for (var i = 0; i < count; i++) {
+          final t = (tokens + i).ref;
+          final tokenId = Uint8List(64);
+          for (var j = 0; j < 64; j++) tokenId[j] = t.token_id[j];
+          result.add(DnacToken(
+            tokenId: tokenId,
+            name: t.name.toDartString(33),
+            symbol: t.symbol.toDartString(9),
+            decimals: t.decimals,
+            supply: t.supply,
+            creatorFp: t.creator_fp.toDartString(129),
+          ));
+        }
+        if (count > 0) {
+          _bindings.dna_engine_dnac_free_tokens(tokens, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDnacTokenListCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_dnac_token_list(
+      _engine, callback.nativeFunction.cast(), nullptr);
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit DNAC token list request');
+    }
+
+    return completer.future;
+  }
+
+  /// Create a new custom token (burns 1 DNAC fee)
+  Future<void> dnacTokenCreate({
+    required String name,
+    required String symbol,
+    required int decimals,
+    required int supply,
+  }) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final namePtr = name.toNativeUtf8();
+    final symbolPtr = symbol.toNativeUtf8();
+
+    final requestId = _bindings.dna_engine_dnac_token_create(
+      _engine,
+      namePtr.cast(),
+      symbolPtr.cast(),
+      decimals,
+      supply,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    calloc.free(namePtr);
+    calloc.free(symbolPtr);
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit DNAC token create request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get balance for a specific token
+  Future<DnacBalance> dnacTokenBalance(Uint8List tokenId) async {
+    final completer = Completer<DnacBalance>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error,
+                    Pointer<dna_dnac_balance_t> balance,
+                    Pointer<Void> userData) {
+      if (error == 0 && balance != nullptr) {
+        final b = balance.ref;
+        completer.complete(DnacBalance(
+          confirmed: b.confirmed,
+          pending: b.pending,
+          locked: b.locked,
+          utxoCount: b.utxo_count,
+        ));
+        malloc.free(balance);
+      } else {
+        if (balance != nullptr) malloc.free(balance);
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDnacBalanceCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final tokenIdPtr = calloc<Uint8>(64);
+    for (var i = 0; i < 64; i++) tokenIdPtr[i] = tokenId[i];
+
+    final requestId = _bindings.dna_engine_dnac_token_balance(
+      _engine, tokenIdPtr, callback.nativeFunction.cast(), nullptr);
+
+    calloc.free(tokenIdPtr);
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit DNAC token balance request');
     }
 
     return completer.future;

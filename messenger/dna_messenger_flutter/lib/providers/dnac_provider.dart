@@ -2,6 +2,7 @@
 // Lazy init: DNAC context created on first access
 // 30s polling sync for wallet updates
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -179,3 +180,54 @@ class DnacUtxosNotifier extends AsyncNotifier<List<DnacUtxo>> {
     });
   }
 }
+
+// =============================================================================
+// TOKEN LIST PROVIDER
+// =============================================================================
+
+final dnacTokenListProvider =
+    AsyncNotifierProvider<DnacTokenListNotifier, List<DnacToken>>(
+  DnacTokenListNotifier.new,
+);
+
+class DnacTokenListNotifier extends AsyncNotifier<List<DnacToken>> {
+  @override
+  Future<List<DnacToken>> build() async {
+    final identityLoaded = ref.watch(identityLoadedProvider);
+    if (!identityLoaded) return [];
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      return await engine.dnacTokenList();
+    } catch (e) {
+      logger.logError('DNAC', 'Token list fetch failed: $e');
+      return [];
+    }
+  }
+
+  Future<void> refresh() async {
+    state = await AsyncValue.guard(() async {
+      final engine = await ref.read(engineProvider.future);
+      return engine.dnacTokenList();
+    });
+  }
+}
+
+// =============================================================================
+// TOKEN BALANCE PROVIDER (per token_id)
+// =============================================================================
+
+final dnacTokenBalanceProvider =
+    FutureProvider.family<DnacBalance?, List<int>>((ref, tokenIdList) async {
+  final identityLoaded = ref.watch(identityLoadedProvider);
+  if (!identityLoaded) return null;
+
+  try {
+    final engine = await ref.read(engineProvider.future);
+    final tokenId = Uint8List.fromList(tokenIdList);
+    return await engine.dnacTokenBalance(tokenId);
+  } catch (e) {
+    logger.logError('DNAC', 'Token balance fetch failed: $e');
+    return null;
+  }
+});

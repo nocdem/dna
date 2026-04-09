@@ -970,6 +970,9 @@ void dna_free_task_params(dna_task_t *task) {
                 task->params.debug_log_send.log_body = NULL;
             }
             break;
+        case TASK_DNAC_TOKEN_LIST:
+        case TASK_DNAC_TOKEN_CREATE:
+        case TASK_DNAC_TOKEN_BALANCE:
         default:
             break;
     }
@@ -1108,6 +1111,9 @@ void dna_handle_dnac_sync(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_get_utxos(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_estimate_fee(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_token_list(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_token_create(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_token_balance(dna_engine_t *engine, dna_task_t *task);
 
 void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
     switch (task->type) {
@@ -1440,6 +1446,15 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_DNAC_ESTIMATE_FEE:
             dna_handle_dnac_estimate_fee(engine, task);
+            break;
+        case TASK_DNAC_TOKEN_LIST:
+            dna_handle_dnac_token_list(engine, task);
+            break;
+        case TASK_DNAC_TOKEN_CREATE:
+            dna_handle_dnac_token_create(engine, task);
+            break;
+        case TASK_DNAC_TOKEN_BALANCE:
+            dna_handle_dnac_token_balance(engine, task);
             break;
     }
 }

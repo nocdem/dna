@@ -1739,6 +1739,42 @@ class AppLocalizationsPt extends AppLocalizations {
   String get dnacDetailTitle => 'XXX Details';
 
   @override
+  String get dnacTokens => 'Tokens';
+
+  @override
+  String get dnacNoTokens => 'No tokens on this chain';
+
+  @override
+  String get dnacTokenCreate => 'Create Token';
+
+  @override
+  String get dnacTokenBalance => 'Token Balance';
+
+  @override
+  String get dnacTokenCreateName => 'Token Name';
+
+  @override
+  String get dnacTokenCreateSymbol => 'Symbol';
+
+  @override
+  String get dnacTokenCreateDecimals => 'Decimals';
+
+  @override
+  String get dnacTokenCreateSupply => 'Total Supply';
+
+  @override
+  String get dnacTokenCreating => 'Creating token...';
+
+  @override
+  String get dnacTokenCreateSuccess => 'Token created successfully';
+
+  @override
+  String get dnacTokenCreateFailed => 'Token creation failed';
+
+  @override
+  String get dnacTokenCreateFee => 'Creating a token costs 1 DNAC';
+
+  @override
   String get walletContacts => 'Contacts';
 
   @override

@@ -403,3 +403,81 @@ void dna_engine_dnac_free_utxos(dna_dnac_utxo_t *utxos, int count) {
     (void)count;
     free(utxos);
 }
+
+#define TOKEN_LIST_MAX 256
+
+void dna_handle_dnac_token_list(dna_engine_t *engine, dna_task_t *task) {
+    dnac_context_t *ctx = ensure_dnac_init(engine);
+    if (!ctx) { task->callback.dnac_token_list(task->request_id, DNA_ENGINE_ERROR_NOT_INITIALIZED, NULL, 0, task->user_data); return; }
+    dnac_sync_tokens(ctx);
+    dnac_token_t buf[TOKEN_LIST_MAX];
+    int count = 0;
+    int ret = dnac_token_list(ctx, buf, TOKEN_LIST_MAX, &count);
+    if (ret != DNAC_SUCCESS) { QGP_LOG_ERROR(LOG_TAG, "dnac_token_list failed: %d", ret); task->callback.dnac_token_list(task->request_id, ret, NULL, 0, task->user_data); return; }
+    dna_dnac_token_t *result = NULL;
+    if (count > 0) {
+        result = calloc(count, sizeof(dna_dnac_token_t));
+        if (!result) { task->callback.dnac_token_list(task->request_id, DNA_ERROR_INTERNAL, NULL, 0, task->user_data); return; }
+        for (int i = 0; i < count; i++) {
+            memcpy(result[i].token_id, buf[i].token_id, 64);
+            strncpy(result[i].name, buf[i].name, 32); result[i].name[32] = '\0';
+            strncpy(result[i].symbol, buf[i].symbol, 8); result[i].symbol[8] = '\0';
+            result[i].decimals = buf[i].decimals;
+            result[i].supply = (int64_t)buf[i].initial_supply;
+            strncpy(result[i].creator_fp, buf[i].creator_fp, 128); result[i].creator_fp[128] = '\0';
+        }
+    }
+    QGP_LOG_DEBUG(LOG_TAG, "Token list: %d tokens", count);
+    task->callback.dnac_token_list(task->request_id, 0, result, count, task->user_data);
+}
+
+void dna_handle_dnac_token_create(dna_engine_t *engine, dna_task_t *task) {
+    dnac_context_t *ctx = ensure_dnac_init(engine);
+    if (!ctx) { task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NOT_INITIALIZED, task->user_data); return; }
+    const char *name = task->params.dnac_token_create.name;
+    const char *symbol = task->params.dnac_token_create.symbol;
+    uint8_t decimals = task->params.dnac_token_create.decimals;
+    uint64_t supply = task->params.dnac_token_create.supply;
+    QGP_LOG_INFO(LOG_TAG, "Creating token: name=%s symbol=%s decimals=%u supply=%llu", name, symbol, decimals, (unsigned long long)supply);
+    int ret = dnac_token_create(ctx, name, symbol, decimals, supply);
+    if (ret != DNAC_SUCCESS) { QGP_LOG_ERROR(LOG_TAG, "dnac_token_create failed: %d (%s)", ret, dnac_error_string(ret)); task->callback.completion(task->request_id, ret, task->user_data); return; }
+    QGP_LOG_INFO(LOG_TAG, "Token created: %s (%s)", name, symbol);
+    task->callback.completion(task->request_id, 0, task->user_data);
+}
+
+void dna_handle_dnac_token_balance(dna_engine_t *engine, dna_task_t *task) {
+    dnac_context_t *ctx = ensure_dnac_init(engine);
+    if (!ctx) { task->callback.dnac_balance(task->request_id, DNA_ENGINE_ERROR_NOT_INITIALIZED, NULL, task->user_data); return; }
+    dnac_balance_t bal = {0};
+    int ret = dnac_wallet_get_balance_token(ctx, task->params.dnac_token_balance.token_id, &bal);
+    if (ret != DNAC_SUCCESS) { QGP_LOG_ERROR(LOG_TAG, "token balance failed: %d", ret); task->callback.dnac_balance(task->request_id, ret, NULL, task->user_data); return; }
+    dna_dnac_balance_t *result = calloc(1, sizeof(dna_dnac_balance_t));
+    if (!result) { task->callback.dnac_balance(task->request_id, DNA_ERROR_INTERNAL, NULL, task->user_data); return; }
+    result->confirmed = bal.confirmed; result->pending = bal.pending; result->locked = bal.locked; result->utxo_count = bal.utxo_count;
+    task->callback.dnac_balance(task->request_id, 0, result, task->user_data);
+}
+
+dna_request_id_t dna_engine_dnac_token_list(dna_engine_t *engine, dna_dnac_token_list_cb callback, void *user_data) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+    dna_task_params_t params = {0}; dna_task_callback_t cb = {0}; cb.dnac_token_list = callback;
+    return dna_submit_task(engine, TASK_DNAC_TOKEN_LIST, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_dnac_token_create(dna_engine_t *engine, const char *name, const char *symbol, uint8_t decimals, uint64_t supply, dna_completion_cb callback, void *user_data) {
+    if (!engine || !name || !symbol || !callback) return DNA_REQUEST_ID_INVALID;
+    dna_task_params_t params = {0};
+    strncpy(params.dnac_token_create.name, name, 32); params.dnac_token_create.name[32] = '\0';
+    strncpy(params.dnac_token_create.symbol, symbol, 8); params.dnac_token_create.symbol[8] = '\0';
+    params.dnac_token_create.decimals = decimals; params.dnac_token_create.supply = supply;
+    dna_task_callback_t cb = {0}; cb.completion = callback;
+    return dna_submit_task(engine, TASK_DNAC_TOKEN_CREATE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_dnac_token_balance(dna_engine_t *engine, const uint8_t *token_id, dna_dnac_balance_cb callback, void *user_data) {
+    if (!engine || !token_id || !callback) return DNA_REQUEST_ID_INVALID;
+    dna_task_params_t params = {0}; memcpy(params.dnac_token_balance.token_id, token_id, 64);
+    dna_task_callback_t cb = {0}; cb.dnac_balance = callback;
+    return dna_submit_task(engine, TASK_DNAC_TOKEN_BALANCE, &params, cb, user_data);
+}
+
+void dna_engine_dnac_free_tokens(dna_dnac_token_t *tokens, int count) { (void)count; free(tokens); }

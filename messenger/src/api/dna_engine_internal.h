@@ -197,7 +197,10 @@ typedef enum {
     TASK_DNAC_SYNC,
     TASK_DNAC_GET_HISTORY,
     TASK_DNAC_GET_UTXOS,
-    TASK_DNAC_ESTIMATE_FEE
+    TASK_DNAC_ESTIMATE_FEE,
+    TASK_DNAC_TOKEN_LIST,
+    TASK_DNAC_TOKEN_CREATE,
+    TASK_DNAC_TOKEN_BALANCE
 } dna_task_type_t;
 
 /* ============================================================================
@@ -584,6 +587,17 @@ typedef union {
         uint64_t amount;                    /* Amount in raw units */
     } dnac_estimate_fee;
 
+    struct {
+        char name[33];
+        char symbol[9];
+        uint8_t decimals;
+        uint64_t supply;
+    } dnac_token_create;
+
+    struct {
+        uint8_t token_id[64];
+    } dnac_token_balance;
+
 } dna_task_params_t;
 
 /**
@@ -634,6 +648,7 @@ typedef union {
     dna_dnac_history_cb dnac_history;
     dna_dnac_utxos_cb dnac_utxos;
     dna_dnac_fee_cb dnac_fee;
+    dna_dnac_token_list_cb dnac_token_list;
 } dna_task_callback_t;
 
 /**

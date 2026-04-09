@@ -1735,6 +1735,42 @@ class AppLocalizationsTr extends AppLocalizations {
   String get dnacDetailTitle => 'XXX Detayları';
 
   @override
+  String get dnacTokens => 'Tokenlar';
+
+  @override
+  String get dnacNoTokens => 'Bu zincirde token yok';
+
+  @override
+  String get dnacTokenCreate => 'Token Oluştur';
+
+  @override
+  String get dnacTokenBalance => 'Token Bakiyesi';
+
+  @override
+  String get dnacTokenCreateName => 'Token Adı';
+
+  @override
+  String get dnacTokenCreateSymbol => 'Sembol';
+
+  @override
+  String get dnacTokenCreateDecimals => 'Ondalık';
+
+  @override
+  String get dnacTokenCreateSupply => 'Toplam Arz';
+
+  @override
+  String get dnacTokenCreating => 'Token oluşturuluyor...';
+
+  @override
+  String get dnacTokenCreateSuccess => 'Token başarıyla oluşturuldu';
+
+  @override
+  String get dnacTokenCreateFailed => 'Token oluşturma başarısız';
+
+  @override
+  String get dnacTokenCreateFee => 'Token oluşturma ücreti 1 DNAC';
+
+  @override
   String get walletContacts => 'Kişiler';
 
   @override

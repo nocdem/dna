@@ -408,14 +408,20 @@ One-directional follow system. No approval needed, private to owner.
 | `dna_request_id_t dna_engine_dnac_estimate_fee(dna_engine_t *engine, uint64_t amount, dna_dnac_fee_cb callback, void *user_data)` | Estimate transaction fee |
 | `void dna_engine_dnac_free_history(dna_dnac_history_t *history, int count)` | Free history array from callback |
 | `void dna_engine_dnac_free_utxos(dna_dnac_utxo_t *utxos, int count)` | Free UTXO array from callback |
+| `dna_request_id_t dna_engine_dnac_token_list(...)` | List all custom tokens from witnesses |
+| `dna_request_id_t dna_engine_dnac_token_create(...)` | Create new token (burns 1 DNAC) |
+| `dna_request_id_t dna_engine_dnac_token_balance(...)` | Get balance for specific token |
+| `void dna_engine_dnac_free_tokens(dna_dnac_token_t *tokens, int count)` | Free token array |
 
 **Data types:**
 - `dna_dnac_balance_t` — `{uint64_t confirmed, pending, locked; int utxo_count}`
 - `dna_dnac_history_t` — `{tx_hash[64], int type, counterparty[129], int64_t amount_delta, uint64_t fee/timestamp, memo[256]}`
 - `dna_dnac_utxo_t` — `{tx_hash[64], uint32_t output_index, uint64_t amount, int status, uint64_t received_at}`
+- `dna_dnac_token_t` — `{token_id[64], name[33], symbol[9], uint8_t decimals, int64_t supply, creator_fp[129]}`
 
 **Notes:**
 - Amounts are in raw units (1 token = 100,000,000 raw, 8 decimal places)
+- Custom tokens may have different decimal places (0-18)
 - DNAC context is lazy-initialized on first API call (no startup cost)
 - Wallet syncs from witness servers (no DHT dependency)
 - Thread-safe init via mutex

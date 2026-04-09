@@ -246,6 +246,9 @@ void dna_handle_dnac_sync(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_get_utxos(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_estimate_fee(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_token_list(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_token_create(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_token_balance(dna_engine_t *engine, dna_task_t *task);
 
 /* Global engine accessors (thread-safe) */
 extern dna_engine_t *g_dht_callback_engine;

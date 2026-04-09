@@ -19,7 +19,7 @@ import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
 import '../../providers/price_provider.dart';
 import '../../providers/dnac_provider.dart';
-import '../../ffi/dna_engine.dart' show DnacBalance, DnacTxHistory, formatDnacAmount, parseDnacAmount;
+import '../../ffi/dna_engine.dart' show DnacBalance, DnacToken, DnacTxHistory, formatDnacAmount, formatTokenAmount, parseDnacAmount;
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
 import 'dnac_utxos_screen.dart';
@@ -1436,16 +1436,17 @@ class _AllBalancesSection extends ConsumerWidget {
     final walletSettings = ref.watch(walletSettingsProvider);
     final networkFilter = ref.watch(walletNetworkFilterProvider);
     final dnacBalance = ref.watch(dnacBalanceProvider).valueOrNull;
+    final dnacTokens = ref.watch(dnacTokenListProvider).valueOrNull ?? [];
     final theme = Theme.of(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         allBalances.when(
-          data: (_) => _buildGroupedList(grouped, networkFilter, walletSettings, dnacBalance, theme),
+          data: (_) => _buildGroupedList(grouped, networkFilter, walletSettings, dnacBalance, dnacTokens, theme),
           loading: () {
             if (grouped.isNotEmpty) {
-              return _buildGroupedList(grouped, networkFilter, walletSettings, dnacBalance, theme);
+              return _buildGroupedList(grouped, networkFilter, walletSettings, dnacBalance, dnacTokens, theme);
             }
             return const Padding(
               padding: EdgeInsets.all(16),
@@ -1465,7 +1466,8 @@ class _AllBalancesSection extends ConsumerWidget {
   }
 
   Widget _buildGroupedList(List<GroupedToken> groups, String? networkFilter,
-      WalletSettingsState walletSettings, DnacBalance? dnacBalance, ThemeData theme) {
+      WalletSettingsState walletSettings, DnacBalance? dnacBalance,
+      List<DnacToken> dnacTokens, ThemeData theme) {
     var filteredGroups = groups.toList();
 
     // Filter out inactive chains first
@@ -1519,8 +1521,10 @@ class _AllBalancesSection extends ConsumerWidget {
     final dnacConfirmed = dnacBalance?.confirmed ?? 0;
     final hideDnacZero = walletSettings.hideZeroBalances && dnacConfirmed == 0;
     final showDnacTile = showDnac && !hideDnacZero;
+    final showTokens = showDnac;
+    final tokenCount = showTokens ? dnacTokens.length : 0;
 
-    final assetCount = filteredGroups.length + (showDnacTile ? 1 : 0);
+    final assetCount = filteredGroups.length + (showDnacTile ? 1 : 0) + tokenCount;
 
     return assetCount == 0
         ? Padding(
@@ -1568,6 +1572,9 @@ class _AllBalancesSection extends ConsumerWidget {
               // DNAC tile after other assets
               if (showDnacTile)
                 _DnacAssetTile(balance: dnacBalance),
+              // Custom tokens below native DNAC
+              if (showTokens)
+                ...dnacTokens.map((token) => _DnacTokenTile(token: token)),
             ],
           );
   }
@@ -1687,6 +1694,218 @@ class _DnacAssetTile extends ConsumerWidget {
         network: 'dnac',
         initialBalance: '0',
         isDnac: true,
+      ),
+    );
+  }
+}
+
+/// Custom token tile — shows token from DNAC multi-token system
+class _DnacTokenTile extends ConsumerWidget {
+  final DnacToken token;
+
+  const _DnacTokenTile({required this.token});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
+    final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
+    final balanceAsync = ref.watch(dnacTokenBalanceProvider(token.tokenId.toList()));
+    final confirmed = balanceAsync.valueOrNull?.confirmed ?? 0;
+    final balanceStr = formatTokenAmount(confirmed, token.decimals);
+    const tokenColor = Color(0xFF7B61FF); // Purple for custom tokens
+
+    return DnaCard(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      onTap: () => _showTokenDetail(context, ref),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Color(0x337B61FF),
+                  blurRadius: 8,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+            child: Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: tokenColor.withValues(alpha: 0.3),
+                  width: 1.5,
+                ),
+                color: tokenColor.withValues(alpha: 0.08),
+              ),
+              child: const Center(
+                child: FaIcon(
+                  FontAwesomeIcons.coins,
+                  size: 20,
+                  color: tokenColor,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  token.symbol,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 15,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  token.name,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.4),
+                    fontSize: 12,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                hideBalances ? '*****' : balanceStr,
+                style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              Text(
+                token.symbol,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.4),
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 8),
+          FaIcon(
+            FontAwesomeIcons.chevronRight,
+            size: 14,
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.3),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showTokenDetail(BuildContext context, WidgetRef ref) {
+    final l10n = AppLocalizations.of(context);
+    final balanceAsync = ref.read(dnacTokenBalanceProvider(token.tokenId.toList()));
+    final balance = balanceAsync.valueOrNull;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.5,
+        minChildSize: 0.3,
+        maxChildSize: 0.85,
+        expand: false,
+        builder: (context, scrollController) {
+          final theme = Theme.of(context);
+          final confirmed = balance?.confirmed ?? 0;
+          final pending = balance?.pending ?? 0;
+          return Container(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            child: ListView(
+              controller: scrollController,
+              padding: const EdgeInsets.all(24),
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Center(
+                  child: Container(
+                    width: 64,
+                    height: 64,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFF7B61FF).withValues(alpha: 0.1),
+                      border: Border.all(
+                        color: const Color(0xFF7B61FF).withValues(alpha: 0.3),
+                        width: 2,
+                      ),
+                    ),
+                    child: const Center(
+                      child: FaIcon(
+                        FontAwesomeIcons.coins,
+                        size: 28,
+                        color: Color(0xFF7B61FF),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Center(
+                  child: Text(
+                    '${token.name} (${token.symbol})',
+                    style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Center(
+                  child: Text(
+                    l10n.dnacNetworkLabel,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                _detailRow(theme, l10n.dnacConfirmed, formatTokenAmount(confirmed, token.decimals)),
+                if (pending > 0)
+                  _detailRow(theme, l10n.dnacPending, formatTokenAmount(pending, token.decimals)),
+                const Divider(height: 32),
+                _detailRow(theme, l10n.dnacTokenCreateDecimals, '${token.decimals}'),
+                _detailRow(theme, l10n.dnacTokenCreateSupply,
+                    formatTokenAmount(token.supply, token.decimals)),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _detailRow(ThemeData theme, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+          )),
+          Text(value, style: theme.textTheme.bodyMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+          )),
+        ],
       ),
     );
   }
