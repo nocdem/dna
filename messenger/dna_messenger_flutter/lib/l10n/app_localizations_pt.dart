@@ -1725,18 +1725,18 @@ class AppLocalizationsPt extends AppLocalizations {
   String get dnacNotInitialized => 'Wallet is loading...';
 
   @override
-  String get dnacToken => 'XXX';
+  String get dnacToken => 'DNAC';
 
   @override
   String dnacAmountWithToken(String amount) {
-    return '$amount XXX';
+    return '$amount DNAC';
   }
 
   @override
   String get dnacNetworkLabel => 'DNA Chain';
 
   @override
-  String get dnacDetailTitle => 'XXX Details';
+  String get dnacDetailTitle => 'DNAC Details';
 
   @override
   String get dnacTokens => 'Tokens';

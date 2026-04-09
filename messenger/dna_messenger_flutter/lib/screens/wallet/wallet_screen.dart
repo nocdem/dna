@@ -55,7 +55,7 @@ String? getTokenIconPath(String token) {
       return 'assets/icons/crypto/nys.png';
     case 'CPUNK':
       return 'assets/icons/crypto/cpunk.png';
-    case 'XXX':
+    case 'DNAC':
       return 'assets/icons/crypto/cpunk.png';  // DNAC token (DNA Chain)
     case 'CELL':
     case 'QEVM':
@@ -764,7 +764,7 @@ class _PortfolioBreakdownSheet extends ConsumerWidget {
   // Official brand colors — maximum contrast, globally recognizable
   static const _tokenColors = <String, Color>{
     'CPUNK': Color(0xFF00E5A0),  // CPUNK vibrant cyan-green (Cellframe)
-    'XXX': Color(0xFF00E5A0),    // XXX DNAC token (DNA Chain)
+    'DNAC': Color(0xFF00E5A0),   // DNAC token (DNA Chain)
     'CELL': Color(0xFF7B3FE4),   // Cellframe purple (official)
     'ETH': Color(0xFF627EEA),    // Ethereum blue (official)
     'SOL': Color(0xFF14F195),    // Solana green (official brand)
@@ -1592,7 +1592,7 @@ class _DnacAssetTile extends ConsumerWidget {
     final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
     final confirmed = balance?.confirmed ?? 0;
     final balanceStr = formatDnacAmount(confirmed);
-    const tokenColor = Color(0xFF00E5A0); // XXX (DNAC) cyan-green
+    const tokenColor = Color(0xFF00E5A0); // DNAC cyan-green
 
     return DnaCard(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -1636,7 +1636,7 @@ class _DnacAssetTile extends ConsumerWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'XXX',
+                  'DNAC',
                   style: theme.textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.w600,
                     fontSize: 15,
@@ -1690,7 +1690,7 @@ class _DnacAssetTile extends ConsumerWidget {
       builder: (context) => const _TokenDetailSheet(
         walletIndex: 0,
         walletAddress: '',
-        token: 'XXX',
+        token: 'DNAC',
         network: 'dnac',
         initialBalance: '0',
         isDnac: true,
@@ -2463,7 +2463,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   void initState() {
     super.initState();
     if (widget.isDnac) {
-      _selectedToken = 'XXX';
+      _selectedToken = 'DNAC';
       _selectedNetwork = 'dnac';
     } else {
       _selectedToken = widget.preselectedToken ?? 'CPUNK';

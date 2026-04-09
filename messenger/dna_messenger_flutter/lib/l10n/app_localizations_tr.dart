@@ -1721,18 +1721,18 @@ class AppLocalizationsTr extends AppLocalizations {
   String get dnacNotInitialized => 'Cüzdan yükleniyor...';
 
   @override
-  String get dnacToken => 'XXX';
+  String get dnacToken => 'DNAC';
 
   @override
   String dnacAmountWithToken(String amount) {
-    return '$amount XXX';
+    return '$amount DNAC';
   }
 
   @override
   String get dnacNetworkLabel => 'DNA Zinciri';
 
   @override
-  String get dnacDetailTitle => 'XXX Detayları';
+  String get dnacDetailTitle => 'DNAC Detayları';
 
   @override
   String get dnacTokens => 'Tokenlar';

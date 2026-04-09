@@ -865,8 +865,8 @@
   "dnacUtxoPending": "Pending",
   "dnacUtxoSpent": "Spent",
   "dnacNotInitialized": "Wallet is loading...",
-  "dnacToken": "XXX",
-  "dnacAmountWithToken": "{amount} XXX",
+  "dnacToken": "DNAC",
+  "dnacAmountWithToken": "{amount} DNAC",
   "@dnacAmountWithToken": {
     "placeholders": {
       "amount": {
@@ -875,7 +875,7 @@
     }
   },
   "dnacNetworkLabel": "DNA Chain",
-  "dnacDetailTitle": "XXX Details",
+  "dnacDetailTitle": "DNAC Details",
   "dnacTokens": "Tokens",
   "dnacNoTokens": "No tokens on this chain",
   "dnacTokenCreate": "Create Token",
