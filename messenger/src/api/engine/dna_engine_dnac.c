@@ -179,7 +179,14 @@ void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task) {
 
     dnac_tx_history_t *history = NULL;
     int count = 0;
-    int ret = dnac_get_history(ctx, &history, &count);
+
+    /* Fetch from Nodus (authoritative), fallback to local cache */
+    int ret = dnac_get_remote_history(ctx, &history, &count);
+    if (ret != DNAC_SUCCESS) {
+        QGP_LOG_WARN(LOG_TAG, "remote history failed (%d), falling back to local",
+                     ret);
+        ret = dnac_get_history(ctx, &history, &count);
+    }
     if (ret != DNAC_SUCCESS) {
         QGP_LOG_ERROR(LOG_TAG, "dnac_get_history failed: %d (%s)",
                       ret, dnac_error_string(ret));
