@@ -160,12 +160,42 @@ int verify_sender_signature(const dnac_transaction_t *tx) {
 }
 
 /**
+ * @brief Verify all inputs and outputs have the same token_id
+ *
+ * For SPEND/BURN: all inputs must match, all outputs must match inputs.
+ * For TOKEN_CREATE: skip (mixed token_ids expected — fee is DNAC, output is new token).
+ * For GENESIS: skip (no inputs).
+ */
+static int verify_token_consistency(const dnac_transaction_t *tx) {
+    if (tx->type == DNAC_TX_TOKEN_CREATE || tx->type == DNAC_TX_GENESIS)
+        return DNAC_SUCCESS;
+    if (tx->input_count == 0)
+        return DNAC_SUCCESS;
+
+    const uint8_t *expected = tx->inputs[0].token_id;
+
+    for (int i = 1; i < tx->input_count; i++) {
+        if (memcmp(tx->inputs[i].token_id, expected, DNAC_TOKEN_ID_SIZE) != 0)
+            return DNAC_ERROR_INVALID_PARAM;
+    }
+    for (int i = 0; i < tx->output_count; i++) {
+        if (memcmp(tx->outputs[i].token_id, expected, DNAC_TOKEN_ID_SIZE) != 0)
+            return DNAC_ERROR_INVALID_PARAM;
+    }
+    return DNAC_SUCCESS;
+}
+
+/**
  * @brief Full transaction verification
  */
 int dnac_tx_verify_full(const dnac_transaction_t *tx) {
     int rc;
 
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
+
+    /* 0. Verify token_id consistency */
+    rc = verify_token_consistency(tx);
+    if (rc != DNAC_SUCCESS) return rc;
 
     /* 1. Verify balance (or mint rules) */
     rc = verify_balance_v1(tx);
