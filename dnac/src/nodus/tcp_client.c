@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <time.h>
 
 #include "dnac/nodus.h"
@@ -623,6 +624,91 @@ int dnac_query_block_range(dnac_context_t *ctx,
     QGP_LOG_INFO(LOG_TAG, "Block range: from=%llu to=%llu returned=%d",
                  (unsigned long long)from_height,
                  (unsigned long long)to_height, *count_out);
+    return DNAC_SUCCESS;
+}
+
+/* ============================================================================
+ * Transaction History (from Nodus witnesses)
+ * ========================================================================== */
+
+int dnac_get_remote_history(dnac_context_t *ctx,
+                             dnac_tx_history_t **history_out,
+                             int *count_out) {
+    if (!ctx || !history_out || !count_out)
+        return DNAC_ERROR_INVALID_PARAM;
+
+    *history_out = NULL;
+    *count_out = 0;
+
+    const char *fingerprint = dnac_get_owner_fingerprint(ctx);
+    if (!fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "remote_history: owner fingerprint is NULL");
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        QGP_LOG_ERROR(LOG_TAG, "remote_history: nodus singleton is NULL");
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
+
+    nodus_singleton_lock();
+
+    nodus_dnac_history_result_t result;
+    int rc = nodus_client_dnac_history(client, fingerprint,
+                                        NODUS_DNAC_MAX_HISTORY_RESULTS,
+                                        &result);
+
+    nodus_singleton_unlock();
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "remote_history: nodus query failed: %d", rc);
+        return DNAC_ERROR_NETWORK;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "remote_history: received %d entries from Nodus",
+                 result.count);
+
+    /* Convert Nodus entries to DNAC history format */
+    if (result.count > 0) {
+        dnac_tx_history_t *history = calloc((size_t)result.count,
+                                             sizeof(dnac_tx_history_t));
+        if (!history) {
+            nodus_client_free_history_result(&result);
+            return DNAC_ERROR_OUT_OF_MEMORY;
+        }
+
+        for (int i = 0; i < result.count; i++) {
+            nodus_dnac_history_entry_t *e = &result.entries[i];
+            dnac_tx_history_t *h = &history[i];
+
+            memcpy(h->tx_hash, e->tx_hash, DNAC_TX_HASH_SIZE);
+            h->type = (dnac_tx_type_t)e->tx_type;
+            h->fee = e->fee;
+            h->timestamp = e->timestamp;
+
+            /* Determine counterparty and amount direction */
+            bool is_sender = (e->sender_fp[0] &&
+                              strcmp(e->sender_fp, fingerprint) == 0);
+
+            if (is_sender) {
+                /* We sent — counterparty is receiver, delta is negative */
+                strncpy(h->counterparty, e->receiver_fp,
+                        DNAC_FINGERPRINT_SIZE - 1);
+                h->amount_delta = -(int64_t)e->amount;
+            } else {
+                /* We received — counterparty is sender, delta is positive */
+                strncpy(h->counterparty, e->sender_fp,
+                        DNAC_FINGERPRINT_SIZE - 1);
+                h->amount_delta = (int64_t)e->amount;
+            }
+        }
+
+        *history_out = history;
+        *count_out = result.count;
+    }
+
+    nodus_client_free_history_result(&result);
     return DNAC_SUCCESS;
 }
 

@@ -72,7 +72,11 @@ static const char *WITNESS_DB_SCHEMA =
     "  tx_data BLOB NOT NULL,"
     "  tx_len  INTEGER NOT NULL,"
     "  block_height INTEGER NOT NULL DEFAULT 0,"
-    "  timestamp INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
+    "  timestamp INTEGER NOT NULL DEFAULT (strftime('%%s','now')),"
+    "  sender_fp TEXT,"
+    "  receiver_fp TEXT,"
+    "  amount INTEGER NOT NULL DEFAULT 0,"
+    "  fee INTEGER NOT NULL DEFAULT 0"
     ");"
     "CREATE TABLE IF NOT EXISTS commit_certificates ("
     "  block_height INTEGER NOT NULL,"
@@ -84,7 +88,9 @@ static const char *WITNESS_DB_SCHEMA =
     "CREATE INDEX IF NOT EXISTS idx_utxo_owner ON utxo_set(owner);"
     "CREATE INDEX IF NOT EXISTS idx_ledger_epoch ON ledger_entries(epoch);"
     "CREATE INDEX IF NOT EXISTS idx_ledger_tx ON ledger_entries(tx_hash);"
-    "CREATE INDEX IF NOT EXISTS idx_ctx_height ON committed_transactions(block_height);";
+    "CREATE INDEX IF NOT EXISTS idx_ctx_height ON committed_transactions(block_height);"
+    "CREATE INDEX IF NOT EXISTS idx_ctx_sender ON committed_transactions(sender_fp);"
+    "CREATE INDEX IF NOT EXISTS idx_ctx_receiver ON committed_transactions(receiver_fp);";
 
 /* ── Set chain ID ────────────────────────────────────────────────── */
 
@@ -119,6 +125,20 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
         sqlite3_free(err_msg);
         return -1;
     }
+
+    /* ── Migration: add sender_fp/receiver_fp/amount/fee columns ──── */
+    sqlite3_exec(witness->db,
+        "ALTER TABLE committed_transactions ADD COLUMN sender_fp TEXT;",
+        NULL, NULL, NULL);
+    sqlite3_exec(witness->db,
+        "ALTER TABLE committed_transactions ADD COLUMN receiver_fp TEXT;",
+        NULL, NULL, NULL);
+    sqlite3_exec(witness->db,
+        "ALTER TABLE committed_transactions ADD COLUMN amount INTEGER NOT NULL DEFAULT 0;",
+        NULL, NULL, NULL);
+    sqlite3_exec(witness->db,
+        "ALTER TABLE committed_transactions ADD COLUMN fee INTEGER NOT NULL DEFAULT 0;",
+        NULL, NULL, NULL);
 
     fprintf(stderr, "%s: opened database %s\n", LOG_TAG, db_path);
     return 0;

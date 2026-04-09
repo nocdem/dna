@@ -96,6 +96,7 @@ extern "C" {
 #define NODUS_WAL_CHECKPOINT_SEC   300     /* 5 min — WAL checkpoint interval */
 #define NODUS_VACUUM_SEC           3600    /* 1 hour — incremental vacuum interval */
 #define NODUS_HINT_OFFLINE_SKIP_SEC 3600   /* 1 hour — skip hinted handoff for long-offline peers */
+#define NODUS_REPLICATION_MIN      3      /* Min successful sends before skipping hinted handoff */
 #define NODUS_FV_MAX_INFLIGHT      16      /* Max concurrent FIND_VALUE lookups */
 #define NODUS_FV_TIMEOUT_MS        5000    /* Per-lookup overall timeout */
 #define NODUS_FV_QUERY_TIMEOUT_MS  3000    /* Per-query connect+recv timeout */
@@ -351,6 +352,27 @@ typedef struct {
     int      count;
     nodus_dnac_range_entry_t *entries;  /* Heap-allocated, caller frees */
 } nodus_dnac_range_result_t;
+
+/** Transaction history entry (per-owner query) */
+typedef struct {
+    uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
+    uint8_t  tx_type;
+    char     sender_fp[129];
+    char     receiver_fp[129];
+    uint64_t amount;
+    uint64_t fee;
+    uint64_t block_height;
+    uint64_t timestamp;
+} nodus_dnac_history_entry_t;
+
+/** Transaction history query result */
+typedef struct {
+    int      count;
+    nodus_dnac_history_entry_t *entries;  /* Heap-allocated, caller frees */
+} nodus_dnac_history_result_t;
+
+/** Max history entries per query */
+#define NODUS_DNAC_MAX_HISTORY_RESULTS 100
 
 /** Roster witness entry */
 typedef struct {

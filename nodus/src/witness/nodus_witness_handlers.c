@@ -37,6 +37,9 @@
 /* Max ledger range entries per query */
 #define DNAC_MAX_RANGE_RESULTS  100
 
+/* Max history entries per owner query */
+#define DNAC_MAX_HISTORY_RESULTS 100
+
 /* Spend result status codes */
 #define DNAC_STATUS_APPROVED   0
 #define DNAC_STATUS_REJECTED   1
@@ -356,7 +359,9 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     }
 
     int count = 0;
-    nodus_witness_utxo_by_owner(w, owner, utxos, max_results, &count);
+    int utxo_rc = nodus_witness_utxo_by_owner(w, owner, utxos, max_results, &count);
+    fprintf(stderr, "WITNESS_UTXO: owner=%.16s... db=%p rc=%d count=%d\n",
+            owner, (void*)w->db, utxo_rc, count);
 
     /* Encode response — size depends on count */
     size_t buf_size = 512 + ((size_t)count * 256);
@@ -837,6 +842,116 @@ static void handle_dnac_block_range(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_history — Query transaction history for an owner fingerprint
+ *
+ * Request:  "a": {"owner": tstr, "limit": uint}
+ * Response: "r": {"count":N, "entries":[{hash,type,sender,receiver,
+ *                  amount,fee,bh,ts}, ...]}
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_history(nodus_witness_t *w,
+                                  struct nodus_tcp_conn *conn,
+                                  const uint8_t *payload, size_t len,
+                                  uint32_t txn_id) {
+    cbor_decoder_t dec;
+    size_t args_count;
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing args map");
+        return;
+    }
+
+    char owner[256] = {0};
+    int max_results = DNAC_MAX_HISTORY_RESULTS;
+
+    for (size_t i = 0; i < args_count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key_match(&key, "owner")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_TSTR && val.tstr.len > 0) {
+                size_t clen = val.tstr.len < sizeof(owner) - 1
+                              ? val.tstr.len : sizeof(owner) - 1;
+                memcpy(owner, val.tstr.ptr, clen);
+                owner[clen] = '\0';
+            }
+        } else if (key_match(&key, "limit")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_UINT) {
+                max_results = (int)val.uint_val;
+                if (max_results <= 0 || max_results > DNAC_MAX_HISTORY_RESULTS)
+                    max_results = DNAC_MAX_HISTORY_RESULTS;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    if (owner[0] == '\0') {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing owner field");
+        return;
+    }
+
+    nodus_witness_tx_history_entry_t *entries = calloc((size_t)max_results,
+                                                        sizeof(nodus_witness_tx_history_entry_t));
+    if (!entries) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return;
+    }
+
+    int count = 0;
+    nodus_witness_tx_by_owner(w, owner, entries, max_results, &count);
+
+    /* Encode response */
+    size_t buf_size = 512 + ((size_t)count * 512);
+    uint8_t *buf = malloc(buf_size);
+    if (!buf) {
+        free(entries);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return;
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, buf_size);
+    enc_dnac_response(&enc, txn_id, "dnac_history", 2);
+
+    cbor_encode_cstr(&enc, "count");
+    cbor_encode_uint(&enc, (uint64_t)count);
+
+    cbor_encode_cstr(&enc, "entries");
+    cbor_encode_array(&enc, (size_t)count);
+
+    for (int i = 0; i < count; i++) {
+        cbor_encode_map(&enc, 8);
+        cbor_encode_cstr(&enc, "hash");
+        cbor_encode_bstr(&enc, entries[i].tx_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "type");
+        cbor_encode_uint(&enc, entries[i].tx_type);
+        cbor_encode_cstr(&enc, "sender");
+        cbor_encode_cstr(&enc, entries[i].sender_fp);
+        cbor_encode_cstr(&enc, "receiver");
+        cbor_encode_cstr(&enc, entries[i].receiver_fp);
+        cbor_encode_cstr(&enc, "amount");
+        cbor_encode_uint(&enc, entries[i].amount);
+        cbor_encode_cstr(&enc, "fee");
+        cbor_encode_uint(&enc, entries[i].fee);
+        cbor_encode_cstr(&enc, "bh");
+        cbor_encode_uint(&enc, entries[i].block_height);
+        cbor_encode_cstr(&enc, "ts");
+        cbor_encode_uint(&enc, entries[i].timestamp);
+    }
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0)
+        nodus_tcp_send(conn, buf, rlen);
+
+    free(buf);
+    free(entries);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_spend — Submit TX for BFT consensus
  *
  * Request:  "a": {"tx":bstr, "hash":bstr(64), "pk":bstr(2592),
@@ -1282,6 +1397,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_block(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_block_range") == 0) {
         handle_dnac_block_range(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_history") == 0) {
+        handle_dnac_history(w, conn, payload, len, txn_id);
     } else {
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                     "unknown DNAC method");

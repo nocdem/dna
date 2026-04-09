@@ -258,10 +258,17 @@ int dnac_cli_history(dnac_context_t *ctx, int limit) {
     dnac_tx_history_t *history = NULL;
     int count = 0;
 
-    int rc = dnac_get_history(ctx, &history, &count);
+    /* Fetch from Nodus (authoritative source) */
+    int rc = dnac_get_remote_history(ctx, &history, &count);
     if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
-        return 1;
+        /* Fallback to local cache if network fails */
+        fprintf(stderr, "Note: Could not fetch from network (%s), using local cache\n",
+                dnac_error_string(rc));
+        rc = dnac_get_history(ctx, &history, &count);
+        if (rc != DNAC_SUCCESS) {
+            fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+            return 1;
+        }
     }
 
     if (count == 0) {

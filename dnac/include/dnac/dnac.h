@@ -450,6 +450,19 @@ void dnac_free_transaction(dnac_transaction_t *tx);
 int dnac_get_history(dnac_context_t *ctx, dnac_tx_history_t **history, int *count);
 
 /**
+ * @brief Fetch transaction history from Nodus witnesses (remote).
+ *
+ * Clears local transaction cache and repopulates from the authoritative
+ * remote source. Local DB is cache only.
+ *
+ * @param ctx DNAC context
+ * @param history Output array (caller must free with dnac_free_history)
+ * @param count Output count
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_get_remote_history(dnac_context_t *ctx, dnac_tx_history_t **history, int *count);
+
+/**
  * @brief Free history array
  */
 void dnac_free_history(dnac_tx_history_t *history, int count);

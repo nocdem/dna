@@ -83,6 +83,11 @@ int dnac_db_mark_utxo_spent(sqlite3 *db,
  */
 int dnac_db_clear_utxos(sqlite3 *db, const char *owner_fp);
 
+/**
+ * Delete all entries from dnac_transactions (cache clear).
+ */
+int dnac_db_clear_transactions(sqlite3 *db);
+
 /* ============================================================================
  * Transaction Functions
  * ========================================================================== */

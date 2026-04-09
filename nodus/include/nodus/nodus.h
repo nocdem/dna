@@ -732,6 +732,21 @@ int nodus_client_dnac_ledger_range(nodus_client_t *client,
                                      nodus_dnac_range_result_t *result_out);
 
 /**
+ * Query transaction history for an owner fingerprint.
+ * Returns transactions where the owner is sender OR receiver.
+ * Caller must free result_out with nodus_client_free_history_result().
+ *
+ * @param owner       Owner fingerprint string (128 hex chars)
+ * @param limit       Maximum entries to return (capped at 100)
+ * @param result_out  History query result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_history(nodus_client_t *client,
+                                const char *owner,
+                                int limit,
+                                nodus_dnac_history_result_t *result_out);
+
+/**
  * Query witness roster.
  *
  * @param result_out  Roster result
@@ -780,6 +795,11 @@ int nodus_client_dnac_block_range(nodus_client_t *client,
  * Free UTXO entries from nodus_client_dnac_utxo().
  */
 void nodus_client_free_utxo_result(nodus_dnac_utxo_result_t *result);
+
+/**
+ * Free history entries from nodus_client_dnac_history().
+ */
+void nodus_client_free_history_result(nodus_dnac_history_result_t *result);
 
 /**
  * Free range entries from nodus_client_dnac_ledger_range().

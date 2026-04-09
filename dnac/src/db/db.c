@@ -50,7 +50,7 @@ static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS dnac_transactions ("
     "    id                  INTEGER PRIMARY KEY AUTOINCREMENT,"
     "    tx_hash             BLOB NOT NULL UNIQUE,"
-    "    raw_tx              BLOB NOT NULL,"
+    "    raw_tx              BLOB,"
     "    type                INTEGER NOT NULL,"
     "    counterparty_fp     TEXT,"
     "    created_at          INTEGER NOT NULL,"
@@ -150,6 +150,30 @@ int dnac_db_init(sqlite3 *db) {
             }
         }
         dnac_db_set_version(db, 3);
+    }
+
+    /* v4: Recreate dnac_transactions with nullable raw_tx
+     * (remote history entries have no raw TX data — cache only) */
+    if (current_version < 4) {
+        sqlite3_exec(db, "DROP TABLE IF EXISTS dnac_transactions;",
+                     NULL, NULL, NULL);
+        const char *recreate =
+            "CREATE TABLE IF NOT EXISTS dnac_transactions ("
+            "    id                  INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "    tx_hash             BLOB NOT NULL UNIQUE,"
+            "    raw_tx              BLOB,"
+            "    type                INTEGER NOT NULL,"
+            "    counterparty_fp     TEXT,"
+            "    created_at          INTEGER NOT NULL,"
+            "    confirmed_at        INTEGER,"
+            "    amount_in           INTEGER NOT NULL DEFAULT 0,"
+            "    amount_out          INTEGER NOT NULL DEFAULT 0,"
+            "    amount_fee          INTEGER NOT NULL DEFAULT 0,"
+            "    ledger_seq          INTEGER,"
+            "    ledger_epoch        INTEGER"
+            ");";
+        sqlite3_exec(db, recreate, NULL, NULL, NULL);
+        dnac_db_set_version(db, 4);
     }
 
     return DNAC_SUCCESS;
@@ -320,10 +344,10 @@ int dnac_db_store_transaction(sqlite3 *db,
                                uint64_t amount_in,
                                uint64_t amount_out,
                                uint64_t amount_fee) {
-    if (!db || !tx_hash || !raw_tx) return DNAC_ERROR_INVALID_PARAM;
+    if (!db || !tx_hash) return DNAC_ERROR_INVALID_PARAM;
 
     const char *sql =
-        "INSERT INTO dnac_transactions "
+        "INSERT OR REPLACE INTO dnac_transactions "
         "(tx_hash, raw_tx, type, counterparty_fp, created_at, "
         "amount_in, amount_out, amount_fee) "
         "VALUES (?, ?, ?, ?, strftime('%s','now'), ?, ?, ?)";
@@ -333,7 +357,10 @@ int dnac_db_store_transaction(sqlite3 *db,
     if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
 
     sqlite3_bind_blob(stmt, 1, tx_hash, DNAC_TX_HASH_SIZE, SQLITE_STATIC);
-    sqlite3_bind_blob(stmt, 2, raw_tx, (int)raw_tx_len, SQLITE_STATIC);
+    if (raw_tx && raw_tx_len > 0)
+        sqlite3_bind_blob(stmt, 2, raw_tx, (int)raw_tx_len, SQLITE_STATIC);
+    else
+        sqlite3_bind_null(stmt, 2);
     sqlite3_bind_int(stmt, 3, type);
     if (counterparty_fp) {
         sqlite3_bind_text(stmt, 4, counterparty_fp, -1, SQLITE_STATIC);
@@ -671,6 +698,21 @@ int dnac_db_clear_utxos(sqlite3 *db, const char *owner_fp) {
     if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
 
     sqlite3_bind_text(stmt, 1, owner_fp, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
+}
+
+int dnac_db_clear_transactions(sqlite3 *db) {
+    if (!db) return DNAC_ERROR_INVALID_PARAM;
+
+    const char *sql = "DELETE FROM dnac_transactions";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

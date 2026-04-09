@@ -658,7 +658,56 @@ static int commit_block_inner(nodus_witness_t *w,
 
     if (!failed && tx_data && tx_len > 0) {
         uint64_t bh = nodus_witness_block_height(w) + 1;
-        nodus_witness_tx_store(w, tx_hash, tx_type, tx_data, tx_len, bh);
+
+        /* Extract sender_fp, receiver_fp, total amount from TX binary.
+         * Wire format: header(74) → inputs(1+N*(64+8)) → outputs(1+...) → witnesses → sender(pk+sig)
+         * Sender pubkey is at the end: skip inputs, outputs, witnesses to find it.
+         * First output's owner_fingerprint is the receiver. */
+        char sender_fp[129] = {0};
+        char receiver_fp[129] = {0};
+        uint64_t total_amount = 0;
+
+        if (tx_len > 75) {
+            size_t off = 74; /* skip header: version(1)+type(1)+timestamp(8)+tx_hash(64) */
+            uint8_t in_count = tx_data[off++];
+            off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8);
+
+            /* Parse outputs — first output owner is receiver */
+            if (off < tx_len) {
+                uint8_t out_count = tx_data[off++];
+                for (int oi = 0; oi < out_count && off + 171 <= tx_len; oi++) {
+                    off += 1;  /* version */
+                    if (oi == 0) {
+                        memcpy(receiver_fp, tx_data + off, 128);
+                        receiver_fp[128] = '\0';
+                    }
+                    off += 129; /* fingerprint */
+                    uint64_t amt;
+                    memcpy(&amt, tx_data + off, 8);
+                    total_amount += amt;
+                    off += 8;   /* amount */
+                    off += 32;  /* seed */
+                    uint8_t ml = tx_data[off++]; /* memo_len */
+                    off += ml;
+                }
+            }
+
+            /* Skip witness signatures to reach sender pubkey */
+            if (off < tx_len) {
+                uint8_t wit_count = tx_data[off++];
+                /* Each witness: id(32)+sig(4627)+ts(8)+pubkey(2592) = 7259 bytes */
+                off += (size_t)wit_count * (32 + 4627 + 8 + 2592);
+            }
+
+            /* Sender pubkey (2592 bytes) → SHA3-512 → hex fingerprint */
+            if (off + 2592 <= tx_len) {
+                qgp_sha3_512_fingerprint(tx_data + off, 2592, sender_fp);
+            }
+        }
+
+        nodus_witness_tx_store(w, tx_hash, tx_type, tx_data, tx_len, bh,
+                               sender_fp, receiver_fp, total_amount,
+                               committed_fee);
     }
 
     if (failed) return -1;
