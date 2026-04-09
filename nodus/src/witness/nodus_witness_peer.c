@@ -572,7 +572,7 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
                 return -1;
             memcpy(nullifiers[i], fwd->tx_data + offset,
                    NODUS_T3_NULLIFIER_LEN);
-            offset += NODUS_T3_NULLIFIER_LEN + 8;
+            offset += NODUS_T3_NULLIFIER_LEN + 8 + 64; /* nullifier + amount + token_id */
         }
     }
 

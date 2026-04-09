@@ -66,9 +66,10 @@ typedef struct {
 
 /* ── Transaction types (DNAC) ────────────────────────────────────── */
 
-#define NODUS_W_TX_GENESIS  0
-#define NODUS_W_TX_SPEND    1
-#define NODUS_W_TX_BURN     2
+#define NODUS_W_TX_GENESIS       0
+#define NODUS_W_TX_SPEND         1
+#define NODUS_W_TX_BURN          2
+#define NODUS_W_TX_TOKEN_CREATE  3
 
 /* ── Vote types ──────────────────────────────────────────────────── */
 

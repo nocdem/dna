@@ -423,16 +423,17 @@ static int update_utxo_set(nodus_witness_t *w,
     uint8_t input_count = tx_data[offset++];
     uint64_t total_input = 0;
     for (int i = 0; i < input_count; i++) {
-        offset += NODUS_T3_NULLIFIER_LEN;  /* skip nullifier */
-        if (offset + 8 > tx_len) {
-            fprintf(stderr, "%s: update_utxo_set: input %d truncated at amount\n",
+        offset += NODUS_T3_NULLIFIER_LEN;  /* skip nullifier (64) */
+        if (offset + 8 + 64 > tx_len) {
+            fprintf(stderr, "%s: update_utxo_set: input %d truncated at amount/token_id\n",
                     LOG_TAG, i);
             return -1;
         }
         uint64_t in_amt;
         memcpy(&in_amt, tx_data + offset, 8);
         total_input += in_amt;
-        offset += 8;
+        offset += 8;   /* amount */
+        offset += 64;  /* token_id */
     }
 
     /* Read output count */
@@ -453,10 +454,10 @@ static int update_utxo_set(nodus_witness_t *w,
     uint64_t total_output = 0;
 
     for (int i = 0; i < output_count; i++) {
-        /* Minimum output: version(1) + fp(129) + amount(8) + seed(32) + memo_len(1) = 171 */
-        if (offset + 171 > tx_len) {
+        /* Minimum output: version(1) + fp(129) + amount(8) + token_id(64) + seed(32) + memo_len(1) = 235 */
+        if (offset + 235 > tx_len) {
             fprintf(stderr, "%s: update_utxo_set: output %d truncated (need %zu, have %u)\n",
-                    LOG_TAG, i, offset + 171, tx_len);
+                    LOG_TAG, i, offset + 235, tx_len);
             return -1;
         }
 
@@ -469,6 +470,10 @@ static int update_utxo_set(nodus_witness_t *w,
         memcpy(&amount, tx_data + offset, 8);
         offset += 8;
         total_output += amount;
+
+        /* Read token_id (64 bytes — zeros = native DNAC) */
+        const uint8_t *output_token_id = tx_data + offset;
+        offset += 64;
 
         const uint8_t *nullifier_seed = tx_data + offset;
         offset += 32;
@@ -496,7 +501,7 @@ static int update_utxo_set(nodus_witness_t *w,
 
         if (nodus_witness_utxo_add(w, nul_hash.bytes, fingerprint,
                                       amount, tx_hash, (uint32_t)i, block_height,
-                                      NULL) == 0) {
+                                      output_token_id) == 0) {
             stored++;
         }
     }
@@ -582,16 +587,17 @@ static int commit_block_inner(nodus_witness_t *w,
         if (supply == 0 && tx_data && tx_len > 75) {
             size_t off = 74;
             uint8_t in_count = tx_data[off++];
-            off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8);
+            off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64); /* nullifier + amount + token_id */
             if (off < tx_len) {
                 uint8_t out_count = tx_data[off++];
-                for (int i = 0; i < out_count && off + 171 <= tx_len; i++) {
+                for (int i = 0; i < out_count && off + 235 <= tx_len; i++) {
                     off += 1;   /* version */
                     off += 129; /* fingerprint */
                     uint64_t amt;
                     memcpy(&amt, tx_data + off, 8);
                     supply += amt;
                     off += 8;   /* amount */
+                    off += 64;  /* token_id */
                     off += 32;  /* seed */
                     uint8_t ml = tx_data[off++]; /* memo_len */
                     off += ml;
@@ -661,7 +667,7 @@ static int commit_block_inner(nodus_witness_t *w,
         uint64_t bh = nodus_witness_block_height(w) + 1;
 
         /* Extract sender_fp and per-output data from TX binary.
-         * Wire format: header(74) → inputs(1+N*(64+8)) → outputs(1+...)
+         * Wire format: header(74) → inputs(1+N*(64+8+64)) → outputs(1+...)
          *              → witnesses(1+N*7259) → sender(pk(2592)+sig(4627)) */
         char sender_fp[129] = {0};
 
@@ -673,12 +679,12 @@ static int commit_block_inner(nodus_witness_t *w,
         if (tx_len > 75) {
             size_t off = 74; /* skip header: version(1)+type(1)+timestamp(8)+tx_hash(64) */
             uint8_t in_count = tx_data[off++];
-            off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8);
+            off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64); /* nullifier + amount + token_id */
 
             /* Parse outputs — store each separately */
             if (off < tx_len) {
                 uint8_t out_count = tx_data[off++];
-                for (int oi = 0; oi < out_count && off + 171 <= tx_len; oi++) {
+                for (int oi = 0; oi < out_count && off + 235 <= tx_len; oi++) {
                     off += 1;  /* version */
                     if (oi < NODUS_WITNESS_MAX_TX_OUTPUTS) {
                         memcpy(out_fps[oi], tx_data + off, 128);
@@ -691,6 +697,7 @@ static int commit_block_inner(nodus_witness_t *w,
                         out_amts[oi] = amt;
                     }
                     off += 8;   /* amount */
+                    off += 64;  /* token_id */
                     off += 32;  /* seed */
                     uint8_t ml = tx_data[off++]; /* memo_len */
                     off += ml;
@@ -754,7 +761,7 @@ int nodus_witness_commit_block(nodus_witness_t *w,
 
         size_t fp_offset = 74;
         uint8_t in_count = tx_data[fp_offset++];
-        fp_offset += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8);
+        fp_offset += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64); /* nullifier + amount + token_id */
         if (fp_offset >= tx_len) {
             fprintf(stderr, "%s: genesis tx_data truncated at outputs\n", LOG_TAG);
             return -1;

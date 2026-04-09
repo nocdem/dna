@@ -36,15 +36,17 @@
 
 #define INPUT_NULLIFIER_LEN 64
 #define INPUT_AMOUNT_LEN    8
-#define INPUT_SIZE          (INPUT_NULLIFIER_LEN + INPUT_AMOUNT_LEN) /* 72 */
+#define INPUT_TOKEN_ID_LEN  64
+#define INPUT_SIZE          (INPUT_NULLIFIER_LEN + INPUT_AMOUNT_LEN + INPUT_TOKEN_ID_LEN) /* 136 */
 
 #define OUTPUT_VERSION_LEN  1
 #define OUTPUT_FP_LEN       129
 #define OUTPUT_AMOUNT_LEN   8
+#define OUTPUT_TOKEN_ID_LEN 64
 #define OUTPUT_SEED_LEN     32
 #define OUTPUT_MEMO_LEN_LEN 1
 #define OUTPUT_FIXED_SIZE   (OUTPUT_VERSION_LEN + OUTPUT_FP_LEN + OUTPUT_AMOUNT_LEN + \
-                             OUTPUT_SEED_LEN + OUTPUT_MEMO_LEN_LEN) /* 171 */
+                             OUTPUT_TOKEN_ID_LEN + OUTPUT_SEED_LEN + OUTPUT_MEMO_LEN_LEN) /* 235 */
 
 /* Fee: 0.1% (10 basis points), minimum 1 unit */
 #define FEE_RATE_BPS 10
@@ -91,7 +93,7 @@ int nodus_witness_recompute_tx_hash(const uint8_t *tx_data, uint32_t tx_len,
 
     if (input_count > NODUS_T3_MAX_TX_INPUTS) { free(buf); return -1; }
 
-    /* Copy each input's nullifier(64) + amount(8) */
+    /* Copy each input's nullifier(64) + amount(8) + token_id(64) */
     for (int i = 0; i < input_count; i++) {
         if (remaining < INPUT_SIZE) { free(buf); return -1; }
         memcpy(buf + buf_pos, p, INPUT_SIZE);
@@ -224,6 +226,7 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
     }
 
     bool is_genesis = (tx_type == NODUS_W_TX_GENESIS);
+    bool is_token_create = (tx_type == NODUS_W_TX_TOKEN_CREATE);
 
     /* ── Check 1: Duplicate nullifiers within TX ───────────────── */
     if (!is_genesis && nullifiers && nullifier_count > 1) {
@@ -354,33 +357,56 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
         return -1;
     }
 
-    if (total_input < total_output) {
-        snprintf(reject_reason, reason_size,
-                 "insufficient balance: input=%lu < output=%lu",
-                 (unsigned long)total_input, (unsigned long)total_output);
-        return -1;
-    }
+    if (is_token_create) {
+        /* ── TOKEN_CREATE: custom balance/fee check ────────────── */
+        /* Inputs are DNAC (fee payment). Outputs include a genesis
+         * UTXO for the new token (different denomination) so standard
+         * total_input >= total_output does NOT apply.
+         * Verify: DNAC inputs cover the creation fee. */
+        if (total_input < NODUS_W_TOKEN_CREATE_FEE) {
+            snprintf(reject_reason, reason_size,
+                     "insufficient DNAC for token creation fee: input=%lu < required=%lu",
+                     (unsigned long)total_input,
+                     (unsigned long)NODUS_W_TOKEN_CREATE_FEE);
+            return -1;
+        }
+        if (declared_fee < NODUS_W_TOKEN_CREATE_FEE) {
+            snprintf(reject_reason, reason_size,
+                     "token create fee too low: declared=%lu < required=%lu",
+                     (unsigned long)declared_fee,
+                     (unsigned long)NODUS_W_TOKEN_CREATE_FEE);
+            return -1;
+        }
+    } else {
+        /* ── Standard SPEND/BURN balance check ─────────────────── */
+        if (total_input < total_output) {
+            snprintf(reject_reason, reason_size,
+                     "insufficient balance: input=%lu < output=%lu",
+                     (unsigned long)total_input, (unsigned long)total_output);
+            return -1;
+        }
 
-    /* ── Check 5: Fee ──────────────────────────────────────────── */
-    uint64_t actual_fee = total_input - total_output;
-    /* Fee = 0.1% of send amount (non-change outputs), min 1 */
-    uint64_t fee_basis = (send_amount > 0) ? send_amount : total_output;
-    uint64_t min_fee = fee_basis / 1000;
-    if (min_fee == 0) min_fee = 1;
+        /* ── Check 5: Fee ──────────────────────────────────────── */
+        uint64_t actual_fee = total_input - total_output;
+        /* Fee = 0.1% of send amount (non-change outputs), min 1 */
+        uint64_t fee_basis = (send_amount > 0) ? send_amount : total_output;
+        uint64_t min_fee = fee_basis / 1000;
+        if (min_fee == 0) min_fee = 1;
 
-    if (actual_fee < min_fee) {
-        snprintf(reject_reason, reason_size,
-                 "fee too low: actual=%lu < min=%lu (output=%lu)",
-                 (unsigned long)actual_fee, (unsigned long)min_fee,
-                 (unsigned long)total_output);
-        return -1;
-    }
+        if (actual_fee < min_fee) {
+            snprintf(reject_reason, reason_size,
+                     "fee too low: actual=%lu < min=%lu (output=%lu)",
+                     (unsigned long)actual_fee, (unsigned long)min_fee,
+                     (unsigned long)total_output);
+            return -1;
+        }
 
-    if (actual_fee != declared_fee) {
-        snprintf(reject_reason, reason_size,
-                 "fee mismatch: actual=%lu != declared=%lu",
-                 (unsigned long)actual_fee, (unsigned long)declared_fee);
-        return -1;
+        if (actual_fee != declared_fee) {
+            snprintf(reject_reason, reason_size,
+                     "fee mismatch: actual=%lu != declared=%lu",
+                     (unsigned long)actual_fee, (unsigned long)declared_fee);
+            return -1;
+        }
     }
 
     /* ── Check 6: Double-spend ─────────────────────────────────── */

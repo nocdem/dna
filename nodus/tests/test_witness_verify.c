@@ -34,6 +34,7 @@ static int failed = 0;
 /* Wire format constants (must match nodus_witness_verify.c) */
 #define TX_HASH_LEN     64
 #define NULLIFIER_LEN   64
+#define TOKEN_ID_LEN    64
 #define FP_LEN          129
 #define SEED_LEN        32
 
@@ -55,6 +56,9 @@ static int setup_witness(nodus_witness_t *w) {
         "  nullifier BLOB PRIMARY KEY,"
         "  owner TEXT NOT NULL,"
         "  amount INTEGER NOT NULL,"
+        "  token_id BLOB NOT NULL DEFAULT x'"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "0000000000000000000000000000000000000000000000000000000000000000',"
         "  tx_hash BLOB NOT NULL,"
         "  output_index INTEGER NOT NULL,"
         "  block_height INTEGER NOT NULL DEFAULT 0,"
@@ -90,10 +94,10 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
     /* Calculate size */
     size_t size = 10 + TX_HASH_LEN;  /* version+type+timestamp+tx_hash */
     size += 1;  /* input_count */
-    size += input_count * (NULLIFIER_LEN + 8);
+    size += input_count * (NULLIFIER_LEN + 8 + TOKEN_ID_LEN);
     size += 1;  /* output_count */
-    /* Each output: version(1)+fp(129)+amount(8)+seed(32)+memo_len(1) = 171 */
-    size += output_count * (1 + FP_LEN + 8 + SEED_LEN + 1);
+    /* Each output: version(1)+fp(129)+amount(8)+token_id(64)+seed(32)+memo_len(1) = 235 */
+    size += output_count * (1 + FP_LEN + 8 + TOKEN_ID_LEN + SEED_LEN + 1);
 
     uint8_t *buf = calloc(1, size);
     if (!buf) return NULL;
@@ -116,6 +120,8 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
         p += NULLIFIER_LEN;
         memcpy(p, &input_amounts[i], 8);
         p += 8;
+        /* token_id: 64 bytes of zeros (native DNAC) */
+        p += TOKEN_ID_LEN;
     }
 
     /* Outputs */
@@ -128,6 +134,8 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
         p += FP_LEN;
         memcpy(p, &output_amounts[i], 8);
         p += 8;
+        /* token_id: 64 bytes of zeros (native DNAC) */
+        p += TOKEN_ID_LEN;
         /* nullifier_seed: 32 bytes of zeros */
         p += SEED_LEN;
         *p++ = 0;  /* memo_len = 0 */

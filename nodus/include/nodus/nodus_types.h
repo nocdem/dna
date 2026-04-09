@@ -127,6 +127,9 @@ extern "C" {
 #define NODUS_T3_EPOCH_DURATION_SEC 60      /* DNAC epoch = 60s */
 #define NODUS_T3_BFT_PROTOCOL_VER   2
 
+/* Token creation fee: 1 DNAC (100M raw units) */
+#define NODUS_W_TOKEN_CREATE_FEE  100000000ULL
+
 /* Block production (mempool + batch) */
 #define NODUS_W_BLOCK_INTERVAL_MS   5000    /* 5s between block proposals */
 #define NODUS_W_MAX_MEMPOOL         64      /* max pending TXs in mempool */

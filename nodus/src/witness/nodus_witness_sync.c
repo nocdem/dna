@@ -293,7 +293,7 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
 
     if (tx_data && tx_len > 75 && blk.tx_type != NODUS_W_TX_GENESIS) {
         /* Parse nullifiers from tx_data:
-         * offset 74 = input_count, then each input is nullifier(64) + amount(8) */
+         * offset 74 = input_count, then each input is nullifier(64) + amount(8) + token_id(64) */
         size_t off = 74;
         nullifier_count = tx_data[off++];
         if (nullifier_count > NODUS_T3_MAX_TX_INPUTS)
@@ -303,7 +303,7 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
             if (off + NODUS_T3_NULLIFIER_LEN > tx_len) break;
             memcpy(nullifier_bufs[i], tx_data + off, NODUS_T3_NULLIFIER_LEN);
             nullifier_ptrs[i] = nullifier_bufs[i];
-            off += NODUS_T3_NULLIFIER_LEN + 8;  /* nullifier + amount */
+            off += NODUS_T3_NULLIFIER_LEN + 8 + 64;  /* nullifier + amount + token_id */
         }
     }
 

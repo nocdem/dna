@@ -1105,8 +1105,8 @@ static void handle_dnac_spend(nodus_witness_t *w,
             }
             memcpy(nullifiers[i], tx_data + offset,
                    NODUS_T3_NULLIFIER_LEN);
-            /* Skip rest of input: nullifier(64) + amount(8) */
-            offset += NODUS_T3_NULLIFIER_LEN + 8;
+            /* Skip rest of input: nullifier(64) + amount(8) + token_id(64) */
+            offset += NODUS_T3_NULLIFIER_LEN + 8 + 64;
         }
     }
 
