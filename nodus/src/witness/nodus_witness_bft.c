@@ -646,7 +646,7 @@ static int commit_block_inner(nodus_witness_t *w,
         }
     }
 
-    /* ── Supply invariant check ─────────────────────────────────── */
+    /* ── Supply invariant check (native DNAC) ─────────────────── */
     if (!failed && w->db) {
         nodus_witness_supply_t sup;
         uint64_t utxo_total = 0;
@@ -659,6 +659,28 @@ static int commit_block_inner(nodus_witness_t *w,
                     (unsigned long long)sup.genesis_supply,
                     (unsigned long long)utxo_total,
                     (long long)(sup.genesis_supply - utxo_total));
+            }
+        }
+
+        /* Per-token supply invariant: each custom token's UTXO sum must
+         * equal its registered initial_supply (no fee burn for custom tokens) */
+        nodus_witness_token_entry_t tokens[64];
+        int token_count = 0;
+        if (nodus_witness_token_list(w, tokens, 64, &token_count) == 0) {
+            for (int ti = 0; ti < token_count; ti++) {
+                uint64_t token_utxo_sum = 0;
+                if (nodus_witness_utxo_sum_by_token(w, tokens[ti].token_id,
+                                                      &token_utxo_sum) == 0) {
+                    if (tokens[ti].supply != token_utxo_sum) {
+                        QGP_LOG_ERROR(LOG_TAG,
+                            "TOKEN SUPPLY INVARIANT VIOLATION: "
+                            "token=%s initial=%llu utxo_sum=%llu (delta=%lld)",
+                            tokens[ti].symbol,
+                            (unsigned long long)tokens[ti].supply,
+                            (unsigned long long)token_utxo_sum,
+                            (long long)(tokens[ti].supply - token_utxo_sum));
+                    }
+                }
             }
         }
     }
@@ -725,6 +747,71 @@ static int commit_block_inner(nodus_witness_t *w,
         for (int oi = 0; oi < out_total; oi++) {
             nodus_witness_tx_output_add(w, tx_hash, (uint32_t)oi,
                                           out_fps[oi], out_amts[oi]);
+        }
+
+        /* ── TOKEN_CREATE: register token in tokens table ──────── */
+        if (tx_type == NODUS_W_TX_TOKEN_CREATE && tx_len > 75) {
+            /* Re-parse to extract output[0]'s token_id, amount, and memo.
+             * Memo format: "name:symbol:decimals" */
+            size_t toff = 74;
+            uint8_t tc_in_count = tx_data[toff++];
+            toff += (size_t)tc_in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
+
+            if (toff < tx_len) {
+                uint8_t tc_out_count = tx_data[toff++];
+                if (tc_out_count > 0 && toff + 235 <= tx_len) {
+                    toff += 1;   /* version */
+                    const char *creator_fp = (const char *)(tx_data + toff);
+                    toff += 129; /* fingerprint */
+                    uint64_t token_supply;
+                    memcpy(&token_supply, tx_data + toff, 8);
+                    toff += 8;   /* amount */
+                    const uint8_t *new_token_id = tx_data + toff;
+                    toff += 64;  /* token_id */
+                    toff += 32;  /* seed */
+
+                    if (toff < tx_len) {
+                        uint8_t memo_len = tx_data[toff++];
+                        if (memo_len > 0 && toff + memo_len <= tx_len) {
+                            /* Parse "name:symbol:decimals" from memo */
+                            char memo_buf[256];
+                            size_t copy_len = memo_len < sizeof(memo_buf) - 1
+                                              ? memo_len : sizeof(memo_buf) - 1;
+                            memcpy(memo_buf, tx_data + toff, copy_len);
+                            memo_buf[copy_len] = '\0';
+
+                            char *first_colon = strchr(memo_buf, ':');
+                            if (first_colon) {
+                                *first_colon = '\0';
+                                char *second_colon = strchr(first_colon + 1, ':');
+                                if (second_colon) {
+                                    *second_colon = '\0';
+                                    const char *t_name = memo_buf;
+                                    const char *t_symbol = first_colon + 1;
+                                    uint8_t t_decimals = (uint8_t)atoi(second_colon + 1);
+
+                                    /* Use creator_fp from output (null-terminated 128-char hex) */
+                                    char cfp[129];
+                                    memcpy(cfp, creator_fp, 128);
+                                    cfp[128] = '\0';
+
+                                    nodus_witness_token_add(w, new_token_id,
+                                        t_name, t_symbol, t_decimals,
+                                        token_supply, cfp, 0, bh);
+
+                                    fprintf(stderr, "%s: TOKEN_CREATE registered: "
+                                            "name=%s symbol=%s decimals=%u "
+                                            "supply=%llu (block %llu)\n",
+                                            LOG_TAG, t_name, t_symbol,
+                                            (unsigned)t_decimals,
+                                            (unsigned long long)token_supply,
+                                            (unsigned long long)bh);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -213,6 +213,35 @@ int nodus_witness_utxo_sum(nodus_witness_t *w, uint64_t *sum_out) {
     return 0;
 }
 
+int nodus_witness_utxo_sum_by_token(nodus_witness_t *w,
+                                       const uint8_t *token_id,
+                                       uint64_t *sum_out) {
+    if (!w || !w->db || !sum_out) return -1;
+
+    /* NULL token_id or all-zeros = native DNAC */
+    uint8_t zeros[64];
+    memset(zeros, 0, sizeof(zeros));
+    const uint8_t *tid = token_id ? token_id : zeros;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT COALESCE(SUM(amount), 0) FROM utxo_set WHERE token_id = ?",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_blob(stmt, 1, tid, 64, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+    *sum_out = (uint64_t)sqlite3_column_int64(stmt, 0);
+
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
 int nodus_witness_utxo_checksum(nodus_witness_t *w, uint8_t *checksum_out) {
     if (!w || !w->db || !checksum_out) return -1;
 

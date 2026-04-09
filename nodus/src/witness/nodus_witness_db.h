@@ -42,6 +42,16 @@ int  nodus_witness_utxo_count(nodus_witness_t *w, uint64_t *count_out);
 int  nodus_witness_utxo_sum(nodus_witness_t *w, uint64_t *sum_out);
 
 /**
+ * Sum UTXO amounts for a specific token_id.
+ * @param token_id  64-byte token ID (zeros = native DNAC, NULL = same as zeros)
+ * @param sum_out   [out] Total amount for this token
+ * @return 0 on success, -1 on error
+ */
+int  nodus_witness_utxo_sum_by_token(nodus_witness_t *w,
+                                       const uint8_t *token_id,
+                                       uint64_t *sum_out);
+
+/**
  * Compute SHA3-512 checksum of the entire UTXO set.
  * Hashes all nullifiers in sorted order for cross-witness validation.
  *
