@@ -1153,6 +1153,50 @@ int nodus_witness_token_get(nodus_witness_t *w, const uint8_t *token_id,
     return 0;
 }
 
+int nodus_witness_token_list(nodus_witness_t *w,
+                               nodus_witness_token_entry_t *out,
+                               int max_entries, int *count_out) {
+    if (!w || !w->db || !out || !count_out) return -1;
+    *count_out = 0;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT token_id, name, symbol, decimals, supply, creator_fp "
+        "FROM tokens ORDER BY rowid LIMIT ?", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int(stmt, 1, max_entries);
+
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && count < max_entries) {
+        nodus_witness_token_entry_t *e = &out[count];
+        memset(e, 0, sizeof(*e));
+
+        const void *tid = sqlite3_column_blob(stmt, 0);
+        int tid_len = sqlite3_column_bytes(stmt, 0);
+        if (tid && tid_len == 64)
+            memcpy(e->token_id, tid, 64);
+
+        const char *n = (const char *)sqlite3_column_text(stmt, 1);
+        if (n) { strncpy(e->name, n, sizeof(e->name) - 1); }
+
+        const char *s = (const char *)sqlite3_column_text(stmt, 2);
+        if (s) { strncpy(e->symbol, s, sizeof(e->symbol) - 1); }
+
+        e->decimals = (uint8_t)sqlite3_column_int(stmt, 3);
+        e->supply = (uint64_t)sqlite3_column_int64(stmt, 4);
+
+        const char *c = (const char *)sqlite3_column_text(stmt, 5);
+        if (c) { strncpy(e->creator_fp, c, sizeof(e->creator_fp) - 1); }
+
+        count++;
+    }
+
+    sqlite3_finalize(stmt);
+    *count_out = count;
+    return 0;
+}
+
 /* ── DB transaction wrappers ─────────────────────────────────────── */
 
 int nodus_witness_db_begin(nodus_witness_t *w) {

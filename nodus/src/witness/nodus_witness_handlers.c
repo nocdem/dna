@@ -384,13 +384,15 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     cbor_encode_array(&enc, (size_t)count);
 
     for (int i = 0; i < count; i++) {
-        cbor_encode_map(&enc, 6);
+        cbor_encode_map(&enc, 7);
         cbor_encode_cstr(&enc, "n");
         cbor_encode_bstr(&enc, utxos[i].nullifier, NODUS_T3_NULLIFIER_LEN);
         cbor_encode_cstr(&enc, "owner");
         cbor_encode_cstr(&enc, utxos[i].owner);
         cbor_encode_cstr(&enc, "amount");
         cbor_encode_uint(&enc, utxos[i].amount);
+        cbor_encode_cstr(&enc, "tid");
+        cbor_encode_bstr(&enc, utxos[i].token_id, 64);
         cbor_encode_cstr(&enc, "hash");
         cbor_encode_bstr(&enc, utxos[i].tx_hash, NODUS_T3_TX_HASH_LEN);
         cbor_encode_cstr(&enc, "idx");
@@ -1377,6 +1379,148 @@ void nodus_witness_send_spend_result(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_token_list — List all registered tokens
+ *
+ * Request:  "a": {}
+ * Response: "r": {"count":N, "tokens":[{tid,name,sym,dec,supply,creator},...]}
+ * ════════════════════════════════════════════════════════════════════ */
+
+#define DNAC_MAX_TOKEN_RESULTS 100
+
+static void handle_dnac_token_list(nodus_witness_t *w,
+                                     struct nodus_tcp_conn *conn,
+                                     uint32_t txn_id) {
+    nodus_witness_token_entry_t *tokens = calloc(DNAC_MAX_TOKEN_RESULTS,
+                                                   sizeof(nodus_witness_token_entry_t));
+    if (!tokens) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return;
+    }
+
+    int count = 0;
+    nodus_witness_token_list(w, tokens, DNAC_MAX_TOKEN_RESULTS, &count);
+
+    size_t buf_size = 512 + ((size_t)count * 512);
+    uint8_t *buf = malloc(buf_size);
+    if (!buf) {
+        free(tokens);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return;
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, buf_size);
+    enc_dnac_response(&enc, txn_id, "dnac_token_list", 2);
+
+    cbor_encode_cstr(&enc, "count");
+    cbor_encode_uint(&enc, (uint64_t)count);
+
+    cbor_encode_cstr(&enc, "tokens");
+    cbor_encode_array(&enc, (size_t)count);
+
+    for (int i = 0; i < count; i++) {
+        cbor_encode_map(&enc, 6);
+        cbor_encode_cstr(&enc, "tid");
+        cbor_encode_bstr(&enc, tokens[i].token_id, 64);
+        cbor_encode_cstr(&enc, "name");
+        cbor_encode_cstr(&enc, tokens[i].name);
+        cbor_encode_cstr(&enc, "sym");
+        cbor_encode_cstr(&enc, tokens[i].symbol);
+        cbor_encode_cstr(&enc, "dec");
+        cbor_encode_uint(&enc, tokens[i].decimals);
+        cbor_encode_cstr(&enc, "supply");
+        cbor_encode_uint(&enc, tokens[i].supply);
+        cbor_encode_cstr(&enc, "creator");
+        cbor_encode_cstr(&enc, tokens[i].creator_fp);
+    }
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0)
+        nodus_tcp_send(conn, buf, rlen);
+
+    free(buf);
+    free(tokens);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * dnac_token_info — Query single token by token_id
+ *
+ * Request:  "a": {"tid": bstr(64)}
+ * Response: "r": {"tid":bstr, "name":str, "sym":str, "dec":N, "supply":N, "creator":str}
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_token_info(nodus_witness_t *w,
+                                     struct nodus_tcp_conn *conn,
+                                     const uint8_t *payload, size_t len,
+                                     uint32_t txn_id) {
+    cbor_decoder_t dec;
+    size_t args_count;
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing args map");
+        return;
+    }
+
+    uint8_t token_id[64] = {0};
+    bool has_tid = false;
+
+    for (size_t i = 0; i < args_count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key_match(&key, "tid")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 64) {
+                memcpy(token_id, val.bstr.ptr, 64);
+                has_tid = true;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    if (!has_tid) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing tid field");
+        return;
+    }
+
+    char name[64] = {0}, symbol[16] = {0}, creator[129] = {0};
+    uint8_t decimals = 0;
+    uint64_t supply = 0;
+
+    int rc = nodus_witness_token_get(w, token_id, name, symbol,
+                                       &decimals, &supply, creator);
+    if (rc != 0) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_FOUND,
+                    "token not found");
+        return;
+    }
+
+    uint8_t buf[512];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    enc_dnac_response(&enc, txn_id, "dnac_token_info", 6);
+
+    cbor_encode_cstr(&enc, "tid");
+    cbor_encode_bstr(&enc, token_id, 64);
+    cbor_encode_cstr(&enc, "name");
+    cbor_encode_cstr(&enc, name);
+    cbor_encode_cstr(&enc, "sym");
+    cbor_encode_cstr(&enc, symbol);
+    cbor_encode_cstr(&enc, "dec");
+    cbor_encode_uint(&enc, decimals);
+    cbor_encode_cstr(&enc, "supply");
+    cbor_encode_uint(&enc, supply);
+    cbor_encode_cstr(&enc, "creator");
+    cbor_encode_cstr(&enc, creator);
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0)
+        nodus_tcp_send(conn, buf, rlen);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * Dispatch router
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -1408,6 +1552,10 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_block_range(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_history") == 0) {
         handle_dnac_history(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_token_list") == 0) {
+        handle_dnac_token_list(w, conn, txn_id);
+    } else if (strcmp(method, "dnac_token_info") == 0) {
+        handle_dnac_token_info(w, conn, payload, len, txn_id);
     } else {
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                     "unknown DNAC method");

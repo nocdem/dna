@@ -329,6 +329,7 @@ typedef struct {
     uint8_t  nullifier[NODUS_T3_NULLIFIER_LEN];
     char     owner[NODUS_KEY_HEX_LEN];
     uint64_t amount;
+    uint8_t  token_id[64];          /* 64 bytes — zeros = native DNAC */
     uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
     uint32_t output_index;
     uint64_t block_height;
@@ -422,6 +423,24 @@ typedef struct {
     uint64_t timestamp;
     uint8_t  proposer_id[NODUS_T3_WITNESS_ID_LEN];
 } nodus_dnac_block_result_t;
+
+/** Token info (returned by token_list / token_info queries) */
+#define NODUS_DNAC_MAX_TOKEN_RESULTS  100
+
+typedef struct {
+    uint8_t  token_id[64];
+    char     name[64];
+    char     symbol[16];
+    uint8_t  decimals;
+    uint64_t supply;
+    char     creator_fp[NODUS_KEY_HEX_LEN];
+} nodus_dnac_token_info_t;
+
+/** Token list query result */
+typedef struct {
+    int count;
+    nodus_dnac_token_info_t *tokens;   /* Heap-allocated, caller frees */
+} nodus_dnac_token_list_result_t;
 
 /** Block range query result (v0.10.0 hub/spoke) */
 typedef struct {

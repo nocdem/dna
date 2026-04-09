@@ -792,6 +792,32 @@ int nodus_client_dnac_block_range(nodus_client_t *client,
                                     nodus_dnac_block_range_result_t *result_out);
 
 /**
+ * List all registered tokens.
+ * Caller must free result_out with nodus_client_free_token_list_result().
+ *
+ * @param result_out  Token list result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_token_list(nodus_client_t *client,
+                                   nodus_dnac_token_list_result_t *result_out);
+
+/**
+ * Query single token by token_id.
+ *
+ * @param token_id    64-byte token identifier
+ * @param result_out  Token info result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_token_info(nodus_client_t *client,
+                                   const uint8_t *token_id,
+                                   nodus_dnac_token_info_t *result_out);
+
+/**
+ * Free token list from nodus_client_dnac_token_list().
+ */
+void nodus_client_free_token_list_result(nodus_dnac_token_list_result_t *result);
+
+/**
  * Free UTXO entries from nodus_client_dnac_utxo().
  */
 void nodus_client_free_utxo_result(nodus_dnac_utxo_result_t *result);

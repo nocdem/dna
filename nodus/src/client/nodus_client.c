@@ -2306,6 +2306,11 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
                             memcpy(e->tx_hash, v.bstr.ptr,
                                    NODUS_T3_TX_HASH_LEN);
                     } else if (ek.tstr.len == 3 &&
+                               memcmp(ek.tstr.ptr, "tid", 3) == 0) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len == 64)
+                            memcpy(e->token_id, v.bstr.ptr, 64);
+                    } else if (ek.tstr.len == 3 &&
                                memcmp(ek.tstr.ptr, "idx", 3) == 0) {
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_UINT)
@@ -3028,6 +3033,213 @@ void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *resul
     if (!result) return;
     free(result->blocks);
     result->blocks = NULL;
+    result->count = 0;
+}
+
+/* ── Token query functions ───────────────────────────────────────── */
+
+int nodus_client_dnac_token_list(nodus_client_t *client,
+                                   nodus_dnac_token_list_result_t *result_out) {
+    if (!nodus_client_is_ready(client) || !result_out)
+        return -1;
+
+    memset(result_out, 0, sizeof(*result_out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_token_list", 0);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') {
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+        if (key.tstr.len == 6 && memcmp(key.tstr.ptr, "tokens", 6) == 0) {
+            cbor_item_t arr = cbor_decode_next(&dec);
+            if (arr.type != CBOR_ITEM_ARRAY) continue;
+
+            if (arr.count > 0) {
+                result_out->tokens = calloc(arr.count,
+                                              sizeof(nodus_dnac_token_info_t));
+                if (!result_out->tokens) { free_pending(client, req); return NODUS_ERR_INTERNAL_ERROR; }
+            }
+
+            for (size_t j = 0; j < arr.count; j++) {
+                cbor_item_t emap = cbor_decode_next(&dec);
+                if (emap.type != CBOR_ITEM_MAP) continue;
+
+                nodus_dnac_token_info_t *t =
+                    &result_out->tokens[result_out->count];
+                memset(t, 0, sizeof(*t));
+
+                for (size_t k = 0; k < emap.count; k++) {
+                    cbor_item_t ek = cbor_decode_next(&dec);
+                    if (ek.type != CBOR_ITEM_TSTR) {
+                        cbor_decode_skip(&dec); continue;
+                    }
+
+                    if (ek.tstr.len == 3 && memcmp(ek.tstr.ptr, "tid", 3) == 0) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_BSTR && v.bstr.len == 64)
+                            memcpy(t->token_id, v.bstr.ptr, 64);
+                    } else if (ek.tstr.len == 4 && memcmp(ek.tstr.ptr, "name", 4) == 0) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_TSTR) {
+                            size_t cl = v.tstr.len < sizeof(t->name) - 1 ?
+                                        v.tstr.len : sizeof(t->name) - 1;
+                            memcpy(t->name, v.tstr.ptr, cl);
+                        }
+                    } else if (ek.tstr.len == 3 && memcmp(ek.tstr.ptr, "sym", 3) == 0) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_TSTR) {
+                            size_t cl = v.tstr.len < sizeof(t->symbol) - 1 ?
+                                        v.tstr.len : sizeof(t->symbol) - 1;
+                            memcpy(t->symbol, v.tstr.ptr, cl);
+                        }
+                    } else if (ek.tstr.len == 3 && memcmp(ek.tstr.ptr, "dec", 3) == 0) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT)
+                            t->decimals = (uint8_t)v.uint_val;
+                    } else if (ek.tstr.len == 6 && memcmp(ek.tstr.ptr, "supply", 6) == 0) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT)
+                            t->supply = v.uint_val;
+                    } else if (ek.tstr.len == 7 && memcmp(ek.tstr.ptr, "creator", 7) == 0) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_TSTR) {
+                            size_t cl = v.tstr.len < sizeof(t->creator_fp) - 1 ?
+                                        v.tstr.len : sizeof(t->creator_fp) - 1;
+                            memcpy(t->creator_fp, v.tstr.ptr, cl);
+                        }
+                    } else {
+                        cbor_decode_skip(&dec);
+                    }
+                }
+                result_out->count++;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
+int nodus_client_dnac_token_info(nodus_client_t *client,
+                                   const uint8_t *token_id,
+                                   nodus_dnac_token_info_t *result_out) {
+    if (!nodus_client_is_ready(client) || !token_id || !result_out)
+        return -1;
+
+    memset(result_out, 0, sizeof(*result_out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_token_info", 1);
+
+    cbor_encode_cstr(&enc, "tid");
+    cbor_encode_bstr(&enc, token_id, 64);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') {
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+        if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "tid", 3) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == 64)
+                memcpy(result_out->token_id, v.bstr.ptr, 64);
+        } else if (key.tstr.len == 4 && memcmp(key.tstr.ptr, "name", 4) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_TSTR) {
+                size_t cl = v.tstr.len < sizeof(result_out->name) - 1 ?
+                            v.tstr.len : sizeof(result_out->name) - 1;
+                memcpy(result_out->name, v.tstr.ptr, cl);
+            }
+        } else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "sym", 3) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_TSTR) {
+                size_t cl = v.tstr.len < sizeof(result_out->symbol) - 1 ?
+                            v.tstr.len : sizeof(result_out->symbol) - 1;
+                memcpy(result_out->symbol, v.tstr.ptr, cl);
+            }
+        } else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "dec", 3) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->decimals = (uint8_t)v.uint_val;
+        } else if (key.tstr.len == 6 && memcmp(key.tstr.ptr, "supply", 6) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->supply = v.uint_val;
+        } else if (key.tstr.len == 7 && memcmp(key.tstr.ptr, "creator", 7) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_TSTR) {
+                size_t cl = v.tstr.len < sizeof(result_out->creator_fp) - 1 ?
+                            v.tstr.len : sizeof(result_out->creator_fp) - 1;
+                memcpy(result_out->creator_fp, v.tstr.ptr, cl);
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
+void nodus_client_free_token_list_result(nodus_dnac_token_list_result_t *result) {
+    if (!result) return;
+    free(result->tokens);
+    result->tokens = NULL;
     result->count = 0;
 }
 

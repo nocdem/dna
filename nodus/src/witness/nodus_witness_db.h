@@ -79,6 +79,29 @@ int  nodus_witness_token_get(nodus_witness_t *w, const uint8_t *token_id,
                                uint8_t *decimals_out, uint64_t *supply_out,
                                char *creator_fp_out);
 
+/** Token list entry for query results */
+typedef struct {
+    uint8_t  token_id[64];
+    char     name[64];
+    char     symbol[16];
+    uint8_t  decimals;
+    uint64_t supply;
+    char     creator_fp[129];
+} nodus_witness_token_entry_t;
+
+/**
+ * List all registered tokens.
+ *
+ * @param w           Witness context
+ * @param out         Output array (caller-allocated)
+ * @param max_entries Array capacity
+ * @param count_out   [out] Number of entries written
+ * @return 0 on success, -1 on error
+ */
+int  nodus_witness_token_list(nodus_witness_t *w,
+                                nodus_witness_token_entry_t *out,
+                                int max_entries, int *count_out);
+
 /* ── Ledger operations ───────────────────────────────────────────── */
 
 typedef struct {
