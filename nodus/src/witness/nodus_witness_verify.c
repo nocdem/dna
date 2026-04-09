@@ -322,12 +322,17 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
     }
 
     uint64_t total_input = 0;
+    uint8_t expected_token_id[64];
+    bool token_id_set = false;
+
     for (int i = 0; i < nullifier_count; i++) {
         const uint8_t *nul = nullifiers + i * NODUS_T3_NULLIFIER_LEN;
         uint64_t utxo_amount = 0;
         char owner[129] = {0};
+        uint8_t utxo_token_id[64] = {0};
 
-        if (nodus_witness_utxo_lookup(w, nul, &utxo_amount, owner) != 0) {
+        if (nodus_witness_utxo_lookup(w, nul, &utxo_amount, owner,
+                                       is_token_create ? NULL : utxo_token_id) != 0) {
             snprintf(reject_reason, reason_size,
                      "input %d: UTXO not found in set", i);
             return -1;
@@ -338,6 +343,19 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
             snprintf(reject_reason, reason_size,
                      "input %d: UTXO not owned by sender", i);
             return -1;
+        }
+
+        /* CRITICAL-5: Verify all input UTXOs have the same token_id
+         * (skip for TOKEN_CREATE — inputs are DNAC fee payment) */
+        if (!is_token_create) {
+            if (!token_id_set) {
+                memcpy(expected_token_id, utxo_token_id, 64);
+                token_id_set = true;
+            } else if (memcmp(utxo_token_id, expected_token_id, 64) != 0) {
+                snprintf(reject_reason, reason_size,
+                         "input %d: token_id mismatch (mixed tokens in SPEND)", i);
+                return -1;
+            }
         }
 
         if (total_input + utxo_amount < total_input) {

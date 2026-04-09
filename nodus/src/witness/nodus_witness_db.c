@@ -75,12 +75,13 @@ int nodus_witness_nullifier_add(nodus_witness_t *w, const uint8_t *nullifier,
 /* ── UTXO set operations ─────────────────────────────────────────── */
 
 int nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
-                                uint64_t *amount_out, char *owner_out) {
+                                uint64_t *amount_out, char *owner_out,
+                                uint8_t *token_id_out) {
     if (!w || !w->db || !nullifier) return -1;
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT amount, owner FROM utxo_set WHERE nullifier = ?",
+        "SELECT amount, owner, token_id FROM utxo_set WHERE nullifier = ?",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
@@ -100,6 +101,16 @@ int nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
         if (fp) {
             strncpy(owner_out, fp, 128);
             owner_out[128] = '\0';
+        }
+    }
+
+    if (token_id_out) {
+        const void *tid = sqlite3_column_blob(stmt, 2);
+        int tid_len = sqlite3_column_bytes(stmt, 2);
+        if (tid && tid_len >= 64) {
+            memcpy(token_id_out, tid, 64);
+        } else {
+            memset(token_id_out, 0, 64);  /* Default: native DNAC */
         }
     }
 

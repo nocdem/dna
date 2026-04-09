@@ -30,7 +30,8 @@ int  nodus_witness_nullifier_add(nodus_witness_t *w, const uint8_t *nullifier,
 /* ── UTXO set operations ─────────────────────────────────────────── */
 
 int  nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
-                                uint64_t *amount_out, char *owner_out);
+                                uint64_t *amount_out, char *owner_out,
+                                uint8_t *token_id_out);
 int  nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
                               const char *owner, uint64_t amount,
                               const uint8_t *tx_hash, uint32_t index,
