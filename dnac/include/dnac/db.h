@@ -223,6 +223,40 @@ int dnac_db_complete_pending_spend(sqlite3 *db, const uint8_t *tx_hash);
 int dnac_db_expire_pending_spends(sqlite3 *db);
 
 /* ============================================================================
+ * Token Registry Functions
+ * ========================================================================== */
+
+/**
+ * @brief Store or update a token in the registry
+ *
+ * @param db SQLite database handle
+ * @param token Token to store
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_db_store_token(sqlite3 *db, const dnac_token_t *token);
+
+/**
+ * @brief Get a token by its ID
+ *
+ * @param db SQLite database handle
+ * @param token_id Token ID (64 bytes)
+ * @param out Output token struct
+ * @return DNAC_SUCCESS, DNAC_ERROR_NOT_FOUND, or error code
+ */
+int dnac_db_get_token(sqlite3 *db, const uint8_t *token_id, dnac_token_t *out);
+
+/**
+ * @brief List all known tokens
+ *
+ * @param db SQLite database handle
+ * @param out Output array (caller-allocated)
+ * @param max Maximum entries to return
+ * @param count Output count of entries written
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_db_list_tokens(sqlite3 *db, dnac_token_t *out, int max, int *count);
+
+/* ============================================================================
  * P0-4 (v0.7.0): Confirmation Tracking Functions
  * ========================================================================== */
 

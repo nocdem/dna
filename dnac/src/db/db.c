@@ -16,7 +16,7 @@
 #define LOG_TAG "DNAC_DB"
 
 /* Database schema version */
-#define DNAC_DB_VERSION 3
+#define DNAC_DB_VERSION 5
 
 /* Pending spend status values */
 #define DNAC_PENDING_STATUS_ACTIVE    0
@@ -176,6 +176,46 @@ int dnac_db_init(sqlite3 *db) {
         dnac_db_set_version(db, 4);
     }
 
+    /* v5: Multi-token support — token_id column on UTXOs + token registry table */
+    if (current_version < 5) {
+        const char *stmts[] = {
+            "ALTER TABLE dnac_utxos ADD COLUMN token_id BLOB NOT NULL DEFAULT x'"
+            "00000000000000000000000000000000"
+            "00000000000000000000000000000000"
+            "00000000000000000000000000000000"
+            "00000000000000000000000000000000"
+            "';",
+            "CREATE TABLE IF NOT EXISTS dnac_tokens ("
+            "  token_id BLOB PRIMARY KEY,"
+            "  name TEXT NOT NULL,"
+            "  symbol TEXT NOT NULL,"
+            "  decimals INTEGER NOT NULL DEFAULT 8,"
+            "  supply INTEGER NOT NULL,"
+            "  creator_fp TEXT NOT NULL,"
+            "  flags INTEGER NOT NULL DEFAULT 0,"
+            "  block_height INTEGER NOT NULL DEFAULT 0,"
+            "  timestamp INTEGER NOT NULL DEFAULT 0"
+            ");",
+            "CREATE INDEX IF NOT EXISTS idx_utxos_token ON dnac_utxos(token_id);",
+            NULL
+        };
+
+        for (int i = 0; stmts[i] != NULL; i++) {
+            rc = sqlite3_exec(db, stmts[i], NULL, NULL, &err_msg);
+            if (rc != SQLITE_OK) {
+                /* Column might already exist from partial migration */
+                if (strstr(err_msg, "duplicate column") == NULL) {
+                    QGP_LOG_ERROR(LOG_TAG, "DB migration v5 error: %s", err_msg);
+                    sqlite3_free(err_msg);
+                    return DNAC_ERROR_DATABASE;
+                }
+                sqlite3_free(err_msg);
+                err_msg = NULL;
+            }
+        }
+        dnac_db_set_version(db, 5);
+    }
+
     return DNAC_SUCCESS;
 }
 
@@ -216,8 +256,8 @@ int dnac_db_store_utxo(sqlite3 *db, const dnac_utxo_t *utxo) {
 
     const char *sql =
         "INSERT INTO dnac_utxos "
-        "(tx_hash, output_index, amount, nullifier, owner_fingerprint, status, received_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)";
+        "(tx_hash, output_index, amount, nullifier, owner_fingerprint, status, received_at, token_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
@@ -230,6 +270,7 @@ int dnac_db_store_utxo(sqlite3 *db, const dnac_utxo_t *utxo) {
     sqlite3_bind_text(stmt, 5, utxo->owner_fingerprint, -1, SQLITE_STATIC);
     sqlite3_bind_int(stmt, 6, utxo->status);
     sqlite3_bind_int64(stmt, 7, utxo->received_at);
+    sqlite3_bind_blob(stmt, 8, utxo->token_id, DNAC_TOKEN_ID_SIZE, SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -272,7 +313,7 @@ int dnac_db_get_unspent_utxos(sqlite3 *db,
 
     const char *select_sql =
         "SELECT tx_hash, output_index, amount, nullifier, owner_fingerprint, "
-        "status, received_at, spent_at "
+        "status, received_at, spent_at, token_id "
         "FROM dnac_utxos WHERE owner_fingerprint = ? AND status = 0 "
         "ORDER BY amount ASC";
 
@@ -296,6 +337,10 @@ int dnac_db_get_unspent_utxos(sqlite3 *db,
         utxos[i].status = sqlite3_column_int(stmt, 5);
         utxos[i].received_at = sqlite3_column_int64(stmt, 6);
         utxos[i].spent_at = sqlite3_column_int64(stmt, 7);
+        const void *tid = sqlite3_column_blob(stmt, 8);
+        if (tid && sqlite3_column_bytes(stmt, 8) == DNAC_TOKEN_ID_SIZE) {
+            memcpy(utxos[i].token_id, tid, DNAC_TOKEN_ID_SIZE);
+        }
         i++;
     }
     sqlite3_finalize(stmt);
@@ -851,6 +896,130 @@ int dnac_db_update_utxo_confirmation(sqlite3 *db, const uint8_t *tx_hash,
     sqlite3_finalize(stmt);
 
     return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
+}
+
+/* ============================================================================
+ * Token Registry Functions
+ * ========================================================================== */
+
+int dnac_db_store_token(sqlite3 *db, const dnac_token_t *token) {
+    if (!db || !token) return DNAC_ERROR_INVALID_PARAM;
+
+    const char *sql =
+        "INSERT OR REPLACE INTO dnac_tokens "
+        "(token_id, name, symbol, decimals, supply, creator_fp, flags, block_height, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
+
+    sqlite3_bind_blob(stmt, 1, token->token_id, DNAC_TOKEN_ID_SIZE, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, token->name, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, token->symbol, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 4, token->decimals);
+    sqlite3_bind_int64(stmt, 5, (int64_t)token->initial_supply);
+    sqlite3_bind_text(stmt, 6, token->creator_fp, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 7, token->flags);
+    sqlite3_bind_int64(stmt, 8, (int64_t)token->block_height);
+    sqlite3_bind_int64(stmt, 9, (int64_t)token->timestamp);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
+}
+
+int dnac_db_get_token(sqlite3 *db, const uint8_t *token_id, dnac_token_t *out) {
+    if (!db || !token_id || !out) return DNAC_ERROR_INVALID_PARAM;
+
+    memset(out, 0, sizeof(*out));
+
+    const char *sql =
+        "SELECT token_id, name, symbol, decimals, supply, creator_fp, "
+        "flags, block_height, timestamp "
+        "FROM dnac_tokens WHERE token_id = ?";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
+
+    sqlite3_bind_blob(stmt, 1, token_id, DNAC_TOKEN_ID_SIZE, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return DNAC_ERROR_NOT_FOUND;
+    }
+
+    const void *tid = sqlite3_column_blob(stmt, 0);
+    if (tid) memcpy(out->token_id, tid, DNAC_TOKEN_ID_SIZE);
+
+    const char *name = (const char *)sqlite3_column_text(stmt, 1);
+    if (name) strncpy(out->name, name, sizeof(out->name) - 1);
+
+    const char *symbol = (const char *)sqlite3_column_text(stmt, 2);
+    if (symbol) strncpy(out->symbol, symbol, sizeof(out->symbol) - 1);
+
+    out->decimals = (uint8_t)sqlite3_column_int(stmt, 3);
+    out->initial_supply = (uint64_t)sqlite3_column_int64(stmt, 4);
+
+    const char *creator = (const char *)sqlite3_column_text(stmt, 5);
+    if (creator) strncpy(out->creator_fp, creator, DNAC_FINGERPRINT_SIZE - 1);
+
+    out->flags = (uint8_t)sqlite3_column_int(stmt, 6);
+    out->block_height = (uint64_t)sqlite3_column_int64(stmt, 7);
+    out->timestamp = (uint64_t)sqlite3_column_int64(stmt, 8);
+
+    sqlite3_finalize(stmt);
+    return DNAC_SUCCESS;
+}
+
+int dnac_db_list_tokens(sqlite3 *db, dnac_token_t *out, int max, int *count) {
+    if (!db || !out || !count || max <= 0) return DNAC_ERROR_INVALID_PARAM;
+
+    *count = 0;
+
+    const char *sql =
+        "SELECT token_id, name, symbol, decimals, supply, creator_fp, "
+        "flags, block_height, timestamp "
+        "FROM dnac_tokens ORDER BY name LIMIT ?";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
+
+    sqlite3_bind_int(stmt, 1, max);
+
+    int i = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && i < max) {
+        memset(&out[i], 0, sizeof(out[i]));
+
+        const void *tid = sqlite3_column_blob(stmt, 0);
+        if (tid) memcpy(out[i].token_id, tid, DNAC_TOKEN_ID_SIZE);
+
+        const char *name = (const char *)sqlite3_column_text(stmt, 1);
+        if (name) strncpy(out[i].name, name, sizeof(out[i].name) - 1);
+
+        const char *symbol = (const char *)sqlite3_column_text(stmt, 2);
+        if (symbol) strncpy(out[i].symbol, symbol, sizeof(out[i].symbol) - 1);
+
+        out[i].decimals = (uint8_t)sqlite3_column_int(stmt, 3);
+        out[i].initial_supply = (uint64_t)sqlite3_column_int64(stmt, 4);
+
+        const char *creator = (const char *)sqlite3_column_text(stmt, 5);
+        if (creator) strncpy(out[i].creator_fp, creator, DNAC_FINGERPRINT_SIZE - 1);
+
+        out[i].flags = (uint8_t)sqlite3_column_int(stmt, 6);
+        out[i].block_height = (uint64_t)sqlite3_column_int64(stmt, 7);
+        out[i].timestamp = (uint64_t)sqlite3_column_int64(stmt, 8);
+
+        i++;
+    }
+    sqlite3_finalize(stmt);
+
+    *count = i;
+    return DNAC_SUCCESS;
 }
 
 /* ============================================================================
