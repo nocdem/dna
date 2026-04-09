@@ -1,7 +1,7 @@
 # DNA Connect - Protocol Specifications
 
-**Version:** 1.0
-**Last Updated:** 2025-12-12
+**Version:** 1.1
+**Last Updated:** 2026-04-10
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document specifies all wire formats and protocols used by DNA Connect.
@@ -17,6 +17,8 @@ This document specifies all wire formats and protocols used by DNA Connect.
 | **Anchor Protocol** | v1 | Unified identity in DHT |
 | **Atlas Protocol** | v1 | DHT key derivation scheme |
 | **Nexus Protocol** | v1 | Group symmetric key encryption |
+| **Circuit Relay** | v1 | NAT traversal via relay nodes |
+| **Media Storage** | v1 | Encrypted media attachments in DHT |
 
 ---
 
@@ -522,7 +524,7 @@ Recipient Entry:
 | Seal (per-recipient) | ~50ms/recipient | 1608 bytes/recipient |
 | Nexus (GEK) | ~0.25ms total | 40 bytes fixed |
 
-**Source:** `messenger/gsk.c`, `messenger/gsk.h`
+**Source:** `messenger/gek.c`, `messenger/gek.h`
 
 ---
 
@@ -649,7 +651,25 @@ typedef enum {
 
 ---
 
-## Appendix A: Protocol Cross-Reference
+## Appendix A: Additional Protocols
+
+### Circuit Relay Protocol
+
+The circuit relay protocol enables connectivity between peers that cannot establish direct connections (e.g., behind symmetric NAT). A relay node forwards encrypted traffic between two endpoints. Messages remain E2E encrypted (Seal Protocol) — the relay sees only opaque ciphertext.
+
+**Source:** `transport/relay/`
+
+### Media Storage Protocol
+
+Media attachments (voice messages, video clips, images) are stored in DHT using chunked uploads. The media payload is encrypted with AES-256-GCM before upload. Recipients receive a media reference (DHT key + decryption key) inside the Seal-encrypted message, then fetch and decrypt the media independently.
+
+**Supported types:** Voice messages, video, images
+
+**Source:** `dht/shared/dht_media.c`
+
+---
+
+## Appendix B: Protocol Cross-Reference
 
 | Protocol | Depends On | Used By |
 |----------|------------|---------|
@@ -659,7 +679,7 @@ typedef enum {
 | **Atlas** | SHA3-512 | All DHT operations |
 | **Nexus** | Seal, AES-256 | Group Messaging |
 
-## Appendix B: Security Properties
+## Appendix C: Security Properties
 
 | Protocol | Confidentiality | Integrity | Authentication | Forward Secrecy |
 |----------|-----------------|-----------|----------------|-----------------|

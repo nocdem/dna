@@ -1,6 +1,6 @@
 # DNA Connect - Code Cleanup Required
 
-**Generated:** 2025-12-07 | **Updated:** 2025-12-07 | **Status:** Phase 1 Complete | **Priority:** Medium
+**Generated:** 2025-12-07 | **Updated:** 2026-04-10 | **Status:** Phase 1 Complete | **Priority:** Medium
 
 This document tracks all stubs, dead code, unused functions, and incomplete implementations that need cleanup before production release.
 
@@ -51,7 +51,7 @@ The following critical issues have been resolved:
 
 ### 1.1 GEK Module (HIGH PRIORITY)
 
-**File:** `messenger/gek.c`
+**File:** `messenger/gek.c` *(renamed from gsk.c)*
 
 | Line | Issue | Description |
 |------|-------|-------------|
@@ -173,13 +173,13 @@ All debug print() statements have been removed from:
 // export 'feed_provider.dart';
 ```
 
-### 3.6 Logic Error
+### 3.6 Logic Error - ✅ **FIXED**
 
 **File:** `lib/providers/background_tasks_provider.dart` (Line 74)
 ```dart
 if (!_disposed && mounted) {  // ERROR: 'mounted' doesn't exist on StateNotifier
 ```
-**Action:** Fix lifecycle management - StateNotifier doesn't have `mounted` property.
+**Action:** ~~Fix lifecycle management - StateNotifier doesn't have `mounted` property.~~ — Fixed: `mounted` reference removed.
 
 ---
 
@@ -209,7 +209,7 @@ if (!_disposed && mounted) {  // ERROR: 'mounted' doesn't exist on StateNotifier
 ## 5. Files Summary
 
 ### C/C++ Files Requiring Cleanup
-1. `messenger/gek.c` - 2 TODOs (Phase 8 features)
+1. `messenger/gek.c` *(renamed from gsk.c)* - 2 TODOs (Phase 8 features)
 2. `messenger/messages.c` - ✅ debug prints FIXED
 3. `transport/internal/transport_offline.c` - ✅ debug prints FIXED
 4. `blockchain/cellframe/cellframe_wallet.c` - ✅ commented debugs FIXED

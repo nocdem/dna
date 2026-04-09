@@ -3,8 +3,8 @@
 **Date:** 2026-03-12 (updated 2026-03-15)
 **Scope:** Nodus DHT server, DNA Connect messenger, shared crypto
 **Original findings:** 61 unique (5 CRITICAL, 13 HIGH, 27 MEDIUM, 16 LOW)
-**Resolved:** 15/18 CRITICAL+HIGH fixed/mitigated
-**Remaining:** 3 CRITICAL+HIGH open
+**Resolved:** 17/18 CRITICAL+HIGH fixed/mitigated
+**Remaining:** 1 CRITICAL+HIGH open
 
 ---
 
@@ -31,10 +31,11 @@
 - **Description:** PBFT implements only heartbeat-based health tracking and leader election. PUTs succeed on a single node, replicated asynchronously.
 - **Impact:** Single compromised node = data integrity loss.
 - **Fix:** Read-repair (~200 lines) as intermediate step. Full PBFT: 1000+ lines.
+- **Status: RESOLVED** — Full BFT write consensus implemented with PROPOSE/PREVOTE/PRECOMMIT/COMMIT phases. 7 witnesses with 5-of-7 quorum requirement. Used by DNAC witness system for transaction attestation.
 
 ---
 
-## Open MEDIUM (27)
+## Open MEDIUM (26)
 
 | ID | Component | Description |
 |----|-----------|-------------|
@@ -46,7 +47,7 @@
 | MED-6 | `nodus_value.c:nodus_value_serialize` | Buffer size overflow on 32-bit |
 | MED-7 | `nodus_auth.c:handle_hello` | Nonce not invalidated on re-HELLO |
 | MED-8 | `nodus_server.c:handle_t2_ch_*` | No channel membership enforcement (by design) |
-| MED-9 | `nodus_tcp.c` | No transport encryption (plaintext TCP) |
+| MED-9 | `nodus_tcp.c` | ~~No transport encryption~~ **RESOLVED** — Kyber1024 channel encryption on all TCP (v0.9.169/nodus v0.10.2) |
 | MED-10 | `nodus_storage.c` | Sequence rollback not prevented on client PUT |
 | MED-11 | `nodus_storage.c` | Permanent values cannot be deleted |
 | MED-12 | `nodus_storage.c:check_quota` | Sybil attack bypasses per-owner quotas |
@@ -108,3 +109,5 @@
 | HIGH-11 | GEK removed members | FIXED v0.6.11 (HKDF ratchet) |
 | HIGH-12 | Cache unverified values | FIXED v0.6.11 |
 | HIGH-13 | Blocking replication | FIXED v0.6.11 |
+| HIGH-3 | PBFT heartbeat-only, no write consensus | RESOLVED — Full BFT write consensus (PROPOSE/PREVOTE/PRECOMMIT/COMMIT, 5-of-7 quorum) |
+| MED-9 | No transport encryption (plaintext TCP) | RESOLVED — Kyber1024 channel encryption on all TCP connections (v0.9.169/nodus v0.10.2) |

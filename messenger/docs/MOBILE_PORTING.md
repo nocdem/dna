@@ -1,6 +1,6 @@
 # DNA Connect Mobile Porting Guide
 
-**Last Updated:** 2026-01-18
+**Last Updated:** 2026-04-10
 **Status:** Android SDK Complete (Phases 1-6, 14)
 **Target:** Android first, iOS later
 
@@ -19,7 +19,7 @@ DNA Connect has been successfully ported to Android. The Android SDK provides JN
 | 3 | HTTP Abstraction | ✅ Complete (CURL via NDK) |
 | 4 | Android NDK Build Config | ✅ Complete |
 | 5 | ~~OpenDHT-PQ Android Port~~ | Removed (replaced by Nodus client SDK, pure C) |
-| 6 | JNI Bindings | ✅ Complete (26 functions) |
+| 6 | JNI Bindings | ✅ Complete (27 functions) |
 | 7 | Android UI | 🚧 In Progress |
 | 8 | iOS Port | 📋 Future |
 | **14** | **DHT-Only Messaging + ForegroundService** | ✅ **Complete** |
@@ -44,7 +44,7 @@ DNA Connect has been successfully ported to Android. The Android SDK provides JN
 │                            │                                 │
 │  ┌─────────────────────────────────────────────────────────┐│
 │  │       JNI Bridge (libdna_jni.so) ✅ COMPLETE            ││
-│  │   - 26 native methods                                   ││
+│  │   - 27 native methods                                   ││
 │  │   - 16MB stripped (arm64-v8a)                           ││
 │  │   - All dependencies statically linked                  ││
 │  └─────────────────────────────────────────────────────────┘│
@@ -210,7 +210,7 @@ OpenDHT-PQ has been completely removed and replaced by the Nodus client SDK, whi
 
 ### Phase 6: JNI Bindings ✅
 
-**Status:** Complete (26 native methods)
+**Status:** Complete (27 native methods)
 
 **Android SDK Structure:**
 ```
@@ -238,16 +238,16 @@ android/
 └── settings.gradle
 ```
 
-**JNI Native Methods (26 total):**
-- `nativeCreate`, `nativeDestroy`
-- `nativeCreateIdentity`, `nativeLoadIdentity`, `nativeListIdentities`
+**JNI Native Methods (27 total):**
+- `nativeCreate`, `nativeDestroy`, `nativeSetEventListener`
+- `nativeCreateIdentity`, `nativeLoadIdentity`, `nativeIsIdentityLoaded`
 - `nativeGetFingerprint`, `nativeRegisterName`, `nativeGetDisplayName`
-- `nativeGetContacts`, `nativeAddContact`, `nativeGetConversation`
+- `nativeGetContacts`, `nativeAddContact`, `nativeRemoveContact`, `nativeGetConversation`
 - `nativeSendMessage`, `nativeSendGroupMessage`
-- `nativeGetGroups`, `nativeCreateGroup`, `nativeJoinGroup`, `nativeLeaveGroup`
-- `nativeGetInvitations`, `nativeAcceptInvitation`, `nativeRejectInvitation`, `nativeSendInvitation`
-- `nativeListWallets`, `nativeGetBalances`, `nativeGetTransactions`
-- `nativeIsPeerOnline`, `nativeRefreshPresence`
+- `nativeGetGroups`, `nativeCreateGroup`
+- `nativeGetInvitations`, `nativeAcceptInvitation`, `nativeRejectInvitation`
+- `nativeListWallets`, `nativeGetBalances`, `nativeGetTransactions`, `nativeSendTokens`
+- `nativeIsPeerOnline`, `nativeRefreshPresence`, `nativeNetworkChanged`
 
 **Example Usage:**
 ```java
@@ -356,6 +356,39 @@ Background threads are tracked and joined on shutdown to prevent use-after-free 
 2. **Stabilization retry thread** - spawned on identity load, waits 15s then retries messages
 
 Threads check `shutdown_requested` flag after sleeps. Engine tracks thread handles and running state. `dna_engine_destroy()` joins threads before freeing resources.
+
+### TEE Key Wrapping (v0.9.168+) ✅
+
+**Status:** Complete (2026-04-05)
+
+Private keys (Dilithium5 `.dsa`, Kyber1024 `.kem`) are wrapped using platform-specific TEE (Trusted Execution Environment) on Android.
+
+**Android Implementation:**
+- Uses Android Keystore with hardware-backed keys (StrongBox or TEE)
+- AES-256-GCM wrapping key generated inside the secure element
+- Key alias: `dna_key_wrap_<identity_fingerprint_prefix>`
+- Wrapping is transparent to the engine — keys are unwrapped on load
+
+**Source Files:**
+- `dna_messenger_flutter/android/app/src/main/kotlin/io/cpunk/dna_connect/DnaKeyStore.kt` — Android Keystore integration (Kotlin)
+- `jni/dna_jni.c` — JNI bridge for key wrapping callbacks
+- `src/api/engine/dna_engine_identity.c` — Engine-side key wrapping hooks
+- `tests/test_platform_keystore.c` — Unit test for platform keystore
+
+**Desktop (Linux/Windows):** No TEE available. Keys are encrypted with the user's password via Kyber1024 KEM + AES-256-GCM (existing mechanism).
+
+### Debug Log Send (Mobile) ✅
+
+**Status:** Complete (v1.0.0-rc159+)
+
+Users can send their app debug log to the developer from the Flutter UI:
+- **Settings > Data & Storage > Send Debug Log to Developer**
+- Log is sanitized (mnemonic, hex keys, credentials scrubbed by LogSanitizer)
+- Hybrid-encrypted (Kyber1024 + AES-256-GCM) to developer's Kyber public key
+- Delivered via DHT with 1-hour TTL
+- Received by `dna-punk-debug-inbox.service` on the dev machine
+
+**Mobile path fix:** APK must be >= `rc159+10509` for correct file path resolution on Android.
 
 ---
 

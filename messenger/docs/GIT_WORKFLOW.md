@@ -1,6 +1,6 @@
 # DNA Connect - Git Workflow
 
-**Last Updated:** 2025-11-21
+**Last Updated:** 2026-04-10
 
 ---
 
@@ -30,21 +30,28 @@ DNA Connect is developed by a **collaborative team**. Our workflow prioritizes:
 
 **Format:**
 ```
-Short summary (<50 chars)
+type(scope): Short summary (vX.Y.Z) [BUILD]
 
 Detailed description:
 - What changed
 - Why it changed
 - Any breaking changes
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 ```
+
+**Commit Types:** `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `debug`
+
+**Tags:**
+- `[BUILD]` — **Required** for CI pipeline to trigger. Must be in commit message.
+- `[RELEASE]` — Triggers website deploy + DHT version publish (used with `release` command)
+- `[ENFORCED]` — Forces all users to update (used with `release enforced` command)
+
+**Version in Message:** Include version bump in parentheses: `feat: something (v0.9.187) [BUILD]`
 
 **Example:**
 ```
-feat: Add GEK group encryption (Phase 13)
+feat: Add GEK group encryption (v0.9.50) [BUILD]
 
 - Implement AES-256 shared keys for groups
 - 200x performance improvement for large groups
@@ -52,11 +59,7 @@ feat: Add GEK group encryption (Phase 13)
 - Dilithium5 owner signatures
 - 57/57 unit tests passing
 
-Breaking: Requires GEK support for group messaging
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 ```
 
 ---
@@ -73,13 +76,14 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ## Push to Both Repos (MANDATORY)
 
-DNA Connect must be pushed to **both** GitLab and GitHub:
+DNA Connect must be pushed to **both** GitLab and GitHub. **GitLab FIRST** (CI runs there):
 
 ```bash
-git add . && git commit -m "your message"
-git push gitlab main    # GitLab (primary: CI/CD, builds)
-git push origin main    # GitHub (mirror: public, community)
+git push gitlab main    # GitLab FIRST (primary: CI/CD, builds)
+git push origin main    # GitHub second (mirror: public, community)
 ```
+
+**NEVER** push only to GitHub. GitLab is the primary repo where CI pipelines run.
 
 **Or use the script:**
 ```bash
@@ -107,6 +111,26 @@ Verify:
 ```bash
 git remote -v
 ```
+
+---
+
+## Version Bumping
+
+Each component has its own independent version. Only bump the version of the component that changed:
+
+| Component | Version File | Format |
+|-----------|-------------|--------|
+| C Library | `include/dna/version.h` | `MAJOR.MINOR.PATCH` |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | `X.Y.Z+NNN` (NNN = versionCode) |
+| Nodus | `../nodus/include/nodus/nodus_types.h` | `MAJOR.MINOR.PATCH` |
+| DNAC | `../dnac/include/dnac/version.h` | `MAJOR.MINOR.PATCH` |
+
+**Which number to bump:**
+- **PATCH**: Bug fixes, small features, improvements
+- **MINOR**: Major new features, significant API changes
+- **MAJOR**: Breaking changes, production release
+
+**Flutter versionCode** (`+NNN` suffix) must always increase for Play Store.
 
 ---
 

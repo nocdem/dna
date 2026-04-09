@@ -1,6 +1,6 @@
 # P2P Architecture - Transport Layer
 
-**Current Version:** Nodus v0.10.11, Messenger v0.9.172
+**Current Version:** Nodus v0.10.30, Messenger v0.9.187
 
 ## Overview
 
@@ -91,6 +91,42 @@ With the internal read thread, push notifications for new offline messages arriv
 | `nodus/src/client/nodus_client.c` | Client SDK with internal read thread |
 | `nodus/include/nodus/nodus.h` | Client SDK public API |
 
+## Circuit Relay / VPN Mesh (Faz 1)
+
+Circuit relay enables peer-to-peer data forwarding through Nodus nodes, forming the foundation for VPN mesh networking.
+
+**Architecture:**
+- **Local bridge:** Two clients on the same Nodus node are connected directly via session bridging
+- **Inter-node relay:** Clients on different Nodus nodes are connected via TCP 4002 forwarding
+
+**Protocol messages (TCP 4001 - client-facing):**
+- `circ_open` — Request circuit to a target fingerprint
+- `circ_data` — Send data over an established circuit
+- `circ_close` — Tear down a circuit
+
+**Protocol messages (TCP 4002 - inter-node):**
+- `ri_open` — Open relay to a peer session on another Nodus node
+- `ri_data` — Forward data between Nodus nodes
+- `ri_close` — Close inter-node relay
+
+**Source files:**
+- `nodus/src/circuit/nodus_circuit.h` — Per-session circuit table
+- `nodus/src/circuit/nodus_inter_circuit.h` — Inter-node circuit forwarding
+
+## Kyber1024 Channel Encryption
+
+Channel traffic on TCP 4003 can be encrypted using Kyber1024 key encapsulation. After Dilithium5 authentication, the server's Kyber1024 public key (signed by its Dilithium5 identity) is used to establish an AES-256-GCM encrypted session, matching the transport encryption model on TCP 4001.
+
+## Transport Ports
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| UDP 4000 | Kademlia | Peer discovery (ping, find_node, put, get) |
+| TCP 4001 | Client | Auth, DHT ops, listen, circuit relay |
+| TCP 4002 | Inter-node | Replication, heartbeat, inter-node circuit forwarding |
+| TCP 4003 | Channels | Dedicated channel traffic (PRIMARY/BACKUP) |
+| TCP 4004 | Witness BFT | DNAC consensus (propose, prevote, precommit, commit) |
+
 ## Removed Components
 
 | Component | Removed In | Reason |
@@ -100,7 +136,7 @@ With the internal read thread, push notifications for new offline messages arriv
 | OpenDHT-PQ | v0.8.0 | Replaced by Nodus |
 | Manual `nodus_client_poll()` cycling | v0.5.6 | Replaced by internal read thread |
 
-## Server Discovery & TOFU Key Cache (v0.9.172+)
+## Server Discovery & TOFU Key Cache (v0.9.172+, current v0.9.187)
 
 Client bootstrap order: **known_nodes → config → hardcoded fallback**.
 

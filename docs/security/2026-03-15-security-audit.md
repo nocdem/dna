@@ -9,13 +9,13 @@
 ## Executive Summary
 
 **82 unique findings** (after deduplication) across 6 domains, forming **6 cross-domain attack chains.**
-**As of 2026-03-16: 22 RESOLVED, 2 IN PROGRESS, 58 remaining.**
+**As of 2026-04-10: 35 RESOLVED, 0 IN PROGRESS, 47 remaining.**
 
 | Severity | Total | Resolved | In Progress | Open |
 |----------|-------|----------|-------------|------|
 | CRITICAL | 6 | 6 | 0 | 0 |
-| HIGH | 17 | 10 | 0 | 7 |
-| MEDIUM | 35 | 14 | 0 | 21 |
+| HIGH | 17 | 13 | 0 | 4 |
+| MEDIUM | 35 | 16 | 0 | 19 |
 | LOW | 24 | 0 | 0 | 24 |
 
 **Top 3 systemic risks:**
@@ -40,7 +40,7 @@
 
 ## Resolution Status (Updated 2026-03-16)
 
-**30 findings RESOLVED** | **0 IN PROGRESS** | **52 remaining**
+**35 findings RESOLVED** | **0 IN PROGRESS** | **47 remaining**
 
 ### Resolved Items
 | ID | Severity | Resolution |
@@ -75,13 +75,18 @@
 | C-06 | CRITICAL | RESOLVED (verify_witnesses pins pubkey against DHT roster cache) |
 | C-01 | CRITICAL | RESOLVED (server-side enforcement + config flag require_peer_auth, witness client auth done, inter-node FV deferred) |
 | C-02 | CRITICAL | RESOLVED (server-side enforcement + witness peer auth with PEER_AUTH_NONE/HELLO_SENT/OK state machine) |
+| H-01 | HIGH | RESOLVED (v0.9.169/nodus v0.10.2) — Kyber1024 channel encryption on all TCP connections (4001, 4002). Post-quantum transport encryption. |
+| H-02 | HIGH | RESOLVED — UDP response size limits added, preventing amplification attacks. |
+| H-06 | HIGH | RESOLVED (nodus v0.10.4+) — Mutual Dilithium5 auth on TCP 4002 blocks unauthenticated presence injection. |
+| H-10 | HIGH | RESOLVED (nodus v0.10.4+) — Inter-node auth prevents heartbeat spoofing from unauthenticated sources. |
+| M-09 | MEDIUM | RESOLVED (v0.9.169/nodus v0.10.2) — getrandom loop fixed; also transport encryption now in place. |
 
 ### Remaining Open (by priority)
 | Severity | Count | Key Items |
 |----------|-------|-----------|
-| CRITICAL | 0 | — all resolved or in progress |
-| HIGH | 8 | H-01 (TLS), H-02 (UDP amplification), H-03 (static resp_buf), H-04 (inter-node quota), H-06 (presence inject), H-09 (ring eviction), H-10 (heartbeat spoof) |
-| MEDIUM | 24 | See detailed findings below |
+| CRITICAL | 0 | — all resolved |
+| HIGH | 4 | H-03 (static resp_buf), H-04 (inter-node quota), H-09 (ring eviction) |
+| MEDIUM | 19 | See detailed findings below |
 | LOW | 24 | See detailed findings below |
 
 ---
@@ -192,16 +197,16 @@
 
 | ID | Description | Component | File:Line | Confidence | Prior Audit Status |
 |----|-------------|-----------|-----------|------------|-------------------|
-| H-01 | No TLS/encryption on any transport — all 5 ports use plaintext; metadata, session tokens, and DHT values visible to network observers | Nodus Transport | `nodus_tcp.c`, `nodus_udp.c` | HIGH | KNOWN (was NET-6 / MED-9; upgraded to HIGH) |
-| H-02 | UDP amplification attack — FIND_NODE/FIND_VALUE responses 5-10x larger than requests; rate limiter table trivially bypassable via IP spoofing | Nodus Server | `nodus_server.c:1729-1786` | HIGH | KNOWN (was NET-7; confirmed) |
+| H-01 | ~~No TLS/encryption on any transport~~ **RESOLVED (v0.9.169/nodus v0.10.2)** — Kyber1024 channel encryption on all TCP connections | Nodus Transport | `nodus_tcp.c`, `nodus_udp.c` | HIGH | RESOLVED |
+| H-02 | ~~UDP amplification attack~~ **RESOLVED** — Response size limits added | Nodus Server | `nodus_server.c:1729-1786` | HIGH | RESOLVED |
 | H-03 | Static response buffer `resp_buf` shared across operations — fragile reentrancy, data corruption risk if code evolves | Nodus Server | `nodus_server.c:36` | HIGH | KNOWN (was MEM-02 / HIGH-5; still open) |
 | H-04 | Inter-node port accepts arbitrary STORE_VALUE — bypasses client port rate limits (200 SV/sec vs 60 PUT/min) | Nodus Server | `nodus_server.c:1402-1423` | HIGH | KNOWN (was DHT-07; confirmed) |
 | H-05 | UDP STORE_VALUE has no rate limiting — unlike FIND_NODE/FIND_VALUE which have `udp_rate_check` | Nodus Server | `nodus_server.c:1751-1762` | HIGH | NEW |
-| H-06 | Presence sync injection via unauthenticated inter-node port — false online/offline status for any user | Nodus Server | `nodus_server.c:1375-1393` | HIGH | KNOWN (was NET-9; confirmed) |
+| H-06 | ~~Presence sync injection via unauthenticated inter-node port~~ **RESOLVED (nodus v0.10.4+)** — Mutual Dilithium5 auth on TCP 4002 | Nodus Server | `nodus_server.c:1375-1393` | HIGH | RESOLVED |
 | H-07 | Channel member update has no authorization check — any client can add/remove push targets for any encrypted channel | Nodus Channel | `nodus_channel_server.c:298-374` | HIGH | NEW |
 | H-08 | Replicated channel posts not verified on BACKUP nodes — compromised PRIMARY injects forged posts into all replicas | Nodus Channel | `nodus_channel_replication.c:114-143` | HIGH | NEW |
 | H-09 | Unilateral ring eviction without peer confirmation — network partition causes legitimate node eviction from hashring | Nodus Channel | `nodus_channel_ring.c:240-251` | HIGH | NEW |
-| H-10 | Cluster heartbeat spoofing via IP matching — forged UDP PONG hijacks peer identity mapping and corrupts leader election | Nodus Cluster | `nodus_cluster.c:189-210` | HIGH | KNOWN (was DHT-15; confirmed) |
+| H-10 | ~~Cluster heartbeat spoofing via IP matching~~ **RESOLVED (nodus v0.10.4+)** — Inter-node auth prevents unauthenticated heartbeat spoofing | Nodus Cluster | `nodus_cluster.c:189-210` | HIGH | RESOLVED |
 | H-11 | DHT value `owner_fp` not verified against `owner_pk` — enables per-owner quota bypass via mismatched fingerprints | Nodus Value | `nodus_value.c:291-293` | HIGH | NEW |
 | H-12 | `sprintf` in `dht_groups.c` `serialize_metadata` — heap buffer overflow if `group_uuid` exceeds expectations | Messenger DHT | `dht_groups.c:158-173` | HIGH | KNOWN (was MEM-05 / MED-3; still open) |
 | H-13 | Integer overflow in `nodus_value_sign_payload` on 32-bit — `size_t` wraps, undersized malloc, memcpy overflow | Nodus Value | `nodus_value.c:31` | HIGH | KNOWN (was MEM-10 / MED-6; still open) |
@@ -380,8 +385,8 @@ No regressions identified. All fixed issues from v1 remain fixed.
 
 | Priority | IDs | Description | Effort |
 |----------|-----|-------------|--------|
-| P11 | H-01 | Implement TLS 1.3 on all TCP transports (or Noise Protocol) | 1-2 weeks |
-| P12 | H-02, M-06 | Scalable rate limiter (hash map); UDP cookie exchange before responses | 2-3 days |
+| P11 | ~~H-01~~ | ~~Implement TLS 1.3 on all TCP transports~~ **RESOLVED** — Kyber1024 channel encryption (v0.9.169) | ~~1-2 weeks~~ |
+| P12 | ~~H-02~~, M-06 | ~~UDP amplification~~ **RESOLVED** (response size limits); Scalable rate limiter still open | 2-3 days |
 | P13 | H-08 | Verify post signatures on BACKUP nodes before storing | 1 day |
 | P14 | H-09, M-27 | Require peer confirmation for eviction; membership verification for ring rejoin | 2-3 days |
 | P15 | H-10, M-25 | Authenticate PONG responses; use monotonic clock for heartbeat | 1-2 days |

@@ -14,14 +14,16 @@
 - [x] Nodus DHT network (Kademlia, PBFT, channels, presence) — `nodus/`
 - [x] DNA Connect (encrypted messaging, multi-chain wallet) — `messenger/`
 - [x] Shared crypto (Dilithium5, Kyber1024, SHA3-512, BIP39) — `shared/crypto/`
-- [x] 6 production nodus nodes deployed and operational
+- [x] 7 production nodus nodes deployed and operational
 - [x] DNAC witness logic embedded in nodus-server
-- [x] BFT consensus working (2-of-3, PROPOSE/PREVOTE/PRECOMMIT/COMMIT)
+- [x] BFT consensus working (5-of-7 with 7 witnesses, PROPOSE/PREVOTE/PRECOMMIT/COMMIT)
 - [x] UTXO transactions working (GENESIS, SPEND, BURN)
 - [x] Block chain with Merkle proofs
 - [x] Hub/spoke TX storage + query protocol
 - [x] Cellframe RPC integration (balance, TX verify, TX history)
-- [x] Multi-chain wallet in Flutter (Cellframe, ETH, SOL, TRON)
+- [x] Multi-chain wallet in Flutter (Cellframe, ETH, BSC, SOL, TRON)
+- [x] Multi-token support (TX_TOKEN_CREATE)
+- [x] DNAC wallet UI in Flutter
 
 ### Documentation Complete
 - [x] Design document (`docs/DNAC_CPUNK_DESIGN.md`)
@@ -30,13 +32,12 @@
 - [x] Technical Specification (`docs/CPUNK_TECHNICAL_SPEC.md`)
 
 ### Not Started
-- [ ] JSON-RPC API (port 4002)
+- [ ] JSON-RPC API (port TBD; NOT 4002, which is inter-node replication)
 - [ ] Staking (TX_STAKE_LOCK, TX_STAKE_UNLOCK)
 - [ ] Proof of Space (challenge-response)
 - [ ] Emission (TX_REWARD, halving)
 - [ ] Burn bridge (TX_BRIDGE_MINT, CF20 verification)
 - [ ] Slashing logic
-- [ ] DNAC wallet UI in Flutter
 - [ ] Block explorer
 - [ ] Testnet deployment
 - [ ] Exchange integration
@@ -64,7 +65,7 @@
 | 6 | Epoch duration | 30s / 60s / 300s | **60s** (current) | Challenge frequency |
 | 7 | Unstaking period | 7 / 14 / 30 days | **14 days** | Validator flexibility |
 | 8 | PoSpace challenge freq | Every epoch / every 10 epochs | **Every epoch** | Storage verification |
-| 9 | Witness committee size | Fixed 3 / dynamic | **Start 3, grow** | Scalability |
+| 9 | Witness committee size | Fixed / dynamic | **Currently 7, dynamic growth** | Scalability |
 | 10 | Reward split | Consensus/Storage ratio | **50/50** | Incentive balance |
 
 ### 1.3 Operational Decisions
@@ -73,7 +74,7 @@
 |---|----------|---------|-------------|--------|
 | 11 | Testnet token name | XXX / TCPUNK / TEST | **XXX** | Branding |
 | 12 | Burn address | Provably unspendable / designated | **Provably unspendable** | Bridge security |
-| 13 | RPC port | 4002 / 8545 | **4002** | Exchange docs |
+| 13 | RPC port | TBD (NOT 4002, reserved for inter-node) / 8545 | **TBD** | Exchange docs |
 | 14 | Block explorer stack | C / Python / Node | **Python (Flask)** | Dev speed |
 | 15 | Exchange ticker | Same CPUNK / new | **Same CPUNK** | Market continuity |
 
@@ -91,7 +92,7 @@
 
 ```
 File: nodus/src/server/nodus_rpc.c (new)
-- Add HTTP listener on port 4002
+- Add HTTP listener on RPC port (TBD; NOT 4002, which is inter-node replication)
 - Parse JSON-RPC 2.0 requests
 - Route to handler functions
 - Return JSON responses
@@ -287,14 +288,14 @@ Config flag: slashing_enabled = false  (Phase 1: launch)
 
 ## Phase 6: Testnet (2-3 weeks)
 
-**Goal:** Deploy everything to existing 6 nodus nodes with test token XXX.
+**Goal:** Deploy everything to existing 7 nodus nodes with test token XXX.
 
 **Dependency:** Phases 2-5 complete.
 
 ### 6.1 Deploy Updated Nodus
 
 ```bash
-# For each of 6 nodes:
+# For each of 7 nodes:
 ssh root@<IP> "git -C /opt/dna pull && \
   systemctl stop nodus && \
   make -C /opt/dna/nodus/build -j4 && \
@@ -306,7 +307,7 @@ ssh root@<IP> "git -C /opt/dna pull && \
 
 ```
 1. Generate XXX token genesis TX (1B supply)
-2. 3-of-3 witness authorization
+2. Unanimous witness authorization
 3. Distribute XXX to test wallets
 4. Verify balances via RPC
 ```
@@ -317,7 +318,7 @@ ssh root@<IP> "git -C /opt/dna pull && \
 |------|--------|----------|
 | Send XXX via messenger | Flutter UI | TX confirmed, balance updated |
 | Send XXX via CLI | dna-connect-cli | TX confirmed |
-| Send XXX via RPC | curl to port 4002 | TX hash returned |
+| Send XXX via RPC | curl to RPC port | TX hash returned |
 | Query balance | RPC getBalance | Correct balance |
 | Query TX | RPC getTransaction | Full TX details |
 | Query blocks | RPC getBlockRange | Block list |
@@ -450,7 +451,7 @@ All new strings in `app_en.arb` + `app_tr.arb`. No hardcoded strings.
 
 ```
 Stack: Python (Flask) + DNAC RPC
-Endpoint: Nodus RPC on port 4002
+Endpoint: Nodus RPC on TBD port
 
 Routes:
 - /tx/<hash>         -> Transaction details
@@ -559,7 +560,7 @@ Phase C: DNAC becomes default, CF20 remains available
 - [ ] Block explorer operational
 - [ ] Whitepaper published (cpunk.io)
 - [ ] Tokenomics paper published
-- [ ] All 6 nodus nodes updated to release version
+- [ ] All 7 nodus nodes updated to release version
 - [ ] Burn address created and published
 - [ ] Genesis parameters finalized
 ```
@@ -568,7 +569,7 @@ Phase C: DNAC becomes default, CF20 remains available
 
 ```
 Day -7:  Final code freeze. Release candidate build.
-Day -3:  Deploy release to all 6 nodus nodes.
+Day -3:  Deploy release to all 7 nodus nodes.
 Day -2:  Wipe testnet data. Fresh databases.
 Day -1:  Genesis: mint CPUNK on DNAC (initial distribution from treasury).
 Day  0:  LAUNCH
@@ -587,7 +588,7 @@ Day +30: Enable slashing (if sufficient operators).
 
 ```
 Daily checks:
-- All 6 nodus nodes online
+- All 7 nodus nodes online
 - BFT consensus operating (blocks being produced)
 - No failed TXs in last 24h
 - RPC API responsive
@@ -676,7 +677,7 @@ Phase 10                                                                        
 | Risk | Impact | Probability | Mitigation |
 |------|--------|------------|------------|
 | Cellframe RPC becomes unreachable | Bridge pauses | Medium | Bridge auto-pauses, DNAC continues independently |
-| Low initial operator count | Centralization | Medium | Founder operates 6 nodes (60M staked) as baseline |
+| Low initial operator count | Centralization | Medium | Founder operates 7 nodes (70M staked) as baseline |
 | Exchange refuses DNAC integration | Limited liquidity | Low | Strong CEO relationship, we provide all tech support |
 | Security vulnerability in BFT | Loss of funds | Low | Extensive testnet, fuzz testing, adversarial testing |
 | Slow CF20 migration | Split liquidity | Medium | No deadline pressure — natural market incentives |

@@ -1,6 +1,6 @@
 # DNA Nodus - Post-Quantum DHT Network
 
-**Current Version:** Nodus v0.10.14
+**Current Version:** Nodus v0.10.30
 **Security:** FIPS 204 / ML-DSA-87 (Dilithium5) - NIST Category 5
 
 ## Overview
@@ -100,16 +100,17 @@ The messenger integrates directly with Nodus -- no compatibility layer, no OpenD
 
 ## Nodus Production Cluster
 
-Six nodes running v0.8.1 with cluster membership formed and cross-node replication verified.
+Seven nodes running v0.10.30 with cluster membership formed and cross-node replication verified.
 
-| Node | IP | UDP | TCP (DHT) | TCP (Channel) |
-|------|-----|-----|-----------|---------------|
-| US-1 | 154.38.182.161 | 4000 | 4001 | 4003 |
-| EU-1 | 164.68.105.227 | 4000 | 4001 | 4003 |
-| EU-2 | 164.68.116.180 | 4000 | 4001 | 4003 |
-| EU-3 | 161.97.85.25 | 4000 | 4001 | 4003 |
-| EU-4 | 156.67.24.125 | 4000 | 4001 | 4003 |
-| EU-5 | 156.67.25.251 | 4000 | 4001 | 4003 |
+| Node | IP | UDP | TCP (DHT) | TCP (Inter-node) | TCP (Channel) | TCP (Witness) |
+|------|-----|-----|-----------|-------------------|---------------|---------------|
+| US-1 | 154.38.182.161 | 4000 | 4001 | 4002 | 4003 | 4004 |
+| EU-1 | 161.97.85.25 | 4000 | 4001 | 4002 | 4003 | 4004 |
+| EU-2 | 156.67.24.125 | 4000 | 4001 | 4002 | 4003 | 4004 |
+| EU-3 | 156.67.25.251 | 4000 | 4001 | 4002 | 4003 | 4004 |
+| EU-4 | 164.68.105.227 | 4000 | 4001 | 4002 | 4003 | 4004 |
+| EU-5 | 164.68.116.180 | 4000 | 4001 | 4002 | 4003 | 4004 |
+| EU-6 | 75.119.141.51 | 4000 | 4001 | 4002 | 4003 | 4004 |
 
 **Configuration:** `/etc/nodus.conf` (per-machine, each seeds the others)
 **Data directory:** `/var/lib/nodus/` (identity + SQLite storage)
@@ -150,11 +151,12 @@ Nodus uses `/etc/nodus.conf`:
 - **TCP 4001** — Client DHT operations
 - **TCP 4002** — Inter-node replication (auto = tcp_port + 1)
 - **TCP 4003** — Channel system (PRIMARY/BACKUP + client channel connections)
+- **TCP 4004** — Witness BFT consensus (DNAC block production)
 
 ## Legacy Servers (REMOVED)
 
-The legacy dna-nodus v0.4.5 (OpenDHT-based) has been completely removed. All 6 production
-nodes now run Nodus v0.8.1+ (pure C). The `vendor/opendht-pq/` directory was deleted.
+The legacy dna-nodus v0.4.5 (OpenDHT-based) has been completely removed. All 7 production
+nodes now run Nodus v0.10.30 (pure C). The `vendor/opendht-pq/` directory was deleted.
 
 ## Building
 

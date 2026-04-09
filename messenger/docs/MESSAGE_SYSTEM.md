@@ -1,7 +1,7 @@
 # DNA Connect - Message System Documentation
 
-**Version:** v0.11 (Message Deletion + Cross-Device Sync)
-**Last Updated:** 2026-03-11
+**Version:** v0.12 (Message Deletion + Cross-Device Sync + SQLCipher + Media)
+**Last Updated:** 2026-04-10
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document describes how the DNA Connect message system works, with all facts verified directly from source code.
@@ -55,7 +55,7 @@ This document describes how the DNA Connect message system works, with all facts
 │         │                                              │                 │
 │         ▼                                              ▼                 │
 │  ┌─────────────┐                                ┌─────────────┐         │
-│  │   SQLite    │◄───────────────────────────────│   SQLite    │         │
+│  │  SQLCipher  │◄───────────────────────────────│  SQLCipher  │         │
 │  │ (messages.db│                                │ (messages.db│         │
 │  └──────┬──────┘                                └──────┬──────┘         │
 │         │                                              ▲                 │
@@ -1179,8 +1179,8 @@ CREATE TABLE IF NOT EXISTS group_messages (
 │   └── identity.dsa      # Dilithium5 private key (4896 bytes)
 │   └── identity.kem      # Kyber1024 private key (3168 bytes)
 ├── db/
-│   ├── messages.db       # SQLite - Direct messages only (v0.4.63+)
-│   ├── groups.db         # SQLite - All group data (v0.4.63+)
+│   ├── messages.db       # SQLCipher - Direct messages only (v0.4.63+, encrypted v0.9.161+)
+│   ├── groups.db         # SQLCipher - All group data (v0.4.63+, encrypted v0.9.161+)
 │   └── keyserver_cache.db    # Public key cache (7-day TTL)
 └── ...
 ```
@@ -1282,15 +1282,15 @@ On every engine startup, before listener setup, each contact's salt is verified:
 ## 10. Database Schema
 
 **v0.4.63+ Architecture:** Two separate databases for clean separation:
-- **messages.db**: Direct user-to-user messages (`message_backup.c`)
-- **groups.db**: All group data (`messenger/group_database.c`)
+- **messages.db**: Direct user-to-user messages (`message_backup.c`) — encrypted at rest via SQLCipher (v0.9.161+)
+- **groups.db**: All group data (`messenger/group_database.c`) — encrypted at rest via SQLCipher (v0.9.161+)
 
 ### 10.1 Messages Table (messages.db)
 
 ```sql
 -- Source: message_backup.c - Schema v17
 -- NOTE: v14 stores plaintext directly (no per-message encryption)
---       Database encryption handled by SQLCipher in future update
+--       Database encryption at rest handled by SQLCipher (shipped v0.9.161)
 
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1304,7 +1304,7 @@ CREATE TABLE IF NOT EXISTS messages (
   is_outgoing INTEGER DEFAULT 0,
   status INTEGER DEFAULT 1,         -- v15: 0=PENDING, 1=SENT, 2=RECEIVED, 3=FAILED
   group_id INTEGER DEFAULT 0,       -- 0=direct message, >0=group ID
-  message_type INTEGER DEFAULT 0,   -- 0=chat, 1=group_invitation, 3=delete
+  message_type INTEGER DEFAULT 0,   -- 0=chat, 1=group_invitation, 3=delete, 4=voice, 5=video, 6=image
   invitation_status INTEGER DEFAULT 0,  -- 0=pending, 1=accepted, 2=declined
   retry_count INTEGER DEFAULT 0,    -- Retry attempts for failed messages
   offline_seq INTEGER DEFAULT 0,    -- DHT offline queue sequence number

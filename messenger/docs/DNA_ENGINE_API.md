@@ -1,10 +1,13 @@
 # DNA Engine API Reference
 
-**Version:** 1.14.0
-**Date:** 2026-02-25
+**Version:** 1.19.0
+**Date:** 2026-04-10
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.19.0 (2026-04-10): Added DNAC Multi-Token API (section 11c) — `dna_engine_dnac_token_list`, `dna_engine_dnac_token_create`, `dna_engine_dnac_token_balance`. New types: `dna_dnac_token_t`, `dna_dnac_token_list_cb`. Free function: `dna_engine_dnac_free_tokens`.
+- v1.18.0 (2026-04-09): Added DNAC Digital Cash API (section 11b) — `dna_engine_dnac_get_balance`, `dna_engine_dnac_send`, `dna_engine_dnac_sync`, `dna_engine_dnac_get_history`, `dna_engine_dnac_get_utxos`, `dna_engine_dnac_estimate_fee`. New types: `dna_dnac_balance_t`, `dna_dnac_history_t`, `dna_dnac_utxo_t`. Callbacks: `dna_dnac_balance_cb`, `dna_dnac_history_cb`, `dna_dnac_utxos_cb`, `dna_dnac_fee_cb`. Free functions: `dna_engine_dnac_free_history`, `dna_engine_dnac_free_utxos`.
+- v1.17.0 (2026-04-09): Added Follow API (section 11) — `dna_engine_follow`, `dna_engine_unfollow`, `dna_engine_get_following`, `dna_engine_is_following`, `dna_engine_sync_following_to_dht`, `dna_engine_sync_following_from_dht`. New types: `dna_following_t`, `dna_following_cb`. Free function: `dna_free_following`. Updated Debug Log API (section 10) with `dna_engine_debug_log_send`, `dna_engine_debug_log_message`, `dna_engine_debug_log_message_level`, `dna_engine_debug_log_export`.
 - v1.16.0 (2026-03-11): Added Message Deletion API — `dna_engine_delete_message`, `dna_engine_delete_conversation`, `dna_engine_delete_all_messages`. Three deletion scopes (single, conversation, all) with local delete + DHT outbox rebuild + DELETE notices to contacts + cross-device sync via self-addressed outbox messages. New types: `deleted_by_sender` field in `dna_message_t`, `MESSAGE_TYPE_DELETE` (3), `delete_action_t` enum. DB schema v17: `deleted_by_sender` column.
 - v1.15.0 (2026-03-10): Added mandatory version enforcement — `dna_version_check_result_t` now includes `library_below_minimum` and `app_below_minimum` flags. When local version is below DHT-published minimum, Flutter app blocks usage with UpdateRequiredScreen.
 - v1.14.0 (2026-02-25): Added Wall API (section 5b) - user wall posts with images, comments, and timeline. New functions: `dna_engine_wall_post`, `dna_engine_wall_post_with_image`, `dna_engine_wall_delete`, `dna_engine_wall_load`, `dna_engine_wall_timeline`, `dna_engine_wall_add_comment`, `dna_engine_wall_get_comments`. New types: `dna_wall_post_info_t` (includes `image_json` field), `dna_wall_comment_info_t`, `dna_wall_post_cb`, `dna_wall_posts_cb`, `dna_wall_comment_cb`, `dna_wall_comments_cb`. Free functions: `dna_free_wall_posts`, `dna_free_wall_comments`.
@@ -165,6 +168,9 @@ if (bindings.dna_engine_has_identity(engine, dataDir.toNativeUtf8())) {
 | [P2P & Presence](#7-p2p--presence) | 7 | Online status (Nodus-native), DHT sync |
 | [Backward Compat](#8-backward-compatibility) | 2 | Access raw contexts |
 | [Memory](#9-memory-management) | 9 | Free callback data |
+| [Follow](#11-follow) | 6 | One-directional follow/unfollow, DHT sync |
+| [DNAC](#11b-dnac-digital-cash) | 9 | DNAC balance, send, sync, history, UTXOs, fee estimate |
+| [DNAC Multi-Token](#11c-dnac-multi-token) | 4 | Token create, list, balance |
 
 ---
 
@@ -2225,6 +2231,10 @@ dna_free_transactions(transactions, count); // For transactions list
 dna_free_profile(profile);                  // For profile
 dna_free_wall_posts(posts, count);          // For wall posts (also frees image_json)
 dna_free_wall_comments(comments, count);    // For wall comments
+dna_free_following(following, count);       // For following list
+dna_engine_dnac_free_history(history, count); // For DNAC history
+dna_engine_dnac_free_utxos(utxos, count);  // For DNAC UTXOs
+dna_engine_dnac_free_tokens(tokens, count); // For DNAC tokens
 ```
 
 ---
@@ -2284,7 +2294,472 @@ for (final entry in entries) {
 engine.debugLogClear();
 ```
 
+### Add External Log Messages
+
+```c
+// Add a log message from external code (e.g., Dart/Flutter)
+void dna_engine_debug_log_message(const char *tag, const char *message);
+
+// Add a log message with explicit level
+void dna_engine_debug_log_message_level(const char *tag, const char *message, int level);
+```
+
+**Parameters:**
+- `tag` - Module/source tag (e.g., `"FLUTTER"`)
+- `message` - Log message text
+- `level` - Log level: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+
+### Export Logs to File
+
+```c
+int dna_engine_debug_log_export(const char *filepath);
+```
+
+Exports all log entries in the ring buffer to a text file.
+
+**Parameters:**
+- `filepath` - Path to write log file
+
+**Returns:** 0 on success, -1 on error
+
+### Send Debug Log to Developer (v0.9.164+)
+
+```c
+dna_request_id_t dna_engine_debug_log_send(
+    dna_engine_t *engine,
+    const char *receiver_fp_hex,
+    const uint8_t *log_body,
+    size_t log_len,
+    const char *hint,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Sends an encrypted debug log blob to a receiver's DHT inbox. The log body is encrypted with Kyber1024 + AES-256-GCM using the receiver's Kyber public key (fetched from DHT/profile cache), then PUT to the receiver's debug inbox DHT key.
+
+**Parameters:**
+- `engine` - Engine instance (must have identity loaded)
+- `receiver_fp_hex` - 128-char hex Dilithium5 fingerprint of the receiver
+- `log_body` - Raw log bytes (plaintext)
+- `log_len` - Length of log body (1 .. 3 MB max)
+- `hint` - Optional short label (NUL-terminated, may be NULL)
+- `callback` - Completion callback (error == 0 on success)
+- `user_data` - User data for callback
+
+**Returns:** Request ID (0 on immediate error)
+
 **Note:** Ring buffer is thread-safe. Logs are automatically captured when enabled.
+
+---
+
+## 11. Follow
+
+One-directional follow system (v0.9.126+). No approval needed — similar to Twitter/X follows. Follow lists are synced to DHT (encrypted, private).
+
+### Data Types
+
+```c
+/**
+ * Following entry (one-directional follow)
+ */
+typedef struct {
+    char fingerprint[129];      /* Followed user's fingerprint */
+    uint64_t followed_at;       /* Unix timestamp when followed */
+} dna_following_t;
+
+/**
+ * Following list callback
+ * Caller takes ownership of following - free with dna_free_following()
+ */
+typedef void (*dna_following_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_following_t *following,
+    int count,
+    void *user_data
+);
+```
+
+### dna_engine_follow
+
+```c
+dna_request_id_t dna_engine_follow(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Follow a user (one-directional, no approval needed).
+
+**Parameters:**
+- `engine` - Engine instance
+- `fingerprint` - 128-char hex fingerprint of user to follow
+- `callback` - Completion callback
+- `user_data` - User data for callback
+
+---
+
+### dna_engine_unfollow
+
+```c
+dna_request_id_t dna_engine_unfollow(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Unfollow a user.
+
+**Parameters:**
+- `engine` - Engine instance
+- `fingerprint` - 128-char hex fingerprint of user to unfollow
+- `callback` - Completion callback
+- `user_data` - User data for callback
+
+---
+
+### dna_engine_get_following
+
+```c
+dna_request_id_t dna_engine_get_following(
+    dna_engine_t *engine,
+    dna_following_cb callback,
+    void *user_data
+);
+```
+
+Get list of followed users. Caller takes ownership of the result.
+
+**Memory:** Free with `dna_free_following(following, count)`.
+
+---
+
+### dna_engine_is_following
+
+```c
+bool dna_engine_is_following(dna_engine_t *engine, const char *fingerprint);
+```
+
+Check if following a user (synchronous, local DB check).
+
+**Returns:** `true` if following, `false` otherwise.
+
+---
+
+### dna_engine_sync_following_to_dht
+
+```c
+dna_request_id_t dna_engine_sync_following_to_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Sync follow list to DHT (encrypted, private). Used for backup.
+
+---
+
+### dna_engine_sync_following_from_dht
+
+```c
+dna_request_id_t dna_engine_sync_following_from_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Sync follow list from DHT (restore from backup).
+
+---
+
+### dna_free_following
+
+```c
+void dna_free_following(dna_following_t *following, int count);
+```
+
+Free following list returned by `dna_engine_get_following`.
+
+---
+
+## 11b. DNAC Digital Cash
+
+DNAC (DNA Cash) integration (v0.9.173+). UTXO-based digital cash with BFT witness consensus. All amounts are in raw units (1 DNAC = 100,000,000 raw).
+
+### Data Types
+
+```c
+/**
+ * DNAC balance information
+ */
+typedef struct {
+    uint64_t confirmed;         /* Confirmed spendable balance */
+    uint64_t pending;           /* Pending incoming */
+    uint64_t locked;            /* Locked in pending spends */
+    int utxo_count;             /* Number of UTXOs */
+} dna_dnac_balance_t;
+
+/**
+ * DNAC transaction history entry
+ */
+typedef struct {
+    uint8_t tx_hash[64];        /* Transaction hash (SHA3-512) */
+    int type;                   /* 0=genesis, 1=spend, 2=burn */
+    char counterparty[129];     /* Other party fingerprint (if known) */
+    int64_t amount_delta;       /* Change in balance (+/-) in raw units */
+    uint64_t fee;               /* Fee paid (if sender) */
+    uint64_t timestamp;         /* Unix timestamp */
+    char memo[256];             /* Memo (if any) */
+} dna_dnac_history_t;
+
+/**
+ * DNAC UTXO entry
+ */
+typedef struct {
+    uint8_t tx_hash[64];        /* Transaction that created this UTXO */
+    uint32_t output_index;      /* Index within transaction */
+    uint64_t amount;            /* Amount in raw units */
+    int status;                 /* 0=unspent, 1=pending, 2=spent */
+    uint64_t received_at;       /* Unix timestamp when received */
+} dna_dnac_utxo_t;
+```
+
+### Callback Types
+
+```c
+typedef void (*dna_dnac_balance_cb)(
+    dna_request_id_t request_id, int error,
+    const dna_dnac_balance_t *balance, void *user_data
+);
+
+typedef void (*dna_dnac_history_cb)(
+    dna_request_id_t request_id, int error,
+    const dna_dnac_history_t *history, int count, void *user_data
+);
+
+typedef void (*dna_dnac_utxos_cb)(
+    dna_request_id_t request_id, int error,
+    const dna_dnac_utxo_t *utxos, int count, void *user_data
+);
+
+typedef void (*dna_dnac_fee_cb)(
+    dna_request_id_t request_id, int error,
+    uint64_t fee, void *user_data
+);
+```
+
+### dna_engine_dnac_get_balance
+
+```c
+dna_request_id_t dna_engine_dnac_get_balance(
+    dna_engine_t *engine,
+    dna_dnac_balance_cb callback,
+    void *user_data
+);
+```
+
+Get DNAC wallet balance. Lazy-initializes DNAC context on first call.
+
+---
+
+### dna_engine_dnac_send
+
+```c
+dna_request_id_t dna_engine_dnac_send(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    uint64_t amount,
+    const char *memo,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Send DNAC payment.
+
+**Parameters:**
+- `engine` - Engine instance
+- `recipient_fingerprint` - 128-char hex fingerprint
+- `amount` - Amount in raw units (1 DNAC = 100,000,000 raw)
+- `memo` - Optional memo (NULL for none)
+- `callback` - Completion callback
+- `user_data` - User data for callback
+
+---
+
+### dna_engine_dnac_sync
+
+```c
+dna_request_id_t dna_engine_dnac_sync(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Sync DNAC wallet from witnesses.
+
+---
+
+### dna_engine_dnac_get_history
+
+```c
+dna_request_id_t dna_engine_dnac_get_history(
+    dna_engine_t *engine,
+    dna_dnac_history_cb callback,
+    void *user_data
+);
+```
+
+Get DNAC transaction history.
+
+**Memory:** Free with `dna_engine_dnac_free_history(history, count)`.
+
+---
+
+### dna_engine_dnac_get_utxos
+
+```c
+dna_request_id_t dna_engine_dnac_get_utxos(
+    dna_engine_t *engine,
+    dna_dnac_utxos_cb callback,
+    void *user_data
+);
+```
+
+Get DNAC UTXO list.
+
+**Memory:** Free with `dna_engine_dnac_free_utxos(utxos, count)`.
+
+---
+
+### dna_engine_dnac_estimate_fee
+
+```c
+dna_request_id_t dna_engine_dnac_estimate_fee(
+    dna_engine_t *engine,
+    uint64_t amount,
+    dna_dnac_fee_cb callback,
+    void *user_data
+);
+```
+
+Estimate fee for DNAC transaction.
+
+**Parameters:**
+- `amount` - Amount to send (raw units)
+
+---
+
+### Memory Management (DNAC)
+
+```c
+void dna_engine_dnac_free_history(dna_dnac_history_t *history, int count);
+void dna_engine_dnac_free_utxos(dna_dnac_utxo_t *utxos, int count);
+```
+
+---
+
+## 11c. DNAC Multi-Token
+
+Multi-token support for DNAC (v0.9.188+). Users can create custom tokens on the DNAC network.
+
+### Data Types
+
+```c
+/**
+ * DNAC token information
+ */
+typedef struct {
+    uint8_t  token_id[64];      /* Token ID (SHA3-512) */
+    char     name[33];          /* Token name, max 32 chars */
+    char     symbol[9];         /* Token symbol, max 8 chars */
+    uint8_t  decimals;          /* Decimal places, 0-18 */
+    int64_t  supply;            /* Total supply in smallest units */
+    char     creator_fp[129];   /* Creator's fingerprint */
+} dna_dnac_token_t;
+
+/**
+ * DNAC token list callback
+ */
+typedef void (*dna_dnac_token_list_cb)(
+    dna_request_id_t request_id, int error,
+    const dna_dnac_token_t *tokens, int count, void *user_data
+);
+```
+
+### dna_engine_dnac_token_list
+
+```c
+dna_request_id_t dna_engine_dnac_token_list(
+    dna_engine_t *engine,
+    dna_dnac_token_list_cb callback,
+    void *user_data
+);
+```
+
+List all tokens from witnesses.
+
+**Memory:** Free with `dna_engine_dnac_free_tokens(tokens, count)`.
+
+---
+
+### dna_engine_dnac_token_create
+
+```c
+dna_request_id_t dna_engine_dnac_token_create(
+    dna_engine_t *engine,
+    const char *name,
+    const char *symbol,
+    uint8_t decimals,
+    uint64_t supply,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Create a new token. Burns 1 DNAC fee. Full supply assigned to creator.
+
+**Parameters:**
+- `name` - Token name (max 32 chars)
+- `symbol` - Token symbol (max 8 chars)
+- `decimals` - Decimal places (0-18)
+- `supply` - Total supply in smallest units
+
+---
+
+### dna_engine_dnac_token_balance
+
+```c
+dna_request_id_t dna_engine_dnac_token_balance(
+    dna_engine_t *engine,
+    const uint8_t *token_id,
+    dna_dnac_balance_cb callback,
+    void *user_data
+);
+```
+
+Get balance for a specific token.
+
+**Parameters:**
+- `token_id` - Token ID (64 bytes SHA3-512)
+
+---
+
+### dna_engine_dnac_free_tokens
+
+```c
+void dna_engine_dnac_free_tokens(dna_dnac_token_t *tokens, int count);
+```
+
+Free token array returned by `dna_engine_dnac_token_list` callback.
 
 ---
 
@@ -2310,6 +2785,8 @@ engine.debugLogClear();
 | -115 | `DNA_ENGINE_ERROR_RENT_MINIMUM` | Solana: amount below rent-exempt minimum for new account |
 | -116 | `DNA_ENGINE_ERROR_KEY_UNAVAILABLE` | Recipient public key not cached and DHT lookup failed (offline) |
 | -117 | `DNA_ENGINE_ERROR_IDENTITY_LOCKED` | Identity lock held by another process (Flutter/Service) |
+| -118 | `DNA_ENGINE_ERROR_LIMIT_REACHED` | Maximum limit reached (e.g., max likes per post) |
+| -119 | `DNA_ENGINE_ERROR_TEE_FAILED` | TEE/hardware keystore key unavailable — restore from mnemonic |
 
 **Note:** Error code -105 is not defined (gap in sequence).
 

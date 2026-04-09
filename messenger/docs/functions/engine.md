@@ -164,6 +164,9 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_dnac_get_history(dna_engine_t*, dna_task_t*)` | Transaction history handler |
 | `void dna_handle_dnac_get_utxos(dna_engine_t*, dna_task_t*)` | UTXO list handler |
 | `void dna_handle_dnac_estimate_fee(dna_engine_t*, dna_task_t*)` | Fee estimate handler |
+| `void dna_handle_dnac_token_list(dna_engine_t*, dna_task_t*)` | List custom tokens handler |
+| `void dna_handle_dnac_token_create(dna_engine_t*, dna_task_t*)` | Create token handler |
+| `void dna_handle_dnac_token_balance(dna_engine_t*, dna_task_t*)` | Token balance handler |
 
 ### Helpers
 

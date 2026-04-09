@@ -1,6 +1,6 @@
 # DNA Connect Flutter UI
 
-**Last Updated:** 2026-03-11
+**Last Updated:** 2026-04-10
 **Status:** Phase 4 — Design System + UI Redesign Complete
 **Target:** Mobile-first, all platforms from single codebase
 
@@ -255,7 +255,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 
 3. **Wallet:**
    - Send tokens with recipient, amount selection
-   - Supported tokens across 4 chains: **Cellframe** (CELL, CPUNK, USDC), **Ethereum** (ETH, USDT, USDC), **Solana** (SOL, USDT, USDC), **TRON** (TRX, USDT, USDC)
+   - Supported tokens across 5 chains: **Cellframe** (CELL, CPUNK, USDC), **Ethereum** (ETH, USDT, USDC), **Solana** (SOL, USDT, USDC), **TRON** (TRX, USDT, USDC), **BSC** (BNB, USDT, USDC)
    - Transaction history UI with address resolution:
      - Resolves `otherAddress` to contact name (via profile wallet fields) or address book label
      - Resolution runs once per fetch, re-resolves reactively when contacts or address book change
@@ -264,12 +264,15 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
    - Balances display per wallet (fetched via Cellframe RPC)
    - **Multi-token send via chat:** Transfer tokens directly from chat conversation
      - "$" button in chat input bar opens multi-token send bottom sheet
-     - Token dropdown with 12 options across 4 chains (Cellframe, Ethereum, Solana, TRON)
+     - Token dropdown with options across 5 chains (Cellframe, Ethereum, Solana, TRON, BSC)
      - Only tokens for chains where the contact has a registered wallet address are shown
      - Transaction speed selector (slow/normal/fast) only shown for Cellframe chain
      - Transfer message JSON includes `token`, `network`, and `chain` fields
      - Transfer bubble with gradient styling and blockchain verification (orange/green/red border)
    - **Note:** "Backbone" network name has been renamed to "Cellframe" throughout the codebase
+   - **DNAC Wallet:** Digital cash (DNAC) integrated via `dna_engine_dnac.c` engine module
+     - Balance display, send, sync, transaction history, UTXO management
+     - Witness-based consensus (not DHT-stored), syncs from nodus witness nodes
 
 4. **Profile/Identity:**
    - Nickname registration on DHT
@@ -291,6 +294,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
    - Export seed phrase (placeholder)
    - Delete Account (v0.3.0: renamed from "Delete Identity")
    - Manage Contacts (view/remove contacts)
+   - **Debug Log Send** (Settings > Data & Storage > Send Debug Log to Developer): Sends app log via DHT, hybrid-encrypted (Kyber1024 + AES-256-GCM) to developer's Kyber key. Logs are sanitized (mnemonic/keys scrubbed) before encryption.
 
 **FFI Functions Added (11 new):**
 ```dart
@@ -490,7 +494,7 @@ To re-enable: define `DNA_CHANNELS_ENABLED` in CMake, restore Flutter channel sc
 - Message status indicators: pending (spinner), sent (checkmark), failed (red X)
 - Enter sends message, Shift+Enter adds newline
 - Emoji picker with shortcode support (:smile: etc.)
-- **Multi-token transfer via chat:** Send tokens from any supported chain directly from conversation via "$" button. Token dropdown shows 12 options across 4 chains (Cellframe, Ethereum, Solana, TRON), filtered by contact's available wallet addresses. Verified transfer bubble (orange=pending, green=verified, red=failed). Message type: `token_transfer`. Both sides verify independently via blockchain RPC.
+- **Multi-token transfer via chat:** Send tokens from any supported chain directly from conversation via "$" button. Token dropdown shows options across 5 chains (Cellframe, Ethereum, Solana, TRON, BSC), filtered by contact's available wallet addresses. Verified transfer bubble (orange=pending, green=verified, red=failed). Message type: `token_transfer`. Both sides verify independently via blockchain RPC.
 
 **Background Tasks:**
 - Initial DHT offline message poll on login (15 second delay)

@@ -1,12 +1,10 @@
 # DHT System Documentation
 
-**Last Updated:** 2026-03-01
-**Phase:** 14 (DHT-Only Messaging)
-**Version:** 0.7.10
+**Last Updated:** 2026-04-10
+**Phase:** 7 (Flutter UI)
+**Version:** 0.9.187
 
 Comprehensive documentation of the DNA Connect DHT (Distributed Hash Table) system. The DHT layer is powered by Nodus, a pure C Kademlia DHT with PBFT consensus. OpenDHT has been completely removed.
-
-**Migration Note:** Many API function signatures in this document still show `dht_context_t *ctx` as the first parameter. As of the Nodus migration, the `dht_context_t` type no longer exists. All DHT functions now use the Nodus singleton internally (via `nodus_ops.c`) and no longer require an explicit context parameter. Consult the header files in `dht/` for current signatures.
 
 ---
 
@@ -39,16 +37,29 @@ The DHT is a distributed key-value store powered by Nodus (pure C, Kademlia + PB
 
 ### Production Bootstrap Nodes
 
-Six production Nodus servers:
+Seven production Nodus servers:
 
-| Node | IP Address | UDP | TCP | Location |
-|------|-----------|------|------|----------|
-| US-1 | 154.38.182.161 | 4000 | 4001 | United States |
-| EU-1 | 164.68.105.227 | 4000 | 4001 | Europe |
-| EU-2 | 164.68.116.180 | 4000 | 4001 | Europe |
-| EU-3 | 161.97.85.25 | 4000 | 4001 | Europe |
-| EU-4 | 156.67.24.125 | 4000 | 4001 | Europe |
-| EU-5 | 156.67.25.251 | 4000 | 4001 | Europe |
+| Node | IP Address | UDP 4000 | TCP 4001 | TCP 4002 | TCP 4003 | TCP 4004 | Location |
+|------|-----------|----------|----------|----------|----------|----------|----------|
+| US-1 | 154.38.182.161 | Kademlia | Client | Inter-node | Channels (idle) | Witness BFT | United States |
+| EU-1 | 161.97.85.25 | Kademlia | Client | Inter-node | Channels (idle) | Witness BFT | Europe |
+| EU-2 | 156.67.24.125 | Kademlia | Client | Inter-node | Channels (idle) | Witness BFT | Europe |
+| EU-3 | 156.67.25.251 | Kademlia | Client | Inter-node | Channels (idle) | Witness BFT | Europe |
+| EU-4 | 164.68.105.227 | Kademlia | Client | Inter-node | Channels (idle) | Witness BFT | Europe |
+| EU-5 | 164.68.116.180 | Kademlia | Client | Inter-node | Channels (idle) | Witness BFT | Europe |
+| EU-6 | 75.119.141.51 | Kademlia | Client | Inter-node | Channels (idle) | Witness BFT | Europe |
+
+**Port Reference:**
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| UDP 4000 | Kademlia | Peer discovery, routing table maintenance |
+| TCP 4001 | Tier 2 | Client connections (auth, dht_put, dht_get, listen) |
+| TCP 4002 | Inter-node | Server-to-server replication and coordination |
+| TCP 4003 | Channels | Channel/subscription system (currently idle/disabled) |
+| TCP 4004 | Witness BFT | DNAC witness consensus protocol |
+
+All connections use Kyber1024 channel encryption for post-quantum security.
 
 ---
 
@@ -83,9 +94,11 @@ Six production Nodus servers:
 +-------------------------------------------------------------+
 |                  Nodus Server Cluster                     |
 |  nodus/src/server/nodus_server.c                            |
-|  - Test: 161.97.85.25, 156.67.24.125, 156.67.25.251       |
-|  - Kademlia DHT (UDP 4000) + Client/Replication (TCP 4001) |
-|  - PBFT consensus for cross-node replication                |
+|  - 7 production nodes (US-1, EU-1 through EU-6)            |
+|  - UDP 4000 (Kademlia) + TCP 4001 (Client) + TCP 4002     |
+|    (Inter-node) + TCP 4003 (Channels) + TCP 4004 (Witness) |
+|  - Kyber1024 channel encryption on all connections          |
+|  - Witness BFT consensus for DNAC digital cash              |
 |  - SQLite persistence for stored values                     |
 +-------------------------------------------------------------+
 ```

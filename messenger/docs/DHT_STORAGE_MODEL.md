@@ -1,7 +1,7 @@
 # DHT Storage Model
 
-**Last Updated:** 2026-03-11
-**Version:** 0.9.44
+**Last Updated:** 2026-04-10
+**Version:** 0.9.187
 **Status:** Verified from source code
 
 This document describes how each data type in DNA Connect is stored on the Nodus DHT network. It covers key derivation, bucket strategies, serialization formats, TTLs, ownership models, and sync patterns.
@@ -17,9 +17,13 @@ This document describes how each data type in DNA Connect is stored on the Nodus
 3. [Group Messages](#3-group-messages)
 4. [Wall Posts](#4-wall-posts)
 5. [Channels](#5-channels)
-6. [Comparison Table](#6-comparison-table)
-7. [Common Patterns](#7-common-patterns)
-8. [Source File Reference](#8-source-file-reference)
+6. [Follow List](#6-follow-list)
+7. [Media Storage](#7-media-storage)
+8. [Debug Log Inbox](#8-debug-log-inbox)
+9. [DNAC (Digital Cash)](#9-dnac-digital-cash)
+10. [Comparison Table](#10-comparison-table)
+11. [Common Patterns](#11-common-patterns)
+12. [Source File Reference](#12-source-file-reference)
 
 ---
 
@@ -326,7 +330,84 @@ Channels use `YYYYMMDD` string dates (e.g., `20260311`) for daily buckets, while
 
 ---
 
-## 6. Comparison Table
+## 6. Follow List
+
+**Source:** `dht/client/dht_followlist.c`, `dht/client/dht_followlist.h`
+
+### Strategy: Single Key, Single-Owner
+
+Each identity stores their follow list under a single DHT key.
+
+### Key Format
+
+```
+<fingerprint>:followlist
+```
+
+### Properties
+
+| Property | Value |
+|----------|-------|
+| **TTL** | 7 days |
+| **Owner model** | Single-owner (identity writes its own follow list) |
+| **Serialization** | JSON array of fingerprints |
+| **Local DB** | `following_db.c/h` (SQLCipher-encrypted) |
+
+---
+
+## 7. Media Storage
+
+**Source:** `src/api/engine/dna_engine_media.c`
+
+### Strategy: Content-Addressed Binary Blobs on Nodus
+
+Media files (images, avatars) are stored as binary blobs on Nodus using content-addressed keys (SHA3-512 hash of content).
+
+### Properties
+
+| Property | Value |
+|----------|-------|
+| **Storage** | `nodus_ops_media_put()` — binary blob, up to 4MB |
+| **Key** | Content hash (SHA3-512 of data) |
+| **Encryption** | Optional per-upload (Kyber1024 + AES-256-GCM) |
+| **TTL** | Configurable per upload |
+
+---
+
+## 8. Debug Log Inbox
+
+**Source:** `src/api/engine/dna_debug_log_wire.c`, `src/api/engine/dna_engine_debug_log.c`
+
+### Strategy: Content-Addressed, Encrypted
+
+Debug logs are hybrid-encrypted (Kyber1024 + AES-256-GCM) and delivered via DHT to the developer's inbox key.
+
+### Key Derivation
+
+```
+SHA3-512("dna-debug-inbox" || receiver_fp_raw) → 64-byte DHT key
+```
+
+### Properties
+
+| Property | Value |
+|----------|-------|
+| **TTL** | 1 hour |
+| **Encryption** | Kyber1024 KEM + AES-256-GCM (hybrid E2E) |
+| **Sanitization** | Mnemonic/keys/credentials scrubbed before encryption |
+| **Receiver** | Developer identity (Kyber public key from DHT) |
+
+---
+
+## 9. DNAC (Digital Cash)
+
+DNAC uses **witness-based BFT consensus**, not DHT storage. Transactions and UTXOs are stored in `witness_<chain_id>.db` on each Nodus witness node, replicated via the BFT protocol on TCP 4004.
+
+DNAC does not use DHT PUT/GET for ledger data. The relationship with Nodus is that the witness server is embedded in `nodus-server`, and the DNAC client SDK connects via the Nodus client SDK to interact with witnesses.
+
+---
+
+## 10. Comparison Table
 
 | Data Type | Daily Bucket | Owner Model | TTL | Serialization | Max Size/Count | Encryption |
 |-----------|:------------:|:-----------:|:---:|:-------------:|:--------------:|:----------:|
@@ -337,6 +418,9 @@ Channels use `YYYYMMDD` string dates (e.g., `20260311`) for daily buckets, while
 | **Channel Meta** | No | Single | 30d | JSON | 1 channel | None (signed) |
 | **Channel Posts** | Yes (`YYYYMMDD`) | Multi | 30d | JSON | 4,000 char/post | None (signed) |
 | **Channel Index** | Yes (`YYYYMMDD`) | Multi | 30d | JSON | N entries | None |
+| **Follow List** | No | Single | 7d | JSON array | N fingerprints | None |
+| **Media Blobs** | No | Single | Configurable | Binary | 4MB max | Optional (Kyber+AES) |
+| **Debug Log** | No | Single | 1h | Binary | N/A | E2E (Kyber+AES) |
 
 ### Key Observations
 
@@ -347,9 +431,9 @@ Channels use `YYYYMMDD` string dates (e.g., `20260311`) for daily buckets, while
 
 ---
 
-## 7. Common Patterns
+## 11. Common Patterns
 
-### 7.1 Daily Bucket Pattern
+### 11.1 Daily Bucket Pattern
 
 Used by: DM, Group Messages, Channel Posts, Channel Index.
 
@@ -369,7 +453,7 @@ Sync full:    [today-6 ... today+1]            → 8 GET calls
 
 **Listener rotation**: At midnight UTC, cancel old listener, subscribe to new day's key. Sync previous day to catch stragglers.
 
-### 7.2 Single Key Pattern
+### 11.2 Single Key Pattern
 
 Used by: Wall Posts, Channel Metadata.
 
@@ -384,7 +468,7 @@ Appropriate when:
 - Updates are infrequent
 - Read-modify-write race is acceptable
 
-### 7.3 Multi-Owner Pattern
+### 11.3 Multi-Owner Pattern
 
 Used by: Group Messages, Wall Comments, Channel Posts, Channel Index.
 
@@ -399,7 +483,7 @@ DHT Key: shared_key
 - `nodus_ops_get_all()` retrieves all writers' values at once
 - No coordination needed between writers — each manages their own slot
 
-### 7.4 Salt-Based Privacy (DM Only)
+### 11.4 Salt-Based Privacy (DM Only)
 
 DM keys include an optional per-contact salt:
 ```
@@ -410,7 +494,7 @@ Without salt, anyone who knows both fingerprints can derive the outbox key and m
 
 ---
 
-## 8. Source File Reference
+## 12. Source File Reference
 
 | Component | Source File | Header |
 |-----------|-----------|--------|
@@ -420,6 +504,9 @@ Without salt, anyone who knows both fingerprints can derive the outbox key and m
 | Wall Posts | `dht/client/dna_wall.c` | `dht/client/dna_wall.h` |
 | Wall Comments | `dht/client/dna_wall_comments.c` | (in `dna_wall.h`) |
 | Channels | `dht/client/dna_channels.c` | `dht/client/dna_channels.h` |
+| Follow List | `dht/client/dht_followlist.c` | `dht/client/dht_followlist.h` |
+| Media Upload | `src/api/engine/dna_engine_media.c` | `include/dna/dna_engine.h` |
+| Debug Log | `src/api/engine/dna_debug_log_wire.c` | `src/api/engine/dna_debug_log_wire.h` |
 | Nodus Ops | `dht/shared/nodus_ops.c` | `dht/shared/nodus_ops.h` |
 
 ### Related Documentation

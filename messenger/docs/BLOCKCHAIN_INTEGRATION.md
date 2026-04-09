@@ -2,7 +2,7 @@
 
 ## Overview
 
-DNA Connect uses a modular blockchain architecture. Each blockchain is a self-contained module that implements the `blockchain_ops_t` interface.
+DNA Connect uses a modular blockchain architecture with 5 wallet chains. Each blockchain is a self-contained module that implements the `blockchain_ops_t` interface. Additionally, DNAC (DNA Cash) provides a native UTXO-based digital cash system over the Nodus DHT.
 
 ## Architecture
 
@@ -16,6 +16,15 @@ blockchain/
 │   ├── eth_rpc.c             # JSON-RPC client
 │   ├── eth_erc20.c           # ERC-20 token support (USDT, USDC)
 │   └── eth_wallet.h          # Wallet utilities
+├── bsc/
+│   ├── bsc_chain.c           # blockchain_ops_t implementation (forked from eth_chain.c)
+│   ├── bsc_tx.c              # Transaction building/signing
+│   ├── bsc_tx.h
+│   ├── bsc_rpc.c             # BSC JSON-RPC client
+│   ├── bsc_rpc.h
+│   ├── bsc_bep20.c           # BEP-20 token support (USDT, USDC)
+│   ├── bsc_bep20.h
+│   └── bsc_wallet.h          # Wallet utilities
 ├── tron/
 │   ├── trx_chain.c           # blockchain_ops_t implementation
 │   ├── trx_tx.c              # Transaction building/signing
@@ -52,6 +61,15 @@ blockchain/
 | USDC | `TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8` | 6 |
 | USDD | `TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn` | 18 |
 
+### BNB Smart Chain (BEP-20)
+
+| Token | Contract Address | Decimals |
+|-------|-----------------|----------|
+| USDT | `0x55d398326f99059fF775485246999027B3197955` | 18 |
+| USDC | `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d` | 18 |
+
+**Note:** BSC USDT/USDC use 18 decimals (not 6 like on Ethereum). BEP-20 is identical to ERC-20 in terms of ABI.
+
 ### Using Token Support
 
 ```c
@@ -86,7 +104,7 @@ trx->send(from, to, "100.0", "USDT", privkey, 32,
 
 ### Step 1: Create Directory Structure
 
-> **Note:** The example below uses "bitcoin" as a hypothetical example to illustrate the integration pattern. Bitcoin is NOT currently implemented. The actual implemented chains are: `cellframe/`, `ethereum/`, `solana/`, and `tron/`.
+> **Note:** The example below uses "bitcoin" as a hypothetical example to illustrate the integration pattern. Bitcoin is NOT currently implemented. The actual implemented chains are: `cellframe/`, `ethereum/`, `bsc/`, `solana/`, and `tron/`.
 
 ```bash
 mkdir -p blockchain/bitcoin
@@ -103,6 +121,7 @@ typedef enum {
     BLOCKCHAIN_TYPE_CELLFRAME,
     BLOCKCHAIN_TYPE_BITCOIN,      // Add your chain
     BLOCKCHAIN_TYPE_SOLANA,
+    BLOCKCHAIN_TYPE_BSC,          // BNB Smart Chain
 } blockchain_type_t;
 ```
 
@@ -338,3 +357,43 @@ chain->send(from, to, "0.1", NULL, privkey, 32,
 ## Wallet Integration
 
 Wallets are managed separately in `blockchain/blockchain_wallet.c`. After adding a chain, update the wallet system to support it.
+
+## DNAC (DNA Cash) Integration
+
+DNAC is a separate UTXO-based digital cash system that operates over the Nodus DHT with BFT witness consensus. Unlike the blockchain wallet chains above (which use `blockchain_ops_t`), DNAC has its own dedicated API and is not part of the blockchain registry.
+
+### Architecture
+
+DNAC lives in a separate top-level directory (`/opt/dna/dnac/`) and is linked into the messenger as `libdnac`. The engine module `src/api/engine/dna_engine_dnac.c` wraps the DNAC library for async access.
+
+### Key Differences from Wallet Chains
+
+| Feature | Wallet Chains (ETH, BSC, etc.) | DNAC |
+|---------|-------------------------------|------|
+| Interface | `blockchain_ops_t` | Dedicated C API (`dnac/include/dnac/dnac.h`) |
+| Consensus | External blockchain | BFT witness (Nodus nodes) |
+| Identity | secp256k1/Ed25519 keys | Dilithium5 (post-quantum) |
+| Addressing | Chain-specific addresses | Dilithium5 fingerprints |
+| Units | Chain-specific (ETH, BNB, etc.) | Raw units (1 DNAC = 100,000,000 raw) |
+| Engine module | `dna_engine_wallet.c` | `dna_engine_dnac.c` |
+
+### Engine API
+
+DNAC is accessed through the DNA Engine API (see `DNA_ENGINE_API.md` section 11b):
+
+```c
+// Balance, send, sync, history, UTXOs, fee estimate
+dna_engine_dnac_get_balance(engine, callback, user_data);
+dna_engine_dnac_send(engine, recipient_fp, amount, memo, callback, user_data);
+dna_engine_dnac_sync(engine, callback, user_data);
+dna_engine_dnac_get_history(engine, callback, user_data);
+dna_engine_dnac_get_utxos(engine, callback, user_data);
+dna_engine_dnac_estimate_fee(engine, amount, callback, user_data);
+
+// Multi-token (v0.9.188+)
+dna_engine_dnac_token_list(engine, callback, user_data);
+dna_engine_dnac_token_create(engine, name, symbol, decimals, supply, callback, user_data);
+dna_engine_dnac_token_balance(engine, token_id, callback, user_data);
+```
+
+See `dnac/README.md` for full DNAC architecture, CLI commands, and transaction format.

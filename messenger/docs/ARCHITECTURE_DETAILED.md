@@ -1,6 +1,6 @@
 # DNA Connect - Comprehensive Architecture Documentation
 
-**Version:** 0.1.x | **Last Updated:** 2025-12-15 | **Phase:** 13 (GEK v0.09)
+**Version:** 0.9.187 | **Last Updated:** 2026-04-10 | **Phase:** 7 (Flutter UI)
 
 This document provides a complete technical architecture reference for DNA Connect, derived entirely from source code analysis.
 
@@ -41,9 +41,9 @@ DNA Connect is a post-quantum end-to-end encrypted messenger with integrated cry
 | **Hash Function** | SHA3-512, Keccak-256 (ETH) |
 | **DHT Network** | Nodus (post-quantum Kademlia DHT) |
 | **NAT Traversal** | DHT-only (ICE/STUN removed v0.4.61) |
-| **Local Storage** | SQLite3 |
+| **Local Storage** | SQLCipher (SQLite3 with AES-256-CBC encryption) |
 | **GUI Framework** | Flutter (Dart FFI to C library) |
-| **Blockchain** | Cellframe (CPUNK), Ethereum (ETH), TRON (TRX), Solana (SOL) |
+| **Blockchain** | Cellframe (CPUNK), Ethereum (ETH), TRON (TRX), Solana (SOL), BSC (BNB) |
 | **HD Derivation** | BIP-32/BIP-44 (secp256k1), SLIP-10 (Ed25519) |
 
 ### Security Model
@@ -118,14 +118,21 @@ DNA Connect is a post-quantum end-to-end encrypted messenger with integrated cry
 │   ├── gsk.c                 # Group Symmetric Key
 │   └── gsk_packet.c          # GEK packet builder
 │
-├── database/                 # SQLite persistence
+├── database/                 # SQLite/SQLCipher persistence
+│   ├── addressbook_db.c/h    # Address book entries
+│   ├── cache_manager.c/h     # Unified cache lifecycle
+│   ├── channel_cache.c/h     # Channel data cache
+│   ├── channel_subscriptions_db.c/h # Channel subscriptions
 │   ├── contacts_db.c/h       # Per-identity contacts
+│   ├── db_encryption.c/h     # SQLCipher key derivation + encrypted open
+│   ├── following_db.c/h      # Follow list persistence
+│   ├── group_invitations.c/h # Invitation tracking
 │   ├── keyserver_cache.c/h   # Key cache (7-day TTL)
+│   ├── presence_cache.c/h    # Online status cache
 │   ├── profile_cache.c/h     # Profile cache (7-day TTL)
 │   ├── profile_manager.c/h   # Smart profile fetching
-│   ├── presence_cache.c/h    # Online status cache
-│   ├── group_invitations.c/h # Invitation tracking
-│   └── cache_manager.c/h     # Unified cache lifecycle
+│   ├── wall_cache.c/h        # Wall post cache
+│   └── wallet_cache.c/h      # Wallet balance/transaction cache
 │
 ├── blockchain/               # Multi-chain wallet integration
 │   ├── blockchain_wallet.c/h # Generic multi-chain interface
@@ -143,10 +150,16 @@ DNA Connect is a post-quantum end-to-end encrypted messenger with integrated cry
 │   │   ├── trx_wallet_create.c         # BIP-44 derivation
 │   │   ├── trx_base58.c                # Base58Check encoding
 │   │   └── trx_rpc.c                   # TronGrid API client
-│   └── solana/               # Solana wallet
-│       ├── sol_wallet.h                # SOL wallet interface
-│       ├── sol_wallet.c                # SLIP-10 Ed25519 derivation
-│       └── sol_rpc.c                   # Solana JSON-RPC client
+│   ├── solana/               # Solana wallet
+│   │   ├── sol_wallet.h                # SOL wallet interface
+│   │   ├── sol_wallet.c                # SLIP-10 Ed25519 derivation
+│   │   └── sol_rpc.c                   # Solana JSON-RPC client
+│   └── bsc/                  # BNB Smart Chain wallet (EVM-compatible)
+│       ├── bsc_wallet.h                # BSC wallet interface
+│       ├── bsc_chain.c                 # blockchain_ops_t implementation
+│       ├── bsc_tx.c                    # Transaction building/signing
+│       ├── bsc_rpc.c/h                 # BSC JSON-RPC client
+│       └── bsc_bep20.c                 # BEP-20 token support
 │
 ├── cli/                      # CLI testing tool
 │   ├── main.c                # Entry point + REPL loop
@@ -1095,6 +1108,8 @@ typedef enum {
     BLOCKCHAIN_ETHEREUM  = 1,   /* Ethereum mainnet (secp256k1) */
     BLOCKCHAIN_TRON      = 2,   /* TRON mainnet (TRC-20, secp256k1) */
     BLOCKCHAIN_SOLANA    = 3,   /* Solana (Ed25519) */
+    BLOCKCHAIN_BSC       = 4,   /* BNB Smart Chain (EVM-compatible, secp256k1) */
+    BLOCKCHAIN_COUNT            /* Number of supported blockchains */
 } blockchain_type_t;
 ```
 
@@ -1103,12 +1118,14 @@ typedef enum {
 - **Ethereum**: BIP-44 path `m/44'/60'/0'/0/0` → secp256k1 keypair
 - **TRON**: BIP-44 path `m/44'/195'/0'/0/0` → secp256k1 keypair
 - **Solana**: SLIP-10 Ed25519 path `m/44'/501'/0'/0'`
+- **BSC**: BIP-44 path `m/44'/60'/0'/0/0` → secp256k1 keypair (same as Ethereum, EVM-compatible)
 
 **Wallet Storage:** `<data_dir>/<fingerprint>/wallets/`
 - Cellframe: `<fingerprint>.dwallet`
 - Ethereum: `<fingerprint>.eth.json`
 - TRON: `<fingerprint>.trx.json`
 - Solana: `<fingerprint>.sol.json`
+- BSC: `<fingerprint>.bsc.json`
 
 **Encrypted Seed Storage:** `<data_dir>/<fingerprint>/`
 - `master_seed.enc` - 64-byte BIP39 master seed (1660 bytes)
@@ -1258,6 +1275,7 @@ Minimal transaction builder for DNA name registration and token transfers.
 | Ethereum Mainnet | ETH, ERC-20 | secp256k1 | ✅ Active |
 | TRON Mainnet | TRX, TRC-20 | secp256k1 | ✅ Active |
 | Solana Mainnet | SOL | Ed25519 | ✅ Active |
+| BNB Smart Chain | BNB, BEP-20 | secp256k1 | ✅ Active |
 
 ---
 
