@@ -1,4 +1,5 @@
 // Wallet Screen - Wallet list and balances
+import 'dart:async' show Timer;
 import 'dart:convert' show base64Decode;
 import 'dart:typed_data' show Uint8List;
 import 'dart:ui';
@@ -18,10 +19,9 @@ import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
 import '../../providers/price_provider.dart';
 import '../../providers/dnac_provider.dart';
-import '../../ffi/dna_engine.dart' show DnacBalance, DnacTxHistory, formatDnacAmount;
+import '../../ffi/dna_engine.dart' show DnacBalance, DnacTxHistory, formatDnacAmount, parseDnacAmount;
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
-import 'dnac_send_screen.dart';
 import 'dnac_utxos_screen.dart';
 import '../../l10n/app_localizations.dart';
 
@@ -2094,12 +2094,14 @@ class _SendSheet extends ConsumerStatefulWidget {
   final String? preselectedToken;
   final String? preselectedNetwork;
   final String? availableBalance;
+  final bool isDnac;
 
   const _SendSheet({
     required this.walletIndex,
     this.preselectedToken,
     this.preselectedNetwork,
     this.availableBalance,
+    this.isDnac = false,
   });
 
   @override
@@ -2126,6 +2128,12 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   String? _gasFee1; // normal
   String? _gasFee2; // fast
   bool _isLoadingGas = false;
+
+  // DNAC-specific state
+  final _memoController = TextEditingController();
+  int? _estimatedDnacFee;
+  bool _isEstimatingDnacFee = false;
+  Timer? _dnacFeeDebounce;
 
   // Cellframe network fees (validator fee varies by speed, network fee is fixed)
   static const double _cellframeNetworkFee = 0.002;
@@ -2235,10 +2243,15 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   @override
   void initState() {
     super.initState();
-    _selectedToken = widget.preselectedToken ?? 'CPUNK';
-    _selectedNetwork = widget.preselectedNetwork ?? 'Cellframe';
-    if (_selectedNetwork == 'Ethereum') {
-      _fetchGasEstimates();
+    if (widget.isDnac) {
+      _selectedToken = 'XXX';
+      _selectedNetwork = 'dnac';
+    } else {
+      _selectedToken = widget.preselectedToken ?? 'CPUNK';
+      _selectedNetwork = widget.preselectedNetwork ?? 'Cellframe';
+      if (_selectedNetwork == 'Ethereum') {
+        _fetchGasEstimates();
+      }
     }
   }
 
@@ -2267,6 +2280,8 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   void dispose() {
     _recipientController.dispose();
     _amountController.dispose();
+    _memoController.dispose();
+    _dnacFeeDebounce?.cancel();
     super.dispose();
   }
 
@@ -2499,8 +2514,221 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     return _resolvedAddress ?? _recipientController.text.trim();
   }
 
+  // ── DNAC-specific methods ──────────────────────────────────────────
+
+  void _onDnacAmountChanged(String value) {
+    _dnacFeeDebounce?.cancel();
+    _dnacFeeDebounce = Timer(const Duration(milliseconds: 500), () {
+      _estimateDnacFee();
+    });
+  }
+
+  Future<void> _estimateDnacFee() async {
+    final amountText = _amountController.text.trim();
+    if (amountText.isEmpty) {
+      setState(() {
+        _estimatedDnacFee = null;
+        _isEstimatingDnacFee = false;
+      });
+      return;
+    }
+
+    int rawAmount;
+    try {
+      rawAmount = parseDnacAmount(amountText);
+    } catch (_) {
+      setState(() {
+        _estimatedDnacFee = null;
+        _isEstimatingDnacFee = false;
+      });
+      return;
+    }
+
+    if (rawAmount <= 0) return;
+
+    setState(() => _isEstimatingDnacFee = true);
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final fee = await engine.dnacEstimateFee(rawAmount);
+      if (mounted) {
+        setState(() {
+          _estimatedDnacFee = fee;
+          _isEstimatingDnacFee = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _estimatedDnacFee = null;
+          _isEstimatingDnacFee = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _sendDnac() async {
+    final l10n = AppLocalizations.of(context);
+    final recipient = _recipientController.text.trim();
+    final amountText = _amountController.text.trim();
+    final memo = _memoController.text.trim();
+
+    // Must be 128-char hex fingerprint
+    if (!_isFingerprint(recipient)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.dnacInvalidRecipient)),
+      );
+      return;
+    }
+
+    int rawAmount;
+    try {
+      rawAmount = parseDnacAmount(amountText);
+    } catch (_) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.dnacInvalidAmount)),
+      );
+      return;
+    }
+
+    if (rawAmount <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.dnacInvalidAmount)),
+      );
+      return;
+    }
+
+    // Check balance (include fee)
+    final balance = ref.read(dnacBalanceProvider).valueOrNull;
+    final totalCost = rawAmount + (_estimatedDnacFee ?? 0);
+    if (balance != null && totalCost > balance.confirmed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.dnacInsufficientFunds)),
+      );
+      return;
+    }
+
+    // Confirmation dialog
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l10n.dnacConfirmSend),
+        content: Text(l10n.dnacAmountWithToken(formatDnacAmount(rawAmount))),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(MaterialLocalizations.of(ctx).cancelButtonLabel),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l10n.dnacSend),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _isSending = true);
+
+    try {
+      await ref.read(dnacBalanceProvider.notifier).sendPayment(
+        recipientFingerprint: recipient,
+        amount: rawAmount,
+        memo: memo.isNotEmpty ? memo : null,
+      );
+
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.dnacSendSuccess)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${l10n.dnacSendFailed}: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSending = false);
+    }
+  }
+
+  Future<void> _pickDnacContact() async {
+    final contacts = ref.read(contactsProvider).valueOrNull ?? [];
+    if (contacts.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AppLocalizations.of(context).contactsEmpty)),
+        );
+      }
+      return;
+    }
+
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) {
+        final l10n = AppLocalizations.of(context);
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(l10n.dnacPickContact,
+                  style: Theme.of(context).textTheme.titleMedium),
+            ),
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: contacts.length,
+                itemBuilder: (context, index) {
+                  final contact = contacts[index];
+                  return ListTile(
+                    leading: const FaIcon(FontAwesomeIcons.user, size: 20),
+                    title: Text(contact.effectiveName),
+                    subtitle: Text(
+                      '${contact.fingerprint.substring(0, 16)}...',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    onTap: () => Navigator.pop(context, contact.fingerprint),
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (result != null && mounted) {
+      _recipientController.text = result;
+    }
+  }
+
+  bool _canSendDnac() {
+    if (_isSending || _isEstimatingDnacFee) return false;
+    final recipient = _recipientController.text.trim();
+    if (!_isFingerprint(recipient)) return false;
+    final amountText = _amountController.text.trim();
+    if (amountText.isEmpty) return false;
+    try {
+      final raw = parseDnacAmount(amountText);
+      return raw > 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ── End DNAC methods ───────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final theme = Theme.of(context);
+
     return Padding(
       padding: EdgeInsets.only(
         bottom: MediaQuery.of(context).viewInsets.bottom,
@@ -2513,10 +2741,11 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                AppLocalizations.of(context).walletSend,
-                style: Theme.of(context).textTheme.titleLarge,
+                widget.isDnac ? l10n.dnacSendTitle : l10n.walletSend,
+                style: theme.textTheme.titleLarge,
               ),
               const SizedBox(height: 16),
+              // ── Recipient field ──
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -2524,35 +2753,50 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     child: TextField(
                       controller: _recipientController,
                       decoration: InputDecoration(
-                        labelText: AppLocalizations.of(context).walletRecipientAddress,
-                        hintText: 'Address or DNA fingerprint',
-                        suffixIcon: _isResolving
+                        labelText: widget.isDnac ? l10n.dnacRecipient : l10n.walletRecipientAddress,
+                        hintText: widget.isDnac ? l10n.dnacRecipientHint : 'Address or DNA fingerprint',
+                        prefixIcon: widget.isDnac
                             ? const Padding(
                                 padding: EdgeInsets.all(12),
-                                child: SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                ),
+                                child: FaIcon(FontAwesomeIcons.user, size: 18),
                               )
                             : null,
+                        suffixIcon: widget.isDnac
+                            ? IconButton(
+                                icon: const FaIcon(FontAwesomeIcons.addressBook, size: 18),
+                                onPressed: _pickDnacContact,
+                                tooltip: l10n.dnacPickContact,
+                              )
+                            : _isResolving
+                                ? const Padding(
+                                    padding: EdgeInsets.all(12),
+                                    child: SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    ),
+                                  )
+                                : null,
                       ),
-                      onChanged: _onRecipientChanged,
+                      style: widget.isDnac ? const TextStyle(fontSize: 14) : null,
+                      onChanged: widget.isDnac ? null : _onRecipientChanged,
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: IconButton(
-                      icon: const FaIcon(FontAwesomeIcons.addressBook),
-                      tooltip: 'Select contact',
-                      onPressed: _showContactPicker,
+                  if (!widget.isDnac) ...[
+                    const SizedBox(width: 8),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: IconButton(
+                        icon: const FaIcon(FontAwesomeIcons.addressBook),
+                        tooltip: 'Select contact',
+                        onPressed: _showContactPicker,
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
-              // Resolution status indicator
-              if (_resolvedAddress != null)
+              // Resolution status indicator (multi-chain only)
+              if (!widget.isDnac && _resolvedAddress != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Row(
@@ -2571,7 +2815,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     ],
                   ),
                 ),
-              if (_resolveError != null)
+              if (!widget.isDnac && _resolveError != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Row(
@@ -2589,6 +2833,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   ),
                 ),
               const SizedBox(height: 12),
+              // ── Amount field ──
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -2596,92 +2841,175 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     child: TextField(
                       controller: _amountController,
                       decoration: InputDecoration(
-                        labelText: AppLocalizations.of(context).walletAmount,
-                        hintText: '0.00',
-                        suffixText: _selectedToken,
+                        labelText: widget.isDnac ? l10n.dnacAmount : l10n.walletAmount,
+                        hintText: widget.isDnac ? l10n.dnacAmountHint : '0.00',
+                        prefixIcon: widget.isDnac
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: FaIcon(FontAwesomeIcons.coins, size: 18),
+                              )
+                            : null,
+                        suffixText: widget.isDnac ? l10n.dnacToken : _selectedToken,
                       ),
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      onChanged: (_) => setState(() {}),
+                      onChanged: widget.isDnac
+                          ? _onDnacAmountChanged
+                          : (_) => setState(() {}),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  Column(
-                    children: [
-                      const SizedBox(height: 8), // Align with TextField
-                      OutlinedButton(
-                        onPressed: _getCurrentBalance() != null ? () {
-                          final max = _calculateMaxAmount();
-                          if (max != null && max > 0) {
-                            _amountController.text = _formatMaxAmount(max);
-                            setState(() {});
-                          }
-                        } : null,
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          minimumSize: const Size(50, 36),
-                        ),
-                        child: Text(AppLocalizations.of(context).walletMax),
-                      ),
-                      const SizedBox(height: 4),
-                      // Show max amount below button
-                      if (_getCurrentBalance() != null)
-                        Text(
-                          'Max: ${_formatMaxAmount(_calculateMaxAmount())} $_selectedToken',
-                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: Theme.of(context).colorScheme.primary.withAlpha(179),
+                  if (!widget.isDnac) ...[
+                    const SizedBox(width: 8),
+                    Column(
+                      children: [
+                        const SizedBox(height: 8),
+                        OutlinedButton(
+                          onPressed: _getCurrentBalance() != null ? () {
+                            final max = _calculateMaxAmount();
+                            if (max != null && max > 0) {
+                              _amountController.text = _formatMaxAmount(max);
+                              setState(() {});
+                            }
+                          } : null,
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            minimumSize: const Size(50, 36),
                           ),
+                          child: Text(l10n.walletMax),
                         ),
+                        const SizedBox(height: 4),
+                        if (_getCurrentBalance() != null)
+                          Text(
+                            'Max: ${_formatMaxAmount(_calculateMaxAmount())} $_selectedToken',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.primary.withAlpha(179),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+              // ── Memo field (DNAC only) ──
+              if (widget.isDnac) ...[
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _memoController,
+                  decoration: InputDecoration(
+                    labelText: l10n.dnacMemo,
+                    hintText: l10n.dnacMemoHint,
+                    prefixIcon: const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: FaIcon(FontAwesomeIcons.noteSticky, size: 18),
+                    ),
+                    border: const OutlineInputBorder(),
+                  ),
+                  maxLength: 255,
+                ),
+              ],
+              // ── DNAC fee estimate ──
+              if (widget.isDnac) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(l10n.dnacFee, style: theme.textTheme.bodyMedium),
+                          if (_isEstimatingDnacFee)
+                            Text(l10n.dnacEstimatingFee, style: theme.textTheme.bodySmall)
+                          else if (_estimatedDnacFee != null)
+                            Text(
+                              l10n.dnacAmountWithToken(formatDnacAmount(_estimatedDnacFee!)),
+                              style: theme.textTheme.bodyMedium,
+                            )
+                          else
+                            Text('—', style: theme.textTheme.bodyMedium),
+                        ],
+                      ),
+                      if (_estimatedDnacFee != null && _amountController.text.isNotEmpty) ...[
+                        const Divider(height: 16),
+                        Builder(builder: (context) {
+                          int? rawAmount;
+                          try {
+                            rawAmount = parseDnacAmount(_amountController.text.trim());
+                          } catch (_) {}
+                          if (rawAmount == null) return const SizedBox.shrink();
+                          return Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(l10n.dnacTotal,
+                                  style: theme.textTheme.titleSmall?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  )),
+                              Text(
+                                l10n.dnacAmountWithToken(formatDnacAmount(
+                                  rawAmount + _estimatedDnacFee!,
+                                )),
+                                style: theme.textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          );
+                        }),
+                      ],
                     ],
                   ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      key: ValueKey('token_$_selectedNetwork'),
-                      initialValue: _selectedToken,
-                      decoration: const InputDecoration(labelText: 'Token'),
-                      items: _getTokenItems(),
-                      onChanged: (v) => setState(() => _selectedToken = v ?? 'CPUNK'),
+                ),
+              ],
+              // ── Token/Network selectors (multi-chain only) ──
+              if (!widget.isDnac) ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        key: ValueKey('token_$_selectedNetwork'),
+                        initialValue: _selectedToken,
+                        decoration: const InputDecoration(labelText: 'Token'),
+                        items: _getTokenItems(),
+                        onChanged: (v) => setState(() => _selectedToken = v ?? 'CPUNK'),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      initialValue: _selectedNetwork,
-                      decoration: const InputDecoration(labelText: 'Network'),
-                      items: _getNetworkItems(),
-                      onChanged: (v) {
-                        final newNetwork = v ?? 'Cellframe';
-                        setState(() {
-                          _selectedNetwork = newNetwork;
-                          // Reset token to default for the new network
-                          if (widget.preselectedToken == null) {
-                            _selectedToken = _defaultTokenForNetwork(newNetwork);
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: _selectedNetwork,
+                        decoration: const InputDecoration(labelText: 'Network'),
+                        items: _getNetworkItems(),
+                        onChanged: (v) {
+                          final newNetwork = v ?? 'Cellframe';
+                          setState(() {
+                            _selectedNetwork = newNetwork;
+                            if (widget.preselectedToken == null) {
+                              _selectedToken = _defaultTokenForNetwork(newNetwork);
+                            }
+                          });
+                          if (newNetwork == 'Ethereum') {
+                            _fetchGasEstimates();
                           }
-                        });
-                        // Fetch gas estimates when switching to Ethereum
-                        if (newNetwork == 'Ethereum') {
-                          _fetchGasEstimates();
-                        }
-                        // Re-resolve if there's a DNA identity in the input
-                        final input = _recipientController.text.trim();
-                        if (_isFingerprint(input) || _isDnaName(input)) {
-                          _resolveDnaIdentity(input);
-                        }
-                      },
+                          final input = _recipientController.text.trim();
+                          if (_isFingerprint(input) || _isDnaName(input)) {
+                            _resolveDnaIdentity(input);
+                          }
+                        },
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                ),
+              ],
               // Gas speed selector for Ethereum
-              if (_selectedNetwork == 'Ethereum') ...[
+              if (!widget.isDnac && _selectedNetwork == 'Ethereum') ...[
                 const SizedBox(height: 16),
                 Text(
                   'Transaction Speed (Gas Fee)',
-                  style: Theme.of(context).textTheme.bodySmall,
+                  style: theme.textTheme.bodySmall,
                 ),
                 const SizedBox(height: 8),
                 Row(
@@ -2713,11 +3041,11 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                 ),
               ],
               // Transaction speed selector for Cellframe
-              if (_selectedNetwork == 'Cellframe') ...[
+              if (!widget.isDnac && _selectedNetwork == 'Cellframe') ...[
                 const SizedBox(height: 16),
                 Text(
                   'Transaction Speed (Validator Fee)',
-                  style: Theme.of(context).textTheme.bodySmall,
+                  style: theme.textTheme.bodySmall,
                 ),
                 const SizedBox(height: 8),
                 Row(
@@ -2745,17 +3073,34 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   ],
                 ),
               ],
+              // ── Send button ──
               const SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: _canSend() ? _send : null,
-                child: _isSending
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text(AppLocalizations.of(context).walletSend),
-              ),
+              if (widget.isDnac)
+                SizedBox(
+                  height: 48,
+                  child: ElevatedButton.icon(
+                    onPressed: _canSendDnac() ? _sendDnac : null,
+                    icon: _isSending
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const FaIcon(FontAwesomeIcons.paperPlane, size: 18),
+                    label: Text(_isSending ? l10n.dnacSending : l10n.dnacConfirmSend),
+                  ),
+                )
+              else
+                ElevatedButton(
+                  onPressed: _canSend() ? _send : null,
+                  child: _isSending
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Text(l10n.walletSend),
+                ),
             ],
           ),
         ),
@@ -3091,13 +3436,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
-                        onPressed: isDnac
-                            ? () {
-                                Navigator.pop(context);
-                                Navigator.push(context,
-                                  MaterialPageRoute(builder: (_) => const DnacSendScreen()));
-                              }
-                            : () => _showSend(context, ref, balance),
+                        onPressed: () => _showSend(context, ref, balance),
                         icon: const FaIcon(FontAwesomeIcons.paperPlane, size: 16, color: Colors.white),
                         label: Text(
                           isDnac ? AppLocalizations.of(context).dnacSend : AppLocalizations.of(context).walletSendTitle(token),
@@ -3353,9 +3692,10 @@ class _TokenDetailSheet extends ConsumerWidget {
       isScrollControlled: true,
       builder: (context) => _SendSheet(
         walletIndex: walletIndex,
-        preselectedToken: token,
-        preselectedNetwork: network,
-        availableBalance: currentBalance,
+        preselectedToken: isDnac ? null : token,
+        preselectedNetwork: isDnac ? null : network,
+        availableBalance: isDnac ? null : currentBalance,
+        isDnac: isDnac,
       ),
     );
   }
