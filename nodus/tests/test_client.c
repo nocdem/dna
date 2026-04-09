@@ -462,6 +462,7 @@ int main(void) {
     test_get_not_found();
     test_listen();
     test_unlisten();
+#ifndef NODUS_CHANNELS_DISABLED
     test_ch_connect();
     if (nodus_channel_is_ready(&ch_conn)) {
         test_ch_create();
@@ -470,10 +471,13 @@ int main(void) {
         test_ch_subscribe_notify();
         test_ch_unsubscribe();
     }
+#endif
     test_failover_bad_server();
 
     /* Cleanup */
+#ifndef NODUS_CHANNELS_DISABLED
     nodus_channel_close(&ch_conn);
+#endif
     nodus_client_close(&client);
     nodus_server_stop(&server);
     pthread_join(srv_tid, NULL);

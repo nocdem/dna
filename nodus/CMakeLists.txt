@@ -139,7 +139,7 @@ endif()
 add_library(nodus STATIC ${NODUS_SOURCES})
 
 # Channel system disabled — heap corruption in ring/replication causes SIGABRT
-target_compile_definitions(nodus PRIVATE NODUS_CHANNELS_DISABLED)
+target_compile_definitions(nodus PUBLIC NODUS_CHANNELS_DISABLED)
 
 target_include_directories(nodus PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include

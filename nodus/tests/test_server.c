@@ -913,6 +913,7 @@ int main(void) {
         test_presence_query_mixed();
     }
 
+#ifndef NODUS_CHANNELS_DISABLED
     /* Channel tests require separate TCP 14003 connection */
     test_ch_connect();
     if (ch_client_conn) test_ch_auth();
@@ -924,12 +925,17 @@ int main(void) {
         test_ch_subscribe_notify();
         test_ch_nonexistent();
     }
+#endif
 
     /* Cleanup */
     nodus_t2_msg_free(&last_resp);
+#ifndef NODUS_CHANNELS_DISABLED
     nodus_t2_msg_free(&ch_last_resp);
+#endif
     nodus_tcp_close(&client_tcp);
+#ifndef NODUS_CHANNELS_DISABLED
     nodus_tcp_close(&ch_client_tcp);
+#endif
     nodus_server_stop(&server);
     pthread_join(tid, NULL);
     nodus_identity_clear(&client_id);

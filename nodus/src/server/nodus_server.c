@@ -313,6 +313,7 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
             rpl_kh, (unsigned long long)val->value_id, count, NODUS_R);
 
     int sent = 0, skipped_self = 0, failed = 0, hinted = 0;
+    int fail_indices[NODUS_R];
     for (int i = 0; i < count; i++) {
         /* Skip self */
         if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) {
@@ -320,13 +321,24 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
             continue;
         }
 
-        /* Send via inter_tcp pool. Falls back to hinted handoff on failure. */
+        /* Send via inter_tcp pool. Track failures for conditional hinting. */
         if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen) != 0) {
+            fail_indices[failed] = i;
             failed++;
             fprintf(stderr, "REPL: key=%s... SEND_FAIL to %s:%d\n",
                     rpl_kh, closest[i].ip, closest[i].tcp_port);
-            /* Skip hinted handoff if peer has been offline > 1 hour —
-             * republish will deliver data when peer comes back alive */
+        } else {
+            sent++;
+        }
+    }
+
+    /* Only queue hinted handoff when insufficient copies were delivered.
+     * With periodic republish (every 10 min) from all nodes that hold the
+     * value, gaps are filled naturally — hints are only needed when the
+     * copy count is critically low. */
+    if (sent < NODUS_REPLICATION_MIN && failed > 0) {
+        for (int f = 0; f < failed; f++) {
+            int i = fail_indices[f];
             uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[i].node_id);
             if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
                 nodus_storage_hinted_insert(&srv->storage,
@@ -335,8 +347,6 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
                                              frame, flen);
                 hinted++;
             }
-        } else {
-            sent++;
         }
     }
 
@@ -3439,6 +3449,15 @@ static void on_witness_connect(nodus_tcp_conn_t *conn, void *ctx) {
                             hello_buf, sizeof(hello_buf), &hello_len) == 0) {
             nodus_tcp_send_raw(conn, hello_buf, hello_len);
             conn->auth_state = NODUS_CONN_AUTH_HELLO_SENT;
+            /* Sync peer auth_state so peer_tick doesn't send a duplicate hello */
+            if (srv->witness) {
+                for (int i = 0; i < srv->witness->peer_count; i++) {
+                    if (srv->witness->peers[i].conn == conn) {
+                        srv->witness->peers[i].auth_state = PEER_AUTH_HELLO_SENT;
+                        break;
+                    }
+                }
+            }
         } else {
             conn->auth_state = NODUS_CONN_AUTH_FAILED;
         }
@@ -3543,8 +3562,10 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 }
             }
             fprintf(stderr, "WITNESS_AUTH_OK: outbound peer authenticated on port 4004\n");
-        } else if (strcmp(msg.method, "error") == 0) {
-            /* Auth error from peer — ignore */
+        } else if (strcmp(msg.method, "error") == 0 || msg.type == 'e') {
+            /* Auth error from peer — ignore.
+             * T2 error responses lack "q" field → method is empty.
+             * Check msg.type == 'e' to catch these. */
         } else {
             size_t rlen = 0;
             nodus_t2_error(msg.txn_id, NODUS_ERR_NOT_AUTHENTICATED,
