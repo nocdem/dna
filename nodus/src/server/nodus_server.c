@@ -495,8 +495,9 @@ static void dht_hinted_retry(nodus_server_t *srv) {
                 nodus_storage_hinted_delete(&srv->storage, entries[j].id);
                 h_sent++;
             } else {
-                /* Increment retry count; delete after max retries.
-                 * Republish (every 10 min) will handle delivery. */
+                /* Send failed — TCP buffer likely full. Bump retry count,
+                 * delete if max retries reached, then STOP trying this
+                 * peer to avoid flooding the buffer. */
                 int retries = nodus_storage_hinted_bump_retry(
                     &srv->storage, entries[j].id);
                 if (retries >= NODUS_HINT_MAX_RETRIES) {
@@ -505,6 +506,7 @@ static void dht_hinted_retry(nodus_server_t *srv) {
                 } else {
                     h_bumped++;
                 }
+                break;  /* Back off — don't flood this peer's TCP buffer */
             }
         }
         fprintf(stderr, "HINT-RETRY: peer=%s:%d batch=%zu delivered=%d bumped=%d maxretry=%d\n",
