@@ -255,7 +255,7 @@ static void test_sync_response_dedup(void) {
 }
 
 static void test_retry_timing(void) {
-    TEST("replication_retry respects 30s interval");
+    TEST("replication_retry respects 60s interval");
 
     /* Set last_retry to a known value */
     rep.last_retry_ms = 100000;
@@ -266,30 +266,30 @@ static void test_retry_timing(void) {
         FAIL("last_retry_ms should not have changed"); return;
     }
 
-    /* Call retry at 131000 (31s later) -- should run */
-    nodus_ch_replication_retry(&rep, 131000);
-    if (rep.last_retry_ms != 131000) {
-        FAIL("last_retry_ms should have updated to 131000"); return;
+    /* Call retry at 161000 (61s later) -- should run */
+    nodus_ch_replication_retry(&rep, 161000);
+    if (rep.last_retry_ms != 161000) {
+        FAIL("last_retry_ms should have updated to 161000"); return;
     }
 
     PASS();
 }
 
 static void test_retry_at_exact_boundary(void) {
-    TEST("replication_retry triggers at exact 30s boundary");
+    TEST("replication_retry triggers at exact 60s boundary");
 
     rep.last_retry_ms = 200000;
 
-    /* 29999ms later -- should NOT trigger (< 30000) */
-    nodus_ch_replication_retry(&rep, 229999);
+    /* 59999ms later -- should NOT trigger (< 60000) */
+    nodus_ch_replication_retry(&rep, 259999);
     if (rep.last_retry_ms != 200000) {
-        FAIL("should not trigger at 29999ms"); return;
+        FAIL("should not trigger at 59999ms"); return;
     }
 
-    /* Exactly 30s (30000ms) later -- SHOULD trigger (30000 < 30000 is false) */
-    nodus_ch_replication_retry(&rep, 230000);
-    if (rep.last_retry_ms != 230000) {
-        FAIL("should trigger at exact 30s boundary"); return;
+    /* Exactly 60s (60000ms) later -- SHOULD trigger (60000 < 60000 is false) */
+    nodus_ch_replication_retry(&rep, 260000);
+    if (rep.last_retry_ms != 260000) {
+        FAIL("should trigger at exact 60s boundary"); return;
     }
 
     PASS();

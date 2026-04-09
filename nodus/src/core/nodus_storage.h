@@ -221,6 +221,9 @@ int nodus_storage_hinted_get(nodus_storage_t *store,
 /** Delete a hint by ID (on successful delivery). */
 int nodus_storage_hinted_delete(nodus_storage_t *store, int64_t id);
 
+/** Increment retry_count for a hint. Returns new retry_count, or -1 on error. */
+int nodus_storage_hinted_bump_retry(nodus_storage_t *store, int64_t id);
+
 /** Delete expired hinted handoff entries. Returns count deleted. */
 int nodus_storage_hinted_cleanup(nodus_storage_t *store);
 

@@ -720,6 +720,23 @@ int nodus_storage_hinted_delete(nodus_storage_t *store, int64_t id) {
     return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
+int nodus_storage_hinted_bump_retry(nodus_storage_t *store, int64_t id) {
+    if (!store || !store->db) return -1;
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(store->db,
+            "UPDATE dht_hinted_handoff SET retry_count = retry_count + 1 WHERE id = ? RETURNING retry_count",
+            -1, &s, NULL) != SQLITE_OK)
+        return -1;
+
+    sqlite3_bind_int64(s, 1, (sqlite3_int64)id);
+    int result = -1;
+    if (sqlite3_step(s) == SQLITE_ROW)
+        result = sqlite3_column_int(s, 0);
+    sqlite3_finalize(s);
+    return result;
+}
+
 int nodus_storage_hinted_cleanup(nodus_storage_t *store) {
     if (!store || !store->db) return -1;
 

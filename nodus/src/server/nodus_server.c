@@ -389,12 +389,25 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
     int count = nodus_routing_find_closest(&srv->routing, &media_key,
                                             closest, NODUS_R);
 
+    int sent = 0, failed = 0;
+    int fail_indices[NODUS_R];
     for (int i = 0; i < count; i++) {
         /* Skip self */
         if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0)
             continue;
 
         if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen) != 0) {
+            fail_indices[failed] = i;
+            failed++;
+        } else {
+            sent++;
+        }
+    }
+
+    /* Only queue hints when critically few copies delivered */
+    if (sent < NODUS_REPLICATION_MIN && failed > 0) {
+        for (int f = 0; f < failed; f++) {
+            int i = fail_indices[f];
             uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[i].node_id);
             if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
                 nodus_storage_hinted_insert(&srv->storage,
@@ -463,8 +476,14 @@ static void dht_hinted_retry(nodus_server_t *srv) {
                                     entries[j].frame_data,
                                     entries[j].frame_len) == 0) {
                 nodus_storage_hinted_delete(&srv->storage, entries[j].id);
+            } else {
+                /* Increment retry count; delete after max retries.
+                 * Republish (every 10 min) will handle delivery. */
+                int retries = nodus_storage_hinted_bump_retry(
+                    &srv->storage, entries[j].id);
+                if (retries >= NODUS_HINT_MAX_RETRIES)
+                    nodus_storage_hinted_delete(&srv->storage, entries[j].id);
             }
-            /* If send fails, hint stays in DB for next retry cycle */
         }
 
         nodus_storage_hinted_free(entries, count);
