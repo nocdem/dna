@@ -118,15 +118,9 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
     sqlite3_exec(witness->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
     sqlite3_exec(witness->db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
 
-    char *err_msg = NULL;
-    rc = sqlite3_exec(witness->db, WITNESS_DB_SCHEMA, NULL, NULL, &err_msg);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "%s: schema creation failed: %s\n", LOG_TAG, err_msg);
-        sqlite3_free(err_msg);
-        return -1;
-    }
-
-    /* ── Migration: add sender_fp/receiver_fp/amount/fee columns ──── */
+    /* ── Migration: add sender_fp/receiver_fp/amount/fee columns ────
+     * Must run BEFORE schema exec because the schema includes indexes
+     * on sender_fp/receiver_fp which would fail on old DBs. */
     sqlite3_exec(witness->db,
         "ALTER TABLE committed_transactions ADD COLUMN sender_fp TEXT;",
         NULL, NULL, NULL);
@@ -139,6 +133,14 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
     sqlite3_exec(witness->db,
         "ALTER TABLE committed_transactions ADD COLUMN fee INTEGER NOT NULL DEFAULT 0;",
         NULL, NULL, NULL);
+
+    char *err_msg = NULL;
+    rc = sqlite3_exec(witness->db, WITNESS_DB_SCHEMA, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: schema creation failed: %s\n", LOG_TAG, err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
 
     fprintf(stderr, "%s: opened database %s\n", LOG_TAG, db_path);
     return 0;
