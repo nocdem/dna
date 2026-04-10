@@ -70,6 +70,7 @@ class _MainNavigation extends ConsumerWidget {
             icon: FontAwesomeIcons.ellipsis,
             activeIcon: FontAwesomeIcons.ellipsis,
             label: AppLocalizations.of(context).navMore,
+            badgeCount: ref.watch(pendingRequestCountProvider),
           ),
         ],
       ),
