@@ -351,6 +351,84 @@ static void subscription_cleanup_expired(nodus_subscription_table_t *table) {
     }
 }
 
+#define NODUS_SUB_RENEWAL_PER_TICK  5   /* Max listens to renew per event loop tick */
+
+/* Forward decl — defined later in file */
+static void listen_fwd_complete(nodus_server_t *srv,
+                                 nodus_peer_t *closest, int count,
+                                 void *user_data);
+
+/** Periodic subscription renewal: re-forward local client LISTEN keys to
+ *  current responsible nodes. Rate-limited to prevent bursts.
+ *
+ *  Walks through all sessions and their listen_keys, starting a new
+ *  iterative FIND_NODE lookup for each. Processes up to
+ *  NODUS_SUB_RENEWAL_PER_TICK keys per call, saving progress in
+ *  srv->sub_renewal bookmark to resume next tick.
+ *
+ *  A full renewal cycle starts every NODUS_SUBSCRIPTION_TTL/2 (7.5 min).
+ */
+static void subscription_renew_tick(nodus_server_t *srv) {
+    if (!srv) return;
+
+    /* Start a new renewal cycle every NODUS_SUBSCRIPTION_TTL / 2 */
+    uint64_t now = nodus_time_now();
+    if (now - srv->sub_renewal.last_renewal < NODUS_SUBSCRIPTION_TTL / 2) {
+        /* Not time yet — but if we're mid-cycle, continue processing */
+        if (srv->sub_renewal.session_idx == 0 && srv->sub_renewal.key_idx == 0) {
+            return;
+        }
+    } else if (srv->sub_renewal.session_idx == 0 && srv->sub_renewal.key_idx == 0) {
+        /* Start new cycle */
+        srv->sub_renewal.last_renewal = now;
+    }
+
+    int processed = 0;
+    while (processed < NODUS_SUB_RENEWAL_PER_TICK &&
+           srv->sub_renewal.session_idx < NODUS_MAX_SESSIONS) {
+
+        nodus_session_t *s = &srv->sessions[srv->sub_renewal.session_idx];
+
+        if (!s->conn || !s->authenticated) {
+            /* Skip disconnected/unauthed sessions */
+            srv->sub_renewal.session_idx++;
+            srv->sub_renewal.key_idx = 0;
+            continue;
+        }
+
+        if (srv->sub_renewal.key_idx >= s->listen_count) {
+            /* Done with this session */
+            srv->sub_renewal.session_idx++;
+            srv->sub_renewal.key_idx = 0;
+            continue;
+        }
+
+        /* Process this listen key: re-forward subscription */
+        nodus_key_t *key_copy = malloc(sizeof(nodus_key_t));
+        if (key_copy) {
+            *key_copy = s->listen_keys[srv->sub_renewal.key_idx];
+            if (iterative_lookup_start(srv, key_copy, -1, 0,
+                                        listen_fwd_complete, key_copy, free) != 0) {
+                /* No slots — fallback (synchronous) */
+                nodus_peer_t closest[NODUS_R];
+                int count = nodus_routing_find_closest(&srv->routing, key_copy,
+                                                         closest, NODUS_R);
+                listen_fwd_complete(srv, closest, count, key_copy);
+            }
+        }
+
+        srv->sub_renewal.key_idx++;
+        processed++;
+    }
+
+    /* If we walked past all sessions, reset for next cycle */
+    if (srv->sub_renewal.session_idx >= NODUS_MAX_SESSIONS) {
+        srv->sub_renewal.session_idx = 0;
+        srv->sub_renewal.key_idx = 0;
+        QGP_LOG_DEBUG(LOG_TAG, "SUB_RENEWAL: cycle complete");
+    }
+}
+
 /** Send a T1 notify to every remote subscriber interested in key. */
 static void subscription_notify(nodus_server_t *srv, const nodus_key_t *key,
                                  const nodus_value_t *val) {
@@ -5234,6 +5312,10 @@ int nodus_server_run(nodus_server_t *srv) {
                 srv->last_sub_cleanup = now_sec;
             }
         }
+
+        /* Periodic subscription renewal (re-forward local LISTENs to K-closest).
+         * Rate-limited internally to NODUS_SUB_RENEWAL_PER_TICK per call. */
+        subscription_renew_tick(srv);
 
         /* Iterative Kademlia FIND_NODE lookup engine tick */
         iterative_lookup_tick(srv);

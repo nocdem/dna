@@ -390,6 +390,13 @@ typedef struct nodus_server {
     nodus_subscription_table_t  subscriptions;
     uint64_t                    last_sub_cleanup;
 
+    /* Subscription renewal state (rate-limited across ticks) */
+    struct {
+        int      session_idx;    /* Current session being processed */
+        int      key_idx;        /* Current listen_keys index within session */
+        uint64_t last_renewal;   /* Last time renewal cycle started */
+    } sub_renewal;
+
     /* Batch forward state machine (get_batch miss → forward to closest peer) */
     dht_bf_state_t          bf_state;
     dht_bf_fd_entry_t       bf_fd_table[NODUS_BF_FD_TABLE_SIZE];
