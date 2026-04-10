@@ -41,6 +41,7 @@ message(STATUS "Shared dir: ${SHARED_DIR}")
 include_directories(
     ${DNA_ROOT}
     ${DNA_ROOT}/include
+    ${DNA_ROOT}/dht/client  # dna_profile.h (transitively included by dht_keyserver.h)
     ${SHARED_DIR}          # shared/crypto/utils/*.h, shared/crypto/bip39/*.h
 )
 
@@ -172,6 +173,13 @@ add_test(NAME test_debug_log_wire COMMAND test_debug_log_wire)
 add_executable(test_platform_keystore test_platform_keystore.c)
 target_link_libraries(test_platform_keystore ${TEST_LIBS})
 add_test(NAME test_platform_keystore COMMAND test_platform_keystore)
+
+# =============================================================================
+# Test: Registered name validator (regression for reverse_lookup bug)
+# =============================================================================
+add_executable(test_registered_name_validation test_registered_name_validation.c)
+target_link_libraries(test_registered_name_validation ${TEST_LIBS})
+add_test(NAME test_registered_name_validation COMMAND test_registered_name_validation)
 
 # =============================================================================
 # CTest integration

@@ -154,6 +154,33 @@ int dht_keyserver_lookup(
     return 0;
 }
 
+// Validator: rejects NULL/empty/overlong/fingerprint-format strings.
+// The legacy bug wrote "<16-hex>..." into identity_out on lookup failure,
+// which callers happily cached as a "registered name". Reject that pattern
+// here so the invariant is enforced in one place.
+bool dht_keyserver_is_valid_registered_name(const char *name) {
+    if (!name) return false;
+    size_t len = strlen(name);
+    if (len == 0) return false;
+    // DNA names are short (< 64 chars); reject overlong input
+    if (len >= 64) return false;
+    // Reject trailing "..." (legacy fingerprint-format fallback)
+    if (len >= 3 && name[len - 1] == '.' && name[len - 2] == '.' && name[len - 3] == '.') {
+        return false;
+    }
+    // Reject pure-hex strings of length >= 16 (looks like a fingerprint prefix)
+    if (len >= 16) {
+        bool all_hex = true;
+        for (size_t i = 0; i < len; i++) {
+            char c = name[i];
+            bool is_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!is_hex) { all_hex = false; break; }
+        }
+        if (all_hex) return false;
+    }
+    return true;
+}
+
 // Reverse lookup: fingerprint → name
 // Fetches from fingerprint:profile and extracts registered_name
 int dht_keyserver_reverse_lookup(
@@ -169,10 +196,12 @@ int dht_keyserver_reverse_lookup(
 
     QGP_LOG_INFO(LOG_TAG, "Reverse lookup for fingerprint: %.16s...\n", fingerprint);
 
-    // Check name cache first (avoids DHT roundtrip for repeated lookups)
+    // Check name cache first (avoids DHT roundtrip for repeated lookups).
+    // Validate: legacy builds cached fingerprint-format "names" here; skip
+    // those so the DHT path can refresh with a real name (or return -2).
     char cached_name[64] = {0};
     if (keyserver_cache_get_name(fingerprint, cached_name, sizeof(cached_name)) == 0 &&
-        cached_name[0] != '\0') {
+        dht_keyserver_is_valid_registered_name(cached_name)) {
         *identity_out = strdup(cached_name);
         QGP_LOG_INFO(LOG_TAG, "✓ Reverse lookup (cached): %s\n", cached_name);
         return 0;
@@ -223,6 +252,15 @@ int dht_keyserver_reverse_lookup(
 
     // Verify candidate via name:lookup → fingerprint (proof of ownership)
     if (have_candidate) {
+        // Invariant: reject fingerprint-format "names" produced by legacy code
+        // paths before they can reach the DHT verify step.
+        if (!dht_keyserver_is_valid_registered_name(candidate)) {
+            QGP_LOG_WARN(LOG_TAG, "⚠ Candidate '%s' rejected by name validator for %.16s...\n",
+                         candidate, fingerprint);
+            dna_identity_free(identity);
+            return -3;
+        }
+
         char verify_key[256];
         snprintf(verify_key, sizeof(verify_key), "%s:lookup", candidate);
         uint8_t *lookup_fp = NULL;
@@ -234,22 +272,20 @@ int dht_keyserver_reverse_lookup(
             *identity_out = strdup(candidate);
             QGP_LOG_INFO(LOG_TAG, "✓ Reverse lookup VERIFIED: %s\n", candidate);
             keyserver_cache_put_name(fingerprint, candidate, 0);
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "⚠ Name '%s' failed verification for %.16s...\n", candidate, fingerprint);
-            char short_fp[32];
-            snprintf(short_fp, sizeof(short_fp), "%.16s...", fingerprint);
-            *identity_out = strdup(short_fp);
+            if (lookup_fp) free(lookup_fp);
+            dna_identity_free(identity);
+            return 0;
         }
+
+        QGP_LOG_WARN(LOG_TAG, "⚠ Name '%s' failed verification for %.16s...\n", candidate, fingerprint);
         if (lookup_fp) free(lookup_fp);
-    } else {
-        char short_fp[32];
-        snprintf(short_fp, sizeof(short_fp), "%.16s...", fingerprint);
-        *identity_out = strdup(short_fp);
-        QGP_LOG_INFO(LOG_TAG, "No name candidate found for %.16s...\n", fingerprint);
+        dna_identity_free(identity);
+        return -3;
     }
 
+    QGP_LOG_INFO(LOG_TAG, "No name candidate found for %.16s...\n", fingerprint);
     dna_identity_free(identity);
-    return 0;
+    return -2;
 }
 
 // Thread context for async reverse lookup

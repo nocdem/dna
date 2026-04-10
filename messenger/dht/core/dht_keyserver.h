@@ -113,13 +113,27 @@ int dht_keyserver_update(
  * Used when receiving messages from unknown senders (synchronous, blocking)
  *
  * @param fingerprint: SHA3-512 fingerprint of Dilithium pubkey (128 hex chars)
- * @param identity_out: Output identity string (caller must free)
- * @return: 0 on success, -1 on error, -2 if not found, -3 if signature verification failed
+ * @param identity_out: On success (ret=0), caller-owned registered name string.
+ *                      On any failure (ret!=0), set to NULL. Callers must NOT
+ *                      treat the fingerprint as a fallback name — use a separate
+ *                      display-name API for that.
+ * @return: 0 on success, -1 on error, -2 if not found, -3 if verification failed
  */
 int dht_keyserver_reverse_lookup(
     const char *fingerprint,
     char **identity_out
 );
+
+/**
+ * Validate a candidate registered name.
+ * Rejects NULL, empty, overlong, and fingerprint-format strings (e.g. the
+ * legacy bug output "f8ebbbb9cb834ab8..."). Used as an invariant check by
+ * reverse_lookup and as a migration guard for clients with stale caches.
+ *
+ * @param name: Candidate name string (may be NULL)
+ * @return: true if name looks like a real DNA name, false otherwise
+ */
+bool dht_keyserver_is_valid_registered_name(const char *name);
 
 /**
  * Reverse lookup: Find identity from Dilithium pubkey fingerprint (asynchronous, non-blocking)

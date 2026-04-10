@@ -1815,108 +1815,22 @@ class _DnacTokenTile extends ConsumerWidget {
   }
 
   void _showTokenDetail(BuildContext context, WidgetRef ref) {
-    final l10n = AppLocalizations.of(context);
-    final balanceAsync = ref.read(dnacTokenBalanceProvider(_tokenIdHex(token.tokenId)));
-    final balance = balanceAsync.valueOrNull;
-
+    // Refresh balance + history providers before opening
+    ref.invalidate(dnacTokenBalanceProvider(_tokenIdHex(token.tokenId)));
+    ref.invalidate(dnacHistoryProvider);
+    final initialBal = ref.read(dnacTokenBalanceProvider(_tokenIdHex(token.tokenId)))
+        .valueOrNull?.confirmed ?? 0;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.5,
-        minChildSize: 0.3,
-        maxChildSize: 0.85,
-        expand: false,
-        builder: (context, scrollController) {
-          final theme = Theme.of(context);
-          final confirmed = balance?.confirmed ?? 0;
-          final pending = balance?.pending ?? 0;
-          return Container(
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surface,
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-            ),
-            child: ListView(
-              controller: scrollController,
-              padding: const EdgeInsets.all(24),
-              children: [
-                Center(
-                  child: Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Center(
-                  child: Container(
-                    width: 64,
-                    height: 64,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: const Color(0xFF7B61FF).withValues(alpha: 0.1),
-                      border: Border.all(
-                        color: const Color(0xFF7B61FF).withValues(alpha: 0.3),
-                        width: 2,
-                      ),
-                    ),
-                    child: const Center(
-                      child: FaIcon(
-                        FontAwesomeIcons.coins,
-                        size: 28,
-                        color: Color(0xFF7B61FF),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Center(
-                  child: Text(
-                    '${token.name} (${token.symbol})',
-                    style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Center(
-                  child: Text(
-                    l10n.dnacNetworkLabel,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                _detailRow(theme, l10n.dnacConfirmed, formatTokenAmount(confirmed, token.decimals)),
-                if (pending > 0)
-                  _detailRow(theme, l10n.dnacPending, formatTokenAmount(pending, token.decimals)),
-                const Divider(height: 32),
-                _detailRow(theme, l10n.dnacTokenCreateDecimals, '${token.decimals}'),
-                _detailRow(theme, l10n.dnacTokenCreateSupply,
-                    formatTokenAmount(token.supply, token.decimals)),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _detailRow(ThemeData theme, String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label, style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-          )),
-          Text(value, style: theme.textTheme.bodyMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-          )),
-        ],
+      builder: (context) => _TokenDetailSheet(
+        walletIndex: 0,
+        walletAddress: '',
+        token: token.symbol,
+        network: 'dnac',
+        initialBalance: formatTokenAmount(initialBal, token.decimals),
+        isDnac: true,
+        dnacToken: token,
       ),
     );
   }
@@ -3521,6 +3435,9 @@ class _TokenDetailSheet extends ConsumerWidget {
   final String network;
   final String initialBalance;
   final bool isDnac;
+  /// When non-null, show a custom DNAC token (XYZ-style) instead of native DNAC.
+  /// Works alongside isDnac=true. isDnac=true + dnacToken=null → native DNAC.
+  final DnacToken? dnacToken;
 
   const _TokenDetailSheet({
     required this.walletIndex,
@@ -3529,13 +3446,21 @@ class _TokenDetailSheet extends ConsumerWidget {
     required this.network,
     required this.initialBalance,
     this.isDnac = false,
+    this.dnacToken,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // DNAC mode: use DNAC providers instead of multi-chain wallet providers
     final String balance;
-    if (isDnac) {
+    if (isDnac && dnacToken != null) {
+      // Custom DNAC token mode
+      final tokenIdHex = _DnacTokenTile._tokenIdHex(dnacToken!.tokenId);
+      final tokBal = ref.watch(dnacTokenBalanceProvider(tokenIdHex)).valueOrNull;
+      balance = tokBal != null
+          ? formatTokenAmount(tokBal.confirmed, dnacToken!.decimals)
+          : '0';
+    } else if (isDnac) {
       final dnacBal = ref.watch(dnacBalanceProvider).valueOrNull;
       balance = dnacBal != null ? formatDnacAmount(dnacBal.confirmed) : '0';
     } else {
@@ -3783,9 +3708,14 @@ class _TokenDetailSheet extends ConsumerWidget {
     final l10n = AppLocalizations.of(context);
     return historyAsync.when(
       data: (allHistory) {
-        // Native DNAC detail sheet: show only native DNAC transactions
-        // (filter out custom token transfers — they have their own history)
-        final history = allHistory.where((tx) => tx.isNative).toList();
+        // Filter by token: native sheet → only native TXs, custom token sheet → only that token's TXs
+        final List<DnacTxHistory> history;
+        if (dnacToken != null) {
+          final wantedHex = _DnacTokenTile._tokenIdHex(dnacToken!.tokenId);
+          history = allHistory.where((tx) => tx.tokenIdHex == wantedHex).toList();
+        } else {
+          history = allHistory.where((tx) => tx.isNative).toList();
+        }
         if (history.isEmpty) {
           return Center(
             child: Column(

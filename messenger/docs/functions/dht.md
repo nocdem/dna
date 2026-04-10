@@ -72,8 +72,9 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 | `int dht_keyserver_publish_alias(dht_context_t*, const char*, const char*)` | Publish name → fingerprint alias |
 | `int dht_keyserver_lookup(dht_context_t*, const char*, dna_unified_identity_t**)` | Lookup identity by name or fingerprint |
 | `int dht_keyserver_update(dht_context_t*, const char*, const uint8_t*, const uint8_t*, const uint8_t*)` | Update public keys |
-| `int dht_keyserver_reverse_lookup(dht_context_t*, const char*, char**)` | Reverse lookup by fingerprint |
-| `void dht_keyserver_reverse_lookup_async(dht_context_t*, const char*, void(*)(char*, void*), void*)` | Async reverse lookup |
+| `int dht_keyserver_reverse_lookup(const char*, char**)` | Reverse lookup by fingerprint. Returns 0+name on success, -2 if no name, -3 if verification failed. `*identity_out` is NULL on any failure. |
+| `void dht_keyserver_reverse_lookup_async(const char*, void(*)(char*, void*), void*)` | Async reverse lookup. Callback receives NULL identity on any failure. |
+| `bool dht_keyserver_is_valid_registered_name(const char*)` | Rejects NULL/empty/overlong/fingerprint-format strings. Used as invariant check by reverse_lookup and as migration guard for stale caches. |
 
 ### 9.7 DNA Name System (`dht_keyserver.h`)
 

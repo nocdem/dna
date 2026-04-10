@@ -25,6 +25,7 @@ import 'services/notification_service.dart';
 import 'utils/window_state.dart';
 import 'utils/lifecycle_observer.dart';
 import 'utils/logger.dart';
+import 'utils/registered_name_validator.dart';
 
 /// Global RouteObserver for screens that need to know when they're covered/uncovered
 /// Used by QrScannerScreen to stop camera when covered by another route
@@ -165,9 +166,9 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
       _nameCheckTimeout?.cancel();
       try {
         final registeredName = await engine.getRegisteredName();
-        if (registeredName != null && registeredName.isNotEmpty) {
+        if (isValidRegisteredName(registeredName)) {
           engine.debugLog('STARTUP', 'Backfill: recovered name from DHT: $registeredName');
-          await CacheDatabase.instance.saveRegisteredName(fp, registeredName);
+          await CacheDatabase.instance.saveRegisteredName(fp, registeredName!);
           if (mounted) {
             ref.read(identityProfileCacheProvider.notifier).updateIdentity(fp, registeredName, '');
             setState(() {
@@ -176,7 +177,11 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
             });
           }
         } else {
-          engine.debugLog('STARTUP', 'Backfill: no registered name in DHT — showing registration');
+          if (registeredName != null && registeredName.isNotEmpty) {
+            engine.debugLog('STARTUP', 'Backfill: rejected corrupt name "$registeredName" — showing registration');
+          } else {
+            engine.debugLog('STARTUP', 'Backfill: no registered name in DHT — showing registration');
+          }
           if (mounted) {
             setState(() {
               _nameCheckDone = true;
@@ -304,7 +309,7 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
         // Name check (reuse existing methods)
         if (fp != null) {
           final cached = await CacheDatabase.instance.getIdentity(fp);
-          if (cached != null && cached.registeredName.isNotEmpty) {
+          if (cached != null && isValidRegisteredName(cached.registeredName)) {
             engine.debugLog('STARTUP', 'Cached registeredName: ${cached.registeredName}');
             if (mounted) {
               setState(() {
@@ -315,7 +320,16 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
             // Background: verify name exists in DHT
             _ensureNameInDht(engine, cached.registeredName);
           } else {
-            engine.debugLog('STARTUP', 'No cached registeredName — backfilling from DHT');
+            if (cached != null && cached.registeredName.isNotEmpty) {
+              engine.debugLog('STARTUP',
+                  'Corrupt cached name "${cached.registeredName}" detected — clearing and backfilling');
+              await CacheDatabase.instance.saveRegisteredName(fp, '');
+              if (mounted) {
+                ref.read(identityProfileCacheProvider.notifier).updateIdentity(fp, '', '');
+              }
+            } else {
+              engine.debugLog('STARTUP', 'No cached registeredName — backfilling from DHT');
+            }
             _backfillNameFromDht(engine, fp);
           }
         } else {
