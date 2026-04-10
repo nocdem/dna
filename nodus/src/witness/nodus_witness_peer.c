@@ -576,6 +576,23 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
         }
     }
 
+    /* GENESIS TX must bypass mempool — legacy single-TX path creates the
+     * chain DB during commit. Batch commit path cannot create chain DB
+     * and will fail with "batch db begin failed" on pre-genesis state. */
+    if (tx_type == NODUS_W_TX_GENESIS) {
+        fprintf(stderr, "%s: forwarded genesis TX — using legacy BFT path\n",
+                LOG_TAG);
+        w->round_state.client_conn = NULL;
+        w->round_state.client_txn_id = 0;
+        w->round_state.is_forwarded = true;
+        memcpy(w->round_state.forwarder_id, fwd->forwarder_id,
+               NODUS_T3_WITNESS_ID_LEN);
+        return nodus_witness_bft_start_round(w, fwd->tx_hash,
+                    nullifiers, nullifier_count, tx_type,
+                    fwd->tx_data, (uint32_t)fwd->tx_len,
+                    fwd->client_pubkey, fwd->client_sig, fwd->fee);
+    }
+
     /* Add forwarded TX to mempool instead of immediate BFT round */
     nodus_witness_mempool_entry_t *entry = calloc(1, sizeof(*entry));
     if (!entry) return -1;
