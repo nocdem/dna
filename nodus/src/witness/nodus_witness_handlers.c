@@ -171,8 +171,12 @@ static void handle_dnac_nullifier(nodus_witness_t *w,
     cbor_encode_bool(&enc, spent);
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -248,8 +252,12 @@ static void handle_dnac_ledger(nodus_witness_t *w,
     }
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -296,8 +304,12 @@ static void handle_dnac_supply(nodus_witness_t *w,
     }
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -402,8 +414,12 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     }
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 
     free(buf);
     free(utxos);
@@ -504,8 +520,12 @@ static void handle_dnac_ledger_range(nodus_witness_t *w,
     }
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 
     free(buf);
 }
@@ -557,8 +577,12 @@ static void handle_dnac_roster(nodus_witness_t *w,
     }
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 
     free(buf);
 }
@@ -621,7 +645,12 @@ static void handle_dnac_tx(nodus_witness_t *w,
         cbor_encode_cstr(&enc, "found");
         cbor_encode_bool(&enc, false);
         size_t rlen = cbor_encoder_len(&enc);
-        if (rlen > 0) nodus_tcp_send(conn, buf, rlen);
+        if (rlen > 0) {
+            nodus_tcp_send(conn, buf, rlen);
+        } else {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "response buffer overflow");
+        }
         return;
     }
 
@@ -655,8 +684,12 @@ static void handle_dnac_tx(nodus_witness_t *w,
     cbor_encode_uint(&enc, (uint64_t)time(NULL));
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 
     free(buf);
     free(tx_data);
@@ -734,8 +767,12 @@ static void handle_dnac_block(nodus_witness_t *w,
     }
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -837,8 +874,12 @@ static void handle_dnac_block_range(nodus_witness_t *w,
     }
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 
     free(buf);
 }
@@ -905,8 +946,11 @@ static void handle_dnac_history(nodus_witness_t *w,
     int count = 0;
     nodus_witness_tx_by_owner(w, owner, entries, max_results, &count);
 
-    /* Encode response */
-    size_t buf_size = 512 + ((size_t)count * 512);
+    /* Encode response.
+     * Per-entry budget: ~300B metadata + up to NODUS_WITNESS_MAX_TX_OUTPUTS
+     * outputs × ~260B (128-char fp + token_id + amount + index).
+     * 4096B per entry gives safe headroom for 8+ outputs. */
+    size_t buf_size = 1024 + ((size_t)count * 4096);
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
         free(entries);
@@ -957,8 +1001,12 @@ static void handle_dnac_history(nodus_witness_t *w,
     }
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 
     free(buf);
     free(entries);
@@ -1373,8 +1421,12 @@ void nodus_witness_send_spend_result(nodus_witness_t *w,
     cbor_encode_bstr(&enc, sig.bytes, NODUS_SIG_BYTES);
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 
     fprintf(stderr, "%s: sent spend result (status=%d, txn_id=%u)\n",
             LOG_TAG, status, txn_id);
@@ -1439,8 +1491,12 @@ static void handle_dnac_token_list(nodus_witness_t *w,
     }
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 
     free(buf);
     free(tokens);
@@ -1518,8 +1574,12 @@ static void handle_dnac_token_info(nodus_witness_t *w,
     cbor_encode_cstr(&enc, creator);
 
     size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0)
+    if (rlen > 0) {
         nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
 }
 
 /* ════════════════════════════════════════════════════════════════════
