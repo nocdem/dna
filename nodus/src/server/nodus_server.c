@@ -1192,17 +1192,17 @@ static void dht_republish(nodus_server_t *srv) {
         nodus_peer_t closest[NODUS_R];
         int n = nodus_routing_find_closest(&srv->routing, &val->key_hash, closest, NODUS_R);
 
+        /* Republish is a best-effort periodic maintenance operation.
+         * We do NOT queue hinted handoffs here — the next republish
+         * cycle (10 min) will retry any failed sends. Queueing hints
+         * for republish failures caused massive duplication (same frame
+         * inserted every cycle → 367 unique frames expanding to 134K
+         * hint entries in production). Fresh client PUTs still queue
+         * hints via replicate_value() → do_replicate_store_frame(). */
         for (int j = 0; j < n; j++) {
             if (nodus_key_cmp(&closest[j].node_id, &srv->identity.node_id) == 0) continue;
-            if (dht_republish_send(srv, closest[j].ip, closest[j].tcp_port, frame, flen) != 0) {
-                uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[j].node_id);
-                if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
-                    nodus_storage_hinted_insert(&srv->storage,
-                                                 &closest[j].node_id,
-                                                 closest[j].ip, closest[j].tcp_port,
-                                                 frame, flen);
-                }
-            }
+            (void)dht_republish_send(srv, closest[j].ip, closest[j].tcp_port, frame, flen);
+            /* Ignore failures — next republish cycle retries. */
         }
 
         rs->last_key = val->key_hash;
