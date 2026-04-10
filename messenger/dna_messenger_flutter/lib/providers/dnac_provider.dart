@@ -194,13 +194,17 @@ class DnacTokenListNotifier extends AsyncNotifier<List<DnacToken>> {
   @override
   Future<List<DnacToken>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
+    logger.log('DNAC_TOKENS', 'build() called, identityLoaded=$identityLoaded');
     if (!identityLoaded) return [];
 
     try {
       final engine = await ref.read(engineProvider.future);
-      return await engine.dnacTokenList();
-    } catch (e) {
-      logger.logError('DNAC', 'Token list fetch failed: $e');
+      logger.log('DNAC_TOKENS', 'calling dnacTokenList()...');
+      final tokens = await engine.dnacTokenList();
+      logger.log('DNAC_TOKENS', 'dnacTokenList() returned ${tokens.length} tokens: ${tokens.map((t) => t.symbol).join(",")}');
+      return tokens;
+    } catch (e, st) {
+      logger.logError('DNAC_TOKENS', 'Token list fetch failed: $e\n$st');
       return [];
     }
   }
