@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-04-08 | **Status:** RC (Release Candidate) | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.9.188 | Flutter v1.0.0-rc188 | Nodus v0.10.30
+**Versions:** Library v0.9.189 | Flutter v1.0.0-rc189 | Nodus v0.10.30
 
 **Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains messenger-specific guidelines only.
 
