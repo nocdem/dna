@@ -6,8 +6,8 @@ const _kHideZeroBalances = 'wallet_hide_zero_balances';
 const _kHideBalances = 'wallet_hide_balances';
 const _kActiveChains = 'wallet_active_chains';
 
-/// All toggleable chains (DNAC is always active and not in this list)
-const allToggleableChains = ['bsc', 'cellframe', 'ethereum', 'solana', 'tron'];
+/// All toggleable chains (DNAC and Cellframe are always active and not in this list)
+const allToggleableChains = ['bsc', 'ethereum', 'solana', 'tron'];
 
 /// State for wallet display settings
 class WalletSettingsState {
@@ -18,12 +18,12 @@ class WalletSettingsState {
   const WalletSettingsState({
     this.hideZeroBalances = false,
     this.hideBalances = false,
-    this.activeChains = const {'bsc', 'cellframe', 'ethereum', 'solana', 'tron'},
+    this.activeChains = const {'bsc', 'ethereum', 'solana', 'tron'},
   });
 
-  /// Whether a chain is active. DNAC is always active.
+  /// Whether a chain is active. DNAC and Cellframe are always active.
   bool isChainActive(String chain) =>
-      chain == 'dnac' || activeChains.contains(chain);
+      chain == 'dnac' || chain == 'cellframe' || activeChains.contains(chain);
 
   WalletSettingsState copyWith({
     bool? hideZeroBalances,
@@ -50,7 +50,7 @@ class WalletSettingsNotifier extends StateNotifier<WalletSettingsState> {
       hideBalances: prefs.getBool(_kHideBalances) ?? false,
       activeChains: chainsList != null
           ? chainsList.toSet()
-          : const {'bsc', 'cellframe', 'ethereum', 'solana', 'tron'},
+          : const {'bsc', 'ethereum', 'solana', 'tron'},
     );
   }
 
@@ -68,7 +68,7 @@ class WalletSettingsNotifier extends StateNotifier<WalletSettingsState> {
   }
 
   Future<void> setChainActive(String chain, bool active) async {
-    if (chain == 'dnac') return; // DNAC always active
+    if (chain == 'dnac' || chain == 'cellframe') return; // always active
     final newChains = Set<String>.from(state.activeChains);
     if (active) {
       newChains.add(chain);

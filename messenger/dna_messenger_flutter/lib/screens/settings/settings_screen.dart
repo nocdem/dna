@@ -835,6 +835,13 @@ class _WalletSection extends ConsumerWidget {
           value: true,
           onChanged: null, // disabled — always active
         ),
+        // Cellframe — always active, not toggleable
+        SwitchListTile(
+          contentPadding: const EdgeInsets.only(left: 56, right: 16),
+          title: Text(_chainLabels['cellframe']!),
+          value: true,
+          onChanged: null, // disabled — always active
+        ),
         // Toggleable chains
         ...allToggleableChains.map((chain) => SwitchListTile(
           contentPadding: const EdgeInsets.only(left: 56, right: 16),
