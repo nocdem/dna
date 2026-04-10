@@ -3963,10 +3963,13 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
 
         } else if (strcmp(t1msg.method, "ntf") == 0 && t1msg.value) {
             /* NOTIFY forwarded from a responsible node — we have a local
-             * listener that asked for this key. Verify then notify + store. */
+             * listener that asked for this key. Verify and push to local
+             * listeners only. Do NOT store: this node is not necessarily
+             * a responsible node for the key, and storing here would bloat
+             * non-responsible nodes and break R=3 invariants. Scribe is
+             * push-only — the value lives only on responsible nodes. */
             if (nodus_value_verify(t1msg.value) == 0) {
                 notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
-                nodus_storage_put_if_newer(&srv->storage, t1msg.value);
             }
 
         } else {
