@@ -51,6 +51,55 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
                                uint16_t port, const uint8_t *frame,
                                size_t flen);
 
+/* Forward declaration: iterative lookup engine (defined later in file).
+ * Used by replicate_value / replicate_media_chunk for large-cluster PUT
+ * discovery of true K-closest nodes. */
+static int iterative_lookup_start(nodus_server_t *srv,
+                                   const nodus_key_t *target,
+                                   int session_slot,
+                                   uint32_t client_txn_id,
+                                   void (*on_complete)(struct nodus_server *,
+                                                       nodus_peer_t *, int,
+                                                       void *),
+                                   void *cb_data,
+                                   void (*cb_data_free)(void *));
+
+/* ── PUT replication callback context (iterative store for large clusters) ── */
+
+typedef struct {
+    uint8_t    *frame;      /* heap-allocated replication frame (owned) */
+    size_t      flen;
+    nodus_key_t key_hash;   /* for logging */
+} put_repl_ctx_t;
+
+static void put_repl_ctx_free(void *p) {
+    put_repl_ctx_t *ctx = (put_repl_ctx_t *)p;
+    if (!ctx) return;
+    free(ctx->frame);
+    free(ctx);
+}
+
+typedef struct {
+    uint8_t    *frame;      /* heap-allocated media replication frame (owned) */
+    size_t      flen;
+    nodus_key_t media_key;  /* content_hash mapped to nodus_key_t */
+    uint32_t    chunk_index;/* for logging */
+} put_media_ctx_t;
+
+static void put_media_ctx_free(void *p) {
+    put_media_ctx_t *ctx = (put_media_ctx_t *)p;
+    if (!ctx) return;
+    free(ctx->frame);
+    free(ctx);
+}
+
+static void put_replication_complete(nodus_server_t *srv,
+                                      nodus_peer_t *closest, int count,
+                                      void *user_data);
+static void media_replication_complete(nodus_server_t *srv,
+                                        nodus_peer_t *closest, int count,
+                                        void *user_data);
+
 /* ── Session management ──────────────────────────────────────────── */
 
 static nodus_session_t *session_for_conn(nodus_server_t *srv,
@@ -284,39 +333,19 @@ static int __attribute__((unused)) send_frame_to_peer(const char *peer_ip, uint1
     return 0;
 }
 
-void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
-    /* Key hash prefix for logging */
-    char rpl_kh[17];
-    for (int kk = 0; kk < 8; kk++) sprintf(rpl_kh + kk*2, "%02x", val->key_hash.bytes[kk]);
-    rpl_kh[16] = '\0';
-
-    /* Encode T1 STORE_VALUE once for all peers */
-    uint8_t *cbor_buf = malloc(RESP_BUF_SIZE);
-    if (!cbor_buf) return;
-    size_t clen = 0;
-    if (nodus_t1_store_value(0, val, cbor_buf, RESP_BUF_SIZE, &clen) != 0) {
-        fprintf(stderr, "REPL: key=%s... encode FAILED\n", rpl_kh);
-        free(cbor_buf);
-        return;
-    }
-
-    /* Wire-frame it */
-    uint8_t *frame = malloc(clen + 16);
-    if (!frame) { free(cbor_buf); return; }
-    size_t flen = nodus_frame_encode(frame, clen + 16, cbor_buf, (uint32_t)clen);
-    free(cbor_buf);
-    if (flen == 0) { free(frame); return; }
-
-    /* Replicate to R-closest nodes via Kademlia routing table */
-    nodus_peer_t closest[NODUS_R];
-    int count = nodus_routing_find_closest(&srv->routing, &val->key_hash,
-                                            closest, NODUS_R);
-
-    fprintf(stderr, "REPL: key=%s... vid=%llu found %d closest (R=%d)\n",
-            rpl_kh, (unsigned long long)val->value_id, count, NODUS_R);
-
+/**
+ * Replicate a pre-encoded STORE frame to the given peers.
+ * Shared by small-cluster fast path and large-cluster fallback path.
+ * Performs hinted-handoff bookkeeping on transient failures.
+ */
+static void do_replicate_store_frame(nodus_server_t *srv,
+                                      const nodus_key_t *key_hash,
+                                      const uint8_t *frame, size_t flen,
+                                      nodus_peer_t *closest, int count,
+                                      const char *log_prefix,
+                                      const char *kh) {
     int sent = 0, skipped_self = 0, failed = 0, hinted = 0;
-    int fail_indices[NODUS_R];
+    int fail_indices[NODUS_K];
     for (int i = 0; i < count; i++) {
         /* Skip self */
         if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) {
@@ -324,25 +353,19 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
             continue;
         }
 
-        /* Send via inter_tcp pool. Track failures for conditional hinting. */
         if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen) != 0) {
-            fail_indices[failed] = i;
+            if (failed < NODUS_K) fail_indices[failed] = i;
             failed++;
-            fprintf(stderr, "REPL: key=%s... SEND_FAIL to %s:%d\n",
-                    rpl_kh, closest[i].ip, closest[i].tcp_port);
+            QGP_LOG_DEBUG(LOG_TAG, "%s: key=%s... SEND_FAIL to %s:%d",
+                          log_prefix, kh, closest[i].ip, closest[i].tcp_port);
         } else {
             sent++;
         }
     }
 
-    /* Only queue hinted handoff when:
-     * 1. Enough peers were found (routing table is ready)
-     * 2. Not enough copies were delivered
-     * If routing table only has 1-2 peers, don't hint — it's a startup
-     * condition, not a real failure. Republish will handle it. */
     int peers_tried = count - skipped_self;
     if (sent < NODUS_REPLICATION_MIN && peers_tried >= NODUS_REPLICATION_MIN && failed > 0) {
-        for (int f = 0; f < failed; f++) {
+        for (int f = 0; f < failed && f < NODUS_K; f++) {
             int i = fail_indices[f];
             uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[i].node_id);
             if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
@@ -355,10 +378,121 @@ void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val)
         }
     }
 
-    fprintf(stderr, "REPL: key=%s... done: sent=%d self=%d fail=%d hint=%d (peers=%d)\n",
-            rpl_kh, sent, skipped_self, failed, hinted, peers_tried);
+    QGP_LOG_DEBUG(LOG_TAG,
+                  "%s: key=%s... done sent=%d self=%d fail=%d hint=%d peers=%d",
+                  log_prefix, kh, sent, skipped_self, failed, hinted, peers_tried);
+    (void)key_hash;  /* reserved for future */
+}
 
-    free(frame);
+void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
+    /* Key hash prefix for logging */
+    char rpl_kh[17];
+    for (int kk = 0; kk < 8; kk++) sprintf(rpl_kh + kk*2, "%02x", val->key_hash.bytes[kk]);
+    rpl_kh[16] = '\0';
+
+    /* Encode T1 STORE_VALUE once for all peers */
+    uint8_t *cbor_buf = malloc(RESP_BUF_SIZE);
+    if (!cbor_buf) return;
+    size_t clen = 0;
+    if (nodus_t1_store_value(0, val, cbor_buf, RESP_BUF_SIZE, &clen) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "REPL: key=%s... encode FAILED", rpl_kh);
+        free(cbor_buf);
+        return;
+    }
+
+    /* Wire-frame it */
+    uint8_t *frame = malloc(clen + 16);
+    if (!frame) { free(cbor_buf); return; }
+    size_t flen = nodus_frame_encode(frame, clen + 16, cbor_buf, (uint32_t)clen);
+    free(cbor_buf);
+    if (flen == 0) { free(frame); return; }
+
+    int known = nodus_routing_count(&srv->routing);
+
+    if (known <= NODUS_R * 4) {
+        /* Small cluster fast path — routing table IS the network. */
+        nodus_peer_t closest[NODUS_R];
+        int count = nodus_routing_find_closest(&srv->routing, &val->key_hash,
+                                                closest, NODUS_R);
+        QGP_LOG_DEBUG(LOG_TAG, "REPL: key=%s... vid=%llu fast_path found=%d (R=%d)",
+                      rpl_kh, (unsigned long long)val->value_id, count, NODUS_R);
+        do_replicate_store_frame(srv, &val->key_hash, frame, flen,
+                                 closest, count, "REPL", rpl_kh);
+        free(frame);
+        return;
+    }
+
+    /* Large cluster: iterative FIND_NODE, then STORE from callback.
+     * Frame ownership transfers to the ctx; the callback (or cb_data_free
+     * on abandonment) frees both the ctx and the frame. */
+    put_repl_ctx_t *ctx = malloc(sizeof(put_repl_ctx_t));
+    if (!ctx) { free(frame); return; }
+    ctx->frame = frame;
+    ctx->flen = flen;
+    ctx->key_hash = val->key_hash;
+
+    QGP_LOG_DEBUG(LOG_TAG, "REPL: key=%s... vid=%llu iter_path known=%d",
+                  rpl_kh, (unsigned long long)val->value_id, known);
+
+    if (iterative_lookup_start(srv, &val->key_hash, -1, 0,
+                                put_replication_complete, ctx,
+                                put_repl_ctx_free) != 0) {
+        /* No lookup slots — fallback to routing table fast path. */
+        nodus_peer_t closest[NODUS_R];
+        int count = nodus_routing_find_closest(&srv->routing, &val->key_hash,
+                                                closest, NODUS_R);
+        QGP_LOG_DEBUG(LOG_TAG, "REPL: key=%s... iter FALLBACK found=%d",
+                      rpl_kh, count);
+        do_replicate_store_frame(srv, &val->key_hash, frame, flen,
+                                 closest, count, "REPL-FB", rpl_kh);
+        put_repl_ctx_free(ctx);
+    }
+}
+
+static void put_replication_complete(nodus_server_t *srv,
+                                      nodus_peer_t *closest, int count,
+                                      void *user_data) {
+    put_repl_ctx_t *ctx = (put_repl_ctx_t *)user_data;
+    if (!ctx) return;
+
+    /* Log key prefix */
+    char kh[17];
+    for (int i = 0; i < 8; i++) sprintf(kh + i*2, "%02x", ctx->key_hash.bytes[i]);
+    kh[16] = '\0';
+
+    int sent = 0, failed = 0;
+    int fail_indices[NODUS_K];
+    for (int i = 0; i < count; i++) {
+        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) continue;
+        if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port,
+                                ctx->frame, ctx->flen) == 0) {
+            sent++;
+        } else {
+            if (failed < NODUS_K) fail_indices[failed] = i;
+            failed++;
+        }
+    }
+
+    /* Hinted handoff for failures when we got enough peers but not enough sends */
+    if (sent < NODUS_REPLICATION_MIN && failed > 0) {
+        for (int f = 0; f < failed && f < NODUS_K; f++) {
+            int i = fail_indices[f];
+            uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster,
+                                                                &closest[i].node_id);
+            if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
+                nodus_storage_hinted_insert(&srv->storage, &closest[i].node_id,
+                                             closest[i].ip, closest[i].tcp_port,
+                                             ctx->frame, ctx->flen);
+            }
+        }
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG,
+                  "REPL_ITER: key=%s... iterative store sent=%d failed=%d closest=%d",
+                  kh, sent, failed, count);
+
+    /* on_complete owns cb_data cleanup on normal completion. */
+    put_repl_ctx_free(ctx);
 }
 
 void nodus_server_replicate_media_chunk(nodus_server_t *srv,
@@ -389,51 +523,97 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
     nodus_key_t media_key;
     memcpy(media_key.bytes, meta->content_hash, NODUS_KEY_BYTES);
 
-    /* Replicate to R-closest nodes via Kademlia routing table */
-    nodus_peer_t closest[NODUS_R];
-    int count = nodus_routing_find_closest(&srv->routing, &media_key,
-                                            closest, NODUS_R);
+    /* Hex prefix for logging */
+    char mkh[17];
+    for (int x = 0; x < 8; x++) sprintf(mkh + x*2, "%02x", meta->content_hash[x]);
+    mkh[16] = '\0';
 
-    int sent = 0, failed = 0, skipped_self = 0;
-    int fail_indices[NODUS_R];
+    int known = nodus_routing_count(&srv->routing);
+
+    if (known <= NODUS_R * 4) {
+        /* Small cluster fast path — routing table is the network */
+        nodus_peer_t closest[NODUS_R];
+        int count = nodus_routing_find_closest(&srv->routing, &media_key,
+                                                closest, NODUS_R);
+        QGP_LOG_DEBUG(LOG_TAG,
+                      "MEDIA-REPL: hash=%s... chunk=%u fast_path found=%d",
+                      mkh, chunk_index, count);
+        do_replicate_store_frame(srv, &media_key, frame, flen,
+                                 closest, count, "MEDIA-REPL", mkh);
+        free(frame);
+        return;
+    }
+
+    /* Large cluster: iterative FIND_NODE then STORE from callback.
+     * Frame ownership transfers to the ctx. */
+    put_media_ctx_t *ctx = malloc(sizeof(put_media_ctx_t));
+    if (!ctx) { free(frame); return; }
+    ctx->frame = frame;
+    ctx->flen = flen;
+    ctx->media_key = media_key;
+    ctx->chunk_index = chunk_index;
+
+    QGP_LOG_DEBUG(LOG_TAG,
+                  "MEDIA-REPL: hash=%s... chunk=%u iter_path known=%d",
+                  mkh, chunk_index, known);
+
+    if (iterative_lookup_start(srv, &media_key, -1, 0,
+                                media_replication_complete, ctx,
+                                put_media_ctx_free) != 0) {
+        /* No lookup slots — fallback to routing table fast path. */
+        nodus_peer_t closest[NODUS_R];
+        int count = nodus_routing_find_closest(&srv->routing, &media_key,
+                                                closest, NODUS_R);
+        QGP_LOG_DEBUG(LOG_TAG,
+                      "MEDIA-REPL: hash=%s... chunk=%u iter FALLBACK found=%d",
+                      mkh, chunk_index, count);
+        do_replicate_store_frame(srv, &media_key, frame, flen,
+                                 closest, count, "MEDIA-REPL-FB", mkh);
+        put_media_ctx_free(ctx);
+    }
+}
+
+static void media_replication_complete(nodus_server_t *srv,
+                                        nodus_peer_t *closest, int count,
+                                        void *user_data) {
+    put_media_ctx_t *ctx = (put_media_ctx_t *)user_data;
+    if (!ctx) return;
+
+    char mkh[17];
+    for (int i = 0; i < 8; i++) sprintf(mkh + i*2, "%02x", ctx->media_key.bytes[i]);
+    mkh[16] = '\0';
+
+    int sent = 0, failed = 0;
+    int fail_indices[NODUS_K];
     for (int i = 0; i < count; i++) {
-        /* Skip self */
-        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) {
-            skipped_self++;
-            continue;
-        }
-
-        if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen) != 0) {
-            fail_indices[failed] = i;
-            failed++;
-        } else {
+        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) continue;
+        if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port,
+                                ctx->frame, ctx->flen) == 0) {
             sent++;
+        } else {
+            if (failed < NODUS_K) fail_indices[failed] = i;
+            failed++;
         }
     }
 
-    /* Only queue hints when enough peers were tried and too few succeeded */
-    int hinted = 0;
-    int peers_tried = count - skipped_self;
-    if (sent < NODUS_REPLICATION_MIN && peers_tried >= NODUS_REPLICATION_MIN && failed > 0) {
-        for (int f = 0; f < failed; f++) {
+    if (sent < NODUS_REPLICATION_MIN && failed > 0) {
+        for (int f = 0; f < failed && f < NODUS_K; f++) {
             int i = fail_indices[f];
-            uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster, &closest[i].node_id);
+            uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster,
+                                                                &closest[i].node_id);
             if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
-                nodus_storage_hinted_insert(&srv->storage,
-                                             &closest[i].node_id,
+                nodus_storage_hinted_insert(&srv->storage, &closest[i].node_id,
                                              closest[i].ip, closest[i].tcp_port,
-                                             frame, flen);
-                hinted++;
+                                             ctx->frame, ctx->flen);
             }
         }
     }
 
-    char kh[33];
-    for (int x = 0; x < 16; x++) sprintf(kh + x*2, "%02x", meta->content_hash[x]);
-    fprintf(stderr, "MEDIA-REPL: hash=%s... chunk=%u sent=%d self=%d fail=%d hint=%d (peers=%d)\n",
-            kh, chunk_index, sent, skipped_self, failed, hinted, peers_tried);
+    QGP_LOG_DEBUG(LOG_TAG,
+                  "MEDIA-REPL_ITER: hash=%s... chunk=%u iterative store sent=%d failed=%d closest=%d",
+                  mkh, ctx->chunk_index, sent, failed, count);
 
-    free(frame);
+    put_media_ctx_free(ctx);
 }
 
 /**
