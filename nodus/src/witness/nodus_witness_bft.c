@@ -741,8 +741,9 @@ static int commit_block_inner(nodus_witness_t *w,
         char sender_fp[129] = {0};
 
         /* Temporary output storage for tx_outputs table */
-        char   out_fps[NODUS_WITNESS_MAX_TX_OUTPUTS][129];
+        char    out_fps[NODUS_WITNESS_MAX_TX_OUTPUTS][129];
         uint64_t out_amts[NODUS_WITNESS_MAX_TX_OUTPUTS];
+        uint8_t out_tids[NODUS_WITNESS_MAX_TX_OUTPUTS][64];
         int    out_total = 0;
 
         if (tx_len > 75) {
@@ -766,6 +767,9 @@ static int commit_block_inner(nodus_witness_t *w,
                         out_amts[oi] = amt;
                     }
                     off += 8;   /* amount */
+                    if (oi < NODUS_WITNESS_MAX_TX_OUTPUTS) {
+                        memcpy(out_tids[oi], tx_data + off, 64);
+                    }
                     off += 64;  /* token_id */
                     off += 32;  /* seed */
                     uint8_t ml = tx_data[off++]; /* memo_len */
@@ -790,10 +794,11 @@ static int commit_block_inner(nodus_witness_t *w,
         nodus_witness_tx_store(w, tx_hash, tx_type, tx_data, tx_len, bh,
                                sender_fp, committed_fee);
 
-        /* Insert each output into tx_outputs table */
+        /* Insert each output into tx_outputs table (with token_id) */
         for (int oi = 0; oi < out_total; oi++) {
             nodus_witness_tx_output_add(w, tx_hash, (uint32_t)oi,
-                                          out_fps[oi], out_amts[oi]);
+                                          out_fps[oi], out_amts[oi],
+                                          out_tids[oi]);
         }
 
         /* ── TOKEN_CREATE: register token in tokens table ──────── */

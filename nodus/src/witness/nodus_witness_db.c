@@ -881,7 +881,7 @@ int nodus_witness_tx_by_owner(nodus_witness_t *w, const char *owner_fp,
     for (int i = 0; i < count; i++) {
         sqlite3_stmt *ostmt;
         rc = sqlite3_prepare_v2(w->db,
-            "SELECT output_index, owner_fp, amount FROM tx_outputs "
+            "SELECT output_index, owner_fp, amount, token_id FROM tx_outputs "
             "WHERE tx_hash = ? ORDER BY output_index ASC", -1, &ostmt, NULL);
         if (rc != SQLITE_OK) continue;
 
@@ -896,6 +896,10 @@ int nodus_witness_tx_by_owner(nodus_witness_t *w, const char *owner_fp,
             const char *ofp = (const char *)sqlite3_column_text(ostmt, 1);
             if (ofp) strncpy(o->owner_fp, ofp, 128);
             o->amount = (uint64_t)sqlite3_column_int64(ostmt, 2);
+            const void *tid_blob = sqlite3_column_blob(ostmt, 3);
+            int tid_len = sqlite3_column_bytes(ostmt, 3);
+            if (tid_blob && tid_len == 64)
+                memcpy(o->token_id, tid_blob, 64);
             oc++;
         }
         out[i].output_count = oc;
@@ -910,20 +914,25 @@ int nodus_witness_tx_by_owner(nodus_witness_t *w, const char *owner_fp,
 
 int nodus_witness_tx_output_add(nodus_witness_t *w, const uint8_t *tx_hash,
                                    uint32_t output_index, const char *owner_fp,
-                                   uint64_t amount) {
+                                   uint64_t amount, const uint8_t *token_id) {
     if (!w || !w->db || !tx_hash || !owner_fp) return -1;
+
+    /* NULL token_id → native DNAC (all zeros) */
+    static const uint8_t zero_token[64] = {0};
+    const uint8_t *tid = token_id ? token_id : zero_token;
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
         "INSERT OR IGNORE INTO tx_outputs "
-        "(tx_hash, output_index, owner_fp, amount) "
-        "VALUES (?, ?, ?, ?)", -1, &stmt, NULL);
+        "(tx_hash, output_index, owner_fp, amount, token_id) "
+        "VALUES (?, ?, ?, ?, ?)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
     sqlite3_bind_blob(stmt, 1, tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
     sqlite3_bind_int(stmt, 2, (int)output_index);
     sqlite3_bind_text(stmt, 3, owner_fp, -1, SQLITE_STATIC);
     sqlite3_bind_int64(stmt, 4, (int64_t)amount);
+    sqlite3_bind_blob(stmt, 5, tid, 64, SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

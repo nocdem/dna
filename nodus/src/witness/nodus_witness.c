@@ -85,6 +85,10 @@ static const char *WITNESS_DB_SCHEMA =
     "  output_index INTEGER NOT NULL,"
     "  owner_fp TEXT NOT NULL,"
     "  amount INTEGER NOT NULL,"
+    "  token_id BLOB NOT NULL DEFAULT x'"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "',"
     "  PRIMARY KEY (tx_hash, output_index)"
     ");"
     "CREATE TABLE IF NOT EXISTS commit_certificates ("
@@ -155,6 +159,15 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
     sqlite3_exec(witness->db,
         "ALTER TABLE committed_transactions ADD COLUMN amount INTEGER NOT NULL DEFAULT 0;",
         NULL, NULL, NULL);
+    /* Multi-token: per-output token_id for transaction history filtering */
+    {
+        const char *alter_sql =
+            "ALTER TABLE tx_outputs ADD COLUMN token_id BLOB NOT NULL DEFAULT x'"
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            "';";
+        sqlite3_exec(witness->db, alter_sql, NULL, NULL, NULL);
+    }
 
     char *err_msg = NULL;
     rc = sqlite3_exec(witness->db, WITNESS_DB_SCHEMA, NULL, NULL, &err_msg);

@@ -197,6 +197,7 @@ typedef struct {
     char        owner_fp[129];
     uint64_t    amount;
     uint32_t    output_index;
+    uint8_t     token_id[64];
 } nodus_witness_tx_output_t;
 
 typedef struct {
@@ -218,7 +219,7 @@ int  nodus_witness_tx_by_owner(nodus_witness_t *w, const char *owner_fp,
 
 int  nodus_witness_tx_output_add(nodus_witness_t *w, const uint8_t *tx_hash,
                                    uint32_t output_index, const char *owner_fp,
-                                   uint64_t amount);
+                                   uint64_t amount, const uint8_t *token_id);
 
 /* ── Committed transaction storage ───────────────────────────────── */
 

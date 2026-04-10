@@ -4559,6 +4559,9 @@ final class dna_dnac_history_t extends Struct {
 
   @Array(256)
   external Array<Char> memo;
+
+  @Array(64)
+  external Array<Uint8> token_id;
 }
 
 /// DNAC UTXO entry

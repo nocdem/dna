@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  10
-#define NODUS_VERSION_PATCH  40
-#define NODUS_VERSION_STRING "0.10.40"
+#define NODUS_VERSION_PATCH  41
+#define NODUS_VERSION_STRING "0.10.41"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -371,6 +371,7 @@ typedef struct {
     char     owner_fp[129];
     uint64_t amount;
     uint32_t output_index;
+    uint8_t  token_id[64];          /* zeros = native DNAC */
 } nodus_dnac_history_output_t;
 
 #define NODUS_DNAC_MAX_TX_OUTPUTS 8

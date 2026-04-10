@@ -3782,7 +3782,10 @@ class _TokenDetailSheet extends ConsumerWidget {
     final historyAsync = ref.watch(dnacHistoryProvider);
     final l10n = AppLocalizations.of(context);
     return historyAsync.when(
-      data: (history) {
+      data: (allHistory) {
+        // Native DNAC detail sheet: show only native DNAC transactions
+        // (filter out custom token transfers — they have their own history)
+        final history = allHistory.where((tx) => tx.isNative).toList();
         if (history.isEmpty) {
           return Center(
             child: Column(

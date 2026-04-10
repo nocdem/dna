@@ -220,6 +220,7 @@ typedef struct {
     uint64_t fee;                        /**< Fee paid (if sender) */
     uint64_t timestamp;                  /**< Unix timestamp */
     char memo[DNAC_MEMO_MAX_SIZE];       /**< Memo (if any) */
+    uint8_t token_id[DNAC_TOKEN_ID_SIZE]; /**< Token ID (zeros = native DNAC) */
 } dnac_tx_history_t;
 
 /**

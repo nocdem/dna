@@ -2723,6 +2723,10 @@ int nodus_client_dnac_history(nodus_client_t *client,
                                 } else if (ok.tstr.len == 3 && memcmp(ok.tstr.ptr, "idx", 3) == 0) {
                                     cbor_item_t ov = cbor_decode_next(&dec);
                                     if (o && ov.type == CBOR_ITEM_UINT) o->output_index = (uint32_t)ov.uint_val;
+                                } else if (ok.tstr.len == 3 && memcmp(ok.tstr.ptr, "tid", 3) == 0) {
+                                    cbor_item_t ov = cbor_decode_next(&dec);
+                                    if (o && ov.type == CBOR_ITEM_BSTR && ov.bstr.len == 64)
+                                        memcpy(o->token_id, ov.bstr.ptr, 64);
                                 } else {
                                     cbor_decode_skip(&dec);
                                 }

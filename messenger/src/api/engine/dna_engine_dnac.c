@@ -216,6 +216,7 @@ void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task) {
             result[i].timestamp = history[i].timestamp;
             strncpy(result[i].memo, history[i].memo, 255);
             result[i].memo[255] = '\0';
+            memcpy(result[i].token_id, history[i].token_id, 64);
         }
     }
 

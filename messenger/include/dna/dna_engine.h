@@ -3961,6 +3961,7 @@ typedef struct {
     uint64_t fee;               /**< Fee paid (if sender) */
     uint64_t timestamp;         /**< Unix timestamp */
     char memo[256];             /**< Memo (if any) */
+    uint8_t token_id[64];       /**< Token ID (zeros = native DNAC) */
 } dna_dnac_history_t;
 
 /**

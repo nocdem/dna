@@ -944,13 +944,15 @@ static void handle_dnac_history(nodus_witness_t *w,
         cbor_encode_cstr(&enc, "outputs");
         cbor_encode_array(&enc, (size_t)entries[i].output_count);
         for (int j = 0; j < entries[i].output_count; j++) {
-            cbor_encode_map(&enc, 3);
+            cbor_encode_map(&enc, 4);
             cbor_encode_cstr(&enc, "fp");
             cbor_encode_cstr(&enc, entries[i].outputs[j].owner_fp);
             cbor_encode_cstr(&enc, "amt");
             cbor_encode_uint(&enc, entries[i].outputs[j].amount);
             cbor_encode_cstr(&enc, "idx");
             cbor_encode_uint(&enc, entries[i].outputs[j].output_index);
+            cbor_encode_cstr(&enc, "tid");
+            cbor_encode_bstr(&enc, entries[i].outputs[j].token_id, 64);
         }
     }
 

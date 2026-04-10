@@ -1321,6 +1321,7 @@ class DnacTxHistory {
   final int fee;
   final DateTime timestamp;
   final String memo;
+  final Uint8List tokenId; // 64 bytes — zeros = native DNAC
 
   DnacTxHistory({
     required this.txHash,
@@ -1330,12 +1331,30 @@ class DnacTxHistory {
     required this.fee,
     required this.timestamp,
     required this.memo,
+    required this.tokenId,
   });
 
   bool get isReceived => amountDelta > 0;
   bool get isSent => amountDelta < 0;
   String get amountFormatted => formatDnacAmount(amountDelta.abs());
   String get feeFormatted => formatDnacAmount(fee);
+
+  /// True if this entry is for native DNAC (token_id all zeros)
+  bool get isNative {
+    for (final b in tokenId) {
+      if (b != 0) return false;
+    }
+    return true;
+  }
+
+  /// Hex string of token_id (for matching against DnacToken.tokenId)
+  String get tokenIdHex {
+    final sb = StringBuffer();
+    for (final b in tokenId) {
+      sb.write(b.toRadixString(16).padLeft(2, '0'));
+    }
+    return sb.toString();
+  }
 }
 
 class DnacUtxo {
@@ -6804,6 +6823,8 @@ class DnaEngine {
           final h = (history + i).ref;
           final txHash = Uint8List(64);
           for (var j = 0; j < 64; j++) txHash[j] = h.tx_hash[j];
+          final tokenId = Uint8List(64);
+          for (var j = 0; j < 64; j++) tokenId[j] = h.token_id[j];
           result.add(DnacTxHistory(
             txHash: txHash,
             type: h.type,
@@ -6812,6 +6833,7 @@ class DnaEngine {
             fee: h.fee,
             timestamp: DateTime.fromMillisecondsSinceEpoch(h.timestamp * 1000),
             memo: h.memo.toDartString(256),
+            tokenId: tokenId,
           ));
         }
         if (count > 0) {

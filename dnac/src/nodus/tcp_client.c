@@ -697,10 +697,17 @@ int dnac_get_remote_history(dnac_context_t *ctx,
 
             uint64_t send_amount = 0;
             uint64_t recv_amount = 0;
+            bool token_id_set = false;
 
             for (int oi = 0; oi < e->output_count; oi++) {
                 bool output_is_mine = (strcmp(e->outputs[oi].owner_fp,
                                               fingerprint) == 0);
+                /* Capture token_id from first relevant output */
+                if (!token_id_set) {
+                    memcpy(h->token_id, e->outputs[oi].token_id,
+                           DNAC_TOKEN_ID_SIZE);
+                    token_id_set = true;
+                }
                 if (is_sender) {
                     if (!output_is_mine) {
                         /* Output to someone else = transferred amount */
