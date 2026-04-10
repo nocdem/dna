@@ -1710,7 +1710,7 @@ class _DnacTokenTile extends ConsumerWidget {
     final theme = Theme.of(context);
     final l10n = AppLocalizations.of(context);
     final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
-    final balanceAsync = ref.watch(dnacTokenBalanceProvider(token.tokenId.toList()));
+    final balanceAsync = ref.watch(dnacTokenBalanceProvider(_tokenIdHex(token.tokenId)));
     final confirmed = balanceAsync.valueOrNull?.confirmed ?? 0;
     final balanceStr = formatTokenAmount(confirmed, token.decimals);
     const tokenColor = Color(0xFF7B61FF); // Purple for custom tokens
@@ -1803,9 +1803,20 @@ class _DnacTokenTile extends ConsumerWidget {
     );
   }
 
+  /// Convert token_id bytes to lowercase hex string for stable Riverpod family key.
+  /// Uint8List.toList() creates a new instance per call → reference inequality →
+  /// Riverpod creates infinite new provider instances. Hex string has value equality.
+  static String _tokenIdHex(Uint8List bytes) {
+    final sb = StringBuffer();
+    for (final b in bytes) {
+      sb.write(b.toRadixString(16).padLeft(2, '0'));
+    }
+    return sb.toString();
+  }
+
   void _showTokenDetail(BuildContext context, WidgetRef ref) {
     final l10n = AppLocalizations.of(context);
-    final balanceAsync = ref.read(dnacTokenBalanceProvider(token.tokenId.toList()));
+    final balanceAsync = ref.read(dnacTokenBalanceProvider(_tokenIdHex(token.tokenId)));
     final balance = balanceAsync.valueOrNull;
 
     showModalBottomSheet(

@@ -194,17 +194,13 @@ class DnacTokenListNotifier extends AsyncNotifier<List<DnacToken>> {
   @override
   Future<List<DnacToken>> build() async {
     final identityLoaded = ref.watch(identityLoadedProvider);
-    logger.log('DNAC_TOKENS', 'build() called, identityLoaded=$identityLoaded');
     if (!identityLoaded) return [];
 
     try {
       final engine = await ref.read(engineProvider.future);
-      logger.log('DNAC_TOKENS', 'calling dnacTokenList()...');
-      final tokens = await engine.dnacTokenList();
-      logger.log('DNAC_TOKENS', 'dnacTokenList() returned ${tokens.length} tokens: ${tokens.map((t) => t.symbol).join(",")}');
-      return tokens;
-    } catch (e, st) {
-      logger.logError('DNAC_TOKENS', 'Token list fetch failed: $e\n$st');
+      return await engine.dnacTokenList();
+    } catch (e) {
+      logger.logError('DNAC', 'Token list fetch failed: $e');
       return [];
     }
   }
@@ -221,14 +217,20 @@ class DnacTokenListNotifier extends AsyncNotifier<List<DnacToken>> {
 // TOKEN BALANCE PROVIDER (per token_id)
 // =============================================================================
 
+/// Family parameter is hex string (NOT List<int>) — strings have value equality
+/// in Dart, so the same token_id from two rebuilds yields the same provider
+/// instance and avoids infinite re-creation.
 final dnacTokenBalanceProvider =
-    FutureProvider.family<DnacBalance?, List<int>>((ref, tokenIdList) async {
+    FutureProvider.family<DnacBalance?, String>((ref, tokenIdHex) async {
   final identityLoaded = ref.watch(identityLoadedProvider);
   if (!identityLoaded) return null;
 
   try {
     final engine = await ref.read(engineProvider.future);
-    final tokenId = Uint8List.fromList(tokenIdList);
+    final tokenId = Uint8List(64);
+    for (var i = 0; i < 64; i++) {
+      tokenId[i] = int.parse(tokenIdHex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
     return await engine.dnacTokenBalance(tokenId);
   } catch (e) {
     logger.logError('DNAC', 'Token balance fetch failed: $e');
