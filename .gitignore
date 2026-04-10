@@ -7,12 +7,23 @@ tasks/
 *COMPREHENSIVE_AUDIT*
 *security_audit*
 **/*AUDIT*
+*audit*.md
 
 # Build artifacts
 *.o
 *.so
 *.a
 *.dylib
+**/build-asan/
+
+# Debug log files dumped at repo root
+dna_debug_*.log
+
+# Debian source packages (sqlcipher build inputs)
+sqlcipher_*.dsc
+sqlcipher_*.tar.xz
+sqlcipher_*.tar.gz
+sqlcipher_*.orig.tar.gz
 
 # IDE/tool caches
 **/.cache/
