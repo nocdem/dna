@@ -38,6 +38,25 @@ extern "C" {
 #define NODUS_MAX_LISTEN_KEYS  128    /* Per session */
 #define NODUS_MAX_SEED_NODES   16
 
+/* ── Listen Forwarding (Scribe pattern) ─────────────────────────── */
+
+#define NODUS_MAX_SUBSCRIPTIONS  4096
+#define NODUS_SUBSCRIPTION_TTL   900     /* 15 min — must be > 2x renewal interval */
+
+typedef struct {
+    bool            active;
+    nodus_key_t     key;                /* DHT key being listened */
+    nodus_key_t     subscriber_node_id; /* Node that has the listener */
+    char            subscriber_ip[64];
+    uint16_t        subscriber_port;    /* TCP 4002 */
+    uint64_t        expires_at;
+} nodus_subscription_t;
+
+typedef struct {
+    nodus_subscription_t entries[NODUS_MAX_SUBSCRIPTIONS];
+    int                  count;
+} nodus_subscription_table_t;
+
 /* ── Configuration ───────────────────────────────────────────────── */
 
 typedef struct {
@@ -366,6 +385,10 @@ typedef struct nodus_server {
 
     /* Iterative Kademlia FIND_NODE lookup engine (UDP-based) */
     iterative_lookup_state_t lookup_state;
+
+    /* Listen forwarding: Scribe pub/sub subscriptions from remote nodes */
+    nodus_subscription_table_t  subscriptions;
+    uint64_t                    last_sub_cleanup;
 
     /* Batch forward state machine (get_batch miss → forward to closest peer) */
     dht_bf_state_t          bf_state;

@@ -259,6 +259,146 @@ static void notify_listeners(nodus_server_t *srv, const nodus_key_t *key,
     free(notify_buf);
 }
 
+/* ── Listen Forwarding (Scribe pattern) subscription table ──────── */
+
+/**
+ * Add or refresh a subscription entry. Returns 0 on success, -1 if full.
+ * If an entry with the same (key, subscriber_node_id) already exists,
+ * its TTL is refreshed and IP/port updated.
+ */
+static int subscription_add(nodus_subscription_table_t *table,
+                             const nodus_key_t *key,
+                             const nodus_key_t *subscriber_id,
+                             const char *ip, uint16_t port) {
+    if (!table || !key || !subscriber_id) return -1;
+    uint64_t now = nodus_time_now();
+    uint64_t expires = now + NODUS_SUBSCRIPTION_TTL;
+
+    /* Refresh duplicate */
+    for (int i = 0; i < table->count; i++) {
+        nodus_subscription_t *e = &table->entries[i];
+        if (!e->active) continue;
+        if (nodus_key_cmp(&e->key, key) == 0 &&
+            nodus_key_cmp(&e->subscriber_node_id, subscriber_id) == 0) {
+            e->expires_at = expires;
+            if (ip && ip[0]) {
+                snprintf(e->subscriber_ip, sizeof(e->subscriber_ip), "%s", ip);
+            }
+            if (port) e->subscriber_port = port;
+            return 0;
+        }
+    }
+
+    /* Find empty slot — prefer inactive slots in [0..count) */
+    int slot = -1;
+    for (int i = 0; i < table->count; i++) {
+        if (!table->entries[i].active) { slot = i; break; }
+    }
+    if (slot < 0) {
+        if (table->count >= NODUS_MAX_SUBSCRIPTIONS) return -1;
+        slot = table->count++;
+    }
+
+    nodus_subscription_t *e = &table->entries[slot];
+    memset(e, 0, sizeof(*e));
+    e->active = true;
+    e->key = *key;
+    e->subscriber_node_id = *subscriber_id;
+    if (ip) {
+        snprintf(e->subscriber_ip, sizeof(e->subscriber_ip), "%s", ip);
+    }
+    e->subscriber_port = port ? port : NODUS_DEFAULT_PEER_PORT;
+    e->expires_at = expires;
+    return 0;
+}
+
+/** Mark matching subscription inactive. */
+static void subscription_remove(nodus_subscription_table_t *table,
+                                 const nodus_key_t *key,
+                                 const nodus_key_t *subscriber_id) {
+    if (!table || !key || !subscriber_id) return;
+    for (int i = 0; i < table->count; i++) {
+        nodus_subscription_t *e = &table->entries[i];
+        if (!e->active) continue;
+        if (nodus_key_cmp(&e->key, key) == 0 &&
+            nodus_key_cmp(&e->subscriber_node_id, subscriber_id) == 0) {
+            e->active = false;
+            return;
+        }
+    }
+}
+
+/** Remove all expired subscriptions. Called periodically. */
+static void subscription_cleanup_expired(nodus_subscription_table_t *table) {
+    if (!table) return;
+    uint64_t now = nodus_time_now();
+    int removed = 0;
+    for (int i = 0; i < table->count; i++) {
+        nodus_subscription_t *e = &table->entries[i];
+        if (!e->active) continue;
+        if (e->expires_at && e->expires_at <= now) {
+            e->active = false;
+            removed++;
+        }
+    }
+    /* Compact trailing inactive slots to keep count accurate */
+    while (table->count > 0 && !table->entries[table->count - 1].active) {
+        table->count--;
+    }
+    if (removed > 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "SUB_CLEANUP: removed %d expired subscriptions (count=%d)",
+                       removed, table->count);
+    }
+}
+
+/** Send a T1 notify to every remote subscriber interested in key. */
+static void subscription_notify(nodus_server_t *srv, const nodus_key_t *key,
+                                 const nodus_value_t *val) {
+    if (!srv || !key || !val) return;
+    nodus_subscription_table_t *table = &srv->subscriptions;
+    if (table->count == 0) return;
+
+    /* Encode once, reuse for all subscribers. */
+    uint8_t *cbor_buf = malloc(RESP_BUF_SIZE);
+    if (!cbor_buf) return;
+    size_t clen = 0;
+    if (nodus_t1_notify(0, key, val, cbor_buf, RESP_BUF_SIZE, &clen) != 0) {
+        free(cbor_buf);
+        return;
+    }
+    uint8_t *frame = malloc(clen + 16);
+    if (!frame) { free(cbor_buf); return; }
+    size_t flen = nodus_frame_encode(frame, clen + 16, cbor_buf, (uint32_t)clen);
+    free(cbor_buf);
+    if (flen == 0) { free(frame); return; }
+
+    uint64_t now = nodus_time_now();
+    int sent = 0;
+    for (int i = 0; i < table->count; i++) {
+        nodus_subscription_t *e = &table->entries[i];
+        if (!e->active) continue;
+        if (e->expires_at && e->expires_at <= now) continue;
+        if (nodus_key_cmp(&e->key, key) != 0) continue;
+        /* Skip sending to self */
+        if (nodus_key_cmp(&e->subscriber_node_id, &srv->identity.node_id) == 0) continue;
+        if (!e->subscriber_ip[0]) continue;
+        if (dht_republish_send(srv, e->subscriber_ip, e->subscriber_port,
+                                frame, flen) == 0) {
+            sent++;
+        }
+    }
+
+    if (sent > 0) {
+        char kh[17];
+        for (int i = 0; i < 8; i++) sprintf(kh + i*2, "%02x", key->bytes[i]);
+        kh[16] = '\0';
+        QGP_LOG_DEBUG(LOG_TAG, "SUB_NOTIFY: key=%s... forwarded to %d subscribers",
+                       kh, sent);
+    }
+
+    free(frame);
+}
+
 /* Channel session helpers are now in nodus_channel_server.c */
 
 /* Forward declaration for inter_tcp pool replication */
@@ -1138,6 +1278,8 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
 
     /* Notify listeners */
     notify_listeners(srv, &msg->key, val);
+    /* Forward to remote subscribers (Scribe pattern) */
+    subscription_notify(srv, &msg->key, val);
 
     /* Replicate to alive cluster peers via TCP STORE */
     nodus_server_replicate_value(srv, val);
@@ -3050,6 +3192,49 @@ static void handle_inter_ri_close(nodus_server_t *srv, nodus_inter_session_t *se
     nodus_inter_circuit_free(&srv->inter_circuits, ic->our_cid);
 }
 
+/**
+ * Completion callback for listen forwarding iterative lookup.
+ * Sends T1 "sub" frames to the K-closest nodes so they remember to
+ * forward NOTIFY messages back to us when a PUT matches.
+ *
+ * user_data is a heap-allocated nodus_key_t (the listen key),
+ * freed here or via cb_data_free on abandonment (see iterative_lookup_start).
+ */
+static void listen_fwd_complete(nodus_server_t *srv,
+                                 nodus_peer_t *closest, int count,
+                                 void *user_data) {
+    nodus_key_t *key = (nodus_key_t *)user_data;
+    if (!srv || !key) { free(key); return; }
+
+    uint8_t cbor_buf[256];
+    size_t clen = 0;
+    if (nodus_t1_subscribe(0, key, cbor_buf, sizeof(cbor_buf), &clen) != 0) {
+        free(key);
+        return;
+    }
+    uint8_t frame[512];
+    size_t flen = nodus_frame_encode(frame, sizeof(frame), cbor_buf, (uint32_t)clen);
+    if (flen == 0) { free(key); return; }
+
+    int sent = 0;
+    for (int i = 0; i < count; i++) {
+        if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) continue;
+        if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port,
+                                frame, flen) == 0) {
+            sent++;
+        }
+    }
+
+    char kh[17];
+    for (int i = 0; i < 8; i++) sprintf(kh + i*2, "%02x", key->bytes[i]);
+    kh[16] = '\0';
+    QGP_LOG_DEBUG(LOG_TAG,
+                   "LISTEN_FWD: key=%s... subscribe sent=%d closest=%d",
+                   kh, sent, count);
+
+    free(key);
+}
+
 static void handle_t2_listen(nodus_server_t *srv, nodus_session_t *sess,
                               nodus_tier2_msg_t *msg) {
     if (session_add_listen(sess, &msg->key) != 0) {
@@ -3063,6 +3248,21 @@ static void handle_t2_listen(nodus_server_t *srv, nodus_session_t *sess,
     size_t len = 0;
     nodus_t2_listen_ok(msg->txn_id, resp_buf, sizeof(resp_buf), &len);
     nodus_tcp_send(sess->conn, resp_buf, len);
+
+    /* Forward subscription to the key's responsible nodes so that remote
+     * PUTs will generate NOTIFY messages back to us (Scribe pattern). */
+    nodus_key_t *key_copy = malloc(sizeof(nodus_key_t));
+    if (!key_copy) return;
+    *key_copy = msg->key;
+
+    if (iterative_lookup_start(srv, &msg->key, -1, 0,
+                                listen_fwd_complete, key_copy, free) != 0) {
+        /* No lookup slots available — synchronous fallback via routing table */
+        nodus_peer_t closest[NODUS_R];
+        int count = nodus_routing_find_closest(&srv->routing, &msg->key,
+                                                 closest, NODUS_R);
+        listen_fwd_complete(srv, closest, count, key_copy);
+    }
 }
 
 static void handle_t2_unlisten(nodus_server_t *srv, nodus_session_t *sess,
@@ -3711,38 +3911,75 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         nodus_t2_msg_free(&msg);
     }
 
-    /* Try T1 decode for STORE_VALUE replication */
+    /* Decode once, dispatch by T1 method (FIX-C6).
+     * Prior code decoded twice and silently dropped non-sv T1 methods
+     * (sub/unsub/ntf) because the second branch only triggered on decode
+     * failure. It also leaked the first decode's value when re-decoding. */
     nodus_tier1_msg_t t1msg;
     memset(&t1msg, 0, sizeof(t1msg));
-    if (nodus_t1_decode(payload, len, &t1msg) == 0 &&
-        strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
+    if (nodus_t1_decode(payload, len, &t1msg) == 0) {
 
-        /* Per-session rate limit */
-        uint64_t sv_now = nodus_time_now();
-        if (sv_now != sess->sv_window_start) { sess->sv_window_start = sv_now; sess->sv_count = 0; }
-        if (++sess->sv_count > NODUS_SV_MAX_PER_SEC) {
-            fprintf(stderr, "REPL_TCP: sv rate limit hit (%d/s), slot=%d\n",
-                    sess->sv_count, sess->conn ? sess->conn->slot : -1);
-            nodus_t1_msg_free(&t1msg);
-            return;
-        }
-
-        if (nodus_value_verify(t1msg.value) == 0) {
-            int put_rc = nodus_storage_put_if_newer(&srv->storage, t1msg.value);
-            if (put_rc == 0) {
-                notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
+        if (strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
+            /* STORE_VALUE: replication from another node */
+            uint64_t sv_now = nodus_time_now();
+            if (sv_now != sess->sv_window_start) { sess->sv_window_start = sv_now; sess->sv_count = 0; }
+            if (++sess->sv_count > NODUS_SV_MAX_PER_SEC) {
+                fprintf(stderr, "REPL_TCP: sv rate limit hit (%d/s), slot=%d\n",
+                        sess->sv_count, sess->conn ? sess->conn->slot : -1);
+                nodus_t1_msg_free(&t1msg);
+                return;
             }
+
+            if (nodus_value_verify(t1msg.value) == 0) {
+                int put_rc = nodus_storage_put_if_newer(&srv->storage, t1msg.value);
+                if (put_rc == 0) {
+                    notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
+                    /* Forward to remote subscribers (Scribe pattern) */
+                    subscription_notify(srv, &t1msg.value->key_hash, t1msg.value);
+                }
+            } else {
+                char kh[17];
+                for (int i = 0; i < 8; i++)
+                    sprintf(kh + i*2, "%02x", t1msg.value->key_hash.bytes[i]);
+                kh[16] = '\0';
+                fprintf(stderr, "REPL_TCP: verify FAILED for key=%s... vid=%llu seq=%llu — value DROPPED\n",
+                        kh, (unsigned long long)t1msg.value->value_id,
+                        (unsigned long long)t1msg.value->seq);
+            }
+
+        } else if (strcmp(t1msg.method, "sub") == 0) {
+            /* SUBSCRIBE_FWD: remote node subscribing to a key on us.
+             * Look up subscriber's TCP 4002 port from routing table. */
+            nodus_peer_t peer;
+            uint16_t sub_port = NODUS_DEFAULT_PEER_PORT;
+            if (nodus_routing_lookup(&srv->routing, &sess->client_fp, &peer) == 0) {
+                sub_port = peer.tcp_port ? peer.tcp_port : NODUS_DEFAULT_PEER_PORT;
+            }
+            subscription_add(&srv->subscriptions, &t1msg.target, &sess->client_fp,
+                              sess->conn ? sess->conn->ip : "", sub_port);
+
+        } else if (strcmp(t1msg.method, "unsub") == 0) {
+            subscription_remove(&srv->subscriptions, &t1msg.target, &sess->client_fp);
+
+        } else if (strcmp(t1msg.method, "ntf") == 0 && t1msg.value) {
+            /* NOTIFY forwarded from a responsible node — we have a local
+             * listener that asked for this key. Verify then notify + store. */
+            if (nodus_value_verify(t1msg.value) == 0) {
+                notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
+                nodus_storage_put_if_newer(&srv->storage, t1msg.value);
+            }
+
         } else {
-            char kh[17];
-            for (int i = 0; i < 8; i++)
-                sprintf(kh + i*2, "%02x", t1msg.value->key_hash.bytes[i]);
-            kh[16] = '\0';
-            fprintf(stderr, "REPL_TCP: verify FAILED for key=%s... vid=%llu seq=%llu — value DROPPED\n",
-                    kh, (unsigned long long)t1msg.value->value_id,
-                    (unsigned long long)t1msg.value->seq);
+            QGP_LOG_DEBUG(LOG_TAG, "INTER_TCP: unknown T1 method '%s'",
+                           t1msg.method[0] ? t1msg.method : "(empty)");
         }
-    } else if (nodus_t1_decode(payload, len, &t1msg) != 0) {
-        /* T1 decode also failed — unknown frame on inter-node port */
+
+        nodus_t1_msg_free(&t1msg);
+        return;
+    }
+
+    /* T1 decode failed — unknown frame on inter-node port */
+    {
         char hexdump[65] = {0};
         size_t dumplen = len < 32 ? len : 32;
         for (size_t i = 0; i < dumplen; i++)
@@ -4977,6 +5214,15 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Retry DHT hinted handoff (failed replication, every 30s) */
         dht_hinted_retry(srv);
+
+        /* Listen-forward subscription cleanup (every 60s) */
+        {
+            uint64_t now_sec = nodus_time_now();
+            if (now_sec - srv->last_sub_cleanup > 60) {
+                subscription_cleanup_expired(&srv->subscriptions);
+                srv->last_sub_cleanup = now_sec;
+            }
+        }
 
         /* Iterative Kademlia FIND_NODE lookup engine tick */
         iterative_lookup_tick(srv);
