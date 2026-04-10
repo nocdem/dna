@@ -464,19 +464,19 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
               ),
             ),
             if (!_isSelf && _isContact) ...[
-              const SizedBox(width: DnaSpacing.xs),
+              const SizedBox(width: DnaSpacing.sm),
               IconButton(
                 visualDensity: VisualDensity.compact,
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(
-                  minWidth: 32,
-                  minHeight: 32,
+                  minWidth: 44,
+                  minHeight: 44,
                 ),
                 tooltip: AppLocalizations.of(context).contactProfileSetNickname,
                 icon: FaIcon(
-                  FontAwesomeIcons.penToSquare,
-                  size: 14,
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                  FontAwesomeIcons.userPen,
+                  size: 22,
+                  color: theme.colorScheme.primary,
                 ),
                 onPressed: _showNicknameDialog,
               ),

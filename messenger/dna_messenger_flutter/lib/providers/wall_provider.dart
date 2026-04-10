@@ -9,6 +9,7 @@ import '../utils/logger.dart' as logger;
 import 'engine_provider.dart';
 import 'contact_profile_cache_provider.dart';
 import 'contact_requests_provider.dart';
+import 'contacts_provider.dart';
 import 'identity_profile_cache_provider.dart';
 import 'identity_provider.dart';
 import 'profile_provider.dart';
@@ -391,6 +392,13 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       ownName = ref.read(userProfileProvider).valueOrNull?.nickname;
     }
 
+    // Build fp -> local nickname map from contacts (user-assigned overrides)
+    final contactsList = ref.read(contactsProvider).valueOrNull ?? [];
+    final nicknameMap = <String, String>{
+      for (final c in contactsList)
+        if (c.nickname.isNotEmpty) c.fingerprint: c.nickname,
+    };
+
     // Assemble items — no engagement data, just posts + profiles + images
     final items = <WallFeedItem>[];
     for (var i = 0; i < posts.length; i++) {
@@ -410,9 +418,10 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       } else {
         final profile = profiles[post.authorFingerprint];
         avatar = profile?.decodeAvatar();
-        displayName = post.authorName.isNotEmpty
-            ? post.authorName
-            : post.authorFingerprint.substring(0, 16);
+        displayName = nicknameMap[post.authorFingerprint] ??
+            (post.authorName.isNotEmpty
+                ? post.authorName
+                : post.authorFingerprint.substring(0, 16));
       }
 
       // Pre-decode image from post data (avoids per-tile FFI wallGetImage calls)
@@ -477,6 +486,13 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
       await profileCache.prefetchProfiles(uniqueAuthors);
       final profiles = ref.read(contactProfileCacheProvider);
 
+      // Local nickname overrides from contacts
+      final contactsList = ref.read(contactsProvider).valueOrNull ?? [];
+      final nicknameMap = <String, String>{
+        for (final c in contactsList)
+          if (c.nickname.isNotEmpty) c.fingerprint: c.nickname,
+      };
+
       for (var i = 0; i < newBoosts.length; i++) {
         final post = newBoosts[i];
         final comments = allComments[i];
@@ -493,9 +509,10 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
           previewComments: previewComments,
           likeCount: likes.length,
           isLikedByMe: likes.any((l) => l.authorFingerprint == myFp),
-          authorDisplayName: post.authorName.isNotEmpty
-              ? post.authorName
-              : post.authorFingerprint.substring(0, 16),
+          authorDisplayName: nicknameMap[post.authorFingerprint] ??
+              (post.authorName.isNotEmpty
+                  ? post.authorName
+                  : post.authorFingerprint.substring(0, 16)),
           authorAvatar: profile?.decodeAvatar(),
           decodedImage: _ImageCache.get(post.uuid),
         ));
