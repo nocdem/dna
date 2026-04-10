@@ -39,6 +39,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   bool _isFollowing = false;
   bool _isContact = false;
   bool _isSelf = false;
+  String? _nickname;
   List<WallFeedItem> _posts = [];
   int _totalLikes = 0;
   int _totalTips = 0;
@@ -99,8 +100,14 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
     // Relationship status (sync providers, no await)
     if (!_isSelf) {
       final contacts = ref.read(contactsProvider).valueOrNull ?? [];
-      _isContact =
-          contacts.any((c) => c.fingerprint == widget.fingerprint);
+      final contact = contacts.cast<Contact?>().firstWhere(
+            (c) => c?.fingerprint == widget.fingerprint,
+            orElse: () => null,
+          );
+      _isContact = contact != null;
+      if (contact != null && contact.nickname.isNotEmpty) {
+        _nickname = contact.nickname;
+      }
     }
 
     // Show what we have — no spinner if we have a display name
@@ -441,10 +448,51 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
           ),
         ),
         const SizedBox(height: DnaSpacing.md),
-        // ── Name ──
-        Text(_displayName,
-            style: theme.textTheme.headlineSmall
-                ?.copyWith(fontWeight: FontWeight.bold)),
+        // ── Name (with optional edit-nickname icon) ──
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Flexible(
+              child: Text(
+                (_nickname != null && _nickname!.isNotEmpty)
+                    ? _nickname!
+                    : _displayName,
+                style: theme.textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+            ),
+            if (!_isSelf && _isContact) ...[
+              const SizedBox(width: DnaSpacing.xs),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(
+                  minWidth: 32,
+                  minHeight: 32,
+                ),
+                tooltip: AppLocalizations.of(context).contactProfileSetNickname,
+                icon: FaIcon(
+                  FontAwesomeIcons.penToSquare,
+                  size: 14,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+                onPressed: _showNicknameDialog,
+              ),
+            ],
+          ],
+        ),
+        if (_nickname != null && _nickname!.isNotEmpty) ...[
+          const SizedBox(height: DnaSpacing.xs),
+          Text(
+            AppLocalizations.of(context).contactProfileOriginal(_displayName),
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontStyle: FontStyle.italic,
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.55),
+            ),
+          ),
+        ],
         // ── Bio ──
         if (bio.isNotEmpty) ...[
           const SizedBox(height: DnaSpacing.sm),
@@ -849,6 +897,85 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   // ---------------------------------------------------------------------------
   // ACTIONS
   // ---------------------------------------------------------------------------
+
+  void _showNicknameDialog() {
+    final controller = TextEditingController(text: _nickname ?? '');
+    final originalName = _displayName;
+    final l10n = AppLocalizations.of(context);
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text(l10n.contactProfileSetNickname),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              l10n.contactProfileOriginalName(originalName),
+              style: TextStyle(
+                color: Theme.of(dialogCtx).textTheme.bodySmall?.color,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              maxLength: 63,
+              decoration: InputDecoration(
+                labelText: l10n.contactProfileNicknameLabel,
+                hintText: l10n.contactProfileNicknameHint,
+                helperText: l10n.contactProfileNicknameHelper,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: Text(l10n.cancel),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final entered = controller.text.trim();
+              final messenger = ScaffoldMessenger.of(context);
+              Navigator.pop(dialogCtx);
+
+              try {
+                await ref.read(contactsProvider.notifier).setContactNickname(
+                      widget.fingerprint,
+                      entered.isEmpty ? null : entered,
+                    );
+                if (mounted) {
+                  setState(() {
+                    _nickname = entered.isEmpty ? null : entered;
+                  });
+                  messenger.showSnackBar(
+                    SnackBar(
+                      content: Text(entered.isEmpty
+                          ? l10n.contactProfileNicknameCleared
+                          : l10n.contactProfileNicknameSet(entered)),
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  messenger.showSnackBar(
+                    SnackBar(
+                      content: Text(
+                          l10n.contactProfileNicknameFailed(e.toString())),
+                    ),
+                  );
+                }
+              }
+            },
+            child: Text(l10n.save),
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> _toggleFollow() async {
     final engine = await ref.read(engineProvider.future);

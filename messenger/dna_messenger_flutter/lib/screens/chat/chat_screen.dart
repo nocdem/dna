@@ -22,7 +22,6 @@ import '../../widgets/media_message_bubble.dart';
 import '../../widgets/voice_record_sheet.dart';
 import '../../services/image_attachment_service.dart';
 import '../../services/media_service.dart';
-import 'contact_profile_dialog.dart';
 import '../profile/user_profile_screen.dart';
 import 'widgets/message_bubble.dart';
 
