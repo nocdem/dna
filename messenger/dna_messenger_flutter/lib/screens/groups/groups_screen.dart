@@ -1205,8 +1205,8 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
                           : theme.colorScheme.onSurface.withAlpha(179),
                     ),
                     title: Text(
-                      contact.displayName.isNotEmpty
-                          ? contact.displayName
+                      contact.effectiveName.isNotEmpty
+                          ? contact.effectiveName
                           : contact.fingerprint.substring(0, 16),
                       overflow: TextOverflow.ellipsis,
                     ),

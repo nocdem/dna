@@ -222,8 +222,8 @@ class _UnreadContactTile extends ConsumerWidget {
     );
     final avatarBytes = cachedProfile?.decodeAvatar();
 
-    final displayName = contact.displayName.isNotEmpty
-        ? contact.displayName
+    final displayName = contact.effectiveName.isNotEmpty
+        ? contact.effectiveName
         : _shortenFp(contact.fingerprint);
 
     if (cachedProfile == null) {

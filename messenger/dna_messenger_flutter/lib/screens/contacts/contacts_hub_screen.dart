@@ -227,8 +227,8 @@ class _HubContactTile extends ConsumerWidget {
     );
     final avatarBytes = cachedProfile?.decodeAvatar();
 
-    final displayName = contact.displayName.isNotEmpty
-        ? contact.displayName
+    final displayName = contact.effectiveName.isNotEmpty
+        ? contact.effectiveName
         : _shortenFingerprint(contact.fingerprint);
 
     if (cachedProfile == null) {
@@ -316,7 +316,7 @@ class _HubContactTile extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(AppLocalizations.of(context).contactsHubRemoveMessage(contact.displayName)),
+            Text(AppLocalizations.of(context).contactsHubRemoveMessage(contact.effectiveName)),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
@@ -363,7 +363,7 @@ class _HubContactTile extends ConsumerWidget {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${contact.displayName} removed'),
+              content: Text('${contact.effectiveName} removed'),
               backgroundColor: DnaColors.snackbarSuccess,
             ),
           );

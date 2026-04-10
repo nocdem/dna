@@ -2623,14 +2623,14 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                           leading: CircleAvatar(
                             backgroundColor: Theme.of(context).colorScheme.primary.withAlpha(50),
                             child: Text(
-                              contact.displayName.isNotEmpty
-                                  ? contact.displayName[0].toUpperCase()
+                              contact.effectiveName.isNotEmpty
+                                  ? contact.effectiveName[0].toUpperCase()
                                   : '?',
                               style: TextStyle(color: Theme.of(context).colorScheme.primary),
                             ),
                           ),
-                          title: Text(contact.displayName.isNotEmpty
-                              ? contact.displayName
+                          title: Text(contact.effectiveName.isNotEmpty
+                              ? contact.effectiveName
                               : '${contact.fingerprint.substring(0, 16)}...'),
                           subtitle: Text(
                             '${contact.fingerprint.substring(0, 16)}...',

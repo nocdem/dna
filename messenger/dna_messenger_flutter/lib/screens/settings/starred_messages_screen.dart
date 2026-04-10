@@ -87,8 +87,8 @@ class StarredMessagesScreen extends ConsumerWidget {
                 ),
               );
 
-              final displayName = contact.displayName.isNotEmpty
-                  ? contact.displayName
+              final displayName = contact.effectiveName.isNotEmpty
+                  ? contact.effectiveName
                   : '${contactFp.substring(0, 8)}...';
 
               return _ContactStarredSection(

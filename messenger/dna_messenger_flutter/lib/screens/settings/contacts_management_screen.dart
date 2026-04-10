@@ -134,7 +134,7 @@ class ContactsManagementScreen extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              AppLocalizations.of(context).contactsHubRemoveMessage(contact.displayName),
+              AppLocalizations.of(context).contactsHubRemoveMessage(contact.effectiveName),
             ),
             const SizedBox(height: 12),
             Container(
@@ -185,7 +185,7 @@ class ContactsManagementScreen extends ConsumerWidget {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${contact.displayName} removed'),
+              content: Text('${contact.effectiveName} removed'),
               backgroundColor: DnaColors.snackbarSuccess,
             ),
           );
@@ -239,7 +239,7 @@ class _ContactTile extends StatelessWidget {
               : theme.colorScheme.primary,
         ),
       ),
-      title: Text(contact.displayName),
+      title: Text(contact.effectiveName),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

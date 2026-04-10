@@ -319,10 +319,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // ignore: unused_local_variable
     final profileCache = ref.watch(contactProfileCacheProvider);
 
-    // Use contact.displayName (resolved by C library from registered name)
-    // v0.6.24: UserProfile.displayName removed - Contact.displayName is the source of truth
-    final displayName = contact.displayName.isNotEmpty
-        ? contact.displayName
+    // effectiveName = local nickname override (if set) || DHT-resolved displayName
+    final displayName = contact.effectiveName.isNotEmpty
+        ? contact.effectiveName
         : _shortenFingerprint(contact.fingerprint);
 
     return Scaffold(
@@ -854,7 +853,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        'Replying to ${_replyingTo!.isOutgoing ? "yourself" : contact.displayName.isNotEmpty ? contact.displayName : "message"}',
+                        'Replying to ${_replyingTo!.isOutgoing ? "yourself" : contact.effectiveName.isNotEmpty ? contact.effectiveName : "message"}',
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.primary,
                           fontWeight: FontWeight.w600,
@@ -1395,8 +1394,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final contact = ref.read(selectedContactProvider);
-    final contactName = contact?.displayName.isNotEmpty == true
-        ? contact!.displayName
+    final contactName = contact?.effectiveName.isNotEmpty == true
+        ? contact!.effectiveName
         : 'contact';
 
     // Format full timestamp
@@ -1880,13 +1879,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         final contact = contacts[index];
                         return ListTile(
                           leading: DnaAvatar(
-                            name: contact.displayName.isNotEmpty
-                                ? contact.displayName
+                            name: contact.effectiveName.isNotEmpty
+                                ? contact.effectiveName
                                 : null,
                             size: DnaAvatarSize.md,
                           ),
-                          title: Text(contact.displayName.isNotEmpty
-                              ? contact.displayName
+                          title: Text(contact.effectiveName.isNotEmpty
+                              ? contact.effectiveName
                               : '${contact.fingerprint.substring(0, 16)}...'),
                           subtitle: Text(
                             '${contact.fingerprint.substring(0, 16)}...',
@@ -1924,7 +1923,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Message forwarded to ${selectedContact.displayName.isNotEmpty ? selectedContact.displayName : 'contact'}'),
+          content: Text('Message forwarded to ${selectedContact.effectiveName.isNotEmpty ? selectedContact.effectiveName : 'contact'}'),
           backgroundColor: DnaColors.snackbarSuccess,
         ),
       );
@@ -1933,8 +1932,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _showQrCodeDialog(Contact contact) {
     final theme = Theme.of(context);
-    final displayName = contact.displayName.isNotEmpty
-        ? contact.displayName
+    final displayName = contact.effectiveName.isNotEmpty
+        ? contact.effectiveName
         : '${contact.fingerprint.substring(0, 8)}...';
 
     showDialog(
@@ -2018,7 +2017,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Remove ${contact.displayName} from your contacts?',
+              'Remove ${contact.effectiveName} from your contacts?',
             ),
             const SizedBox(height: 12),
             Container(
@@ -2069,7 +2068,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${contact.displayName} removed'),
+              content: Text('${contact.effectiveName} removed'),
               backgroundColor: DnaColors.snackbarSuccess,
             ),
           );
@@ -2095,7 +2094,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: Text(l10n.wallBlockUser),
-        content: Text(l10n.wallBlockUserConfirm(contact.displayName)),
+        content: Text(l10n.wallBlockUserConfirm(contact.effectiveName)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -2124,7 +2123,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(l10n.wallUserBlocked(contact.displayName)),
+              content: Text(l10n.wallUserBlocked(contact.effectiveName)),
               backgroundColor: DnaColors.snackbarSuccess,
             ),
           );
@@ -2844,8 +2843,8 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet>
     final theme = Theme.of(context);
     final l10n = AppLocalizations.of(context);
     final isDark = theme.brightness == Brightness.dark;
-    final contactName = widget.contact.displayName.isNotEmpty
-        ? widget.contact.displayName
+    final contactName = widget.contact.effectiveName.isNotEmpty
+        ? widget.contact.effectiveName
         : 'contact';
 
     final totalSteps = _selectedTokenName == 'CPUNK' ? '2' : '3';

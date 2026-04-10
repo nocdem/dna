@@ -202,10 +202,9 @@ class _ContactTile extends ConsumerWidget {
     );
     final avatarBytes = cachedProfile?.decodeAvatar();
 
-    // Use contact.displayName (resolved by C library from registered name)
-    // v0.6.24: UserProfile.displayName removed - Contact.displayName is the source of truth
-    final displayName = contact.displayName.isNotEmpty
-        ? contact.displayName
+    // effectiveName = local nickname override (if set) || DHT-resolved displayName
+    final displayName = contact.effectiveName.isNotEmpty
+        ? contact.effectiveName
         : _shortenFingerprint(contact.fingerprint);
 
     // Trigger fetch if not cached (fire and forget)
