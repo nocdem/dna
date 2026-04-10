@@ -2618,29 +2618,37 @@ static void handle_t2_get_batch(nodus_server_t *srv, nodus_session_t *sess,
 
         for (int m = 0; m < miss_count; m++) {
             int ki = miss_indices[m];
-            nodus_peer_t closest[1];
+            /* FIX-N4: try up to R closest peers instead of just 1.
+             * At R=3 with 100 nodes, the single closest peer might be
+             * unreachable or not hold the key. Trying R candidates gives
+             * the same reliability as replication factor. */
+            nodus_peer_t closest[NODUS_R];
             int found = nodus_routing_find_closest(&srv->routing, &msg->batch_keys[ki],
-                                                     closest, 1);
+                                                     closest, NODUS_R);
             if (found == 0) continue; /* No peers known — skip */
 
-            /* Skip self */
-            if (nodus_key_cmp(&closest[0].node_id, &srv->identity.node_id) == 0) {
-                /* We ARE the closest — no point forwarding */
-                continue;
+            /* Pick the first non-self closest peer */
+            int chosen = -1;
+            for (int c = 0; c < found; c++) {
+                if (nodus_key_cmp(&closest[c].node_id, &srv->identity.node_id) != 0) {
+                    chosen = c;
+                    break;
+                }
             }
+            if (chosen < 0) continue; /* All candidates are self */
 
             /* Find existing group for this peer or create new */
             int gi = -1;
             for (int g = 0; g < group_count; g++) {
-                if (strcmp(groups[g].peer.ip, closest[0].ip) == 0 &&
-                    groups[g].peer.tcp_port == closest[0].tcp_port) {
+                if (strcmp(groups[g].peer.ip, closest[chosen].ip) == 0 &&
+                    groups[g].peer.tcp_port == closest[chosen].tcp_port) {
                     gi = g;
                     break;
                 }
             }
             if (gi < 0 && group_count < NODUS_BF_MAX_FORWARDS) {
                 gi = group_count++;
-                groups[gi].peer = closest[0];
+                groups[gi].peer = closest[chosen];
                 groups[gi].count = 0;
             }
             if (gi >= 0 && groups[gi].count < NODUS_MAX_BATCH_KEYS) {
