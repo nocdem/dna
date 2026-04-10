@@ -2917,7 +2917,11 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                widget.isDnac ? l10n.dnacSendTitle : l10n.walletSend,
+                widget.isDnac
+                    ? (widget.dnacToken != null
+                        ? 'Send ${widget.dnacToken!.symbol}'
+                        : l10n.dnacSendTitle)
+                    : l10n.walletSend,
                 style: theme.textTheme.titleLarge,
               ),
               const SizedBox(height: 16),
@@ -3061,38 +3065,61 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
               // ── DNAC fee estimate ──
               if (widget.isDnac) ...[
                 const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(l10n.dnacFee, style: theme.textTheme.bodyMedium),
-                          if (_isEstimatingDnacFee)
-                            Text(l10n.dnacEstimatingFee, style: theme.textTheme.bodySmall)
-                          else if (_estimatedDnacFee != null)
-                            Text(
-                              l10n.dnacAmountWithToken(formatDnacAmount(_estimatedDnacFee!)),
-                              style: theme.textTheme.bodyMedium,
-                            )
-                          else
-                            Text('—', style: theme.textTheme.bodyMedium),
-                        ],
-                      ),
-                      if (_estimatedDnacFee != null && _amountController.text.isNotEmpty) ...[
-                        const Divider(height: 16),
-                        Builder(builder: (context) {
-                          int? rawAmount;
-                          try {
-                            rawAmount = parseDnacAmount(_amountController.text.trim());
-                          } catch (_) {}
-                          if (rawAmount == null) return const SizedBox.shrink();
-                          return Row(
+                Builder(builder: (context) {
+                  final tok = widget.dnacToken;
+                  // Parse current amount in the correct denomination
+                  int? rawAmount;
+                  try {
+                    rawAmount = tok != null
+                        ? parseTokenAmount(_amountController.text.trim(), tok.decimals)
+                        : parseDnacAmount(_amountController.text.trim());
+                  } catch (_) {}
+
+                  // Fee: for token sends, compute locally (0.1%, min 1) in
+                  // the same token — no engine round-trip. For native, use
+                  // the async-estimated fee.
+                  int? feeRaw;
+                  bool feeLoading = false;
+                  if (tok != null) {
+                    if (rawAmount != null && rawAmount > 0) {
+                      feeRaw = rawAmount ~/ 1000;
+                      if (feeRaw < 1) feeRaw = 1;
+                    }
+                  } else {
+                    feeRaw = _estimatedDnacFee;
+                    feeLoading = _isEstimatingDnacFee;
+                  }
+
+                  String formatAmt(int raw) => tok != null
+                      ? '${formatTokenAmount(raw, tok.decimals)} ${tok.symbol}'
+                      : l10n.dnacAmountWithToken(formatDnacAmount(raw));
+
+                  return Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(l10n.dnacFee, style: theme.textTheme.bodyMedium),
+                            if (feeLoading)
+                              Text(l10n.dnacEstimatingFee, style: theme.textTheme.bodySmall)
+                            else if (feeRaw != null)
+                              Text(
+                                formatAmt(feeRaw),
+                                style: theme.textTheme.bodyMedium,
+                              )
+                            else
+                              Text('—', style: theme.textTheme.bodyMedium),
+                          ],
+                        ),
+                        if (feeRaw != null && rawAmount != null) ...[
+                          const Divider(height: 16),
+                          Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Text(l10n.dnacTotal,
@@ -3100,20 +3127,18 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                                     fontWeight: FontWeight.bold,
                                   )),
                               Text(
-                                l10n.dnacAmountWithToken(formatDnacAmount(
-                                  rawAmount + _estimatedDnacFee!,
-                                )),
+                                formatAmt(rawAmount + feeRaw),
                                 style: theme.textTheme.titleSmall?.copyWith(
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
                             ],
-                          );
-                        }),
+                          ),
+                        ],
                       ],
-                    ],
-                  ),
-                ),
+                    ),
+                  );
+                }),
               ],
               // ── Token/Network selectors (multi-chain only) ──
               if (!widget.isDnac) ...[
