@@ -36,8 +36,13 @@ int dnac_wallet_calculate_balance(dnac_context_t *ctx, dnac_balance_t *balance) 
         return rc;
     }
 
-    /* Sum up balances by status */
+    /* Sum up balances by status (native DNAC only — skip token UTXOs) */
+    static const uint8_t zero_token[DNAC_TOKEN_ID_SIZE] = {0};
+    int native_count = 0;
     for (int i = 0; i < count; i++) {
+        if (memcmp(utxos[i].token_id, zero_token, DNAC_TOKEN_ID_SIZE) != 0)
+            continue;
+        native_count++;
         switch (utxos[i].status) {
             case DNAC_UTXO_UNSPENT:
                 /* HIGH-8: Safe overflow check on balance */
@@ -62,7 +67,7 @@ int dnac_wallet_calculate_balance(dnac_context_t *ctx, dnac_balance_t *balance) 
         }
     }
 
-    balance->utxo_count = count;
+    balance->utxo_count = native_count;
 
     free(utxos);
     return DNAC_SUCCESS;
