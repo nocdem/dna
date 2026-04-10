@@ -507,6 +507,16 @@ static int update_utxo_set(nodus_witness_t *w,
     }
 
     /* ── Burn UTXO for fee ──────────────────────────────────────── */
+    /* Determine fee token_id from first input (zeros = native DNAC).
+     * For token transfers, fee is charged in the same token being sent;
+     * for TOKEN_CREATE, fee is always native DNAC (enforced below). */
+    uint8_t fee_token_id[64] = {0};
+    if (tx_type != NODUS_W_TX_GENESIS && nullifier_count > 0 && tx_len >= 74 + 1 + 64 + 8 + 64) {
+        /* Input layout: nullifier(64) + amount(8) + token_id(64)
+         * First input's token_id starts at offset 74 + 1 + 64 + 8 = 147 */
+        memcpy(fee_token_id, tx_data + 74 + 1 + 64 + 8, 64);
+    }
+
     uint64_t fee = 0;
     if (tx_type == NODUS_W_TX_TOKEN_CREATE) {
         /* TOKEN_CREATE: fee = input DNAC - change DNAC output.
@@ -538,6 +548,9 @@ static int update_utxo_set(nodus_witness_t *w,
         }
         if (total_input > dnac_output)
             fee = total_input - dnac_output;
+        /* TOKEN_CREATE fee is always native DNAC (creating a new token
+         * shouldn't charge fee in that token since creator doesn't own any yet). */
+        memset(fee_token_id, 0, 64);
     } else if (tx_type != NODUS_W_TX_GENESIS && total_input > total_output) {
         fee = total_input - total_output;
     }
@@ -556,16 +569,20 @@ static int update_utxo_set(nodus_witness_t *w,
                     LOG_TAG, (unsigned long long)fee);
             return -1;
         }
+        /* Use fee_token_id — token transfers burn the same token; native for DNAC/TOKEN_CREATE */
+        uint8_t zeros64[64] = {0};
+        const uint8_t *burn_tid = (memcmp(fee_token_id, zeros64, 64) == 0) ? NULL : fee_token_id;
         if (nodus_witness_utxo_add(w, burn_nul.bytes, DNAC_BURN_ADDRESS,
                                       fee, tx_hash, (uint32_t)output_count,
-                                      block_height, NULL) != 0) {
+                                      block_height, burn_tid) != 0) {
             fprintf(stderr, "%s: burn UTXO insert failed (fee=%llu)\n",
                     LOG_TAG, (unsigned long long)fee);
             return -1;
         }
         stored++;
-        fprintf(stderr, "%s: burn UTXO: fee=%llu → burn_address (block %llu)\n",
+        fprintf(stderr, "%s: burn UTXO: fee=%llu token=%s → burn_address (block %llu)\n",
                 LOG_TAG, (unsigned long long)fee,
+                burn_tid ? "custom" : "native",
                 (unsigned long long)block_height);
     }
 
