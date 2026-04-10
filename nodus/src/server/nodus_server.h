@@ -130,67 +130,79 @@ typedef struct {
     nodus_channel_crypto_t  channel_crypto;
 } nodus_session_t;
 
-/* ── FIND_VALUE async state machine ──────────────────────────────── */
+/* ── Iterative Kademlia FIND_NODE Lookup (UDP) ───────────────────── */
 
-/** Query states for outgoing FIND_VALUE TCP connections */
+/*
+ * DESIGN NOTE: Only FIND_NODE is used. NOT FIND_VALUE.
+ *
+ * Nodus values are 1.5-6KB+ (Kyber1024 CT + Dilithium5 sig + envelope)
+ * which exceed NODUS_MAX_FRAME_UDP (1400 bytes). nodus_udp_send() rejects
+ * payloads > 1400 bytes, so most values can't be returned via UDP.
+ *
+ * Instead: FIND_NODE discovers K-closest nodes (small response, ~200-400B),
+ * then BF forward over TCP 4002 fetches the actual value (no size limit).
+ *
+ * Used by: GET (find nodes → BF forward), PUT (find nodes → STORE),
+ *          LISTEN (find nodes → SUBSCRIBE_FWD)
+ */
+
+/** States for individual UDP queries within a lookup */
 typedef enum {
-    FV_QUERY_CONNECTING,    /**< Non-blocking connect in progress (EPOLLOUT) */
-    FV_QUERY_SENDING,       /**< Connected, sending request (EPOLLOUT) */
-    FV_QUERY_RECEIVING,     /**< Request sent, waiting for response (EPOLLIN) */
-    FV_QUERY_DONE,          /**< Response received or failed */
-} dht_fv_query_state_t;
+    LOOKUP_QUERY_IDLE,       /**< Slot available */
+    LOOKUP_QUERY_SENT,       /**< UDP sent, waiting for response */
+    LOOKUP_QUERY_DONE        /**< Response received or timed out */
+} lookup_query_state_t;
 
-/** One outgoing TCP query to a peer */
+/** One outgoing UDP query to a peer */
 typedef struct {
-    int                     fd;           /**< Socket fd (-1 if unused) */
-    dht_fv_query_state_t    state;
-    nodus_key_t             node_id;      /**< Peer being queried */
-    char                    ip[64];
-    uint16_t                tcp_port;
-    uint64_t                started_at;   /**< For per-query timeout (ms) */
-    uint8_t                *send_buf;     /**< Encoded fv request frame */
-    size_t                  send_len;
-    size_t                  send_pos;     /**< Bytes sent so far */
-    uint8_t                *recv_buf;     /**< Dynamic: malloc on start, free on done */
-    size_t                  recv_cap;
-    size_t                  recv_len;
-} dht_fv_query_t;
+    lookup_query_state_t state;
+    nodus_key_t         node_id;        /**< Peer being queried */
+    char                ip[64];
+    uint16_t            udp_port;
+    uint32_t            txn;            /**< Transaction ID for matching response */
+    uint64_t            sent_at;        /**< For per-query timeout */
+    int                 retries;        /**< 0 = first attempt, 1 = retry */
+} lookup_query_t;
 
-/** One FIND_VALUE lookup (may issue multiple queries across rounds) */
+/** One iterative FIND_NODE lookup */
 typedef struct {
-    bool                    active;
-    nodus_key_t             key_hash;          /**< Key being looked up */
-    uint32_t                txn_id;            /**< Client's transaction ID */
-    int                     session_slot;      /**< Client session index */
-    uint64_t                started_at;        /**< For overall timeout (ms) */
+    bool                active;
+    nodus_key_t         target_key;         /**< Key being looked up */
+    uint32_t            client_txn_id;      /**< Client's T2 transaction ID */
+    int                 session_slot;       /**< Client session index (-1 internal) */
+    uint64_t            started_at;
 
     /* Kademlia iterative state */
-    nodus_peer_t            candidates[NODUS_K * 4];
-    int                     candidate_count;
-    nodus_key_t             visited[NODUS_K * 4];
-    int                     visited_count;
-    int                     round;
+    nodus_peer_t        shortlist[NODUS_LOOKUP_MAX_CANDIDATES];
+    int                 shortlist_count;
+    nodus_key_t         queried[NODUS_LOOKUP_MAX_QUERIED];
+    int                 queried_count;
+    nodus_peer_t        closest_k[NODUS_K];      /**< Current K-closest snapshot */
+    nodus_peer_t        prev_closest_k[NODUS_K]; /**< Previous round's K-closest */
+    int                 closest_k_count;
+    int                 stable_rounds;           /**< Rounds with unchanged closest_k */
 
-    /* Active outgoing queries for this lookup */
-    dht_fv_query_t          queries[NODUS_ALPHA];
-    int                     queries_pending;
+    /* Active outgoing UDP queries */
+    lookup_query_t      queries[NODUS_ALPHA];
+    int                 queries_pending;
 
-    /* Result */
-    bool                    found;
-    uint8_t                *result_buf;
-    size_t                  result_len;
-} dht_fv_lookup_t;
+    /* Result: K-closest nodes (populated on convergence or timeout) */
+    nodus_peer_t        result_nodes[NODUS_K];
+    int                 result_node_count;
 
-/** All in-flight FIND_VALUE lookups */
+    /* Callback for async completion */
+    void              (*on_complete)(struct nodus_server *srv,
+                                     nodus_peer_t *closest, int count,
+                                     void *user_data);
+    void               *cb_data;
+    void              (*cb_data_free)(void *);  /**< Cleanup cb_data on shutdown */
+} iterative_lookup_t;
+
+/** All in-flight iterative lookups */
 typedef struct {
-    dht_fv_lookup_t         lookups[NODUS_FV_MAX_INFLIGHT];
-} dht_fv_state_t;
-
-/** FV fd→lookup index mapping (indexed by fd number) */
-typedef struct {
-    int lookup_idx;   /**< Index into lookups[] (-1 = not an FV fd) */
-    int query_idx;    /**< Index into lookup->queries[] */
-} dht_fv_fd_entry_t;
+    iterative_lookup_t  lookups[NODUS_LOOKUP_MAX_INFLIGHT];
+    uint32_t            next_txn;       /**< Unique UDP txn IDs (single-threaded, no atomic) */
+} iterative_lookup_state_t;
 
 /* ── Batch forward (get_batch miss → forward to closest peer) ────── */
 
@@ -261,6 +273,10 @@ typedef struct {
 
     bool            is_get_all;        /**< True if this BF serves a get_all request
                                         *   (1 key, respond with result_multi not batch) */
+    bool            is_single_get;     /**< True if this BF serves a single-value GET
+                                        *   (1 key, respond with `result` (first value)
+                                        *   or `result_empty`). Mutually exclusive with
+                                        *   is_get_all. */
 } dht_bf_batch_t;
 
 /** Batch forward state (part of nodus_server_t) */
@@ -348,10 +364,8 @@ typedef struct nodus_server {
     nodus_session_t         sessions[NODUS_MAX_SESSIONS];
     nodus_inter_session_t   inter_sessions[NODUS_MAX_INTER_SESSIONS];
 
-    /* FIND_VALUE async state machine */
-    dht_fv_state_t          fv_state;
-    dht_fv_fd_entry_t       fv_fd_table[NODUS_FV_FD_TABLE_SIZE];
-    int                     fv_epoll_fd;
+    /* Iterative Kademlia FIND_NODE lookup engine (UDP-based) */
+    iterative_lookup_state_t lookup_state;
 
     /* Batch forward state machine (get_batch miss → forward to closest peer) */
     dht_bf_state_t          bf_state;

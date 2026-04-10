@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  10
-#define NODUS_VERSION_PATCH  31
-#define NODUS_VERSION_STRING "0.10.31"
+#define NODUS_VERSION_PATCH  32
+#define NODUS_VERSION_STRING "0.10.32"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -98,12 +98,20 @@ extern "C" {
 #define NODUS_VACUUM_SEC           3600    /* 1 hour — incremental vacuum interval */
 #define NODUS_HINT_OFFLINE_SKIP_SEC 3600   /* 1 hour — skip hinted handoff for long-offline peers */
 #define NODUS_REPLICATION_MIN      3      /* Min successful sends before skipping hinted handoff */
-#define NODUS_FV_MAX_INFLIGHT      16      /* Max concurrent FIND_VALUE lookups */
-#define NODUS_FV_TIMEOUT_MS        5000    /* Per-lookup overall timeout */
-#define NODUS_FV_QUERY_TIMEOUT_MS  3000    /* Per-query connect+recv timeout */
-#define NODUS_FV_FD_TABLE_SIZE     4096    /* fd->lookup mapping table size */
-#define NODUS_FV_MAX_PER_SEC       100     /* Rate limit inter-node FIND_VALUE */
+
+/* Iterative Kademlia FIND_NODE lookup engine (UDP-based). Replaces the
+ * old TCP FIND_VALUE state machine. Values are fetched via BF forward
+ * over TCP after FIND_NODE discovers the K-closest peers. */
+#define NODUS_LOOKUP_MAX_INFLIGHT      32      /* Max concurrent iterative lookups */
+#define NODUS_LOOKUP_TIMEOUT_MS        10000   /* Overall per-lookup timeout */
+#define NODUS_LOOKUP_QUERY_TIMEOUT_MS  3000    /* Per-UDP-query timeout */
+#define NODUS_LOOKUP_MAX_CANDIDATES    128     /* Shortlist size (K*16) */
+#define NODUS_LOOKUP_MAX_QUERIED       128     /* Visited/queried set size */
+#define NODUS_LOOKUP_CONVERGE_ROUNDS   3       /* Rounds with unchanged closest_k → done */
+#define NODUS_UDP_MAX_VALUE_SIZE       1200    /* Max value size to return via UDP */
+
 #define NODUS_SV_MAX_PER_SEC       200     /* Rate limit inter-node STORE_VALUE */
+#define NODUS_FV_MAX_PER_SEC       100     /* Rate limit UDP FIND_VALUE responses */
 
 /* Wire array count caps (HIGH-13: prevent OOM from untrusted CBOR counts) */
 #define NODUS_MAX_WIRE_FPS         1000    /* Max fingerprints per message */
