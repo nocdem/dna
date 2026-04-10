@@ -49,6 +49,25 @@ static void format_amount(uint64_t amount, char *buf, size_t buf_len) {
     }
 }
 
+static void format_amount_decimals(uint64_t amount, uint8_t decimals,
+                                    char *buf, size_t buf_len) {
+    if (decimals == 0) {
+        snprintf(buf, buf_len, "%" PRIu64, amount);
+        return;
+    }
+    uint64_t divisor = 1;
+    for (uint8_t i = 0; i < decimals; i++) divisor *= 10;
+    uint64_t whole = amount / divisor;
+    uint64_t frac = amount % divisor;
+    if (frac == 0) {
+        snprintf(buf, buf_len, "%" PRIu64, whole);
+    } else {
+        snprintf(buf, buf_len, "%" PRIu64 ".%0*" PRIu64, whole, decimals, frac);
+        size_t len = strlen(buf);
+        while (len > 0 && buf[len - 1] == '0') buf[--len] = '\0';
+    }
+}
+
 /**
  * Format timestamp for display
  */
@@ -99,6 +118,24 @@ int dnac_cli_balance(dnac_context_t *ctx) {
     printf("Pending:    %s\n", pending_str);
     printf("Locked:     %s\n", locked_str);
     printf("UTXOs:      %d\n", balance.utxo_count);
+
+    /* Show custom token balances */
+    dnac_token_t tokens[64];
+    int token_count = 0;
+    dnac_sync_tokens(ctx);
+    if (dnac_token_list(ctx, tokens, 64, &token_count) == DNAC_SUCCESS && token_count > 0) {
+        printf("\nTokens (%d)\n", token_count);
+        printf("%-10s %-20s %s\n", "SYMBOL", "CONFIRMED", "PENDING");
+        printf("--------  ------------------  ------------------\n");
+        for (int i = 0; i < token_count; i++) {
+            dnac_balance_t tbal = {0};
+            dnac_wallet_get_balance_token(ctx, tokens[i].token_id, &tbal);
+            char tconf[64], tpend[64];
+            format_amount_decimals(tbal.confirmed, tokens[i].decimals, tconf, sizeof(tconf));
+            format_amount_decimals(tbal.pending, tokens[i].decimals, tpend, sizeof(tpend));
+            printf("%-10s %-20s %s\n", tokens[i].symbol, tconf, tpend);
+        }
+    }
 
     return 0;
 }
