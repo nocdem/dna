@@ -19,6 +19,9 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_channel_crypto.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "NODUS_SRV"
 
 extern void qgp_secure_memzero(void *ptr, size_t len);
 
@@ -1104,6 +1107,10 @@ static void lookup_send_round(nodus_server_t *srv, iterative_lookup_t *l) {
         if (lookup_send_query(srv, l, qi, p) == 0)
             sent++;
     }
+
+    QGP_LOG_DEBUG(LOG_TAG,
+        "lookup_round stable=%d shortlist=%d queries_sent=%d pending=%d",
+        l->stable_rounds, l->shortlist_count, sent, l->queries_pending);
 }
 
 /**
@@ -1112,11 +1119,20 @@ static void lookup_send_round(nodus_server_t *srv, iterative_lookup_t *l) {
  * Discovers K-closest nodes to target_key via UDP FIND_NODE queries.
  * On completion, calls on_complete(srv, closest_nodes, count, cb_data).
  *
+ * CONTRACT: cb_data ownership transfers to the lookup engine.
+ *   - Normal completion: on_complete() is called with cb_data; the callback
+ *     MUST free cb_data itself.
+ *   - Abandonment (client disconnect, server shutdown, lookup slot exhaustion):
+ *     cb_data_free() is called if non-NULL. If cb_data_free is NULL and the
+ *     lookup is abandoned, cb_data leaks — always provide cb_data_free unless
+ *     cb_data is stack-allocated or static.
+ *
  * @param session_slot  Client session (-1 for internal/async operations)
  * @param client_txn_id Client's T2 txn ID (unused for internal lookups)
  * @param on_complete   Called when lookup converges (REQUIRED)
  * @param cb_data       Passed to on_complete
- * @param cb_data_free  Called to free cb_data on shutdown cleanup (can be NULL)
+ * @param cb_data_free  Called to free cb_data on abandonment (can be NULL;
+ *                      see CONTRACT above)
  * @return 0 on success (lookup started), -1 on failure (no slots / no peers)
  */
 static int iterative_lookup_start(nodus_server_t *srv,
@@ -1152,6 +1168,13 @@ static int iterative_lookup_start(nodus_server_t *srv,
     for (int i = 0; i < seed_count && l->shortlist_count < NODUS_LOOKUP_MAX_CANDIDATES; i++)
         l->shortlist[l->shortlist_count++] = seeds[i];
 
+    QGP_LOG_DEBUG(LOG_TAG,
+        "lookup_start slot=%d target=%02x%02x%02x%02x%02x%02x%02x%02x seeds=%d",
+        slot,
+        target->bytes[0], target->bytes[1], target->bytes[2], target->bytes[3],
+        target->bytes[4], target->bytes[5], target->bytes[6], target->bytes[7],
+        seed_count);
+
     if (l->shortlist_count == 0) {
         l->active = false;
         return -1;
@@ -1172,10 +1195,16 @@ static int iterative_lookup_start(nodus_server_t *srv,
 /**
  * Handle a FIND_NODE response (fn_r / nodes_found) for active lookups.
  * Called from handle_udp_message() when fn_r is received.
+ *
+ * SECURITY: from_ip/from_port are the sender of the UDP datagram. We verify
+ * they match the peer we originally queried to prevent a malicious node from
+ * forging fn_r responses (guessing txn) and polluting our shortlist.
  */
 static void iterative_lookup_handle_response(nodus_server_t *srv,
                                               uint32_t txn,
-                                              const nodus_tier1_msg_t *msg) {
+                                              const nodus_tier1_msg_t *msg,
+                                              const char *from_ip,
+                                              uint16_t from_port) {
     for (int li = 0; li < NODUS_LOOKUP_MAX_INFLIGHT; li++) {
         iterative_lookup_t *l = &srv->lookup_state.lookups[li];
         if (!l->active) continue;
@@ -1183,6 +1212,16 @@ static void iterative_lookup_handle_response(nodus_server_t *srv,
         for (int qi = 0; qi < NODUS_ALPHA; qi++) {
             lookup_query_t *q = &l->queries[qi];
             if (q->state != LOOKUP_QUERY_SENT || q->txn != txn) continue;
+
+            /* SECURITY: verify response source matches the queried peer.
+             * Prevents forged fn_r from polluting our shortlist. Do NOT
+             * mark the query done — the genuine peer may still reply. */
+            if (strcmp(q->ip, from_ip) != 0 || q->udp_port != from_port) {
+                QGP_LOG_WARN(LOG_TAG,
+                    "lookup_resp spoof? txn=%u expected=%s:%u got=%s:%u",
+                    txn, q->ip, q->udp_port, from_ip, from_port);
+                return;
+            }
 
             /* Match! Add newly discovered peers to the shortlist. */
             q->state = LOOKUP_QUERY_DONE;
@@ -1208,22 +1247,49 @@ static void iterative_lookup_handle_response(nodus_server_t *srv,
     /* No match — stale/duplicate response, ignore */
 }
 
-/** Finalize lookup: invoke callback with K-closest nodes found */
+/** Finalize lookup: invoke callback with K-closest nodes found.
+ *
+ * Reentrancy-safe: snapshots callback state and clears the slot BEFORE
+ * invoking on_complete, so the callback is free to start another lookup
+ * or iterate the lookup table without observing a half-released slot.
+ *
+ * Ownership: on_complete is responsible for freeing cb_data (normal
+ * completion path). cb_data_free is only called on abandonment paths
+ * (iterative_lookup_tick disconnect, nodus_server_close shutdown).
+ */
 static void lookup_finalize(nodus_server_t *srv, iterative_lookup_t *l) {
+    /* Populate result_nodes from closest_k if not already set */
     if (l->result_node_count == 0 && l->closest_k_count > 0) {
         memcpy(l->result_nodes, l->closest_k,
                (size_t)l->closest_k_count * sizeof(nodus_peer_t));
         l->result_node_count = l->closest_k_count;
     }
 
-    if (l->on_complete) {
-        l->on_complete(srv, l->result_nodes, l->result_node_count, l->cb_data);
+    /* Snapshot callback + result into locals BEFORE clearing the slot.
+     * This makes it safe for on_complete to re-enter the engine. */
+    void (*cb)(struct nodus_server *, nodus_peer_t *, int, void *) = l->on_complete;
+    void *cb_data = l->cb_data;
+    nodus_peer_t result_nodes[NODUS_K];
+    int result_count = l->result_node_count;
+    if (result_count > 0) {
+        if (result_count > NODUS_K) result_count = NODUS_K;
+        memcpy(result_nodes, l->result_nodes,
+               (size_t)result_count * sizeof(nodus_peer_t));
     }
 
-    /* Ownership note: on_complete is expected to free cb_data itself. */
+    QGP_LOG_DEBUG(LOG_TAG,
+        "lookup_finalize stable=%d results=%d shortlist=%d queried=%d",
+        l->stable_rounds, result_count, l->shortlist_count, l->queried_count);
+
+    /* Clear slot first — the callback sees an inactive lookup. */
+    l->on_complete = NULL;
     l->cb_data = NULL;
     l->cb_data_free = NULL;
     l->active = false;
+
+    /* Invoke callback with local copies — safe to re-enter the engine.
+     * The callback is responsible for freeing cb_data. */
+    if (cb) cb(srv, result_nodes, result_count, cb_data);
 }
 
 /**
@@ -1239,6 +1305,9 @@ static void iterative_lookup_tick(nodus_server_t *srv) {
 
         /* Overall timeout — finalize with best-effort closest_k */
         if (now - l->started_at > NODUS_LOOKUP_TIMEOUT_MS) {
+            QGP_LOG_DEBUG(LOG_TAG,
+                "lookup_timeout after %llu ms (overall), finalizing",
+                (unsigned long long)(now - l->started_at));
             lookup_finalize(srv, l);
             continue;
         }
@@ -1297,13 +1366,22 @@ static void iterative_lookup_tick(nodus_server_t *srv) {
                 }
 
                 if (has_unqueried) {
-                    for (int i = 0; i < l->closest_k_count; i++) {
+                    /* Count free query slots so we can stop iterating
+                     * closest_k as soon as all slots are full. */
+                    int free_slots = 0;
+                    for (int qi = 0; qi < NODUS_ALPHA; qi++)
+                        if (l->queries[qi].state != LOOKUP_QUERY_SENT) free_slots++;
+
+                    for (int i = 0;
+                         i < l->closest_k_count && free_slots > 0; i++) {
                         if (lookup_is_queried(l, &l->closest_k[i].node_id)) continue;
                         if (nodus_key_cmp(&l->closest_k[i].node_id,
                                            &srv->identity.node_id) == 0) continue;
                         for (int qi = 0; qi < NODUS_ALPHA; qi++) {
                             if (l->queries[qi].state != LOOKUP_QUERY_SENT) {
-                                lookup_send_query(srv, l, qi, &l->closest_k[i]);
+                                if (lookup_send_query(srv, l, qi,
+                                                       &l->closest_k[i]) == 0)
+                                    free_slots--;
                                 break;
                             }
                         }
@@ -4041,7 +4119,8 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
     } else if (strcmp(msg.method, "fn_r") == 0) {
         /* NODES_FOUND: feed to iterative lookup engine FIRST (FIX-C3),
          * then update routing table (existing behavior, kept). */
-        iterative_lookup_handle_response(srv, msg.txn_id, &msg);
+        iterative_lookup_handle_response(srv, msg.txn_id, &msg,
+                                          from_ip, from_port);
         for (int i = 0; i < msg.peer_count; i++) {
             msg.peers[i].last_seen = nodus_time_now();
             routing_insert_or_ping(srv, &msg.peers[i]);
