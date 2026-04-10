@@ -129,12 +129,15 @@ void dna_handle_dnac_send(dna_engine_t *engine, dna_task_t *task) {
     uint64_t amount = task->params.dnac_send.amount;
     const char *memo = task->params.dnac_send.memo[0] != '\0'
                        ? task->params.dnac_send.memo : NULL;
+    const uint8_t *token_id = task->params.dnac_send.has_token_id
+                              ? task->params.dnac_send.token_id : NULL;
 
-    QGP_LOG_INFO(LOG_TAG, "Sending %llu raw to %.16s... memo=%s",
+    QGP_LOG_INFO(LOG_TAG, "Sending %llu raw to %.16s... token=%s memo=%s",
                  (unsigned long long)amount, recipient,
+                 token_id ? "custom" : "native",
                  memo ? memo : "(none)");
 
-    int ret = dnac_send(ctx, recipient, amount, memo, NULL, NULL);
+    int ret = dnac_send_token(ctx, recipient, amount, memo, token_id, NULL, NULL);
     if (ret != DNAC_SUCCESS) {
         QGP_LOG_ERROR(LOG_TAG, "dnac_send failed: %d (%s)",
                       ret, dnac_error_string(ret));
@@ -142,8 +145,9 @@ void dna_handle_dnac_send(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Payment sent successfully: %llu raw to %.16s...",
-                 (unsigned long long)amount, recipient);
+    QGP_LOG_INFO(LOG_TAG, "Payment sent successfully: %llu raw to %.16s... token=%s",
+                 (unsigned long long)amount, recipient,
+                 token_id ? "custom" : "native");
     task->callback.completion(task->request_id, 0, task->user_data);
 }
 
@@ -320,6 +324,7 @@ dna_request_id_t dna_engine_dnac_send(
     const char *recipient_fingerprint,
     uint64_t amount,
     const char *memo,
+    const uint8_t *token_id,
     dna_completion_cb callback,
     void *user_data
 ) {
@@ -333,6 +338,10 @@ dna_request_id_t dna_engine_dnac_send(
     if (memo) {
         strncpy(params.dnac_send.memo, memo, 255);
         params.dnac_send.memo[255] = '\0';
+    }
+    if (token_id) {
+        memcpy(params.dnac_send.token_id, token_id, 64);
+        params.dnac_send.has_token_id = true;
     }
 
     dna_task_callback_t cb = {0};

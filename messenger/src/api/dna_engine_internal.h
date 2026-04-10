@@ -580,6 +580,8 @@ typedef union {
         char recipient_fingerprint[129];    /* 128 hex chars + NUL */
         uint64_t amount;                    /* Amount in raw units */
         char memo[256];                     /* Optional memo */
+        uint8_t token_id[64];               /* Token ID (zeros = native DNAC) */
+        bool has_token_id;                  /* True if custom token send */
     } dnac_send;
 
     /* DNAC: Estimate fee (v0.9.173+) */

@@ -4028,17 +4028,21 @@ DNA_API dna_request_id_t dna_engine_dnac_get_balance(
 );
 
 /**
- * Send DNAC payment
+ * Send DNAC payment (native or custom token)
  *
  * @param recipient_fingerprint  128-char hex fingerprint
  * @param amount                 Amount in raw units (1 token = 100,000,000 raw)
  * @param memo                   Optional memo (NULL for none)
+ * @param token_id               Token ID (64 bytes) for custom token send,
+ *                               or NULL for native DNAC. Fee (0.1%) is
+ *                               calculated in the same token.
  */
 DNA_API dna_request_id_t dna_engine_dnac_send(
     dna_engine_t *engine,
     const char *recipient_fingerprint,
     uint64_t amount,
     const char *memo,
+    const uint8_t *token_id,
     dna_completion_cb callback,
     void *user_data
 );

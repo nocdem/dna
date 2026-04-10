@@ -276,12 +276,13 @@ int dnac_wallet_recover(dnac_context_t *ctx, int *recovered_count) {
  * Send Functions
  * ========================================================================== */
 
-int dnac_send(dnac_context_t *ctx,
-              const char *recipient_fingerprint,
-              uint64_t amount,
-              const char *memo,
-              dnac_callback_t callback,
-              void *user_data) {
+int dnac_send_token(dnac_context_t *ctx,
+                    const char *recipient_fingerprint,
+                    uint64_t amount,
+                    const char *memo,
+                    const uint8_t *token_id,
+                    dnac_callback_t callback,
+                    void *user_data) {
     if (!ctx || !recipient_fingerprint || amount == 0 || !ctx->initialized) {
         return DNAC_ERROR_INVALID_PARAM;
     }
@@ -310,7 +311,18 @@ int dnac_send(dnac_context_t *ctx,
         return DNAC_ERROR_OUT_OF_MEMORY;
     }
 
-    /* Step 2: Add output */
+    /* Step 2: Set token_id if specified (leaves all-zero/native otherwise).
+     * The builder then uses dnac_wallet_select_utxos_token() for the same
+     * token and computes the 0.1% fee from the same token's amount. */
+    if (token_id) {
+        rc = dnac_tx_builder_set_token(builder, token_id);
+        if (rc != DNAC_SUCCESS) {
+            dnac_tx_builder_free(builder);
+            return rc;
+        }
+    }
+
+    /* Step 3: Add output */
     dnac_tx_output_t output = {0};
     strncpy(output.recipient_fingerprint, recipient_fingerprint,
             sizeof(output.recipient_fingerprint) - 1);
@@ -325,7 +337,7 @@ int dnac_send(dnac_context_t *ctx,
         return rc;
     }
 
-    /* Step 3: Build transaction (selects UTXOs, signs) */
+    /* Step 4: Build transaction (selects UTXOs, signs) */
     dnac_transaction_t *tx = NULL;
     rc = dnac_tx_builder_build(builder, &tx);
     dnac_tx_builder_free(builder);
@@ -334,7 +346,7 @@ int dnac_send(dnac_context_t *ctx,
         return rc;
     }
 
-    /* Step 4: Broadcast (gets witness signatures, sends via DHT) */
+    /* Step 5: Broadcast (gets witness signatures, sends via DHT) */
     rc = dnac_tx_broadcast(ctx, tx, callback, user_data);
     if (rc != DNAC_SUCCESS) {
         dnac_free_transaction(tx);
@@ -343,6 +355,16 @@ int dnac_send(dnac_context_t *ctx,
 
     dnac_free_transaction(tx);
     return DNAC_SUCCESS;
+}
+
+int dnac_send(dnac_context_t *ctx,
+              const char *recipient_fingerprint,
+              uint64_t amount,
+              const char *memo,
+              dnac_callback_t callback,
+              void *user_data) {
+    return dnac_send_token(ctx, recipient_fingerprint, amount, memo,
+                           NULL, callback, user_data);
 }
 
 int dnac_estimate_fee(dnac_context_t *ctx, uint64_t amount, uint64_t *fee_out) {

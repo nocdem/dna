@@ -1281,6 +1281,25 @@ int parseDnacAmount(String amount) {
   return isNegative ? -result : result;
 }
 
+/// Parse human-readable amount to raw units for a custom token with N decimals
+int parseTokenAmount(String amount, int decimals) {
+  if (decimals < 0 || decimals > 18) {
+    throw ArgumentError('decimals must be 0..18, got $decimals');
+  }
+  final isNegative = amount.startsWith('-');
+  final abs = isNegative ? amount.substring(1) : amount;
+  final parts = abs.split('.');
+  final rawPerToken = _pow10(decimals);
+  var result = int.parse(parts[0]) * rawPerToken;
+  if (parts.length > 1 && decimals > 0) {
+    var fracStr = parts[1];
+    if (fracStr.length > decimals) fracStr = fracStr.substring(0, decimals);
+    fracStr = fracStr.padRight(decimals, '0');
+    result += int.parse(fracStr);
+  }
+  return isNegative ? -result : result;
+}
+
 class DnacBalance {
   final int confirmed;
   final int pending;
@@ -6737,12 +6756,21 @@ class DnaEngine {
     return completer.future;
   }
 
-  /// Send DNAC payment
+  /// Send DNAC payment (native or custom token).
+  ///
+  /// If [tokenId] is null, sends native DNAC. If provided, must be exactly
+  /// 64 bytes and the fee (0.1%) is calculated in the same token — native
+  /// DNAC balance is not consumed.
   Future<void> dnacSend({
     required String recipientFingerprint,
     required int amount,
     String? memo,
+    Uint8List? tokenId,
   }) async {
+    if (tokenId != null && tokenId.length != 64) {
+      throw ArgumentError('tokenId must be exactly 64 bytes, got ${tokenId.length}');
+    }
+
     final completer = Completer<void>();
     final localId = _nextLocalId++;
 
@@ -6761,17 +6789,27 @@ class DnaEngine {
     final recipientPtr = recipientFingerprint.toNativeUtf8();
     final memoPtr = memo?.toNativeUtf8() ?? nullptr;
 
+    Pointer<Uint8> tokenIdPtr = nullptr;
+    if (tokenId != null) {
+      tokenIdPtr = calloc<Uint8>(64);
+      for (int i = 0; i < 64; i++) {
+        tokenIdPtr[i] = tokenId[i];
+      }
+    }
+
     final requestId = _bindings.dna_engine_dnac_send(
       _engine,
       recipientPtr.cast(),
       amount,
       memoPtr.cast(),
+      tokenIdPtr,
       callback.nativeFunction.cast(),
       nullptr,
     );
 
     calloc.free(recipientPtr);
     if (memoPtr != nullptr) calloc.free(memoPtr);
+    if (tokenIdPtr != nullptr) calloc.free(tokenIdPtr);
 
     if (requestId == 0) {
       _cleanupRequest(localId);

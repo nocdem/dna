@@ -19,7 +19,7 @@ import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
 import '../../providers/price_provider.dart';
 import '../../providers/dnac_provider.dart';
-import '../../ffi/dna_engine.dart' show DnacBalance, DnacToken, DnacTxHistory, formatDnacAmount, formatTokenAmount, parseDnacAmount;
+import '../../ffi/dna_engine.dart' show DnacBalance, DnacToken, DnacTxHistory, formatDnacAmount, formatTokenAmount, parseDnacAmount, parseTokenAmount;
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
 import 'dnac_utxos_screen.dart';
@@ -2239,6 +2239,10 @@ class _SendSheet extends ConsumerStatefulWidget {
   final String? preselectedNetwork;
   final String? availableBalance;
   final bool isDnac;
+  /// When set (alongside isDnac=true), the send sheet operates on a
+  /// custom DNAC token instead of native DNAC. Routes through the
+  /// token-aware send path.
+  final DnacToken? dnacToken;
 
   const _SendSheet({
     required this.walletIndex,
@@ -2246,6 +2250,7 @@ class _SendSheet extends ConsumerStatefulWidget {
     this.preselectedNetwork,
     this.availableBalance,
     this.isDnac = false,
+    this.dnacToken,
   });
 
   @override
@@ -2717,6 +2722,10 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     final amountText = _amountController.text.trim();
     final memo = _memoController.text.trim();
 
+    // Custom DNAC token send vs native DNAC send
+    final dnacToken = widget.dnacToken;
+    final isTokenSend = dnacToken != null;
+
     // Must be 128-char hex fingerprint
     if (!_isFingerprint(recipient)) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2727,7 +2736,9 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
 
     int rawAmount;
     try {
-      rawAmount = parseDnacAmount(amountText);
+      rawAmount = isTokenSend
+          ? parseTokenAmount(amountText, dnacToken.decimals)
+          : parseDnacAmount(amountText);
     } catch (_) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(l10n.dnacInvalidAmount)),
@@ -2742,22 +2753,40 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       return;
     }
 
-    // Check balance (include fee)
-    final balance = ref.read(dnacBalanceProvider).valueOrNull;
-    final totalCost = rawAmount + (_estimatedDnacFee ?? 0);
-    if (balance != null && totalCost > balance.confirmed) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l10n.dnacInsufficientFunds)),
-      );
-      return;
+    // Check balance (include fee). For token sends, fee is in the same
+    // token (0.1% of amount) and is checked against the token balance.
+    // For native sends, fee is native and checked against native balance.
+    final tokenFee = rawAmount ~/ 1000 < 1 ? 1 : rawAmount ~/ 1000;
+    if (isTokenSend) {
+      final tokenIdHex = _DnacTokenTile._tokenIdHex(dnacToken.tokenId);
+      final tokBal = ref.read(dnacTokenBalanceProvider(tokenIdHex)).valueOrNull;
+      final totalCost = rawAmount + tokenFee;
+      if (tokBal != null && totalCost > tokBal.confirmed) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.dnacInsufficientFunds)),
+        );
+        return;
+      }
+    } else {
+      final balance = ref.read(dnacBalanceProvider).valueOrNull;
+      final totalCost = rawAmount + (_estimatedDnacFee ?? 0);
+      if (balance != null && totalCost > balance.confirmed) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.dnacInsufficientFunds)),
+        );
+        return;
+      }
     }
 
-    // Confirmation dialog
+    // Confirmation dialog — show token-specific formatting if custom token
+    final amountDisplay = isTokenSend
+        ? '${formatTokenAmount(rawAmount, dnacToken.decimals)} ${dnacToken.symbol}'
+        : l10n.dnacAmountWithToken(formatDnacAmount(rawAmount));
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(l10n.dnacConfirmSend),
-        content: Text(l10n.dnacAmountWithToken(formatDnacAmount(rawAmount))),
+        content: Text(amountDisplay),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -2779,6 +2808,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         recipientFingerprint: recipient,
         amount: rawAmount,
         memo: memo.isNotEmpty ? memo : null,
+        tokenId: isTokenSend ? dnacToken.tokenId : null,
       );
 
       if (mounted) {
@@ -2859,7 +2889,9 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     final amountText = _amountController.text.trim();
     if (amountText.isEmpty) return false;
     try {
-      final raw = parseDnacAmount(amountText);
+      final raw = widget.dnacToken != null
+          ? parseTokenAmount(amountText, widget.dnacToken!.decimals)
+          : parseDnacAmount(amountText);
       return raw > 0;
     } catch (_) {
       return false;
@@ -2972,7 +3004,9 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                       decoration: InputDecoration(
                         labelText: widget.isDnac ? l10n.dnacAmount : l10n.walletAmount,
                         hintText: '0.00',
-                        suffixText: widget.isDnac ? l10n.dnacToken : _selectedToken,
+                        suffixText: widget.isDnac
+                            ? (widget.dnacToken?.symbol ?? l10n.dnacToken)
+                            : _selectedToken,
                       ),
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       onChanged: widget.isDnac
@@ -3819,6 +3853,7 @@ class _TokenDetailSheet extends ConsumerWidget {
         preselectedNetwork: isDnac ? null : network,
         availableBalance: isDnac ? null : currentBalance,
         isDnac: isDnac,
+        dnacToken: dnacToken,
       ),
     );
   }

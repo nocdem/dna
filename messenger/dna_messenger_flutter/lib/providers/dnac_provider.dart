@@ -89,23 +89,32 @@ class DnacBalanceNotifier extends AsyncNotifier<DnacBalance?>
     }
   }
 
-  /// Send DNAC payment and refresh all state
+  /// Send DNAC payment and refresh all state.
+  ///
+  /// [tokenId] selects a custom token (64 bytes). When null, sends native
+  /// DNAC. Fee (0.1%) is charged in the same token either way.
   Future<void> sendPayment({
     required String recipientFingerprint,
     required int amount,
     String? memo,
+    Uint8List? tokenId,
   }) async {
     final engine = await ref.read(engineProvider.future);
     await engine.dnacSend(
       recipientFingerprint: recipientFingerprint,
       amount: amount,
       memo: memo,
+      tokenId: tokenId,
     );
 
     // Await balance refresh so UI updates immediately
     await refreshBalance();
     ref.invalidate(dnacHistoryProvider);
     ref.invalidate(dnacUtxosProvider);
+    // Token balances are keyed by tokenIdHex — invalidate the family
+    if (tokenId != null) {
+      ref.invalidate(dnacTokenBalanceProvider);
+    }
   }
 
   /// Refresh balance without sync (after send)

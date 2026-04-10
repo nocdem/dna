@@ -415,6 +415,31 @@ int dnac_send(dnac_context_t *ctx,
               void *user_data);
 
 /**
+ * @brief Send a DNAC payment in a specific token
+ *
+ * Same as dnac_send(), but allows selecting a custom token. Fee is
+ * calculated as 0.1% of amount in the SAME token (not native DNAC).
+ * UTXO selection is token-aware: only UTXOs of the specified token
+ * are used as inputs, and change is also emitted in the same token.
+ *
+ * @param ctx DNAC context
+ * @param recipient_fingerprint Recipient's identity fingerprint
+ * @param amount Amount to send (in token's raw units)
+ * @param memo Optional memo (can be NULL)
+ * @param token_id Token ID (DNAC_TOKEN_ID_SIZE bytes), or NULL for native DNAC
+ * @param callback Completion callback (can be NULL for sync)
+ * @param user_data User data for callback
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_send_token(dnac_context_t *ctx,
+                    const char *recipient_fingerprint,
+                    uint64_t amount,
+                    const char *memo,
+                    const uint8_t *token_id,
+                    dnac_callback_t callback,
+                    void *user_data);
+
+/**
  * @brief Estimate fee for transaction
  *
  * @param ctx DNAC context

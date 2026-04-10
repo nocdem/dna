@@ -4391,19 +4391,20 @@ class DnaBindings {
 
   late final _dna_engine_dnac_send = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Uint64,
-          Pointer<Utf8>, Pointer<DnaCompletionCb>, Pointer<Void>),
+          Pointer<Utf8>, Pointer<Uint8>, Pointer<DnaCompletionCb>, Pointer<Void>),
       int Function(Pointer<dna_engine_t>, Pointer<Utf8>, int,
-          Pointer<Utf8>, Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_dnac_send');
+          Pointer<Utf8>, Pointer<Uint8>, Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_dnac_send');
 
   int dna_engine_dnac_send(
     Pointer<dna_engine_t> engine,
     Pointer<Utf8> recipient_fingerprint,
     int amount,
     Pointer<Utf8> memo,
+    Pointer<Uint8> token_id,
     Pointer<DnaCompletionCb> callback,
     Pointer<Void> user_data,
   ) {
-    return _dna_engine_dnac_send(engine, recipient_fingerprint, amount, memo, callback, user_data);
+    return _dna_engine_dnac_send(engine, recipient_fingerprint, amount, memo, token_id, callback, user_data);
   }
 
   late final _dna_engine_dnac_sync = _lib.lookupFunction<

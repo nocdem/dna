@@ -198,10 +198,10 @@ cd messenger
 
 | Component | Version |
 |-----------|---------|
-| C Library | v0.9.192 |
-| Flutter App | v1.0.0-rc196 |
+| C Library | v0.9.193 |
+| Flutter App | v1.0.0-rc197 |
 | Nodus | v0.10.42 |
-| DNAC | v0.13.1 |
+| DNAC | v0.13.2 |
 
 ---
 
