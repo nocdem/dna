@@ -207,6 +207,26 @@ static int derive_nullifier(const char *owner_fp, const uint8_t *seed,
 int dnac_sync_wallet(dnac_context_t *ctx) {
     if (!ctx || !ctx->initialized) return DNAC_ERROR_INVALID_PARAM;
 
+    /* Detect chain resets: if the witness chain_id differs from what we
+     * stored last, any cached transaction history is from a dead chain
+     * and must be wiped. UTXOs are already rebuilt from witnesses below,
+     * but dnac_transactions is never cleared on sync and would otherwise
+     * leak ghost TXs across chain resets. */
+    const uint8_t *current_chain = dnac_get_chain_id(ctx);
+    if (current_chain) {
+        uint8_t stored_chain[32];
+        int cr = dnac_db_get_stored_chain_id(ctx->db, stored_chain);
+        if (cr == DNAC_ERROR_NOT_FOUND) {
+            dnac_db_set_stored_chain_id(ctx->db, current_chain);
+        } else if (cr == DNAC_SUCCESS &&
+                   memcmp(stored_chain, current_chain, 32) != 0) {
+            QGP_LOG_WARN(LOG_TAG,
+                "sync: chain_id changed, wiping stale transaction cache");
+            dnac_db_clear_transactions(ctx->db);
+            dnac_db_set_stored_chain_id(ctx->db, current_chain);
+        }
+    }
+
     /* Clear existing UTXOs (fresh start from authoritative source) */
     int rc = dnac_db_clear_utxos(ctx->db, ctx->owner_fingerprint);
     if (rc != DNAC_SUCCESS) {

@@ -320,6 +320,28 @@ int dnac_db_get_owner_salt(sqlite3 *db, uint8_t *salt_out);
  */
 int dnac_db_set_owner_salt(sqlite3 *db, const uint8_t *salt);
 
+/**
+ * @brief Get stored chain_id from wallet config
+ *
+ * Used to detect chain resets: if the stored chain_id differs from the
+ * current witness chain_id, the local transaction cache is stale and
+ * must be wiped.
+ *
+ * @param db SQLite database handle
+ * @param chain_id_out Output buffer (32 bytes)
+ * @return DNAC_SUCCESS, DNAC_ERROR_NOT_FOUND if never set, or error code
+ */
+int dnac_db_get_stored_chain_id(sqlite3 *db, uint8_t *chain_id_out);
+
+/**
+ * @brief Set stored chain_id in wallet config
+ *
+ * @param db SQLite database handle
+ * @param chain_id Chain ID to store (32 bytes)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_db_set_stored_chain_id(sqlite3 *db, const uint8_t *chain_id);
+
 #ifdef __cplusplus
 }
 #endif

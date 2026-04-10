@@ -815,6 +815,52 @@ int dnac_db_set_owner_salt(sqlite3 *db, const uint8_t *salt) {
     return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
 }
 
+int dnac_db_get_stored_chain_id(sqlite3 *db, uint8_t *chain_id_out) {
+    if (!db || !chain_id_out) return DNAC_ERROR_INVALID_PARAM;
+
+    const char *sql = "SELECT value FROM dnac_wallet_config WHERE key = 'chain_id'";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return DNAC_ERROR_NOT_FOUND;
+    }
+
+    const void *blob = sqlite3_column_blob(stmt, 0);
+    int blob_size = sqlite3_column_bytes(stmt, 0);
+
+    if (!blob || blob_size != 32) {
+        sqlite3_finalize(stmt);
+        return DNAC_ERROR_DATABASE;
+    }
+
+    memcpy(chain_id_out, blob, 32);
+    sqlite3_finalize(stmt);
+    return DNAC_SUCCESS;
+}
+
+int dnac_db_set_stored_chain_id(sqlite3 *db, const uint8_t *chain_id) {
+    if (!db || !chain_id) return DNAC_ERROR_INVALID_PARAM;
+
+    const char *sql =
+        "INSERT OR REPLACE INTO dnac_wallet_config (key, value) VALUES ('chain_id', ?)";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
+
+    sqlite3_bind_blob(stmt, 1, chain_id, 32, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
+}
+
 /* ============================================================================
  * P0-4 (v0.7.0): Confirmation Tracking Functions
  * ========================================================================== */
