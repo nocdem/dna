@@ -2269,7 +2269,12 @@ static void bf_conn_cleanup(nodus_server_t *srv, dht_bf_conn_t *c) {
 
 static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b) {
     for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) {
-        if (b->forwards[i].fd >= 0) bf_conn_cleanup(srv, &b->forwards[i]);
+        /* Phase 3.2e FIX: was `fd >= 0` which treated zero-initialized
+         * uninitialized forwards (.bss start, or post-memset state below)
+         * as valid fds, calling close(0) on each batch cleanup pass and
+         * stomping stdin. Use `> 0` so only real socket fds (>= 3 in
+         * practice) are cleaned. */
+        if (b->forwards[i].fd > 0) bf_conn_cleanup(srv, &b->forwards[i]);
     }
     if (b->vals_per_key) {
         for (int i = 0; i < b->key_count; i++) {
@@ -2284,6 +2289,9 @@ static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b) {
     free(b->counts_per_key);
     free(b->keys);
     memset(b, 0, sizeof(*b));
+    /* Phase 3.2e FIX: after memset all forwards' fd are 0 — re-init to -1
+     * so any later cleanup pass treats them as inactive, not as stdin. */
+    for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
 }
 
 /** Send batch response to client and clean up */
@@ -2685,9 +2693,10 @@ static void bf_tick(nodus_server_t *srv) {
 
         /* Overall batch timeout */
         if (now - b->started_at > NODUS_BF_TIMEOUT_MS) {
-            /* Timeout: clean up remaining forwards, send what we have */
+            /* Timeout: clean up remaining forwards, send what we have.
+             * Phase 3.2e FIX: `> 0` not `>= 0` — see bf_batch_cleanup. */
             for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
-                if (b->forwards[fi].fd >= 0) {
+                if (b->forwards[fi].fd > 0) {
                     bf_conn_cleanup(srv, &b->forwards[fi]);
                 }
             }
@@ -5282,6 +5291,16 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     if (!srv || !config) return -1;
     memset(srv, 0, sizeof(*srv));
     srv->config = *config;
+
+    /* Phase 3.2e FIX: bf_state.batches[].forwards[].fd starts at 0 from
+     * memset above, but 0 is a VALID stdio fd (stdin). Cleanup paths use
+     * fd >= 0 as "active" check, so uninitialized forwards trigger
+     * close(0) and stomp stdin. Initialize all forward fds to -1. */
+    for (int bi = 0; bi < NODUS_BF_MAX_BATCHES; bi++) {
+        for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
+            srv->bf_state.batches[bi].forwards[fi].fd = -1;
+        }
+    }
 
     /* Jitter republish start to avoid thundering herd across cluster.
      * Each node delays its first republish cycle by a random offset
