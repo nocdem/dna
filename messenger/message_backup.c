@@ -578,32 +578,39 @@ int message_backup_save(message_backup_context_t *ctx,
                              recipient, plaintext, timestamp, hash);
     }
 
-    // Check for duplicate by content hash
-    if (message_backup_exists(ctx, hash)) {
-        QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (hash match)\n",
-               sender, recipient);
-        return 1;  // Return 1 to indicate duplicate (not an error)
-    }
+    /* Reactions intentionally share content_hash with the target message
+     * (used as an indexed back-reference). Skip the dedup-by-content_hash
+     * check for message_type=3; reaction-level dedup is handled at the
+     * application layer in message_backup_get_reactions_for_target via
+     * (reactor, emoji, op) replay. */
+    if (message_type != 3) {
+        // Check for duplicate by content hash
+        if (message_backup_exists(ctx, hash)) {
+            QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (hash match)\n",
+                   sender, recipient);
+            return 1;  // Return 1 to indicate duplicate (not an error)
+        }
 
-    // Fallback: catch pre-v16 rows where content_hash is NULL
-    {
-        const char *fb_sql =
-            "SELECT COUNT(*) FROM messages "
-            "WHERE content_hash IS NULL AND sender_fingerprint = ? "
-            "AND recipient = ? AND plaintext = ? AND timestamp = ?";
-        sqlite3_stmt *fb_stmt;
-        if (sqlite3_prepare_v2(ctx->db, fb_sql, -1, &fb_stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(fb_stmt, 1, sender_fingerprint ? sender_fingerprint : sender, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(fb_stmt, 2, recipient, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(fb_stmt, 3, plaintext, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int64(fb_stmt, 4, (sqlite3_int64)timestamp);
-            if (sqlite3_step(fb_stmt) == SQLITE_ROW && sqlite3_column_int(fb_stmt, 0) > 0) {
+        // Fallback: catch pre-v16 rows where content_hash is NULL
+        {
+            const char *fb_sql =
+                "SELECT COUNT(*) FROM messages "
+                "WHERE content_hash IS NULL AND sender_fingerprint = ? "
+                "AND recipient = ? AND plaintext = ? AND timestamp = ?";
+            sqlite3_stmt *fb_stmt;
+            if (sqlite3_prepare_v2(ctx->db, fb_sql, -1, &fb_stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_text(fb_stmt, 1, sender_fingerprint ? sender_fingerprint : sender, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(fb_stmt, 2, recipient, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(fb_stmt, 3, plaintext, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(fb_stmt, 4, (sqlite3_int64)timestamp);
+                if (sqlite3_step(fb_stmt) == SQLITE_ROW && sqlite3_column_int(fb_stmt, 0) > 0) {
+                    sqlite3_finalize(fb_stmt);
+                    QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (pre-v16 fallback)\n",
+                           sender, recipient);
+                    return 1;
+                }
                 sqlite3_finalize(fb_stmt);
-                QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (pre-v16 fallback)\n",
-                       sender, recipient);
-                return 1;
             }
-            sqlite3_finalize(fb_stmt);
         }
     }
 
