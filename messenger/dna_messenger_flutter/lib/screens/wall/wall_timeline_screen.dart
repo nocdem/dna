@@ -28,22 +28,47 @@ class WallTimelineScreen extends ConsumerStatefulWidget {
 
 class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
   final _scrollController = ScrollController();
+  // isScrollingNotifier can only be bound after the ScrollPosition is attached
+  // (first layout). We attach once via a post-frame callback and track the
+  // bound notifier so dispose can cleanly detach it.
+  ValueNotifier<bool>? _scrollingNotifier;
 
   @override
   void initState() {
     super.initState();
     _checkLostCameraData();
     _scrollController.addListener(_onScroll);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bindScrollingNotifier());
   }
 
   @override
   void dispose() {
     _scrollController.removeListener(_onScroll);
+    _scrollingNotifier?.removeListener(_onScrollingChanged);
     _scrollController.dispose();
     super.dispose();
   }
 
+  void _bindScrollingNotifier() {
+    if (!mounted || !_scrollController.hasClients) return;
+    final notifier = _scrollController.position.isScrollingNotifier;
+    if (identical(notifier, _scrollingNotifier)) return;
+    _scrollingNotifier?.removeListener(_onScrollingChanged);
+    _scrollingNotifier = notifier;
+    notifier.addListener(_onScrollingChanged);
+  }
+
+  void _onScrollingChanged() {
+    final active = _scrollingNotifier?.value ?? false;
+    ref.read(wallTimelineProvider.notifier).setUserScrolling(active);
+  }
+
   void _onScroll() {
+    // Lazy-bind in case post-frame callback fired before the ListView mounted
+    // (e.g. empty state → content state transition reattaches the position).
+    if (_scrollingNotifier == null && _scrollController.hasClients) {
+      _bindScrollingNotifier();
+    }
     final pos = _scrollController.position;
     if (pos.pixels >= pos.maxScrollExtent - 200) {
       logger.log('WALL_SCROLL', 'SCROLL_BOTTOM pixels=${pos.pixels.toInt()} max=${pos.maxScrollExtent.toInt()}');
@@ -115,6 +140,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                     final item = items[index];
                     final isOwn = item.isOwn(myFp);
                     return WallPostTile(
+                      key: ValueKey(item.post.uuid),
                       post: item.post,
                       myFingerprint: myFp,
                       authorDisplayName: item.authorDisplayName,
@@ -183,6 +209,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                 final item = cached[index];
                 final isOwn = item.isOwn(myFp);
                 return WallPostTile(
+                  key: ValueKey(item.post.uuid),
                   post: item.post,
                   myFingerprint: myFp,
                   authorDisplayName: item.authorDisplayName,
