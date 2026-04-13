@@ -233,7 +233,7 @@ class EventHandler {
           engine?.debugLog('EVENT', 'MESSAGE_RECEIVED: Incremented unread count for $contactFp');
 
           // Show notification for incoming message
-          _showMessageNotification(contactFp, msg.plaintext);
+          _showMessageNotification(contactFp, msg.plaintext, msg.type);
         } else {
           engine?.debugLog('EVENT', 'MESSAGE_RECEIVED: Skipped unread increment (outgoing=${msg.isOutgoing}, chatOpen=$isChatOpen)');
         }
@@ -516,7 +516,8 @@ class EventHandler {
   }
 
   /// Show local notification + sound for incoming message
-  void _showMessageNotification(String contactFingerprint, String messageText) {
+  void _showMessageNotification(
+      String contactFingerprint, String messageText, MessageType messageType) {
     // Get contact display name from contacts list
     final contacts = _ref.read(contactsProvider).valueOrNull;
     String senderName = 'New message';
@@ -531,17 +532,47 @@ class EventHandler {
       }
     }
 
-    // Truncate message preview
-    final preview = messageText.length > 100
-        ? '${messageText.substring(0, 100)}...'
-        : messageText;
+    // Compose notification body. Reactions get a humanised string instead of
+    // the raw JSON payload, and reaction removals are suppressed entirely.
+    String notificationBody;
+    if (messageType == MessageType.reaction) {
+      // Reaction payload format (from C side):
+      //   {"target":"<64hex>","emoji":"<utf8>","op":"add|remove"}
+      final emoji = _parseReactionEmoji(messageText);
+      final op = _parseReactionOp(messageText);
+      if (op == 'remove') {
+        // Un-reacting should not notify the recipient.
+        return;
+      }
+      // TODO(i18n): replace with
+      //   AppLocalizations.of(context).reactionNotificationBody(senderName, emoji)
+      // once Task 16 adds the ARB keys.
+      notificationBody = '$senderName reacted $emoji to your message';
+    } else {
+      // Truncate message preview
+      notificationBody = messageText.length > 100
+          ? '${messageText.substring(0, 100)}...'
+          : messageText;
+    }
 
     // Use hash of fingerprint as notification ID so each contact has its own
     NotificationService.instance.showMessageNotification(
       senderName: senderName,
-      messagePreview: preview,
+      messagePreview: notificationBody,
       id: contactFingerprint.hashCode.abs() % 100000,
     );
+  }
+
+  /// Extract the "emoji" field from a reaction JSON payload.
+  String _parseReactionEmoji(String json) {
+    final m = RegExp(r'"emoji":"([^"]+)"').firstMatch(json);
+    return m?.group(1) ?? '';
+  }
+
+  /// Extract the "op" field from a reaction JSON payload.
+  String _parseReactionOp(String json) {
+    final m = RegExp(r'"op":"([^"]+)"').firstMatch(json);
+    return m?.group(1) ?? '';
   }
 
   /// Queue background download for media_ref messages.
