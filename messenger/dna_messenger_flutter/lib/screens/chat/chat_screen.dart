@@ -24,6 +24,7 @@ import '../../services/image_attachment_service.dart';
 import '../../services/media_service.dart';
 import '../profile/user_profile_screen.dart';
 import 'widgets/message_bubble.dart';
+import 'widgets/reaction_chips.dart';
 import 'widgets/reaction_emoji_bar.dart';
 import '../../providers/reaction_provider.dart';
 
@@ -726,30 +727,41 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   if (shouldAnimate) {
                     _seenMessageIds.add(message.id);
                   }
-                  return MessageBubbleWrapper(
-                    message: message,
-                    isStarred: starredIds.contains(message.id),
-                    animate: shouldAnimate,
-                    onTap: () => _showMessageInfo(message),
-                    onLongPress: () => _showMessageActions(message),
-                    onReply: _replyMessage,
-                    onCopy: _copyMessage,
-                    onForward: _forwardMessage,
-                    onStar: (msg) => _toggleStarMessage(msg, contact.fingerprint),
-                    onDelete: _confirmDeleteMessage,
-                    onRetry: message.isOutgoing &&
-                            (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
-                        ? () => _retryMessage(message.id)
-                        : null,
-                    child: _MessageBubble(
-                      message: message,
-                      isStarred: starredIds.contains(message.id),
-                      onRetry: message.isOutgoing &&
-                              (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
-                          ? () => _retryMessage(message.id)
-                          : null,
-                      engine: ref.read(engineProvider).valueOrNull,
-                    ),
+                  return Column(
+                    crossAxisAlignment: message.isOutgoing
+                        ? CrossAxisAlignment.end
+                        : CrossAxisAlignment.start,
+                    children: [
+                      MessageBubbleWrapper(
+                        message: message,
+                        isStarred: starredIds.contains(message.id),
+                        animate: shouldAnimate,
+                        onTap: () => _showMessageInfo(message),
+                        onLongPress: () => _showMessageActions(message),
+                        onReply: _replyMessage,
+                        onCopy: _copyMessage,
+                        onForward: _forwardMessage,
+                        onStar: (msg) => _toggleStarMessage(msg, contact.fingerprint),
+                        onDelete: _confirmDeleteMessage,
+                        onRetry: message.isOutgoing &&
+                                (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
+                            ? () => _retryMessage(message.id)
+                            : null,
+                        child: _MessageBubble(
+                          message: message,
+                          isStarred: starredIds.contains(message.id),
+                          onRetry: message.isOutgoing &&
+                                  (message.status == MessageStatus.failed || message.status == MessageStatus.pending)
+                              ? () => _retryMessage(message.id)
+                              : null,
+                          engine: ref.read(engineProvider).valueOrNull,
+                        ),
+                      ),
+                      ReactionChips(
+                        contentHash: message.contentHash,
+                        onTap: (emoji) => _toggleReactionFor(message, emoji),
+                      ),
+                    ],
                   );
                 },
               ),
