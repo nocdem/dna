@@ -123,6 +123,13 @@ target_link_libraries(test_kyber1024 ${TEST_LIBS})
 add_test(NAME test_kyber1024 COMMAND test_kyber1024)
 
 # =============================================================================
+# Test: SEC-02 — qgp_key file size validation (exact-bounds rejection)
+# =============================================================================
+add_executable(test_qgp_key_size_validation test_qgp_key_size_validation.c)
+target_link_libraries(test_qgp_key_size_validation ${TEST_LIBS})
+add_test(NAME qgp_key_size_validation COMMAND test_qgp_key_size_validation)
+
+# =============================================================================
 # Test: BIP39/BIP32 Mnemonic and HD Key Derivation
 # =============================================================================
 add_executable(test_bip39_bip32 test_bip39_bip32.c)

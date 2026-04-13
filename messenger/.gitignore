@@ -166,6 +166,8 @@ _deps/
 # CMake generated binaries
 dna-messenger
 test_*
+!tests/test_*.c
+!tests/test_*.h
 *_test
 migrate_storage_once
 persistent_bootstrap
