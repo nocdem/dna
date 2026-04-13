@@ -186,10 +186,12 @@ int qgp_derive_seeds_with_master(
         free(input);
     }
 
-    // Clear master seed from memory (security) - unless returned to caller
-    if (!master_seed_out) {
-        qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
-    }
+    /* SEC-06: Always clear the LOCAL master_seed stack buffer.
+     * The caller-owned `master_seed_out` (if provided) already received a copy
+     * via memcpy above, so the local copy is no longer needed and must not
+     * persist on the returning stack frame. Per D-07, every stack buffer that
+     * held seed material is zeroed before return on every path. */
+    qgp_secure_memzero(master_seed, BIP39_SEED_SIZE);
 
     return 0;
 }
@@ -213,6 +215,7 @@ void qgp_display_mnemonic(const char *mnemonic) {
     printf("\n");
 
     // Split mnemonic into words
+    size_t mnemonic_copy_len = strlen(mnemonic);
     char *mnemonic_copy = strdup(mnemonic);
     if (!mnemonic_copy) {
         return;
@@ -243,5 +246,7 @@ void qgp_display_mnemonic(const char *mnemonic) {
     printf("=========================================================================\n");
     printf("\n");
 
+    /* SEC-06: zero the mnemonic copy before free */
+    qgp_secure_memzero(mnemonic_copy, mnemonic_copy_len);
     free(mnemonic_copy);
 }
