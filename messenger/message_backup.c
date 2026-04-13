@@ -18,6 +18,8 @@
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "database/db_encryption.h"
+#include "dna/dna_engine.h"      /* for dna_reaction_t */
+#include "dna/reaction_json.h"   /* for parse helpers */
 
 #define LOG_TAG "MSG_BACKUP"
 
@@ -692,6 +694,112 @@ int message_backup_get_unread_count(message_backup_context_t *ctx, const char *c
     sqlite3_finalize(stmt);
 
     return count;
+}
+
+/**
+ * Get the current reaction list for a target message.
+ *
+ * Scans message_type=3 rows where content_hash equals the target, then
+ * replays add/remove ops in timestamp order to compute the live state.
+ *
+ * @param ctx                  Backup context
+ * @param target_content_hash  64-hex hash of the target message
+ * @param reactions_out        Caller-owned. Free with free(). NULL if count=0.
+ * @param count_out            Number of live reactions
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_reactions_for_target(message_backup_context_t *ctx,
+                                             const char *target_content_hash,
+                                             dna_reaction_t **reactions_out,
+                                             int *count_out) {
+    if (!ctx || !ctx->db || !target_content_hash || !reactions_out || !count_out) return -1;
+    *reactions_out = NULL;
+    *count_out = 0;
+
+    const char *sql =
+        "SELECT sender_fingerprint, plaintext, timestamp FROM messages "
+        "WHERE message_type = 3 AND content_hash = ? "
+        "ORDER BY timestamp ASC, id ASC";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare reactions query: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, target_content_hash, -1, SQLITE_STATIC);
+
+    int capacity = 16;
+    int count = 0;
+    dna_reaction_t *arr = malloc(capacity * sizeof(dna_reaction_t));
+    if (!arr) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *reactor_text = sqlite3_column_text(stmt, 0);
+        const unsigned char *payload_text = sqlite3_column_text(stmt, 1);
+        if (!reactor_text || !payload_text) continue;
+        const char *reactor = (const char *)reactor_text;
+        const char *payload = (const char *)payload_text;
+        uint64_t ts = (uint64_t)sqlite3_column_int64(stmt, 2);
+
+        char emoji[8] = {0};
+        char op[8] = {0};
+        if (dna_reaction_parse_emoji(payload, emoji, sizeof(emoji)) != 0) continue;
+        if (dna_reaction_parse_op(payload, op, sizeof(op)) != 0) continue;
+
+        if (strcmp(op, "add") == 0) {
+            int exists = 0;
+            for (int i = 0; i < count; i++) {
+                if (strcmp(arr[i].reactor_fp, reactor) == 0 &&
+                    strcmp(arr[i].emoji, emoji) == 0) {
+                    exists = 1;
+                    break;
+                }
+            }
+            if (exists) continue;
+            if (count >= capacity) {
+                int new_cap = capacity * 2;
+                dna_reaction_t *tmp = realloc(arr, new_cap * sizeof(dna_reaction_t));
+                if (!tmp) {
+                    free(arr);
+                    sqlite3_finalize(stmt);
+                    return -1;
+                }
+                arr = tmp;
+                capacity = new_cap;
+            }
+            strncpy(arr[count].reactor_fp, reactor, 128);
+            arr[count].reactor_fp[128] = '\0';
+            strncpy(arr[count].emoji, emoji, 7);
+            arr[count].emoji[7] = '\0';
+            arr[count].timestamp = ts;
+            count++;
+        } else if (strcmp(op, "remove") == 0) {
+            for (int i = 0; i < count; i++) {
+                if (strcmp(arr[i].reactor_fp, reactor) == 0 &&
+                    strcmp(arr[i].emoji, emoji) == 0) {
+                    if (i < count - 1) {
+                        memmove(&arr[i], &arr[i+1], (count - i - 1) * sizeof(dna_reaction_t));
+                    }
+                    count--;
+                    break;
+                }
+            }
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    if (count == 0) {
+        free(arr);
+        *reactions_out = NULL;
+    } else {
+        *reactions_out = arr;
+    }
+    *count_out = count;
+    return 0;
 }
 
 /**
