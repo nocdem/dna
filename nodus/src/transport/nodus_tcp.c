@@ -86,6 +86,9 @@ static void set_reuseaddr(int fd) {
 
 /* ── Connection management ───────────────────────────────────────── */
 
+/* Phase 3: forward declarations so conn_free can release pending frames. */
+static void pending_free_all(nodus_tcp_conn_t *conn);
+
 static nodus_tcp_conn_t *conn_alloc(nodus_tcp_t *tcp) {
     int slot = -1;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
@@ -110,6 +113,7 @@ static nodus_tcp_conn_t *conn_alloc(nodus_tcp_t *tcp) {
     }
 
     conn->slot = slot;
+    conn->tcp_parent = tcp;   /* Phase 3: back-pointer for pending-full callback */
     tcp->pool[slot] = conn;
     tcp->count++;
     return conn;
@@ -129,10 +133,89 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         tcp->pool[conn->slot] = NULL;
 
     tcp->count--;
+    pending_free_all(conn);   /* Phase 3: drop any queued frames */
     free(conn->pending_buf);
     free(conn->rbuf);
     free(conn->wbuf);
     free(conn);
+}
+
+/* ── Phase 3: Pending queue ──────────────────────────────────────── */
+
+/* Forward decl so pending_drain_to_wbuf() can grow the buffer. */
+static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed);
+
+/** Push an already-encoded frame onto the tail of the pending FIFO.
+ *  Takes ownership of `encoded` (caller must not free on success). */
+static int pending_push_tail(nodus_tcp_conn_t *conn,
+                              uint8_t *encoded, size_t frame_size) {
+    nodus_pending_frame_t *node = malloc(sizeof(*node));
+    if (!node) return -1;
+    node->next = NULL;
+    node->encoded = encoded;
+    node->frame_size = frame_size;
+    node->enqueued_at = nodus_time_now_ms();
+
+    if (conn->pending_tail) {
+        conn->pending_tail->next = node;
+        conn->pending_tail = node;
+    } else {
+        conn->pending_head = conn->pending_tail = node;
+    }
+    conn->pending_count++;
+    conn->pending_bytes += frame_size;
+    conn->pending_enqueued_count++;
+    return 0;
+}
+
+/** Pop the head of the pending FIFO. Caller owns returned node and must free
+ *  both node->encoded and node itself. Returns NULL if queue empty. */
+static nodus_pending_frame_t *pending_pop_head(nodus_tcp_conn_t *conn) {
+    nodus_pending_frame_t *node = conn->pending_head;
+    if (!node) return NULL;
+    conn->pending_head = node->next;
+    if (!conn->pending_head) conn->pending_tail = NULL;
+    if (conn->pending_count > 0) conn->pending_count--;
+    if (conn->pending_bytes >= node->frame_size)
+        conn->pending_bytes -= node->frame_size;
+    else
+        conn->pending_bytes = 0;
+    node->next = NULL;
+    return node;
+}
+
+/** Free the entire pending list (called on conn_free). */
+static void pending_free_all(nodus_tcp_conn_t *conn) {
+    nodus_pending_frame_t *node = conn->pending_head;
+    while (node) {
+        nodus_pending_frame_t *next = node->next;
+        free(node->encoded);
+        free(node);
+        node = next;
+    }
+    conn->pending_head = conn->pending_tail = NULL;
+    conn->pending_count = 0;
+    conn->pending_bytes = 0;
+}
+
+/** Drain pending head frames into wbuf as long as they fit.
+ *  Bounded by NODUS_DRAIN_PER_CALL to avoid monopolizing the event loop. */
+static void pending_drain_to_wbuf(nodus_tcp_conn_t *conn) {
+    int drained = 0;
+    const size_t max_cap = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
+    while (drained < NODUS_DRAIN_PER_CALL && conn->pending_head) {
+        nodus_pending_frame_t *head = conn->pending_head;
+        if (conn->wlen + head->frame_size > max_cap) break;
+        if (buf_ensure(&conn->wbuf, &conn->wcap, conn->wlen + head->frame_size) != 0)
+            break;
+        head = pending_pop_head(conn);
+        memcpy(conn->wbuf + conn->wlen, head->encoded, head->frame_size);
+        conn->wlen += head->frame_size;
+        conn->pending_drained_count++;
+        free(head->encoded);
+        free(head);
+        drained++;
+    }
 }
 
 static int buf_ensure(uint8_t **buf, size_t *cap, size_t needed) {
@@ -319,11 +402,44 @@ static void handle_write(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     if (conn->wpos >= conn->wlen) {
         conn->wpos = 0;
         conn->wlen = 0;
+    }
+
+    /* Phase 3: wbuf made space — promote queued frames if any. We compact
+     * first so `wlen` reflects only still-pending bytes, then pull from the
+     * pending FIFO as long as they fit. */
+    if (conn->pending_head) {
+        if (conn->wpos > 0) {
+            size_t remaining = conn->wlen - conn->wpos;
+            if (remaining > 0)
+                memmove(conn->wbuf, conn->wbuf + conn->wpos, remaining);
+            conn->wlen = remaining;
+            conn->wpos = 0;
+        }
+        pending_drain_to_wbuf(conn);
+        /* If we queued more data into wbuf, try to push it out right now
+         * so drain and send stay in lock-step. */
+        while (conn->wpos < conn->wlen) {
+            ssize_t n = poll_write(conn->fd, conn->wbuf + conn->wpos,
+                                   conn->wlen - conn->wpos);
+            if (n > 0) { conn->wpos += (size_t)n; continue; }
+            if (n < 0 && IS_EAGAIN(get_socket_error())) break;
+            if (tcp->on_disconnect)
+                tcp->on_disconnect(conn, tcp->cb_ctx);
+            conn_free(tcp, conn);
+            return;
+        }
+        if (conn->wpos >= conn->wlen) {
+            conn->wpos = 0;
+            conn->wlen = 0;
+        }
+    }
+
 #ifndef _WIN32
+    if (conn->wlen == 0 && conn->pending_head == NULL) {
         uint32_t ev = EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET);
         epoll_mod(tcp->epoll_fd, conn->fd, ev, conn);
-#endif
     }
+#endif
 }
 
 #ifndef _WIN32
@@ -738,19 +854,64 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
     size_t needed = conn->wlen + frame_size;
 
     if (buf_ensure(&conn->wbuf, &conn->wcap, needed) != 0) {
-        /* Phase 1 visibility: capture payload type hint (first 16 plaintext bytes)
-         * and peer address so we can correlate failures across the cluster. */
+        /* Phase 3: wbuf can't absorb this frame right now. Route to the
+         * per-conn pending queue instead of dropping. handle_write will
+         * drain it later when the socket makes room.
+         *
+         * If the pending queue is also at its cap, fall back to the
+         * tcp-level on_pending_full callback (typically writes to the
+         * hint table for persistent off-box queueing). If no callback
+         * is installed we preserve legacy behavior: log + drop. */
+        bool queue_ok = (conn->pending_count < NODUS_PENDING_MAX_FRAMES) &&
+                        (conn->pending_bytes + frame_size <= NODUS_PENDING_MAX_BYTES);
+        if (queue_ok) {
+            uint8_t *encoded = malloc(frame_size);
+            if (encoded) {
+                size_t written = nodus_frame_encode(encoded, frame_size,
+                                                      send_payload, (uint32_t)send_len);
+                if (written == frame_size &&
+                    pending_push_tail(conn, encoded, frame_size) == 0) {
+                    conn->send_ok_count++;
+                    conn->send_bytes_total += send_len;
+#ifndef _WIN32
+                    /* Make sure EPOLLOUT is armed so drain kicks in. */
+                    nodus_tcp_t *tcp = conn->tcp_parent;
+                    if (tcp && tcp->epoll_fd >= 0 && conn->fd >= 0) {
+                        uint32_t et = tcp->level_triggered ? 0 : EPOLLET;
+                        uint32_t ev = EPOLLIN | EPOLLOUT | EPOLLRDHUP | et;
+                        epoll_mod(tcp->epoll_fd, conn->fd, ev, conn);
+                    }
+#endif
+                    free(enc_buf);
+                    return 0;
+                }
+                free(encoded);
+            }
+            /* malloc / encode / push failure — fall through to callback path */
+        }
+
+        /* Queue is full (or allocation failed) — last resort fallback. */
+        nodus_tcp_t *tcp = conn->tcp_parent;
+        if (tcp && tcp->on_pending_full) {
+            tcp->on_pending_full(conn, payload, len, tcp->pending_full_ctx);
+            conn->pending_hint_fallback_count++;
+            free(enc_buf);
+            return 0;
+        }
+
+        /* No callback — legacy drop with diagnostic log. */
         char head[33] = {0};
         size_t hlen = len < 16 ? len : 16;
         for (size_t i = 0; i < hlen; i++)
             snprintf(head + i * 2, 3, "%02x", payload[i]);
         QGP_LOG_ERROR(LOG_TAG_TCP,
                       "send: buf_ensure failed (needed=%zu wcap=%zu wlen=%zu wpos=%zu) "
-                      "peer=%s:%u slot=%d payload_len=%zu head=%s",
+                      "peer=%s:%u slot=%d payload_len=%zu head=%s pending=%zu/%zu",
                       needed, conn->wcap, conn->wlen, conn->wpos,
-                      conn->ip, (unsigned)conn->port, conn->slot, len, head);
+                      conn->ip, (unsigned)conn->port, conn->slot, len, head,
+                      conn->pending_count, conn->pending_bytes);
         conn->send_full_count++;
-        free(enc_buf);  /* NULL-safe — fix pre-existing leak on this error path */
+        free(enc_buf);
         return -1;
     }
 

@@ -1058,16 +1058,77 @@ static void dht_send_stats_dump(nodus_server_t *srv) {
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
         if (!c || c->state != NODUS_CONN_CONNECTED) continue;
-        if (c->send_ok_count == 0 && c->send_full_count == 0) continue;
+        if (c->send_ok_count == 0 && c->send_full_count == 0 &&
+            c->pending_enqueued_count == 0) continue;
         fprintf(stderr,
                 "SEND_STATS: peer=%s:%u slot=%d ok=%llu full=%llu "
-                "bytes=%llu wlen=%zu wcap=%zu\n",
+                "bytes=%llu wlen=%zu wcap=%zu "
+                "pending_now=%zu pending_bytes=%zu enq=%llu drain=%llu hint=%llu\n",
                 c->ip, (unsigned)c->port, c->slot,
                 (unsigned long long)c->send_ok_count,
                 (unsigned long long)c->send_full_count,
                 (unsigned long long)c->send_bytes_total,
-                c->wlen, c->wcap);
+                c->wlen, c->wcap,
+                c->pending_count, c->pending_bytes,
+                (unsigned long long)c->pending_enqueued_count,
+                (unsigned long long)c->pending_drained_count,
+                (unsigned long long)c->pending_hint_fallback_count);
     }
+}
+
+/* ── Phase 3: Pending-full hint fallback ─────────────────────────── */
+/* Invoked by the TCP layer when a send cannot fit into wbuf AND the
+ * per-conn pending queue is also at its cap. We persist the frame to
+ * the DHT hinted handoff table so it can be delivered when the peer
+ * has drained — same path that periodic republish already uses. */
+static void server_on_pending_full(nodus_tcp_conn_t *conn,
+                                    const uint8_t *payload, size_t len,
+                                    void *ctx) {
+    nodus_server_t *srv = (nodus_server_t *)ctx;
+    if (!srv || !conn || !payload) return;
+
+    /* We can only hint to a known node_id. If the peer hasn't authenticated
+     * yet (rare — this is an inter-node pool conn) we drop with a warning
+     * so the operator sees the state. */
+    if (!conn->peer_id_set) {
+        fprintf(stderr,
+                "PENDING_FULL: peer=%s:%u len=%zu — no peer_id, dropping (unauth?)\n",
+                conn->ip, (unsigned)conn->port, len);
+        return;
+    }
+
+    /* We need a fully framed wire blob in the hint table because hint drain
+     * resends it as-is (see dht_republish_send). Build it here. */
+    size_t frame_size = NODUS_FRAME_HEADER_SIZE + len;
+    uint8_t *framed = malloc(frame_size);
+    if (!framed) {
+        fprintf(stderr, "PENDING_FULL: malloc failed (peer=%s:%u len=%zu)\n",
+                conn->ip, (unsigned)conn->port, len);
+        return;
+    }
+    size_t written = nodus_frame_encode(framed, frame_size, payload, (uint32_t)len);
+    if (written != frame_size) {
+        fprintf(stderr, "PENDING_FULL: frame_encode failed (peer=%s:%u len=%zu)\n",
+                conn->ip, (unsigned)conn->port, len);
+        free(framed);
+        return;
+    }
+
+    int rc = nodus_storage_hinted_insert(&srv->storage,
+                                          &conn->peer_id,
+                                          conn->ip, conn->port,
+                                          framed, frame_size);
+    free(framed);
+
+    if (rc != 0) {
+        fprintf(stderr,
+                "PENDING_FULL: hint insert failed (peer=%s:%u len=%zu rc=%d)\n",
+                conn->ip, (unsigned)conn->port, len, rc);
+        return;
+    }
+    fprintf(stderr,
+            "PENDING_FULL: peer=%s:%u len=%zu queued to hint table (wbuf+pending full)\n",
+            conn->ip, (unsigned)conn->port, len);
 }
 
 /* ── Periodic republish (via inter_tcp pool) ────────────────────── */
@@ -5118,6 +5179,9 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     srv->inter_tcp.cb_ctx        = srv;
     srv->inter_tcp.auth_required = srv->config.require_peer_auth;
     srv->inter_tcp.auth_ctx      = &srv->identity;
+    /* Phase 3: hint-table fallback when pending queue is saturated. */
+    srv->inter_tcp.on_pending_full   = server_on_pending_full;
+    srv->inter_tcp.pending_full_ctx  = srv;
 
     /* Bind TCP (client port) */
     if (nodus_tcp_listen(&srv->tcp, config->bind_ip, config->tcp_port) != 0) {

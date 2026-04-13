@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  10
-#define NODUS_VERSION_PATCH  44
-#define NODUS_VERSION_STRING "0.10.44"
+#define NODUS_VERSION_PATCH  45
+#define NODUS_VERSION_STRING "0.10.45"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -97,6 +97,11 @@ extern "C" {
 #define NODUS_WAL_CHECKPOINT_SEC   300     /* 5 min — WAL checkpoint interval */
 #define NODUS_VACUUM_SEC           3600    /* 1 hour — incremental vacuum interval */
 #define NODUS_STATS_DUMP_SEC       300     /* 5 min — send diagnostics dump interval */
+
+/* Send-path backpressure (Phase 3): pending queue + hint fallback */
+#define NODUS_PENDING_MAX_FRAMES   20                     /* per-conn frame queue cap */
+#define NODUS_PENDING_MAX_BYTES    (32ULL * 1024 * 1024)  /* per-conn bytes queue cap (32 MB) */
+#define NODUS_DRAIN_PER_CALL       10                     /* max pending frames promoted per handle_write */
 #define NODUS_HINT_OFFLINE_SKIP_SEC 3600   /* 1 hour — skip hinted handoff for long-offline peers */
 #define NODUS_REPLICATION_MIN      3      /* Min successful sends before skipping hinted handoff */
 

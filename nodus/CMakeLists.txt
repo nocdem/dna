@@ -238,6 +238,11 @@ add_executable(test_tcp tests/test_tcp.c)
 target_link_libraries(test_tcp nodus dsa nodus)
 add_test(NAME test_tcp COMMAND test_tcp)
 
+# Phase 3: Pending queue / backpressure test
+add_executable(test_pending_queue tests/test_pending_queue.c)
+target_link_libraries(test_pending_queue nodus dsa nodus)
+add_test(NAME test_pending_queue COMMAND test_pending_queue)
+
 # Inter-node auth state machine test
 add_executable(test_inter_auth tests/test_inter_auth.c)
 target_link_libraries(test_inter_auth nodus dsa nodus)

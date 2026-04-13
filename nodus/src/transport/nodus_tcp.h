@@ -36,6 +36,16 @@ typedef enum {
     NODUS_CONN_AUTH_FAILED
 } nodus_conn_auth_state_t;
 
+/* Phase 3: Pending frame queued while wbuf is over the send cap.
+ * The frame is already encoded (header + encrypted payload) and ready to
+ * blast into wbuf as soon as space becomes available. Stored FIFO. */
+typedef struct nodus_pending_frame {
+    struct nodus_pending_frame *next;
+    uint8_t                    *encoded;      /* malloc'd, owned */
+    size_t                      frame_size;   /* encoded bytes including 7-byte header */
+    uint64_t                    enqueued_at;  /* monotonic ms for diagnostics */
+} nodus_pending_frame_t;
+
 typedef struct nodus_tcp_conn {
     int                 fd;
     nodus_conn_state_t  state;
@@ -86,6 +96,20 @@ typedef struct nodus_tcp_conn {
     uint64_t            send_ok_count;      /* frames accepted into wbuf */
     uint64_t            send_full_count;    /* buf_ensure failed (wbuf cap exceeded) */
     uint64_t            send_bytes_total;   /* cumulative plaintext bytes offered to wbuf */
+
+    /* Phase 3: parent transport back-pointer so send path can invoke the
+     * pending-full callback without global state. Set in conn_alloc. */
+    struct nodus_tcp *tcp_parent;
+
+    /* Phase 3: Pending queue (FIFO) for frames that can't fit into wbuf right now.
+     * Drained by handle_write whenever wbuf gets space. */
+    nodus_pending_frame_t *pending_head;
+    nodus_pending_frame_t *pending_tail;
+    size_t              pending_count;
+    size_t              pending_bytes;
+    uint64_t            pending_enqueued_count;      /* lifetime frames queued */
+    uint64_t            pending_drained_count;       /* lifetime frames promoted from queue to wbuf */
+    uint64_t            pending_hint_fallback_count; /* lifetime frames that spilled to hint table */
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */
@@ -98,9 +122,20 @@ typedef void (*nodus_tcp_frame_fn)(nodus_tcp_conn_t *conn,
 /** Called on connection events (accept, connect, disconnect) */
 typedef void (*nodus_tcp_event_fn)(nodus_tcp_conn_t *conn, void *ctx);
 
+/**
+ * Phase 3: Called when a send cannot fit into wbuf AND the pending queue
+ * is also full (frames or bytes cap exhausted). The handler is expected
+ * to persist the frame elsewhere (e.g. hint table) so it is not lost.
+ * If the handler is NULL, the frame is dropped with an error log
+ * (legacy behavior).
+ */
+typedef void (*nodus_tcp_pending_full_fn)(nodus_tcp_conn_t *conn,
+                                           const uint8_t *payload, size_t len,
+                                           void *ctx);
+
 /* ── TCP Transport ───────────────────────────────────────────────── */
 
-typedef struct {
+typedef struct nodus_tcp {
     int                 listen_fd;
 #ifdef _WIN32
     int                 poll_fd;     /* unused on Windows, kept for compat */
@@ -124,6 +159,10 @@ typedef struct {
 
     bool                auth_required;     /* New conns inherit this */
     void               *auth_ctx;          /* nodus_identity_t* for hello/sign */
+
+    /* Phase 3: pending-full fallback hook. May be NULL (legacy drop). */
+    nodus_tcp_pending_full_fn on_pending_full;
+    void                    *pending_full_ctx;
 } nodus_tcp_t;
 
 /**
