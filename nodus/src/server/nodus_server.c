@@ -4377,12 +4377,14 @@ static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     if (!conn->first_frame_logged) {
         conn->first_frame_logged = true;
         int has_crypto = (conn->crypto != NULL) ? 1 : 0;
+        /* Phase 3.2d: include fd so we can detect any cross-conn fd alias
+         * by matching against TCP_CONN: FD_SET and TCP_SEND_FIRST logs. */
         fprintf(stderr,
-                "INTER_FRAME_FIRST: slot=%d peer=%s:%u len=%zu auth_state=%d "
-                "has_crypto=%d sess=%p sess_conn=%p match=%d\n",
-                conn->slot, conn->ip, (unsigned)conn->port, len,
+                "INTER_FRAME_FIRST: slot=%d fd=%d peer=%s:%u len=%zu auth_state=%d "
+                "has_crypto=%d sess=%p sess_conn=%p conn=%p match=%d\n",
+                conn->slot, conn->fd, conn->ip, (unsigned)conn->port, len,
                 (int)conn->auth_state, has_crypto,
-                (void *)sess, (void *)sess->conn,
+                (void *)sess, (void *)sess->conn, (void *)conn,
                 (sess->conn == conn) ? 1 : 0);
     }
 

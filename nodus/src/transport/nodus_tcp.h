@@ -128,6 +128,9 @@ typedef struct nodus_tcp_conn {
      * 0=hello 1=challenge 2=auth 3=auth_ok 4=key_init 5=key_ack */
     bool                first_frame_logged;
     uint8_t             dispatch_logged_mask;
+
+    /* Phase 3.2d: one-shot flag for first SEND log per conn. */
+    bool                first_send_logged;
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */

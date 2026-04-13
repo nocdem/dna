@@ -116,6 +116,13 @@ static nodus_tcp_conn_t *conn_alloc(nodus_tcp_t *tcp) {
     conn->tcp_parent = tcp;   /* Phase 3: back-pointer for pending-full callback */
     tcp->pool[slot] = conn;
     tcp->count++;
+
+    /* Phase 3.2d: log every conn alloc with its (slot, ptr, tcp pool ptr).
+     * Reader correlates tcp ptr to inter/client/witness pool. Captures slot
+     * reuse + memory address recycling so we can detect cached stale conn
+     * pointers being aliased to fresh allocations. */
+    fprintf(stderr, "TCP_CONN: ALLOC slot=%d tcp=%p conn=%p\n",
+            slot, (void *)tcp, (void *)conn);
     return conn;
 }
 
@@ -553,6 +560,12 @@ static void handle_accept(nodus_tcp_t *tcp) {
     conn->connected_at = nodus_time_now();
     conn->last_activity = conn->connected_at;
 
+    /* Phase 3.2d: bind fd to slot, log it. Match this fd against
+     * INTER_FRAME_FIRST and TCP_SEND_FIRST to detect any fd alias. */
+    fprintf(stderr, "TCP_CONN: FD_SET slot=%d fd=%d direction=accept "
+            "peer=%s:%u conn=%p\n",
+            conn->slot, fd, new_ip, (unsigned)conn->port, (void *)conn);
+
     epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
 
     if (tcp->on_accept)
@@ -699,6 +712,11 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
     conn->state = NODUS_CONN_CONNECTING;
     conn->port = port;
 
+    /* Phase 3.2d: bind fd to slot, log it. */
+    fprintf(stderr, "TCP_CONN: FD_SET slot=%d fd=%d direction=connect "
+            "peer=%s:%u conn=%p\n",
+            conn->slot, fd, ip, (unsigned)port, (void *)conn);
+
     /* Inherit auth requirement from transport IMMEDIATELY so gated send
      * queues frames even before TCP handshake completes. Without this,
      * callers would bypass the gate (auth_required=false default) and
@@ -837,6 +855,27 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
     if (len > NODUS_MAX_FRAME_TCP) {
         QGP_LOG_ERROR(LOG_TAG_TCP, "send: payload too large (%zu > %d)", len, NODUS_MAX_FRAME_TCP);
         return -1;
+    }
+
+    /* Phase 3.2d: log first send per conn — captures (slot, fd, conn ptr,
+     * peer, has_crypto) at the moment data is first written. Compare with
+     * INTER_FRAME_FIRST to detect any cross-conn fd alias. */
+    if (!conn->first_send_logged) {
+        conn->first_send_logged = true;
+        int has_crypto = (conn->crypto != NULL) ? 1 : 0;
+        int established = 0;
+        if (conn->crypto) {
+            nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
+            established = cc->established ? 1 : 0;
+        }
+        fprintf(stderr,
+                "TCP_SEND_FIRST: slot=%d fd=%d peer=%s:%u len=%zu "
+                "has_crypto=%d est=%d state=%d auth_state=%d "
+                "tcp=%p conn=%p\n",
+                conn->slot, conn->fd, conn->ip, (unsigned)conn->port, len,
+                has_crypto, established, (int)conn->state,
+                (int)conn->auth_state,
+                (void *)conn->tcp_parent, (void *)conn);
     }
 
     /* Encrypt payload if channel crypto is established */
