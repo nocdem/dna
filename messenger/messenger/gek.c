@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 #include <sqlite3.h>
 #include <openssl/evp.h>
 #include <openssl/core_names.h>
@@ -53,6 +54,20 @@ static sqlite3 *msg_db = NULL;
 // KEM keys for GEK encryption (set via gek_set_kem_keys)
 static uint8_t *gek_kem_pubkey = NULL;   // 1568 bytes (Kyber1024)
 static uint8_t *gek_kem_privkey = NULL;  // 3168 bytes (Kyber1024)
+
+/* CONCURRENCY.md L2: gek_lock protects gek_kem_pubkey and gek_kem_privkey.
+ * Read sites take rdlock, copy contents to a stack buffer, release the lock,
+ * then work with the copy. Write sites (gek_set_kem_keys, gek_clear_kem_keys)
+ * take wrlock. Do NOT call into nodus_*, dht_*, or sqlite3_* while holding
+ * this lock — those are L3/L4/L5 and acquiring them after L2 is allowed only
+ * if the call site documents the ordering. Keep the critical section flat:
+ * no recursion into other gek_* functions that re-enter the lock.
+ * Default POSIX rwlock policy (glibc writer-preference attrs are non-portable
+ * to llvm-mingw winpthreads, see Phase 2 CONTEXT correction C-04). */
+static pthread_rwlock_t gek_lock = PTHREAD_RWLOCK_INITIALIZER;
+
+#define GEK_KEM_PUBKEY_SIZE  1568  /* Kyber1024 public key size  */
+#define GEK_KEM_PRIVKEY_SIZE 3168  /* Kyber1024 private key size */
 
 /* ============================================================================
  * ENCRYPTION / DECRYPTION
@@ -220,14 +235,21 @@ int gek_store(const char *group_uuid, uint32_t version, const uint8_t gek[GEK_KE
         return -1;
     }
 
+    /* CONCURRENCY.md L2: gek_lock rdlock — copy pubkey to stack then release
+     * before any SQLite work (L5) to keep the critical section flat. */
+    uint8_t pubkey_local[GEK_KEM_PUBKEY_SIZE];
+    pthread_rwlock_rdlock(&gek_lock);
     if (!gek_kem_pubkey) {
+        pthread_rwlock_unlock(&gek_lock);
         QGP_LOG_ERROR(LOG_TAG, "KEM keys not set - call gek_set_kem_keys() first\n");
         return -1;
     }
+    memcpy(pubkey_local, gek_kem_pubkey, sizeof(pubkey_local));
+    pthread_rwlock_unlock(&gek_lock);
 
     /* Encrypt GEK with Kyber1024 KEM + AES-256-GCM */
     uint8_t encrypted_gek[GEK_ENC_TOTAL_SIZE];
-    if (gek_encrypt(gek, gek_kem_pubkey, encrypted_gek) != 0) {
+    if (gek_encrypt(gek, pubkey_local, encrypted_gek) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to encrypt GEK\n");
         return -1;
     }
@@ -276,10 +298,17 @@ int gek_load(const char *group_uuid, uint32_t version, uint8_t gek_out[GEK_KEY_S
         return -1;
     }
 
+    /* CONCURRENCY.md L2: gek_lock rdlock — copy privkey to stack then release
+     * before any SQLite work (L5). Privkey is sensitive; secure-zero on exit. */
+    uint8_t privkey_local[GEK_KEM_PRIVKEY_SIZE];
+    pthread_rwlock_rdlock(&gek_lock);
     if (!gek_kem_privkey) {
+        pthread_rwlock_unlock(&gek_lock);
         QGP_LOG_ERROR(LOG_TAG, "KEM keys not set - call gek_set_kem_keys() first\n");
         return -1;
     }
+    memcpy(privkey_local, gek_kem_privkey, sizeof(privkey_local));
+    pthread_rwlock_unlock(&gek_lock);
 
     uint64_t now = (uint64_t)time(NULL);
 
@@ -303,19 +332,22 @@ int gek_load(const char *group_uuid, uint32_t version, uint8_t gek_out[GEK_KEY_S
         int blob_size = sqlite3_column_bytes(stmt, 0);
 
         /* Decrypt encrypted GEK */
-        if (gek_decrypt((const uint8_t *)blob, (size_t)blob_size, gek_kem_privkey, gek_out) != 0) {
+        if (gek_decrypt((const uint8_t *)blob, (size_t)blob_size, privkey_local, gek_out) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to decrypt GEK for group %s v%u\n", group_uuid, version);
             sqlite3_finalize(stmt);
+            qgp_secure_memzero(privkey_local, sizeof(privkey_local));
             return -1;
         }
 
         sqlite3_finalize(stmt);
+        qgp_secure_memzero(privkey_local, sizeof(privkey_local));
 
         QGP_LOG_INFO(LOG_TAG, "Loaded and decrypted GEK for group %s v%u\n", group_uuid, version);
         return 0;
     }
 
     sqlite3_finalize(stmt);
+    qgp_secure_memzero(privkey_local, sizeof(privkey_local));
 
     if (rc == SQLITE_DONE) {
         QGP_LOG_INFO(LOG_TAG, "No active GEK found for group %s v%u\n", group_uuid, version);
@@ -337,10 +369,17 @@ int gek_load_active(const char *group_uuid, uint8_t gek_out[GEK_KEY_SIZE], uint3
         return -1;
     }
 
+    /* CONCURRENCY.md L2: gek_lock rdlock — copy privkey to stack then release
+     * before any SQLite work (L5). Privkey is sensitive; secure-zero on exit. */
+    uint8_t privkey_local[GEK_KEM_PRIVKEY_SIZE];
+    pthread_rwlock_rdlock(&gek_lock);
     if (!gek_kem_privkey) {
+        pthread_rwlock_unlock(&gek_lock);
         QGP_LOG_ERROR(LOG_TAG, "KEM keys not set - call gek_set_kem_keys() first\n");
         return -1;
     }
+    memcpy(privkey_local, gek_kem_privkey, sizeof(privkey_local));
+    pthread_rwlock_unlock(&gek_lock);
 
     uint64_t now = (uint64_t)time(NULL);
 
@@ -365,9 +404,10 @@ int gek_load_active(const char *group_uuid, uint8_t gek_out[GEK_KEY_SIZE], uint3
         uint32_t version = (uint32_t)sqlite3_column_int(stmt, 1);
 
         /* Decrypt encrypted GEK */
-        if (gek_decrypt((const uint8_t *)blob, (size_t)blob_size, gek_kem_privkey, gek_out) != 0) {
+        if (gek_decrypt((const uint8_t *)blob, (size_t)blob_size, privkey_local, gek_out) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to decrypt active GEK for group %s\n", group_uuid);
             sqlite3_finalize(stmt);
+            qgp_secure_memzero(privkey_local, sizeof(privkey_local));
             return -1;
         }
 
@@ -376,12 +416,14 @@ int gek_load_active(const char *group_uuid, uint8_t gek_out[GEK_KEY_SIZE], uint3
         }
 
         sqlite3_finalize(stmt);
+        qgp_secure_memzero(privkey_local, sizeof(privkey_local));
 
         QGP_LOG_INFO(LOG_TAG, "Loaded and decrypted active GEK for group %s v%u\n", group_uuid, version);
         return 0;
     }
 
     sqlite3_finalize(stmt);
+    qgp_secure_memzero(privkey_local, sizeof(privkey_local));
 
     if (rc == SQLITE_DONE) {
         QGP_LOG_INFO(LOG_TAG, "No active GEK found for group %s\n", group_uuid);
@@ -551,27 +593,37 @@ int gek_set_kem_keys(const uint8_t *kem_pubkey, const uint8_t *kem_privkey) {
         return -1;
     }
 
-    /* Clear existing keys if any */
-    gek_clear_kem_keys();
-
-    /* Allocate and copy public key (1568 bytes) */
-    gek_kem_pubkey = malloc(1568);
-    if (!gek_kem_pubkey) {
+    /* Pre-allocate outside the lock to keep the critical section short
+     * and to avoid holding a writer lock across malloc. */
+    uint8_t *new_pub = malloc(GEK_KEM_PUBKEY_SIZE);
+    if (!new_pub) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate KEM pubkey\n");
         return -1;
     }
-    memcpy(gek_kem_pubkey, kem_pubkey, 1568);
-
-    /* Allocate and copy private key (3168 bytes) */
-    gek_kem_privkey = malloc(3168);
-    if (!gek_kem_privkey) {
+    uint8_t *new_priv = malloc(GEK_KEM_PRIVKEY_SIZE);
+    if (!new_priv) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate KEM privkey\n");
-        qgp_secure_memzero(gek_kem_pubkey, 1568);
-        free(gek_kem_pubkey);
-        gek_kem_pubkey = NULL;
+        free(new_pub);
         return -1;
     }
-    memcpy(gek_kem_privkey, kem_privkey, 3168);
+    memcpy(new_pub, kem_pubkey, GEK_KEM_PUBKEY_SIZE);
+    memcpy(new_priv, kem_privkey, GEK_KEM_PRIVKEY_SIZE);
+
+    /* CONCURRENCY.md L2: gek_lock wrlock — atomically swap pointers. POSIX
+     * rwlocks are not recursive so we inline the clear rather than calling
+     * gek_clear_kem_keys() which would re-enter the lock. */
+    pthread_rwlock_wrlock(&gek_lock);
+    if (gek_kem_pubkey) {
+        qgp_secure_memzero(gek_kem_pubkey, GEK_KEM_PUBKEY_SIZE);
+        free(gek_kem_pubkey);
+    }
+    if (gek_kem_privkey) {
+        qgp_secure_memzero(gek_kem_privkey, GEK_KEM_PRIVKEY_SIZE);
+        free(gek_kem_privkey);
+    }
+    gek_kem_pubkey = new_pub;
+    gek_kem_privkey = new_priv;
+    pthread_rwlock_unlock(&gek_lock);
 
     QGP_LOG_INFO(LOG_TAG, "KEM keys set for GEK encryption\n");
     return 0;
@@ -583,16 +635,19 @@ void gek_cleanup(void) {
 }
 
 void gek_clear_kem_keys(void) {
+    /* CONCURRENCY.md L2: gek_lock wrlock — zero + free both pointers. */
+    pthread_rwlock_wrlock(&gek_lock);
     if (gek_kem_pubkey) {
-        qgp_secure_memzero(gek_kem_pubkey, 1568);
+        qgp_secure_memzero(gek_kem_pubkey, GEK_KEM_PUBKEY_SIZE);
         free(gek_kem_pubkey);
         gek_kem_pubkey = NULL;
     }
     if (gek_kem_privkey) {
-        qgp_secure_memzero(gek_kem_privkey, 3168);
+        qgp_secure_memzero(gek_kem_privkey, GEK_KEM_PRIVKEY_SIZE);
         free(gek_kem_privkey);
         gek_kem_privkey = NULL;
     }
+    pthread_rwlock_unlock(&gek_lock);
     QGP_LOG_DEBUG(LOG_TAG, "KEM keys cleared\n");
 }
 
@@ -1548,10 +1603,17 @@ static int gek_export_plain_entries(dht_gek_entry_t **entries_out, size_t *count
         return 0;
     }
 
+    /* CONCURRENCY.md L2: gek_lock rdlock — copy privkey to stack then release
+     * before the SQLite loop (L5). Privkey is sensitive; secure-zero on exit. */
+    uint8_t privkey_local[GEK_KEM_PRIVKEY_SIZE];
+    pthread_rwlock_rdlock(&gek_lock);
     if (!gek_kem_privkey) {
+        pthread_rwlock_unlock(&gek_lock);
         QGP_LOG_ERROR(LOG_TAG, "KEM keys not set - cannot decrypt GEKs for export\n");
         return -1;
     }
+    memcpy(privkey_local, gek_kem_privkey, sizeof(privkey_local));
+    pthread_rwlock_unlock(&gek_lock);
 
     uint64_t now = (uint64_t)time(NULL);
 
@@ -1571,6 +1633,7 @@ static int gek_export_plain_entries(dht_gek_entry_t **entries_out, size_t *count
     sqlite3_finalize(count_stmt);
 
     if (total_count == 0) {
+        qgp_secure_memzero(privkey_local, sizeof(privkey_local));
         QGP_LOG_INFO(LOG_TAG, "No non-expired GEKs to export\n");
         return 0;
     }
@@ -1578,6 +1641,7 @@ static int gek_export_plain_entries(dht_gek_entry_t **entries_out, size_t *count
     // Allocate output array
     dht_gek_entry_t *entries = calloc(total_count, sizeof(dht_gek_entry_t));
     if (!entries) {
+        qgp_secure_memzero(privkey_local, sizeof(privkey_local));
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate entries\n");
         return -1;
     }
@@ -1591,6 +1655,7 @@ static int gek_export_plain_entries(dht_gek_entry_t **entries_out, size_t *count
     if (sqlite3_prepare_v2(msg_db, select_sql, -1, &select_stmt, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to prepare select statement\n");
         free(entries);
+        qgp_secure_memzero(privkey_local, sizeof(privkey_local));
         return -1;
     }
     sqlite3_bind_int64(select_stmt, 1, (sqlite3_int64)now);
@@ -1608,10 +1673,10 @@ static int gek_export_plain_entries(dht_gek_entry_t **entries_out, size_t *count
             continue;
         }
 
-        // Decrypt the GEK
+        // Decrypt the GEK (use local privkey copy, not the protected global)
         uint8_t plain_gek[GEK_KEY_SIZE];
         if (gek_decrypt((const uint8_t *)enc_gek, (size_t)enc_gek_len,
-                        gek_kem_privkey, plain_gek) != 0) {
+                        privkey_local, plain_gek) != 0) {
             QGP_LOG_WARN(LOG_TAG, "Failed to decrypt GEK for %s v%u\n", uuid, version);
             continue;
         }
@@ -1631,6 +1696,7 @@ static int gek_export_plain_entries(dht_gek_entry_t **entries_out, size_t *count
     }
 
     sqlite3_finalize(select_stmt);
+    qgp_secure_memzero(privkey_local, sizeof(privkey_local));
 
     *entries_out = entries;
     *count_out = idx;
@@ -1661,10 +1727,17 @@ static int gek_import_plain_entries(const dht_gek_entry_t *entries, size_t count
         return -1;
     }
 
+    /* CONCURRENCY.md L2: gek_lock rdlock — copy pubkey to stack then release
+     * before any SQLite work (L5) to keep the critical section flat. */
+    uint8_t pubkey_local[GEK_KEM_PUBKEY_SIZE];
+    pthread_rwlock_rdlock(&gek_lock);
     if (!gek_kem_pubkey) {
+        pthread_rwlock_unlock(&gek_lock);
         QGP_LOG_ERROR(LOG_TAG, "KEM keys not set - cannot encrypt GEKs for import\n");
         return -1;
     }
+    memcpy(pubkey_local, gek_kem_pubkey, sizeof(pubkey_local));
+    pthread_rwlock_unlock(&gek_lock);
 
     int imported = 0;
 
@@ -1689,9 +1762,9 @@ static int gek_import_plain_entries(const dht_gek_entry_t *entries, size_t count
             continue;
         }
 
-        // Encrypt the GEK with local Kyber key
+        // Encrypt the GEK with local Kyber key (use local copy)
         uint8_t encrypted_gek[GEK_ENC_TOTAL_SIZE];
-        if (gek_encrypt(entry->gek, gek_kem_pubkey, encrypted_gek) != 0) {
+        if (gek_encrypt(entry->gek, pubkey_local, encrypted_gek) != 0) {
             QGP_LOG_WARN(LOG_TAG, "Failed to encrypt GEK for %s v%u\n",
                          entry->group_uuid, entry->gek_version);
             continue;
