@@ -1480,6 +1480,25 @@ int message_backup_delete(message_backup_context_t *ctx, int message_id) {
         return -1;
     }
 
+    /* Fetch target content_hash + message_type BEFORE delete so we can
+     * cascade-remove orphan reactions that reference this message.
+     * Skip cascade if the row itself is a reaction (message_type == 3). */
+    char target_hash[65] = {0};
+    int target_type = 0;
+    const char *fetch_sql = "SELECT content_hash, message_type FROM messages WHERE id = ?";
+    sqlite3_stmt *fstmt = NULL;
+    if (sqlite3_prepare_v2(ctx->db, fetch_sql, -1, &fstmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(fstmt, 1, message_id);
+        if (sqlite3_step(fstmt) == SQLITE_ROW) {
+            const unsigned char *h = sqlite3_column_text(fstmt, 0);
+            if (h) {
+                strncpy(target_hash, (const char *)h, sizeof(target_hash) - 1);
+            }
+            target_type = sqlite3_column_int(fstmt, 1);
+        }
+        sqlite3_finalize(fstmt);
+    }
+
     const char *sql = "DELETE FROM messages WHERE id = ?";
     sqlite3_stmt *stmt = NULL;
 
@@ -1505,6 +1524,24 @@ int message_backup_delete(message_backup_context_t *ctx, int message_id) {
         return -1;
     }
 
+    /* Cascade-remove orphan reactions targeting this message, but only if
+     * the deleted row was itself a chat message (not a reaction). */
+    if (target_hash[0] != '\0' && target_type != 3) {
+        const char *cleanup_sql =
+            "DELETE FROM messages WHERE message_type = 3 AND content_hash = ?";
+        sqlite3_stmt *cstmt = NULL;
+        if (sqlite3_prepare_v2(ctx->db, cleanup_sql, -1, &cstmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(cstmt, 1, target_hash, -1, SQLITE_STATIC);
+            sqlite3_step(cstmt);
+            int reactions_removed = sqlite3_changes(ctx->db);
+            sqlite3_finalize(cstmt);
+            if (reactions_removed > 0) {
+                QGP_LOG_INFO(LOG_TAG, "Cleaned up %d orphan reactions for deleted message %d\n",
+                             reactions_removed, message_id);
+            }
+        }
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Deleted message %d\n", message_id);
     return 0;
 }
@@ -1517,6 +1554,28 @@ int message_backup_delete_conversation(message_backup_context_t *ctx,
     if (!ctx || !ctx->db || !contact_identity) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid context or contact_identity\n");
         return -1;
+    }
+
+    /* Cascade-remove orphan reactions BEFORE deleting the target chat rows,
+     * otherwise the subquery would return nothing. Only cascade for rows that
+     * are themselves chat messages (message_type != 3). */
+    const char *cleanup_sql =
+        "DELETE FROM messages WHERE message_type = 3 AND content_hash IN ("
+        "  SELECT content_hash FROM messages WHERE "
+        "    (sender = ? OR recipient = ?) AND message_type != 3 "
+        "    AND content_hash IS NOT NULL AND content_hash != ''"
+        ")";
+    sqlite3_stmt *cstmt = NULL;
+    if (sqlite3_prepare_v2(ctx->db, cleanup_sql, -1, &cstmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(cstmt, 1, contact_identity, -1, SQLITE_STATIC);
+        sqlite3_bind_text(cstmt, 2, contact_identity, -1, SQLITE_STATIC);
+        sqlite3_step(cstmt);
+        int reactions_removed = sqlite3_changes(ctx->db);
+        sqlite3_finalize(cstmt);
+        if (reactions_removed > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Cleaned up %d orphan reactions for conversation with %.20s...\n",
+                         reactions_removed, contact_identity);
+        }
     }
 
     const char *sql = "DELETE FROM messages WHERE sender = ? OR recipient = ?";
