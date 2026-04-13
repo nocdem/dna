@@ -3391,6 +3391,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Choose which networks to show in your wallet'**
   String get settingsActiveChainsSubtitle;
+
+  /// No description provided for @reactionAdded.
+  ///
+  /// In en, this message translates to:
+  /// **'Reacted with {emoji}'**
+  String reactionAdded(String emoji);
+
+  /// No description provided for @reactionRemoved.
+  ///
+  /// In en, this message translates to:
+  /// **'Reaction removed'**
+  String get reactionRemoved;
+
+  /// No description provided for @reactionNotificationBody.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} reacted {emoji} to your message'**
+  String reactionNotificationBody(String name, String emoji);
 }
 
 class _AppLocalizationsDelegate

@@ -545,5 +545,8 @@
   "dnacTokenCreateFee": "Token oluşturma ücreti 1 DNAC",
   "walletContacts": "Kişiler",
   "settingsActiveChains": "Aktif Ağlar",
-  "settingsActiveChainsSubtitle": "Cüzdanınızda hangi ağları görmek istediğinizi seçin"
+  "settingsActiveChainsSubtitle": "Cüzdanınızda hangi ağları görmek istediğinizi seçin",
+  "reactionAdded": "{emoji} ile tepki verdi",
+  "reactionRemoved": "Tepki kaldırıldı",
+  "reactionNotificationBody": "{name} mesajınıza {emoji} ile tepki verdi"
 }

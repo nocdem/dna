@@ -1754,4 +1754,17 @@ class AppLocalizationsJa extends AppLocalizations {
   @override
   String get settingsActiveChainsSubtitle =>
       'Choose which networks to show in your wallet';
+
+  @override
+  String reactionAdded(String emoji) {
+    return 'Reacted with $emoji';
+  }
+
+  @override
+  String get reactionRemoved => 'Reaction removed';
+
+  @override
+  String reactionNotificationBody(String name, String emoji) {
+    return '$name reacted $emoji to your message';
+  }
 }

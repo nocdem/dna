@@ -890,5 +890,19 @@
   "dnacTokenCreateFee": "Creating a token costs 1 DNAC",
   "walletContacts": "Contacts",
   "settingsActiveChains": "Active Chains",
-  "settingsActiveChainsSubtitle": "Choose which networks to show in your wallet"
+  "settingsActiveChainsSubtitle": "Choose which networks to show in your wallet",
+  "reactionAdded": "Reacted with {emoji}",
+  "@reactionAdded": {
+    "placeholders": {
+      "emoji": { "type": "String" }
+    }
+  },
+  "reactionRemoved": "Reaction removed",
+  "reactionNotificationBody": "{name} reacted {emoji} to your message",
+  "@reactionNotificationBody": {
+    "placeholders": {
+      "name": { "type": "String" },
+      "emoji": { "type": "String" }
+    }
+  }
 }

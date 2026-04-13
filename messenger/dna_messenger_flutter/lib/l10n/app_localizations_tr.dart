@@ -1779,4 +1779,17 @@ class AppLocalizationsTr extends AppLocalizations {
   @override
   String get settingsActiveChainsSubtitle =>
       'Cüzdanınızda hangi ağları görmek istediğinizi seçin';
+
+  @override
+  String reactionAdded(String emoji) {
+    return '$emoji ile tepki verdi';
+  }
+
+  @override
+  String get reactionRemoved => 'Tepki kaldırıldı';
+
+  @override
+  String reactionNotificationBody(String name, String emoji) {
+    return '$name mesajınıza $emoji ile tepki verdi';
+  }
 }

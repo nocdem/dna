@@ -1,6 +1,7 @@
 // Event Handler - Listens to engine events and updates UI state
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' show Locale;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import '../models/media_ref.dart';
@@ -10,6 +11,8 @@ import '../services/media_outbox_service.dart';
 import '../services/notification_service.dart';
 import '../utils/lifecycle_observer.dart';
 import '../utils/logger.dart';
+import '../l10n/app_localizations.dart';
+import 'locale_provider.dart';
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
 import 'messages_provider.dart';
@@ -544,10 +547,14 @@ class EventHandler {
         // Un-reacting should not notify the recipient.
         return;
       }
-      // TODO(i18n): replace with
-      //   AppLocalizations.of(context).reactionNotificationBody(senderName, emoji)
-      // once Task 16 adds the ARB keys.
-      notificationBody = '$senderName reacted $emoji to your message';
+      // No BuildContext available inside this provider, so resolve
+      // AppLocalizations synchronously via the user's saved locale. When
+      // null (= system default) we fall back to English for the notification
+      // body; the rest of the UI still follows the system locale through
+      // MaterialApp.
+      final selectedLocale = _ref.read(localeProvider) ?? Locale('en');
+      final l10n = lookupAppLocalizations(selectedLocale);
+      notificationBody = l10n.reactionNotificationBody(senderName, emoji);
     } else {
       // Truncate message preview
       notificationBody = messageText.length > 100
