@@ -318,6 +318,11 @@ add_executable(test_witness_verify tests/test_witness_verify.c)
 target_link_libraries(test_witness_verify nodus dsa nodus)
 add_test(NAME test_witness_verify COMMAND test_witness_verify)
 
+# Witness chain DB archive test (Fix 1 — orphan DB prevention)
+add_executable(test_witness_chain_archive tests/test_witness_chain_archive.c)
+target_link_libraries(test_witness_chain_archive nodus dsa nodus)
+add_test(NAME test_witness_chain_archive COMMAND test_witness_chain_archive)
+
 # Replication phase tests
 add_executable(test_put_if_newer tests/test_put_if_newer.c)
 target_link_libraries(test_put_if_newer nodus dsa nodus)

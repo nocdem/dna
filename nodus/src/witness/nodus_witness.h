@@ -229,6 +229,20 @@ typedef struct nodus_witness {
     /* Zone chain ID */
     uint8_t     chain_id[32];
 
+    /* Startup chain_id quorum verification (Fix 3 — fork detection).
+     * Tracks distinct peers that agree/disagree with our local chain_id
+     * during the first 300s after activation. If a strict majority of
+     * observed peers disagree (and >= 2 dissenters seen), the witness
+     * quarantines itself — refuses to participate in BFT consensus until
+     * operator intervention. Piggybacks on the chain_id field in every
+     * T3 message header (no new wire protocol). */
+    uint64_t    activated_at_sec;
+    bool        quarantined;
+    uint32_t    chain_dissent_count;
+    uint32_t    chain_agree_count;
+    uint8_t     chain_dissent_ids[NODUS_T3_MAX_WITNESSES][NODUS_T3_WITNESS_ID_LEN];
+    uint8_t     chain_agree_ids[NODUS_T3_MAX_WITNESSES][NODUS_T3_WITNESS_ID_LEN];
+
     /* Transaction ID counter (monotonic) */
     uint32_t    next_txn_id;
 

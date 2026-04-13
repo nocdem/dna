@@ -22,6 +22,11 @@
 #include <string.h>
 #include <stdlib.h>
 #include <dirent.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <time.h>
 
 #define LOG_TAG "WITNESS"
 
@@ -234,6 +239,68 @@ static int witness_scan_chain_db(nodus_witness_t *witness) {
     return -1;  /* No chain DB found — pre-genesis */
 }
 
+/* ── Archive stale chain DB files (Fix 1 — prevent orphan forks) ──
+ *
+ * Before creating a new witness_<chain>.db, move every existing
+ * witness_<other>.db (and its -wal / -shm siblings) into <data>/archive/.
+ * Never deletes — only renames atomically so we can recover for forensics.
+ *
+ * This plugs the orphan-DB class of bug that produced the EU-6 fork on
+ * 2026-04-10: the scanner's first-match-wins behavior silently picks up
+ * a stale file from a prior chain lifecycle and activates the wrong chain.
+ */
+static int witness_archive_stale_chain_dbs(nodus_witness_t *witness,
+                                           const char *keep_filename) {
+    const char *data_path = witness->data_path;
+
+    char archive_dir[512];
+    snprintf(archive_dir, sizeof(archive_dir), "%s/archive", data_path);
+    /* mkdir -p; ignore EEXIST */
+    if (mkdir(archive_dir, 0700) != 0 && errno != EEXIST) {
+        fprintf(stderr, "%s: archive mkdir failed: %s (continuing)\n",
+                LOG_TAG, strerror(errno));
+        return -1;
+    }
+
+    DIR *dir = opendir(data_path);
+    if (!dir) return -1;
+
+    int archived = 0;
+    uint64_t ts = (uint64_t)time(NULL);
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        /* Only match witness_<hex>.db* (db, db-wal, db-shm) */
+        if (strncmp(entry->d_name, "witness_", 8) != 0) continue;
+        /* Skip the file we're about to open — match its prefix exactly */
+        const char *dot_db = strstr(entry->d_name, ".db");
+        if (!dot_db) continue;
+        size_t prefix_len = (size_t)(dot_db - entry->d_name) + 3;  /* include ".db" */
+        if (prefix_len > strlen(entry->d_name)) continue;
+        if (strncmp(entry->d_name, keep_filename, prefix_len) == 0) continue;
+
+        char src[768];
+        char dst[1024];
+        snprintf(src, sizeof(src), "%s/%s", data_path, entry->d_name);
+        snprintf(dst, sizeof(dst), "%s/%" PRIu64 "_%s",
+                 archive_dir, ts, entry->d_name);
+
+        if (rename(src, dst) == 0) {
+            fprintf(stderr, "%s: archived stale chain file %s -> %s\n",
+                    LOG_TAG, entry->d_name, dst);
+            archived++;
+        } else {
+            fprintf(stderr, "%s: failed to archive %s: %s\n",
+                    LOG_TAG, src, strerror(errno));
+        }
+    }
+    closedir(dir);
+
+    if (archived > 0)
+        fprintf(stderr, "%s: archived %d stale chain file(s) before creating new chain DB\n",
+                LOG_TAG, archived);
+    return 0;
+}
+
 /* ── Create chain DB on genesis commit (called from BFT) ────────── */
 
 int nodus_witness_create_chain_db(nodus_witness_t *witness,
@@ -251,9 +318,16 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
     for (int i = 0; i < 16; i++)
         snprintf(hex + i * 2, 3, "%02x", chain_id[i]);
 
+    char basename[128];
+    snprintf(basename, sizeof(basename), "witness_%s.db", hex);
+
+    /* Fix 1: atomically archive any pre-existing witness_*.db files that
+     * do NOT match the target chain. Prevents orphaned chain DBs from
+     * co-existing on disk and fooling the next restart's scanner. */
+    witness_archive_stale_chain_dbs(witness, basename);
+
     char db_path[512];
-    snprintf(db_path, sizeof(db_path), "%s/witness_%s.db",
-             witness->data_path, hex);
+    snprintf(db_path, sizeof(db_path), "%s/%s", witness->data_path, basename);
 
     if (witness_db_open_path(witness, db_path) != 0)
         return -1;
@@ -311,6 +385,16 @@ int nodus_witness_init(nodus_witness_t *witness,
     if (witness_scan_chain_db(witness) != 0) {
         fprintf(stderr, "%s: no chain DB found — pre-genesis state\n", LOG_TAG);
     }
+
+    /* Fix 3: record activation time for the chain_id quorum-check window.
+     * Within the first 300s after activation, every incoming w_ident is
+     * compared against our local chain_id; if a strict majority of
+     * observed peers disagree (and >=2 dissenters), the witness
+     * quarantines itself. See nodus_witness_peer_handle_ident. */
+    witness->activated_at_sec = (uint64_t)time(NULL);
+    witness->quarantined = false;
+    witness->chain_dissent_count = 0;
+    witness->chain_agree_count = 0;
 
     /* Initialize roster */
     witness_init_roster(witness);
@@ -593,6 +677,29 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
     /* Register inbound conn as peer so broadcasts reach this sender */
     if (sender_idx >= 0 && conn)
         nodus_witness_peer_ensure(witness, msg.header.sender_id, conn);
+
+    /* Fix 3: if we have self-quarantined due to chain_id disagreement with a
+     * majority of peers on startup, refuse to participate in BFT consensus.
+     * Still accept IDENT / ROST_Q/R (so the peer mesh stays alive) and SYNC
+     * messages (read-only, can't affect chain state) so an operator can
+     * diagnose and recover without tearing the node down. */
+    if (witness->quarantined) {
+        switch (msg.type) {
+        case NODUS_T3_PROPOSE:
+        case NODUS_T3_PREVOTE:
+        case NODUS_T3_PRECOMMIT:
+        case NODUS_T3_COMMIT:
+        case NODUS_T3_VIEWCHG:
+        case NODUS_T3_NEWVIEW:
+        case NODUS_T3_FWD_REQ:
+        case NODUS_T3_FWD_RSP:
+            fprintf(stderr, "%s: QUARANTINED — dropping %s (chain_id disagreement with quorum)\n",
+                    LOG_TAG, msg.method);
+            return;
+        default:
+            break;
+        }
+    }
 
     /* Route to appropriate handler */
     switch (msg.type) {

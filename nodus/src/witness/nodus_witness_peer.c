@@ -365,6 +365,80 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
 
 /* ── Handle IDENT ────────────────────────────────────────────────── */
 
+/* ── Fix 3: startup chain_id quorum check ─────────────────────────
+ *
+ * Called from handle_ident for every peer w_ident we receive during
+ * the first 300s after witness activation. Tracks distinct dissenters
+ * (peers on a different chain) and agreers (peers on the same chain).
+ * If dissent reaches strict majority of observed peers and we have at
+ * least 2 dissenters, the witness self-quarantines. See dispatch_t3
+ * in nodus_witness.c for where the quarantine flag is enforced.
+ *
+ * Non-reverts: agreement evidence alone can never clear a quarantine.
+ * Operator intervention (restart after fixing the disk state) is the
+ * only way out — by design, to prevent a self-heal loop on ambiguity.
+ */
+#define WITNESS_CHAIN_QUORUM_WINDOW_SEC  300
+
+static void witness_chain_quorum_observe(nodus_witness_t *w,
+                                          const uint8_t *peer_id,
+                                          const uint8_t *peer_chain_id) {
+    if (!w || !peer_id || !peer_chain_id) return;
+    if (w->quarantined) return;  /* Already decided — sticky */
+
+    /* Skip if we are still pre-genesis (all-zero chain_id) */
+    static const uint8_t zero[32] = {0};
+    if (memcmp(w->chain_id, zero, 32) == 0) return;
+    /* Skip if peer is pre-genesis (no opinion) */
+    if (memcmp(peer_chain_id, zero, 32) == 0) return;
+
+    /* Only check within startup window — after this we trust the cluster
+     * decision that's already been made and rely on per-message
+     * chain_id verification in nodus_witness_bft.c. */
+    uint64_t now = (uint64_t)time(NULL);
+    if (now > w->activated_at_sec + WITNESS_CHAIN_QUORUM_WINDOW_SEC) return;
+
+    bool disagree = (memcmp(w->chain_id, peer_chain_id, 32) != 0);
+
+    /* Dedup by peer_id in the appropriate list */
+    uint8_t (*list)[NODUS_T3_WITNESS_ID_LEN] =
+        disagree ? w->chain_dissent_ids : w->chain_agree_ids;
+    uint32_t *count = disagree ? &w->chain_dissent_count : &w->chain_agree_count;
+    uint32_t cap = NODUS_T3_MAX_WITNESSES;
+
+    for (uint32_t i = 0; i < *count; i++) {
+        if (memcmp(list[i], peer_id, NODUS_T3_WITNESS_ID_LEN) == 0)
+            return;  /* Already counted */
+    }
+    if (*count >= cap) return;  /* Should never happen (bounded by roster) */
+    memcpy(list[*count], peer_id, NODUS_T3_WITNESS_ID_LEN);
+    (*count)++;
+
+    if (disagree) {
+        char local_hex[17], peer_hex[17];
+        for (int i = 0; i < 8; i++) {
+            snprintf(local_hex + i * 2, 3, "%02x", w->chain_id[i]);
+            snprintf(peer_hex + i * 2, 3, "%02x", peer_chain_id[i]);
+        }
+        fprintf(stderr, "%s: CHAIN_QUORUM: peer reports chain %s (local %s) — dissent=%u agree=%u\n",
+                LOG_TAG, peer_hex, local_hex,
+                w->chain_dissent_count, w->chain_agree_count);
+    }
+
+    /* Quarantine decision:
+     *   >=2 distinct dissenters AND strict majority of observed peers disagree
+     * A single dissenter (network race, a peer still catching up) is
+     * not enough. */
+    if (w->chain_dissent_count >= 2 &&
+        w->chain_dissent_count > w->chain_agree_count) {
+        w->quarantined = true;
+        fprintf(stderr, "%s: QUARANTINED — %u peers disagree with local chain_id "
+                "vs %u that agree. Refusing BFT activity until operator "
+                "intervention. Check /var/lib/nodus/data/witness_*.db files.\n",
+                LOG_TAG, w->chain_dissent_count, w->chain_agree_count);
+    }
+}
+
 int nodus_witness_peer_handle_ident(nodus_witness_t *w,
                                     struct nodus_tcp_conn *conn,
                                     const nodus_t3_msg_t *msg) {
@@ -375,6 +449,9 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
         fprintf(stderr, "%s: w_ident missing required fields\n", LOG_TAG);
         return -1;
     }
+
+    /* Fix 3: chain_id quorum tracking — piggybacks on T3 message header */
+    witness_chain_quorum_observe(w, ident->witness_id, msg->header.chain_id);
 
     /* Try to find in roster by witness_id */
     int roster_idx = nodus_witness_roster_find(&w->roster,
