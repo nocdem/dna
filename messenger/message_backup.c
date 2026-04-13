@@ -559,8 +559,24 @@ int message_backup_save(message_backup_context_t *ctx,
 
     // v16: Compute content hash for dedup
     char hash[QGP_SHA3_256_HEX_LENGTH];
-    compute_content_hash(sender_fingerprint ? sender_fingerprint : sender,
-                         recipient, plaintext, timestamp, hash);
+    if (message_type == 3) {
+        /* Reaction: store TARGET message's content_hash (not a hash of this
+         * reaction's plaintext) so that get_reactions_for_target can index
+         * rows by the message they apply to. Both sender and receiver flow
+         * through this path, so behavior is symmetric. */
+        char target_hash[65] = {0};
+        if (dna_reaction_parse_target(plaintext, target_hash, sizeof(target_hash)) == 0) {
+            memcpy(hash, target_hash, 64);
+            hash[64] = '\0';
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Reaction missing valid target, falling back to computed hash\n");
+            compute_content_hash(sender_fingerprint ? sender_fingerprint : sender,
+                                 recipient, plaintext, timestamp, hash);
+        }
+    } else {
+        compute_content_hash(sender_fingerprint ? sender_fingerprint : sender,
+                             recipient, plaintext, timestamp, hash);
+    }
 
     // Check for duplicate by content hash
     if (message_backup_exists(ctx, hash)) {

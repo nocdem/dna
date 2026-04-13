@@ -117,7 +117,20 @@ static nodus_inter_session_t *inter_session_for_conn(nodus_server_t *srv,
     return &srv->inter_sessions[conn->slot];
 }
 
-static void inter_session_clear(nodus_inter_session_t *sess) {
+static void inter_session_clear(nodus_inter_session_t *sess,
+                                 int slot, const char *caller) {
+    /* Phase 3.2c: log every clear so we can correlate session resets with
+     * downstream T1 decode failures. The session memset wipes
+     * channel_crypto inline, so any conn pointer still aliasing
+     * &sess->channel_crypto is now staring at a zeroed AES-GCM context. */
+    void *prev_conn = sess->conn;
+    int prev_established = sess->channel_crypto.established ? 1 : 0;
+    unsigned long long prev_tx = (unsigned long long)sess->channel_crypto.tx_counter;
+    unsigned long long prev_rx = (unsigned long long)sess->channel_crypto.rx_counter;
+    fprintf(stderr,
+            "SESS_CLEAR: slot=%d caller=%s prev_conn=%p prev_established=%d "
+            "prev_tx=%llu prev_rx=%llu\n",
+            slot, caller, prev_conn, prev_established, prev_tx, prev_rx);
     memset(sess, 0, sizeof(*sess));
 }
 
@@ -3771,6 +3784,31 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
      * Pre-auth: only hello and auth messages allowed.
      * Enforcement controlled by require_peer_auth config flag. */
     if (nodus_t2_decode(payload, len, &msg) == 0) {
+        /* Phase 3.2c: log every t2 method received per (slot, method)
+         * one-shot. Tells us which handshake messages are actually arriving
+         * vs missing on each conn. Bits: 0=hello 1=challenge 2=auth
+         * 3=auth_ok 4=key_init 5=key_ack. */
+        if (sess->conn) {
+            int bit = -1;
+            if      (strcmp(msg.method, "hello")     == 0) bit = 0;
+            else if (strcmp(msg.method, "challenge") == 0) bit = 1;
+            else if (strcmp(msg.method, "auth")      == 0) bit = 2;
+            else if (strcmp(msg.method, "auth_ok")   == 0) bit = 3;
+            else if (strcmp(msg.method, "key_init")  == 0) bit = 4;
+            else if (strcmp(msg.method, "key_ack")   == 0) bit = 5;
+            if (bit >= 0 && !(sess->conn->dispatch_logged_mask & (1u << bit))) {
+                sess->conn->dispatch_logged_mask |= (1u << bit);
+                fprintf(stderr,
+                        "INTER_DISPATCH: slot=%d peer=%s:%u method=%s "
+                        "auth_state=%d authed=%d has_crypto=%d\n",
+                        sess->conn->slot, sess->conn->ip,
+                        (unsigned)sess->conn->port, msg.method,
+                        (int)sess->conn->auth_state,
+                        sess->conn->authenticated ? 1 : 0,
+                        sess->conn->crypto ? 1 : 0);
+            }
+        }
+
         /* Handle auth RESPONSES for outgoing inter-node connections (this
          * node opened the conn, sent hello, now receives challenge/auth_ok).
          * These must be handled regardless of require_peer_auth — they
@@ -4245,9 +4283,19 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         }
         int authed = (sess->conn && sess->conn->authenticated) ? 1 : 0;
         int peer_id_set = (sess->conn && sess->conn->peer_id_set) ? 1 : 0;
+        /* Phase 3.2c: include sess->channel_crypto.established. If conn->crypto
+         * is NULL but sess channel_crypto IS established, that means the conn
+         * pointer alias was lost — we have crypto state but the conn doesn't
+         * see it. Plus auth_state, dispatch_mask, decrypt_skip_count for full
+         * forensics. sess_aliases_conn==0 means conn->crypto != &sess->cc. */
+        int sess_cc_est = sess->channel_crypto.established ? 1 : 0;
+        int sess_aliases_conn = (sess->conn && sess->conn->crypto ==
+            (void *)&sess->channel_crypto) ? 1 : 0;
         fprintf(stderr,
                 "REPL_TCP: T1 decode failed (len=%zu) slot=%d src=%s:%u "
                 "head=%s crypto=%s tx=%llu rx=%llu authed=%d peer_id_set=%d "
+                "auth_state=%d dispatch_mask=0x%02x decrypt_skip=%llu "
+                "sess_cc_est=%d sess_alias=%d "
                 "sess=%p sess_conn=%p\n",
                 len, sess->conn ? sess->conn->slot : -1,
                 sess->conn ? sess->conn->ip : "?",
@@ -4255,6 +4303,10 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                 hexdump, crypto_state,
                 (unsigned long long)tx_ctr, (unsigned long long)rx_ctr,
                 authed, peer_id_set,
+                sess->conn ? (int)sess->conn->auth_state : -1,
+                sess->conn ? (unsigned)sess->conn->dispatch_logged_mask : 0,
+                sess->conn ? (unsigned long long)sess->conn->decrypt_skip_count : 0ULL,
+                sess_cc_est, sess_aliases_conn,
                 (void *)sess, (void *)(sess->conn));
     }
     nodus_t1_msg_free(&t1msg);
@@ -4270,7 +4322,7 @@ static void on_inter_connect(nodus_tcp_conn_t *conn, void *ctx) {
      * dispatch_inter uses sess->conn for auth response handling). */
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
     if (sess) {
-        inter_session_clear(sess);
+        inter_session_clear(sess, conn->slot, "on_inter_connect");
         sess->conn = conn;
     }
 
@@ -4301,7 +4353,7 @@ static void on_inter_accept(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
     if (sess) {
-        inter_session_clear(sess);
+        inter_session_clear(sess, conn->slot, "on_inter_accept");
         sess->conn = conn;
     }
     conn->is_nodus = true;
@@ -4317,6 +4369,22 @@ static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
     if (!sess) return;
+
+    /* Phase 3.2c: log first frame seen on this conn — tells us whether
+     * an INBOUND ACCEPT ever made it past the TCP handshake into actual
+     * data exchange. If conns drop with first_frame_logged=0, the peer
+     * never sent anything (TCP-only churn). */
+    if (!conn->first_frame_logged) {
+        conn->first_frame_logged = true;
+        int has_crypto = (conn->crypto != NULL) ? 1 : 0;
+        fprintf(stderr,
+                "INTER_FRAME_FIRST: slot=%d peer=%s:%u len=%zu auth_state=%d "
+                "has_crypto=%d sess=%p sess_conn=%p match=%d\n",
+                conn->slot, conn->ip, (unsigned)conn->port, len,
+                (int)conn->auth_state, has_crypto,
+                (void *)sess, (void *)sess->conn,
+                (sess->conn == conn) ? 1 : 0);
+    }
 
     /* Phase 3.2b-inv: SESS_MISMATCH detector — critical bug if fires.
      * on_inter_accept/connect sets sess->conn = conn, so they should be
@@ -4344,14 +4412,20 @@ static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
         nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
         established = cc->established ? 1 : 0;
     }
+    /* Phase 3.2c: include auth_state at disconnect — tells us how far the
+     * handshake got before the conn died. INBOUND conn that drops with
+     * auth_state=NONE means peer never even sent hello. */
     fprintf(stderr,
             "INTER_CONN: DISCONNECT slot=%d peer=%s:%u had_crypto=%d established=%d "
+            "auth_state=%d authed=%d peer_id_set=%d frames_seen=%d "
             "sess=%p sess_conn=%p conn=%p\n",
             conn->slot, conn->ip, (unsigned)conn->port, had_crypto, established,
+            (int)conn->auth_state, conn->authenticated ? 1 : 0,
+            conn->peer_id_set ? 1 : 0, conn->first_frame_logged ? 1 : 0,
             (void *)sess, sess ? (void *)sess->conn : NULL, (void *)conn);
 
     if (sess) {
-        inter_session_clear(sess);
+        inter_session_clear(sess, conn->slot, "on_inter_disconnect");
     }
 
     /* Notify witness module so it can clear peer references */

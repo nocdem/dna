@@ -122,6 +122,12 @@ typedef struct nodus_tcp_conn {
 
     /* Phase 3.2b-inv2: one-shot flag for PENDING_DRAIN log. */
     bool                drain_logged;
+
+    /* Phase 3.2c: one-shot flag for INTER_FRAME_FIRST log + tag bitmap so
+     * dispatch_inter only logs each handshake message once per conn. Bits:
+     * 0=hello 1=challenge 2=auth 3=auth_ok 4=key_init 5=key_ack */
+    bool                first_frame_logged;
+    uint8_t             dispatch_logged_mask;
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */

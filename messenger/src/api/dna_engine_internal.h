@@ -1002,6 +1002,7 @@ void dna_handle_get_blocked_users(dna_engine_t *engine, dna_task_t *task);
 
 /* Messaging */
 void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_send_reaction(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task);
