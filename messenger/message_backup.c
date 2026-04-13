@@ -672,7 +672,7 @@ int message_backup_get_unread_count(message_backup_context_t *ctx, const char *c
     const char *sql =
         "SELECT COUNT(*) FROM messages "
         "WHERE sender = ? AND recipient = ? AND read = 0 AND is_outgoing = 0 "
-        "AND message_type != 99";
+        "AND message_type NOT IN (3, 99)";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -748,7 +748,7 @@ int message_backup_get_conversation_page(message_backup_context_t *ctx,
     const char *count_sql =
         "SELECT COUNT(*) FROM messages "
         "WHERE ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) "
-        "AND message_type != 99";
+        "AND message_type NOT IN (3, 99)";
 
     sqlite3_stmt *count_stmt;
     int rc = sqlite3_prepare_v2(ctx->db, count_sql, -1, &count_stmt, NULL);
@@ -783,7 +783,7 @@ int message_backup_get_conversation_page(message_backup_context_t *ctx,
         "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, is_outgoing, deleted_by_sender "
         "FROM messages "
         "WHERE ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) "
-        "AND message_type != 99 "
+        "AND message_type NOT IN (3, 99) "
         "ORDER BY timestamp DESC "
         "LIMIT ? OFFSET ?";
 
@@ -1222,7 +1222,7 @@ int message_backup_get_recent_contacts(message_backup_context_t *ctx,
         "  END AS contact "
         "FROM messages "
         "WHERE (sender = ? OR recipient = ?) "
-        "AND message_type != 99 "
+        "AND message_type NOT IN (3, 99) "
         "ORDER BY timestamp DESC";
 
     sqlite3_stmt *stmt;
