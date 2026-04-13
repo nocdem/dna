@@ -884,7 +884,20 @@ static void dht_hinted_retry(nodus_server_t *srv) {
         nodus_key_t node_id;
         memcpy(node_id.bytes, blob, NODUS_KEY_BYTES);
 
-        /* Look up current IP:Port in routing table (node may have migrated) */
+        /* Fetch entries first — we need them either way, and they carry the
+         * peer_ip/peer_port that was current at hint creation time. */
+        nodus_dht_hint_t *entries = NULL;
+        size_t count = 0;
+        if (nodus_storage_hinted_get(&srv->storage, &node_id,
+                                       100, &entries, &count) != 0 || count == 0)
+            continue;
+
+        /* Phase 3.2f FIX: previously this used routing_lookup as the only
+         * source of truth and `continue` if routing was sparse. Result:
+         * hints accumulated forever when routing rebuilt slowly after a
+         * restart (observed: 343 MB stuck on EU-2 post-deploy). The hint
+         * table already records peer_ip/peer_port from insert time; fall
+         * back to those when routing is empty for this node_id. */
         nodus_peer_t peer;
         const char *ip;
         uint16_t tcp_port;
@@ -892,15 +905,9 @@ static void dht_hinted_retry(nodus_server_t *srv) {
             ip = peer.ip;
             tcp_port = peer.tcp_port;
         } else {
-            /* Not in routing table — skip until rediscovered */
-            continue;
+            ip = entries[0].peer_ip;
+            tcp_port = entries[0].peer_port;
         }
-
-        nodus_dht_hint_t *entries = NULL;
-        size_t count = 0;
-        if (nodus_storage_hinted_get(&srv->storage, &node_id,
-                                       100, &entries, &count) != 0 || count == 0)
-            continue;
 
         int h_sent = 0, h_bumped = 0, h_expired = 0;
         for (size_t j = 0; j < count; j++) {
