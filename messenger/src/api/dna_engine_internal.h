@@ -673,6 +673,23 @@ typedef struct {
     dna_task_t tasks[DNA_TASK_QUEUE_SIZE];
     atomic_size_t head;  /* Producer writes here */
     atomic_size_t tail;  /* Consumer reads from here */
+#ifndef NDEBUG
+    /* THR-03 — Task Queue Concurrency Contract (CONCURRENCY.md L1 cluster).
+     *
+     * The MPSC-via-task_mutex contract requires every call to
+     * dna_task_queue_push to happen while engine->task_mutex is held.
+     * dna_submit_task sets this field to pthread_self() immediately after
+     * locking task_mutex; dna_task_queue_push asserts via pthread_equal
+     * that the current thread matches. A future caller that bypasses
+     * dna_submit_task and pushes directly will either trip the assert
+     * (owner is a different thread) or trip it on first push (owner is
+     * zero-initialized). Zero cost in release builds — the field and the
+     * assert are both #ifndef NDEBUG-gated.
+     *
+     * Portable POSIX: pthread_t + pthread_self() + pthread_equal() are
+     * available on pthreads-w32 / llvm-mingw winpthreads and Android NDK. */
+    pthread_t task_mutex_owner;
+#endif
 } dna_task_queue_t;
 
 /* ============================================================================

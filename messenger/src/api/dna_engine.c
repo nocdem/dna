@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <assert.h>  /* THR-03: assert(pthread_equal(...)) in dna_task_queue_push */
 
 #ifdef _WIN32
 #include <direct.h>
@@ -799,15 +800,70 @@ const char* dna_engine_error_string(int error) {
 
 /* ============================================================================
  * TASK QUEUE IMPLEMENTATION
- * ============================================================================ */
+ * ============================================================================
+ *
+ * THR-03 — Task Queue Concurrency Contract (CONCURRENCY.md L1 cluster)
+ * =====================================================================
+ *
+ * The dna_task_queue_t is a fixed-size ring buffer with atomic head and
+ * atomic tail. Read in isolation, the push/pop functions look SPSC: the
+ * producer writes `head`, the consumer writes `tail`, and each reads the
+ * other's index atomically.
+ *
+ * In this codebase, however, the queue is driven as MPSC-serialized-by-mutex:
+ * every caller of `dna_task_queue_push` goes through `dna_submit_task`
+ * (see below around line 880), which takes `engine->task_mutex` around the
+ * push. The consumer is the single engine worker thread which calls
+ * `dna_task_queue_pop` without holding the mutex — the atomic tail store
+ * is safe because there is exactly one consumer.
+ *
+ * INVARIANT: every call to `dna_task_queue_push` must be made while holding
+ * `engine->task_mutex`. `dna_task_queue_pop` is called only from the single
+ * worker thread. Violating either of these two rules is a data race.
+ *
+ * ENFORCEMENT (debug builds only): `dna_task_queue_t` carries a
+ * `pthread_t task_mutex_owner` field under `#ifndef NDEBUG`. `dna_submit_task`
+ * sets it to `pthread_self()` immediately after locking `engine->task_mutex`,
+ * and `dna_task_queue_push` runs
+ * `assert(pthread_equal(queue->task_mutex_owner, pthread_self()))`. A future
+ * caller that bypasses `dna_submit_task` and pushes directly will trip the
+ * assert and abort the debug build. Zero cost in release.
+ *
+ * Do NOT convert to lock-free MPSC with CAS. Do NOT remove the mutex to
+ * enforce SPSC. The current combination is correct under the above
+ * invariant, and RC no-breaking-changes forbids reshaping it.
+ *
+ * Future Flutter isolate / FFI work that submits tasks from multiple
+ * threads is fine as long as every submission still goes through
+ * `dna_submit_task` which takes `engine->task_mutex` and sets the owner.
+ *
+ * See messenger/docs/CONCURRENCY.md L1 engine cluster section.
+ */
 
 void dna_task_queue_init(dna_task_queue_t *queue) {
     memset(queue->tasks, 0, sizeof(queue->tasks));
     atomic_store(&queue->head, 0);
     atomic_store(&queue->tail, 0);
+#ifndef NDEBUG
+    /* THR-03: owner is set per-push by dna_submit_task under task_mutex.
+     * Zero-initialize here to a known invalid state; the first push will
+     * trip the assert if it bypasses dna_submit_task. */
+    memset(&queue->task_mutex_owner, 0, sizeof(queue->task_mutex_owner));
+#endif
 }
 
 bool dna_task_queue_push(dna_task_queue_t *queue, const dna_task_t *task) {
+#ifndef NDEBUG
+    /* THR-03: the caller must hold engine->task_mutex. dna_submit_task
+     * sets queue->task_mutex_owner = pthread_self() under the mutex
+     * immediately before calling us, so pthread_equal must return true
+     * here. If a future caller bypasses dna_submit_task and pushes
+     * directly without holding task_mutex, the owner will be a different
+     * thread (or zero-initialized) and this assert aborts the debug
+     * build. See CONCURRENCY.md L1 engine cluster and the contract
+     * comment block above dna_task_queue_init. */
+    assert(pthread_equal(queue->task_mutex_owner, pthread_self()));
+#endif
     size_t head = atomic_load(&queue->head);
     size_t next_head = (head + 1) % DNA_TASK_QUEUE_SIZE;
 
@@ -878,6 +934,13 @@ dna_request_id_t dna_submit_task(
     task.cancelled = false;
 
     pthread_mutex_lock(&engine->task_mutex);
+#ifndef NDEBUG
+    /* THR-03: capture the task_mutex holder for the contract assert
+     * inside dna_task_queue_push. See CONCURRENCY.md L1 engine cluster
+     * and the task queue contract comment block above dna_task_queue_init.
+     * Debug builds only. */
+    engine->task_queue.task_mutex_owner = pthread_self();
+#endif
     bool pushed = dna_task_queue_push(&engine->task_queue, &task);
     if (pushed) {
         pthread_cond_signal(&engine->task_cond);
