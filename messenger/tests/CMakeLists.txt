@@ -158,6 +158,13 @@ target_link_libraries(test_gek_concurrent ${TEST_LIBS})
 add_test(NAME gek_concurrent COMMAND test_gek_concurrent)
 
 # =============================================================================
+# Test: SEC-05 — engine destroy during backup regression (Phase 02-02)
+# =============================================================================
+add_executable(test_engine_destroy_during_backup test_engine_destroy_during_backup.c)
+target_link_libraries(test_engine_destroy_during_backup ${TEST_LIBS})
+add_test(NAME engine_destroy_during_backup COMMAND test_engine_destroy_during_backup)
+
+# =============================================================================
 # Test: Salt Agreement Protocol (Kyber dual-encrypted, authenticated)
 # =============================================================================
 add_executable(test_salt_agreement test_salt_agreement.c)
