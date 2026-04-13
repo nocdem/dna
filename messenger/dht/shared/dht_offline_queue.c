@@ -40,91 +40,13 @@ typedef struct {
     bool needs_dht_sync;                 // True if failed to publish, needs retry
 } outbox_cache_entry_t;
 
+/* g_outbox_cache is zero-initialized at load time (static storage). All live
+ * access happens inside dht_offline_queue_sync_pending which holds
+ * g_queue_mutex (see CONCURRENCY.md L4). Phase 02-04 deleted four dead
+ * helper functions (outbox_cache_init / outbox_cache_find / outbox_cache_store
+ * / outbox_cache_store_ex) per CLAUDE.md No Dead Code rule — they had zero
+ * callers anywhere in the codebase. */
 static outbox_cache_entry_t g_outbox_cache[OUTBOX_CACHE_MAX_ENTRIES];
-static bool g_cache_initialized = false;
-
-/* Cache init - MUST be called while holding g_queue_mutex (v0.6.43 race fix) */
-static void outbox_cache_init(void) {
-    /* Note: Caller must hold g_queue_mutex. Check is safe because all callers
-     * either hold the mutex or are dead code (find/store helpers unused). */
-    if (g_cache_initialized) return;
-    memset(g_outbox_cache, 0, sizeof(g_outbox_cache));
-    g_cache_initialized = true;
-}
-
-// Find cache entry for key (returns NULL if not found or expired)
-static outbox_cache_entry_t *outbox_cache_find(const char *base_key) {
-    outbox_cache_init();
-    time_t now = time(NULL);
-
-    for (int i = 0; i < OUTBOX_CACHE_MAX_ENTRIES; i++) {
-        if (g_outbox_cache[i].valid &&
-            strcmp(g_outbox_cache[i].base_key, base_key) == 0) {
-            // Check if expired
-            if (now - g_outbox_cache[i].last_update > OUTBOX_CACHE_TTL_SECONDS) {
-                // Expired - invalidate and return NULL
-                if (g_outbox_cache[i].messages) {
-                    dht_offline_messages_free(g_outbox_cache[i].messages, g_outbox_cache[i].count);
-                }
-                g_outbox_cache[i].valid = false;
-                return NULL;
-            }
-            return &g_outbox_cache[i];
-        }
-    }
-    return NULL;
-}
-
-// Store messages in cache (takes ownership of messages array)
-// needs_sync: true if DHT publish failed, entry needs retry
-static void outbox_cache_store_ex(const char *base_key, dht_offline_message_t *messages, size_t count, bool needs_sync) {
-    outbox_cache_init();
-
-    // Find existing entry or empty slot
-    outbox_cache_entry_t *entry = NULL;
-    int oldest_idx = 0;
-    time_t oldest_time = time(NULL);
-
-    for (int i = 0; i < OUTBOX_CACHE_MAX_ENTRIES; i++) {
-        if (g_outbox_cache[i].valid && strcmp(g_outbox_cache[i].base_key, base_key) == 0) {
-            // Found existing - free old data
-            if (g_outbox_cache[i].messages) {
-                dht_offline_messages_free(g_outbox_cache[i].messages, g_outbox_cache[i].count);
-            }
-            entry = &g_outbox_cache[i];
-            break;
-        }
-        if (!g_outbox_cache[i].valid) {
-            entry = &g_outbox_cache[i];
-            break;
-        }
-        if (g_outbox_cache[i].last_update < oldest_time) {
-            oldest_time = g_outbox_cache[i].last_update;
-            oldest_idx = i;
-        }
-    }
-
-    // If no slot found, evict oldest
-    if (!entry) {
-        entry = &g_outbox_cache[oldest_idx];
-        if (entry->messages) {
-            dht_offline_messages_free(entry->messages, entry->count);
-        }
-    }
-
-    strncpy(entry->base_key, base_key, sizeof(entry->base_key) - 1);
-    entry->base_key[sizeof(entry->base_key) - 1] = '\0';
-    entry->messages = messages;
-    entry->count = count;
-    entry->last_update = time(NULL);
-    entry->valid = true;
-    entry->needs_dht_sync = needs_sync;
-}
-
-// Wrapper for backward compatibility
-static void outbox_cache_store(const char *base_key, dht_offline_message_t *messages, size_t count) {
-    outbox_cache_store_ex(base_key, messages, count, false);
-}
 
 // Platform-specific network byte order functions
 #ifdef _WIN32
@@ -1034,8 +956,11 @@ void dht_cancel_ack_listener(
  */
 int dht_offline_queue_sync_pending(void) {
 
+    /* CONCURRENCY.md L4: g_queue_mutex protects g_outbox_cache[]. After the
+     * Phase 02-04 dead-code removal, this is the only live access path to
+     * the cache array. g_outbox_cache is zero-initialized at load time, so
+     * no explicit init is required. */
     pthread_mutex_lock(&g_queue_mutex);
-    outbox_cache_init();
 
     int synced = 0;
     int pending = 0;
