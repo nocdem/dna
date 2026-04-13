@@ -182,6 +182,13 @@ target_link_libraries(test_registered_name_validation ${TEST_LIBS})
 add_test(NAME test_registered_name_validation COMMAND test_registered_name_validation)
 
 # =============================================================================
+# Test: Reaction JSON build/parse helpers
+# =============================================================================
+add_executable(test_reactions test_reactions.c)
+target_link_libraries(test_reactions ${TEST_LIBS})
+add_test(NAME test_reactions COMMAND test_reactions)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()
