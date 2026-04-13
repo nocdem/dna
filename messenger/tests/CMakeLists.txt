@@ -130,6 +130,13 @@ target_link_libraries(test_qgp_key_size_validation ${TEST_LIBS})
 add_test(NAME qgp_key_size_validation COMMAND test_qgp_key_size_validation)
 
 # =============================================================================
+# Test: SEC-01 — Contact request wire-level validation regression guard
+# =============================================================================
+add_executable(test_contact_request_validation test_contact_request_validation.c)
+target_link_libraries(test_contact_request_validation ${TEST_LIBS})
+add_test(NAME contact_request_validation COMMAND test_contact_request_validation)
+
+# =============================================================================
 # Test: BIP39/BIP32 Mnemonic and HD Key Derivation
 # =============================================================================
 add_executable(test_bip39_bip32 test_bip39_bip32.c)
