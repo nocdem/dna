@@ -2245,6 +2245,9 @@ ga_empty:
 
 static void bf_conn_cleanup(nodus_server_t *srv, dht_bf_conn_t *c) {
     if (c->fd >= 0) {
+        /* Phase 3.2e: log BF close so we can correlate close(fd) → recycle. */
+        fprintf(stderr, "BF_CLOSE: fd=%d state=%d encrypted=%d\n",
+                c->fd, (int)c->state, c->encrypted ? 1 : 0);
         epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_DEL, c->fd, NULL);
         if (c->fd < NODUS_BF_FD_TABLE_SIZE) {
             srv->bf_fd_table[c->fd].batch_idx = -1;
@@ -2383,6 +2386,9 @@ static void bf_forward_fail(nodus_server_t *srv, dht_bf_batch_t *b, dht_bf_conn_
 
 /** Handle epoll events for batch forward fds — full auth state machine */
 static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
+    /* Phase 3.2e: log every BF event with fd. Captures BF subsystem activity
+     * we previously had no visibility into. */
+    fprintf(stderr, "BF_EVENT: fd=%d events=0x%x\n", fd, events);
     if (fd < 0 || fd >= NODUS_BF_FD_TABLE_SIZE) return;
     int bi = srv->bf_fd_table[fd].batch_idx;
     int fi = srv->bf_fd_table[fd].forward_idx;
@@ -2409,6 +2415,13 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
          c->state == BF_SEND_KEY_INIT || c->state == BF_SEND_BATCH) &&
         (events & EPOLLOUT)) {
         if (!c->send_buf) { bf_forward_fail(srv, b, c); return; }
+        /* Phase 3.2e: log BF send target fd + state. If fd ever points at a
+         * recycled stale value, this log will reveal the mismatch. */
+        fprintf(stderr,
+                "BF_SEND: fd=%d c_fd=%d state=%d peer=%s:%u send_pos=%zu "
+                "send_len=%zu encrypted=%d bi=%d fi=%d\n",
+                fd, c->fd, (int)c->state, c->ip, (unsigned)c->port,
+                c->send_pos, c->send_len, c->encrypted ? 1 : 0, bi, fi);
         ssize_t n = send(fd, c->send_buf + c->send_pos,
                          c->send_len - c->send_pos, MSG_NOSIGNAL);
         if (n < 0) { bf_forward_fail(srv, b, c); return; }
@@ -2734,6 +2747,9 @@ static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
     /* Non-blocking connect to peer's INTER-NODE port (4002) */
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (fd < 0) goto fail;
+    /* Phase 3.2e: log BF socket allocation. fd value tells us if BF is
+     * grabbing low fds (e.g. fd=0 from closed stdin). */
+    fprintf(stderr, "BF_SOCK: fd=%d peer=%s\n", fd, peer->ip);
     if (fd >= NODUS_BF_FD_TABLE_SIZE) { close(fd); goto fail; }
 
     /* Inter-node port = UDP port + 2 (convention: 4000→4002) */
