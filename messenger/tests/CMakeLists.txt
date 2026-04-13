@@ -19,7 +19,12 @@ project(dna_tests C)
 # Find the main project build
 # =============================================================================
 set(DNA_ROOT "${CMAKE_SOURCE_DIR}/..")
-set(DNA_BUILD "${DNA_ROOT}/build")
+# DNA_BUILD defaults to ../build but can be overridden from the command line
+# via -DDNA_BUILD=... (Phase 02-04: used to point tests at build-tsan/ when
+# running the concurrency suite under ThreadSanitizer).
+if(NOT DEFINED DNA_BUILD OR DNA_BUILD STREQUAL "")
+    set(DNA_BUILD "${DNA_ROOT}/build")
+endif()
 set(SHARED_DIR "${DNA_ROOT}/../shared")
 
 # Verify main project is built (shared lib)
