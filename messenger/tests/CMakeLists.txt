@@ -42,6 +42,7 @@ include_directories(
     ${DNA_ROOT}
     ${DNA_ROOT}/include
     ${DNA_ROOT}/dht/client  # dna_profile.h (transitively included by dht_keyserver.h)
+    ${DNA_ROOT}/../nodus/include  # nodus/nodus_types.h (THR-02 test_nodus_init_concurrent)
     ${SHARED_DIR}          # shared/crypto/utils/*.h, shared/crypto/bip39/*.h
 )
 
@@ -163,6 +164,14 @@ add_test(NAME gek_concurrent COMMAND test_gek_concurrent)
 add_executable(test_engine_destroy_during_backup test_engine_destroy_during_backup.c)
 target_link_libraries(test_engine_destroy_during_backup ${TEST_LIBS})
 add_test(NAME engine_destroy_during_backup COMMAND test_engine_destroy_during_backup)
+
+# =============================================================================
+# Test: THR-02 — concurrent nodus init mutex + pthread_once regression (Phase 02-03)
+# =============================================================================
+add_executable(test_nodus_init_concurrent test_nodus_init_concurrent.c)
+target_link_libraries(test_nodus_init_concurrent ${TEST_LIBS} pthread)
+add_test(NAME nodus_init_concurrent COMMAND test_nodus_init_concurrent)
+set_tests_properties(nodus_init_concurrent PROPERTIES TIMEOUT 30)
 
 # =============================================================================
 # Test: Salt Agreement Protocol (Kyber dual-encrypted, authenticated)
