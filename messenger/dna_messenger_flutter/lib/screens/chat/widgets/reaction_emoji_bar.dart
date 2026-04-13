@@ -13,11 +13,11 @@ const List<String> kReactionEmojis = [
   '\ud83c\udf89', // 🎉 party popper
 ];
 
-/// Horizontal bar of preset reaction emojis used at the top of the
-/// message actions bottom sheet.
+/// Floating pill-shape bar of preset reaction emojis used in the Telegram-style
+/// message overlay. Shown above the selected message.
 ///
 /// Emojis the current user has already applied to this message are shown
-/// with a filled background pill so tapping them feels like a toggle.
+/// with a filled background so tapping them feels like a toggle.
 class ReactionEmojiBar extends StatelessWidget {
   final void Function(String emoji) onSelected;
   final Set<String> currentUserEmojis;
@@ -31,30 +31,42 @@ class ReactionEmojiBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: kReactionEmojis.map((emoji) {
-          final active = currentUserEmojis.contains(emoji);
-          return InkWell(
-            onTap: () => onSelected(emoji),
-            borderRadius: BorderRadius.circular(24),
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: active
-                  ? BoxDecoration(
-                      color: theme.colorScheme.primary.withValues(alpha: 0.2),
-                      shape: BoxShape.circle,
-                    )
-                  : null,
-              child: Text(
-                emoji,
-                style: const TextStyle(fontSize: 26),
-              ),
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(32),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.25),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
             ),
-          );
-        }).toList(),
+          ],
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: kReactionEmojis.map((emoji) {
+            final active = currentUserEmojis.contains(emoji);
+            return InkWell(
+              onTap: () => onSelected(emoji),
+              borderRadius: BorderRadius.circular(24),
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 2),
+                padding: const EdgeInsets.all(6),
+                decoration: active
+                    ? BoxDecoration(
+                        color: theme.colorScheme.primary.withValues(alpha: 0.25),
+                        shape: BoxShape.circle,
+                      )
+                    : null,
+                child: Text(emoji, style: const TextStyle(fontSize: 26)),
+              ),
+            );
+          }).toList(),
+        ),
       ),
     );
   }

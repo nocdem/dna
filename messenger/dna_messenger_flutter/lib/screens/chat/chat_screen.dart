@@ -24,8 +24,8 @@ import '../../services/image_attachment_service.dart';
 import '../../services/media_service.dart';
 import '../profile/user_profile_screen.dart';
 import 'widgets/message_bubble.dart';
+import 'widgets/message_overlay_controller.dart';
 import 'widgets/reaction_chips.dart';
-import 'widgets/reaction_emoji_bar.dart';
 import '../../providers/reaction_provider.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -47,6 +47,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   // Track seen message IDs to only animate new ones
   final Set<int> _seenMessageIds = {};
   bool _initialLoadDone = false;
+
+  // GlobalKeys per message for anchoring the Telegram-style message overlay
+  // (pill emoji bar + action card) to each bubble's screen rect.
+  final Map<int, GlobalKey> _messageKeys = {};
+  GlobalKey _keyFor(Message m) =>
+      _messageKeys.putIfAbsent(m.id, () => GlobalKey());
 
   // Search state
   bool _isSearching = false;
@@ -737,12 +743,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         ? CrossAxisAlignment.end
                         : CrossAxisAlignment.start,
                     children: [
-                      MessageBubbleWrapper(
+                      KeyedSubtree(
+                        key: _keyFor(message),
+                        child: MessageBubbleWrapper(
                         message: message,
                         isStarred: starredIds.contains(message.id),
                         animate: shouldAnimate,
-                        onTap: () => _showMessageInfo(message),
-                        onLongPress: () => _showMessageActions(message),
+                        onTap: () => _showMessageOverlay(message),
+                        onLongPress: () => _showMessageOverlay(message),
                         onReply: _replyMessage,
                         onCopy: _copyMessage,
                         onForward: _forwardMessage,
@@ -761,6 +769,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               : null,
                           engine: ref.read(engineProvider).valueOrNull,
                         ),
+                      ),
                       ),
                       ReactionChips(
                         contentHash: message.contentHash,
@@ -1409,231 +1418,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  void _showMessageInfo(Message message) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final contact = ref.read(selectedContactProvider);
-    final contactName = contact?.effectiveName.isNotEmpty == true
-        ? contact!.effectiveName
-        : 'contact';
-
-    // Format full timestamp
-    final fullTimestamp = DateFormat('MMMM d, y \'at\' HH:mm:ss').format(message.timestamp);
-
-    // Get status info (v15: simplified 4-state model)
-    String statusText;
-    IconData statusIcon;
-    Color statusColor;
-    final mutedColor = theme.textTheme.bodySmall?.color ?? Colors.grey;
-    switch (message.status) {
-      case MessageStatus.pending:
-        statusText = 'Sending...';
-        statusIcon = FontAwesomeIcons.clock;
-        statusColor = mutedColor;
-        break;
-      case MessageStatus.sent:
-        statusText = 'Sent';
-        statusIcon = FontAwesomeIcons.check;
-        statusColor = mutedColor;
-        break;
-      case MessageStatus.received:
-        statusText = 'Received';
-        statusIcon = FontAwesomeIcons.checkDouble;
-        statusColor = DnaColors.success;
-        break;
-      case MessageStatus.failed:
-        statusText = 'Failed to send';
-        statusIcon = FontAwesomeIcons.circleExclamation;
-        statusColor = DnaColors.error;
-        break;
-    }
-
-    Widget infoIcon(IconData icon, Color color) {
-      return Container(
-        width: 32,
-        height: 32,
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: isDark ? 0.15 : 0.1),
-          borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
-        ),
-        child: Center(
-          child: FaIcon(icon, size: 14, color: color),
-        ),
-      );
-    }
-
-    DnaBottomSheet.show(
-      context,
-      title: 'Message Info',
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.lg),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Timestamp
-            Row(
-              children: [
-                infoIcon(FontAwesomeIcons.clock, DnaColors.info),
-                const SizedBox(width: DnaSpacing.md),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Time', style: theme.textTheme.bodySmall),
-                      Text(fullTimestamp, style: theme.textTheme.bodyMedium),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: DnaSpacing.lg),
-
-            // Direction
-            Row(
-              children: [
-                infoIcon(
-                  message.isOutgoing ? FontAwesomeIcons.arrowUp : FontAwesomeIcons.arrowDown,
-                  message.isOutgoing ? DnaColors.success : DnaColors.info,
-                ),
-                const SizedBox(width: DnaSpacing.md),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Direction', style: theme.textTheme.bodySmall),
-                      Text(
-                        message.isOutgoing ? 'Sent to $contactName' : 'Received from $contactName',
-                        style: theme.textTheme.bodyMedium,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-
-            // Status (only for outgoing)
-            if (message.isOutgoing) ...[
-              const SizedBox(height: DnaSpacing.lg),
-              Row(
-                children: [
-                  infoIcon(statusIcon, statusColor),
-                  const SizedBox(width: DnaSpacing.md),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Status', style: theme.textTheme.bodySmall),
-                        Text(statusText, style: theme.textTheme.bodyMedium),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            const SizedBox(height: DnaSpacing.lg),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showMessageActions(Message message) {
+  Future<void> _showMessageOverlay(Message message) async {
     final contact = ref.read(selectedContactProvider);
     if (contact == null) return;
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final l10n = AppLocalizations.of(context);
-
+    final contactName = contact.effectiveName.isNotEmpty
+        ? contact.effectiveName
+        : 'contact';
     final starredIds = ref.read(starredMessagesProvider(contact.fingerprint));
     final isStarred = starredIds.contains(message.id);
 
-    Widget iconBox(IconData icon, Color color) {
-      return Container(
-        width: 36,
-        height: 36,
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: isDark ? 0.15 : 0.1),
-          borderRadius: BorderRadius.circular(DnaSpacing.radiusSm),
-        ),
-        child: Center(
-          child: FaIcon(icon, size: DnaSpacing.iconSm, color: color),
-        ),
-      );
-    }
-
-    final hasContentHash = message.contentHash.isNotEmpty;
-
-    DnaBottomSheet.show(
-      context,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Reaction emoji bar (tap to add/remove a reaction).
-          // Only shown when we have a content_hash to target.
-          if (hasContentHash) ...[
-            ReactionEmojiBar(
-              currentUserEmojis: _getCurrentUserEmojisFor(message),
-              onSelected: (emoji) {
-                Navigator.pop(context);
-                _toggleReactionFor(message, emoji);
-              },
-            ),
-            Divider(height: 1, color: theme.dividerColor),
-          ],
-          DnaListTile(
-            leading: iconBox(FontAwesomeIcons.reply, DnaColors.info),
-            title: l10n.messageMenuReply,
-            onTap: () {
-              Navigator.pop(context);
-              _replyMessage(message);
-            },
-          ),
-          DnaListTile(
-            leading: iconBox(FontAwesomeIcons.copy, DnaColors.info),
-            title: l10n.messageMenuCopy,
-            onTap: () {
-              Navigator.pop(context);
-              _copyMessage(message);
-            },
-          ),
-          DnaListTile(
-            leading: iconBox(FontAwesomeIcons.share, DnaColors.success),
-            title: l10n.messageMenuForward,
-            onTap: () {
-              Navigator.pop(context);
-              _forwardMessage(message);
-            },
-          ),
-          DnaListTile(
-            leading: iconBox(
-              isStarred ? FontAwesomeIcons.solidStar : FontAwesomeIcons.star,
-              isStarred ? Colors.amber : DnaColors.warning,
-            ),
-            title: isStarred ? l10n.messageMenuUnstar : l10n.messageMenuStar,
-            onTap: () {
-              Navigator.pop(context);
-              _toggleStarMessage(message, contact.fingerprint);
-            },
-          ),
-          // ─── Divider before destructive action ─────
-          Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: DnaSpacing.lg,
-              vertical: DnaSpacing.xs,
-            ),
-            child: Divider(height: 1, color: theme.dividerColor),
-          ),
-          DnaListTile(
-            leading: iconBox(FontAwesomeIcons.trash, DnaColors.error),
-            title: l10n.messageMenuDelete,
-            onTap: () {
-              Navigator.pop(context);
-              _confirmDeleteMessage(message);
-            },
-          ),
-          const SizedBox(height: DnaSpacing.sm),
-        ],
-      ),
+    await showMessageOverlay(
+      context: context,
+      messageKey: _keyFor(message),
+      message: message,
+      contactName: contactName,
+      isStarred: isStarred,
+      currentUserEmojis: _getCurrentUserEmojisFor(message),
+      onEmojiTap: (emoji) => _toggleReactionFor(message, emoji),
+      onReply: () => _replyMessage(message),
+      onCopy: () => _copyMessage(message),
+      onForward: () => _forwardMessage(message),
+      onStar: () => _toggleStarMessage(message, contact.fingerprint),
+      onDelete: () => _confirmDeleteMessage(message),
     );
   }
 
