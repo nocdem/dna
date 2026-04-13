@@ -115,6 +115,10 @@ typedef struct nodus_tcp_conn {
      * silently logged once and the frame skipped. Counter lets us correlate
      * these with upstream "T1 decode failed" asymmetry. */
     uint64_t            decrypt_skip_count;
+
+    /* Phase 3.2b-inv: one-shot flag so we log TX_ENCRYPT_FIRST only once
+     * per conn lifetime (per-frame would flood the journal). */
+    bool                tx_encrypt_logged;
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */

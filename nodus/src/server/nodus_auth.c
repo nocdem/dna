@@ -194,8 +194,10 @@ int nodus_auth_handle_key_init(nodus_server_t *srv, nodus_session_t *sess,
     /* NOW attach crypto to connection — all subsequent frames will be encrypted */
     sess->conn->crypto = &sess->channel_crypto;
 
-    fprintf(stderr, "CHANNEL_CRYPTO: session slot=%d encrypted (Kyber1024+AES-256-GCM)\n",
-            sess->conn->slot);
+    /* Phase 3.2b-inv: tagged format consistent with inter-node crypto logs */
+    fprintf(stderr,
+            "CRYPTO: SET_CLIENT slot=%d peer=%s:%u (client channel Kyber1024+AES-256-GCM)\n",
+            sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
 
     return 0;
 }

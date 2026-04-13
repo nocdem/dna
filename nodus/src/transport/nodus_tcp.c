@@ -134,6 +134,17 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
 
     tcp->count--;
     pending_free_all(conn);   /* Phase 3: drop any queued frames */
+
+    /* Phase 3.2b-inv: conn lifecycle visibility at TCP layer */
+    int had_crypto = (conn->crypto != NULL) ? 1 : 0;
+    fprintf(stderr,
+            "TCP_CONN: FREE slot=%d peer=%s:%u had_crypto=%d "
+            "send_ok=%llu send_full=%llu pending=%zu\n",
+            conn->slot, conn->ip, (unsigned)conn->port, had_crypto,
+            (unsigned long long)conn->send_ok_count,
+            (unsigned long long)conn->send_full_count,
+            conn->pending_count);
+
     free(conn->pending_buf);
     free(conn->rbuf);
     free(conn->wbuf);
@@ -828,6 +839,16 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
     if (conn->crypto) {
         nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
         if (cc->established) {
+            /* Phase 3.2b-inv: log the first encrypted send on this conn
+             * so we can correlate "sender established crypto" with the
+             * matching receiver's conn state at the same moment. */
+            if (!conn->tx_encrypt_logged) {
+                conn->tx_encrypt_logged = true;
+                fprintf(stderr,
+                        "TX_ENCRYPT_FIRST slot=%d peer=%s:%u tx_counter=%llu len=%zu\n",
+                        conn->slot, conn->ip, (unsigned)conn->port,
+                        (unsigned long long)cc->tx_counter, len);
+            }
             size_t enc_needed = len + NODUS_CHANNEL_OVERHEAD;
             enc_buf = malloc(enc_needed);
             if (!enc_buf) return -1;

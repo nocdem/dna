@@ -3801,11 +3801,21 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "key_ack") == 0 && sess->pending_kyber) {
+            /* Phase 3.2b-inv: KEY_ACK receive visibility */
+            fprintf(stderr,
+                    "CRYPTO: KEY_ACK_RX slot=%d peer=%s:%u has_nonce=%d sess=%p\n",
+                    sess->conn ? sess->conn->slot : -1,
+                    sess->conn ? sess->conn->ip : "?",
+                    sess->conn ? (unsigned)sess->conn->port : 0,
+                    msg.has_key_nonce ? 1 : 0, (void *)sess);
             /* Complete inter-node Kyber handshake */
             if (msg.has_key_nonce) {
                 nodus_channel_crypto_init(&sess->channel_crypto,
                                            sess->pending_ss, sess->pending_nc, msg.key_nonce);
                 sess->conn->crypto = &sess->channel_crypto;
+                fprintf(stderr,
+                        "CRYPTO: SET_OUTGOING slot=%d peer=%s:%u (inter-node encrypted)\n",
+                        sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
                 qgp_secure_memzero(sess->pending_ss, sizeof(sess->pending_ss));
                 qgp_secure_memzero(sess->pending_nc, sizeof(sess->pending_nc));
                 sess->pending_kyber = false;
@@ -3906,6 +3916,15 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
 
         /* Inter-node key_init: accepting side Kyber handshake */
         if (strcmp(msg.method, "key_init") == 0 && msg.has_kyber_ct && msg.has_key_nonce) {
+            /* Phase 3.2b-inv: KEY_INIT receive visibility */
+            fprintf(stderr,
+                    "CRYPTO: KEY_INIT_RX slot=%d peer=%s:%u has_kyber=%d "
+                    "sess=%p sess_conn=%p\n",
+                    sess->conn ? sess->conn->slot : -1,
+                    sess->conn ? sess->conn->ip : "?",
+                    sess->conn ? (unsigned)sess->conn->port : 0,
+                    srv->identity.has_kyber ? 1 : 0,
+                    (void *)sess, (void *)(sess->conn));
             if (srv->identity.has_kyber) {
                 uint8_t ss_buf[NODUS_KYBER_SS_BYTES];
                 if (qgp_kem1024_decapsulate(ss_buf, msg.kyber_ct, srv->identity.kyber_sk) == 0) {
@@ -3918,9 +3937,25 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     nodus_channel_crypto_init(&sess->channel_crypto, ss_buf, msg.key_nonce, ns);
                     sess->conn->crypto = &sess->channel_crypto;
                     qgp_secure_memzero(ss_buf, sizeof(ss_buf));
-                    fprintf(stderr, "INTER_CRYPTO: incoming conn from %s:%d encrypted\n",
-                            sess->conn->ip, sess->conn->port);
+                    fprintf(stderr,
+                            "CRYPTO: SET_INCOMING slot=%d peer=%s:%u (inter-node encrypted)\n",
+                            sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
+                } else {
+                    /* Phase 3.2b-inv: decap failure was SILENT — log it now. */
+                    fprintf(stderr,
+                            "CRYPTO: DECAP_FAIL slot=%d peer=%s:%u kyber_ct_len=%zu\n",
+                            sess->conn ? sess->conn->slot : -1,
+                            sess->conn ? sess->conn->ip : "?",
+                            sess->conn ? (unsigned)sess->conn->port : 0,
+                            (size_t)NODUS_KYBER_CT_BYTES);
                 }
+            } else {
+                /* Phase 3.2b-inv: identity missing kyber keys was SILENT */
+                fprintf(stderr,
+                        "CRYPTO: NO_KYBER slot=%d peer=%s:%u (identity has no kyber key)\n",
+                        sess->conn ? sess->conn->slot : -1,
+                        sess->conn ? sess->conn->ip : "?",
+                        sess->conn ? (unsigned)sess->conn->port : 0);
             }
             nodus_t2_msg_free(&msg);
             return;
@@ -4177,9 +4212,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
     }
 
     /* T1 decode failed — unknown frame on inter-node port.
-     * Phase 3.2a: include crypto state so we can correlate "decode failed"
-     * with asymmetric crypto activation (sender encrypted, receiver not yet
-     * established, etc.). */
+     * Phase 3.2a: crypto state. Phase 3.2b-inv: authenticated + peer_id_set
+     * + sess session pointer for root cause correlation. */
     {
         char hexdump[65] = {0};
         size_t dumplen = len < 32 ? len : 32;
@@ -4195,14 +4229,19 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             tx_ctr = cc->tx_counter;
             rx_ctr = cc->rx_counter;
         }
+        int authed = (sess->conn && sess->conn->authenticated) ? 1 : 0;
+        int peer_id_set = (sess->conn && sess->conn->peer_id_set) ? 1 : 0;
         fprintf(stderr,
                 "REPL_TCP: T1 decode failed (len=%zu) slot=%d src=%s:%u "
-                "head=%s crypto=%s tx=%llu rx=%llu\n",
+                "head=%s crypto=%s tx=%llu rx=%llu authed=%d peer_id_set=%d "
+                "sess=%p sess_conn=%p\n",
                 len, sess->conn ? sess->conn->slot : -1,
                 sess->conn ? sess->conn->ip : "?",
                 sess->conn ? (unsigned)sess->conn->port : 0,
                 hexdump, crypto_state,
-                (unsigned long long)tx_ctr, (unsigned long long)rx_ctr);
+                (unsigned long long)tx_ctr, (unsigned long long)rx_ctr,
+                authed, peer_id_set,
+                (void *)sess, (void *)(sess->conn));
     }
     nodus_t1_msg_free(&t1msg);
 }
@@ -4223,6 +4262,10 @@ static void on_inter_connect(nodus_tcp_conn_t *conn, void *ctx) {
 
     conn->is_nodus = true;
     conn->auth_required = srv->inter_tcp.auth_required;
+
+    /* Phase 3.2b-inv: conn lifecycle visibility */
+    fprintf(stderr, "INTER_CONN: CONNECT slot=%d peer=%s:%u sess=%p\n",
+            conn->slot, conn->ip, (unsigned)conn->port, (void *)sess);
 
     if (conn->auth_required) {
         /* Auto-send hello to initiate auth */
@@ -4249,6 +4292,10 @@ static void on_inter_accept(nodus_tcp_conn_t *conn, void *ctx) {
     }
     conn->is_nodus = true;
     conn->auth_required = srv->inter_tcp.auth_required;
+
+    /* Phase 3.2b-inv: conn lifecycle visibility */
+    fprintf(stderr, "INTER_CONN: ACCEPT slot=%d peer=%s:%u sess=%p\n",
+            conn->slot, conn->ip, (unsigned)conn->port, (void *)sess);
 }
 
 static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
@@ -4256,12 +4303,39 @@ static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
     if (!sess) return;
+
+    /* Phase 3.2b-inv: SESS_MISMATCH detector — critical bug if fires.
+     * on_inter_accept/connect sets sess->conn = conn, so they should be
+     * equal. If not, the session was not re-initialized after a slot
+     * reuse, or a different conn is hitting the same slot's session. */
+    if (sess->conn != conn) {
+        fprintf(stderr,
+                "SESS_MISMATCH: slot=%d peer=%s:%u sess_conn=%p actual_conn=%p\n",
+                conn->slot, conn->ip, (unsigned)conn->port,
+                (void *)sess->conn, (void *)conn);
+    }
+
     dispatch_inter(srv, sess, payload, len);
 }
 
 static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
+
+    /* Phase 3.2b-inv: conn lifecycle visibility — capture crypto state
+     * before we clear the session. */
+    int had_crypto = (conn->crypto != NULL) ? 1 : 0;
+    int established = 0;
+    if (conn->crypto) {
+        nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
+        established = cc->established ? 1 : 0;
+    }
+    fprintf(stderr,
+            "INTER_CONN: DISCONNECT slot=%d peer=%s:%u had_crypto=%d established=%d "
+            "sess=%p sess_conn=%p conn=%p\n",
+            conn->slot, conn->ip, (unsigned)conn->port, had_crypto, established,
+            (void *)sess, sess ? (void *)sess->conn : NULL, (void *)conn);
+
     if (sess) {
         inter_session_clear(sess);
     }
