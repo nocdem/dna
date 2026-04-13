@@ -61,19 +61,27 @@ static int send_sync_req(nodus_witness_t *w, struct nodus_tcp_conn *conn,
 
 static void compute_prev_hash(const nodus_witness_block_t *blk,
                                 uint8_t *prev_hash_out) {
-    /* Same formula as nodus_witness_block_add():
-     * SHA3-512(height || tx_hash || timestamp || prev_hash) */
-    uint8_t hash_input[8 + NODUS_T3_TX_HASH_LEN + 8 + NODUS_T3_TX_HASH_LEN];
-    size_t off = 0;
-    memcpy(hash_input + off, &blk->height, 8);    off += 8;
-    memcpy(hash_input + off, blk->tx_hash, NODUS_T3_TX_HASH_LEN); off += NODUS_T3_TX_HASH_LEN;
-    memcpy(hash_input + off, &blk->timestamp, 8); off += 8;
-    memcpy(hash_input + off, blk->prev_hash, NODUS_T3_TX_HASH_LEN); off += NODUS_T3_TX_HASH_LEN;
+    /* Must match nodus_witness_block_add() formula exactly:
+     *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64)
+     *             || tx_hash(64) || timestamp(8 LE) || proposer_id(32) )
+     * See dnac/include/dnac/block.h:13 for the canonical spec. */
+    uint8_t height_le[8];
+    uint8_t ts_le[8];
+    for (int i = 0; i < 8; i++) {
+        height_le[i] = (uint8_t)((blk->height >> (i * 8)) & 0xff);
+        ts_le[i] = (uint8_t)((blk->timestamp >> (i * 8)) & 0xff);
+    }
 
-    unsigned int hash_len = 0;
     EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
     EVP_DigestInit_ex(mdctx, EVP_sha3_512(), NULL);
-    EVP_DigestUpdate(mdctx, hash_input, off);
+    EVP_DigestUpdate(mdctx, height_le, 8);
+    EVP_DigestUpdate(mdctx, blk->prev_hash, NODUS_T3_TX_HASH_LEN);
+    EVP_DigestUpdate(mdctx, blk->state_root, NODUS_T3_TX_HASH_LEN);
+    EVP_DigestUpdate(mdctx, blk->tx_hash, NODUS_T3_TX_HASH_LEN);
+    EVP_DigestUpdate(mdctx, ts_le, 8);
+    EVP_DigestUpdate(mdctx, blk->proposer_id, NODUS_T3_WITNESS_ID_LEN);
+
+    unsigned int hash_len = 0;
     EVP_DigestFinal_ex(mdctx, prev_hash_out, &hash_len);
     EVP_MD_CTX_free(mdctx);
 }

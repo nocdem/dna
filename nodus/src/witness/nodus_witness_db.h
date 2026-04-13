@@ -142,12 +142,14 @@ typedef struct {
     uint8_t     tx_type;
     uint64_t    timestamp;
     uint8_t     proposer_id[NODUS_T3_WITNESS_ID_LEN];
-    uint8_t     prev_hash[NODUS_T3_TX_HASH_LEN];  /* SHA3-512 of previous block */
+    uint8_t     prev_hash[NODUS_T3_TX_HASH_LEN];   /* SHA3-512 of previous block */
+    uint8_t     state_root[NODUS_T3_TX_HASH_LEN];  /* SHA3-512 Merkle root of UTXO set after this block */
 } nodus_witness_block_t;
 
 int  nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
                                uint8_t tx_type, uint64_t timestamp,
-                               const uint8_t *proposer_id);
+                               const uint8_t *proposer_id,
+                               const uint8_t *state_root);
 int  nodus_witness_block_get(nodus_witness_t *w, uint64_t height,
                                nodus_witness_block_t *out);
 int  nodus_witness_block_get_latest(nodus_witness_t *w,

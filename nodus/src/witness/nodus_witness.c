@@ -66,6 +66,7 @@ static const char *WITNESS_DB_SCHEMA =
     "  timestamp INTEGER NOT NULL,"
     "  proposer_id BLOB,"
     "  prev_hash BLOB NOT NULL DEFAULT x'',"
+    "  state_root BLOB NOT NULL,"
     "  created_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
     ");"
     "CREATE TABLE IF NOT EXISTS genesis_state ("

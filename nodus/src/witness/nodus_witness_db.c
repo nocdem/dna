@@ -489,24 +489,38 @@ uint64_t nodus_witness_ledger_count(nodus_witness_t *w) {
 
 int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
                                uint8_t tx_type, uint64_t timestamp,
-                               const uint8_t *proposer_id) {
-    if (!w || !w->db || !tx_hash) return -1;
+                               const uint8_t *proposer_id,
+                               const uint8_t *state_root) {
+    if (!w || !w->db || !tx_hash || !state_root) return -1;
 
-    /* Compute prev_hash = SHA3-512(height || tx_hash || timestamp || prev_hash) of latest block */
+    /* Compute prev_hash over the previous block header.
+     * Formula (matches dnac/include/dnac/block.h:13 spec):
+     *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64)
+     *             || tx_hash(64) || timestamp(8 LE) || proposer_id(32) )
+     *
+     * Proposer is included so two witnesses proposing the same TX at the
+     * same height produce distinct block hashes (they cannot, since BFT
+     * elects a single proposer, but the binding is defensive). */
     uint8_t prev_hash[NODUS_T3_TX_HASH_LEN] = {0};
     nodus_witness_block_t prev_block;
     if (nodus_witness_block_get_latest(w, &prev_block) == 0) {
-        uint8_t hash_input[8 + NODUS_T3_TX_HASH_LEN + 8 + NODUS_T3_TX_HASH_LEN];
-        size_t off = 0;
-        memcpy(hash_input + off, &prev_block.height, 8);    off += 8;
-        memcpy(hash_input + off, prev_block.tx_hash, NODUS_T3_TX_HASH_LEN); off += NODUS_T3_TX_HASH_LEN;
-        memcpy(hash_input + off, &prev_block.timestamp, 8); off += 8;
-        memcpy(hash_input + off, prev_block.prev_hash, NODUS_T3_TX_HASH_LEN); off += NODUS_T3_TX_HASH_LEN;
+        uint8_t height_le[8];
+        uint8_t ts_le[8];
+        for (int i = 0; i < 8; i++) {
+            height_le[i] = (uint8_t)((prev_block.height >> (i * 8)) & 0xff);
+            ts_le[i] = (uint8_t)((prev_block.timestamp >> (i * 8)) & 0xff);
+        }
 
-        unsigned int hash_len = 0;
         EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
         EVP_DigestInit_ex(mdctx, EVP_sha3_512(), NULL);
-        EVP_DigestUpdate(mdctx, hash_input, off);
+        EVP_DigestUpdate(mdctx, height_le, 8);
+        EVP_DigestUpdate(mdctx, prev_block.prev_hash, NODUS_T3_TX_HASH_LEN);
+        EVP_DigestUpdate(mdctx, prev_block.state_root, NODUS_T3_TX_HASH_LEN);
+        EVP_DigestUpdate(mdctx, prev_block.tx_hash, NODUS_T3_TX_HASH_LEN);
+        EVP_DigestUpdate(mdctx, ts_le, 8);
+        EVP_DigestUpdate(mdctx, prev_block.proposer_id, NODUS_T3_WITNESS_ID_LEN);
+
+        unsigned int hash_len = 0;
         EVP_DigestFinal_ex(mdctx, prev_hash, &hash_len);
         EVP_MD_CTX_free(mdctx);
     }
@@ -514,8 +528,8 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "INSERT INTO blocks (tx_hash, tx_type, timestamp, proposer_id, prev_hash, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
+        "INSERT INTO blocks (tx_hash, tx_type, timestamp, proposer_id, prev_hash, state_root, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: block add prepare failed: %s\n",
                 LOG_TAG, sqlite3_errmsg(w->db));
@@ -530,7 +544,8 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
     else
         sqlite3_bind_null(stmt, 4);
     sqlite3_bind_blob(stmt, 5, prev_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
-    sqlite3_bind_int64(stmt, 6, (int64_t)time(NULL));
+    sqlite3_bind_blob(stmt, 6, state_root, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 7, (int64_t)time(NULL));
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -565,6 +580,11 @@ static int block_from_row(sqlite3_stmt *stmt, nodus_witness_block_t *out) {
     if (blob && blen == NODUS_T3_TX_HASH_LEN)
         memcpy(out->prev_hash, blob, NODUS_T3_TX_HASH_LEN);
 
+    blob = sqlite3_column_blob(stmt, 6);
+    blen = sqlite3_column_bytes(stmt, 6);
+    if (blob && blen == NODUS_T3_TX_HASH_LEN)
+        memcpy(out->state_root, blob, NODUS_T3_TX_HASH_LEN);
+
     return 0;
 }
 
@@ -574,7 +594,7 @@ int nodus_witness_block_get(nodus_witness_t *w, uint64_t height,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash "
+        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash, state_root "
         "FROM blocks WHERE height = ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
@@ -597,7 +617,7 @@ int nodus_witness_block_get_latest(nodus_witness_t *w,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash "
+        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash, state_root "
         "FROM blocks ORDER BY height DESC LIMIT 1", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
@@ -621,7 +641,7 @@ int nodus_witness_block_get_range(nodus_witness_t *w,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash "
+        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash, state_root "
         "FROM blocks WHERE height >= ? AND height <= ? "
         "ORDER BY height ASC LIMIT ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;

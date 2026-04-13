@@ -1,0 +1,367 @@
+/**
+ * Nodus — Witness Merkle Tree Implementation
+ *
+ * See nodus_witness_merkle.h for design and determinism rules.
+ *
+ * @file nodus_witness_merkle.c
+ */
+
+#include "witness/nodus_witness_merkle.h"
+#include "witness/nodus_witness_db.h"
+
+#include <openssl/evp.h>
+#include <sqlite3.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define LOG_TAG "MERKLE"
+
+/* ── Little-endian encoders (endianness-independent) ───────────────── */
+
+static void enc_u32_le(uint32_t v, uint8_t out[4]) {
+    out[0] = (uint8_t)(v & 0xff);
+    out[1] = (uint8_t)((v >> 8) & 0xff);
+    out[2] = (uint8_t)((v >> 16) & 0xff);
+    out[3] = (uint8_t)((v >> 24) & 0xff);
+}
+
+static void enc_u64_le(uint64_t v, uint8_t out[8]) {
+    for (int i = 0; i < 8; i++)
+        out[i] = (uint8_t)((v >> (i * 8)) & 0xff);
+}
+
+/* ── SHA3-512 helpers ──────────────────────────────────────────────── */
+
+static int sha3_512_init(EVP_MD_CTX **md_out) {
+    EVP_MD_CTX *md = EVP_MD_CTX_new();
+    if (!md) return -1;
+    if (EVP_DigestInit_ex(md, EVP_sha3_512(), NULL) != 1) {
+        EVP_MD_CTX_free(md);
+        return -1;
+    }
+    *md_out = md;
+    return 0;
+}
+
+static int sha3_512_final(EVP_MD_CTX *md, uint8_t out[64]) {
+    unsigned int hash_len = 0;
+    int ok = EVP_DigestFinal_ex(md, out, &hash_len);
+    EVP_MD_CTX_free(md);
+    return (ok == 1 && hash_len == 64) ? 0 : -1;
+}
+
+/* Compute SHA3-512 of a single contiguous buffer. */
+static int sha3_512_once(const uint8_t *data, size_t len, uint8_t out[64]) {
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) return -1;
+    if (EVP_DigestUpdate(md, data, len) != 1) {
+        EVP_MD_CTX_free(md);
+        return -1;
+    }
+    return sha3_512_final(md, out);
+}
+
+/* Compute SHA3-512(left(64) || right(64)). Used for internal nodes. */
+static int sha3_512_pair(const uint8_t left[64], const uint8_t right[64],
+                         uint8_t out[64]) {
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) return -1;
+    if (EVP_DigestUpdate(md, left, 64) != 1 ||
+        EVP_DigestUpdate(md, right, 64) != 1) {
+        EVP_MD_CTX_free(md);
+        return -1;
+    }
+    return sha3_512_final(md, out);
+}
+
+/* ── Leaf hash ─────────────────────────────────────────────────────── */
+
+int nodus_witness_merkle_leaf_hash(const uint8_t *nullifier,
+                                     const char *owner,
+                                     uint64_t amount,
+                                     const uint8_t *token_id,
+                                     const uint8_t *tx_hash,
+                                     uint32_t output_index,
+                                     uint8_t *leaf_out) {
+    if (!nullifier || !owner || !token_id || !tx_hash || !leaf_out) return -1;
+
+    /* Owner fingerprint is a null-terminated 128-char hex string. Hash
+     * exactly 128 bytes so length is implicit in the preimage format.
+     * Shorter owners are padded-hashed as stored (strncpy to 128). */
+    size_t owner_len = strlen(owner);
+    if (owner_len > 128) owner_len = 128;
+
+    uint8_t owner_buf[128];
+    memset(owner_buf, 0, sizeof(owner_buf));
+    memcpy(owner_buf, owner, owner_len);
+
+    uint8_t amount_le[8];
+    enc_u64_le(amount, amount_le);
+    uint8_t oi_le[4];
+    enc_u32_le(output_index, oi_le);
+
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) return -1;
+
+    if (EVP_DigestUpdate(md, nullifier, 64) != 1 ||
+        EVP_DigestUpdate(md, owner_buf, 128) != 1 ||
+        EVP_DigestUpdate(md, amount_le, 8) != 1 ||
+        EVP_DigestUpdate(md, token_id, 64) != 1 ||
+        EVP_DigestUpdate(md, tx_hash, 64) != 1 ||
+        EVP_DigestUpdate(md, oi_le, 4) != 1) {
+        EVP_MD_CTX_free(md);
+        return -1;
+    }
+
+    return sha3_512_final(md, leaf_out);
+}
+
+/* ── Load all UTXO leaves into a sorted array ──────────────────────── */
+
+/* Output: caller-owned heap buffer, leaves_out[i * 64] = leaf i.
+ * Leaves are sorted by nullifier (enforced by ORDER BY in SQL). */
+static int load_utxo_leaves(nodus_witness_t *w,
+                            uint8_t **leaves_out,
+                            size_t *count_out) {
+    *leaves_out = NULL;
+    *count_out = 0;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT nullifier, owner, amount, token_id, tx_hash, output_index "
+        "FROM utxo_set ORDER BY nullifier ASC", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: utxo scan prepare failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    size_t cap = 64;
+    size_t n = 0;
+    uint8_t *buf = malloc(cap * 64);
+    if (!buf) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (n >= cap) {
+            size_t new_cap = cap * 2;
+            uint8_t *new_buf = realloc(buf, new_cap * 64);
+            if (!new_buf) {
+                free(buf);
+                sqlite3_finalize(stmt);
+                return -1;
+            }
+            buf = new_buf;
+            cap = new_cap;
+        }
+
+        const uint8_t *nullifier = sqlite3_column_blob(stmt, 0);
+        int nlen = sqlite3_column_bytes(stmt, 0);
+        const char *owner = (const char *)sqlite3_column_text(stmt, 1);
+        uint64_t amount = (uint64_t)sqlite3_column_int64(stmt, 2);
+        const uint8_t *token_id = sqlite3_column_blob(stmt, 3);
+        int tlen = sqlite3_column_bytes(stmt, 3);
+        const uint8_t *tx_hash = sqlite3_column_blob(stmt, 4);
+        int thlen = sqlite3_column_bytes(stmt, 4);
+        uint32_t output_index = (uint32_t)sqlite3_column_int(stmt, 5);
+
+        if (!nullifier || nlen != 64 ||
+            !owner ||
+            !token_id || tlen != 64 ||
+            !tx_hash || thlen != 64) {
+            fprintf(stderr, "%s: utxo row malformed, skipping\n", LOG_TAG);
+            continue;
+        }
+
+        if (nodus_witness_merkle_leaf_hash(nullifier, owner, amount,
+                                             token_id, tx_hash,
+                                             output_index,
+                                             buf + n * 64) != 0) {
+            free(buf);
+            sqlite3_finalize(stmt);
+            return -1;
+        }
+        n++;
+    }
+
+    sqlite3_finalize(stmt);
+    *leaves_out = buf;
+    *count_out = n;
+    return 0;
+}
+
+/* ── Reduce a leaf array to a root in place ────────────────────────── */
+
+/* Collapses `level` (n hashes, each 64 bytes) into a single root.
+ * Modifies the buffer in place: after return, level[0..63] is the root.
+ * Odd sibling at any level is duplicated.
+ */
+static int reduce_to_root(uint8_t *level, size_t n, uint8_t *root_out) {
+    if (n == 0) {
+        /* Empty UTXO set: root = SHA3-512(""). Deterministic zero-state. */
+        return sha3_512_once(NULL, 0, root_out);
+    }
+    if (n == 1) {
+        memcpy(root_out, level, 64);
+        return 0;
+    }
+
+    while (n > 1) {
+        size_t out_n = (n + 1) / 2;
+        for (size_t i = 0; i < out_n; i++) {
+            const uint8_t *left = level + (2 * i) * 64;
+            const uint8_t *right = (2 * i + 1 < n)
+                                       ? level + (2 * i + 1) * 64
+                                       : left; /* duplicate odd sibling */
+            uint8_t parent[64];
+            if (sha3_512_pair(left, right, parent) != 0) return -1;
+            memcpy(level + i * 64, parent, 64);
+        }
+        n = out_n;
+    }
+
+    memcpy(root_out, level, 64);
+    return 0;
+}
+
+/* ── Public: compute UTXO root ─────────────────────────────────────── */
+
+int nodus_witness_merkle_compute_utxo_root(nodus_witness_t *w,
+                                             uint8_t *root_out) {
+    if (!w || !w->db || !root_out) return -1;
+
+    uint8_t *leaves = NULL;
+    size_t n = 0;
+    if (load_utxo_leaves(w, &leaves, &n) != 0) return -1;
+
+    int rc = reduce_to_root(leaves, n, root_out);
+    free(leaves);
+    return rc;
+}
+
+/* ── Proof generation ──────────────────────────────────────────────── */
+
+int nodus_witness_merkle_build_proof(nodus_witness_t *w,
+                                       const uint8_t *target_leaf,
+                                       uint8_t *siblings_out,
+                                       uint32_t *positions_out,
+                                       int max_depth,
+                                       int *depth_out,
+                                       uint8_t *root_out) {
+    if (!w || !w->db || !target_leaf || !siblings_out || !positions_out ||
+        !depth_out || max_depth <= 0) return -1;
+
+    *depth_out = 0;
+    *positions_out = 0;
+
+    uint8_t *leaves = NULL;
+    size_t n = 0;
+    if (load_utxo_leaves(w, &leaves, &n) != 0) return -1;
+
+    if (n == 0) {
+        free(leaves);
+        return -1; /* target cannot be in empty set */
+    }
+
+    /* Locate target leaf (linear scan — O(n); fine for current sizes). */
+    ssize_t target_idx = -1;
+    for (size_t i = 0; i < n; i++) {
+        if (memcmp(leaves + i * 64, target_leaf, 64) == 0) {
+            target_idx = (ssize_t)i;
+            break;
+        }
+    }
+    if (target_idx < 0) {
+        free(leaves);
+        return -1;
+    }
+
+    /* Walk up the tree, collecting sibling at each level. We mutate a
+     * working buffer level-by-level just like reduce_to_root. */
+    int depth = 0;
+    uint32_t positions = 0;
+    size_t cur_n = n;
+    size_t cur_idx = (size_t)target_idx;
+
+    while (cur_n > 1) {
+        if (depth >= max_depth) {
+            free(leaves);
+            return -1;
+        }
+
+        size_t sib_idx;
+        int sibling_is_left;
+        if (cur_idx % 2 == 0) {
+            /* We are left child; sibling is right (or duplicate of self). */
+            sib_idx = (cur_idx + 1 < cur_n) ? cur_idx + 1 : cur_idx;
+            sibling_is_left = 0;
+        } else {
+            /* We are right child; sibling is left. */
+            sib_idx = cur_idx - 1;
+            sibling_is_left = 1;
+        }
+
+        memcpy(siblings_out + depth * 64, leaves + sib_idx * 64, 64);
+        if (sibling_is_left)
+            positions |= (1u << depth);
+        depth++;
+
+        /* Collapse to next level. */
+        size_t out_n = (cur_n + 1) / 2;
+        for (size_t i = 0; i < out_n; i++) {
+            const uint8_t *left = leaves + (2 * i) * 64;
+            const uint8_t *right = (2 * i + 1 < cur_n)
+                                       ? leaves + (2 * i + 1) * 64
+                                       : left;
+            uint8_t parent[64];
+            if (sha3_512_pair(left, right, parent) != 0) {
+                free(leaves);
+                return -1;
+            }
+            memcpy(leaves + i * 64, parent, 64);
+        }
+        cur_n = out_n;
+        cur_idx /= 2;
+    }
+
+    if (root_out)
+        memcpy(root_out, leaves, 64);
+
+    *depth_out = depth;
+    *positions_out = positions;
+    free(leaves);
+    return 0;
+}
+
+/* ── Proof verification (pure function) ────────────────────────────── */
+
+int nodus_witness_merkle_verify_proof(const uint8_t *leaf,
+                                        const uint8_t *siblings,
+                                        uint32_t positions,
+                                        int depth,
+                                        const uint8_t *expected_root) {
+    if (!leaf || !expected_root) return -1;
+    if (depth < 0 || depth > NODUS_MERKLE_MAX_DEPTH) return -1;
+    if (depth > 0 && !siblings) return -1;
+
+    uint8_t cur[64];
+    memcpy(cur, leaf, 64);
+
+    for (int i = 0; i < depth; i++) {
+        const uint8_t *sib = siblings + i * 64;
+        uint8_t parent[64];
+        if (positions & (1u << i)) {
+            /* Sibling on LEFT, cur on RIGHT. */
+            if (sha3_512_pair(sib, cur, parent) != 0) return -1;
+        } else {
+            /* Sibling on RIGHT, cur on LEFT. */
+            if (sha3_512_pair(cur, sib, parent) != 0) return -1;
+        }
+        memcpy(cur, parent, 64);
+    }
+
+    return memcmp(cur, expected_root, 64) == 0 ? 0 : -1;
+}
