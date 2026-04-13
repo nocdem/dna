@@ -412,6 +412,81 @@ done:
     }
 }
 
+/*
+ * SEC-01: Wire-level validation of a contact request at the point of trust
+ * violation inside the handler. This is intentionally a re-check of fields
+ * that dht_fetch_contact_requests should have validated — the handler does
+ * not trust its caller. Fails closed per D-09 (drop + WARN log + continue).
+ *
+ * The check is intentionally narrow: it re-validates the wire-level TYPE
+ * (magic + version + version/salt consistency + fingerprint shape +
+ * NUL-termination of variable-length fields). Signature re-verification is
+ * out of scope — that is dht_verify_contact_request's job, called inside
+ * dht_fetch_contact_requests before the request is returned to us.
+ */
+static bool contact_request_is_well_formed(const dht_contact_request_t *req) {
+    if (!req) {
+        QGP_LOG_WARN("CONTACT", "SEC-01: null contact request — dropping");
+        return false;
+    }
+    if (req->magic != DHT_CONTACT_REQUEST_MAGIC) {
+        QGP_LOG_WARN("CONTACT",
+            "SEC-01: contact request has wrong magic 0x%08x (expected 0x%08x) from %.20s... — dropping",
+            (unsigned)req->magic, (unsigned)DHT_CONTACT_REQUEST_MAGIC,
+            req->sender_fingerprint);
+        return false;
+    }
+    if (req->version != DHT_CONTACT_REQUEST_VERSION &&
+        req->version != DHT_CONTACT_REQUEST_VERSION_SALT) {
+        QGP_LOG_WARN("CONTACT",
+            "SEC-01: contact request has unsupported version %u from %.20s... — dropping",
+            (unsigned)req->version, req->sender_fingerprint);
+        return false;
+    }
+    /* Version-consistency: v1 must not carry a DHT salt flag.
+     * (v2 may legitimately have has_dht_salt either way after deserialization,
+     * so we only enforce the v1 case here — see dht_contact_request.h.) */
+    if (req->version == DHT_CONTACT_REQUEST_VERSION && req->has_dht_salt) {
+        QGP_LOG_WARN("CONTACT",
+            "SEC-01: v1 contact request claims has_dht_salt — dropping");
+        return false;
+    }
+    /* Fingerprint must be exactly 128 hex chars + NUL. contacts_db_*
+     * functions downstream assume this shape; if we let a malformed one
+     * through, we corrupt the DB. */
+    size_t fp_len = strnlen(req->sender_fingerprint, sizeof(req->sender_fingerprint));
+    if (fp_len != 128) {
+        QGP_LOG_WARN("CONTACT",
+            "SEC-01: contact request fingerprint length=%zu (expected 128) — dropping",
+            fp_len);
+        return false;
+    }
+    for (size_t i = 0; i < 128; i++) {
+        char c = req->sender_fingerprint[i];
+        bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        if (!ok) {
+            QGP_LOG_WARN("CONTACT",
+                "SEC-01: contact request fingerprint contains non-hex char at offset %zu — dropping",
+                i);
+            return false;
+        }
+    }
+    /* sender_name must be NUL-terminated within its buffer (defense:
+     * downstream copies assume C-string semantics). */
+    if (memchr(req->sender_name, '\0', sizeof(req->sender_name)) == NULL) {
+        QGP_LOG_WARN("CONTACT",
+            "SEC-01: contact request sender_name is not NUL-terminated — dropping");
+        return false;
+    }
+    /* message must be NUL-terminated within its buffer. */
+    if (memchr(req->message, '\0', sizeof(req->message)) == NULL) {
+        QGP_LOG_WARN("CONTACT",
+            "SEC-01: contact request message is not NUL-terminated — dropping");
+        return false;
+    }
+    return true;
+}
+
 void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_contact_request_t *requests = NULL;
@@ -437,6 +512,14 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
         if (dht_fetch_contact_requests(engine->fingerprint, &dht_requests, &dht_count) == 0) {
             /* Store new requests in local database */
             for (size_t i = 0; i < dht_count; i++) {
+                /* SEC-01: re-validate wire-level type at the point of trust
+                 * violation. Do not trust dht_fetch_contact_requests — re-check
+                 * here BEFORE any contacts_db_* call and BEFORE the auto-approve
+                 * branch. Per D-08 / D-09: handler-level, fail-closed. */
+                if (!contact_request_is_well_formed(&dht_requests[i])) {
+                    continue;
+                }
+
                 /* Skip if blocked */
                 if (contacts_db_is_blocked(dht_requests[i].sender_fingerprint)) {
                     continue;
