@@ -595,9 +595,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // They get added to _seenMessageIds after being rendered (see below).
 
     // Filter messages if searching
-    final filteredMessages = _searchQuery.isEmpty
-        ? messages
-        : messages.where((m) => m.plaintext.toLowerCase().contains(_searchQuery)).toList();
+    // Defensive: always exclude reaction rows so they never render as chat bubbles,
+    // even if a code path leaks them past the C library's SQL filter.
+    final filteredMessages = (_searchQuery.isEmpty
+            ? messages.where((m) => m.type != MessageType.reaction)
+            : messages.where((m) =>
+                m.type != MessageType.reaction &&
+                m.plaintext.toLowerCase().contains(_searchQuery)))
+        .toList();
 
     if (messages.isEmpty) {
       return Center(
