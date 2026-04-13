@@ -19,6 +19,7 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_channel_crypto.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "NODUS_SRV"
@@ -1080,25 +1081,38 @@ static void dht_send_stats_dump(nodus_server_t *srv) {
 /* Invoked by the TCP layer when a send cannot fit into wbuf AND the
  * per-conn pending queue is also at its cap. We persist the frame to
  * the DHT hinted handoff table so it can be delivered when the peer
- * has drained — same path that periodic republish already uses. */
+ * has drained — same path that periodic republish already uses.
+ *
+ * Dedup key policy: authenticated conns use the real peer identity so
+ * retries bucket with the canonical node_id. Unauth conns (pre-handshake
+ * race, or inter-node conns observed in the wild with peer_id not yet
+ * populated) fall back to a deterministic SHA3-512 of "ip:port" — the
+ * drain path only reads ip+port from the hint row, so the synthetic key
+ * is safe and still supports the (node_id, frame_hash) dedup index. */
 static void server_on_pending_full(nodus_tcp_conn_t *conn,
                                     const uint8_t *payload, size_t len,
                                     void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     if (!srv || !conn || !payload) return;
 
-    /* We can only hint to a known node_id. If the peer hasn't authenticated
-     * yet (rare — this is an inter-node pool conn) we drop with a warning
-     * so the operator sees the state. */
-    if (!conn->peer_id_set) {
-        fprintf(stderr,
-                "PENDING_FULL: peer=%s:%u len=%zu — no peer_id, dropping (unauth?)\n",
-                conn->ip, (unsigned)conn->port, len);
-        return;
+    nodus_key_t dedup_id;
+    const char *id_source;
+    if (conn->peer_id_set) {
+        memcpy(&dedup_id, &conn->peer_id, sizeof(dedup_id));
+        id_source = "peer_id";
+    } else {
+        char addr[96];
+        int al = snprintf(addr, sizeof(addr), "%s:%u",
+                          conn->ip, (unsigned)conn->port);
+        if (al <= 0) {
+            fprintf(stderr, "PENDING_FULL: addr format failed len=%zu\n", len);
+            return;
+        }
+        qgp_sha3_512((const uint8_t *)addr, (size_t)al, dedup_id.bytes);
+        id_source = "synth-ip:port";
     }
 
-    /* We need a fully framed wire blob in the hint table because hint drain
-     * resends it as-is (see dht_republish_send). Build it here. */
+    /* Build a fully framed wire blob (hint drain resends it as-is). */
     size_t frame_size = NODUS_FRAME_HEADER_SIZE + len;
     uint8_t *framed = malloc(frame_size);
     if (!framed) {
@@ -1115,20 +1129,20 @@ static void server_on_pending_full(nodus_tcp_conn_t *conn,
     }
 
     int rc = nodus_storage_hinted_insert(&srv->storage,
-                                          &conn->peer_id,
+                                          &dedup_id,
                                           conn->ip, conn->port,
                                           framed, frame_size);
     free(framed);
 
     if (rc != 0) {
         fprintf(stderr,
-                "PENDING_FULL: hint insert failed (peer=%s:%u len=%zu rc=%d)\n",
-                conn->ip, (unsigned)conn->port, len, rc);
+                "PENDING_FULL: hint insert failed (peer=%s:%u len=%zu id=%s rc=%d)\n",
+                conn->ip, (unsigned)conn->port, len, id_source, rc);
         return;
     }
     fprintf(stderr,
-            "PENDING_FULL: peer=%s:%u len=%zu queued to hint table (wbuf+pending full)\n",
-            conn->ip, (unsigned)conn->port, len);
+            "PENDING_FULL: peer=%s:%u len=%zu queued to hint table (id=%s)\n",
+            conn->ip, (unsigned)conn->port, len, id_source);
 }
 
 /* ── Periodic republish (via inter_tcp pool) ────────────────────── */
