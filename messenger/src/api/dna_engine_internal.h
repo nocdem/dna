@@ -200,7 +200,8 @@ typedef enum {
     TASK_DNAC_ESTIMATE_FEE,
     TASK_DNAC_TOKEN_LIST,
     TASK_DNAC_TOKEN_CREATE,
-    TASK_DNAC_TOKEN_BALANCE
+    TASK_DNAC_TOKEN_BALANCE,
+    TASK_SEND_REACTION
 } dna_task_type_t;
 
 /* ============================================================================
@@ -291,6 +292,14 @@ typedef union {
         char *message;  /* Heap allocated, task owns */
         time_t queued_at;  /* Timestamp when user sent (for ordering) */
     } send_message;
+
+    /* Send reaction */
+    struct {
+        char recipient[129];
+        char target_content_hash[65];
+        char emoji[8];
+        char op[8];
+    } send_reaction;
 
     /* Get conversation */
     struct {

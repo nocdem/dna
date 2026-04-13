@@ -144,9 +144,18 @@ typedef struct {
     uint64_t timestamp;         /* Unix timestamp */
     bool is_outgoing;           /* true if sent by current identity */
     int status;                 /* 0=pending, 1=sent, 2=received, 3=failed */
-    int message_type;           /* 0=chat, 1=group_invitation */
+    int message_type;           /* 0=chat, 1=group_invitation, 2=cpunkTransfer, 3=reaction */
     bool deleted_by_sender;     /* true if sender deleted this message (v17) */
 } dna_message_t;
+
+/**
+ * Reaction entry (one reactor applying one emoji to one target message)
+ */
+typedef struct {
+    char reactor_fp[129];       /* Reactor fingerprint (128 hex + null) */
+    char emoji[8];              /* UTF-8 emoji, max 4 bytes + null */
+    uint64_t timestamp;         /* Unix timestamp when reaction was applied */
+} dna_reaction_t;
 
 /**
  * Group information
@@ -1692,6 +1701,28 @@ DNA_API dna_request_id_t dna_engine_send_message(
     dna_engine_t *engine,
     const char *recipient_fingerprint,
     const char *message,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Send a reaction to a message (async)
+ *
+ * @param engine                Engine instance
+ * @param recipient_fingerprint Target recipient fingerprint (128 hex + null)
+ * @param target_content_hash   content_hash of the message being reacted to (64 hex chars)
+ * @param emoji                 UTF-8 emoji (must be one of the allowed 8)
+ * @param op                    "add" or "remove"
+ * @param callback              Called on completion
+ * @param user_data             User data for callback
+ * @return                      Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_send_reaction(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *target_content_hash,
+    const char *emoji,
+    const char *op,
     dna_completion_cb callback,
     void *user_data
 );
