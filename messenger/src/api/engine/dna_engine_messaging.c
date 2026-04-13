@@ -170,6 +170,44 @@ done:
     }
 }
 
+void dna_handle_get_reactions(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_reaction_t *reactions = NULL;
+    int count = 0;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    int rc = message_backup_get_reactions_for_target(
+        backup_ctx,
+        task->params.get_reactions.target_content_hash,
+        &reactions,
+        &count);
+
+    if (rc != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        reactions = NULL;
+        count = 0;
+        goto done;
+    }
+
+done:
+    if (task->callback.reactions) {
+        task->callback.reactions(task->request_id, error, reactions, count, task->user_data);
+    } else {
+        /* No callback — caller leaked the result; free it to avoid leak */
+        free(reactions);
+    }
+}
+
 void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_message_t *messages = NULL;
@@ -751,6 +789,30 @@ dna_request_id_t dna_engine_send_reaction(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_SEND_REACTION, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_reactions(
+    dna_engine_t *engine,
+    const char *target_content_hash,
+    dna_reactions_cb callback,
+    void *user_data)
+{
+    if (!engine || !target_content_hash || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+    if (strlen(target_content_hash) != 64) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_reactions.target_content_hash, target_content_hash, 64);
+    params.get_reactions.target_content_hash[64] = '\0';
+
+    dna_task_callback_t cb = { .reactions = callback };
+    return dna_submit_task(engine, TASK_GET_REACTIONS, &params, cb, user_data);
+}
+
+void dna_free_reactions(dna_reaction_t *reactions, int count) {
+    (void)count;
+    free(reactions);
 }
 
 int dna_engine_queue_message(

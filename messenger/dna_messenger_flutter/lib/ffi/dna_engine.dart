@@ -369,6 +369,27 @@ MessageStatus _mapNativeStatus(int status) {
 }
 enum MessageType { chat, groupInvitation, cpunkTransfer, reaction }
 
+/// A single reaction entry (one reactor applying one emoji to one target)
+class ReactionEntry {
+  final String reactorFingerprint;
+  final String emoji;
+  final DateTime timestamp;
+
+  ReactionEntry({
+    required this.reactorFingerprint,
+    required this.emoji,
+    required this.timestamp,
+  });
+
+  factory ReactionEntry.fromNative(dna_reaction_t native) {
+    return ReactionEntry(
+      reactorFingerprint: native.reactor_fp.toDartString(129),
+      emoji: native.emoji.toDartString(8),
+      timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp * 1000),
+    );
+  }
+}
+
 /// Result of paginated conversation query
 class ConversationPage {
   final List<Message> messages;
@@ -2826,6 +2847,59 @@ class DnaEngine {
       calloc.free(targetHashPtr);
       calloc.free(emojiPtr);
       calloc.free(opPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get the live reaction list for a target message (DB-only, no network).
+  ///
+  /// Returns the set of reactions currently applied to the message identified
+  /// by [targetContentHash]. Each entry is (reactor_fp, emoji, timestamp).
+  /// Replays add/remove ops internally so the result is the live state.
+  Future<List<ReactionEntry>> getReactions(String targetContentHash) async {
+    assert(targetContentHash.length == 64,
+        'target hash must be 64 hex chars');
+
+    final completer = Completer<List<ReactionEntry>>();
+    final localId = _nextLocalId++;
+
+    final targetHashPtr = targetContentHash.toNativeUtf8();
+
+    void onComplete(int requestId, int error,
+        Pointer<dna_reaction_t> reactions, int count, Pointer<Void> userData) {
+      calloc.free(targetHashPtr);
+
+      if (error == 0) {
+        final result = <ReactionEntry>[];
+        for (var i = 0; i < count; i++) {
+          result.add(ReactionEntry.fromNative((reactions + i).ref));
+        }
+        if (reactions != nullptr) {
+          _bindings.dna_free_reactions(reactions, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(
+            DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaReactionsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_reactions(
+      _engine,
+      targetHashPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(targetHashPtr);
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit request');
     }

@@ -121,6 +121,22 @@ final class dna_message_t extends Struct {
   external Array<Uint8> _padding3;
 }
 
+/// Reaction entry (one reactor applying one emoji to one target message)
+final class dna_reaction_t extends Struct {
+  @Array(129)
+  external Array<Char> reactor_fp;
+
+  @Array(8)
+  external Array<Char> emoji;
+
+  // 7 bytes padding to align uint64 to 8-byte boundary (137 -> 144)
+  @Array(7)
+  external Array<Uint8> _padding1;
+
+  @Uint64()
+  external int timestamp;
+}
+
 /// Group information
 final class dna_group_t extends Struct {
   @Array(37)
@@ -967,6 +983,16 @@ typedef DnaMessagesPageCbNative = Void Function(
   Pointer<Void> user_data,
 );
 typedef DnaMessagesPageCb = NativeFunction<DnaMessagesPageCbNative>;
+
+/// Reactions callback - Native
+typedef DnaReactionsCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_reaction_t> reactions,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaReactionsCb = NativeFunction<DnaReactionsCbNative>;
 
 /// Groups callback - Native
 typedef DnaGroupsCbNative = Void Function(
@@ -2175,6 +2201,30 @@ class DnaBindings {
   ) {
     return _dna_engine_send_reaction(engine, recipient_fingerprint,
         target_content_hash, emoji, op, callback, user_data);
+  }
+
+  late final _dna_engine_get_reactions = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaReactionsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaReactionsCb>, Pointer<Void>)>('dna_engine_get_reactions');
+
+  int dna_engine_get_reactions(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> target_content_hash,
+    Pointer<DnaReactionsCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_reactions(
+        engine, target_content_hash, callback, user_data);
+  }
+
+  late final _dna_free_reactions = _lib.lookupFunction<
+      Void Function(Pointer<dna_reaction_t>, Int32),
+      void Function(Pointer<dna_reaction_t>, int)>('dna_free_reactions');
+
+  void dna_free_reactions(Pointer<dna_reaction_t> reactions, int count) {
+    _dna_free_reactions(reactions, count);
   }
 
   // Send debug log to a receiver's debug inbox

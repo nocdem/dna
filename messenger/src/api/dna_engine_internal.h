@@ -201,7 +201,8 @@ typedef enum {
     TASK_DNAC_TOKEN_LIST,
     TASK_DNAC_TOKEN_CREATE,
     TASK_DNAC_TOKEN_BALANCE,
-    TASK_SEND_REACTION
+    TASK_SEND_REACTION,
+    TASK_GET_REACTIONS
 } dna_task_type_t;
 
 /* ============================================================================
@@ -300,6 +301,11 @@ typedef union {
         char emoji[8];
         char op[8];
     } send_reaction;
+
+    /* Get reactions for a target message */
+    struct {
+        char target_content_hash[65];
+    } get_reactions;
 
     /* Get conversation */
     struct {
@@ -624,6 +630,7 @@ typedef union {
     dna_blocked_users_cb blocked_users;
     dna_messages_cb messages;
     dna_messages_page_cb messages_page;
+    dna_reactions_cb reactions;
     dna_groups_cb groups;
     dna_group_info_cb group_info;
     dna_group_members_cb group_members;
@@ -1003,6 +1010,7 @@ void dna_handle_get_blocked_users(dna_engine_t *engine, dna_task_t *task);
 /* Messaging */
 void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_send_reaction(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_reactions(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task);

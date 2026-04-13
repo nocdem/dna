@@ -1190,6 +1190,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_SEND_REACTION:
             dna_handle_send_reaction(engine, task);
             break;
+        case TASK_GET_REACTIONS:
+            dna_handle_get_reactions(engine, task);
+            break;
         case TASK_GET_CONVERSATION:
             dna_handle_get_conversation(engine, task);
             break;

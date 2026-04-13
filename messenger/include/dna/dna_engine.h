@@ -482,6 +482,23 @@ typedef void (*dna_messages_page_cb)(
 );
 
 /**
+ * Reactions callback
+ *
+ * @param request_id Request ID
+ * @param error      0 on success, error code otherwise
+ * @param reactions  Array of reactions (caller must free via dna_free_reactions)
+ * @param count      Number of reactions
+ * @param user_data  User data
+ */
+typedef void (*dna_reactions_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_reaction_t *reactions,
+    int count,
+    void *user_data
+);
+
+/**
  * Groups callback
  */
 typedef void (*dna_groups_cb)(
@@ -1728,6 +1745,25 @@ DNA_API dna_request_id_t dna_engine_send_reaction(
 );
 
 /**
+ * Get the live reaction list for a target message (async, DB-only)
+ *
+ * Scans local message backup for message_type=3 rows matching
+ * target_content_hash and replays add/remove ops in timestamp order.
+ *
+ * @param engine               Engine instance
+ * @param target_content_hash  64-hex hash of the target message
+ * @param callback             Called with the reactions array (owned by caller)
+ * @param user_data            User data for callback
+ * @return                     Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_get_reactions(
+    dna_engine_t *engine,
+    const char *target_content_hash,
+    dna_reactions_cb callback,
+    void *user_data
+);
+
+/**
  * Queue message for async sending (returns immediately)
  *
  * Adds message to internal send queue for background delivery.
@@ -2856,6 +2892,11 @@ DNA_API void dna_free_contacts(dna_contact_t *contacts, int count);
  * Free messages array returned by callbacks
  */
 DNA_API void dna_free_messages(dna_message_t *messages, int count);
+
+/**
+ * Free reactions array returned by callbacks
+ */
+DNA_API void dna_free_reactions(dna_reaction_t *reactions, int count);
 
 /**
  * Free groups array returned by callbacks
