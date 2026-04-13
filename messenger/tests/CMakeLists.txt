@@ -77,7 +77,16 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+# Phase 02-04 THR-03/SEC-04/SEC-05/THR-02 concurrency tests: opt-in
+# ThreadSanitizer via -DENABLE_TSAN=ON. Mutually exclusive with AddressSanitizer.
+# See messenger/docs/CONCURRENCY.md for usage.
+option(ENABLE_TSAN "Build with ThreadSanitizer (conflicts with ASan)" OFF)
+
+if(ENABLE_TSAN)
+    message(STATUS "ENABLE_TSAN=ON — building tests with -fsanitize=thread (ASan disabled)")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -O1 -fsanitize=thread -fno-omit-frame-pointer")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -O0 -fsanitize=address -fno-omit-frame-pointer")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 endif()
@@ -172,6 +181,34 @@ add_executable(test_nodus_init_concurrent test_nodus_init_concurrent.c)
 target_link_libraries(test_nodus_init_concurrent ${TEST_LIBS} pthread)
 add_test(NAME nodus_init_concurrent COMMAND test_nodus_init_concurrent)
 set_tests_properties(nodus_init_concurrent PROPERTIES TIMEOUT 30)
+
+# =============================================================================
+# Test: THR-03 — task queue MPSC-via-task_mutex contract regression (Phase 02-04)
+# =============================================================================
+# Positive: N threads call public engine API that funnels through the
+# THR-03 assert under task_mutex. Negative: fork() child mirrors the
+# assert(pthread_equal(...)) pattern with a zero-initialized owner and
+# must abort with SIGABRT — proves the mechanism actually trips.
+add_executable(test_concurrency_task_queue_contract test_concurrency_task_queue_contract.c)
+target_link_libraries(test_concurrency_task_queue_contract ${TEST_LIBS} pthread)
+add_test(NAME concurrency_task_queue_contract COMMAND test_concurrency_task_queue_contract)
+set_tests_properties(concurrency_task_queue_contract PROPERTIES TIMEOUT 30)
+
+# =============================================================================
+# TSan suppression wiring (Phase 02-04 THR-03/SEC-04/SEC-05/THR-02)
+# =============================================================================
+# When built with -DENABLE_TSAN=ON, run the concurrency tests with
+# TSAN_OPTIONS pointing at the (empty, comment-only) tsan.supp scaffold.
+if(ENABLE_TSAN)
+    set_tests_properties(
+        gek_concurrent
+        engine_destroy_during_backup
+        nodus_init_concurrent
+        concurrency_task_queue_contract
+        PROPERTIES
+        ENVIRONMENT "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp:halt_on_error=1"
+    )
+endif()
 
 # =============================================================================
 # Test: Salt Agreement Protocol (Kyber dual-encrypted, authenticated)
