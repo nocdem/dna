@@ -19,9 +19,64 @@
 #include "crypto/utils/qgp_compiler.h"
 #include "crypto/utils/platform_keystore.h"
 #include "crypto/key/key_encryption.h"
+#include "crypto/sign/qgp_dilithium.h"  /* SEC-02: QGP_DSA87_*BYTES exact sizes */
+#include "crypto/enc/qgp_kyber.h"       /* SEC-02: QGP_KEM1024_*BYTES exact sizes */
 #include "qgp.h"  /* For write_armored_file */
 
 #define LOG_TAG "KEY"
+
+/* ============================================================================
+ * SEC-02: Exact per-algorithm key size table.
+ *
+ * Every legitimate QGP private key file header must match these sizes exactly.
+ * Any mismatch is either a corrupted file or attacker-controlled input and is
+ * rejected before any payload allocation. Adding a new algorithm = one line here.
+ *
+ * Reuses the canonical size constants from qgp_dilithium.h / qgp_kyber.h —
+ * never redefine them locally.
+ * ============================================================================ */
+typedef struct {
+    uint32_t public_key_size;
+    uint32_t private_key_size;
+} qgp_key_size_spec_t;
+
+static const qgp_key_size_spec_t qgp_key_expected_sizes[] = {
+    [QGP_KEY_TYPE_INVALID] = { 0, 0 },
+    [QGP_KEY_TYPE_DSA87]   = { QGP_DSA87_PUBLICKEYBYTES,   QGP_DSA87_SECRETKEYBYTES   },
+    [QGP_KEY_TYPE_KEM1024] = { QGP_KEM1024_PUBLICKEYBYTES, QGP_KEM1024_SECRETKEYBYTES },
+};
+
+#define QGP_KEY_TYPE_COUNT (sizeof(qgp_key_expected_sizes) / sizeof(qgp_key_expected_sizes[0]))
+
+/* Returns 0 if sizes match the spec for the given key_type, -1 otherwise.
+ * Logs via QGP_LOG_ERROR on mismatch. Used by qgp_key_load_encrypted to
+ * reject attacker-controlled size fields BEFORE any payload allocation. */
+static int qgp_key_validate_header_sizes(uint8_t key_type,
+                                         uint32_t public_key_size,
+                                         uint32_t private_key_size) {
+    if (key_type == QGP_KEY_TYPE_INVALID || key_type >= QGP_KEY_TYPE_COUNT) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "qgp_key_validate_header_sizes: unknown key_type=%u (rejecting, SEC-02)",
+            (unsigned)key_type);
+        return -1;
+    }
+    const qgp_key_size_spec_t *spec = &qgp_key_expected_sizes[key_type];
+    if (public_key_size != spec->public_key_size) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "qgp_key_validate_header_sizes: public_key_size mismatch for key_type=%u "
+            "(got %u, expected %u) - rejecting (SEC-02)",
+            (unsigned)key_type, (unsigned)public_key_size, (unsigned)spec->public_key_size);
+        return -1;
+    }
+    if (private_key_size != spec->private_key_size) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "qgp_key_validate_header_sizes: private_key_size mismatch for key_type=%u "
+            "(got %u, expected %u) - rejecting (SEC-02)",
+            (unsigned)key_type, (unsigned)private_key_size, (unsigned)spec->private_key_size);
+        return -1;
+    }
+    return 0;
+}
 
 /* v0.6.47: Thread-safe gmtime wrapper (security fix) */
 static inline struct tm *safe_gmtime(const time_t *timer, struct tm *result) {
@@ -581,6 +636,15 @@ int qgp_key_load_encrypted(const char *path, const char *password, qgp_key_t **k
 
     if (header.version != QGP_PRIVKEY_VERSION) {
         QGP_LOG_ERROR("KEY", "qgp_key_load_encrypted: Unsupported version: %d", header.version);
+        goto cleanup;
+    }
+
+    /* SEC-02: Exact-bounds size validation BEFORE any payload allocation.
+     * Rejects files with attacker-controlled size fields. Per D-03 this also
+     * covers qgp_key_load() because qgp_key_load delegates here with NULL password. */
+    if (qgp_key_validate_header_sizes(header.key_type,
+                                       header.public_key_size,
+                                       header.private_key_size) != 0) {
         goto cleanup;
     }
 
