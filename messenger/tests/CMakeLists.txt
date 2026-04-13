@@ -151,6 +151,13 @@ target_link_libraries(test_gek_ratchet ${TEST_LIBS})
 add_test(NAME test_gek_ratchet COMMAND test_gek_ratchet)
 
 # =============================================================================
+# Test: SEC-04 — concurrent GEK KEM-key rwlock race regression (Phase 02-01)
+# =============================================================================
+add_executable(test_gek_concurrent test_gek_concurrent.c)
+target_link_libraries(test_gek_concurrent ${TEST_LIBS})
+add_test(NAME gek_concurrent COMMAND test_gek_concurrent)
+
+# =============================================================================
 # Test: Salt Agreement Protocol (Kyber dual-encrypted, authenticated)
 # =============================================================================
 add_executable(test_salt_agreement test_salt_agreement.c)
