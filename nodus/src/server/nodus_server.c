@@ -1060,12 +1060,21 @@ static void dht_send_stats_dump(nodus_server_t *srv) {
         nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
         if (!c || c->state != NODUS_CONN_CONNECTED) continue;
         if (c->send_ok_count == 0 && c->send_full_count == 0 &&
-            c->pending_enqueued_count == 0) continue;
+            c->pending_enqueued_count == 0 && c->decrypt_skip_count == 0) continue;
+
+        /* Phase 3.2a: crypto state tag for asymmetry diagnosis */
+        const char *crypto_state = "none";
+        if (c->crypto) {
+            nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)c->crypto;
+            crypto_state = cc->established ? "est" : "pend";
+        }
+
         fprintf(stderr,
-                "SEND_STATS: peer=%s:%u slot=%d ok=%llu full=%llu "
+                "SEND_STATS: peer=%s:%u slot=%d crypto=%s ok=%llu full=%llu "
                 "bytes=%llu wlen=%zu wcap=%zu "
-                "pending_now=%zu pending_bytes=%zu enq=%llu drain=%llu hint=%llu\n",
-                c->ip, (unsigned)c->port, c->slot,
+                "pending_now=%zu pending_bytes=%zu enq=%llu drain=%llu hint=%llu "
+                "decrypt_skip=%llu\n",
+                c->ip, (unsigned)c->port, c->slot, crypto_state,
                 (unsigned long long)c->send_ok_count,
                 (unsigned long long)c->send_full_count,
                 (unsigned long long)c->send_bytes_total,
@@ -1073,7 +1082,8 @@ static void dht_send_stats_dump(nodus_server_t *srv) {
                 c->pending_count, c->pending_bytes,
                 (unsigned long long)c->pending_enqueued_count,
                 (unsigned long long)c->pending_drained_count,
-                (unsigned long long)c->pending_hint_fallback_count);
+                (unsigned long long)c->pending_hint_fallback_count,
+                (unsigned long long)c->decrypt_skip_count);
     }
 }
 
@@ -4166,17 +4176,33 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         return;
     }
 
-    /* T1 decode failed — unknown frame on inter-node port */
+    /* T1 decode failed — unknown frame on inter-node port.
+     * Phase 3.2a: include crypto state so we can correlate "decode failed"
+     * with asymmetric crypto activation (sender encrypted, receiver not yet
+     * established, etc.). */
     {
         char hexdump[65] = {0};
         size_t dumplen = len < 32 ? len : 32;
         for (size_t i = 0; i < dumplen; i++)
             snprintf(hexdump + i * 2, 3, "%02x", payload[i]);
-        fprintf(stderr, "REPL_TCP: T1 decode failed (len=%zu) slot=%d src=%s:%u head=%s\n",
+
+        const char *crypto_state = "none";
+        uint64_t tx_ctr = 0, rx_ctr = 0;
+        if (sess->conn && sess->conn->crypto) {
+            nodus_channel_crypto_t *cc =
+                (nodus_channel_crypto_t *)sess->conn->crypto;
+            crypto_state = cc->established ? "established" : "pending";
+            tx_ctr = cc->tx_counter;
+            rx_ctr = cc->rx_counter;
+        }
+        fprintf(stderr,
+                "REPL_TCP: T1 decode failed (len=%zu) slot=%d src=%s:%u "
+                "head=%s crypto=%s tx=%llu rx=%llu\n",
                 len, sess->conn ? sess->conn->slot : -1,
                 sess->conn ? sess->conn->ip : "?",
                 sess->conn ? (unsigned)sess->conn->port : 0,
-                hexdump);
+                hexdump, crypto_state,
+                (unsigned long long)tx_ctr, (unsigned long long)rx_ctr);
     }
     nodus_t1_msg_free(&t1msg);
 }

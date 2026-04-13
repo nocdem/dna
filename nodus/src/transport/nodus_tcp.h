@@ -110,6 +110,11 @@ typedef struct nodus_tcp_conn {
     uint64_t            pending_enqueued_count;      /* lifetime frames queued */
     uint64_t            pending_drained_count;       /* lifetime frames promoted from queue to wbuf */
     uint64_t            pending_hint_fallback_count; /* lifetime frames that spilled to hint table */
+
+    /* Phase 3.2a: crypto-path visibility — decrypt failures are currently
+     * silently logged once and the frame skipped. Counter lets us correlate
+     * these with upstream "T1 decode failed" asymmetry. */
+    uint64_t            decrypt_skip_count;
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */
