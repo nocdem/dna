@@ -64,7 +64,8 @@ static void *backup_thread_func(void *arg) {
         qgp_key_free(ctx->kyber_key);
         qgp_key_free(ctx->dilithium_key);
         /* HIGH-8: Mark thread as done */
-        if (engine) engine->backup_thread_running = false;
+        /* SEC-05: atomic_store pairs with atomic_load in dna_engine_destroy */
+        if (engine) atomic_store(&engine->backup_thread_running, false);
         free(ctx);
         return NULL;
     }
@@ -112,7 +113,8 @@ static void *backup_thread_func(void *arg) {
     }
 
     /* HIGH-8: Mark thread as done before exit */
-    engine->backup_thread_running = false;
+    /* SEC-05: atomic_store pairs with atomic_load in dna_engine_destroy */
+    atomic_store(&engine->backup_thread_running, false);
     free(ctx);
     return NULL;
 }
@@ -133,7 +135,8 @@ static void *restore_thread_func(void *arg) {
         qgp_key_free(ctx->kyber_key);
         qgp_key_free(ctx->dilithium_key);
         /* HIGH-8: Mark thread as done */
-        if (engine) engine->restore_thread_running = false;
+        /* SEC-05: atomic_store pairs with atomic_load in dna_engine_destroy */
+        if (engine) atomic_store(&engine->restore_thread_running, false);
         free(ctx);
         return NULL;
     }
@@ -147,7 +150,8 @@ static void *restore_thread_func(void *arg) {
         }
         qgp_key_free(ctx->kyber_key);
         qgp_key_free(ctx->dilithium_key);
-        engine->restore_thread_running = false;
+        /* SEC-05: atomic_store pairs with atomic_load in dna_engine_destroy */
+        atomic_store(&engine->restore_thread_running, false);
         free(ctx);
         return NULL;
     }
@@ -188,7 +192,8 @@ static void *restore_thread_func(void *arg) {
     }
 
     /* HIGH-8: Mark thread as done before exit */
-    engine->restore_thread_running = false;
+    /* SEC-05: atomic_store pairs with atomic_load in dna_engine_destroy */
+    atomic_store(&engine->restore_thread_running, false);
     free(ctx);
     return NULL;
 }
@@ -277,9 +282,10 @@ dna_request_id_t dna_engine_backup_messages(
     ctx->dilithium_key = dilithium_key;
 
     /* HIGH-8: Join any previous backup thread before spawning new one */
-    if (engine->backup_thread_running) {
+    /* SEC-05: atomic_load/atomic_store pair with writes in backup_thread_func */
+    if (atomic_load(&engine->backup_thread_running)) {
         pthread_join(engine->backup_thread, NULL);
-        engine->backup_thread_running = false;
+        atomic_store(&engine->backup_thread_running, false);
     }
 
     /* Spawn tracked thread for async backup (never blocks UI) */
@@ -291,7 +297,8 @@ dna_request_id_t dna_engine_backup_messages(
         callback(request_id, -1, 0, 0, user_data);
         return request_id;
     }
-    engine->backup_thread_running = true;
+    /* SEC-05: atomic_store pairs with atomic_load in dna_engine_destroy */
+    atomic_store(&engine->backup_thread_running, true);
 
     QGP_LOG_INFO(LOG_TAG, "Backup thread spawned (request_id=%llu)", (unsigned long long)request_id);
     return request_id;
@@ -381,9 +388,10 @@ dna_request_id_t dna_engine_restore_messages(
     ctx->dilithium_key = dilithium_key;
 
     /* HIGH-8: Join any previous restore thread before spawning new one */
-    if (engine->restore_thread_running) {
+    /* SEC-05: atomic_load/atomic_store pair with writes in restore_thread_func */
+    if (atomic_load(&engine->restore_thread_running)) {
         pthread_join(engine->restore_thread, NULL);
-        engine->restore_thread_running = false;
+        atomic_store(&engine->restore_thread_running, false);
     }
 
     /* Spawn tracked thread for async restore (never blocks UI) */
@@ -395,7 +403,8 @@ dna_request_id_t dna_engine_restore_messages(
         callback(request_id, -1, 0, 0, user_data);
         return request_id;
     }
-    engine->restore_thread_running = true;
+    /* SEC-05: atomic_store pairs with atomic_load in dna_engine_destroy */
+    atomic_store(&engine->restore_thread_running, true);
 
     QGP_LOG_INFO(LOG_TAG, "Restore thread spawned (request_id=%llu)", (unsigned long long)request_id);
     return request_id;

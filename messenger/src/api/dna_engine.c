@@ -1850,16 +1850,26 @@ void dna_engine_destroy(dna_engine_t *engine) {
     pthread_cond_destroy(&engine->background_thread_exit_cond);
     pthread_mutex_destroy(&engine->background_threads_mutex);
 
-    /* HIGH-8: Join backup/restore threads to prevent use-after-free */
-    if (engine->backup_thread_running) {
+    /* HIGH-8: Join backup/restore threads to prevent use-after-free.
+     *
+     * CONCURRENCY.md L1 cluster: engine mutexes — backup_thread join during
+     * destroy. SEC-05 invariant (Phase 02-02): backup_thread and restore_thread
+     * MUST be joined BEFORE gek_clear_kem_keys() (L1869),
+     * dna_engine_cancel_all_outbox_listeners() (L1873),
+     * messenger_free(engine->messenger) (L1903), and session_password
+     * zeroization (L1957). The existing sequential ordering below is correct
+     * (verified Phase 2 research 2026-04-13); this block only adds atomicity
+     * to the flag read/write, because the destroy thread and the
+     * backup/restore threads touch the flags without a shared lock. */
+    if (atomic_load(&engine->backup_thread_running)) {
         QGP_LOG_INFO(LOG_TAG, "Joining backup thread...");
         pthread_join(engine->backup_thread, NULL);
-        engine->backup_thread_running = false;
+        atomic_store(&engine->backup_thread_running, false);
     }
-    if (engine->restore_thread_running) {
+    if (atomic_load(&engine->restore_thread_running)) {
         QGP_LOG_INFO(LOG_TAG, "Joining restore thread...");
         pthread_join(engine->restore_thread, NULL);
-        engine->restore_thread_running = false;
+        atomic_store(&engine->restore_thread_running, false);
     }
 
     /* Stop presence heartbeat thread */

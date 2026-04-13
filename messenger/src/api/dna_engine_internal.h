@@ -870,10 +870,13 @@ struct dna_engine {
     pthread_cond_t background_thread_exit_cond;  /* v0.6.113: Signaled when background thread exits */
 
     /* HIGH-8: Track backup/restore threads for clean shutdown */
+    /* SEC-05 (Phase 02-02): running flags are _Atomic bool — the destroy path
+     * reads them without holding any engine mutex, and the backup/restore
+     * threads write them from their own pthread. Plain bool is a data race. */
     pthread_t backup_thread;
-    bool backup_thread_running;
+    _Atomic bool backup_thread_running;  /* SEC-05: atomic for destroy-path read race */
     pthread_t restore_thread;
-    bool restore_thread_running;
+    _Atomic bool restore_thread_running;  /* SEC-05: atomic for destroy-path read race */
 
     /* v0.6.107+: State synchronization */
     pthread_mutex_t state_mutex;           /* Protects engine state transitions */
