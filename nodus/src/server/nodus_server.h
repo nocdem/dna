@@ -415,6 +415,9 @@ typedef struct nodus_server {
     uint64_t                last_wal_checkpoint;
     uint64_t                last_vacuum;
 
+    /* Phase 1 visibility: send diagnostics dump timer */
+    uint64_t                last_stats_dump;
+
     bool                    running;
 } nodus_server_t;
 

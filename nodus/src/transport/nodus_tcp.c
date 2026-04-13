@@ -738,8 +738,19 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
     size_t needed = conn->wlen + frame_size;
 
     if (buf_ensure(&conn->wbuf, &conn->wcap, needed) != 0) {
-        QGP_LOG_ERROR(LOG_TAG_TCP, "send: buf_ensure failed (needed=%zu, wcap=%zu, wlen=%zu, wpos=%zu)",
-                      needed, conn->wcap, conn->wlen, conn->wpos);
+        /* Phase 1 visibility: capture payload type hint (first 16 plaintext bytes)
+         * and peer address so we can correlate failures across the cluster. */
+        char head[33] = {0};
+        size_t hlen = len < 16 ? len : 16;
+        for (size_t i = 0; i < hlen; i++)
+            snprintf(head + i * 2, 3, "%02x", payload[i]);
+        QGP_LOG_ERROR(LOG_TAG_TCP,
+                      "send: buf_ensure failed (needed=%zu wcap=%zu wlen=%zu wpos=%zu) "
+                      "peer=%s:%u slot=%d payload_len=%zu head=%s",
+                      needed, conn->wcap, conn->wlen, conn->wpos,
+                      conn->ip, (unsigned)conn->port, conn->slot, len, head);
+        conn->send_full_count++;
+        free(enc_buf);  /* NULL-safe — fix pre-existing leak on this error path */
         return -1;
     }
 
@@ -753,6 +764,8 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
         return -1;
     }
     conn->wlen += written;
+    conn->send_ok_count++;
+    conn->send_bytes_total += send_len;
     free(enc_buf);  /* NULL-safe */
 
     /* Try immediate send */

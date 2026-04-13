@@ -96,6 +96,7 @@ extern "C" {
 #define NODUS_CLEANUP_SEC          3600    /* 1 hour — storage cleanup interval */
 #define NODUS_WAL_CHECKPOINT_SEC   300     /* 5 min — WAL checkpoint interval */
 #define NODUS_VACUUM_SEC           3600    /* 1 hour — incremental vacuum interval */
+#define NODUS_STATS_DUMP_SEC       300     /* 5 min — send diagnostics dump interval */
 #define NODUS_HINT_OFFLINE_SKIP_SEC 3600   /* 1 hour — skip hinted handoff for long-offline peers */
 #define NODUS_REPLICATION_MIN      3      /* Min successful sends before skipping hinted handoff */
 

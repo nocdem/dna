@@ -81,6 +81,11 @@ typedef struct nodus_tcp_conn {
 
     /* Channel encryption (set after Kyber handshake, NULL = plaintext) */
     void               *crypto;     /* nodus_channel_crypto_t*, opaque to avoid circular include */
+
+    /* Send diagnostics (Phase 1 visibility — no behavior change) */
+    uint64_t            send_ok_count;      /* frames accepted into wbuf */
+    uint64_t            send_full_count;    /* buf_ensure failed (wbuf cap exceeded) */
+    uint64_t            send_bytes_total;   /* cumulative plaintext bytes offered to wbuf */
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */

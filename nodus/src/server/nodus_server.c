@@ -1046,6 +1046,30 @@ static void dht_incremental_vacuum(nodus_server_t *srv) {
     fprintf(stderr, "VACUUM: incremental vacuum completed\n");
 }
 
+/* ── Phase 1: Send diagnostics dump ──────────────────────────────── */
+/* Periodic per-peer counter dump so we can correlate buf_ensure failures
+ * with throughput and identify slow peers. No behavior change — pure
+ * visibility for Phase 1 of the send-path diagnosis. */
+static void dht_send_stats_dump(nodus_server_t *srv) {
+    uint64_t now = nodus_time_now();
+    if (now - srv->last_stats_dump < NODUS_STATS_DUMP_SEC) return;
+    srv->last_stats_dump = now;
+
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
+        if (!c || c->state != NODUS_CONN_CONNECTED) continue;
+        if (c->send_ok_count == 0 && c->send_full_count == 0) continue;
+        fprintf(stderr,
+                "SEND_STATS: peer=%s:%u slot=%d ok=%llu full=%llu "
+                "bytes=%llu wlen=%zu wcap=%zu\n",
+                c->ip, (unsigned)c->port, c->slot,
+                (unsigned long long)c->send_ok_count,
+                (unsigned long long)c->send_full_count,
+                (unsigned long long)c->send_bytes_total,
+                c->wlen, c->wcap);
+    }
+}
+
 /* ── Periodic republish (via inter_tcp pool) ────────────────────── */
 
 /** Send a pre-framed replication payload via persistent inter_tcp pool.
@@ -5340,6 +5364,9 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Incremental vacuum — reclaim freelist pages (every 24 hours) */
         dht_incremental_vacuum(srv);
+
+        /* Phase 1 visibility: per-peer send counter dump (every 5 min) */
+        dht_send_stats_dump(srv);
     }
 
     return 0;
