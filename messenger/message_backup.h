@@ -84,6 +84,7 @@ typedef struct {
     int retry_count;  // Number of send retry attempts (for failed messages)
     bool is_outgoing;  // true if we sent it, false if we received it
     bool deleted_by_sender;  // true if sender sent deletion notice (v17)
+    char content_hash[65];  // SHA3-256 hex (64 chars + null), empty if unavailable (v0.9.194)
 } backup_message_t;
 
 /**

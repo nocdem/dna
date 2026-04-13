@@ -80,6 +80,7 @@ typedef struct {
     char *plaintext;             // Decrypted message text (NULL if not decrypted)
     int message_type;            // Message type: 0=chat, 1=group_invitation (Phase 6.2)
     bool deleted_by_sender;      // true if sender deleted this message (v17)
+    char content_hash[65];       // SHA3-256 hex (64 chars + null), empty if unavailable (v0.9.194)
 } message_info_t;
 
 // ============================================================================

@@ -24,6 +24,8 @@ import '../../services/image_attachment_service.dart';
 import '../../services/media_service.dart';
 import '../profile/user_profile_screen.dart';
 import 'widgets/message_bubble.dart';
+import 'widgets/reaction_emoji_bar.dart';
+import '../../providers/reaction_provider.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -1542,11 +1544,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
     }
 
+    final hasContentHash = message.contentHash.isNotEmpty;
+
     DnaBottomSheet.show(
       context,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // Reaction emoji bar (tap to add/remove a reaction).
+          // Only shown when we have a content_hash to target.
+          if (hasContentHash) ...[
+            ReactionEmojiBar(
+              currentUserEmojis: _getCurrentUserEmojisFor(message),
+              onSelected: (emoji) {
+                Navigator.pop(context);
+                _toggleReactionFor(message, emoji);
+              },
+            ),
+            Divider(height: 1, color: theme.dividerColor),
+          ],
           DnaListTile(
             leading: iconBox(FontAwesomeIcons.reply, DnaColors.info),
             title: l10n.messageMenuReply,
@@ -1606,6 +1622,52 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _toggleStarMessage(Message message, String contactFp) {
     ref.read(starredMessagesProvider(contactFp).notifier).toggleStar(message.id);
+  }
+
+  /// Read the currently-cached reaction state for [message] and return the
+  /// set of emojis the current user has already applied. Returns an empty
+  /// set if the reactions haven't loaded yet.
+  Set<String> _getCurrentUserEmojisFor(Message message) {
+    if (message.contentHash.isEmpty) return <String>{};
+    final async = ref.read(reactionsForMessageProvider(message.contentHash));
+    return async.maybeWhen(
+      data: (groups) => groups
+          .where((g) => g.currentUserReacted)
+          .map((g) => g.emoji)
+          .toSet(),
+      orElse: () => <String>{},
+    );
+  }
+
+  /// Toggle the given [emoji] on [message]: add if absent, remove if present.
+  Future<void> _toggleReactionFor(Message message, String emoji) async {
+    if (message.contentHash.isEmpty) {
+      log('REACTION',
+          'Cannot react to message ${message.id}: no content_hash');
+      return;
+    }
+
+    final already = _getCurrentUserEmojisFor(message).contains(emoji);
+    final op = already ? 'remove' : 'add';
+
+    // Determine the peer fingerprint: for outgoing messages it's the
+    // recipient we originally sent to; for incoming, it's the sender.
+    final peerFp = message.isOutgoing ? message.recipient : message.sender;
+    if (peerFp.isEmpty) return;
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      await engine.sendReaction(
+        recipientFingerprint: peerFp,
+        targetContentHash: message.contentHash,
+        emoji: emoji,
+        op: op,
+      );
+      // Force-refresh the reaction list for this message.
+      ref.invalidate(reactionsForMessageProvider(message.contentHash));
+    } catch (e) {
+      logError('REACTION', e);
+    }
   }
 
   Future<void> _jumpToDate(List<Message> messages) async {

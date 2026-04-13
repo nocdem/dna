@@ -292,6 +292,10 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
 
             messages[i].message_type = msg_infos[i].message_type;
             messages[i].deleted_by_sender = msg_infos[i].deleted_by_sender;
+
+            /* v0.9.194: Propagate content_hash for reaction targeting */
+            strncpy(messages[i].content_hash, msg_infos[i].content_hash, 64);
+            messages[i].content_hash[64] = '\0';
         }
         count = msg_count;
 
@@ -387,6 +391,10 @@ void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task) {
 
             messages[i].message_type = msg_infos[i].message_type;
             messages[i].deleted_by_sender = msg_infos[i].deleted_by_sender;
+
+            /* v0.9.194: Propagate content_hash for reaction targeting */
+            strncpy(messages[i].content_hash, msg_infos[i].content_hash, 64);
+            messages[i].content_hash[64] = '\0';
         }
         count = msg_count;
 

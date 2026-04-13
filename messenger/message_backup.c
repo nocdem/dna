@@ -911,7 +911,7 @@ int message_backup_get_conversation_page(message_backup_context_t *ctx,
     // This allows efficient loading for reverse-scroll chat UI
     // message_type=99 are processed delete notices (dedup anchors), exclude them
     const char *sql =
-        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, is_outgoing, deleted_by_sender "
+        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, is_outgoing, deleted_by_sender, content_hash "
         "FROM messages "
         "WHERE ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) "
         "AND message_type NOT IN (3, 99) "
@@ -962,6 +962,15 @@ int message_backup_get_conversation_page(message_backup_context_t *ctx,
         messages[idx].message_type = sqlite3_column_int(stmt, 10);
         messages[idx].is_outgoing = sqlite3_column_int(stmt, 11) != 0;
         messages[idx].deleted_by_sender = sqlite3_column_int(stmt, 12) != 0;
+
+        // v0.9.194: Copy content_hash for reaction targeting
+        const char *chash = (const char*)sqlite3_column_text(stmt, 13);
+        if (chash) {
+            strncpy(messages[idx].content_hash, chash, 64);
+            messages[idx].content_hash[64] = '\0';
+        } else {
+            messages[idx].content_hash[0] = '\0';
+        }
         idx++;
     }
 

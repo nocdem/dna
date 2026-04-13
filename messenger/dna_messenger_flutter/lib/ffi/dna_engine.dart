@@ -273,6 +273,7 @@ class Message {
   final MessageStatus status;
   final MessageType type;
   final bool deletedBySender;
+  final String contentHash; // v0.9.194: SHA3-256 hex (64 chars) or empty
 
   Message({
     required this.id,
@@ -284,6 +285,7 @@ class Message {
     required this.status,
     required this.type,
     this.deletedBySender = false,
+    this.contentHash = '',
   });
 
   factory Message.fromNative(dna_message_t native) {
@@ -307,6 +309,7 @@ class Message {
                   ? MessageType.groupInvitation
                   : MessageType.chat)),
       deletedBySender: native.deleted_by_sender,
+      contentHash: native.content_hash.toDartString(64),
     );
   }
 
@@ -342,6 +345,7 @@ class Message {
       status: status ?? this.status,
       type: type,
       deletedBySender: deletedBySender ?? this.deletedBySender,
+      contentHash: contentHash,
     );
   }
 }

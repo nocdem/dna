@@ -116,8 +116,14 @@ final class dna_message_t extends Struct {
   @Bool()
   external bool deleted_by_sender;
 
-  // 3 bytes padding to align struct to 8-byte boundary
-  @Array(3)
+  // v0.9.194: content_hash (SHA3-256 hex, 64 chars + null = 65 bytes)
+  // Offset 293, ends at 358.
+  @Array(65)
+  external Array<Char> content_hash;
+
+  // Padding to align struct to 8-byte boundary (plaintext pointer alignment).
+  // Struct total size 360; after content_hash we're at 358, need 2 bytes pad.
+  @Array(2)
   external Array<Uint8> _padding3;
 }
 

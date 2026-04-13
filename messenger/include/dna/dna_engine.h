@@ -146,6 +146,7 @@ typedef struct {
     int status;                 /* 0=pending, 1=sent, 2=received, 3=failed */
     int message_type;           /* 0=chat, 1=group_invitation, 2=cpunkTransfer, 3=reaction */
     bool deleted_by_sender;     /* true if sender deleted this message (v17) */
+    char content_hash[65];      /* SHA3-256 hex (64 chars + null), empty if unavailable (v0.9.194) */
 } dna_message_t;
 
 /**
