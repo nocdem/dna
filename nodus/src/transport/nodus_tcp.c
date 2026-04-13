@@ -857,11 +857,13 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                         conn->slot, conn->ip, (unsigned)conn->port,
                         (unsigned long long)cc->tx_counter, len);
             }
-            /* Phase 3.2b-inv2: log first 3 encrypts per conn so we can see
-             * whether tx_counter ACTUALLY starts from 0. If a conn sends
-             * encrypted frames with counter > 2 as the first thing we log
-             * here, it means the crypto state was imported from elsewhere. */
-            if (cc->tx_counter < 3) {
+            /* Phase 3.2b-inv2+inv3: milestone encrypt log. First 3 catch
+             * fresh handshake; 100/500/1000/2000k milestones catch long-lived
+             * conns so we can correlate high tx_counter T1 fails with the
+             * actual sender state. */
+            if (cc->tx_counter < 3 ||
+                cc->tx_counter == 100 || cc->tx_counter == 500 ||
+                cc->tx_counter == 1000 || (cc->tx_counter % 2000) == 0) {
                 fprintf(stderr,
                         "ENCRYPT_CALL slot=%d peer=%s:%u tx_counter=%llu "
                         "cc=%p conn_crypto=%p len=%zu\n",
@@ -1157,12 +1159,29 @@ nodus_tcp_conn_t *nodus_tcp_find_by_id(nodus_tcp_t *tcp,
 nodus_tcp_conn_t *nodus_tcp_find_by_addr(nodus_tcp_t *tcp,
                                           const char *ip, uint16_t port) {
     if (!tcp || !ip) return NULL;
+    /* Phase 3.2b-inv3: duplicate conn detector. If pool holds more than
+     * one conn with the same (ip, port) pair we return the first match
+     * (legacy behavior) but also emit a warning. Hypothesis under test:
+     * T1 decode fail on receiver is caused by sender picking a stale
+     * conn while a fresh handshake already exists on a different slot. */
+    nodus_tcp_conn_t *first = NULL;
+    int match_count = 0;
+    int second_slot = -1;
     for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
         nodus_tcp_conn_t *c = tcp->pool[i];
-        if (c && c->port == port && strcmp(c->ip, ip) == 0)
-            return c;
+        if (c && c->port == port && strcmp(c->ip, ip) == 0) {
+            if (!first) first = c;
+            else if (second_slot < 0) second_slot = c->slot;
+            match_count++;
+        }
     }
-    return NULL;
+    if (match_count > 1) {
+        fprintf(stderr,
+                "FIND_DUP: %s:%u matches=%d first_slot=%d second_slot=%d\n",
+                ip, (unsigned)port, match_count,
+                first ? first->slot : -1, second_slot);
+    }
+    return first;
 }
 
 int nodus_tcp_epoll_fd(const nodus_tcp_t *tcp) {
