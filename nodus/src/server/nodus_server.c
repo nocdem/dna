@@ -1205,6 +1205,20 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
         if (flen <= NODUS_FRAME_HEADER_SIZE) return -1;
         const uint8_t *payload = frame + NODUS_FRAME_HEADER_SIZE;
         size_t payload_len = flen - NODUS_FRAME_HEADER_SIZE;
+        /* Phase 3.2b-inv2: republish send path visibility. Sample: first 3
+         * calls per conn logged via cc->tx_counter check inside send_progress;
+         * this log just tags the entry point so we know which caller. */
+        {
+            nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
+            if (cc->tx_counter < 3) {
+                fprintf(stderr,
+                        "REPUBLISH_SEND slot=%d peer=%s:%u crypto=%p "
+                        "tx_counter=%llu flen=%zu\n",
+                        conn->slot, conn->ip, (unsigned)conn->port,
+                        (void *)conn->crypto,
+                        (unsigned long long)cc->tx_counter, flen);
+            }
+        }
         int rc = nodus_tcp_send_progress(conn, payload, payload_len, NULL, NULL);
         if (rc != 0) {
             /* Send failed (buffer full / slow consumer) — disconnect so

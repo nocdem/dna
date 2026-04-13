@@ -212,6 +212,14 @@ static void pending_free_all(nodus_tcp_conn_t *conn) {
 /** Drain pending head frames into wbuf as long as they fit.
  *  Bounded by NODUS_DRAIN_PER_CALL to avoid monopolizing the event loop. */
 static void pending_drain_to_wbuf(nodus_tcp_conn_t *conn) {
+    /* Phase 3.2b-inv2: first-drain visibility */
+    if (!conn->drain_logged && conn->pending_head) {
+        conn->drain_logged = true;
+        fprintf(stderr,
+                "PENDING_DRAIN slot=%d peer=%s:%u count=%zu bytes=%zu\n",
+                conn->slot, conn->ip, (unsigned)conn->port,
+                conn->pending_count, conn->pending_bytes);
+    }
     int drained = 0;
     const size_t max_cap = NODUS_MAX_FRAME_TCP + NODUS_FRAME_HEADER_SIZE + 4096;
     while (drained < NODUS_DRAIN_PER_CALL && conn->pending_head) {
@@ -848,6 +856,18 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                         "TX_ENCRYPT_FIRST slot=%d peer=%s:%u tx_counter=%llu len=%zu\n",
                         conn->slot, conn->ip, (unsigned)conn->port,
                         (unsigned long long)cc->tx_counter, len);
+            }
+            /* Phase 3.2b-inv2: log first 3 encrypts per conn so we can see
+             * whether tx_counter ACTUALLY starts from 0. If a conn sends
+             * encrypted frames with counter > 2 as the first thing we log
+             * here, it means the crypto state was imported from elsewhere. */
+            if (cc->tx_counter < 3) {
+                fprintf(stderr,
+                        "ENCRYPT_CALL slot=%d peer=%s:%u tx_counter=%llu "
+                        "cc=%p conn_crypto=%p len=%zu\n",
+                        conn->slot, conn->ip, (unsigned)conn->port,
+                        (unsigned long long)cc->tx_counter,
+                        (void *)cc, (void *)conn->crypto, len);
             }
             size_t enc_needed = len + NODUS_CHANNEL_OVERHEAD;
             enc_buf = malloc(enc_needed);

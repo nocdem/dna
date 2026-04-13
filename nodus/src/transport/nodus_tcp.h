@@ -119,6 +119,9 @@ typedef struct nodus_tcp_conn {
     /* Phase 3.2b-inv: one-shot flag so we log TX_ENCRYPT_FIRST only once
      * per conn lifetime (per-frame would flood the journal). */
     bool                tx_encrypt_logged;
+
+    /* Phase 3.2b-inv2: one-shot flag for PENDING_DRAIN log. */
+    bool                drain_logged;
 } nodus_tcp_conn_t;
 
 /* ── Callbacks ───────────────────────────────────────────────────── */
