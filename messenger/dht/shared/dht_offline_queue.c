@@ -55,27 +55,15 @@ static outbox_cache_entry_t g_outbox_cache[OUTBOX_CACHE_MAX_ENTRIES];
     #include <arpa/inet.h>  // For htonl/ntohl on Linux
 #endif
 
-/**
- * Generate base key for sender's outbox to recipient (Spillway)
- * Chunked layer handles hashing internally
- *
- * Key format: sender + ":outbox:" + recipient
- * Example: "alice_fp:outbox:bob_fp"
+/*
+ * CORE-04 (phase 6, plan 06): Removed legacy unsalted outbox-key helpers
+ * (make_outbox_base_key, dht_generate_outbox_key) along with the unsalted
+ * retrieval paths (dht_retrieve_queued_messages_from_contacts[_parallel]).
+ * Per CLAUDE.md "No Dead Code" rule, these had zero non-doc callers and
+ * represented a re-introduction risk for deterministic outbox keys that
+ * leak sender×recipient communication metadata. The salted DM outbox
+ * (dht_dm_outbox.c) is the sole remaining producer/consumer of outbox keys.
  */
-static void make_outbox_base_key(const char *sender, const char *recipient, char *key_out, size_t key_out_size) {
-    snprintf(key_out, key_out_size, "%s:outbox:%s", sender, recipient);
-}
-
-/**
- * Legacy function - kept for API compatibility but now just creates base key
- * @deprecated Use make_outbox_base_key instead
- */
-void dht_generate_outbox_key(const char *sender, const char *recipient, uint8_t *key_out) {
-    // For backward compatibility, fill with SHA3-512 hash of base key
-    char base_key[512];
-    make_outbox_base_key(sender, recipient, base_key, sizeof(base_key));
-    qgp_sha3_512((const uint8_t*)base_key, strlen(base_key), key_out);
-}
 
 /**
  * Free a single offline message
@@ -419,272 +407,18 @@ int dht_queue_message(
                                  ciphertext_len, seq_num, ttl_seconds, salt);
 }
 
-/**
- * Retrieve all queued messages for recipient from all contacts' outboxes (Spillway)
+/*
+ * CORE-04 (phase 6, plan 06): Removed dead functions
+ * dht_retrieve_queued_messages_from_contacts and
+ * dht_retrieve_queued_messages_from_contacts_parallel. Both produced
+ * deterministic unsalted outbox keys (sender:outbox:recipient) and had zero
+ * callers anywhere in messenger/, dnac/, or nodus/ (only docstring mentions).
+ * The live DM retrieval path is dht_dm_outbox.c with per-contact salts.
  *
- * Queries each sender's outbox (SHA3-512(sender + ":outbox:" + recipient))
- * and accumulates all messages from all senders.
+ * REMOVED: dht_clear_queue() - No longer needed in Spillway Protocol.
+ * In sender-based outbox model, recipients don't control sender outboxes;
+ * senders manage their own outboxes and recipients are read-only.
  */
-int dht_retrieve_queued_messages_from_contacts(
-    const char *recipient,
-    const char **sender_list,
-    size_t sender_count,
-    dht_offline_message_t **messages_out,
-    size_t *count_out)
-{
-    if (!recipient || !sender_list || sender_count == 0 || !messages_out || !count_out) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for retrieval\n");
-        return -1;
-    }
-
-    struct timespec function_start;
-    clock_gettime(CLOCK_MONOTONIC, &function_start);
-
-    QGP_LOG_INFO(LOG_TAG, "Retrieving queued messages for %s from %zu contacts\n", recipient, sender_count);
-
-    // Allocate temporary array to accumulate messages from all senders
-    dht_offline_message_t *all_messages = NULL;
-    size_t all_count = 0;
-    size_t all_capacity = 0;
-
-    uint64_t now = (uint64_t)time(NULL);
-
-    // Iterate through all senders (contacts)
-    for (size_t contact_idx = 0; contact_idx < sender_count; contact_idx++) {
-        struct timespec loop_start, dht_get_start, deserialize_start;
-        clock_gettime(CLOCK_MONOTONIC, &loop_start);
-
-        const char *sender = sender_list[contact_idx];
-
-        // Generate sender's outbox base key to us
-        char outbox_base_key[512];
-        make_outbox_base_key(sender, recipient, outbox_base_key, sizeof(outbox_base_key));
-
-        QGP_LOG_INFO(LOG_TAG, "[%zu/%zu] Checking sender %.20s... outbox\n",
-               contact_idx + 1, sender_count, sender);
-
-        // Query DHT for this sender's outbox via chunked layer
-        uint8_t *outbox_data = NULL;
-        size_t outbox_len = 0;
-
-        clock_gettime(CLOCK_MONOTONIC, &dht_get_start);
-        int get_result = nodus_ops_get_str(outbox_base_key, &outbox_data, &outbox_len);
-        struct timespec dht_get_end;
-        clock_gettime(CLOCK_MONOTONIC, &dht_get_end);
-        long dht_get_ms = (dht_get_end.tv_sec - dht_get_start.tv_sec) * 1000 +
-                          (dht_get_end.tv_nsec - dht_get_start.tv_nsec) / 1000000;
-
-        if (get_result != 0 || !outbox_data || outbox_len == 0) {
-            // No messages from this sender (outbox empty or doesn't exist)
-            QGP_LOG_INFO(LOG_TAG, "✗ No messages (chunked_fetch took %ld ms)\n", dht_get_ms);
-            continue;
-        }
-
-        QGP_LOG_INFO(LOG_TAG, "✓ Found outbox (%zu bytes, chunked_fetch took %ld ms)\n", outbox_len, dht_get_ms);
-
-        // Deserialize messages from this sender's outbox
-        dht_offline_message_t *sender_messages = NULL;
-        size_t sender_count_msgs = 0;
-
-        clock_gettime(CLOCK_MONOTONIC, &deserialize_start);
-        if (dht_deserialize_messages(outbox_data, outbox_len, &sender_messages, &sender_count_msgs) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "✗ Failed to deserialize sender's outbox\n");
-            free(outbox_data);
-            continue;
-        }
-
-        free(outbox_data);
-        struct timespec deserialize_end;
-        clock_gettime(CLOCK_MONOTONIC, &deserialize_end);
-        long deserialize_ms = (deserialize_end.tv_sec - deserialize_start.tv_sec) * 1000 +
-                              (deserialize_end.tv_nsec - deserialize_start.tv_nsec) / 1000000;
-
-        QGP_LOG_INFO(LOG_TAG, "Deserialized %zu message(s) from this sender (took %ld ms)\n",
-               sender_count_msgs, deserialize_ms);
-
-        // Filter out expired messages and append valid ones to all_messages
-        for (size_t i = 0; i < sender_count_msgs; i++) {
-            if (sender_messages[i].expiry >= now) {
-                // Valid message - add to combined array
-                if (all_count >= all_capacity) {
-                    // Grow array (double capacity, min 16)
-                    size_t new_capacity = (all_capacity == 0) ? 16 : (all_capacity * 2);
-                    dht_offline_message_t *new_array = (dht_offline_message_t*)realloc(
-                        all_messages, new_capacity * sizeof(dht_offline_message_t));
-                    if (!new_array) {
-                        QGP_LOG_ERROR(LOG_TAG, "Failed to grow message array\n");
-                        dht_offline_messages_free(all_messages, all_count);
-                        dht_offline_messages_free(sender_messages, sender_count_msgs);
-                        return -1;
-                    }
-                    all_messages = new_array;
-                    all_capacity = new_capacity;
-                }
-
-                // Copy message to combined array (transfer ownership)
-                all_messages[all_count++] = sender_messages[i];
-            } else {
-                // Expired message - free it
-                QGP_LOG_INFO(LOG_TAG, "Message %zu expired (expiry=%llu, now=%llu)\n",
-                       i, (unsigned long long)sender_messages[i].expiry, (unsigned long long)now);
-                dht_offline_message_free(&sender_messages[i]);
-            }
-        }
-
-        // Free sender_messages array (contents transferred or freed)
-        free(sender_messages);
-    }
-
-    struct timespec function_end;
-    clock_gettime(CLOCK_MONOTONIC, &function_end);
-    long total_ms = (function_end.tv_sec - function_start.tv_sec) * 1000 +
-                    (function_end.tv_nsec - function_start.tv_nsec) / 1000000;
-    long avg_ms_per_contact = sender_count > 0 ? total_ms / sender_count : 0;
-
-    QGP_LOG_INFO(LOG_TAG, "✓ Retrieved %zu valid messages from %zu contacts (total: %ld ms, avg per contact: %ld ms)\n",
-           all_count, sender_count, total_ms, avg_ms_per_contact);
-
-    *messages_out = all_messages;
-    *count_out = all_count;
-    return 0;
-}
-
-/**
- * REMOVED: dht_clear_queue() - No longer needed in Spillway Protocol
- *
- * In sender-based outbox model:
- * - Recipients don't control sender outboxes (can't clear them)
- * - Senders manage their own outboxes
- * - Recipients only retrieve messages (read-only operation)
- * - No need for recipient-side clearing
- */
-
-/**
- * ============================================================================
- * PARALLEL MESSAGE RETRIEVAL (BATCH API)
- * ============================================================================
- * Uses nodus_ops batch API to fetch all contacts' outboxes in parallel.
- * This provides 10-100x speedup compared to sequential fetching.
- *
- * Performance: 50 contacts sequential = ~12.5s, parallel = ~0.3s
- */
-
-/**
- * Retrieve queued messages from all contacts using parallel batch fetch
- *
- * Uses the new batch API to fetch all chunk0 keys simultaneously, providing
- * massive speedup for checking offline messages from many contacts.
- */
-int dht_retrieve_queued_messages_from_contacts_parallel(
-    const char *recipient,
-    const char **sender_list,
-    size_t sender_count,
-    dht_offline_message_t **messages_out,
-    size_t *count_out)
-{
-    if (!recipient || !sender_list || sender_count == 0 || !messages_out || !count_out) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for parallel retrieval\n");
-        return -1;
-    }
-
-    struct timespec function_start;
-    clock_gettime(CLOCK_MONOTONIC, &function_start);
-
-    QGP_LOG_INFO(LOG_TAG, "PARALLEL: Retrieving queued messages for %s from %zu contacts\n",
-                 recipient, sender_count);
-
-    // Step 1: Build all outbox base keys
-    char **outbox_keys = (char **)malloc(sender_count * sizeof(char *));
-    if (!outbox_keys) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate outbox keys array\n");
-        return -1;
-    }
-
-    for (size_t i = 0; i < sender_count; i++) {
-        outbox_keys[i] = (char *)malloc(512);
-        if (!outbox_keys[i]) {
-            for (size_t j = 0; j < i; j++) free(outbox_keys[j]);
-            free(outbox_keys);
-            return -1;
-        }
-        make_outbox_base_key(sender_list[i], recipient, outbox_keys[i], 512);
-    }
-
-    // Step 2: Fetch all outboxes sequentially (nodus client-server is fast)
-    dht_offline_message_t *all_messages = NULL;
-    size_t all_count = 0;
-    size_t all_capacity = 0;
-    uint64_t now = (uint64_t)time(NULL);
-
-    for (size_t i = 0; i < sender_count; i++) {
-        uint8_t *outbox_data = NULL;
-        size_t outbox_len = 0;
-
-        int get_result = nodus_ops_get_str(outbox_keys[i], &outbox_data, &outbox_len);
-        if (get_result != 0 || !outbox_data || outbox_len == 0) {
-            continue;
-        }
-
-        QGP_LOG_INFO(LOG_TAG, "PARALLEL: [%zu/%zu] Found outbox from %.20s... (%zu bytes)\n",
-                     i + 1, sender_count, sender_list[i], outbox_len);
-
-        dht_offline_message_t *sender_messages = NULL;
-        size_t sender_msg_count = 0;
-
-        if (dht_deserialize_messages(outbox_data, outbox_len,
-                                     &sender_messages, &sender_msg_count) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "PARALLEL: Failed to deserialize sender's outbox\n");
-            free(outbox_data);
-            continue;
-        }
-        free(outbox_data);
-
-        QGP_LOG_INFO(LOG_TAG, "PARALLEL: Deserialized %zu message(s) from sender\n", sender_msg_count);
-
-        for (size_t j = 0; j < sender_msg_count; j++) {
-            if (sender_messages[j].expiry >= now) {
-                if (all_count >= all_capacity) {
-                    size_t new_capacity = (all_capacity == 0) ? 16 : (all_capacity * 2);
-                    dht_offline_message_t *new_array = (dht_offline_message_t *)realloc(
-                        all_messages, new_capacity * sizeof(dht_offline_message_t));
-                    if (!new_array) {
-                        QGP_LOG_ERROR(LOG_TAG, "Failed to grow message array\n");
-                        dht_offline_messages_free(all_messages, all_count);
-                        dht_offline_messages_free(sender_messages, sender_msg_count);
-                        for (size_t k = i; k < sender_count; k++) free(outbox_keys[k]);
-                        free(outbox_keys);
-                        return -1;
-                    }
-                    all_messages = new_array;
-                    all_capacity = new_capacity;
-                }
-                all_messages[all_count++] = sender_messages[j];
-            } else {
-                dht_offline_message_free(&sender_messages[j]);
-            }
-        }
-        free(sender_messages);
-    }
-
-    // Free outbox keys
-    for (size_t i = 0; i < sender_count; i++) {
-        free(outbox_keys[i]);
-    }
-    free(outbox_keys);
-
-    struct timespec function_end;
-    clock_gettime(CLOCK_MONOTONIC, &function_end);
-    long total_ms = (function_end.tv_sec - function_start.tv_sec) * 1000 +
-                    (function_end.tv_nsec - function_start.tv_nsec) / 1000000;
-    long avg_ms = sender_count > 0 ? total_ms / sender_count : 0;
-
-    QGP_LOG_INFO(LOG_TAG, "PARALLEL: Retrieved %zu messages from %zu contacts in %ld ms (avg %ld ms/contact)\n",
-                 all_count, sender_count, total_ms, avg_ms);
-
-    *messages_out = all_messages;
-    *count_out = all_count;
-    return 0;
-}
 
 /**
  * ============================================================================

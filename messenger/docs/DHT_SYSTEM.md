@@ -790,34 +790,12 @@ size_t dht_listen_ack(const char *my_fp, const char *recipient_fp,
                       dht_ack_callback_t callback, void *user_data);
 void dht_cancel_ack_listener(dht_context_t *ctx, size_t token);
 
-// Retrieve messages from all contacts (sequential)
-int dht_retrieve_queued_messages_from_contacts(
-    dht_context_t *ctx,
-    const char *recipient,
-    const char **sender_list,     // Contact fingerprints
-    size_t sender_count,
-    dht_offline_message_t **messages_out,
-    size_t *count_out
-);
-
-// Retrieve messages from all contacts (parallel - 10-100x faster)
-int dht_retrieve_queued_messages_from_contacts_parallel(
-    dht_context_t *ctx,
-    const char *recipient,
-    const char **sender_list,
-    size_t sender_count,
-    dht_offline_message_t **messages_out,
-    size_t *count_out
-);
-
-// Generate outbox base key hash (legacy - for backward compatibility)
-// NOTE: For listening to outbox updates, use dht_chunked_make_key() instead
-// because chunked storage writes to chunk[0] key, not this raw hash.
-void dht_generate_outbox_key(
-    const char *sender,
-    const char *recipient,
-    uint8_t *key_out              // 64 bytes for SHA3-512
-);
+// CORE-04 (v0.9.197+): Removed dht_retrieve_queued_messages_from_contacts,
+// dht_retrieve_queued_messages_from_contacts_parallel, and dht_generate_outbox_key.
+// All three produced deterministic unsalted SHA3-512(sender:outbox:recipient)
+// keys that leaked sender×recipient communication metadata. They had zero
+// callers anywhere in the tree and were removed per the No Dead Code rule.
+// The live salted retrieval path is in dht_dm_outbox.h (per-contact salt).
 ```
 
 ---

@@ -139,13 +139,12 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | Function | Description |
 |----------|-------------|
 | `int dht_queue_message(..., const uint8_t *salt)` | Store message (redirects to daily bucket API, salt-aware) |
-| `int dht_retrieve_queued_messages_from_contacts(...)` | Retrieve messages from contacts (sequential) |
-| `int dht_retrieve_queued_messages_from_contacts_parallel(...)` | Retrieve messages (parallel, 10-100× faster) |
 | `void dht_offline_message_free(dht_offline_message_t*)` | Free single message |
 | `void dht_offline_messages_free(dht_offline_message_t*, size_t)` | Free message array |
 | `int dht_serialize_messages(...)` | Serialize messages to binary |
 | `int dht_deserialize_messages(...)` | Deserialize messages from binary |
-| `void dht_generate_outbox_key(const char*, const char*, uint8_t*)` | Generate outbox DHT key |
+
+**CORE-04 (v0.9.197+):** Removed `dht_retrieve_queued_messages_from_contacts`, `dht_retrieve_queued_messages_from_contacts_parallel`, and `dht_generate_outbox_key`. These produced deterministic unsalted `SHA3-512(sender:outbox:recipient)` keys leaking communication metadata, had zero callers, and were removed per the No Dead Code rule. The live salted DM retrieval path is `dht_dm_outbox_fetch_*` in `dht_dm_outbox.h`.
 
 ### 10.2 ACK API (`dht_offline_queue.h`) - v15 Replaces Watermarks
 
