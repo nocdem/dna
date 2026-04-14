@@ -100,33 +100,15 @@ static void enc_batch_tx(cbor_encoder_t *enc, const nodus_t3_batch_tx_t *tx) {
 }
 
 static void enc_propose_args(cbor_encoder_t *enc, const nodus_t3_propose_t *p) {
-    if (p->batch_count > 0) {
-        /* Batch mode: encode btx array + block_hash */
-        cbor_encode_map(enc, 2);
-        cbor_encode_cstr(enc, "bh");
-        cbor_encode_bstr(enc, p->block_hash, NODUS_T3_TX_HASH_LEN);
-        cbor_encode_cstr(enc, "btx");
-        cbor_encode_array(enc, (size_t)p->batch_count);
-        for (int i = 0; i < p->batch_count; i++)
-            enc_batch_tx(enc, &p->batch_txs[i]);
-    } else {
-        /* Legacy single-TX mode */
-        cbor_encode_map(enc, 8);
-        cbor_encode_cstr(enc, "txh");  cbor_encode_bstr(enc, p->tx_hash,
-                                                         NODUS_T3_TX_HASH_LEN);
-        cbor_encode_cstr(enc, "nlc");  cbor_encode_uint(enc, p->nullifier_count);
-        cbor_encode_cstr(enc, "nls");
-        cbor_encode_array(enc, p->nullifier_count);
-        for (int i = 0; i < p->nullifier_count; i++)
-            cbor_encode_bstr(enc, p->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
-        cbor_encode_cstr(enc, "tty");  cbor_encode_uint(enc, p->tx_type);
-        cbor_encode_cstr(enc, "txd");  cbor_encode_bstr(enc, p->tx_data, p->tx_len);
-        cbor_encode_cstr(enc, "pk");   cbor_encode_bstr(enc, p->client_pubkey,
-                                                         NODUS_PK_BYTES);
-        cbor_encode_cstr(enc, "csig"); cbor_encode_bstr(enc, p->client_sig,
-                                                         NODUS_SIG_BYTES);
-        cbor_encode_cstr(enc, "fee");  cbor_encode_uint(enc, p->fee);
-    }
+    /* Phase 9 / Task 9.2 — legacy single-TX branch deleted; every
+     * propose is batch-shaped post Phase 7. */
+    cbor_encode_map(enc, 2);
+    cbor_encode_cstr(enc, "bh");
+    cbor_encode_bstr(enc, p->block_hash, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "btx");
+    cbor_encode_array(enc, (size_t)p->batch_count);
+    for (int i = 0; i < p->batch_count; i++)
+        enc_batch_tx(enc, &p->batch_txs[i]);
 }
 
 static void enc_vote_args(cbor_encoder_t *enc, const nodus_t3_vote_t *v) {
@@ -160,30 +142,16 @@ static void enc_commit_certs(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
 }
 
 static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
-    if (c->batch_count > 0) {
-        /* Batch mode: block_hash + btx array + certs */
-        cbor_encode_map(enc, 7);
-        cbor_encode_cstr(enc, "bh");
-        cbor_encode_bstr(enc, c->block_hash, NODUS_T3_TX_HASH_LEN);
-        cbor_encode_cstr(enc, "btx");
-        cbor_encode_array(enc, (size_t)c->batch_count);
-        for (int i = 0; i < c->batch_count; i++)
-            enc_batch_tx(enc, &c->batch_txs[i]);
-        enc_commit_certs(enc, c);
-    } else {
-        /* Legacy single-TX mode */
-        cbor_encode_map(enc, 10);
-        cbor_encode_cstr(enc, "txh");  cbor_encode_bstr(enc, c->tx_hash,
-                                                         NODUS_T3_TX_HASH_LEN);
-        cbor_encode_cstr(enc, "nlc");  cbor_encode_uint(enc, c->nullifier_count);
-        cbor_encode_cstr(enc, "nls");
-        cbor_encode_array(enc, c->nullifier_count);
-        for (int i = 0; i < c->nullifier_count; i++)
-            cbor_encode_bstr(enc, c->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
-        cbor_encode_cstr(enc, "tty");  cbor_encode_uint(enc, c->tx_type);
-        cbor_encode_cstr(enc, "txd");  cbor_encode_bstr(enc, c->tx_data, c->tx_len);
-        enc_commit_certs(enc, c);
-    }
+    /* Phase 9 / Task 9.2 — legacy single-TX branch deleted; every
+     * commit is batch-shaped post Phase 7. */
+    cbor_encode_map(enc, 7);
+    cbor_encode_cstr(enc, "bh");
+    cbor_encode_bstr(enc, c->block_hash, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "btx");
+    cbor_encode_array(enc, (size_t)c->batch_count);
+    for (int i = 0; i < c->batch_count; i++)
+        enc_batch_tx(enc, &c->batch_txs[i]);
+    enc_commit_certs(enc, c);
 }
 
 static void enc_viewchg_args(cbor_encoder_t *enc, const nodus_t3_viewchg_t *v) {
@@ -537,62 +505,10 @@ static void dec_propose_args(cbor_decoder_t *dec, size_t count,
                 val.bstr.len == NODUS_T3_TX_HASH_LEN)
                 memcpy(p->block_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
         }
-        /* Legacy single-TX fields */
-        else if (KEY_IS(key, "txh")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(p->tx_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "nlc")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) {
-                p->nullifier_count = (uint8_t)val.uint_val;
-                if (p->nullifier_count > NODUS_T3_MAX_TX_INPUTS)
-                    p->nullifier_count = NODUS_T3_MAX_TX_INPUTS;
-            }
-        }
-        else if (KEY_IS(key, "nls")) {
-            cbor_item_t arr = cbor_decode_next(dec);
-            if (arr.type == CBOR_ITEM_ARRAY) {
-                size_t max = arr.count < NODUS_T3_MAX_TX_INPUTS ?
-                             arr.count : NODUS_T3_MAX_TX_INPUTS;
-                for (size_t j = 0; j < max; j++) {
-                    cbor_item_t val = cbor_decode_next(dec);
-                    if (val.type == CBOR_ITEM_BSTR &&
-                        val.bstr.len == NODUS_T3_NULLIFIER_LEN)
-                        p->nullifiers[j] = val.bstr.ptr;
-                }
-                for (size_t j = max; j < arr.count; j++)
-                    cbor_decode_skip(dec);
-            }
-        }
-        else if (KEY_IS(key, "tty")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) p->tx_type = (uint8_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "txd")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len <= NODUS_T3_MAX_TX_SIZE) {
-                p->tx_data = val.bstr.ptr;
-                p->tx_len = (uint32_t)val.bstr.len;
-            }
-        }
-        else if (KEY_IS(key, "pk")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_PK_BYTES)
-                p->client_pubkey = val.bstr.ptr;
-        }
-        else if (KEY_IS(key, "csig")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
-                p->client_sig = val.bstr.ptr;
-        }
-        else if (KEY_IS(key, "fee")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) p->fee = val.uint_val;
-        }
+        /* Phase 9 / Task 9.2 — legacy single-TX propose keys
+         * (txh/nlc/nls/tty/txd/pk/csig/fee) decoder branches deleted.
+         * Unknown keys still skip, but no peer in this codebase emits
+         * them after Phase 7. */
         else {
             cbor_decode_skip(dec);
         }
@@ -725,50 +641,10 @@ static void dec_commit_args(cbor_decoder_t *dec, size_t count,
                 val.bstr.len == NODUS_T3_TX_HASH_LEN)
                 memcpy(c->block_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
         }
-        /* Legacy single-TX fields */
-        else if (KEY_IS(key, "txh")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(c->tx_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "nlc")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) {
-                c->nullifier_count = (uint8_t)val.uint_val;
-                if (c->nullifier_count > NODUS_T3_MAX_TX_INPUTS)
-                    c->nullifier_count = NODUS_T3_MAX_TX_INPUTS;
-            }
-        }
-        else if (KEY_IS(key, "nls")) {
-            cbor_item_t arr = cbor_decode_next(dec);
-            if (arr.type == CBOR_ITEM_ARRAY) {
-                size_t max = arr.count < NODUS_T3_MAX_TX_INPUTS ?
-                             arr.count : NODUS_T3_MAX_TX_INPUTS;
-                for (size_t j = 0; j < max; j++) {
-                    cbor_item_t val = cbor_decode_next(dec);
-                    if (val.type == CBOR_ITEM_BSTR &&
-                        val.bstr.len == NODUS_T3_NULLIFIER_LEN)
-                        c->nullifiers[j] = val.bstr.ptr;
-                }
-                for (size_t j = max; j < arr.count; j++)
-                    cbor_decode_skip(dec);
-            }
-        }
-        else if (KEY_IS(key, "tty")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) c->tx_type = (uint8_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "txd")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len <= NODUS_T3_MAX_TX_SIZE) {
-                c->tx_data = val.bstr.ptr;
-                c->tx_len = (uint32_t)val.bstr.len;
-            }
-        }
+        /* Phase 9 / Task 9.2 — legacy single-TX commit keys
+         * (txh/nlc/nls/tty/txd) decoder branches deleted. Falls through
+         * to commit-specific fields (certs / timestamps) or skip. */
         else {
-            /* Try commit-specific fields (certs, timestamps) */
             dec_commit_field(dec, &key, c);
         }
     }

@@ -1683,40 +1683,15 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                 LOG_TAG, prop->batch_count,
                 tx_invalid ? "REJECTED" : "APPROVED");
     } else {
-        /* ── Legacy single-TX mode ───────────────────────────────── */
-        memcpy(w->round_state.tx_hash, prop->tx_hash, NODUS_T3_TX_HASH_LEN);
-        w->round_state.tx_type = prop->tx_type;
-
-        w->round_state.nullifier_count = prop->nullifier_count;
-        for (int i = 0; i < prop->nullifier_count; i++)
-            memcpy(w->round_state.nullifiers[i], prop->nullifiers[i],
-                   NODUS_T3_NULLIFIER_LEN);
-
-        if (prop->tx_data && prop->tx_len > 0 &&
-            prop->tx_len <= NODUS_T3_MAX_TX_SIZE) {
-            memcpy(w->round_state.tx_data, prop->tx_data, prop->tx_len);
-            w->round_state.tx_len = prop->tx_len;
-        }
-
-        if (prop->client_pubkey)
-            memcpy(w->round_state.client_pubkey, prop->client_pubkey,
-                   NODUS_PK_BYTES);
-        if (prop->client_sig)
-            memcpy(w->round_state.client_signature, prop->client_sig,
-                   NODUS_SIG_BYTES);
-        w->round_state.fee_amount = prop->fee;
-
-        int vrc = nodus_witness_verify_transaction(w,
-                      w->round_state.tx_data, w->round_state.tx_len,
-                      prop->tx_hash, prop->tx_type,
-                      (const uint8_t *)w->round_state.nullifiers,
-                      w->round_state.nullifier_count,
-                      w->round_state.client_pubkey,
-                      w->round_state.client_signature,
-                      w->round_state.fee_amount,
-                      reject_reason, sizeof(reject_reason));
-
-        tx_invalid = (vrc != 0);
+        /* Phase 9 / Task 9.1 — legacy single-TX propose path DELETED.
+         * Phase 7 removed the only sender of legacy single-TX proposals
+         * (nodus_witness_bft_start_round); after the chain-wipe deploy,
+         * no peer ever sends batch_count == 0. Reject defensively. */
+        fprintf(stderr, "%s: legacy single-TX propose rejected — "
+                "batch_count == 0 unsupported after Phase 7\n", LOG_TAG);
+        tx_invalid = true;
+        snprintf(reject_reason, sizeof(reject_reason),
+                 "legacy single-TX propose unsupported");
     }
 
     nodus_witness_vote_t my_vote =
@@ -1744,10 +1719,10 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
 
     int sent = nodus_witness_bft_broadcast(w, &vote_msg);
 
-    fprintf(stderr, "%s: PREVOTE %s for round %lu (%d nullifiers, sent=%d)\n",
+    fprintf(stderr, "%s: PREVOTE %s for round %lu (%d batch txs, sent=%d)\n",
             LOG_TAG,
             my_vote == NODUS_W_VOTE_APPROVE ? "APPROVE" : "REJECT",
-            (unsigned long)hdr->round, prop->nullifier_count, sent);
+            (unsigned long)hdr->round, prop->batch_count, sent);
 
     return 0;
 }
@@ -2037,17 +2012,8 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             btx->client_sig = e->client_sig;
             btx->fee = e->fee;
         }
-    } else {
-        /* Legacy single-TX commit message */
-        memcpy(c_msg.commit.tx_hash, w->round_state.tx_hash,
-               NODUS_T3_TX_HASH_LEN);
-        c_msg.commit.nullifier_count = w->round_state.nullifier_count;
-        for (int i = 0; i < w->round_state.nullifier_count; i++)
-            c_msg.commit.nullifiers[i] = w->round_state.nullifiers[i];
-        c_msg.commit.tx_type = w->round_state.tx_type;
-        c_msg.commit.tx_data = w->round_state.tx_data;
-        c_msg.commit.tx_len = w->round_state.tx_len;
     }
+    /* Phase 9 / Task 9.1 — legacy single-TX commit message build deleted. */
 
     c_msg.commit.proposal_timestamp = w->round_state.proposal_timestamp;
     memcpy(c_msg.commit.proposer_id, w->round_state.proposer_id,
@@ -2222,49 +2188,11 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
             return -1;
         }
     } else {
-        QGP_LOG_INFO(LOG_TAG, "received COMMIT for round %lu (%d nullifiers)",
-                     (unsigned long)hdr->round, cmt->nullifier_count);
-
-        /* HIGH-1: Verify tx_hash integrity before committing */
-        if (cmt->tx_data && cmt->tx_len > 0) {
-            const uint8_t *hash_pubkey = w->round_state.client_pubkey;
-            uint8_t zero_pk[NODUS_PK_BYTES];
-            memset(zero_pk, 0, NODUS_PK_BYTES);
-
-            if (cmt->tx_type == NODUS_W_TX_GENESIS)
-                hash_pubkey = zero_pk;
-
-            bool have_pubkey = (cmt->tx_type == NODUS_W_TX_GENESIS) ||
-                               (memcmp(hash_pubkey, zero_pk, NODUS_PK_BYTES) != 0);
-
-            if (have_pubkey) {
-                uint8_t computed_hash[NODUS_KEY_BYTES];
-                if (nodus_witness_recompute_tx_hash(cmt->tx_data, cmt->tx_len,
-                        hash_pubkey, computed_hash) != 0 ||
-                    memcmp(computed_hash, cmt->tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
-                    QGP_LOG_WARN(LOG_TAG, "COMMIT tx_hash mismatch — "
-                                 "rejecting round %lu",
-                                 (unsigned long)hdr->round);
-                    return -1;
-                }
-            }
-        }
-
-        /* Build nullifier pointer array from T3 message */
-        const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
-        for (int i = 0; i < cmt->nullifier_count; i++)
-            nul_ptrs[i] = cmt->nullifiers[i];
-
-        /* Write to database */
-        if (nodus_witness_commit_block(w, cmt->tx_hash, cmt->tx_type,
-                           nul_ptrs, cmt->nullifier_count,
-                           0,
-                           cmt->proposal_timestamp,
-                           cmt->proposer_id,
-                           cmt->tx_data, cmt->tx_len) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "remote commit to DB failed!");
-            return -1;
-        }
+        /* Phase 9 / Task 9.1 — legacy single-TX COMMIT path DELETED.
+         * After Phase 7 every commit is batch-shaped; reject defensively. */
+        QGP_LOG_ERROR(LOG_TAG, "legacy single-TX COMMIT rejected — "
+                     "batch_count == 0 unsupported after Phase 7");
+        return -1;
     }
 
     /* Store commit certificates from leader's COMMIT message */
@@ -2310,57 +2238,11 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
     if (hdr->round > w->last_committed_round)
         w->last_committed_round = hdr->round;
 
-    /* Handle client response if this was our active round.
-     * Phase 12 / Task 12.5 — direct-client spend_result is sent by the
-     * leader at handle_vote time (per-entry), so this handler only owns
-     * the forwarder fwd_rsp branch. */
+    /* Phase 9 / Task 9.1 — handle_commit fwd_rsp branch deleted.
+     * The leader emits per-entry fwd_rsp at handle_vote precommit→commit
+     * batch reply path; the duplicate single-TX path here referenced
+     * legacy cmt->tx_hash which no longer exists. */
     if (w->round_state.round == hdr->round) {
-        if (w->round_state.is_forwarded) {
-            /* Forwarded request — send w_fwd_rsp to forwarder */
-            int fwd_pi = -1;
-            for (int i = 0; i < w->peer_count; i++) {
-                if (memcmp(w->peers[i].witness_id,
-                           w->round_state.forwarder_id,
-                           NODUS_T3_WITNESS_ID_LEN) == 0 &&
-                    w->peers[i].conn && w->peers[i].identified) {
-                    fwd_pi = i;
-                    break;
-                }
-            }
-
-            if (fwd_pi >= 0) {
-                nodus_t3_msg_t fwd_rsp;
-                memset(&fwd_rsp, 0, sizeof(fwd_rsp));
-                fwd_rsp.type = NODUS_T3_FWD_RSP;
-                fwd_rsp.txn_id = ++w->next_txn_id;
-                snprintf(fwd_rsp.method, sizeof(fwd_rsp.method), "w_fwd_rsp");
-
-                fwd_rsp.fwd_rsp.status = 0;
-                memcpy(fwd_rsp.fwd_rsp.tx_hash, cmt->tx_hash,
-                       NODUS_T3_TX_HASH_LEN);
-                fwd_rsp.fwd_rsp.witness_count = 0;  /* forwarder doesn't use sigs */
-
-                fwd_rsp.header.version = NODUS_T3_BFT_PROTOCOL_VER;
-                fwd_rsp.header.round = hdr->round;
-                fwd_rsp.header.view = hdr->view;
-                memcpy(fwd_rsp.header.sender_id, w->my_id,
-                       NODUS_T3_WITNESS_ID_LEN);
-                fwd_rsp.header.timestamp = (uint64_t)time(NULL);
-                nodus_random((uint8_t *)&fwd_rsp.header.nonce,
-                              sizeof(fwd_rsp.header.nonce));
-                memcpy(fwd_rsp.header.chain_id, w->chain_id, 32);
-
-                uint8_t fwd_buf[NODUS_T3_MAX_MSG_SIZE];
-                size_t fwd_len = 0;
-                if (nodus_t3_encode(&fwd_rsp, &w->server->identity.sk,
-                                     fwd_buf, sizeof(fwd_buf), &fwd_len) == 0) {
-                    nodus_tcp_send(w->peers[fwd_pi].conn, fwd_buf, fwd_len);
-                    fprintf(stderr, "%s: sent w_fwd_rsp to forwarder "
-                            "(via handle_commit)\n", LOG_TAG);
-                }
-            }
-        }
-
         w->round_state.phase = NODUS_W_PHASE_IDLE;
         w->round_state.client_conn = NULL;
     }

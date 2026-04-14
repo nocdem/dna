@@ -130,16 +130,21 @@ static void test_propose(void) {
     in.txn_id = 100;
     fill_header(&in.header);
 
-    memcpy(in.propose.tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    in.propose.nullifier_count = 3;
+    /* Phase 9 / Task 9.1 — propose is now batch-shaped only. Build a
+     * 1-entry batch round-trip. */
+    memcpy(in.propose.block_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
+    in.propose.batch_count = 1;
+    nodus_t3_batch_tx_t *btx = &in.propose.batch_txs[0];
+    memcpy(btx->tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
+    btx->nullifier_count = 3;
     for (int i = 0; i < 3; i++)
-        in.propose.nullifiers[i] = test_nullifiers[i];
-    in.propose.tx_type = 2;
-    in.propose.tx_data = test_tx_data;
-    in.propose.tx_len = 128;
-    in.propose.client_pubkey = test_pubkey;
-    in.propose.client_sig = test_sig;
-    in.propose.fee = 500;
+        btx->nullifiers[i] = test_nullifiers[i];
+    btx->tx_type = 2;
+    btx->tx_data = test_tx_data;
+    btx->tx_len = 128;
+    btx->client_pubkey = test_pubkey;
+    btx->client_sig = test_sig;
+    btx->fee = 500;
 
     int rc = roundtrip(&in, &out);
     if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
@@ -148,32 +153,18 @@ static void test_propose(void) {
 
     if (out.txn_id != 100) { TEST_FAIL(name, "txn_id"); return; }
     if (out.type != NODUS_T3_PROPOSE) { TEST_FAIL(name, "type"); return; }
-    if (memcmp(out.propose.tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
-        TEST_FAIL(name, "tx_hash"); return;
+    if (memcmp(out.propose.block_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
+        TEST_FAIL(name, "block_hash"); return;
     }
-    if (out.propose.nullifier_count != 3) { TEST_FAIL(name, "nlc"); return; }
-    for (int i = 0; i < 3; i++) {
-        if (!out.propose.nullifiers[i] ||
-            memcmp(out.propose.nullifiers[i], test_nullifiers[i],
-                   NODUS_T3_NULLIFIER_LEN) != 0) {
-            TEST_FAIL(name, "nullifier data"); return;
-        }
+    if (out.propose.batch_count != 1) { TEST_FAIL(name, "batch_count"); return; }
+    const nodus_t3_batch_tx_t *obtx = &out.propose.batch_txs[0];
+    if (memcmp(obtx->tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
+        TEST_FAIL(name, "btx tx_hash"); return;
     }
-    if (out.propose.tx_type != 2) { TEST_FAIL(name, "tx_type"); return; }
-    if (out.propose.tx_len != 128) { TEST_FAIL(name, "tx_len"); return; }
-    if (!out.propose.tx_data ||
-        memcmp(out.propose.tx_data, test_tx_data, 128) != 0) {
-        TEST_FAIL(name, "tx_data"); return;
-    }
-    if (!out.propose.client_pubkey ||
-        memcmp(out.propose.client_pubkey, test_pubkey, NODUS_PK_BYTES) != 0) {
-        TEST_FAIL(name, "client_pubkey"); return;
-    }
-    if (!out.propose.client_sig ||
-        memcmp(out.propose.client_sig, test_sig, NODUS_SIG_BYTES) != 0) {
-        TEST_FAIL(name, "client_sig"); return;
-    }
-    if (out.propose.fee != 500) { TEST_FAIL(name, "fee"); return; }
+    if (obtx->nullifier_count != 3) { TEST_FAIL(name, "btx nlc"); return; }
+    if (obtx->tx_type != 2) { TEST_FAIL(name, "btx tx_type"); return; }
+    if (obtx->tx_len != 128) { TEST_FAIL(name, "btx tx_len"); return; }
+    if (obtx->fee != 500) { TEST_FAIL(name, "btx fee"); return; }
 
     /* Verify signature */
     if (nodus_t3_verify(&out, &test_id.pk) != 0) {
@@ -258,13 +249,17 @@ static void test_commit(void) {
     in.txn_id = 103;
     fill_header(&in.header);
 
-    memcpy(in.commit.tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    in.commit.nullifier_count = 2;
-    in.commit.nullifiers[0] = test_nullifiers[0];
-    in.commit.nullifiers[1] = test_nullifiers[1];
-    in.commit.tx_type = 1;
-    in.commit.tx_data = test_tx_data;
-    in.commit.tx_len = 64;
+    /* Phase 9 / Task 9.1 — commit is batch-shaped only. */
+    memcpy(in.commit.block_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
+    in.commit.batch_count = 1;
+    nodus_t3_batch_tx_t *cbtx = &in.commit.batch_txs[0];
+    memcpy(cbtx->tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
+    cbtx->nullifier_count = 2;
+    cbtx->nullifiers[0] = test_nullifiers[0];
+    cbtx->nullifiers[1] = test_nullifiers[1];
+    cbtx->tx_type = 1;
+    cbtx->tx_data = test_tx_data;
+    cbtx->tx_len = 64;
     in.commit.proposal_timestamp = 1709300100;
     memset(in.commit.proposer_id, 0xCC, NODUS_T3_WITNESS_ID_LEN);
     in.commit.n_precommits = 3;
@@ -274,11 +269,9 @@ static void test_commit(void) {
 
     check_header(&in.header, &out.header, name);
     if (out.type != NODUS_T3_COMMIT) { TEST_FAIL(name, "type"); return; }
-    if (out.commit.nullifier_count != 2) { TEST_FAIL(name, "nlc"); return; }
-    if (out.commit.tx_len != 64) { TEST_FAIL(name, "tx_len"); return; }
-    if (!out.commit.tx_data ||
-        memcmp(out.commit.tx_data, test_tx_data, 64) != 0) {
-        TEST_FAIL(name, "tx_data"); return;
+    if (out.commit.batch_count != 1) { TEST_FAIL(name, "batch_count"); return; }
+    if (memcmp(out.commit.block_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
+        TEST_FAIL(name, "block_hash"); return;
     }
     if (out.commit.proposal_timestamp != 1709300100) {
         TEST_FAIL(name, "pts"); return;
@@ -732,20 +725,25 @@ static void test_propose_zero_nullifiers(void) {
     in.txn_id = 300;
     fill_header(&in.header);
 
-    memcpy(in.propose.tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
-    in.propose.nullifier_count = 0;
-    in.propose.tx_type = 0; /* genesis */
-    in.propose.tx_data = test_tx_data;
-    in.propose.tx_len = 32;
-    in.propose.client_pubkey = test_pubkey;
-    in.propose.client_sig = test_sig;
-    in.propose.fee = 0;
+    /* Phase 9 / Task 9.1 — genesis is now batch-of-1 with zero nullifiers. */
+    memcpy(in.propose.block_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
+    in.propose.batch_count = 1;
+    nodus_t3_batch_tx_t *btx = &in.propose.batch_txs[0];
+    memcpy(btx->tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
+    btx->nullifier_count = 0;
+    btx->tx_type = 0; /* genesis */
+    btx->tx_data = test_tx_data;
+    btx->tx_len = 32;
+    btx->client_pubkey = test_pubkey;
+    btx->client_sig = test_sig;
+    btx->fee = 0;
 
     int rc = roundtrip(&in, &out);
     if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
 
-    if (out.propose.nullifier_count != 0) { TEST_FAIL(name, "nlc"); return; }
-    if (out.propose.tx_len != 32) { TEST_FAIL(name, "tx_len"); return; }
+    if (out.propose.batch_count != 1) { TEST_FAIL(name, "batch_count"); return; }
+    if (out.propose.batch_txs[0].nullifier_count != 0) { TEST_FAIL(name, "btx nlc"); return; }
+    if (out.propose.batch_txs[0].tx_len != 32) { TEST_FAIL(name, "btx tx_len"); return; }
     if (nodus_t3_verify(&out, &test_id.pk) != 0) {
         TEST_FAIL(name, "wsig verify"); return;
     }
