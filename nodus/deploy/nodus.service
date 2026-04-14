@@ -3,6 +3,8 @@ Description=Nodus - Post-Quantum DHT Server
 Documentation=https://github.com/nocdem/dna
 After=network-online.target
 Wants=network-online.target
+StartLimitBurst=3
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
