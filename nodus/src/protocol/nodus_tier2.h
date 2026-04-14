@@ -93,6 +93,10 @@ typedef struct {
     uint32_t peer_count;
     uint64_t uptime_sec;
     uint64_t wall_clock;
+    /* disk_free_pct is the percentage of the witness data directory's
+     * filesystem that is currently free (0–100, integer). 255 = unknown
+     * (statvfs failed or no data dir). Phase 0 / Task 0.12. */
+    uint8_t  disk_free_pct;
 } nodus_t2_status_info_t;
 
 int nodus_t2_status_result(uint32_t txn,

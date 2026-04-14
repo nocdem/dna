@@ -400,6 +400,7 @@ typedef struct {
     uint32_t peer_count;
     uint64_t uptime_sec;
     uint64_t wall_clock;
+    uint8_t  disk_free_pct;
 } cluster_node_status_t;
 
 static int cluster_status_query_one(const char *host, uint16_t port,
@@ -429,12 +430,13 @@ static int cluster_status_query_one(const char *host, uint16_t port,
     if (last_response.type == 'e' || !last_response.has_status_info) goto done;
 
     out->reachable = true;
-    out->block_height = last_response.status_info.block_height;
+    out->block_height  = last_response.status_info.block_height;
     memcpy(out->state_root, last_response.status_info.state_root, 64);
     memcpy(out->chain_id,   last_response.status_info.chain_id,   32);
-    out->peer_count   = last_response.status_info.peer_count;
-    out->uptime_sec   = last_response.status_info.uptime_sec;
-    out->wall_clock   = last_response.status_info.wall_clock;
+    out->peer_count    = last_response.status_info.peer_count;
+    out->uptime_sec    = last_response.status_info.uptime_sec;
+    out->wall_clock    = last_response.status_info.wall_clock;
+    out->disk_free_pct = last_response.status_info.disk_free_pct;
 
 done:
     nodus_t2_msg_free(&last_response);
@@ -480,27 +482,33 @@ static int cmd_cluster_status(int argc, char **argv, int optind_cmd) {
     }
 
     /* Print table */
-    printf("%-24s  %-8s  %-12s  %-6s  %-8s  %-12s  %s\n",
-           "ADDR", "STATUS", "HEIGHT", "PEERS", "UPTIME", "WALL_CLOCK", "STATE_ROOT");
-    printf("%-24s  %-8s  %-12s  %-6s  %-8s  %-12s  %s\n",
-           "------------------------", "--------", "------------",
-           "------", "--------", "------------", "----------------");
+    printf("%-24s  %-6s  %-12s  %-6s  %-8s  %-5s  %-12s  %s\n",
+           "ADDR", "STATUS", "HEIGHT", "PEERS", "UPTIME", "DF%",
+           "WALL_CLOCK", "STATE_ROOT");
+    printf("%-24s  %-6s  %-12s  %-6s  %-8s  %-5s  %-12s  %s\n",
+           "------------------------", "------", "------------",
+           "------", "--------", "-----", "------------",
+           "----------------");
     for (int i = 0; i < targets; i++) {
         if (!rows[i].reachable) {
-            printf("%-24s  %-8s\n", rows[i].target, "DOWN");
+            printf("%-24s  %-6s\n", rows[i].target, "DOWN");
             continue;
         }
         char up[16];
         format_uptime(rows[i].uptime_sec, up, sizeof(up));
+        char df[8];
+        if (rows[i].disk_free_pct == 255) snprintf(df, sizeof(df), " -");
+        else                              snprintf(df, sizeof(df), "%3u%%", rows[i].disk_free_pct);
         char sr_short[17];
         for (int j = 0; j < 8; j++)
             snprintf(sr_short + j * 2, 3, "%02x", rows[i].state_root[j]);
-        printf("%-24s  %-8s  %-12llu  %-6u  %-8s  %-12llu  %s...\n",
+        printf("%-24s  %-6s  %-12llu  %-6u  %-8s  %-5s  %-12llu  %s...\n",
                rows[i].target,
                "UP",
                (unsigned long long)rows[i].block_height,
                rows[i].peer_count,
                up,
+               df,
                (unsigned long long)rows[i].wall_clock,
                sr_short);
     }

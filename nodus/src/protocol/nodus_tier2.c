@@ -1159,13 +1159,14 @@ int nodus_t2_status_result(uint32_t txn,
     cbor_encoder_init(&enc, buf, cap);
     enc_response_header(&enc, 4, txn, "status");
     cbor_encode_cstr(&enc, "r");
-    cbor_encode_map(&enc, 6);
+    cbor_encode_map(&enc, 7);
     cbor_encode_cstr(&enc, "bh");   cbor_encode_uint(&enc, info->block_height);
     cbor_encode_cstr(&enc, "sr");   cbor_encode_bstr(&enc, info->state_root, 64);
     cbor_encode_cstr(&enc, "chid"); cbor_encode_bstr(&enc, info->chain_id, 32);
     cbor_encode_cstr(&enc, "pc");   cbor_encode_uint(&enc, info->peer_count);
     cbor_encode_cstr(&enc, "us");   cbor_encode_uint(&enc, info->uptime_sec);
     cbor_encode_cstr(&enc, "wc");   cbor_encode_uint(&enc, info->wall_clock);
+    cbor_encode_cstr(&enc, "df");   cbor_encode_uint(&enc, info->disk_free_pct);
     return finish(&enc, out_len);
 }
 
@@ -2556,6 +2557,13 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                     cbor_item_t v = cbor_decode_next(&dec);
                     if (v.type == CBOR_ITEM_UINT) {
                         msg->status_info.wall_clock = v.uint_val;
+                        msg->has_status_info = true;
+                    }
+                }
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "df", 2) == 0) {
+                    cbor_item_t v = cbor_decode_next(&dec);
+                    if (v.type == CBOR_ITEM_UINT) {
+                        msg->status_info.disk_free_pct = (uint8_t)v.uint_val;
                         msg->has_status_info = true;
                     }
                 }

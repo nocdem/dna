@@ -34,9 +34,10 @@ static void test_status_result_round_trip(void) {
     in.block_height = 12345;
     for (int i = 0; i < 64; i++) in.state_root[i] = (uint8_t)(0x10 + i);
     for (int i = 0; i < 32; i++) in.chain_id[i]   = (uint8_t)(0xA0 + i);
-    in.peer_count   = 7;
-    in.uptime_sec   = 86400 + 3600 + 42;   /* 1d 1h 42s */
-    in.wall_clock   = 1700000000;
+    in.peer_count    = 7;
+    in.uptime_sec    = 86400 + 3600 + 42;   /* 1d 1h 42s */
+    in.wall_clock    = 1700000000;
+    in.disk_free_pct = 73;
 
     uint8_t buf[2048];
     size_t  len = 0;
@@ -56,6 +57,7 @@ static void test_status_result_round_trip(void) {
     if (msg.status_info.peer_count != in.peer_count) { FAIL("peer_count"); nodus_t2_msg_free(&msg); return; }
     if (msg.status_info.uptime_sec != in.uptime_sec) { FAIL("uptime_sec"); nodus_t2_msg_free(&msg); return; }
     if (msg.status_info.wall_clock != in.wall_clock) { FAIL("wall_clock"); nodus_t2_msg_free(&msg); return; }
+    if (msg.status_info.disk_free_pct != in.disk_free_pct) { FAIL("disk_free_pct"); nodus_t2_msg_free(&msg); return; }
 
     nodus_t2_msg_free(&msg);
     PASS();

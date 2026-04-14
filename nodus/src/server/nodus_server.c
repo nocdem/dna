@@ -33,6 +33,7 @@ extern void qgp_secure_memzero(void *ptr, size_t len);
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <sys/statvfs.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -3703,6 +3704,20 @@ static void handle_t2_status(nodus_server_t *srv, nodus_session_t *sess,
     uint64_t now = (uint64_t)time(NULL);
     info.uptime_sec = srv->start_time ? (now - srv->start_time) : 0;
     info.wall_clock = now;
+
+    /* disk_free_pct via statvfs on the configured data path. 255 means
+     * unknown (no data path or statvfs error). Phase 0 / Task 0.12. */
+    info.disk_free_pct = 255;
+    if (srv->config.data_path[0]) {
+        struct statvfs sv;
+        if (statvfs(srv->config.data_path, &sv) == 0 && sv.f_blocks > 0) {
+            uint64_t avail = (uint64_t)sv.f_bavail * sv.f_frsize;
+            uint64_t total = (uint64_t)sv.f_blocks * sv.f_frsize;
+            if (total > 0) {
+                info.disk_free_pct = (uint8_t)((avail * 100) / total);
+            }
+        }
+    }
 
     size_t len = 0;
     nodus_t2_status_result(msg->txn_id, &info,
