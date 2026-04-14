@@ -22,6 +22,7 @@
 #include "../database/contacts_db.h"
 #include "../transport/transport.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_safe_string.h"
 
 #define LOG_TAG "MSG_KEYS"
 
@@ -168,7 +169,7 @@ int messenger_load_pubkey(
 
         // Return fingerprint from cache
         if (fingerprint_out && strlen(cached->identity) == 128) {
-            strcpy(fingerprint_out, cached->identity);
+            snprintf(fingerprint_out, 129, "%s", cached->identity);
         }
 
         keyserver_cache_free_entry(cached);
@@ -217,7 +218,7 @@ int messenger_load_pubkey(
 
     // Return fingerprint if requested
     if (fingerprint_out) {
-        strcpy(fingerprint_out, dht_identity->fingerprint);
+        snprintf(fingerprint_out, 129, "%s", dht_identity->fingerprint);
     }
 
     // Free DHT identity

@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include "crypto/utils/qgp_safe_string.h"
 
 #define LOG_TAG "DHT_REQUEST"
 
@@ -599,7 +600,7 @@ int dht_send_contact_request(
     /* Log key for debugging */
     char key_hex[33];
     for (int i = 0; i < 16; i++) {
-        sprintf(&key_hex[i*2], "%02x", inbox_key[i]);
+        snprintf(&key_hex[i*2], sizeof(key_hex) - (i*2), "%02x", inbox_key[i]);
     }
     key_hex[32] = '\0';
     QGP_LOG_INFO(LOG_TAG, "Recipient inbox key (first 16 bytes): %s\n", key_hex);
@@ -652,7 +653,7 @@ int dht_fetch_contact_requests(
     /* Log key for debugging */
     char key_hex[33];
     for (int i = 0; i < 16; i++) {
-        sprintf(&key_hex[i*2], "%02x", inbox_key[i]);
+        snprintf(&key_hex[i*2], sizeof(key_hex) - (i*2), "%02x", inbox_key[i]);
     }
     key_hex[32] = '\0';
     QGP_LOG_DEBUG(LOG_TAG, "Inbox key (first 16 bytes): %s\n", key_hex);

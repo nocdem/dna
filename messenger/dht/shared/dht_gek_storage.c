@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_safe_string.h"
 
 #define LOG_TAG "DHT_GEK"
 
@@ -84,7 +85,7 @@ int dht_gek_make_chunk_key(const char *group_uuid,
 
     // Convert to hex string
     for (int i = 0; i < 32; i++) {
-        sprintf(&key_out[i * 2], "%02x", binary_key[i]);
+        snprintf(&key_out[i * 2], 65 - (i * 2), "%02x", binary_key[i]);
     }
     key_out[64] = '\0';
 

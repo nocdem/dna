@@ -28,6 +28,7 @@
 #include "../dht/core/dht_keyserver.h"
 #include "crypto/nodus_identity.h"
 #include "../database/keyserver_cache.h"
+#include "crypto/utils/qgp_safe_string.h"
 #include "../dna_config.h"
 #include "keys.h"
 #include "../blockchain/cellframe/cellframe_wallet_create.h"
@@ -655,7 +656,7 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
 
     // Convert to hex string (128 chars)
     for (int i = 0; i < 64; i++) {
-        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+        snprintf(fingerprint + (i * 2), sizeof(fingerprint) - (i * 2), "%02x", hash[i]);
     }
     fingerprint[128] = '\0';
 

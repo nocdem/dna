@@ -33,6 +33,7 @@
 #include <json-c/json.h>
 #include <pthread.h>
 #include <time.h>
+#include "crypto/utils/qgp_safe_string.h"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -296,7 +297,7 @@ static char* extract_sender_from_encrypted(
 
     char fingerprint[129];
     for (int i = 0; i < 64; i++) {
-        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+        snprintf(fingerprint + (i * 2), sizeof(fingerprint) - (i * 2), "%02x", hash[i]);
     }
     fingerprint[128] = '\0';
 
@@ -347,7 +348,7 @@ static char* lookup_identity_for_pubkey(
 
     char fingerprint[129];
     for (int i = 0; i < 64; i++) {
-        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+        snprintf(fingerprint + (i * 2), sizeof(fingerprint) - (i * 2), "%02x", hash[i]);
     }
     fingerprint[128] = '\0';
 
