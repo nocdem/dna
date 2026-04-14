@@ -468,7 +468,7 @@ static void subscription_notify(nodus_server_t *srv, const nodus_key_t *key,
 
     if (sent > 0) {
         char kh[17];
-        for (int i = 0; i < 8; i++) sprintf(kh + i*2, "%02x", key->bytes[i]);
+        for (int i = 0; i < 8; i++) snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", key->bytes[i]);
         kh[16] = '\0';
         QGP_LOG_DEBUG(LOG_TAG, "SUB_NOTIFY: key=%s... forwarded to %d subscribers",
                        kh, sent);
@@ -605,7 +605,7 @@ static void do_replicate_store_frame(nodus_server_t *srv,
 void nodus_server_replicate_value(nodus_server_t *srv, const nodus_value_t *val) {
     /* Key hash prefix for logging */
     char rpl_kh[17];
-    for (int kk = 0; kk < 8; kk++) sprintf(rpl_kh + kk*2, "%02x", val->key_hash.bytes[kk]);
+    for (int kk = 0; kk < 8; kk++) snprintf(rpl_kh + kk*2, sizeof(rpl_kh) - kk*2, "%02x", val->key_hash.bytes[kk]);
     rpl_kh[16] = '\0';
 
     /* Encode T1 STORE_VALUE once for all peers */
@@ -675,7 +675,7 @@ static void put_replication_complete(nodus_server_t *srv,
 
     /* Log key prefix */
     char kh[17];
-    for (int i = 0; i < 8; i++) sprintf(kh + i*2, "%02x", ctx->key_hash.bytes[i]);
+    for (int i = 0; i < 8; i++) snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", ctx->key_hash.bytes[i]);
     kh[16] = '\0';
 
     int sent = 0, failed = 0;
@@ -743,7 +743,7 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
 
     /* Hex prefix for logging */
     char mkh[17];
-    for (int x = 0; x < 8; x++) sprintf(mkh + x*2, "%02x", meta->content_hash[x]);
+    for (int x = 0; x < 8; x++) snprintf(mkh + x*2, sizeof(mkh) - x*2, "%02x", meta->content_hash[x]);
     mkh[16] = '\0';
 
     int known = nodus_routing_count(&srv->routing);
@@ -798,7 +798,7 @@ static void media_replication_complete(nodus_server_t *srv,
     if (!ctx) return;
 
     char mkh[17];
-    for (int i = 0; i < 8; i++) sprintf(mkh + i*2, "%02x", ctx->media_key.bytes[i]);
+    for (int i = 0; i < 8; i++) snprintf(mkh + i*2, sizeof(mkh) - i*2, "%02x", ctx->media_key.bytes[i]);
     mkh[16] = '\0';
 
     int sent = 0, failed = 0;
@@ -1319,8 +1319,8 @@ static void handle_t2_put(nodus_server_t *srv, nodus_session_t *sess,
     if (nodus_value_verify(val) != 0) {
         char kh[17], fp_hex[17];
         for (int i = 0; i < 8; i++) {
-            sprintf(kh + i*2, "%02x", val->key_hash.bytes[i]);
-            sprintf(fp_hex + i*2, "%02x", sess->client_fp.bytes[i]);
+            snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", val->key_hash.bytes[i]);
+            snprintf(fp_hex + i*2, sizeof(fp_hex) - i*2, "%02x", sess->client_fp.bytes[i]);
         }
         kh[16] = '\0'; fp_hex[16] = '\0';
         fprintf(stderr, "T2_PUT: verify FAILED key=%s... client=%s... vid=%llu seq=%llu\n",
@@ -1968,7 +1968,7 @@ static void handle_t2_get_all(nodus_server_t *srv, nodus_session_t *sess,
 
     /* Key hash prefix for logging */
     char ga_kh[17];
-    for (int kk = 0; kk < 8; kk++) sprintf(ga_kh + kk*2, "%02x", msg->key.bytes[kk]);
+    for (int kk = 0; kk < 8; kk++) snprintf(ga_kh + kk*2, sizeof(ga_kh) - kk*2, "%02x", msg->key.bytes[kk]);
     ga_kh[16] = '\0';
 
     /* Find R closest peers for potential forwarding (needed even on local hit
@@ -2174,7 +2174,7 @@ static void bf_send_result(nodus_server_t *srv, dht_bf_batch_t *b) {
         } else if (b->is_get_all && b->key_count == 1) {
             /* get_all forward: respond with result_multi (all values for 1 key) */
             char bfkh[17];
-            for (int kk = 0; kk < 8; kk++) sprintf(bfkh + kk*2, "%02x", b->keys[0].bytes[kk]);
+            for (int kk = 0; kk < 8; kk++) snprintf(bfkh + kk*2, sizeof(bfkh) - kk*2, "%02x", b->keys[0].bytes[kk]);
             bfkh[16] = '\0';
             if (b->counts_per_key[0] > 0 && b->vals_per_key[0]) {
                 fprintf(stderr, "GET_ALL: key=%s... forward_result %zu values\n",
@@ -3312,7 +3312,7 @@ static void listen_fwd_complete(nodus_server_t *srv,
     }
 
     char kh[17];
-    for (int i = 0; i < 8; i++) sprintf(kh + i*2, "%02x", key->bytes[i]);
+    for (int i = 0; i < 8; i++) snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", key->bytes[i]);
     kh[16] = '\0';
     QGP_LOG_DEBUG(LOG_TAG,
                    "LISTEN_FWD: key=%s... subscribe sent=%d closest=%d",
@@ -3600,7 +3600,7 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
             char fp_hex[33] = {0};
             if (authed)
                 for (int j = 0; j < 16; j++)
-                    sprintf(fp_hex + j*2, "%02x", srv->sessions[c->slot].client_fp.bytes[j]);
+                    snprintf(fp_hex + j*2, sizeof(fp_hex) - j*2, "%02x", srv->sessions[c->slot].client_fp.bytes[j]);
             fprintf(stderr, "IDLE_SWEEP: slot=%d ip=%s idle=%lus timeout=%lus auth=%s fp=%s\n",
                     c->slot, c->ip,
                     (unsigned long)idle, (unsigned long)timeout,
@@ -3780,7 +3780,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
                     char fp_hex[33];
                     for (int k = 0; k < 16; k++)
-                        sprintf(fp_hex + k*2, "%02x", sess->client_fp.bytes[k]);
+                        snprintf(fp_hex + k*2, sizeof(fp_hex) - k*2, "%02x", sess->client_fp.bytes[k]);
                     fp_hex[32] = '\0';
                     fprintf(stderr, "INTER_AUTH_OK: node %s... authenticated on port 4002 (v=%u)\n",
                             fp_hex, sess->proto_version);
@@ -4026,7 +4026,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             } else {
                 char kh[17];
                 for (int i = 0; i < 8; i++)
-                    sprintf(kh + i*2, "%02x", t1msg.value->key_hash.bytes[i]);
+                    snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", t1msg.value->key_hash.bytes[i]);
                 kh[16] = '\0';
                 fprintf(stderr, "REPL_TCP: verify FAILED for key=%s... vid=%llu seq=%llu — value DROPPED\n",
                         kh, (unsigned long long)t1msg.value->value_id,
@@ -4647,7 +4647,7 @@ static void handle_udp_message(const uint8_t *payload, size_t len,
             } else {
                 char kh[17];
                 for (int i = 0; i < 8; i++)
-                    sprintf(kh + i*2, "%02x", msg.value->key_hash.bytes[i]);
+                    snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", msg.value->key_hash.bytes[i]);
                 kh[16] = '\0';
                 fprintf(stderr, "REPL_UDP: verify FAILED for key=%s... from %s:%d — value DROPPED\n",
                         kh, from_ip, from_port);
@@ -4712,7 +4712,7 @@ static void on_tcp_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
         char fp_hex[33] = {0};
         if (sess->authenticated) {
             for (int i = 0; i < 16; i++)
-                sprintf(fp_hex + i*2, "%02x", sess->client_fp.bytes[i]);
+                snprintf(fp_hex + i*2, sizeof(fp_hex) - i*2, "%02x", sess->client_fp.bytes[i]);
             fprintf(stderr, "CLIENT_DISCONNECT: %s slot=%d ip=%s auth=yes idle=%lus reason=",
                     fp_hex, conn->slot, conn->ip,
                     (unsigned long)(nodus_time_now() - conn->last_activity));

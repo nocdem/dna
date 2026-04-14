@@ -309,9 +309,9 @@ int nodus_storage_put(nodus_storage_t *store, const nodus_value_t *val) {
                 memcmp(existing_fp, val->owner_fp.bytes, NODUS_KEY_BYTES) != 0) {
                 char kh[17], own_hex[17], new_hex[17];
                 for (int i = 0; i < 8; i++) {
-                    sprintf(kh + i*2, "%02x", val->key_hash.bytes[i]);
-                    sprintf(own_hex + i*2, "%02x", ((const uint8_t*)existing_fp)[i]);
-                    sprintf(new_hex + i*2, "%02x", val->owner_fp.bytes[i]);
+                    snprintf(kh + i*2, sizeof(kh) - i*2, "%02x", val->key_hash.bytes[i]);
+                    snprintf(own_hex + i*2, sizeof(own_hex) - i*2, "%02x", ((const uint8_t*)existing_fp)[i]);
+                    snprintf(new_hex + i*2, sizeof(new_hex) - i*2, "%02x", val->owner_fp.bytes[i]);
                 }
                 kh[16] = own_hex[16] = new_hex[16] = '\0';
                 fprintf(stderr, "NODUS_STORE: EXCLUSIVE PUT rejected — key=%s... owned by %s..., attempted by %s...\n",

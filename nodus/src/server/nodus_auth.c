@@ -102,7 +102,7 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
         {
             char old_fp[33];
             for (int k = 0; k < 16; k++)
-                sprintf(old_fp + k*2, "%02x", old->client_fp.bytes[k]);
+                snprintf(old_fp + k*2, sizeof(old_fp) - k*2, "%02x", old->client_fp.bytes[k]);
             old_fp[32] = '\0';
             fprintf(stderr, "SESSION_EVICT: old slot=%d ip=%s fp=%s... (replaced by new slot=%d)\n",
                     old->conn->slot, old->conn->ip, old_fp, sess->conn->slot);
@@ -117,7 +117,7 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
     {
         char fp_hex[33];
         for (int k = 0; k < 16; k++)
-            sprintf(fp_hex + k*2, "%02x", sess->client_fp.bytes[k]);
+            snprintf(fp_hex + k*2, sizeof(fp_hex) - k*2, "%02x", sess->client_fp.bytes[k]);
         fp_hex[32] = '\0';
         fprintf(stderr, "AUTH_OK: client %s... authenticated (presence added)\n", fp_hex);
     }

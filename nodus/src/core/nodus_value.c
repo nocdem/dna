@@ -149,7 +149,7 @@ int nodus_value_verify(const nodus_value_t *val) {
     /* Key hex prefix for log correlation */
     char key_hex[17];
     for (int i = 0; i < 8; i++)
-        sprintf(key_hex + i*2, "%02x", val->key_hash.bytes[i]);
+        snprintf(key_hex + i*2, sizeof(key_hex) - i*2, "%02x", val->key_hash.bytes[i]);
     key_hex[16] = '\0';
 
     /* H-11: Verify owner_fp == SHA3-512(owner_pk) */
@@ -162,8 +162,8 @@ int nodus_value_verify(const nodus_value_t *val) {
     if (memcmp(computed_fp.bytes, val->owner_fp.bytes, NODUS_KEY_BYTES) != 0) {
         char comp_hex[17], stored_hex[17];
         for (int i = 0; i < 8; i++) {
-            sprintf(comp_hex + i*2, "%02x", computed_fp.bytes[i]);
-            sprintf(stored_hex + i*2, "%02x", val->owner_fp.bytes[i]);
+            snprintf(comp_hex + i*2, sizeof(comp_hex) - i*2, "%02x", computed_fp.bytes[i]);
+            snprintf(stored_hex + i*2, sizeof(stored_hex) - i*2, "%02x", val->owner_fp.bytes[i]);
         }
         fprintf(stderr, "VERIFY_FAIL [%s]: owner_fp mismatch — computed=%s... stored=%s... (vid=%llu seq=%llu)\n",
                 key_hex, comp_hex, stored_hex,
@@ -184,7 +184,7 @@ int nodus_value_verify(const nodus_value_t *val) {
     if (rc != 0) {
         char owner_hex[17];
         for (int i = 0; i < 8; i++)
-            sprintf(owner_hex + i*2, "%02x", val->owner_fp.bytes[i]);
+            snprintf(owner_hex + i*2, sizeof(owner_hex) - i*2, "%02x", val->owner_fp.bytes[i]);
         fprintf(stderr, "VERIFY_FAIL [%s]: Dilithium5 signature invalid — owner=%s... (vid=%llu seq=%llu data_len=%zu)\n",
                 key_hex, owner_hex,
                 (unsigned long long)val->value_id, (unsigned long long)val->seq, val->data_len);
