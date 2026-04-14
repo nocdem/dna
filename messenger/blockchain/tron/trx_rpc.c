@@ -25,6 +25,7 @@
 #endif
 #include <curl/curl.h>
 #include <json-c/json.h>
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 #define LOG_TAG "TRX_RPC"
 
@@ -486,7 +487,7 @@ int trx_rpc_get_transactions(
                                     *end-- = '\0';
                                 }
                                 if (end == dot) {
-                                    strcpy(dot, ".0");
+                                    snprintf(dot, 3, ".0");
                                 }
                             }
                         }

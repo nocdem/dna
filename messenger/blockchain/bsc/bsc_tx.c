@@ -20,6 +20,7 @@
 #endif
 #include <curl/curl.h>
 #include <json-c/json.h>
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 #define LOG_TAG "BSC_TX"
 
@@ -238,7 +239,7 @@ int bsc_tx_send(const eth_signed_tx_t *signed_tx, char *tx_hash_out) {
         strncpy(tx_hash_out, hash, 66);
         tx_hash_out[66] = '\0';
     } else {
-        strcpy(tx_hash_out, signed_tx->tx_hash);
+        snprintf(tx_hash_out, 67, "%s", signed_tx->tx_hash);
     }
 
     json_object_put(result);

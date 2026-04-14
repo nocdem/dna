@@ -36,6 +36,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include "src/api/engine/dna_debug_log_wire.h"
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 #define LOG_TAG "CLI"
 
@@ -7097,7 +7098,7 @@ static int parse_hex_hash(const char *hex, uint8_t out[64]) {
  */
 static void format_hex_hash(const uint8_t hash[64], char out[129]) {
     for (int i = 0; i < 64; i++) {
-        sprintf(out + i * 2, "%02x", hash[i]);
+        snprintf(&out[i * 2], 129 - (size_t)(i * 2), "%02x", hash[i]);
     }
     out[128] = '\0';
 }
