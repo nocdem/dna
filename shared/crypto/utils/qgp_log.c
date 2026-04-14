@@ -117,7 +117,7 @@ void qgp_log_enable_tag(const char *tag) {
         if (strcmp(g_disabled_tags[i], tag) == 0) {
             /* Shift remaining tags */
             for (int j = i; j < g_disabled_count - 1; j++) {
-                strcpy(g_disabled_tags[j], g_disabled_tags[j + 1]);
+                snprintf(g_disabled_tags[j], sizeof(g_disabled_tags[j]), "%s", g_disabled_tags[j + 1]);
             }
             g_disabled_count--;
             break;
@@ -148,7 +148,7 @@ void qgp_log_disable_tag(const char *tag) {
         if (strcmp(g_enabled_tags[i], tag) == 0) {
             /* Shift remaining tags */
             for (int j = i; j < g_enabled_count - 1; j++) {
-                strcpy(g_enabled_tags[j], g_enabled_tags[j + 1]);
+                snprintf(g_enabled_tags[j], sizeof(g_enabled_tags[j]), "%s", g_enabled_tags[j + 1]);
             }
             g_enabled_count--;
             break;

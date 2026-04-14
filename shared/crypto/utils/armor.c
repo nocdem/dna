@@ -243,7 +243,7 @@ int read_armored_file(
                 b64_data = new_b64_data;
             }
             // Append line to base64 data
-            strcpy(b64_data + b64_length, line);
+            snprintf(b64_data + b64_length, b64_capacity - b64_length, "%s", line);
             b64_length += len;
         }
     }

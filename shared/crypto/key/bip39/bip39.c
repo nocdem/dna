@@ -106,7 +106,7 @@ int bip39_mnemonic_from_entropy(
             mnemonic[mnemonic_len++] = ' ';
         }
 
-        strcpy(mnemonic + mnemonic_len, word);
+        snprintf(mnemonic + mnemonic_len, mnemonic_size - mnemonic_len, "%s", word);
         mnemonic_len += word_len;
     }
 
