@@ -578,6 +578,7 @@ static void do_replicate_store_frame(nodus_server_t *srv,
                                       const char *kh) {
     int sent = 0, skipped_self = 0, failed = 0, hinted = 0;
     int fail_indices[NODUS_K];
+    bool is_media = (strncmp(log_prefix, "MEDIA", 5) == 0);
     for (int i = 0; i < count; i++) {
         /* Skip self */
         if (nodus_key_cmp(&closest[i].node_id, &srv->identity.node_id) == 0) {
@@ -585,7 +586,13 @@ static void do_replicate_store_frame(nodus_server_t *srv,
             continue;
         }
 
-        if (dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen) != 0) {
+        int send_rc = dht_republish_send(srv, closest[i].ip, closest[i].tcp_port, frame, flen);
+        if (is_media) {
+            fprintf(stderr,
+                    "MEDIA-REPL-SEND: hash=%s peer=%s:%d rc=%d flen=%zu\n",
+                    kh, closest[i].ip, closest[i].tcp_port, send_rc, flen);
+        }
+        if (send_rc != 0) {
             if (failed < NODUS_K) fail_indices[failed] = i;
             failed++;
             QGP_LOG_DEBUG(LOG_TAG, "%s: key=%s... SEND_FAIL to %s:%d",
@@ -610,6 +617,11 @@ static void do_replicate_store_frame(nodus_server_t *srv,
         }
     }
 
+    if (is_media) {
+        fprintf(stderr,
+                "MEDIA-REPL-DONE: hash=%s sent=%d self=%d fail=%d hint=%d peers=%d\n",
+                kh, sent, skipped_self, failed, hinted, peers_tried);
+    }
     QGP_LOG_DEBUG(LOG_TAG,
                   "%s: key=%s... done sent=%d self=%d fail=%d hint=%d peers=%d",
                   log_prefix, kh, sent, skipped_self, failed, hinted, peers_tried);
@@ -762,14 +774,19 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
 
     int known = nodus_routing_count(&srv->routing);
 
+    fprintf(stderr,
+            "MEDIA-REPL-CALL: hash=%s chunk=%u routing=%d path=%s\n",
+            mkh, chunk_index, known,
+            (known <= NODUS_R * 4) ? "fast" : "iter");
+
     if (known <= NODUS_R * 4) {
         /* Small cluster fast path — routing table is the network */
         nodus_peer_t closest[NODUS_R];
         int count = nodus_routing_find_closest(&srv->routing, &media_key,
                                                 closest, NODUS_R);
-        QGP_LOG_DEBUG(LOG_TAG,
-                      "MEDIA-REPL: hash=%s... chunk=%u fast_path found=%d",
-                      mkh, chunk_index, count);
+        fprintf(stderr,
+                "MEDIA-REPL-FAST: hash=%s chunk=%u found=%d (target_R=%d)\n",
+                mkh, chunk_index, count, NODUS_R);
         do_replicate_store_frame(srv, &media_key, frame, flen,
                                  closest, count, "MEDIA-REPL", mkh);
         free(frame);
@@ -785,9 +802,9 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
     ctx->media_key = media_key;
     ctx->chunk_index = chunk_index;
 
-    QGP_LOG_DEBUG(LOG_TAG,
-                  "MEDIA-REPL: hash=%s... chunk=%u iter_path known=%d",
-                  mkh, chunk_index, known);
+    fprintf(stderr,
+            "MEDIA-REPL-ITER: hash=%s chunk=%u routing=%d (large cluster)\n",
+            mkh, chunk_index, known);
 
     if (iterative_lookup_start(srv, &media_key, -1, 0,
                                 media_replication_complete, ctx,
@@ -796,9 +813,9 @@ void nodus_server_replicate_media_chunk(nodus_server_t *srv,
         nodus_peer_t closest[NODUS_R];
         int count = nodus_routing_find_closest(&srv->routing, &media_key,
                                                 closest, NODUS_R);
-        QGP_LOG_DEBUG(LOG_TAG,
-                      "MEDIA-REPL: hash=%s... chunk=%u iter FALLBACK found=%d",
-                      mkh, chunk_index, count);
+        fprintf(stderr,
+                "MEDIA-REPL-ITER-FB: hash=%s chunk=%u found=%d (no lookup slots)\n",
+                mkh, chunk_index, count);
         do_replicate_store_frame(srv, &media_key, frame, flen,
                                  closest, count, "MEDIA-REPL-FB", mkh);
         put_media_ctx_free(ctx);
@@ -1366,12 +1383,21 @@ static void dht_media_republish(nodus_server_t *srv) {
     uint64_t now = nodus_time_now();
 
     if (!mrs->active) {
-        /* Start new cycle every NODUS_MEDIA_REPUBLISH_SEC (24h — media is immutable) */
+        /* Start new cycle every NODUS_MEDIA_REPUBLISH_SEC */
         if (now - mrs->cycle_start < NODUS_MEDIA_REPUBLISH_SEC) return;
         /* Don't start cycle until routing table has enough peers —
          * otherwise we "complete" the cycle sending to 0 peers and
-         * wait 24h before trying again */
-        if (nodus_routing_count(&srv->routing) < NODUS_REPLICATION_MIN) return;
+         * wait full interval before trying again */
+        if (nodus_routing_count(&srv->routing) < NODUS_REPLICATION_MIN) {
+            fprintf(stderr,
+                    "MEDIA-REPUB-SKIP: routing sparse (%d < %d)\n",
+                    nodus_routing_count(&srv->routing), NODUS_REPLICATION_MIN);
+            return;
+        }
+        fprintf(stderr,
+                "MEDIA-REPUB-CYCLE: start cycle, routing=%d, last_complete_at=%llu\n",
+                nodus_routing_count(&srv->routing),
+                (unsigned long long)mrs->cycle_start);
         memset(mrs->last_hash, 0, sizeof(mrs->last_hash));
         mrs->active = true;
         mrs->first_batch = true;
@@ -1383,18 +1409,32 @@ static void dht_media_republish(nodus_server_t *srv) {
     int fetched = nodus_media_fetch_batch(&srv->media_storage,
                                            mrs->first_batch ? NULL : mrs->last_hash,
                                            batch, NODUS_REPUBLISH_BATCH);
+    fprintf(stderr,
+            "MEDIA-REPUB-FETCH: fetched=%d (after_hash=%s)\n",
+            fetched, mrs->first_batch ? "NULL" : "set");
     mrs->first_batch = false;
 
     for (int i = 0; i < fetched; i++) {
         nodus_media_meta_t *meta = &batch[i];
+        char hpfx[17];
+        for (int x = 0; x < 8; x++) sprintf(hpfx + x*2, "%02x", meta->content_hash[x]);
+        hpfx[16] = '\0';
+        fprintf(stderr,
+                "MEDIA-REPUB-ENTRY: hash=%s chunks=%u total_size=%llu complete=%d\n",
+                hpfx, meta->chunk_count,
+                (unsigned long long)meta->total_size, meta->complete);
 
         /* For each chunk, replicate */
         for (uint32_t ci = 0; ci < meta->chunk_count; ci++) {
             uint8_t *chunk_data = NULL;
             size_t chunk_len = 0;
             if (nodus_media_get_chunk(&srv->media_storage, meta->content_hash,
-                                       ci, &chunk_data, &chunk_len) != 0)
+                                       ci, &chunk_data, &chunk_len) != 0) {
+                fprintf(stderr,
+                        "MEDIA-REPUB-CHUNK-MISS: hash=%s chunk_idx=%u get_chunk_failed\n",
+                        hpfx, ci);
                 continue;
+            }
 
             nodus_server_replicate_media_chunk(srv, meta, ci, chunk_data, chunk_len);
             free(chunk_data);
@@ -1406,6 +1446,8 @@ static void dht_media_republish(nodus_server_t *srv) {
 
     /* Cycle complete if fewer rows than batch size */
     if (fetched < NODUS_REPUBLISH_BATCH) {
+        fprintf(stderr,
+                "MEDIA-REPUB-DONE: cycle complete (last_fetched=%d)\n", fetched);
         mrs->active = false;
         mrs->cycle_start = nodus_time_now();
     }
@@ -5319,7 +5361,8 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
         uint64_t value_jitter = jitter_seed % NODUS_REPUBLISH_SEC;
         uint64_t media_jitter = (jitter_seed >> 16) % NODUS_MEDIA_REPUBLISH_SEC;
         srv->republish.cycle_start = now - NODUS_REPUBLISH_SEC + value_jitter;
-        srv->media_republish.cycle_start = now - NODUS_MEDIA_REPUBLISH_SEC + media_jitter;
+        /* Stagger media 60s after value cycle to avoid wbuf contention */
+        srv->media_republish.cycle_start = now - NODUS_MEDIA_REPUBLISH_SEC + media_jitter + 60;
     }
 
     /* Iterative Kademlia lookup engine — no epoll/fd state.
