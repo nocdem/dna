@@ -91,6 +91,10 @@ dev_dependencies:
   dna_lints:
     path: tools/dna_lints
 
+  # Mocking framework for unit tests (Phase 04 / SEC-08 migration tests).
+  # mocktail is preferred over mockito for new test code (no code generation).
+  mocktail: ^1.0.0
+
   # Code generation
   ffigen: ^9.0.0
   riverpod_generator: 2.6.5
