@@ -195,7 +195,8 @@ typedef struct {
     uint8_t         state_root[NODUS_KEY_BYTES];        /* RFC 6962 Merkle root over UTXO set */
     uint32_t        current_view;                       /* BFT view number */
     uint32_t        roster_size;                        /* sender's roster n_witnesses */
-    bool            has_block_height;                    /* true if bh/sr/view present */
+    uint64_t        ts_local;                           /* Phase 10 / Task 10.4 — sender wall clock for skew probe */
+    bool            has_block_height;                   /* true if bh/sr/view present */
 } nodus_t3_ident_t;
 
 /** w_sync_req: Request block at height N for sync */

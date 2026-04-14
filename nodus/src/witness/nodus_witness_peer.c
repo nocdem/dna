@@ -340,6 +340,7 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
     }
     msg.ident.current_view = w->current_view;
     msg.ident.roster_size = w->roster.n_witnesses;
+    msg.ident.ts_local = (uint64_t)time(NULL);  /* Phase 10 / Task 10.4 */
     msg.ident.has_block_height = true;
 
     /* Fill header */
@@ -536,6 +537,18 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
             w->peers[pi].conn = conn;
         w->peers[pi].identified = true;
         w->peers[pi].connect_failures = 0;
+
+        /* Phase 10 / Task 10.4 — clock skew probe */
+        {
+            int64_t now_s = (int64_t)time(NULL);
+            int64_t skew = now_s - (int64_t)ident->ts_local;
+            w->peers[pi].last_skew_sec = skew;
+            int64_t abs_skew = skew < 0 ? -skew : skew;
+            if (abs_skew > 10) {
+                QGP_LOG_WARN(LOG_TAG, "clock skew %lld s vs peer %s",
+                             (long long)skew, w->peers[pi].address);
+            }
+        }
 
         /* Store peer's chain state for sync decisions */
         if (ident->has_block_height) {

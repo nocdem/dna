@@ -234,12 +234,14 @@ static void enc_rost_r_args(cbor_encoder_t *enc, const nodus_t3_rost_r_t *r) {
 }
 
 static void enc_ident_args(cbor_encoder_t *enc, const nodus_t3_ident_t *id) {
-    cbor_encode_map(enc, id->has_block_height ? 7 : 3);
+    /* Phase 10 / Task 10.4 — bump map count by 1 for ts_local. */
+    cbor_encode_map(enc, id->has_block_height ? 8 : 4);
     cbor_encode_cstr(enc, "wid");  cbor_encode_bstr(enc, id->witness_id,
                                                      NODUS_T3_WITNESS_ID_LEN);
     cbor_encode_cstr(enc, "pk");   cbor_encode_bstr(enc, id->pubkey,
                                                      NODUS_PK_BYTES);
     cbor_encode_cstr(enc, "addr"); cbor_encode_cstr(enc, id->address);
+    cbor_encode_cstr(enc, "tsl");  cbor_encode_uint(enc, id->ts_local);
     if (id->has_block_height) {
         cbor_encode_cstr(enc, "bh");  cbor_encode_uint(enc, id->block_height);
         cbor_encode_cstr(enc, "sr"); cbor_encode_bstr(enc, id->state_root,
@@ -964,6 +966,12 @@ static void dec_ident_args(cbor_decoder_t *dec, size_t count,
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_UINT)
                 id->roster_size = (uint32_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "tsl")) {
+            /* Phase 10 / Task 10.4 — sender wall clock for skew probe */
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                id->ts_local = val.uint_val;
         }
         else {
             cbor_decode_skip(dec);
