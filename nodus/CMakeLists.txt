@@ -444,6 +444,11 @@ add_executable(test_spend_preimage tests/test_spend_preimage.c)
 target_link_libraries(test_spend_preimage nodus dsa nodus crypto)
 add_test(NAME test_spend_preimage COMMAND test_spend_preimage)
 
+# Phase 9 / Task 9.6 — strict top-level decoder tests
+add_executable(test_strict_decoder tests/test_strict_decoder.c)
+target_link_libraries(test_strict_decoder nodus dsa nodus crypto)
+add_test(NAME test_strict_decoder COMMAND test_strict_decoder)
+
 # BFT quorum formula tests (Phase 8)
 add_executable(test_bft_quorum_formula tests/test_bft_quorum_formula.c)
 target_link_libraries(test_bft_quorum_formula nodus dsa nodus)
