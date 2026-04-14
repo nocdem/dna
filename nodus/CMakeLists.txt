@@ -364,6 +364,11 @@ add_executable(test_db_savepoint tests/test_db_savepoint.c)
 target_link_libraries(test_db_savepoint nodus dsa nodus)
 add_test(NAME test_db_savepoint COMMAND test_db_savepoint)
 
+# Tier 2 cluster-status wire round-trip test (Phase 0 / Task 0.2)
+add_executable(test_t2_status_wire tests/test_t2_status_wire.c)
+target_link_libraries(test_t2_status_wire nodus dsa nodus)
+add_test(NAME test_t2_status_wire COMMAND test_t2_status_wire)
+
 # Witness Merkle state_root test
 add_executable(test_witness_merkle tests/test_witness_merkle.c)
 target_link_libraries(test_witness_merkle nodus dsa nodus)
