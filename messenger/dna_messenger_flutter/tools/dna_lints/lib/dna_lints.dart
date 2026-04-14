@@ -15,7 +15,10 @@
 // Until then, `dart run custom_lint` exits 0 with zero issues — Wave 2 sweep
 // plans can land without the analyzer blocking them.
 
-import 'package:analyzer/error/error.dart';
+import 'package:analyzer/error/error.dart'
+    hide
+        // ignore: undefined_hidden_name, needed to support lower analyzer versions
+        LintCode;
 import 'package:analyzer/error/listener.dart';
 import 'package:custom_lint_builder/custom_lint_builder.dart';
 
@@ -39,7 +42,7 @@ class AvoidDnaLogPrimitives extends DartLintRule {
   // implements the real MethodInvocation visitor below.
   static const bool _enabled = false;
 
-  AvoidDnaLogPrimitives()
+  const AvoidDnaLogPrimitives()
       : super(
           code: const LintCode(
             name: 'avoid_dna_log_primitives',

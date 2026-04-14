@@ -7,5 +7,10 @@ environment:
   sdk: ^3.5.0
 
 dependencies:
-  analyzer: ^8.0.0
-  custom_lint_builder: ^0.8.1
+  # Pinned to custom_lint_builder 0.7.5 to stay compatible with
+  # riverpod_generator 2.6.5, which transitively requires
+  # `custom_lint_core ^0.7.0` via riverpod_analyzer_utils 0.5.10.
+  # 0.7.5 uses analyzer ^7.0.0 and custom_lint_core 0.7.5.
+  # See parent pubspec.yaml for the rationale.
+  analyzer: ^7.0.0
+  custom_lint_builder: 0.7.5
