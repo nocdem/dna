@@ -52,20 +52,10 @@ static int sha3_512_final(EVP_MD_CTX *md, uint8_t out[64]) {
     return (ok == 1 && hash_len == 64) ? 0 : -1;
 }
 
-/* Compute SHA3-512(left(64) || right(64)). Used by the legacy proof
- * paths (build_proof, verify_proof) that Task 2.6 rewrites onto
- * inner_hash. After 2.6 lands this helper is removed too. */
-static int sha3_512_pair(const uint8_t left[64], const uint8_t right[64],
-                         uint8_t out[64]) {
-    EVP_MD_CTX *md = NULL;
-    if (sha3_512_init(&md) != 0) return -1;
-    if (EVP_DigestUpdate(md, left, 64) != 1 ||
-        EVP_DigestUpdate(md, right, 64) != 1) {
-        EVP_MD_CTX_free(md);
-        return -1;
-    }
-    return sha3_512_final(md, out);
-}
+/* The legacy untagged sha3_512_pair() helper was removed by Phase 2 /
+ * Task 2.6. All Merkle paths (root, build_proof, verify_proof) now go
+ * through inner_hash() which prepends the 0x01 RFC 6962 internal-node
+ * domain tag. */
 
 /* ── RFC 6962 domain-tagged primitives (Phase 2 / Tasks 2.1, 2.2) ──
  *
@@ -337,7 +327,88 @@ int nodus_witness_merkle_compute_utxo_root(nodus_witness_t *w,
     return rc;
 }
 
-/* ── Proof generation ──────────────────────────────────────────────── */
+/* ── Proof generation (RFC 6962, Phase 2 / Task 2.6) ──────────────────
+ *
+ * The proof structure follows RFC 6962 §2.1.1: walk the recursive split
+ * from root to leaf, recording the OPPOSITE subtree's root at every
+ * level. The verifier walks the same path bottom-up, combining current
+ * with each sibling via inner_hash.
+ *
+ * Position bit i (LSB = leaf level): 1 means "sibling on the left, we
+ * are right", 0 means "sibling on the right, we are left". The bit
+ * order matches verify_proof.
+ */
+
+/* Recursive helper: walks the RFC 6962 split for `idx` in `leaves[0..n]`,
+ * appending one sibling per level to siblings_out and one bit per level
+ * to *positions_out. Depth grows as we recurse INTO a subtree; the leaf
+ * level is the deepest call. We collect siblings on the way IN so that
+ * the verifier (which walks bottom-up) sees them in the right order.
+ *
+ * Returns 0 on success. The caller must zero *depth_out / *positions_out
+ * before the first call.
+ */
+static int rfc6962_path(const uint8_t *leaves, size_t n, size_t idx,
+                         uint8_t *siblings_out, uint32_t *positions_out,
+                         int *depth_out, int max_depth) {
+    if (n <= 1) return 0;  /* leaf level — nothing to record */
+
+    if (*depth_out >= max_depth) return -1;
+
+    size_t k = 1;
+    while (k * 2 < n) k *= 2;
+
+    /* The current level's split point is k. The opposite subtree is the
+     * sibling for THIS level. We record it as MTH of that subtree. */
+    uint8_t sibling[64];
+    int sibling_is_left;
+    int rc;
+
+    if (idx < k) {
+        /* Target is in the left subtree; sibling = MTH(leaves[k..n]). */
+        rc = merkle_root_rfc6962(leaves + k * 64, n - k, sibling);
+        sibling_is_left = 0;
+    } else {
+        /* Target is in the right subtree; sibling = MTH(leaves[0..k]). */
+        rc = merkle_root_rfc6962(leaves, k, sibling);
+        sibling_is_left = 1;
+    }
+    if (rc != 0) return -1;
+
+    int level = *depth_out;
+    memcpy(siblings_out + level * 64, sibling, 64);
+    if (sibling_is_left) *positions_out |= (1u << level);
+    (*depth_out)++;
+
+    /* Recurse into the subtree containing the target. */
+    if (idx < k) {
+        return rfc6962_path(leaves, k, idx,
+                            siblings_out, positions_out, depth_out, max_depth);
+    } else {
+        return rfc6962_path(leaves + k * 64, n - k, idx - k,
+                            siblings_out, positions_out, depth_out, max_depth);
+    }
+}
+
+/* The position bits collected by rfc6962_path are root-to-leaf, but
+ * verify_proof walks leaf-to-root, so we reverse the bit order before
+ * returning. Same for the sibling array. */
+static void reverse_proof(uint8_t *siblings, uint32_t *positions, int depth) {
+    /* Reverse sibling array in place */
+    for (int i = 0, j = depth - 1; i < j; i++, j--) {
+        uint8_t tmp[64];
+        memcpy(tmp, siblings + i * 64, 64);
+        memcpy(siblings + i * 64, siblings + j * 64, 64);
+        memcpy(siblings + j * 64, tmp, 64);
+    }
+    /* Reverse the bit field across `depth` bits */
+    uint32_t in = *positions;
+    uint32_t out = 0;
+    for (int i = 0; i < depth; i++) {
+        if (in & (1u << i)) out |= (1u << (depth - 1 - i));
+    }
+    *positions = out;
+}
 
 int nodus_witness_merkle_build_proof(nodus_witness_t *w,
                                        const uint8_t *target_leaf,
@@ -352,6 +423,13 @@ int nodus_witness_merkle_build_proof(nodus_witness_t *w,
     *depth_out = 0;
     *positions_out = 0;
 
+    /* Caller's target_leaf is the 64-byte composite digest produced by
+     * nodus_witness_merkle_leaf_hash (UTXO row → digest). build_proof
+     * leaf-hashes that digest internally to match the prehash compute_root
+     * applies in Task 2.5. */
+    uint8_t target_prehashed[64];
+    if (leaf_hash(target_leaf, 64, target_prehashed) != 0) return -1;
+
     uint8_t *leaves = NULL;
     size_t n = 0;
     if (load_utxo_leaves(w, &leaves, &n) != 0) return -1;
@@ -361,10 +439,19 @@ int nodus_witness_merkle_build_proof(nodus_witness_t *w,
         return -1; /* target cannot be in empty set */
     }
 
-    /* Locate target leaf (linear scan — O(n); fine for current sizes). */
+    /* Apply the leaf domain tag in place, then locate the target. */
+    for (size_t i = 0; i < n; i++) {
+        uint8_t prehashed[64];
+        if (leaf_hash(leaves + i * 64, 64, prehashed) != 0) {
+            free(leaves);
+            return -1;
+        }
+        memcpy(leaves + i * 64, prehashed, 64);
+    }
+
     ssize_t target_idx = -1;
     for (size_t i = 0; i < n; i++) {
-        if (memcmp(leaves + i * 64, target_leaf, 64) == 0) {
+        if (memcmp(leaves + i * 64, target_prehashed, 64) == 0) {
             target_idx = (ssize_t)i;
             break;
         }
@@ -374,64 +461,35 @@ int nodus_witness_merkle_build_proof(nodus_witness_t *w,
         return -1;
     }
 
-    /* Walk up the tree, collecting sibling at each level. We mutate a
-     * working buffer level-by-level just like reduce_to_root. */
-    int depth = 0;
-    uint32_t positions = 0;
-    size_t cur_n = n;
-    size_t cur_idx = (size_t)target_idx;
+    /* Single-leaf tree: empty proof, root == leaf. */
+    if (n == 1) {
+        if (root_out) memcpy(root_out, leaves, 64);
+        free(leaves);
+        return 0;
+    }
 
-    while (cur_n > 1) {
-        if (depth >= max_depth) {
+    if (rfc6962_path(leaves, n, (size_t)target_idx,
+                      siblings_out, positions_out, depth_out, max_depth) != 0) {
+        free(leaves);
+        return -1;
+    }
+
+    /* rfc6962_path collects root-to-leaf; flip to leaf-to-root for the
+     * verifier. */
+    reverse_proof(siblings_out, positions_out, *depth_out);
+
+    if (root_out) {
+        if (merkle_root_rfc6962(leaves, n, root_out) != 0) {
             free(leaves);
             return -1;
         }
-
-        size_t sib_idx;
-        int sibling_is_left;
-        if (cur_idx % 2 == 0) {
-            /* We are left child; sibling is right (or duplicate of self). */
-            sib_idx = (cur_idx + 1 < cur_n) ? cur_idx + 1 : cur_idx;
-            sibling_is_left = 0;
-        } else {
-            /* We are right child; sibling is left. */
-            sib_idx = cur_idx - 1;
-            sibling_is_left = 1;
-        }
-
-        memcpy(siblings_out + depth * 64, leaves + sib_idx * 64, 64);
-        if (sibling_is_left)
-            positions |= (1u << depth);
-        depth++;
-
-        /* Collapse to next level. */
-        size_t out_n = (cur_n + 1) / 2;
-        for (size_t i = 0; i < out_n; i++) {
-            const uint8_t *left = leaves + (2 * i) * 64;
-            const uint8_t *right = (2 * i + 1 < cur_n)
-                                       ? leaves + (2 * i + 1) * 64
-                                       : left;
-            uint8_t parent[64];
-            if (sha3_512_pair(left, right, parent) != 0) {
-                free(leaves);
-                return -1;
-            }
-            memcpy(leaves + i * 64, parent, 64);
-        }
-        cur_n = out_n;
-        cur_idx /= 2;
     }
 
-    if (root_out)
-        memcpy(root_out, leaves, 64);
-
-    *depth_out = depth;
-    *positions_out = positions;
     free(leaves);
     return 0;
 }
 
-/* ── Proof verification (pure function) ────────────────────────────── */
+/* ── Proof verification (pure function, RFC 6962) ───────────────────── */
 
 int nodus_witness_merkle_verify_proof(const uint8_t *leaf,
                                         const uint8_t *siblings,
@@ -442,18 +500,19 @@ int nodus_witness_merkle_verify_proof(const uint8_t *leaf,
     if (depth < 0 || depth > NODUS_MERKLE_MAX_DEPTH) return -1;
     if (depth > 0 && !siblings) return -1;
 
+    /* Caller passes the same composite-digest leaf that build_proof
+     * received; verify_proof leaf-hashes it before walking. */
     uint8_t cur[64];
-    memcpy(cur, leaf, 64);
+    if (leaf_hash(leaf, 64, cur) != 0) return -1;
 
     for (int i = 0; i < depth; i++) {
         const uint8_t *sib = siblings + i * 64;
         uint8_t parent[64];
         if (positions & (1u << i)) {
-            /* Sibling on LEFT, cur on RIGHT. */
-            if (sha3_512_pair(sib, cur, parent) != 0) return -1;
+            /* Sibling on LEFT, cur on RIGHT — RFC 6962 inner_hash. */
+            if (inner_hash(sib, cur, parent) != 0) return -1;
         } else {
-            /* Sibling on RIGHT, cur on LEFT. */
-            if (sha3_512_pair(cur, sib, parent) != 0) return -1;
+            if (inner_hash(cur, sib, parent) != 0) return -1;
         }
         memcpy(cur, parent, 64);
     }

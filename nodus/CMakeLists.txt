@@ -384,6 +384,11 @@ add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
 target_link_libraries(test_merkle_utxo_root nodus dsa nodus)
 add_test(NAME test_merkle_utxo_root COMMAND test_merkle_utxo_root)
 
+# RFC 6962 Merkle proof round-trip tests (Phase 2 / Task 2.6)
+add_executable(test_merkle_proof tests/test_merkle_proof.c)
+target_link_libraries(test_merkle_proof nodus dsa nodus)
+add_test(NAME test_merkle_proof COMMAND test_merkle_proof)
+
 # Witness Merkle state_root test
 add_executable(test_witness_merkle tests/test_witness_merkle.c)
 target_link_libraries(test_witness_merkle nodus dsa nodus)
