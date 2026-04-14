@@ -248,6 +248,20 @@ int  nodus_witness_db_begin(nodus_witness_t *w);
 int  nodus_witness_db_commit(nodus_witness_t *w);
 int  nodus_witness_db_rollback(nodus_witness_t *w);
 
+/* Savepoint wrappers (Phase 0 / Task 0.15).
+ *
+ * Required by Phase 6 commit_batch attribution replay (Task 6.2): when a
+ * multi-tx batch's finalize_block fails, the attribution loop replays each
+ * TX in isolation under a savepoint to identify which one violated the
+ * supply invariant.
+ *
+ * Caller is responsible for ensuring `name` is a valid SQL identifier
+ * (alphanumeric + underscores). Names are inlined into the generated SQL —
+ * SQLite SAVEPOINT does not accept parameter binding.
+ */
+int  nodus_witness_db_savepoint(nodus_witness_t *w, const char *name);
+int  nodus_witness_db_rollback_to_savepoint(nodus_witness_t *w, const char *name);
+
 #ifdef __cplusplus
 }
 #endif

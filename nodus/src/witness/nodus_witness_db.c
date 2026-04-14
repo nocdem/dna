@@ -1306,3 +1306,45 @@ int nodus_witness_db_rollback(nodus_witness_t *w) {
     }
     return 0;
 }
+
+/* Reject anything but [A-Za-z0-9_] in savepoint names — they go straight
+ * into SQL with no binding, and SQLite SAVEPOINT does not accept ?. */
+static bool savepoint_name_safe(const char *name) {
+    if (!name || !*name) return false;
+    for (const char *p = name; *p; p++) {
+        char c = *p;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int nodus_witness_db_savepoint(nodus_witness_t *w, const char *name) {
+    if (!w || !w->db || !savepoint_name_safe(name)) return -1;
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SAVEPOINT %s", name);
+    char *err = NULL;
+    int rc = sqlite3_exec(w->db, sql, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: SAVEPOINT %s failed: %s\n", LOG_TAG, name, err);
+        sqlite3_free(err);
+        return -1;
+    }
+    return 0;
+}
+
+int nodus_witness_db_rollback_to_savepoint(nodus_witness_t *w, const char *name) {
+    if (!w || !w->db || !savepoint_name_safe(name)) return -1;
+    char sql[128];
+    snprintf(sql, sizeof(sql), "ROLLBACK TO SAVEPOINT %s", name);
+    char *err = NULL;
+    int rc = sqlite3_exec(w->db, sql, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: ROLLBACK TO SAVEPOINT %s failed: %s\n", LOG_TAG, name, err);
+        sqlite3_free(err);
+        return -1;
+    }
+    return 0;
+}

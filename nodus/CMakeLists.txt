@@ -359,6 +359,11 @@ add_executable(test_witness_chain_archive tests/test_witness_chain_archive.c)
 target_link_libraries(test_witness_chain_archive nodus dsa nodus)
 add_test(NAME test_witness_chain_archive COMMAND test_witness_chain_archive)
 
+# Witness DB savepoint wrapper test (Phase 0 / Task 0.15)
+add_executable(test_db_savepoint tests/test_db_savepoint.c)
+target_link_libraries(test_db_savepoint nodus dsa nodus)
+add_test(NAME test_db_savepoint COMMAND test_db_savepoint)
+
 # Witness Merkle state_root test
 add_executable(test_witness_merkle tests/test_witness_merkle.c)
 target_link_libraries(test_witness_merkle nodus dsa nodus)
