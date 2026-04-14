@@ -10,6 +10,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import '../ffi/dna_engine.dart';
+import '../utils/logger.dart' as dna_logger;
 import '../utils/qr_payload_parser.dart';
 
 class QrAuthResult {
@@ -111,11 +112,10 @@ class QrAuthService {
       );
 
       final payloadBytes = utf8.encode(signedPayloadStr);
-      final payloadHash = sha256.convert(payloadBytes).toString();
-      debugPrint(
-        'QR_AUTH: payload_v=$pv payload_len=${payloadBytes.length} payload_sha256=$payloadHash',
-      );
-
+      // SEC-07 D-08: removed debugPrint of payload_sha256 + length.
+      // The payload contains session_id, nonce, and origin which are
+      // auth-sensitive; the hash is a linkable identifier across logs.
+      // Per D-09 "when in doubt, delete" — no replacement routed log.
       final signature = _engine.signData(Uint8List.fromList(payloadBytes));
       final signatureBase64 = base64Encode(signature);
       final pubkeyB64 = base64Encode(_engine.signingPublicKey);
@@ -325,7 +325,11 @@ class QrAuthService {
   }
 
   void deny(QrPayload payload) {
-    debugPrint('QR_AUTH: Auth request denied by user: ${payload.origin}');
+    // SEC-07 D-08: origin is a public URI (not secret) — ROUTE to DnaLogger.
+    dna_logger.log(
+      'QR_AUTH',
+      'Auth request denied by user: ${payload.origin}',
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -400,10 +404,10 @@ class QrAuthService {
       );
 
       final payloadBytes = utf8.encode(canonicalStr);
-      final payloadHash = sha256.convert(payloadBytes).toString();
-      debugPrint(
-        'QR_AUTH_V4: sid=$sid payload_sha256=$payloadHash',
-      );
+      // SEC-07 D-08: removed debugPrint of sid + payload_sha256.
+      // sid is the v4 session identifier; the hash is a linkable
+      // identifier across logs. Per D-09 "when in doubt, delete" —
+      // no replacement routed log.
 
       // Sign with Dilithium5
       final signature = _engine.signData(Uint8List.fromList(payloadBytes));
@@ -439,7 +443,9 @@ class QrAuthService {
           ? '${origin}api/v5/verify'
         : '$origin/api/v5/verify';
 
-      debugPrint('QR_AUTH_V4: verifyUrl=$verifyUrl');
+      // SEC-07 D-08: removed debugPrint of verifyUrl. The URL encodes
+      // the origin and may carry session identifiers in the path/query;
+      // this is auth-sensitive. Per D-09 "when in doubt, delete."
 
       return await _postToCallback(verifyUrl, jsonEncode(requestBody));
     } on DnaEngineException catch (e) {
@@ -463,7 +469,13 @@ class QrAuthService {
       final payload = jsonDecode(payloadStr) as Map<String, dynamic>;
       return payload;
     } catch (e) {
-      debugPrint('QR_AUTH_V4: Failed to decode st payload: $e');
+      // SEC-07 D-08: ROUTE to DnaLogger but strip the exception body —
+      // `$e` may contain raw st payload bytes. Log only the runtime
+      // type so operators still see the failure class in dna.log.
+      dna_logger.logError(
+        'QR_AUTH_V4',
+        'Failed to decode st payload: ${e.runtimeType}',
+      );
       return null;
     }
   }
