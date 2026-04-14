@@ -25,6 +25,8 @@
 #define NODUS_WITNESS_CERT_H
 
 #include "nodus/nodus_types.h"
+#include "witness/nodus_witness.h"
+#include "protocol/nodus_tier3.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -56,6 +58,38 @@ int nodus_witness_compute_cert_preimage(const uint8_t *block_hash,
                                           uint64_t height,
                                           const uint8_t *chain_id,
                                           uint8_t *out_buf);
+
+/**
+ * Verify a batch of sync certificates against locally-known facts.
+ *
+ * For each cert, looks up the voter_id in the roster, reconstructs
+ * the cert_preimage from the caller-supplied (block_hash, height,
+ * chain_id) and the cert's own voter_id, and Dilithium5-verifies the
+ * signature against the roster pubkey. Voters not in the roster, or
+ * verification failures, are silently dropped from the count.
+ *
+ * **CRITICAL:** the caller MUST pass a block_hash that was recomputed
+ * locally (e.g. via nodus_witness_compute_block_hash on locally-replayed
+ * data), NEVER the wire-supplied block_hash from the sync_rsp. Phase 11
+ * task 11.4 is the wiring point.
+ *
+ * @param block_hash   64-byte block hash, locally recomputed
+ * @param height       block height the cert attests to
+ * @param chain_id     32-byte chain identifier
+ * @param roster       witness roster used to resolve voter pubkeys
+ * @param certs        cert array from a sync_rsp
+ * @param cert_count   length of certs[]
+ * @param quorum       minimum verified count for success
+ * @return number of verified certs (>= quorum) on success, -1 on
+ *         insufficient quorum
+ */
+int nodus_witness_verify_sync_certs(const uint8_t *block_hash,
+                                      uint64_t height,
+                                      const uint8_t *chain_id,
+                                      const nodus_witness_roster_t *roster,
+                                      const nodus_t3_sync_cert_t *certs,
+                                      uint32_t cert_count,
+                                      uint32_t quorum);
 
 #ifdef __cplusplus
 }
