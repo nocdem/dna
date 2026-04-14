@@ -463,6 +463,16 @@ class AppLocalizationsRu extends AppLocalizations {
   String get settingsSeedCopied => 'Сид-фраза скопирована в буфер обмена';
 
   @override
+  String get seedCopyConfirmTitle => 'Copy seed phrase?';
+
+  @override
+  String get seedCopyConfirmBody =>
+      'Your seed phrase will be in the clipboard for 10 seconds. Do not switch apps or background the app during this time. Continue?';
+
+  @override
+  String get seedCopiedToast => 'Copied. Clipboard will clear in 10 seconds.';
+
+  @override
   String get settingsSeedNotAvailable =>
       'Сид-фраза недоступна для этой личности. Она была создана до добавления этой функции.';
 

@@ -227,6 +227,18 @@
   "settingsYourSeedPhrase": "Your Seed Phrase",
   "settingsSeedPhraseWarning": "Write these words down in order and store them safely. Anyone with this phrase can access your identity.",
   "settingsSeedCopied": "Seed phrase copied to clipboard",
+  "seedCopyConfirmTitle": "Copy seed phrase?",
+  "@seedCopyConfirmTitle": {
+    "description": "Title of the confirmation dialog shown before copying a seed phrase to the clipboard (SEC-09)."
+  },
+  "seedCopyConfirmBody": "Your seed phrase will be in the clipboard for 10 seconds. Do not switch apps or background the app during this time. Continue?",
+  "@seedCopyConfirmBody": {
+    "description": "Body of the confirmation dialog shown before copying a seed phrase to the clipboard (SEC-09)."
+  },
+  "seedCopiedToast": "Copied. Clipboard will clear in 10 seconds.",
+  "@seedCopiedToast": {
+    "description": "Toast shown after a seed phrase has been copied, reminding the user the clipboard will auto-clear (SEC-09)."
+  },
   "settingsSeedNotAvailable": "Seed phrase not available for this identity. It was created before this feature was added.",
   "settingsSeedError": "Unable to retrieve seed phrase",
   "settingsWallet": "Wallet",

@@ -454,6 +454,16 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsSeedCopied => '助记词已复制到剪贴板';
 
   @override
+  String get seedCopyConfirmTitle => 'Copy seed phrase?';
+
+  @override
+  String get seedCopyConfirmBody =>
+      'Your seed phrase will be in the clipboard for 10 seconds. Do not switch apps or background the app during this time. Continue?';
+
+  @override
+  String get seedCopiedToast => 'Copied. Clipboard will clear in 10 seconds.';
+
+  @override
   String get settingsSeedNotAvailable => '此身份的助记词不可用。它是在添加此功能之前创建的。';
 
   @override

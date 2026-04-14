@@ -462,6 +462,17 @@ class AppLocalizationsTr extends AppLocalizations {
   String get settingsSeedCopied => 'Kurtarma ifadesi panoya kopyalandı';
 
   @override
+  String get seedCopyConfirmTitle => 'Kurtarma ifadesi kopyalansın mı?';
+
+  @override
+  String get seedCopyConfirmBody =>
+      'Kurtarma ifadeniz 10 saniye boyunca panoda kalacak. Bu süre içinde başka bir uygulamaya geçmeyin veya uygulamayı arka plana almayın. Devam edilsin mi?';
+
+  @override
+  String get seedCopiedToast =>
+      'Kopyalandı. Pano 10 saniye içinde temizlenecek.';
+
+  @override
   String get settingsSeedNotAvailable =>
       'Bu kimlik için kurtarma ifadesi mevcut değil. Bu özellik eklenmeden önce oluşturulmuş.';
 

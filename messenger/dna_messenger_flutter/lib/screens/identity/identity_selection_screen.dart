@@ -11,6 +11,8 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart' as dna;
 import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart';
+import '../../design_system/components/dna_dialog.dart';
+import '../../design_system/components/dna_snack_bar.dart';
 import '../../design_system/theme/dna_colors.dart';
 import '../../utils/clipboard_utils.dart';
 import '../../utils/logger.dart' show log, logError;
@@ -318,10 +320,23 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           const SizedBox(height: 16),
           // Copy button
           OutlinedButton.icon(
-            onPressed: () {
-              ClipboardUtils.copyWithAutoClear(_mnemonic);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(AppLocalizations.of(context).copiedToClipboard)),
+            onPressed: () async {
+              // SEC-09: pre-copy confirmation gate + post-copy toast.
+              final l10n = AppLocalizations.of(context);
+              final confirmed = await DnaDialog.confirm(
+                context,
+                title: l10n.seedCopyConfirmTitle,
+                message: l10n.seedCopyConfirmBody,
+                confirmLabel: l10n.continueButton,
+                cancelLabel: l10n.cancel,
+              );
+              if (!confirmed) return;
+              if (!mounted) return;
+              await ClipboardUtils.copyWithAutoClear(_mnemonic);
+              if (!mounted) return;
+              DnaSnackBar.info(
+                context,
+                AppLocalizations.of(context).seedCopiedToast,
               );
             },
             icon: const FaIcon(FontAwesomeIcons.copy, size: 18),

@@ -463,6 +463,16 @@ class AppLocalizationsEs extends AppLocalizations {
   String get settingsSeedCopied => 'Frase semilla copiada al portapapeles';
 
   @override
+  String get seedCopyConfirmTitle => 'Copy seed phrase?';
+
+  @override
+  String get seedCopyConfirmBody =>
+      'Your seed phrase will be in the clipboard for 10 seconds. Do not switch apps or background the app during this time. Continue?';
+
+  @override
+  String get seedCopiedToast => 'Copied. Clipboard will clear in 10 seconds.';
+
+  @override
   String get settingsSeedNotAvailable =>
       'La frase semilla no está disponible para esta identidad. Fue creada antes de que se añadiera esta función.';
 

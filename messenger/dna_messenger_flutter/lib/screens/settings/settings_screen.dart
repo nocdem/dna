@@ -699,10 +699,25 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: ElevatedButton.icon(
-                            onPressed: () {
-                              ClipboardUtils.copyWithAutoClear(mnemonic);
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text(AppLocalizations.of(context).settingsSeedCopied)),
+                            onPressed: () async {
+                              // SEC-09: pre-copy confirmation gate. Cancel is
+                              // the ghost (less-prominent) button per
+                              // DnaDialog.confirm default styling.
+                              final l10n = AppLocalizations.of(context);
+                              final confirmed = await DnaDialog.confirm(
+                                context,
+                                title: l10n.seedCopyConfirmTitle,
+                                message: l10n.seedCopyConfirmBody,
+                                confirmLabel: l10n.continueButton,
+                                cancelLabel: l10n.cancel,
+                              );
+                              if (!confirmed) return;
+                              if (!context.mounted) return;
+                              await ClipboardUtils.copyWithAutoClear(mnemonic);
+                              if (!context.mounted) return;
+                              DnaSnackBar.info(
+                                context,
+                                AppLocalizations.of(context).seedCopiedToast,
                               );
                             },
                             icon: const FaIcon(FontAwesomeIcons.copy, size: 16),
