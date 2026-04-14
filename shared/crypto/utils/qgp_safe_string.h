@@ -15,6 +15,17 @@
 #ifndef QGP_SAFE_STRING_H
 #define QGP_SAFE_STRING_H
 
+#ifdef _WIN32
+/* Windows system headers (rpcndr.h, stralign.h via windows.h) reference
+ * strcpy/sprintf as tokens in macro definitions (MIDL_ascii_strcpy,
+ * ua_tcscpy). #pragma GCC poison triggers on any subsequent occurrence
+ * of these tokens — even inside unused macro bodies. Pre-include
+ * <windows.h> so those macros are parsed before the poison takes
+ * effect; any user TU that later pulls <winsock2.h> / <windows.h>
+ * will just see the header guards and skip re-parsing. */
+#include <windows.h>
+#endif
+
 #pragma GCC poison strcpy sprintf
 
 #endif /* QGP_SAFE_STRING_H */
