@@ -430,6 +430,11 @@ add_executable(test_witness_cert_verify tests/test_witness_cert_verify.c)
 target_link_libraries(test_witness_cert_verify nodus dsa nodus crypto)
 add_test(NAME test_witness_cert_verify COMMAND test_witness_cert_verify)
 
+# Phase 11 / Task 11.6 — multi-tx sync_rsp wire guard tests
+add_executable(test_sync_rsp_guards tests/test_sync_rsp_guards.c)
+target_link_libraries(test_sync_rsp_guards nodus dsa nodus crypto)
+add_test(NAME test_sync_rsp_guards COMMAND test_sync_rsp_guards)
+
 # BFT quorum formula tests (Phase 8)
 add_executable(test_bft_quorum_formula tests/test_bft_quorum_formula.c)
 target_link_libraries(test_bft_quorum_formula nodus dsa nodus)
