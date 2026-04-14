@@ -217,6 +217,16 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NODUS_WITNESS_INTERNAL_API)
         "internal headers would leak into the production binary")
 endif()
 
+# Test hook guard (Phase 4 / Task 4.4): NODUS_WITNESS_TEST_HOOKS lets
+# tests bypass production checks (e.g. propose_batch's layer-2 chained
+# UTXO defense). The flag must never be set in a Release build because
+# the bypass would be compiled into the shipped library.
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NODUS_WITNESS_TEST_HOOKS)
+    message(FATAL_ERROR
+        "NODUS_WITNESS_TEST_HOOKS must not be set in Release builds — "
+        "production checks would be bypassable in the shipped binary")
+endif()
+
 function(register_witness_test name)
     add_executable(${name} tests/${name}.c)
     target_link_libraries(${name} nodus dsa nodus)
@@ -391,6 +401,9 @@ add_test(NAME test_merkle_proof COMMAND test_merkle_proof)
 
 # apply_tx_to_state + finalize_block isolation tests (Phase 3 / Task 3.6)
 register_witness_test(test_apply_finalize)
+
+# Intra-batch chained UTXO defense tests (Phase 4 / Task 4.5)
+register_witness_test(test_chained_utxo)
 
 # Witness Merkle state_root test
 add_executable(test_witness_merkle tests/test_witness_merkle.c)
