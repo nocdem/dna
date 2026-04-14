@@ -2812,9 +2812,22 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       );
 
       if (mounted) {
+        // Phase 13 / Task 13.5 — append witness receipt (block, tx_index)
+        // to the success snackbar when available.
+        String successMsg = l10n.dnacSendSuccess;
+        try {
+          final engine = await ref.read(engineProvider.future);
+          final receipt = await engine.dnacLastSendReceipt();
+          if (receipt != null) {
+            successMsg = '$successMsg\nBlock ${receipt.blockHeight} · '
+                'tx_index ${receipt.txIndex}';
+          }
+        } catch (_) {
+          // Receipt fetch is best-effort — never block UI on it.
+        }
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l10n.dnacSendSuccess)),
+          SnackBar(content: Text(successMsg)),
         );
       }
     } catch (e) {
