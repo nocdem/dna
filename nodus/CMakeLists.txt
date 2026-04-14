@@ -130,6 +130,7 @@ if(NOT WIN32)
         src/witness/nodus_witness_sync.c
         src/witness/nodus_witness_mempool.c
         src/witness/nodus_witness_cert.c
+        src/witness/nodus_witness_spend_preimage.c
     )
 endif()
 
@@ -437,6 +438,11 @@ add_test(NAME test_sync_rsp_guards COMMAND test_sync_rsp_guards)
 
 # Phase 11 follow-up — block_txs_get DB query test
 register_witness_test(test_block_txs_get)
+
+# Phase 12 / Task 12.6 — spend_result preimage layout tests
+add_executable(test_spend_preimage tests/test_spend_preimage.c)
+target_link_libraries(test_spend_preimage nodus dsa nodus crypto)
+add_test(NAME test_spend_preimage COMMAND test_spend_preimage)
 
 # BFT quorum formula tests (Phase 8)
 add_executable(test_bft_quorum_formula tests/test_bft_quorum_formula.c)

@@ -24,6 +24,7 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/hash/qgp_sha3.h"
+#include "witness/nodus_witness_spend_preimage.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -1416,26 +1417,10 @@ static void handle_dnac_spend(nodus_witness_t *w,
  * Spend result — sent on BFT COMMIT (async response to dnac_spend)
  * ════════════════════════════════════════════════════════════════════ */
 
-/* Phase 12 / Task 12.2 — extended spend_result preimage layout (221 B):
- *
- *   [0..7]      'spndrslt' domain tag        (8)
- *   [8..71]     tx_hash                       (64)
- *   [72..103]   witness_id                    (32)
- *   [104..167]  SHA3-512(witness_pubkey)     (64)  Task 12.3
- *   [168..199]  chain_id                      (32)
- *   [200..207]  timestamp (LE)                (8)
- *   [208..215]  block_height (LE)             (8)
- *   [216..219]  tx_index (LE)                 (4)
- *   [220]       status                        (1)
- *
- * Total: 221 bytes. Fixes Task 12.1 (timestamp TOCTOU — single time(NULL)
- * call), Task 12.2 (domain tag prevents cross-context confusion), Task
- * 12.3 (pubkey hash binds wpk wire field to the sig). */
-#define DNAC_SPEND_RESULT_PREIMAGE_LEN  221
-static const uint8_t DNAC_SPEND_RESULT_DOMAIN_TAG[8] =
-    { 's', 'p', 'n', 'd', 'r', 's', 'l', 't' };
-_Static_assert(sizeof(DNAC_SPEND_RESULT_DOMAIN_TAG) == 8,
-               "spend_result domain tag must be exactly 8 bytes");
+/* Phase 12 / Task 12.2 spec moved to nodus_witness_spend_preimage.h
+ * along with the testable preimage builder. The live signer below
+ * uses dnac_compute_spend_result_preimage(); the spec stays exported
+ * so test fixtures bind to the same authoritative layout. */
 
 void nodus_witness_send_spend_result(nodus_witness_t *w,
                                        nodus_witness_mempool_entry_t *entry,
@@ -1464,20 +1449,11 @@ void nodus_witness_send_spend_result(nodus_witness_t *w,
     qgp_sha3_512(w->server->identity.pk.bytes, NODUS_PK_BYTES, wpk_hash);
 
     uint8_t preimage[DNAC_SPEND_RESULT_PREIMAGE_LEN];
-    memcpy(preimage,           DNAC_SPEND_RESULT_DOMAIN_TAG, 8);
-    memcpy(preimage + 8,       entry->tx_hash, NODUS_T3_TX_HASH_LEN);
-    memcpy(preimage + 72,      w->my_id, NODUS_T3_WITNESS_ID_LEN);
-    memcpy(preimage + 104,     wpk_hash, 64);
-    memcpy(preimage + 168,     w->chain_id, 32);
-    for (int i = 0; i < 8; i++)
-        preimage[200 + i] = (uint8_t)((ts >> (i * 8)) & 0xFF);
-    for (int i = 0; i < 8; i++)
-        preimage[208 + i] =
-            (uint8_t)((entry->committed_block_height >> (i * 8)) & 0xFF);
-    for (int i = 0; i < 4; i++)
-        preimage[216 + i] =
-            (uint8_t)((entry->committed_tx_index >> (i * 8)) & 0xFF);
-    preimage[220] = (uint8_t)status;
+    dnac_compute_spend_result_preimage(entry->tx_hash, w->my_id, wpk_hash,
+                                         w->chain_id, ts,
+                                         entry->committed_block_height,
+                                         entry->committed_tx_index,
+                                         (uint8_t)status, preimage);
 
     nodus_sig_t sig;
     memset(&sig, 0, sizeof(sig));
