@@ -6,6 +6,7 @@
 #include "messenger.h"
 #include "messenger_transport.h"  // For messenger_transport_check_offline_messages
 #include "messenger/gek.h"  // GEK rotation
+#include "messenger/group_database.h"  // CORE-04: per-group DHT salt
 #include "dht/shared/dht_groups.h"
 #include "dht/shared/dht_gek_storage.h"  // GEK fetch from DHT
 #include "crypto/hash/qgp_sha3.h"  // For fingerprint calculation
@@ -19,6 +20,7 @@
 #include "dna_api.h"  // For dna_decrypt_message_raw
 #include "crypto/utils/qgp_types.h"  // For qgp_key_load/free
 #include "crypto/utils/qgp_platform.h"  // For qgp_platform_home_dir
+#include "crypto/utils/qgp_random.h"    // CORE-04: qgp_randombytes (CSPRNG)
 // transport_ctx.h no longer needed - nodus_ops replaces direct DHT access
 #include <json-c/json.h>
 #include <stdio.h>
@@ -138,6 +140,21 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
         uuid_out[36] = '\0';
     }
     QGP_LOG_INFO(LOG_TAG, "Created group '%s' (local_id=%d, uuid=%s)\n", name, local_id, group_uuid);
+
+    // CORE-04: eagerly provision a per-group 32-byte DHT privacy salt
+    // BEFORE the first GEK rotation so the IKP can embed it for members.
+    uint8_t group_salt[32];
+    if (qgp_randombytes(group_salt, sizeof(group_salt)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate DHT salt for group %s\n", group_uuid);
+        return -1;
+    }
+    if (group_database_set_dht_salt(group_uuid, group_salt) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to persist DHT salt for group %s\n", group_uuid);
+        qgp_secure_memzero(group_salt, sizeof(group_salt));
+        return -1;
+    }
+    qgp_secure_memzero(group_salt, sizeof(group_salt));
+    QGP_LOG_INFO(LOG_TAG, "CORE-04: DHT privacy salt provisioned for group %s\n", group_uuid);
 
     // Phase 13: Create initial GEK (version 0) and publish to DHT
     QGP_LOG_INFO(LOG_TAG, "Creating initial GEK for group %s...\n", group_uuid);
@@ -672,10 +689,13 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
                      group_uuid, gek_version, ikp_size);
 
         // Extract GEK from IKP using my fingerprint and Kyber private key
+        // CORE-04: also extract the per-group DHT privacy salt
         uint8_t gek[GEK_KEY_SIZE];
         uint32_t extracted_version = 0;
+        uint8_t dht_salt[IKP_DHT_SALT_SIZE];
         ret = ikp_extract(ikp_packet, ikp_size, my_fingerprint,
-                          kyber_key->private_key, gek, &extracted_version);
+                          kyber_key->private_key, gek, &extracted_version,
+                          dht_salt);
         free(ikp_packet);
         qgp_key_free(kyber_key);
 
@@ -690,8 +710,20 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
 
         if (ret != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to store GEK locally\n");
+            qgp_secure_memzero(dht_salt, sizeof(dht_salt));
             break;
         }
+
+        // CORE-04: persist DHT privacy salt received from owner so we can
+        // publish/read group outbox under the salted key layout.
+        if (group_database_set_dht_salt(group_uuid, dht_salt) != 0) {
+            QGP_LOG_WARN(LOG_TAG,
+                "Failed to persist DHT salt for group %s (non-fatal, will retry)\n",
+                group_uuid);
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "Persisted DHT privacy salt for group %s\n", group_uuid);
+        }
+        qgp_secure_memzero(dht_salt, sizeof(dht_salt));
 
         QGP_LOG_INFO(LOG_TAG, "Successfully stored GEK v%u for group %s\n",
                      extracted_version, group_uuid);
@@ -830,10 +862,13 @@ int messenger_sync_group_gek(const char *group_uuid) {
                  group_uuid, gek_version, ikp_size);
 
     // Extract GEK from IKP using my fingerprint and Kyber private key
+    // CORE-04: also extract per-group DHT privacy salt
     uint8_t gek[GEK_KEY_SIZE];
     uint32_t extracted_version = 0;
+    uint8_t dht_salt[IKP_DHT_SALT_SIZE];
     ret = ikp_extract(ikp_packet, ikp_size, my_fingerprint,
-                      kyber_key->private_key, gek, &extracted_version);
+                      kyber_key->private_key, gek, &extracted_version,
+                      dht_salt);
     free(ikp_packet);
     qgp_key_free(kyber_key);
 
@@ -848,8 +883,18 @@ int messenger_sync_group_gek(const char *group_uuid) {
 
     if (ret != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to store GEK locally\n");
+        qgp_secure_memzero(dht_salt, sizeof(dht_salt));
         return -1;
     }
+
+    // CORE-04: persist DHT privacy salt from owner-signed IKP
+    if (group_database_set_dht_salt(group_uuid, dht_salt) != 0) {
+        QGP_LOG_WARN(LOG_TAG,
+            "Failed to persist DHT salt for group %s (non-fatal)\n", group_uuid);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Persisted DHT privacy salt for group %s\n", group_uuid);
+    }
+    qgp_secure_memzero(dht_salt, sizeof(dht_salt));
 
     QGP_LOG_INFO(LOG_TAG, "Successfully synced GEK v%u for group %s\n",
                  extracted_version, group_uuid);

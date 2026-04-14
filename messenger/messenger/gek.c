@@ -698,6 +698,52 @@ int gek_generate_ratcheted(const uint8_t old_gek[GEK_KEY_SIZE],
  * ============================================================================ */
 
 /**
+ * CORE-04 helper: Ensure per-group DHT privacy salt is provisioned and
+ * return it in salt_out. If no salt exists in groups.db (pre-existing group
+ * from before plan 6-04), lazily generate one via CSPRNG and persist it.
+ *
+ * The owner is expected to follow this call with an IKP rebuild+publish to
+ * distribute the salt to members.
+ *
+ * @param group_uuid Group UUID
+ * @param salt_out Output buffer (32 bytes)
+ * @return 0 on success, -1 on CSPRNG/db error
+ */
+static int gek_ensure_dht_salt(const char *group_uuid,
+                               uint8_t salt_out[IKP_DHT_SALT_SIZE]) {
+    if (!group_uuid || !salt_out) return -1;
+
+    if (group_database_has_dht_salt(group_uuid) == 1) {
+        if (group_database_get_dht_salt(group_uuid, salt_out) == 0) {
+            return 0;
+        }
+        QGP_LOG_WARN(LOG_TAG,
+            "has_dht_salt=1 but get_dht_salt failed for %s; regenerating\n",
+            group_uuid);
+    }
+
+    /* Lazy provision — generate fresh 32-byte CSPRNG salt */
+    if (qgp_randombytes(salt_out, IKP_DHT_SALT_SIZE) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "Failed to generate DHT salt for group %s (CSPRNG error)\n",
+            group_uuid);
+        return -1;
+    }
+
+    if (group_database_set_dht_salt(group_uuid, salt_out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "Failed to persist DHT salt for group %s\n", group_uuid);
+        qgp_secure_memzero(salt_out, IKP_DHT_SALT_SIZE);
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG,
+        "CORE-04: lazy-provisioned DHT privacy salt for group %s\n",
+        group_uuid);
+    return 0;
+}
+
+/**
  * Helper: Rotate GEK and publish to DHT
  *
  * Common logic for both member add/remove operations.
@@ -827,12 +873,11 @@ static int gek_rotate_and_publish(void *ctx_ptr, const char *group_uuid, const c
     memcpy(owner_privkey, owner_key->private_key, 4896);
     qgp_key_free(owner_key);
 
-    // Step 6: Build Initial Key Packet
-    uint8_t *packet = NULL;
-    size_t packet_size = 0;
-    if (ikp_build(group_uuid, new_version, new_gek, (const gek_member_entry_t *)member_entries, valid_members,
-                  owner_privkey, &packet, &packet_size) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to build Initial Key Packet\n");
+    /* CORE-04: Ensure per-group DHT privacy salt is provisioned
+     * (lazy-generate if missing) and embed it in the IKP header. */
+    uint8_t dht_salt[IKP_DHT_SALT_SIZE];
+    if (gek_ensure_dht_salt(group_uuid, dht_salt) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to ensure DHT salt for group %s\n", group_uuid);
         qgp_secure_memzero(owner_privkey, sizeof(owner_privkey));
         for (size_t i = 0; i < valid_members; i++) {
             free(kyber_pubkeys[i]);
@@ -842,6 +887,25 @@ static int gek_rotate_and_publish(void *ctx_ptr, const char *group_uuid, const c
         dht_groups_free_metadata(meta);
         return -1;
     }
+
+    // Step 6: Build Initial Key Packet
+    uint8_t *packet = NULL;
+    size_t packet_size = 0;
+    if (ikp_build(group_uuid, new_version, new_gek, dht_salt,
+                  (const gek_member_entry_t *)member_entries, valid_members,
+                  owner_privkey, &packet, &packet_size) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build Initial Key Packet\n");
+        qgp_secure_memzero(owner_privkey, sizeof(owner_privkey));
+        qgp_secure_memzero(dht_salt, sizeof(dht_salt));
+        for (size_t i = 0; i < valid_members; i++) {
+            free(kyber_pubkeys[i]);
+        }
+        free(kyber_pubkeys);
+        free(member_entries);
+        dht_groups_free_metadata(meta);
+        return -1;
+    }
+    qgp_secure_memzero(dht_salt, sizeof(dht_salt));
 
     QGP_LOG_INFO(LOG_TAG, "Built Initial Key Packet: %zu bytes\n", packet_size);
 
@@ -1032,13 +1096,10 @@ int gek_rotate_on_member_remove(void *ctx, const char *group_uuid, const char *o
     memcpy(owner_privkey, owner_key->private_key, 4896);
     qgp_key_free(owner_key);
 
-    /* Step 8: Build Initial Key Packet */
-    uint8_t *packet = NULL;
-    size_t packet_size = 0;
-    if (ikp_build(group_uuid, new_version, new_gek,
-                  (const gek_member_entry_t *)member_entries, valid_members,
-                  owner_privkey, &packet, &packet_size) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to build Initial Key Packet\n");
+    /* CORE-04: ensure per-group DHT privacy salt (lazy-provisioned) */
+    uint8_t dht_salt[IKP_DHT_SALT_SIZE];
+    if (gek_ensure_dht_salt(group_uuid, dht_salt) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to ensure DHT salt for group %s\n", group_uuid);
         qgp_secure_memzero(owner_privkey, sizeof(owner_privkey));
         for (size_t i = 0; i < valid_members; i++) free(kyber_pubkeys[i]);
         free(kyber_pubkeys);
@@ -1047,6 +1108,24 @@ int gek_rotate_on_member_remove(void *ctx, const char *group_uuid, const char *o
         qgp_secure_memzero(new_gek, sizeof(new_gek));
         return -1;
     }
+
+    /* Step 8: Build Initial Key Packet */
+    uint8_t *packet = NULL;
+    size_t packet_size = 0;
+    if (ikp_build(group_uuid, new_version, new_gek, dht_salt,
+                  (const gek_member_entry_t *)member_entries, valid_members,
+                  owner_privkey, &packet, &packet_size) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build Initial Key Packet\n");
+        qgp_secure_memzero(owner_privkey, sizeof(owner_privkey));
+        qgp_secure_memzero(dht_salt, sizeof(dht_salt));
+        for (size_t i = 0; i < valid_members; i++) free(kyber_pubkeys[i]);
+        free(kyber_pubkeys);
+        free(member_entries);
+        dht_groups_free_metadata(meta);
+        qgp_secure_memzero(new_gek, sizeof(new_gek));
+        return -1;
+    }
+    qgp_secure_memzero(dht_salt, sizeof(dht_salt));
 
     QGP_LOG_INFO(LOG_TAG, "Built ratcheted Initial Key Packet: %zu bytes\n", packet_size);
 
@@ -1089,12 +1168,13 @@ size_t ikp_calculate_size(size_t member_count) {
 int ikp_build(const char *group_uuid,
               uint32_t version,
               const uint8_t gek[GEK_KEY_SIZE],
+              const uint8_t dht_salt[IKP_DHT_SALT_SIZE],
               const gek_member_entry_t *members,
               size_t member_count,
               const uint8_t *owner_dilithium_privkey,
               uint8_t **packet_out,
               size_t *packet_size_out) {
-    if (!group_uuid || !gek || !members || member_count == 0 ||
+    if (!group_uuid || !gek || !dht_salt || !members || member_count == 0 ||
         !owner_dilithium_privkey || !packet_out || !packet_size_out) {
         QGP_LOG_ERROR(LOG_TAG, "ikp_build: NULL parameter\n");
         return -1;
@@ -1136,7 +1216,11 @@ int ikp_build(const char *group_uuid,
     packet[offset] = (uint8_t)member_count;
     offset += 1;
 
-    QGP_LOG_INFO(LOG_TAG, "Building IKP for group %.8s... v%u with %zu members\n",
+    // CORE-04: DHT privacy salt (32 bytes)
+    memcpy(packet + offset, dht_salt, IKP_DHT_SALT_SIZE);
+    offset += IKP_DHT_SALT_SIZE;
+
+    QGP_LOG_INFO(LOG_TAG, "Building IKP v2 for group %.8s... v%u with %zu members (salted)\n",
            group_uuid, version, member_count);
 
     // === PER-MEMBER ENTRIES ===
@@ -1216,7 +1300,8 @@ int ikp_extract(const uint8_t *packet,
                 const uint8_t *my_fingerprint_bin,
                 const uint8_t *my_kyber_privkey,
                 uint8_t gek_out[GEK_KEY_SIZE],
-                uint32_t *version_out) {
+                uint32_t *version_out,
+                uint8_t dht_salt_out[IKP_DHT_SALT_SIZE]) {
     if (!packet || packet_size < IKP_HEADER_SIZE ||
         !my_fingerprint_bin || !my_kyber_privkey || !gek_out) {
         QGP_LOG_ERROR(LOG_TAG, "ikp_extract: Invalid parameter\n");
@@ -1264,7 +1349,13 @@ int ikp_extract(const uint8_t *packet,
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Extracting from IKP: group=%.8s... v%u members=%u\n",
+    // CORE-04 v2: DHT privacy salt (32 bytes)
+    if (dht_salt_out) {
+        memcpy(dht_salt_out, packet + offset, IKP_DHT_SALT_SIZE);
+    }
+    offset += IKP_DHT_SALT_SIZE;
+
+    QGP_LOG_INFO(LOG_TAG, "Extracting from IKP v2: group=%.8s... v%u members=%u (salted)\n",
            group_uuid, version, member_count);
 
     // === SEARCH FOR MY ENTRY ===
@@ -1344,7 +1435,8 @@ int ikp_verify(const uint8_t *packet,
     }
 
     // Parse header to get member count
-    uint8_t member_count = packet[IKP_HEADER_SIZE - 1];
+    // Offset: magic(4) + uuid(36) + version(4) = 44; member_count at byte 44
+    uint8_t member_count = packet[44];
 
     // Validate member count
     if (member_count == 0 || member_count > IKP_MAX_MEMBERS) {

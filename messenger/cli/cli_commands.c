@@ -23,6 +23,7 @@
 /* ICE/TURN removed in v0.4.61 for privacy */
 #include "messenger.h"
 #include "messenger/gek.h"
+#include "messenger/group_database.h"  /* CORE-04: per-group DHT salt */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -2492,11 +2493,14 @@ int cmd_gek_fetch(dna_engine_t *engine, const char *group_uuid) {
     }
 
     /* Try to extract GEK from IKP using my fingerprint and Kyber private key */
+    /* CORE-04: also extract the per-group DHT privacy salt */
     printf("Attempting to extract GEK...\n");
     uint8_t gek[GEK_KEY_SIZE];
     uint32_t extracted_version = 0;
+    uint8_t dht_salt[IKP_DHT_SALT_SIZE];
     ret = ikp_extract(ikp_packet, ikp_size, my_fingerprint,
-                      kyber_key->private_key, gek, &extracted_version);
+                      kyber_key->private_key, gek, &extracted_version,
+                      dht_salt);
     free(ikp_packet);
     qgp_key_free(kyber_key);
 
@@ -2509,6 +2513,12 @@ int cmd_gek_fetch(dna_engine_t *engine, const char *group_uuid) {
 
     /* Store GEK locally */
     ret = gek_store(group_uuid, extracted_version, gek);
+
+    /* CORE-04: persist DHT privacy salt received via IKP */
+    if (group_database_set_dht_salt(group_uuid, dht_salt) != 0) {
+        printf("Warning: Failed to persist DHT privacy salt locally\n");
+    }
+    qgp_secure_memzero(dht_salt, sizeof(dht_salt));
 
     /* Print success and GEK info (first 8 bytes for debugging) */
     printf("\nGEK extracted successfully!\n");
