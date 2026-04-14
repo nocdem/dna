@@ -374,6 +374,11 @@ add_executable(test_schema_migration tests/test_schema_migration.c)
 target_link_libraries(test_schema_migration nodus dsa nodus)
 add_test(NAME test_schema_migration COMMAND test_schema_migration)
 
+# RFC 6962 Merkle domain tag tests (Phase 2 / Tasks 2.1, 2.2, 2.4)
+add_executable(test_merkle_domain_tags tests/test_merkle_domain_tags.c)
+target_link_libraries(test_merkle_domain_tags nodus dsa nodus crypto)
+add_test(NAME test_merkle_domain_tags COMMAND test_merkle_domain_tags)
+
 # Witness Merkle state_root test
 add_executable(test_witness_merkle tests/test_witness_merkle.c)
 target_link_libraries(test_witness_merkle nodus dsa nodus)

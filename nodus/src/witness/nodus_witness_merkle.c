@@ -8,6 +8,7 @@
 
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_db.h"
+#include "nodus/nodus_types.h"
 
 #include <openssl/evp.h>
 #include <sqlite3.h>
@@ -62,7 +63,9 @@ static int sha3_512_once(const uint8_t *data, size_t len, uint8_t out[64]) {
     return sha3_512_final(md, out);
 }
 
-/* Compute SHA3-512(left(64) || right(64)). Used for internal nodes. */
+/* Compute SHA3-512(left(64) || right(64)). Used for internal nodes
+ * in the legacy duplicate-odd-sibling Merkle. The new RFC 6962 path
+ * uses inner_hash() below instead, which prepends a 0x01 domain tag. */
 static int sha3_512_pair(const uint8_t left[64], const uint8_t right[64],
                          uint8_t out[64]) {
     EVP_MD_CTX *md = NULL;
@@ -73,6 +76,77 @@ static int sha3_512_pair(const uint8_t left[64], const uint8_t right[64],
         return -1;
     }
     return sha3_512_final(md, out);
+}
+
+/* ── RFC 6962 domain-tagged primitives (Phase 2 / Tasks 2.1, 2.2) ──
+ *
+ * RFC 6962 §2.1 requires every Merkle node to carry a 1-byte domain tag
+ * so leaves and internal nodes hash to disjoint preimages, closing
+ * CVE-2012-2459 (a tree of {A,B,C} and a tree of {A,B,C,C} produced
+ * the same root under the legacy duplicate-odd-sibling rule because
+ * leaves and pairs were indistinguishable).
+ *
+ *   leaf_hash(d)        = SHA-512(0x00 || d)
+ *   inner_hash(L, R)    = SHA-512(0x01 || L || R)
+ *
+ * These are static helpers — the public wrapper merkle_tx_root applies
+ * leaf_hash to its inputs before passing them to merkle_root_rfc6962.
+ */
+
+static int leaf_hash(const uint8_t *data, size_t len, uint8_t out[64]) {
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) return -1;
+    const uint8_t prefix = 0x00;
+    if (EVP_DigestUpdate(md, &prefix, 1) != 1 ||
+        (len > 0 && EVP_DigestUpdate(md, data, len) != 1)) {
+        EVP_MD_CTX_free(md);
+        return -1;
+    }
+    return sha3_512_final(md, out);
+}
+
+static int inner_hash(const uint8_t L[64], const uint8_t R[64], uint8_t out[64]) {
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) return -1;
+    const uint8_t prefix = 0x01;
+    if (EVP_DigestUpdate(md, &prefix, 1) != 1 ||
+        EVP_DigestUpdate(md, L, 64) != 1 ||
+        EVP_DigestUpdate(md, R, 64) != 1) {
+        EVP_MD_CTX_free(md);
+        return -1;
+    }
+    return sha3_512_final(md, out);
+}
+
+/* RFC 6962 §2.1 Merkle root recursion.
+ *
+ *   MTH({})       = leaf_hash("")          -- empty tree
+ *   MTH({d0})     = leaves[0]              -- caller pre-applies leaf_hash
+ *   MTH(D[0..n]) = inner_hash( MTH(D[0..k]), MTH(D[k..n]) )
+ *
+ * with k = largest power of 2 strictly less than n.
+ *
+ * Contract: the `leaves` buffer holds n already-hashed leaves of 64
+ * bytes each. The caller (merkle_tx_root) is responsible for applying
+ * leaf_hash() to raw inputs first. The buffer is read-only here.
+ */
+static int merkle_root_rfc6962(const uint8_t *leaves, size_t n, uint8_t out[64]) {
+    if (n == 0) {
+        return leaf_hash(NULL, 0, out);
+    }
+    if (n == 1) {
+        memcpy(out, leaves, 64);
+        return 0;
+    }
+
+    size_t k = 1;
+    while (k * 2 < n) k *= 2;
+
+    uint8_t left[64];
+    uint8_t right[64];
+    if (merkle_root_rfc6962(leaves, k, left) != 0) return -1;
+    if (merkle_root_rfc6962(leaves + k * 64, n - k, right) != 0) return -1;
+    return inner_hash(left, right, out);
 }
 
 /* ── Leaf hash ─────────────────────────────────────────────────────── */
@@ -225,6 +299,30 @@ static int reduce_to_root(uint8_t *level, size_t n, uint8_t *root_out) {
 
     memcpy(root_out, level, 64);
     return 0;
+}
+
+/* ── Public: tx_root over a list of TX hashes (Phase 2 / Task 2.4) ──
+ *
+ * Applies the RFC 6962 leaf domain tag (0x00 prefix) to every input
+ * before reducing through merkle_root_rfc6962. Caller passes raw TX
+ * hashes; the wrapper does the leaf-hashing internally. CVE-2012-2459
+ * is closed by domain separation — see test_merkle_domain_tags.c.
+ *
+ * Per-call stack budget for the prehash buffer is bounded by
+ * NODUS_W_MAX_BLOCK_TXS (currently 10) * 64 = 640 bytes. Comfortable
+ * even on a 16 KB embedded stack.
+ */
+int nodus_witness_merkle_tx_root(const uint8_t *tx_hashes, size_t n, uint8_t out[64]) {
+    if (!out) return -1;
+    if (n == 0) return merkle_root_rfc6962(NULL, 0, out);
+    if (!tx_hashes) return -1;
+    if (n > NODUS_W_MAX_BLOCK_TXS) return -1;
+
+    uint8_t leaves[NODUS_W_MAX_BLOCK_TXS][64];
+    for (size_t i = 0; i < n; i++) {
+        if (leaf_hash(tx_hashes + i * 64, 64, leaves[i]) != 0) return -1;
+    }
+    return merkle_root_rfc6962((const uint8_t *)leaves, n, out);
 }
 
 /* ── Public: compute UTXO root ─────────────────────────────────────── */

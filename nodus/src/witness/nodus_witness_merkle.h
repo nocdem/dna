@@ -113,6 +113,23 @@ int nodus_witness_merkle_verify_proof(const uint8_t *leaf,
                                         int depth,
                                         const uint8_t *expected_root);
 
+/**
+ * Compute the RFC 6962 Merkle tx_root over a list of raw TX hashes.
+ *
+ * Required by the multi-tx block refactor: each block's `tx_root`
+ * column is this aggregate hash. The wrapper applies the leaf domain
+ * tag (0x00 prefix) to each input before feeding the leaves into the
+ * §2.1 root recursion. CVE-2012-2459 cannot reproduce the legacy
+ * collision because leaves and inner nodes hash to disjoint preimages.
+ *
+ * @param tx_hashes  n * 64 bytes of raw TX hashes (NOT pre-hashed)
+ * @param n          number of hashes; 0 returns the empty-tree root
+ * @param out        [out] 64-byte tx_root
+ * @return 0 on success, -1 on error or when n exceeds the per-block
+ *         limit NODUS_W_MAX_BLOCK_TXS
+ */
+int nodus_witness_merkle_tx_root(const uint8_t *tx_hashes, size_t n, uint8_t out[64]);
+
 #ifdef __cplusplus
 }
 #endif
