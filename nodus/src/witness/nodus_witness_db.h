@@ -231,7 +231,9 @@ int  nodus_witness_tx_output_add(nodus_witness_t *w, const uint8_t *tx_hash,
 int  nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
                               uint8_t tx_type, const uint8_t *tx_data,
                               uint32_t tx_len, uint64_t block_height,
-                              const char *sender_fp, uint64_t fee);
+                              const char *sender_fp, uint64_t fee,
+                              const uint8_t *client_pubkey,
+                              const uint8_t *client_sig);
 int  nodus_witness_tx_get(nodus_witness_t *w, const uint8_t *tx_hash,
                             uint8_t *tx_type_out, uint8_t **tx_data_out,
                             uint32_t *tx_len_out, uint64_t *block_height_out);
@@ -246,6 +248,11 @@ typedef struct {
     uint8_t   tx_type;
     uint8_t  *tx_data;
     uint32_t  tx_len;
+    /* Phase 11 follow-up — heap-allocated client_pubkey + client_sig
+     * if present in committed_transactions, NULL otherwise. Sync replay
+     * serves zero pad when NULL. */
+    uint8_t  *client_pubkey;   /* NODUS_PK_BYTES if non-NULL */
+    uint8_t  *client_sig;      /* NODUS_SIG_BYTES if non-NULL */
 } nodus_witness_block_tx_row_t;
 
 /** Free heap fields on a single block_tx_row. Idempotent on NULL. */

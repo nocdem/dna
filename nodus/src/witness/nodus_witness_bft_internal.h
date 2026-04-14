@@ -80,7 +80,9 @@ int apply_tx_to_state(nodus_witness_t *w,
                        const uint8_t *tx_data,
                        uint32_t tx_len,
                        uint64_t block_height,
-                       nodus_witness_batch_ctx_t *batch_ctx);
+                       nodus_witness_batch_ctx_t *batch_ctx,
+                       const uint8_t *client_pubkey,
+                       const uint8_t *client_sig);
 
 /* Phase 3 / Task 3.2 — finalize a block from N already-applied TXs.
  *

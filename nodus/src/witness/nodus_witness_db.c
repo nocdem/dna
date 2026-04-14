@@ -923,15 +923,17 @@ int nodus_witness_tx_output_add(nodus_witness_t *w, const uint8_t *tx_hash,
 int nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
                               uint8_t tx_type, const uint8_t *tx_data,
                               uint32_t tx_len, uint64_t block_height,
-                              const char *sender_fp, uint64_t fee) {
+                              const char *sender_fp, uint64_t fee,
+                              const uint8_t *client_pubkey,
+                              const uint8_t *client_sig) {
     if (!w || !w->db || !tx_hash || !tx_data || tx_len == 0) return -1;
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
         "INSERT OR IGNORE INTO committed_transactions "
         "(tx_hash, tx_type, tx_data, tx_len, block_height, timestamp, "
-        "sender_fp, fee) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
+        "sender_fp, fee, client_pubkey, client_sig) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: tx_store prepare failed: %s\n",
                 LOG_TAG, sqlite3_errmsg(w->db));
@@ -951,6 +953,18 @@ int nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
         sqlite3_bind_null(stmt, 7);
 
     sqlite3_bind_int64(stmt, 8, (int64_t)fee);
+
+    /* Phase 11 follow-up — persist client_pubkey + client_sig so sync
+     * replay can serve real values. NULL inputs (e.g. genesis) bind
+     * SQL NULL. */
+    if (client_pubkey)
+        sqlite3_bind_blob(stmt, 9, client_pubkey, NODUS_PK_BYTES, SQLITE_STATIC);
+    else
+        sqlite3_bind_null(stmt, 9);
+    if (client_sig)
+        sqlite3_bind_blob(stmt, 10, client_sig, NODUS_SIG_BYTES, SQLITE_STATIC);
+    else
+        sqlite3_bind_null(stmt, 10);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -1010,8 +1024,12 @@ int nodus_witness_tx_get(nodus_witness_t *w, const uint8_t *tx_hash,
 void nodus_witness_block_tx_row_free(nodus_witness_block_tx_row_t *row) {
     if (!row) return;
     free(row->tx_data);
+    free(row->client_pubkey);
+    free(row->client_sig);
     row->tx_data = NULL;
     row->tx_len = 0;
+    row->client_pubkey = NULL;
+    row->client_sig = NULL;
 }
 
 int nodus_witness_block_txs_get(nodus_witness_t *w, uint64_t block_height,
@@ -1022,7 +1040,7 @@ int nodus_witness_block_txs_get(nodus_witness_t *w, uint64_t block_height,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT tx_hash, tx_type, tx_data, tx_len "
+        "SELECT tx_hash, tx_type, tx_data, tx_len, client_pubkey, client_sig "
         "FROM committed_transactions "
         "WHERE block_height = ? "
         "ORDER BY tx_index ASC",
@@ -1052,6 +1070,23 @@ int nodus_witness_block_txs_get(nodus_witness_t *w, uint64_t block_height,
                 row->tx_len = (uint32_t)data_len;
             }
         }
+
+        const void *pk_blob = sqlite3_column_blob(stmt, 4);
+        int pk_len = sqlite3_column_bytes(stmt, 4);
+        if (pk_blob && pk_len == NODUS_PK_BYTES) {
+            row->client_pubkey = malloc(NODUS_PK_BYTES);
+            if (row->client_pubkey)
+                memcpy(row->client_pubkey, pk_blob, NODUS_PK_BYTES);
+        }
+
+        const void *sig_blob = sqlite3_column_blob(stmt, 5);
+        int sig_len = sqlite3_column_bytes(stmt, 5);
+        if (sig_blob && sig_len == NODUS_SIG_BYTES) {
+            row->client_sig = malloc(NODUS_SIG_BYTES);
+            if (row->client_sig)
+                memcpy(row->client_sig, sig_blob, NODUS_SIG_BYTES);
+        }
+
         n++;
     }
     sqlite3_finalize(stmt);
@@ -1396,6 +1431,8 @@ void nodus_witness_compute_block_hash(uint64_t height,
  * reason. Real SQLite errors (out of memory, disk full, lock contention)
  * trigger WITNESS_DB_MIGRATION_FATAL → abort().
  */
+static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w);
+
 int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
 
@@ -1450,5 +1487,31 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
         }
     }
 
+    /* Phase 11 follow-up — client_pubkey + client_sig columns. */
+    nodus_witness_db_migrate_v13_client_fields(w);
+
     return 0;
+}
+
+/* Phase 11 follow-up — additive ALTER for client_pubkey + client_sig.
+ * Split out so the migration body in v12 stays focused. */
+static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w) {
+    static const char *cols[2];
+    cols[0] = "ALTER TABLE committed_transactions ADD COLUMN client_pubkey BLOB";
+    cols[1] = "ALTER TABLE committed_transactions ADD COLUMN client_sig BLOB";
+    for (int i = 0; i < 2; i++) {
+        char *err = NULL;
+        int rc = sqlite3_exec(w->db, cols[i], NULL, NULL, &err);
+        if (rc != SQLITE_OK) {
+            const char *msg = err ? err : "(null)";
+            if (!strstr(msg, "duplicate column name")) {
+                fprintf(stderr,
+                        "MIGRATION FAILURE: ALTER ADD client field [%d] "
+                        "sqlite error %d: %s\n", i, rc, msg);
+                if (err) sqlite3_free(err);
+                abort();
+            }
+            if (err) sqlite3_free(err);
+        }
+    }
 }

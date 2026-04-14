@@ -313,12 +313,11 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
     memcpy(rsp.sync_rsp.tx_root, blk.tx_root, NODUS_T3_TX_HASH_LEN);
     rsp.sync_rsp.tx_count = row_count;
 
-    /* Zero-pad pointers for client_pubkey / client_sig — the wire
-     * encoder requires non-NULL bstr pointers, but the sync receiver
-     * does not re-verify per-TX client sigs (quorum cert is the
-     * security gate). committed_transactions doesn't currently store
-     * client_pubkey / client_sig, so we serve zero pads here. Phase 11
-     * follow-up: persist client pk/sig at commit time and serve them. */
+    /* Phase 11 follow-up — committed_transactions now stores
+     * client_pubkey and client_sig (migration v13 client-fields). Use
+     * the real values when present; fall back to zero pad on rows that
+     * predate the migration. The wire encoder requires non-NULL bstr
+     * pointers either way. */
     static const uint8_t zero_pk[NODUS_PK_BYTES] = {0};
     static const uint8_t zero_sig[NODUS_SIG_BYTES] = {0};
 
@@ -328,8 +327,10 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
         btx->tx_type = rows[i].tx_type;
         btx->tx_data = rows[i].tx_data;
         btx->tx_len = rows[i].tx_len;
-        btx->client_pubkey = zero_pk;
-        btx->client_sig = zero_sig;
+        btx->client_pubkey = rows[i].client_pubkey ?
+                              rows[i].client_pubkey : zero_pk;
+        btx->client_sig = rows[i].client_sig ?
+                            rows[i].client_sig : zero_sig;
         btx->fee = 0;
         /* Parse input nullifiers from tx_data for the wire, mirrors
          * the existing batch-propose pattern. */

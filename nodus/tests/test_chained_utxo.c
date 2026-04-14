@@ -69,7 +69,7 @@ static void test_null_batch_ctx_skips_layer3(void) {
     memset(tx_hash, 0xC1, sizeof(tx_hash));
 
     int rc = apply_tx_to_state(&w, tx_hash, NODUS_W_TX_SPEND, nfs, 1,
-                                NULL, 0, 1, NULL);
+                                NULL, 0, 1, NULL, NULL, NULL);
     if (rc != 0) { FAIL("returned non-zero"); sqlite3_close(w.db); return; }
 
     PASS();
@@ -93,7 +93,7 @@ static void test_empty_ctx_passes(void) {
     memset(tx_hash, 0xD2, sizeof(tx_hash));
 
     int rc = apply_tx_to_state(&w, tx_hash, NODUS_W_TX_SPEND, nfs, 1,
-                                NULL, 0, 1, &ctx);
+                                NULL, 0, 1, &ctx, NULL, NULL);
     if (rc != 0) { FAIL("returned non-zero"); sqlite3_close(w.db); return; }
 
     PASS();
@@ -119,7 +119,7 @@ static void test_populated_ctx_rejects_matching_input(void) {
     memset(tx_hash, 0xE3, sizeof(tx_hash));
 
     int rc = apply_tx_to_state(&w, tx_hash, NODUS_W_TX_SPEND, nfs, 1,
-                                NULL, 0, 1, &ctx);
+                                NULL, 0, 1, &ctx, NULL, NULL);
     if (rc != -1) { FAIL("expected -1"); sqlite3_close(w.db); return; }
 
     sqlite3_stmt *stmt;
@@ -157,7 +157,7 @@ static void test_transitive_chain_rejected(void) {
     memset(tx_hash, 0xF4, sizeof(tx_hash));
 
     int rc = apply_tx_to_state(&w, tx_hash, NODUS_W_TX_SPEND, nfs, 3,
-                                NULL, 0, 1, &ctx);
+                                NULL, 0, 1, &ctx, NULL, NULL);
     if (rc != -1) { FAIL("expected -1"); sqlite3_close(w.db); return; }
 
     PASS();
@@ -181,7 +181,7 @@ static void test_self_reference_not_flagged(void) {
     memset(tx_hash, 0xA5, sizeof(tx_hash));
 
     int rc = apply_tx_to_state(&w, tx_hash, NODUS_W_TX_SPEND, nfs, 1,
-                                NULL, 0, 1, &ctx);
+                                NULL, 0, 1, &ctx, NULL, NULL);
     if (rc != 0) { FAIL("returned non-zero"); sqlite3_close(w.db); return; }
 
     PASS();

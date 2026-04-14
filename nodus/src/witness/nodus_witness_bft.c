@@ -748,7 +748,9 @@ int apply_tx_to_state(nodus_witness_t *w,
                        const uint8_t *tx_data,
                        uint32_t tx_len,
                        uint64_t block_height,
-                       nodus_witness_batch_ctx_t *batch_ctx) {
+                       nodus_witness_batch_ctx_t *batch_ctx,
+                       const uint8_t *client_pubkey,
+                       const uint8_t *client_sig) {
     bool failed = false;
 
     /* Phase 4 / Task 4.3 — layer-3 chained UTXO check.
@@ -910,7 +912,8 @@ int apply_tx_to_state(nodus_witness_t *w,
         }
 
         nodus_witness_tx_store(w, tx_hash, tx_type, tx_data, tx_len, bh,
-                               sender_fp, committed_fee);
+                               sender_fp, committed_fee,
+                               client_pubkey, client_sig);
 
         /* Insert each output into tx_outputs table (with token_id) */
         for (int oi = 0; oi < out_total; oi++) {
@@ -2427,7 +2430,8 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
 
     uint64_t bh = nodus_witness_block_height(w) + 1;
     if (apply_tx_to_state(w, tx_hash, NODUS_W_TX_GENESIS, NULL, 0,
-                           tx_data, tx_len, bh, NULL) != 0) {
+                           tx_data, tx_len, bh, NULL,
+                           NULL, NULL) != 0) {
         nodus_witness_db_rollback(w);
         return -1;
     }
@@ -2466,7 +2470,8 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
 
         if (apply_tx_to_state(w, e->tx_hash, e->tx_type, nul_ptrs,
                                e->nullifier_count, e->tx_data, e->tx_len,
-                               bh, &ctx) != 0) {
+                               bh, &ctx,
+                               e->client_pubkey, e->client_sig) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "commit_batch: TX %d apply_tx failed", i);
             nodus_witness_db_rollback(w);
             return -1;
@@ -2544,7 +2549,9 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
                 apply_tx_to_state(w, entries[i]->tx_hash, entries[i]->tx_type,
                                    nul_ptrs, entries[i]->nullifier_count,
                                    entries[i]->tx_data, entries[i]->tx_len,
-                                   bh, &empty_ctx);
+                                   bh, &empty_ctx,
+                                   entries[i]->client_pubkey,
+                                   entries[i]->client_sig);
                 if (supply_invariant_violated(w)) {
                     QGP_LOG_ERROR(LOG_TAG,
                         "attribution: TX %d violates supply invariant", i);
