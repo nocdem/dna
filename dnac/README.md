@@ -42,8 +42,10 @@ v1 uses transparent amounts for simplicity. v2 will add STARK-based zero-knowled
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        dnac-cli                             │
-│              (standalone CLI application)                   │
+│                  dna-connect-cli `dna` group                │
+│         (DNAC commands live in dna-connect-cli, the         │
+│          unified messenger CLI — there is no separate       │
+│          dnac-cli binary anymore)                           │
 └─────────────────────────────────────────────────────────────┘
            │                              │
            ▼                              ▼
@@ -88,40 +90,41 @@ cmake .. && make -j$(nproc)
 ```
 
 This builds:
-- `libdnac.a` - Static library
-- `dnac-cli` - Command-line wallet
+- `libdnac.a` — Static library (linked into `dna-connect-cli`)
+
+There is **no standalone `dnac-cli` binary**. All DNAC commands are reached through `dna-connect-cli` under the `dna` subcommand group. The dispatcher and command implementations live in `messenger/cli/cli_dna_chain.c`.
 
 ## CLI Commands
 
 ```bash
 # Identity & Info
-dnac-cli info                    # Show wallet info, address, DHT status, balance
-dnac-cli address                 # Show wallet address (fingerprint only)
-dnac-cli query <name|fp>         # Lookup identity by name or fingerprint
+dna-connect-cli dna info                    # Wallet info, address, DHT status, balance
+dna-connect-cli dna address                 # Wallet address (fingerprint only)
+dna-connect-cli dna query <name|fp>         # Lookup identity by name or fingerprint
 
 # Wallet
-dnac-cli balance                 # Show wallet balance
-dnac-cli utxos                   # List UTXOs
-dnac-cli send <name|fp> <amount> [memo]  # Send payment (accepts DNA name or fingerprint)
-dnac-cli genesis <fp> <amount>   # Create genesis TX (3-of-3 witness auth)
-dnac-cli sync                    # Sync wallet from network
-dnac-cli recover                 # Recover wallet from seed
+dna-connect-cli dna balance                 # Wallet balance
+dna-connect-cli dna utxos                   # List UTXOs
+dna-connect-cli dna send <name|fp> <amount> [memo]   # Send payment
+dna-connect-cli dna genesis-create <fp> <amount>     # Create genesis TX
+dna-connect-cli dna genesis-submit <file>            # Submit pre-signed genesis TX
+dna-connect-cli dna sync                    # Sync wallet from network
 
 # History
-dnac-cli history [n]             # Transaction history (optional: last n)
-dnac-cli tx <hash>               # Show transaction details
+dna-connect-cli dna history [n]             # Transaction history (optional: last n)
+dna-connect-cli dna tx <hash>               # Show transaction details
 
 # Token Management
-dnac-cli token-create <name> <symbol> <supply>  # Create new token (burns 1 DNAC fee)
-dnac-cli token-list                              # List all known tokens
-dnac-cli token-info <token_id|symbol>            # Show token details
+dna-connect-cli dna token-create <name> <symbol> <supply>  # Create new token
+dna-connect-cli dna token-list                             # List all known tokens
+dna-connect-cli dna token-info <id|symbol>                 # Show token details
 
 # Token-Aware Operations
-dnac-cli balance --token <token_id>              # Show balance for a specific token
-dnac-cli send --token <token_id> <name|fp> <amount> [memo]  # Send token payment
+dna-connect-cli dna balance --token <token_id>             # Token balance
+dna-connect-cli dna send --token <id> <name|fp> <amount> [memo]  # Send token
 
 # Network
-dnac-cli nodus-list              # Show witness servers
+dna-connect-cli dna witnesses                # Show witness servers
 ```
 
 ## Hub/Spoke Query API (v0.10.0)
