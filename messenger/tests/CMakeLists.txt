@@ -48,6 +48,7 @@ include_directories(
     ${DNA_ROOT}/include
     ${DNA_ROOT}/dht/client  # dna_profile.h (transitively included by dht_keyserver.h)
     ${DNA_ROOT}/../nodus/include  # nodus/nodus_types.h (THR-02 test_nodus_init_concurrent)
+    ${DNA_ROOT}/../nodus/src      # nodus/nodus.h transitively needs core/nodus_media_storage.h (Phase 6 wave 0)
     ${SHARED_DIR}          # shared/crypto/utils/*.h, shared/crypto/bip39/*.h
 )
 
@@ -259,6 +260,40 @@ add_test(NAME test_platform_keystore COMMAND test_platform_keystore)
 add_executable(test_registered_name_validation test_registered_name_validation.c)
 target_link_libraries(test_registered_name_validation ${TEST_LIBS})
 add_test(NAME test_registered_name_validation COMMAND test_registered_name_validation)
+
+# =============================================================================
+# Phase 6 Wave 0 — RED test scaffolding for CORE-04 / CORE-05
+# =============================================================================
+# These five tests are intentionally RED until their respective fixing plans
+# (02..05) land. They MUST compile, link, and be discoverable via `ctest -N`
+# from day one so later plans can drive them GREEN one at a time.
+# See: .planning/phases/06-c-engine-core-flow-fixes/6-01-wave0-test-scaffolding-PLAN.md
+
+# CORE-05: register-name failure must not delete on-disk identity material
+add_executable(test_register_name_failure_preserves_keys test_register_name_failure_preserves_keys.c)
+target_link_libraries(test_register_name_failure_preserves_keys ${TEST_LIBS})
+add_test(NAME test_register_name_failure_preserves_keys COMMAND test_register_name_failure_preserves_keys)
+
+# CORE-05: register-name idempotency regression guard (nodus-dependent: SKIP=77)
+add_executable(test_register_name_idempotent test_register_name_idempotent.c)
+target_link_libraries(test_register_name_idempotent ${TEST_LIBS})
+add_test(NAME test_register_name_idempotent COMMAND test_register_name_idempotent)
+set_tests_properties(test_register_name_idempotent PROPERTIES SKIP_RETURN_CODE 77)
+
+# CORE-04: group outbox key derivation must accept and embed a per-group salt
+add_executable(test_group_outbox_make_key_salted test_group_outbox_make_key_salted.c)
+target_link_libraries(test_group_outbox_make_key_salted ${TEST_LIBS})
+add_test(NAME test_group_outbox_make_key_salted COMMAND test_group_outbox_make_key_salted)
+
+# CORE-04: DM outbox helper must reject NULL salt (close legacy fallback)
+add_executable(test_dm_outbox_requires_salt test_dm_outbox_requires_salt.c)
+target_link_libraries(test_dm_outbox_requires_salt ${TEST_LIBS})
+add_test(NAME test_dm_outbox_requires_salt COMMAND test_dm_outbox_requires_salt)
+
+# CORE-04: groups.db schema v2 -> v3 migration adds dht_salt + has_dht_salt
+add_executable(test_group_database_migration_v3 test_group_database_migration_v3.c)
+target_link_libraries(test_group_database_migration_v3 ${TEST_LIBS})
+add_test(NAME test_group_database_migration_v3 COMMAND test_group_database_migration_v3)
 
 # =============================================================================
 # CTest integration
