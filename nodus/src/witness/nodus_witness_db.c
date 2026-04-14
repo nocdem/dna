@@ -22,6 +22,20 @@
 
 #define LOG_TAG "WITNESS_DB"
 
+/*
+ * Pinned migration failure log literal for rollback trigger #9.
+ * Phase 1.1 will introduce a real schema migration path that invokes this
+ * macro from every ALTER/CREATE step. The literal MIGRATION FAILURE is the
+ * exact pattern operators grep journalctl for when deciding whether to roll
+ * back a deploy. Keep this macro in sync with nodus/docs/DEPLOY_RUNBOOK.md.
+ */
+#define WITNESS_DB_MIGRATION_FATAL(step_name, rc)                                  \
+    do {                                                                           \
+        fprintf(stderr, "MIGRATION FAILURE: %s failed with sqlite error %d: %s\n", \
+                (step_name), (int)(rc), sqlite3_errmsg(w->db));                    \
+        abort();                                                                   \
+    } while (0)
+
 /* ── Nullifier operations ────────────────────────────────────────── */
 
 bool nodus_witness_nullifier_exists(nodus_witness_t *w, const uint8_t *nullifier) {
