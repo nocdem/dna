@@ -533,6 +533,14 @@ int messenger_register_name(
         QGP_LOG_INFO(LOG_TAG, "✓ Public keys cached locally\n");
     }
 
+    /* Also cache the fingerprint->name mapping locally so that
+     * dht_keyserver_reverse_lookup (used by dna_engine_get_registered_name)
+     * resolves synchronously without a DHT roundtrip. Previously this table
+     * was only written by dna_handle_register_name, so the startup-republish
+     * path populated DHT + keyserver_cache (pubkeys) but NEVER name_cache,
+     * leaving the UI showing "Anonymous" until something else poked state. */
+    keyserver_cache_put_name(fingerprint, desired_name, 0);
+
     qgp_key_free(sign_key);
     qgp_key_free(enc_key);
 

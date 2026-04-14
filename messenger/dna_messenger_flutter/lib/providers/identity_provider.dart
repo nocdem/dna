@@ -313,21 +313,38 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     }
   }
 
-  /// Register a nickname for the current identity
+  /// Register a nickname for the current identity.
+  ///
+  /// Writes the user's chosen name into the local profile cache and
+  /// invalidates the profile providers BEFORE awaiting the DHT publish.
+  /// The UI (Settings, More, profile card) therefore shows the real name
+  /// immediately as soon as the user confirms registration — the 10+ s DHT
+  /// publish continues in the background and is purely propagation, not a
+  /// source-of-truth operation. The name the user typed is the truth;
+  /// availability was already verified via the debounced `isNameAvailable`
+  /// check on the nickname form, so there is no "corrected" version to
+  /// reconcile later. If the DHT publish ultimately fails, the caller
+  /// (`_registerAndLoad`) catches the exception and returns the user to
+  /// the nickname step, where the next attempt will overwrite this entry.
   Future<void> registerName(String name) async {
     final engine = await ref.read(engineProvider.future);
-    await engine.registerName(name);
 
-    // Cache profile locally so UI shows name without waiting for DHT propagation
+    // 1) Optimistic local write — happens BEFORE the DHT await so the UI
+    //    doesn't sit on "Anonymous" while Kademlia walks the network.
     final fingerprint = ref.read(currentFingerprintProvider);
     if (fingerprint != null && name.isNotEmpty) {
-      // Update SQLite-backed cache (used by userProfileProvider)
-      await ref.read(identityProfileCacheProvider.notifier).updateIdentity(fingerprint, name, '', registeredName: name);
+      await ref.read(identityProfileCacheProvider.notifier).updateIdentity(
+            fingerprint,
+            name,
+            '',
+            registeredName: name,
+          );
+      ref.invalidate(userProfileProvider);
+      ref.invalidate(fullProfileProvider);
     }
 
-    // Invalidate profile providers to refresh with new name
-    ref.invalidate(userProfileProvider);
-    ref.invalidate(fullProfileProvider);
+    // 2) Fire the DHT publish. May take 10+ seconds; UI is already updated.
+    await engine.registerName(name);
   }
 
   /// v0.3.0: Deprecated - in single-user model, unloading is only used

@@ -316,6 +316,27 @@ int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
     engine->state = DNA_ENGINE_STATE_ACTIVE;
     QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, state=ACTIVE");
 
+    /* Warm the local name_cache from profile_cache (SQLite-backed, fast,
+     * no DHT) so that dna_engine_get_registered_name — and by extension
+     * the Flutter userProfileProvider → Settings screen — resolves the
+     * real registered name immediately instead of flashing "Anonymous"
+     * while the background stabilization thread spends 10+ seconds
+     * doing DHT probes + republish. profile_cache_get only touches local
+     * storage; it does not block on the network. */
+    {
+        dna_unified_identity_t *local_id = NULL;
+        uint64_t cached_at = 0;
+        if (profile_cache_get(engine->fingerprint, &local_id, &cached_at) == 0
+            && local_id != NULL
+            && local_id->registered_name[0] != '\0') {
+            keyserver_cache_put_name(engine->fingerprint, local_id->registered_name, 0);
+            QGP_LOG_INFO(LOG_TAG,
+                         "Warmed name_cache from profile_cache on load: %s",
+                         local_id->registered_name);
+        }
+        if (local_id) dna_identity_free(local_id);
+    }
+
     /* v0.9.142+: Start wall poll timer (replaces per-contact wall listeners) */
     if (!minimal) {
         dna_engine_start_wall_poll(engine);
