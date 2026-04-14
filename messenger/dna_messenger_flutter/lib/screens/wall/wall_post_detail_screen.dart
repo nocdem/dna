@@ -251,13 +251,21 @@ class _WallPostDetailScreenState extends ConsumerState<WallPostDetailScreen> {
     );
   }
 
-  /// Build threaded comments: top-level first, replies indented under parent
+  /// Build threaded comments: top-level first, replies indented under parent.
+  /// Always sorted chronologically (oldest first) so newly-added comments
+  /// appear at the bottom on refresh — otherwise the list depends on whatever
+  /// order engine.wallGetComments returns, which isn't guaranteed to be stable
+  /// across a refresh cycle.
   Widget _buildCommentsList(List<WallComment> comments) {
     // Separate top-level and replies
-    final topLevel = comments.where((c) => !c.isReply).toList();
+    final topLevel = comments.where((c) => !c.isReply).toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     final replies = <String, List<WallComment>>{};
     for (final c in comments.where((c) => c.isReply)) {
       replies.putIfAbsent(c.parentCommentUuid!, () => []).add(c);
+    }
+    for (final bucket in replies.values) {
+      bucket.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     }
 
     // Build flat list with threading
