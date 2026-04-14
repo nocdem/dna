@@ -21,12 +21,14 @@
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_verify.h"
 #include "witness/nodus_witness_handlers.h"
+#include "witness/nodus_witness_cert.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
 #include "transport/nodus_tcp.h"
 #include "crypto/nodus_sign.h"
 
 #include "crypto/hash/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -1829,6 +1831,13 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     memcpy(votes[*vote_count].voter_id, hdr->sender_id,
            NODUS_T3_WITNESS_ID_LEN);
     votes[*vote_count].vote = (nodus_witness_vote_t)vote->vote;
+    /* Phase 7.5 / Task 7.5.2 — store the wire-supplied cert_sig.
+     * Only PRECOMMIT messages carry a meaningful cert_sig; PREVOTE
+     * cert_sig is zero-padded by senders and ignored downstream. */
+    if (msg->type == NODUS_T3_PRECOMMIT) {
+        memcpy(votes[*vote_count].signature, vote->cert_sig,
+               NODUS_SIG_BYTES);
+    }
     (*vote_count)++;
 
     if (vote->vote == NODUS_W_VOTE_APPROVE)
@@ -1862,14 +1871,47 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     if (next_phase == NODUS_W_PHASE_PRECOMMIT) {
         /* PREVOTE quorum → send PRECOMMIT */
 
+        /* Phase 7.5 / Task 7.5.2 — sign the cert preimage with our own
+         * Dilithium5 SK before recording or broadcasting the precommit.
+         * If signing fails (entropy / OOM / Dilithium internal), abort
+         * the precommit and let the round time out via view change. */
+        uint64_t cert_height = nodus_witness_block_height(w) + 1;
+        uint8_t cert_preimage[NODUS_WITNESS_CERT_PREIMAGE_LEN];
+        if (nodus_witness_compute_cert_preimage(w->round_state.tx_hash,
+                                                  w->my_id, cert_height,
+                                                  w->chain_id,
+                                                  cert_preimage) != 0) {
+            fprintf(stderr, "%s: cert preimage compute failed — "
+                    "aborting precommit\n", LOG_TAG);
+            return -1;
+        }
+
+        uint8_t cert_sig[NODUS_SIG_BYTES];
+        size_t cert_sig_len = 0;
+        if (qgp_dsa87_sign(cert_sig, &cert_sig_len, cert_preimage,
+                            sizeof(cert_preimage),
+                            w->server->identity.sk.bytes) != 0 ||
+            cert_sig_len > NODUS_SIG_BYTES) {
+            fprintf(stderr, "%s: cert dilithium sign failed — "
+                    "aborting precommit\n", LOG_TAG);
+            return -1;
+        }
+        /* Pad sig out to the fixed wire size if the detached
+         * signature came back shorter than NODUS_SIG_BYTES. */
+        if (cert_sig_len < NODUS_SIG_BYTES)
+            memset(cert_sig + cert_sig_len, 0,
+                   NODUS_SIG_BYTES - cert_sig_len);
+
         /* Record our own precommit first */
         memcpy(w->round_state.precommits[0].voter_id, w->my_id,
                NODUS_T3_WITNESS_ID_LEN);
         w->round_state.precommits[0].vote = NODUS_W_VOTE_APPROVE;
+        memcpy(w->round_state.precommits[0].signature, cert_sig,
+               NODUS_SIG_BYTES);
         w->round_state.precommit_count = 1;
         w->round_state.precommit_approve_count = 1;
 
-        /* Broadcast PRECOMMIT */
+        /* Broadcast PRECOMMIT (cert_sig embedded in vote payload) */
         nodus_t3_msg_t pc;
         memset(&pc, 0, sizeof(pc));
         pc.type = NODUS_T3_PRECOMMIT;
@@ -1877,6 +1919,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
         memcpy(pc.vote.tx_hash, w->round_state.tx_hash,
                NODUS_T3_TX_HASH_LEN);
         pc.vote.vote = NODUS_W_VOTE_APPROVE;
+        memcpy(pc.vote.cert_sig, cert_sig, NODUS_SIG_BYTES);
 
         nodus_witness_bft_broadcast(w, &pc);
         return 0;
