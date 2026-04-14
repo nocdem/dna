@@ -891,12 +891,30 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
     pthread_once(&g_nodus_once, nodus_once_init);
 
     /* CONCURRENCY.md L3: g_nodus_init_mutex
-     * Phase A: serialize concurrent nodus_messenger_init calls, populate
-     * g_stored_identity + build a local nconfig from the protected statics
-     * (g_known_nodes, g_config), then RELEASE the lock before calling
-     * nodus_singleton_init — the anti-pattern rule bans nodus_singleton_* /
-     * nodus_client_* calls inside this critical section. Phase B reacquires
-     * the lock solely to write g_connect_thread under pthread_create. */
+     * Serialize concurrent nodus_messenger_init calls and protect the
+     * non-atomic statics (g_stored_identity, g_connect_thread, g_known_nodes,
+     * g_config, g_status_cb) through the whole init sequence. The winning
+     * thread sets g_initialized=true at the end; all losing threads see it
+     * via the double-check under lock.
+     *
+     * Anti-pattern carve-out: this critical section calls nodus_singleton_init
+     * (and optionally nodus_singleton_connect on the pthread_create failure
+     * fallback). That is SAFE here because:
+     *   (a) nodus_singleton_init is the FIRST-EVER init of the singleton in
+     *       this process — no other thread can hold the nodus-internal lock
+     *       yet, so there is no reverse ordering to deadlock against.
+     *   (b) on_state_change — the only reverse-ordering hazard — can only
+     *       fire from the nodus poll thread, which is not started until the
+     *       connect thread runs, which is spawned AFTER we finish this
+     *       critical section (pthread_create below). At the moment of
+     *       nodus_singleton_init, no poll thread exists.
+     *   (c) nodus_singleton_connect under lock only happens on the rare
+     *       pthread_create failure fallback, and even then the connect
+     *       thread can't already be running (that's the failure we are
+     *       recovering from).
+     * Outside of init(), the strict rule applies: no nodus_singleton_* /
+     * nodus_client_* calls under g_nodus_init_mutex (see close, reinit,
+     * set_status_callback, on_state_change). */
     pthread_mutex_lock(&g_nodus_init_mutex);
 
     /* Double-check under lock */
@@ -980,12 +998,6 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
         return -1;
     }
 
-    /* Snapshot identity to a local so we can call nodus_singleton_init
-     * outside our mutex (anti-pattern rule: no nodus_singleton_* under lock). */
-    nodus_identity_t identity_local = g_stored_identity;
-
-    pthread_mutex_unlock(&g_nodus_init_mutex);
-
     /* Check preferred node file and prioritize if valid */
     {
         char pref_ip[64] = {0};
@@ -1002,22 +1014,16 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
                 i, nconfig.servers[i].ip, nconfig.servers[i].port);
     }
 
-    /* nodus_singleton_init runs OUTSIDE g_nodus_init_mutex — anti-pattern
-     * rule prohibits holding our lock while calling nodus_singleton_*. */
-    int rc = nodus_singleton_init(&nconfig, &identity_local);
+    int rc = nodus_singleton_init(&nconfig, &g_stored_identity);
     if (rc != 0) {
         fprintf(stderr, "[NODUS_INIT] Singleton init failed (rc=%d)\n", rc);
         QGP_LOG_ERROR(LOG_TAG, "Singleton init failed");
+        pthread_mutex_unlock(&g_nodus_init_mutex);
         return -1;
     }
 
     /* Initialize channel connection pool (TCP 4003) */
     nodus_ops_ch_init(NULL, NULL);
-
-    /* CONCURRENCY.md L3: g_nodus_init_mutex
-     * Phase B — reacquire to mark initialized and write g_connect_thread
-     * under pthread_create. */
-    pthread_mutex_lock(&g_nodus_init_mutex);
 
     /* Mark initialized before spawning connect thread */
     atomic_store(&g_initialized, true);
@@ -1028,8 +1034,9 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
     if (pthread_create(&g_connect_thread, NULL, nodus_connect_thread_fn, NULL) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Failed to create connect thread, falling back to blocking connect");
         atomic_store(&g_connect_thread_running, false);
-        /* Blocking fallback — release our mutex first (anti-pattern rule)
-         * before calling nodus_singleton_connect. */
+        /* Blocking fallback — release our mutex first so nodus_singleton_connect
+         * does not run under g_nodus_init_mutex (callback path may try to take
+         * our lock from the poll thread). */
         pthread_mutex_unlock(&g_nodus_init_mutex);
         nodus_singleton_connect();
         return 0;
