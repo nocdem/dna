@@ -49,10 +49,13 @@ static group_database_context_t *g_instance = NULL;
  * ============================================================================ */
 
 /**
- * Database Schema v2
+ * Database Schema v3
  *
  * v1: Initial schema - migrated from message_backup.c v9
  * v2: Added status and is_outgoing columns to group_messages for send tracking
+ * v3: Added dht_salt + has_dht_salt columns to groups for per-group DHT key
+ *     privacy salt storage (CORE-04, Phase 6 plan 03). Foundation for plan 04
+ *     (group outbox salt hard cutover).
  */
 static const char *SCHEMA_SQL =
     /* Groups table - core group metadata */
@@ -61,7 +64,9 @@ static const char *SCHEMA_SQL =
     "  name TEXT NOT NULL,"
     "  created_at INTEGER NOT NULL,"
     "  is_owner INTEGER DEFAULT 0,"
-    "  owner_fp TEXT NOT NULL"
+    "  owner_fp TEXT NOT NULL,"
+    "  dht_salt BLOB DEFAULT NULL,"
+    "  has_dht_salt INTEGER DEFAULT 0"
     ");"
 
     /* Group members table */
@@ -119,7 +124,7 @@ static const char *SCHEMA_SQL =
     "CREATE INDEX IF NOT EXISTS idx_group_messages_timestamp ON group_messages(timestamp_ms);"
 
     /* Set schema version */
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '2');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '3');";
 
 /**
  * Migration SQL for v1 -> v2
@@ -129,6 +134,20 @@ static const char *MIGRATION_V1_TO_V2 =
     "ALTER TABLE group_messages ADD COLUMN status INTEGER DEFAULT 1;"
     "ALTER TABLE group_messages ADD COLUMN is_outgoing INTEGER DEFAULT 0;"
     "UPDATE metadata SET value = '2' WHERE key = 'version';";
+
+/**
+ * Migration SQL for v2 -> v3 (CORE-04, Phase 6 plan 03)
+ * Adds dht_salt + has_dht_salt columns to groups. No data loss: ALTER TABLE
+ * ADD COLUMN preserves all existing rows; existing groups end up with
+ * has_dht_salt=0 and dht_salt=NULL. Salt provisioning happens in plan 04.
+ */
+static const char *MIGRATION_V2_TO_V3 =
+    "ALTER TABLE groups ADD COLUMN dht_salt BLOB DEFAULT NULL;"
+    "ALTER TABLE groups ADD COLUMN has_dht_salt INTEGER DEFAULT 0;"
+    "UPDATE metadata SET value = '3' WHERE key = 'version';";
+
+/* Per-group DHT salt size (matches DM/contact salt size). */
+#define GROUP_DHT_SALT_SIZE 32
 
 /* ============================================================================
  * HELPER FUNCTIONS
@@ -231,12 +250,29 @@ group_database_context_t* group_database_init(const char *db_key) {
         } else {
             QGP_LOG_INFO(LOG_TAG, "Migration v1->v2 completed successfully\n");
         }
+        schema_version = 2;
+    }
+
+    /* Run v2 -> v3 migration if needed (CORE-04: per-group DHT salt columns) */
+    if (schema_version == 2) {
+        QGP_LOG_INFO(LOG_TAG, "Migrating groups.db v2 -> v3 (CORE-04 dht_salt)\n");
+        rc = sqlite3_exec(ctx->db, MIGRATION_V2_TO_V3, NULL, NULL, &err_msg);
+        if (rc != SQLITE_OK) {
+            QGP_LOG_WARN(LOG_TAG, "Migration v2->v3 partial: %s (columns may already exist)\n",
+                         err_msg ? err_msg : "?");
+            sqlite3_free(err_msg);
+            /* Try updating version even if ALTER fails (column may already exist) */
+            sqlite3_exec(ctx->db, "UPDATE metadata SET value = '3' WHERE key = 'version'", NULL, NULL, NULL);
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "Migration v2->v3 completed successfully\n");
+        }
+        schema_version = 3;
     }
 
     /* Store as global singleton */
     g_instance = ctx;
 
-    QGP_LOG_INFO(LOG_TAG, "Group database initialized successfully (schema v2)\n");
+    QGP_LOG_INFO(LOG_TAG, "Group database initialized successfully (schema v3)\n");
     return ctx;
 }
 
@@ -312,5 +348,116 @@ int group_database_get_stats(group_database_context_t *ctx,
         sqlite3_finalize(stmt);
     }
 
+    return 0;
+}
+
+/* ============================================================================
+ * DHT SALT ACCESSORS (CORE-04 — per-group DHT key privacy salt)
+ *
+ * Mirrors the per-contact pattern in messenger/database/contacts_db.c
+ * (contacts_db_set_salt / contacts_db_get_salt). group_database has no
+ * dedicated mutex — it shares the sqlite3 handle with other group modules
+ * and relies on SQLite's busy-timeout for cross-thread serialization, same
+ * as the existing group_database_get_stats() path above.
+ * ============================================================================ */
+
+int group_database_has_dht_salt(const char *group_uuid) {
+    if (!g_instance || !g_instance->db || !group_uuid) {
+        return 0;
+    }
+
+    const char *sql = "SELECT has_dht_salt FROM groups WHERE uuid = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_instance->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "has_dht_salt: prepare failed: %s\n",
+                      sqlite3_errmsg(g_instance->db));
+        return 0;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
+
+    int result = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        result = sqlite3_column_int(stmt, 0) ? 1 : 0;
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+int group_database_get_dht_salt(const char *group_uuid, uint8_t *salt_out) {
+    if (!g_instance || !g_instance->db || !group_uuid || !salt_out) {
+        return -1;
+    }
+
+    const char *sql = "SELECT dht_salt, has_dht_salt FROM groups WHERE uuid = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_instance->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "get_dht_salt: prepare failed: %s\n",
+                      sqlite3_errmsg(g_instance->db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, group_uuid, -1, SQLITE_TRANSIENT);
+
+    int result = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        int has_salt = sqlite3_column_int(stmt, 1);
+        const void *blob = sqlite3_column_blob(stmt, 0);
+        int blob_len = sqlite3_column_bytes(stmt, 0);
+        if (has_salt && blob && blob_len == GROUP_DHT_SALT_SIZE) {
+            memcpy(salt_out, blob, GROUP_DHT_SALT_SIZE);
+            result = 0;
+            QGP_LOG_DEBUG(LOG_TAG, "get_dht_salt: found for %.20s...\n", group_uuid);
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "get_dht_salt: no salt for %.20s... (has=%d len=%d)\n",
+                          group_uuid, has_salt, blob_len);
+        }
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "get_dht_salt: no row found for %.20s...\n", group_uuid);
+    }
+
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+int group_database_set_dht_salt(const char *group_uuid, const uint8_t *salt) {
+    if (!g_instance || !g_instance->db || !group_uuid || !salt) {
+        return -1;
+    }
+
+    const char *sql =
+        "UPDATE groups SET dht_salt = ?, has_dht_salt = 1 WHERE uuid = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_instance->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "set_dht_salt: prepare failed: %s\n",
+                      sqlite3_errmsg(g_instance->db));
+        return -1;
+    }
+
+    sqlite3_bind_blob(stmt, 1, salt, GROUP_DHT_SALT_SIZE, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, group_uuid, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    int changes = sqlite3_changes(g_instance->db);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "set_dht_salt: step failed: %s\n",
+                      sqlite3_errmsg(g_instance->db));
+        return -1;
+    }
+    if (changes == 0) {
+        QGP_LOG_WARN(LOG_TAG, "set_dht_salt: no group row updated for %.20s...\n",
+                     group_uuid);
+        return -1;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "set_dht_salt: stored salt for %.20s...\n", group_uuid);
     return 0;
 }
