@@ -435,6 +435,9 @@ add_executable(test_sync_rsp_guards tests/test_sync_rsp_guards.c)
 target_link_libraries(test_sync_rsp_guards nodus dsa nodus crypto)
 add_test(NAME test_sync_rsp_guards COMMAND test_sync_rsp_guards)
 
+# Phase 11 follow-up — block_txs_get DB query test
+register_witness_test(test_block_txs_get)
+
 # BFT quorum formula tests (Phase 8)
 add_executable(test_bft_quorum_formula tests/test_bft_quorum_formula.c)
 target_link_libraries(test_bft_quorum_formula nodus dsa nodus)
