@@ -1,19 +1,30 @@
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// Storage keys
+// Storage keys — same string constants used before SEC-08 migration (D-16,
+// drop-in replacement). Fields 1-4 below moved from SharedPreferences to
+// FlutterSecureStorage in Phase 04 Plan 04-04 per C-04.
 const _kAppLockEnabled = 'app_lock_enabled';
 const _kBiometricsEnabled = 'app_lock_biometrics';
 const _kPinHash = 'app_lock_pin_hash';
 const _kPinSalt = 'app_lock_pin_salt';
 const _kFailedAttempts = 'app_lock_failed_attempts';
 const _kLockoutUntil = 'app_lock_lockout_until';
+
+/// Keys migrated from SharedPreferences to secure storage. Used by the
+/// one-shot migration function below.
+const List<String> _kMigratedKeys = <String>[
+  _kAppLockEnabled,
+  _kBiometricsEnabled,
+  _kFailedAttempts,
+  _kLockoutUntil,
+];
 
 // Brute-force protection constants
 const _maxAttemptsBeforeLockout = 5;
@@ -77,8 +88,55 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
     _load();
   }
 
-  Future<void> _load() async {
+  /// Test-only constructor that injects a custom [FlutterSecureStorage]
+  /// instance so unit tests can supply a mock. Not part of the public API;
+  /// production code uses the default constructor above.
+  @visibleForTesting
+  AppLockNotifier.withSecureStorage(FlutterSecureStorage secureStorage)
+      : _secureStorage = secureStorage,
+        _localAuth = LocalAuthentication(),
+        super(const AppLockState()) {
+    _load();
+  }
+
+  /// One-shot migration from legacy SharedPreferences storage to
+  /// FlutterSecureStorage for the 4 app-lock fields (SEC-08, CONTEXT C-04).
+  ///
+  /// Invariants:
+  ///   - Idempotent: safe to run on every launch. Second run is a no-op
+  ///     because SharedPreferences entries have been deleted.
+  ///   - Secure-wins-on-conflict: if secure storage already has a value for a
+  ///     key, the SharedPreferences value is discarded (secure is canonical).
+  ///   - Non-destructive of user state: legacy values are copied to secure
+  ///     storage before the SharedPreferences entries are removed.
+  ///
+  /// This closes the app-lock bypass attack surface where a filesystem
+  /// attacker could tamper with unencrypted SharedPreferences XML to flip
+  /// `app_lock_enabled` to false or reset `app_lock_failed_attempts`.
+  Future<void> _migrateFromSharedPreferencesIfNeeded() async {
     final prefs = await SharedPreferences.getInstance();
+    for (final key in _kMigratedKeys) {
+      if (!prefs.containsKey(key)) continue;
+
+      final secureHas = await _secureStorage.containsKey(key: key);
+      if (!secureHas) {
+        final legacy = prefs.get(key);
+        if (legacy != null) {
+          await _secureStorage.write(key: key, value: legacy.toString());
+        }
+      }
+      // Always delete the SharedPreferences entry: it's either been migrated
+      // (secure now holds it) or shadowed by an existing secure value.
+      await prefs.remove(key);
+    }
+  }
+
+  Future<void> _load() async {
+    // Step 1: migrate any pre-existing SharedPreferences state to secure
+    // storage before the first state publication.
+    await _migrateFromSharedPreferencesIfNeeded();
+
+    // Step 2: read PIN hash (already in secure storage pre-SEC-08).
     String? pinHash;
     try {
       pinHash = await _secureStorage.read(key: _kPinHash);
@@ -86,36 +144,65 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
       pinHash = null;
     }
 
-    final failedAttempts = prefs.getInt(_kFailedAttempts) ?? 0;
-    final lockoutMs = prefs.getInt(_kLockoutUntil) ?? 0;
-    DateTime? lockoutUntil;
-    if (lockoutMs > 0) {
-      lockoutUntil = DateTime.fromMillisecondsSinceEpoch(lockoutMs);
-      if (DateTime.now().isAfter(lockoutUntil)) {
-        lockoutUntil = null; // Expired
-      }
-    }
+    // Step 3: read the 4 migrated fields from secure storage.
+    final enabled = await _readSecureBool(_kAppLockEnabled);
+    final biometricsEnabled = await _readSecureBool(_kBiometricsEnabled);
+    final failedAttempts = await _readSecureInt(_kFailedAttempts);
+    final lockoutUntil = await _readSecureLockoutUntil();
 
     state = AppLockState(
-      enabled: prefs.getBool(_kAppLockEnabled) ?? false,
-      biometricsEnabled: prefs.getBool(_kBiometricsEnabled) ?? false,
+      enabled: enabled,
+      biometricsEnabled: biometricsEnabled,
       pinSet: pinHash != null && pinHash.isNotEmpty,
       failedAttempts: failedAttempts,
       lockoutUntil: lockoutUntil,
     );
   }
 
+  Future<bool> _readSecureBool(String key) async {
+    try {
+      final v = await _secureStorage.read(key: key);
+      return v == 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<int> _readSecureInt(String key) async {
+    try {
+      final v = await _secureStorage.read(key: key);
+      if (v == null) return 0;
+      return int.tryParse(v) ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Future<DateTime?> _readSecureLockoutUntil() async {
+    try {
+      final v = await _secureStorage.read(key: _kLockoutUntil);
+      if (v == null) return null;
+      final ms = int.tryParse(v) ?? 0;
+      if (ms <= 0) return null;
+      final dt = DateTime.fromMillisecondsSinceEpoch(ms);
+      if (DateTime.now().isAfter(dt)) return null; // Expired.
+      return dt;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Enable/disable app lock
   Future<void> setEnabled(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kAppLockEnabled, enabled);
+    await _secureStorage.write(
+        key: _kAppLockEnabled, value: enabled ? 'true' : 'false');
     state = state.copyWith(enabled: enabled);
   }
 
   /// Enable/disable biometrics
   Future<void> setBiometricsEnabled(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kBiometricsEnabled, enabled);
+    await _secureStorage.write(
+        key: _kBiometricsEnabled, value: enabled ? 'true' : 'false');
     state = state.copyWith(biometricsEnabled: enabled);
   }
 
@@ -179,9 +266,9 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
 
   /// Record a failed PIN attempt and apply lockout if needed
   Future<void> _recordFailedAttempt() async {
-    final prefs = await SharedPreferences.getInstance();
-    final attempts = (prefs.getInt(_kFailedAttempts) ?? 0) + 1;
-    await prefs.setInt(_kFailedAttempts, attempts);
+    final attempts = (await _readSecureInt(_kFailedAttempts)) + 1;
+    await _secureStorage.write(
+        key: _kFailedAttempts, value: attempts.toString());
 
     DateTime? lockoutUntil;
     if (attempts >= _maxAttemptsBeforeLockout) {
@@ -190,8 +277,9 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
           .clamp(0, _lockoutDurations.length - 1);
       final seconds = _lockoutDurations[lockoutIndex];
       lockoutUntil = DateTime.now().add(Duration(seconds: seconds));
-      await prefs.setInt(
-          _kLockoutUntil, lockoutUntil.millisecondsSinceEpoch);
+      await _secureStorage.write(
+          key: _kLockoutUntil,
+          value: lockoutUntil.millisecondsSinceEpoch.toString());
     }
 
     state = state.copyWith(
@@ -202,9 +290,8 @@ class AppLockNotifier extends StateNotifier<AppLockState> {
 
   /// Reset failed attempt counter
   Future<void> _resetFailedAttempts() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_kFailedAttempts);
-    await prefs.remove(_kLockoutUntil);
+    await _secureStorage.delete(key: _kFailedAttempts);
+    await _secureStorage.delete(key: _kLockoutUntil);
   }
 
   /// Generate random salt
