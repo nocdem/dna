@@ -1,0 +1,33 @@
+# perf_baseline placeholder — v0.11.10
+
+# This file is a Phase 0 / Task 0.4 placeholder. The actual baseline must be
+# captured by running `perf_baseline.sh` against a live v0.11.10 cluster
+# BEFORE Phase 1 lands. Phase 15.3 go/no-go compares the post-refactor
+# perf capture against the values recorded here.
+#
+# Capture command:
+#     ./nodus/tests/perf_baseline.sh nodus1:4001 nodus2:4001 [...] \
+#         > docs/plans/perf_baseline_v0.11.10.txt
+#
+# Until that capture is run, this file holds zeros. Phase 15.3 must FAIL
+# loudly if compared against zeros — the comparison logic should detect
+# the placeholder and refuse to proceed.
+
+# cluster: (not yet captured)
+# spend count: 0
+
+## latency (ms) over 0 spends
+p50=0
+p95=0
+p99=0
+
+## iops (during 10-tx burst)
+# (not yet captured)
+
+## witness rss (KB)
+# (not yet captured)
+
+## merkle compute count (per round, last 10 rounds)
+# (not yet captured)
+
+# placeholder — replace via perf_baseline.sh capture
