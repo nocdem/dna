@@ -1,17 +1,24 @@
 /**
  * @file block.h
- * @brief DNAC Block Chain Structure (v0.9.0)
+ * @brief DNAC Block Chain Structure (v0.14.0 — multi-tx block refactor)
  *
- * Each committed transaction becomes a block with:
- * - block_height: sequential counter from 0 (genesis block)
- * - prev_block_hash: SHA3-512 of previous block header (all zeros for genesis)
- * - state_root: UTXO set Merkle root after this block's changes
- * - tx_hash: the transaction contained in this block
- * - tx_count: 1 for now (upgrade path for batched blocks)
+ * Each block carries N transactions (1..NODUS_W_MAX_BLOCK_TXS) instead of
+ * exactly one. Field semantics:
+ * - block_height:    sequential counter from 0 (genesis block)
+ * - prev_block_hash: SHA3-512 of previous block header (zeros for genesis)
+ * - state_root:      SHA3-512 over the UTXO set after applying this block
+ * - tx_root:         RFC 6962 Merkle root over the block's TX hashes
+ *                    (replaces the legacy single tx_hash field)
+ * - tx_count:        number of TXs in this block (1..NODUS_W_MAX_BLOCK_TXS)
  *
- * Hash input (250 bytes, deterministic):
- *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64) || tx_hash(64) ||
- *             tx_count(2 LE) || epoch(8 LE) || timestamp(8 LE) || proposer_id(32) )
+ * Hash input (multi-tx, deterministic — Phase 1 / Task 1.2):
+ *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64)
+ *             || tx_root(64) || tx_count(4 LE) || timestamp(8 LE)
+ *             || proposer_id(32) )
+ *
+ * The legacy "epoch" and "tx_hash" fields are gone. Per-TX type lives on
+ * committed_transactions in the witness DB; the block row only carries
+ * the aggregate Merkle root and the count.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -39,19 +46,25 @@ extern "C" {
  * ========================================================================== */
 
 /**
- * @brief Block header type
+ * @brief Block header type (multi-tx, Phase 1 / Task 1.2)
  *
- * Each committed TX produces exactly one block. The block_hash is computed
- * over all other fields (deterministic). tx_count=1 today; batching later
- * changes only this field.
+ * Each block carries N transactions whose hashes are aggregated under
+ * tx_root via RFC 6962 Merkle hashing. block_hash is computed over the
+ * other fields deterministically — see dnac_block_compute_hash.
+ *
+ * Field changes from v0.13:
+ *   - tx_hash field removed (was the single TX hash for a 1-tx block)
+ *   + tx_root field added (RFC 6962 Merkle root over the TX hashes)
+ *   - epoch field removed (no longer part of the block hash preimage)
+ *   * tx_count widened from uint16 to uint32 to match the witness DB
+ *     INTEGER column without sign issues
  */
 typedef struct {
     uint64_t block_height;                          /**< Sequential from 0 */
-    uint8_t  prev_block_hash[DNAC_BLOCK_HASH_SIZE]; /**< SHA3-512 of previous block */
-    uint8_t  state_root[DNAC_BLOCK_HASH_SIZE];      /**< UTXO set root after block */
-    uint8_t  tx_hash[DNAC_TX_HASH_SIZE];            /**< Transaction in this block */
-    uint16_t tx_count;                              /**< 1 for now (batching upgrade path) */
-    uint64_t epoch;                                 /**< Epoch number */
+    uint8_t  prev_block_hash[DNAC_BLOCK_HASH_SIZE]; /**< SHA3-512 of previous block header */
+    uint8_t  state_root[DNAC_BLOCK_HASH_SIZE];      /**< SHA3-512 over the UTXO set after this block */
+    uint8_t  tx_root[DNAC_BLOCK_HASH_SIZE];         /**< RFC 6962 Merkle root over block TX hashes */
+    uint32_t tx_count;                              /**< Number of TXs (1..NODUS_W_MAX_BLOCK_TXS) */
     uint64_t timestamp;                             /**< From BFT proposal (deterministic) */
     uint8_t  proposer_id[DNAC_BLOCK_PROPOSER_SIZE]; /**< Leader who proposed */
     uint8_t  block_hash[DNAC_BLOCK_HASH_SIZE];      /**< Computed: SHA3-512 of header fields */
@@ -62,11 +75,12 @@ typedef struct {
  * ========================================================================== */
 
 /**
- * @brief Compute block_hash from header fields
+ * @brief Compute block_hash from header fields (multi-tx)
  *
- * Hash input (250 bytes):
- *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64) || tx_hash(64) ||
- *             tx_count(2 LE) || epoch(8 LE) || timestamp(8 LE) || proposer_id(32) )
+ * Hash input (244 bytes — Phase 1 / Task 1.2):
+ *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64)
+ *             || tx_root(64) || tx_count(4 LE) || timestamp(8 LE)
+ *             || proposer_id(32) )
  *
  * @param block Block to compute hash for (block_hash field is filled)
  * @return 0 on success, -1 on error
