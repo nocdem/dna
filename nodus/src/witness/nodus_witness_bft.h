@@ -82,6 +82,23 @@ int nodus_witness_bft_start_round_from_entries(nodus_witness_t *w,
  */
 int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w);
 
+/* Phase 6 commit wrappers — exposed for sync replay (Phase 11 Task
+ * 11.4). nodus_witness_commit_block is the deprecated single-TX shim
+ * that dispatches to these; sync.c calls them directly. */
+int nodus_witness_commit_genesis(nodus_witness_t *w,
+                                   const uint8_t *tx_hash,
+                                   const uint8_t *tx_data,
+                                   uint32_t tx_len,
+                                   uint64_t timestamp,
+                                   const uint8_t *proposer_id);
+
+int nodus_witness_replay_block(nodus_witness_t *w,
+                                 uint64_t rsp_height,
+                                 nodus_witness_mempool_entry_t **entries,
+                                 int count,
+                                 uint64_t timestamp,
+                                 const uint8_t *proposer_id);
+
 /** Handle decoded PROPOSAL message. */
 int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                                        const nodus_t3_msg_t *msg);
@@ -123,23 +140,9 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w);
  */
 int nodus_witness_bft_broadcast(nodus_witness_t *w, nodus_t3_msg_t *msg);
 
-/**
- * Write committed block to witness database (replay-safe).
- * Used by BFT COMMIT path and state sync replay.
- * Handles genesis (DB creation) and non-genesis (nullifiers, UTXO).
- *
- * @return 0 on success, -1 on failure
- */
-int nodus_witness_commit_block(nodus_witness_t *w,
-                                const uint8_t *tx_hash,
-                                uint8_t tx_type,
-                                const uint8_t *const *nullifiers,
-                                uint8_t nullifier_count,
-                                uint64_t total_supply,
-                                uint64_t proposal_timestamp,
-                                const uint8_t *proposer_id,
-                                const uint8_t *tx_data,
-                                uint32_t tx_len);
+/* Phase 11 partial — nodus_witness_commit_block DELETED.
+ * Was a thin dispatcher to commit_genesis / commit_batch; sync.c now
+ * calls those wrappers directly. */
 
 #ifdef __cplusplus
 }

@@ -1061,67 +1061,12 @@ int finalize_block(nodus_witness_t *w,
     return 0;
 }
 
-/* commit_block_inner — DELETED in Phase 3 / Task 3.3.
+/* nodus_witness_commit_block — DELETED in Phase 11 partial.
  *
- * The legacy 280-line function that did everything from per-TX state
- * mutation through state_root and block_add is gone. Its responsibilities
- * are now split between:
- *
- *   apply_tx_to_state  — per-TX state mutation
- *   finalize_block     — per-block state_root + supply check + block_add
- *
- * All three former call sites (nodus_witness_commit_block single-TX
- * path, the local mempool batch path, and the remote BFT batch path)
- * now invoke the apply_tx + finalize_block pair directly. Phase 6
- * commit wrappers (commit_genesis / commit_batch / replay_block)
- * replace those inline pair calls with named wrappers — but the call
- * structure stays the same. */
-
-int nodus_witness_commit_block(nodus_witness_t *w,
-                          const uint8_t *tx_hash,
-                          uint8_t tx_type,
-                          const uint8_t *const *nullifiers,
-                          uint8_t nullifier_count,
-                          uint64_t total_supply,
-                          uint64_t proposal_timestamp,
-                          const uint8_t *proposer_id,
-                          const uint8_t *tx_data,
-                          uint32_t tx_len) {
-    /* Phase 7 / Task 7.6 — thin dispatch to the Phase 6 wrappers.
-     *
-     * Genesis bootstraps a fresh chain DB via commit_genesis. Non-genesis
-     * single-TX commits build a 1-entry batch and ride the same
-     * commit_batch path as multi-TX rounds. The total_supply parameter
-     * is unused (apply_tx derives it from tx_data); kept on the public
-     * signature only because sync.c:521 still calls this function until
-     * Phase 11 rewires the sync replay path to nodus_witness_replay_block. */
-    (void)total_supply;
-
-    if (!w || !tx_hash || !tx_data) return -1;
-
-    if (tx_type == NODUS_W_TX_GENESIS) {
-        return nodus_witness_commit_genesis(w, tx_hash, tx_data, tx_len,
-                                              proposal_timestamp, proposer_id);
-    }
-
-    /* Non-genesis single TX: build a 1-entry stack array and dispatch
-     * to commit_batch. The wrapper does not free the entry. */
-    nodus_witness_mempool_entry_t e;
-    memset(&e, 0, sizeof(e));
-    memcpy(e.tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
-    e.tx_type = tx_type;
-    e.nullifier_count = nullifier_count;
-    for (int i = 0; i < nullifier_count; i++) {
-        if (nullifiers && nullifiers[i])
-            memcpy(e.nullifiers[i], nullifiers[i], NODUS_T3_NULLIFIER_LEN);
-    }
-    e.tx_data = (uint8_t *)tx_data;
-    e.tx_len = tx_len;
-
-    nodus_witness_mempool_entry_t *entries[1] = { &e };
-    return nodus_witness_commit_batch(w, entries, 1, proposal_timestamp,
-                                        proposer_id);
-}
+ * The thin dispatcher had a single remaining caller (sync.c:521); that
+ * caller now calls nodus_witness_commit_genesis or
+ * nodus_witness_replay_block directly. The legacy single-TX commit
+ * wrapper / Phase 7 dispatcher is fully gone. */
 
 /* ════════════════════════════════════════════════════════════════════
  * Phase 7 / Task 7.4 — legacy single-TX nodus_witness_bft_start_round

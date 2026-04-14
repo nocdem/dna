@@ -513,18 +513,34 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
                 verified, rsp->cert_count, w->bft_config.quorum);
     }
 
-    /* Replay block via nodus_witness_commit_block */
+    /* Phase 11 partial — replay block via the Phase 6 commit wrappers
+     * directly. Build a 1-entry stack mempool entry from the sync_rsp
+     * payload and dispatch to commit_genesis (height==1) or
+     * nodus_witness_replay_block. Phase 11.1 will rewrite sync_rsp to
+     * carry a multi-tx body; for now the wire stays single-TX. */
     {
-        const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
-        for (int i = 0; i < rsp->nullifier_count && i < NODUS_T3_MAX_TX_INPUTS; i++)
-            nul_ptrs[i] = rsp->nullifiers[i];
+        nodus_witness_mempool_entry_t e;
+        memset(&e, 0, sizeof(e));
+        memcpy(e.tx_hash, rsp->tx_hash, NODUS_T3_TX_HASH_LEN);
+        e.tx_type = rsp->tx_type;
+        e.nullifier_count = rsp->nullifier_count;
+        for (int i = 0; i < rsp->nullifier_count && i < NODUS_T3_MAX_TX_INPUTS; i++) {
+            if (rsp->nullifiers[i])
+                memcpy(e.nullifiers[i], rsp->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
+        }
+        e.tx_data = (uint8_t *)rsp->tx_data;
+        e.tx_len = rsp->tx_len;
 
-        if (nodus_witness_commit_block(w, rsp->tx_hash, rsp->tx_type,
-                                        nul_ptrs, rsp->nullifier_count,
-                                        0, /* total_supply — derived from tx_data */
-                                        rsp->timestamp,
-                                        rsp->proposer_id,
-                                        rsp->tx_data, rsp->tx_len) != 0) {
+        int rc;
+        if (rsp->tx_type == NODUS_W_TX_GENESIS) {
+            rc = nodus_witness_commit_genesis(w, e.tx_hash, e.tx_data, e.tx_len,
+                                                rsp->timestamp, rsp->proposer_id);
+        } else {
+            nodus_witness_mempool_entry_t *entries[1] = { &e };
+            rc = nodus_witness_replay_block(w, db_height, entries, 1,
+                                              rsp->timestamp, rsp->proposer_id);
+        }
+        if (rc != 0) {
             fprintf(stderr, "%s: block replay failed at height %llu\n",
                     LOG_TAG, (unsigned long long)db_height);
             w->sync_state.syncing = false;
