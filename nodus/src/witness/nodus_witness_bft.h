@@ -100,6 +100,21 @@ int nodus_witness_bft_start_round_from_entries(nodus_witness_t *w,
                                                  nodus_witness_mempool_entry_t **entries,
                                                  int count);
 
+/**
+ * Phase 7 / Task 7.2 — start a BFT round from the mempool.
+ *
+ * Pops up to NODUS_W_MAX_BLOCK_TXS entries from the mempool, runs the
+ * Phase 4 layer-2 chained-UTXO filter and DB-nullifier rechecks, and
+ * forwards the survivors to the shared round-start body. On round-start
+ * failure the surviving entries are returned to the mempool for retry.
+ *
+ * Replaces the previous static nodus_witness_propose_batch helper that
+ * lived in nodus_witness.c.
+ *
+ * @return 0 success, -1 error or no valid entries
+ */
+int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w);
+
 /** Handle decoded PROPOSAL message. */
 int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                                        const nodus_t3_msg_t *msg);
