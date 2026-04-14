@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <strings.h>
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 /* ============================================================================
  * Helper Functions

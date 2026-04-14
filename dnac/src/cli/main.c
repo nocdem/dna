@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <errno.h>
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 /* Global options */
 static char g_data_dir[512] = "";

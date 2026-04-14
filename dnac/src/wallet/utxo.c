@@ -6,6 +6,7 @@
 #include "dnac/wallet.h"
 #include "dnac/db.h"
 #include <string.h>
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 int dnac_wallet_store_utxo(dnac_context_t *ctx, const dnac_utxo_t *utxo) {
     if (!ctx || !utxo) return DNAC_ERROR_INVALID_PARAM;

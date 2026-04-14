@@ -29,6 +29,7 @@
 
 /* Nodus client SDK */
 #include "nodus/nodus.h"
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 /* Nodus singleton access */
 extern nodus_client_t *nodus_singleton_get(void);

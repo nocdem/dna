@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <inttypes.h>
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 /* ── Async wait helpers ──────────────────────────────────────────── */
 

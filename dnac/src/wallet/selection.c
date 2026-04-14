@@ -11,6 +11,7 @@
 #include "dnac/safe_math.h"
 #include <stdlib.h>
 #include <string.h>
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 /**
  * @brief Compare UTXOs by amount (for qsort)
