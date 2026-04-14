@@ -30,6 +30,7 @@ class WallPostTile extends StatelessWidget {
   final VoidCallback? onReply;
   final VoidCallback? onTip;
   final List<WallComment>? comments;
+  final int commentCount;
   final VoidCallback? onViewAllComments;
   final int likeCount;
   final bool isLikedByMe;
@@ -50,6 +51,7 @@ class WallPostTile extends StatelessWidget {
     this.onReply,
     this.onTip,
     this.comments,
+    this.commentCount = 0,
     this.onViewAllComments,
     this.likeCount = 0,
     this.isLikedByMe = false,
@@ -204,8 +206,8 @@ class WallPostTile extends StatelessWidget {
                 ),
               _ActionButton(
                 icon: FontAwesomeIcons.comment,
-                label: comments != null && comments!.isNotEmpty
-                    ? '${AppLocalizations.of(context).wallReply} (${comments!.length})'
+                label: commentCount > 0
+                    ? '${AppLocalizations.of(context).wallReply} ($commentCount)'
                     : AppLocalizations.of(context).wallReply,
                 onTap: onReply,
               ),

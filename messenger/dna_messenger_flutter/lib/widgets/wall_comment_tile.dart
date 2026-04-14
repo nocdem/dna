@@ -7,8 +7,22 @@ import '../design_system/design_system.dart';
 import '../ffi/dna_engine.dart';
 import '../l10n/app_localizations.dart';
 import '../providers/engine_provider.dart';
+import '../screens/profile/user_profile_screen.dart';
 import '../utils/logger.dart';
 import '../utils/time_format.dart';
+
+void _openAuthorProfile(BuildContext context, WallComment comment) {
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => UserProfileScreen(
+        fingerprint: comment.authorFingerprint,
+        initialDisplayName:
+            comment.authorName.isNotEmpty ? comment.authorName : null,
+      ),
+    ),
+  );
+}
 
 /// Displays a single wall comment (top-level or reply)
 class WallCommentTile extends StatelessWidget {
@@ -60,11 +74,6 @@ class _TextCommentTile extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          DnaAvatar(
-            name: comment.authorName.isNotEmpty ? comment.authorName : '?',
-            size: isReply ? DnaAvatarSize.sm : DnaAvatarSize.sm,
-          ),
-          const SizedBox(width: DnaSpacing.sm),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -72,12 +81,16 @@ class _TextCommentTile extends StatelessWidget {
                 // Author name + timestamp
                 Row(
                   children: [
-                    Text(
-                      comment.authorName.isNotEmpty
-                          ? comment.authorName
-                          : comment.authorFingerprint.substring(0, 12),
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w600,
+                    InkWell(
+                      onTap: () => _openAuthorProfile(context, comment),
+                      child: Text(
+                        comment.authorName.isNotEmpty
+                            ? comment.authorName
+                            : comment.authorFingerprint.substring(0, 12),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: theme.colorScheme.primary,
+                        ),
                       ),
                     ),
                     const SizedBox(width: DnaSpacing.sm),
@@ -267,13 +280,6 @@ class _TipCommentTileState extends ConsumerState<_TipCommentTile> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          DnaAvatar(
-            name: widget.comment.authorName.isNotEmpty
-                ? widget.comment.authorName
-                : '?',
-            size: DnaAvatarSize.sm,
-          ),
-          const SizedBox(width: DnaSpacing.sm),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -281,12 +287,17 @@ class _TipCommentTileState extends ConsumerState<_TipCommentTile> {
                 // Author + timestamp
                 Row(
                   children: [
-                    Text(
-                      widget.comment.authorName.isNotEmpty
-                          ? widget.comment.authorName
-                          : widget.comment.authorFingerprint.substring(0, 12),
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w600,
+                    InkWell(
+                      onTap: () =>
+                          _openAuthorProfile(context, widget.comment),
+                      child: Text(
+                        widget.comment.authorName.isNotEmpty
+                            ? widget.comment.authorName
+                            : widget.comment.authorFingerprint.substring(0, 12),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: theme.colorScheme.primary,
+                        ),
                       ),
                     ),
                     const SizedBox(width: DnaSpacing.sm),

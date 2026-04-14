@@ -74,6 +74,7 @@ class _WallPostDetailScreenState extends ConsumerState<WallPostDetailScreen> {
                     authorDisplayName: feedItem?.authorDisplayName,
                     authorAvatar: feedItem?.authorAvatar,
                     decodedImage: feedItem?.decodedImage,
+                    commentCount: feedItem?.commentCount ?? 0,
                     likeCount: likeCount,
                     isLikedByMe: isLiked,
                     onLike: isLiked
