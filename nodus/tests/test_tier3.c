@@ -260,6 +260,8 @@ static void test_commit(void) {
     cbtx->tx_type = 1;
     cbtx->tx_data = test_tx_data;
     cbtx->tx_len = 64;
+    cbtx->client_pubkey = test_pubkey;
+    cbtx->client_sig = test_sig;
     in.commit.proposal_timestamp = 1709300100;
     memset(in.commit.proposer_id, 0xCC, NODUS_T3_WITNESS_ID_LEN);
     in.commit.n_precommits = 3;
@@ -633,6 +635,8 @@ static void test_sync_rsp(void) {
         memset(nul, 0xEE, NODUS_T3_NULLIFIER_LEN);
         btx->nullifiers[0] = nul;
         btx->nullifier_count = 1;
+        btx->client_pubkey = test_pubkey;
+        btx->client_sig = test_sig;
 
         /* One cert */
         in.sync_rsp.cert_count = 1;
