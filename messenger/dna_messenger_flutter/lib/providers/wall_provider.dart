@@ -140,8 +140,35 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
   bool _isLoadingMore = false;
   int _loadedDays = 2; // Start with today + yesterday (DNA_WALL_INITIAL_DAYS)
 
+  // Scroll-aware state replacement: while user is actively scrolling, full
+  // list replacements (background DHT refresh, boost merge) are deferred to
+  // avoid visual jumps caused by head/order mutations under the viewport.
+  // The screen calls setUserScrolling() from the scroll position's
+  // isScrollingNotifier; _pendingReplacement holds only the most recent
+  // deferred list so stale data is never applied.
+  bool _userScrolling = false;
+  List<WallFeedItem>? _pendingReplacement;
+
   bool get hasMore => _hasMore;
   bool get isLoadingMore => _isLoadingMore;
+
+  void setUserScrolling(bool active) {
+    if (_userScrolling == active) return;
+    _userScrolling = active;
+    if (!active && _pendingReplacement != null) {
+      final next = _pendingReplacement!;
+      _pendingReplacement = null;
+      state = AsyncData(next);
+    }
+  }
+
+  void _applyOrDefer(List<WallFeedItem> next) {
+    if (_userScrolling) {
+      _pendingReplacement = next;
+    } else {
+      state = AsyncData(next);
+    }
+  }
 
   @override
   Future<List<WallFeedItem>> build() async {
@@ -216,8 +243,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
                   final oldFirst = oldItems.isNotEmpty ? oldItems.first.post.uuid.substring(0, 8) : 'empty';
                   final newCount = dhtItems.length;
                   final newFirst = dhtItems.first.post.uuid.substring(0, 8);
-                  engine.debugLog('WALL_SCROLL', 'BG_REFRESH_DONE old=$oldCount($oldFirst) new=$newCount($newFirst) changed=${oldCount != newCount || oldFirst != newFirst}');
-                  state = AsyncData(dhtItems);
+                  engine.debugLog('WALL_SCROLL', 'BG_REFRESH_DONE old=$oldCount($oldFirst) new=$newCount($newFirst) changed=${oldCount != newCount || oldFirst != newFirst} scrolling=$_userScrolling');
+                  _applyOrDefer(dhtItems);
                 }
               } catch (_) {}
             });
@@ -520,8 +547,8 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     }
 
     merged.sort((a, b) => b.post.timestamp.compareTo(a.post.timestamp));
-    logger.log('WALL_SCROLL', 'MERGE_BOOSTS count=${merged.length}');
-    state = AsyncData(merged);
+    logger.log('WALL_SCROLL', 'MERGE_BOOSTS count=${merged.length} scrolling=$_userScrolling');
+    _applyOrDefer(merged);
   }
 
   Future<void> refresh() async {

@@ -144,9 +144,19 @@ typedef struct {
     uint64_t timestamp;         /* Unix timestamp */
     bool is_outgoing;           /* true if sent by current identity */
     int status;                 /* 0=pending, 1=sent, 2=received, 3=failed */
-    int message_type;           /* 0=chat, 1=group_invitation */
+    int message_type;           /* 0=chat, 1=group_invitation, 2=cpunkTransfer, 3=reaction */
     bool deleted_by_sender;     /* true if sender deleted this message (v17) */
+    char content_hash[65];      /* SHA3-256 hex (64 chars + null), empty if unavailable (v0.9.194) */
 } dna_message_t;
+
+/**
+ * Reaction entry (one reactor applying one emoji to one target message)
+ */
+typedef struct {
+    char reactor_fp[129];       /* Reactor fingerprint (128 hex + null) */
+    char emoji[8];              /* UTF-8 emoji, max 4 bytes + null */
+    uint64_t timestamp;         /* Unix timestamp when reaction was applied */
+} dna_reaction_t;
 
 /**
  * Group information
@@ -469,6 +479,23 @@ typedef void (*dna_messages_page_cb)(
     dna_message_t *messages,
     int count,
     int total,
+    void *user_data
+);
+
+/**
+ * Reactions callback
+ *
+ * @param request_id Request ID
+ * @param error      0 on success, error code otherwise
+ * @param reactions  Array of reactions (caller must free via dna_free_reactions)
+ * @param count      Number of reactions
+ * @param user_data  User data
+ */
+typedef void (*dna_reactions_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_reaction_t *reactions,
+    int count,
     void *user_data
 );
 
@@ -1697,6 +1724,47 @@ DNA_API dna_request_id_t dna_engine_send_message(
 );
 
 /**
+ * Send a reaction to a message (async)
+ *
+ * @param engine                Engine instance
+ * @param recipient_fingerprint Target recipient fingerprint (128 hex + null)
+ * @param target_content_hash   content_hash of the message being reacted to (64 hex chars)
+ * @param emoji                 UTF-8 emoji (must be one of the allowed 8)
+ * @param op                    "add" or "remove"
+ * @param callback              Called on completion
+ * @param user_data             User data for callback
+ * @return                      Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_send_reaction(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *target_content_hash,
+    const char *emoji,
+    const char *op,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get the live reaction list for a target message (async, DB-only)
+ *
+ * Scans local message backup for message_type=3 rows matching
+ * target_content_hash and replays add/remove ops in timestamp order.
+ *
+ * @param engine               Engine instance
+ * @param target_content_hash  64-hex hash of the target message
+ * @param callback             Called with the reactions array (owned by caller)
+ * @param user_data            User data for callback
+ * @return                     Request ID (0 on immediate error)
+ */
+DNA_API dna_request_id_t dna_engine_get_reactions(
+    dna_engine_t *engine,
+    const char *target_content_hash,
+    dna_reactions_cb callback,
+    void *user_data
+);
+
+/**
  * Queue message for async sending (returns immediately)
  *
  * Adds message to internal send queue for background delivery.
@@ -2825,6 +2893,11 @@ DNA_API void dna_free_contacts(dna_contact_t *contacts, int count);
  * Free messages array returned by callbacks
  */
 DNA_API void dna_free_messages(dna_message_t *messages, int count);
+
+/**
+ * Free reactions array returned by callbacks
+ */
+DNA_API void dna_free_reactions(dna_reaction_t *reactions, int count);
 
 /**
  * Free groups array returned by callbacks

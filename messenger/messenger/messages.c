@@ -1178,6 +1178,10 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         messages[i].message_type = backup_messages[i].message_type;
         messages[i].deleted_by_sender = backup_messages[i].deleted_by_sender;
 
+        // v0.9.194: Propagate content_hash for reaction targeting
+        strncpy(messages[i].content_hash, backup_messages[i].content_hash, 64);
+        messages[i].content_hash[64] = '\0';
+
         // v14: Direct plaintext copy - no decryption needed
         messages[i].plaintext = backup_messages[i].plaintext ? strdup(backup_messages[i].plaintext) : strdup("");
 
@@ -1284,6 +1288,10 @@ int messenger_get_conversation_page(messenger_context_t *ctx, const char *other_
         messages[i].read_at = backup_messages[i].read ? strdup(messages[i].timestamp) : NULL;
         messages[i].message_type = backup_messages[i].message_type;
         messages[i].deleted_by_sender = backup_messages[i].deleted_by_sender;
+
+        // v0.9.194: Propagate content_hash for reaction targeting
+        strncpy(messages[i].content_hash, backup_messages[i].content_hash, 64);
+        messages[i].content_hash[64] = '\0';
 
         // v14: Direct plaintext copy - no decryption needed
         messages[i].plaintext = backup_messages[i].plaintext ? strdup(backup_messages[i].plaintext) : strdup("");

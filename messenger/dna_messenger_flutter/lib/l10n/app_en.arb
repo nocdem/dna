@@ -906,5 +906,19 @@
   "invalidQrCode": "Invalid QR code",
   "@invalidQrCode": {
     "description": "Error shown when a scanned QR payload fails strict validation (SEC-03 defense-in-depth: malformed, oversized, or charset-violating auth payloads are rejected before signing or UI display)"
+  },
+  "reactionAdded": "Reacted with {emoji}",
+  "@reactionAdded": {
+    "placeholders": {
+      "emoji": { "type": "String" }
+    }
+  },
+  "reactionRemoved": "Reaction removed",
+  "reactionNotificationBody": "{name} reacted {emoji} to your message",
+  "@reactionNotificationBody": {
+    "placeholders": {
+      "name": { "type": "String" },
+      "emoji": { "type": "String" }
+    }
   }
 }

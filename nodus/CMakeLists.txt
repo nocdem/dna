@@ -123,6 +123,7 @@ if(NOT WIN32)
         src/witness/nodus_witness.c
         src/witness/nodus_witness_db.c
         src/witness/nodus_witness_bft.c
+        src/witness/nodus_witness_merkle.c
         src/witness/nodus_witness_verify.c
         src/witness/nodus_witness_peer.c
         src/witness/nodus_witness_handlers.c
@@ -238,6 +239,11 @@ add_executable(test_tcp tests/test_tcp.c)
 target_link_libraries(test_tcp nodus dsa nodus)
 add_test(NAME test_tcp COMMAND test_tcp)
 
+# Phase 3: Pending queue / backpressure test
+add_executable(test_pending_queue tests/test_pending_queue.c)
+target_link_libraries(test_pending_queue nodus dsa nodus)
+add_test(NAME test_pending_queue COMMAND test_pending_queue)
+
 # Inter-node auth state machine test
 add_executable(test_inter_auth tests/test_inter_auth.c)
 target_link_libraries(test_inter_auth nodus dsa nodus)
@@ -322,6 +328,11 @@ add_test(NAME test_witness_verify COMMAND test_witness_verify)
 add_executable(test_witness_chain_archive tests/test_witness_chain_archive.c)
 target_link_libraries(test_witness_chain_archive nodus dsa nodus)
 add_test(NAME test_witness_chain_archive COMMAND test_witness_chain_archive)
+
+# Witness Merkle state_root test
+add_executable(test_witness_merkle tests/test_witness_merkle.c)
+target_link_libraries(test_witness_merkle nodus dsa nodus)
+add_test(NAME test_witness_merkle COMMAND test_witness_merkle)
 
 # Replication phase tests
 add_executable(test_put_if_newer tests/test_put_if_newer.c)

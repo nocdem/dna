@@ -18,6 +18,7 @@
 
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_verify.h"
 #include "witness/nodus_witness_handlers.h"
 #include "protocol/nodus_tier3.h"
@@ -873,10 +874,28 @@ static int commit_block_inner(nodus_witness_t *w,
 
     nodus_witness_ledger_add(w, tx_hash, tx_type, nullifier_count);
 
-    /* Block creation inside caller's DB transaction for crash atomicity */
+    /* Block creation inside caller's DB transaction for crash atomicity.
+     *
+     * The Merkle state_root is computed AFTER all UTXO writes for this
+     * block are in place, so the root reflects post-block state. Because
+     * we are inside a BEGIN IMMEDIATE transaction opened by
+     * nodus_witness_commit_block(), the UTXO inserts we just performed
+     * are visible to this read.
+     *
+     * Invalidate the cached UTXO checksum up front — it covered the
+     * pre-block state and is now stale. */
+    w->cached_utxo_checksum_valid = false;
+
     if (proposer_id) {
+        uint8_t state_root[NODUS_T3_TX_HASH_LEN];
+        if (nodus_witness_merkle_compute_utxo_root(w, state_root) != 0) {
+            fprintf(stderr, "%s: failed to compute state_root for block\n",
+                    LOG_TAG);
+            return -1;
+        }
         nodus_witness_block_add(w, tx_hash, tx_type,
-                                  proposal_timestamp, proposer_id);
+                                  proposal_timestamp, proposer_id,
+                                  state_root);
     }
 
     return 0;

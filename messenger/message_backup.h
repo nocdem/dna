@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <time.h>
+#include "dna/dna_engine.h"  /* for dna_reaction_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -83,6 +84,7 @@ typedef struct {
     int retry_count;  // Number of send retry attempts (for failed messages)
     bool is_outgoing;  // true if we sent it, false if we received it
     bool deleted_by_sender;  // true if sender sent deletion notice (v17)
+    char content_hash[65];  // SHA3-256 hex (64 chars + null), empty if unavailable (v0.9.194)
 } backup_message_t;
 
 /**
@@ -162,6 +164,23 @@ int message_backup_mark_read(message_backup_context_t *ctx, int message_id);
  * @return Unread count (>=0), or -1 on error
  */
 int message_backup_get_unread_count(message_backup_context_t *ctx, const char *contact_identity);
+
+/**
+ * Get the current reaction list for a target message.
+ *
+ * Scans message_type=3 rows where content_hash equals the target, then
+ * replays add/remove ops in timestamp order to compute the live state.
+ *
+ * @param ctx Backup context
+ * @param target_content_hash 64-hex hash of the target message
+ * @param reactions_out Caller-owned. Free with free(). NULL if count=0.
+ * @param count_out Number of live reactions
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_reactions_for_target(message_backup_context_t *ctx,
+                                             const char *target_content_hash,
+                                             dna_reaction_t **reactions_out,
+                                             int *count_out);
 
 /**
  * Update message status

@@ -16,6 +16,7 @@
 
 #define DNA_ENGINE_MESSAGING_IMPL
 #include "engine_includes.h"
+#include "dna/reaction_json.h"
 
 /* ============================================================================
  * MESSAGING TASK HANDLERS
@@ -107,6 +108,106 @@ done:
     }
 }
 
+void dna_handle_send_reaction(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    /* Ensure Nodus is alive (mirror send_message behavior) */
+    if (!nodus_messenger_is_ready()) {
+        QGP_LOG_WARN(LOG_TAG, "[REACTION] Nodus not ready, attempting reconnect...");
+        nodus_messenger_reinit();
+        if (!nodus_messenger_wait_for_ready(5000)) {
+            QGP_LOG_WARN(LOG_TAG, "[REACTION] Nodus reconnect failed — reaction will be retried");
+        }
+    }
+
+    /* Build JSON payload */
+    char payload[256];
+    if (dna_reaction_build_json(
+            task->params.send_reaction.target_content_hash,
+            task->params.send_reaction.emoji,
+            task->params.send_reaction.op,
+            payload, sizeof(payload)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[REACTION] Failed to build JSON payload");
+        error = DNA_ENGINE_ERROR_INVALID_PARAM;
+        goto done;
+    }
+
+    const char *recipients[1] = { task->params.send_reaction.recipient };
+
+    int rc = messenger_send_message(
+        engine->messenger,
+        recipients,
+        1,
+        payload,
+        0,                     /* group_id = 0 for direct */
+        3,                     /* message_type = reaction */
+        (uint64_t)time(NULL)   /* queued_at */
+    );
+
+    if (rc != 0) {
+        if (rc == -3) {
+            error = DNA_ENGINE_ERROR_KEY_UNAVAILABLE;
+            QGP_LOG_WARN(LOG_TAG, "[REACTION] Key unavailable for recipient");
+        } else {
+            error = DNA_ENGINE_ERROR_NETWORK;
+            QGP_LOG_WARN(LOG_TAG, "[REACTION] Send failed (rc=%d)", rc);
+        }
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "[REACTION] Sent (op=%s, emoji=%s, target=%.16s...)",
+                     task->params.send_reaction.op,
+                     task->params.send_reaction.emoji,
+                     task->params.send_reaction.target_content_hash);
+    }
+
+done:
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_get_reactions(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_reaction_t *reactions = NULL;
+    int count = 0;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    message_backup_context_t *backup_ctx = messenger_get_backup_ctx(engine->messenger);
+    if (!backup_ctx) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    int rc = message_backup_get_reactions_for_target(
+        backup_ctx,
+        task->params.get_reactions.target_content_hash,
+        &reactions,
+        &count);
+
+    if (rc != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        reactions = NULL;
+        count = 0;
+        goto done;
+    }
+
+done:
+    if (task->callback.reactions) {
+        task->callback.reactions(task->request_id, error, reactions, count, task->user_data);
+    } else {
+        /* No callback — caller leaked the result; free it to avoid leak */
+        free(reactions);
+    }
+}
+
 void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_message_t *messages = NULL;
@@ -191,6 +292,10 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
 
             messages[i].message_type = msg_infos[i].message_type;
             messages[i].deleted_by_sender = msg_infos[i].deleted_by_sender;
+
+            /* v0.9.194: Propagate content_hash for reaction targeting */
+            strncpy(messages[i].content_hash, msg_infos[i].content_hash, 64);
+            messages[i].content_hash[64] = '\0';
         }
         count = msg_count;
 
@@ -286,6 +391,10 @@ void dna_handle_get_conversation_page(dna_engine_t *engine, dna_task_t *task) {
 
             messages[i].message_type = msg_infos[i].message_type;
             messages[i].deleted_by_sender = msg_infos[i].deleted_by_sender;
+
+            /* v0.9.194: Propagate content_hash for reaction targeting */
+            strncpy(messages[i].content_hash, msg_infos[i].content_hash, 64);
+            messages[i].content_hash[64] = '\0';
         }
         count = msg_count;
 
@@ -659,6 +768,59 @@ dna_request_id_t dna_engine_send_message(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_SEND_MESSAGE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_send_reaction(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *target_content_hash,
+    const char *emoji,
+    const char *op,
+    dna_completion_cb callback,
+    void *user_data)
+{
+    if (!engine || !recipient_fingerprint || !target_content_hash || !emoji || !op) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+    if (strlen(target_content_hash) != 64) return DNA_REQUEST_ID_INVALID;
+    if (strcmp(op, "add") != 0 && strcmp(op, "remove") != 0) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.send_reaction.recipient, recipient_fingerprint, 128);
+    params.send_reaction.recipient[128] = '\0';
+    strncpy(params.send_reaction.target_content_hash, target_content_hash, 64);
+    params.send_reaction.target_content_hash[64] = '\0';
+    strncpy(params.send_reaction.emoji, emoji, 7);
+    params.send_reaction.emoji[7] = '\0';
+    strncpy(params.send_reaction.op, op, 7);
+    params.send_reaction.op[7] = '\0';
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SEND_REACTION, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_reactions(
+    dna_engine_t *engine,
+    const char *target_content_hash,
+    dna_reactions_cb callback,
+    void *user_data)
+{
+    if (!engine || !target_content_hash || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+    if (strlen(target_content_hash) != 64) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_reactions.target_content_hash, target_content_hash, 64);
+    params.get_reactions.target_content_hash[64] = '\0';
+
+    dna_task_callback_t cb = { .reactions = callback };
+    return dna_submit_task(engine, TASK_GET_REACTIONS, &params, cb, user_data);
+}
+
+void dna_free_reactions(dna_reaction_t *reactions, int count) {
+    (void)count;
+    free(reactions);
 }
 
 int dna_engine_queue_message(

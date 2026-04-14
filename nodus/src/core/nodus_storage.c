@@ -91,16 +91,18 @@ static const char *HINT_SCHEMA_SQL =
     "  peer_ip     TEXT NOT NULL,"
     "  peer_port   INTEGER NOT NULL,"
     "  frame_data  BLOB NOT NULL,"
+    "  frame_hash  BLOB NOT NULL,"
     "  created_at  INTEGER NOT NULL,"
     "  expires_at  INTEGER NOT NULL,"
     "  retry_count INTEGER DEFAULT 0"
     ");"
     "CREATE INDEX IF NOT EXISTS idx_dht_hint_node ON dht_hinted_handoff(node_id);"
-    "CREATE INDEX IF NOT EXISTS idx_dht_hint_expires ON dht_hinted_handoff(expires_at);";
+    "CREATE INDEX IF NOT EXISTS idx_dht_hint_expires ON dht_hinted_handoff(expires_at);"
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_dht_hint_dedup ON dht_hinted_handoff(node_id, frame_hash);";
 
 static const char *HINT_INSERT_SQL =
-    "INSERT INTO dht_hinted_handoff (node_id, peer_ip, peer_port, frame_data, created_at, expires_at) "
-    "VALUES (?, ?, ?, ?, ?, ?)";
+    "INSERT OR IGNORE INTO dht_hinted_handoff (node_id, peer_ip, peer_port, frame_data, frame_hash, created_at, expires_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?)";
 
 static const char *HINT_GET_SQL =
     "SELECT id, peer_ip, peer_port, frame_data, created_at, expires_at, retry_count "
@@ -627,6 +629,10 @@ int nodus_storage_hinted_insert(nodus_storage_t *store,
                                  const uint8_t *frame_data, size_t frame_len) {
     if (!store || !store->db || !node_id || !peer_ip || !frame_data) return -1;
 
+    /* Compute SHA3-512 of frame_data, use first 32 bytes as dedup hash */
+    uint8_t hash_full[64];
+    qgp_sha3_512(frame_data, frame_len, hash_full);
+
     uint64_t now = (uint64_t)time(NULL);
     uint64_t expires = now + DHT_HINT_TTL_SEC;
 
@@ -637,17 +643,24 @@ int nodus_storage_hinted_insert(nodus_storage_t *store,
     sqlite3_bind_text(s, 2, peer_ip, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(s, 3, peer_port);
     sqlite3_bind_blob(s, 4, frame_data, (int)frame_len, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(s, 5, (sqlite3_int64)now);
-    sqlite3_bind_int64(s, 6, (sqlite3_int64)expires);
+    sqlite3_bind_blob(s, 5, hash_full, 32, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 6, (sqlite3_int64)now);
+    sqlite3_bind_int64(s, 7, (sqlite3_int64)expires);
 
     int rc = sqlite3_step(s);
     if (rc != SQLITE_DONE) {
+        /* SQLITE_CONSTRAINT = duplicate (node_id, frame_hash) → silently ignore */
+        if (sqlite3_errcode(store->db) == SQLITE_CONSTRAINT) {
+            return 0;
+        }
         fprintf(stderr, "DHT-HINT: insert failed: %s\n", sqlite3_errmsg(store->db));
         return -1;
     }
 
-    fprintf(stderr, "DHT-HINT: queued for %s:%d (%zu bytes)\n",
-            peer_ip, peer_port, frame_len);
+    if (sqlite3_changes(store->db) > 0) {
+        fprintf(stderr, "DHT-HINT: queued for %s:%d (%zu bytes)\n",
+                peer_ip, peer_port, frame_len);
+    }
     return 0;
 }
 

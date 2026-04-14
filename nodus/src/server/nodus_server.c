@@ -19,6 +19,7 @@
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_channel_crypto.h"
 #include "crypto/enc/qgp_kyber.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "NODUS_SRV"
@@ -118,7 +119,20 @@ static nodus_inter_session_t *inter_session_for_conn(nodus_server_t *srv,
     return &srv->inter_sessions[conn->slot];
 }
 
-static void inter_session_clear(nodus_inter_session_t *sess) {
+static void inter_session_clear(nodus_inter_session_t *sess,
+                                 int slot, const char *caller) {
+    /* Phase 3.2c: log every clear so we can correlate session resets with
+     * downstream T1 decode failures. The session memset wipes
+     * channel_crypto inline, so any conn pointer still aliasing
+     * &sess->channel_crypto is now staring at a zeroed AES-GCM context. */
+    void *prev_conn = sess->conn;
+    int prev_established = sess->channel_crypto.established ? 1 : 0;
+    unsigned long long prev_tx = (unsigned long long)sess->channel_crypto.tx_counter;
+    unsigned long long prev_rx = (unsigned long long)sess->channel_crypto.rx_counter;
+    fprintf(stderr,
+            "SESS_CLEAR: slot=%d caller=%s prev_conn=%p prev_established=%d "
+            "prev_tx=%llu prev_rx=%llu\n",
+            slot, caller, prev_conn, prev_established, prev_tx, prev_rx);
     memset(sess, 0, sizeof(*sess));
 }
 
@@ -872,7 +886,20 @@ static void dht_hinted_retry(nodus_server_t *srv) {
         nodus_key_t node_id;
         memcpy(node_id.bytes, blob, NODUS_KEY_BYTES);
 
-        /* Look up current IP:Port in routing table (node may have migrated) */
+        /* Fetch entries first — we need them either way, and they carry the
+         * peer_ip/peer_port that was current at hint creation time. */
+        nodus_dht_hint_t *entries = NULL;
+        size_t count = 0;
+        if (nodus_storage_hinted_get(&srv->storage, &node_id,
+                                       100, &entries, &count) != 0 || count == 0)
+            continue;
+
+        /* Phase 3.2f FIX: previously this used routing_lookup as the only
+         * source of truth and `continue` if routing was sparse. Result:
+         * hints accumulated forever when routing rebuilt slowly after a
+         * restart (observed: 343 MB stuck on EU-2 post-deploy). The hint
+         * table already records peer_ip/peer_port from insert time; fall
+         * back to those when routing is empty for this node_id. */
         nodus_peer_t peer;
         const char *ip;
         uint16_t tcp_port;
@@ -880,15 +907,9 @@ static void dht_hinted_retry(nodus_server_t *srv) {
             ip = peer.ip;
             tcp_port = peer.tcp_port;
         } else {
-            /* Not in routing table — skip until rediscovered */
-            continue;
+            ip = entries[0].peer_ip;
+            tcp_port = entries[0].peer_port;
         }
-
-        nodus_dht_hint_t *entries = NULL;
-        size_t count = 0;
-        if (nodus_storage_hinted_get(&srv->storage, &node_id,
-                                       100, &entries, &count) != 0 || count == 0)
-            continue;
 
         int h_sent = 0, h_bumped = 0, h_expired = 0;
         for (size_t j = 0; j < count; j++) {
@@ -1048,6 +1069,114 @@ static void dht_incremental_vacuum(nodus_server_t *srv) {
     fprintf(stderr, "VACUUM: incremental vacuum completed\n");
 }
 
+/* ── Phase 1: Send diagnostics dump ──────────────────────────────── */
+/* Periodic per-peer counter dump so we can correlate buf_ensure failures
+ * with throughput and identify slow peers. No behavior change — pure
+ * visibility for Phase 1 of the send-path diagnosis. */
+static void dht_send_stats_dump(nodus_server_t *srv) {
+    uint64_t now = nodus_time_now();
+    if (now - srv->last_stats_dump < NODUS_STATS_DUMP_SEC) return;
+    srv->last_stats_dump = now;
+
+    for (int i = 0; i < NODUS_TCP_MAX_CONNS; i++) {
+        nodus_tcp_conn_t *c = srv->inter_tcp.pool[i];
+        if (!c || c->state != NODUS_CONN_CONNECTED) continue;
+        if (c->send_ok_count == 0 && c->send_full_count == 0 &&
+            c->pending_enqueued_count == 0 && c->decrypt_skip_count == 0) continue;
+
+        /* Phase 3.2a: crypto state tag for asymmetry diagnosis */
+        const char *crypto_state = "none";
+        if (c->crypto) {
+            nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)c->crypto;
+            crypto_state = cc->established ? "est" : "pend";
+        }
+
+        fprintf(stderr,
+                "SEND_STATS: peer=%s:%u slot=%d crypto=%s ok=%llu full=%llu "
+                "bytes=%llu wlen=%zu wcap=%zu "
+                "pending_now=%zu pending_bytes=%zu enq=%llu drain=%llu hint=%llu "
+                "decrypt_skip=%llu\n",
+                c->ip, (unsigned)c->port, c->slot, crypto_state,
+                (unsigned long long)c->send_ok_count,
+                (unsigned long long)c->send_full_count,
+                (unsigned long long)c->send_bytes_total,
+                c->wlen, c->wcap,
+                c->pending_count, c->pending_bytes,
+                (unsigned long long)c->pending_enqueued_count,
+                (unsigned long long)c->pending_drained_count,
+                (unsigned long long)c->pending_hint_fallback_count,
+                (unsigned long long)c->decrypt_skip_count);
+    }
+}
+
+/* ── Phase 3: Pending-full hint fallback ─────────────────────────── */
+/* Invoked by the TCP layer when a send cannot fit into wbuf AND the
+ * per-conn pending queue is also at its cap. We persist the frame to
+ * the DHT hinted handoff table so it can be delivered when the peer
+ * has drained — same path that periodic republish already uses.
+ *
+ * Dedup key policy: authenticated conns use the real peer identity so
+ * retries bucket with the canonical node_id. Unauth conns (pre-handshake
+ * race, or inter-node conns observed in the wild with peer_id not yet
+ * populated) fall back to a deterministic SHA3-512 of "ip:port" — the
+ * drain path only reads ip+port from the hint row, so the synthetic key
+ * is safe and still supports the (node_id, frame_hash) dedup index. */
+static void server_on_pending_full(nodus_tcp_conn_t *conn,
+                                    const uint8_t *payload, size_t len,
+                                    void *ctx) {
+    nodus_server_t *srv = (nodus_server_t *)ctx;
+    if (!srv || !conn || !payload) return;
+
+    nodus_key_t dedup_id;
+    const char *id_source;
+    if (conn->peer_id_set) {
+        memcpy(&dedup_id, &conn->peer_id, sizeof(dedup_id));
+        id_source = "peer_id";
+    } else {
+        char addr[96];
+        int al = snprintf(addr, sizeof(addr), "%s:%u",
+                          conn->ip, (unsigned)conn->port);
+        if (al <= 0) {
+            fprintf(stderr, "PENDING_FULL: addr format failed len=%zu\n", len);
+            return;
+        }
+        qgp_sha3_512((const uint8_t *)addr, (size_t)al, dedup_id.bytes);
+        id_source = "synth-ip:port";
+    }
+
+    /* Build a fully framed wire blob (hint drain resends it as-is). */
+    size_t frame_size = NODUS_FRAME_HEADER_SIZE + len;
+    uint8_t *framed = malloc(frame_size);
+    if (!framed) {
+        fprintf(stderr, "PENDING_FULL: malloc failed (peer=%s:%u len=%zu)\n",
+                conn->ip, (unsigned)conn->port, len);
+        return;
+    }
+    size_t written = nodus_frame_encode(framed, frame_size, payload, (uint32_t)len);
+    if (written != frame_size) {
+        fprintf(stderr, "PENDING_FULL: frame_encode failed (peer=%s:%u len=%zu)\n",
+                conn->ip, (unsigned)conn->port, len);
+        free(framed);
+        return;
+    }
+
+    int rc = nodus_storage_hinted_insert(&srv->storage,
+                                          &dedup_id,
+                                          conn->ip, conn->port,
+                                          framed, frame_size);
+    free(framed);
+
+    if (rc != 0) {
+        fprintf(stderr,
+                "PENDING_FULL: hint insert failed (peer=%s:%u len=%zu id=%s rc=%d)\n",
+                conn->ip, (unsigned)conn->port, len, id_source, rc);
+        return;
+    }
+    fprintf(stderr,
+            "PENDING_FULL: peer=%s:%u len=%zu queued to hint table (id=%s)\n",
+            conn->ip, (unsigned)conn->port, len, id_source);
+}
+
 /* ── Periodic republish (via inter_tcp pool) ────────────────────── */
 
 /** Send a pre-framed replication payload via persistent inter_tcp pool.
@@ -1098,6 +1227,20 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
         if (flen <= NODUS_FRAME_HEADER_SIZE) return -1;
         const uint8_t *payload = frame + NODUS_FRAME_HEADER_SIZE;
         size_t payload_len = flen - NODUS_FRAME_HEADER_SIZE;
+        /* Phase 3.2b-inv2: republish send path visibility. Sample: first 3
+         * calls per conn logged via cc->tx_counter check inside send_progress;
+         * this log just tags the entry point so we know which caller. */
+        {
+            nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
+            if (cc->tx_counter < 3) {
+                fprintf(stderr,
+                        "REPUBLISH_SEND slot=%d peer=%s:%u crypto=%p "
+                        "tx_counter=%llu flen=%zu\n",
+                        conn->slot, conn->ip, (unsigned)conn->port,
+                        (void *)conn->crypto,
+                        (unsigned long long)cc->tx_counter, flen);
+            }
+        }
         int rc = nodus_tcp_send_progress(conn, payload, payload_len, NULL, NULL);
         if (rc != 0) {
             /* Send failed (buffer full / slow consumer) — disconnect so
@@ -2111,6 +2254,9 @@ ga_empty:
 
 static void bf_conn_cleanup(nodus_server_t *srv, dht_bf_conn_t *c) {
     if (c->fd >= 0) {
+        /* Phase 3.2e: log BF close so we can correlate close(fd) → recycle. */
+        fprintf(stderr, "BF_CLOSE: fd=%d state=%d encrypted=%d\n",
+                c->fd, (int)c->state, c->encrypted ? 1 : 0);
         epoll_ctl(srv->bf_state.bf_epoll_fd, EPOLL_CTL_DEL, c->fd, NULL);
         if (c->fd < NODUS_BF_FD_TABLE_SIZE) {
             srv->bf_fd_table[c->fd].batch_idx = -1;
@@ -2132,7 +2278,12 @@ static void bf_conn_cleanup(nodus_server_t *srv, dht_bf_conn_t *c) {
 
 static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b) {
     for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) {
-        if (b->forwards[i].fd >= 0) bf_conn_cleanup(srv, &b->forwards[i]);
+        /* Phase 3.2e FIX: was `fd >= 0` which treated zero-initialized
+         * uninitialized forwards (.bss start, or post-memset state below)
+         * as valid fds, calling close(0) on each batch cleanup pass and
+         * stomping stdin. Use `> 0` so only real socket fds (>= 3 in
+         * practice) are cleaned. */
+        if (b->forwards[i].fd > 0) bf_conn_cleanup(srv, &b->forwards[i]);
     }
     if (b->vals_per_key) {
         for (int i = 0; i < b->key_count; i++) {
@@ -2147,6 +2298,9 @@ static void bf_batch_cleanup(nodus_server_t *srv, dht_bf_batch_t *b) {
     free(b->counts_per_key);
     free(b->keys);
     memset(b, 0, sizeof(*b));
+    /* Phase 3.2e FIX: after memset all forwards' fd are 0 — re-init to -1
+     * so any later cleanup pass treats them as inactive, not as stdin. */
+    for (int i = 0; i < NODUS_BF_MAX_FORWARDS; i++) b->forwards[i].fd = -1;
 }
 
 /** Send batch response to client and clean up */
@@ -2249,6 +2403,9 @@ static void bf_forward_fail(nodus_server_t *srv, dht_bf_batch_t *b, dht_bf_conn_
 
 /** Handle epoll events for batch forward fds — full auth state machine */
 static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
+    /* Phase 3.2e: log every BF event with fd. Captures BF subsystem activity
+     * we previously had no visibility into. */
+    fprintf(stderr, "BF_EVENT: fd=%d events=0x%x\n", fd, events);
     if (fd < 0 || fd >= NODUS_BF_FD_TABLE_SIZE) return;
     int bi = srv->bf_fd_table[fd].batch_idx;
     int fi = srv->bf_fd_table[fd].forward_idx;
@@ -2275,6 +2432,13 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
          c->state == BF_SEND_KEY_INIT || c->state == BF_SEND_BATCH) &&
         (events & EPOLLOUT)) {
         if (!c->send_buf) { bf_forward_fail(srv, b, c); return; }
+        /* Phase 3.2e: log BF send target fd + state. If fd ever points at a
+         * recycled stale value, this log will reveal the mismatch. */
+        fprintf(stderr,
+                "BF_SEND: fd=%d c_fd=%d state=%d peer=%s:%u send_pos=%zu "
+                "send_len=%zu encrypted=%d bi=%d fi=%d\n",
+                fd, c->fd, (int)c->state, c->ip, (unsigned)c->port,
+                c->send_pos, c->send_len, c->encrypted ? 1 : 0, bi, fi);
         ssize_t n = send(fd, c->send_buf + c->send_pos,
                          c->send_len - c->send_pos, MSG_NOSIGNAL);
         if (n < 0) { bf_forward_fail(srv, b, c); return; }
@@ -2538,9 +2702,10 @@ static void bf_tick(nodus_server_t *srv) {
 
         /* Overall batch timeout */
         if (now - b->started_at > NODUS_BF_TIMEOUT_MS) {
-            /* Timeout: clean up remaining forwards, send what we have */
+            /* Timeout: clean up remaining forwards, send what we have.
+             * Phase 3.2e FIX: `> 0` not `>= 0` — see bf_batch_cleanup. */
             for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
-                if (b->forwards[fi].fd >= 0) {
+                if (b->forwards[fi].fd > 0) {
                     bf_conn_cleanup(srv, &b->forwards[fi]);
                 }
             }
@@ -2600,6 +2765,9 @@ static int bf_start_forward(nodus_server_t *srv, dht_bf_batch_t *b,
     /* Non-blocking connect to peer's INTER-NODE port (4002) */
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (fd < 0) goto fail;
+    /* Phase 3.2e: log BF socket allocation. fd value tells us if BF is
+     * grabbing low fds (e.g. fd=0 from closed stdin). */
+    fprintf(stderr, "BF_SOCK: fd=%d peer=%s\n", fd, peer->ip);
     if (fd >= NODUS_BF_FD_TABLE_SIZE) { close(fd); goto fail; }
 
     /* Inter-node port = UDP port + 2 (convention: 4000→4002) */
@@ -3650,6 +3818,31 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
      * Pre-auth: only hello and auth messages allowed.
      * Enforcement controlled by require_peer_auth config flag. */
     if (nodus_t2_decode(payload, len, &msg) == 0) {
+        /* Phase 3.2c: log every t2 method received per (slot, method)
+         * one-shot. Tells us which handshake messages are actually arriving
+         * vs missing on each conn. Bits: 0=hello 1=challenge 2=auth
+         * 3=auth_ok 4=key_init 5=key_ack. */
+        if (sess->conn) {
+            int bit = -1;
+            if      (strcmp(msg.method, "hello")     == 0) bit = 0;
+            else if (strcmp(msg.method, "challenge") == 0) bit = 1;
+            else if (strcmp(msg.method, "auth")      == 0) bit = 2;
+            else if (strcmp(msg.method, "auth_ok")   == 0) bit = 3;
+            else if (strcmp(msg.method, "key_init")  == 0) bit = 4;
+            else if (strcmp(msg.method, "key_ack")   == 0) bit = 5;
+            if (bit >= 0 && !(sess->conn->dispatch_logged_mask & (1u << bit))) {
+                sess->conn->dispatch_logged_mask |= (1u << bit);
+                fprintf(stderr,
+                        "INTER_DISPATCH: slot=%d peer=%s:%u method=%s "
+                        "auth_state=%d authed=%d has_crypto=%d\n",
+                        sess->conn->slot, sess->conn->ip,
+                        (unsigned)sess->conn->port, msg.method,
+                        (int)sess->conn->auth_state,
+                        sess->conn->authenticated ? 1 : 0,
+                        sess->conn->crypto ? 1 : 0);
+            }
+        }
+
         /* Handle auth RESPONSES for outgoing inter-node connections (this
          * node opened the conn, sent hello, now receives challenge/auth_ok).
          * These must be handled regardless of require_peer_auth — they
@@ -3694,11 +3887,21 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
             nodus_t2_msg_free(&msg);
             return;
         } else if (strcmp(msg.method, "key_ack") == 0 && sess->pending_kyber) {
+            /* Phase 3.2b-inv: KEY_ACK receive visibility */
+            fprintf(stderr,
+                    "CRYPTO: KEY_ACK_RX slot=%d peer=%s:%u has_nonce=%d sess=%p\n",
+                    sess->conn ? sess->conn->slot : -1,
+                    sess->conn ? sess->conn->ip : "?",
+                    sess->conn ? (unsigned)sess->conn->port : 0,
+                    msg.has_key_nonce ? 1 : 0, (void *)sess);
             /* Complete inter-node Kyber handshake */
             if (msg.has_key_nonce) {
                 nodus_channel_crypto_init(&sess->channel_crypto,
                                            sess->pending_ss, sess->pending_nc, msg.key_nonce);
                 sess->conn->crypto = &sess->channel_crypto;
+                fprintf(stderr,
+                        "CRYPTO: SET_OUTGOING slot=%d peer=%s:%u (inter-node encrypted)\n",
+                        sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
                 qgp_secure_memzero(sess->pending_ss, sizeof(sess->pending_ss));
                 qgp_secure_memzero(sess->pending_nc, sizeof(sess->pending_nc));
                 sess->pending_kyber = false;
@@ -3799,6 +4002,15 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
 
         /* Inter-node key_init: accepting side Kyber handshake */
         if (strcmp(msg.method, "key_init") == 0 && msg.has_kyber_ct && msg.has_key_nonce) {
+            /* Phase 3.2b-inv: KEY_INIT receive visibility */
+            fprintf(stderr,
+                    "CRYPTO: KEY_INIT_RX slot=%d peer=%s:%u has_kyber=%d "
+                    "sess=%p sess_conn=%p\n",
+                    sess->conn ? sess->conn->slot : -1,
+                    sess->conn ? sess->conn->ip : "?",
+                    sess->conn ? (unsigned)sess->conn->port : 0,
+                    srv->identity.has_kyber ? 1 : 0,
+                    (void *)sess, (void *)(sess->conn));
             if (srv->identity.has_kyber) {
                 uint8_t ss_buf[NODUS_KYBER_SS_BYTES];
                 if (qgp_kem1024_decapsulate(ss_buf, msg.kyber_ct, srv->identity.kyber_sk) == 0) {
@@ -3811,9 +4023,25 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     nodus_channel_crypto_init(&sess->channel_crypto, ss_buf, msg.key_nonce, ns);
                     sess->conn->crypto = &sess->channel_crypto;
                     qgp_secure_memzero(ss_buf, sizeof(ss_buf));
-                    fprintf(stderr, "INTER_CRYPTO: incoming conn from %s:%d encrypted\n",
-                            sess->conn->ip, sess->conn->port);
+                    fprintf(stderr,
+                            "CRYPTO: SET_INCOMING slot=%d peer=%s:%u (inter-node encrypted)\n",
+                            sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
+                } else {
+                    /* Phase 3.2b-inv: decap failure was SILENT — log it now. */
+                    fprintf(stderr,
+                            "CRYPTO: DECAP_FAIL slot=%d peer=%s:%u kyber_ct_len=%zu\n",
+                            sess->conn ? sess->conn->slot : -1,
+                            sess->conn ? sess->conn->ip : "?",
+                            sess->conn ? (unsigned)sess->conn->port : 0,
+                            (size_t)NODUS_KYBER_CT_BYTES);
                 }
+            } else {
+                /* Phase 3.2b-inv: identity missing kyber keys was SILENT */
+                fprintf(stderr,
+                        "CRYPTO: NO_KYBER slot=%d peer=%s:%u (identity has no kyber key)\n",
+                        sess->conn ? sess->conn->slot : -1,
+                        sess->conn ? sess->conn->ip : "?",
+                        sess->conn ? (unsigned)sess->conn->port : 0);
             }
             nodus_t2_msg_free(&msg);
             return;
@@ -4069,17 +4297,51 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         return;
     }
 
-    /* T1 decode failed — unknown frame on inter-node port */
+    /* T1 decode failed — unknown frame on inter-node port.
+     * Phase 3.2a: crypto state. Phase 3.2b-inv: authenticated + peer_id_set
+     * + sess session pointer for root cause correlation. */
     {
         char hexdump[65] = {0};
         size_t dumplen = len < 32 ? len : 32;
         for (size_t i = 0; i < dumplen; i++)
             snprintf(hexdump + i * 2, 3, "%02x", payload[i]);
-        fprintf(stderr, "REPL_TCP: T1 decode failed (len=%zu) slot=%d src=%s:%u head=%s\n",
+
+        const char *crypto_state = "none";
+        uint64_t tx_ctr = 0, rx_ctr = 0;
+        if (sess->conn && sess->conn->crypto) {
+            nodus_channel_crypto_t *cc =
+                (nodus_channel_crypto_t *)sess->conn->crypto;
+            crypto_state = cc->established ? "established" : "pending";
+            tx_ctr = cc->tx_counter;
+            rx_ctr = cc->rx_counter;
+        }
+        int authed = (sess->conn && sess->conn->authenticated) ? 1 : 0;
+        int peer_id_set = (sess->conn && sess->conn->peer_id_set) ? 1 : 0;
+        /* Phase 3.2c: include sess->channel_crypto.established. If conn->crypto
+         * is NULL but sess channel_crypto IS established, that means the conn
+         * pointer alias was lost — we have crypto state but the conn doesn't
+         * see it. Plus auth_state, dispatch_mask, decrypt_skip_count for full
+         * forensics. sess_aliases_conn==0 means conn->crypto != &sess->cc. */
+        int sess_cc_est = sess->channel_crypto.established ? 1 : 0;
+        int sess_aliases_conn = (sess->conn && sess->conn->crypto ==
+            (void *)&sess->channel_crypto) ? 1 : 0;
+        fprintf(stderr,
+                "REPL_TCP: T1 decode failed (len=%zu) slot=%d src=%s:%u "
+                "head=%s crypto=%s tx=%llu rx=%llu authed=%d peer_id_set=%d "
+                "auth_state=%d dispatch_mask=0x%02x decrypt_skip=%llu "
+                "sess_cc_est=%d sess_alias=%d "
+                "sess=%p sess_conn=%p\n",
                 len, sess->conn ? sess->conn->slot : -1,
                 sess->conn ? sess->conn->ip : "?",
                 sess->conn ? (unsigned)sess->conn->port : 0,
-                hexdump);
+                hexdump, crypto_state,
+                (unsigned long long)tx_ctr, (unsigned long long)rx_ctr,
+                authed, peer_id_set,
+                sess->conn ? (int)sess->conn->auth_state : -1,
+                sess->conn ? (unsigned)sess->conn->dispatch_logged_mask : 0,
+                sess->conn ? (unsigned long long)sess->conn->decrypt_skip_count : 0ULL,
+                sess_cc_est, sess_aliases_conn,
+                (void *)sess, (void *)(sess->conn));
     }
     nodus_t1_msg_free(&t1msg);
 }
@@ -4094,12 +4356,16 @@ static void on_inter_connect(nodus_tcp_conn_t *conn, void *ctx) {
      * dispatch_inter uses sess->conn for auth response handling). */
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
     if (sess) {
-        inter_session_clear(sess);
+        inter_session_clear(sess, conn->slot, "on_inter_connect");
         sess->conn = conn;
     }
 
     conn->is_nodus = true;
     conn->auth_required = srv->inter_tcp.auth_required;
+
+    /* Phase 3.2b-inv: conn lifecycle visibility */
+    fprintf(stderr, "INTER_CONN: CONNECT slot=%d peer=%s:%u sess=%p\n",
+            conn->slot, conn->ip, (unsigned)conn->port, (void *)sess);
 
     if (conn->auth_required) {
         /* Auto-send hello to initiate auth */
@@ -4121,11 +4387,15 @@ static void on_inter_accept(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
     if (sess) {
-        inter_session_clear(sess);
+        inter_session_clear(sess, conn->slot, "on_inter_accept");
         sess->conn = conn;
     }
     conn->is_nodus = true;
     conn->auth_required = srv->inter_tcp.auth_required;
+
+    /* Phase 3.2b-inv: conn lifecycle visibility */
+    fprintf(stderr, "INTER_CONN: ACCEPT slot=%d peer=%s:%u sess=%p\n",
+            conn->slot, conn->ip, (unsigned)conn->port, (void *)sess);
 }
 
 static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
@@ -4133,14 +4403,65 @@ static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
     if (!sess) return;
+
+    /* Phase 3.2c: log first frame seen on this conn — tells us whether
+     * an INBOUND ACCEPT ever made it past the TCP handshake into actual
+     * data exchange. If conns drop with first_frame_logged=0, the peer
+     * never sent anything (TCP-only churn). */
+    if (!conn->first_frame_logged) {
+        conn->first_frame_logged = true;
+        int has_crypto = (conn->crypto != NULL) ? 1 : 0;
+        /* Phase 3.2d: include fd so we can detect any cross-conn fd alias
+         * by matching against TCP_CONN: FD_SET and TCP_SEND_FIRST logs. */
+        fprintf(stderr,
+                "INTER_FRAME_FIRST: slot=%d fd=%d peer=%s:%u len=%zu auth_state=%d "
+                "has_crypto=%d sess=%p sess_conn=%p conn=%p match=%d\n",
+                conn->slot, conn->fd, conn->ip, (unsigned)conn->port, len,
+                (int)conn->auth_state, has_crypto,
+                (void *)sess, (void *)sess->conn, (void *)conn,
+                (sess->conn == conn) ? 1 : 0);
+    }
+
+    /* Phase 3.2b-inv: SESS_MISMATCH detector — critical bug if fires.
+     * on_inter_accept/connect sets sess->conn = conn, so they should be
+     * equal. If not, the session was not re-initialized after a slot
+     * reuse, or a different conn is hitting the same slot's session. */
+    if (sess->conn != conn) {
+        fprintf(stderr,
+                "SESS_MISMATCH: slot=%d peer=%s:%u sess_conn=%p actual_conn=%p\n",
+                conn->slot, conn->ip, (unsigned)conn->port,
+                (void *)sess->conn, (void *)conn);
+    }
+
     dispatch_inter(srv, sess, payload, len);
 }
 
 static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
+
+    /* Phase 3.2b-inv: conn lifecycle visibility — capture crypto state
+     * before we clear the session. */
+    int had_crypto = (conn->crypto != NULL) ? 1 : 0;
+    int established = 0;
+    if (conn->crypto) {
+        nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
+        established = cc->established ? 1 : 0;
+    }
+    /* Phase 3.2c: include auth_state at disconnect — tells us how far the
+     * handshake got before the conn died. INBOUND conn that drops with
+     * auth_state=NONE means peer never even sent hello. */
+    fprintf(stderr,
+            "INTER_CONN: DISCONNECT slot=%d peer=%s:%u had_crypto=%d established=%d "
+            "auth_state=%d authed=%d peer_id_set=%d frames_seen=%d "
+            "sess=%p sess_conn=%p conn=%p\n",
+            conn->slot, conn->ip, (unsigned)conn->port, had_crypto, established,
+            (int)conn->auth_state, conn->authenticated ? 1 : 0,
+            conn->peer_id_set ? 1 : 0, conn->first_frame_logged ? 1 : 0,
+            (void *)sess, sess ? (void *)sess->conn : NULL, (void *)conn);
+
     if (sess) {
-        inter_session_clear(sess);
+        inter_session_clear(sess, conn->slot, "on_inter_disconnect");
     }
 
     /* Notify witness module so it can clear peer references */
@@ -4980,6 +5301,16 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     memset(srv, 0, sizeof(*srv));
     srv->config = *config;
 
+    /* Phase 3.2e FIX: bf_state.batches[].forwards[].fd starts at 0 from
+     * memset above, but 0 is a VALID stdio fd (stdin). Cleanup paths use
+     * fd >= 0 as "active" check, so uninitialized forwards trigger
+     * close(0) and stomp stdin. Initialize all forward fds to -1. */
+    for (int bi = 0; bi < NODUS_BF_MAX_BATCHES; bi++) {
+        for (int fi = 0; fi < NODUS_BF_MAX_FORWARDS; fi++) {
+            srv->bf_state.batches[bi].forwards[fi].fd = -1;
+        }
+    }
+
     /* Jitter republish start to avoid thundering herd across cluster.
      * Each node delays its first republish cycle by a random offset
      * (0 to REPUBLISH_SEC), spreading replication traffic over time. */
@@ -5096,6 +5427,9 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     srv->inter_tcp.cb_ctx        = srv;
     srv->inter_tcp.auth_required = srv->config.require_peer_auth;
     srv->inter_tcp.auth_ctx      = &srv->identity;
+    /* Phase 3: hint-table fallback when pending queue is saturated. */
+    srv->inter_tcp.on_pending_full   = server_on_pending_full;
+    srv->inter_tcp.pending_full_ctx  = srv;
 
     /* Bind TCP (client port) */
     if (nodus_tcp_listen(&srv->tcp, config->bind_ip, config->tcp_port) != 0) {
@@ -5342,6 +5676,9 @@ int nodus_server_run(nodus_server_t *srv) {
 
         /* Incremental vacuum — reclaim freelist pages (every 24 hours) */
         dht_incremental_vacuum(srv);
+
+        /* Phase 1 visibility: per-peer send counter dump (every 5 min) */
+        dht_send_stats_dump(srv);
     }
 
     return 0;

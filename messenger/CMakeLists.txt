@@ -208,6 +208,7 @@ if(BUILD_SHARED_LIB)
         src/api/engine/dna_engine_debug_log.c
         src/api/engine/dna_debug_log_wire.c
         src/api/engine/dna_engine_dnac.c
+        src/reaction/reaction_json.c
         # DNAC (digital cash) — compiled into libdna for single .so
         ${CMAKE_SOURCE_DIR}/../dnac/src/version.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/wallet.c
@@ -322,6 +323,7 @@ else()
         src/api/engine/dna_engine_debug_log.c
         src/api/engine/dna_debug_log_wire.c
         src/api/engine/dna_engine_dnac.c
+        src/reaction/reaction_json.c
         # DNAC (digital cash) — compiled into libdna for single .so
         ${CMAKE_SOURCE_DIR}/../dnac/src/version.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/wallet/wallet.c

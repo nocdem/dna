@@ -549,5 +549,8 @@
   "walletContacts": "Kişiler",
   "settingsActiveChains": "Aktif Ağlar",
   "settingsActiveChainsSubtitle": "Cüzdanınızda hangi ağları görmek istediğinizi seçin",
-  "invalidQrCode": "Geçersiz QR kodu"
+  "invalidQrCode": "Geçersiz QR kodu",
+  "reactionAdded": "{emoji} ile tepki verdi",
+  "reactionRemoved": "Tepki kaldırıldı",
+  "reactionNotificationBody": "{name} mesajınıza {emoji} ile tepki verdi"
 }

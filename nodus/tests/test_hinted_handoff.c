@@ -132,9 +132,10 @@ static void test_count(void) {
     nodus_storage_open(TEST_DB, &store);
 
     nodus_key_t node = make_key(0xDD);
-    uint8_t frame[] = {0x01};
 
+    /* Each frame must be unique to avoid dedup */
     for (int i = 0; i < 5; i++) {
+        uint8_t frame[] = {(uint8_t)i};
         nodus_storage_hinted_insert(&store, &node, "10.0.0.1", 4001,
                                      frame, sizeof(frame));
     }
@@ -157,15 +158,18 @@ static void test_multiple_nodes(void) {
 
     nodus_key_t node1 = make_key(0x11);
     nodus_key_t node2 = make_key(0x22);
-    uint8_t frame[] = {0x01};
 
-    /* 3 hints for node1, 2 for node2 */
-    for (int i = 0; i < 3; i++)
+    /* 3 unique hints for node1, 2 unique for node2 */
+    for (int i = 0; i < 3; i++) {
+        uint8_t frame[] = {(uint8_t)(0x10 + i)};
         nodus_storage_hinted_insert(&store, &node1, "10.0.0.1", 4001,
                                      frame, sizeof(frame));
-    for (int i = 0; i < 2; i++)
+    }
+    for (int i = 0; i < 2; i++) {
+        uint8_t frame[] = {(uint8_t)(0x20 + i)};
         nodus_storage_hinted_insert(&store, &node2, "10.0.0.2", 4002,
                                      frame, sizeof(frame));
+    }
 
     nodus_dht_hint_t *entries1 = NULL, *entries2 = NULL;
     size_t count1 = 0, count2 = 0;
@@ -182,6 +186,32 @@ static void test_multiple_nodes(void) {
     nodus_storage_close(&store);
 }
 
+static void test_dedup(void) {
+    TEST("duplicate hint is silently ignored (dedup)");
+    unlink(TEST_DB);
+
+    nodus_storage_t store;
+    nodus_storage_open(TEST_DB, &store);
+
+    nodus_key_t node = make_key(0xEE);
+    uint8_t frame[] = {0xDE, 0xAD, 0xBE, 0xEF};
+
+    /* Insert same (node, frame) 10 times */
+    for (int i = 0; i < 10; i++) {
+        int rc = nodus_storage_hinted_insert(&store, &node, "10.0.0.1", 4001,
+                                              frame, sizeof(frame));
+        if (rc != 0) { FAIL("insert returned error"); nodus_storage_close(&store); return; }
+    }
+
+    int count = nodus_storage_hinted_count(&store);
+    if (count == 1)
+        PASS();
+    else
+        FAIL("dedup failed: expected 1 entry");
+
+    nodus_storage_close(&store);
+}
+
 int main(void) {
     printf("=== Nodus Hinted Handoff Tests ===\n");
 
@@ -190,6 +220,7 @@ int main(void) {
     test_delete_by_id();
     test_count();
     test_multiple_nodes();
+    test_dedup();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;

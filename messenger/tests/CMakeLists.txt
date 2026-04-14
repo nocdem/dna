@@ -296,6 +296,13 @@ target_link_libraries(test_group_database_migration_v3 ${TEST_LIBS})
 add_test(NAME test_group_database_migration_v3 COMMAND test_group_database_migration_v3)
 
 # =============================================================================
+# Test: Reaction JSON build/parse helpers
+# =============================================================================
+add_executable(test_reactions test_reactions.c)
+target_link_libraries(test_reactions ${TEST_LIBS})
+add_test(NAME test_reactions COMMAND test_reactions)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()

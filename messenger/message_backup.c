@@ -18,6 +18,8 @@
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "database/db_encryption.h"
+#include "dna/dna_engine.h"      /* for dna_reaction_t */
+#include "dna/reaction_json.h"   /* for parse helpers */
 
 #define LOG_TAG "MSG_BACKUP"
 
@@ -557,35 +559,58 @@ int message_backup_save(message_backup_context_t *ctx,
 
     // v16: Compute content hash for dedup
     char hash[QGP_SHA3_256_HEX_LENGTH];
-    compute_content_hash(sender_fingerprint ? sender_fingerprint : sender,
-                         recipient, plaintext, timestamp, hash);
-
-    // Check for duplicate by content hash
-    if (message_backup_exists(ctx, hash)) {
-        QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (hash match)\n",
-               sender, recipient);
-        return 1;  // Return 1 to indicate duplicate (not an error)
+    if (message_type == 3) {
+        /* Reaction: store TARGET message's content_hash (not a hash of this
+         * reaction's plaintext) so that get_reactions_for_target can index
+         * rows by the message they apply to. Both sender and receiver flow
+         * through this path, so behavior is symmetric. */
+        char target_hash[65] = {0};
+        if (dna_reaction_parse_target(plaintext, target_hash, sizeof(target_hash)) == 0) {
+            memcpy(hash, target_hash, 64);
+            hash[64] = '\0';
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Reaction missing valid target, falling back to computed hash\n");
+            compute_content_hash(sender_fingerprint ? sender_fingerprint : sender,
+                                 recipient, plaintext, timestamp, hash);
+        }
+    } else {
+        compute_content_hash(sender_fingerprint ? sender_fingerprint : sender,
+                             recipient, plaintext, timestamp, hash);
     }
 
-    // Fallback: catch pre-v16 rows where content_hash is NULL
-    {
-        const char *fb_sql =
-            "SELECT COUNT(*) FROM messages "
-            "WHERE content_hash IS NULL AND sender_fingerprint = ? "
-            "AND recipient = ? AND plaintext = ? AND timestamp = ?";
-        sqlite3_stmt *fb_stmt;
-        if (sqlite3_prepare_v2(ctx->db, fb_sql, -1, &fb_stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(fb_stmt, 1, sender_fingerprint ? sender_fingerprint : sender, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(fb_stmt, 2, recipient, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(fb_stmt, 3, plaintext, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int64(fb_stmt, 4, (sqlite3_int64)timestamp);
-            if (sqlite3_step(fb_stmt) == SQLITE_ROW && sqlite3_column_int(fb_stmt, 0) > 0) {
+    /* Reactions intentionally share content_hash with the target message
+     * (used as an indexed back-reference). Skip the dedup-by-content_hash
+     * check for message_type=3; reaction-level dedup is handled at the
+     * application layer in message_backup_get_reactions_for_target via
+     * (reactor, emoji, op) replay. */
+    if (message_type != 3) {
+        // Check for duplicate by content hash
+        if (message_backup_exists(ctx, hash)) {
+            QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (hash match)\n",
+                   sender, recipient);
+            return 1;  // Return 1 to indicate duplicate (not an error)
+        }
+
+        // Fallback: catch pre-v16 rows where content_hash is NULL
+        {
+            const char *fb_sql =
+                "SELECT COUNT(*) FROM messages "
+                "WHERE content_hash IS NULL AND sender_fingerprint = ? "
+                "AND recipient = ? AND plaintext = ? AND timestamp = ?";
+            sqlite3_stmt *fb_stmt;
+            if (sqlite3_prepare_v2(ctx->db, fb_sql, -1, &fb_stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_text(fb_stmt, 1, sender_fingerprint ? sender_fingerprint : sender, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(fb_stmt, 2, recipient, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(fb_stmt, 3, plaintext, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int64(fb_stmt, 4, (sqlite3_int64)timestamp);
+                if (sqlite3_step(fb_stmt) == SQLITE_ROW && sqlite3_column_int(fb_stmt, 0) > 0) {
+                    sqlite3_finalize(fb_stmt);
+                    QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (pre-v16 fallback)\n",
+                           sender, recipient);
+                    return 1;
+                }
                 sqlite3_finalize(fb_stmt);
-                QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s -> %s (pre-v16 fallback)\n",
-                       sender, recipient);
-                return 1;
             }
-            sqlite3_finalize(fb_stmt);
         }
     }
 
@@ -672,7 +697,7 @@ int message_backup_get_unread_count(message_backup_context_t *ctx, const char *c
     const char *sql =
         "SELECT COUNT(*) FROM messages "
         "WHERE sender = ? AND recipient = ? AND read = 0 AND is_outgoing = 0 "
-        "AND message_type != 99";
+        "AND message_type NOT IN (3, 99)";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -692,6 +717,112 @@ int message_backup_get_unread_count(message_backup_context_t *ctx, const char *c
     sqlite3_finalize(stmt);
 
     return count;
+}
+
+/**
+ * Get the current reaction list for a target message.
+ *
+ * Scans message_type=3 rows where content_hash equals the target, then
+ * replays add/remove ops in timestamp order to compute the live state.
+ *
+ * @param ctx                  Backup context
+ * @param target_content_hash  64-hex hash of the target message
+ * @param reactions_out        Caller-owned. Free with free(). NULL if count=0.
+ * @param count_out            Number of live reactions
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_reactions_for_target(message_backup_context_t *ctx,
+                                             const char *target_content_hash,
+                                             dna_reaction_t **reactions_out,
+                                             int *count_out) {
+    if (!ctx || !ctx->db || !target_content_hash || !reactions_out || !count_out) return -1;
+    *reactions_out = NULL;
+    *count_out = 0;
+
+    const char *sql =
+        "SELECT sender_fingerprint, plaintext, timestamp FROM messages "
+        "WHERE message_type = 3 AND content_hash = ? "
+        "ORDER BY timestamp ASC, id ASC";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare reactions query: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, target_content_hash, -1, SQLITE_STATIC);
+
+    int capacity = 16;
+    int count = 0;
+    dna_reaction_t *arr = malloc(capacity * sizeof(dna_reaction_t));
+    if (!arr) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *reactor_text = sqlite3_column_text(stmt, 0);
+        const unsigned char *payload_text = sqlite3_column_text(stmt, 1);
+        if (!reactor_text || !payload_text) continue;
+        const char *reactor = (const char *)reactor_text;
+        const char *payload = (const char *)payload_text;
+        uint64_t ts = (uint64_t)sqlite3_column_int64(stmt, 2);
+
+        char emoji[8] = {0};
+        char op[8] = {0};
+        if (dna_reaction_parse_emoji(payload, emoji, sizeof(emoji)) != 0) continue;
+        if (dna_reaction_parse_op(payload, op, sizeof(op)) != 0) continue;
+
+        if (strcmp(op, "add") == 0) {
+            int exists = 0;
+            for (int i = 0; i < count; i++) {
+                if (strcmp(arr[i].reactor_fp, reactor) == 0 &&
+                    strcmp(arr[i].emoji, emoji) == 0) {
+                    exists = 1;
+                    break;
+                }
+            }
+            if (exists) continue;
+            if (count >= capacity) {
+                int new_cap = capacity * 2;
+                dna_reaction_t *tmp = realloc(arr, new_cap * sizeof(dna_reaction_t));
+                if (!tmp) {
+                    free(arr);
+                    sqlite3_finalize(stmt);
+                    return -1;
+                }
+                arr = tmp;
+                capacity = new_cap;
+            }
+            strncpy(arr[count].reactor_fp, reactor, 128);
+            arr[count].reactor_fp[128] = '\0';
+            strncpy(arr[count].emoji, emoji, 7);
+            arr[count].emoji[7] = '\0';
+            arr[count].timestamp = ts;
+            count++;
+        } else if (strcmp(op, "remove") == 0) {
+            for (int i = 0; i < count; i++) {
+                if (strcmp(arr[i].reactor_fp, reactor) == 0 &&
+                    strcmp(arr[i].emoji, emoji) == 0) {
+                    if (i < count - 1) {
+                        memmove(&arr[i], &arr[i+1], (count - i - 1) * sizeof(dna_reaction_t));
+                    }
+                    count--;
+                    break;
+                }
+            }
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    if (count == 0) {
+        free(arr);
+        *reactions_out = NULL;
+    } else {
+        *reactions_out = arr;
+    }
+    *count_out = count;
+    return 0;
 }
 
 /**
@@ -748,7 +879,7 @@ int message_backup_get_conversation_page(message_backup_context_t *ctx,
     const char *count_sql =
         "SELECT COUNT(*) FROM messages "
         "WHERE ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) "
-        "AND message_type != 99";
+        "AND message_type NOT IN (3, 99)";
 
     sqlite3_stmt *count_stmt;
     int rc = sqlite3_prepare_v2(ctx->db, count_sql, -1, &count_stmt, NULL);
@@ -780,10 +911,10 @@ int message_backup_get_conversation_page(message_backup_context_t *ctx,
     // This allows efficient loading for reverse-scroll chat UI
     // message_type=99 are processed delete notices (dedup anchors), exclude them
     const char *sql =
-        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, is_outgoing, deleted_by_sender "
+        "SELECT id, sender, recipient, plaintext, sender_fingerprint, timestamp, delivered, read, status, group_id, message_type, is_outgoing, deleted_by_sender, content_hash "
         "FROM messages "
         "WHERE ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) "
-        "AND message_type != 99 "
+        "AND message_type NOT IN (3, 99) "
         "ORDER BY timestamp DESC "
         "LIMIT ? OFFSET ?";
 
@@ -831,6 +962,15 @@ int message_backup_get_conversation_page(message_backup_context_t *ctx,
         messages[idx].message_type = sqlite3_column_int(stmt, 10);
         messages[idx].is_outgoing = sqlite3_column_int(stmt, 11) != 0;
         messages[idx].deleted_by_sender = sqlite3_column_int(stmt, 12) != 0;
+
+        // v0.9.194: Copy content_hash for reaction targeting
+        const char *chash = (const char*)sqlite3_column_text(stmt, 13);
+        if (chash) {
+            strncpy(messages[idx].content_hash, chash, 64);
+            messages[idx].content_hash[64] = '\0';
+        } else {
+            messages[idx].content_hash[0] = '\0';
+        }
         idx++;
     }
 
@@ -1222,7 +1362,7 @@ int message_backup_get_recent_contacts(message_backup_context_t *ctx,
         "  END AS contact "
         "FROM messages "
         "WHERE (sender = ? OR recipient = ?) "
-        "AND message_type != 99 "
+        "AND message_type NOT IN (3, 99) "
         "ORDER BY timestamp DESC";
 
     sqlite3_stmt *stmt;
@@ -1349,6 +1489,25 @@ int message_backup_delete(message_backup_context_t *ctx, int message_id) {
         return -1;
     }
 
+    /* Fetch target content_hash + message_type BEFORE delete so we can
+     * cascade-remove orphan reactions that reference this message.
+     * Skip cascade if the row itself is a reaction (message_type == 3). */
+    char target_hash[65] = {0};
+    int target_type = 0;
+    const char *fetch_sql = "SELECT content_hash, message_type FROM messages WHERE id = ?";
+    sqlite3_stmt *fstmt = NULL;
+    if (sqlite3_prepare_v2(ctx->db, fetch_sql, -1, &fstmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(fstmt, 1, message_id);
+        if (sqlite3_step(fstmt) == SQLITE_ROW) {
+            const unsigned char *h = sqlite3_column_text(fstmt, 0);
+            if (h) {
+                strncpy(target_hash, (const char *)h, sizeof(target_hash) - 1);
+            }
+            target_type = sqlite3_column_int(fstmt, 1);
+        }
+        sqlite3_finalize(fstmt);
+    }
+
     const char *sql = "DELETE FROM messages WHERE id = ?";
     sqlite3_stmt *stmt = NULL;
 
@@ -1374,6 +1533,24 @@ int message_backup_delete(message_backup_context_t *ctx, int message_id) {
         return -1;
     }
 
+    /* Cascade-remove orphan reactions targeting this message, but only if
+     * the deleted row was itself a chat message (not a reaction). */
+    if (target_hash[0] != '\0' && target_type != 3) {
+        const char *cleanup_sql =
+            "DELETE FROM messages WHERE message_type = 3 AND content_hash = ?";
+        sqlite3_stmt *cstmt = NULL;
+        if (sqlite3_prepare_v2(ctx->db, cleanup_sql, -1, &cstmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(cstmt, 1, target_hash, -1, SQLITE_STATIC);
+            sqlite3_step(cstmt);
+            int reactions_removed = sqlite3_changes(ctx->db);
+            sqlite3_finalize(cstmt);
+            if (reactions_removed > 0) {
+                QGP_LOG_INFO(LOG_TAG, "Cleaned up %d orphan reactions for deleted message %d\n",
+                             reactions_removed, message_id);
+            }
+        }
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Deleted message %d\n", message_id);
     return 0;
 }
@@ -1386,6 +1563,28 @@ int message_backup_delete_conversation(message_backup_context_t *ctx,
     if (!ctx || !ctx->db || !contact_identity) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid context or contact_identity\n");
         return -1;
+    }
+
+    /* Cascade-remove orphan reactions BEFORE deleting the target chat rows,
+     * otherwise the subquery would return nothing. Only cascade for rows that
+     * are themselves chat messages (message_type != 3). */
+    const char *cleanup_sql =
+        "DELETE FROM messages WHERE message_type = 3 AND content_hash IN ("
+        "  SELECT content_hash FROM messages WHERE "
+        "    (sender = ? OR recipient = ?) AND message_type != 3 "
+        "    AND content_hash IS NOT NULL AND content_hash != ''"
+        ")";
+    sqlite3_stmt *cstmt = NULL;
+    if (sqlite3_prepare_v2(ctx->db, cleanup_sql, -1, &cstmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(cstmt, 1, contact_identity, -1, SQLITE_STATIC);
+        sqlite3_bind_text(cstmt, 2, contact_identity, -1, SQLITE_STATIC);
+        sqlite3_step(cstmt);
+        int reactions_removed = sqlite3_changes(ctx->db);
+        sqlite3_finalize(cstmt);
+        if (reactions_removed > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Cleaned up %d orphan reactions for conversation with %.20s...\n",
+                         reactions_removed, contact_identity);
+        }
     }
 
     const char *sql = "DELETE FROM messages WHERE sender = ? OR recipient = ?";
