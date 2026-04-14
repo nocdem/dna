@@ -104,6 +104,14 @@ typedef struct {
     uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
     uint32_t    vote;           /* 0=approve, 1=reject */
     char        reason[256];
+    /* Phase 7.5 / Task 7.5.2 — cert preimage signature.
+     * Only meaningful for PRECOMMIT; PREVOTE encoders set this to all
+     * zeros and PREVOTE decoders ignore it. The signature is over the
+     * 144-byte preimage produced by nodus_witness_compute_cert_preimage
+     * (block_hash, voter_id = sender_id, height = local block_height + 1
+     * at the moment of signing, chain_id). Wire-independent: the same
+     * bytes are signed and verified regardless of T3 envelope shape. */
+    uint8_t     cert_sig[NODUS_SIG_BYTES];
 } nodus_t3_vote_t;
 
 /** Precommit certificate entry (voter_id + signature) */

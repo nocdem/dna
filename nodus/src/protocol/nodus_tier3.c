@@ -130,11 +130,14 @@ static void enc_propose_args(cbor_encoder_t *enc, const nodus_t3_propose_t *p) {
 }
 
 static void enc_vote_args(cbor_encoder_t *enc, const nodus_t3_vote_t *v) {
-    cbor_encode_map(enc, 3);
+    /* Phase 7.5 / Task 7.5.2 — map size 4 (added "cs" cert_sig). */
+    cbor_encode_map(enc, 4);
     cbor_encode_cstr(enc, "txh"); cbor_encode_bstr(enc, v->tx_hash,
                                                     NODUS_T3_TX_HASH_LEN);
     cbor_encode_cstr(enc, "vt");  cbor_encode_uint(enc, v->vote);
     cbor_encode_cstr(enc, "rsn"); cbor_encode_cstr(enc, v->reason);
+    cbor_encode_cstr(enc, "cs");  cbor_encode_bstr(enc, v->cert_sig,
+                                                    NODUS_SIG_BYTES);
 }
 
 /* Encode commit cert array (shared between batch and legacy) */
@@ -620,6 +623,13 @@ static void dec_vote_args(cbor_decoder_t *dec, size_t count,
                 memcpy(v->reason, val.tstr.ptr, clen);
                 v->reason[clen] = '\0';
             }
+        }
+        else if (KEY_IS(key, "cs")) {
+            /* Phase 7.5 / Task 7.5.2 — cert preimage signature */
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_SIG_BYTES)
+                memcpy(v->cert_sig, val.bstr.ptr, NODUS_SIG_BYTES);
         }
         else {
             cbor_decode_skip(dec);
