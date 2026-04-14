@@ -382,6 +382,135 @@ static int cmd_listen(const char *key_str) {
     return 0;
 }
 
+/* ── cluster-status (Phase 0 / Task 0.2) ─────────────────────────────
+ *
+ * Queries one or more nodes for their block_height, state_root,
+ * chain_id, peer count, uptime and wall clock, then prints a side-by-
+ * side table. Each target gets its own connect+auth+query+disconnect
+ * cycle — there is no batch query because operators want explicit
+ * per-node visibility (and we want one node failing to be a single row
+ * rather than the entire query collapsing).
+ */
+typedef struct {
+    char     target[280];   /* "host:port" — host up to 256, ":port" up to 6 */
+    bool     reachable;
+    uint64_t block_height;
+    uint8_t  state_root[64];
+    uint8_t  chain_id[32];
+    uint32_t peer_count;
+    uint64_t uptime_sec;
+    uint64_t wall_clock;
+} cluster_node_status_t;
+
+static int cluster_status_query_one(const char *host, uint16_t port,
+                                     cluster_node_status_t *out) {
+    snprintf(out->target, sizeof(out->target), "%s:%u", host, port);
+    out->reachable = false;
+
+    nodus_tcp_init(&transport, -1);
+    transport.on_frame = on_frame;
+    transport.on_disconnect = on_disconnect;
+    transport.on_connect = on_connect;
+
+    server_conn = nodus_tcp_connect(&transport, host, port);
+    if (!server_conn) goto done;
+
+    for (int i = 0; i < 60 && server_conn->state == NODUS_CONN_CONNECTING; i++)
+        nodus_tcp_poll(&transport, 50);
+    if (!server_conn || server_conn->state != NODUS_CONN_CONNECTED) goto done;
+
+    if (do_auth() != 0) goto done;
+
+    size_t len = 0;
+    uint32_t txn = next_txn++;
+    nodus_t2_status(txn, session_token, proto_buf, sizeof(proto_buf), &len);
+    nodus_tcp_send(server_conn, proto_buf, len);
+    if (!wait_response(5000)) goto done;
+    if (last_response.type == 'e' || !last_response.has_status_info) goto done;
+
+    out->reachable = true;
+    out->block_height = last_response.status_info.block_height;
+    memcpy(out->state_root, last_response.status_info.state_root, 64);
+    memcpy(out->chain_id,   last_response.status_info.chain_id,   32);
+    out->peer_count   = last_response.status_info.peer_count;
+    out->uptime_sec   = last_response.status_info.uptime_sec;
+    out->wall_clock   = last_response.status_info.wall_clock;
+
+done:
+    nodus_t2_msg_free(&last_response);
+    nodus_tcp_close(&transport);
+    server_conn = NULL;
+    authenticated = false;
+    return out->reachable ? 0 : -1;
+}
+
+static void format_uptime(uint64_t sec, char *buf, size_t buf_len) {
+    if (sec == 0)              { snprintf(buf, buf_len, "  -"); return; }
+    if (sec < 60)              { snprintf(buf, buf_len, "%2us", (unsigned)sec); return; }
+    if (sec < 3600)            { snprintf(buf, buf_len, "%2um", (unsigned)(sec/60)); return; }
+    if (sec < 86400)           { snprintf(buf, buf_len, "%2uh", (unsigned)(sec/3600)); return; }
+    snprintf(buf, buf_len, "%2ud", (unsigned)(sec/86400));
+}
+
+static int cmd_cluster_status(int argc, char **argv, int optind_cmd) {
+    if (optind_cmd + 1 >= argc) {
+        fprintf(stderr, "Usage: nodus-cli cluster-status <host[:port]> [host[:port] ...]\n");
+        return 1;
+    }
+
+    int targets = argc - (optind_cmd + 1);
+    cluster_node_status_t *rows = calloc((size_t)targets, sizeof(*rows));
+    if (!rows) return 1;
+
+    for (int i = 0; i < targets; i++) {
+        const char *spec = argv[optind_cmd + 1 + i];
+        char host[256];
+        uint16_t port = NODUS_DEFAULT_TCP_PORT;
+        const char *colon = strchr(spec, ':');
+        if (colon) {
+            size_t hl = (size_t)(colon - spec);
+            if (hl >= sizeof(host)) hl = sizeof(host) - 1;
+            memcpy(host, spec, hl);
+            host[hl] = '\0';
+            port = (uint16_t)atoi(colon + 1);
+        } else {
+            snprintf(host, sizeof(host), "%s", spec);
+        }
+        cluster_status_query_one(host, port, &rows[i]);
+    }
+
+    /* Print table */
+    printf("%-24s  %-8s  %-12s  %-6s  %-8s  %-12s  %s\n",
+           "ADDR", "STATUS", "HEIGHT", "PEERS", "UPTIME", "WALL_CLOCK", "STATE_ROOT");
+    printf("%-24s  %-8s  %-12s  %-6s  %-8s  %-12s  %s\n",
+           "------------------------", "--------", "------------",
+           "------", "--------", "------------", "----------------");
+    for (int i = 0; i < targets; i++) {
+        if (!rows[i].reachable) {
+            printf("%-24s  %-8s\n", rows[i].target, "DOWN");
+            continue;
+        }
+        char up[16];
+        format_uptime(rows[i].uptime_sec, up, sizeof(up));
+        char sr_short[17];
+        for (int j = 0; j < 8; j++)
+            snprintf(sr_short + j * 2, 3, "%02x", rows[i].state_root[j]);
+        printf("%-24s  %-8s  %-12llu  %-6u  %-8s  %-12llu  %s...\n",
+               rows[i].target,
+               "UP",
+               (unsigned long long)rows[i].block_height,
+               rows[i].peer_count,
+               up,
+               (unsigned long long)rows[i].wall_clock,
+               sr_short);
+    }
+
+    int down = 0;
+    for (int i = 0; i < targets; i++) if (!rows[i].reachable) down++;
+    free(rows);
+    return down == 0 ? 0 : 1;
+}
+
 static int cmd_servers(void) {
     size_t len = 0;
     uint32_t txn = next_txn++;
@@ -755,8 +884,9 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* All other commands need a server */
-    if (!server_ip) {
+    /* All other commands need a server, except cluster-status which
+     * takes its target list as positional args. */
+    if (!server_ip && strcmp(command, "cluster-status") != 0) {
         fprintf(stderr, "Server required (-s <ip>)\n");
         return 1;
     }
@@ -773,6 +903,14 @@ int main(int argc, char **argv) {
     } else {
         nodus_identity_generate(&identity);
         fprintf(stderr, "Using random identity: %s\n", identity.fingerprint);
+    }
+
+    /* cluster-status: drives its own per-target connect+auth+query loop,
+     * does not use the default single-target connection below. */
+    if (strcmp(command, "cluster-status") == 0) {
+        int rc = cmd_cluster_status(argc, argv, optind);
+        nodus_identity_clear(&identity);
+        return rc;
     }
 
     /* ch_listen: connects to TCP 4003 directly, bypasses TCP 4001 */
