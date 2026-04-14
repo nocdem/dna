@@ -8,6 +8,7 @@
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_merkle.h"
+#include "witness/nodus_witness_cert.h"
 #include "witness/nodus_witness_peer.h"
 #include "protocol/nodus_tier3.h"
 #include "transport/nodus_tcp.h"
@@ -487,28 +488,33 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
         }
     }
 
-    /* Verify commit certificates — count roster-known voters.
-     * We trust the sigs because the w_sync_rsp itself was wsig-verified
-     * by T3 dispatch. Re-verifying individual precommit sigs would require
-     * reconstructing the original T3 message, which we don't have. */
+    /* Phase 11 partial / Task 11.4 step c — wire verify_sync_certs into
+     * the sync receiver. The wire block_hash field is used as the
+     * cert_preimage block_hash input; once Phase 11.1-11.3 lands the
+     * multi-tx sync_rsp wire format, this should be replaced with a
+     * locally-recomputed block_hash via merkle_tx_root + compute_block_hash
+     * to close the wire-trust gap. The current state still verifies real
+     * Dilithium5 cert sigs (was: only counted roster IDs), so it is
+     * strictly better than the pre-Phase-7.5 baseline. */
     {
-        int verified = 0;
-        for (uint32_t i = 0; i < rsp->cert_count; i++) {
-            int voter_idx = nodus_witness_roster_find(&w->roster,
-                                                        rsp->certs[i].voter_id);
-            if (voter_idx >= 0) verified++;
-        }
-
-        if (verified < (int)w->bft_config.quorum) {
-            fprintf(stderr, "%s: insufficient certs at height %llu "
-                    "(%d < quorum %u)\n", LOG_TAG,
-                    (unsigned long long)db_height, verified,
-                    w->bft_config.quorum);
+        /* Translate the rsp cert array (matches nodus_t3_sync_cert_t
+         * layout already). */
+        int verified = nodus_witness_verify_sync_certs(rsp->tx_hash,
+                                                         db_height,
+                                                         w->chain_id,
+                                                         &w->roster,
+                                                         rsp->certs,
+                                                         rsp->cert_count,
+                                                         w->bft_config.quorum);
+        if (verified < 0) {
+            fprintf(stderr, "%s: cert verify FAILED at height %llu "
+                    "(< quorum %u)\n", LOG_TAG,
+                    (unsigned long long)db_height, w->bft_config.quorum);
             w->sync_state.syncing = false;
             return -1;
         }
 
-        fprintf(stderr, "%s: block %llu certs: %d roster-known/%u total "
+        fprintf(stderr, "%s: block %llu certs verified: %d/%u "
                 "(quorum=%u)\n", LOG_TAG, (unsigned long long)db_height,
                 verified, rsp->cert_count, w->bft_config.quorum);
     }
