@@ -618,6 +618,74 @@ static int update_utxo_set(nodus_witness_t *w,
  *
  * @return 0 on success, -1 on failure (caller should rollback)
  */
+/* Supply invariant check (Phase 3 / Task 3.0).
+ *
+ * Returns true if any of the following invariants is currently violated
+ * for the live witness DB state:
+ *
+ *   1. Native DNAC: registered genesis_supply must equal the sum of all
+ *      utxo_set rows whose token_id is the native (zero) token.
+ *   2. Per custom token: the registered supply (from the `tokens` table)
+ *      must equal the sum of utxo_set rows for that token_id.
+ *
+ * Burn fees are tracked separately and excluded from the comparison
+ * (genesis_supply is the post-burn target).
+ *
+ * Read-only — does not modify w->db. Side effect: emits an ERROR log
+ * line via QGP_LOG_ERROR with the specific delta that violated. Phase
+ * 6 SAVEPOINT attribution replay relies on these log lines to identify
+ * the offending TX in a batch.
+ *
+ * Lifted from the inline check in the legacy commit_block_inner so
+ * Phase 3.4 can move the call from per-TX to per-block (run once
+ * inside finalize_block) without changing the check's semantics.
+ */
+static bool supply_invariant_violated(nodus_witness_t *w) {
+    if (!w || !w->db) return false;
+
+    bool violated = false;
+
+    nodus_witness_supply_t sup;
+    uint64_t utxo_total = 0;
+    if (nodus_witness_supply_get(w, &sup) == 0 &&
+        nodus_witness_utxo_sum_by_token(w, NULL, &utxo_total) == 0) {
+        if (sup.genesis_supply != utxo_total) {
+            QGP_LOG_ERROR(LOG_TAG,
+                "SUPPLY INVARIANT VIOLATION: genesis=%llu != utxo_sum=%llu "
+                "(delta=%lld)",
+                (unsigned long long)sup.genesis_supply,
+                (unsigned long long)utxo_total,
+                (long long)(sup.genesis_supply - utxo_total));
+            violated = true;
+        }
+    }
+
+    /* Per-token supply invariant: each custom token's UTXO sum must equal
+     * its registered initial_supply (custom tokens have no fee burn). */
+    nodus_witness_token_entry_t tokens[64];
+    int token_count = 0;
+    if (nodus_witness_token_list(w, tokens, 64, &token_count) == 0) {
+        for (int ti = 0; ti < token_count; ti++) {
+            uint64_t token_utxo_sum = 0;
+            if (nodus_witness_utxo_sum_by_token(w, tokens[ti].token_id,
+                                                  &token_utxo_sum) == 0) {
+                if (tokens[ti].supply != token_utxo_sum) {
+                    QGP_LOG_ERROR(LOG_TAG,
+                        "TOKEN SUPPLY INVARIANT VIOLATION: "
+                        "token=%s initial=%llu utxo_sum=%llu (delta=%lld)",
+                        tokens[ti].symbol,
+                        (unsigned long long)tokens[ti].supply,
+                        (unsigned long long)token_utxo_sum,
+                        (long long)(tokens[ti].supply - token_utxo_sum));
+                    violated = true;
+                }
+            }
+        }
+    }
+
+    return violated;
+}
+
 static int commit_block_inner(nodus_witness_t *w,
                                 const uint8_t *tx_hash,
                                 uint8_t tx_type,
@@ -694,43 +762,14 @@ static int commit_block_inner(nodus_witness_t *w,
         }
     }
 
-    /* ── Supply invariant check (native DNAC) ─────────────────── */
+    /* ── Supply invariant check (native + per-token DNAC) ─────────
+     * Phase 3 / Task 3.0: extracted into supply_invariant_violated()
+     * helper. Currently still per-TX; Task 3.4 moves the call into
+     * finalize_block so it runs once per block instead of N times per
+     * batch. The legacy semantic is preserved here — a violation logs
+     * but does not fail the commit (the check was advisory pre-Phase 3). */
     if (!failed && w->db) {
-        nodus_witness_supply_t sup;
-        uint64_t utxo_total = 0;
-        if (nodus_witness_supply_get(w, &sup) == 0 &&
-            nodus_witness_utxo_sum_by_token(w, NULL, &utxo_total) == 0) {
-            if (sup.genesis_supply != utxo_total) {
-                QGP_LOG_ERROR(LOG_TAG,
-                    "SUPPLY INVARIANT VIOLATION: genesis=%llu != utxo_sum=%llu "
-                    "(delta=%lld)",
-                    (unsigned long long)sup.genesis_supply,
-                    (unsigned long long)utxo_total,
-                    (long long)(sup.genesis_supply - utxo_total));
-            }
-        }
-
-        /* Per-token supply invariant: each custom token's UTXO sum must
-         * equal its registered initial_supply (no fee burn for custom tokens) */
-        nodus_witness_token_entry_t tokens[64];
-        int token_count = 0;
-        if (nodus_witness_token_list(w, tokens, 64, &token_count) == 0) {
-            for (int ti = 0; ti < token_count; ti++) {
-                uint64_t token_utxo_sum = 0;
-                if (nodus_witness_utxo_sum_by_token(w, tokens[ti].token_id,
-                                                      &token_utxo_sum) == 0) {
-                    if (tokens[ti].supply != token_utxo_sum) {
-                        QGP_LOG_ERROR(LOG_TAG,
-                            "TOKEN SUPPLY INVARIANT VIOLATION: "
-                            "token=%s initial=%llu utxo_sum=%llu (delta=%lld)",
-                            tokens[ti].symbol,
-                            (unsigned long long)tokens[ti].supply,
-                            (unsigned long long)token_utxo_sum,
-                            (long long)(tokens[ti].supply - token_utxo_sum));
-                    }
-                }
-            }
-        }
+        (void)supply_invariant_violated(w);
     }
 
     if (!failed && tx_data && tx_len > 0) {
