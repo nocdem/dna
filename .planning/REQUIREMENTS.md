@@ -32,7 +32,7 @@ Requirements for stabilization release. Each maps to roadmap phases.
 - [ ] **CORE-02**: Fix background notification permission toggle — toggle ON doesn't re-request permissions
 - [ ] **CORE-03**: Fix camera permission after reinstall — QR scanner doesn't request camera on fresh install
 - [x] **CORE-04**: Complete DHT metadata privacy salt migration — deterministic outbox keys leak communication patterns
-- [ ] **CORE-05**: Fix name registration failure — registration doesn't go through and user gets locked out of changing name afterwards (C engine + Flutter, needs investigation)
+- [x] **CORE-05**: Fix name registration failure — registration doesn't go through and user gets locked out of changing name afterwards (C engine + Flutter, needs investigation)
 
 ### Unsafe C Patterns
 
@@ -97,7 +97,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CORE-02 | Phase 7 | Pending |
 | CORE-03 | Phase 7 | Pending |
 | CORE-04 | Phase 6 | Complete |
-| CORE-05 | Phase 6 | Pending |
+| CORE-05 | Phase 6 | Complete |
 | SAFE-01 | Phase 3 | Pending |
 
 **Coverage:**
