@@ -1007,33 +1007,21 @@ static int finalize_block(nodus_witness_t *w,
     return 0;
 }
 
-/* commit_block_inner — Phase 3 / Task 3.3: thin shim over the new
- * apply_tx + finalize pair. Kept temporarily so the existing single-TX
- * callers still build; Phase 6 commit wrappers replace these calls
- * with explicit apply_tx + finalize_block sequences. */
-static int commit_block_inner(nodus_witness_t *w,
-                                const uint8_t *tx_hash,
-                                uint8_t tx_type,
-                                const uint8_t *const *nullifiers,
-                                uint8_t nullifier_count,
-                                uint64_t total_supply,
-                                uint64_t proposal_timestamp,
-                                const uint8_t *proposer_id,
-                                const uint8_t *tx_data,
-                                uint32_t tx_len) {
-    (void)total_supply;  /* Always derived from tx_data inside apply_tx_to_state */
-    uint64_t bh = nodus_witness_block_height(w) + 1;
-
-    if (apply_tx_to_state(w, tx_hash, tx_type, nullifiers, nullifier_count,
-                           tx_data, tx_len, bh, NULL) != 0) {
-        return -1;
-    }
-
-    if (proposer_id) {
-        return finalize_block(w, tx_hash, 1, proposer_id, proposal_timestamp, bh);
-    }
-    return 0;
-}
+/* commit_block_inner — DELETED in Phase 3 / Task 3.3.
+ *
+ * The legacy 280-line function that did everything from per-TX state
+ * mutation through state_root and block_add is gone. Its responsibilities
+ * are now split between:
+ *
+ *   apply_tx_to_state  — per-TX state mutation
+ *   finalize_block     — per-block state_root + supply check + block_add
+ *
+ * All three former call sites (nodus_witness_commit_block single-TX
+ * path, the local mempool batch path, and the remote BFT batch path)
+ * now invoke the apply_tx + finalize_block pair directly. Phase 6
+ * commit wrappers (commit_genesis / commit_batch / replay_block)
+ * replace those inline pair calls with named wrappers — but the call
+ * structure stays the same. */
 
 int nodus_witness_commit_block(nodus_witness_t *w,
                           const uint8_t *tx_hash,
@@ -1086,11 +1074,30 @@ int nodus_witness_commit_block(nodus_witness_t *w,
         return -1;
     }
 
-    if (commit_block_inner(w, tx_hash, tx_type, nullifiers, nullifier_count,
-                             total_supply, proposal_timestamp, proposer_id,
-                             tx_data, tx_len) != 0) {
+    /* Phase 3 / Task 3.3: legacy single-TX path now drives the new
+     * apply_tx_to_state + finalize_block primitives directly. The
+     * total_supply parameter is unused (apply_tx derives it from
+     * tx_data); the BFT round timer / mempool commit paths use the
+     * same primitives via Phase 7 wrappers.
+     *
+     * Phase 6 wrappers (commit_genesis / commit_batch / replay_block)
+     * supersede this thin shim — but until Phase 6 lands, this path
+     * preserves the legacy single-TX behavior. */
+    (void)total_supply;
+    uint64_t bh = nodus_witness_block_height(w) + 1;
+
+    if (apply_tx_to_state(w, tx_hash, tx_type, nullifiers, nullifier_count,
+                           tx_data, tx_len, bh, NULL) != 0) {
         nodus_witness_db_rollback(w);
         return -1;
+    }
+
+    if (proposer_id) {
+        if (finalize_block(w, tx_hash, 1, proposer_id,
+                            proposal_timestamp, bh) != 0) {
+            nodus_witness_db_rollback(w);
+            return -1;
+        }
     }
 
     if (nodus_witness_db_commit(w) != 0) {
@@ -1808,6 +1815,12 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
         }
 
         if (!batch_failed) {
+            /* Phase 3 / Task 3.3: legacy semantics — each batch TX still
+             * lands in its own block (1 block per TX). Phase 6
+             * commit_batch wrapper switches to true multi-tx blocks
+             * (1 block per N TXs sharing one height). For now, drive
+             * apply_tx_to_state + finalize_block per TX inside the
+             * outer batch transaction. */
             for (int bi = 0; bi < w->round_state.batch_count; bi++) {
                 nodus_witness_mempool_entry_t *e =
                     w->round_state.batch_entries[bi];
@@ -1817,13 +1830,22 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
                 for (int j = 0; j < e->nullifier_count; j++)
                     nul_ptrs[j] = e->nullifiers[j];
 
-                if (commit_block_inner(w, e->tx_hash, e->tx_type,
-                                         nul_ptrs, e->nullifier_count,
-                                         0, /* total_supply: N/A for batch spends */
-                                         w->round_state.proposal_timestamp,
-                                         w->round_state.proposer_id,
-                                         e->tx_data, e->tx_len) != 0) {
-                    fprintf(stderr, "%s: batch TX %d inner commit failed!\n",
+                uint64_t bh = nodus_witness_block_height(w) + 1;
+
+                if (apply_tx_to_state(w, e->tx_hash, e->tx_type,
+                                       nul_ptrs, e->nullifier_count,
+                                       e->tx_data, e->tx_len,
+                                       bh, NULL) != 0) {
+                    fprintf(stderr, "%s: batch TX %d apply_tx failed!\n",
+                            LOG_TAG, bi);
+                    batch_failed = true;
+                    break;
+                }
+                if (finalize_block(w, e->tx_hash, 1,
+                                    w->round_state.proposer_id,
+                                    w->round_state.proposal_timestamp,
+                                    bh) != 0) {
+                    fprintf(stderr, "%s: batch TX %d finalize_block failed!\n",
                             LOG_TAG, bi);
                     batch_failed = true;
                     break;
@@ -2105,19 +2127,29 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
             return -1;
         }
 
+        /* Phase 3 / Task 3.3: legacy semantics (1 block per TX) — see
+         * commit_block_inner deletion comment in the local batch path. */
         for (int bi = 0; bi < cmt->batch_count; bi++) {
             const nodus_t3_batch_tx_t *btx = &cmt->batch_txs[bi];
             const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
             for (int j = 0; j < btx->nullifier_count; j++)
                 nul_ptrs[j] = btx->nullifiers[j];
 
-            if (commit_block_inner(w, btx->tx_hash, btx->tx_type,
-                               nul_ptrs, btx->nullifier_count,
-                               0, /* total_supply: N/A */
-                               cmt->proposal_timestamp,
-                               cmt->proposer_id,
-                               btx->tx_data, btx->tx_len) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "batch remote TX %d inner commit failed!", bi);
+            uint64_t bh = nodus_witness_block_height(w) + 1;
+
+            if (apply_tx_to_state(w, btx->tx_hash, btx->tx_type,
+                                   nul_ptrs, btx->nullifier_count,
+                                   btx->tx_data, btx->tx_len,
+                                   bh, NULL) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "batch remote TX %d apply_tx failed!", bi);
+                rmt_batch_failed = true;
+                break;
+            }
+            if (finalize_block(w, btx->tx_hash, 1,
+                                cmt->proposer_id,
+                                cmt->proposal_timestamp,
+                                bh) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "batch remote TX %d finalize_block failed!", bi);
                 rmt_batch_failed = true;
                 break;
             }
