@@ -48,7 +48,7 @@ static void print_dna_chain_help(void) {
     printf("  query <name|fp>               Lookup identity by name or fingerprint\n");
     printf("  balance                       Show wallet balance\n");
     printf("  utxos                         List unspent transaction outputs\n");
-    printf("  send <fp> <amount> [memo]     Send payment to fingerprint\n");
+    printf("  send <name|fp> <amount> [memo] Send payment to name or fingerprint\n");
     printf("  sync                          Sync wallet from network\n");
     printf("  history [n]                   Show transaction history (last n entries)\n");
     printf("  tx <hash>                     Show transaction details\n");
@@ -61,7 +61,7 @@ static void print_dna_chain_help(void) {
     printf("  token-list                          List all known tokens\n");
     printf("  token-info <id|symbol>              Show token details\n");
     printf("  balance --token <id>                Show balance for a specific token\n");
-    printf("  send --token <id> <fp> <amt> [memo] Send token payment\n");
+    printf("  send --token <id> <name|fp> <amt> [memo] Send token payment\n");
 }
 
 /* ============================================================================
