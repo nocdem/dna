@@ -527,6 +527,9 @@ register_witness_test(test_bft_start_round_from_entries)
 # Phase 7 / Task 7.2 — bft_start_round_from_mempool guard tests
 register_witness_test(test_bft_start_round_from_mempool)
 
+# Witness peer table dedup / slot leak regression tests
+register_witness_test(test_witness_peer_dedup)
+
 # Phase 7.5 / Task 7.5.1 — witness cert preimage layout tests
 add_executable(test_witness_cert_preimage tests/test_witness_cert_preimage.c)
 target_link_libraries(test_witness_cert_preimage nodus dsa nodus crypto)
