@@ -1103,10 +1103,17 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
     /* Save position for second pass (args decode) */
     size_t entries_start = dec.pos;
 
-    /* Pass 1: extract method, txn_id, header, wsig */
+    /* Pass 1: extract method, txn_id, header, wsig.
+     *
+     * Phase 9 / Task 9.3 — strict mode. The ONLY valid top-level keys
+     * in a T3 envelope are { t, q, wh, wsig, a }. Any other key is a
+     * protocol violation (or a pre-chain-wipe peer that should never
+     * exist after deploy). Reject defensively with -1 so attackers can
+     * not append shadow fields to a wsig-protected envelope hoping
+     * the receiver silently skips. */
     for (size_t i = 0; i < map_count; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        if (key.type != CBOR_ITEM_TSTR) return -1;
 
         if (KEY_IS(key, "t")) {
             cbor_item_t val = cbor_decode_next(&dec);
@@ -1127,15 +1134,24 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
             if (wh.type == CBOR_ITEM_MAP)
                 dec_wh(&dec, wh.count, &msg->header);
             else
-                cbor_decode_skip(&dec);
+                return -1;
         }
         else if (KEY_IS(key, "wsig")) {
             cbor_item_t val = cbor_decode_next(&dec);
             if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
                 msg->wsig = val.bstr.ptr;
         }
-        else {
+        else if (KEY_IS(key, "a")) {
+            /* args body — dispatched in pass 2; skip here */
             cbor_decode_skip(&dec);
+        }
+        else if (KEY_IS(key, "y")) {
+            /* message-type marker emitted by encoder; consume value */
+            cbor_decode_skip(&dec);
+        }
+        else {
+            /* Phase 9 / Task 9.3 — unknown top-level key = reject */
+            return -1;
         }
     }
 
