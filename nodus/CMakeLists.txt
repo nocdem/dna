@@ -425,6 +425,11 @@ add_executable(test_witness_cert_preimage tests/test_witness_cert_preimage.c)
 target_link_libraries(test_witness_cert_preimage nodus dsa nodus crypto)
 add_test(NAME test_witness_cert_preimage COMMAND test_witness_cert_preimage)
 
+# Phase 7.5 / Task 7.5.5 — sync cert sign/verify tamper tests
+add_executable(test_witness_cert_verify tests/test_witness_cert_verify.c)
+target_link_libraries(test_witness_cert_verify nodus dsa nodus crypto)
+add_test(NAME test_witness_cert_verify COMMAND test_witness_cert_verify)
+
 # BFT quorum formula tests (Phase 8)
 add_executable(test_bft_quorum_formula tests/test_bft_quorum_formula.c)
 target_link_libraries(test_bft_quorum_formula nodus dsa nodus)
