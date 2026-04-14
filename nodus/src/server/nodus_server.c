@@ -1433,7 +1433,7 @@ static void dht_media_republish(nodus_server_t *srv) {
 
         char hpfx[17];
         for (int x = 0; x < 8; x++)
-            sprintf(hpfx + x*2, "%02x", mrs->current_meta.content_hash[x]);
+            snprintf(hpfx + x*2, 3, "%02x", mrs->current_meta.content_hash[x]);
         hpfx[16] = '\0';
         fprintf(stderr,
                 "MEDIA-REPUB-ENTRY: hash=%s chunks=%u total_size=%llu complete=%d\n",
@@ -1457,7 +1457,7 @@ static void dht_media_republish(nodus_server_t *srv) {
         } else {
             char hpfx[17];
             for (int x = 0; x < 8; x++)
-                sprintf(hpfx + x*2, "%02x", mrs->current_meta.content_hash[x]);
+                snprintf(hpfx + x*2, 3, "%02x", mrs->current_meta.content_hash[x]);
             hpfx[16] = '\0';
             fprintf(stderr,
                     "MEDIA-REPUB-CHUNK-MISS: hash=%s chunk_idx=%u get_chunk_failed\n",
