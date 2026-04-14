@@ -8,6 +8,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../main.dart' show routeObserver;
 import '../../design_system/theme/dna_colors.dart';
 import '../../utils/qr_payload_parser.dart';
+import '../../utils/logger.dart' as dna_logger;
 import 'qr_auth_screen.dart';
 import 'qr_result_screen.dart';
 import '../../l10n/app_localizations.dart';
@@ -223,14 +224,17 @@ class _QrScannerScreenState extends ConsumerState<QrScannerScreen>
     // Other payloads go to QrResultScreen
     final rootNav = Navigator.of(context, rootNavigator: true);
     if (payload.type == QrPayloadType.auth) {
-      debugPrint('QR_SCANNER: auth payload, navigating directly to QrAuthScreen');
+      // SEC-07 D-08: flow trace, no payload material — ROUTE to DnaLogger.
+      dna_logger.log('QR_SCANNER', 'auth payload, navigating directly to QrAuthScreen');
       rootNav.push(
         MaterialPageRoute(
           builder: (context) => QrAuthScreen(payload: payload),
         ),
       );
     } else {
-      debugPrint('QR_SCANNER: ${payload.type} payload, navigating to QrResultScreen');
+      // SEC-07 D-08: payload.type is a public enum (contact/auth/plainText), no
+      // payload material — ROUTE to DnaLogger.
+      dna_logger.log('QR_SCANNER', '${payload.type} payload, navigating to QrResultScreen');
       rootNav.push(
         MaterialPageRoute(
           builder: (context) => QrResultScreen(payload: payload),

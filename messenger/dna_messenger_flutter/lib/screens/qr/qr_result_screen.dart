@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../providers/providers.dart';
 import '../../design_system/theme/dna_colors.dart';
 import '../../utils/qr_payload_parser.dart';
+import '../../utils/logger.dart' as dna_logger;
 import 'qr_auth_screen.dart';
 import '../../l10n/app_localizations.dart';
 
@@ -327,15 +328,22 @@ class _AuthResultState extends State<_AuthResult> {
   void didChangeDependencies() {
     super.didChangeDependencies();
 
-    // TEMP DEBUG: Track when this is called
-    debugPrint('_AuthResult didChangeDependencies: _navigated=$_navigated, valid=${_isValidAuthPayload()}');
+    // SEC-07 D-08: booleans only, no payload material — ROUTE to DnaLogger.
+    dna_logger.log(
+      'QR_RESULT',
+      '_AuthResult didChangeDependencies: _navigated=$_navigated, valid=${_isValidAuthPayload()}',
+    );
 
     // Navigate only once and only if payload is valid
     // NOTE: Scanner now navigates directly to QrAuthScreen for auth payloads,
     // so this code path should not be reached. Keeping as fallback.
     if (!_navigated && _isValidAuthPayload()) {
       _navigated = true;
-      debugPrint('_AuthResult: PUSHING QrAuthScreen (this should not happen anymore)');
+      // SEC-07 D-08: static diagnostic message, no payload material — ROUTE.
+      dna_logger.log(
+        'QR_RESULT',
+        '_AuthResult: PUSHING QrAuthScreen (this should not happen anymore)',
+      );
       // Use push (NOT pushReplacement) so there's a route to pop back to
       Navigator.of(context, rootNavigator: true).push(
         MaterialPageRoute(
@@ -343,7 +351,11 @@ class _AuthResultState extends State<_AuthResult> {
         ),
       );
     } else if (_navigated) {
-      debugPrint('_AuthResult: didChangeDependencies called but _navigated=true, NOT re-pushing');
+      // SEC-07 D-08: static diagnostic message, no payload material — ROUTE.
+      dna_logger.log(
+        'QR_RESULT',
+        '_AuthResult: didChangeDependencies called but _navigated=true, NOT re-pushing',
+      );
     }
   }
 
