@@ -697,31 +697,53 @@ int dht_retrieve_queued_messages_from_contacts_parallel(
 
 /**
  * Generate base key for ACK storage
- * Key format: recipient + ":ack:" + sender
+ * Key format: recipient + ":ack:" + sender + ":" + SALT_HEX
+ *
+ * CORE-04 (phase 6, plan 05): salt is REQUIRED. The legacy unsalted fallback
+ * was removed to prevent deterministic ACK keys from leaking sender/recipient
+ * communication metadata. Returns -1 if salt is NULL.
  */
-static void make_ack_base_key(const char *recipient, const char *sender,
-                               const uint8_t *salt,
-                               char *key_out, size_t key_out_size) {
-    if (salt) {
-        char salt_hex[65];
-        for (int i = 0; i < 32; i++) {
-            snprintf(salt_hex + (i * 2), 3, "%02x", salt[i]);
-        }
-        salt_hex[64] = '\0';
-        snprintf(key_out, key_out_size, "%s:ack:%s:%s", recipient, sender, salt_hex);
-    } else {
-        snprintf(key_out, key_out_size, "%s:ack:%s", recipient, sender);
+static int make_ack_base_key(const char *recipient, const char *sender,
+                              const uint8_t *salt,
+                              char *key_out, size_t key_out_size) {
+    if (!recipient || !sender || !key_out || key_out_size == 0) {
+        return -1;
     }
+    if (!salt) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "make_ack_base_key: salt is required (NULL passed) "
+            "- refusing to produce unsalted ACK key");
+        return -1;
+    }
+    char salt_hex[65];
+    for (int i = 0; i < 32; i++) {
+        snprintf(salt_hex + (i * 2), 3, "%02x", salt[i]);
+    }
+    salt_hex[64] = '\0';
+    int written = snprintf(key_out, key_out_size, "%s:ack:%s:%s",
+                           recipient, sender, salt_hex);
+    if (written < 0 || (size_t)written >= key_out_size) {
+        return -1;
+    }
+    return 0;
 }
 
 /**
- * Generate DHT key for ACK storage (SHA3-512 hash of base key)
+ * Generate DHT key for ACK storage (SHA3-512 hash of base key).
+ *
+ * CORE-04: returns -1 if salt is NULL (no unsalted fallback).
  */
-void dht_generate_ack_key(const char *recipient, const char *sender,
-                           const uint8_t *salt, uint8_t *key_out) {
+int dht_generate_ack_key(const char *recipient, const char *sender,
+                          const uint8_t *salt, uint8_t *key_out) {
+    if (!key_out) {
+        return -1;
+    }
     char base_key[512];
-    make_ack_base_key(recipient, sender, salt, base_key, sizeof(base_key));
+    if (make_ack_base_key(recipient, sender, salt, base_key, sizeof(base_key)) != 0) {
+        return -1;
+    }
     qgp_sha3_512((const uint8_t*)base_key, strlen(base_key), key_out);
+    return 0;
 }
 
 /**
@@ -742,9 +764,14 @@ int dht_publish_ack(const char *my_fp,
         return -1;
     }
 
-    // Generate ACK key
+    // Generate ACK key (CORE-04: salt is required, returns -1 if NULL)
     uint8_t key[64];
-    dht_generate_ack_key(my_fp, sender_fp, salt, key);
+    if (dht_generate_ack_key(my_fp, sender_fp, salt, key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "[ACK-PUT] Refusing to publish ACK without per-contact salt "
+            "(%.20s... -> %.20s...)", my_fp, sender_fp);
+        return -1;
+    }
 
     // Get current timestamp
     uint64_t timestamp = (uint64_t)time(NULL);
@@ -901,9 +928,16 @@ size_t dht_listen_ack(
     actx->user_cb = callback;
     actx->user_data = user_data;
 
-    // Generate ACK key: SHA3-512(recipient + ":ack:" + sender)
+    // Generate ACK key: SHA3-512(recipient + ":ack:" + sender + ":" + SALT_HEX)
+    // CORE-04: salt is required — refuse to start an unsalted listener.
     uint8_t key[64];
-    dht_generate_ack_key(recipient_fp, my_fp, salt, key);
+    if (dht_generate_ack_key(recipient_fp, my_fp, salt, key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "[ACK] Refusing to start listener without per-contact salt "
+            "(%.20s... -> %.20s...)", recipient_fp, my_fp);
+        free(actx);
+        return 0;
+    }
 
     QGP_LOG_INFO(LOG_TAG, "[ACK] Starting listener: %.20s... -> %.20s...\n",
            recipient_fp, my_fp);

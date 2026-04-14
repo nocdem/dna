@@ -257,14 +257,18 @@ void dht_generate_outbox_key(
 /**
  * Generate DHT key for ACK storage
  *
- * Key format: SHA3-512(recipient + ":ack:" + sender)
+ * Key format: SHA3-512(recipient + ":ack:" + sender + ":" + SALT_HEX)
+ *
+ * CORE-04 (phase 6, plan 05): salt is REQUIRED. Returns -1 if salt is NULL
+ * or on any internal failure. Callers MUST check the return value.
  *
  * @param recipient Recipient fingerprint (ACK owner)
  * @param sender Sender fingerprint (whose messages were fetched)
- * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy)
+ * @param salt 32-byte per-contact DHT salt (REQUIRED, NULL is rejected)
  * @param key_out Output buffer (64 bytes for SHA3-512)
+ * @return 0 on success, -1 on error (NULL salt, NULL args, formatting error)
  */
-void dht_generate_ack_key(
+int dht_generate_ack_key(
     const char *recipient,
     const char *sender,
     const uint8_t *salt,

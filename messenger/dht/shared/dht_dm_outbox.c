@@ -233,31 +233,33 @@ int dht_dm_outbox_make_key(
         return -1;
     }
 
+    /* CORE-04: salt is required. The legacy unsalted fallback branch was
+     * removed in phase 6 plan 05. A NULL salt now returns -1 so that any
+     * caller that forgets to thread the per-contact salt through fails
+     * loudly instead of publishing a deterministic, metadata-leaking key. */
+    if (!salt) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "dht_dm_outbox_make_key: salt is required (NULL passed) "
+            "- refusing to produce unsalted key");
+        return -1;
+    }
+
     /* Use current day if day_bucket is 0 */
     if (day_bucket == 0) {
         day_bucket = dht_dm_outbox_get_day_bucket();
     }
 
-    if (salt) {
-        /* Salted key format: sender_fp:outbox:recipient_fp:day_bucket:SALT_HEX */
-        char salt_hex[65];
-        for (int i = 0; i < 32; i++) {
-            snprintf(salt_hex + (i * 2), 3, "%02x", salt[i]);
-        }
-        salt_hex[64] = '\0';
+    /* Salted key format: sender_fp:outbox:recipient_fp:day_bucket:SALT_HEX */
+    char salt_hex[65];
+    for (int i = 0; i < 32; i++) {
+        snprintf(salt_hex + (i * 2), 3, "%02x", salt[i]);
+    }
+    salt_hex[64] = '\0';
 
-        int written = snprintf(key_out, key_out_size, "%s:outbox:%s:%lu:%s",
-                               sender_fp, recipient_fp, (unsigned long)day_bucket, salt_hex);
-        if (written < 0 || (size_t)written >= key_out_size) {
-            return -1;
-        }
-    } else {
-        /* Legacy unsalted key format: sender_fp:outbox:recipient_fp:day_bucket */
-        int written = snprintf(key_out, key_out_size, "%s:outbox:%s:%lu",
-                               sender_fp, recipient_fp, (unsigned long)day_bucket);
-        if (written < 0 || (size_t)written >= key_out_size) {
-            return -1;
-        }
+    int written = snprintf(key_out, key_out_size, "%s:outbox:%s:%lu:%s",
+                           sender_fp, recipient_fp, (unsigned long)day_bucket, salt_hex);
+    if (written < 0 || (size_t)written >= key_out_size) {
+        return -1;
     }
 
     return 0;
