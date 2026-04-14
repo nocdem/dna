@@ -1,9 +1,15 @@
 /**
- * @file commands.c
- * @brief DNAC CLI command implementations
+ * @file cli_dna_chain_impl.c
+ * @brief Implementations for the `dna-connect-cli dna ...` subcommand group.
+ *
+ * Originally lived at dnac/src/cli/commands.c, moved into messenger/cli/
+ * so the messenger build no longer reaches across project boundaries to
+ * pick up source from the dnac tree. Functions are still named
+ * dna_chain_cmd_* for now; the dispatcher in cli_dna_chain.c calls them
+ * directly.
  */
 
-#include "dnac/cli.h"
+#include "cli_dna_chain_helpers.h"
 #include "dnac/dnac.h"
 #include "dnac/wallet.h"
 #include "dnac/transaction.h"
@@ -98,7 +104,7 @@ static int hex_to_bytes(const char *hex, uint8_t *out, size_t out_len) {
  * Command Implementations
  * ========================================================================== */
 
-int dnac_cli_balance(dnac_context_t *ctx) {
+int dna_chain_cmd_balance(dnac_context_t *ctx) {
     dnac_balance_t balance;
     int rc = dnac_get_balance(ctx, &balance);
 
@@ -140,7 +146,7 @@ int dnac_cli_balance(dnac_context_t *ctx) {
     return 0;
 }
 
-int dnac_cli_balance_of(dnac_context_t *ctx, const char *fingerprint) {
+int dna_chain_cmd_balance_of(dnac_context_t *ctx, const char *fingerprint) {
     (void)ctx;  /* only need nodus singleton */
     if (!fingerprint || strlen(fingerprint) != 128) {
         fprintf(stderr, "Error: fingerprint must be exactly 128 hex chars\n");
@@ -191,7 +197,7 @@ int dnac_cli_balance_of(dnac_context_t *ctx, const char *fingerprint) {
     return 0;
 }
 
-int dnac_cli_utxos(dnac_context_t *ctx) {
+int dna_chain_cmd_utxos(dnac_context_t *ctx) {
     dnac_utxo_t *utxos = NULL;
     int count = 0;
 
@@ -322,7 +328,7 @@ static int resolve_recipient(dnac_context_t *ctx, const char *recipient,
     return 0;
 }
 
-int dnac_cli_send(dnac_context_t *ctx, const char *recipient,
+int dna_chain_cmd_send(dnac_context_t *ctx, const char *recipient,
                   uint64_t amount, const char *memo) {
     char resolved_fp[129];
     if (resolve_recipient(ctx, recipient, resolved_fp) != 0) {
@@ -362,7 +368,7 @@ int dnac_cli_send(dnac_context_t *ctx, const char *recipient,
     return 0;
 }
 
-int dnac_cli_sync(dnac_context_t *ctx) {
+int dna_chain_cmd_sync(dnac_context_t *ctx) {
     printf("Syncing wallet from DHT...\n");
 
     int rc = dnac_sync_wallet(ctx);
@@ -375,7 +381,7 @@ int dnac_cli_sync(dnac_context_t *ctx) {
     return 0;
 }
 
-int dnac_cli_history(dnac_context_t *ctx, int limit) {
+int dna_chain_cmd_history(dnac_context_t *ctx, int limit) {
     dnac_tx_history_t *history = NULL;
     int count = 0;
 
@@ -443,7 +449,7 @@ int dnac_cli_history(dnac_context_t *ctx, int limit) {
     return 0;
 }
 
-int dnac_cli_tx_details(dnac_context_t *ctx, const char *tx_hash_hex) {
+int dna_chain_cmd_tx_details(dnac_context_t *ctx, const char *tx_hash_hex) {
     /* Validate and convert hex hash */
     if (strlen(tx_hash_hex) != DNAC_TX_HASH_SIZE * 2) {
         fprintf(stderr, "Error: Invalid transaction hash (expected %d hex chars)\n",
@@ -520,7 +526,7 @@ int dnac_cli_tx_details(dnac_context_t *ctx, const char *tx_hash_hex) {
     return 0;
 }
 
-int dnac_cli_nodus_list(dnac_context_t *ctx) {
+int dna_chain_cmd_nodus_list(dnac_context_t *ctx) {
     dnac_witness_info_t *servers = NULL;
     int count = 0;
 
@@ -558,7 +564,7 @@ int dnac_cli_nodus_list(dnac_context_t *ctx) {
 }
 
 
-int dnac_cli_info(dnac_context_t *ctx) {
+int dna_chain_cmd_info(dnac_context_t *ctx) {
     dna_engine_t *engine = dnac_get_engine(ctx);
     if (!engine) {
         fprintf(stderr, "Error: Engine not initialized\n");
@@ -593,7 +599,7 @@ int dnac_cli_info(dnac_context_t *ctx) {
     return 0;
 }
 
-int dnac_cli_address(dnac_context_t *ctx) {
+int dna_chain_cmd_address(dnac_context_t *ctx) {
     dna_engine_t *engine = dnac_get_engine(ctx);
     if (!engine) {
         fprintf(stderr, "Error: Engine not initialized\n");
@@ -611,7 +617,7 @@ int dnac_cli_address(dnac_context_t *ctx) {
 }
 
 
-int dnac_cli_query(dnac_context_t *ctx, const char *query) {
+int dna_chain_cmd_query(dnac_context_t *ctx, const char *query) {
     dna_engine_t *engine = dnac_get_engine(ctx);
     if (!engine) {
         fprintf(stderr, "Error: Engine not initialized\n");
@@ -847,7 +853,7 @@ fail:
  * Genesis CLI Commands
  * ========================================================================== */
 
-int dnac_cli_genesis_create(dnac_context_t *ctx, const char *fingerprint,
+int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
                             uint64_t amount) {
     /* Build recipient */
     dnac_genesis_recipient_t recipients[1];
@@ -916,7 +922,7 @@ int dnac_cli_genesis_create(dnac_context_t *ctx, const char *fingerprint,
     return 0;
 }
 
-int dnac_cli_genesis_submit(dnac_context_t *ctx, const char *tx_file) {
+int dna_chain_cmd_genesis_submit(dnac_context_t *ctx, const char *tx_file) {
     /* Determine file path */
     char filepath[512];
     if (tx_file) {
@@ -1022,7 +1028,7 @@ int dnac_cli_genesis_submit(dnac_context_t *ctx, const char *tx_file) {
  * Token CLI Commands
  * ========================================================================== */
 
-int dnac_cli_token_create(dnac_context_t *ctx, const char *name,
+int dna_chain_cmd_token_create(dnac_context_t *ctx, const char *name,
                           const char *symbol, uint64_t supply) {
     printf("Creating token '%s' (%s) with supply %" PRIu64 "...\n",
            name, symbol, supply);
@@ -1038,7 +1044,7 @@ int dnac_cli_token_create(dnac_context_t *ctx, const char *name,
     return 0;
 }
 
-int dnac_cli_token_list(dnac_context_t *ctx) {
+int dna_chain_cmd_token_list(dnac_context_t *ctx) {
     dnac_token_t tokens[64];
     int count = 0;
 
@@ -1072,7 +1078,7 @@ int dnac_cli_token_list(dnac_context_t *ctx) {
     return 0;
 }
 
-int dnac_cli_token_info(dnac_context_t *ctx, const char *id_or_symbol) {
+int dna_chain_cmd_token_info(dnac_context_t *ctx, const char *id_or_symbol) {
     size_t len = strlen(id_or_symbol);
 
     /* If it looks like a hex token_id (128 hex chars = 64 bytes) */
@@ -1132,7 +1138,7 @@ int dnac_cli_token_info(dnac_context_t *ctx, const char *id_or_symbol) {
             char id_hex[DNAC_TOKEN_ID_SIZE * 2 + 1];
             for (int j = 0; j < DNAC_TOKEN_ID_SIZE; j++)
                 snprintf(id_hex + j * 2, 3, "%02x", tokens[i].token_id[j]);
-            return dnac_cli_token_info(ctx, id_hex);
+            return dna_chain_cmd_token_info(ctx, id_hex);
         }
     }
 
@@ -1140,7 +1146,7 @@ int dnac_cli_token_info(dnac_context_t *ctx, const char *id_or_symbol) {
     return 1;
 }
 
-int dnac_cli_balance_token(dnac_context_t *ctx, const char *token_id_hex) {
+int dna_chain_cmd_balance_token(dnac_context_t *ctx, const char *token_id_hex) {
     if (strlen(token_id_hex) != DNAC_TOKEN_ID_SIZE * 2) {
         fprintf(stderr, "Error: Token ID must be %d hex chars\n",
                 DNAC_TOKEN_ID_SIZE * 2);
@@ -1175,7 +1181,7 @@ int dnac_cli_balance_token(dnac_context_t *ctx, const char *token_id_hex) {
     return 0;
 }
 
-int dnac_cli_send_token(dnac_context_t *ctx, const char *recipient,
+int dna_chain_cmd_send_token(dnac_context_t *ctx, const char *recipient,
                         uint64_t amount, const char *token_id_hex,
                         const char *memo) {
     char resolved_fp[129];
@@ -1262,7 +1268,7 @@ int dnac_cli_send_token(dnac_context_t *ctx, const char *recipient,
     return 0;
 }
 
-void dnac_cli_print_help(void) {
+void dna_chain_cmd_print_help(void) {
     printf("dnac-cli - DNAC Wallet Command Line Interface\n\n");
     printf("Usage: dnac-cli [options] <command> [arguments]\n\n");
     printf("Options:\n");
@@ -1295,7 +1301,7 @@ void dnac_cli_print_help(void) {
     printf("  dnac-cli history 10\n");
 }
 
-void dnac_cli_print_version(void) {
+void dna_chain_cmd_print_version(void) {
     printf("dnac-cli version %s\n", DNAC_VERSION_STRING);
     printf("DNAC - Post-Quantum Digital Cash over DHT\n");
     printf("Protocol version: v%d\n", DNAC_PROTOCOL_VERSION);

@@ -10,11 +10,13 @@ set(CLI_SOURCES
     cli_dna_chain.c
 )
 
-# DNA Chain: compile DNAC CLI commands directly (they are not part of libdnac)
+# DNA Chain: handler implementations live alongside the dispatcher so the
+# messenger build no longer reaches into the dnac source tree. libdnac.a
+# is still linked below for the underlying wallet/transaction primitives.
 set(DNAC_DIR "${CMAKE_SOURCE_DIR}/../dnac")
 set(DNAC_BUILD_DIR "${DNAC_DIR}/build")
 if(EXISTS "${DNAC_BUILD_DIR}/libdnac.a")
-    list(APPEND CLI_SOURCES ${DNAC_DIR}/src/cli/commands.c)
+    list(APPEND CLI_SOURCES cli_dna_chain_impl.c)
 endif()
 
 add_executable(dna-connect-cli ${CLI_SOURCES})

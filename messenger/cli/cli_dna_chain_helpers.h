@@ -1,15 +1,18 @@
 /**
- * @file cli.h
- * @brief DNAC CLI declarations
+ * @file cli_dna_chain_helpers.h
+ * @brief Declarations for the dna-connect-cli `dna` subcommand handlers.
+ *
+ * Originally dnac/include/dnac/cli.h. Moved into messenger/cli/ together
+ * with cli_dna_chain_impl.c so the messenger build owns its CLI surface.
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
  */
 
-#ifndef DNAC_CLI_H
-#define DNAC_CLI_H
+#ifndef CLI_DNA_CHAIN_HELPERS_H
+#define CLI_DNA_CHAIN_HELPERS_H
 
-#include "dnac.h"
+#include "dnac/dnac.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,19 +27,19 @@ extern "C" {
  * @param ctx DNAC context
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_balance(dnac_context_t *ctx);
+int dna_chain_cmd_balance(dnac_context_t *ctx);
 
 /**
  * @brief Query balance of any fingerprint via witness UTXO query
  */
-int dnac_cli_balance_of(dnac_context_t *ctx, const char *fingerprint);
+int dna_chain_cmd_balance_of(dnac_context_t *ctx, const char *fingerprint);
 
 /**
  * @brief List UTXOs
  * @param ctx DNAC context
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_utxos(dnac_context_t *ctx);
+int dna_chain_cmd_utxos(dnac_context_t *ctx);
 
 /**
  * @brief Send payment
@@ -46,7 +49,7 @@ int dnac_cli_utxos(dnac_context_t *ctx);
  * @param memo Optional memo (can be NULL)
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_send(dnac_context_t *ctx, const char *recipient,
+int dna_chain_cmd_send(dnac_context_t *ctx, const char *recipient,
                   uint64_t amount, const char *memo);
 
 /**
@@ -54,7 +57,7 @@ int dnac_cli_send(dnac_context_t *ctx, const char *recipient,
  * @param ctx DNAC context
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_sync(dnac_context_t *ctx);
+int dna_chain_cmd_sync(dnac_context_t *ctx);
 
 /**
  * @brief Show transaction history
@@ -62,7 +65,7 @@ int dnac_cli_sync(dnac_context_t *ctx);
  * @param limit Maximum entries to show (0 = all)
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_history(dnac_context_t *ctx, int limit);
+int dna_chain_cmd_history(dnac_context_t *ctx, int limit);
 
 /**
  * @brief Show transaction details
@@ -70,28 +73,28 @@ int dnac_cli_history(dnac_context_t *ctx, int limit);
  * @param tx_hash_hex Transaction hash in hex
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_tx_details(dnac_context_t *ctx, const char *tx_hash_hex);
+int dna_chain_cmd_tx_details(dnac_context_t *ctx, const char *tx_hash_hex);
 
 /**
  * @brief List Nodus servers
  * @param ctx DNAC context
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_nodus_list(dnac_context_t *ctx);
+int dna_chain_cmd_nodus_list(dnac_context_t *ctx);
 
 /**
  * @brief Show wallet info and status
  * @param ctx DNAC context
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_info(dnac_context_t *ctx);
+int dna_chain_cmd_info(dnac_context_t *ctx);
 
 /**
  * @brief Show wallet address (fingerprint only)
  * @param ctx DNAC context
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_address(dnac_context_t *ctx);
+int dna_chain_cmd_address(dnac_context_t *ctx);
 
 /**
  * @brief Lookup identity by name or fingerprint
@@ -99,7 +102,7 @@ int dnac_cli_address(dnac_context_t *ctx);
  * @param query Name or fingerprint to lookup
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_query(dnac_context_t *ctx, const char *query);
+int dna_chain_cmd_query(dnac_context_t *ctx, const char *query);
 
 /**
  * @brief Create genesis TX locally (Phase 1 — no network)
@@ -111,7 +114,7 @@ int dnac_cli_query(dnac_context_t *ctx, const char *query);
  * @param amount Amount to allocate
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_genesis_create(dnac_context_t *ctx, const char *fingerprint,
+int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
                             uint64_t amount);
 
 /**
@@ -123,7 +126,7 @@ int dnac_cli_genesis_create(dnac_context_t *ctx, const char *fingerprint,
  * @param tx_file Path to genesis TX file (NULL for default ~/.dna/genesis_tx.bin)
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_genesis_submit(dnac_context_t *ctx, const char *tx_file);
+int dna_chain_cmd_genesis_submit(dnac_context_t *ctx, const char *tx_file);
 
 /**
  * @brief Create a new token
@@ -133,7 +136,7 @@ int dnac_cli_genesis_submit(dnac_context_t *ctx, const char *tx_file);
  * @param supply Total supply in smallest units
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_token_create(dnac_context_t *ctx, const char *name,
+int dna_chain_cmd_token_create(dnac_context_t *ctx, const char *name,
                           const char *symbol, uint64_t supply);
 
 /**
@@ -141,7 +144,7 @@ int dnac_cli_token_create(dnac_context_t *ctx, const char *name,
  * @param ctx DNAC context
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_token_list(dnac_context_t *ctx);
+int dna_chain_cmd_token_list(dnac_context_t *ctx);
 
 /**
  * @brief Show token info by ID (hex) or symbol
@@ -149,7 +152,7 @@ int dnac_cli_token_list(dnac_context_t *ctx);
  * @param id_or_symbol Token ID hex string or symbol to look up
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_token_info(dnac_context_t *ctx, const char *id_or_symbol);
+int dna_chain_cmd_token_info(dnac_context_t *ctx, const char *id_or_symbol);
 
 /**
  * @brief Show balance for a specific token
@@ -157,7 +160,7 @@ int dnac_cli_token_info(dnac_context_t *ctx, const char *id_or_symbol);
  * @param token_id_hex Token ID as hex string
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_balance_token(dnac_context_t *ctx, const char *token_id_hex);
+int dna_chain_cmd_balance_token(dnac_context_t *ctx, const char *token_id_hex);
 
 /**
  * @brief Send token payment
@@ -168,22 +171,22 @@ int dnac_cli_balance_token(dnac_context_t *ctx, const char *token_id_hex);
  * @param memo Optional memo (can be NULL)
  * @return 0 on success, non-zero on failure
  */
-int dnac_cli_send_token(dnac_context_t *ctx, const char *recipient,
+int dna_chain_cmd_send_token(dnac_context_t *ctx, const char *recipient,
                         uint64_t amount, const char *token_id_hex,
                         const char *memo);
 
 /**
  * @brief Print CLI help
  */
-void dnac_cli_print_help(void);
+void dna_chain_cmd_print_help(void);
 
 /**
  * @brief Print CLI version
  */
-void dnac_cli_print_version(void);
+void dna_chain_cmd_print_version(void);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* DNAC_CLI_H */
+#endif /* CLI_DNA_CHAIN_HELPERS_H */
