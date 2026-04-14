@@ -60,6 +60,45 @@ int nodus_t2_ping(uint32_t txn, const uint8_t *token,
 int nodus_t2_servers(uint32_t txn, const uint8_t *token,
                       uint8_t *buf, size_t cap, size_t *out_len);
 
+/* Cluster-status query — Phase 0 / Task 0.2.
+ *
+ * Read-only ops query: server reports its own block_height, state_root,
+ * chain_id, peer_count, uptime_sec, and wall_clock. Used by
+ * `nodus-cli cluster-status` to render a side-by-side per-node table
+ * during pre-deploy rehearsals and post-deploy checkins. The query
+ * carries no arguments beyond the auth token.
+ */
+int nodus_t2_status(uint32_t txn, const uint8_t *token,
+                     uint8_t *buf, size_t cap, size_t *out_len);
+
+/* Cluster-status response. State fields are read straight from the
+ * witness DB plus a few server-process metrics; all currently public.
+ *
+ * Field semantics (server-side):
+ *   block_height — latest committed block in the active witness chain;
+ *                  0 if no witness DB is open yet.
+ *   state_root   — 64-byte SHA3-512 over the current UTXO set, or
+ *                  zeros if no witness DB is open.
+ *   chain_id     — 32-byte first-block hash that names the active chain;
+ *                  zeros if no chain is open.
+ *   peer_count   — number of inter-node TCP peers currently connected.
+ *   uptime_sec   — seconds since this nodus-server process started.
+ *   wall_clock   — server's local wall clock at response time (unix sec)
+ *                  for clock skew detection (Task 10.4 telafi).
+ */
+typedef struct {
+    uint64_t block_height;
+    uint8_t  state_root[64];
+    uint8_t  chain_id[32];
+    uint32_t peer_count;
+    uint64_t uptime_sec;
+    uint64_t wall_clock;
+} nodus_t2_status_info_t;
+
+int nodus_t2_status_result(uint32_t txn,
+                            const nodus_t2_status_info_t *info,
+                            uint8_t *buf, size_t cap, size_t *out_len);
+
 /* Circuit (VPN mesh) — Faz 1 + E2E encryption */
 int nodus_t2_circ_open(uint32_t txn, const uint8_t *token,
                         uint64_t cid, const nodus_key_t *peer_fp,
@@ -499,6 +538,10 @@ typedef struct {
         bool        has_dil_fp;
     } servers[17];  /* NODUS_CLUSTER_MAX_PEERS(16) + 1 for self */
     int             server_count;
+
+    /* Cluster-status response (Phase 0 / Task 0.2) */
+    nodus_t2_status_info_t status_info;
+    bool                   has_status_info;
 
     /* Presence query/sync */
     nodus_key_t    *pq_fps;         /* FP array (heap) */

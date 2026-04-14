@@ -200,6 +200,17 @@ int nodus_t2_servers(uint32_t txn, const uint8_t *token,
     return finish(&enc, out_len);
 }
 
+/* Cluster-status query (Phase 0 / Task 0.2) — args-less query, server
+ * reports its own state in the response. */
+int nodus_t2_status(uint32_t txn, const uint8_t *token,
+                     uint8_t *buf, size_t cap, size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_query_header(&enc, 4, txn, "status");
+    enc_token(&enc, token);
+    return finish(&enc, out_len);
+}
+
 int nodus_t2_circ_open(uint32_t txn, const uint8_t *token,
                         uint64_t cid, const nodus_key_t *peer_fp,
                         uint8_t *buf, size_t cap, size_t *out_len) {
@@ -1135,6 +1146,26 @@ int nodus_t2_ch_post_notify(uint32_t txn,
     cbor_encode_bstr(&enc, (const uint8_t *)post->body, post->body_len);
     cbor_encode_cstr(&enc, "sig");
     cbor_encode_bstr(&enc, post->signature.bytes, NODUS_SIG_BYTES);
+    return finish(&enc, out_len);
+}
+
+/* ── Cluster-status response (Phase 0 / Task 0.2) ─────────────────── */
+
+int nodus_t2_status_result(uint32_t txn,
+                            const nodus_t2_status_info_t *info,
+                            uint8_t *buf, size_t cap, size_t *out_len) {
+    if (!info) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, cap);
+    enc_response_header(&enc, 4, txn, "status");
+    cbor_encode_cstr(&enc, "r");
+    cbor_encode_map(&enc, 6);
+    cbor_encode_cstr(&enc, "bh");   cbor_encode_uint(&enc, info->block_height);
+    cbor_encode_cstr(&enc, "sr");   cbor_encode_bstr(&enc, info->state_root, 64);
+    cbor_encode_cstr(&enc, "chid"); cbor_encode_bstr(&enc, info->chain_id, 32);
+    cbor_encode_cstr(&enc, "pc");   cbor_encode_uint(&enc, info->peer_count);
+    cbor_encode_cstr(&enc, "us");   cbor_encode_uint(&enc, info->uptime_sec);
+    cbor_encode_cstr(&enc, "wc");   cbor_encode_uint(&enc, info->wall_clock);
     return finish(&enc, out_len);
 }
 
@@ -2483,6 +2514,49 @@ int nodus_t2_decode(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg) {
                             }
                             msg->server_count++;
                         }
+                    }
+                }
+                /* Cluster-status response fields (Phase 0 / Task 0.2) */
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "bh", 2) == 0) {
+                    cbor_item_t v = cbor_decode_next(&dec);
+                    if (v.type == CBOR_ITEM_UINT) {
+                        msg->status_info.block_height = v.uint_val;
+                        msg->has_status_info = true;
+                    }
+                }
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "sr", 2) == 0) {
+                    cbor_item_t v = cbor_decode_next(&dec);
+                    if (v.type == CBOR_ITEM_BSTR && v.bstr.len == 64) {
+                        memcpy(msg->status_info.state_root, v.bstr.ptr, 64);
+                        msg->has_status_info = true;
+                    }
+                }
+                else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "chid", 4) == 0) {
+                    cbor_item_t v = cbor_decode_next(&dec);
+                    if (v.type == CBOR_ITEM_BSTR && v.bstr.len == 32) {
+                        memcpy(msg->status_info.chain_id, v.bstr.ptr, 32);
+                        msg->has_status_info = true;
+                    }
+                }
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "pc", 2) == 0) {
+                    cbor_item_t v = cbor_decode_next(&dec);
+                    if (v.type == CBOR_ITEM_UINT) {
+                        msg->status_info.peer_count = (uint32_t)v.uint_val;
+                        msg->has_status_info = true;
+                    }
+                }
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "us", 2) == 0) {
+                    cbor_item_t v = cbor_decode_next(&dec);
+                    if (v.type == CBOR_ITEM_UINT) {
+                        msg->status_info.uptime_sec = v.uint_val;
+                        msg->has_status_info = true;
+                    }
+                }
+                else if (rkey.tstr.len == 2 && memcmp(rkey.tstr.ptr, "wc", 2) == 0) {
+                    cbor_item_t v = cbor_decode_next(&dec);
+                    if (v.type == CBOR_ITEM_UINT) {
+                        msg->status_info.wall_clock = v.uint_val;
+                        msg->has_status_info = true;
                     }
                 }
                 /* rv (node_auth_ok: ring version) */
