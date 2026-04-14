@@ -449,6 +449,11 @@ add_executable(test_strict_decoder tests/test_strict_decoder.c)
 target_link_libraries(test_strict_decoder nodus dsa nodus crypto)
 add_test(NAME test_strict_decoder COMMAND test_strict_decoder)
 
+# Phase 12 follow-up — spend_result sign/verify roundtrip
+add_executable(test_spend_signed_roundtrip tests/test_spend_signed_roundtrip.c)
+target_link_libraries(test_spend_signed_roundtrip nodus dsa nodus crypto)
+add_test(NAME test_spend_signed_roundtrip COMMAND test_spend_signed_roundtrip)
+
 # BFT quorum formula tests (Phase 8)
 add_executable(test_bft_quorum_formula tests/test_bft_quorum_formula.c)
 target_link_libraries(test_bft_quorum_formula nodus dsa nodus)

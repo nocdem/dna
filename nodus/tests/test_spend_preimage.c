@@ -169,3 +169,5 @@ int main(void) {
     printf("\nPassed: %d\nFailed: %d\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }
+
+/* end-of-file marker — appended Phase 12 follow-up */
