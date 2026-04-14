@@ -405,6 +405,11 @@ register_witness_test(test_apply_finalize)
 # Intra-batch chained UTXO defense tests (Phase 4 / Task 4.5)
 register_witness_test(test_chained_utxo)
 
+# compute_block_hash helper tests (Phase 5 / Task 5.4)
+add_executable(test_compute_block_hash tests/test_compute_block_hash.c)
+target_link_libraries(test_compute_block_hash nodus dsa nodus crypto)
+add_test(NAME test_compute_block_hash COMMAND test_compute_block_hash)
+
 # Witness Merkle state_root test
 add_executable(test_witness_merkle tests/test_witness_merkle.c)
 target_link_libraries(test_witness_merkle nodus dsa nodus)

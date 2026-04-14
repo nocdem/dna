@@ -271,6 +271,30 @@ int  nodus_witness_db_rollback(nodus_witness_t *w);
 int  nodus_witness_db_savepoint(nodus_witness_t *w, const char *name);
 int  nodus_witness_db_rollback_to_savepoint(nodus_witness_t *w, const char *name);
 
+/* Block hash computation (Phase 5 / Task 5.1).
+ *
+ * Pure function — no DB access. Computes the canonical block hash
+ * preimage and returns its SHA3-512 digest. Single source of truth
+ * for both the block-add path (writes the hash) and the sync path
+ * (recomputes the hash to verify a peer's block).
+ *
+ * Preimage layout (244 bytes, little-endian per project convention):
+ *   height(8) || prev_hash(64) || state_root(64) || tx_root(64)
+ *            || tx_count(4)   || timestamp(8)   || proposer_id(32)
+ *
+ * Caller passes every field by value — the helper does NOT touch any
+ * witness state. This makes it trivial to unit-test and lets sync
+ * verifications happen without a live witness DB.
+ */
+void nodus_witness_compute_block_hash(uint64_t height,
+                                       const uint8_t prev_hash[64],
+                                       const uint8_t state_root[64],
+                                       const uint8_t tx_root[64],
+                                       uint32_t tx_count,
+                                       uint64_t timestamp,
+                                       const uint8_t proposer_id[32],
+                                       uint8_t out[64]);
+
 /* Schema v12 migration (Phase 1 / Task 1.1).
  *
  * Adds the `tx_index` column to committed_transactions and replaces the

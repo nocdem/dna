@@ -507,42 +507,19 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
                                const uint8_t *state_root) {
     if (!w || !w->db || !tx_root || !state_root) return -1;
 
-    /* Compute prev_hash over the previous block header.
-     * Multi-tx formula (Phase 1 / Task 1.2 — matches dnac/include/dnac/block.h):
-     *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64)
-     *             || tx_root(64) || tx_count(4 LE) || timestamp(8 LE)
-     *             || proposer_id(32) )
-     *
-     * Phase 5 will replace this inline SHA3 with the shared
-     * nodus_witness_compute_block_hash helper so the block_add path and
-     * the sync path agree on the formula. For now the body is inline. */
+    /* Phase 5 / Task 5.2: prev_hash via the shared compute_block_hash
+     * helper. Single source of truth with nodus_witness_sync.c. */
     uint8_t prev_hash[NODUS_T3_TX_HASH_LEN] = {0};
     nodus_witness_block_t prev_block;
     if (nodus_witness_block_get_latest(w, &prev_block) == 0) {
-        uint8_t height_le[8];
-        uint8_t ts_le[8];
-        uint8_t tc_le[4];
-        for (int i = 0; i < 8; i++) {
-            height_le[i] = (uint8_t)((prev_block.height >> (i * 8)) & 0xff);
-            ts_le[i] = (uint8_t)((prev_block.timestamp >> (i * 8)) & 0xff);
-        }
-        for (int i = 0; i < 4; i++) {
-            tc_le[i] = (uint8_t)((prev_block.tx_count >> (i * 8)) & 0xff);
-        }
-
-        EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
-        EVP_DigestInit_ex(mdctx, EVP_sha3_512(), NULL);
-        EVP_DigestUpdate(mdctx, height_le, 8);
-        EVP_DigestUpdate(mdctx, prev_block.prev_hash, NODUS_T3_TX_HASH_LEN);
-        EVP_DigestUpdate(mdctx, prev_block.state_root, NODUS_T3_TX_HASH_LEN);
-        EVP_DigestUpdate(mdctx, prev_block.tx_root, NODUS_T3_TX_HASH_LEN);
-        EVP_DigestUpdate(mdctx, tc_le, 4);
-        EVP_DigestUpdate(mdctx, ts_le, 8);
-        EVP_DigestUpdate(mdctx, prev_block.proposer_id, NODUS_T3_WITNESS_ID_LEN);
-
-        unsigned int hash_len = 0;
-        EVP_DigestFinal_ex(mdctx, prev_hash, &hash_len);
-        EVP_MD_CTX_free(mdctx);
+        nodus_witness_compute_block_hash(prev_block.height,
+                                          prev_block.prev_hash,
+                                          prev_block.state_root,
+                                          prev_block.tx_root,
+                                          prev_block.tx_count,
+                                          prev_block.timestamp,
+                                          prev_block.proposer_id,
+                                          prev_hash);
     }
     /* Genesis block: prev_hash stays all zeros */
 
@@ -1357,6 +1334,46 @@ int nodus_witness_db_rollback_to_savepoint(nodus_witness_t *w, const char *name)
         return -1;
     }
     return 0;
+}
+
+/* Block hash computation (Phase 5 / Task 5.1).
+ *
+ * Canonical preimage shared by block_add (writer side) and
+ * sync compute_prev_hash (verifier side). Before Phase 5 each side
+ * had its own inline SHA3-512 with the same formula — two copies of
+ * the same logic is a bug magnet. Now both call this helper. */
+static void enc_u64_le(uint64_t v, uint8_t out[8]) {
+    for (int i = 0; i < 8; i++) out[i] = (uint8_t)((v >> (i * 8)) & 0xff);
+}
+static void enc_u32_le_v(uint32_t v, uint8_t out[4]) {
+    for (int i = 0; i < 4; i++) out[i] = (uint8_t)((v >> (i * 8)) & 0xff);
+}
+
+void nodus_witness_compute_block_hash(uint64_t height,
+                                       const uint8_t prev_hash[64],
+                                       const uint8_t state_root[64],
+                                       const uint8_t tx_root[64],
+                                       uint32_t tx_count,
+                                       uint64_t timestamp,
+                                       const uint8_t proposer_id[32],
+                                       uint8_t out[64]) {
+    uint8_t buf[8 + 64 + 64 + 64 + 4 + 8 + 32];  /* 244 bytes */
+    uint8_t *p = buf;
+
+    enc_u64_le(height, p);        p += 8;
+    memcpy(p, prev_hash, 64);     p += 64;
+    memcpy(p, state_root, 64);    p += 64;
+    memcpy(p, tx_root, 64);       p += 64;
+    enc_u32_le_v(tx_count, p);    p += 4;
+    enc_u64_le(timestamp, p);     p += 8;
+    memcpy(p, proposer_id, 32);
+
+    EVP_MD_CTX *md = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(md, EVP_sha3_512(), NULL);
+    EVP_DigestUpdate(md, buf, sizeof(buf));
+    unsigned int n = 0;
+    EVP_DigestFinal_ex(md, out, &n);
+    EVP_MD_CTX_free(md);
 }
 
 /* Schema v12 migration (Phase 1 / Task 1.1).
