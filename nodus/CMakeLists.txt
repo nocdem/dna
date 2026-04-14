@@ -194,6 +194,36 @@ endif()
 
 enable_testing()
 
+# ── Multi-TX block refactor: register_witness_test macro ─────────────
+# Convenience helper for tests created by Phases 1-15 that need access
+# to internal witness primitives via NODUS_WITNESS_INTERNAL_API. Existing
+# tests continue using the explicit add_executable/add_test pattern below.
+#
+# Usage:
+#     register_witness_test(test_apply_tx_to_state)
+#
+# The macro:
+#   - Compiles tests/${name}.c and links against nodus + dsa
+#   - Defines NODUS_WITNESS_INTERNAL_API so internal headers are visible
+#   - Registers the test with ctest
+#
+# Guarded against accidental Release builds: NODUS_WITNESS_INTERNAL_API
+# would otherwise compile internal headers into the production library
+# if a Release CI job ran the test target by mistake. Mirrors the
+# NODUS_WITNESS_TEST_HOOKS guard from Task 4.4.
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NODUS_WITNESS_INTERNAL_API)
+    message(FATAL_ERROR
+        "NODUS_WITNESS_INTERNAL_API must not be set in Release builds — "
+        "internal headers would leak into the production binary")
+endif()
+
+function(register_witness_test name)
+    add_executable(${name} tests/${name}.c)
+    target_link_libraries(${name} nodus dsa nodus)
+    target_compile_definitions(${name} PRIVATE NODUS_WITNESS_INTERNAL_API)
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
 # CBOR test
 add_executable(test_cbor tests/test_cbor.c)
 target_link_libraries(test_cbor nodus)

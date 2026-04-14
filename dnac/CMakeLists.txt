@@ -159,6 +159,28 @@ target_link_libraries(dnac
 if(DNAC_BUILD_TESTS)
     enable_testing()
 
+    # ── Multi-TX block refactor: register_dnac_test macro ────────────
+    # Convenience helper for new tests created by the refactor sprint.
+    # Wraps the boilerplate (link dnac, libdna, OpenSSL, sqlite, pthread, m).
+    # Existing tests below continue using the explicit pattern.
+    function(register_dnac_test name)
+        add_executable(${name} tests/${name}.c)
+        target_link_libraries(${name} dnac)
+        if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
+            target_link_libraries(${name} ${DNA_BUILD_DIR}/libdna.so)
+        else()
+            target_link_libraries(${name} ${DNA_BUILD_DIR}/libdna.a)
+        endif()
+        target_link_libraries(${name}
+            OpenSSL::SSL
+            OpenSSL::Crypto
+            ${SQLITE3_LIBRARIES}
+            pthread
+            m
+        )
+        add_test(NAME ${name} COMMAND ${name})
+    endfunction()
+
     # Real end-to-end test (uses real genesis, real witnesses, real DHT)
     add_executable(test_real tests/test_real.c)
 
