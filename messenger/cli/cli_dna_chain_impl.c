@@ -938,6 +938,41 @@ int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
     return 0;
 }
 
+/* Verify the cluster has actually committed the expected genesis chain,
+ * even if dnac_genesis_phase2_submit returned an error. BFT consensus is
+ * asynchronous: the client's attestation collector may time out on round N
+ * while the cluster converges on round N+k. Re-query the witnesses for the
+ * authoritative UTXO state before declaring failure to the user.
+ *
+ * Returns 1 if the cluster has the expected chain committed with a non-empty
+ * UTXO set matching expected_chain_id, 0 otherwise.
+ */
+static int verify_genesis_actually_committed(dnac_context_t *ctx,
+                                              const uint8_t *expected_chain_id) {
+    /* Give the cluster a beat to settle its last BFT round. */
+    sleep(2);
+
+    /* Sync UTXOs from witnesses — authoritative source. */
+    int rc = dnac_sync_wallet(ctx);
+    if (rc != DNAC_SUCCESS) return 0;
+
+    /* Confirm our ctx still points at the expected chain. sync_wallet can
+     * reset chain_id on divergence, so re-check before trusting the balance. */
+    const uint8_t *current_chain = dnac_get_chain_id(ctx);
+    if (!current_chain ||
+        memcmp(current_chain, expected_chain_id, DNAC_CHAIN_ID_SIZE) != 0) {
+        return 0;
+    }
+
+    /* Non-empty UTXO set on the expected chain = cluster committed a genesis
+     * that owns us funds. Genesis is the only way UTXOs appear before any
+     * spends, so seeing any UTXO here proves the submit actually landed. */
+    dnac_balance_t balance = {0};
+    rc = dnac_get_balance(ctx, &balance);
+    if (rc != DNAC_SUCCESS) return 0;
+    return balance.utxo_count > 0;
+}
+
 int dna_chain_cmd_genesis_submit(dnac_context_t *ctx, const char *tx_file) {
     /* Determine file path */
     char filepath[512];
@@ -1006,9 +1041,26 @@ int dna_chain_cmd_genesis_submit(dnac_context_t *ctx, const char *tx_file) {
         return 1;
     }
     if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "Error: Genesis submission failed: %s\n", dnac_error_string(rc));
-        dnac_free_transaction(tx);
-        return 1;
+        /* Submit reported failure — but BFT consensus is asynchronous, so
+         * the cluster may have committed on a later round than our local
+         * attestation collector waited for. Query the authoritative cluster
+         * state before giving up to avoid telling the user "failed" after
+         * a successful commit. */
+        fprintf(stderr,
+                "Warning: submit reported '%s', verifying cluster state...\n",
+                dnac_error_string(rc));
+
+        if (!verify_genesis_actually_committed(ctx, recomputed_chain_id)) {
+            fprintf(stderr, "Error: Genesis submission failed: %s\n",
+                    dnac_error_string(rc));
+            dnac_free_transaction(tx);
+            return 1;
+        }
+
+        fprintf(stderr,
+                "Cluster has committed this chain despite the submit error — "
+                "treating as success.\n");
+        /* Fall through to the success print path. */
     }
 
     /* Success */
