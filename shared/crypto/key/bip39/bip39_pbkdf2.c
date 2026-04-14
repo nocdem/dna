@@ -19,6 +19,8 @@
 #include <openssl/sha.h>
 #include "crypto/utils/qgp_platform.h"
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /**
  * HMAC-SHA512 implementation
  *
@@ -147,6 +149,10 @@ int bip39_pbkdf2_hmac_sha512(
         // Prepare salt || INT(block)
         uint8_t *salt_block = malloc(salt_len + 4);
         if (!salt_block) {
+            /* SEC-06: U / T are uninitialized here, but zero them defensively
+             * so future modifications cannot leak partial seed-adjacent state. */
+            qgp_secure_memzero(U, sizeof(U));
+            qgp_secure_memzero(T, sizeof(T));
             return -1;
         }
 

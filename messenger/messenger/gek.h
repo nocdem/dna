@@ -99,10 +99,15 @@ typedef struct {
 #define IKP_MEMBER_ENTRY_SIZE 1672
 
 /**
- * Packet header size
- * magic(4) + group_uuid(36) + version(4) + member_count(1) = 45 bytes
+ * Packet header size (CORE-04 v2: +32 bytes dht_salt)
+ * magic(4) + group_uuid(36) + version(4) + member_count(1) + dht_salt(32) = 77 bytes
  */
-#define IKP_HEADER_SIZE 45
+#define IKP_HEADER_SIZE 77
+
+/**
+ * Size of the per-group DHT privacy salt in the IKP header
+ */
+#define IKP_DHT_SALT_SIZE 32
 
 /**
  * Signature block size (approximate)
@@ -111,9 +116,15 @@ typedef struct {
 #define IKP_SIGNATURE_SIZE 4630
 
 /**
- * IKP Magic bytes: "GEK " (0x47454B20)
+ * IKP Magic bytes: "GEK2" (0x47454B32)
+ *
+ * CORE-04 (Phase 6 plan 04): IKP format v2 adds a 32-byte dht_salt field
+ * to the header for group outbox DHT key privacy. Hard cutover: old "GEK "
+ * magic is no longer accepted. Pre-existing groups must redistribute via
+ * GEK rotation before members can receive messages under the new salted
+ * key layout.
  */
-#define IKP_MAGIC 0x47454B20
+#define IKP_MAGIC 0x47454B32
 
 /* ============================================================================
  * INITIALIZATION
@@ -354,19 +365,20 @@ int gek_rotate_on_member_remove(void *ctx, const char *group_uuid, const char *o
  * ============================================================================ */
 
 /**
- * Build Initial Key Packet for GEK distribution
+ * Build Initial Key Packet for GEK distribution (CORE-04 v2)
  *
  * Creates a packet containing the GEK wrapped with Kyber1024 for each member.
  * The packet is signed with the owner's Dilithium5 key for authentication.
  *
- * Packet format:
- *   [magic(4) || group_uuid(36) || version(4) || member_count(1)]
+ * Packet format (v2):
+ *   [magic(4) || group_uuid(36) || version(4) || member_count(1) || dht_salt(32)]
  *   [For each member: fingerprint(64) || kyber_ct(1568) || wrapped_gek(40)]
  *   [signature_type(1) || sig_size(2) || signature(~4627)]
  *
  * @param group_uuid Group UUID (36-char UUID v4 string)
  * @param version GEK version number
  * @param gek GEK to distribute (32 bytes)
+ * @param dht_salt Per-group 32-byte DHT privacy salt (CORE-04, MUST be non-NULL)
  * @param members Array of member entries (fingerprint + kyber pubkey)
  * @param member_count Number of members
  * @param owner_dilithium_privkey Owner's Dilithium5 private key (4896 bytes) for signing
@@ -377,6 +389,7 @@ int gek_rotate_on_member_remove(void *ctx, const char *group_uuid, const char *o
 int ikp_build(const char *group_uuid,
               uint32_t version,
               const uint8_t gek[GEK_KEY_SIZE],
+              const uint8_t dht_salt[IKP_DHT_SALT_SIZE],
               const gek_member_entry_t *members,
               size_t member_count,
               const uint8_t *owner_dilithium_privkey,
@@ -384,10 +397,11 @@ int ikp_build(const char *group_uuid,
               size_t *packet_size_out);
 
 /**
- * Extract GEK from received Initial Key Packet
+ * Extract GEK from received Initial Key Packet (CORE-04 v2)
  *
  * Finds the entry matching my_fingerprint, performs Kyber1024 decapsulation
- * to get KEK, then unwraps the GEK.
+ * to get KEK, then unwraps the GEK. Also returns the per-group DHT privacy
+ * salt from the v2 header so the receiver can persist it for outbox reads.
  *
  * @param packet Received packet buffer
  * @param packet_size Packet size in bytes
@@ -395,6 +409,7 @@ int ikp_build(const char *group_uuid,
  * @param my_kyber_privkey My Kyber1024 private key (3168 bytes)
  * @param gek_out Output buffer for extracted GEK (32 bytes)
  * @param version_out Output for GEK version (optional, can be NULL)
+ * @param dht_salt_out Output buffer for DHT privacy salt (32 bytes, optional, can be NULL)
  * @return 0 on success, -1 on error (entry not found or decryption failed)
  */
 int ikp_extract(const uint8_t *packet,
@@ -402,7 +417,8 @@ int ikp_extract(const uint8_t *packet,
                 const uint8_t *my_fingerprint_bin,
                 const uint8_t *my_kyber_privkey,
                 uint8_t gek_out[GEK_KEY_SIZE],
-                uint32_t *version_out);
+                uint32_t *version_out,
+                uint8_t dht_salt_out[IKP_DHT_SALT_SIZE]);
 
 /**
  * Verify Initial Key Packet signature

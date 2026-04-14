@@ -33,6 +33,7 @@
 #include <json-c/json.h>
 #include <pthread.h>
 #include <time.h>
+#include "crypto/utils/qgp_safe_string.h"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -296,7 +297,7 @@ static char* extract_sender_from_encrypted(
 
     char fingerprint[129];
     for (int i = 0; i < 64; i++) {
-        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+        snprintf(fingerprint + (i * 2), sizeof(fingerprint) - (i * 2), "%02x", hash[i]);
     }
     fingerprint[128] = '\0';
 
@@ -347,7 +348,7 @@ static char* lookup_identity_for_pubkey(
 
     char fingerprint[129];
     for (int i = 0; i < 64; i++) {
-        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+        snprintf(fingerprint + (i * 2), sizeof(fingerprint) - (i * 2), "%02x", hash[i]);
     }
     fingerprint[128] = '\0';
 
@@ -517,11 +518,17 @@ int messenger_queue_to_dht(
         return -1;
     }
 
-    /* Look up per-contact DHT salt */
+    /* CORE-04 (phase 6, plan 05): salt is REQUIRED.
+     * Salt agreement runs synchronously at contact-add time and at listener
+     * startup. If no salt is persisted for this recipient, refuse to queue —
+     * never fall back to a deterministic unsalted key that leaks metadata. */
     uint8_t msg_salt_buf[32];
-    const uint8_t *msg_salt_ptr = NULL;
-    if (contacts_db_get_salt(recipient_fingerprint, msg_salt_buf) == 0) {
-        msg_salt_ptr = msg_salt_buf;
+    if (contacts_db_get_salt(recipient_fingerprint, msg_salt_buf) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "No per-contact DHT salt for %.20s... - refusing to queue DM "
+            "without salt (salt agreement must complete before first send)\n",
+            recipient_fingerprint);
+        return -1;
     }
 
     int queue_result = dht_queue_message(
@@ -531,7 +538,7 @@ int messenger_queue_to_dht(
         encrypted_len,
         seq_num,
         604800,
-        msg_salt_ptr
+        msg_salt_buf
     );
 
     if (queue_result == 0) {

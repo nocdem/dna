@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "MEDIA_HDL"
 
 /* Response buffer — per-thread to avoid contention with server's resp_buf.
@@ -25,7 +27,7 @@ static __thread uint8_t media_resp_buf[NODUS_MAX_VALUE_SIZE + 65536];
 /** Convert binary fingerprint to hex string */
 static void fp_to_hex(const nodus_key_t *fp, char hex_out[NODUS_KEY_HEX_LEN]) {
     for (int i = 0; i < NODUS_KEY_BYTES; i++)
-        sprintf(hex_out + i * 2, "%02x", fp->bytes[i]);
+        snprintf(hex_out + i * 2, NODUS_KEY_HEX_LEN - i * 2, "%02x", fp->bytes[i]);
     hex_out[128] = '\0';
 }
 

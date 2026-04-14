@@ -50,6 +50,22 @@
 
 /* ── State ──────────────────────────────────────────────────────── */
 
+/* THR-02 / CONCURRENCY.md L3: g_nodus_init_mutex protects the non-atomic
+ * static globals in this file (g_stored_identity, g_connect_thread,
+ * g_config_loaded, g_config, g_status_cb, g_status_cb_data, g_known_nodes[],
+ * g_known_node_count). The existing _Atomic bool g_initialized and
+ * _Atomic bool g_connect_thread_running are fast-path fences and stay atomic.
+ * First-time bootstrap (ensure_config + load_known_nodes) runs exactly once
+ * via pthread_once(&g_nodus_once, nodus_once_init). Rules:
+ *  - Lock order: L3. A thread holding this lock may acquire L4 (g_queue_mutex)
+ *    and below, but MUST NOT re-enter nodus_singleton_* or nodus_client_*
+ *    while holding it — that would deadlock the nodus-internal lock.
+ *  - Callback pattern: on_state_change copies g_status_cb + g_status_cb_data
+ *    to locals under lock, releases, then invokes the callback. User code
+ *    never runs under g_nodus_init_mutex. */
+static pthread_mutex_t g_nodus_init_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t g_nodus_once = PTHREAD_ONCE_INIT;
+
 static nodus_identity_t g_stored_identity;      /* Value type — no heap alloc */
 static _Atomic bool g_initialized = false;
 static pthread_t g_connect_thread;
@@ -89,6 +105,9 @@ static int get_known_nodes_path(char *path, size_t path_size) {
 /**
  * Load known nodes from file. Format per line:
  *   ip:port|dil_fp_hex|kyber_hash_hex|last_seen|rtt_ms
+ *
+ * THR-02: CALLER MUST HOLD g_nodus_init_mutex, OR be called from
+ * nodus_once_init (which is serialized by pthread_once).
  */
 static int load_known_nodes(void) {
     char path[512];
@@ -154,6 +173,8 @@ static int load_known_nodes(void) {
 
 /**
  * Save all known nodes to file.
+ *
+ * THR-02: CALLER MUST HOLD g_nodus_init_mutex.
  */
 static int save_known_nodes(void) {
     char path[512];
@@ -182,6 +203,8 @@ static int save_known_nodes(void) {
  * If ip:port already exists, update keys + last_seen.
  * Otherwise add new entry (evict oldest if full).
  * Returns: 0 = updated/added, 1 = key changed (TOFU warning), -1 = error
+ *
+ * THR-02: CALLER MUST HOLD g_nodus_init_mutex.
  */
 static int known_nodes_upsert(const char *ip, uint16_t port,
                                const char *dil_fp, const char *kyber_hash,
@@ -256,6 +279,10 @@ static int known_nodes_upsert(const char *ip, uint16_t port,
 
 /**
  * Find a known node by ip:port. Returns pointer or NULL.
+ *
+ * THR-02: CALLER MUST HOLD g_nodus_init_mutex. The returned pointer is only
+ * valid while the caller continues to hold the mutex — it points directly
+ * into g_known_nodes[].
  */
 static known_node_t *known_nodes_find(const char *ip, uint16_t port) {
     for (int i = 0; i < g_known_node_count; i++) {
@@ -288,6 +315,18 @@ static void ensure_config(void) {
 
         /* bootstrap_cache disabled — stale port 4000 entries caused startup delay */
     }
+}
+
+/**
+ * THR-02: First-time bootstrap helper. Runs exactly once across all threads
+ * via pthread_once(&g_nodus_once, nodus_once_init). POSIX guarantees exactly-
+ * once semantics, so this does NOT take g_nodus_init_mutex — pthread_once
+ * already serializes. Subsequent mutations of the statics that this function
+ * populates go through g_nodus_init_mutex in the regular entry points.
+ */
+static void nodus_once_init(void) {
+    ensure_config();
+    load_known_nodes();
 }
 
 /* Hardcoded fallback bootstrap nodes (compiled into binary) */
@@ -365,8 +404,27 @@ static void on_state_change(nodus_client_state_t old_state,
 
     QGP_LOG_INFO(LOG_TAG, "[STATE] %s → %s", state_name(old_state), state_name(new_state));
 
+    /* THR-02: on_state_change fires on the nodus poll thread. The anti-pattern
+     * rule is: NEVER call nodus_singleton_* / nodus_client_* while holding
+     * g_nodus_init_mutex — that would deadlock the nodus-internal lock.
+     * Strategy: (1) snapshot all server data from the nodus client into
+     * locals with the singleton held (nodus-internal lock only, NOT our
+     * mutex). (2) Release the nodus singleton. (3) Take g_nodus_init_mutex
+     * to mutate g_known_nodes via known_nodes_upsert + copy out g_status_cb.
+     * (4) Release our mutex. (5) Invoke the user callback OUTSIDE the lock. */
+
+    bool is_connect_event = false;
+    bool is_disconnect_event = false;
+    bool have_server_info = false;
+    char srv_ip[64] = {0};
+    uint16_t srv_port = 0;
+    char kyber_hash[KNOWN_NODES_FP_HEX + 1] = {0};
+    char dil_fp_hex[KNOWN_NODES_FP_HEX + 1] = {0};
+
     if (new_state == NODUS_CLIENT_READY) {
-        /* Cache connected server's keys (TOFU) */
+        is_connect_event = true;
+
+        /* Step 1: Snapshot connected server info under nodus singleton lock. */
         nodus_client_t *client = nodus_singleton_get();
         if (client) {
             /* Get connected server IP:port directly from the TCP connection,
@@ -375,35 +433,18 @@ static void on_state_change(nodus_client_state_t old_state,
              * the wrong IP (the bug that caused duplicate TOFU hashes). */
             nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
             if (conn && conn->ip[0] && conn->port > 0) {
-                const char *srv_ip = conn->ip;
-                uint16_t srv_port = conn->port;
+                strncpy(srv_ip, conn->ip, sizeof(srv_ip) - 1);
+                srv_ip[sizeof(srv_ip) - 1] = '\0';
+                srv_port = conn->port;
 
                 /* Compute Kyber PK hash if we have it */
-                char kyber_hash[KNOWN_NODES_FP_HEX + 1] = {0};
                 if (client->has_cached_server_kyber) {
                     compute_key_hash_hex(client->cached_server_kyber_pk,
                                          NODUS_KYBER_PK_BYTES,
                                          kyber_hash, sizeof(kyber_hash));
                 }
 
-                QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] server=%s:%d has_cached_kyber=%d kyber_hash=%s",
-                             srv_ip, srv_port, client->has_cached_server_kyber,
-                             kyber_hash[0] ? kyber_hash : "(empty)");
-
-                /* Check what's stored in known_nodes for this server */
-                known_node_t *existing = known_nodes_find(srv_ip, srv_port);
-                if (existing) {
-                    QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] existing entry: dil_fp=%s kyber_hash=%s last_seen=%llu",
-                                 existing->dil_fp[0] ? existing->dil_fp : "(empty)",
-                                 existing->kyber_hash[0] ? existing->kyber_hash : "(empty)",
-                                 (unsigned long long)existing->last_seen);
-                } else {
-                    QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] no existing entry for %s:%d (new node)",
-                                 srv_ip, srv_port);
-                }
-
                 /* Dilithium fingerprint from server's signed AUTH_OK */
-                char dil_fp_hex[KNOWN_NODES_FP_HEX + 1] = {0};
                 if (client->has_server_dil_pk) {
                     compute_key_hash_hex(client->server_dil_pk.bytes,
                                          NODUS_PK_BYTES,
@@ -413,29 +454,86 @@ static void on_state_change(nodus_client_state_t old_state,
                     QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] server dil_pk NOT available (legacy server)");
                 }
 
-                int tofu_rc = known_nodes_upsert(srv_ip, srv_port,
-                                                  dil_fp_hex, kyber_hash, -1);
-                if (tofu_rc == 1) {
-                    QGP_LOG_ERROR(LOG_TAG, "⚠ TOFU VIOLATION: Server %s:%d key changed! "
-                                  "Possible MITM attack.", srv_ip, srv_port);
-                } else if (tofu_rc == 0) {
-                    QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] upsert OK (no key change) for %s:%d",
-                                 srv_ip, srv_port);
-                }
+                QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] server=%s:%d has_cached_kyber=%d kyber_hash=%s",
+                             srv_ip, srv_port, client->has_cached_server_kyber,
+                             kyber_hash[0] ? kyber_hash : "(empty)");
+
+                have_server_info = true;
             }
             nodus_singleton_release();
         }
-
-        /* Actual connection established */
-        if (g_status_cb) g_status_cb(true, g_status_cb_data);
     } else if (old_state == NODUS_CLIENT_READY) {
-        /* Actual disconnect — was connected, now lost connection */
+        is_disconnect_event = true;
         QGP_LOG_WARN(LOG_TAG, "[DISCONNECT] Connection lost (was READY → %s)", state_name(new_state));
-        if (g_status_cb) g_status_cb(false, g_status_cb_data);
     }
     /* Ignore non-READY → non-READY transitions (DISCONNECTED→CONNECTING,
      * CONNECTING→AUTHENTICATING, etc.) to avoid false "DHT disconnected"
      * warnings during initial connection sequence. */
+
+    if (!is_connect_event && !is_disconnect_event) {
+        return;
+    }
+
+    /* Step 2: Under g_nodus_init_mutex, do TOFU upsert and snapshot status_cb.
+     * NO nodus_singleton_* / nodus_client_* calls inside this critical section. */
+    nodus_messenger_status_cb_t cb_local = NULL;
+    void *cb_data_local = NULL;
+    int tofu_rc = 0;
+    bool did_upsert = false;
+    bool existing_present = false;
+    char existing_dil[KNOWN_NODES_FP_HEX + 1] = {0};
+    char existing_kyber[KNOWN_NODES_FP_HEX + 1] = {0};
+    uint64_t existing_last_seen = 0;
+
+    /* CONCURRENCY.md L3: g_nodus_init_mutex */
+    pthread_mutex_lock(&g_nodus_init_mutex);
+
+    if (is_connect_event && have_server_info) {
+        /* Check what's stored in known_nodes for this server */
+        known_node_t *existing = known_nodes_find(srv_ip, srv_port);
+        if (existing) {
+            existing_present = true;
+            strncpy(existing_dil, existing->dil_fp, sizeof(existing_dil) - 1);
+            strncpy(existing_kyber, existing->kyber_hash, sizeof(existing_kyber) - 1);
+            existing_last_seen = existing->last_seen;
+        }
+
+        tofu_rc = known_nodes_upsert(srv_ip, srv_port,
+                                      dil_fp_hex, kyber_hash, -1);
+        did_upsert = true;
+    }
+
+    cb_local = g_status_cb;
+    cb_data_local = g_status_cb_data;
+
+    pthread_mutex_unlock(&g_nodus_init_mutex);
+
+    /* Step 3: Diagnostic logging and callback invocation OUTSIDE the lock. */
+    if (is_connect_event && have_server_info) {
+        if (existing_present) {
+            QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] existing entry: dil_fp=%s kyber_hash=%s last_seen=%llu",
+                         existing_dil[0] ? existing_dil : "(empty)",
+                         existing_kyber[0] ? existing_kyber : "(empty)",
+                         (unsigned long long)existing_last_seen);
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] no existing entry for %s:%d (new node)",
+                         srv_ip, srv_port);
+        }
+
+        if (did_upsert) {
+            if (tofu_rc == 1) {
+                QGP_LOG_ERROR(LOG_TAG, "⚠ TOFU VIOLATION: Server %s:%d key changed! "
+                              "Possible MITM attack.", srv_ip, srv_port);
+            } else if (tofu_rc == 0) {
+                QGP_LOG_INFO(LOG_TAG, "[TOFU_DEBUG] upsert OK (no key change) for %s:%d",
+                             srv_ip, srv_port);
+            }
+        }
+    }
+
+    if (cb_local) {
+        cb_local(is_connect_event, cb_data_local);
+    }
 }
 
 /* ── Preferred Node Cache (flat file) ───────────────────────────── */
@@ -782,16 +880,52 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
         return -1;
     }
 
+    /* Fast path: already initialized (atomic fence, no lock). */
     if (atomic_load(&g_initialized)) {
         QGP_LOG_WARN(LOG_TAG, "Already initialized");
         return 0;
     }
 
+    /* First-time bootstrap — exactly once, across all callers.
+     * Populates g_config_loaded / g_config and g_known_nodes[] / g_known_node_count. */
+    pthread_once(&g_nodus_once, nodus_once_init);
+
+    /* CONCURRENCY.md L3: g_nodus_init_mutex
+     * Serialize concurrent nodus_messenger_init calls and protect the
+     * non-atomic statics (g_stored_identity, g_connect_thread, g_known_nodes,
+     * g_config, g_status_cb) through the whole init sequence. The winning
+     * thread sets g_initialized=true at the end; all losing threads see it
+     * via the double-check under lock.
+     *
+     * Anti-pattern carve-out: this critical section calls nodus_singleton_init
+     * (and optionally nodus_singleton_connect on the pthread_create failure
+     * fallback). That is SAFE here because:
+     *   (a) nodus_singleton_init is the FIRST-EVER init of the singleton in
+     *       this process — no other thread can hold the nodus-internal lock
+     *       yet, so there is no reverse ordering to deadlock against.
+     *   (b) on_state_change — the only reverse-ordering hazard — can only
+     *       fire from the nodus poll thread, which is not started until the
+     *       connect thread runs, which is spawned AFTER we finish this
+     *       critical section (pthread_create below). At the moment of
+     *       nodus_singleton_init, no poll thread exists.
+     *   (c) nodus_singleton_connect under lock only happens on the rare
+     *       pthread_create failure fallback, and even then the connect
+     *       thread can't already be running (that's the failure we are
+     *       recovering from).
+     * Outside of init(), the strict rule applies: no nodus_singleton_* /
+     * nodus_client_* calls under g_nodus_init_mutex (see close, reinit,
+     * set_status_callback, on_state_change). */
+    pthread_mutex_lock(&g_nodus_init_mutex);
+
+    /* Double-check under lock */
+    if (atomic_load(&g_initialized)) {
+        pthread_mutex_unlock(&g_nodus_init_mutex);
+        QGP_LOG_WARN(LOG_TAG, "Already initialized (race resolved)");
+        return 0;
+    }
+
     /* Store identity (value copy — no heap, no leak) */
     g_stored_identity = *identity;
-
-    /* Load bootstrap config */
-    ensure_config();
 
     /* Build Nodus client config from bootstrap nodes */
     nodus_client_config_t nconfig;
@@ -802,8 +936,7 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
 
     /* ── Try sources in order: known_nodes → config → hardcoded fallback ── */
 
-    /* Source 1: Known nodes cache (persisted from previous sessions) */
-    load_known_nodes();
+    /* Source 1: Known nodes cache (populated by nodus_once_init on first init; TOFU upserts since). */
     if (g_known_node_count > 0) {
         QGP_LOG_INFO(LOG_TAG, "Using %d known nodes from cache", g_known_node_count);
         for (int i = 0; i < g_known_node_count && nconfig.server_count < NODUS_CLIENT_MAX_SERVERS; i++) {
@@ -861,6 +994,7 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
 
     if (nconfig.server_count == 0) {
         QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes available");
+        pthread_mutex_unlock(&g_nodus_init_mutex);
         return -1;
     }
 
@@ -884,6 +1018,7 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
     if (rc != 0) {
         fprintf(stderr, "[NODUS_INIT] Singleton init failed (rc=%d)\n", rc);
         QGP_LOG_ERROR(LOG_TAG, "Singleton init failed");
+        pthread_mutex_unlock(&g_nodus_init_mutex);
         return -1;
     }
 
@@ -893,15 +1028,21 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
     /* Mark initialized before spawning connect thread */
     atomic_store(&g_initialized, true);
 
-    /* Spawn background connect thread (non-blocking init) */
+    /* Spawn background connect thread (non-blocking init).
+     * pthread_create writes g_connect_thread — protected by g_nodus_init_mutex. */
     atomic_store(&g_connect_thread_running, true);
     if (pthread_create(&g_connect_thread, NULL, nodus_connect_thread_fn, NULL) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Failed to create connect thread, falling back to blocking connect");
         atomic_store(&g_connect_thread_running, false);
-        /* Blocking fallback */
+        /* Blocking fallback — release our mutex first so nodus_singleton_connect
+         * does not run under g_nodus_init_mutex (callback path may try to take
+         * our lock from the poll thread). */
+        pthread_mutex_unlock(&g_nodus_init_mutex);
         nodus_singleton_connect();
+        return 0;
     }
 
+    pthread_mutex_unlock(&g_nodus_init_mutex);
     return 0;
 }
 
@@ -910,11 +1051,26 @@ void nodus_messenger_close(void) {
 
     QGP_LOG_INFO(LOG_TAG, "Closing");
 
-    /* Join connect thread BEFORE closing singleton */
+    /* Snapshot the connect-thread handle under the lock, then release
+     * before calling any nodus_singleton_* / pthread_join (which block and
+     * could interact with on_state_change taking g_nodus_init_mutex on the
+     * poll thread — that would deadlock if we held it here). */
+    pthread_t thread_to_join = 0;
+    bool need_join = false;
+
+    /* CONCURRENCY.md L3: g_nodus_init_mutex */
+    pthread_mutex_lock(&g_nodus_init_mutex);
     if (atomic_load(&g_connect_thread_running)) {
+        thread_to_join = g_connect_thread;
+        need_join = true;
+    }
+    pthread_mutex_unlock(&g_nodus_init_mutex);
+
+    /* Join connect thread BEFORE closing singleton — outside our mutex. */
+    if (need_join) {
         QGP_LOG_INFO(LOG_TAG, "Waiting for connect thread to finish...");
         nodus_singleton_force_disconnect();
-        pthread_join(g_connect_thread, NULL);
+        pthread_join(thread_to_join, NULL);
         atomic_store(&g_connect_thread_running, false);
     }
 
@@ -927,8 +1083,10 @@ void nodus_messenger_close(void) {
     /* Close the singleton (disconnects TCP, frees client) */
     nodus_singleton_close();
 
-    /* Clear stored identity */
+    /* Clear stored identity — protected by the mutex. */
+    pthread_mutex_lock(&g_nodus_init_mutex);
     nodus_identity_clear(&g_stored_identity);
+    pthread_mutex_unlock(&g_nodus_init_mutex);
 
     /* bootstrap_cache disabled — no cleanup needed */
 
@@ -943,14 +1101,27 @@ int nodus_messenger_reinit(void) {
         return -1;
     }
 
-    /* Save identity before close */
-    nodus_identity_t saved = g_stored_identity;
+    /* Snapshot identity + connect-thread handle under lock, then release
+     * before calling nodus_singleton_* / pthread_join. Same rationale as
+     * nodus_messenger_close. */
+    nodus_identity_t saved;
+    pthread_t thread_to_join = 0;
+    bool need_join = false;
 
-    /* Join connect thread BEFORE closing singleton */
+    /* CONCURRENCY.md L3: g_nodus_init_mutex */
+    pthread_mutex_lock(&g_nodus_init_mutex);
+    saved = g_stored_identity;
     if (atomic_load(&g_connect_thread_running)) {
+        thread_to_join = g_connect_thread;
+        need_join = true;
+    }
+    pthread_mutex_unlock(&g_nodus_init_mutex);
+
+    /* Join connect thread BEFORE closing singleton — outside our mutex. */
+    if (need_join) {
         QGP_LOG_INFO(LOG_TAG, "Waiting for connect thread to finish...");
         nodus_singleton_force_disconnect();
-        pthread_join(g_connect_thread, NULL);
+        pthread_join(thread_to_join, NULL);
         atomic_store(&g_connect_thread_running, false);
     }
 
@@ -973,10 +1144,17 @@ bool nodus_messenger_is_initialized(void) {
 }
 
 void nodus_messenger_set_status_callback(nodus_messenger_status_cb_t cb, void *user_data) {
+    /* CONCURRENCY.md L3: g_nodus_init_mutex
+     * Store cb + user_data under the mutex to avoid a torn fn-ptr/user-data
+     * pair being read by on_state_change on the nodus poll thread. */
+    pthread_mutex_lock(&g_nodus_init_mutex);
     g_status_cb = cb;
     g_status_cb_data = user_data;
+    pthread_mutex_unlock(&g_nodus_init_mutex);
 
-    /* Fire immediately if already connected */
+    /* Fire immediately if already connected — OUTSIDE the mutex so user
+     * callback code never runs under our lock (and cannot re-enter our
+     * entry points or nodus_singleton_*). */
     if (atomic_load(&g_initialized) && nodus_singleton_is_ready() && cb) {
         cb(true, user_data);
     }

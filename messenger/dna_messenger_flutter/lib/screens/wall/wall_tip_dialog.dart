@@ -176,7 +176,12 @@ class _WallTipSheetState extends ConsumerState<_WallTipSheet> {
         left: DnaSpacing.lg,
         right: DnaSpacing.lg,
         top: DnaSpacing.lg,
-        bottom: MediaQuery.of(context).viewInsets.bottom + DnaSpacing.lg,
+        // viewInsets.bottom = keyboard height (when IME is open)
+        // padding.bottom = system navigation bar / gesture area
+        // Must add BOTH or the Send Tip button sits under the nav bar.
+        bottom: MediaQuery.of(context).viewInsets.bottom +
+            MediaQuery.of(context).padding.bottom +
+            DnaSpacing.lg,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,

@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* Portable strndup (missing on Windows — both MSVC and MinGW) */
 #ifdef _WIN32
 static char *portable_strndup(const char *s, size_t n) {

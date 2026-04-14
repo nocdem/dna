@@ -1,0 +1,14 @@
+# ThreadSanitizer suppression file for the DNA messenger test suite.
+#
+# This file starts empty by design. Do NOT pre-populate with guessed
+# suppressions from OpenSSL / libsodium / SQLCipher false positives.
+# Populate only in response to concrete TSan output from a real run.
+#
+# Each suppression added here must carry a comment explaining:
+#   1. The race pattern TSan reported (copy the TSan frame header).
+#   2. Why it is benign (external library lazy init, etc.).
+#   3. The date and the contributor who verified it.
+#
+# To run the concurrency tests under TSan, see messenger/docs/CONCURRENCY.md.
+#
+# Phase 2 introduced this file; see .planning/phases/02-concurrency-safety/.

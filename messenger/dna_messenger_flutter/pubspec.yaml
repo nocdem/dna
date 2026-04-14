@@ -79,6 +79,22 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+  # Custom lint infrastructure (Phase 04 / SEC-07 anti-regression)
+  # `dart run custom_lint` is a separate gate from `flutter analyze` (per C-03).
+  # Rules live in the local `dna_lints` package under tools/.
+  # Pinned to 0.7.5 (not 0.8.x) because riverpod_generator 2.6.5 transitively
+  # requires `custom_lint_core ^0.7.0` via riverpod_analyzer_utils 0.5.10.
+  # 0.7.5 uses analyzer ^7.0.0 and custom_lint_core 0.7.5, resolving cleanly
+  # alongside the existing dev toolchain. The research target (0.8.1) cannot
+  # be used until riverpod_generator is upgraded — out of scope for Phase 4.
+  custom_lint: 0.7.5
+  dna_lints:
+    path: tools/dna_lints
+
+  # Mocking framework for unit tests (Phase 04 / SEC-08 migration tests).
+  # mocktail is preferred over mockito for new test code (no code generation).
+  mocktail: ^1.0.0
+
   # Code generation
   ffigen: ^9.0.0
   riverpod_generator: 2.6.5

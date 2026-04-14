@@ -11,10 +11,12 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart' as dna;
 import '../../l10n/app_localizations.dart';
 import '../../providers/providers.dart';
+import '../../design_system/components/dna_dialog.dart';
+import '../../design_system/components/dna_snack_bar.dart';
 import '../../design_system/theme/dna_colors.dart';
 import '../../utils/clipboard_utils.dart';
 import '../../utils/logger.dart' show log, logError;
-import '../../utils/screen_security.dart';
+import '../../widgets/secure_display_scope.dart';
 
 /// Entry point for onboarding - in v0.3.0 single-user model, this just shows the unified flow
 class IdentitySelectionScreen extends ConsumerWidget {
@@ -152,7 +154,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     switch (_step) {
       case _OnboardingStep.showSeed:
       case _OnboardingStep.enterSeed:
-        ScreenSecurity.disable();
+        // SEC-10: FLAG_SECURE is disabled automatically by
+        // SecureDisplayScope.dispose() when the step widget subtree
+        // is rebuilt out of _buildShowSeedStep.
         setState(() {
           _step = _OnboardingStep.welcome;
           _mnemonic = '';
@@ -258,7 +262,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Future<void> _generateNewSeed() async {
     try {
       final mnemonic = await ref.read(identitiesProvider.notifier).generateMnemonic();
-      ScreenSecurity.enable();
+      // SEC-10: FLAG_SECURE is enabled automatically by
+      // SecureDisplayScope.initState() when _buildShowSeedStep mounts.
       setState(() {
         _mnemonic = mnemonic;
         _step = _OnboardingStep.showSeed;
@@ -279,7 +284,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Widget _buildShowSeedStep() {
     final theme = Theme.of(context);
 
-    return SingleChildScrollView(
+    // SEC-10: wrap the mnemonic display step in SecureDisplayScope so
+    // FLAG_SECURE is installed on mount and removed on unmount, covering
+    // every path that exits this step (back, continue, process).
+    return SecureDisplayScope(
+      child: SingleChildScrollView(
       padding: const EdgeInsets.all(24.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -318,10 +327,23 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           const SizedBox(height: 16),
           // Copy button
           OutlinedButton.icon(
-            onPressed: () {
-              ClipboardUtils.copyWithAutoClear(_mnemonic);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(AppLocalizations.of(context).copiedToClipboard)),
+            onPressed: () async {
+              // SEC-09: pre-copy confirmation gate + post-copy toast.
+              final l10n = AppLocalizations.of(context);
+              final confirmed = await DnaDialog.confirm(
+                context,
+                title: l10n.seedCopyConfirmTitle,
+                message: l10n.seedCopyConfirmBody,
+                confirmLabel: l10n.continueButton,
+                cancelLabel: l10n.cancel,
+              );
+              if (!confirmed) return;
+              if (!mounted) return;
+              await ClipboardUtils.copyWithAutoClear(_mnemonic);
+              if (!mounted) return;
+              DnaSnackBar.info(
+                context,
+                AppLocalizations.of(context).seedCopiedToast,
               );
             },
             icon: const FaIcon(FontAwesomeIcons.copy, size: 18),
@@ -348,6 +370,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
           ),
         ],
+      ),
       ),
     );
   }
@@ -594,7 +617,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   // ==================== STEP 3: Processing ====================
   Future<void> _processSeed() async {
-    ScreenSecurity.disable();
+    // SEC-10: FLAG_SECURE is disabled automatically by
+    // SecureDisplayScope.dispose() when _buildShowSeedStep unmounts
+    // as the step transitions to processing.
     setState(() => _step = _OnboardingStep.processing);
 
     // Get mnemonic (either generated or from input)

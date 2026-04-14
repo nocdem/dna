@@ -29,6 +29,8 @@
 #include <unistd.h>
 #include <time.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* ── Globals ─────────────────────────────────────────────────────── */
 
 static nodus_identity_t identity;
@@ -284,7 +286,7 @@ static int cmd_witness(const char *connected_ip) {
                 cbor_item_t v = cbor_decode_next(&dec);
                 if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_KEY_BYTES) {
                     for (int b = 0; b < NODUS_KEY_BYTES; b++)
-                        sprintf(node_id_hex + b * 2, "%02x", v.bstr.ptr[b]);
+                        snprintf(node_id_hex + b * 2, sizeof(node_id_hex) - b * 2, "%02x", v.bstr.ptr[b]);
                     has_id = true;
                 }
             } else if (k.tstr.len == 2 && memcmp(k.tstr.ptr, "ip", 2) == 0) {

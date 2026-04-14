@@ -20,6 +20,7 @@
 #include <time.h>
 #include <sqlite3.h>
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_safe_string.h"
 
 #define LOG_TAG "DHT_GROUPS"
 
@@ -366,12 +367,12 @@ int dht_groups_create(
         QGP_LOG_ERROR(LOG_TAG, "Failed to generate UUID for group\n");
         return -1;
     }
-    strcpy(group_uuid_out, group_uuid);
+    snprintf(group_uuid_out, 37, "%s", group_uuid);
 
     // Build metadata
     dht_group_metadata_t meta;
     memset(&meta, 0, sizeof(meta));
-    strcpy(meta.group_uuid, group_uuid);
+    snprintf(meta.group_uuid, sizeof(meta.group_uuid), "%s", group_uuid);
     strncpy(meta.name, name, sizeof(meta.name) - 1);
     if (description) {
         strncpy(meta.description, description, sizeof(meta.description) - 1);

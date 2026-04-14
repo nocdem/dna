@@ -50,6 +50,8 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_lookup_profile(dna_engine_t*, dna_task_t*)` | Handle lookup profile |
 | `void dna_handle_update_profile(dna_engine_t*, dna_task_t*)` | Handle update profile |
 
+**CORE-05 (Phase 6, 2026-04-14):** On registration failure, `dna_engine_create_identity_sync` (the public sync create-with-name entry point, internally documented as `dna_engine_create_identity_with_name_sync`) now PRESERVES local key material (`keys/`, `db/`, `wallets/`, `mnemonic.enc`). Previously it called `qgp_platform_rmdir_recursive` on all four paths whenever `messenger_init` or `messenger_register_name` returned a non-zero code, which locked users out of their identity on transient DHT errors. Retry is handled by the Flutter resume-flow UI calling `dna_engine_register_name` once the network recovers. Function signature and return codes (`DNA_ERROR_INTERNAL`, `DNA_ENGINE_ERROR_NETWORK`) are unchanged.
+
 ### Task Handlers - Contacts
 
 | Function | Description |

@@ -18,6 +18,8 @@
 #include "crypto/enc/kem/polyvec.h"
 #include "crypto/enc/kem/ntt_kyber.h"
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 // Use vendored Kyber's gen_matrix function
 #define gen_a(A,B)  gen_matrix(A,B,0)
 

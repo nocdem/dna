@@ -98,6 +98,41 @@ int group_database_get_stats(group_database_context_t *ctx,
                               int *member_count,
                               int *message_count);
 
+/* ============================================================================
+ * DHT SALT ACCESSORS (CORE-04 — Phase 6 plan 03)
+ *
+ * Per-group 32-byte DHT key privacy salt. Mirrors the per-contact salt API
+ * in database/contacts_db.c (contacts_db_set_salt / contacts_db_get_salt).
+ * Plan 04 will use these to hard-cut over the group outbox to salted keys.
+ * ============================================================================ */
+
+/**
+ * Check whether a group has a DHT salt provisioned.
+ *
+ * @param group_uuid Group UUID
+ * @return 1 if has_dht_salt=1 on the group row, 0 otherwise (including
+ *         missing group / uninitialized db / NULL args)
+ */
+int group_database_has_dht_salt(const char *group_uuid);
+
+/**
+ * Read the 32-byte DHT salt for a group.
+ *
+ * @param group_uuid Group UUID
+ * @param salt_out Output buffer, MUST be at least 32 bytes
+ * @return 0 on success, -1 if not found or salt not set
+ */
+int group_database_get_dht_salt(const char *group_uuid, uint8_t *salt_out);
+
+/**
+ * Set the 32-byte DHT salt for a group. Marks has_dht_salt=1 on the row.
+ *
+ * @param group_uuid Group UUID (group row must already exist)
+ * @param salt Exactly 32 bytes of salt material
+ * @return 0 on success, -1 on error (no such group, db error, NULL args)
+ */
+int group_database_set_dht_salt(const char *group_uuid, const uint8_t *salt);
+
 #ifdef __cplusplus
 }
 #endif

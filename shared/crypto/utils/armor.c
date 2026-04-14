@@ -9,6 +9,8 @@
 #include "crypto/utils/qgp_log.h"
 #include <time.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "ARMOR"
 
 /* v0.6.47: Thread-safe gmtime wrapper (security fix) */
@@ -243,7 +245,7 @@ int read_armored_file(
                 b64_data = new_b64_data;
             }
             // Append line to base64 data
-            strcpy(b64_data + b64_length, line);
+            snprintf(b64_data + b64_length, b64_capacity - b64_length, "%s", line);
             b64_length += len;
         }
     }

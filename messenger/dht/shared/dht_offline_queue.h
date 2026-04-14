@@ -95,60 +95,13 @@ int dht_queue_message(
     const uint8_t *salt
 );
 
-/**
- * Retrieve all queued messages for recipient from all contacts' outboxes
- *
- * Workflow (Spillway - Multi-Outbox Retrieval):
- * 1. For each sender in sender_list (contacts):
- *    a. Generate outbox key: SHA3-512(sender + ":outbox:" + recipient)
- *    b. Query DHT for this sender's outbox
- *    c. Deserialize messages from this outbox
- *    d. Filter out expired messages
- *    e. Append to combined message array
- * 2. Return all messages from all contacts
- *
- * Note: Only queries contacts in sender_list (spam prevention).
- *       Messages from unknown senders are ignored (not queried).
- *
- * @param recipient Recipient identity (fingerprint - 128 hex chars)
- * @param sender_list Array of sender identities (contacts' fingerprints)
- * @param sender_count Number of senders in list
- * @param messages_out Output array (caller must free with dht_offline_messages_free)
- * @param count_out Output count of messages
- * @return 0 on success, -1 on failure
+/*
+ * CORE-04 (phase 6, plan 06): Removed dead declarations
+ * dht_retrieve_queued_messages_from_contacts and
+ * dht_retrieve_queued_messages_from_contacts_parallel. Both produced
+ * deterministic unsalted outbox keys and had zero callers. The live DM
+ * retrieval path is dht_dm_outbox.h (salted, per-contact).
  */
-int dht_retrieve_queued_messages_from_contacts(
-    const char *recipient,
-    const char **sender_list,
-    size_t sender_count,
-    dht_offline_message_t **messages_out,
-    size_t *count_out
-);
-
-/**
- * Retrieve all queued messages for recipient from all contacts' outboxes (PARALLEL VERSION)
- *
- * Same as dht_retrieve_queued_messages_from_contacts(), but queries all contacts
- * concurrently using async DHT operations for 10-100× speedup.
- *
- * Performance comparison:
- * - Sequential: N contacts × 300ms/contact = 30 seconds for 100 contacts
- * - Parallel:   ~300ms total (all queries concurrent)
- *
- * @param recipient Recipient identity (fingerprint - 128 hex chars)
- * @param sender_list Array of sender identities (contacts' fingerprints)
- * @param sender_count Number of senders in list
- * @param messages_out Output array (caller must free with dht_offline_messages_free)
- * @param count_out Output count of messages
- * @return 0 on success, -1 on failure
- */
-int dht_retrieve_queued_messages_from_contacts_parallel(
-    const char *recipient,
-    const char **sender_list,
-    size_t sender_count,
-    dht_offline_message_t **messages_out,
-    size_t *count_out
-);
 
 /**
  * REMOVED: dht_clear_queue() - No longer needed in Spillway Protocol
@@ -213,26 +166,12 @@ int dht_deserialize_messages(
     size_t *count_out
 );
 
-/**
- * Generate DHT storage key for sender's outbox to recipient
- *
- * Key format (Spillway): SHA3-512(sender + ":outbox:" + recipient)
- *
- * Example:
- *   sender = "a3f9e2d1c5b8a7f6..."  (128-char fingerprint)
- *   recipient = "b4a7f89012e3c6d5..."  (128-char fingerprint)
- *   input = "a3f9e2d1c5b8a7f6...:outbox:b4a7f89012e3c6d5..."
- *   output = SHA3-512(input) = 64-byte hash
- *
- * @param sender Sender identity (fingerprint - 128 hex chars)
- * @param recipient Recipient identity (fingerprint - 128 hex chars)
- * @param key_out Output buffer (64 bytes for SHA3-512)
+/*
+ * CORE-04 (phase 6, plan 06): Removed dht_generate_outbox_key. It produced
+ * deterministic unsalted SHA3-512(sender:outbox:recipient) keys leaking
+ * sender×recipient communication metadata. Zero non-doc callers. Salted DM
+ * outbox keys are produced by dht_dm_outbox_make_key (dht_dm_outbox.h).
  */
-void dht_generate_outbox_key(
-    const char *sender,
-    const char *recipient,
-    uint8_t *key_out
-);
 
 /**
  * ============================================================================
@@ -257,14 +196,18 @@ void dht_generate_outbox_key(
 /**
  * Generate DHT key for ACK storage
  *
- * Key format: SHA3-512(recipient + ":ack:" + sender)
+ * Key format: SHA3-512(recipient + ":ack:" + sender + ":" + SALT_HEX)
+ *
+ * CORE-04 (phase 6, plan 05): salt is REQUIRED. Returns -1 if salt is NULL
+ * or on any internal failure. Callers MUST check the return value.
  *
  * @param recipient Recipient fingerprint (ACK owner)
  * @param sender Sender fingerprint (whose messages were fetched)
- * @param salt Optional 32-byte per-contact DHT salt (NULL for legacy)
+ * @param salt 32-byte per-contact DHT salt (REQUIRED, NULL is rejected)
  * @param key_out Output buffer (64 bytes for SHA3-512)
+ * @return 0 on success, -1 on error (NULL salt, NULL args, formatting error)
  */
-void dht_generate_ack_key(
+int dht_generate_ack_key(
     const char *recipient,
     const char *sender,
     const uint8_t *salt,

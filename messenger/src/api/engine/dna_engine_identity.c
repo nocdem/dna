@@ -316,6 +316,27 @@ int dna_load_identity_internal(dna_engine_t *engine, const char *fingerprint,
     engine->state = DNA_ENGINE_STATE_ACTIVE;
     QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, state=ACTIVE");
 
+    /* Warm the local name_cache from profile_cache (SQLite-backed, fast,
+     * no DHT) so that dna_engine_get_registered_name — and by extension
+     * the Flutter userProfileProvider → Settings screen — resolves the
+     * real registered name immediately instead of flashing "Anonymous"
+     * while the background stabilization thread spends 10+ seconds
+     * doing DHT probes + republish. profile_cache_get only touches local
+     * storage; it does not block on the network. */
+    {
+        dna_unified_identity_t *local_id = NULL;
+        uint64_t cached_at = 0;
+        if (profile_cache_get(engine->fingerprint, &local_id, &cached_at) == 0
+            && local_id != NULL
+            && local_id->registered_name[0] != '\0') {
+            keyserver_cache_put_name(engine->fingerprint, local_id->registered_name, 0);
+            QGP_LOG_INFO(LOG_TAG,
+                         "Warmed name_cache from profile_cache on load: %s",
+                         local_id->registered_name);
+        }
+        if (local_id) dna_identity_free(local_id);
+    }
+
     /* v0.9.142+: Start wall poll timer (replaces per-contact wall listeners) */
     if (!minimal) {
         dna_engine_start_wall_poll(engine);
@@ -1265,17 +1286,13 @@ int dna_engine_create_identity_sync(
     /* Step 2: Create temporary messenger context for registration */
     messenger_context_t *temp_ctx = messenger_init(fingerprint_out, engine->db_encryption_key);
     if (!temp_ctx) {
-        /* Cleanup: v0.3.0 flat structure - delete keys/, db/, wallets/, mnemonic.enc */
-        char path[512];
-        snprintf(path, sizeof(path), "%s/keys", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/db", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/wallets", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/mnemonic.enc", engine->data_dir);
-        remove(path);
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create messenger context for identity registration");
+        /* CORE-05: Do NOT destroy keys when messenger_init fails.
+         * Same rationale as the post-register_name branch below: transient
+         * init failures (e.g., DHT not ready yet) must not wipe the user's
+         * on-disk identity. The resume-flow UI can retry once the subsystem
+         * is healthy. See .planning/phases/06-c-engine-core-flow-fixes/. */
+        QGP_LOG_WARN(LOG_TAG,
+                     "Failed to create messenger context for identity registration — keys preserved for retry");
         return DNA_ERROR_INTERNAL;
     }
 
@@ -1286,17 +1303,14 @@ int dna_engine_create_identity_sync(
     messenger_free(temp_ctx);
 
     if (rc != 0) {
-        /* Cleanup: v0.3.0 flat structure - delete keys/, db/, wallets/, mnemonic.enc */
-        char path[512];
-        snprintf(path, sizeof(path), "%s/keys", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/db", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/wallets", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/mnemonic.enc", engine->data_dir);
-        remove(path);
-        QGP_LOG_ERROR(LOG_TAG, "Name registration failed for '%s', identity rolled back", name);
+        /* CORE-05: Do NOT destroy keys on registration failure.
+         * Transient DHT errors used to wipe the user's identity, locking them out.
+         * The Flutter UI's IdentitySelectionScreen(resumeFingerprint:) (shipped v0.101.38)
+         * handles retry via dna_engine_register_name without re-deriving keys.
+         * See .planning/phases/06-c-engine-core-flow-fixes/ for the full audit. */
+        QGP_LOG_WARN(LOG_TAG,
+                     "Name registration failed for '%s' (rc=%d) — keys preserved for retry via resume-flow",
+                     name, rc);
         return DNA_ENGINE_ERROR_NETWORK;
     }
 

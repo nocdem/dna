@@ -4,6 +4,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/engine_provider.dart';
+import 'clipboard_utils.dart';
 import 'logger.dart';
 
 /// Provider that tracks whether the app is currently in foreground (resumed)
@@ -31,10 +32,26 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
         ref.read(appInForegroundProvider.notifier).state = false;
         log('LIFECYCLE', 'App paused (background)');
         _pausePresence();
+        // SEC-09: primary clipboard clear on backgrounding — paused is the
+        // reliable state that fires before the OS removes the process from
+        // the foreground on home/task-switch/lock.
+        ClipboardUtils.clearIfSensitive();
+        break;
+      case AppLifecycleState.hidden:
+        // SEC-09: defense in depth — hidden fires slightly earlier than
+        // paused on Flutter 3.13+ on the same backgrounding transitions.
+        ClipboardUtils.clearIfSensitive();
         break;
       case AppLifecycleState.detached:
+        // SEC-09: best-effort clear on clean shutdown. May not get CPU time
+        // on swipe-kill / OOM-kill; that residual risk is documented in
+        // ClipboardUtils and accepted per user decision D-01/D-02.
+        ClipboardUtils.clearIfSensitive();
+        break;
       case AppLifecycleState.inactive:
-      case AppLifecycleState.hidden:
+        // No-op: inactive is a transient focus loss (phone call overlay,
+        // permission dialog) — not a real backgrounding event. Clearing
+        // here would wipe the clipboard on every in-app permission prompt.
         break;
     }
   }

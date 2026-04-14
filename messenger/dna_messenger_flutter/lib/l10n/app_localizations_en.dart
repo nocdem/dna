@@ -458,6 +458,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsSeedCopied => 'Seed phrase copied to clipboard';
 
   @override
+  String get seedCopyConfirmTitle => 'Copy seed phrase?';
+
+  @override
+  String get seedCopyConfirmBody =>
+      'Your seed phrase will be in the clipboard for 10 seconds. Do not switch apps or background the app during this time. Continue?';
+
+  @override
+  String get seedCopiedToast => 'Copied. Clipboard will clear in 10 seconds.';
+
+  @override
   String get settingsSeedNotAvailable =>
       'Seed phrase not available for this identity. It was created before this feature was added.';
 
@@ -1770,6 +1780,9 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get settingsActiveChainsSubtitle =>
       'Choose which networks to show in your wallet';
+
+  @override
+  String get invalidQrCode => 'Invalid QR code';
 
   @override
   String reactionAdded(String emoji) {

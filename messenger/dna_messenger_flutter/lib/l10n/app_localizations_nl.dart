@@ -463,6 +463,16 @@ class AppLocalizationsNl extends AppLocalizations {
   String get settingsSeedCopied => 'Herstelzin gekopieerd naar klembord';
 
   @override
+  String get seedCopyConfirmTitle => 'Copy seed phrase?';
+
+  @override
+  String get seedCopyConfirmBody =>
+      'Your seed phrase will be in the clipboard for 10 seconds. Do not switch apps or background the app during this time. Continue?';
+
+  @override
+  String get seedCopiedToast => 'Copied. Clipboard will clear in 10 seconds.';
+
+  @override
   String get settingsSeedNotAvailable =>
       'Herstelzin niet beschikbaar voor deze identiteit. Ze is aangemaakt voordat deze functie werd toegevoegd.';
 
@@ -1778,6 +1788,9 @@ class AppLocalizationsNl extends AppLocalizations {
   @override
   String get settingsActiveChainsSubtitle =>
       'Choose which networks to show in your wallet';
+
+  @override
+  String get invalidQrCode => 'Invalid QR code';
 
   @override
   String reactionAdded(String emoji) {

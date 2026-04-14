@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:dna_messenger/utils/qr_payload_parser.dart';
+import 'package:dna_connect/utils/qr_payload_parser.dart';
 
 void main() {
   group('QR Payload Parser', () {

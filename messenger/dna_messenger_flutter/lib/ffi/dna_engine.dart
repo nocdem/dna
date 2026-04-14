@@ -8,17 +8,16 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
 
 import 'dna_bindings.dart';
 
-// Debug logging helper - only prints in debug mode
-void _debugLog(String message) {
-  if (kDebugMode) {
-    // ignore: avoid_print
-    print(message);
-  }
-}
+// SEC-07: The legacy kDebugMode-gated print helper (pre-DnaLogger era) has
+// been removed. DnaLogger (lib/utils/logger.dart) is the sanctioned logging
+// path, but it imports this file — a circular dependency would block routing
+// from here. Every former call site has been deleted outright per D-09
+// ("when in doubt, delete"). Event-dispatch/dispose flow traces that used to
+// live here are observable via higher-level DnaLogger callers in the
+// providers and screens that consume DnaEngine's streams.
 
 // =============================================================================
 // DART MODELS
@@ -1658,13 +1657,11 @@ class DnaEngine {
     // CRITICAL: Check _isDisposed BEFORE dereferencing any pointers!
     // After dispose, C memory may be freed - dereferencing would crash.
     if (_isDisposed) {
-      _debugLog('[DART-EVENT] Callback invoked after dispose, ignoring');
       return;
     }
 
     final event = eventPtr.ref;
     final type = event.type;
-    _debugLog('[DART-EVENT] _onEventReceived called, type=$type');
 
     DnaEvent? dartEvent;
 
@@ -1734,7 +1731,6 @@ class DnaEngine {
           recipientFpBytes.add(byte);
         }
         final recipientFp = String.fromCharCodes(recipientFpBytes);
-        _debugLog('[DART-EVENT] MESSAGE_SENT: messageId=$messageId, status=$status, recipient=${recipientFp.length > 16 ? recipientFp.substring(0, 16) : recipientFp}...');
         dartEvent = MessageSentEvent(messageId, status, recipientFp);
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_DELIVERED:
@@ -1878,7 +1874,6 @@ class DnaEngine {
     }
 
     if (dartEvent != null) {
-      _debugLog('[DART-EVENT] Adding to stream: ${dartEvent.runtimeType}');
       _eventController.add(dartEvent);
     }
 
@@ -7314,45 +7309,32 @@ class DnaEngine {
 
   /// Dispose the engine and release all resources
   void dispose() {
-    _debugLog('[DART-DISPOSE] dispose() called, _isDisposed=$_isDisposed');
     if (_isDisposed) {
-      _debugLog('[DART-DISPOSE] Already disposed, returning');
       return;
     }
     _isDisposed = true;
-    _debugLog('[DART-DISPOSE] Set _isDisposed=true');
 
     // Check if async creation is still in progress
     // If so, set cancelled flag - C thread will destroy engine and skip callback
     if (_createCancelledPtr != null) {
-      _debugLog('[DART-DISPOSE] Async creation in progress, setting cancelled flag');
       _createCancelledPtr!.value = true;
       // Don't close callback or free pointer here - create()'s finally block will do it
       // Don't call dna_engine_destroy - we don't have an engine yet
       // The C thread will check the flag and destroy the engine itself
-      _debugLog('[DART-DISPOSE] Cancelled flag set, returning early');
       return;
     }
 
     // Clear the C callback pointer to prevent new callbacks
-    _debugLog('[DART-DISPOSE] Clearing C event callback...');
     _bindings.dna_engine_set_event_callback(_engine, nullptr, nullptr);
-    _debugLog('[DART-DISPOSE] C event callback cleared');
 
     // Clear pending requests
-    _debugLog('[DART-DISPOSE] Clearing ${_pendingRequests.length} pending requests...');
     _pendingRequests.clear();
-    _debugLog('[DART-DISPOSE] Pending requests cleared');
 
     // Close the event controller
-    _debugLog('[DART-DISPOSE] Closing event controller...');
     _eventController.close();
-    _debugLog('[DART-DISPOSE] Event controller closed');
 
     // Call destroy - releases identity lock and cleans up all resources.
-    _debugLog('[DART-DISPOSE] Calling dna_engine_destroy()...');
     _bindings.dna_engine_destroy(_engine);
-    _debugLog('[DART-DISPOSE] dna_engine_destroy() returned');
 
     // On Android, skip NativeCallable cleanup - process will die anyway
     // and closing these while callbacks might be in flight causes crashes.
@@ -7361,7 +7343,6 @@ class DnaEngine {
       _eventCallback = null;
     }
     _engine = nullptr;
-    _debugLog('[DART-DISPOSE] dispose() complete');
   }
 }
 

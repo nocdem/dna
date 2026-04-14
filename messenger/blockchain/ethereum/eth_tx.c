@@ -22,6 +22,7 @@
 #endif
 #include <curl/curl.h>
 #include <json-c/json.h>
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 #define LOG_TAG "ETH_TX"
 
@@ -531,7 +532,7 @@ int eth_tx_send(const eth_signed_tx_t *signed_tx, char *tx_hash_out) {
     } else {
         /* Use our computed hash */
         QGP_LOG_WARN(LOG_TAG, "RPC returned no hash, using computed: %s", signed_tx->tx_hash);
-        strcpy(tx_hash_out, signed_tx->tx_hash);
+        snprintf(tx_hash_out, 67, "%s", signed_tx->tx_hash);
     }
 
     json_object_put(result);
@@ -585,7 +586,7 @@ int eth_tx_send_private(const eth_signed_tx_t *signed_tx, char *tx_hash_out) {
             strncpy(tx_hash_out, hash, 66);
             tx_hash_out[66] = '\0';
         } else {
-            strcpy(tx_hash_out, signed_tx->tx_hash);
+            snprintf(tx_hash_out, 67, "%s", signed_tx->tx_hash);
         }
         json_object_put(result);
         json_object_put(params);

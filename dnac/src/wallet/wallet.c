@@ -20,6 +20,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "dnac/crypto_helpers.h"
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 #define LOG_TAG "DNAC_WALLET"
 

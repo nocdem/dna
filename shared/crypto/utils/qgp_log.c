@@ -31,6 +31,8 @@
 #include <dirent.h>
 #endif
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* v0.6.47: Thread-safe localtime wrapper (security fix) */
 static inline struct tm *safe_localtime(const time_t *timer, struct tm *result) {
 #ifdef _WIN32
@@ -117,7 +119,7 @@ void qgp_log_enable_tag(const char *tag) {
         if (strcmp(g_disabled_tags[i], tag) == 0) {
             /* Shift remaining tags */
             for (int j = i; j < g_disabled_count - 1; j++) {
-                strcpy(g_disabled_tags[j], g_disabled_tags[j + 1]);
+                memcpy(g_disabled_tags[j], g_disabled_tags[j + 1], sizeof(g_disabled_tags[j]));
             }
             g_disabled_count--;
             break;
@@ -148,7 +150,7 @@ void qgp_log_disable_tag(const char *tag) {
         if (strcmp(g_enabled_tags[i], tag) == 0) {
             /* Shift remaining tags */
             for (int j = i; j < g_enabled_count - 1; j++) {
-                strcpy(g_enabled_tags[j], g_enabled_tags[j + 1]);
+                memcpy(g_enabled_tags[j], g_enabled_tags[j + 1], sizeof(g_enabled_tags[j]));
             }
             g_enabled_count--;
             break;

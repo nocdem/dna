@@ -13,6 +13,8 @@
 #include "crypto/utils/qgp_platform.h"
 #include <stdio.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /**
  * Generate cryptographically secure random bytes
  *

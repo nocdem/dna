@@ -216,7 +216,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         /* Native ETH balance */
         strncpy(balances[0].token, "ETH", sizeof(balances[0].token) - 1);
         strncpy(balances[0].network, "Ethereum", sizeof(balances[0].network) - 1);
-        strcpy(balances[0].balance, "0.0");
+        snprintf(balances[0].balance, sizeof(balances[0].balance), "0.0");
 
         blockchain_balance_t bc_balance;
         if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
@@ -235,7 +235,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         /* USDT (ERC-20) balance */
         strncpy(balances[1].token, "USDT", sizeof(balances[1].token) - 1);
         strncpy(balances[1].network, "Ethereum", sizeof(balances[1].network) - 1);
-        strcpy(balances[1].balance, "0.0");
+        snprintf(balances[1].balance, sizeof(balances[1].balance), "0.0");
 
         char usdt_balance[64] = {0};
         if (eth_erc20_get_balance_by_symbol(wallet_info->address, "USDT", usdt_balance, sizeof(usdt_balance)) == 0) {
@@ -253,7 +253,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         /* USDC (ERC-20) balance */
         strncpy(balances[2].token, "USDC", sizeof(balances[2].token) - 1);
         strncpy(balances[2].network, "Ethereum", sizeof(balances[2].network) - 1);
-        strcpy(balances[2].balance, "0");
+        snprintf(balances[2].balance, sizeof(balances[2].balance), "0");
 
         char usdc_balance_eth[64] = {0};
         if (eth_erc20_get_balance_by_symbol(wallet_info->address, "USDC", usdc_balance_eth, sizeof(usdc_balance_eth)) == 0) {
@@ -283,7 +283,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         /* Native TRX balance */
         strncpy(balances[0].token, "TRX", sizeof(balances[0].token) - 1);
         strncpy(balances[0].network, "Tron", sizeof(balances[0].network) - 1);
-        strcpy(balances[0].balance, "0.0");
+        snprintf(balances[0].balance, sizeof(balances[0].balance), "0.0");
 
         blockchain_balance_t bc_balance;
         if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
@@ -301,11 +301,11 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         /* TRC-20 balances (USDT, USDC) — single HTTP call for all tokens */
         strncpy(balances[1].token, "USDT", sizeof(balances[1].token) - 1);
         strncpy(balances[1].network, "Tron", sizeof(balances[1].network) - 1);
-        strcpy(balances[1].balance, "0.0");
+        snprintf(balances[1].balance, sizeof(balances[1].balance), "0.0");
 
         strncpy(balances[2].token, "USDC", sizeof(balances[2].token) - 1);
         strncpy(balances[2].network, "Tron", sizeof(balances[2].network) - 1);
-        strcpy(balances[2].balance, "0.0");
+        snprintf(balances[2].balance, sizeof(balances[2].balance), "0.0");
 
         /* Batch: one /v1/accounts/ call returns USDT+USDC+USDD */
         char trc20_balances[3][64];
@@ -344,7 +344,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         /* Native SOL balance */
         strncpy(balances[0].token, "SOL", sizeof(balances[0].token) - 1);
         strncpy(balances[0].network, "Solana", sizeof(balances[0].network) - 1);
-        strcpy(balances[0].balance, "0.0");
+        snprintf(balances[0].balance, sizeof(balances[0].balance), "0.0");
 
         blockchain_balance_t bc_balance;
         if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
@@ -362,7 +362,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         /* USDT (SPL) balance */
         strncpy(balances[1].token, "USDT", sizeof(balances[1].token) - 1);
         strncpy(balances[1].network, "Solana", sizeof(balances[1].network) - 1);
-        strcpy(balances[1].balance, "0");
+        snprintf(balances[1].balance, sizeof(balances[1].balance), "0");
 
         char usdt_balance[64] = {0};
         if (sol_spl_get_balance_by_symbol(wallet_info->address, "USDT", usdt_balance, sizeof(usdt_balance)) == 0) {
@@ -380,7 +380,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         /* USDC (SPL) balance */
         strncpy(balances[2].token, "USDC", sizeof(balances[2].token) - 1);
         strncpy(balances[2].network, "Solana", sizeof(balances[2].network) - 1);
-        strcpy(balances[2].balance, "0");
+        snprintf(balances[2].balance, sizeof(balances[2].balance), "0");
 
         char usdc_balance_sol[64] = {0};
         if (sol_spl_get_balance_by_symbol(wallet_info->address, "USDC", usdc_balance_sol, sizeof(usdc_balance_sol)) == 0) {
@@ -410,7 +410,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         /* Native BNB balance */
         strncpy(balances[0].token, "BNB", sizeof(balances[0].token) - 1);
         strncpy(balances[0].network, "BSC", sizeof(balances[0].network) - 1);
-        strcpy(balances[0].balance, "0.0");
+        snprintf(balances[0].balance, sizeof(balances[0].balance), "0.0");
 
         blockchain_balance_t bc_balance;
         if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
@@ -428,7 +428,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         /* USDT (BEP-20) balance */
         strncpy(balances[1].token, "USDT", sizeof(balances[1].token) - 1);
         strncpy(balances[1].network, "BSC", sizeof(balances[1].network) - 1);
-        strcpy(balances[1].balance, "0.0");
+        snprintf(balances[1].balance, sizeof(balances[1].balance), "0.0");
 
         char bsc_usdt[64] = {0};
         if (bsc_bep20_get_balance_by_symbol(wallet_info->address, "USDT", bsc_usdt, sizeof(bsc_usdt)) == 0) {
@@ -446,7 +446,7 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         /* USDC (BEP-20) balance */
         strncpy(balances[2].token, "USDC", sizeof(balances[2].token) - 1);
         strncpy(balances[2].network, "BSC", sizeof(balances[2].network) - 1);
-        strcpy(balances[2].balance, "0.0");
+        snprintf(balances[2].balance, sizeof(balances[2].balance), "0.0");
 
         char bsc_usdc[64] = {0};
         if (bsc_bep20_get_balance_by_symbol(wallet_info->address, "USDC", bsc_usdc, sizeof(bsc_usdc)) == 0) {
@@ -478,23 +478,23 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     /* Initialize with defaults */
     strncpy(balances[0].token, "CPUNK", sizeof(balances[0].token) - 1);
     strncpy(balances[0].network, "Cellframe", sizeof(balances[0].network) - 1);
-    strcpy(balances[0].balance, "0.0");
+    snprintf(balances[0].balance, sizeof(balances[0].balance), "0.0");
 
     strncpy(balances[1].token, "CELL", sizeof(balances[1].token) - 1);
     strncpy(balances[1].network, "Cellframe", sizeof(balances[1].network) - 1);
-    strcpy(balances[1].balance, "0.0");
+    snprintf(balances[1].balance, sizeof(balances[1].balance), "0.0");
 
     strncpy(balances[2].token, "NYS", sizeof(balances[2].token) - 1);
     strncpy(balances[2].network, "Cellframe", sizeof(balances[2].network) - 1);
-    strcpy(balances[2].balance, "0.0");
+    snprintf(balances[2].balance, sizeof(balances[2].balance), "0.0");
 
     strncpy(balances[3].token, "KEL", sizeof(balances[3].token) - 1);
     strncpy(balances[3].network, "Cellframe", sizeof(balances[3].network) - 1);
-    strcpy(balances[3].balance, "0.0");
+    snprintf(balances[3].balance, sizeof(balances[3].balance), "0.0");
 
     strncpy(balances[4].token, "QEVM", sizeof(balances[4].token) - 1);
     strncpy(balances[4].network, "Cellframe", sizeof(balances[4].network) - 1);
-    strcpy(balances[4].balance, "0.0");
+    snprintf(balances[4].balance, sizeof(balances[4].balance), "0.0");
 
     count = 5;
 

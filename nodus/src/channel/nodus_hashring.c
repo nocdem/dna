@@ -10,6 +10,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* Sort members by node_id for deterministic ring ordering */
 static int member_cmp(const void *a, const void *b) {
     const nodus_ring_member_t *ma = (const nodus_ring_member_t *)a;

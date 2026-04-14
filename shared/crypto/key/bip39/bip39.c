@@ -22,6 +22,8 @@
 
 #include <openssl/evp.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /**
  * Get random bytes for entropy generation
  * Uses cross-platform qgp_randombytes() for cryptographically secure random bytes
@@ -106,7 +108,7 @@ int bip39_mnemonic_from_entropy(
             mnemonic[mnemonic_len++] = ' ';
         }
 
-        strcpy(mnemonic + mnemonic_len, word);
+        snprintf(mnemonic + mnemonic_len, mnemonic_size - mnemonic_len, "%s", word);
         mnemonic_len += word_len;
     }
 
@@ -139,13 +141,16 @@ int bip39_generate_mnemonic(
     // Generate random entropy
     uint8_t entropy[32];
     if (get_random_bytes(entropy, entropy_len) != 0) {
+        /* SEC-06: Defensive — entropy is uninitialized here, but zero it
+         * unconditionally so future modifications cannot leak partial state. */
+        qgp_secure_memzero(entropy, sizeof(entropy));
         return -1;
     }
 
     // Convert entropy to mnemonic
     int rc = bip39_mnemonic_from_entropy(entropy, entropy_len, mnemonic, mnemonic_size);
 
-    /* M-10: Wipe entropy from stack after use */
+    /* M-10 / SEC-06: Wipe entropy from stack on every return path */
     qgp_secure_memzero(entropy, sizeof(entropy));
 
     return rc;
@@ -188,6 +193,7 @@ bool bip39_validate_mnemonic(const char *mnemonic) {
     }
 
     // Split mnemonic into words
+    size_t mnemonic_copy_len = strlen(mnemonic);
     char *mnemonic_copy = strdup(mnemonic);
     if (!mnemonic_copy) {
         return false;
@@ -201,7 +207,10 @@ bool bip39_validate_mnemonic(const char *mnemonic) {
     while (token != NULL && word_count < 24) {
         int index = bip39_word_index(token);
         if (index < 0) {
+            /* SEC-06: zero seed-adjacent buffers before free / return */
+            qgp_secure_memzero(mnemonic_copy, mnemonic_copy_len);
             free(mnemonic_copy);
+            qgp_secure_memzero(word_indices, sizeof(word_indices));
             return false;
         }
 
@@ -209,11 +218,14 @@ bool bip39_validate_mnemonic(const char *mnemonic) {
         token = strtok(NULL, " ");
     }
 
+    /* SEC-06: zero mnemonic_copy before free */
+    qgp_secure_memzero(mnemonic_copy, mnemonic_copy_len);
     free(mnemonic_copy);
 
     // Validate word count
     if (word_count != 12 && word_count != 15 && word_count != 18 &&
         word_count != 21 && word_count != 24) {
+        qgp_secure_memzero(word_indices, sizeof(word_indices));
         return false;
     }
 
@@ -262,10 +274,16 @@ bool bip39_validate_mnemonic(const char *mnemonic) {
     // Expected checksum: top checksum_bits of SHA256 hash
     uint8_t expected_checksum = hash[0] >> (8 - checksum_bits);
 
-    /* M-11: Wipe SHA-256 hash after use */
-    qgp_secure_memzero(hash, sizeof(hash));
+    bool valid = (actual_checksum == expected_checksum);
 
-    return actual_checksum == expected_checksum;
+    /* M-11 / SEC-06: Wipe all seed-adjacent stack buffers before return.
+     * `entropy` holds reconstructed seed-adjacent material; `hash` is the
+     * SHA-256 of that entropy; `word_indices` encodes the same data. */
+    qgp_secure_memzero(hash, sizeof(hash));
+    qgp_secure_memzero(entropy, sizeof(entropy));
+    qgp_secure_memzero(word_indices, sizeof(word_indices));
+
+    return valid;
 }
 
 /**

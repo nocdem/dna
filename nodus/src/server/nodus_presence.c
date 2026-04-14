@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* ── Internal helpers ─────────────────────────────────────────────── */
 
 static int find_entry(nodus_presence_table_t *tbl, const nodus_key_t *fp,

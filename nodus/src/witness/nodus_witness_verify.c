@@ -24,6 +24,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "WITNESS-VERIFY"
 
 /* Wire format constants */

@@ -698,13 +698,21 @@ int messenger_flush_recipient_outbox(messenger_context_t *ctx, const char *recip
     uint64_t today = dht_dm_outbox_get_day_bucket();
     char base_key[512];
 
+    /* CORE-04 (phase 6, plan 05): salt is REQUIRED for DM outbox writes.
+     * Refuse to flush if the per-contact salt is not persisted yet. */
     uint8_t salt_buf[32];
-    const uint8_t *salt_ptr = NULL;
-    if (contacts_db_get_salt(recipient_fp, salt_buf) == 0) {
-        salt_ptr = salt_buf;
+    if (contacts_db_get_salt(recipient_fp, salt_buf) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "[FLUSH] No per-contact DHT salt for %.20s... - refusing to flush "
+            "DM bucket (salt agreement must complete before first send)",
+            recipient_fp);
+        free(serialized);
+        dht_offline_messages_free(offline_msgs, built_count);
+        message_backup_free_messages(pending, pending_count);
+        return -1;
     }
 
-    if (dht_dm_outbox_make_key(ctx->identity, recipient_fp, today, salt_ptr,
+    if (dht_dm_outbox_make_key(ctx->identity, recipient_fp, today, salt_buf,
                                 base_key, sizeof(base_key)) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "[FLUSH] Failed to generate bucket key");
         free(serialized);
@@ -714,9 +722,8 @@ int messenger_flush_recipient_outbox(messenger_context_t *ctx, const char *recip
     }
 
     /* 8. PUT to DHT */
-    QGP_LOG_INFO(LOG_TAG, "[FLUSH] PUT %d msgs, blob=%zu bytes, day=%lu, salt=%s",
-                 built_count, serialized_len, (unsigned long)today,
-                 salt_ptr ? "YES" : "NO");
+    QGP_LOG_INFO(LOG_TAG, "[FLUSH] PUT %d msgs, blob=%zu bytes, day=%lu",
+                 built_count, serialized_len, (unsigned long)today);
     int put_rc = nodus_ops_put_str(base_key, serialized, serialized_len,
                                     DNA_DM_OUTBOX_TTL, nodus_ops_value_id());
 

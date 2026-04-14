@@ -28,6 +28,7 @@
 #include "../dht/core/dht_keyserver.h"
 #include "crypto/nodus_identity.h"
 #include "../database/keyserver_cache.h"
+#include "crypto/utils/qgp_safe_string.h"
 #include "../dna_config.h"
 #include "keys.h"
 #include "../blockchain/cellframe/cellframe_wallet_create.h"
@@ -532,6 +533,14 @@ int messenger_register_name(
         QGP_LOG_INFO(LOG_TAG, "✓ Public keys cached locally\n");
     }
 
+    /* Also cache the fingerprint->name mapping locally so that
+     * dht_keyserver_reverse_lookup (used by dna_engine_get_registered_name)
+     * resolves synchronously without a DHT roundtrip. Previously this table
+     * was only written by dna_handle_register_name, so the startup-republish
+     * path populated DHT + keyserver_cache (pubkeys) but NEVER name_cache,
+     * leaving the UI showing "Anonymous" until something else poked state. */
+    keyserver_cache_put_name(fingerprint, desired_name, 0);
+
     qgp_key_free(sign_key);
     qgp_key_free(enc_key);
 
@@ -655,7 +664,7 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
 
     // Convert to hex string (128 chars)
     for (int i = 0; i < 64; i++) {
-        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+        snprintf(fingerprint + (i * 2), sizeof(fingerprint) - (i * 2), "%02x", hash[i]);
     }
     fingerprint[128] = '\0';
 

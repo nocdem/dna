@@ -689,6 +689,23 @@ typedef struct {
     dna_task_t tasks[DNA_TASK_QUEUE_SIZE];
     atomic_size_t head;  /* Producer writes here */
     atomic_size_t tail;  /* Consumer reads from here */
+#ifndef NDEBUG
+    /* THR-03 — Task Queue Concurrency Contract (CONCURRENCY.md L1 cluster).
+     *
+     * The MPSC-via-task_mutex contract requires every call to
+     * dna_task_queue_push to happen while engine->task_mutex is held.
+     * dna_submit_task sets this field to pthread_self() immediately after
+     * locking task_mutex; dna_task_queue_push asserts via pthread_equal
+     * that the current thread matches. A future caller that bypasses
+     * dna_submit_task and pushes directly will either trip the assert
+     * (owner is a different thread) or trip it on first push (owner is
+     * zero-initialized). Zero cost in release builds — the field and the
+     * assert are both #ifndef NDEBUG-gated.
+     *
+     * Portable POSIX: pthread_t + pthread_self() + pthread_equal() are
+     * available on pthreads-w32 / llvm-mingw winpthreads and Android NDK. */
+    pthread_t task_mutex_owner;
+#endif
 } dna_task_queue_t;
 
 /* ============================================================================
@@ -886,10 +903,13 @@ struct dna_engine {
     pthread_cond_t background_thread_exit_cond;  /* v0.6.113: Signaled when background thread exits */
 
     /* HIGH-8: Track backup/restore threads for clean shutdown */
+    /* SEC-05 (Phase 02-02): running flags are _Atomic bool — the destroy path
+     * reads them without holding any engine mutex, and the backup/restore
+     * threads write them from their own pthread. Plain bool is a data race. */
     pthread_t backup_thread;
-    bool backup_thread_running;
+    _Atomic bool backup_thread_running;  /* SEC-05: atomic for destroy-path read race */
     pthread_t restore_thread;
-    bool restore_thread_running;
+    _Atomic bool restore_thread_running;  /* SEC-05: atomic for destroy-path read race */
 
     /* v0.6.107+: State synchronization */
     pthread_mutex_t state_mutex;           /* Protects engine state transitions */

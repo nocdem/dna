@@ -10,6 +10,8 @@
 #include "crypto/utils/qgp_platform.h"
 #include <string.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 int nodus_sign(nodus_sig_t *sig_out,
                const uint8_t *data, size_t data_len,
                const nodus_seckey_t *sk) {

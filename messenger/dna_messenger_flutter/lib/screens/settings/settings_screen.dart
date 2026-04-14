@@ -16,7 +16,7 @@ import '../../config/app_config.dart';
 import '../../l10n/app_localizations.dart';
 import '../../utils/clipboard_utils.dart';
 import '../../utils/log_sanitizer.dart';
-import '../../utils/screen_security.dart';
+import '../../widgets/secure_display_scope.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
@@ -534,7 +534,6 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
           final theme = Theme.of(context);
           final isDark = theme.brightness == Brightness.dark;
 
-          ScreenSecurity.enable();
           showDialog(
             context: context,
             barrierDismissible: false,
@@ -542,7 +541,11 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
               insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 32),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               backgroundColor: theme.dialogBackgroundColor,
-              child: SingleChildScrollView(
+              // SEC-10: FLAG_SECURE is installed on initState and cleared on
+              // dispose by SecureDisplayScope, covering all dialog dismissal
+              // paths uniformly (copy button, Done button, barrier, back press).
+              child: SecureDisplayScope(
+                child: SingleChildScrollView(
                 child: Padding(
                   padding: const EdgeInsets.all(24),
                   child: Column(
@@ -699,10 +702,25 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: ElevatedButton.icon(
-                            onPressed: () {
-                              ClipboardUtils.copyWithAutoClear(mnemonic);
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text(AppLocalizations.of(context).settingsSeedCopied)),
+                            onPressed: () async {
+                              // SEC-09: pre-copy confirmation gate. Cancel is
+                              // the ghost (less-prominent) button per
+                              // DnaDialog.confirm default styling.
+                              final l10n = AppLocalizations.of(context);
+                              final confirmed = await DnaDialog.confirm(
+                                context,
+                                title: l10n.seedCopyConfirmTitle,
+                                message: l10n.seedCopyConfirmBody,
+                                confirmLabel: l10n.continueButton,
+                                cancelLabel: l10n.cancel,
+                              );
+                              if (!confirmed) return;
+                              if (!context.mounted) return;
+                              await ClipboardUtils.copyWithAutoClear(mnemonic);
+                              if (!context.mounted) return;
+                              DnaSnackBar.info(
+                                context,
+                                AppLocalizations.of(context).seedCopiedToast,
                               );
                             },
                             icon: const FaIcon(FontAwesomeIcons.copy, size: 16),
@@ -729,7 +747,6 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                         height: 46,
                         child: OutlinedButton(
                           onPressed: () {
-                                ScreenSecurity.disable();
                                 Navigator.pop(context);
                               },
                           style: OutlinedButton.styleFrom(
@@ -752,6 +769,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                     ],
                   ),
                 ),
+              ),
               ),
             ),
           );

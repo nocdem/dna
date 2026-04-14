@@ -10,6 +10,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import '../ffi/dna_engine.dart';
+import '../utils/logger.dart' as dna_logger;
 import '../utils/qr_payload_parser.dart';
 
 class QrAuthResult {
@@ -111,11 +112,10 @@ class QrAuthService {
       );
 
       final payloadBytes = utf8.encode(signedPayloadStr);
-      final payloadHash = sha256.convert(payloadBytes).toString();
-      debugPrint(
-        'QR_AUTH: payload_v=$pv payload_len=${payloadBytes.length} payload_sha256=$payloadHash',
-      );
-
+      // SEC-07 D-08: removed debugPrint of payload_sha256 + length.
+      // The payload contains session_id, nonce, and origin which are
+      // auth-sensitive; the hash is a linkable identifier across logs.
+      // Per D-09 "when in doubt, delete" — no replacement routed log.
       final signature = _engine.signData(Uint8List.fromList(payloadBytes));
       final signatureBase64 = base64Encode(signature);
       final pubkeyB64 = base64Encode(_engine.signingPublicKey);
@@ -152,7 +152,7 @@ class QrAuthService {
     }
   }
 
-  String _buildCanonicalSignedPayload({
+  static String _buildCanonicalSignedPayload({
     required String origin,
     required String sessionId,
     required String nonce,
@@ -166,21 +166,95 @@ class QrAuthService {
     final hasRp = rpId != null && rpId.trim().isNotEmpty;
     final hasRpHash = rpIdHashB64 != null && rpIdHashB64.trim().isNotEmpty;
 
+    // SEC-03: canonical signed payload is built via jsonEncode(Map) so
+    // Dart's stdlib escapes any JSON metacharacters in attacker-controlled
+    // fields (nonce, origin, session_id). Map keys are inserted in the
+    // SAME alphabetical order the legacy interpolated template used;
+    // jsonEncode emits Map entries in insertion order, so the byte
+    // sequence is identical to the legacy form on clean inputs and
+    // v3/v4 signatures remain verifiable on the receive side.
     if (hasRp && hasRpHash) {
       final normRpId = rpId.trim().toLowerCase();
       final normRpHash = rpIdHashB64.trim();
-      // alphabetical: expires_at, issued_at, nonce, origin, rp_id, rp_id_hash, session_id
-      return '{"expires_at":$expiresAt,"issued_at":$issuedAt,"nonce":"$nonce","origin":"$normOrigin","rp_id":"$normRpId","rp_id_hash":"$normRpHash","session_id":"$sessionId"}';
+      return jsonEncode(<String, dynamic>{
+        'expires_at': expiresAt,
+        'issued_at': issuedAt,
+        'nonce': nonce,
+        'origin': normOrigin,
+        'rp_id': normRpId,
+        'rp_id_hash': normRpHash,
+        'session_id': sessionId,
+      });
     }
 
     if (hasRp) {
       final normRpId = rpId.trim().toLowerCase();
-      // alphabetical: expires_at, issued_at, nonce, origin, rp_id, session_id
-      return '{"expires_at":$expiresAt,"issued_at":$issuedAt,"nonce":"$nonce","origin":"$normOrigin","rp_id":"$normRpId","session_id":"$sessionId"}';
+      return jsonEncode(<String, dynamic>{
+        'expires_at': expiresAt,
+        'issued_at': issuedAt,
+        'nonce': nonce,
+        'origin': normOrigin,
+        'rp_id': normRpId,
+        'session_id': sessionId,
+      });
     }
 
-    return '{"expires_at":$expiresAt,"issued_at":$issuedAt,"nonce":"$nonce","origin":"$normOrigin","session_id":"$sessionId"}';
+    return jsonEncode(<String, dynamic>{
+      'expires_at': expiresAt,
+      'issued_at': issuedAt,
+      'nonce': nonce,
+      'origin': normOrigin,
+      'session_id': sessionId,
+    });
   }
+
+  /// SEC-03 test hook — @visibleForTesting wrapper around
+  /// [_buildCanonicalSignedPayload] so byte-identical round-trip tests can
+  /// exercise the real production code path without duplicating it.
+  /// This is NOT part of the public API surface consumed by screens.
+  @visibleForTesting
+  static String debugBuildCanonicalSignedPayload({
+    required String origin,
+    required String sessionId,
+    required String nonce,
+    required int issuedAt,
+    required int expiresAt,
+    String? rpId,
+    String? rpIdHashB64,
+  }) =>
+      _buildCanonicalSignedPayload(
+        origin: origin,
+        sessionId: sessionId,
+        nonce: nonce,
+        issuedAt: issuedAt,
+        expiresAt: expiresAt,
+        rpId: rpId,
+        rpIdHashB64: rpIdHashB64,
+      );
+
+  /// SEC-03 test hook — @visibleForTesting wrapper around
+  /// [_buildCanonicalV4Payload].
+  @visibleForTesting
+  static String debugBuildCanonicalV4Payload({
+    required int expiresAt,
+    required int issuedAt,
+    required String nonce,
+    required String origin,
+    required String rpIdHash,
+    required String sessionId,
+    required String sid,
+    required String stHash,
+  }) =>
+      _buildCanonicalV4Payload(
+        expiresAt: expiresAt,
+        issuedAt: issuedAt,
+        nonce: nonce,
+        origin: origin,
+        rpIdHash: rpIdHash,
+        sessionId: sessionId,
+        sid: sid,
+        stHash: stHash,
+      );
 
   String _buildResponseBody({
     required String sessionId,
@@ -251,7 +325,11 @@ class QrAuthService {
   }
 
   void deny(QrPayload payload) {
-    debugPrint('QR_AUTH: Auth request denied by user: ${payload.origin}');
+    // SEC-07 D-08: origin is a public URI (not secret) — ROUTE to DnaLogger.
+    dna_logger.log(
+      'QR_AUTH',
+      'Auth request denied by user: ${payload.origin}',
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -326,10 +404,10 @@ class QrAuthService {
       );
 
       final payloadBytes = utf8.encode(canonicalStr);
-      final payloadHash = sha256.convert(payloadBytes).toString();
-      debugPrint(
-        'QR_AUTH_V4: sid=$sid payload_sha256=$payloadHash',
-      );
+      // SEC-07 D-08: removed debugPrint of sid + payload_sha256.
+      // sid is the v4 session identifier; the hash is a linkable
+      // identifier across logs. Per D-09 "when in doubt, delete" —
+      // no replacement routed log.
 
       // Sign with Dilithium5
       final signature = _engine.signData(Uint8List.fromList(payloadBytes));
@@ -365,7 +443,9 @@ class QrAuthService {
           ? '${origin}api/v5/verify'
         : '$origin/api/v5/verify';
 
-      debugPrint('QR_AUTH_V4: verifyUrl=$verifyUrl');
+      // SEC-07 D-08: removed debugPrint of verifyUrl. The URL encodes
+      // the origin and may carry session identifiers in the path/query;
+      // this is auth-sensitive. Per D-09 "when in doubt, delete."
 
       return await _postToCallback(verifyUrl, jsonEncode(requestBody));
     } on DnaEngineException catch (e) {
@@ -389,7 +469,13 @@ class QrAuthService {
       final payload = jsonDecode(payloadStr) as Map<String, dynamic>;
       return payload;
     } catch (e) {
-      debugPrint('QR_AUTH_V4: Failed to decode st payload: $e');
+      // SEC-07 D-08: ROUTE to DnaLogger but strip the exception body —
+      // `$e` may contain raw st payload bytes. Log only the runtime
+      // type so operators still see the failure class in dna.log.
+      dna_logger.logError(
+        'QR_AUTH_V4',
+        'Failed to decode st payload: ${e.runtimeType}',
+      );
       return null;
     }
   }
@@ -416,8 +502,15 @@ class QrAuthService {
     return base64Encode(digest.bytes);
   }
 
-  /// Build canonical v4 payload string with exact key order
-  String _buildCanonicalV4Payload({
+  /// Build canonical v4 payload string with exact key order.
+  ///
+  /// SEC-03: built via jsonEncode(Map) so attacker-controlled fields are
+  /// escaped by dart:convert. Map keys are inserted in alphabetical order
+  /// (expires_at, issued_at, nonce, origin, rp_id_hash, session_id, sid,
+  /// st_hash) and jsonEncode preserves Map insertion order, so the byte
+  /// sequence is byte-identical to the legacy interpolated template on
+  /// clean inputs — v4 signatures remain verifiable on the receive side.
+  static String _buildCanonicalV4Payload({
     required int expiresAt,
     required int issuedAt,
     required String nonce,
@@ -427,8 +520,15 @@ class QrAuthService {
     required String sid,
     required String stHash,
   }) {
-    // Alphabetical key order:
-    // expires_at, issued_at, nonce, origin, rp_id_hash, session_id, sid, st_hash
-    return '{"expires_at":$expiresAt,"issued_at":$issuedAt,"nonce":"$nonce","origin":"$origin","rp_id_hash":"$rpIdHash","session_id":"$sessionId","sid":"$sid","st_hash":"$stHash"}';
+    return jsonEncode(<String, dynamic>{
+      'expires_at': expiresAt,
+      'issued_at': issuedAt,
+      'nonce': nonce,
+      'origin': origin,
+      'rp_id_hash': rpIdHash,
+      'session_id': sessionId,
+      'sid': sid,
+      'st_hash': stHash,
+    });
   }
 }

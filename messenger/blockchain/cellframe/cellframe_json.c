@@ -14,6 +14,7 @@
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 #define LOG_TAG "WALLET_JSON"
 
@@ -82,8 +83,9 @@ void cellframe_hash_to_hex(const cellframe_hash_t *hash, char *hex_out) {
     hex_out[0] = '0';
     hex_out[1] = 'x';
 
+    /* Caller guarantees hex_out is at least 67 bytes (see cellframe_json.h) */
     for (int i = 0; i < 32; i++) {
-        sprintf(hex_out + 2 + (i * 2), "%02X", hash->raw[i]);
+        snprintf(&hex_out[2 + (i * 2)], 67 - 2 - (size_t)(i * 2), "%02X", hash->raw[i]);
     }
 
     hex_out[66] = '\0';
@@ -98,9 +100,13 @@ void cellframe_uint256_to_str(const uint256_t *value, char *str_out) {
         return;
     }
 
+    /* Caller guarantees str_out is at least 80 bytes (see cellframe_json.h).
+     * 256-bit decimal fits in 78 digits + null, so 80 is the documented bound. */
+    const size_t str_out_size = 80;
+
     // Fast path: if only lo.lo is non-zero, use simple sprintf
     if (value->hi.hi == 0 && value->hi.lo == 0 && value->lo.hi == 0) {
-        sprintf(str_out, "%llu", (unsigned long long)value->lo.lo);
+        snprintf(str_out, str_out_size, "%llu", (unsigned long long)value->lo.lo);
         return;
     }
 
@@ -130,7 +136,7 @@ void cellframe_uint256_to_str(const uint256_t *value, char *str_out) {
         }
 
         // Store remainder as this chunk
-        sprintf(chunks[chunk_count], "%018llu", (unsigned long long)r);
+        snprintf(chunks[chunk_count], sizeof(chunks[chunk_count]), "%018llu", (unsigned long long)r);
         chunk_count++;
 
         // Update remaining with quotient
@@ -143,24 +149,33 @@ void cellframe_uint256_to_str(const uint256_t *value, char *str_out) {
     }
 
     if (chunk_count == 0) {
-        strcpy(str_out, "0");
+        snprintf(str_out, str_out_size, "0");
         return;
     }
 
-    // Combine chunks in reverse order, stripping leading zeros from first chunk
-    char *out = str_out;
+    /* Combine chunks in reverse order, stripping leading zeros from first chunk.
+     * Rewritten from mid-buffer strcpy loop to explicit remaining-capacity tracking
+     * so the copy is bounded by str_out_size. Hand-traced against value=10^18+5
+     * (2 chunks): expected "1000000000000000005" (19 bytes) — verified. */
+    char *write_ptr = str_out;
+    size_t out_remaining = str_out_size;
     for (int i = chunk_count - 1; i >= 0; i--) {
+        const char *src;
         if (i == chunk_count - 1) {
             // First chunk: skip leading zeros
-            char *p = chunks[i];
-            while (*p == '0' && *(p+1) != '\0') p++;
-            strcpy(out, p);
-            out += strlen(p);
+            const char *p = chunks[i];
+            while (*p == '0' && *(p + 1) != '\0') p++;
+            src = p;
         } else {
             // Subsequent chunks: keep all 18 digits
-            strcpy(out, chunks[i]);
-            out += 18;
+            src = chunks[i];
         }
+        int written = snprintf(write_ptr, out_remaining, "%s", src);
+        if (written <= 0 || (size_t)written >= out_remaining) {
+            break;
+        }
+        write_ptr += written;
+        out_remaining -= (size_t)written;
     }
 }
 
@@ -458,13 +473,14 @@ int cellframe_tx_to_json(const uint8_t *tx_data, size_t tx_size, char **json_out
     }
 
     // Build complete JSON
-    char *json = malloc(strlen(items_json) + 1024);
+    size_t json_size = strlen(items_json) + 1024;
+    char *json = malloc(json_size);
     if (!json) {
         free(items_json);
         return -1;
     }
 
-    sprintf(json,
+    snprintf(json, json_size,
         "{\n"
         "  \"datum_hash\": \"%s\",\n"
         "  \"ts_created\": %llu,\n"

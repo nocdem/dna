@@ -14,6 +14,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* ── Internal helpers ────────────────────────────────────────────── */
 
 static nodus_cluster_peer_t *find_peer(nodus_cluster_t *cluster,

@@ -501,12 +501,37 @@ endif()
 # Option to disable AddressSanitizer in Debug builds (useful when ASAN causes issues)
 option(ENABLE_ASAN "Enable AddressSanitizer in Debug builds" ON)
 
+# Phase 2 (02-04): ThreadSanitizer for concurrency tests. Opt-in via
+# -DENABLE_TSAN=ON. Mutually exclusive with ASan in the same binary.
+# See messenger/docs/CONCURRENCY.md for usage.
+option(ENABLE_TSAN "Build with ThreadSanitizer for concurrency tests (conflicts with ASan)" OFF)
+
+if(ENABLE_TSAN AND ENABLE_ASAN)
+    # TSan and ASan cannot coexist in the same binary. When ENABLE_TSAN is
+    # requested, automatically disable ENABLE_ASAN below. Emit a fatal error
+    # only if the user explicitly set BOTH to ON on the cmake command line.
+    if(DEFINED CACHE{ENABLE_ASAN_EXPLICIT} AND ENABLE_ASAN_EXPLICIT)
+        message(FATAL_ERROR
+            "ENABLE_TSAN and ENABLE_ASAN are mutually exclusive. "
+            "Pick one: -DENABLE_TSAN=ON (concurrency tests) OR "
+            "-DENABLE_ASAN=ON (default, memory-safety tests).")
+    endif()
+    message(STATUS "ENABLE_TSAN=ON — disabling ENABLE_ASAN (mutually exclusive)")
+    set(ENABLE_ASAN OFF CACHE BOOL "Disabled automatically by ENABLE_TSAN" FORCE)
+endif()
+
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     if(MSVC)
         set(CMAKE_C_FLAGS_DEBUG "/Od /Zi /DDEBUG")
         set(CMAKE_CXX_FLAGS_DEBUG "/Od /Zi /DDEBUG")
     else()
-        if(ENABLE_ASAN)
+        if(ENABLE_TSAN)
+            set(CMAKE_C_FLAGS_DEBUG "-g -O1 -DDEBUG -fsanitize=thread -fno-omit-frame-pointer")
+            set(CMAKE_CXX_FLAGS_DEBUG "-g -O1 -DDEBUG -fsanitize=thread -fno-omit-frame-pointer")
+            set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fsanitize=thread")
+            set(CMAKE_SHARED_LINKER_FLAGS_DEBUG "${CMAKE_SHARED_LINKER_FLAGS_DEBUG} -fsanitize=thread")
+            message(STATUS "Debug build enabled with ThreadSanitizer (Phase 02-04)")
+        elseif(ENABLE_ASAN)
             set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG -fsanitize=address -fno-omit-frame-pointer")
             set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG -fsanitize=address -fno-omit-frame-pointer")
             set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fsanitize=address")

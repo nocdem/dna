@@ -141,6 +141,9 @@
   "settingsYourSeedPhrase": "Kurtarma İfadeniz",
   "settingsSeedPhraseWarning": "Bu kelimeleri sırasıyla yazın ve güvenli bir yerde saklayın. Bu ifadeye sahip olan herkes kimliğinize erişebilir.",
   "settingsSeedCopied": "Kurtarma ifadesi panoya kopyalandı",
+  "seedCopyConfirmTitle": "Kurtarma ifadesi kopyalansın mı?",
+  "seedCopyConfirmBody": "Kurtarma ifadeniz 10 saniye boyunca panoda kalacak. Bu süre içinde başka bir uygulamaya geçmeyin veya uygulamayı arka plana almayın. Devam edilsin mi?",
+  "seedCopiedToast": "Kopyalandı. Pano 10 saniye içinde temizlenecek.",
   "settingsSeedNotAvailable": "Bu kimlik için kurtarma ifadesi mevcut değil. Bu özellik eklenmeden önce oluşturulmuş.",
   "settingsSeedError": "Kurtarma ifadesi alınamadı",
   "settingsWallet": "Cüzdan",
@@ -546,6 +549,7 @@
   "walletContacts": "Kişiler",
   "settingsActiveChains": "Aktif Ağlar",
   "settingsActiveChainsSubtitle": "Cüzdanınızda hangi ağları görmek istediğinizi seçin",
+  "invalidQrCode": "Geçersiz QR kodu",
   "reactionAdded": "{emoji} ile tepki verdi",
   "reactionRemoved": "Tepki kaldırıldı",
   "reactionNotificationBody": "{name} mesajınıza {emoji} ile tepki verdi"

@@ -10,6 +10,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 static uint64_t routing_time_now(void) { return (uint64_t)time(NULL); }
 
 void nodus_routing_init(nodus_routing_t *rt, const nodus_key_t *self_id) {

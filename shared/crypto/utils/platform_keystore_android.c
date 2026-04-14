@@ -22,6 +22,8 @@
 #include <sys/stat.h>
 #include <pthread.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "KEYSTORE_ANDROID"
 
 /* ============================================================================

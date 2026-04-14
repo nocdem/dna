@@ -294,7 +294,10 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
                         border: InputBorder.none,
                         enabledBorder: InputBorder.none,
                         focusedBorder: InputBorder.none,
-                        contentPadding: EdgeInsets.zero,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: DnaSpacing.sm,
+                          vertical: DnaSpacing.md,
+                        ),
                         counterText: '', // hide default counter
                       ),
                       onChanged: (_) => setState(() {}),

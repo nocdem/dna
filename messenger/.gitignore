@@ -146,6 +146,9 @@ FOLDER_ANALYSIS.md
 *.dcert
 *_test.*
 
+# Flutter test sources are first-class source code — keep them tracked
+!dna_messenger_flutter/test/**/*_test.dart
+
 # Additional build artifacts 
 p2p/test_p2p_basic
 p2p/build/
@@ -166,6 +169,8 @@ _deps/
 # CMake generated binaries
 dna-messenger
 test_*
+!tests/test_*.c
+!tests/test_*.h
 *_test
 migrate_storage_once
 persistent_bootstrap

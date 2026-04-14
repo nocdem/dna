@@ -12,6 +12,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <json-c/json.h>
+#include "crypto/utils/qgp_safe_string.h"
 
 // Disallowed DNA names
 static const char *DISALLOWED_NAMES[] = {
@@ -123,7 +124,7 @@ static int socials_from_json(json_object *obj, dna_socials_t *socials) {
 
 static void bytes_to_hex(const uint8_t *bytes, size_t len, char *hex_out) {
     for (size_t i = 0; i < len; i++) {
-        sprintf(&hex_out[i * 2], "%02x", bytes[i]);
+        snprintf(&hex_out[i * 2], (len * 2 + 1) - (i * 2), "%02x", bytes[i]);
     }
     hex_out[len * 2] = '\0';  // Null terminate
 }

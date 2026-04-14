@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 #define CONFIG_FILE_NAME "config"
 
@@ -42,7 +43,7 @@ int dna_config_load(dna_config_t *config) {
     FILE *f = fopen(config_path, "r");
     if (!f) {
         // Default config if file doesn't exist
-        strcpy(config->log_level, "DEBUG");
+        snprintf(config->log_level, sizeof(config->log_level), "DEBUG");
         config->log_tags[0] = '\0';  // Empty = show all
 
         // File logging defaults
@@ -51,12 +52,12 @@ int dna_config_load(dna_config_t *config) {
         config->log_max_files = 3;       // Keep 3 rotated files
 
         // Default bootstrap nodes (all 6 nodus servers)
-        strcpy(config->bootstrap_nodes[0], "154.38.182.161:4001");
-        strcpy(config->bootstrap_nodes[1], "164.68.105.227:4001");
-        strcpy(config->bootstrap_nodes[2], "164.68.116.180:4001");
-        strcpy(config->bootstrap_nodes[3], "161.97.85.25:4001");
-        strcpy(config->bootstrap_nodes[4], "156.67.24.125:4001");
-        strcpy(config->bootstrap_nodes[5], "156.67.25.251:4001");
+        snprintf(config->bootstrap_nodes[0], sizeof(config->bootstrap_nodes[0]), "154.38.182.161:4001");
+        snprintf(config->bootstrap_nodes[1], sizeof(config->bootstrap_nodes[1]), "164.68.105.227:4001");
+        snprintf(config->bootstrap_nodes[2], sizeof(config->bootstrap_nodes[2]), "164.68.116.180:4001");
+        snprintf(config->bootstrap_nodes[3], sizeof(config->bootstrap_nodes[3]), "161.97.85.25:4001");
+        snprintf(config->bootstrap_nodes[4], sizeof(config->bootstrap_nodes[4]), "156.67.24.125:4001");
+        snprintf(config->bootstrap_nodes[5], sizeof(config->bootstrap_nodes[5]), "156.67.25.251:4001");
         config->bootstrap_count = 6;
 
         // Create default config file
@@ -123,7 +124,7 @@ int dna_config_load(dna_config_t *config) {
 
     // Set defaults if not in config
     if (config->log_level[0] == '\0') {
-        strcpy(config->log_level, "DEBUG");
+        snprintf(config->log_level, sizeof(config->log_level), "DEBUG");
     }
 
     // File logging defaults if not in config
@@ -142,19 +143,19 @@ int dna_config_load(dna_config_t *config) {
         for (int i = 0; i < config->bootstrap_count; i++) {
             char *colon = strrchr(config->bootstrap_nodes[i], ':');
             if (colon && strcmp(colon, ":4000") == 0) {
-                strcpy(colon, ":4001");
+                snprintf(colon, sizeof(config->bootstrap_nodes[0]) - (size_t)(colon - config->bootstrap_nodes[i]), ":4001");
                 needs_save = true;
             }
         }
 
         // Replace with full 6-node list if stale (fewer than 6 nodes)
         if (config->bootstrap_count < 6) {
-            strcpy(config->bootstrap_nodes[0], "154.38.182.161:4001");
-            strcpy(config->bootstrap_nodes[1], "164.68.105.227:4001");
-            strcpy(config->bootstrap_nodes[2], "164.68.116.180:4001");
-            strcpy(config->bootstrap_nodes[3], "161.97.85.25:4001");
-            strcpy(config->bootstrap_nodes[4], "156.67.24.125:4001");
-            strcpy(config->bootstrap_nodes[5], "156.67.25.251:4001");
+            snprintf(config->bootstrap_nodes[0], sizeof(config->bootstrap_nodes[0]), "154.38.182.161:4001");
+            snprintf(config->bootstrap_nodes[1], sizeof(config->bootstrap_nodes[1]), "164.68.105.227:4001");
+            snprintf(config->bootstrap_nodes[2], sizeof(config->bootstrap_nodes[2]), "164.68.116.180:4001");
+            snprintf(config->bootstrap_nodes[3], sizeof(config->bootstrap_nodes[3]), "161.97.85.25:4001");
+            snprintf(config->bootstrap_nodes[4], sizeof(config->bootstrap_nodes[4]), "156.67.24.125:4001");
+            snprintf(config->bootstrap_nodes[5], sizeof(config->bootstrap_nodes[5]), "156.67.25.251:4001");
             config->bootstrap_count = 6;
             needs_save = true;
         }

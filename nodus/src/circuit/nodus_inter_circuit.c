@@ -5,6 +5,8 @@
 #include "circuit/nodus_inter_circuit.h"
 #include <string.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 void nodus_inter_circuit_table_init(nodus_inter_circuit_table_t *t) {
     if (!t) return;
     memset(t, 0, sizeof(*t));

@@ -6,6 +6,7 @@ import '../../providers/providers.dart';
 import '../../services/qr_auth_service.dart';
 import '../../design_system/theme/dna_colors.dart';
 import '../../utils/qr_payload_parser.dart';
+import '../../utils/logger.dart' as dna_logger;
 import '../home_screen.dart';
 import '../../l10n/app_localizations.dart';
 
@@ -50,7 +51,8 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
     final rootCanPop = rootNav.canPop();
     final localCanPop = localNav.canPop();
 
-    debugPrint('QR_AUTH _close: rootCanPop=$rootCanPop, localCanPop=$localCanPop');
+    // SEC-07 D-08: navigation state booleans, no auth material — ROUTE to DnaLogger.
+    dna_logger.log('QR_AUTH', '_close: rootCanPop=$rootCanPop, localCanPop=$localCanPop');
 
     // Try root navigator first (this is where we were pushed from scanner)
     if (rootCanPop) {
@@ -65,7 +67,8 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
     }
 
     // FALLBACK: Neither can pop - force navigate to HomeScreen
-    debugPrint('QR_AUTH _close: FALLBACK - forcing HomeScreen');
+    // SEC-07 D-08: pure flow trace — ROUTE to DnaLogger.
+    dna_logger.log('QR_AUTH', '_close: FALLBACK - forcing HomeScreen');
     rootNav.pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const HomeScreen()),
       (route) => false,
@@ -626,7 +629,10 @@ class _QrAuthScreenState extends ConsumerState<QrAuthScreen> {
         });
       }
     } catch (e) {
-      debugPrint('QR_AUTH: Unexpected error during approve: $e');
+      // SEC-07 D-08/D-09: exception text from the approve path may contain
+      // DnaEngineException messages referencing key/signature material —
+      // DELETED outright (conservative path, "when in doubt, delete"). The
+      // error still surfaces to the user via _errorMessage below.
       if (!mounted) return;
       setState(() {
         _state = _AuthState.failed;

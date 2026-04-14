@@ -36,6 +36,8 @@
 #else
   #include <pthread.h>
   #include <stdatomic.h>
+
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
   static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
   static _Atomic bool g_initialized = false;
   static _Atomic int g_refcount = 0;

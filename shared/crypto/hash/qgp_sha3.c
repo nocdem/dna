@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <openssl/evp.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /**
  * Compute SHA3-512 hash of data
  *

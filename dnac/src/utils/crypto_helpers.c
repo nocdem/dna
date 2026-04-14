@@ -7,6 +7,7 @@
 #include "dnac/dnac.h"
 #include "crypto/hash/qgp_sha3.h"
 #include <string.h>
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 /* Helper: convert single hex char to nibble value, -1 on error */
 static int hex_nibble(char c) {

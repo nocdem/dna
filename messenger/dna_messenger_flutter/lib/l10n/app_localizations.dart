@@ -962,6 +962,24 @@ abstract class AppLocalizations {
   /// **'Seed phrase copied to clipboard'**
   String get settingsSeedCopied;
 
+  /// Title of the confirmation dialog shown before copying a seed phrase to the clipboard (SEC-09).
+  ///
+  /// In en, this message translates to:
+  /// **'Copy seed phrase?'**
+  String get seedCopyConfirmTitle;
+
+  /// Body of the confirmation dialog shown before copying a seed phrase to the clipboard (SEC-09).
+  ///
+  /// In en, this message translates to:
+  /// **'Your seed phrase will be in the clipboard for 10 seconds. Do not switch apps or background the app during this time. Continue?'**
+  String get seedCopyConfirmBody;
+
+  /// Toast shown after a seed phrase has been copied, reminding the user the clipboard will auto-clear (SEC-09).
+  ///
+  /// In en, this message translates to:
+  /// **'Copied. Clipboard will clear in 10 seconds.'**
+  String get seedCopiedToast;
+
   /// No description provided for @settingsSeedNotAvailable.
   ///
   /// In en, this message translates to:
@@ -3391,6 +3409,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Choose which networks to show in your wallet'**
   String get settingsActiveChainsSubtitle;
+
+  /// Error shown when a scanned QR payload fails strict validation (SEC-03 defense-in-depth: malformed, oversized, or charset-violating auth payloads are rejected before signing or UI display)
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid QR code'**
+  String get invalidQrCode;
 
   /// No description provided for @reactionAdded.
   ///

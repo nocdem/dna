@@ -13,6 +13,7 @@
 #include "dnac/transaction.h"
 #include <string.h>
 #include <stdlib.h>
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
 /* Helper macros for serialization */
 #define WRITE_U8(buf, val) do { *(buf)++ = (uint8_t)(val); } while(0)

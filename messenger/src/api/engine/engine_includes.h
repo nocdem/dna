@@ -162,6 +162,9 @@ static inline char* win_strptime(const char* s, const char* format, struct tm* t
 /* JSON */
 #include <json-c/json.h>
 
+/* Phase 03: unsafe-string poison guard — covers all 18 engine modules transitively */
+#include "crypto/utils/qgp_safe_string.h"
+
 #define LOG_TAG "DNA_ENGINE"
 
 /* Use engine-specific error codes */

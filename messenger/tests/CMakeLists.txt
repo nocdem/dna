@@ -19,7 +19,12 @@ project(dna_tests C)
 # Find the main project build
 # =============================================================================
 set(DNA_ROOT "${CMAKE_SOURCE_DIR}/..")
-set(DNA_BUILD "${DNA_ROOT}/build")
+# DNA_BUILD defaults to ../build but can be overridden from the command line
+# via -DDNA_BUILD=... (Phase 02-04: used to point tests at build-tsan/ when
+# running the concurrency suite under ThreadSanitizer).
+if(NOT DEFINED DNA_BUILD OR DNA_BUILD STREQUAL "")
+    set(DNA_BUILD "${DNA_ROOT}/build")
+endif()
 set(SHARED_DIR "${DNA_ROOT}/../shared")
 
 # Verify main project is built (shared lib)
@@ -42,6 +47,8 @@ include_directories(
     ${DNA_ROOT}
     ${DNA_ROOT}/include
     ${DNA_ROOT}/dht/client  # dna_profile.h (transitively included by dht_keyserver.h)
+    ${DNA_ROOT}/../nodus/include  # nodus/nodus_types.h (THR-02 test_nodus_init_concurrent)
+    ${DNA_ROOT}/../nodus/src      # nodus/nodus.h transitively needs core/nodus_media_storage.h (Phase 6 wave 0)
     ${SHARED_DIR}          # shared/crypto/utils/*.h, shared/crypto/bip39/*.h
 )
 
@@ -76,7 +83,16 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+# Phase 02-04 THR-03/SEC-04/SEC-05/THR-02 concurrency tests: opt-in
+# ThreadSanitizer via -DENABLE_TSAN=ON. Mutually exclusive with AddressSanitizer.
+# See messenger/docs/CONCURRENCY.md for usage.
+option(ENABLE_TSAN "Build with ThreadSanitizer (conflicts with ASan)" OFF)
+
+if(ENABLE_TSAN)
+    message(STATUS "ENABLE_TSAN=ON — building tests with -fsanitize=thread (ASan disabled)")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -O1 -fsanitize=thread -fno-omit-frame-pointer")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -O0 -fsanitize=address -fno-omit-frame-pointer")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 endif()
@@ -123,6 +139,20 @@ target_link_libraries(test_kyber1024 ${TEST_LIBS})
 add_test(NAME test_kyber1024 COMMAND test_kyber1024)
 
 # =============================================================================
+# Test: SEC-02 — qgp_key file size validation (exact-bounds rejection)
+# =============================================================================
+add_executable(test_qgp_key_size_validation test_qgp_key_size_validation.c)
+target_link_libraries(test_qgp_key_size_validation ${TEST_LIBS})
+add_test(NAME qgp_key_size_validation COMMAND test_qgp_key_size_validation)
+
+# =============================================================================
+# Test: SEC-01 — Contact request wire-level validation regression guard
+# =============================================================================
+add_executable(test_contact_request_validation test_contact_request_validation.c)
+target_link_libraries(test_contact_request_validation ${TEST_LIBS})
+add_test(NAME contact_request_validation COMMAND test_contact_request_validation)
+
+# =============================================================================
 # Test: BIP39/BIP32 Mnemonic and HD Key Derivation
 # =============================================================================
 add_executable(test_bip39_bip32 test_bip39_bip32.c)
@@ -135,6 +165,56 @@ add_test(NAME test_bip39_bip32 COMMAND test_bip39_bip32)
 add_executable(test_gek_ratchet test_gek_ratchet.c)
 target_link_libraries(test_gek_ratchet ${TEST_LIBS})
 add_test(NAME test_gek_ratchet COMMAND test_gek_ratchet)
+
+# =============================================================================
+# Test: SEC-04 — concurrent GEK KEM-key rwlock race regression (Phase 02-01)
+# =============================================================================
+add_executable(test_gek_concurrent test_gek_concurrent.c)
+target_link_libraries(test_gek_concurrent ${TEST_LIBS})
+add_test(NAME gek_concurrent COMMAND test_gek_concurrent)
+
+# =============================================================================
+# Test: SEC-05 — engine destroy during backup regression (Phase 02-02)
+# =============================================================================
+add_executable(test_engine_destroy_during_backup test_engine_destroy_during_backup.c)
+target_link_libraries(test_engine_destroy_during_backup ${TEST_LIBS})
+add_test(NAME engine_destroy_during_backup COMMAND test_engine_destroy_during_backup)
+
+# =============================================================================
+# Test: THR-02 — concurrent nodus init mutex + pthread_once regression (Phase 02-03)
+# =============================================================================
+add_executable(test_nodus_init_concurrent test_nodus_init_concurrent.c)
+target_link_libraries(test_nodus_init_concurrent ${TEST_LIBS} pthread)
+add_test(NAME nodus_init_concurrent COMMAND test_nodus_init_concurrent)
+set_tests_properties(nodus_init_concurrent PROPERTIES TIMEOUT 30)
+
+# =============================================================================
+# Test: THR-03 — task queue MPSC-via-task_mutex contract regression (Phase 02-04)
+# =============================================================================
+# Positive: N threads call public engine API that funnels through the
+# THR-03 assert under task_mutex. Negative: fork() child mirrors the
+# assert(pthread_equal(...)) pattern with a zero-initialized owner and
+# must abort with SIGABRT — proves the mechanism actually trips.
+add_executable(test_concurrency_task_queue_contract test_concurrency_task_queue_contract.c)
+target_link_libraries(test_concurrency_task_queue_contract ${TEST_LIBS} pthread)
+add_test(NAME concurrency_task_queue_contract COMMAND test_concurrency_task_queue_contract)
+set_tests_properties(concurrency_task_queue_contract PROPERTIES TIMEOUT 30)
+
+# =============================================================================
+# TSan suppression wiring (Phase 02-04 THR-03/SEC-04/SEC-05/THR-02)
+# =============================================================================
+# When built with -DENABLE_TSAN=ON, run the concurrency tests with
+# TSAN_OPTIONS pointing at the (empty, comment-only) tsan.supp scaffold.
+if(ENABLE_TSAN)
+    set_tests_properties(
+        gek_concurrent
+        engine_destroy_during_backup
+        nodus_init_concurrent
+        concurrency_task_queue_contract
+        PROPERTIES
+        ENVIRONMENT "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp:halt_on_error=1"
+    )
+endif()
 
 # =============================================================================
 # Test: Salt Agreement Protocol (Kyber dual-encrypted, authenticated)
@@ -180,6 +260,40 @@ add_test(NAME test_platform_keystore COMMAND test_platform_keystore)
 add_executable(test_registered_name_validation test_registered_name_validation.c)
 target_link_libraries(test_registered_name_validation ${TEST_LIBS})
 add_test(NAME test_registered_name_validation COMMAND test_registered_name_validation)
+
+# =============================================================================
+# Phase 6 Wave 0 — RED test scaffolding for CORE-04 / CORE-05
+# =============================================================================
+# These five tests are intentionally RED until their respective fixing plans
+# (02..05) land. They MUST compile, link, and be discoverable via `ctest -N`
+# from day one so later plans can drive them GREEN one at a time.
+# See: .planning/phases/06-c-engine-core-flow-fixes/6-01-wave0-test-scaffolding-PLAN.md
+
+# CORE-05: register-name failure must not delete on-disk identity material
+add_executable(test_register_name_failure_preserves_keys test_register_name_failure_preserves_keys.c)
+target_link_libraries(test_register_name_failure_preserves_keys ${TEST_LIBS})
+add_test(NAME test_register_name_failure_preserves_keys COMMAND test_register_name_failure_preserves_keys)
+
+# CORE-05: register-name idempotency regression guard (nodus-dependent: SKIP=77)
+add_executable(test_register_name_idempotent test_register_name_idempotent.c)
+target_link_libraries(test_register_name_idempotent ${TEST_LIBS})
+add_test(NAME test_register_name_idempotent COMMAND test_register_name_idempotent)
+set_tests_properties(test_register_name_idempotent PROPERTIES SKIP_RETURN_CODE 77)
+
+# CORE-04: group outbox key derivation must accept and embed a per-group salt
+add_executable(test_group_outbox_make_key_salted test_group_outbox_make_key_salted.c)
+target_link_libraries(test_group_outbox_make_key_salted ${TEST_LIBS})
+add_test(NAME test_group_outbox_make_key_salted COMMAND test_group_outbox_make_key_salted)
+
+# CORE-04: DM outbox helper must reject NULL salt (close legacy fallback)
+add_executable(test_dm_outbox_requires_salt test_dm_outbox_requires_salt.c)
+target_link_libraries(test_dm_outbox_requires_salt ${TEST_LIBS})
+add_test(NAME test_dm_outbox_requires_salt COMMAND test_dm_outbox_requires_salt)
+
+# CORE-04: groups.db schema v2 -> v3 migration adds dht_salt + has_dht_salt
+add_executable(test_group_database_migration_v3 test_group_database_migration_v3.c)
+target_link_libraries(test_group_database_migration_v3 ${TEST_LIBS})
+add_test(NAME test_group_database_migration_v3 COMMAND test_group_database_migration_v3)
 
 # =============================================================================
 # Test: Reaction JSON build/parse helpers

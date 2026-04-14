@@ -119,7 +119,7 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | Function | Description |
 |----------|-------------|
 | `uint64_t dht_dm_outbox_get_day_bucket(void)` | Get current day bucket (timestamp/86400) |
-| `int dht_dm_outbox_make_key(..., const uint8_t *salt)` | Generate DHT key for day bucket (salt-aware) |
+| `int dht_dm_outbox_make_key(..., const uint8_t *salt)` | Generate DHT key for day bucket (salt REQUIRED, returns -1 if NULL — v0.9.196+) |
 | `int dht_dm_queue_message(..., const uint8_t *salt)` | Queue message to daily bucket (salt-aware) |
 | `int dht_dm_outbox_sync_day(..., const uint8_t *salt)` | Sync messages from specific day (salt-aware) |
 | `int dht_dm_outbox_sync_recent(..., const uint8_t *salt)` | Sync 3 days (salt-aware) |
@@ -139,13 +139,12 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | Function | Description |
 |----------|-------------|
 | `int dht_queue_message(..., const uint8_t *salt)` | Store message (redirects to daily bucket API, salt-aware) |
-| `int dht_retrieve_queued_messages_from_contacts(...)` | Retrieve messages from contacts (sequential) |
-| `int dht_retrieve_queued_messages_from_contacts_parallel(...)` | Retrieve messages (parallel, 10-100× faster) |
 | `void dht_offline_message_free(dht_offline_message_t*)` | Free single message |
 | `void dht_offline_messages_free(dht_offline_message_t*, size_t)` | Free message array |
 | `int dht_serialize_messages(...)` | Serialize messages to binary |
 | `int dht_deserialize_messages(...)` | Deserialize messages from binary |
-| `void dht_generate_outbox_key(const char*, const char*, uint8_t*)` | Generate outbox DHT key |
+
+**CORE-04 (v0.9.197+):** Removed `dht_retrieve_queued_messages_from_contacts`, `dht_retrieve_queued_messages_from_contacts_parallel`, and `dht_generate_outbox_key`. These produced deterministic unsalted `SHA3-512(sender:outbox:recipient)` keys leaking communication metadata, had zero callers, and were removed per the No Dead Code rule. The live salted DM retrieval path is `dht_dm_outbox_fetch_*` in `dht_dm_outbox.h`.
 
 ### 10.2 ACK API (`dht_offline_queue.h`) - v15 Replaces Watermarks
 
@@ -153,7 +152,7 @@ Simple per-contact ACK timestamps for delivery confirmation. When recipient sync
 
 | Function | Description |
 |----------|-------------|
-| `void dht_generate_ack_key(const char*, const char*, const uint8_t *salt, uint8_t*)` | Generate ACK DHT key (salt-aware) |
+| `int dht_generate_ack_key(const char*, const char*, const uint8_t *salt, uint8_t*)` | Generate ACK DHT key (salt REQUIRED, returns -1 if NULL — v0.9.196+) |
 | `int dht_publish_ack(const char*, const char*, const uint8_t *salt)` | Publish ACK timestamp (salt-aware) |
 | `size_t dht_listen_ack(const char*, const char*, const uint8_t *salt, dht_ack_callback_t, void*)` | Listen for ACK updates (salt-aware) |
 | `void dht_cancel_ack_listener(dht_context_t*, size_t)` | Cancel ACK listener |
@@ -512,7 +511,7 @@ Each commenter stores their own value_id slot, allowing concurrent writers witho
 | Function | Description |
 |----------|-------------|
 | `uint64_t dna_group_outbox_get_day_bucket(void)` | Get current day bucket (timestamp/86400) |
-| `int dna_group_outbox_make_key(const char*, uint64_t, char*, size_t)` | Generate DHT key for outbox |
+| `int dna_group_outbox_make_key(const char*, uint64_t, const uint8_t*, char*, size_t)` | Generate salted DHT key for outbox (CORE-04: salt is MANDATORY, 32 bytes, NULL → -1) |
 | `int dna_group_outbox_make_message_id(const char*, const char*, uint64_t, char*)` | Generate message ID |
 | `const char* dna_group_outbox_strerror(int)` | Get error message |
 

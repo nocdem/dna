@@ -37,6 +37,8 @@
 #define getrandom(buf, len, flags) syscall(SYS_getrandom, buf, len, flags)
 #endif
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* ============================================================================
  * Application Data Directories (Android Implementation)
  * These MUST be set by the Java/Kotlin app via JNI before using the library
