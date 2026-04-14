@@ -1387,16 +1387,26 @@ Messages can be deleted locally with cross-device sync and sender notification v
 
 **Added in v0.4.63** - All group data moved to separate database.
 
-```sql
--- Source: messenger/group_database.c:48-96
+**Schema version 3 (Phase 6, CORE-04):** Adds `dht_salt` and `has_dht_salt`
+columns to the `groups` table. Salt provisioning is performed by the group
+owner at group creation time (or on first publish for pre-existing groups)
+and distributed to members via the GEK channel. See `dht_salt_agreement.c`
+for the per-contact analog and `dna_group_outbox.c` for usage. Migration
+v2→v3 uses `ALTER TABLE ADD COLUMN` and preserves all existing groups rows;
+salt agreement runs lazily after upgrade.
 
--- Core group metadata
+```sql
+-- Source: messenger/group_database.c - Schema v3
+
+-- Core group metadata (v3: dht_salt + has_dht_salt added)
 CREATE TABLE IF NOT EXISTS groups (
   uuid TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   is_owner INTEGER DEFAULT 0,
-  owner_fp TEXT NOT NULL
+  owner_fp TEXT NOT NULL,
+  dht_salt BLOB DEFAULT NULL,      -- v3: 32-byte per-group DHT key salt (CORE-04)
+  has_dht_salt INTEGER DEFAULT 0   -- v3: 1 if dht_salt provisioned, 0 otherwise
 );
 
 -- Group members
