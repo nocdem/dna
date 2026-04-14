@@ -35,6 +35,12 @@ struct dnac_context {
     uint8_t chain_id[32];               /* Chain ID from witness */
     bool chain_id_loaded;               /* Whether chain_id has been fetched */
     int initialized;
+
+    /* Phase 13 / Task 13.4 — latest send receipt for CLI display. */
+    bool     last_receipt_valid;
+    uint64_t last_receipt_block_height;
+    uint32_t last_receipt_tx_index;
+    uint8_t  last_receipt_tx_hash[64];
 };
 
 /* ============================================================================
@@ -393,6 +399,26 @@ const char* dnac_get_owner_fingerprint(dnac_context_t *ctx) {
 
 dna_engine_t* dnac_get_engine(dnac_context_t *ctx) {
     return ctx ? ctx->dna_engine : NULL;
+}
+
+/* Phase 13 / Task 13.4 — receipt accessors for CLI display. */
+void dnac_set_last_receipt(dnac_context_t *ctx, uint64_t block_height,
+                             uint32_t tx_index, const uint8_t *tx_hash) {
+    if (!ctx) return;
+    ctx->last_receipt_block_height = block_height;
+    ctx->last_receipt_tx_index = tx_index;
+    if (tx_hash) memcpy(ctx->last_receipt_tx_hash, tx_hash, 64);
+    ctx->last_receipt_valid = true;
+}
+
+int dnac_last_send_receipt(dnac_context_t *ctx, uint64_t *block_height_out,
+                             uint32_t *tx_index_out, uint8_t *tx_hash_out) {
+    if (!ctx) return DNAC_ERROR_INVALID_PARAM;
+    if (!ctx->last_receipt_valid) return DNAC_ERROR_NOT_FOUND;
+    if (block_height_out) *block_height_out = ctx->last_receipt_block_height;
+    if (tx_index_out) *tx_index_out = ctx->last_receipt_tx_index;
+    if (tx_hash_out) memcpy(tx_hash_out, ctx->last_receipt_tx_hash, 64);
+    return DNAC_SUCCESS;
 }
 
 /* ============================================================================

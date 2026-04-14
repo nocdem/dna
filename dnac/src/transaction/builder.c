@@ -360,6 +360,15 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
         if (rc != DNAC_SUCCESS) return rc;
     }
 
+    /* Phase 13 / Task 13.4 — stash the receipt on the context so the
+     * CLI / Flutter caller can display block_height + tx_index after
+     * the send completes. Use the first witness (BFT mode = 1
+     * attestation == quorum). */
+    if (witness_count > 0) {
+        dnac_set_last_receipt(ctx, witnesses[0].block_height,
+                                witnesses[0].tx_index, tx->tx_hash);
+    }
+
     /* Step 5: Serialize transaction */
     uint8_t *tx_buffer = malloc(65536);
     if (!tx_buffer) return DNAC_ERROR_OUT_OF_MEMORY;

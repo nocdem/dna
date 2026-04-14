@@ -15,6 +15,7 @@
 
 /* libdna crypto utilities */
 #include "crypto/sign/qgp_dilithium.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
 
 /* Nodus client SDK (public API) */
@@ -182,21 +183,37 @@ bool dnac_witness_verify(const dnac_witness_sig_t *witness,
                          const uint8_t *witness_pubkey) {
     if (!witness || !tx_hash || !witness_pubkey) return false;
 
-    /* Build signed data: tx_hash + witness_id + timestamp */
-    uint8_t signed_data[DNAC_TX_HASH_SIZE + 32 + 8];
-    memcpy(signed_data, tx_hash, DNAC_TX_HASH_SIZE);
-    memcpy(signed_data + DNAC_TX_HASH_SIZE, witness->witness_id, 32);
+    /* Phase 12 / Task 13.1 — reconstruct the 221-byte spndrslt preimage
+     * the witness Dilithium5-signed at commit time. Requires the
+     * receipt fields (block_height, tx_index, chain_id) to be populated
+     * on the witness struct — they are when the caller is verifying a
+     * fresh receipt straight from nodus_client_dnac_spend, but NOT when
+     * verifying a serialized TX from on-chain (those fields are
+     * receipt-only and don't persist into serialize.c). */
+    static const uint8_t spend_tag[8] = { 's','p','n','d','r','s','l','t' };
+    uint8_t preimage[221];
+    memset(preimage, 0, sizeof(preimage));
 
-    /* Little-endian timestamp */
-    for (int i = 0; i < 8; i++) {
-        signed_data[DNAC_TX_HASH_SIZE + 32 + i] =
-            (witness->timestamp >> (i * 8)) & 0xFF;
-    }
+    memcpy(preimage,        spend_tag, 8);
+    memcpy(preimage + 8,    tx_hash, DNAC_TX_HASH_SIZE);
+    memcpy(preimage + 72,   witness->witness_id, 32);
 
-    /* Verify Dilithium5 signature */
+    uint8_t wpk_hash[64];
+    qgp_sha3_512(witness->server_pubkey, DNAC_PUBKEY_SIZE, wpk_hash);
+    memcpy(preimage + 104, wpk_hash, 64);
+
+    memcpy(preimage + 168, witness->chain_id, 32);
+
+    for (int i = 0; i < 8; i++)
+        preimage[200 + i] = (uint8_t)((witness->timestamp >> (i * 8)) & 0xFF);
+    for (int i = 0; i < 8; i++)
+        preimage[208 + i] = (uint8_t)((witness->block_height >> (i * 8)) & 0xFF);
+    for (int i = 0; i < 4; i++)
+        preimage[216 + i] = (uint8_t)((witness->tx_index >> (i * 8)) & 0xFF);
+    preimage[220] = 0;  /* APPROVED */
+
     int ret = qgp_dsa87_verify(witness->signature, DNAC_SIGNATURE_SIZE,
-                               signed_data, sizeof(signed_data),
-                               witness_pubkey);
+                               preimage, sizeof(preimage), witness_pubkey);
     return (ret == 0);
 }
 

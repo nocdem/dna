@@ -415,6 +415,19 @@ int dnac_send(dnac_context_t *ctx,
               void *user_data);
 
 /**
+ * @brief Get the receipt of the most recently completed dnac_send().
+ *
+ * Phase 13 / Task 13.4 — surfaces block_height + tx_index + tx_hash
+ * from the witness response so callers (CLI, Flutter) can display
+ * exactly where the TX landed. Returns DNAC_ERROR_NOT_FOUND if no
+ * send has completed yet on this context.
+ */
+int dnac_last_send_receipt(dnac_context_t *ctx,
+                            uint64_t *block_height_out,
+                            uint32_t *tx_index_out,
+                            uint8_t *tx_hash_out);
+
+/**
  * @brief Send a DNAC payment in a specific token
  *
  * Same as dnac_send(), but allows selecting a custom token. Fee is

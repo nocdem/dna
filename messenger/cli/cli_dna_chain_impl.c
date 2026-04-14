@@ -361,6 +361,21 @@ int dna_chain_cmd_send(dnac_context_t *ctx, const char *recipient,
 
     printf("Payment sent successfully!\n");
 
+    /* Phase 13 / Task 13.4 — print the witness receipt if available. */
+    {
+        uint64_t bh = 0;
+        uint32_t ti = 0;
+        uint8_t  txh[64];
+        if (dnac_last_send_receipt(ctx, &bh, &ti, txh) == DNAC_SUCCESS) {
+            printf("Block:        %" PRIu64 "\n", bh);
+            printf("Tx index:     %" PRIu32 "\n", ti);
+            printf("Tx hash:      ");
+            for (int i = 0; i < DNAC_TX_HASH_SIZE; i++)
+                printf("%02x", txh[i]);
+            printf("\n");
+        }
+    }
+
     /* Allow DHT time to replicate the published TX data */
     printf("Waiting for DHT propagation...\n");
     sleep(5);

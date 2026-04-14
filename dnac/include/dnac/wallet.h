@@ -153,6 +153,11 @@ const char* dnac_get_owner_fingerprint(dnac_context_t *ctx);
  */
 dna_engine_t* dnac_get_engine(dnac_context_t *ctx);
 
+/* Phase 13 / Task 13.4 — receipt setter (called by tx_builder after a
+ * successful witness verify). */
+void dnac_set_last_receipt(dnac_context_t *ctx, uint64_t block_height,
+                             uint32_t tx_index, const uint8_t *tx_hash);
+
 /** Set chain_id (called when supply query returns chain_id from witness). */
 void dnac_set_chain_id(dnac_context_t *ctx, const uint8_t *chain_id);
 
