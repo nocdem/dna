@@ -68,85 +68,82 @@ Future<void> showMessageOverlay({
 
   entry = OverlayEntry(
     builder: (overlayContext) {
-      // BackButtonListener intercepts the Android system back button so the
-      // overlay dismisses cleanly instead of being orphaned when the chat
-      // route is popped. Returning true consumes the event.
-      return BackButtonListener(
-        onBackButtonPressed: () async {
-          close();
-          return true;
-        },
-        child: Stack(
-          children: [
-            // Dim backdrop — tap to dismiss.
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: close,
-                child: Container(color: Colors.black.withValues(alpha: 0.55)),
-              ),
+      // NOTE: BackButtonListener was tried in rc204 but threw at build time
+      // because it requires a Router ancestor in context, and OverlayEntry
+      // lives ABOVE MaterialApp's Router. The thrown widget rendered a grey
+      // error widget over the whole screen. Removed for rc205. Back button
+      // dismissal will be reintroduced via a transparent ModalRoute or a
+      // PopScope at the chat-screen level in a follow-up.
+      return Stack(
+        children: [
+          // Dim backdrop — tap to dismiss.
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: close,
+              child: Container(color: Colors.black.withValues(alpha: 0.55)),
             ),
-            // Pill-shape emoji bar above the message.
-            Positioned(
-              left: 0,
-              right: 0,
-              top: (messagePos.dy - pillHeight - gap)
-                  .clamp(padding.top + 8, double.infinity),
-              child: Center(
-                child: Transform.scale(
-                  scale: overlayScale,
-                  alignment: Alignment.center,
-                  child: ReactionEmojiBar(
-                    currentUserEmojis: currentUserEmojis,
-                    onSelected: (emoji) {
-                      close();
-                      onEmojiTap(emoji);
-                    },
-                  ),
-                ),
-              ),
-            ),
-            // Action card below the message (or above if there's not enough
-            // room below).
-            Positioned(
-              left: 16,
-              right: 16,
-              top: cardGoesBelow
-                  ? messagePos.dy + messageSize.height + gap
-                  : (messagePos.dy - cardHeightEstimate - pillHeight - (gap * 2))
-                      .clamp(padding.top + pillHeight + gap + 8, double.infinity),
+          ),
+          // Pill-shape emoji bar above the message.
+          Positioned(
+            left: 0,
+            right: 0,
+            top: (messagePos.dy - pillHeight - gap)
+                .clamp(padding.top + 8, double.infinity),
+            child: Center(
               child: Transform.scale(
                 scale: overlayScale,
-                alignment: Alignment.topCenter,
-                child: MessageActionCard(
-                  message: message,
-                  contactName: contactName,
-                  isStarred: isStarred,
-                  onReply: () {
+                alignment: Alignment.center,
+                child: ReactionEmojiBar(
+                  currentUserEmojis: currentUserEmojis,
+                  onSelected: (emoji) {
                     close();
-                    onReply();
-                  },
-                  onCopy: () {
-                    close();
-                    onCopy();
-                  },
-                  onForward: () {
-                    close();
-                    onForward();
-                  },
-                  onStar: () {
-                    close();
-                    onStar();
-                  },
-                  onDelete: () {
-                    close();
-                    onDelete();
+                    onEmojiTap(emoji);
                   },
                 ),
               ),
             ),
-          ],
-        ),
+          ),
+          // Action card below the message (or above if there's not enough
+          // room below).
+          Positioned(
+            left: 16,
+            right: 16,
+            top: cardGoesBelow
+                ? messagePos.dy + messageSize.height + gap
+                : (messagePos.dy - cardHeightEstimate - pillHeight - (gap * 2))
+                    .clamp(padding.top + pillHeight + gap + 8, double.infinity),
+            child: Transform.scale(
+              scale: overlayScale,
+              alignment: Alignment.topCenter,
+              child: MessageActionCard(
+                message: message,
+                contactName: contactName,
+                isStarred: isStarred,
+                onReply: () {
+                  close();
+                  onReply();
+                },
+                onCopy: () {
+                  close();
+                  onCopy();
+                },
+                onForward: () {
+                  close();
+                  onForward();
+                },
+                onStar: () {
+                  close();
+                  onStar();
+                },
+                onDelete: () {
+                  close();
+                  onDelete();
+                },
+              ),
+            ),
+          ),
+        ],
       );
     },
   );
