@@ -146,6 +146,9 @@ FOLDER_ANALYSIS.md
 *.dcert
 *_test.*
 
+# Flutter test sources are first-class source code — keep them tracked
+!dna_messenger_flutter/test/**/*_test.dart
+
 # Additional build artifacts 
 p2p/test_p2p_basic
 p2p/build/
