@@ -40,6 +40,22 @@
 /* Forward declaration — defined near bft_check_timeout */
 static void round_state_free_batch(nodus_witness_round_state_t *rs);
 
+/* Phase 6 commit wrappers — defined later in this file. Forward
+ * declarations let the Phase 7 / Task 7.6 dispatchers (commit_block,
+ * the local batch path, the remote batch path) call them without
+ * pulling the test-only nodus_witness_bft_internal.h header. */
+int nodus_witness_commit_genesis(nodus_witness_t *w,
+                                   const uint8_t *tx_hash,
+                                   const uint8_t *tx_data,
+                                   uint32_t tx_len,
+                                   uint64_t timestamp,
+                                   const uint8_t *proposer_id);
+int nodus_witness_commit_batch(nodus_witness_t *w,
+                                 nodus_witness_mempool_entry_t **entries,
+                                 int count,
+                                 uint64_t timestamp,
+                                 const uint8_t *proposer_id);
+
 /* ── Time helper ─────────────────────────────────────────────────── */
 
 static uint64_t time_ms(void) {
@@ -1069,80 +1085,40 @@ int nodus_witness_commit_block(nodus_witness_t *w,
                           const uint8_t *proposer_id,
                           const uint8_t *tx_data,
                           uint32_t tx_len) {
-    /* For genesis: derive chain_id from fingerprint + tx_hash, then create DB */
-    if (tx_type == NODUS_W_TX_GENESIS && !w->db) {
-        if (!tx_data || tx_len < 77 + 129) {
-            fprintf(stderr, "%s: genesis tx_data too short for fingerprint (len=%u)\n",
-                    LOG_TAG, tx_len);
-            return -1;
-        }
-
-        size_t fp_offset = 74;
-        uint8_t in_count = tx_data[fp_offset++];
-        fp_offset += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64); /* nullifier + amount + token_id */
-        if (fp_offset >= tx_len) {
-            fprintf(stderr, "%s: genesis tx_data truncated at outputs\n", LOG_TAG);
-            return -1;
-        }
-        uint8_t out_count = tx_data[fp_offset++];
-        if (out_count == 0 || fp_offset + 1 + 129 > tx_len) {
-            fprintf(stderr, "%s: genesis has no outputs or truncated\n", LOG_TAG);
-            return -1;
-        }
-        fp_offset += 1;
-        const char *genesis_fp = (const char *)(tx_data + fp_offset);
-
-        uint8_t derived_chain_id[32];
-        if (nodus_derive_chain_id(genesis_fp, tx_hash, derived_chain_id) != 0) {
-            fprintf(stderr, "%s: failed to derive chain_id from genesis\n", LOG_TAG);
-            return -1;
-        }
-
-        if (nodus_witness_create_chain_db(w, derived_chain_id) != 0) {
-            fprintf(stderr, "%s: failed to create chain DB\n", LOG_TAG);
-            return -1;
-        }
-    }
-
-    /* Single-TX: own transaction */
-    if (nodus_witness_db_begin(w) != 0) {
-        fprintf(stderr, "%s: db begin failed\n", LOG_TAG);
-        return -1;
-    }
-
-    /* Phase 3 / Task 3.3: legacy single-TX path now drives the new
-     * apply_tx_to_state + finalize_block primitives directly. The
-     * total_supply parameter is unused (apply_tx derives it from
-     * tx_data); the BFT round timer / mempool commit paths use the
-     * same primitives via Phase 7 wrappers.
+    /* Phase 7 / Task 7.6 — thin dispatch to the Phase 6 wrappers.
      *
-     * Phase 6 wrappers (commit_genesis / commit_batch / replay_block)
-     * supersede this thin shim — but until Phase 6 lands, this path
-     * preserves the legacy single-TX behavior. */
+     * Genesis bootstraps a fresh chain DB via commit_genesis. Non-genesis
+     * single-TX commits build a 1-entry batch and ride the same
+     * commit_batch path as multi-TX rounds. The total_supply parameter
+     * is unused (apply_tx derives it from tx_data); kept on the public
+     * signature only because sync.c:521 still calls this function until
+     * Phase 11 rewires the sync replay path to nodus_witness_replay_block. */
     (void)total_supply;
-    uint64_t bh = nodus_witness_block_height(w) + 1;
 
-    if (apply_tx_to_state(w, tx_hash, tx_type, nullifiers, nullifier_count,
-                           tx_data, tx_len, bh, NULL) != 0) {
-        nodus_witness_db_rollback(w);
-        return -1;
+    if (!w || !tx_hash || !tx_data) return -1;
+
+    if (tx_type == NODUS_W_TX_GENESIS) {
+        return nodus_witness_commit_genesis(w, tx_hash, tx_data, tx_len,
+                                              proposal_timestamp, proposer_id);
     }
 
-    if (proposer_id) {
-        if (finalize_block(w, tx_hash, 1, proposer_id,
-                            proposal_timestamp, bh) != 0) {
-            nodus_witness_db_rollback(w);
-            return -1;
-        }
+    /* Non-genesis single TX: build a 1-entry stack array and dispatch
+     * to commit_batch. The wrapper does not free the entry. */
+    nodus_witness_mempool_entry_t e;
+    memset(&e, 0, sizeof(e));
+    memcpy(e.tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
+    e.tx_type = tx_type;
+    e.nullifier_count = nullifier_count;
+    for (int i = 0; i < nullifier_count; i++) {
+        if (nullifiers && nullifiers[i])
+            memcpy(e.nullifiers[i], nullifiers[i], NODUS_T3_NULLIFIER_LEN);
     }
+    e.tx_data = (uint8_t *)tx_data;
+    e.tx_len = tx_len;
 
-    if (nodus_witness_db_commit(w) != 0) {
-        fprintf(stderr, "%s: db commit failed\n", LOG_TAG);
-        nodus_witness_db_rollback(w);
-        return -1;
-    }
-
-    return 0;
+    nodus_witness_mempool_entry_t *entries[1] = { &e };
+    return nodus_witness_commit_batch(w, entries, 1, proposal_timestamp,
+                                        proposer_id);
 }
 
 /* Helper: build pointer array from round_state inline nullifiers */
@@ -2061,80 +2037,46 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     /* next_phase == NODUS_W_PHASE_COMMIT: PRECOMMIT quorum → COMMIT */
 
     if (w->round_state.batch_count > 0) {
-        /* ── Batch commit: N TXs → N blocks (ATOMIC) ────────────── */
-        bool batch_failed = false;
-
-        if (nodus_witness_db_begin(w) != 0) {
-            fprintf(stderr, "%s: batch db begin failed\n", LOG_TAG);
-            batch_failed = true;
-        }
-
-        if (!batch_failed) {
-            /* Phase 3 / Task 3.3: legacy semantics — each batch TX still
-             * lands in its own block (1 block per TX). Phase 6
-             * commit_batch wrapper switches to true multi-tx blocks
-             * (1 block per N TXs sharing one height). For now, drive
-             * apply_tx_to_state + finalize_block per TX inside the
-             * outer batch transaction. */
-            for (int bi = 0; bi < w->round_state.batch_count; bi++) {
-                nodus_witness_mempool_entry_t *e =
-                    w->round_state.batch_entries[bi];
-                if (!e) continue;
-
-                const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
-                for (int j = 0; j < e->nullifier_count; j++)
-                    nul_ptrs[j] = e->nullifiers[j];
-
-                uint64_t bh = nodus_witness_block_height(w) + 1;
-
-                if (apply_tx_to_state(w, e->tx_hash, e->tx_type,
-                                       nul_ptrs, e->nullifier_count,
-                                       e->tx_data, e->tx_len,
-                                       bh, NULL) != 0) {
-                    fprintf(stderr, "%s: batch TX %d apply_tx failed!\n",
-                            LOG_TAG, bi);
-                    batch_failed = true;
-                    break;
-                }
-                if (finalize_block(w, e->tx_hash, 1,
-                                    w->round_state.proposer_id,
-                                    w->round_state.proposal_timestamp,
-                                    bh) != 0) {
-                    fprintf(stderr, "%s: batch TX %d finalize_block failed!\n",
-                            LOG_TAG, bi);
-                    batch_failed = true;
-                    break;
-                }
-            }
+        /* ── Phase 7 / Task 7.6 — multi-tx block via Phase 6 wrappers ──
+         *
+         * Local-leader commit path. The Phase 6 commit_batch wrapper
+         * applies all N TXs against the SAME pre-batch state at one
+         * shared block height, then runs a single finalize_block — so a
+         * batch of N TXs becomes ONE multi-tx block, not N single-TX
+         * blocks. Genesis (always batch_count == 1 under this path)
+         * routes through commit_genesis which bootstraps the chain DB. */
+        bool batch_failed;
+        if (w->round_state.batch_count == 1 &&
+            w->round_state.batch_entries[0] &&
+            w->round_state.batch_entries[0]->tx_type == NODUS_W_TX_GENESIS) {
+            nodus_witness_mempool_entry_t *ge =
+                w->round_state.batch_entries[0];
+            batch_failed = (nodus_witness_commit_genesis(w, ge->tx_hash,
+                                ge->tx_data, ge->tx_len,
+                                w->round_state.proposal_timestamp,
+                                w->round_state.proposer_id) != 0);
+        } else {
+            batch_failed = (nodus_witness_commit_batch(w,
+                                w->round_state.batch_entries,
+                                w->round_state.batch_count,
+                                w->round_state.proposal_timestamp,
+                                w->round_state.proposer_id) != 0);
         }
 
         if (batch_failed) {
-            nodus_witness_db_rollback(w);
-            fprintf(stderr, "%s: BATCH COMMIT ROLLED BACK round %lu\n",
+            fprintf(stderr, "%s: BATCH COMMIT FAILED round %lu\n",
                     LOG_TAG, (unsigned long)w->round_state.round);
         } else {
-            if (nodus_witness_db_commit(w) != 0) {
-                nodus_witness_db_rollback(w);
-                fprintf(stderr, "%s: batch db commit failed\n", LOG_TAG);
-                batch_failed = true;
-            }
-        }
+            /* Store one commit certificate for the new block. With true
+             * multi-tx blocks, batch_count TXs share a single height. */
+            uint64_t bh = nodus_witness_block_height(w);
+            nodus_witness_cert_store(w, bh, w->round_state.precommits,
+                                      w->round_state.precommit_count);
 
-        if (!batch_failed) {
-            /* Store commit certificates for EACH block in the batch.
-             * State sync verifies certs per block. */
-            uint64_t top_bh = nodus_witness_block_height(w);
-            if (top_bh >= (uint64_t)w->round_state.batch_count) {
-                uint64_t base_bh = top_bh - (uint64_t)w->round_state.batch_count + 1;
-                for (uint64_t bh = base_bh; bh <= top_bh; bh++) {
-                    nodus_witness_cert_store(w, bh, w->round_state.precommits,
-                                              w->round_state.precommit_count);
-                }
-            }
-
-            fprintf(stderr, "%s: BATCH COMMITTED round %lu (%d TXs)\n",
+            fprintf(stderr, "%s: BATCH COMMITTED round %lu (%d TXs, height %llu)\n",
                     LOG_TAG, (unsigned long)w->round_state.round,
-                    w->round_state.batch_count);
+                    w->round_state.batch_count,
+                    (unsigned long long)bh);
         }
     } else {
         /* ── Legacy single-TX commit ─────────────────────────────── */
@@ -2375,53 +2317,58 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
         QGP_LOG_INFO(LOG_TAG, "received batch COMMIT for round %lu (%d TXs)",
                      (unsigned long)hdr->round, cmt->batch_count);
 
-        /* Atomic batch commit */
-        bool rmt_batch_failed = false;
-        if (nodus_witness_db_begin(w) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "batch remote db begin failed");
+        /* Phase 7 / Task 7.6 — multi-tx block via Phase 6 wrappers.
+         *
+         * Build stack-allocated mempool entries from cmt->batch_txs.
+         * tx_data pointers borrow the message buffer; commit_batch does
+         * not free entries. Genesis (batch_count == 1, type GENESIS)
+         * dispatches to commit_genesis for chain DB bootstrap. */
+        bool rmt_batch_failed;
+        nodus_witness_mempool_entry_t local_entries[NODUS_W_MAX_BLOCK_TXS];
+        nodus_witness_mempool_entry_t *entry_ptrs[NODUS_W_MAX_BLOCK_TXS];
+
+        if ((uint32_t)cmt->batch_count > NODUS_W_MAX_BLOCK_TXS) {
+            QGP_LOG_ERROR(LOG_TAG, "batch remote: count %d exceeds max",
+                          cmt->batch_count);
             return -1;
         }
 
-        /* Phase 3 / Task 3.3: legacy semantics (1 block per TX) — see
-         * commit_block_inner deletion comment in the local batch path. */
+        memset(local_entries, 0, sizeof(local_entries));
         for (int bi = 0; bi < cmt->batch_count; bi++) {
             const nodus_t3_batch_tx_t *btx = &cmt->batch_txs[bi];
-            const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
-            for (int j = 0; j < btx->nullifier_count; j++)
-                nul_ptrs[j] = btx->nullifiers[j];
-
-            uint64_t bh = nodus_witness_block_height(w) + 1;
-
-            if (apply_tx_to_state(w, btx->tx_hash, btx->tx_type,
-                                   nul_ptrs, btx->nullifier_count,
-                                   btx->tx_data, btx->tx_len,
-                                   bh, NULL) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "batch remote TX %d apply_tx failed!", bi);
-                rmt_batch_failed = true;
-                break;
+            nodus_witness_mempool_entry_t *e = &local_entries[bi];
+            memcpy(e->tx_hash, btx->tx_hash, NODUS_T3_TX_HASH_LEN);
+            e->tx_type = btx->tx_type;
+            e->nullifier_count = btx->nullifier_count;
+            for (int j = 0; j < btx->nullifier_count; j++) {
+                if (btx->nullifiers[j])
+                    memcpy(e->nullifiers[j], btx->nullifiers[j],
+                           NODUS_T3_NULLIFIER_LEN);
             }
-            if (finalize_block(w, btx->tx_hash, 1,
-                                cmt->proposer_id,
-                                cmt->proposal_timestamp,
-                                bh) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "batch remote TX %d finalize_block failed!", bi);
-                rmt_batch_failed = true;
-                break;
-            }
+            e->tx_data = (uint8_t *)btx->tx_data;
+            e->tx_len = btx->tx_len;
+            entry_ptrs[bi] = e;
+        }
+
+        if (cmt->batch_count == 1 &&
+            local_entries[0].tx_type == NODUS_W_TX_GENESIS) {
+            rmt_batch_failed = (nodus_witness_commit_genesis(w,
+                                    local_entries[0].tx_hash,
+                                    local_entries[0].tx_data,
+                                    local_entries[0].tx_len,
+                                    cmt->proposal_timestamp,
+                                    cmt->proposer_id) != 0);
+        } else {
+            rmt_batch_failed = (nodus_witness_commit_batch(w, entry_ptrs,
+                                    cmt->batch_count,
+                                    cmt->proposal_timestamp,
+                                    cmt->proposer_id) != 0);
         }
 
         if (rmt_batch_failed) {
-            nodus_witness_db_rollback(w);
-            QGP_LOG_ERROR(LOG_TAG, "batch remote commit ROLLED BACK");
+            QGP_LOG_ERROR(LOG_TAG, "batch remote commit FAILED");
             return -1;
         }
-
-        if (nodus_witness_db_commit(w) != 0) {
-            nodus_witness_db_rollback(w);
-            QGP_LOG_ERROR(LOG_TAG, "batch remote db commit failed");
-            return -1;
-        }
-        /* block_add now inside commit_block_inner */
     } else {
         QGP_LOG_INFO(LOG_TAG, "received COMMIT for round %lu (%d nullifiers)",
                      (unsigned long)hdr->round, cmt->nullifier_count);
