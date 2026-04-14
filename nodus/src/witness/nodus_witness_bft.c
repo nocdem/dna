@@ -1123,13 +1123,6 @@ int nodus_witness_commit_block(nodus_witness_t *w,
                                         proposer_id);
 }
 
-/* Helper: build pointer array from round_state inline nullifiers */
-static void round_state_nullifier_ptrs(nodus_witness_round_state_t *rs,
-                                         const uint8_t *ptrs[]) {
-    for (int i = 0; i < rs->nullifier_count; i++)
-        ptrs[i] = rs->nullifiers[i];
-}
-
 /* ════════════════════════════════════════════════════════════════════
  * Phase 7 / Task 7.4 — legacy single-TX nodus_witness_bft_start_round
  * DELETED. Genesis and forwarded-genesis callers now build a 1-entry
@@ -1944,32 +1937,9 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
                     w->round_state.batch_count,
                     (unsigned long long)bh);
         }
-    } else {
-        /* ── Legacy single-TX commit ─────────────────────────────── */
-        const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
-        round_state_nullifier_ptrs(&w->round_state, nul_ptrs);
-
-        if (nodus_witness_commit_block(w, w->round_state.tx_hash,
-                           w->round_state.tx_type,
-                           nul_ptrs,
-                           w->round_state.nullifier_count,
-                           w->round_state.fee_amount,
-                           w->round_state.proposal_timestamp,
-                           w->round_state.proposer_id,
-                           w->round_state.tx_data,
-                           w->round_state.tx_len) != 0) {
-            fprintf(stderr, "%s: commit to DB failed!\n", LOG_TAG);
-        }
-
-        /* Store commit certificate */
-        uint64_t cert_bh = nodus_witness_block_height(w);
-        nodus_witness_cert_store(w, cert_bh, w->round_state.precommits,
-                                  w->round_state.precommit_count);
-
-        fprintf(stderr, "%s: COMMITTED round %lu (tx_type=%u)\n",
-                LOG_TAG, (unsigned long)w->round_state.round,
-                w->round_state.tx_type);
     }
+    /* Phase 9 cleanup — legacy single-TX commit branch deleted; every
+     * round goes through the batch path above since Phase 7. */
 
     /* Compute UTXO set checksum */
     uint8_t utxo_cksum[NODUS_KEY_BYTES];

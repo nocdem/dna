@@ -114,12 +114,16 @@ typedef struct {
     uint64_t    round;
     uint32_t    view;
     nodus_witness_phase_t phase;
+
+    /* tx_hash mirrors block_hash for vote message addressing — every
+     * round is now batch-shaped (Phase 7), so the two values are equal
+     * by construction. Kept as a separate field only so vote message
+     * dispatch does not have to know about block_hash semantics. */
     uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t     nullifiers[NODUS_T3_MAX_TX_INPUTS][NODUS_T3_NULLIFIER_LEN];
-    uint8_t     nullifier_count;
+    /* tx_type retained for the genesis-quorum-unanimous decision in
+     * handle_vote (genesis still requires unanimous approval). Set by
+     * bft_start_round_internal from entries[0]->tx_type. */
     uint8_t     tx_type;
-    uint8_t     tx_data[NODUS_T3_MAX_TX_SIZE];
-    uint32_t    tx_len;
 
     /* Votes */
     nodus_witness_vote_record_t prevotes[NODUS_T3_MAX_WITNESSES];
@@ -137,16 +141,11 @@ typedef struct {
     uint64_t    proposal_timestamp;
     uint8_t     proposer_id[NODUS_T3_WITNESS_ID_LEN];
 
-    /* Client request data */
-    uint8_t     client_pubkey[NODUS_PK_BYTES];
-    uint8_t     client_signature[NODUS_SIG_BYTES];
-    uint64_t    fee_amount;
-
     /* Forwarder info */
     bool        is_forwarded;
     uint8_t     forwarder_id[NODUS_T3_WITNESS_ID_LEN];
 
-    /* Client session (for direct response — single-TX legacy) */
+    /* Client session (deprecated — entries carry their own conn after Phase 12) */
     struct nodus_tcp_conn *client_conn;
     uint32_t    client_txn_id;
 
