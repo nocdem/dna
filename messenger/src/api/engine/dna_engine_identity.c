@@ -1265,17 +1265,13 @@ int dna_engine_create_identity_sync(
     /* Step 2: Create temporary messenger context for registration */
     messenger_context_t *temp_ctx = messenger_init(fingerprint_out, engine->db_encryption_key);
     if (!temp_ctx) {
-        /* Cleanup: v0.3.0 flat structure - delete keys/, db/, wallets/, mnemonic.enc */
-        char path[512];
-        snprintf(path, sizeof(path), "%s/keys", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/db", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/wallets", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/mnemonic.enc", engine->data_dir);
-        remove(path);
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create messenger context for identity registration");
+        /* CORE-05: Do NOT destroy keys when messenger_init fails.
+         * Same rationale as the post-register_name branch below: transient
+         * init failures (e.g., DHT not ready yet) must not wipe the user's
+         * on-disk identity. The resume-flow UI can retry once the subsystem
+         * is healthy. See .planning/phases/06-c-engine-core-flow-fixes/. */
+        QGP_LOG_WARN(LOG_TAG,
+                     "Failed to create messenger context for identity registration — keys preserved for retry");
         return DNA_ERROR_INTERNAL;
     }
 
@@ -1286,17 +1282,14 @@ int dna_engine_create_identity_sync(
     messenger_free(temp_ctx);
 
     if (rc != 0) {
-        /* Cleanup: v0.3.0 flat structure - delete keys/, db/, wallets/, mnemonic.enc */
-        char path[512];
-        snprintf(path, sizeof(path), "%s/keys", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/db", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/wallets", engine->data_dir);
-        qgp_platform_rmdir_recursive(path);
-        snprintf(path, sizeof(path), "%s/mnemonic.enc", engine->data_dir);
-        remove(path);
-        QGP_LOG_ERROR(LOG_TAG, "Name registration failed for '%s', identity rolled back", name);
+        /* CORE-05: Do NOT destroy keys on registration failure.
+         * Transient DHT errors used to wipe the user's identity, locking them out.
+         * The Flutter UI's IdentitySelectionScreen(resumeFingerprint:) (shipped v0.101.38)
+         * handles retry via dna_engine_register_name without re-deriving keys.
+         * See .planning/phases/06-c-engine-core-flow-fixes/ for the full audit. */
+        QGP_LOG_WARN(LOG_TAG,
+                     "Name registration failed for '%s' (rc=%d) — keys preserved for retry via resume-flow",
+                     name, rc);
         return DNA_ENGINE_ERROR_NETWORK;
     }
 
