@@ -686,20 +686,48 @@ static bool supply_invariant_violated(nodus_witness_t *w) {
     return violated;
 }
 
-static int commit_block_inner(nodus_witness_t *w,
-                                const uint8_t *tx_hash,
-                                uint8_t tx_type,
-                                const uint8_t *const *nullifiers,
-                                uint8_t nullifier_count,
-                                uint64_t total_supply,
-                                uint64_t proposal_timestamp,
-                                const uint8_t *proposer_id,
-                                const uint8_t *tx_data,
-                                uint32_t tx_len) {
+/* apply_tx_to_state — Phase 3 / Task 3.1.
+ *
+ * Per-TX state mutation: extracts the per-TX body of the legacy
+ * commit_block_inner. Does NOT touch state_root, supply check, or
+ * block_add — those live in finalize_block (Task 3.2). Suitable for
+ * use inside both single-TX paths (caller invokes finalize_block once
+ * after a single apply_tx_to_state) and multi-TX batch paths (caller
+ * invokes apply_tx_to_state N times, then finalize_block once).
+ *
+ * The block_height parameter is the height at which the TX is being
+ * committed — for single-TX paths it equals
+ * nodus_witness_block_height(w) + 1; for batch paths all N TXs share
+ * the same height (the height of the block they are being applied to).
+ *
+ * batch_ctx is a forward declaration for Phase 4's intra-batch
+ * chained-UTXO defense. NULL is legal — the chained check is skipped,
+ * which is what single-TX paths and the SAVEPOINT attribution replay
+ * (Task 6.2) want.
+ */
+#ifdef NODUS_WITNESS_INTERNAL_API
+int apply_tx_to_state(nodus_witness_t *w,
+#else
+static int apply_tx_to_state(nodus_witness_t *w,
+#endif
+                       const uint8_t *tx_hash,
+                       uint8_t tx_type,
+                       const uint8_t *const *nullifiers,
+                       uint8_t nullifier_count,
+                       const uint8_t *tx_data,
+                       uint32_t tx_len,
+                       uint64_t block_height,
+                       void *batch_ctx) {
+    (void)batch_ctx;  /* Phase 4 wires the chained-UTXO check */
     bool failed = false;
 
     if (tx_type == NODUS_W_TX_GENESIS) {
-        uint64_t supply = total_supply;
+        /* Phase 3 / Task 3.1: total_supply param dropped from the per-TX
+         * primitive — always derive supply from tx_data outputs. The
+         * legacy single-TX caller used to pass an explicit total_supply
+         * for optimization, but the fallback path was always present and
+         * dead-equivalent. */
+        uint64_t supply = 0;
         if (supply == 0 && tx_data && tx_len > 75) {
             size_t off = 74;
             uint8_t in_count = tx_data[off++];
@@ -762,18 +790,11 @@ static int commit_block_inner(nodus_witness_t *w,
         }
     }
 
-    /* ── Supply invariant check (native + per-token DNAC) ─────────
-     * Phase 3 / Task 3.0: extracted into supply_invariant_violated()
-     * helper. Currently still per-TX; Task 3.4 moves the call into
-     * finalize_block so it runs once per block instead of N times per
-     * batch. The legacy semantic is preserved here — a violation logs
-     * but does not fail the commit (the check was advisory pre-Phase 3). */
-    if (!failed && w->db) {
-        (void)supply_invariant_violated(w);
-    }
+    /* Phase 3 / Task 3.4: supply check moved to finalize_block —
+     * runs once per block instead of N times per batch. */
 
     if (!failed && tx_data && tx_len > 0) {
-        uint64_t bh = nodus_witness_block_height(w) + 1;
+        uint64_t bh = block_height;  /* Phase 3 / Task 3.1: explicit param */
 
         /* Extract sender_fp and per-output data from TX binary.
          * Wire format: header(74) → inputs(1+N*(64+8+64)) → outputs(1+...)
@@ -911,36 +932,106 @@ static int commit_block_inner(nodus_witness_t *w,
 
     nodus_witness_ledger_add(w, tx_hash, tx_type, nullifier_count);
 
-    /* Block creation inside caller's DB transaction for crash atomicity.
-     *
-     * The Merkle state_root is computed AFTER all UTXO writes for this
-     * block are in place, so the root reflects post-block state. Because
-     * we are inside a BEGIN IMMEDIATE transaction opened by
-     * nodus_witness_commit_block(), the UTXO inserts we just performed
-     * are visible to this read.
-     *
-     * Invalidate the cached UTXO checksum up front — it covered the
-     * pre-block state and is now stale. */
+    /* Phase 3 / Task 3.2: state_root + cached_state_root invalidation +
+     * block_add moved to finalize_block. The caller is expected to call
+     * finalize_block() once after applying all TXs in the block. */
+    return 0;
+}
+
+/* finalize_block — Phase 3 / Task 3.2.
+ *
+ * Per-block work: invalidate the cached state_root, recompute it from
+ * the post-batch UTXO set, run the supply invariant check once, build
+ * the tx_root over the batch's TX hashes, and write the block row.
+ *
+ * MUST be called inside the same outer DB transaction as the
+ * apply_tx_to_state calls that produced the batch. The state_root
+ * read sees the uncommitted UTXO writes from that transaction.
+ *
+ * tx_hashes is the flat n*64 buffer of raw TX hashes for tx_root
+ * computation. tx_count is the batch size (1..NODUS_W_MAX_BLOCK_TXS).
+ *
+ * The supply invariant check is currently advisory (logs only) to
+ * preserve legacy single-TX behavior. Phase 6 commit_batch wrapper
+ * promotes a violation to fatal via outer rollback.
+ */
+#ifdef NODUS_WITNESS_INTERNAL_API
+int finalize_block(nodus_witness_t *w,
+#else
+static int finalize_block(nodus_witness_t *w,
+#endif
+                    const uint8_t *tx_hashes,
+                    uint32_t tx_count,
+                    const uint8_t *proposer_id,
+                    uint64_t timestamp,
+                    uint64_t expected_height) {
+    if (!w || !w->db) return -1;
+    if (!proposer_id) return 0;  /* legacy: skip block_add when no proposer */
+    if (tx_count == 0 || tx_count > NODUS_W_MAX_BLOCK_TXS) return -1;
+    if (!tx_hashes) return -1;
+
+    (void)expected_height;  /* Phase 6 will assert against block_height(w)+1 */
+
+    /* Invalidate the cached UTXO checksum — the per-TX writes from this
+     * batch made the previous root stale. Phase 11 renames this to
+     * cached_state_root. */
     w->cached_utxo_checksum_valid = false;
 
-    if (proposer_id) {
-        uint8_t state_root[NODUS_T3_TX_HASH_LEN];
-        if (nodus_witness_merkle_compute_utxo_root(w, state_root) != 0) {
-            fprintf(stderr, "%s: failed to compute state_root for block\n",
-                    LOG_TAG);
-            return -1;
-        }
-        /* Phase 1 / Task 1.2: single-TX legacy path. tx_root == tx_hash for
-         * a 1-leaf "Merkle"; Phase 2 introduces RFC 6962 hashing and Phase 3
-         * splits this into apply_tx + finalize_block which builds tx_root
-         * over the multi-TX batch. tx_count is fixed at 1 here. The
-         * dropped tx_type column moved to committed_transactions. */
-        (void)tx_type;
-        nodus_witness_block_add(w, tx_hash, 1,
-                                  proposal_timestamp, proposer_id,
-                                  state_root);
+    /* 1. Compute post-batch state_root. */
+    uint8_t state_root[NODUS_T3_TX_HASH_LEN];
+    if (nodus_witness_merkle_compute_utxo_root(w, state_root) != 0) {
+        fprintf(stderr, "%s: finalize_block: state_root compute failed\n",
+                LOG_TAG);
+        return -1;
     }
 
+    /* 2. Supply invariant check — once per block (Phase 3 / Task 3.4).
+     * Advisory only in Phase 3; Phase 6 commit_batch promotes to fatal. */
+    (void)supply_invariant_violated(w);
+
+    /* 3. tx_root via RFC 6962 over the batch's TX hashes (Phase 2 wrapper). */
+    uint8_t tx_root[NODUS_T3_TX_HASH_LEN];
+    if (nodus_witness_merkle_tx_root(tx_hashes, (size_t)tx_count, tx_root) != 0) {
+        fprintf(stderr, "%s: finalize_block: tx_root compute failed\n",
+                LOG_TAG);
+        return -1;
+    }
+
+    /* 4. Block row insert. */
+    if (nodus_witness_block_add(w, tx_root, tx_count, timestamp,
+                                  proposer_id, state_root) != 0) {
+        fprintf(stderr, "%s: finalize_block: block_add failed\n", LOG_TAG);
+        return -1;
+    }
+
+    return 0;
+}
+
+/* commit_block_inner — Phase 3 / Task 3.3: thin shim over the new
+ * apply_tx + finalize pair. Kept temporarily so the existing single-TX
+ * callers still build; Phase 6 commit wrappers replace these calls
+ * with explicit apply_tx + finalize_block sequences. */
+static int commit_block_inner(nodus_witness_t *w,
+                                const uint8_t *tx_hash,
+                                uint8_t tx_type,
+                                const uint8_t *const *nullifiers,
+                                uint8_t nullifier_count,
+                                uint64_t total_supply,
+                                uint64_t proposal_timestamp,
+                                const uint8_t *proposer_id,
+                                const uint8_t *tx_data,
+                                uint32_t tx_len) {
+    (void)total_supply;  /* Always derived from tx_data inside apply_tx_to_state */
+    uint64_t bh = nodus_witness_block_height(w) + 1;
+
+    if (apply_tx_to_state(w, tx_hash, tx_type, nullifiers, nullifier_count,
+                           tx_data, tx_len, bh, NULL) != 0) {
+        return -1;
+    }
+
+    if (proposer_id) {
+        return finalize_block(w, tx_hash, 1, proposer_id, proposal_timestamp, bh);
+    }
     return 0;
 }
 
