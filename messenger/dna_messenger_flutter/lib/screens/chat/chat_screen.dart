@@ -2305,7 +2305,9 @@ class _MessageBubble extends StatelessWidget {
             ],
             FormattedText(
               displayText,
-              selectable: true,
+              // selectable: false (default) — native text selection swallows
+              // tap/long-press, blocking the message overlay. The overlay's
+              // Copy action replaces the need for native selection.
               style: TextStyle(
                 color: isOutgoing
                     ? theme.colorScheme.onPrimary
