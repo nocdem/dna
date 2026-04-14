@@ -138,6 +138,45 @@ static void test_empty_tree_is_leaf_hash_empty(void) {
     PASS();
 }
 
+/* CVE-2012-2459 — under the legacy duplicate-odd-sibling Merkle, the
+ * tree {A,B,C} and the tree {A,B,C,C} produce identical roots:
+ *
+ *   legacy({A,B,C})   = pair( pair(A,B), pair(C,C) )
+ *   legacy({A,B,C,C}) = pair( pair(A,B), pair(C,C) )
+ *
+ * RFC 6962 closes the collision because leaves and inner nodes hash
+ * to disjoint preimages (0x00 vs 0x01 prefix), and the second tree's
+ * right subtree is inner(lh(C), lh(C)) — distinct from lh(C). */
+static void test_cve_2012_2459_rejected(void) {
+    TEST("CVE-2012-2459: root({A,B,C}) != root({A,B,C,C})");
+
+    uint8_t A[64], B[64], C[64];
+    for (int i = 0; i < 64; i++) {
+        A[i] = (uint8_t)(0x11 + i);
+        B[i] = (uint8_t)(0x55 + i);
+        C[i] = (uint8_t)(0x99 + i);
+    }
+
+    uint8_t three[3 * 64];
+    memcpy(three + 0,  A, 64);
+    memcpy(three + 64, B, 64);
+    memcpy(three + 128, C, 64);
+
+    uint8_t four[4 * 64];
+    memcpy(four + 0,   A, 64);
+    memcpy(four + 64,  B, 64);
+    memcpy(four + 128, C, 64);
+    memcpy(four + 192, C, 64);   /* duplicated last */
+
+    uint8_t r3[64], r4[64];
+    if (nodus_witness_merkle_tx_root(three, 3, r3) != 0) { FAIL("3-leaf"); return; }
+    if (nodus_witness_merkle_tx_root(four,  4, r4) != 0) { FAIL("4-leaf"); return; }
+
+    if (memcmp(r3, r4, 64) == 0) { FAIL("CVE collision still present"); return; }
+
+    PASS();
+}
+
 int main(void) {
     printf("\nNodus RFC 6962 Merkle Domain Tag Tests\n");
     printf("==========================================\n\n");
@@ -145,6 +184,7 @@ int main(void) {
     test_single_leaf_is_prehashed();
     test_three_leaf_root();
     test_empty_tree_is_leaf_hash_empty();
+    test_cve_2012_2459_rejected();
 
     printf("\n==========================================\n");
     printf("Results: %d passed, %d failed\n\n", passed, failed);
