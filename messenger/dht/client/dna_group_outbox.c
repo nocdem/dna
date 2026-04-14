@@ -15,6 +15,7 @@
 #include "dna_group_outbox.h"
 #include "../shared/nodus_ops.h"
 #include "../../messenger/gek.h"
+#include "../../messenger/group_database.h"  // CORE-04: per-group salt accessors
 #include "../../messenger.h"  // For messenger_sync_group_gek
 #include "../../message_backup.h"
 #include "crypto/enc/qgp_aes.h"
@@ -72,15 +73,27 @@ uint64_t dna_group_outbox_get_day_bucket(void) {
 int dna_group_outbox_make_key(
     const char *group_uuid,
     uint64_t day_bucket,
+    const uint8_t *salt,
     char *key_out,
     size_t key_out_size
 ) {
-    if (!group_uuid || !key_out || key_out_size < 128) {
+    /* CORE-04: salt is required. Hard cutover — no unsalted fallback.
+     * Plan 6-04 locked decision D-07/D-08/D-11. */
+    if (!group_uuid || !key_out || key_out_size < 256 || !salt) {
         return -1;
     }
 
-    snprintf(key_out, key_out_size, DNA_GROUP_OUTBOX_KEY_FMT,
-             group_uuid, (unsigned long)day_bucket);
+    char salt_hex[65];
+    for (int i = 0; i < 32; i++) {
+        snprintf(salt_hex + (i * 2), 3, "%02x", salt[i]);
+    }
+    salt_hex[64] = '\0';
+
+    int n = snprintf(key_out, key_out_size, DNA_GROUP_OUTBOX_KEY_FMT,
+                     group_uuid, (unsigned long)day_bucket, salt_hex);
+    if (n < 0 || (size_t)n >= key_out_size) {
+        return -1;
+    }
     return 0;
 }
 
@@ -340,6 +353,18 @@ int dna_group_outbox_send(
 
     QGP_LOG_INFO(LOG_TAG, "Sending message to group %s\n", group_uuid);
 
+    /* CORE-04: fetch per-group DHT privacy salt before any DHT operation.
+     * No unsalted fallback — if no salt is provisioned for this group, the
+     * owner must provision it first via the GEK/IKP distribution path. */
+    uint8_t group_salt[32];
+    if (group_database_get_dht_salt(group_uuid, group_salt) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "No DHT salt provisioned for group %s — cannot publish "
+            "(waiting for owner to distribute salt via GEK channel)\n",
+            group_uuid);
+        return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
+    }
+
     /* Step 1: Load active GEK */
     uint8_t gek[GEK_KEY_SIZE];
     uint32_t gek_version = 0;
@@ -440,9 +465,14 @@ int dna_group_outbox_send(
     memcpy(new_msg.signature, signature, signature_len);
     new_msg.signature_len = signature_len;
 
-    /* Step 7: Generate shared group DHT key */
+    /* Step 7: Generate shared group DHT key (CORE-04: salted) */
     char group_key[256];
-    dna_group_outbox_make_key(group_uuid, day_bucket, group_key, sizeof(group_key));
+    if (dna_group_outbox_make_key(group_uuid, day_bucket, group_salt,
+                                  group_key, sizeof(group_key)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build salted group key for %s\n", group_uuid);
+        free(ciphertext);
+        return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
+    }
 
     /* Step 8: Read my existing messages from the multi-owner key.
      * Uses get_all_with_ids and filters by our value_id. */
@@ -570,9 +600,22 @@ int dna_group_outbox_fetch(
         day_bucket = dna_group_outbox_get_day_bucket();
     }
 
-    /* Generate shared group DHT key */
+    /* CORE-04: fetch per-group salt for salted-only key derivation */
+    uint8_t group_salt[32];
+    if (group_database_get_dht_salt(group_uuid, group_salt) != 0) {
+        QGP_LOG_WARN(LOG_TAG,
+            "No DHT salt for group %s — cannot fetch (salted-only)\n",
+            group_uuid);
+        return DNA_GROUP_OUTBOX_OK; /* No salt yet → nothing to fetch */
+    }
+
+    /* Generate shared group DHT key (CORE-04: salted) */
     char group_key[256];
-    dna_group_outbox_make_key(group_uuid, day_bucket, group_key, sizeof(group_key));
+    if (dna_group_outbox_make_key(group_uuid, day_bucket, group_salt,
+                                  group_key, sizeof(group_key)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build salted group key for %s\n", group_uuid);
+        return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
+    }
 
     QGP_LOG_DEBUG(LOG_TAG, "Fetching group %s day %lu from key %s\n",
                   group_uuid, (unsigned long)day_bucket, group_key);
@@ -1557,9 +1600,23 @@ static int subscribe_to_group_key(dna_group_listen_ctx_t *ctx) {
         return -1;
     }
 
-    /* Generate shared group key for current day */
+    /* CORE-04: fetch per-group salt (salted-only key derivation) */
+    uint8_t group_salt[32];
+    if (group_database_get_dht_salt(ctx->group_uuid, group_salt) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "No DHT salt for group %s — cannot subscribe (salted-only)\n",
+            ctx->group_uuid);
+        return -1;
+    }
+
+    /* Generate shared group key for current day (CORE-04: salted) */
     char group_key[256];
-    dna_group_outbox_make_key(ctx->group_uuid, ctx->current_day, group_key, sizeof(group_key));
+    if (dna_group_outbox_make_key(ctx->group_uuid, ctx->current_day,
+                                  group_salt, group_key, sizeof(group_key)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build salted key for group %s\n",
+                      ctx->group_uuid);
+        return -1;
+    }
 
     /* Subscribe to the shared key (nodus_ops_listen hashes internally) */
     size_t token = nodus_ops_listen((const uint8_t *)group_key, strlen(group_key),

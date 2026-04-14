@@ -63,8 +63,10 @@ extern "C" {
 /** Days to sync on full check (today-6 to today+1 = 8 days) */
 #define DNA_GROUP_OUTBOX_FULL_DAYS 8
 
-/** Key format for shared group storage (all members write here) */
-#define DNA_GROUP_OUTBOX_KEY_FMT "dna:group:%s:out:%lu"
+/** Key format for shared group storage (all members write here).
+ *  CORE-04: includes a per-group 32-byte salt (hex-encoded) to prevent a
+ *  passive DHT observer from correlating group activity to a fingerprint. */
+#define DNA_GROUP_OUTBOX_KEY_FMT "dna:group:%s:out:%lu:%s"
 
 /** AES-256-GCM nonce size */
 #define DNA_GROUP_OUTBOX_NONCE_SIZE 12
@@ -302,19 +304,24 @@ int dna_group_outbox_sync_full(
 uint64_t dna_group_outbox_get_day_bucket(void);
 
 /**
- * @brief Generate DHT key for group outbox
+ * @brief Generate DHT key for group outbox (CORE-04: salted)
  *
- * Key format: dna:group:<group_uuid>:out:<day_bucket>
+ * Key format: dna:group:<group_uuid>:out:<day_bucket>:<salt_hex>
+ *
+ * The `salt` parameter MUST be non-NULL (32 bytes). Plan 6-04 hard-cutover:
+ * there is no unsalted fallback. A NULL salt returns -1.
  *
  * @param group_uuid Group UUID
  * @param day_bucket Day bucket (unix_timestamp / 86400)
- * @param key_out Output buffer for key string (must be at least 128 bytes)
+ * @param salt Per-group 32-byte privacy salt (MUST be non-NULL)
+ * @param key_out Output buffer for key string (must be at least 256 bytes)
  * @param key_out_size Size of output buffer
  * @return 0 on success, -1 on error
  */
 int dna_group_outbox_make_key(
     const char *group_uuid,
     uint64_t day_bucket,
+    const uint8_t *salt,
     char *key_out,
     size_t key_out_size
 );
