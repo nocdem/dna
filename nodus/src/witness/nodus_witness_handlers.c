@@ -23,6 +23,7 @@
 #include "server/nodus_server.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/nodus_identity.h"
+#include "crypto/hash/qgp_sha3.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -1415,13 +1416,35 @@ static void handle_dnac_spend(nodus_witness_t *w,
  * Spend result — sent on BFT COMMIT (async response to dnac_spend)
  * ════════════════════════════════════════════════════════════════════ */
 
+/* Phase 12 / Task 12.2 — extended spend_result preimage layout (221 B):
+ *
+ *   [0..7]      'spndrslt' domain tag        (8)
+ *   [8..71]     tx_hash                       (64)
+ *   [72..103]   witness_id                    (32)
+ *   [104..167]  SHA3-512(witness_pubkey)     (64)  Task 12.3
+ *   [168..199]  chain_id                      (32)
+ *   [200..207]  timestamp (LE)                (8)
+ *   [208..215]  block_height (LE)             (8)
+ *   [216..219]  tx_index (LE)                 (4)
+ *   [220]       status                        (1)
+ *
+ * Total: 221 bytes. Fixes Task 12.1 (timestamp TOCTOU — single time(NULL)
+ * call), Task 12.2 (domain tag prevents cross-context confusion), Task
+ * 12.3 (pubkey hash binds wpk wire field to the sig). */
+#define DNAC_SPEND_RESULT_PREIMAGE_LEN  221
+static const uint8_t DNAC_SPEND_RESULT_DOMAIN_TAG[8] =
+    { 's', 'p', 'n', 'd', 'r', 's', 'l', 't' };
+_Static_assert(sizeof(DNAC_SPEND_RESULT_DOMAIN_TAG) == 8,
+               "spend_result domain tag must be exactly 8 bytes");
+
 void nodus_witness_send_spend_result(nodus_witness_t *w,
+                                       nodus_witness_mempool_entry_t *entry,
                                        int status,
                                        const char *error_msg) {
-    if (!w) return;
+    if (!w || !entry) return;
 
-    struct nodus_tcp_conn *conn = w->round_state.client_conn;
-    uint32_t txn_id = w->round_state.client_txn_id;
+    struct nodus_tcp_conn *conn = entry->client_conn;
+    uint32_t txn_id = entry->client_txn_id;
 
     if (!conn) return;
 
@@ -1430,11 +1453,43 @@ void nodus_witness_send_spend_result(nodus_witness_t *w,
         return;
     }
 
-    /* Build spend response with witness attestation */
+    /* Phase 12 / Task 12.1 — single time(NULL) call reused for wire field
+     * AND signed preimage. Eliminates TOCTOU between the two values. */
+    uint64_t ts = (uint64_t)time(NULL);
+
+    /* Phase 12 / Task 12.3 — bind the wire wpk field via SHA3-512(wpk).
+     * Without this, an attacker could swap the pk field in the response
+     * and the sig would still validate over the bare tx_hash/wid/ts. */
+    uint8_t wpk_hash[64];
+    qgp_sha3_512(w->server->identity.pk.bytes, NODUS_PK_BYTES, wpk_hash);
+
+    uint8_t preimage[DNAC_SPEND_RESULT_PREIMAGE_LEN];
+    memcpy(preimage,           DNAC_SPEND_RESULT_DOMAIN_TAG, 8);
+    memcpy(preimage + 8,       entry->tx_hash, NODUS_T3_TX_HASH_LEN);
+    memcpy(preimage + 72,      w->my_id, NODUS_T3_WITNESS_ID_LEN);
+    memcpy(preimage + 104,     wpk_hash, 64);
+    memcpy(preimage + 168,     w->chain_id, 32);
+    for (int i = 0; i < 8; i++)
+        preimage[200 + i] = (uint8_t)((ts >> (i * 8)) & 0xFF);
+    for (int i = 0; i < 8; i++)
+        preimage[208 + i] =
+            (uint8_t)((entry->committed_block_height >> (i * 8)) & 0xFF);
+    for (int i = 0; i < 4; i++)
+        preimage[216 + i] =
+            (uint8_t)((entry->committed_tx_index >> (i * 8)) & 0xFF);
+    preimage[220] = (uint8_t)status;
+
+    nodus_sig_t sig;
+    memset(&sig, 0, sizeof(sig));
+    nodus_sign(&sig, preimage, sizeof(preimage), &w->server->identity.sk);
+
+    /* Build response with extended fields (status, wid, wpk, ts, bnr, ti,
+     * cid, wsig). Phase 13 / Task 13.2 pulls block_height + tx_index +
+     * chain_id onto the client API. */
     uint8_t buf[8192];
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, sizeof(buf));
-    enc_dnac_response(&enc, txn_id, "dnac_spend", 5);
+    enc_dnac_response(&enc, txn_id, "dnac_spend", 8);
 
     cbor_encode_cstr(&enc, "status");
     cbor_encode_uint(&enc, (uint64_t)status);
@@ -1446,21 +1501,16 @@ void nodus_witness_send_spend_result(nodus_witness_t *w,
     cbor_encode_bstr(&enc, w->server->identity.pk.bytes, NODUS_PK_BYTES);
 
     cbor_encode_cstr(&enc, "ts");
-    cbor_encode_uint(&enc, (uint64_t)time(NULL));
+    cbor_encode_uint(&enc, ts);
 
-    /* Sign: tx_hash + witness_id + timestamp */
-    uint8_t signed_data[NODUS_T3_TX_HASH_LEN + NODUS_T3_WITNESS_ID_LEN + 8];
-    memcpy(signed_data, w->round_state.tx_hash, NODUS_T3_TX_HASH_LEN);
-    memcpy(signed_data + NODUS_T3_TX_HASH_LEN, w->my_id,
-           NODUS_T3_WITNESS_ID_LEN);
-    uint64_t ts = (uint64_t)time(NULL);
-    memcpy(signed_data + NODUS_T3_TX_HASH_LEN + NODUS_T3_WITNESS_ID_LEN,
-           &ts, 8);
+    cbor_encode_cstr(&enc, "bnr");
+    cbor_encode_uint(&enc, entry->committed_block_height);
 
-    nodus_sig_t sig;
-    memset(&sig, 0, sizeof(sig));
-    nodus_sign(&sig, signed_data, sizeof(signed_data),
-                &w->server->identity.sk);
+    cbor_encode_cstr(&enc, "ti");
+    cbor_encode_uint(&enc, (uint64_t)entry->committed_tx_index);
+
+    cbor_encode_cstr(&enc, "cid");
+    cbor_encode_bstr(&enc, w->chain_id, 32);
 
     cbor_encode_cstr(&enc, "wsig");
     cbor_encode_bstr(&enc, sig.bytes, NODUS_SIG_BYTES);
@@ -1473,8 +1523,11 @@ void nodus_witness_send_spend_result(nodus_witness_t *w,
                     "response buffer overflow");
     }
 
-    fprintf(stderr, "%s: sent spend result (status=%d, txn_id=%u)\n",
-            LOG_TAG, status, txn_id);
+    fprintf(stderr, "%s: sent spend result (status=%d, txn_id=%u, "
+            "block=%llu, tx_index=%u)\n",
+            LOG_TAG, status, txn_id,
+            (unsigned long long)entry->committed_block_height,
+            entry->committed_tx_index);
 }
 
 /* ════════════════════════════════════════════════════════════════════

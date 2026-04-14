@@ -2075,16 +2075,8 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             if (!e) continue;
 
             if (e->client_conn && !e->is_forwarded) {
-                /* Direct client — send spend result */
-                struct nodus_tcp_conn *saved_conn = w->round_state.client_conn;
-                uint32_t saved_txn = w->round_state.client_txn_id;
-                memcpy(w->round_state.tx_hash, e->tx_hash,
-                       NODUS_T3_TX_HASH_LEN);
-                w->round_state.client_conn = e->client_conn;
-                w->round_state.client_txn_id = e->client_txn_id;
-                nodus_witness_send_spend_result(w, 0, NULL);
-                w->round_state.client_conn = saved_conn;
-                w->round_state.client_txn_id = saved_txn;
+                /* Phase 12 / Task 12.5 — per-entry call, no round_state stash. */
+                nodus_witness_send_spend_result(w, e, 0, NULL);
             } else if (e->is_forwarded) {
                 /* Send w_fwd_rsp per forwarded TX */
                 int fwd_pi = -1;
@@ -2135,41 +2127,10 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             }
         }
         w->round_state.batch_count = 0;
-    } else {
-        /* Legacy single-TX client response */
-        if (w->round_state.client_conn && !w->round_state.is_forwarded) {
-            nodus_witness_send_spend_result(w, 0, NULL);
-        } else if (w->round_state.is_forwarded) {
-            int fwd_pi = -1;
-            for (int i = 0; i < w->peer_count; i++) {
-                if (memcmp(w->peers[i].witness_id,
-                           w->round_state.forwarder_id,
-                           NODUS_T3_WITNESS_ID_LEN) == 0 &&
-                    w->peers[i].conn && w->peers[i].identified) {
-                    fwd_pi = i;
-                    break;
-                }
-            }
-            if (fwd_pi >= 0) {
-                nodus_t3_msg_t fwd_rsp;
-                memset(&fwd_rsp, 0, sizeof(fwd_rsp));
-                fwd_rsp.type = NODUS_T3_FWD_RSP;
-                fwd_rsp.txn_id = ++w->next_txn_id;
-                snprintf(fwd_rsp.method, sizeof(fwd_rsp.method), "w_fwd_rsp");
-                fwd_rsp.fwd_rsp.status = 0;
-                memcpy(fwd_rsp.fwd_rsp.tx_hash, w->round_state.tx_hash,
-                       NODUS_T3_TX_HASH_LEN);
-                fill_header(w, &fwd_rsp.header);
-                uint8_t fwd_buf[NODUS_T3_MAX_MSG_SIZE];
-                size_t fwd_len = 0;
-                if (nodus_t3_encode(&fwd_rsp, &w->server->identity.sk,
-                                     fwd_buf, sizeof(fwd_buf), &fwd_len) == 0) {
-                    nodus_tcp_send(w->peers[fwd_pi].conn, fwd_buf, fwd_len);
-                    QGP_LOG_DEBUG(LOG_TAG, "sent w_fwd_rsp to forwarder");
-                }
-            }
-        }
     }
+    /* Legacy single-TX client response branch deleted in Phase 12 — every
+     * round is now batch_count > 0 since Phase 7 removed the single-TX
+     * BFT entrypoint. */
 
     /* Reset round */
     w->round_state.phase = NODUS_W_PHASE_IDLE;
@@ -2349,12 +2310,12 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
     if (hdr->round > w->last_committed_round)
         w->last_committed_round = hdr->round;
 
-    /* Handle client response if this was our active round */
+    /* Handle client response if this was our active round.
+     * Phase 12 / Task 12.5 — direct-client spend_result is sent by the
+     * leader at handle_vote time (per-entry), so this handler only owns
+     * the forwarder fwd_rsp branch. */
     if (w->round_state.round == hdr->round) {
-        /* Direct client request — send spend result */
-        if (w->round_state.client_conn && !w->round_state.is_forwarded) {
-            nodus_witness_send_spend_result(w, 0, NULL);
-        } else if (w->round_state.is_forwarded) {
+        if (w->round_state.is_forwarded) {
             /* Forwarded request — send w_fwd_rsp to forwarder */
             int fwd_pi = -1;
             for (int i = 0; i < w->peer_count; i++) {
@@ -2768,6 +2729,7 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
                         timestamp, bh) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "commit_batch: finalize_block failed");
         nodus_witness_db_rollback(w);
+        /* fall through to attribution replay */
 
         /* SAVEPOINT attribution replay — one TX at a time in a fresh
          * read-only transaction, check supply invariant after each,
@@ -2795,6 +2757,16 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
             nodus_witness_db_rollback(w);
         }
         return -1;
+    }
+
+    /* Phase 12 / Task 12.0 — populate per-entry committed coordinates
+     * after the block lands. Used by the per-entry spend_result sender
+     * (Task 12.5) so each receipt carries the height + tx_index. */
+    for (int i = 0; i < count; i++) {
+        if (entries[i]) {
+            entries[i]->committed_block_height = bh;
+            entries[i]->committed_tx_index = (uint32_t)i;
+        }
     }
 
     return nodus_witness_db_commit(w);

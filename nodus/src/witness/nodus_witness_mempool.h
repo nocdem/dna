@@ -39,6 +39,13 @@ typedef struct {
     uint32_t    client_txn_id;
     bool        is_forwarded;
     uint8_t     forwarder_id[NODUS_T3_WITNESS_ID_LEN];
+
+    /* Phase 12 / Task 12.0 — populated by finalize_block once the TX
+     * lands in a committed block. Used by the per-entry spend_result
+     * sender (Task 12.5) so the receipt carries the exact (height,
+     * index) the TX was committed at. */
+    uint64_t    committed_block_height;
+    uint32_t    committed_tx_index;
 } nodus_witness_mempool_entry_t;
 
 /* ── Mempool ────────────────────────────────────────────────────── */

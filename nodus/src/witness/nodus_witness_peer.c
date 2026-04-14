@@ -760,23 +760,18 @@ int nodus_witness_peer_handle_fwd_rsp(nodus_witness_t *w,
         return -1;
     }
 
-    /* Send spend result to original client */
+    /* Send spend result to original client.
+     * Phase 12 / Task 12.5 — build a minimal stack entry with just the
+     * tx_hash + client routing. block_height / tx_index are 0 because
+     * the fwd_rsp wire does not yet carry them; Phase 13 / Task 13.2
+     * extends fwd_rsp with bnr/ti so this path produces a full receipt. */
     if (rsp->status == 0) {
-        /* Use the round_state temporarily to build the response */
-        struct nodus_tcp_conn *saved_conn = w->round_state.client_conn;
-        uint32_t saved_txn = w->round_state.client_txn_id;
-        uint8_t saved_hash[NODUS_T3_TX_HASH_LEN];
-        memcpy(saved_hash, w->round_state.tx_hash, NODUS_T3_TX_HASH_LEN);
-
-        w->round_state.client_conn = client_conn;
-        w->round_state.client_txn_id = client_txn_id;
-        memcpy(w->round_state.tx_hash, rsp->tx_hash, NODUS_T3_TX_HASH_LEN);
-
-        nodus_witness_send_spend_result(w, 0, NULL);
-
-        w->round_state.client_conn = saved_conn;
-        w->round_state.client_txn_id = saved_txn;
-        memcpy(w->round_state.tx_hash, saved_hash, NODUS_T3_TX_HASH_LEN);
+        nodus_witness_mempool_entry_t stack_entry;
+        memset(&stack_entry, 0, sizeof(stack_entry));
+        memcpy(stack_entry.tx_hash, rsp->tx_hash, NODUS_T3_TX_HASH_LEN);
+        stack_entry.client_conn = client_conn;
+        stack_entry.client_txn_id = client_txn_id;
+        nodus_witness_send_spend_result(w, &stack_entry, 0, NULL);
     } else {
         /* Send error response */
         uint8_t err_buf[512];
