@@ -23,6 +23,8 @@
 #include "crypto/enc/qgp_kyber.h"       /* SEC-02: QGP_KEM1024_*BYTES exact sizes */
 #include "qgp.h"  /* For write_armored_file */
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "KEY"
 
 /* ============================================================================

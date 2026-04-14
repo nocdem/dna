@@ -2,6 +2,8 @@
 #include "crypto/enc/kem/kem.h"
 #include <string.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 // QGP KEM-1024 API (ML-KEM-1024)
 // Wrapper for vendored pq-crystals/kyber reference implementation
 // FIPS 203 compliant - ML-KEM-1024 (NIST Level 5 / Category 5 security)

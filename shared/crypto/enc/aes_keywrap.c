@@ -19,6 +19,8 @@
 #include <openssl/evp.h>
 #include <string.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /**
  * RFC 3394 AES Key Wrap using OpenSSL
  *

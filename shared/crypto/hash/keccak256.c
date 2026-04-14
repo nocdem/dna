@@ -15,6 +15,8 @@
 #include <stdio.h>
 #include <ctype.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "KECCAK"
 
 /* Keccak parameters for 256-bit output */

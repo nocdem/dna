@@ -22,6 +22,8 @@
 
 #include <openssl/evp.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /**
  * Get random bytes for entropy generation
  * Uses cross-platform qgp_randombytes() for cryptographically secure random bytes

@@ -26,6 +26,8 @@
 #include <sys/stat.h>
 #endif
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "SEED_STORAGE"
 
 /* ============================================================================

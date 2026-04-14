@@ -9,6 +9,8 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 // QGP DSA-87 API (ML-DSA-87)
 // Wrapper for vendored pq-crystals/dilithium reference implementation
 // FIPS 204 compliant - ML-DSA-87 (NIST Level 5 / Category 5 security)

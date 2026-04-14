@@ -23,6 +23,8 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /**
  * Derive QGP signing and encryption seeds from BIP39 mnemonic
  *

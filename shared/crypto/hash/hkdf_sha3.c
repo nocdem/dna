@@ -15,6 +15,8 @@
 #include <openssl/params.h>
 #include <string.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "HKDF"
 
 /* Forward declaration for secure zeroing */

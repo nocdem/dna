@@ -19,6 +19,8 @@ typedef SSIZE_T ssize_t;
 #include <sys/types.h>
 #endif
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 static const char BASE58_ALPHABET[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 static const int8_t BASE58_MAP[] = {

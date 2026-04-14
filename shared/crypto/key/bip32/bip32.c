@@ -18,6 +18,8 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_platform.h"
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "BIP32"
 
 /* BIP-32 master key derivation uses this as HMAC key */

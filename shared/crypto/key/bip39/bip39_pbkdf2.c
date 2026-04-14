@@ -19,6 +19,8 @@
 #include <openssl/sha.h>
 #include "crypto/utils/qgp_platform.h"
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /**
  * HMAC-SHA512 implementation
  *

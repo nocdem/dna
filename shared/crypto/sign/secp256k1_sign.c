@@ -12,6 +12,8 @@
 #include <secp256k1_recovery.h>
 #include <string.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "SECP256K1_SIGN"
 
 int secp256k1_sign_hash(

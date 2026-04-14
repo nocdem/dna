@@ -11,6 +11,8 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "ED25519_SIGN"
 
 int ed25519_sign(

@@ -12,6 +12,8 @@
 #include "crypto/utils/platform_keystore.h"
 #include "crypto/utils/qgp_log.h"
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "KEYSTORE"
 
 bool platform_keystore_available(void) {

@@ -9,6 +9,8 @@
 #include "crypto/utils/qgp_log.h"
 #include <time.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "ARMOR"
 
 /* v0.6.47: Thread-safe gmtime wrapper (security fix) */
