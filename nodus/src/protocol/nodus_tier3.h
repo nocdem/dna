@@ -81,12 +81,14 @@ typedef struct {
 } nodus_t3_batch_tx_t;
 
 /** w_propose: Leader proposes a transaction batch for consensus.
- * Phase 9 / Task 9.1 — legacy single-TX fields removed. Every propose
- * is batch-shaped (batch_count == 1 for genesis, 1..10 for normal). */
+ * Phase 9 / Task 9.1 — legacy single-TX fields removed.
+ * Phase 9 / Task 9.4 — block_hash field renamed to tx_root (it is the
+ * RFC 6962 Merkle root over the batch's TX hashes, NOT the full block
+ * header hash — that is computed by nodus_witness_compute_block_hash). */
 typedef struct {
     int             batch_count;
     nodus_t3_batch_tx_t batch_txs[NODUS_W_MAX_BLOCK_TXS];
-    uint8_t         block_hash[NODUS_T3_TX_HASH_LEN];    /* SHA3-512(all tx_hashes) */
+    uint8_t         tx_root[NODUS_T3_TX_HASH_LEN];
 } nodus_t3_propose_t;
 
 /** w_prevote / w_precommit: Witness votes on a proposal.
@@ -125,7 +127,7 @@ typedef struct {
 
     int             batch_count;
     nodus_t3_batch_tx_t batch_txs[NODUS_W_MAX_BLOCK_TXS];
-    uint8_t         block_hash[NODUS_T3_TX_HASH_LEN];    /* SHA3-512(all tx_hashes) */
+    uint8_t         tx_root[NODUS_T3_TX_HASH_LEN];
 } nodus_t3_commit_t;
 
 /** w_viewchg: Witness requests view change */

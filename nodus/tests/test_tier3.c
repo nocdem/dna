@@ -132,7 +132,7 @@ static void test_propose(void) {
 
     /* Phase 9 / Task 9.1 — propose is now batch-shaped only. Build a
      * 1-entry batch round-trip. */
-    memcpy(in.propose.block_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
+    memcpy(in.propose.tx_root, test_tx_hash, NODUS_T3_TX_HASH_LEN);
     in.propose.batch_count = 1;
     nodus_t3_batch_tx_t *btx = &in.propose.batch_txs[0];
     memcpy(btx->tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
@@ -153,7 +153,7 @@ static void test_propose(void) {
 
     if (out.txn_id != 100) { TEST_FAIL(name, "txn_id"); return; }
     if (out.type != NODUS_T3_PROPOSE) { TEST_FAIL(name, "type"); return; }
-    if (memcmp(out.propose.block_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
+    if (memcmp(out.propose.tx_root, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
         TEST_FAIL(name, "block_hash"); return;
     }
     if (out.propose.batch_count != 1) { TEST_FAIL(name, "batch_count"); return; }
@@ -250,7 +250,7 @@ static void test_commit(void) {
     fill_header(&in.header);
 
     /* Phase 9 / Task 9.1 — commit is batch-shaped only. */
-    memcpy(in.commit.block_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
+    memcpy(in.commit.tx_root, test_tx_hash, NODUS_T3_TX_HASH_LEN);
     in.commit.batch_count = 1;
     nodus_t3_batch_tx_t *cbtx = &in.commit.batch_txs[0];
     memcpy(cbtx->tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
@@ -270,7 +270,7 @@ static void test_commit(void) {
     check_header(&in.header, &out.header, name);
     if (out.type != NODUS_T3_COMMIT) { TEST_FAIL(name, "type"); return; }
     if (out.commit.batch_count != 1) { TEST_FAIL(name, "batch_count"); return; }
-    if (memcmp(out.commit.block_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
+    if (memcmp(out.commit.tx_root, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
         TEST_FAIL(name, "block_hash"); return;
     }
     if (out.commit.proposal_timestamp != 1709300100) {
@@ -726,7 +726,7 @@ static void test_propose_zero_nullifiers(void) {
     fill_header(&in.header);
 
     /* Phase 9 / Task 9.1 — genesis is now batch-of-1 with zero nullifiers. */
-    memcpy(in.propose.block_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
+    memcpy(in.propose.tx_root, test_tx_hash, NODUS_T3_TX_HASH_LEN);
     in.propose.batch_count = 1;
     nodus_t3_batch_tx_t *btx = &in.propose.batch_txs[0];
     memcpy(btx->tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);

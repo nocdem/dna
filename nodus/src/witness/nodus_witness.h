@@ -152,7 +152,9 @@ typedef struct {
     /* Batch mode (multi-TX block) */
     int                                batch_count;
     nodus_witness_mempool_entry_t     *batch_entries[NODUS_W_MAX_BLOCK_TXS];
-    uint8_t     block_hash[NODUS_T3_TX_HASH_LEN];  /* SHA3-512(all tx_hashes) */
+    /* Phase 9 / Task 9.4 — tx_root, NOT block_hash. RFC 6962 Merkle
+     * root over the batch's tx hashes. */
+    uint8_t     tx_root[NODUS_T3_TX_HASH_LEN];
 } nodus_witness_round_state_t;
 
 /* ── View change record ──────────────────────────────────────────── */

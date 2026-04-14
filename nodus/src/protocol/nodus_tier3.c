@@ -100,11 +100,10 @@ static void enc_batch_tx(cbor_encoder_t *enc, const nodus_t3_batch_tx_t *tx) {
 }
 
 static void enc_propose_args(cbor_encoder_t *enc, const nodus_t3_propose_t *p) {
-    /* Phase 9 / Task 9.2 — legacy single-TX branch deleted; every
-     * propose is batch-shaped post Phase 7. */
+    /* Phase 9 / Task 9.4 — wire key bh -> tr, field block_hash -> tx_root. */
     cbor_encode_map(enc, 2);
-    cbor_encode_cstr(enc, "bh");
-    cbor_encode_bstr(enc, p->block_hash, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "tr");
+    cbor_encode_bstr(enc, p->tx_root, NODUS_T3_TX_HASH_LEN);
     cbor_encode_cstr(enc, "btx");
     cbor_encode_array(enc, (size_t)p->batch_count);
     for (int i = 0; i < p->batch_count; i++)
@@ -143,11 +142,10 @@ static void enc_commit_certs(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
 }
 
 static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
-    /* Phase 9 / Task 9.2 — legacy single-TX branch deleted; every
-     * commit is batch-shaped post Phase 7. */
+    /* Phase 9 / Task 9.4 — wire key bh -> tr, field block_hash -> tx_root. */
     cbor_encode_map(enc, 7);
-    cbor_encode_cstr(enc, "bh");
-    cbor_encode_bstr(enc, c->block_hash, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "tr");
+    cbor_encode_bstr(enc, c->tx_root, NODUS_T3_TX_HASH_LEN);
     cbor_encode_cstr(enc, "btx");
     cbor_encode_array(enc, (size_t)c->batch_count);
     for (int i = 0; i < c->batch_count; i++)
@@ -502,16 +500,15 @@ static void dec_propose_args(cbor_decoder_t *dec, size_t count,
                     cbor_decode_skip(dec);
             }
         }
-        else if (KEY_IS(key, "bh")) {
+        else if (KEY_IS(key, "tr")) {
+            /* Phase 9 / Task 9.4 — wire key bh -> tr */
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_BSTR &&
                 val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(p->block_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+                memcpy(p->tx_root, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
         }
         /* Phase 9 / Task 9.2 — legacy single-TX propose keys
-         * (txh/nlc/nls/tty/txd/pk/csig/fee) decoder branches deleted.
-         * Unknown keys still skip, but no peer in this codebase emits
-         * them after Phase 7. */
+         * (txh/nlc/nls/tty/txd/pk/csig/fee) decoder branches deleted. */
         else {
             cbor_decode_skip(dec);
         }
@@ -638,11 +635,12 @@ static void dec_commit_args(cbor_decoder_t *dec, size_t count,
                     cbor_decode_skip(dec);
             }
         }
-        else if (KEY_IS(key, "bh")) {
+        else if (KEY_IS(key, "tr")) {
+            /* Phase 9 / Task 9.4 — wire key bh -> tr */
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_BSTR &&
                 val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(c->block_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+                memcpy(c->tx_root, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
         }
         /* Phase 9 / Task 9.2 — legacy single-TX commit keys
          * (txh/nlc/nls/tty/txd) decoder branches deleted. Falls through

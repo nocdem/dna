@@ -1201,7 +1201,7 @@ static int bft_start_round_internal(nodus_witness_t *w,
     w->round_state.round = w->current_round;
     w->round_state.view = w->current_view;
     w->round_state.phase = NODUS_W_PHASE_PREVOTE;
-    memcpy(w->round_state.block_hash, block_hash, NODUS_T3_TX_HASH_LEN);
+    memcpy(w->round_state.tx_root, block_hash, NODUS_T3_TX_HASH_LEN);
     memcpy(w->round_state.tx_hash, block_hash, NODUS_T3_TX_HASH_LEN);
     w->round_state.proposal_timestamp = (uint64_t)time(NULL);
     memcpy(w->round_state.proposer_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
@@ -1227,7 +1227,7 @@ static int bft_start_round_internal(nodus_witness_t *w,
     proposal.txn_id = ++w->next_txn_id;
 
     proposal.propose.batch_count = count;
-    memcpy(proposal.propose.block_hash, block_hash, NODUS_T3_TX_HASH_LEN);
+    memcpy(proposal.propose.tx_root, block_hash, NODUS_T3_TX_HASH_LEN);
 
     for (int i = 0; i < count; i++) {
         nodus_t3_batch_tx_t *btx = &proposal.propose.batch_txs[i];
@@ -1545,9 +1545,9 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
 
     if (prop->batch_count > 0) {
         /* ── Batch mode ──────────────────────────────────────────── */
-        memcpy(w->round_state.block_hash, prop->block_hash,
+        memcpy(w->round_state.tx_root, prop->tx_root,
                NODUS_T3_TX_HASH_LEN);
-        memcpy(w->round_state.tx_hash, prop->block_hash,
+        memcpy(w->round_state.tx_hash, prop->tx_root,
                NODUS_T3_TX_HASH_LEN);
 
         /* Verify block_hash = SHA3-512(all tx_hashes) */
@@ -1565,7 +1565,7 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
             memcpy(computed_bh, bh.bytes, NODUS_T3_TX_HASH_LEN);
         }
 
-        if (memcmp(computed_bh, prop->block_hash, NODUS_T3_TX_HASH_LEN) != 0) {
+        if (memcmp(computed_bh, prop->tx_root, NODUS_T3_TX_HASH_LEN) != 0) {
             fprintf(stderr, "%s: batch block_hash mismatch — rejecting\n",
                     LOG_TAG);
             tx_invalid = true;
@@ -1965,7 +1965,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     if (w->round_state.batch_count > 0) {
         /* Batch commit message */
         c_msg.commit.batch_count = w->round_state.batch_count;
-        memcpy(c_msg.commit.block_hash, w->round_state.block_hash,
+        memcpy(c_msg.commit.tx_root, w->round_state.tx_root,
                NODUS_T3_TX_HASH_LEN);
         for (int i = 0; i < w->round_state.batch_count; i++) {
             nodus_witness_mempool_entry_t *e = w->round_state.batch_entries[i];
