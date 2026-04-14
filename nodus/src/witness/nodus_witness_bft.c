@@ -891,7 +891,13 @@ static int commit_block_inner(nodus_witness_t *w,
                     LOG_TAG);
             return -1;
         }
-        nodus_witness_block_add(w, tx_hash, tx_type,
+        /* Phase 1 / Task 1.2: single-TX legacy path. tx_root == tx_hash for
+         * a 1-leaf "Merkle"; Phase 2 introduces RFC 6962 hashing and Phase 3
+         * splits this into apply_tx + finalize_block which builds tx_root
+         * over the multi-TX batch. tx_count is fixed at 1 here. The
+         * dropped tx_type column moved to committed_transactions. */
+        (void)tx_type;
+        nodus_witness_block_add(w, tx_hash, 1,
                                   proposal_timestamp, proposer_id,
                                   state_root);
     }

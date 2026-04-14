@@ -61,15 +61,22 @@ static int send_sync_req(nodus_witness_t *w, struct nodus_tcp_conn *conn,
 
 static void compute_prev_hash(const nodus_witness_block_t *blk,
                                 uint8_t *prev_hash_out) {
-    /* Must match nodus_witness_block_add() formula exactly:
+    /* Must match nodus_witness_block_add() formula exactly. Multi-tx
+     * formula (Phase 1 / Task 1.2):
      *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64)
-     *             || tx_hash(64) || timestamp(8 LE) || proposer_id(32) )
-     * See dnac/include/dnac/block.h:13 for the canonical spec. */
+     *             || tx_root(64) || tx_count(4 LE) || timestamp(8 LE)
+     *             || proposer_id(32) )
+     * Phase 5 will replace both this site and the inline copy in
+     * block_add with the shared compute_block_hash helper. */
     uint8_t height_le[8];
     uint8_t ts_le[8];
+    uint8_t tc_le[4];
     for (int i = 0; i < 8; i++) {
         height_le[i] = (uint8_t)((blk->height >> (i * 8)) & 0xff);
         ts_le[i] = (uint8_t)((blk->timestamp >> (i * 8)) & 0xff);
+    }
+    for (int i = 0; i < 4; i++) {
+        tc_le[i] = (uint8_t)((blk->tx_count >> (i * 8)) & 0xff);
     }
 
     EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
@@ -77,7 +84,8 @@ static void compute_prev_hash(const nodus_witness_block_t *blk,
     EVP_DigestUpdate(mdctx, height_le, 8);
     EVP_DigestUpdate(mdctx, blk->prev_hash, NODUS_T3_TX_HASH_LEN);
     EVP_DigestUpdate(mdctx, blk->state_root, NODUS_T3_TX_HASH_LEN);
-    EVP_DigestUpdate(mdctx, blk->tx_hash, NODUS_T3_TX_HASH_LEN);
+    EVP_DigestUpdate(mdctx, blk->tx_root, NODUS_T3_TX_HASH_LEN);
+    EVP_DigestUpdate(mdctx, tc_le, 4);
     EVP_DigestUpdate(mdctx, ts_le, 8);
     EVP_DigestUpdate(mdctx, blk->proposer_id, NODUS_T3_WITNESS_ID_LEN);
 
@@ -286,12 +294,16 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
         return nodus_tcp_send((nodus_tcp_conn_t *)conn, buf, len);
     }
 
-    /* Get stored TX data */
+    /* Get stored TX data. Phase 1 / Task 1.2: blk.tx_root carries the
+     * single-TX hash bytes for legacy single-TX-per-block sync (Phase 2
+     * introduces RFC 6962 hashing and Phase 10 rewrites this path for
+     * multi-TX). tx_type now lives on committed_transactions so we read
+     * it from tx_type_stored instead of the dropped blk.tx_type field. */
     uint8_t tx_type_stored;
     uint8_t *tx_data = NULL;
     uint32_t tx_len = 0;
     uint64_t tx_bh = 0;
-    nodus_witness_tx_get(w, blk.tx_hash, &tx_type_stored,
+    nodus_witness_tx_get(w, blk.tx_root, &tx_type_stored,
                            &tx_data, &tx_len, &tx_bh);
 
     /* Get nullifiers from the TX data (parse input section) */
@@ -299,7 +311,7 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
     const uint8_t *nullifier_ptrs[NODUS_T3_MAX_TX_INPUTS];
     uint8_t nullifier_count = 0;
 
-    if (tx_data && tx_len > 75 && blk.tx_type != NODUS_W_TX_GENESIS) {
+    if (tx_data && tx_len > 75 && tx_type_stored != NODUS_W_TX_GENESIS) {
         /* Parse nullifiers from tx_data:
          * offset 74 = input_count, then each input is nullifier(64) + amount(8) + token_id(64) */
         size_t off = 74;
@@ -328,8 +340,8 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
 
     rsp.sync_rsp.found = true;
     rsp.sync_rsp.height = height;
-    memcpy(rsp.sync_rsp.tx_hash, blk.tx_hash, NODUS_T3_TX_HASH_LEN);
-    rsp.sync_rsp.tx_type = blk.tx_type;
+    memcpy(rsp.sync_rsp.tx_hash, blk.tx_root, NODUS_T3_TX_HASH_LEN);
+    rsp.sync_rsp.tx_type = tx_type_stored;
     rsp.sync_rsp.tx_data = tx_data;
     rsp.sync_rsp.tx_len = tx_len;
     rsp.sync_rsp.timestamp = blk.timestamp;
@@ -401,10 +413,14 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
     uint64_t db_height = (rsp->height == 0) ? 1 : rsp->height;
 
     if (db_height <= local_height) {
-        /* We have this block — compare hashes for fork detection */
+        /* We have this block — compare hashes for fork detection.
+         * Phase 1 / Task 1.2: blk.tx_root == single-TX hash for legacy
+         * single-TX blocks (Phase 2 changes the relationship and Phase 10
+         * rewrites this whole comparison via Merkle equality on the
+         * sync_rsp tr field). */
         nodus_witness_block_t local_blk;
         if (nodus_witness_block_get(w, db_height, &local_blk) == 0) {
-            if (memcmp(local_blk.tx_hash, rsp->tx_hash,
+            if (memcmp(local_blk.tx_root, rsp->tx_hash,
                        NODUS_T3_TX_HASH_LEN) != 0) {
                 /* Fork detected! */
                 if (db_height == 1) {

@@ -749,15 +749,24 @@ static void handle_dnac_block(nodus_witness_t *w,
         cbor_encode_cstr(&enc, "found");
         cbor_encode_bool(&enc, false);
     } else {
-        enc_dnac_response(&enc, txn_id, "dnac_block", 7);
+        /* Phase 1 / Task 1.2: blocks table dropped tx_type; per-TX type
+         * lives on committed_transactions. The dnac_block response keeps
+         * the "type" key for client compatibility but reports 0 here —
+         * Phase 13 client receipt API will report the per-TX type via
+         * the new tx_index/block_height path. The "hash" key now carries
+         * the block's tx_root (single-TX path: bytes equal to the tx
+         * hash; multi-TX path: bytes equal to the Merkle root). */
+        enc_dnac_response(&enc, txn_id, "dnac_block", 8);
         cbor_encode_cstr(&enc, "found");
         cbor_encode_bool(&enc, true);
         cbor_encode_cstr(&enc, "height");
         cbor_encode_uint(&enc, blk.height);
         cbor_encode_cstr(&enc, "hash");
-        cbor_encode_bstr(&enc, blk.tx_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_bstr(&enc, blk.tx_root, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "tx_count");
+        cbor_encode_uint(&enc, blk.tx_count);
         cbor_encode_cstr(&enc, "type");
-        cbor_encode_uint(&enc, blk.tx_type);
+        cbor_encode_uint(&enc, 0);
         cbor_encode_cstr(&enc, "ts");
         cbor_encode_uint(&enc, blk.timestamp);
         cbor_encode_cstr(&enc, "proposer");
@@ -857,13 +866,18 @@ static void handle_dnac_block_range(nodus_witness_t *w,
     cbor_encode_array(&enc, (size_t)count);
 
     for (int i = 0; i < count; i++) {
-        cbor_encode_map(&enc, 6);
+        /* Phase 1 / Task 1.2: blocks table dropped tx_type; "type" key
+         * kept at 0 for client compatibility. New tx_count carries the
+         * block's TX count. */
+        cbor_encode_map(&enc, 7);
         cbor_encode_cstr(&enc, "height");
         cbor_encode_uint(&enc, blocks[i].height);
         cbor_encode_cstr(&enc, "hash");
-        cbor_encode_bstr(&enc, blocks[i].tx_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_bstr(&enc, blocks[i].tx_root, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "tx_count");
+        cbor_encode_uint(&enc, blocks[i].tx_count);
         cbor_encode_cstr(&enc, "type");
-        cbor_encode_uint(&enc, blocks[i].tx_type);
+        cbor_encode_uint(&enc, 0);
         cbor_encode_cstr(&enc, "ts");
         cbor_encode_uint(&enc, blocks[i].timestamp);
         cbor_encode_cstr(&enc, "proposer");

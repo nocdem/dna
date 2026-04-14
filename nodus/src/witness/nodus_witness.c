@@ -59,10 +59,18 @@ static const char *WITNESS_DB_SCHEMA =
     "  block_height INTEGER NOT NULL DEFAULT 0,"
     "  created_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
     ");"
+    /* Multi-tx block refactor (Phase 1 / Task 1.2):
+     *   tx_root    = RFC 6962 Merkle root over the block's TX hashes.
+     *                Replaces the legacy tx_hash column which assumed
+     *                exactly one TX per block.
+     *   tx_count   = number of TXs the block carries (1..NODUS_W_MAX_BLOCK_TXS).
+     *   tx_type    = column DELETED. Per-TX type lives on
+     *                committed_transactions.tx_type — a block can carry
+     *                a mix of GENESIS/SPEND/BURN/TOKEN_CREATE TXs. */
     "CREATE TABLE IF NOT EXISTS blocks ("
     "  height INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "  tx_hash BLOB NOT NULL,"
-    "  tx_type INTEGER NOT NULL,"
+    "  tx_root BLOB NOT NULL,"
+    "  tx_count INTEGER NOT NULL DEFAULT 1,"
     "  timestamp INTEGER NOT NULL,"
     "  proposer_id BLOB,"
     "  prev_hash BLOB NOT NULL DEFAULT x'',"

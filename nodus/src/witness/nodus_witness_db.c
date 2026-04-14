@@ -501,28 +501,33 @@ uint64_t nodus_witness_ledger_count(nodus_witness_t *w) {
 
 /* ── Block operations ────────────────────────────────────────────── */
 
-int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
-                               uint8_t tx_type, uint64_t timestamp,
+int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
+                               uint32_t tx_count, uint64_t timestamp,
                                const uint8_t *proposer_id,
                                const uint8_t *state_root) {
-    if (!w || !w->db || !tx_hash || !state_root) return -1;
+    if (!w || !w->db || !tx_root || !state_root) return -1;
 
     /* Compute prev_hash over the previous block header.
-     * Formula (matches dnac/include/dnac/block.h:13 spec):
+     * Multi-tx formula (Phase 1 / Task 1.2 — matches dnac/include/dnac/block.h):
      *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64)
-     *             || tx_hash(64) || timestamp(8 LE) || proposer_id(32) )
+     *             || tx_root(64) || tx_count(4 LE) || timestamp(8 LE)
+     *             || proposer_id(32) )
      *
-     * Proposer is included so two witnesses proposing the same TX at the
-     * same height produce distinct block hashes (they cannot, since BFT
-     * elects a single proposer, but the binding is defensive). */
+     * Phase 5 will replace this inline SHA3 with the shared
+     * nodus_witness_compute_block_hash helper so the block_add path and
+     * the sync path agree on the formula. For now the body is inline. */
     uint8_t prev_hash[NODUS_T3_TX_HASH_LEN] = {0};
     nodus_witness_block_t prev_block;
     if (nodus_witness_block_get_latest(w, &prev_block) == 0) {
         uint8_t height_le[8];
         uint8_t ts_le[8];
+        uint8_t tc_le[4];
         for (int i = 0; i < 8; i++) {
             height_le[i] = (uint8_t)((prev_block.height >> (i * 8)) & 0xff);
             ts_le[i] = (uint8_t)((prev_block.timestamp >> (i * 8)) & 0xff);
+        }
+        for (int i = 0; i < 4; i++) {
+            tc_le[i] = (uint8_t)((prev_block.tx_count >> (i * 8)) & 0xff);
         }
 
         EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
@@ -530,7 +535,8 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
         EVP_DigestUpdate(mdctx, height_le, 8);
         EVP_DigestUpdate(mdctx, prev_block.prev_hash, NODUS_T3_TX_HASH_LEN);
         EVP_DigestUpdate(mdctx, prev_block.state_root, NODUS_T3_TX_HASH_LEN);
-        EVP_DigestUpdate(mdctx, prev_block.tx_hash, NODUS_T3_TX_HASH_LEN);
+        EVP_DigestUpdate(mdctx, prev_block.tx_root, NODUS_T3_TX_HASH_LEN);
+        EVP_DigestUpdate(mdctx, tc_le, 4);
         EVP_DigestUpdate(mdctx, ts_le, 8);
         EVP_DigestUpdate(mdctx, prev_block.proposer_id, NODUS_T3_WITNESS_ID_LEN);
 
@@ -542,7 +548,7 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "INSERT INTO blocks (tx_hash, tx_type, timestamp, proposer_id, prev_hash, state_root, created_at) "
+        "INSERT INTO blocks (tx_root, tx_count, timestamp, proposer_id, prev_hash, state_root, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: block add prepare failed: %s\n",
@@ -550,8 +556,8 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
         return -1;
     }
 
-    sqlite3_bind_blob(stmt, 1, tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 2, tx_type);
+    sqlite3_bind_blob(stmt, 1, tx_root, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 2, (int)tx_count);
     sqlite3_bind_int64(stmt, 3, (int64_t)timestamp);
     if (proposer_id)
         sqlite3_bind_blob(stmt, 4, proposer_id, NODUS_T3_WITNESS_ID_LEN, SQLITE_STATIC);
@@ -572,6 +578,10 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
     return 0;
 }
 
+/* SELECT column order is: height, tx_root, tx_count, timestamp,
+ * proposer_id, prev_hash, state_root. Schema v12 (Phase 1 / Task 1.2)
+ * dropped the legacy tx_type column from blocks; per-TX type now lives
+ * on committed_transactions. */
 static int block_from_row(sqlite3_stmt *stmt, nodus_witness_block_t *out) {
     memset(out, 0, sizeof(*out));
     out->height = (uint64_t)sqlite3_column_int64(stmt, 0);
@@ -579,9 +589,9 @@ static int block_from_row(sqlite3_stmt *stmt, nodus_witness_block_t *out) {
     const void *blob = sqlite3_column_blob(stmt, 1);
     int blen = sqlite3_column_bytes(stmt, 1);
     if (blob && blen == NODUS_T3_TX_HASH_LEN)
-        memcpy(out->tx_hash, blob, NODUS_T3_TX_HASH_LEN);
+        memcpy(out->tx_root, blob, NODUS_T3_TX_HASH_LEN);
 
-    out->tx_type = (uint8_t)sqlite3_column_int(stmt, 2);
+    out->tx_count = (uint32_t)sqlite3_column_int(stmt, 2);
     out->timestamp = (uint64_t)sqlite3_column_int64(stmt, 3);
 
     blob = sqlite3_column_blob(stmt, 4);
@@ -608,7 +618,7 @@ int nodus_witness_block_get(nodus_witness_t *w, uint64_t height,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash, state_root "
+        "SELECT height, tx_root, tx_count, timestamp, proposer_id, prev_hash, state_root "
         "FROM blocks WHERE height = ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
@@ -631,7 +641,7 @@ int nodus_witness_block_get_latest(nodus_witness_t *w,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash, state_root "
+        "SELECT height, tx_root, tx_count, timestamp, proposer_id, prev_hash, state_root "
         "FROM blocks ORDER BY height DESC LIMIT 1", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
@@ -655,7 +665,7 @@ int nodus_witness_block_get_range(nodus_witness_t *w,
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT height, tx_hash, tx_type, timestamp, proposer_id, prev_hash, state_root "
+        "SELECT height, tx_root, tx_count, timestamp, proposer_id, prev_hash, state_root "
         "FROM blocks WHERE height >= ? AND height <= ? "
         "ORDER BY height ASC LIMIT ?", -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;

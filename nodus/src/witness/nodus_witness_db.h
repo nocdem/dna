@@ -138,16 +138,25 @@ uint64_t nodus_witness_ledger_count(nodus_witness_t *w);
 
 typedef struct {
     uint64_t    height;
-    uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t     tx_type;
+    uint8_t     tx_root[NODUS_T3_TX_HASH_LEN];     /* RFC 6962 Merkle root over the block's TX hashes */
+    uint32_t    tx_count;                          /* Number of TXs the block carries */
     uint64_t    timestamp;
     uint8_t     proposer_id[NODUS_T3_WITNESS_ID_LEN];
-    uint8_t     prev_hash[NODUS_T3_TX_HASH_LEN];   /* SHA3-512 of previous block */
-    uint8_t     state_root[NODUS_T3_TX_HASH_LEN];  /* SHA3-512 Merkle root of UTXO set after this block */
+    uint8_t     prev_hash[NODUS_T3_TX_HASH_LEN];   /* SHA3-512 of previous block header */
+    uint8_t     state_root[NODUS_T3_TX_HASH_LEN];  /* SHA3-512 over the UTXO set after this block */
 } nodus_witness_block_t;
 
-int  nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_hash,
-                               uint8_t tx_type, uint64_t timestamp,
+/* nodus_witness_block_add — adds a finalized block row.
+ *
+ * Multi-tx block refactor (Phase 1 / Task 1.2):
+ *   tx_root    — RFC 6962 Merkle root over the block's TX hashes (Phase 2
+ *                introduces nodus_witness_merkle_tx_root which computes it).
+ *   tx_count   — number of TXs in the block (1..NODUS_W_MAX_BLOCK_TXS).
+ *
+ * Per-TX type lives in committed_transactions.tx_type and is no longer
+ * stored on the block row. */
+int  nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
+                               uint32_t tx_count, uint64_t timestamp,
                                const uint8_t *proposer_id,
                                const uint8_t *state_root);
 int  nodus_witness_block_get(nodus_witness_t *w, uint64_t height,
