@@ -52,20 +52,9 @@ static int sha3_512_final(EVP_MD_CTX *md, uint8_t out[64]) {
     return (ok == 1 && hash_len == 64) ? 0 : -1;
 }
 
-/* Compute SHA3-512 of a single contiguous buffer. */
-static int sha3_512_once(const uint8_t *data, size_t len, uint8_t out[64]) {
-    EVP_MD_CTX *md = NULL;
-    if (sha3_512_init(&md) != 0) return -1;
-    if (EVP_DigestUpdate(md, data, len) != 1) {
-        EVP_MD_CTX_free(md);
-        return -1;
-    }
-    return sha3_512_final(md, out);
-}
-
-/* Compute SHA3-512(left(64) || right(64)). Used for internal nodes
- * in the legacy duplicate-odd-sibling Merkle. The new RFC 6962 path
- * uses inner_hash() below instead, which prepends a 0x01 domain tag. */
+/* Compute SHA3-512(left(64) || right(64)). Used by the legacy proof
+ * paths (build_proof, verify_proof) that Task 2.6 rewrites onto
+ * inner_hash. After 2.6 lands this helper is removed too. */
 static int sha3_512_pair(const uint8_t left[64], const uint8_t right[64],
                          uint8_t out[64]) {
     EVP_MD_CTX *md = NULL;
@@ -267,39 +256,10 @@ static int load_utxo_leaves(nodus_witness_t *w,
     return 0;
 }
 
-/* ── Reduce a leaf array to a root in place ────────────────────────── */
-
-/* Collapses `level` (n hashes, each 64 bytes) into a single root.
- * Modifies the buffer in place: after return, level[0..63] is the root.
- * Odd sibling at any level is duplicated.
- */
-static int reduce_to_root(uint8_t *level, size_t n, uint8_t *root_out) {
-    if (n == 0) {
-        /* Empty UTXO set: root = SHA3-512(""). Deterministic zero-state. */
-        return sha3_512_once(NULL, 0, root_out);
-    }
-    if (n == 1) {
-        memcpy(root_out, level, 64);
-        return 0;
-    }
-
-    while (n > 1) {
-        size_t out_n = (n + 1) / 2;
-        for (size_t i = 0; i < out_n; i++) {
-            const uint8_t *left = level + (2 * i) * 64;
-            const uint8_t *right = (2 * i + 1 < n)
-                                       ? level + (2 * i + 1) * 64
-                                       : left; /* duplicate odd sibling */
-            uint8_t parent[64];
-            if (sha3_512_pair(left, right, parent) != 0) return -1;
-            memcpy(level + i * 64, parent, 64);
-        }
-        n = out_n;
-    }
-
-    memcpy(root_out, level, 64);
-    return 0;
-}
+/* The legacy duplicate-odd-sibling reduce_to_root() and its helper
+ * sha3_512_once() were removed by Phase 2 / Task 2.5. The new
+ * compute_utxo_root pre-hashes leaves with leaf_hash() and reduces
+ * through merkle_root_rfc6962 instead. */
 
 /* ── Public: tx_root over a list of TX hashes (Phase 2 / Task 2.4) ──
  *
@@ -325,8 +285,28 @@ int nodus_witness_merkle_tx_root(const uint8_t *tx_hashes, size_t n, uint8_t out
     return merkle_root_rfc6962((const uint8_t *)leaves, n, out);
 }
 
-/* ── Public: compute UTXO root ─────────────────────────────────────── */
-
+/* ── Public: compute UTXO root (Phase 2 / Task 2.5) ────────────────
+ *
+ * Pipeline:
+ *   1. SQL: load every UTXO row, build a 64-byte composite digest
+ *      from (nullifier || owner || amount || token_id || tx_hash ||
+ *      output_index) — this is the existing nodus_witness_merkle_leaf_hash.
+ *   2. RFC 6962 leaf_hash: prepend 0x00 to every composite digest so
+ *      leaves cannot collide with internal nodes (closes CVE-2012-2459
+ *      for the UTXO Merkle as well as the TX Merkle).
+ *   3. merkle_root_rfc6962: §2.1 recursion with k = largest pow2 < n.
+ *
+ * The double SHA3-512 application (composite digest, then leaf_hash
+ * domain tag) is intentional. The first hash compresses the variable-
+ * length UTXO tuple into a fixed 64 bytes; the second applies the RFC
+ * 6962 domain tag.
+ *
+ * Replaces the legacy reduce_to_root(duplicate-odd-sibling) collapse.
+ * The state_root VALUE produced by this function is bit-different
+ * from the pre-Phase-2 root — that is intentional, the chain wipe
+ * resets the state_root format. Phase 11 references this as the
+ * v2.0 state_root.
+ */
 int nodus_witness_merkle_compute_utxo_root(nodus_witness_t *w,
                                              uint8_t *root_out) {
     if (!w || !w->db || !root_out) return -1;
@@ -335,7 +315,24 @@ int nodus_witness_merkle_compute_utxo_root(nodus_witness_t *w,
     size_t n = 0;
     if (load_utxo_leaves(w, &leaves, &n) != 0) return -1;
 
-    int rc = reduce_to_root(leaves, n, root_out);
+    if (n == 0) {
+        free(leaves);
+        return merkle_root_rfc6962(NULL, 0, root_out);
+    }
+
+    /* Apply the leaf domain tag in place: leaves[i] = leaf_hash(leaves[i]).
+     * load_utxo_leaves already wrote 64 bytes per leaf, so we hash that
+     * 64-byte block with the 0x00 prefix and overwrite in place. */
+    for (size_t i = 0; i < n; i++) {
+        uint8_t prehashed[64];
+        if (leaf_hash(leaves + i * 64, 64, prehashed) != 0) {
+            free(leaves);
+            return -1;
+        }
+        memcpy(leaves + i * 64, prehashed, 64);
+    }
+
+    int rc = merkle_root_rfc6962(leaves, n, root_out);
     free(leaves);
     return rc;
 }

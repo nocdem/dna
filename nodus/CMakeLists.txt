@@ -379,6 +379,11 @@ add_executable(test_merkle_domain_tags tests/test_merkle_domain_tags.c)
 target_link_libraries(test_merkle_domain_tags nodus dsa nodus crypto)
 add_test(NAME test_merkle_domain_tags COMMAND test_merkle_domain_tags)
 
+# UTXO state_root determinism tests (Phase 2 / Task 2.5)
+add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
+target_link_libraries(test_merkle_utxo_root nodus dsa nodus)
+add_test(NAME test_merkle_utxo_root COMMAND test_merkle_utxo_root)
+
 # Witness Merkle state_root test
 add_executable(test_witness_merkle tests/test_witness_merkle.c)
 target_link_libraries(test_witness_merkle nodus dsa nodus)
