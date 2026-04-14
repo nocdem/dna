@@ -422,6 +422,9 @@ typedef struct nodus_server {
     /* Phase 1 visibility: send diagnostics dump timer */
     uint64_t                last_stats_dump;
 
+    /* Process start time for cluster-status uptime field (Task 0.2) */
+    uint64_t                start_time;
+
     bool                    running;
 } nodus_server_t;
 

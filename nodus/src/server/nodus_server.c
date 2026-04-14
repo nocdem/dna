@@ -7,6 +7,7 @@
 
 #include "server/nodus_server.h"
 #include "server/nodus_media_handler.h"
+#include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_peer.h"
 #include "channel/nodus_channel_server.h"
 #include "channel/nodus_channel_replication.h"
@@ -3674,6 +3675,41 @@ static void handle_t2_ch_get(nodus_server_t *srv, nodus_session_t *sess,
     free(buf);
 }
 
+/* Cluster-status query handler (Phase 0 / Task 0.2).
+ * Reports this nodus-server's own block_height, state_root, chain_id,
+ * peer count, uptime and wall clock. All fields are public and
+ * authenticated only by the existing tier2 session token. */
+static void handle_t2_status(nodus_server_t *srv, nodus_session_t *sess,
+                              nodus_tier2_msg_t *msg) {
+    nodus_t2_status_info_t info;
+    memset(&info, 0, sizeof(info));
+
+    if (srv->witness && srv->witness->db) {
+        info.block_height = nodus_witness_block_height(srv->witness);
+        if (srv->witness->cached_utxo_checksum_valid) {
+            memcpy(info.state_root, srv->witness->cached_utxo_checksum, 64);
+        }
+        memcpy(info.chain_id, srv->witness->chain_id, 32);
+    }
+
+    /* Inter-node TCP peer connection count = "cluster peers we currently
+     * have a TCP socket open to". */
+    int connected = 0;
+    for (int i = 0; i < srv->cluster.peer_count; i++) {
+        if (srv->cluster.peers[i].state == NODUS_NODE_ALIVE) connected++;
+    }
+    info.peer_count = (uint32_t)connected;
+
+    uint64_t now = (uint64_t)time(NULL);
+    info.uptime_sec = srv->start_time ? (now - srv->start_time) : 0;
+    info.wall_clock = now;
+
+    size_t len = 0;
+    nodus_t2_status_result(msg->txn_id, &info,
+                            resp_buf, sizeof(resp_buf), &len);
+    nodus_tcp_send(sess->conn, resp_buf, len);
+}
+
 static void handle_t2_servers(nodus_server_t *srv, nodus_session_t *sess,
                                 nodus_tier2_msg_t *msg) {
     /* Build server info list: self + alive cluster peers */
@@ -4829,6 +4865,8 @@ static void dispatch_t2(nodus_server_t *srv, nodus_session_t *sess,
         handle_t2_ping(srv, sess, &msg);
     else if (strcmp(msg.method, "servers") == 0)
         handle_t2_servers(srv, sess, &msg);
+    else if (strcmp(msg.method, "status") == 0)
+        handle_t2_status(srv, sess, &msg);
     else if (strcmp(msg.method, "ch_list") == 0)
         handle_t2_ch_list(srv, sess, &msg);
     else if (strcmp(msg.method, "ch_search") == 0)
@@ -5619,6 +5657,7 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
 int nodus_server_run(nodus_server_t *srv) {
     if (!srv) return -1;
     srv->running = true;
+    srv->start_time = (uint64_t)time(NULL);
 
     fprintf(stderr, "Nodus v%s running\n", NODUS_VERSION_STRING);
     fprintf(stderr, "  Identity: %s\n", srv->identity.fingerprint);
