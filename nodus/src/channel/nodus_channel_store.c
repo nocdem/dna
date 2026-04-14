@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* ── UUID validation + hex conversion ───────────────────────────── */
 
 static void uuid_to_hex(const uint8_t uuid[NODUS_UUID_BYTES], char hex[33]) {

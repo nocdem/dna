@@ -38,6 +38,8 @@ extern void qgp_secure_memzero(void *ptr, size_t len);
 #include <fcntl.h>
 #include <errno.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* Response buffer (shared, single-threaded).
  * Must accommodate max value (1MB data) + Dilithium5 pk(2592) + sig(4627) + CBOR.
  * Previous 64KB was too small — values >55KB data caused silent GET failures. */

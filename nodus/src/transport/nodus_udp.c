@@ -18,6 +18,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* Max datagram size (header + max UDP payload) */
 #define UDP_BUFSIZE (NODUS_FRAME_HEADER_SIZE + NODUS_MAX_FRAME_UDP)
 

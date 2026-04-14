@@ -20,6 +20,8 @@
 
 #ifdef NODUS_HAS_JSONC
 #include <json-c/json.h>
+
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 #endif
 
 static nodus_server_t server;

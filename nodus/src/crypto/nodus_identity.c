@@ -24,6 +24,8 @@
 #else
 #include <unistd.h>
 #include <sys/stat.h>
+
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 #endif
 
 int nodus_identity_from_seed(const uint8_t *seed, nodus_identity_t *id_out) {

@@ -17,6 +17,8 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 extern void qgp_secure_memzero(void *ptr, size_t len);
 
 int nodus_auth_handle_hello(nodus_server_t *srv, nodus_session_t *sess,

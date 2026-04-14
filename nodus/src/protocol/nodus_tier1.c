@@ -14,6 +14,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* ── Common encoder helpers ──────────────────────────────────────── */
 
 static void encode_envelope(cbor_encoder_t *enc, size_t map_count,

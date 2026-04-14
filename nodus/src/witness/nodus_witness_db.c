@@ -20,6 +20,8 @@
 #include <limits.h>
 #include <openssl/evp.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "WITNESS_DB"
 
 /* ── Nullifier operations ────────────────────────────────────────── */

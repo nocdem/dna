@@ -7,6 +7,8 @@
 #include "protocol/nodus_wire.h"
 #include <string.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 size_t nodus_frame_encode(uint8_t *buf, size_t buf_cap,
                           const uint8_t *payload, uint32_t payload_len) {
     /* M-02: sanity-check payload_len against max wire frame sizes */

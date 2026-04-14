@@ -9,6 +9,8 @@
 #include "protocol/nodus_cbor.h"
 #include <string.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* ── Internal helpers ────────────────────────────────────────────── */
 
 static inline void enc_ensure(cbor_encoder_t *enc, size_t need) {

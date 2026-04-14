@@ -16,6 +16,8 @@
 
 #include <string.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "CH_RING"
 
 /* ---- Init / Track / Untrack -------------------------------------------- */

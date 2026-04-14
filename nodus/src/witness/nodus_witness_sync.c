@@ -21,6 +21,8 @@
 #include <unistd.h>
 #include <errno.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "WITNESS-SYNC"
 
 /* Rate limiting */

@@ -12,6 +12,8 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define MIGRATION_FLAG_FILE ".nodus_v5_migrated"
 
 int nodus_republish_check_migrated(const char *data_dir) {

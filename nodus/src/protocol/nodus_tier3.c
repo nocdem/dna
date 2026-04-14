@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "T3"
 
 /* Key comparison helper */

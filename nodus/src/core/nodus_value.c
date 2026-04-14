@@ -14,6 +14,8 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 /* ── Signing payload ─────────────────────────────────────────────── */
 
 int nodus_value_sign_payload(const nodus_value_t *val,

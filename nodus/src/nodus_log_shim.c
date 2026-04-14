@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 bool qgp_log_should_log(qgp_log_level_t level, const char *tag) {
     (void)tag;
     /* For nodus standalone, log INFO and above */

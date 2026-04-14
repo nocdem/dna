@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
 #define LOG_TAG "MEDIA_HDL"
 
 /* Response buffer — per-thread to avoid contention with server's resp_buf.
