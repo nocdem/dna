@@ -413,6 +413,11 @@ add_test(NAME test_compute_block_hash COMMAND test_compute_block_hash)
 # Phase 6 commit wrapper tests (Phase 6 / Task 6.4)
 register_witness_test(test_commit_wrappers)
 
+# BFT quorum formula tests (Phase 8)
+add_executable(test_bft_quorum_formula tests/test_bft_quorum_formula.c)
+target_link_libraries(test_bft_quorum_formula nodus dsa nodus)
+add_test(NAME test_bft_quorum_formula COMMAND test_bft_quorum_formula)
+
 # Witness Merkle state_root test
 add_executable(test_witness_merkle tests/test_witness_merkle.c)
 target_link_libraries(test_witness_merkle nodus dsa nodus)

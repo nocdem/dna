@@ -203,9 +203,22 @@ void nodus_witness_bft_config_init(nodus_witness_bft_config_t *cfg,
         return;
     }
 
-    /* n = 3f + 1 → f = (n-1)/3 */
+    /* Phase 8 / Task 8.1 — derive the quorum from n directly via the
+     * standard PBFT safety formula (2n)/3 + 1, and keep f_tolerance as
+     * informational only.
+     *
+     * The old formula 2*f + 1 with f = (n-1)/3 was UNSAFE for cluster
+     * sizes where n ∉ {3f+1}. Example: n=5 → f=(5-1)/3=1 → q=3. Two
+     * disjoint quorums of 3 from a 5-witness cluster can overlap on
+     * just 1 witness — NOT > f, which means both quorums can be
+     * simultaneously honest-majority while disagreeing. (2n)/3+1 gives
+     * q=4 for n=5, restoring the >f intersection guarantee.
+     *
+     * Production cluster (n=7) is unaffected — both formulas give q=5.
+     * Only n=5, 8, 11, ... see a value change. See Phase 8 release
+     * notes; this is a silent security upgrade. */
     cfg->f_tolerance = (n - 1) / 3;
-    cfg->quorum = 2 * cfg->f_tolerance + 1;
+    cfg->quorum = (2 * n) / 3 + 1;
 
     /* Timeouts */
     cfg->round_timeout_ms = NODUS_T3_ROUND_TIMEOUT_MS;
