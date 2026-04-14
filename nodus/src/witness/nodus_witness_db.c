@@ -1348,3 +1348,68 @@ int nodus_witness_db_rollback_to_savepoint(nodus_witness_t *w, const char *name)
     }
     return 0;
 }
+
+/* Schema v12 migration (Phase 1 / Task 1.1).
+ *
+ * Idempotent. ALTER TABLE ADD COLUMN is silently retried on duplicate-
+ * column errors so a second run on an already-migrated DB succeeds.
+ * Index DROP/CREATE both use IF EXISTS / IF NOT EXISTS for the same
+ * reason. Real SQLite errors (out of memory, disk full, lock contention)
+ * trigger WITNESS_DB_MIGRATION_FATAL → abort().
+ */
+int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+
+    /* tx_index column: idempotent via duplicate-column tolerance.
+     * sqlite3 returns SQLITE_ERROR with errmsg "duplicate column name" on
+     * re-run; treat it as success. */
+    {
+        char *err = NULL;
+        int rc = sqlite3_exec(w->db,
+            "ALTER TABLE committed_transactions "
+            "ADD COLUMN tx_index INTEGER NOT NULL DEFAULT 0",
+            NULL, NULL, &err);
+        if (rc != SQLITE_OK) {
+            const char *msg = err ? err : "(null)";
+            if (!strstr(msg, "duplicate column name")) {
+                /* Real failure — log and abort with the pinned literal */
+                fprintf(stderr, "MIGRATION FAILURE: ALTER ADD tx_index failed "
+                                "with sqlite error %d: %s\n", rc, msg);
+                if (err) sqlite3_free(err);
+                abort();
+            }
+            if (err) sqlite3_free(err);
+        }
+    }
+
+    /* Drop legacy single-column index — IF EXISTS makes it safe on fresh DBs */
+    {
+        char *err = NULL;
+        int rc = sqlite3_exec(w->db,
+            "DROP INDEX IF EXISTS idx_ctx_height",
+            NULL, NULL, &err);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "MIGRATION FAILURE: DROP INDEX idx_ctx_height failed "
+                            "with sqlite error %d: %s\n", rc, err ? err : "(null)");
+            if (err) sqlite3_free(err);
+            abort();
+        }
+    }
+
+    /* Create composite index — IF NOT EXISTS for idempotence */
+    {
+        char *err = NULL;
+        int rc = sqlite3_exec(w->db,
+            "CREATE INDEX IF NOT EXISTS idx_ctx_block "
+            "ON committed_transactions(block_height, tx_index)",
+            NULL, NULL, &err);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "MIGRATION FAILURE: CREATE INDEX idx_ctx_block failed "
+                            "with sqlite error %d: %s\n", rc, err ? err : "(null)");
+            if (err) sqlite3_free(err);
+            abort();
+        }
+    }
+
+    return 0;
+}

@@ -369,6 +369,11 @@ add_executable(test_t2_status_wire tests/test_t2_status_wire.c)
 target_link_libraries(test_t2_status_wire nodus dsa nodus)
 add_test(NAME test_t2_status_wire COMMAND test_t2_status_wire)
 
+# Witness DB schema v12 migration test (Phase 1 / Task 1.1)
+add_executable(test_schema_migration tests/test_schema_migration.c)
+target_link_libraries(test_schema_migration nodus dsa nodus)
+add_test(NAME test_schema_migration COMMAND test_schema_migration)
+
 # Witness Merkle state_root test
 add_executable(test_witness_merkle tests/test_witness_merkle.c)
 target_link_libraries(test_witness_merkle nodus dsa nodus)

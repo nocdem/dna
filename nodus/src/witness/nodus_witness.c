@@ -82,6 +82,7 @@ static const char *WITNESS_DB_SCHEMA =
     "  tx_data BLOB NOT NULL,"
     "  tx_len  INTEGER NOT NULL,"
     "  block_height INTEGER NOT NULL DEFAULT 0,"
+    "  tx_index INTEGER NOT NULL DEFAULT 0,"
     "  timestamp INTEGER NOT NULL DEFAULT (strftime('%%s','now')),"
     "  sender_fp TEXT,"
     "  fee INTEGER NOT NULL DEFAULT 0"
@@ -119,7 +120,8 @@ static const char *WITNESS_DB_SCHEMA =
     "CREATE INDEX IF NOT EXISTS idx_utxo_token ON utxo_set(token_id);"
     "CREATE INDEX IF NOT EXISTS idx_ledger_epoch ON ledger_entries(epoch);"
     "CREATE INDEX IF NOT EXISTS idx_ledger_tx ON ledger_entries(tx_hash);"
-    "CREATE INDEX IF NOT EXISTS idx_ctx_height ON committed_transactions(block_height);"
+    /* Composite (block_height, tx_index) for per-block ordering — schema v12 */
+    "CREATE INDEX IF NOT EXISTS idx_ctx_block ON committed_transactions(block_height, tx_index);"
     "CREATE INDEX IF NOT EXISTS idx_ctx_sender ON committed_transactions(sender_fp);"
     "CREATE INDEX IF NOT EXISTS idx_txout_owner ON tx_outputs(owner_fp);";
 
@@ -182,6 +184,10 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
         sqlite3_free(err_msg);
         return -1;
     }
+
+    /* Schema v12 migration (Phase 1 / Task 1.1). Idempotent; aborts on
+     * unrecoverable error. */
+    nodus_witness_db_migrate_v12(witness);
 
     fprintf(stderr, "%s: opened database %s\n", LOG_TAG, db_path);
     return 0;

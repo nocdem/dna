@@ -262,6 +262,21 @@ int  nodus_witness_db_rollback(nodus_witness_t *w);
 int  nodus_witness_db_savepoint(nodus_witness_t *w, const char *name);
 int  nodus_witness_db_rollback_to_savepoint(nodus_witness_t *w, const char *name);
 
+/* Schema v12 migration (Phase 1 / Task 1.1).
+ *
+ * Adds the `tx_index` column to committed_transactions and replaces the
+ * single-column idx_ctx_height with a composite (block_height, tx_index)
+ * index named idx_ctx_block. Required by the multi-tx block refactor —
+ * each block now contains N transactions and per-block ordering must be
+ * queryable. Idempotent: safe to run on a fresh DB or a DB that already
+ * has the v12 shape.
+ *
+ * Returns 0 on success. On unrecoverable SQLite error the function
+ * triggers WITNESS_DB_MIGRATION_FATAL (logs MIGRATION FAILURE then
+ * abort()), so callers can assume success on return.
+ */
+int  nodus_witness_db_migrate_v12(nodus_witness_t *w);
+
 #ifdef __cplusplus
 }
 #endif
