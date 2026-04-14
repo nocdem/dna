@@ -112,9 +112,10 @@ static void enc_propose_args(cbor_encoder_t *enc, const nodus_t3_propose_t *p) {
 }
 
 static void enc_vote_args(cbor_encoder_t *enc, const nodus_t3_vote_t *v) {
-    /* Phase 7.5 / Task 7.5.2 — map size 4 (added "cs" cert_sig). */
+    /* Phase 9 / Task 9.5 — wire key txh -> vh; field is vote_target.
+     * Phase 7.5 / Task 7.5.2 — cs cert_sig. */
     cbor_encode_map(enc, 4);
-    cbor_encode_cstr(enc, "txh"); cbor_encode_bstr(enc, v->tx_hash,
+    cbor_encode_cstr(enc, "vh");  cbor_encode_bstr(enc, v->vote_target,
                                                     NODUS_T3_TX_HASH_LEN);
     cbor_encode_cstr(enc, "vt");  cbor_encode_uint(enc, v->vote);
     cbor_encode_cstr(enc, "rsn"); cbor_encode_cstr(enc, v->reason);
@@ -523,11 +524,11 @@ static void dec_vote_args(cbor_decoder_t *dec, size_t count,
         cbor_item_t key = cbor_decode_next(dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
 
-        if (KEY_IS(key, "txh")) {
+        if (KEY_IS(key, "vh")) {
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_BSTR &&
                 val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(v->tx_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+                memcpy(v->vote_target, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
         }
         else if (KEY_IS(key, "vt")) {
             cbor_item_t val = cbor_decode_next(dec);

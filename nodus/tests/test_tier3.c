@@ -185,7 +185,7 @@ static void test_prevote(void) {
     in.txn_id = 101;
     fill_header(&in.header);
 
-    memcpy(in.vote.tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
+    memcpy(in.vote.vote_target, test_tx_hash, NODUS_T3_TX_HASH_LEN);
     in.vote.vote = 0; /* approve */
     snprintf(in.vote.reason, sizeof(in.vote.reason), "valid transaction");
 
@@ -194,7 +194,7 @@ static void test_prevote(void) {
 
     check_header(&in.header, &out.header, name);
     if (out.type != NODUS_T3_PREVOTE) { TEST_FAIL(name, "type"); return; }
-    if (memcmp(out.vote.tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
+    if (memcmp(out.vote.vote_target, test_tx_hash, NODUS_T3_TX_HASH_LEN) != 0) {
         TEST_FAIL(name, "tx_hash"); return;
     }
     if (out.vote.vote != 0) { TEST_FAIL(name, "vote"); return; }
@@ -219,7 +219,7 @@ static void test_precommit(void) {
     in.txn_id = 102;
     fill_header(&in.header);
 
-    memcpy(in.vote.tx_hash, test_tx_hash, NODUS_T3_TX_HASH_LEN);
+    memcpy(in.vote.vote_target, test_tx_hash, NODUS_T3_TX_HASH_LEN);
     in.vote.vote = 1; /* reject */
     snprintf(in.vote.reason, sizeof(in.vote.reason), "invalid nullifier");
 

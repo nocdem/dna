@@ -1251,7 +1251,7 @@ static int bft_start_round_internal(nodus_witness_t *w,
     memset(&prevote, 0, sizeof(prevote));
     prevote.type = NODUS_T3_PREVOTE;
     prevote.txn_id = ++w->next_txn_id;
-    memcpy(prevote.vote.tx_hash, block_hash, NODUS_T3_TX_HASH_LEN);
+    memcpy(prevote.vote.vote_target, block_hash, NODUS_T3_TX_HASH_LEN);
     prevote.vote.vote = NODUS_W_VOTE_APPROVE;
     nodus_witness_bft_broadcast(w, &prevote);
 
@@ -1704,7 +1704,7 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     vote_msg.type = NODUS_T3_PREVOTE;
     vote_msg.txn_id = ++w->next_txn_id;
     /* Use round_state.tx_hash — set to block_hash in batch mode */
-    memcpy(vote_msg.vote.tx_hash, w->round_state.tx_hash, NODUS_T3_TX_HASH_LEN);
+    memcpy(vote_msg.vote.vote_target, w->round_state.tx_hash, NODUS_T3_TX_HASH_LEN);
     vote_msg.vote.vote = (uint32_t)my_vote;
     if (tx_invalid)
         snprintf(vote_msg.vote.reason, sizeof(vote_msg.vote.reason),
@@ -1745,7 +1745,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
         return 0;  /* Stale vote, ignore */
 
     /* Verify tx_hash matches */
-    if (memcmp(vote->tx_hash, w->round_state.tx_hash,
+    if (memcmp(vote->vote_target, w->round_state.tx_hash,
                NODUS_T3_TX_HASH_LEN) != 0) {
         fprintf(stderr, "%s: vote for different tx_hash\n", LOG_TAG);
         return -1;
@@ -1884,7 +1884,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
         memset(&pc, 0, sizeof(pc));
         pc.type = NODUS_T3_PRECOMMIT;
         pc.txn_id = ++w->next_txn_id;
-        memcpy(pc.vote.tx_hash, w->round_state.tx_hash,
+        memcpy(pc.vote.vote_target, w->round_state.tx_hash,
                NODUS_T3_TX_HASH_LEN);
         pc.vote.vote = NODUS_W_VOTE_APPROVE;
         memcpy(pc.vote.cert_sig, cert_sig, NODUS_SIG_BYTES);

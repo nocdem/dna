@@ -89,9 +89,12 @@ typedef struct {
     uint8_t         block_hash[NODUS_T3_TX_HASH_LEN];    /* SHA3-512(all tx_hashes) */
 } nodus_t3_propose_t;
 
-/** w_prevote / w_precommit: Witness votes on a proposal */
+/** w_prevote / w_precommit: Witness votes on a proposal.
+ * Phase 9 / Task 9.5 — the field carrying the in-progress block hash
+ * is named vote_target (wire key vh) so it does not get confused with
+ * a per-TX hash. Vote signatures bind the target via cert_sig below. */
 typedef struct {
-    uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
+    uint8_t     vote_target[NODUS_T3_TX_HASH_LEN];
     uint32_t    vote;           /* 0=approve, 1=reject */
     char        reason[256];
     /* Phase 7.5 / Task 7.5.2 — cert preimage signature.
