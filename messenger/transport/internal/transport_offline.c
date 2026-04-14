@@ -72,11 +72,21 @@ int transport_queue_offline_message(
     QGP_LOG_DEBUG(LOG_TAG, "Calling dht_queue_message (seq=%lu, ttl=%u)\n",
                   (unsigned long)seq_num, ctx->config.offline_ttl_seconds);
 
-    /* Look up per-contact DHT salt */
+    /* CORE-04 (phase 6, plan 05): salt is REQUIRED.
+     * Look up per-contact DHT salt from contacts.db. If missing, refuse to
+     * queue rather than falling back to a deterministic unsalted key that
+     * would leak sender x recipient metadata. Salt agreement runs at
+     * contact-add time (dna_engine_contacts.c) and at listener start
+     * (dna_engine_listeners.c), so by the time a DM is queued the salt
+     * MUST already be persisted. A missing salt here is an error, not a
+     * normal first-send path. */
     uint8_t salt_buf[32];
-    const uint8_t *salt_ptr = NULL;
-    if (contacts_db_get_salt(recipient, salt_buf) == 0) {
-        salt_ptr = salt_buf;
+    if (contacts_db_get_salt(recipient, salt_buf) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "No per-contact DHT salt for recipient %.20s... - refusing to queue "
+            "DM without salt (salt agreement must complete before first send)\n",
+            recipient);
+        return -1;
     }
 
     int result = dht_queue_message(
@@ -86,7 +96,7 @@ int transport_queue_offline_message(
         message_len,
         seq_num,
         ctx->config.offline_ttl_seconds,
-        salt_ptr
+        salt_buf
     );
 
     if (result == 0) {
