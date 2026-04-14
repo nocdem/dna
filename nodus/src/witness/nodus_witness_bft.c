@@ -43,6 +43,7 @@
 
 /* Forward declaration — defined near bft_check_timeout */
 static void round_state_free_batch(nodus_witness_round_state_t *rs);
+static void bft_emit_batch_replies(nodus_witness_t *w);
 
 /* Phase 6 commit wrappers — defined later in this file. Forward
  * declarations let the Phase 7 / Task 7.6 dispatchers (commit_block,
@@ -1959,67 +1960,9 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
 
     nodus_witness_bft_broadcast(w, &c_msg);
 
-    /* Send client responses */
-    if (w->round_state.batch_count > 0) {
-        /* Batch: send result per TX */
-        for (int bi = 0; bi < w->round_state.batch_count; bi++) {
-            nodus_witness_mempool_entry_t *e = w->round_state.batch_entries[bi];
-            if (!e) continue;
-
-            if (e->client_conn && !e->is_forwarded) {
-                /* Phase 12 / Task 12.5 — per-entry call, no round_state stash. */
-                nodus_witness_send_spend_result(w, e, 0, NULL);
-            } else if (e->is_forwarded) {
-                /* Send w_fwd_rsp per forwarded TX */
-                int fwd_pi = -1;
-                for (int pi = 0; pi < w->peer_count; pi++) {
-                    if (memcmp(w->peers[pi].witness_id,
-                               e->forwarder_id,
-                               NODUS_T3_WITNESS_ID_LEN) == 0 &&
-                        w->peers[pi].conn && w->peers[pi].identified) {
-                        fwd_pi = pi;
-                        break;
-                    }
-                }
-                if (fwd_pi < 0) {
-                    fprintf(stderr, "%s: batch fwd_rsp: forwarder not found "
-                            "(peers=%d, fid=", LOG_TAG, w->peer_count);
-                    for (int k = 0; k < 4; k++)
-                        fprintf(stderr, "%02x", e->forwarder_id[k]);
-                    fprintf(stderr, ")\n");
-                }
-                if (fwd_pi >= 0) {
-                    nodus_t3_msg_t fwd_rsp;
-                    memset(&fwd_rsp, 0, sizeof(fwd_rsp));
-                    fwd_rsp.type = NODUS_T3_FWD_RSP;
-                    fwd_rsp.txn_id = ++w->next_txn_id;
-                    snprintf(fwd_rsp.method, sizeof(fwd_rsp.method),
-                             "w_fwd_rsp");
-                    fwd_rsp.fwd_rsp.status = 0;
-                    memcpy(fwd_rsp.fwd_rsp.tx_hash, e->tx_hash,
-                           NODUS_T3_TX_HASH_LEN);
-                    fill_header(w, &fwd_rsp.header);
-                    uint8_t fwd_buf[NODUS_T3_MAX_MSG_SIZE];
-                    size_t fwd_len = 0;
-                    if (nodus_t3_encode(&fwd_rsp, &w->server->identity.sk,
-                                         fwd_buf, sizeof(fwd_buf),
-                                         &fwd_len) == 0) {
-                        nodus_tcp_send(w->peers[fwd_pi].conn, fwd_buf, fwd_len);
-                    }
-                }
-            }
-        }
-
-        /* Free batch entries */
-        for (int bi = 0; bi < w->round_state.batch_count; bi++) {
-            if (w->round_state.batch_entries[bi]) {
-                nodus_witness_mempool_entry_free(
-                    w->round_state.batch_entries[bi]);
-                w->round_state.batch_entries[bi] = NULL;
-            }
-        }
-        w->round_state.batch_count = 0;
-    }
+    /* Send client responses. Helper is idempotent — noop if already emitted
+     * (e.g. via handle_commit remote-COMMIT race path). */
+    bft_emit_batch_replies(w);
     /* Legacy single-TX client response branch deleted in Phase 12 — every
      * round is now batch_count > 0 since Phase 7 removed the single-TX
      * BFT entrypoint. */
@@ -2164,10 +2107,20 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
     if (hdr->round > w->last_committed_round)
         w->last_committed_round = hdr->round;
 
-    /* Phase 9 / Task 9.1 — handle_commit fwd_rsp branch deleted.
-     * The leader emits per-entry fwd_rsp at handle_vote precommit→commit
-     * batch reply path; the duplicate single-TX path here referenced
-     * legacy cmt->tx_hash which no longer exists. */
+    /* Race path: the leader can reach here when a non-leader peer hits
+     * precommit quorum and broadcasts COMMIT before the leader's own
+     * handle_vote accumulates its local quorum. In that case the leader's
+     * round_state still holds batch_entries with client_conn / forwarder_id
+     * routing info, but handle_vote's reply loop will never run (handle_vote
+     * bails once phase != PRECOMMIT). Emit replies here so forwarded client
+     * spends don't silently drop their w_fwd_rsp. Helper is idempotent. */
+    if (w->round_state.round == hdr->round &&
+        w->round_state.batch_count > 0) {
+        fprintf(stderr, "%s: remote-COMMIT race — emitting replies for own "
+                "round %lu from handle_commit path\n",
+                LOG_TAG, (unsigned long)hdr->round);
+        bft_emit_batch_replies(w);
+    }
     if (w->round_state.round == hdr->round) {
         w->round_state.phase = NODUS_W_PHASE_IDLE;
         w->round_state.client_conn = NULL;
@@ -2351,6 +2304,77 @@ static void round_state_free_batch(nodus_witness_round_state_t *rs) {
         }
     }
     rs->batch_count = 0;
+}
+
+/* Emit client responses for the round currently held in round_state and free
+ * the batch. Idempotent — if batch_count == 0 this is a no-op.
+ *
+ * Split out from handle_vote precommit→commit path so that handle_commit can
+ * also call it when the leader ends up committing its own round via the
+ * remote-COMMIT fast path (non-leader peer reached precommit quorum first and
+ * broadcast COMMIT before our handle_vote accumulated its own quorum). Without
+ * this, forwarded client spends on the leader node silently drop the
+ * w_fwd_rsp reply, and the original client times out at 60s even though the
+ * TX committed on-chain in ~1 second. */
+static void bft_emit_batch_replies(nodus_witness_t *w) {
+    if (!w || w->round_state.batch_count <= 0)
+        return;
+
+    fprintf(stderr, "%s: emitting client replies for round %lu (%d entries)\n",
+            LOG_TAG, (unsigned long)w->round_state.round,
+            w->round_state.batch_count);
+
+    for (int bi = 0; bi < w->round_state.batch_count; bi++) {
+        nodus_witness_mempool_entry_t *e = w->round_state.batch_entries[bi];
+        if (!e) continue;
+
+        if (e->client_conn && !e->is_forwarded) {
+            nodus_witness_send_spend_result(w, e, 0, NULL);
+        } else if (e->is_forwarded) {
+            int fwd_pi = -1;
+            for (int pi = 0; pi < w->peer_count; pi++) {
+                if (memcmp(w->peers[pi].witness_id,
+                           e->forwarder_id,
+                           NODUS_T3_WITNESS_ID_LEN) == 0 &&
+                    w->peers[pi].conn && w->peers[pi].identified) {
+                    fwd_pi = pi;
+                    break;
+                }
+            }
+            if (fwd_pi < 0) {
+                fprintf(stderr, "%s: batch fwd_rsp: forwarder not found "
+                        "(peers=%d, fid=", LOG_TAG, w->peer_count);
+                for (int k = 0; k < 4; k++)
+                    fprintf(stderr, "%02x", e->forwarder_id[k]);
+                fprintf(stderr, ")\n");
+            } else {
+                nodus_t3_msg_t fwd_rsp;
+                memset(&fwd_rsp, 0, sizeof(fwd_rsp));
+                fwd_rsp.type = NODUS_T3_FWD_RSP;
+                fwd_rsp.txn_id = ++w->next_txn_id;
+                snprintf(fwd_rsp.method, sizeof(fwd_rsp.method),
+                         "w_fwd_rsp");
+                fwd_rsp.fwd_rsp.status = 0;
+                memcpy(fwd_rsp.fwd_rsp.tx_hash, e->tx_hash,
+                       NODUS_T3_TX_HASH_LEN);
+                fill_header(w, &fwd_rsp.header);
+                uint8_t fwd_buf[NODUS_T3_MAX_MSG_SIZE];
+                size_t fwd_len = 0;
+                if (nodus_t3_encode(&fwd_rsp, &w->server->identity.sk,
+                                     fwd_buf, sizeof(fwd_buf),
+                                     &fwd_len) == 0) {
+                    nodus_tcp_send(w->peers[fwd_pi].conn, fwd_buf, fwd_len);
+                    fprintf(stderr, "%s: sent w_fwd_rsp to forwarder peer %d "
+                            "for tx_hash ", LOG_TAG, fwd_pi);
+                    for (int k = 0; k < 4; k++)
+                        fprintf(stderr, "%02x", e->tx_hash[k]);
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
+    }
+
+    round_state_free_batch(&w->round_state);
 }
 
 void nodus_witness_bft_check_timeout(nodus_witness_t *w) {

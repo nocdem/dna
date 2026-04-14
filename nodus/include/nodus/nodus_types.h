@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  12
-#define NODUS_VERSION_PATCH  2
-#define NODUS_VERSION_STRING "0.12.2"
+#define NODUS_VERSION_PATCH  3
+#define NODUS_VERSION_STRING "0.12.3"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
