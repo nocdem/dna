@@ -2,6 +2,9 @@
 tasks/
 **/tasks/
 
+# GSD planning docs (local-only)
+.planning/
+
 # Security audit files (private, never commit)
 *SECURITY_AUDIT*
 *COMPREHENSIVE_AUDIT*
