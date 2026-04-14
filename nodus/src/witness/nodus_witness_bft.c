@@ -640,7 +640,7 @@ static int update_utxo_set(nodus_witness_t *w,
  * Phase 3.4 can move the call from per-TX to per-block (run once
  * inside finalize_block) without changing the check's semantics.
  */
-static bool supply_invariant_violated(nodus_witness_t *w) {
+bool supply_invariant_violated(nodus_witness_t *w) {
     if (!w || !w->db) return false;
 
     bool violated = false;
@@ -705,11 +705,11 @@ static bool supply_invariant_violated(nodus_witness_t *w) {
  * which is what single-TX paths and the SAVEPOINT attribution replay
  * (Task 6.2) want.
  */
-#ifdef NODUS_WITNESS_INTERNAL_API
+/* Non-static so test executables (compiled with NODUS_WITNESS_INTERNAL_API
+ * via register_witness_test) can call directly. The function is not
+ * declared in any public header — production callers reach it via
+ * nodus_witness_commit_block / Phase 6 wrappers. */
 int apply_tx_to_state(nodus_witness_t *w,
-#else
-static int apply_tx_to_state(nodus_witness_t *w,
-#endif
                        const uint8_t *tx_hash,
                        uint8_t tx_type,
                        const uint8_t *const *nullifiers,
@@ -955,11 +955,8 @@ static int apply_tx_to_state(nodus_witness_t *w,
  * preserve legacy single-TX behavior. Phase 6 commit_batch wrapper
  * promotes a violation to fatal via outer rollback.
  */
-#ifdef NODUS_WITNESS_INTERNAL_API
+/* Non-static — see apply_tx_to_state comment. */
 int finalize_block(nodus_witness_t *w,
-#else
-static int finalize_block(nodus_witness_t *w,
-#endif
                     const uint8_t *tx_hashes,
                     uint32_t tx_count,
                     const uint8_t *proposer_id,

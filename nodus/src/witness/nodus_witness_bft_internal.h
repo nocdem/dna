@@ -1,20 +1,25 @@
 /**
  * Nodus — Witness BFT Internal API
  *
- * Non-static declarations for primitives that are static in the Release
- * build but exposed to test targets via NODUS_WITNESS_INTERNAL_API.
+ * Declarations for primitives that nodus_witness_bft.c defines as
+ * non-static but does NOT publish in any production-facing header.
+ * Test executables include this header (gated on
+ * NODUS_WITNESS_INTERNAL_API) to call the primitives directly without
+ * having to go through the public commit_block / commit wrappers.
  *
- * The definition file (nodus_witness_bft.c) does NOT include this
- * header — instead the static qualifier is conditionally elided when
- * NODUS_WITNESS_INTERNAL_API is defined at compile time. Test targets
- * include this header to get function prototypes for direct calls.
+ * The functions are non-static in the library because static + test
+ * linkage is incompatible in CMake's normal flow. The protection is
+ * "no public header references them" rather than "static qualifier".
+ * Production code reaching into these symbols is treated as a code
+ * review failure.
  *
  * Guards:
  *   - The CMake `register_witness_test` macro (Task 0.16) defines
- *     NODUS_WITNESS_INTERNAL_API on the test executable's compilation.
+ *     NODUS_WITNESS_INTERNAL_API on the test executable's compilation
+ *     so this header becomes visible.
  *   - The CMakeLists.txt guard from Task 4.4 forbids
- *     NODUS_WITNESS_INTERNAL_API in Release builds, so test-only
- *     primitives never leak into the production library.
+ *     NODUS_WITNESS_INTERNAL_API in Release builds, so the test-only
+ *     header path never compiles into a release binary.
  *
  * @file nodus_witness_bft_internal.h
  */
