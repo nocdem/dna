@@ -1779,4 +1779,7 @@ class AppLocalizationsTr extends AppLocalizations {
   @override
   String get settingsActiveChainsSubtitle =>
       'Cüzdanınızda hangi ağları görmek istediğinizi seçin';
+
+  @override
+  String get invalidQrCode => 'Geçersiz QR kodu';
 }

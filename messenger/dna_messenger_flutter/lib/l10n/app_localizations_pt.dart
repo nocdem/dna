@@ -1783,4 +1783,7 @@ class AppLocalizationsPt extends AppLocalizations {
   @override
   String get settingsActiveChainsSubtitle =>
       'Choose which networks to show in your wallet';
+
+  @override
+  String get invalidQrCode => 'Invalid QR code';
 }

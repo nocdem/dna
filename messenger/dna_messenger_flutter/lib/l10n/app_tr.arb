@@ -545,5 +545,6 @@
   "dnacTokenCreateFee": "Token oluşturma ücreti 1 DNAC",
   "walletContacts": "Kişiler",
   "settingsActiveChains": "Aktif Ağlar",
-  "settingsActiveChainsSubtitle": "Cüzdanınızda hangi ağları görmek istediğinizi seçin"
+  "settingsActiveChainsSubtitle": "Cüzdanınızda hangi ağları görmek istediğinizi seçin",
+  "invalidQrCode": "Geçersiz QR kodu"
 }

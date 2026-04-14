@@ -273,3 +273,122 @@ bool _looksLikeUrl(String input) {
       lower.startsWith('www.') ||
       RegExp(r'^[a-z0-9][-a-z0-9]*\.[a-z]{2,}', caseSensitive: false).hasMatch(input);
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// SEC-03 defense-in-depth: strict validator for v3 auth payloads.
+//
+// Rejects malformed, oversized, or charset-violating payloads BEFORE they
+// are signed or shown in the UI. Returns a stable `errorKey` that the UI
+// layer maps to `AppLocalizations.invalidQrCode` for display.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Result of [validateAuthPayload]. `ok == true` means the payload passed
+/// every strict check; `ok == false` means it was rejected and [errorKey]
+/// holds a stable i18n key (e.g. `'invalidQrCode'`) for the UI to render.
+class QrPayloadValidationResult {
+  final bool ok;
+  final String? errorKey;
+
+  const QrPayloadValidationResult.success()
+      : ok = true,
+        errorKey = null;
+
+  const QrPayloadValidationResult.failure(this.errorKey) : ok = false;
+}
+
+/// Allowed keys in a v3 auth payload. Anything else → reject.
+const Set<String> _kAuthPayloadAllowedKeys = <String>{
+  'expires_at',
+  'issued_at',
+  'nonce',
+  'origin',
+  'rp_id',
+  'rp_id_hash',
+  'session_id',
+};
+
+const Set<String> _kAuthPayloadRequiredKeys = <String>{
+  'expires_at',
+  'issued_at',
+  'nonce',
+  'origin',
+  'session_id',
+};
+
+// Length bounds per field (SEC-03 D-03).
+const int _kNonceMaxLen = 128;
+const int _kOriginMaxLen = 2048;
+const int _kRpIdMaxLen = 253; // DNS label max
+const int _kRpIdHashMaxLen = 256;
+const int _kSessionIdMaxLen = 128;
+
+final RegExp _kNonceCharset = RegExp(r'^[A-Za-z0-9_\-]+$');
+final RegExp _kSessionIdCharset = RegExp(r'^[A-Za-z0-9_\-]+$');
+
+/// Stable i18n key for any validation failure. The UI layer converts this
+/// to `AppLocalizations.of(context).invalidQrCode` at render time.
+const String _kErrorKeyInvalidQrCode = 'invalidQrCode';
+
+QrPayloadValidationResult _reject() =>
+    const QrPayloadValidationResult.failure(_kErrorKeyInvalidQrCode);
+
+/// Strict validator for a decoded v3 auth payload `Map<String, dynamic>`.
+///
+/// Defense-in-depth for SEC-03. Callers should invoke this before signing
+/// the payload or displaying any of its fields in the UI. A failure result
+/// carries `errorKey = 'invalidQrCode'` which the UI layer maps to the
+/// localized `AppLocalizations.invalidQrCode` message (English + Turkish).
+QrPayloadValidationResult validateAuthPayload(Map<String, dynamic> raw) {
+  // 1. Unexpected-field rejection.
+  for (final k in raw.keys) {
+    if (!_kAuthPayloadAllowedKeys.contains(k)) return _reject();
+  }
+
+  // 2. Required-field presence (rp_id and rp_id_hash are optional).
+  for (final req in _kAuthPayloadRequiredKeys) {
+    if (!raw.containsKey(req) || raw[req] == null) return _reject();
+  }
+
+  // 3. Type checks.
+  final expiresAt = raw['expires_at'];
+  final issuedAt = raw['issued_at'];
+  final nonce = raw['nonce'];
+  final origin = raw['origin'];
+  final sessionId = raw['session_id'];
+  final rpId = raw['rp_id'];
+  final rpIdHash = raw['rp_id_hash'];
+
+  if (expiresAt is! int) return _reject();
+  if (issuedAt is! int) return _reject();
+  if (nonce is! String) return _reject();
+  if (origin is! String) return _reject();
+  if (sessionId is! String) return _reject();
+  if (rpId != null && rpId is! String) return _reject();
+  if (rpIdHash != null && rpIdHash is! String) return _reject();
+
+  // 4. Length bounds.
+  if (nonce.isEmpty || nonce.length > _kNonceMaxLen) return _reject();
+  if (origin.isEmpty || origin.length > _kOriginMaxLen) return _reject();
+  if (sessionId.isEmpty || sessionId.length > _kSessionIdMaxLen) {
+    return _reject();
+  }
+  if (rpId is String && (rpId.isEmpty || rpId.length > _kRpIdMaxLen)) {
+    return _reject();
+  }
+  if (rpIdHash is String &&
+      (rpIdHash.isEmpty || rpIdHash.length > _kRpIdHashMaxLen)) {
+    return _reject();
+  }
+
+  // 5. Charset / URI checks.
+  if (!_kNonceCharset.hasMatch(nonce)) return _reject();
+  if (!_kSessionIdCharset.hasMatch(sessionId)) return _reject();
+
+  final originUri = Uri.tryParse(origin);
+  if (originUri == null) return _reject();
+  final scheme = originUri.scheme.toLowerCase();
+  if (scheme != 'http' && scheme != 'https') return _reject();
+  if (originUri.host.isEmpty) return _reject();
+
+  return const QrPayloadValidationResult.success();
+}

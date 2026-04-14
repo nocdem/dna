@@ -890,5 +890,9 @@
   "dnacTokenCreateFee": "Creating a token costs 1 DNAC",
   "walletContacts": "Contacts",
   "settingsActiveChains": "Active Chains",
-  "settingsActiveChainsSubtitle": "Choose which networks to show in your wallet"
+  "settingsActiveChainsSubtitle": "Choose which networks to show in your wallet",
+  "invalidQrCode": "Invalid QR code",
+  "@invalidQrCode": {
+    "description": "Error shown when a scanned QR payload fails strict validation (SEC-03 defense-in-depth: malformed, oversized, or charset-violating auth payloads are rejected before signing or UI display)"
+  }
 }

@@ -3391,6 +3391,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Choose which networks to show in your wallet'**
   String get settingsActiveChainsSubtitle;
+
+  /// Error shown when a scanned QR payload fails strict validation (SEC-03 defense-in-depth: malformed, oversized, or charset-violating auth payloads are rejected before signing or UI display)
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid QR code'**
+  String get invalidQrCode;
 }
 
 class _AppLocalizationsDelegate
