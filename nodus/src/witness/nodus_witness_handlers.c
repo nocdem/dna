@@ -1192,23 +1192,54 @@ static void handle_dnac_spend(nodus_witness_t *w,
     bool is_leader = nodus_witness_bft_is_leader(w);
 
     if (is_leader) {
-        /* Genesis TX must go through legacy single-TX path (needs chain DB creation).
-         * Batch commit path cannot handle genesis — bypass mempool. */
+        /* Phase 7 / Task 7.5 — genesis goes through the same batch-of-1
+         * BFT round as every other TX. The Phase 6 commit_genesis
+         * dispatch (Task 7.6) bootstraps the chain DB at commit time,
+         * so genesis no longer needs its own round entrypoint. */
         if (tx_type == NODUS_W_TX_GENESIS) {
-            fprintf(stderr, "%s: dnac_spend — genesis TX, using legacy BFT path\n",
+            fprintf(stderr, "%s: dnac_spend — genesis TX, batch-of-1 BFT path\n",
                     LOG_TAG);
-            w->round_state.client_conn = conn;
-            w->round_state.client_txn_id = txn_id;
-            w->round_state.is_forwarded = false;
-            int rc = nodus_witness_bft_start_round(w, tx_hash,
-                          nullifiers, nullifier_count, tx_type,
-                          tx_data, (uint32_t)tx_len, client_pk, client_sig, fee);
-            if (rc == -2)
-                send_error(conn, txn_id, NODUS_ERR_DOUBLE_SPEND,
-                            "nullifier already spent (double-spend)");
-            else if (rc != 0)
+
+            nodus_witness_mempool_entry_t *e = calloc(1, sizeof(*e));
+            if (!e) {
                 send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                            "transaction verification failed");
+                            "out of memory");
+                return;
+            }
+            memcpy(e->tx_hash, tx_hash, NODUS_T3_TX_HASH_LEN);
+            e->tx_type = tx_type;
+            e->nullifier_count = nullifier_count;
+            for (int i = 0; i < nullifier_count; i++)
+                memcpy(e->nullifiers[i], nullifiers[i],
+                       NODUS_T3_NULLIFIER_LEN);
+            e->tx_data = malloc(tx_len);
+            if (!e->tx_data) {
+                free(e);
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "out of memory");
+                return;
+            }
+            memcpy(e->tx_data, tx_data, tx_len);
+            e->tx_len = (uint32_t)tx_len;
+            if (client_pk)
+                memcpy(e->client_pubkey, client_pk, NODUS_PK_BYTES);
+            if (client_sig)
+                memcpy(e->client_sig, client_sig, NODUS_SIG_BYTES);
+            e->fee = fee;
+            e->client_conn = conn;
+            e->client_txn_id = txn_id;
+            e->is_forwarded = false;
+
+            nodus_witness_mempool_entry_t *entries[1] = { e };
+            int rc = nodus_witness_bft_start_round_from_entries(w, entries, 1);
+            if (rc != 0) {
+                /* On failure, free the entry — round didn't take ownership */
+                nodus_witness_mempool_entry_free(e);
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "genesis BFT round failed");
+            }
+            /* On success, ownership transfers to round_state.batch_entries
+             * and the commit path frees it. */
             return;
         }
 

@@ -653,21 +653,39 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
         }
     }
 
-    /* GENESIS TX must bypass mempool — legacy single-TX path creates the
-     * chain DB during commit. Batch commit path cannot create chain DB
-     * and will fail with "batch db begin failed" on pre-genesis state. */
+    /* Phase 7 / Task 7.5 — forwarded genesis goes through batch-of-1
+     * BFT round. Phase 6 commit_genesis dispatch (Task 7.6) handles
+     * chain DB bootstrap at commit time. */
     if (tx_type == NODUS_W_TX_GENESIS) {
-        fprintf(stderr, "%s: forwarded genesis TX — using legacy BFT path\n",
+        fprintf(stderr, "%s: forwarded genesis TX — batch-of-1 BFT path\n",
                 LOG_TAG);
-        w->round_state.client_conn = NULL;
-        w->round_state.client_txn_id = 0;
-        w->round_state.is_forwarded = true;
-        memcpy(w->round_state.forwarder_id, fwd->forwarder_id,
-               NODUS_T3_WITNESS_ID_LEN);
-        return nodus_witness_bft_start_round(w, fwd->tx_hash,
-                    nullifiers, nullifier_count, tx_type,
-                    fwd->tx_data, (uint32_t)fwd->tx_len,
-                    fwd->client_pubkey, fwd->client_sig, fwd->fee);
+
+        nodus_witness_mempool_entry_t *e = calloc(1, sizeof(*e));
+        if (!e) return -1;
+        memcpy(e->tx_hash, fwd->tx_hash, NODUS_T3_TX_HASH_LEN);
+        e->tx_type = tx_type;
+        e->nullifier_count = nullifier_count;
+        for (int i = 0; i < nullifier_count; i++)
+            memcpy(e->nullifiers[i], nullifiers[i], NODUS_T3_NULLIFIER_LEN);
+        e->tx_data = malloc(fwd->tx_len);
+        if (!e->tx_data) { free(e); return -1; }
+        memcpy(e->tx_data, fwd->tx_data, fwd->tx_len);
+        e->tx_len = fwd->tx_len;
+        if (fwd->client_pubkey)
+            memcpy(e->client_pubkey, fwd->client_pubkey, NODUS_PK_BYTES);
+        if (fwd->client_sig)
+            memcpy(e->client_sig, fwd->client_sig, NODUS_SIG_BYTES);
+        e->fee = fwd->fee;
+        e->client_conn = NULL;
+        e->is_forwarded = true;
+        memcpy(e->forwarder_id, fwd->forwarder_id, NODUS_T3_WITNESS_ID_LEN);
+
+        nodus_witness_mempool_entry_t *entries[1] = { e };
+        int rc = nodus_witness_bft_start_round_from_entries(w, entries, 1);
+        if (rc != 0) {
+            nodus_witness_mempool_entry_free(e);
+        }
+        return rc;
     }
 
     /* Add forwarded TX to mempool instead of immediate BFT round */

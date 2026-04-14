@@ -54,27 +54,6 @@ int  nodus_witness_roster_add(nodus_witness_t *w,
 /* ── Consensus ───────────────────────────────────────────────────── */
 
 /**
- * Start a new BFT consensus round (leader only).
- * Creates PROPOSAL, broadcasts to peers, records own PREVOTE.
- *
- * The caller (handler) should set w->round_state.client_conn and
- * w->round_state.client_txn_id before calling if a client response
- * is needed on commit.
- *
- * @return 0 success, -1 error, -2 double-spend
- */
-int nodus_witness_bft_start_round(nodus_witness_t *w,
-                                    const uint8_t *tx_hash,
-                                    const uint8_t nullifiers[][NODUS_T3_NULLIFIER_LEN],
-                                    uint8_t nullifier_count,
-                                    uint8_t tx_type,
-                                    const uint8_t *tx_data,
-                                    uint32_t tx_len,
-                                    const uint8_t *client_pubkey,
-                                    const uint8_t *client_sig,
-                                    uint64_t fee);
-
-/**
  * Phase 7 / Task 7.1 — start a BFT round from caller-owned entries.
  *
  * Thin wrapper over the shared batch round-start body. Used by callers
