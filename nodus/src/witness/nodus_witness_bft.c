@@ -717,9 +717,35 @@ int apply_tx_to_state(nodus_witness_t *w,
                        const uint8_t *tx_data,
                        uint32_t tx_len,
                        uint64_t block_height,
-                       void *batch_ctx) {
-    (void)batch_ctx;  /* Phase 4 wires the chained-UTXO check */
+                       nodus_witness_batch_ctx_t *batch_ctx) {
     bool failed = false;
+
+    /* Phase 4 / Task 4.3 — layer-3 chained UTXO check.
+     *
+     * BEFORE consuming the input nullifiers, verify that none of them
+     * appears in batch_ctx->seen_nullifiers (the future-nullifiers of
+     * outputs produced by earlier TXs in this batch). NULL batch_ctx
+     * skips the check — single-TX paths and the SAVEPOINT attribution
+     * replay (Task 6.2) want that.
+     *
+     * Layer 2 (propose_batch) catches the same pattern at proposal
+     * time, but layer 3 is the last line of defense — bug, attack, or
+     * test hook bypass. The check happens BEFORE the nullifier_add
+     * inserts so a violation rolls back via the outer transaction
+     * without polluting state. */
+    if (batch_ctx) {
+        for (int j = 0; j < nullifier_count; j++) {
+            for (int k = 0; k < batch_ctx->seen_count; k++) {
+                if (memcmp(batch_ctx->seen_nullifiers[k], nullifiers[j],
+                           NODUS_T3_NULLIFIER_LEN) == 0) {
+                    QGP_LOG_ERROR(LOG_TAG,
+                        "layer-3: chained UTXO detected — input nullifier "
+                        "matches an earlier TX's output future-nullifier");
+                    return -1;
+                }
+            }
+        }
+    }
 
     if (tx_type == NODUS_W_TX_GENESIS) {
         /* Phase 3 / Task 3.1: total_supply param dropped from the per-TX

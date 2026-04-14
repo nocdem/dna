@@ -13,6 +13,7 @@
 #include "witness/nodus_witness_sync.h"
 #include "witness/nodus_witness_mempool.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
 #include "crypto/nodus_identity.h"
@@ -427,6 +428,71 @@ int nodus_witness_init(nodus_witness_t *witness,
 
 /* ── Block timer: propose batch from mempool ────────────────────── */
 
+/* Compute the future nullifier of a TX output (Phase 4 / Task 4.1).
+ *
+ * INVARIANT: This works ONLY because DNAC nullifiers are a deterministic
+ * function of (owner_fingerprint, nullifier_seed) — both PUBLIC fields
+ * on every output (see dnac/src/transaction/nullifier.c:34). Any future
+ * spend of the output will present this nullifier as its INPUT. Witnesses
+ * can therefore pre-compute the nullifier when they SEE the output, and
+ * use that precomputation to detect intra-batch chained UTXOs (TX[i]
+ * spends a UTXO created by TX[j] in the same batch, where j < i).
+ *
+ * Mirrors dnac_derive_nullifier so nodus does not link libdnac — duplication
+ * is acceptable for a 15-line crypto-only function. If the DNAC nullifier
+ * scheme ever gains a secret input, this helper becomes silently impotent
+ * and the entire 3-layer chained-UTXO defense MUST be redesigned.
+ */
+static int nodus_compute_output_nullifier(const char *owner_fp,
+                                           const uint8_t *seed,
+                                           uint8_t *out64) {
+    if (!owner_fp || !seed || !out64) return -1;
+    uint8_t buf[256];
+    size_t off = 0;
+    size_t fp_len = strlen(owner_fp);
+    if (fp_len > 192) fp_len = 192;
+    memcpy(buf, owner_fp, fp_len); off = fp_len;
+    memcpy(buf + off, seed, 32); off += 32;
+    return qgp_sha3_512(buf, off, out64);
+}
+
+/* Walk a serialized TX's outputs and append each output's future
+ * nullifier to a flat 64-byte array. Returns the number of outputs
+ * appended (0 on parse failure). */
+static int nodus_extract_output_nullifiers(const uint8_t *tx_data, uint32_t tx_len,
+                                            uint8_t out_nullifiers[][64],
+                                            int max_outputs) {
+    if (!tx_data || tx_len < 75 || !out_nullifiers || max_outputs <= 0) return 0;
+    size_t off = 74;  /* version(1)+type(1)+timestamp(8)+tx_hash(64) */
+    if (off >= tx_len) return 0;
+    uint8_t in_count = tx_data[off++];
+    off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
+    if (off >= tx_len) return 0;
+    uint8_t out_count = tx_data[off++];
+
+    int written = 0;
+    for (int i = 0; i < out_count && off + 235 <= tx_len && written < max_outputs; i++) {
+        off += 1;   /* version */
+        const char *owner_fp = (const char *)(tx_data + off);
+        char fp_buf[129];
+        memcpy(fp_buf, owner_fp, 128);
+        fp_buf[128] = '\0';
+        off += 129; /* fingerprint */
+        off += 8;   /* amount */
+        off += 64;  /* token_id */
+        const uint8_t *seed = tx_data + off;
+        off += 32;  /* seed */
+        if (off >= tx_len) break;
+        uint8_t ml = tx_data[off++]; /* memo_len */
+        off += ml;
+
+        if (nodus_compute_output_nullifier(fp_buf, seed, out_nullifiers[written]) == 0) {
+            written++;
+        }
+    }
+    return written;
+}
+
 static void nodus_witness_propose_batch(nodus_witness_t *w) {
     if (!w || w->mempool.count == 0) return;
 
@@ -443,6 +509,19 @@ static void nodus_witness_propose_batch(nodus_witness_t *w) {
     uint8_t seen_nullifiers[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS]
                            [NODUS_T3_NULLIFIER_LEN];
     int seen_count = 0;
+
+    /* Phase 4 / Task 4.1: layer-2 chained UTXO defense.
+     *
+     * Track the future nullifiers of every output produced by an earlier
+     * TX in the batch. When verifying TX[i]'s INPUT nullifiers, reject
+     * the entire batch if any input matches an output future-nullifier
+     * from TX[j] where j < i — that means TX[i] is trying to spend a
+     * UTXO that TX[j] just created, which is forbidden inside a single
+     * block (the Phase 6 commit_batch wrapper applies all TXs against
+     * the SAME pre-batch UTXO snapshot). */
+    uint8_t seen_output_nfs[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS]
+                           [NODUS_T3_NULLIFIER_LEN];
+    int seen_output_nf_count = 0;
 
     int valid = 0;
     for (int i = 0; i < count; i++) {
@@ -466,6 +545,19 @@ static void nodus_witness_propose_batch(nodus_witness_t *w) {
                 }
             }
             if (reject) break;
+            /* Layer 2: chained-UTXO check — input must not match any
+             * earlier TX's output future-nullifier. */
+            for (int k = 0; k < seen_output_nf_count; k++) {
+                if (memcmp(seen_output_nfs[k], batch[i]->nullifiers[j],
+                           NODUS_T3_NULLIFIER_LEN) == 0) {
+                    QGP_LOG_WARN(LOG_TAG,
+                        "layer-2: intra-batch chained UTXO detected at TX %d, "
+                        "rejecting entire batch", i);
+                    reject = true;
+                    break;
+                }
+            }
+            if (reject) break;
         }
 
         if (reject) {
@@ -480,6 +572,23 @@ static void nodus_witness_propose_batch(nodus_witness_t *w) {
                     seen_count++;
                 }
             }
+
+            /* Layer 2: append this TX's output future-nullifiers so
+             * subsequent batch entries can detect chained-UTXO attempts. */
+            uint8_t out_nfs[NODUS_T3_MAX_TX_INPUTS][NODUS_T3_NULLIFIER_LEN];
+            int n_out = nodus_extract_output_nullifiers(batch[i]->tx_data,
+                                                          batch[i]->tx_len,
+                                                          out_nfs,
+                                                          NODUS_T3_MAX_TX_INPUTS);
+            for (int j = 0; j < n_out; j++) {
+                if (seen_output_nf_count <
+                    NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS) {
+                    memcpy(seen_output_nfs[seen_output_nf_count], out_nfs[j],
+                           NODUS_T3_NULLIFIER_LEN);
+                    seen_output_nf_count++;
+                }
+            }
+
             if (valid != i)
                 batch[valid] = batch[i];
             valid++;

@@ -283,6 +283,31 @@ typedef struct nodus_witness {
     bool        running;
 } nodus_witness_t;
 
+/* Phase 4 / Task 4.2 — intra-batch chained-UTXO context.
+ *
+ * Carried by apply_tx_to_state across the N-TX batch loop so the
+ * layer-3 in-memory check (Task 4.3) can detect a TX whose input
+ * nullifier matches a previous TX's output future-nullifier. Layer 2
+ * (propose_batch, Task 4.1) catches the same pattern at proposal time;
+ * layer 3 catches anything that slipped past — bug, attack, or test
+ * hook bypass.
+ *
+ * Sized for the worst case: NODUS_W_MAX_BLOCK_TXS (10) TXs each
+ * producing NODUS_T3_MAX_TX_INPUTS (16) outputs = 160 entries.
+ *
+ * Pass NULL to apply_tx_to_state from single-TX paths and from the
+ * SAVEPOINT attribution replay (Task 6.2) — the layer-3 check is
+ * skipped under NULL.
+ */
+typedef struct {
+    uint8_t seen_nullifiers[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS]
+                          [NODUS_T3_NULLIFIER_LEN];
+    int     seen_count;
+} nodus_witness_batch_ctx_t;
+
+_Static_assert(sizeof(nodus_witness_batch_ctx_t) < 16384,
+               "batch_ctx exceeds 16 KB stack budget");
+
 /* ── Lifecycle ───────────────────────────────────────────────────── */
 
 /**
