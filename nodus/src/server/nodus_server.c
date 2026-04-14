@@ -1377,17 +1377,22 @@ static void dht_republish(nodus_server_t *srv) {
     }
 }
 
-/** Periodic media republish — send stored media chunks to K-closest */
+/** Periodic media republish — paced one chunk per tick.
+ *
+ * Why per-tick pacing: a single media entry can have 100+ chunks of ~512KB
+ * each. Replicating to 6 peers in one tick = 300+ MB queued synchronously
+ * onto inter_tcp wbufs (5 MB cap each) → pending queue overflow → frames
+ * shunted to hint table with synth IDs → never delivered. By processing
+ * exactly one chunk per tick we let the event loop drain wbufs between
+ * chunks, so pending stays well under cap.
+ */
 static void dht_media_republish(nodus_server_t *srv) {
     dht_media_republish_state_t *mrs = &srv->media_republish;
     uint64_t now = nodus_time_now();
 
+    /* Cycle activation gate */
     if (!mrs->active) {
-        /* Start new cycle every NODUS_MEDIA_REPUBLISH_SEC */
         if (now - mrs->cycle_start < NODUS_MEDIA_REPUBLISH_SEC) return;
-        /* Don't start cycle until routing table has enough peers —
-         * otherwise we "complete" the cycle sending to 0 peers and
-         * wait full interval before trying again */
         if (nodus_routing_count(&srv->routing) < NODUS_REPLICATION_MIN) {
             fprintf(stderr,
                     "MEDIA-REPUB-SKIP: routing sparse (%d < %d)\n",
@@ -1395,61 +1400,72 @@ static void dht_media_republish(nodus_server_t *srv) {
             return;
         }
         fprintf(stderr,
-                "MEDIA-REPUB-CYCLE: start cycle, routing=%d, last_complete_at=%llu\n",
-                nodus_routing_count(&srv->routing),
-                (unsigned long long)mrs->cycle_start);
+                "MEDIA-REPUB-CYCLE: start cycle, routing=%d\n",
+                nodus_routing_count(&srv->routing));
         memset(mrs->last_hash, 0, sizeof(mrs->last_hash));
         mrs->active = true;
         mrs->first_batch = true;
+        mrs->has_current = false;
+        mrs->chunk_cursor = 0;
         mrs->cycle_start = now;
     }
 
-    /* Fetch batch of complete media entries */
-    nodus_media_meta_t batch[NODUS_REPUBLISH_BATCH];
-    int fetched = nodus_media_fetch_batch(&srv->media_storage,
-                                           mrs->first_batch ? NULL : mrs->last_hash,
-                                           batch, NODUS_REPUBLISH_BATCH);
-    fprintf(stderr,
-            "MEDIA-REPUB-FETCH: fetched=%d (after_hash=%s)\n",
-            fetched, mrs->first_batch ? "NULL" : "set");
-    mrs->first_batch = false;
+    /* Need a current entry? Fetch the next one (size 1 — pacing). */
+    if (!mrs->has_current) {
+        nodus_media_meta_t one[1];
+        int fetched = nodus_media_fetch_batch(&srv->media_storage,
+                                               mrs->first_batch ? NULL : mrs->last_hash,
+                                               one, 1);
+        mrs->first_batch = false;
+        if (fetched == 0) {
+            fprintf(stderr, "MEDIA-REPUB-DONE: cycle complete\n");
+            mrs->active = false;
+            mrs->cycle_start = nodus_time_now();
+            return;
+        }
+        mrs->current_meta = one[0];
+        mrs->chunk_cursor = 0;
+        mrs->has_current = true;
 
-    for (int i = 0; i < fetched; i++) {
-        nodus_media_meta_t *meta = &batch[i];
         char hpfx[17];
-        for (int x = 0; x < 8; x++) sprintf(hpfx + x*2, "%02x", meta->content_hash[x]);
+        for (int x = 0; x < 8; x++)
+            sprintf(hpfx + x*2, "%02x", mrs->current_meta.content_hash[x]);
         hpfx[16] = '\0';
         fprintf(stderr,
                 "MEDIA-REPUB-ENTRY: hash=%s chunks=%u total_size=%llu complete=%d\n",
-                hpfx, meta->chunk_count,
-                (unsigned long long)meta->total_size, meta->complete);
-
-        /* For each chunk, replicate */
-        for (uint32_t ci = 0; ci < meta->chunk_count; ci++) {
-            uint8_t *chunk_data = NULL;
-            size_t chunk_len = 0;
-            if (nodus_media_get_chunk(&srv->media_storage, meta->content_hash,
-                                       ci, &chunk_data, &chunk_len) != 0) {
-                fprintf(stderr,
-                        "MEDIA-REPUB-CHUNK-MISS: hash=%s chunk_idx=%u get_chunk_failed\n",
-                        hpfx, ci);
-                continue;
-            }
-
-            nodus_server_replicate_media_chunk(srv, meta, ci, chunk_data, chunk_len);
-            free(chunk_data);
-        }
-
-        /* Update bookmark */
-        memcpy(mrs->last_hash, meta->content_hash, 64);
+                hpfx, mrs->current_meta.chunk_count,
+                (unsigned long long)mrs->current_meta.total_size,
+                mrs->current_meta.complete);
     }
 
-    /* Cycle complete if fewer rows than batch size */
-    if (fetched < NODUS_REPUBLISH_BATCH) {
-        fprintf(stderr,
-                "MEDIA-REPUB-DONE: cycle complete (last_fetched=%d)\n", fetched);
-        mrs->active = false;
-        mrs->cycle_start = nodus_time_now();
+    /* Send exactly ONE chunk per tick — drain wbufs between sends */
+    if (mrs->chunk_cursor < mrs->current_meta.chunk_count) {
+        uint8_t *chunk_data = NULL;
+        size_t chunk_len = 0;
+        if (nodus_media_get_chunk(&srv->media_storage,
+                                   mrs->current_meta.content_hash,
+                                   mrs->chunk_cursor,
+                                   &chunk_data, &chunk_len) == 0) {
+            nodus_server_replicate_media_chunk(srv, &mrs->current_meta,
+                                                mrs->chunk_cursor,
+                                                chunk_data, chunk_len);
+            free(chunk_data);
+        } else {
+            char hpfx[17];
+            for (int x = 0; x < 8; x++)
+                sprintf(hpfx + x*2, "%02x", mrs->current_meta.content_hash[x]);
+            hpfx[16] = '\0';
+            fprintf(stderr,
+                    "MEDIA-REPUB-CHUNK-MISS: hash=%s chunk_idx=%u get_chunk_failed\n",
+                    hpfx, mrs->chunk_cursor);
+        }
+        mrs->chunk_cursor++;
+    }
+
+    /* Entry done — advance bookmark, fetch next entry on next tick */
+    if (mrs->chunk_cursor >= mrs->current_meta.chunk_count) {
+        memcpy(mrs->last_hash, mrs->current_meta.content_hash, 64);
+        mrs->has_current = false;
     }
 }
 

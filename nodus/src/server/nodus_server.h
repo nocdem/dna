@@ -337,6 +337,10 @@ typedef struct {
     bool        active;         /**< Republish cycle in progress */
     bool        first_batch;    /**< First batch of cycle (no bookmark yet) */
     uint64_t    cycle_start;    /**< When current cycle began */
+    /* Per-chunk pacing (one chunk per tick to avoid pending-queue overflow) */
+    nodus_media_meta_t current_meta; /**< Entry currently being drained */
+    uint32_t    chunk_cursor;        /**< Next chunk index to send (0..chunk_count) */
+    bool        has_current;         /**< current_meta is valid */
 } dht_media_republish_state_t;
 
 /* ── Server ──────────────────────────────────────────────────────── */
