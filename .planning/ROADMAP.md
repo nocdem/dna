@@ -108,9 +108,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] 6-01-wave0-test-scaffolding-PLAN.md — Wave 0 RED test stubs + audit script + CMake registration
 - [x] 6-02-core05-lockout-fix-PLAN.md — CORE-05 non-destructive registration failure handling
 - [x] 6-03-groups-db-v3-migration-PLAN.md — groups.db v2->v3 schema adding dht_salt + has_dht_salt
-- [ ] 6-04-group-outbox-salt-hard-cutover-PLAN.md — CORE-04 group outbox salted hard cutover + GEK-channel salt distribution
-- [ ] 6-05-dm-outbox-null-salt-closure-PLAN.md — CORE-04 close NULL-salt branch in dht_dm_outbox + salt-agreement gate
-- [ ] 6-06-offline-queue-dead-code-removal-PLAN.md — CORE-04 remove dead unsalted-key functions from dht_offline_queue.c
+- [x] 6-04-group-outbox-salt-hard-cutover-PLAN.md — CORE-04 group outbox salted hard cutover + GEK-channel salt distribution
+- [x] 6-05-dm-outbox-null-salt-closure-PLAN.md — CORE-04 close NULL-salt branch in dht_dm_outbox + salt-agreement gate
+- [x] 6-06-offline-queue-dead-code-removal-PLAN.md — CORE-04 remove dead unsalted-key functions from dht_offline_queue.c
 - [ ] 6-07-dht-producer-audit-signoff-PLAN.md — Producer audit appendix + full build matrix + manual register-name gate
 
 ### Phase 7: Flutter UI and Permission Fixes
@@ -146,6 +146,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 3. Unsafe C Pattern Remediation | 0/0 | Not started | - |
 | 4. App Authentication and Data Security | 0/0 | Not started | - |
 | 5. Seed Phrase Protection | 0/0 | Not started | - |
-| 6. C Engine Core Flow Fixes | 3/7 | In Progress|  |
+| 6. C Engine Core Flow Fixes | 6/7 | In Progress|  |
 | 7. Flutter UI and Permission Fixes | 0/0 | Not started | - |
 | 8. Cross-Layer Verification | 0/0 | Not started | - |

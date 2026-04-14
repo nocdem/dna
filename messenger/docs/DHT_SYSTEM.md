@@ -1486,3 +1486,105 @@ if (nodus_ops_get(key, 64, &value_out, &value_len_out) == 0) {
 ```c
 nodus_cleanup();
 ```
+
+---
+
+## DHT Producer Audit (Phase 6)
+
+**Status:** CORE-04 closed, 2026-04-14. Every file under `messenger/dht/` and
+`messenger/transport/` that calls `nodus_ops_put*` is enumerated below and
+classified as one of:
+
+- **Salted** — the DHT key includes a per-pair/per-group/per-user secret, so
+  a passive observer cannot derive comm patterns from the key itself.
+- **Salted (fixed by Phase 6)** — was unsalted before Phase 6; now writes and
+  reads the salted form only (hard cutover).
+- **Whitelisted public** — the content is intentionally public and the key
+  format is part of the public identity/name/wall surface.
+- **Whitelisted encrypted** — the key is derived from a stable identifier
+  (fingerprint, group UUID), but the value is end-to-end encrypted so the
+  key cannot leak anything the observer didn't already know about that
+  identifier.
+- **Whitelisted bootstrap** — the key is deterministic by protocol necessity
+  (e.g. the two-party salt agreement), but the content is dual-encrypted and
+  the exposure is bounded to the bootstrap handshake itself.
+- **Whitelisted residual** — unsalted key with encrypted content and a
+  documented, accepted residual metadata leak (see notes below).
+
+### Classification Table
+
+| # | File | Key Format | Class | Justification |
+|---|------|-----------|-------|---------------|
+| 1  | `dht/shared/dht_dm_outbox.c`       | `<sender_fp>:outbox:<recipient_fp>:<day>:<salt_hex>` | **Salted** | Per-contact 32-byte salt from `contacts_db`. NULL-salt fallback branch closed in Plan 6-05. `has_dht_salt` is authoritative. |
+| 2  | `dht/shared/dht_dm_outbox.h`       | (header — declares salted API) | **Salted** | Salt-required parameter surface. |
+| 3  | `dht/shared/dht_contact_request.c` | per-contact salted | **Salted** | Reference impl for the salt-agreement → salted-publish pattern. |
+| 4  | `dht/shared/dht_offline_queue.c`   | `<recipient_fp>:ack:<sender_fp>:<salt_hex>` (ACK only) | **Salted** | Only ACK helpers remain after Plan 6-06. `make_outbox_base_key` + `dht_retrieve_queued_messages_from_contacts[_parallel]` deleted as dead code. NULL-salt branch in `make_ack_base_key` closed. |
+| 5  | `dht/client/dht_contactlist.c`     | `<identity>:contacts:<salt_hex>` | **Salted** | Per-identity salt. Already correct before Phase 6. |
+| 6  | `dht/client/dna_group_outbox.c`    | `dna:group:<group_uuid>:out:<day>:<salt_hex>` | **Salted (fixed by Phase 6)** | Per-group 32-byte salt from `groups` table (schema v3). Was unsalted before Plan 6-04 (hard cutover; see Plan 6-03 migration and Plan 6-04 executor notes). |
+| 7  | `dht/shared/dht_salt_agreement.c`  | `<fp_lo>:<fp_hi>:salt` | **Whitelisted bootstrap** | Deterministic by protocol necessity — this is the two-party salt agreement helper itself. Value is dual-encrypted (Kyber + AES-GCM). Making the key itself salted creates a chicken-and-egg. Exposure is bounded to the bootstrap handshake window. |
+| 8  | `dht/shared/dht_gek_storage.c`     | `<group_uuid>:gek:<version>` | **Whitelisted encrypted** | GEK distribution to already-known group members. UUID is a shared secret among members; content is encrypted with per-member Kyber wrap. |
+| 9  | `dht/shared/dht_groups.c`          | `dht:group:<group_uuid>` | **Whitelisted encrypted** | Group metadata blob; signed + encrypted. UUID is shared-secret among members. |
+| 10 | `dht/shared/dht_profile.c`         | `<fp>:profile` | **Whitelisted public** | Profile is public-by-fp. Intentional lookup surface. |
+| 11 | `dht/keyserver/keyserver_publish.c`| `<fp>:profile`, `<name>:lookup`, `<fp>:rname` | **Whitelisted public** | Identity public surface (name registry + reverse lookup). |
+| 12 | `dht/keyserver/keyserver_names.c`  | `<name>:lookup` aliases | **Whitelisted public** | Name registry; public by design (registered-name is the whole point). |
+| 13 | `dht/keyserver/keyserver_profiles.c`| `<fp>:profile` | **Whitelisted public** | Same public-by-fp surface as `dht_profile.c`. |
+| 14 | `dht/client/dht_addressbook.c`     | `<fp>:addressbook` | **Whitelisted encrypted** | Per-identity personal encrypted blob. Key reveals only "this fp has an addressbook" which is uniformly true for every user. |
+| 15 | `dht/client/dht_followlist.c`      | `<fp>:followlist` | **Whitelisted public** | Public social follow graph — follows are public by design. Header comment explicitly reads "no salts" (file matches the audit regex on that comment word, which is acceptable: the semantic classification is still public). |
+| 16 | `dht/client/dht_geks.c`            | `<fp>:geks` | **Whitelisted encrypted** | Per-identity GEK list; Kyber-wrapped. |
+| 17 | `dht/client/dht_grouplist.c`       | `<fp>:grouplist` | **Whitelisted residual** | See residual risk notes below. |
+| 18 | `dht/client/dht_message_backup.c`  | `<fp>:message_backup` | **Whitelisted encrypted** | Owner-encrypted SQLite backup blob. |
+| 19 | `dht/client/dna_wall.c`            | `wall:<fp>:<day>:...` | **Whitelisted public** | Public social wall posts. |
+| 20 | `dht/client/dna_wall_comments.c`   | `wall:<fp>:comments:...` | **Whitelisted public** | Public comments on public wall posts. |
+| 21 | `dht/client/dna_wall_likes.c`      | `wall:<fp>:likes:...` | **Whitelisted public** | Public likes on public wall posts. |
+| 22 | `dht/core/dht_bootstrap_registry.c`| bootstrap registry entries | **Whitelisted public** | Global cluster discovery surface. |
+| 23 | `dht/client/dna_channels.c`        | channels keys | **Whitelisted (disabled)** | `DNA_CHANNELS_ENABLED` feature-gated off in current builds. Whitelisted for forward-compatibility; re-audit if the subsystem is re-enabled. |
+| 24 | `dht/client/dna_channels.h`        | (header) | **Whitelisted (disabled)** | Same as above. |
+| 25 | `dht/shared/dht_channel_subscriptions.c` | channel subscription keys | **Whitelisted (disabled)** | Same as above — re-audit if channels are re-enabled. |
+| 26 | `dht/shared/nodus_ops.c`           | (wrapper — not a producer) | **Whitelisted infrastructure** | This is the `nodus_ops_put` implementation itself. Not a key-derivation site; it's the transport wrapper every real producer goes through. |
+| 27 | `dht/shared/nodus_ops.h`           | (header) | **Whitelisted infrastructure** | Same as above. |
+
+**`messenger/transport/`:** Searched with
+`grep -rln 'nodus_ops_put' messenger/transport/` — **zero results.** The
+transport layer does not publish DHT keys directly; all publishing flows
+through `messenger/dht/` producers above.
+
+### Residual Accepted Risks
+
+1. **`dht_salt_agreement.c`** — The key `<fp_lo>:<fp_hi>:salt` is deterministic
+   by bootstrap necessity. An observer who watches the DHT sees "these two
+   fingerprints are negotiating a salt" — i.e. they are about to be in
+   contact. The content is dual-encrypted (Kyber + AES-GCM), and the exposure
+   is bounded to the handshake itself. Once the salt is agreed, all
+   subsequent DM traffic uses the salted key in row 1. **Accepted:** the
+   alternative is a meta-salt-agreement protocol, which has the same
+   chicken-and-egg problem.
+
+2. **`dht_grouplist.c`** — The key `<fp>:grouplist` is unsalted. An observer
+   who can match an `fp` to a real identity can fetch this key and learn
+   which group UUIDs that identity is a member of. However: (a) the value is
+   encrypted, so the observer learns only the group UUIDs, not group names,
+   members, or content; (b) with Phase 6's salted group-outbox keys
+   (row 6), the UUIDs no longer cross-reference to per-group message
+   volumes; (c) adding a salt here would require yet another bootstrap for
+   the grouplist itself. **Accepted residual:** an observer who already knows
+   a fingerprint can learn that fingerprint's opaque group UUIDs.
+
+3. **`dht_followlist.c`** — Intentionally public. Follow graphs are a
+   publicly-advertised social feature. **Not a leak** by design.
+
+4. **Feature-disabled channels files** (rows 23–25) — Whitelisted because
+   `DNA_CHANNELS_ENABLED` is off in current builds. **Must be re-audited**
+   the moment channels are re-enabled.
+
+### Verification
+
+- **Static guard:** `messenger/scripts/audit_dht_keys.sh` runs in CI. It
+  greps every file under `messenger/dht/` and `messenger/transport/` that
+  calls `nodus_ops_put*` and requires at least one `salt` reference, unless
+  the file is on the whitelist. Exit 0 = clean. Current state (2026-04-14):
+  **exit 0.**
+- **Phase 6 closure:** Plans 6-02 through 6-06 implemented the fixes
+  enumerated in the research. Plan 6-07 is the audit sign-off that produced
+  this appendix.
+
+*Last updated: 2026-04-14 (Phase 6 sign-off).*
