@@ -177,7 +177,7 @@ typedef struct {
  * Flow:
  * 1. gek_load_active(group_uuid) -> get GEK + version
  * 2. hour_bucket = time(NULL) / 3600
- * 3. Generate message_id: sprintf("%s_%s_%lu", my_fingerprint, group_uuid, timestamp_ms)
+ * 3. Generate message_id: snprintf("%s_%s_%lu", my_fingerprint, group_uuid, timestamp_ms)
  * 4. Encrypt plaintext with GEK (AES-256-GCM)
  * 5. Sign with Dilithium5
  * 6. dht_get_owner_value_id() -> my unique value_id
