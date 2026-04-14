@@ -1157,8 +1157,10 @@ static int bft_start_round_internal(nodus_witness_t *w,
     memcpy(w->round_state.proposer_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
     w->round_state.phase_start_time = time_ms();
 
-    /* Store batch entries — batches are always SPEND (genesis is single-TX) */
-    w->round_state.tx_type = NODUS_W_TX_SPEND;
+    /* Store batch entries. Genesis is single-TX but flows through the same
+     * batch path since 4d8ad851; propagate the entry's actual tx_type so the
+     * quorum check at handle_vote() can apply the GENESIS unanimous rule. */
+    w->round_state.tx_type = (count > 0) ? entries[0]->tx_type : NODUS_W_TX_SPEND;
     w->round_state.batch_count = count;
     for (int i = 0; i < count; i++)
         w->round_state.batch_entries[i] = entries[i];
@@ -1529,7 +1531,11 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                                [NODUS_T3_NULLIFIER_LEN];
         int batch_seen_count = 0;
 
-        w->round_state.tx_type = NODUS_W_TX_SPEND;
+        /* Follower path: mirror leader's tx_type propagation so unanimous
+         * quorum check at handle_vote() fires for GENESIS entries. */
+        w->round_state.tx_type = (prop->batch_count > 0)
+            ? prop->batch_txs[0].tx_type
+            : NODUS_W_TX_SPEND;
         w->round_state.batch_count = prop->batch_count;
         for (int i = 0; i < prop->batch_count && !tx_invalid; i++) {
             const nodus_t3_batch_tx_t *btx = &prop->batch_txs[i];
