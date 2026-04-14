@@ -354,7 +354,7 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
     nodus_random((uint8_t *)&rsp.header.nonce, sizeof(rsp.header.nonce));
     memcpy(rsp.header.chain_id, w->chain_id, 32);
 
-    uint8_t *buf = malloc(NODUS_T3_MAX_MSG_SIZE);
+    uint8_t *buf = malloc(NODUS_W_MAX_SYNC_RSP_SIZE);
     if (!buf) {
         for (int i = 0; i < row_count; i++)
             nodus_witness_block_tx_row_free(&rows[i]);
@@ -363,7 +363,13 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
     size_t len = 0;
 
     int rc = nodus_t3_encode(&rsp, &w->server->identity.sk,
-                              buf, NODUS_T3_MAX_MSG_SIZE, &len);
+                              buf, NODUS_W_MAX_SYNC_RSP_SIZE, &len);
+    /* Phase 11 / Task 11.3 — tier 3 aggregate guard. */
+    if (rc == 0 && len > NODUS_W_MAX_SYNC_RSP_SIZE) {
+        fprintf(stderr, "%s: sync_rsp encode size %zu > 1 MB cap\n",
+                LOG_TAG, len);
+        rc = -1;
+    }
     if (rc == 0)
         nodus_tcp_send((nodus_tcp_conn_t *)conn, buf, len);
 

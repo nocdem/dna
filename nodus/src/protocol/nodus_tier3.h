@@ -35,6 +35,19 @@ extern "C" {
 /* Maximum encode buffer size (fits any T3 message) */
 #define NODUS_T3_MAX_MSG_SIZE  131072
 
+/* Phase 11 / Task 11.3 — three-tier sync_rsp size guard.
+ *
+ * Multi-tx sync_rsp can carry up to NODUS_W_MAX_BLOCK_TXS * tx_len
+ * plus cert data, which exceeds the 128 KB NODUS_T3_MAX_MSG_SIZE.
+ * Sync senders/receivers use this larger 1 MB cap instead. The
+ * decoder enforces:
+ *
+ *   tier 1: tx_count <= NODUS_W_MAX_BLOCK_TXS (10)
+ *   tier 2: per-TX tx_len <= NODUS_T3_MAX_TX_SIZE (64 KB)
+ *   tier 3: aggregate wire bytes <= NODUS_W_MAX_SYNC_RSP_SIZE (1 MB)
+ */
+#define NODUS_W_MAX_SYNC_RSP_SIZE  (1024 * 1024)
+
 /* ── Message types ───────────────────────────────────────────────── */
 
 typedef enum {
