@@ -134,6 +134,11 @@ int dnac_witness_request(dnac_context_t *ctx,
     memcpy(witnesses_out[0].signature, result.signature, NODUS_SIG_BYTES);
     memcpy(witnesses_out[0].server_pubkey, result.witness_pubkey, NODUS_PK_BYTES);
     witnesses_out[0].timestamp = result.timestamp;
+    /* Phase 13 / Task 13.1 — receipt fields (block_height, tx_index,
+     * chain_id) needed for client-side spndrslt preimage verification. */
+    witnesses_out[0].block_height = result.block_height;
+    witnesses_out[0].tx_index = result.tx_index;
+    memcpy(witnesses_out[0].chain_id, result.chain_id, 32);
 
     *witness_count_out = 1;
 

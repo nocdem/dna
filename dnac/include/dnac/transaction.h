@@ -61,12 +61,23 @@ typedef struct {
  * @brief Witness signature (attestation)
  *
  * Signatures from 2+ witness servers prevent double-spending.
+ *
+ * Phase 12 / Task 13.1 — the receipt now binds the block_height,
+ * tx_index, and chain_id the witness committed against. These fields
+ * are required for client-side preimage reconstruction (the witness
+ * Dilithium5-signs the 221-byte spndrslt preimage that includes them).
+ * They are NOT serialized into the on-chain TX; serialize.c only
+ * persists witness_id/signature/timestamp/server_pubkey.
  */
 typedef struct {
     uint8_t witness_id[32];                      /**< Witness server ID */
     uint8_t signature[DNAC_SIGNATURE_SIZE];      /**< Dilithium5 signature */
     uint8_t server_pubkey[DNAC_PUBKEY_SIZE];     /**< Server's Dilithium5 public key */
     uint64_t timestamp;                          /**< Witness timestamp */
+    /* Receipt-only fields (not in TX serialization) */
+    uint64_t block_height;                       /**< Block the TX committed in */
+    uint32_t tx_index;                           /**< Per-block tx_index */
+    uint8_t  chain_id[32];                       /**< Chain identifier */
 } dnac_witness_sig_t;
 
 /**

@@ -16,6 +16,8 @@
 #include "dnac/wallet.h"
 #include "dnac/db.h"
 #include <dna/dna_engine.h>
+#include "crypto/hash/qgp_sha3.h"
+#include "crypto/sign/qgp_dilithium.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -308,18 +310,47 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
         return (rc != DNAC_SUCCESS) ? rc : DNAC_ERROR_WITNESS_FAILED;
     }
 
-    /* Step 4: Verify and add witnesses to transaction */
+    /* Step 4: Verify and add witnesses to transaction.
+     *
+     * Phase 12 / Task 12.2 — witness now signs the 221-byte spndrslt
+     * preimage with all eight bound fields. Reconstruct the same
+     * preimage on the client side for verification:
+     *
+     *   [0..7]      'spndrslt' tag
+     *   [8..71]     tx_hash
+     *   [72..103]   witness_id
+     *   [104..167]  SHA3-512(witness_pubkey)
+     *   [168..199]  chain_id (from receipt)
+     *   [200..207]  timestamp (LE)
+     *   [208..215]  block_height (LE)
+     *   [216..219]  tx_index (LE)
+     *   [220]       status (0 = APPROVED) */
+    static const uint8_t spend_tag[8] = { 's','p','n','d','r','s','l','t' };
     for (int i = 0; i < witness_count; i++) {
-        /* Verify witness signature before trusting */
-        uint8_t signed_data[DNAC_TX_HASH_SIZE + 32 + 8];
-        memcpy(signed_data, tx->tx_hash, DNAC_TX_HASH_SIZE);
-        memcpy(signed_data + DNAC_TX_HASH_SIZE, witnesses[i].witness_id, 32);
+        uint8_t preimage[221];
+        memset(preimage, 0, sizeof(preimage));
+
+        memcpy(preimage,        spend_tag, 8);
+        memcpy(preimage + 8,    tx->tx_hash, DNAC_TX_HASH_SIZE);
+        memcpy(preimage + 72,   witnesses[i].witness_id, 32);
+
+        /* SHA3-512 over the wire-supplied server pubkey */
+        uint8_t wpk_hash[64];
+        qgp_sha3_512(witnesses[i].server_pubkey, DNAC_PUBKEY_SIZE, wpk_hash);
+        memcpy(preimage + 104, wpk_hash, 64);
+
+        memcpy(preimage + 168, witnesses[i].chain_id, 32);
+
         for (int j = 0; j < 8; j++)
-            signed_data[DNAC_TX_HASH_SIZE + 32 + j] =
-                (witnesses[i].timestamp >> (j * 8)) & 0xFF;
+            preimage[200 + j] = (uint8_t)((witnesses[i].timestamp >> (j * 8)) & 0xFF);
+        for (int j = 0; j < 8; j++)
+            preimage[208 + j] = (uint8_t)((witnesses[i].block_height >> (j * 8)) & 0xFF);
+        for (int j = 0; j < 4; j++)
+            preimage[216 + j] = (uint8_t)((witnesses[i].tx_index >> (j * 8)) & 0xFF);
+        preimage[220] = 0;  /* APPROVED */
 
         if (qgp_dsa87_verify(witnesses[i].signature, DNAC_SIGNATURE_SIZE,
-                              signed_data, sizeof(signed_data),
+                              preimage, sizeof(preimage),
                               witnesses[i].server_pubkey) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Witness %d signature verification failed", i);
             return DNAC_ERROR_WITNESS_FAILED;

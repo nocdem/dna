@@ -97,6 +97,10 @@ int dnac_bft_witness_request(void *dna_engine,
     memcpy(witnesses_out[0].server_pubkey, result.witness_pubkey,
            NODUS_PK_BYTES);
     witnesses_out[0].timestamp = result.timestamp;
+    /* Phase 13 / Task 13.1 — receipt fields */
+    witnesses_out[0].block_height = result.block_height;
+    witnesses_out[0].tx_index = result.tx_index;
+    memcpy(witnesses_out[0].chain_id, result.chain_id, 32);
     *witness_count_out = 1;
 
     QGP_LOG_INFO(LOG_TAG, "BFT consensus approved transaction");
