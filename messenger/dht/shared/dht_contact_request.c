@@ -17,16 +17,19 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
-#include "crypto/utils/qgp_safe_string.h"
 
-#define LOG_TAG "DHT_REQUEST"
-
-/* Platform-specific network byte order functions */
+/* Platform network headers MUST precede qgp_safe_string.h. winsock2.h
+ * transitively pulls windows.h, whose rpcndr.h/stralign.h reference
+ * strcpy in macro bodies — the poison pragma rejects them otherwise. */
 #ifdef _WIN32
     #include <winsock2.h>
 #else
     #include <arpa/inet.h>
 #endif
+
+#include "crypto/utils/qgp_safe_string.h"
+
+#define LOG_TAG "DHT_REQUEST"
 
 /**
  * Generate DHT key for user's contact requests inbox

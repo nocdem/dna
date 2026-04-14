@@ -15,17 +15,14 @@
 #ifndef QGP_SAFE_STRING_H
 #define QGP_SAFE_STRING_H
 
-#ifdef _WIN32
-/* Windows system headers (rpcndr.h, stralign.h via windows.h) reference
- * strcpy/sprintf as tokens in macro definitions (MIDL_ascii_strcpy,
- * ua_tcscpy). #pragma GCC poison triggers on any subsequent occurrence
- * of these tokens — even inside unused macro bodies. Pre-include
- * <windows.h> so those macros are parsed before the poison takes
- * effect; any user TU that later pulls <winsock2.h> / <windows.h>
- * will just see the header guards and skip re-parsing. */
-#include <windows.h>
-#endif
-
+/* NOTE (Windows): <winsock2.h> / <windows.h> reference strcpy/sprintf in
+ * macro bodies (rpcndr.h MIDL_ascii_strcpy, stralign.h ua_tcscpy). Any TU
+ * that pulls them AFTER this header trips the poison pragma below.
+ * Per-file fix: include the Windows networking headers BEFORE this header.
+ * We intentionally do NOT pre-include <windows.h> here — doing so drags
+ * the entire Win32 namespace into every TU and collides with single-letter
+ * macros (D, N, Q, L, K) used by vendored crypto code like pq-crystals
+ * Dilithium. See dht_gek_storage.c / dht_contact_request.c for the pattern. */
 #pragma GCC poison strcpy sprintf
 
 #endif /* QGP_SAFE_STRING_H */
