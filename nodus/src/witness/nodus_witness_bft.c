@@ -1314,12 +1314,16 @@ int nodus_witness_bft_start_round(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
- * Start batch round (leader only)
+ * Phase 7 / Task 7.3 — shared start-round body (leader only)
+ *
+ * The body of the previous public bft_start_round_batch. Both
+ * from_entries and from_mempool funnel here. Stays file-static; tests
+ * exercise it through the wrappers.
  * ════════════════════════════════════════════════════════════════════ */
 
-int nodus_witness_bft_start_round_batch(nodus_witness_t *w,
-                                          nodus_witness_mempool_entry_t **entries,
-                                          int count) {
+static int bft_start_round_internal(nodus_witness_t *w,
+                                      nodus_witness_mempool_entry_t **entries,
+                                      int count) {
     if (!w || !entries || count <= 0) return -1;
 
     /* Force roster swap if pending */
@@ -1453,7 +1457,7 @@ int nodus_witness_bft_start_round_batch(nodus_witness_t *w,
 int nodus_witness_bft_start_round_from_entries(nodus_witness_t *w,
                                                  nodus_witness_mempool_entry_t **entries,
                                                  int count) {
-    return nodus_witness_bft_start_round_batch(w, entries, count);
+    return bft_start_round_internal(w, entries, count);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -1638,7 +1642,7 @@ int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
     }
 
     /* Start batch BFT round */
-    int rc = nodus_witness_bft_start_round_batch(w, batch, valid);
+    int rc = bft_start_round_internal(w, batch, valid);
     if (rc != 0) {
         QGP_LOG_WARN(LOG_TAG, "batch start_round failed: %d", rc);
         /* Put entries back into mempool or free them */
