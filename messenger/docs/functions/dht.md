@@ -511,7 +511,7 @@ Each commenter stores their own value_id slot, allowing concurrent writers witho
 | Function | Description |
 |----------|-------------|
 | `uint64_t dna_group_outbox_get_day_bucket(void)` | Get current day bucket (timestamp/86400) |
-| `int dna_group_outbox_make_key(const char*, uint64_t, char*, size_t)` | Generate DHT key for outbox |
+| `int dna_group_outbox_make_key(const char*, uint64_t, const uint8_t*, char*, size_t)` | Generate salted DHT key for outbox (CORE-04: salt is MANDATORY, 32 bytes, NULL → -1) |
 | `int dna_group_outbox_make_message_id(const char*, const char*, uint64_t, char*)` | Generate message ID |
 | `const char* dna_group_outbox_strerror(int)` | Get error message |
 
