@@ -4121,6 +4121,21 @@ DNA_API dna_request_id_t dna_engine_dnac_send(
 );
 
 /**
+ * Phase 13 / Task 13.5 — fetch the witness receipt of the most recent
+ * dnac_send. Synchronous: callable from any thread after the send
+ * completion callback has fired. Returns 0 on success, non-zero if no
+ * send has completed yet on this engine.
+ *
+ * tx_hash_out must point at a 64-byte buffer (DNAC tx hash size).
+ */
+DNA_API int dna_engine_dnac_last_send_receipt(
+    dna_engine_t *engine,
+    uint64_t *block_height_out,
+    uint32_t *tx_index_out,
+    uint8_t *tx_hash_out
+);
+
+/**
  * Sync DNAC wallet from witnesses
  */
 DNA_API dna_request_id_t dna_engine_dnac_sync(

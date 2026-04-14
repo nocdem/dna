@@ -4484,6 +4484,24 @@ class DnaBindings {
     return _dna_engine_dnac_send(engine, recipient_fingerprint, amount, memo, token_id, callback, user_data);
   }
 
+  // Phase 13 / Task 13.5 — fetch the witness receipt of the most recent
+  // dnac_send. Synchronous; call from Dart after the send completion
+  // future resolves successfully.
+  late final _dna_engine_dnac_last_send_receipt = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Uint64>,
+          Pointer<Uint32>, Pointer<Uint8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Uint64>,
+          Pointer<Uint32>, Pointer<Uint8>)>('dna_engine_dnac_last_send_receipt');
+
+  int dna_engine_dnac_last_send_receipt(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint64> blockHeightOut,
+    Pointer<Uint32> txIndexOut,
+    Pointer<Uint8> txHashOut,
+  ) {
+    return _dna_engine_dnac_last_send_receipt(engine, blockHeightOut, txIndexOut, txHashOut);
+  }
+
   late final _dna_engine_dnac_sync = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
           Pointer<Void>),

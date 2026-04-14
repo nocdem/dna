@@ -151,6 +151,18 @@ void dna_handle_dnac_send(dna_engine_t *engine, dna_task_t *task) {
     task->callback.completion(task->request_id, 0, task->user_data);
 }
 
+/* Phase 13 / Task 13.5 — sync getter for the most recent send receipt. */
+int dna_engine_dnac_last_send_receipt(dna_engine_t *engine,
+                                        uint64_t *block_height_out,
+                                        uint32_t *tx_index_out,
+                                        uint8_t *tx_hash_out) {
+    if (!engine) return -1;
+    dnac_context_t *ctx = ensure_dnac_init(engine);
+    if (!ctx) return -1;
+    return dnac_last_send_receipt(ctx, block_height_out, tx_index_out,
+                                    tx_hash_out);
+}
+
 void dna_handle_dnac_sync(dna_engine_t *engine, dna_task_t *task) {
     dnac_context_t *ctx = ensure_dnac_init(engine);
     if (!ctx) {

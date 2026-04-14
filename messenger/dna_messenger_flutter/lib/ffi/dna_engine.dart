@@ -1359,6 +1359,27 @@ class DnacBalance {
   int get hashCode => Object.hash(confirmed, pending, locked, utxoCount);
 }
 
+/// Phase 13 / Task 13.5 — witness receipt returned by [dnacLastSendReceipt].
+class DnacSendReceipt {
+  final int blockHeight;
+  final int txIndex;
+  final Uint8List txHash;
+
+  DnacSendReceipt({
+    required this.blockHeight,
+    required this.txIndex,
+    required this.txHash,
+  });
+
+  String get txHashHex {
+    final sb = StringBuffer();
+    for (final b in txHash) {
+      sb.write(b.toRadixString(16).padLeft(2, '0'));
+    }
+    return sb.toString();
+  }
+}
+
 class DnacTxHistory {
   final Uint8List txHash;
   final int type; // 0=genesis, 1=spend, 2=burn
@@ -6967,6 +6988,35 @@ class DnaEngine {
     }
 
     return completer.future;
+  }
+
+  /// Phase 13 / Task 13.5 — receipt model returned alongside dnacSend.
+  ///
+  /// Block height + per-block tx_index + 64-byte tx hash. Populated
+  /// from the witness attestation response after the send completes.
+  /// Call [dnacLastSendReceipt] after [dnacSend] to fetch.
+  Future<DnacSendReceipt?> dnacLastSendReceipt() async {
+    final blockHeightPtr = calloc<Uint64>();
+    final txIndexPtr = calloc<Uint32>();
+    final txHashPtr = calloc<Uint8>(64);
+    try {
+      final rc = _bindings.dna_engine_dnac_last_send_receipt(
+        _engine, blockHeightPtr, txIndexPtr, txHashPtr);
+      if (rc != 0) return null;
+      final hash = Uint8List(64);
+      for (int i = 0; i < 64; i++) {
+        hash[i] = txHashPtr[i];
+      }
+      return DnacSendReceipt(
+        blockHeight: blockHeightPtr.value,
+        txIndex: txIndexPtr.value,
+        txHash: hash,
+      );
+    } finally {
+      calloc.free(blockHeightPtr);
+      calloc.free(txIndexPtr);
+      calloc.free(txHashPtr);
+    }
   }
 
   /// Sync DNAC wallet from witnesses
