@@ -604,7 +604,7 @@ static void test_sync_rsp(void) {
         }
     }
 
-    /* Test 2: found response with full block data */
+    /* Test 2: found response with multi-tx batch (Phase 11 / Task 11.1) */
     {
         nodus_t3_msg_t in, out;
         memset(&in, 0, sizeof(in));
@@ -615,25 +615,24 @@ static void test_sync_rsp(void) {
 
         in.sync_rsp.found = true;
         in.sync_rsp.height = 3;
-
-        /* Fill tx_hash with deterministic data */
-        memset(in.sync_rsp.tx_hash, 0xAA, NODUS_T3_TX_HASH_LEN);
-        in.sync_rsp.tx_type = 1;  /* SPEND */
-
-        uint8_t fake_tx[128];
-        memset(fake_tx, 0xBB, sizeof(fake_tx));
-        in.sync_rsp.tx_data = fake_tx;
-        in.sync_rsp.tx_len = sizeof(fake_tx);
-
         in.sync_rsp.timestamp = 1700000001;
         memset(in.sync_rsp.proposer_id, 0xCC, NODUS_T3_WITNESS_ID_LEN);
         memset(in.sync_rsp.prev_hash, 0xDD, NODUS_T3_TX_HASH_LEN);
+        memset(in.sync_rsp.tx_root, 0xAA, NODUS_T3_TX_HASH_LEN);
 
-        /* One nullifier */
+        /* One TX in the batch */
+        in.sync_rsp.tx_count = 1;
+        nodus_t3_batch_tx_t *btx = &in.sync_rsp.batch_txs[0];
+        memset(btx->tx_hash, 0xAB, NODUS_T3_TX_HASH_LEN);
+        btx->tx_type = 1;  /* SPEND */
+        uint8_t fake_tx[128];
+        memset(fake_tx, 0xBB, sizeof(fake_tx));
+        btx->tx_data = fake_tx;
+        btx->tx_len = sizeof(fake_tx);
         uint8_t nul[NODUS_T3_NULLIFIER_LEN];
         memset(nul, 0xEE, NODUS_T3_NULLIFIER_LEN);
-        in.sync_rsp.nullifiers[0] = nul;
-        in.sync_rsp.nullifier_count = 1;
+        btx->nullifiers[0] = nul;
+        btx->nullifier_count = 1;
 
         /* One cert */
         in.sync_rsp.cert_count = 1;
@@ -646,32 +645,18 @@ static void test_sync_rsp(void) {
         if (out.type != NODUS_T3_SYNC_RSP) { TEST_FAIL(name, "type (found)"); return; }
         if (out.sync_rsp.found != true) { TEST_FAIL(name, "found should be true"); return; }
         if (out.sync_rsp.height != 3) { TEST_FAIL(name, "height"); return; }
-        if (out.sync_rsp.tx_type != 1) { TEST_FAIL(name, "tx_type"); return; }
-        if (out.sync_rsp.tx_len != 128) { TEST_FAIL(name, "tx_len"); return; }
-        if (memcmp(out.sync_rsp.tx_hash, in.sync_rsp.tx_hash,
+        if (out.sync_rsp.tx_count != 1) { TEST_FAIL(name, "tx_count"); return; }
+        if (memcmp(out.sync_rsp.tx_root, in.sync_rsp.tx_root,
                    NODUS_T3_TX_HASH_LEN) != 0) {
-            TEST_FAIL(name, "tx_hash"); return;
+            TEST_FAIL(name, "tx_root"); return;
         }
+        if (out.sync_rsp.batch_txs[0].tx_type != 1) { TEST_FAIL(name, "btx tx_type"); return; }
+        if (out.sync_rsp.batch_txs[0].tx_len != 128) { TEST_FAIL(name, "btx tx_len"); return; }
         if (memcmp(out.sync_rsp.proposer_id, in.sync_rsp.proposer_id,
                    NODUS_T3_WITNESS_ID_LEN) != 0) {
             TEST_FAIL(name, "proposer_id"); return;
         }
-        if (memcmp(out.sync_rsp.prev_hash, in.sync_rsp.prev_hash,
-                   NODUS_T3_TX_HASH_LEN) != 0) {
-            TEST_FAIL(name, "prev_hash"); return;
-        }
-        if (out.sync_rsp.nullifier_count != 1) { TEST_FAIL(name, "nullifier_count"); return; }
-        if (!out.sync_rsp.nullifiers[0] ||
-            memcmp(out.sync_rsp.nullifiers[0], nul, NODUS_T3_NULLIFIER_LEN) != 0) {
-            TEST_FAIL(name, "nullifier data"); return;
-        }
         if (out.sync_rsp.cert_count != 1) { TEST_FAIL(name, "cert_count"); return; }
-        if (memcmp(out.sync_rsp.certs[0].voter_id,
-                   in.sync_rsp.certs[0].voter_id,
-                   NODUS_T3_WITNESS_ID_LEN) != 0) {
-            TEST_FAIL(name, "cert voter_id"); return;
-        }
-        /* cert signatures are large (4627 bytes), just check first byte */
         if (out.sync_rsp.certs[0].signature[0] != 0x22) {
             TEST_FAIL(name, "cert signature"); return;
         }

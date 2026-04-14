@@ -215,19 +215,30 @@ typedef struct {
     uint8_t     signature[NODUS_SIG_BYTES];
 } nodus_t3_sync_cert_t;
 
-/** w_sync_rsp: Full block data for sync */
+/** w_sync_rsp: Full block data for sync (Phase 11 / Task 11.1).
+ *
+ * Multi-tx replay payload: the sender serializes EVERY committed
+ * transaction in the requested block, ordered by tx_index. The
+ * receiver MUST recompute tx_root locally via merkle_tx_root over the
+ * decoded body and feed the recomputed value into compute_block_hash
+ * before verify_sync_certs (Task 11.4 step b/c). NEVER trust the
+ * wire-supplied tx_root field on its own.
+ *
+ * Three-tier wire size guard (Task 11.3):
+ *   tx_count <= NODUS_W_MAX_BLOCK_TXS (10),
+ *   per-TX tx_len <= NODUS_T3_MAX_TX_SIZE (64 KB),
+ *   aggregate <= 1 MB enforced at the encoder/decoder. */
 typedef struct {
     bool        found;
     uint64_t    height;
-    uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t     tx_type;
-    const uint8_t *tx_data;             /* ptr, tx_len bytes */
-    uint32_t    tx_len;
     uint64_t    timestamp;
     uint8_t     proposer_id[NODUS_T3_WITNESS_ID_LEN];
     uint8_t     prev_hash[NODUS_T3_TX_HASH_LEN];
-    uint8_t     nullifier_count;
-    const uint8_t *nullifiers[NODUS_T3_MAX_TX_INPUTS]; /* ptrs to 64-byte each */
+    uint8_t     tx_root[NODUS_T3_TX_HASH_LEN];   /* sender's claim — receiver MUST recompute */
+
+    int         tx_count;
+    nodus_t3_batch_tx_t batch_txs[NODUS_W_MAX_BLOCK_TXS];
+
     uint32_t    cert_count;
     nodus_t3_sync_cert_t certs[NODUS_T3_MAX_WITNESSES];
 } nodus_t3_sync_rsp_t;

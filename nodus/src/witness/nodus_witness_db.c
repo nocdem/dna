@@ -1005,6 +1005,60 @@ int nodus_witness_tx_get(nodus_witness_t *w, const uint8_t *tx_hash,
     return 0;
 }
 
+/* Phase 11 / Task 11.1 — multi-tx block fetch helpers */
+
+void nodus_witness_block_tx_row_free(nodus_witness_block_tx_row_t *row) {
+    if (!row) return;
+    free(row->tx_data);
+    row->tx_data = NULL;
+    row->tx_len = 0;
+}
+
+int nodus_witness_block_txs_get(nodus_witness_t *w, uint64_t block_height,
+                                  nodus_witness_block_tx_row_t *out,
+                                  int max_entries, int *count_out) {
+    if (!w || !w->db || !out || !count_out || max_entries <= 0) return -1;
+    *count_out = 0;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT tx_hash, tx_type, tx_data, tx_len "
+        "FROM committed_transactions "
+        "WHERE block_height = ? "
+        "ORDER BY tx_index ASC",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)block_height);
+
+    int n = 0;
+    while (n < max_entries && sqlite3_step(stmt) == SQLITE_ROW) {
+        nodus_witness_block_tx_row_t *row = &out[n];
+        memset(row, 0, sizeof(*row));
+
+        const void *hash_blob = sqlite3_column_blob(stmt, 0);
+        int hash_len = sqlite3_column_bytes(stmt, 0);
+        if (!hash_blob || hash_len != NODUS_T3_TX_HASH_LEN) continue;
+        memcpy(row->tx_hash, hash_blob, NODUS_T3_TX_HASH_LEN);
+
+        row->tx_type = (uint8_t)sqlite3_column_int(stmt, 1);
+
+        const void *data_blob = sqlite3_column_blob(stmt, 2);
+        int data_len = sqlite3_column_bytes(stmt, 2);
+        if (data_blob && data_len > 0) {
+            row->tx_data = malloc((size_t)data_len);
+            if (row->tx_data) {
+                memcpy(row->tx_data, data_blob, (size_t)data_len);
+                row->tx_len = (uint32_t)data_len;
+            }
+        }
+        n++;
+    }
+    sqlite3_finalize(stmt);
+    *count_out = n;
+    return 0;
+}
+
 /* ── Commit certificate operations ──────────────────────────────── */
 
 int nodus_witness_cert_store(nodus_witness_t *w, uint64_t block_height,

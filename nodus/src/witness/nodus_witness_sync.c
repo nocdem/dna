@@ -278,38 +278,21 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
         return nodus_tcp_send((nodus_tcp_conn_t *)conn, buf, len);
     }
 
-    /* Get stored TX data. Phase 1 / Task 1.2: blk.tx_root carries the
-     * single-TX hash bytes for legacy single-TX-per-block sync (Phase 2
-     * introduces RFC 6962 hashing and Phase 10 rewrites this path for
-     * multi-TX). tx_type now lives on committed_transactions so we read
-     * it from tx_type_stored instead of the dropped blk.tx_type field. */
-    uint8_t tx_type_stored;
-    uint8_t *tx_data = NULL;
-    uint32_t tx_len = 0;
-    uint64_t tx_bh = 0;
-    nodus_witness_tx_get(w, blk.tx_root, &tx_type_stored,
-                           &tx_data, &tx_len, &tx_bh);
-
-    /* Get nullifiers from the TX data (parse input section) */
-    uint8_t nullifier_bufs[NODUS_T3_MAX_TX_INPUTS][NODUS_T3_NULLIFIER_LEN];
-    const uint8_t *nullifier_ptrs[NODUS_T3_MAX_TX_INPUTS];
-    uint8_t nullifier_count = 0;
-
-    if (tx_data && tx_len > 75 && tx_type_stored != NODUS_W_TX_GENESIS) {
-        /* Parse nullifiers from tx_data:
-         * offset 74 = input_count, then each input is nullifier(64) + amount(8) + token_id(64) */
-        size_t off = 74;
-        nullifier_count = tx_data[off++];
-        if (nullifier_count > NODUS_T3_MAX_TX_INPUTS)
-            nullifier_count = NODUS_T3_MAX_TX_INPUTS;
-
-        for (int i = 0; i < nullifier_count; i++) {
-            if (off + NODUS_T3_NULLIFIER_LEN > tx_len) break;
-            memcpy(nullifier_bufs[i], tx_data + off, NODUS_T3_NULLIFIER_LEN);
-            nullifier_ptrs[i] = nullifier_bufs[i];
-            off += NODUS_T3_NULLIFIER_LEN + 8 + 64;  /* nullifier + amount + token_id */
-        }
+    /* Phase 11 / Task 11.1 — fetch ALL committed TXs in this block
+     * via nodus_witness_block_txs_get. */
+    nodus_witness_block_tx_row_t rows[NODUS_W_MAX_BLOCK_TXS];
+    memset(rows, 0, sizeof(rows));
+    int row_count = 0;
+    if (nodus_witness_block_txs_get(w, db_height, rows,
+                                      NODUS_W_MAX_BLOCK_TXS, &row_count) != 0 ||
+        row_count == 0) {
+        return -1;
     }
+
+    /* Per-TX nullifier scratch — pointers into the row tx_data parse. */
+    uint8_t nullifier_bufs[NODUS_W_MAX_BLOCK_TXS]
+                          [NODUS_T3_MAX_TX_INPUTS]
+                          [NODUS_T3_NULLIFIER_LEN];
 
     /* Get commit certificates */
     nodus_witness_vote_record_t certs[NODUS_T3_MAX_WITNESSES];
@@ -324,16 +307,36 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
 
     rsp.sync_rsp.found = true;
     rsp.sync_rsp.height = height;
-    memcpy(rsp.sync_rsp.tx_hash, blk.tx_root, NODUS_T3_TX_HASH_LEN);
-    rsp.sync_rsp.tx_type = tx_type_stored;
-    rsp.sync_rsp.tx_data = tx_data;
-    rsp.sync_rsp.tx_len = tx_len;
     rsp.sync_rsp.timestamp = blk.timestamp;
     memcpy(rsp.sync_rsp.proposer_id, blk.proposer_id, NODUS_T3_WITNESS_ID_LEN);
     memcpy(rsp.sync_rsp.prev_hash, blk.prev_hash, NODUS_T3_TX_HASH_LEN);
-    rsp.sync_rsp.nullifier_count = nullifier_count;
-    for (int i = 0; i < nullifier_count; i++)
-        rsp.sync_rsp.nullifiers[i] = nullifier_ptrs[i];
+    memcpy(rsp.sync_rsp.tx_root, blk.tx_root, NODUS_T3_TX_HASH_LEN);
+    rsp.sync_rsp.tx_count = row_count;
+
+    for (int i = 0; i < row_count; i++) {
+        nodus_t3_batch_tx_t *btx = &rsp.sync_rsp.batch_txs[i];
+        memcpy(btx->tx_hash, rows[i].tx_hash, NODUS_T3_TX_HASH_LEN);
+        btx->tx_type = rows[i].tx_type;
+        btx->tx_data = rows[i].tx_data;
+        btx->tx_len = rows[i].tx_len;
+        btx->fee = 0;
+        /* Parse input nullifiers from tx_data for the wire, mirrors
+         * the existing batch-propose pattern. */
+        if (rows[i].tx_data && rows[i].tx_len > 75 &&
+            rows[i].tx_type != NODUS_W_TX_GENESIS) {
+            size_t off = 74;
+            uint8_t nc = rows[i].tx_data[off++];
+            if (nc > NODUS_T3_MAX_TX_INPUTS) nc = NODUS_T3_MAX_TX_INPUTS;
+            btx->nullifier_count = nc;
+            for (int j = 0; j < nc; j++) {
+                if (off + NODUS_T3_NULLIFIER_LEN > rows[i].tx_len) break;
+                memcpy(nullifier_bufs[i][j], rows[i].tx_data + off,
+                       NODUS_T3_NULLIFIER_LEN);
+                btx->nullifiers[j] = nullifier_bufs[i][j];
+                off += NODUS_T3_NULLIFIER_LEN + 8 + 64;
+            }
+        }
+    }
 
     /* Convert vote records to sync certs */
     rsp.sync_rsp.cert_count = (uint32_t)cert_count;
@@ -352,7 +355,11 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
     memcpy(rsp.header.chain_id, w->chain_id, 32);
 
     uint8_t *buf = malloc(NODUS_T3_MAX_MSG_SIZE);
-    if (!buf) { free(tx_data); return -1; }
+    if (!buf) {
+        for (int i = 0; i < row_count; i++)
+            nodus_witness_block_tx_row_free(&rows[i]);
+        return -1;
+    }
     size_t len = 0;
 
     int rc = nodus_t3_encode(&rsp, &w->server->identity.sk,
@@ -361,7 +368,8 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
         nodus_tcp_send((nodus_tcp_conn_t *)conn, buf, len);
 
     free(buf);
-    free(tx_data);
+    for (int i = 0; i < row_count; i++)
+        nodus_witness_block_tx_row_free(&rows[i]);
     return rc;
 }
 
@@ -397,14 +405,10 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
     uint64_t db_height = (rsp->height == 0) ? 1 : rsp->height;
 
     if (db_height <= local_height) {
-        /* We have this block — compare hashes for fork detection.
-         * Phase 1 / Task 1.2: blk.tx_root == single-TX hash for legacy
-         * single-TX blocks (Phase 2 changes the relationship and Phase 10
-         * rewrites this whole comparison via Merkle equality on the
-         * sync_rsp tr field). */
+        /* We have this block — compare tx_root values for fork detection. */
         nodus_witness_block_t local_blk;
         if (nodus_witness_block_get(w, db_height, &local_blk) == 0) {
-            if (memcmp(local_blk.tx_root, rsp->tx_hash,
+            if (memcmp(local_blk.tx_root, rsp->tx_root,
                        NODUS_T3_TX_HASH_LEN) != 0) {
                 /* Fork detected! */
                 if (db_height == 1) {
@@ -488,18 +492,51 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
         }
     }
 
-    /* Phase 11 partial / Task 11.4 step c — wire verify_sync_certs into
-     * the sync receiver. The wire block_hash field is used as the
-     * cert_preimage block_hash input; once Phase 11.1-11.3 lands the
-     * multi-tx sync_rsp wire format, this should be replaced with a
-     * locally-recomputed block_hash via merkle_tx_root + compute_block_hash
-     * to close the wire-trust gap. The current state still verifies real
-     * Dilithium5 cert sigs (was: only counted roster IDs), so it is
-     * strictly better than the pre-Phase-7.5 baseline. */
+    /* Phase 11 / Task 11.4 — three-step receiver recomputation. */
+    if (rsp->tx_count <= 0 || rsp->tx_count > NODUS_W_MAX_BLOCK_TXS) {
+        fprintf(stderr, "%s: sync_rsp tx_count %d out of range\n",
+                LOG_TAG, rsp->tx_count);
+        w->sync_state.syncing = false;
+        return -1;
+    }
+
+    /* Step a — recompute tx_root locally and check vs wire claim */
+    uint8_t local_tx_root[NODUS_T3_TX_HASH_LEN];
     {
-        /* Translate the rsp cert array (matches nodus_t3_sync_cert_t
-         * layout already). */
-        int verified = nodus_witness_verify_sync_certs(rsp->tx_hash,
+        uint8_t flat[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_TX_HASH_LEN];
+        for (int i = 0; i < rsp->tx_count; i++) {
+            memcpy(flat + i * NODUS_T3_TX_HASH_LEN,
+                   rsp->batch_txs[i].tx_hash, NODUS_T3_TX_HASH_LEN);
+        }
+        if (nodus_witness_merkle_tx_root(flat, (uint32_t)rsp->tx_count,
+                                           local_tx_root) != 0) {
+            fprintf(stderr, "%s: local tx_root compute failed\n", LOG_TAG);
+            w->sync_state.syncing = false;
+            return -1;
+        }
+    }
+    if (memcmp(local_tx_root, rsp->tx_root, NODUS_T3_TX_HASH_LEN) != 0) {
+        fprintf(stderr, "%s: tx_root divergence — sender lied at height %llu\n",
+                LOG_TAG, (unsigned long long)db_height);
+        w->sync_state.syncing = false;
+        return -1;
+    }
+
+    /* Step b — recompute block_hash with the locally-derived tx_root.
+     * state_root is unknown until replay so pass NULL; the helper
+     * accepts a NULL state_root for the cert-preimage path. */
+    uint8_t local_block_hash[NODUS_T3_TX_HASH_LEN];
+    nodus_witness_compute_block_hash(db_height, rsp->prev_hash,
+                                       NULL,
+                                       local_tx_root,
+                                       (uint32_t)rsp->tx_count,
+                                       rsp->timestamp,
+                                       rsp->proposer_id,
+                                       local_block_hash);
+
+    /* Step c — verify cert sigs against the LOCAL block_hash */
+    {
+        int verified = nodus_witness_verify_sync_certs(local_block_hash,
                                                          db_height,
                                                          w->chain_id,
                                                          &w->roster,
@@ -513,38 +550,46 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
             w->sync_state.syncing = false;
             return -1;
         }
-
-        fprintf(stderr, "%s: block %llu certs verified: %d/%u "
-                "(quorum=%u)\n", LOG_TAG, (unsigned long long)db_height,
+        fprintf(stderr, "%s: block %llu certs verified: %d/%u (quorum=%u)\n",
+                LOG_TAG, (unsigned long long)db_height,
                 verified, rsp->cert_count, w->bft_config.quorum);
     }
 
-    /* Phase 11 partial — replay block via the Phase 6 commit wrappers
-     * directly. Build a 1-entry stack mempool entry from the sync_rsp
-     * payload and dispatch to commit_genesis (height==1) or
-     * nodus_witness_replay_block. Phase 11.1 will rewrite sync_rsp to
-     * carry a multi-tx body; for now the wire stays single-TX. */
+    /* Step d — replay every TX in the block via Phase 6 wrappers */
     {
-        nodus_witness_mempool_entry_t e;
-        memset(&e, 0, sizeof(e));
-        memcpy(e.tx_hash, rsp->tx_hash, NODUS_T3_TX_HASH_LEN);
-        e.tx_type = rsp->tx_type;
-        e.nullifier_count = rsp->nullifier_count;
-        for (int i = 0; i < rsp->nullifier_count && i < NODUS_T3_MAX_TX_INPUTS; i++) {
-            if (rsp->nullifiers[i])
-                memcpy(e.nullifiers[i], rsp->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
+        nodus_witness_mempool_entry_t entries[NODUS_W_MAX_BLOCK_TXS];
+        nodus_witness_mempool_entry_t *entry_ptrs[NODUS_W_MAX_BLOCK_TXS];
+        memset(entries, 0, sizeof(entries));
+
+        for (int i = 0; i < rsp->tx_count; i++) {
+            const nodus_t3_batch_tx_t *btx = &rsp->batch_txs[i];
+            nodus_witness_mempool_entry_t *e = &entries[i];
+            memcpy(e->tx_hash, btx->tx_hash, NODUS_T3_TX_HASH_LEN);
+            e->tx_type = btx->tx_type;
+            e->nullifier_count = btx->nullifier_count;
+            for (int j = 0; j < btx->nullifier_count; j++) {
+                if (btx->nullifiers[j])
+                    memcpy(e->nullifiers[j], btx->nullifiers[j],
+                           NODUS_T3_NULLIFIER_LEN);
+            }
+            e->tx_data = (uint8_t *)btx->tx_data;
+            e->tx_len = btx->tx_len;
+            entry_ptrs[i] = e;
         }
-        e.tx_data = (uint8_t *)rsp->tx_data;
-        e.tx_len = rsp->tx_len;
 
         int rc;
-        if (rsp->tx_type == NODUS_W_TX_GENESIS) {
-            rc = nodus_witness_commit_genesis(w, e.tx_hash, e.tx_data, e.tx_len,
-                                                rsp->timestamp, rsp->proposer_id);
+        if (rsp->tx_count == 1 &&
+            entries[0].tx_type == NODUS_W_TX_GENESIS) {
+            rc = nodus_witness_commit_genesis(w, entries[0].tx_hash,
+                                                entries[0].tx_data,
+                                                entries[0].tx_len,
+                                                rsp->timestamp,
+                                                rsp->proposer_id);
         } else {
-            nodus_witness_mempool_entry_t *entries[1] = { &e };
-            rc = nodus_witness_replay_block(w, db_height, entries, 1,
-                                              rsp->timestamp, rsp->proposer_id);
+            rc = nodus_witness_replay_block(w, db_height, entry_ptrs,
+                                              rsp->tx_count,
+                                              rsp->timestamp,
+                                              rsp->proposer_id);
         }
         if (rc != 0) {
             fprintf(stderr, "%s: block replay failed at height %llu\n",

@@ -256,24 +256,23 @@ static void enc_sync_req_args(cbor_encoder_t *enc, const nodus_t3_sync_req_t *r)
 }
 
 static void enc_sync_rsp_args(cbor_encoder_t *enc, const nodus_t3_sync_rsp_t *r) {
-    cbor_encode_map(enc, r->found ? 11 : 2);
+    /* Phase 11 / Task 11.2 — multi-tx sync_rsp encoder.
+     * Map shape (found): f, h, ts, pid, ph, tr, btx, cer = 8 keys. */
+    cbor_encode_map(enc, r->found ? 8 : 2);
     cbor_encode_cstr(enc, "f");  cbor_encode_bool(enc, r->found);
     cbor_encode_cstr(enc, "h");  cbor_encode_uint(enc, r->height);
     if (!r->found) return;
-    cbor_encode_cstr(enc, "txh"); cbor_encode_bstr(enc, r->tx_hash,
-                                                    NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "tty"); cbor_encode_uint(enc, r->tx_type);
-    cbor_encode_cstr(enc, "txd"); cbor_encode_bstr(enc, r->tx_data, r->tx_len);
     cbor_encode_cstr(enc, "ts");  cbor_encode_uint(enc, r->timestamp);
     cbor_encode_cstr(enc, "pid"); cbor_encode_bstr(enc, r->proposer_id,
                                                     NODUS_T3_WITNESS_ID_LEN);
     cbor_encode_cstr(enc, "ph");  cbor_encode_bstr(enc, r->prev_hash,
                                                     NODUS_T3_TX_HASH_LEN);
-    cbor_encode_cstr(enc, "nlc"); cbor_encode_uint(enc, r->nullifier_count);
-    cbor_encode_cstr(enc, "nls");
-    cbor_encode_array(enc, r->nullifier_count);
-    for (int i = 0; i < r->nullifier_count; i++)
-        cbor_encode_bstr(enc, r->nullifiers[i], NODUS_T3_NULLIFIER_LEN);
+    cbor_encode_cstr(enc, "tr");  cbor_encode_bstr(enc, r->tx_root,
+                                                    NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "btx");
+    cbor_encode_array(enc, (size_t)r->tx_count);
+    for (int i = 0; i < r->tx_count; i++)
+        enc_batch_tx(enc, &r->batch_txs[i]);
     cbor_encode_cstr(enc, "cer");
     cbor_encode_array(enc, r->cert_count);
     for (uint32_t i = 0; i < r->cert_count; i++) {
@@ -998,6 +997,7 @@ static void dec_sync_req_args(cbor_decoder_t *dec, size_t count,
 
 static void dec_sync_rsp_args(cbor_decoder_t *dec, size_t count,
                                nodus_t3_sync_rsp_t *r) {
+    /* Phase 11 / Task 11.2 — multi-tx sync_rsp decoder. */
     for (size_t i = 0; i < count; i++) {
         cbor_item_t key = cbor_decode_next(dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
@@ -1009,24 +1009,6 @@ static void dec_sync_rsp_args(cbor_decoder_t *dec, size_t count,
         else if (KEY_IS(key, "h")) {
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_UINT) r->height = val.uint_val;
-        }
-        else if (KEY_IS(key, "txh")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == NODUS_T3_TX_HASH_LEN)
-                memcpy(r->tx_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
-        }
-        else if (KEY_IS(key, "tty")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) r->tx_type = (uint8_t)val.uint_val;
-        }
-        else if (KEY_IS(key, "txd")) {
-            cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len <= NODUS_T3_MAX_TX_SIZE) {
-                r->tx_data = val.bstr.ptr;
-                r->tx_len = (uint32_t)val.bstr.len;
-            }
         }
         else if (KEY_IS(key, "ts")) {
             cbor_item_t val = cbor_decode_next(dec);
@@ -1044,26 +1026,25 @@ static void dec_sync_rsp_args(cbor_decoder_t *dec, size_t count,
                 val.bstr.len == NODUS_T3_TX_HASH_LEN)
                 memcpy(r->prev_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
         }
-        else if (KEY_IS(key, "nlc")) {
+        else if (KEY_IS(key, "tr")) {
             cbor_item_t val = cbor_decode_next(dec);
-            if (val.type == CBOR_ITEM_UINT) {
-                r->nullifier_count = (uint8_t)val.uint_val;
-                if (r->nullifier_count > NODUS_T3_MAX_TX_INPUTS)
-                    r->nullifier_count = NODUS_T3_MAX_TX_INPUTS;
-            }
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(r->tx_root, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
         }
-        else if (KEY_IS(key, "nls")) {
+        else if (KEY_IS(key, "btx")) {
             cbor_item_t arr = cbor_decode_next(dec);
             if (arr.type == CBOR_ITEM_ARRAY) {
-                size_t max = arr.count < NODUS_T3_MAX_TX_INPUTS ?
-                             arr.count : NODUS_T3_MAX_TX_INPUTS;
-                for (size_t j = 0; j < max; j++) {
-                    cbor_item_t val = cbor_decode_next(dec);
-                    if (val.type == CBOR_ITEM_BSTR &&
-                        val.bstr.len == NODUS_T3_NULLIFIER_LEN)
-                        r->nullifiers[j] = val.bstr.ptr;
+                int max = (int)arr.count;
+                /* Phase 11 / Task 11.3 — three-tier guard, top tier */
+                if (max > NODUS_W_MAX_BLOCK_TXS) max = NODUS_W_MAX_BLOCK_TXS;
+                r->tx_count = max;
+                for (int j = 0; j < max; j++) {
+                    cbor_item_t entry = cbor_decode_next(dec);
+                    if (entry.type == CBOR_ITEM_MAP)
+                        dec_batch_tx_entry(dec, entry.count, &r->batch_txs[j]);
                 }
-                for (size_t j = max; j < arr.count; j++)
+                for (int j = max; j < (int)arr.count; j++)
                     cbor_decode_skip(dec);
             }
         }

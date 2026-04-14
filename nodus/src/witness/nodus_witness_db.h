@@ -236,6 +236,37 @@ int  nodus_witness_tx_get(nodus_witness_t *w, const uint8_t *tx_hash,
                             uint8_t *tx_type_out, uint8_t **tx_data_out,
                             uint32_t *tx_len_out, uint64_t *block_height_out);
 
+/* Phase 11 / Task 11.1 — multi-tx block fetch.
+ *
+ * Single TX-row fetched from committed_transactions ordered by tx_index.
+ * tx_data is heap-allocated; caller frees each entry via
+ * nodus_witness_block_tx_row_free(). */
+typedef struct {
+    uint8_t   tx_hash[NODUS_T3_TX_HASH_LEN];
+    uint8_t   tx_type;
+    uint8_t  *tx_data;
+    uint32_t  tx_len;
+} nodus_witness_block_tx_row_t;
+
+/** Free heap fields on a single block_tx_row. Idempotent on NULL. */
+void nodus_witness_block_tx_row_free(nodus_witness_block_tx_row_t *row);
+
+/**
+ * Fetch all committed TXs for a given block_height, ordered by
+ * tx_index. The caller passes a fixed-size array (NODUS_W_MAX_BLOCK_TXS
+ * is the natural ceiling) and the function fills it up to
+ * max_entries.
+ *
+ * On success, *count_out is the number of rows populated. Each row's
+ * tx_data is malloc'd; the caller MUST free each via
+ * nodus_witness_block_tx_row_free() (or rely on a sweep wrapper).
+ *
+ * Returns 0 on success, -1 on DB error.
+ */
+int  nodus_witness_block_txs_get(nodus_witness_t *w, uint64_t block_height,
+                                   nodus_witness_block_tx_row_t *out,
+                                   int max_entries, int *count_out);
+
 /* ── Commit certificate operations ──────────────────────────────── */
 
 int  nodus_witness_cert_store(nodus_witness_t *w, uint64_t block_height,
