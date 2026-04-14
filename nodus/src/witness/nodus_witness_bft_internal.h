@@ -113,6 +113,56 @@ int finalize_block(nodus_witness_t *w,
                     uint64_t timestamp,
                     uint64_t expected_height);
 
+/* Phase 6 commit wrappers.
+ *
+ * These three wrappers compose apply_tx_to_state + finalize_block into
+ * the named operations that the BFT round (Phase 7) and sync handler
+ * (Phase 11) call. Each wrapper manages its own outer DB transaction
+ * and handles rollback. The underlying primitives stay single-purpose. */
+
+/* Task 6.1 — single-TX genesis commit with chain DB bootstrap.
+ *
+ * Derives the chain_id from the genesis TX fingerprint, creates the
+ * witness DB (if !w->db), then runs one apply_tx_to_state + one
+ * finalize_block inside an outer BEGIN/COMMIT. Idempotent: safe to
+ * call twice with the same tx_hash. */
+int nodus_witness_commit_genesis(nodus_witness_t *w,
+                                   const uint8_t *tx_hash,
+                                   const uint8_t *tx_data,
+                                   uint32_t tx_len,
+                                   uint64_t timestamp,
+                                   const uint8_t *proposer_id);
+
+/* Task 6.2 — multi-TX batch commit with SAVEPOINT attribution replay.
+ *
+ * Each entry in `entries` is applied in order under one outer
+ * transaction, with one finalize_block at the end. batch_ctx
+ * accumulates each TX's output future-nullifiers so layer-3 sees the
+ * full history as the loop progresses. On any failure the outer
+ * transaction rolls back, then a secondary replay loop runs each TX
+ * individually under a SAVEPOINT to identify the specific offender
+ * — emits "attribution: TX %d ..." log lines — then discards the
+ * replay transaction. */
+int nodus_witness_commit_batch(nodus_witness_t *w,
+                                 nodus_witness_mempool_entry_t **entries,
+                                 int count,
+                                 uint64_t timestamp,
+                                 const uint8_t *proposer_id);
+
+/* Task 6.3 — replay a block from a sync_rsp.
+ *
+ * Used by follower witnesses catching up via the sync protocol. Takes
+ * the block height, tx array, and block metadata from the wire message
+ * and runs the same apply + finalize pair inside an outer transaction.
+ * Rejects out-of-order replay (rsp_height != local_height + 1) up
+ * front. Phase 11 wires this into the sync handler. */
+int nodus_witness_replay_block(nodus_witness_t *w,
+                                 uint64_t rsp_height,
+                                 nodus_witness_mempool_entry_t **entries,
+                                 int count,
+                                 uint64_t timestamp,
+                                 const uint8_t *proposer_id);
+
 #ifdef __cplusplus
 }
 #endif

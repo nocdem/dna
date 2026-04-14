@@ -2549,3 +2549,207 @@ void nodus_witness_bft_check_timeout(nodus_witness_t *w) {
         nodus_witness_bft_initiate_view_change(w);
     }
 }
+
+/* ── Phase 6 commit wrappers ───────────────────────────────────────────
+ *
+ * These three wrappers compose apply_tx_to_state + finalize_block into
+ * the named operations that the BFT round (Phase 7) and sync handler
+ * (Phase 11) will call. Declared in nodus_witness_bft_internal.h for
+ * test executables; not in any production header — Phase 7 / Phase 11
+ * add the public wiring.
+ */
+
+/* Task 6.1 — single-TX genesis commit with chain DB bootstrap. */
+int nodus_witness_commit_genesis(nodus_witness_t *w,
+                                   const uint8_t *tx_hash,
+                                   const uint8_t *tx_data,
+                                   uint32_t tx_len,
+                                   uint64_t timestamp,
+                                   const uint8_t *proposer_id) {
+    if (!w || !tx_hash || !tx_data) return -1;
+
+    /* Chain DB bootstrap — lifted from legacy nodus_witness_commit_block */
+    if (!w->db) {
+        if (tx_len < 77 + 129) {
+            fprintf(stderr, "%s: genesis tx_data too short for fingerprint (len=%u)\n",
+                    LOG_TAG, tx_len);
+            return -1;
+        }
+        size_t fp_off = 74;
+        uint8_t in_count = tx_data[fp_off++];
+        fp_off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
+        if (fp_off >= tx_len) return -1;
+        uint8_t out_count = tx_data[fp_off++];
+        if (out_count == 0 || fp_off + 1 + 129 > tx_len) return -1;
+        fp_off += 1;
+        const char *genesis_fp = (const char *)(tx_data + fp_off);
+
+        uint8_t derived_chain_id[32];
+        if (nodus_derive_chain_id(genesis_fp, tx_hash, derived_chain_id) != 0) {
+            fprintf(stderr, "%s: commit_genesis: derive_chain_id failed\n", LOG_TAG);
+            return -1;
+        }
+        if (nodus_witness_create_chain_db(w, derived_chain_id) != 0) {
+            fprintf(stderr, "%s: commit_genesis: create_chain_db failed\n", LOG_TAG);
+            return -1;
+        }
+    }
+
+    if (nodus_witness_db_begin(w) != 0) return -1;
+
+    uint64_t bh = nodus_witness_block_height(w) + 1;
+    if (apply_tx_to_state(w, tx_hash, NODUS_W_TX_GENESIS, NULL, 0,
+                           tx_data, tx_len, bh, NULL) != 0) {
+        nodus_witness_db_rollback(w);
+        return -1;
+    }
+    if (finalize_block(w, tx_hash, 1, proposer_id, timestamp, bh) != 0) {
+        nodus_witness_db_rollback(w);
+        return -1;
+    }
+    return nodus_witness_db_commit(w);
+}
+
+/* Task 6.2 — multi-TX batch commit with SAVEPOINT attribution replay. */
+int nodus_witness_commit_batch(nodus_witness_t *w,
+                                 nodus_witness_mempool_entry_t **entries,
+                                 int count,
+                                 uint64_t timestamp,
+                                 const uint8_t *proposer_id) {
+    if (!w || !entries || count <= 0 || count > NODUS_W_MAX_BLOCK_TXS) return -1;
+
+    nodus_witness_batch_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+
+    if (nodus_witness_db_begin(w) != 0) return -1;
+
+    uint64_t bh = nodus_witness_block_height(w) + 1;
+
+    /* Flat buffer of all TX hashes for finalize_block's tx_root compute */
+    uint8_t tx_hashes[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_TX_HASH_LEN];
+
+    for (int i = 0; i < count; i++) {
+        nodus_witness_mempool_entry_t *e = entries[i];
+        if (!e) { nodus_witness_db_rollback(w); return -1; }
+
+        const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
+        for (int j = 0; j < e->nullifier_count; j++)
+            nul_ptrs[j] = e->nullifiers[j];
+
+        if (apply_tx_to_state(w, e->tx_hash, e->tx_type, nul_ptrs,
+                               e->nullifier_count, e->tx_data, e->tx_len,
+                               bh, &ctx) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "commit_batch: TX %d apply_tx failed", i);
+            nodus_witness_db_rollback(w);
+            return -1;
+        }
+
+        /* Append this TX's output future-nullifiers so subsequent TXs
+         * in the batch see them via layer-3. Uses the same derivation
+         * as propose_batch's layer-2 check. */
+        extern int nodus_extract_output_nullifiers_public(const uint8_t *, uint32_t,
+                                                            uint8_t [][64], int);
+        /* Inline the same extraction logic because the propose_batch
+         * helper is file-static. Rather than widen that helper's
+         * visibility, re-derive here. */
+        /* Parse tx_data outputs and compute nullifiers */
+        if (e->tx_data && e->tx_len > 75) {
+            size_t off = 74;
+            uint8_t in_count = e->tx_data[off++];
+            off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
+            if (off < e->tx_len) {
+                uint8_t out_count = e->tx_data[off++];
+                for (int oi = 0; oi < out_count && off + 235 <= e->tx_len &&
+                                 ctx.seen_count <
+                                 NODUS_W_MAX_BLOCK_TXS * NODUS_T3_MAX_TX_INPUTS;
+                     oi++) {
+                    off += 1;   /* version */
+                    char fp_buf[129];
+                    memcpy(fp_buf, e->tx_data + off, 128);
+                    fp_buf[128] = '\0';
+                    off += 129; /* fingerprint */
+                    off += 8;   /* amount */
+                    off += 64;  /* token_id */
+                    const uint8_t *seed = e->tx_data + off;
+                    off += 32;  /* seed */
+                    if (off >= e->tx_len) break;
+                    uint8_t ml = e->tx_data[off++];
+                    off += ml;
+
+                    /* SHA3-512(owner_fp || seed) — mirrors
+                     * nodus_compute_output_nullifier in nodus_witness.c */
+                    uint8_t nf_out[64];
+                    uint8_t buf_in[192 + 32];
+                    size_t fp_len = strlen(fp_buf);
+                    if (fp_len > 192) fp_len = 192;
+                    memcpy(buf_in, fp_buf, fp_len);
+                    memcpy(buf_in + fp_len, seed, 32);
+                    qgp_sha3_512(buf_in, fp_len + 32, nf_out);
+
+                    memcpy(ctx.seen_nullifiers[ctx.seen_count++], nf_out, 64);
+                }
+            }
+        }
+
+        memcpy(tx_hashes + i * NODUS_T3_TX_HASH_LEN, e->tx_hash, NODUS_T3_TX_HASH_LEN);
+    }
+
+    if (finalize_block(w, tx_hashes, (uint32_t)count, proposer_id,
+                        timestamp, bh) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "commit_batch: finalize_block failed");
+        nodus_witness_db_rollback(w);
+
+        /* SAVEPOINT attribution replay — one TX at a time in a fresh
+         * read-only transaction, check supply invariant after each,
+         * roll back. The inner batch_ctx is empty so layer-3 does not
+         * double-flag the chained check. */
+        if (nodus_witness_db_begin(w) == 0) {
+            for (int i = 0; i < count; i++) {
+                if (nodus_witness_db_savepoint(w, "attr_sp") != 0) break;
+                nodus_witness_batch_ctx_t empty_ctx;
+                memset(&empty_ctx, 0, sizeof(empty_ctx));
+                const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
+                for (int j = 0; j < entries[i]->nullifier_count; j++)
+                    nul_ptrs[j] = entries[i]->nullifiers[j];
+
+                apply_tx_to_state(w, entries[i]->tx_hash, entries[i]->tx_type,
+                                   nul_ptrs, entries[i]->nullifier_count,
+                                   entries[i]->tx_data, entries[i]->tx_len,
+                                   bh, &empty_ctx);
+                if (supply_invariant_violated(w)) {
+                    QGP_LOG_ERROR(LOG_TAG,
+                        "attribution: TX %d violates supply invariant", i);
+                }
+                nodus_witness_db_rollback_to_savepoint(w, "attr_sp");
+            }
+            nodus_witness_db_rollback(w);
+        }
+        return -1;
+    }
+
+    return nodus_witness_db_commit(w);
+}
+
+/* Task 6.3 — replay a block from a sync_rsp. */
+int nodus_witness_replay_block(nodus_witness_t *w,
+                                 uint64_t rsp_height,
+                                 nodus_witness_mempool_entry_t **entries,
+                                 int count,
+                                 uint64_t timestamp,
+                                 const uint8_t *proposer_id) {
+    if (!w || !entries || count <= 0 || count > NODUS_W_MAX_BLOCK_TXS) return -1;
+
+    uint64_t local_height = nodus_witness_block_height(w);
+    if (rsp_height != local_height + 1) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "replay_block: out-of-order sync_rsp (h=%llu, local=%llu)",
+            (unsigned long long)rsp_height,
+            (unsigned long long)local_height);
+        return -1;
+    }
+
+    /* replay_block uses the same body as commit_batch — the only
+     * difference is the height precondition above. Delegate to avoid
+     * duplicating the apply+finalize+output-nullifier-append loop. */
+    return nodus_witness_commit_batch(w, entries, count, timestamp, proposer_id);
+}
