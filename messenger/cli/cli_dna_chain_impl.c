@@ -1302,7 +1302,110 @@ void dna_chain_cmd_print_help(void) {
 }
 
 void dna_chain_cmd_print_version(void) {
-    printf("dnac-cli version %s\n", DNAC_VERSION_STRING);
+    printf("dna-connect-cli dna group version %s\n", DNAC_VERSION_STRING);
     printf("DNAC - Post-Quantum Digital Cash over DHT\n");
     printf("Protocol version: v%d\n", DNAC_PROTOCOL_VERSION);
+}
+
+/* ============================================================================
+ * parse-tx (Phase 0 / Task 0.7)
+ * ========================================================================== */
+
+static const char *tx_type_name(dnac_tx_type_t t) {
+    switch (t) {
+        case DNAC_TX_GENESIS:      return "GENESIS";
+        case DNAC_TX_SPEND:        return "SPEND";
+        case DNAC_TX_BURN:         return "BURN";
+        case DNAC_TX_TOKEN_CREATE: return "TOKEN_CREATE";
+        default:                   return "UNKNOWN";
+    }
+}
+
+static void hex_dump(const uint8_t *bytes, size_t n) {
+    for (size_t i = 0; i < n; i++) printf("%02x", bytes[i]);
+}
+
+int dna_chain_cmd_parse_tx(dnac_context_t *ctx, const char *tx_file) {
+    (void)ctx;
+    if (!tx_file) {
+        fprintf(stderr, "Error: tx_file is required\n");
+        return 1;
+    }
+
+    /* Read file into memory */
+    FILE *f = fopen(tx_file, "rb");
+    if (!f) {
+        fprintf(stderr, "Error: cannot open %s: %s\n", tx_file, strerror(errno));
+        return 1;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fprintf(stderr, "Error: fseek failed: %s\n", strerror(errno));
+        fclose(f);
+        return 1;
+    }
+    long size = ftell(f);
+    if (size < 0) {
+        fprintf(stderr, "Error: ftell failed: %s\n", strerror(errno));
+        fclose(f);
+        return 1;
+    }
+    rewind(f);
+
+    /* Sanity bound: 16 inputs + 16 outputs + 3 witnesses + headers fits well
+     * under 64 KB. Reject anything larger as malformed. */
+    if (size > 65536) {
+        fprintf(stderr, "Error: %s is %ld bytes, exceeds 64 KB sanity limit\n",
+                tx_file, size);
+        fclose(f);
+        return 1;
+    }
+
+    uint8_t *buf = malloc((size_t)size);
+    if (!buf) {
+        fprintf(stderr, "Error: out of memory reading %s\n", tx_file);
+        fclose(f);
+        return 1;
+    }
+    size_t nread = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    if (nread != (size_t)size) {
+        fprintf(stderr, "Error: short read on %s (%zu/%ld)\n", tx_file, nread, size);
+        free(buf);
+        return 1;
+    }
+
+    /* Deserialize */
+    dnac_transaction_t *tx = NULL;
+    int rc = dnac_tx_deserialize(buf, (size_t)size, &tx);
+    free(buf);
+    if (rc != DNAC_SUCCESS || !tx) {
+        fprintf(stderr, "Error: dnac_tx_deserialize failed (rc=%d)\n", rc);
+        return 1;
+    }
+
+    /* Pretty-print */
+    printf("file:       %s (%ld bytes)\n", tx_file, size);
+    printf("version:    %u\n", tx->version);
+    printf("tx_type:    %s\n", tx_type_name(tx->type));
+    printf("tx_hash:    "); hex_dump(tx->tx_hash, DNAC_TX_HASH_SIZE); printf("\n");
+    printf("timestamp:  %" PRIu64 "\n", tx->timestamp);
+    printf("inputs:     %d\n", tx->input_count);
+    for (int i = 0; i < tx->input_count; i++) {
+        printf("  [%d] nullifier=", i);
+        hex_dump(tx->inputs[i].nullifier, 8);
+        printf("...  amount=%" PRIu64 "\n", tx->inputs[i].amount);
+    }
+    printf("outputs:    %d\n", tx->output_count);
+    for (int i = 0; i < tx->output_count; i++) {
+        printf("  [%d] fp=%.32s...  amount=%" PRIu64 "\n",
+               i, tx->outputs[i].owner_fingerprint, tx->outputs[i].amount);
+        if (tx->outputs[i].memo_len > 0) {
+            printf("       memo=\"%.*s\"\n",
+                   (int)tx->outputs[i].memo_len, tx->outputs[i].memo);
+        }
+    }
+    printf("witnesses:  %d\n", tx->witness_count);
+
+    free(tx);
+    return 0;
 }

@@ -185,6 +185,20 @@ void dna_chain_cmd_print_help(void);
  */
 void dna_chain_cmd_print_version(void);
 
+/**
+ * @brief Read-only TX file inspector
+ *
+ * Opens @p tx_file, deserializes it via dnac_tx_deserialize, and pretty-prints
+ * tx_hash, tx_type, every input nullifier, and every output recipient
+ * fingerprint with its amount. Used at deploy time to verify a pre-signed
+ * genesis.tx matches the out-of-band agreed recipient list before submission.
+ *
+ * @param ctx DNAC context (currently unused, accepted for dispatcher symmetry)
+ * @param tx_file Path to a serialized transaction file
+ * @return 0 on success, non-zero on read or deserialize failure
+ */
+int dna_chain_cmd_parse_tx(dnac_context_t *ctx, const char *tx_file);
+
 #ifdef __cplusplus
 }
 #endif

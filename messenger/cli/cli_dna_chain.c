@@ -54,7 +54,8 @@ static void print_dna_chain_help(void) {
     printf("  tx <hash>                     Show transaction details\n");
     printf("  witnesses                     List witness servers\n");
     printf("  genesis-create <fp> <amount>  Create genesis TX locally (Phase 1)\n");
-    printf("  genesis-submit [tx_file]      Submit genesis TX to network (Phase 2)\n\n");
+    printf("  genesis-submit [tx_file]      Submit genesis TX to network (Phase 2)\n");
+    printf("  parse-tx <tx_file>            Inspect a serialized TX file (read-only)\n\n");
     printf("Token Commands:\n");
     printf("  token-create <name> <sym> <supply>  Create a new token\n");
     printf("  token-list                          List all known tokens\n");
@@ -199,6 +200,14 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
     else if (strcmp(cmd, "genesis-submit") == 0) {
         const char *tx_file = (sub + 1 < argc) ? argv[sub + 1] : NULL;
         result = dna_chain_cmd_genesis_submit(ctx, tx_file);
+    }
+    else if (strcmp(cmd, "parse-tx") == 0) {
+        if (sub + 1 >= argc) {
+            fprintf(stderr, "Usage: dna-connect-cli dna parse-tx <tx_file>\n");
+            result = 1;
+        } else {
+            result = dna_chain_cmd_parse_tx(ctx, argv[sub + 1]);
+        }
     }
     else if (strcmp(cmd, "token-create") == 0) {
         if (sub + 3 >= argc) {
