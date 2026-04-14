@@ -146,7 +146,7 @@ static void enc_commit_certs(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
     cbor_encode_cstr(enc, "pid");  cbor_encode_bstr(enc, c->proposer_id,
                                                      NODUS_T3_WITNESS_ID_LEN);
     cbor_encode_cstr(enc, "npc");  cbor_encode_uint(enc, c->n_precommits);
-    cbor_encode_cstr(enc, "uck");  cbor_encode_bstr(enc, c->utxo_checksum,
+    cbor_encode_cstr(enc, "sr");  cbor_encode_bstr(enc, c->state_root,
                                                      NODUS_KEY_BYTES);
     cbor_encode_cstr(enc, "cer");
     cbor_encode_array(enc, c->n_precommits);
@@ -274,7 +274,7 @@ static void enc_ident_args(cbor_encoder_t *enc, const nodus_t3_ident_t *id) {
     cbor_encode_cstr(enc, "addr"); cbor_encode_cstr(enc, id->address);
     if (id->has_block_height) {
         cbor_encode_cstr(enc, "bh");  cbor_encode_uint(enc, id->block_height);
-        cbor_encode_cstr(enc, "uck"); cbor_encode_bstr(enc, id->utxo_checksum,
+        cbor_encode_cstr(enc, "sr"); cbor_encode_bstr(enc, id->state_root,
                                                         NODUS_KEY_BYTES);
         cbor_encode_cstr(enc, "vw");  cbor_encode_uint(enc, id->current_view);
         cbor_encode_cstr(enc, "rn");  cbor_encode_uint(enc, id->roster_size);
@@ -654,11 +654,11 @@ static void dec_commit_field(cbor_decoder_t *dec, const cbor_item_t *key,
         cbor_item_t val = cbor_decode_next(dec);
         if (val.type == CBOR_ITEM_UINT) c->n_precommits = (uint32_t)val.uint_val;
     }
-    else if (KEY_IS(*key, "uck")) {
+    else if (KEY_IS(*key, "sr")) {
         cbor_item_t val = cbor_decode_next(dec);
         if (val.type == CBOR_ITEM_BSTR &&
             val.bstr.len == NODUS_KEY_BYTES)
-            memcpy(c->utxo_checksum, val.bstr.ptr, NODUS_KEY_BYTES);
+            memcpy(c->state_root, val.bstr.ptr, NODUS_KEY_BYTES);
     }
     else if (KEY_IS(*key, "cer")) {
         cbor_item_t arr = cbor_decode_next(dec);
@@ -1073,11 +1073,11 @@ static void dec_ident_args(cbor_decoder_t *dec, size_t count,
                 id->has_block_height = true;
             }
         }
-        else if (KEY_IS(key, "uck")) {
+        else if (KEY_IS(key, "sr")) {
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_BSTR &&
                 val.bstr.len == NODUS_KEY_BYTES)
-                memcpy(id->utxo_checksum, val.bstr.ptr, NODUS_KEY_BYTES);
+                memcpy(id->state_root, val.bstr.ptr, NODUS_KEY_BYTES);
         }
         else if (KEY_IS(key, "vw")) {
             cbor_item_t val = cbor_decode_next(dec);

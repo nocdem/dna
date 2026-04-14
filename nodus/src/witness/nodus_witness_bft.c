@@ -1029,7 +1029,7 @@ int finalize_block(nodus_witness_t *w,
     /* Invalidate the cached UTXO checksum — the per-TX writes from this
      * batch made the previous root stale. Phase 11 renames this to
      * cached_state_root. */
-    w->cached_utxo_checksum_valid = false;
+    w->cached_state_root_valid = false;
 
     /* 1. Compute post-batch state_root. */
     uint8_t state_root[NODUS_T3_TX_HASH_LEN];
@@ -1998,15 +1998,15 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
 
     /* Compute UTXO set checksum */
     uint8_t utxo_cksum[NODUS_KEY_BYTES];
-    bool have_cksum = (nodus_witness_utxo_checksum(w, utxo_cksum) == 0);
+    bool have_cksum = (nodus_witness_merkle_compute_utxo_root(w, utxo_cksum) == 0);
     if (have_cksum) {
         char hex[17];
         for (int i = 0; i < 8; i++)
             snprintf(hex + i * 2, 3, "%02x", utxo_cksum[i]);
         fprintf(stderr, "%s: UTXO checksum after round %llu: %s\n",
                 LOG_TAG, (unsigned long long)w->round_state.round, hex);
-        memcpy(w->cached_utxo_checksum, utxo_cksum, NODUS_KEY_BYTES);
-        w->cached_utxo_checksum_valid = true;
+        memcpy(w->cached_state_root, utxo_cksum, NODUS_KEY_BYTES);
+        w->cached_state_root_valid = true;
     }
 
     w->last_committed_round = w->round_state.round;
@@ -2063,7 +2063,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
                NODUS_SIG_BYTES);
     }
     if (have_cksum)
-        memcpy(c_msg.commit.utxo_checksum, utxo_cksum, NODUS_KEY_BYTES);
+        memcpy(c_msg.commit.state_root, utxo_cksum, NODUS_KEY_BYTES);
 
     nodus_witness_bft_broadcast(w, &c_msg);
 
@@ -2323,7 +2323,7 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
     /* Compute UTXO set checksum and compare with leader's */
     {
         uint8_t utxo_cksum[NODUS_KEY_BYTES];
-        if (nodus_witness_utxo_checksum(w, utxo_cksum) == 0) {
+        if (nodus_witness_merkle_compute_utxo_root(w, utxo_cksum) == 0) {
             char hex[17];
             for (int i = 0; i < 8; i++)
                 snprintf(hex + i * 2, 3, "%02x", utxo_cksum[i]);
@@ -2333,15 +2333,15 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
             /* Compare with leader's checksum (if present) */
             uint8_t zero_ck[NODUS_KEY_BYTES];
             memset(zero_ck, 0, NODUS_KEY_BYTES);
-            if (memcmp(cmt->utxo_checksum, zero_ck, NODUS_KEY_BYTES) != 0) {
-                if (memcmp(utxo_cksum, cmt->utxo_checksum, NODUS_KEY_BYTES) != 0) {
+            if (memcmp(cmt->state_root, zero_ck, NODUS_KEY_BYTES) != 0) {
+                if (memcmp(utxo_cksum, cmt->state_root, NODUS_KEY_BYTES) != 0) {
                     QGP_LOG_WARN(LOG_TAG, "UTXO checksum DIVERGED from "
                                  "leader at round %llu!",
                                  (unsigned long long)hdr->round);
                 }
             }
-            memcpy(w->cached_utxo_checksum, utxo_cksum, NODUS_KEY_BYTES);
-            w->cached_utxo_checksum_valid = true;
+            memcpy(w->cached_state_root, utxo_cksum, NODUS_KEY_BYTES);
+            w->cached_state_root_valid = true;
         }
     }
 

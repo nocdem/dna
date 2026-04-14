@@ -256,51 +256,9 @@ int nodus_witness_utxo_sum_by_token(nodus_witness_t *w,
     return 0;
 }
 
-int nodus_witness_utxo_checksum(nodus_witness_t *w, uint8_t *checksum_out) {
-    if (!w || !w->db || !checksum_out) return -1;
-
-    /* Query all UTXO nullifiers in sorted order */
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(w->db,
-        "SELECT nullifier FROM utxo_set ORDER BY nullifier ASC",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "%s: utxo checksum prepare failed: %s\n",
-                LOG_TAG, sqlite3_errmsg(w->db));
-        return -1;
-    }
-
-    /* Incrementally hash all nullifiers using SHA3-512 */
-    EVP_MD_CTX *md = EVP_MD_CTX_new();
-    if (!md) { sqlite3_finalize(stmt); return -1; }
-
-    if (EVP_DigestInit_ex(md, EVP_sha3_512(), NULL) != 1) {
-        EVP_MD_CTX_free(md);
-        sqlite3_finalize(stmt);
-        return -1;
-    }
-
-    int count = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const void *blob = sqlite3_column_blob(stmt, 0);
-        int blen = sqlite3_column_bytes(stmt, 0);
-        if (blob && blen == NODUS_T3_NULLIFIER_LEN) {
-            EVP_DigestUpdate(md, blob, NODUS_T3_NULLIFIER_LEN);
-            count++;
-        }
-    }
-    sqlite3_finalize(stmt);
-
-    /* If no UTXOs, hash empty input (deterministic zero-state) */
-    unsigned int hash_len;
-    if (EVP_DigestFinal_ex(md, checksum_out, &hash_len) != 1) {
-        EVP_MD_CTX_free(md);
-        return -1;
-    }
-    EVP_MD_CTX_free(md);
-
-    return 0;
-}
+/* Phase 10 / Task 10.2 — nodus_witness_utxo_checksum DELETED. Replaced
+ * by the RFC 6962 nodus_witness_merkle_compute_utxo_root in
+ * nodus_witness_merkle.c. */
 
 int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
                                    nodus_witness_utxo_entry_t *out,

@@ -7,6 +7,7 @@
 #include "witness/nodus_witness_sync.h"
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_peer.h"
 #include "protocol/nodus_tier3.h"
 #include "transport/nodus_tcp.h"
@@ -103,7 +104,7 @@ static int drop_witness_db(nodus_witness_t *w) {
 
     /* Clear chain_id */
     memset(w->chain_id, 0, 32);
-    w->cached_utxo_checksum_valid = false;
+    w->cached_state_root_valid = false;
 
     fprintf(stderr, "%s: dropped witness DB %s for fork rebuild\n",
             LOG_TAG, db_path);
@@ -154,9 +155,9 @@ void nodus_witness_sync_check(nodus_witness_t *w) {
     if (peer_height == local_height && local_height > 0) {
         /* Same-height fork detection via checksum quorum */
         uint8_t local_cksum[NODUS_KEY_BYTES];
-        if (w->cached_utxo_checksum_valid) {
-            memcpy(local_cksum, w->cached_utxo_checksum, NODUS_KEY_BYTES);
-        } else if (nodus_witness_utxo_checksum(w, local_cksum) != 0) {
+        if (w->cached_state_root_valid) {
+            memcpy(local_cksum, w->cached_state_root, NODUS_KEY_BYTES);
+        } else if (nodus_witness_merkle_compute_utxo_root(w, local_cksum) != 0) {
             return;  /* Can't compute checksum */
         }
 
@@ -546,8 +547,8 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
     }
 
     /* Update cached UTXO checksum */
-    if (nodus_witness_utxo_checksum(w, w->cached_utxo_checksum) == 0)
-        w->cached_utxo_checksum_valid = true;
+    if (nodus_witness_merkle_compute_utxo_root(w, w->cached_state_root) == 0)
+        w->cached_state_root_valid = true;
 
     fprintf(stderr, "%s: replayed block %llu OK\n",
             LOG_TAG, (unsigned long long)db_height);
@@ -563,8 +564,8 @@ next:
         w->sync_state.syncing = false;
 
         /* Update cached UTXO checksum */
-        if (nodus_witness_utxo_checksum(w, w->cached_utxo_checksum) == 0)
-            w->cached_utxo_checksum_valid = true;
+        if (nodus_witness_merkle_compute_utxo_root(w, w->cached_state_root) == 0)
+            w->cached_state_root_valid = true;
 
         return 0;
     }

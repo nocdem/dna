@@ -132,7 +132,7 @@ typedef struct {
     uint64_t        proposal_timestamp;
     uint8_t         proposer_id[NODUS_T3_WITNESS_ID_LEN];
     uint32_t        n_precommits;
-    uint8_t         utxo_checksum[NODUS_KEY_BYTES]; /* UTXO set hash for cross-validation */
+    uint8_t         state_root[NODUS_KEY_BYTES]; /* RFC 6962 Merkle root over UTXO set */
     nodus_t3_cert_entry_t certs[NODUS_T3_MAX_WITNESSES]; /* Precommit signatures */
 
     /* Batch mode (when batch_count > 0, legacy TX fields above are unused) */
@@ -208,10 +208,10 @@ typedef struct {
     const uint8_t  *pubkey;         /* ptr, NODUS_PK_BYTES */
     char            address[256];
     uint64_t        block_height;                       /* current chain height */
-    uint8_t         utxo_checksum[NODUS_KEY_BYTES];     /* SHA3-512 of UTXO set */
+    uint8_t         state_root[NODUS_KEY_BYTES];        /* RFC 6962 Merkle root over UTXO set */
     uint32_t        current_view;                       /* BFT view number */
     uint32_t        roster_size;                        /* sender's roster n_witnesses */
-    bool            has_block_height;                    /* true if bh/uck/view present */
+    bool            has_block_height;                    /* true if bh/sr/view present */
 } nodus_t3_ident_t;
 
 /** w_sync_req: Request block at height N for sync */

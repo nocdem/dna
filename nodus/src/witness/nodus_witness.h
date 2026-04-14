@@ -272,9 +272,11 @@ typedef struct nodus_witness {
         uint64_t    last_sync_attempt;    /* rate limit (timestamp) */
     } sync_state;
 
-    /* Cached UTXO checksum (avoid full table scan on every epoch tick) */
-    uint8_t         cached_utxo_checksum[64];  /* NODUS_KEY_BYTES */
-    bool            cached_utxo_checksum_valid;
+    /* Phase 10 / Task 10.1 — cached state_root (RFC 6962 Merkle root over
+     * the UTXO set), computed by nodus_witness_merkle_compute_utxo_root.
+     * Cached to avoid a full table scan on every epoch tick. */
+    uint8_t         cached_state_root[64];  /* NODUS_KEY_BYTES */
+    bool            cached_state_root_valid;
 
     /* Witness database (separate from DHT storage) */
     sqlite3     *db;

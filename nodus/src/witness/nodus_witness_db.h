@@ -51,15 +51,9 @@ int  nodus_witness_utxo_sum_by_token(nodus_witness_t *w,
                                        const uint8_t *token_id,
                                        uint64_t *sum_out);
 
-/**
- * Compute SHA3-512 checksum of the entire UTXO set.
- * Hashes all nullifiers in sorted order for cross-witness validation.
- *
- * @param w             Witness context
- * @param checksum_out  Output 64-byte hash (NODUS_KEY_BYTES)
- * @return 0 on success, -1 on error
- */
-int nodus_witness_utxo_checksum(nodus_witness_t *w, uint8_t *checksum_out);
+/* Phase 10 / Task 10.2 — nodus_witness_utxo_checksum DELETED.
+ * State root computation now lives in nodus_witness_merkle.c as
+ * nodus_witness_merkle_compute_utxo_root (RFC 6962 Merkle tree). */
 
 /* Query UTXOs by owner fingerprint */
 typedef struct {

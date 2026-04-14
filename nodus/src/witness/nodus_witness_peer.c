@@ -15,6 +15,7 @@
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_bft.h"
 #include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_handlers.h"
 #include "protocol/nodus_tier3.h"
 #include "protocol/nodus_tier2.h"
@@ -332,10 +333,10 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
 
     /* Block height, UTXO checksum, and view for sync/leader detection */
     msg.ident.block_height = nodus_witness_block_height(w);
-    if (w->cached_utxo_checksum_valid) {
-        memcpy(msg.ident.utxo_checksum, w->cached_utxo_checksum, NODUS_KEY_BYTES);
+    if (w->cached_state_root_valid) {
+        memcpy(msg.ident.state_root, w->cached_state_root, NODUS_KEY_BYTES);
     } else {
-        nodus_witness_utxo_checksum(w, msg.ident.utxo_checksum);
+        nodus_witness_merkle_compute_utxo_root(w, msg.ident.state_root);
     }
     msg.ident.current_view = w->current_view;
     msg.ident.roster_size = w->roster.n_witnesses;
@@ -539,7 +540,7 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
         /* Store peer's chain state for sync decisions */
         if (ident->has_block_height) {
             w->peers[pi].remote_height = ident->block_height;
-            memcpy(w->peers[pi].remote_checksum, ident->utxo_checksum,
+            memcpy(w->peers[pi].remote_checksum, ident->state_root,
                    NODUS_KEY_BYTES);
 
             /* View sync: adopt higher view from peer.

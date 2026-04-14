@@ -3687,8 +3687,8 @@ static void handle_t2_status(nodus_server_t *srv, nodus_session_t *sess,
 
     if (srv->witness && srv->witness->db) {
         info.block_height = nodus_witness_block_height(srv->witness);
-        if (srv->witness->cached_utxo_checksum_valid) {
-            memcpy(info.state_root, srv->witness->cached_utxo_checksum, 64);
+        if (srv->witness->cached_state_root_valid) {
+            memcpy(info.state_root, srv->witness->cached_state_root, 64);
         }
         memcpy(info.chain_id, srv->witness->chain_id, 32);
     }
