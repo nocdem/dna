@@ -129,6 +129,7 @@ if(NOT WIN32)
         src/witness/nodus_witness_handlers.c
         src/witness/nodus_witness_sync.c
         src/witness/nodus_witness_mempool.c
+        src/witness/nodus_witness_cert.c
     )
 endif()
 
@@ -418,6 +419,11 @@ register_witness_test(test_bft_start_round_from_entries)
 
 # Phase 7 / Task 7.2 — bft_start_round_from_mempool guard tests
 register_witness_test(test_bft_start_round_from_mempool)
+
+# Phase 7.5 / Task 7.5.1 — witness cert preimage layout tests
+add_executable(test_witness_cert_preimage tests/test_witness_cert_preimage.c)
+target_link_libraries(test_witness_cert_preimage nodus dsa nodus crypto)
+add_test(NAME test_witness_cert_preimage COMMAND test_witness_cert_preimage)
 
 # BFT quorum formula tests (Phase 8)
 add_executable(test_bft_quorum_formula tests/test_bft_quorum_formula.c)
