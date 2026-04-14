@@ -86,6 +86,20 @@ int nodus_witness_bft_start_round_batch(nodus_witness_t *w,
                                           nodus_witness_mempool_entry_t **entries,
                                           int count);
 
+/**
+ * Phase 7 / Task 7.1 — start a BFT round from caller-owned entries.
+ *
+ * Thin wrapper over the shared batch round-start body. Used by callers
+ * that already have mempool entries in hand (e.g. the genesis path,
+ * which builds a single-entry array from raw TX args) and do not want
+ * to go through the mempool pop/validate cycle.
+ *
+ * @return 0 success, -1 error
+ */
+int nodus_witness_bft_start_round_from_entries(nodus_witness_t *w,
+                                                 nodus_witness_mempool_entry_t **entries,
+                                                 int count);
+
 /** Handle decoded PROPOSAL message. */
 int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                                        const nodus_t3_msg_t *msg);

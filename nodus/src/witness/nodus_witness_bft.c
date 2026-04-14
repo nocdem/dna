@@ -1441,6 +1441,22 @@ int nodus_witness_bft_start_round_batch(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * Phase 7 / Task 7.1 — start round from caller-owned entries
+ *
+ * Thin pass-through to bft_start_round_batch. In commit 3 of the Phase 7
+ * refactor bft_start_round_batch becomes a static bft_start_round_internal
+ * and both from_entries and from_mempool become the only public entry
+ * points. For now the wrapper exists so genesis callers can migrate to
+ * the entry-based API without touching the underlying body.
+ * ════════════════════════════════════════════════════════════════════ */
+
+int nodus_witness_bft_start_round_from_entries(nodus_witness_t *w,
+                                                 nodus_witness_mempool_entry_t **entries,
+                                                 int count) {
+    return nodus_witness_bft_start_round_batch(w, entries, count);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * Handle PROPOSAL (follower receives from leader)
  * ════════════════════════════════════════════════════════════════════ */
 
