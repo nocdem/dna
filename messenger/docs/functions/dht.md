@@ -119,7 +119,7 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | Function | Description |
 |----------|-------------|
 | `uint64_t dht_dm_outbox_get_day_bucket(void)` | Get current day bucket (timestamp/86400) |
-| `int dht_dm_outbox_make_key(..., const uint8_t *salt)` | Generate DHT key for day bucket (salt-aware) |
+| `int dht_dm_outbox_make_key(..., const uint8_t *salt)` | Generate DHT key for day bucket (salt REQUIRED, returns -1 if NULL — v0.9.196+) |
 | `int dht_dm_queue_message(..., const uint8_t *salt)` | Queue message to daily bucket (salt-aware) |
 | `int dht_dm_outbox_sync_day(..., const uint8_t *salt)` | Sync messages from specific day (salt-aware) |
 | `int dht_dm_outbox_sync_recent(..., const uint8_t *salt)` | Sync 3 days (salt-aware) |
@@ -153,7 +153,7 @@ Simple per-contact ACK timestamps for delivery confirmation. When recipient sync
 
 | Function | Description |
 |----------|-------------|
-| `void dht_generate_ack_key(const char*, const char*, const uint8_t *salt, uint8_t*)` | Generate ACK DHT key (salt-aware) |
+| `int dht_generate_ack_key(const char*, const char*, const uint8_t *salt, uint8_t*)` | Generate ACK DHT key (salt REQUIRED, returns -1 if NULL — v0.9.196+) |
 | `int dht_publish_ack(const char*, const char*, const uint8_t *salt)` | Publish ACK timestamp (salt-aware) |
 | `size_t dht_listen_ack(const char*, const char*, const uint8_t *salt, dht_ack_callback_t, void*)` | Listen for ACK updates (salt-aware) |
 | `void dht_cancel_ack_listener(dht_context_t*, size_t)` | Cancel ACK listener |

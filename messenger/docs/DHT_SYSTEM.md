@@ -707,9 +707,19 @@ Sender-based outbox for offline message delivery (Spillway Protocol).
 
 #### Architecture (Current: Daily Buckets)
 
-- **Storage Key**: `sender:outbox:recipient:DAY_BUCKET` (unsalted, legacy) or `sender:outbox:recipient:DAY_BUCKET:SALT_HEX` (salted, v0.8.5+)
+- **Storage Key**: `sender:outbox:recipient:DAY_BUCKET:SALT_HEX` (salt is REQUIRED as of v0.9.196 / phase 6 plan 05)
   - `DAY_BUCKET` = unix_time / 86400
   - `SALT_HEX` = 64-char hex of 32-byte per-contact salt (exchanged during contact request)
+  - **CORE-04 closure (v0.9.196):** The legacy unsalted fallback branch in
+    `dht_dm_outbox_make_key` was removed. `salt==NULL` now returns -1 instead
+    of producing a deterministic `sender:outbox:recipient:DAY_BUCKET` key that
+    would leak communication metadata. All send-side callers
+    (`transport_queue_offline_message`, `messenger_queue_to_dht`, the DM flush
+    path in `messages.c`) now hard-fail with a clear log if
+    `contacts_db_get_salt` returns no row — salt agreement runs at contact-add
+    time (`dna_engine_contacts.c`) and at listener startup
+    (`dna_engine_listeners.c`), so any queue attempt against a contact without
+    salt is a bug rather than a normal first-send path.
 - **TTL**: 7 days (auto-expire, **no pruning needed**)
 - **Put Type**: Signed chunked with `value_id=1`
 - **Max**: 500 messages per day bucket (DoS prevention)
@@ -719,7 +729,7 @@ Sender-based outbox for offline message delivery (Spillway Protocol).
 
 Simple per-contact ACK timestamps for delivery confirmation.
 
-- **ACK Key**: `SHA3-512(recipient + ":ack:" + sender)` (unsalted) or `SHA3-512(recipient + ":ack:" + sender + ":" + SALT_HEX)` (salted, v0.8.5+)
+- **ACK Key**: `SHA3-512(recipient + ":ack:" + sender + ":" + SALT_HEX)` (salt is REQUIRED as of v0.9.196; `make_ack_base_key` rejects NULL salt and `dht_generate_ack_key` now returns `int` — 0 on success, -1 on error)
 - **ACK TTL**: 30 days
 - **Value**: 8-byte big-endian Unix timestamp (when recipient last synced)
 - **Purpose**: Update message status from SENT → RECEIVED
@@ -770,8 +780,9 @@ int dht_queue_message(
     const uint8_t *salt           // 32-byte per-contact salt (NULL = unsalted)
 );
 
-// ACK API (v15, salt-aware v0.8.5+)
-void dht_generate_ack_key(const char *recipient, const char *sender,
+// ACK API (v15, salt-aware v0.8.5+, salt REQUIRED since v0.9.196)
+// dht_generate_ack_key returns 0 on success, -1 if salt==NULL or on error.
+int  dht_generate_ack_key(const char *recipient, const char *sender,
                           const uint8_t *salt, uint8_t *key_out);
 int dht_publish_ack(const char *my_fp, const char *sender_fp, const uint8_t *salt);
 size_t dht_listen_ack(const char *my_fp, const char *recipient_fp,
