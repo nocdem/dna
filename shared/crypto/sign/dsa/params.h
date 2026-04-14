@@ -1,6 +1,24 @@
 #ifndef PARAMS_H
 #define PARAMS_H
 
+/* Windows SDK / mingw CRT headers pollute single-letter names (N, D, Q, L, K).
+ * Undef before redefining vendor constants to avoid token collision. */
+#ifdef N
+#undef N
+#endif
+#ifdef D
+#undef D
+#endif
+#ifdef Q
+#undef Q
+#endif
+#ifdef L
+#undef L
+#endif
+#ifdef K
+#undef K
+#endif
+
 #include "config.h"
 
 #define SEEDBYTES 32
