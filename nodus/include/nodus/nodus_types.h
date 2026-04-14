@@ -304,13 +304,19 @@ typedef enum {
     NODUS_DNAC_ERROR     = 2
 } nodus_dnac_status_t;
 
-/** Spend result (returned after BFT consensus) */
+/** Spend result (returned after BFT consensus). Phase 13 / Task 13.1
+ * extends the struct with block_height + tx_index + chain_id so callers
+ * can pin the exact ledger position the TX landed at, plus verify the
+ * extended preimage signature scheme from Phase 12. */
 typedef struct {
     nodus_dnac_status_t status;
     uint8_t  witness_id[NODUS_T3_WITNESS_ID_LEN];
     uint8_t  witness_pubkey[NODUS_PK_BYTES];
     uint8_t  signature[NODUS_SIG_BYTES];
     uint64_t timestamp;
+    uint64_t block_height;        /* Phase 13 — bnr wire key */
+    uint32_t tx_index;            /* Phase 13 — ti wire key */
+    uint8_t  chain_id[32];        /* Phase 13 — cid wire key */
 } nodus_dnac_spend_result_t;
 
 /** Nullifier check result */

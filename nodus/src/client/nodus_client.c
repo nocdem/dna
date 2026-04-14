@@ -1976,6 +1976,21 @@ int nodus_client_dnac_spend(nodus_client_t *client,
             cbor_item_t v = cbor_decode_next(&dec);
             if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_SIG_BYTES)
                 memcpy(result_out->signature, v.bstr.ptr, NODUS_SIG_BYTES);
+        } else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "bnr", 3) == 0) {
+            /* Phase 13 / Task 13.2 — block_height the TX committed at */
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->block_height = v.uint_val;
+        } else if (key.tstr.len == 2 && memcmp(key.tstr.ptr, "ti", 2) == 0) {
+            /* Phase 13 / Task 13.2 — tx_index within the block */
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->tx_index = (uint32_t)v.uint_val;
+        } else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "cid", 3) == 0) {
+            /* Phase 13 / Task 13.2 — chain_id binding */
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == 32)
+                memcpy(result_out->chain_id, v.bstr.ptr, 32);
         } else {
             cbor_decode_skip(&dec);
         }
