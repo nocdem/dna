@@ -156,6 +156,27 @@ typedef struct {
 int dnac_block_compute_hash(dnac_block_t *block);
 
 /**
+ * @brief Mark a block as genesis and populate its chain_def.
+ *
+ * Must be called before dnac_block_compute_hash for any genesis block
+ * (block_height == 0). For non-genesis blocks, leave is_genesis = false
+ * (default from zero-initialization) and do not call this function —
+ * chain_def will be zero and excluded from the hash preimage.
+ *
+ * The function copies @p chain_def into @p block->chain_def and sets
+ * block->is_genesis = true. It rejects chain_defs whose witness_count
+ * exceeds the compile-time cap DNAC_MAX_WITNESSES_COMPILE_CAP, which
+ * would otherwise make the hash preimage walk past the witness_pubkeys
+ * array.
+ *
+ * @param block      Target block (must be zero-initialized before use).
+ * @param chain_def  Chain definition to copy into block->chain_def.
+ * @return 0 on success, -1 on NULL argument or out-of-range witness_count.
+ */
+int dnac_block_set_genesis_def(dnac_block_t *block,
+                                const dnac_chain_definition_t *chain_def);
+
+/**
  * @brief Verify that block links correctly to previous block
  *
  * Checks:

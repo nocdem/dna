@@ -176,3 +176,22 @@ int dnac_block_compute_hash(dnac_block_t *block) {
 #undef UPD
 }
 
+/* ============================================================================
+ * Genesis construction helper
+ * ========================================================================== */
+
+int dnac_block_set_genesis_def(dnac_block_t *block,
+                                const dnac_chain_definition_t *chain_def) {
+    if (!block || !chain_def) return -1;
+    if (chain_def->witness_count > DNAC_MAX_WITNESSES_COMPILE_CAP) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "chain_def witness_count %u exceeds compile cap %u",
+                      chain_def->witness_count,
+                      (unsigned)DNAC_MAX_WITNESSES_COMPILE_CAP);
+        return -1;
+    }
+    block->is_genesis = true;
+    memcpy(&block->chain_def, chain_def, sizeof(*chain_def));
+    return 0;
+}
+
