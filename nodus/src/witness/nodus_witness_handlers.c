@@ -879,9 +879,33 @@ static void handle_dnac_block(nodus_witness_t *w,
     nodus_witness_block_t blk;
     int rc = nodus_witness_block_get(w, height, &blk);
 
-    uint8_t buf[512];
+    /* Phase 2 / Task 37: response now carries the block's commit
+     * certificate (2f+1 PRECOMMIT APPROVE signatures) so clients
+     * can verify anchored merkle proofs without trusting a single
+     * witness. Certs can be large (up to NODUS_T3_MAX_WITNESSES ×
+     * NODUS_SIG_BYTES ≈ 600 KiB worst case), so the response buffer
+     * is heap-allocated. */
+    nodus_witness_vote_record_t certs[NODUS_T3_MAX_WITNESSES];
+    int cert_count = 0;
+    if (rc == 0) {
+        if (nodus_witness_cert_get(w, height, certs,
+                                     NODUS_T3_MAX_WITNESSES,
+                                     &cert_count) != 0) {
+            cert_count = 0;
+        }
+    }
+
+    size_t buf_cap = 1024 + (size_t)cert_count *
+                             (NODUS_SIG_BYTES + NODUS_T3_WITNESS_ID_LEN + 64);
+    uint8_t *buf = (uint8_t *)malloc(buf_cap);
+    if (!buf) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "out of memory");
+        return;
+    }
+
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf, sizeof(buf));
+    cbor_encoder_init(&enc, buf, buf_cap);
 
     if (rc != 0) {
         enc_dnac_response(&enc, txn_id, "dnac_block", 1);
@@ -894,8 +918,13 @@ static void handle_dnac_block(nodus_witness_t *w,
          * Phase 13 client receipt API will report the per-TX type via
          * the new tx_index/block_height path. The "hash" key now carries
          * the block's tx_root (single-TX path: bytes equal to the tx
-         * hash; multi-TX path: bytes equal to the Merkle root). */
-        enc_dnac_response(&enc, txn_id, "dnac_block", 8);
+         * hash; multi-TX path: bytes equal to the Merkle root).
+         *
+         * Phase 2 / Task 37: adds "commit_cert" — array of maps with
+         * {signer_id: bstr(32), sig: bstr(4627)} for each 2f+1
+         * PRECOMMIT APPROVE signer. Empty array if no cert was stored
+         * (e.g., pre-BFT seeded genesis). */
+        enc_dnac_response(&enc, txn_id, "dnac_block", 9);
         cbor_encode_cstr(&enc, "found");
         cbor_encode_bool(&enc, true);
         cbor_encode_cstr(&enc, "height");
@@ -912,6 +941,17 @@ static void handle_dnac_block(nodus_witness_t *w,
         cbor_encode_bstr(&enc, blk.proposer_id, NODUS_T3_WITNESS_ID_LEN);
         cbor_encode_cstr(&enc, "prev_hash");
         cbor_encode_bstr(&enc, blk.prev_hash, NODUS_T3_TX_HASH_LEN);
+
+        cbor_encode_cstr(&enc, "commit_cert");
+        cbor_encode_array(&enc, (size_t)cert_count);
+        for (int i = 0; i < cert_count; i++) {
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "signer_id");
+            cbor_encode_bstr(&enc, certs[i].voter_id,
+                              NODUS_T3_WITNESS_ID_LEN);
+            cbor_encode_cstr(&enc, "sig");
+            cbor_encode_bstr(&enc, certs[i].signature, NODUS_SIG_BYTES);
+        }
     }
 
     size_t rlen = cbor_encoder_len(&enc);
@@ -921,6 +961,7 @@ static void handle_dnac_block(nodus_witness_t *w,
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                     "response buffer overflow");
     }
+    free(buf);
 }
 
 /* ════════════════════════════════════════════════════════════════════
