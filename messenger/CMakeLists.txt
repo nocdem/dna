@@ -221,6 +221,7 @@ if(BUILD_SHARED_LIB)
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/genesis.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/nullifier.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/block.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/client.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/discovery.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/tcp_client.c
@@ -336,6 +337,7 @@ else()
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/genesis.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/nullifier.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/block.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/client.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/discovery.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/tcp_client.c
