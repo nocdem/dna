@@ -1294,11 +1294,25 @@ static void handle_dnac_history(nodus_witness_t *w,
     int count = 0;
     nodus_witness_tx_by_owner(w, owner, entries, max_results, &count);
 
+    /* Task 39: each historical TX ships a per-block tx_root Merkle inclusion
+     * proof so clients can verify the TX is anchored in the committed block
+     * identified by `bh`. The proof follows Task 38's CBOR convention:
+     *   pr_s : bstr — flat siblings (depth * 64 bytes)
+     *   pr_p : uint — position bitfield
+     *   pr_d : uint — proof depth
+     *   tr   : bstr — 64-byte tx_root (matches block.tx_root)
+     *
+     * Degraded case (build_tx_proof fails — e.g. block not yet fully
+     * committed, TX missing from tx_root): emit pr_d=0, empty siblings,
+     * zeroed tr. Client-side verify rejects and retries. */
+    #define DNAC_HISTORY_PROOF_MAX_DEPTH 32
+
     /* Encode response.
      * Per-entry budget: ~300B metadata + up to NODUS_WITNESS_MAX_TX_OUTPUTS
-     * outputs × ~260B (128-char fp + token_id + amount + index).
-     * 4096B per entry gives safe headroom for 8+ outputs. */
-    size_t buf_size = 1024 + ((size_t)count * 4096);
+     * outputs × ~260B (128-char fp + token_id + amount + index) +
+     * proof fields (~2048B siblings + 64B root + overhead).
+     * 6656B per entry covers 8+ outputs plus full proof. */
+    size_t buf_size = 1024 + ((size_t)count * 6656);
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
         free(entries);
@@ -1318,7 +1332,36 @@ static void handle_dnac_history(nodus_witness_t *w,
     cbor_encode_array(&enc, (size_t)count);
 
     for (int i = 0; i < count; i++) {
-        cbor_encode_map(&enc, 7);
+        /* Build per-TX tx_root proof anchored to the committing block.
+         * On failure emit a degraded empty proof so the entry structure
+         * stays valid — client verify will reject the degraded entry. */
+        uint8_t siblings[DNAC_HISTORY_PROOF_MAX_DEPTH * NODUS_MERKLE_HASH_LEN];
+        uint8_t tx_root[NODUS_MERKLE_HASH_LEN];
+        uint32_t positions = 0;
+        int depth = 0;
+        bool have_proof = false;
+
+        memset(siblings, 0, sizeof(siblings));
+        memset(tx_root, 0, sizeof(tx_root));
+
+        if (nodus_witness_merkle_build_tx_proof(w,
+                                                  entries[i].block_height,
+                                                  entries[i].tx_hash,
+                                                  siblings, &positions,
+                                                  DNAC_HISTORY_PROOF_MAX_DEPTH,
+                                                  &depth, tx_root) == 0) {
+            have_proof = true;
+        }
+        if (!have_proof) {
+            positions = 0;
+            depth = 0;
+            memset(siblings, 0, sizeof(siblings));
+            memset(tx_root, 0, sizeof(tx_root));
+        }
+
+        size_t sibs_len = (size_t)depth * NODUS_MERKLE_HASH_LEN;
+
+        cbor_encode_map(&enc, 11);
         cbor_encode_cstr(&enc, "hash");
         cbor_encode_bstr(&enc, entries[i].tx_hash, NODUS_T3_TX_HASH_LEN);
         cbor_encode_cstr(&enc, "type");
@@ -1331,6 +1374,14 @@ static void handle_dnac_history(nodus_witness_t *w,
         cbor_encode_uint(&enc, entries[i].block_height);
         cbor_encode_cstr(&enc, "ts");
         cbor_encode_uint(&enc, entries[i].timestamp);
+        cbor_encode_cstr(&enc, "pr_s");
+        cbor_encode_bstr(&enc, siblings, sibs_len);
+        cbor_encode_cstr(&enc, "pr_p");
+        cbor_encode_uint(&enc, (uint64_t)positions);
+        cbor_encode_cstr(&enc, "pr_d");
+        cbor_encode_uint(&enc, (uint64_t)depth);
+        cbor_encode_cstr(&enc, "tr");
+        cbor_encode_bstr(&enc, tx_root, NODUS_MERKLE_HASH_LEN);
 
         /* Per-output array. Output map carries an optional `memo` key —
          * clients that don't know the key ignore it, older witnesses
