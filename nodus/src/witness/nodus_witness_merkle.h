@@ -130,6 +130,35 @@ int nodus_witness_merkle_verify_proof(const uint8_t *leaf,
  */
 int nodus_witness_merkle_tx_root(const uint8_t *tx_hashes, size_t n, uint8_t out[64]);
 
+/**
+ * @brief Build an inclusion proof for a TX hash within a specific block's tx_root.
+ *
+ * Symmetric to nodus_witness_merkle_build_proof but operates on the
+ * block-scoped tx_root tree. The caller supplies a block_height; this
+ * function fetches the committed TX hashes for that block in commit
+ * order (tx_index ASC), builds the RFC 6962 Merkle tree, and returns
+ * the proof for target_tx_hash. The raw tx_hash is leaf-tagged
+ * internally to match nodus_witness_merkle_tx_root().
+ *
+ * @param w               Witness context (uses w->db)
+ * @param block_height    Block whose tx_root we're proving against
+ * @param target_tx_hash  64-byte TX hash to prove (raw, pre-tag)
+ * @param siblings_out    [out] Flat sibling buffer (max_depth * 64 bytes)
+ * @param positions_out   [out] Position bitfield (matches verify_proof convention)
+ * @param max_depth       Capacity of siblings_out in units of NODUS_MERKLE_HASH_LEN
+ * @param depth_out       [out] Actual depth written
+ * @param root_out        [out] Optional 64-byte tx_root (may be NULL)
+ * @return 0 on success, -1 on error (target not found, DB error, too deep, etc.)
+ */
+int nodus_witness_merkle_build_tx_proof(nodus_witness_t *w,
+                                          uint64_t block_height,
+                                          const uint8_t *target_tx_hash,
+                                          uint8_t *siblings_out,
+                                          uint32_t *positions_out,
+                                          int max_depth,
+                                          int *depth_out,
+                                          uint8_t *root_out);
+
 #ifdef __cplusplus
 }
 #endif
