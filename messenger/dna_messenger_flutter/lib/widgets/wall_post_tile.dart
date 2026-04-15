@@ -49,7 +49,6 @@ class WallPostTile extends StatelessWidget {
   final int likeCount;
   final bool isLikedByMe;
   final VoidCallback? onLike;
-  final bool isBoosted;
 
   const WallPostTile({
     super.key,
@@ -70,7 +69,6 @@ class WallPostTile extends StatelessWidget {
     this.likeCount = 0,
     this.isLikedByMe = false,
     this.onLike,
-    this.isBoosted = false,
   });
 
   @override
@@ -241,13 +239,8 @@ class WallPostTile extends StatelessWidget {
       card = RepaintBoundary(child: _CyberFireBorder(heat: heat, child: card));
     }
 
-    if (isBoosted) {
-      card = RepaintBoundary(child: _BoostGlow(child: card));
-    }
-
     return card;
   }
-
 }
 
 /// Animated cyber-fire border overlay. Wraps a post card with a
@@ -351,35 +344,6 @@ class _CyberFirePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _CyberFirePainter old) =>
       old.time != time || old.heat != heat;
-}
-
-/// Wraps a card with a boost glow effect (blue-purple gradient border)
-class _BoostGlow extends StatelessWidget {
-  final Widget child;
-
-  const _BoostGlow({required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
-        gradient: const LinearGradient(
-          colors: [Color(0xFF6C63FF), Color(0xFFAB47BC)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-      ),
-      child: Container(
-        margin: const EdgeInsets.all(1.5),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(DnaSpacing.radiusMd - 1),
-          color: Theme.of(context).colorScheme.surface,
-        ),
-        child: child,
-      ),
-    );
-  }
 }
 
 /// Displays an image from pre-decoded bytes (fast path)

@@ -874,7 +874,6 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
         comments: item.previewComments,
         likeCount: item.likeCount,
         isLikedByMe: item.isLikedByMe,
-        isBoosted: item.post.isBoosted,
         onAuthorTap: null, // Already on profile page
         onLike: item.isLikedByMe ? null : () => _likePost(item.post.uuid),
         onReply: () => _navigateToPostDetail(item.post),
