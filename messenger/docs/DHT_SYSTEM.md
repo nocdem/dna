@@ -1278,7 +1278,7 @@ Media (images, video, audio) is stored on the DHT as chunked binary data, dedupl
 
 **TTLs:**
 - DM / Group media: 7 days (matches message TTL)
-- Wall media: 30 days (matches wall post TTL)
+- Wall media: 30 days (legacy — wall buckets themselves are now EXCLUSIVE / never expire since v0.9.160)
 
 **Nodus Tier 2 Commands:** `m_put` (upload), `m_meta` (get metadata), `m_chunk` (get chunk)
 

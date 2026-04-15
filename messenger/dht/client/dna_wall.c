@@ -660,8 +660,14 @@ int dna_wall_delete(const char *fingerprint,
     memset(&bucket, 0, sizeof(bucket));
     int ret = dna_wall_load_day(fingerprint, date_str, &bucket);
     if (ret != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load bucket %s for delete (rc=%d)", date_str, ret);
-        return ret;
+        /* Bucket no longer exists on the DHT (legacy ephemeral buckets from
+         * before the 2026-04-01 EXCLUSIVE switch expire after their original
+         * 30-day TTL). Treat as idempotent success so the caller can clean
+         * up the local wall_cache entry — the post is already gone from the
+         * network, only the stale cache row needs removing. */
+        QGP_LOG_WARN(LOG_TAG, "Bucket %s gone from DHT (rc=%d), treating delete as idempotent", date_str, ret);
+        dna_wall_update_meta(fingerprint, date_str, -1);
+        return 0;
     }
 
     /* Find and remove the post */

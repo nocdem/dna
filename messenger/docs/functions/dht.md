@@ -450,8 +450,11 @@ Uses `dna:channels:` DHT namespace.
 ### 11.7 Wall (Personal Wall Posts — Daily Bucket Storage v0.9.141+)
 
 Wall posts use daily bucket storage: each day's posts stored under `dna:wall:<fp>:<YYYY-MM-DD>`,
-with a meta key `dna:wall:meta:<fp>` listing which days have posts. TTL 30 days per bucket.
-Refresh only fetches today's bucket (not all 30 days). Older days loaded on scroll (lazy load).
+with a meta key `dna:wall:meta:<fp>` listing which days have posts. Buckets are written as
+`NODUS_VALUE_EXCLUSIVE` (since v0.9.160 / 2026-04-01) — never expire and only the original
+writer can update. Refresh only fetches today's bucket; older days loaded on scroll (lazy load).
+Note: buckets created before v0.9.160 were written as ephemeral with a 30-day TTL and may have
+expired naturally; `dna_wall_delete()` treats DHT NOT_FOUND as idempotent success.
 
 | Function | Description |
 |----------|-------------|

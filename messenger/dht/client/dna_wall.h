@@ -27,13 +27,10 @@ extern "C" {
 /* ── Constants ── */
 #define DNA_WALL_MAX_TEXT_LEN    2048
 #define DNA_WALL_MAX_POSTS       50
-#define DNA_WALL_TTL_DAYS        30
 #define DNA_WALL_KEY_PREFIX      "dna:wall:"
 
-/* Daily Bucket Storage (v0.9.141+) */
+/* Daily Bucket Storage (v0.9.141+, EXCLUSIVE since v0.9.160 — never expires) */
 #define DNA_WALL_META_KEY_PREFIX   "dna:wall:meta:"
-#define DNA_WALL_BUCKET_TTL_SECS   (30 * 24 * 3600)   /* 30 days */
-#define DNA_WALL_META_TTL_SECS     (30 * 24 * 3600)   /* 30 days */
 #define DNA_WALL_INITIAL_DAYS      2                    /* fetch today + yesterday on refresh */
 
 /* Wall Comments (v0.7.0+) */
