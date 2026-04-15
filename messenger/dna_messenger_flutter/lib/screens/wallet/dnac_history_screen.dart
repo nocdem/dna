@@ -5,6 +5,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/dnac_provider.dart';
+import '../../providers/name_resolver_provider.dart';
 import '../../l10n/app_localizations.dart';
 import 'wallet_screen.dart' show TransactionDetailSheet;
 
@@ -80,13 +81,13 @@ class DnacHistoryScreen extends ConsumerWidget {
   }
 }
 
-class _HistoryTile extends StatelessWidget {
+class _HistoryTile extends ConsumerWidget {
   final DnacTxHistory tx;
 
   const _HistoryTile({required this.tx});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final l10n = AppLocalizations.of(context);
 
@@ -120,10 +121,13 @@ class _HistoryTile extends StatelessWidget {
     final sign = isPositive ? '+' : '-';
 
     final dateStr = DateFormat.MMMd().add_Hm().format(tx.timestamp);
+    // Lazy fingerprint → nickname resolution (contacts → cache → DHT).
+    final resolvedName = lazyResolveFingerprint(ref, tx.counterparty);
     final cpLen = tx.counterparty.length;
-    final counterparty = cpLen > 0
-        ? '${tx.counterparty.substring(0, cpLen < 12 ? cpLen : 12)}...'
-        : '';
+    final counterparty = resolvedName ??
+        (cpLen > 0
+            ? '${tx.counterparty.substring(0, cpLen < 12 ? cpLen : 12)}...'
+            : '');
 
     return ListTile(
       onTap: () => showModalBottomSheet(
@@ -131,7 +135,8 @@ class _HistoryTile extends StatelessWidget {
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
         builder: (_) => TransactionDetailSheet(
-          transaction: Transaction.fromDnacTxHistory(tx),
+          transaction: Transaction.fromDnacTxHistory(tx)
+            ..resolvedName = resolvedName,
           network: 'dnac',
         ),
       ),

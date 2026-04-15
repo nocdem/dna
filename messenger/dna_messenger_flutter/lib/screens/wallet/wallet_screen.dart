@@ -4364,12 +4364,12 @@ class _StatusChip extends StatelessWidget {
 }
 
 /// DNAC transaction tile — used by _TokenDetailSheet in DNAC mode
-class _DnacTxTile extends StatelessWidget {
+class _DnacTxTile extends ConsumerWidget {
   final DnacTxHistory tx;
   const _DnacTxTile({required this.tx});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final l10n = AppLocalizations.of(context);
 
@@ -4400,10 +4400,16 @@ class _DnacTxTile extends StatelessWidget {
     }
 
     final sign = isPositive ? '+' : '-';
+    // Lazy fingerprint → nickname resolution. Cache hit renders the
+    // name directly; a miss falls back to the shortened fingerprint
+    // while the resolver fetches in the background and rebuilds this
+    // tile once the name lands.
+    final resolvedName = lazyResolveFingerprint(ref, tx.counterparty);
     final cpLen = tx.counterparty.length;
-    final counterparty = cpLen > 0
-        ? '${tx.counterparty.substring(0, cpLen < 12 ? cpLen : 12)}...'
-        : '';
+    final counterparty = resolvedName ??
+        (cpLen > 0
+            ? '${tx.counterparty.substring(0, cpLen < 12 ? cpLen : 12)}...'
+            : '');
 
     return ListTile(
       onTap: () => showModalBottomSheet(
@@ -4411,7 +4417,8 @@ class _DnacTxTile extends StatelessWidget {
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
         builder: (_) => TransactionDetailSheet(
-          transaction: Transaction.fromDnacTxHistory(tx),
+          transaction: Transaction.fromDnacTxHistory(tx)
+            ..resolvedName = resolvedName,
           network: 'dnac',
         ),
       ),

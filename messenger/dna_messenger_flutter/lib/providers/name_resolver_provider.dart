@@ -1,6 +1,8 @@
 // Name Resolver Provider - Async fingerprint → name resolution with caching
 // v0.6.94: Replaces comment author proof with simple DHT lookup + cache
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'contacts_provider.dart';
 import 'engine_provider.dart';
 
 /// Cache of resolved fingerprint → display name mappings
@@ -131,4 +133,44 @@ class NameResolverNotifier extends StateNotifier<Map<String, String>> {
     state = {};
     _pendingLookups.clear();
   }
+}
+
+/// Lazy fingerprint resolver designed to be called from a widget build
+/// method. Resolution priority (each step is sync and free):
+///   1. Loaded contact list — zero-cost match by fingerprint
+///   2. `nameResolverProvider` in-memory cache — populated by earlier lookups
+///   3. Miss — schedules a background `getDisplayName` call (which itself
+///      hits the persistent C keyserver cache before touching the DHT)
+///      and returns null so the caller can render a fingerprint fallback.
+///      When the lookup resolves, the provider emits new state and any
+///      widget watching it rebuilds with the real name.
+/// Returns null if the fingerprint is empty or no cached name is available.
+String? lazyResolveFingerprint(WidgetRef ref, String fingerprint) {
+  if (fingerprint.isEmpty) return null;
+
+  // 1. Contact shortcut — direct fingerprint match, no FFI.
+  final contactsAsync = ref.watch(contactsProvider);
+  final contacts = contactsAsync.valueOrNull;
+  if (contacts != null) {
+    for (final c in contacts) {
+      if (c.fingerprint == fingerprint) {
+        final name = c.effectiveName;
+        if (name.isNotEmpty) return name;
+        break;
+      }
+    }
+  }
+
+  // 2. In-memory resolver cache.
+  final nameCache = ref.watch(nameResolverProvider);
+  final cached = nameCache[fingerprint];
+  if (cached != null && cached.isNotEmpty) return cached;
+
+  // 3. Miss — schedule a post-frame fetch so we don't mutate provider
+  //    state during the current build. The resolver de-duplicates
+  //    in-flight lookups internally.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    ref.read(nameResolverProvider.notifier).resolveName(fingerprint);
+  });
+  return null;
 }
