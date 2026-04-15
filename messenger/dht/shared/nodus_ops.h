@@ -59,6 +59,18 @@ int nodus_ops_put(const uint8_t *key, size_t key_len,
                   uint32_t ttl, uint64_t vid);
 
 /**
+ * Same as nodus_ops_put() but waits up to timeout_ms for the server response
+ * instead of the client default (10s). Use for large payloads or mobile-link
+ * callers that cannot tolerate the default.
+ *
+ * timeout_ms <= 0 → fall back to client default.
+ */
+int nodus_ops_put_with_timeout(const uint8_t *key, size_t key_len,
+                               const uint8_t *data, size_t data_len,
+                               uint32_t ttl, uint64_t vid,
+                               int timeout_ms);
+
+/**
  * Store using a string key (hashed to SHA3-512).
  */
 int nodus_ops_put_str(const char *str_key,

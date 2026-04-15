@@ -1001,13 +1001,16 @@ void nodus_client_close(nodus_client_t *client) {
 
 /* ── DHT Operations ─────────────────────────────────────────────── */
 
-int nodus_client_put(nodus_client_t *client,
-                      const nodus_key_t *key,
-                      const uint8_t *data, size_t data_len,
-                      nodus_value_type_t type, uint32_t ttl,
-                      uint64_t vid, uint64_t seq,
-                      const nodus_sig_t *sig) {
+int nodus_client_put_ex(nodus_client_t *client,
+                         const nodus_key_t *key,
+                         const uint8_t *data, size_t data_len,
+                         nodus_value_type_t type, uint32_t ttl,
+                         uint64_t vid, uint64_t seq,
+                         const nodus_sig_t *sig,
+                         int timeout_ms) {
     if (!nodus_client_is_ready(client)) return -1;
+
+    if (timeout_ms <= 0) timeout_ms = client->config.request_timeout_ms;
 
     uint8_t *buf = malloc(CLIENT_BUF_SIZE_PUT);
     if (!buf) return -1;
@@ -1026,10 +1029,20 @@ int nodus_client_put(nodus_client_t *client,
     free(buf);
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
-    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (!wait_response(client, req, timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     int rc = (resp->type == 'e') ? resp->error_code : 0;
     free_pending(client, req);
     return rc;
+}
+
+int nodus_client_put(nodus_client_t *client,
+                      const nodus_key_t *key,
+                      const uint8_t *data, size_t data_len,
+                      nodus_value_type_t type, uint32_t ttl,
+                      uint64_t vid, uint64_t seq,
+                      const nodus_sig_t *sig) {
+    return nodus_client_put_ex(client, key, data, data_len,
+                                type, ttl, vid, seq, sig, 0);
 }
 
 int nodus_client_get(nodus_client_t *client,

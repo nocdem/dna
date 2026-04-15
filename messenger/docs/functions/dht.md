@@ -569,7 +569,13 @@ Convenience wrappers around the Nodus singleton for DHT operations and presence.
 | `void nodus_ops_free_batch_result(nodus_ops_batch_result_t *results, int count)` | Free batch get results. |
 | `void nodus_ops_free_count_result(nodus_ops_count_result_t *results, int count)` | Free batch count results. |
 
-### 12.3 Media Operations (v0.9.147+)
+### 12.3 Per-call Timeout (v0.10.5+)
+
+| Function | Description |
+|----------|-------------|
+| `int nodus_ops_put_with_timeout(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len, uint32_t ttl, uint64_t vid, int timeout_ms)` | Same as `nodus_ops_put` but overrides the default 10s request timeout. Use for large payloads (debug logs, media) or mobile-link callers that need more time after reconnect bursts. `timeout_ms <= 0` falls back to client default. |
+
+### 12.4 Media Operations (v0.9.147+)
 
 | Function | Description |
 |----------|-------------|

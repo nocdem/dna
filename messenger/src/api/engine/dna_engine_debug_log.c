@@ -189,9 +189,12 @@ void dna_handle_debug_log_send(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    int prc = nodus_ops_put(inbox_key, sizeof(inbox_key),
-                            outer, outer_len,
-                            DEBUG_LOG_TTL_SECONDS, 0);
+    /* Debug logs can be 100KB+ and are sent over mobile links; the default
+     * 10s request timeout is too tight after reconnect bursts. Use 30s. */
+    int prc = nodus_ops_put_with_timeout(inbox_key, sizeof(inbox_key),
+                                          outer, outer_len,
+                                          DEBUG_LOG_TTL_SECONDS, 0,
+                                          30000);
     free(outer);
 
     if (prc != 0) {

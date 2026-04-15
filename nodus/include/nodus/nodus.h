@@ -292,6 +292,23 @@ int nodus_client_put(nodus_client_t *client,
                       const nodus_sig_t *sig);
 
 /**
+ * Same as nodus_client_put(), but waits up to timeout_ms milliseconds for
+ * the server response instead of config.request_timeout_ms. Use for large
+ * payloads or mobile links where the default 10s is too tight.
+ *
+ * Passing timeout_ms <= 0 falls back to config.request_timeout_ms.
+ *
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_put_ex(nodus_client_t *client,
+                         const nodus_key_t *key,
+                         const uint8_t *data, size_t data_len,
+                         nodus_value_type_t type, uint32_t ttl,
+                         uint64_t vid, uint64_t seq,
+                         const nodus_sig_t *sig,
+                         int timeout_ms);
+
+/**
  * Retrieve a single value by key (latest version).
  * Caller must free *val_out with nodus_value_free().
  *

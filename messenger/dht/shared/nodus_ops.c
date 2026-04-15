@@ -70,11 +70,12 @@ static void hash_str(const char *str, nodus_key_t *out) {
     nodus_hash((const uint8_t *)str, strlen(str), out);
 }
 
-/** Internal PUT: sign and store with pre-hashed key. */
+/** Internal PUT: sign and store with pre-hashed key.
+ *  timeout_ms <= 0 → use client default. */
 static int do_put(const nodus_key_t *k,
                   const uint8_t *data, size_t data_len,
                   nodus_value_type_t type, uint32_t ttl,
-                  uint64_t vid) {
+                  uint64_t vid, int timeout_ms) {
     nodus_client_t *c = nodus_singleton_get();
     if (!c || !nodus_client_is_ready(c)) {
         if (c) nodus_singleton_release();
@@ -102,8 +103,9 @@ static int do_put(const nodus_key_t *k,
         return -1;
     }
 
-    int rc = nodus_client_put(c, k, data, data_len,
-                               type, ttl, vid, seq, &val->signature);
+    int rc = nodus_client_put_ex(c, k, data, data_len,
+                                  type, ttl, vid, seq, &val->signature,
+                                  timeout_ms);
     nodus_value_free(val);
     nodus_singleton_release();
     return rc;
@@ -120,7 +122,20 @@ int nodus_ops_put(const uint8_t *key, size_t key_len,
     nodus_value_type_t type = (ttl == 0)
         ? NODUS_VALUE_PERMANENT : NODUS_VALUE_EPHEMERAL;
 
-    return do_put(&k, data, data_len, type, ttl, vid);
+    return do_put(&k, data, data_len, type, ttl, vid, 0);
+}
+
+int nodus_ops_put_with_timeout(const uint8_t *key, size_t key_len,
+                               const uint8_t *data, size_t data_len,
+                               uint32_t ttl, uint64_t vid,
+                               int timeout_ms) {
+    nodus_key_t k;
+    hash_key(key, key_len, &k);
+
+    nodus_value_type_t type = (ttl == 0)
+        ? NODUS_VALUE_PERMANENT : NODUS_VALUE_EPHEMERAL;
+
+    return do_put(&k, data, data_len, type, ttl, vid, timeout_ms);
 }
 
 int nodus_ops_put_str(const char *str_key,
@@ -134,7 +149,7 @@ int nodus_ops_put_str(const char *str_key,
     nodus_value_type_t type = (ttl == 0)
         ? NODUS_VALUE_PERMANENT : NODUS_VALUE_EPHEMERAL;
 
-    return do_put(&k, data, data_len, type, ttl, vid);
+    return do_put(&k, data, data_len, type, ttl, vid, 0);
 }
 
 int nodus_ops_put_permanent(const uint8_t *key, size_t key_len,
@@ -142,7 +157,7 @@ int nodus_ops_put_permanent(const uint8_t *key, size_t key_len,
                             uint64_t vid) {
     nodus_key_t k;
     hash_key(key, key_len, &k);
-    return do_put(&k, data, data_len, NODUS_VALUE_PERMANENT, 0, vid);
+    return do_put(&k, data, data_len, NODUS_VALUE_PERMANENT, 0, vid, 0);
 }
 
 int nodus_ops_put_exclusive(const uint8_t *key, size_t key_len,
@@ -150,7 +165,7 @@ int nodus_ops_put_exclusive(const uint8_t *key, size_t key_len,
                             uint64_t vid) {
     nodus_key_t k;
     hash_key(key, key_len, &k);
-    return do_put(&k, data, data_len, NODUS_VALUE_EXCLUSIVE, 0, vid);
+    return do_put(&k, data, data_len, NODUS_VALUE_EXCLUSIVE, 0, vid, 0);
 }
 
 int nodus_ops_put_str_exclusive(const char *str_key,
@@ -161,7 +176,7 @@ int nodus_ops_put_str_exclusive(const char *str_key,
     nodus_key_t k;
     hash_str(str_key, &k);
 
-    return do_put(&k, data, data_len, NODUS_VALUE_EXCLUSIVE, 0, vid);
+    return do_put(&k, data, data_len, NODUS_VALUE_EXCLUSIVE, 0, vid, 0);
 }
 
 /* ── GET operations ────────────────────────────────────────────── */
