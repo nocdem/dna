@@ -5,6 +5,7 @@
 #include "core/nodus_storage.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
+#include "test_storage_helper.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -17,7 +18,6 @@
 static int passed = 0;
 static int failed = 0;
 
-static const char *TEST_DB = "/tmp/nodus_test_storage.db";
 static nodus_identity_t test_id;
 
 static void init_test_identity(void) {
@@ -41,33 +41,28 @@ static nodus_value_t *make_test_value(const char *key_str, const char *data_str,
 
 static void test_open_close(void) {
     TEST("open and close database");
-    unlink(TEST_DB);
 
     nodus_storage_t store;
-    int rc = nodus_storage_open(TEST_DB, &store);
+    int rc = test_storage_open(&store);
     if (rc == 0) {
-        nodus_storage_close(&store);
+        test_storage_close(&store);
         PASS();
     } else {
         FAIL("open failed");
     }
-    unlink(TEST_DB);
 }
 
 static void test_put_get(void) {
     TEST("put and get value");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_value_t *val = make_test_value("test:key1", "hello storage", 1, 0, NODUS_DEFAULT_TTL);
     int rc = nodus_storage_put(&store, val);
     if (rc != 0) {
         FAIL("put failed");
         nodus_value_free(val);
-        nodus_storage_close(&store);
-        unlink(TEST_DB);
+        test_storage_close(&store);
         return;
     }
 
@@ -84,16 +79,13 @@ static void test_put_get(void) {
 
     nodus_value_free(val);
     nodus_value_free(got);
-    nodus_storage_close(&store);
-    unlink(TEST_DB);
+    test_storage_close(&store);
 }
 
 static void test_put_replace(void) {
     TEST("put replaces on same key+owner+vid");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_value_t *v1 = make_test_value("test:replace", "version1", 1, 0, NODUS_DEFAULT_TTL);
     nodus_storage_put(&store, v1);
@@ -116,16 +108,13 @@ static void test_put_replace(void) {
     nodus_value_free(v1);
     nodus_value_free(v2);
     nodus_value_free(got);
-    nodus_storage_close(&store);
-    unlink(TEST_DB);
+    test_storage_close(&store);
 }
 
 static void test_get_all_multiwriter(void) {
     TEST("get_all returns multi-writer values");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     /* Value from identity 1 */
     nodus_value_t *v1 = make_test_value("test:multi", "from_owner1", 1, 0, NODUS_DEFAULT_TTL);
@@ -163,16 +152,13 @@ static void test_get_all_multiwriter(void) {
     nodus_value_free(v1);
     nodus_value_free(v2);
     nodus_identity_clear(&id2);
-    nodus_storage_close(&store);
-    unlink(TEST_DB);
+    test_storage_close(&store);
 }
 
 static void test_delete(void) {
     TEST("delete specific value");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_value_t *val = make_test_value("test:del", "delete me", 1, 0, NODUS_DEFAULT_TTL);
     nodus_storage_put(&store, val);
@@ -187,16 +173,13 @@ static void test_delete(void) {
     }
 
     nodus_value_free(val);
-    nodus_storage_close(&store);
-    unlink(TEST_DB);
+    test_storage_close(&store);
 }
 
 static void test_cleanup_expired(void) {
     TEST("cleanup removes expired values");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     /* Create a value with TTL=1 second and set created_at in the past */
     nodus_value_t *val = make_test_value("test:expire", "temporary", 1, 0, 1);
@@ -221,16 +204,13 @@ static void test_cleanup_expired(void) {
 
     nodus_value_free(val);
     nodus_value_free(perm);
-    nodus_storage_close(&store);
-    unlink(TEST_DB);
+    test_storage_close(&store);
 }
 
 static void test_count(void) {
     TEST("count values");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     for (int i = 0; i < 5; i++) {
         char key[32];
@@ -247,18 +227,24 @@ static void test_count(void) {
         FAIL("wrong count");
     }
 
-    nodus_storage_close(&store);
-    unlink(TEST_DB);
+    test_storage_close(&store);
 }
 
 static void test_persistence(void) {
     TEST("values persist across close/reopen");
-    unlink(TEST_DB);
+
+    /* Persistence test needs two open/close cycles on the SAME path,
+     * so we manage the path manually instead of using test_storage_open. */
+    char path[32];
+    if (test_storage_make_path(path, sizeof(path)) != 0) {
+        FAIL("mkstemp");
+        return;
+    }
 
     /* Write */
     {
         nodus_storage_t store;
-        nodus_storage_open(TEST_DB, &store);
+        nodus_storage_open(path, &store);
         nodus_value_t *val = make_test_value("test:persist", "survives", 1, 0, NODUS_DEFAULT_TTL);
         nodus_storage_put(&store, val);
         nodus_value_free(val);
@@ -268,7 +254,7 @@ static void test_persistence(void) {
     /* Read */
     {
         nodus_storage_t store;
-        nodus_storage_open(TEST_DB, &store);
+        nodus_storage_open(path, &store);
         nodus_key_t key;
         nodus_hash((const uint8_t *)"test:persist", 12, &key);
         nodus_value_t *got = NULL;
@@ -282,7 +268,7 @@ static void test_persistence(void) {
         nodus_storage_close(&store);
     }
 
-    unlink(TEST_DB);
+    test_storage_cleanup_path(path);
 }
 
 /* ── EXCLUSIVE ownership tests ──────────────────────────────────── */

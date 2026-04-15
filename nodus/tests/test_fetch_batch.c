@@ -11,6 +11,7 @@
 #include "core/nodus_storage.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
+#include "test_storage_helper.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -23,7 +24,6 @@
 static int passed = 0;
 static int failed = 0;
 
-static const char *TEST_DB = "/tmp/nodus_test_fetch_batch.db";
 static nodus_identity_t test_id;
 
 static void init_test_identity(void) {
@@ -46,10 +46,8 @@ static nodus_value_t *make_value(const char *key_str, const char *data_str,
 
 static void test_empty_database(void) {
     TEST("fetch from empty database returns 0");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_value_t *batch[5];
     int fetched = nodus_storage_fetch_batch(&store, NULL, batch, 5);
@@ -59,15 +57,13 @@ static void test_empty_database(void) {
     else
         FAIL("should return 0 for empty db");
 
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_first_batch(void) {
     TEST("first batch (NULL bookmark) returns data");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     /* Insert 3 values with different keys */
     for (int i = 0; i < 3; i++) {
@@ -92,15 +88,13 @@ static void test_first_batch(void) {
         FAIL(buf);
     }
 
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_pagination(void) {
     TEST("bookmark pagination across batches");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     /* Insert 7 values */
     for (int i = 0; i < 7; i++) {
@@ -140,15 +134,13 @@ static void test_pagination(void) {
         FAIL(buf);
     }
 
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_batch_ordering(void) {
     TEST("batch returns values ordered by key_hash");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     /* Insert 5 values */
     for (int i = 0; i < 5; i++) {
@@ -178,7 +170,7 @@ static void test_batch_ordering(void) {
 
     for (int i = 0; i < fetched; i++)
         nodus_value_free(batch[i]);
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 int main(void) {

@@ -7,6 +7,7 @@
 #include "core/nodus_storage.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
+#include "test_storage_helper.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -19,7 +20,6 @@
 static int passed = 0;
 static int failed = 0;
 
-static const char *TEST_DB = "/tmp/nodus_test_put_if_newer.db";
 static nodus_identity_t test_id;
 
 static void init_test_identity(void) {
@@ -43,10 +43,8 @@ static nodus_value_t *make_value(const char *key_str, const char *data_str,
 
 static void test_put_newer_seq_wins(void) {
     TEST("higher seq wins over lower seq");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_value_t *v1 = make_value("key1", "data_old", 1, 10, 3600);
     nodus_value_t *v2 = make_value("key1", "data_new", 1, 20, 3600);
@@ -66,15 +64,13 @@ static void test_put_newer_seq_wins(void) {
     nodus_value_free(v1);
     nodus_value_free(v2);
     if (got) nodus_value_free(got);
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_put_older_seq_skipped(void) {
     TEST("lower seq is skipped");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_value_t *v1 = make_value("key1", "data_newer", 1, 20, 3600);
     nodus_value_t *v2 = make_value("key1", "data_older", 1, 10, 3600);
@@ -94,15 +90,13 @@ static void test_put_older_seq_skipped(void) {
     nodus_value_free(v1);
     nodus_value_free(v2);
     if (got) nodus_value_free(got);
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_put_equal_seq_hash_tiebreak(void) {
     TEST("equal seq uses hash tiebreaker");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     /* Create two values with same seq but different data (different hashes) */
     nodus_value_t *v1 = make_value("key1", "data_aaa", 1, 10, 3600);
@@ -120,15 +114,13 @@ static void test_put_equal_seq_hash_tiebreak(void) {
 
     nodus_value_free(v1);
     nodus_value_free(v2);
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_put_first_insert(void) {
     TEST("first insert always succeeds");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_value_t *v1 = make_value("key_new", "data1", 1, 1, 3600);
     int rc = nodus_storage_put_if_newer(&store, v1);
@@ -139,15 +131,13 @@ static void test_put_first_insert(void) {
         FAIL("first insert should succeed");
 
     nodus_value_free(v1);
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_put_same_seq_same_data(void) {
     TEST("identical value with same seq is skipped");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_value_t *v1 = make_value("key1", "same_data", 1, 5, 3600);
     nodus_value_t *v2 = make_value("key1", "same_data", 1, 5, 3600);
@@ -163,7 +153,7 @@ static void test_put_same_seq_same_data(void) {
 
     nodus_value_free(v1);
     nodus_value_free(v2);
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 int main(void) {

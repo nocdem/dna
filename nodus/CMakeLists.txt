@@ -261,8 +261,13 @@ add_executable(test_routing tests/test_routing.c)
 target_link_libraries(test_routing nodus dsa nodus)
 add_test(NAME test_routing COMMAND test_routing)
 
+# Shared fixture for storage tests (unique mkstemp path + WAL/SHM cleanup).
+# Used as a source dep by every storage test below so the .o is rebuilt
+# when the helper changes.
+set(NODUS_TEST_STORAGE_HELPER tests/test_storage_helper.c)
+
 # Storage test
-add_executable(test_storage tests/test_storage.c)
+add_executable(test_storage tests/test_storage.c ${NODUS_TEST_STORAGE_HELPER})
 target_link_libraries(test_storage nodus dsa nodus)
 add_test(NAME test_storage COMMAND test_storage)
 
@@ -470,7 +475,7 @@ target_link_libraries(test_spend_replay nodus dsa nodus)
 add_test(NAME test_spend_replay COMMAND test_spend_replay)
 
 # Replication phase tests
-add_executable(test_put_if_newer tests/test_put_if_newer.c)
+add_executable(test_put_if_newer tests/test_put_if_newer.c ${NODUS_TEST_STORAGE_HELPER})
 target_link_libraries(test_put_if_newer nodus dsa nodus)
 add_test(NAME test_put_if_newer COMMAND test_put_if_newer)
 
@@ -482,11 +487,11 @@ add_executable(test_bucket_refresh tests/test_bucket_refresh.c)
 target_link_libraries(test_bucket_refresh nodus dsa nodus)
 add_test(NAME test_bucket_refresh COMMAND test_bucket_refresh)
 
-add_executable(test_hinted_handoff tests/test_hinted_handoff.c)
+add_executable(test_hinted_handoff tests/test_hinted_handoff.c ${NODUS_TEST_STORAGE_HELPER})
 target_link_libraries(test_hinted_handoff nodus dsa nodus)
 add_test(NAME test_hinted_handoff COMMAND test_hinted_handoff)
 
-add_executable(test_fetch_batch tests/test_fetch_batch.c)
+add_executable(test_fetch_batch tests/test_fetch_batch.c ${NODUS_TEST_STORAGE_HELPER})
 target_link_libraries(test_fetch_batch nodus dsa nodus)
 add_test(NAME test_fetch_batch COMMAND test_fetch_batch)
 
@@ -495,7 +500,7 @@ add_executable(test_channel_protocol tests/test_channel_protocol.c)
 target_link_libraries(test_channel_protocol nodus dsa nodus)
 add_test(NAME test_channel_protocol COMMAND test_channel_protocol)
 
-add_executable(test_storage_cleanup tests/test_storage_cleanup.c)
+add_executable(test_storage_cleanup tests/test_storage_cleanup.c ${NODUS_TEST_STORAGE_HELPER})
 target_link_libraries(test_storage_cleanup nodus dsa nodus)
 add_test(NAME test_storage_cleanup COMMAND test_storage_cleanup)
 

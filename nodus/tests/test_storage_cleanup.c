@@ -10,6 +10,7 @@
 #include "core/nodus_storage.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
+#include "test_storage_helper.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -22,7 +23,6 @@
 static int passed = 0;
 static int failed = 0;
 
-static const char *TEST_DB = "/tmp/nodus_test_cleanup.db";
 static nodus_identity_t test_id;
 
 static void init_test_identity(void) {
@@ -46,10 +46,8 @@ static nodus_value_t *make_value(const char *key_str, const char *data_str,
 
 static void test_cleanup_empty_db(void) {
     TEST("cleanup on empty database returns 0");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     int cleaned = nodus_storage_cleanup(&store);
     if (cleaned == 0)
@@ -57,15 +55,13 @@ static void test_cleanup_empty_db(void) {
     else
         FAIL("should return 0 for empty db");
 
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_permanent_values_survive(void) {
     TEST("permanent values survive cleanup");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     /* Insert permanent values */
     for (int i = 0; i < 3; i++) {
@@ -86,15 +82,13 @@ static void test_permanent_values_survive(void) {
     else
         FAIL("permanent values should not be cleaned");
 
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_fresh_ephemeral_survives(void) {
     TEST("fresh ephemeral values survive cleanup");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     /* Insert ephemeral with long TTL (7 days) */
     nodus_value_t *v = make_value("ephem1", "data", 1, 1,
@@ -110,15 +104,13 @@ static void test_fresh_ephemeral_survives(void) {
     else
         FAIL("fresh ephemeral should survive");
 
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_expired_ephemeral_cleaned(void) {
     TEST("expired ephemeral values are cleaned up");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     /* Insert ephemeral with TTL=1 second */
     nodus_value_t *v = make_value("expire1", "data", 1, 1,
@@ -140,15 +132,13 @@ static void test_expired_ephemeral_cleaned(void) {
         FAIL(buf);
     }
 
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_mixed_cleanup(void) {
     TEST("mixed: only expired ephemeral cleaned");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     /* 2 permanent */
     for (int i = 0; i < 2; i++) {
@@ -187,7 +177,7 @@ static void test_mixed_cleanup(void) {
         FAIL(buf);
     }
 
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 int main(void) {

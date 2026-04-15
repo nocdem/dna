@@ -135,10 +135,19 @@ static int seeded_leaf_hash(uint8_t seed, uint64_t amount, uint8_t out[64]) {
                                             tx_hash, oi, out);
 }
 
-static int sha3_512_of(const uint8_t *data, size_t len, uint8_t out[64]) {
+/* RFC 6962 domain-tagged primitives. The production Merkle in
+ * nodus_witness_merkle.c switched to this scheme in Phase 2 / Task 2.5
+ * to close CVE-2012-2459: leaves get a 0x00 prefix, inner nodes a 0x01
+ * prefix, so leaves and pairs hash to disjoint preimages. These helpers
+ * are an independent oracle — we re-derive expected roots locally
+ * rather than calling the production helpers. */
+
+static int leaf_hash_tag(const uint8_t *data, size_t len, uint8_t out[64]) {
     EVP_MD_CTX *md = EVP_MD_CTX_new();
     if (!md) return -1;
+    const uint8_t prefix = 0x00;
     if (EVP_DigestInit_ex(md, EVP_sha3_512(), NULL) != 1) goto err;
+    if (EVP_DigestUpdate(md, &prefix, 1) != 1) goto err;
     if (len > 0 && EVP_DigestUpdate(md, data, len) != 1) goto err;
     unsigned int n = 0;
     if (EVP_DigestFinal_ex(md, out, &n) != 1) goto err;
@@ -149,11 +158,13 @@ err:
     return -1;
 }
 
-static int sha3_pair(const uint8_t left[64], const uint8_t right[64],
-                     uint8_t out[64]) {
+static int inner_hash_tag(const uint8_t left[64], const uint8_t right[64],
+                           uint8_t out[64]) {
     EVP_MD_CTX *md = EVP_MD_CTX_new();
     if (!md) return -1;
+    const uint8_t prefix = 0x01;
     if (EVP_DigestInit_ex(md, EVP_sha3_512(), NULL) != 1) goto err;
+    if (EVP_DigestUpdate(md, &prefix, 1) != 1) goto err;
     if (EVP_DigestUpdate(md, left, 64) != 1) goto err;
     if (EVP_DigestUpdate(md, right, 64) != 1) goto err;
     unsigned int n = 0;
@@ -168,7 +179,7 @@ err:
 /* ── Tests ────────────────────────────────────────────────────────── */
 
 static void test_empty_set(void) {
-    T_START("empty UTXO set -> SHA3-512(empty)");
+    T_START("empty UTXO set -> leaf_hash(empty)");
     nodus_witness_t w;
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
@@ -177,8 +188,9 @@ static void test_empty_set(void) {
         T_FAIL("compute"); cleanup_witness(&w); return;
     }
 
+    /* RFC 6962 empty tree root = SHA3-512(0x00) */
     uint8_t expected[64];
-    if (sha3_512_of(NULL, 0, expected) != 0) {
+    if (leaf_hash_tag(NULL, 0, expected) != 0) {
         T_FAIL("ref hash"); cleanup_witness(&w); return;
     }
 
@@ -188,7 +200,7 @@ static void test_empty_set(void) {
 }
 
 static void test_single_leaf(void) {
-    T_START("single leaf -> root equals leaf hash");
+    T_START("single leaf -> root = leaf_hash(composite)");
     nodus_witness_t w;
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
@@ -201,18 +213,24 @@ static void test_single_leaf(void) {
         T_FAIL("compute"); cleanup_witness(&w); return;
     }
 
-    uint8_t leaf[64];
-    if (seeded_leaf_hash(0x01, 1000, leaf) != 0) {
+    /* RFC 6962 single-leaf tree: root = leaf_hash(composite_digest).
+     * The composite digest is what nodus_witness_merkle_leaf_hash returns;
+     * compute_utxo_root then prehashes it with the 0x00 leaf tag. */
+    uint8_t composite[64], expected[64];
+    if (seeded_leaf_hash(0x01, 1000, composite) != 0) {
         T_FAIL("leaf hash"); cleanup_witness(&w); return;
     }
+    if (leaf_hash_tag(composite, 64, expected) != 0) {
+        T_FAIL("ref hash"); cleanup_witness(&w); return;
+    }
 
-    if (memcmp(root, leaf, 64) != 0) T_FAIL("root != leaf");
+    if (memcmp(root, expected, 64) != 0) T_FAIL("root != expected");
     else T_PASS();
     cleanup_witness(&w);
 }
 
 static void test_two_leaves(void) {
-    T_START("two leaves -> root = SHA3(leaf0 || leaf1)");
+    T_START("two leaves -> inner_hash(lh(l0), lh(l1))");
     nodus_witness_t w;
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
@@ -225,10 +243,15 @@ static void test_two_leaves(void) {
         T_FAIL("compute"); cleanup_witness(&w); return;
     }
 
-    uint8_t leaf_a[64], leaf_b[64], expected[64];
-    seeded_leaf_hash(0x02, 200, leaf_a); /* smaller nullifier first */
-    seeded_leaf_hash(0x05, 500, leaf_b);
-    if (sha3_pair(leaf_a, leaf_b, expected) != 0) {
+    /* RFC 6962 two-leaf tree:
+     *   root = inner_hash(leaf_hash(lh_a), leaf_hash(lh_b))
+     * where lh_a/lh_b are the composite digests from the UTXO row. */
+    uint8_t l_a[64], l_b[64], ph_a[64], ph_b[64], expected[64];
+    seeded_leaf_hash(0x02, 200, l_a); /* smaller nullifier first */
+    seeded_leaf_hash(0x05, 500, l_b);
+    if (leaf_hash_tag(l_a, 64, ph_a) != 0 ||
+        leaf_hash_tag(l_b, 64, ph_b) != 0 ||
+        inner_hash_tag(ph_a, ph_b, expected) != 0) {
         T_FAIL("ref hash"); cleanup_witness(&w); return;
     }
 
@@ -237,8 +260,8 @@ static void test_two_leaves(void) {
     cleanup_witness(&w);
 }
 
-static void test_three_leaves_odd_dup(void) {
-    T_START("three leaves -> odd sibling duplicated");
+static void test_three_leaves_rfc6962_split(void) {
+    T_START("three leaves -> RFC 6962 split (k=2)");
     nodus_witness_t w;
     if (setup_witness(&w) != 0) { T_FAIL("setup"); return; }
 
@@ -251,15 +274,24 @@ static void test_three_leaves_odd_dup(void) {
         T_FAIL("compute"); cleanup_witness(&w); return;
     }
 
-    /* Expected: L0 = hash(leaf1, leaf2); L1 = hash(leaf3, leaf3);
-     *           root = hash(L0, L1) */
-    uint8_t l1[64], l2[64], l3[64], L0[64], L1[64], expected[64];
+    /* RFC 6962 §2.1 split for n=3: k = 2 (largest pow2 < 3).
+     *   MTH({a,b,c}) = inner( MTH({a,b}), MTH({c}) )
+     *                = inner( inner(lh(a), lh(b)), lh(c) )
+     * No odd-sibling duplication — that was the legacy Bitcoin convention
+     * which was removed in Phase 2 / Task 2.5 (closes CVE-2012-2459). */
+    uint8_t l1[64], l2[64], l3[64];
+    uint8_t ph1[64], ph2[64], ph3[64];
+    uint8_t left[64], expected[64];
     seeded_leaf_hash(0x01, 100, l1);
     seeded_leaf_hash(0x02, 200, l2);
     seeded_leaf_hash(0x03, 300, l3);
-    sha3_pair(l1, l2, L0);
-    sha3_pair(l3, l3, L1); /* odd sibling duplicated */
-    sha3_pair(L0, L1, expected);
+    if (leaf_hash_tag(l1, 64, ph1) != 0 ||
+        leaf_hash_tag(l2, 64, ph2) != 0 ||
+        leaf_hash_tag(l3, 64, ph3) != 0 ||
+        inner_hash_tag(ph1, ph2, left) != 0 ||
+        inner_hash_tag(left, ph3, expected) != 0) {
+        T_FAIL("ref hash"); cleanup_witness(&w); return;
+    }
 
     if (memcmp(root, expected, 64) != 0) T_FAIL("root mismatch");
     else T_PASS();
@@ -440,7 +472,7 @@ int main(void) {
     test_empty_set();
     test_single_leaf();
     test_two_leaves();
-    test_three_leaves_odd_dup();
+    test_three_leaves_rfc6962_split();
     test_determinism();
     test_stress_1000();
     test_proof_roundtrip();

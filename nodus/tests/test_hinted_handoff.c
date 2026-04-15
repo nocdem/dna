@@ -9,6 +9,7 @@
  */
 
 #include "core/nodus_storage.h"
+#include "test_storage_helper.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -21,8 +22,6 @@
 static int passed = 0;
 static int failed = 0;
 
-static const char *TEST_DB = "/tmp/nodus_test_hinted.db";
-
 static nodus_key_t make_key(uint8_t fill) {
     nodus_key_t k;
     memset(k.bytes, fill, NODUS_KEY_BYTES);
@@ -31,17 +30,15 @@ static nodus_key_t make_key(uint8_t fill) {
 
 static void test_insert_and_retrieve(void) {
     TEST("insert hint and retrieve by node_id");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_key_t node = make_key(0xAA);
     uint8_t frame[] = {0x01, 0x02, 0x03, 0x04};
 
     int rc = nodus_storage_hinted_insert(&store, &node, "10.0.0.1", 4001,
                                           frame, sizeof(frame));
-    if (rc != 0) { FAIL("insert failed"); nodus_storage_close(&store); return; }
+    if (rc != 0) { FAIL("insert failed"); test_storage_close(&store); return; }
 
     nodus_dht_hint_t *entries = NULL;
     size_t count = 0;
@@ -56,15 +53,13 @@ static void test_insert_and_retrieve(void) {
     }
 
     if (entries) nodus_storage_hinted_free(entries, count);
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_retrieve_different_node(void) {
     TEST("retrieve returns nothing for different node_id");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_key_t node1 = make_key(0xAA);
     nodus_key_t node2 = make_key(0xBB);
@@ -84,15 +79,13 @@ static void test_retrieve_different_node(void) {
         FAIL("should return nothing for different node");
 
     if (entries) nodus_storage_hinted_free(entries, count);
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_delete_by_id(void) {
     TEST("delete hint by id");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_key_t node = make_key(0xCC);
     uint8_t frame[] = {0x01, 0x02};
@@ -104,7 +97,7 @@ static void test_delete_by_id(void) {
     size_t count = 0;
     nodus_storage_hinted_get(&store, &node, 100, &entries, &count);
 
-    if (count != 1) { FAIL("setup failed"); nodus_storage_close(&store); return; }
+    if (count != 1) { FAIL("setup failed"); test_storage_close(&store); return; }
 
     int64_t id = entries[0].id;
     nodus_storage_hinted_free(entries, count);
@@ -121,15 +114,13 @@ static void test_delete_by_id(void) {
         FAIL("entry not deleted");
 
     if (entries) nodus_storage_hinted_free(entries, count);
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_count(void) {
     TEST("hint count");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_key_t node = make_key(0xDD);
 
@@ -146,15 +137,13 @@ static void test_count(void) {
     else
         FAIL("wrong count");
 
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_multiple_nodes(void) {
     TEST("hints for multiple node_ids");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_key_t node1 = make_key(0x11);
     nodus_key_t node2 = make_key(0x22);
@@ -183,15 +172,13 @@ static void test_multiple_nodes(void) {
 
     if (entries1) nodus_storage_hinted_free(entries1, count1);
     if (entries2) nodus_storage_hinted_free(entries2, count2);
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 static void test_dedup(void) {
     TEST("duplicate hint is silently ignored (dedup)");
-    unlink(TEST_DB);
-
     nodus_storage_t store;
-    nodus_storage_open(TEST_DB, &store);
+    test_storage_open(&store);
 
     nodus_key_t node = make_key(0xEE);
     uint8_t frame[] = {0xDE, 0xAD, 0xBE, 0xEF};
@@ -200,7 +187,7 @@ static void test_dedup(void) {
     for (int i = 0; i < 10; i++) {
         int rc = nodus_storage_hinted_insert(&store, &node, "10.0.0.1", 4001,
                                               frame, sizeof(frame));
-        if (rc != 0) { FAIL("insert returned error"); nodus_storage_close(&store); return; }
+        if (rc != 0) { FAIL("insert returned error"); test_storage_close(&store); return; }
     }
 
     int count = nodus_storage_hinted_count(&store);
@@ -209,7 +196,7 @@ static void test_dedup(void) {
     else
         FAIL("dedup failed: expected 1 entry");
 
-    nodus_storage_close(&store);
+    test_storage_close(&store);
 }
 
 int main(void) {
