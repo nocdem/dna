@@ -238,6 +238,14 @@ int  nodus_witness_tx_get(nodus_witness_t *w, const uint8_t *tx_hash,
                             uint8_t *tx_type_out, uint8_t **tx_data_out,
                             uint32_t *tx_len_out, uint64_t *block_height_out);
 
+/* Lookup (block_height, tx_index) for a committed tx_hash — used by
+ * dnac_spend_replay to reconstruct a fresh spndrslt receipt without
+ * pulling the tx_data blob. Returns 0 on found, -1 otherwise. */
+int  nodus_witness_get_committed_coords(nodus_witness_t *w,
+                                         const uint8_t *tx_hash,
+                                         uint64_t *block_height_out,
+                                         uint32_t *tx_index_out);
+
 /* Phase 11 / Task 11.1 — multi-tx block fetch.
  *
  * Single TX-row fetched from committed_transactions ordered by tx_index.

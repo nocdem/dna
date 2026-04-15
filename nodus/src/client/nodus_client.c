@@ -2884,6 +2884,108 @@ void nodus_client_free_tx_result(nodus_dnac_tx_result_t *result) {
     result->tx_len = 0;
 }
 
+/* ── Spend Replay (Fix #4 B) ─────────────────────────────────────── */
+
+/* Request a fresh spndrslt receipt for a previously-committed TX. Used by
+ * DNAC clients that timed out on dnac_spend and want to recover the
+ * receipt instead of retrying the spend (which would trigger
+ * DOUBLE_SPEND). Returns 0 on found and populated, NODUS_ERR_NOT_FOUND
+ * if the TX is not in the committed ledger, other NODUS_ERR_* otherwise. */
+int nodus_client_dnac_spend_replay(nodus_client_t *client,
+                                    const uint8_t *tx_hash,
+                                    nodus_dnac_spend_result_t *result_out) {
+    if (!nodus_client_is_ready(client) || !tx_hash || !result_out)
+        return -1;
+
+    memset(result_out, 0, sizeof(*result_out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_spend_replay", 1);
+    cbor_encode_cstr(&enc, "h");
+    cbor_encode_bstr(&enc, tx_hash, NODUS_T3_TX_HASH_LEN);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req);
+        return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code;
+        free_pending(client, req);
+        return rc;
+    }
+
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    bool found = false;
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+        if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "found", 5) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BOOL) found = v.bool_val;
+        } else if (key.tstr.len == 6 && memcmp(key.tstr.ptr, "status", 6) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->status = (nodus_dnac_status_t)v.uint_val;
+        } else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "wid", 3) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_WITNESS_ID_LEN)
+                memcpy(result_out->witness_id, v.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
+        } else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "wpk", 3) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_PK_BYTES)
+                memcpy(result_out->witness_pubkey, v.bstr.ptr, NODUS_PK_BYTES);
+        } else if (key.tstr.len == 2 && memcmp(key.tstr.ptr, "ts", 2) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->timestamp = v.uint_val;
+        } else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "bnr", 3) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->block_height = v.uint_val;
+        } else if (key.tstr.len == 2 && memcmp(key.tstr.ptr, "ti", 2) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->tx_index = (uint32_t)v.uint_val;
+        } else if (key.tstr.len == 3 && memcmp(key.tstr.ptr, "cid", 3) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == 32)
+                memcpy(result_out->chain_id, v.bstr.ptr, 32);
+        } else if (key.tstr.len == 4 && memcmp(key.tstr.ptr, "wsig", 4) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_SIG_BYTES)
+                memcpy(result_out->signature, v.bstr.ptr, NODUS_SIG_BYTES);
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    free_pending(client, req);
+    return found ? 0 : NODUS_ERR_NOT_FOUND;
+}
+
 /* ── Block Query (v0.10.0 hub/spoke) ────────────────────────────── */
 
 int nodus_client_dnac_block(nodus_client_t *client,

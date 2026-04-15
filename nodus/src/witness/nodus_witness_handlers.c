@@ -700,6 +700,141 @@ static void handle_dnac_tx(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_spend_replay — Re-emit spndrslt receipt for a committed TX
+ *
+ * Fix #4 B: a client that timed out waiting for its dnac_spend response
+ * may re-query the receipt via this method. The server looks up the
+ * committed TX and, if present, builds a *fresh* spndrslt receipt using
+ * the same preimage scheme as the live commit path (nodus_witness_send_
+ * spend_result). The signature is a NEW signature over a fresh timestamp
+ * — the existing spndrslt sigs are not persisted — but the committed
+ * (block_height, tx_index, chain_id) are recovered verbatim from the
+ * ledger, so the client can bind the TX to its exact on-chain position.
+ *
+ * Request:  "a": {"h": bstr(64)}
+ * Response: "r": {"found":bool,
+ *                  [if found] "status", "wid", "wpk", "ts",
+ *                  "bnr", "ti", "cid", "wsig"}
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_spend_replay(nodus_witness_t *w,
+                                       struct nodus_tcp_conn *conn,
+                                       const uint8_t *payload, size_t len,
+                                       uint32_t txn_id) {
+    cbor_decoder_t dec;
+    size_t args_count;
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing args map");
+        return;
+    }
+
+    const uint8_t *hash = NULL;
+    size_t hash_len = 0;
+
+    for (size_t i = 0; i < args_count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key_match(&key, "h")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN) {
+                hash = val.bstr.ptr;
+                hash_len = val.bstr.len;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    if (!hash || hash_len != NODUS_T3_TX_HASH_LEN) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing or invalid tx_hash");
+        return;
+    }
+
+    uint64_t block_height = 0;
+    uint32_t tx_index = 0;
+    int rc = nodus_witness_get_committed_coords(w, hash,
+                                                  &block_height, &tx_index);
+
+    /* Not committed → respond with found:false, nothing else. */
+    if (rc != 0) {
+        uint8_t buf[64];
+        cbor_encoder_t enc;
+        cbor_encoder_init(&enc, buf, sizeof(buf));
+        enc_dnac_response(&enc, txn_id, "dnac_spend_replay", 1);
+        cbor_encode_cstr(&enc, "found");
+        cbor_encode_bool(&enc, false);
+        size_t rlen = cbor_encoder_len(&enc);
+        if (rlen > 0) {
+            nodus_tcp_send(conn, buf, rlen);
+        } else {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "response buffer overflow");
+        }
+        return;
+    }
+
+    /* Committed → rebuild the spndrslt preimage and sign it fresh.
+     * Fields sourced identically to nodus_witness_send_spend_result(). */
+    uint64_t ts = (uint64_t)time(NULL);
+
+    uint8_t wpk_hash[64];
+    qgp_sha3_512(w->server->identity.pk.bytes, NODUS_PK_BYTES, wpk_hash);
+
+    uint8_t preimage[DNAC_SPEND_RESULT_PREIMAGE_LEN];
+    dnac_compute_spend_result_preimage(hash, w->my_id, wpk_hash,
+                                         w->chain_id, ts,
+                                         block_height, tx_index,
+                                         (uint8_t)DNAC_STATUS_APPROVED,
+                                         preimage);
+
+    nodus_sig_t sig;
+    memset(&sig, 0, sizeof(sig));
+    nodus_sign(&sig, preimage, sizeof(preimage), &w->server->identity.sk);
+
+    uint8_t buf[8192];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+    enc_dnac_response(&enc, txn_id, "dnac_spend_replay", 9);
+
+    cbor_encode_cstr(&enc, "found");
+    cbor_encode_bool(&enc, true);
+
+    cbor_encode_cstr(&enc, "status");
+    cbor_encode_uint(&enc, (uint64_t)DNAC_STATUS_APPROVED);
+
+    cbor_encode_cstr(&enc, "wid");
+    cbor_encode_bstr(&enc, w->my_id, NODUS_T3_WITNESS_ID_LEN);
+
+    cbor_encode_cstr(&enc, "wpk");
+    cbor_encode_bstr(&enc, w->server->identity.pk.bytes, NODUS_PK_BYTES);
+
+    cbor_encode_cstr(&enc, "ts");
+    cbor_encode_uint(&enc, ts);
+
+    cbor_encode_cstr(&enc, "bnr");
+    cbor_encode_uint(&enc, block_height);
+
+    cbor_encode_cstr(&enc, "ti");
+    cbor_encode_uint(&enc, (uint64_t)tx_index);
+
+    cbor_encode_cstr(&enc, "cid");
+    cbor_encode_bstr(&enc, w->chain_id, 32);
+
+    cbor_encode_cstr(&enc, "wsig");
+    cbor_encode_bstr(&enc, sig.bytes, NODUS_SIG_BYTES);
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) {
+        nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_block — Query block by height
  *
  * Request:  "a": {"height": uint}
@@ -1684,6 +1819,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_roster(w, conn, txn_id);
     } else if (strcmp(method, "dnac_tx") == 0) {
         handle_dnac_tx(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_spend_replay") == 0) {
+        handle_dnac_spend_replay(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_block") == 0) {
         handle_dnac_block(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_block_range") == 0) {

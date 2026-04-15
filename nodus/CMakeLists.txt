@@ -464,6 +464,11 @@ add_executable(test_witness_merkle tests/test_witness_merkle.c)
 target_link_libraries(test_witness_merkle nodus dsa nodus)
 add_test(NAME test_witness_merkle COMMAND test_witness_merkle)
 
+# Spend replay DB helper test (Fix #4 B)
+add_executable(test_spend_replay tests/test_spend_replay.c)
+target_link_libraries(test_spend_replay nodus dsa nodus)
+add_test(NAME test_spend_replay COMMAND test_spend_replay)
+
 # Replication phase tests
 add_executable(test_put_if_newer tests/test_put_if_newer.c)
 target_link_libraries(test_put_if_newer nodus dsa nodus)

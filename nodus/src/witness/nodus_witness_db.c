@@ -1021,6 +1021,39 @@ int nodus_witness_tx_get(nodus_witness_t *w, const uint8_t *tx_hash,
     return 0;
 }
 
+/* Lookup (block_height, tx_index) coordinates for a committed tx_hash.
+ * Used by dnac_spend_replay (Fix #4 B) to reconstruct a spndrslt receipt
+ * without pulling the full tx_data blob. Returns 0 on found, -1 otherwise. */
+int nodus_witness_get_committed_coords(nodus_witness_t *w,
+                                        const uint8_t *tx_hash,
+                                        uint64_t *block_height_out,
+                                        uint32_t *tx_index_out) {
+    if (!w || !w->db || !tx_hash) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT block_height, tx_index FROM committed_transactions "
+        "WHERE tx_hash = ?",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_blob(stmt, 1, tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    if (block_height_out)
+        *block_height_out = (uint64_t)sqlite3_column_int64(stmt, 0);
+    if (tx_index_out)
+        *tx_index_out = (uint32_t)sqlite3_column_int(stmt, 1);
+
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
 /* Phase 11 / Task 11.1 — multi-tx block fetch helpers */
 
 void nodus_witness_block_tx_row_free(nodus_witness_block_tx_row_t *row) {

@@ -785,6 +785,28 @@ int nodus_client_dnac_tx(nodus_client_t *client,
                            nodus_dnac_tx_result_t *result_out);
 
 /**
+ * Request a fresh spndrslt receipt for a previously-committed TX.
+ *
+ * Used by DNAC clients to recover from a dnac_spend timeout: if the
+ * first spend was actually committed but the response was lost, the
+ * client calls spend_replay to re-obtain a valid witness signature +
+ * ledger coordinates. The server re-signs the same canonical preimage
+ * over the committed (block_height, tx_index) with a fresh timestamp;
+ * the on-chain position is identical to the original commit.
+ *
+ * Returns:
+ *   0                        — committed; result_out populated
+ *   NODUS_ERR_NOT_FOUND      — tx_hash is not in the committed ledger
+ *   NODUS_ERR_TIMEOUT / ...  — transport errors as usual
+ *
+ * @param tx_hash     64-byte committed transaction hash to replay
+ * @param result_out  Same shape as nodus_client_dnac_spend() receipt
+ */
+int nodus_client_dnac_spend_replay(nodus_client_t *client,
+                                     const uint8_t *tx_hash,
+                                     nodus_dnac_spend_result_t *result_out);
+
+/**
  * Query block by height.
  *
  * @param height      Block height
