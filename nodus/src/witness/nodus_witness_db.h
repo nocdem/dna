@@ -173,6 +173,19 @@ int  nodus_witness_block_get_range(nodus_witness_t *w,
                                       uint64_t from_height, uint64_t to_height,
                                       nodus_witness_block_t *out,
                                       int max_entries, int *count_out);
+/* Phase 2 / Task 36 — genesis block fetch with chain_def_blob.
+ *
+ * Returns the genesis block row (height == 0) including the
+ * chain_def_blob column. The blob is returned via malloc'd
+ * *blob_out; caller owns and must free(). If the row has no
+ * chain_def_blob, *blob_out = NULL and *blob_len_out = 0.
+ *
+ * Returns 0 on success, -1 on error / not found.
+ */
+int  nodus_witness_block_get_genesis(nodus_witness_t *w,
+                                       nodus_witness_block_t *out,
+                                       uint8_t **blob_out,
+                                       size_t *blob_len_out);
 uint64_t nodus_witness_block_height(nodus_witness_t *w);
 
 /* ── Genesis state ───────────────────────────────────────────────── */

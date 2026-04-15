@@ -1038,6 +1038,85 @@ static void handle_dnac_block_range(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_genesis — Return the genesis block fields + chain_def blob
+ *
+ * Phase 2 / Task 36 — clients fetch the genesis block from any peer
+ * to verify their hardcoded chain_id. The response carries the raw
+ * header fields plus the serialized chain_def blob; the client
+ * reassembles a dnac_block_t, computes the block hash, and compares
+ * against its hardcoded chain_id.
+ *
+ * Request:  "a": {} (no args)
+ * Response: "r": {"found":bool, "height":uint, "prev_hash":bstr,
+ *                  "state_root":bstr, "tx_root":bstr, "tx_count":uint,
+ *                  "ts":uint, "proposer":bstr, "chain_def":bstr}
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_genesis(nodus_witness_t *w,
+                                   struct nodus_tcp_conn *conn,
+                                   uint32_t txn_id) {
+    nodus_witness_block_t blk;
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    int rc = nodus_witness_block_get_genesis(w, &blk, &blob, &blob_len);
+
+    /* Response buffer sized to comfortably hold header fields plus a
+     * full chain_def blob (dnac_chain_def_encoded_size is bounded by
+     * compile-time witness cap; worst-case well under 64 KiB). */
+    size_t buf_cap = 65536;
+    uint8_t *buf = (uint8_t *)malloc(buf_cap);
+    if (!buf) {
+        free(blob);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "out of memory");
+        return;
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, buf_cap);
+
+    if (rc != 0 || blob == NULL || blob_len == 0) {
+        /* No genesis row, or genesis row with no chain_def_blob —
+         * client cannot verify chain_id without the blob, so treat
+         * as not found. */
+        enc_dnac_response(&enc, txn_id, "dnac_genesis", 1);
+        cbor_encode_cstr(&enc, "found");
+        cbor_encode_bool(&enc, false);
+    } else {
+        enc_dnac_response(&enc, txn_id, "dnac_genesis", 9);
+        cbor_encode_cstr(&enc, "found");
+        cbor_encode_bool(&enc, true);
+        cbor_encode_cstr(&enc, "height");
+        cbor_encode_uint(&enc, blk.height);
+        cbor_encode_cstr(&enc, "prev_hash");
+        cbor_encode_bstr(&enc, blk.prev_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "state_root");
+        cbor_encode_bstr(&enc, blk.state_root, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "tx_root");
+        cbor_encode_bstr(&enc, blk.tx_root, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "tx_count");
+        cbor_encode_uint(&enc, blk.tx_count);
+        cbor_encode_cstr(&enc, "ts");
+        cbor_encode_uint(&enc, blk.timestamp);
+        cbor_encode_cstr(&enc, "proposer");
+        cbor_encode_bstr(&enc, blk.proposer_id, NODUS_T3_WITNESS_ID_LEN);
+        cbor_encode_cstr(&enc, "chain_def");
+        cbor_encode_bstr(&enc, blob, blob_len);
+    }
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) {
+        nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
+
+    free(buf);
+    free(blob);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_history — Query transaction history for an owner fingerprint
  *
  * Request:  "a": {"owner": tstr, "limit": uint}
@@ -1834,6 +1913,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_block(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_block_range") == 0) {
         handle_dnac_block_range(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_genesis") == 0) {
+        handle_dnac_genesis(w, conn, txn_id);
     } else if (strcmp(method, "dnac_history") == 0) {
         handle_dnac_history(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_token_list") == 0) {

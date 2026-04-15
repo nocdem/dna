@@ -637,6 +637,55 @@ int nodus_witness_block_get_range(nodus_witness_t *w,
     return 0;
 }
 
+/* Phase 2 / Task 36 — genesis block fetch with chain_def_blob.
+ *
+ * Returns the genesis block row (height == 0) including the
+ * chain_def_blob column. The blob is returned via malloc'd
+ * *blob_out; caller owns and must free(). If the block has no
+ * chain_def_blob (non-genesis or missing), *blob_out = NULL and
+ * *blob_len_out = 0.
+ *
+ * Returns 0 on success (genesis row found), -1 on error / not found.
+ */
+int nodus_witness_block_get_genesis(nodus_witness_t *w,
+                                      nodus_witness_block_t *out,
+                                      uint8_t **blob_out,
+                                      size_t *blob_len_out) {
+    if (!w || !w->db || !out || !blob_out || !blob_len_out) return -1;
+    *blob_out = NULL;
+    *blob_len_out = 0;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT height, tx_root, tx_count, timestamp, proposer_id, prev_hash, state_root, chain_def_blob "
+        "FROM blocks WHERE height = 0", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    block_from_row(stmt, out);
+
+    const void *blob = sqlite3_column_blob(stmt, 7);
+    int blen = sqlite3_column_bytes(stmt, 7);
+    if (blob && blen > 0) {
+        uint8_t *copy = (uint8_t *)malloc((size_t)blen);
+        if (!copy) {
+            sqlite3_finalize(stmt);
+            return -1;
+        }
+        memcpy(copy, blob, (size_t)blen);
+        *blob_out = copy;
+        *blob_len_out = (size_t)blen;
+    }
+
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
 uint64_t nodus_witness_block_height(nodus_witness_t *w) {
     if (!w || !w->db) return 0;
 
