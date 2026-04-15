@@ -265,6 +265,9 @@ if(DNAC_BUILD_TESTS)
     )
 
     add_test(NAME gaps COMMAND test_gaps)
+
+    # Chain-def codec roundtrip + determinism (anchored-merkle-proofs Task 9)
+    register_dnac_test(test_chain_def_codec)
 endif()
 
 # ============================================================================
