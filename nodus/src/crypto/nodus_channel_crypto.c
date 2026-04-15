@@ -154,9 +154,12 @@ int nodus_channel_decrypt(nodus_channel_crypto_t *cc,
         msg_counter = (msg_counter << 8) | nonce[i];
 
     if (msg_counter < cc->rx_counter) {
-        QGP_LOG_ERROR(LOG_TAG, "Replay detected: counter=%llu < expected=%llu",
+        QGP_LOG_ERROR(LOG_TAG,
+                      "Replay detected: counter=%llu < expected=%llu cc=%p tx=%llu",
                       (unsigned long long)msg_counter,
-                      (unsigned long long)cc->rx_counter);
+                      (unsigned long long)cc->rx_counter,
+                      (void *)cc,
+                      (unsigned long long)cc->tx_counter);
         return -1;
     }
 

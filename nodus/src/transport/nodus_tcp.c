@@ -335,8 +335,12 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
                          * real replay/attack we want rx_counter to stay
                          * strictly monotonic. */
                         conn->decrypt_skip_count++;   /* Phase 3.2a visibility */
-                        QGP_LOG_WARN(LOG_TAG_TCP, "decrypt skip: conn=%s:%d frame_len=%u (in-flight plaintext)",
-                                     conn->ip, conn->port, (unsigned)frame.payload_len);
+                        QGP_LOG_WARN(LOG_TAG_TCP,
+                                     "decrypt skip: conn=%s:%d slot=%d cc=%p frame_len=%u skip_count=%u (in-flight plaintext)",
+                                     conn->ip, conn->port, conn->slot,
+                                     (void *)conn->crypto,
+                                     (unsigned)frame.payload_len,
+                                     (unsigned)conn->decrypt_skip_count);
                         free(dec_buf);
                         dec_buf = NULL;
                         /* Skip this frame, continue processing */
