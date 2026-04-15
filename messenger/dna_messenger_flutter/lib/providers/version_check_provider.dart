@@ -23,8 +23,12 @@ int _compareVersions(String a, String b) {
   final aParts = aBase.split('.').map((s) => int.tryParse(s) ?? 0).toList();
   final bParts = bBase.split('.').map((s) => int.tryParse(s) ?? 0).toList();
 
-  while (aParts.length < 3) aParts.add(0);
-  while (bParts.length < 3) bParts.add(0);
+  while (aParts.length < 3) {
+    aParts.add(0);
+  }
+  while (bParts.length < 3) {
+    bParts.add(0);
+  }
 
   for (int i = 0; i < 3; i++) {
     if (aParts[i] > bParts[i]) return 1;

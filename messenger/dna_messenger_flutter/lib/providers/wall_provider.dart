@@ -482,92 +482,6 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     return items;
   }
 
-  /// Merge boost posts into existing state (with full metadata)
-  Future<void> _mergeBoosts(List<WallPost> boostPosts, String myFp) async {
-    // Filter out blocked users' boosts
-    final blockedList = ref.read(blockedUsersProvider).valueOrNull ?? [];
-    if (blockedList.isNotEmpty) {
-      final blockedFps = {for (final b in blockedList) b.fingerprint};
-      boostPosts = boostPosts.where((p) => !blockedFps.contains(p.authorFingerprint)).toList();
-      if (boostPosts.isEmpty) return;
-    }
-
-    final current = state.valueOrNull ?? [];
-    final boostedUuids = {for (final p in boostPosts) p.uuid};
-    final seenUuids = <String>{};
-    final merged = <WallFeedItem>[];
-
-    for (final item in current) {
-      seenUuids.add(item.post.uuid);
-      if (boostedUuids.contains(item.post.uuid)) {
-        merged.add(item.copyWith(
-            post: item.post.copyWith(isBoosted: true)));
-      } else {
-        merged.add(item);
-      }
-    }
-
-    // Add new boost posts not already in timeline — fetch full metadata
-    final newBoosts = boostPosts
-        .where((p) => !seenUuids.contains(p.uuid))
-        .toList();
-
-    if (newBoosts.isNotEmpty) {
-      final engine = await ref.read(engineProvider.future);
-
-      // Batch fetch comments, likes, and profiles for new boost posts
-      final commentsFutures =
-          newBoosts.map((p) => _safeGetComments(engine, p.uuid));
-      final likesFutures =
-          newBoosts.map((p) => _safeGetLikes(engine, p.uuid));
-      final allComments = await Future.wait(commentsFutures);
-      final allLikes = await Future.wait(likesFutures);
-
-      // Prefetch profiles for boost post authors
-      final uniqueAuthors =
-          newBoosts.map((p) => p.authorFingerprint).toSet().toList();
-      final profileCache = ref.read(contactProfileCacheProvider.notifier);
-      await profileCache.prefetchProfiles(uniqueAuthors);
-      final profiles = ref.read(contactProfileCacheProvider);
-
-      // Local nickname overrides from contacts
-      final contactsList = ref.read(contactsProvider).valueOrNull ?? [];
-      final nicknameMap = <String, String>{
-        for (final c in contactsList)
-          if (c.nickname.isNotEmpty) c.fingerprint: c.nickname,
-      };
-
-      for (var i = 0; i < newBoosts.length; i++) {
-        final post = newBoosts[i];
-        final comments = allComments[i];
-        final likes = allLikes[i];
-        final boostedPost = post.copyWith(isBoosted: true);
-        final profile = profiles[post.authorFingerprint];
-        final previewComments =
-            comments.length <= 3 ? comments : comments.sublist(0, 3);
-
-        seenUuids.add(post.uuid);
-        merged.add(WallFeedItem(
-          post: boostedPost,
-          commentCount: comments.length,
-          previewComments: previewComments,
-          likeCount: likes.length,
-          isLikedByMe: likes.any((l) => l.authorFingerprint == myFp),
-          authorDisplayName: nicknameMap[post.authorFingerprint] ??
-              (post.authorName.isNotEmpty
-                  ? post.authorName
-                  : post.authorFingerprint.substring(0, 16)),
-          authorAvatar: profile?.decodeAvatar(),
-          decodedImage: _ImageCache.get(post.uuid),
-        ));
-      }
-    }
-
-    merged.sort((a, b) => b.post.timestamp.compareTo(a.post.timestamp));
-    logger.log('WALL_SCROLL', 'MERGE_BOOSTS count=${merged.length} scrolling=$_userScrolling');
-    _applyOrDefer(merged);
-  }
-
   Future<void> refresh() async {
     _loadedDays = 2;
     _hasMore = true;
@@ -777,14 +691,6 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
     }
   }
 
-  Future<List<WallLike>> _safeGetLikes(
-      DnaEngine engine, String postUuid) async {
-    try {
-      return await engine.wallGetLikes(postUuid);
-    } catch (_) {
-      return [];
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------

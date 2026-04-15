@@ -1470,8 +1470,21 @@ String formatTokenAmount(int rawAmount, int decimals) {
   return '$sign$whole.$fracStr';
 }
 
-int _pow10(int exp) { int r = 1; for (int i = 0; i < exp; i++) r *= 10; return r; }
-bool _listEquals(Uint8List a, Uint8List b) { if (a.length != b.length) return false; for (int i = 0; i < a.length; i++) { if (a[i] != b[i]) return false; } return true; }
+int _pow10(int exp) {
+  int r = 1;
+  for (int i = 0; i < exp; i++) {
+    r *= 10;
+  }
+  return r;
+}
+
+bool _listEquals(Uint8List a, Uint8List b) {
+  if (a.length != b.length) return false;
+  for (int i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
 
 // =============================================================================
 // EXCEPTIONS
@@ -7085,9 +7098,13 @@ class DnaEngine {
         for (var i = 0; i < count; i++) {
           final h = (history + i).ref;
           final txHash = Uint8List(64);
-          for (var j = 0; j < 64; j++) txHash[j] = h.tx_hash[j];
+          for (var j = 0; j < 64; j++) {
+            txHash[j] = h.tx_hash[j];
+          }
           final tokenId = Uint8List(64);
-          for (var j = 0; j < 64; j++) tokenId[j] = h.token_id[j];
+          for (var j = 0; j < 64; j++) {
+            tokenId[j] = h.token_id[j];
+          }
           result.add(DnacTxHistory(
             txHash: txHash,
             type: h.type,
@@ -7136,7 +7153,9 @@ class DnaEngine {
         for (var i = 0; i < count; i++) {
           final u = (utxos + i).ref;
           final txHash = Uint8List(64);
-          for (var j = 0; j < 64; j++) txHash[j] = u.tx_hash[j];
+          for (var j = 0; j < 64; j++) {
+            txHash[j] = u.tx_hash[j];
+          }
           result.add(DnacUtxo(
             txHash: txHash,
             outputIndex: u.output_index,
@@ -7214,7 +7233,9 @@ class DnaEngine {
         for (var i = 0; i < count; i++) {
           final t = (tokens + i).ref;
           final tokenId = Uint8List(64);
-          for (var j = 0; j < 64; j++) tokenId[j] = t.token_id[j];
+          for (var j = 0; j < 64; j++) {
+            tokenId[j] = t.token_id[j];
+          }
           result.add(DnacToken(
             tokenId: tokenId,
             name: t.name.toDartString(33),
@@ -7322,7 +7343,9 @@ class DnaEngine {
     _pendingRequests[localId] = _PendingRequest(callback: callback);
 
     final tokenIdPtr = calloc<Uint8>(64);
-    for (var i = 0; i < 64; i++) tokenIdPtr[i] = tokenId[i];
+    for (var i = 0; i < 64; i++) {
+      tokenIdPtr[i] = tokenId[i];
+    }
 
     final requestId = _bindings.dna_engine_dnac_token_balance(
       _engine, tokenIdPtr, callback.nativeFunction.cast(), nullptr);

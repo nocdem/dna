@@ -273,7 +273,6 @@ class _TipCommentTileState extends ConsumerState<_TipCommentTile> {
     final l10n = AppLocalizations.of(context);
 
     final amount = _tipData?['amount'] as String? ?? '?';
-    final token = _tipData?['token'] as String? ?? 'CPUNK';
 
     return Padding(
       padding: const EdgeInsets.only(bottom: DnaSpacing.sm),

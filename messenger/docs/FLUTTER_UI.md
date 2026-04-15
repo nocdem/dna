@@ -450,7 +450,23 @@ Widget — `WallPostTile` (`lib/widgets/wall_post_tile.dart`):
 - Pure `StatelessWidget` — all data received via constructor (zero provider watches)
 - Displays image from pre-decoded `Uint8List` (fast path) or falls back to `post.imageJson` decode
 - Image is clipped with `radiusSm` rounded corners, constrained to max height 300px
-- Fire glow (1-5 levels based on likes) and boost glow wrapped in `RepaintBoundary`
+- Animated cyber-fire border (`_CyberFireBorder` + `shaders/cyber_fire.frag`) and boost glow wrapped in `RepaintBoundary`
+
+**Wall post cyber fire border (v1.0.0-rc211+):**
+Wall post tiles render an animated GLSL fragment-shader border whose intensity
+and color scale with like count. Heat is computed as
+`log(1 + clamp(likes, 1, 100)) / log(101)` so 1 like already yields ~0.15 heat
+(immediately visible) and saturates at 1.0 for 100+ likes. The shader draws
+only the border strip (interior pixels `discard` early), uses a cyan → blue →
+lavender color ramp sourced from `DnaColors` with a white-hot core that
+emerges only at high heat, and gracefully falls back to the unstyled card if
+shader loading fails. Animation is driven by a `Ticker` inside
+`_CyberFireBorder`, off-screen tiles dispose automatically via
+`ListView.builder`, and `AppLifecycleState.paused` mutes the ticker so battery
+drain is effectively zero when the screen is off. See
+`lib/widgets/wall_post_tile.dart` (`_CyberFireBorder`,
+`_CyberFirePainter`, `heatValueForLikes`) and
+`shaders/cyber_fire.frag`.
 
 Provider — `wallCommentsProvider` (`lib/providers/wall_provider.dart`):
 - `AsyncNotifierProviderFamily<WallCommentsNotifier, List<WallComment>, String>`

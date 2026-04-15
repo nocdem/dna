@@ -1,6 +1,9 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../design_system/design_system.dart';
@@ -14,6 +17,17 @@ import '../services/media_cache_service.dart';
 import '../services/media_service.dart';
 import '../utils/logger.dart';
 import '../utils/time_format.dart';
+
+/// Heat value (0..1) for a given like count, using a log curve:
+///   heat = log(1 + clamp(likes, 1, 100)) / log(101)
+///
+/// Results: 0→0.00, 1→0.15, 10→0.52, 50→0.85, 100+→1.00.
+/// Top-level (public) only so it can be unit tested — pure function, no state.
+double heatValueForLikes(int likes) {
+  if (likes <= 0) return 0.0;
+  final clamped = likes > 100 ? 100 : likes;
+  return math.log(1 + clamped) / math.log(101);
+}
 
 /// Pure presentational widget — receives ALL data via constructor.
 /// Zero provider watches, zero async operations in build.
@@ -70,7 +84,7 @@ class WallPostTile extends StatelessWidget {
             ? post.authorName
             : post.authorFingerprint.substring(0, 16));
 
-    final fireLevel = _fireLevel(likeCount);
+    final heat = heatValueForLikes(likeCount);
 
     Widget card = DnaCard(
       padding: const EdgeInsets.only(
@@ -223,8 +237,8 @@ class WallPostTile extends StatelessWidget {
       ),
     );
 
-    if (fireLevel > 0) {
-      card = RepaintBoundary(child: _FireGlow(level: fireLevel, child: card));
+    if (heat > 0) {
+      card = RepaintBoundary(child: _CyberFireBorder(heat: heat, child: card));
     }
 
     if (isBoosted) {
@@ -234,85 +248,107 @@ class WallPostTile extends StatelessWidget {
     return card;
   }
 
-  /// Returns fire level 0-5 based on like count
-  static int _fireLevel(int count) {
-    if (count <= 0) return 0;
-    if (count < 20) return 1;
-    if (count < 50) return 2;
-    if (count < 80) return 3;
-    if (count < 100) return 4;
-    return 5; // 100 = max fire
-  }
 }
 
-/// Wraps a card with a fire glow effect based on level (1-5)
-class _FireGlow extends StatelessWidget {
-  final int level;
+/// Animated cyber-fire border overlay. Wraps a post card with a
+/// `FragmentShader`-driven flame effect that scales with `heat` (0..1).
+///
+/// If the shader fails to load (unsupported GPU, missing asset), the child
+/// is rendered unchanged — graceful degradation, no crash.
+class _CyberFireBorder extends StatefulWidget {
+  final double heat;
   final Widget child;
+  const _CyberFireBorder({required this.heat, required this.child});
 
-  const _FireGlow({required this.level, required this.child});
+  @override
+  State<_CyberFireBorder> createState() => _CyberFireBorderState();
+}
+
+class _CyberFireBorderState extends State<_CyberFireBorder>
+    with SingleTickerProviderStateMixin {
+  Ticker? _ticker;
+  double _elapsed = 0;
+  ui.FragmentShader? _shader;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadShader();
+    _ticker = createTicker((d) {
+      if (!mounted) return;
+      setState(() => _elapsed = d.inMicroseconds / 1e6);
+    })..start();
+  }
+
+  Future<void> _loadShader() async {
+    try {
+      final program =
+          await ui.FragmentProgram.fromAsset('shaders/cyber_fire.frag');
+      if (mounted) {
+        setState(() => _shader = program.fragmentShader());
+      }
+    } catch (e) {
+      logError('CYBER_FIRE', e);
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker?.dispose();
+    _ticker = null;
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final Color glowColor;
-    final double blur;
-    final double spread;
-    final double borderWidth;
-
-    switch (level) {
-      case 1:
-        glowColor = const Color(0x40FF8C42);
-        blur = 4;
-        spread = 0;
-        borderWidth = 1;
-      case 2:
-        glowColor = const Color(0x66FF6B35);
-        blur = 8;
-        spread = 1;
-        borderWidth = 1.5;
-      case 3:
-        glowColor = const Color(0x80FF4500);
-        blur = 12;
-        spread = 2;
-        borderWidth = 2;
-      case 4:
-        glowColor = const Color(0x99FF2200);
-        blur = 16;
-        spread = 3;
-        borderWidth = 2;
-      case 5:
-        glowColor = const Color(0xBFFFD700);
-        blur = 20;
-        spread = 4;
-        borderWidth = 2.5;
-      default:
-        return child;
-    }
-
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(DnaSpacing.radiusMd),
-        border: Border.all(
-          color: glowColor.withAlpha(180),
-          width: borderWidth,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: glowColor,
-            blurRadius: blur,
-            spreadRadius: spread,
-          ),
-          if (level >= 3)
-            BoxShadow(
-              color: glowColor.withAlpha(glowColor.alpha ~/ 2),
-              blurRadius: blur * 2,
-              spreadRadius: spread / 2,
+    final shader = _shader;
+    if (shader == null) return widget.child;
+    return Stack(children: [
+      widget.child,
+      Positioned.fill(
+        child: IgnorePointer(
+          child: CustomPaint(
+            painter: _CyberFirePainter(
+              shader: shader,
+              time: _elapsed,
+              heat: widget.heat,
+              radius: DnaSpacing.radiusMd,
             ),
-        ],
+          ),
+        ),
       ),
-      child: child,
-    );
+    ]);
   }
+}
+
+class _CyberFirePainter extends CustomPainter {
+  final ui.FragmentShader shader;
+  final double time;
+  final double heat;
+  final double radius;
+
+  _CyberFirePainter({
+    required this.shader,
+    required this.time,
+    required this.heat,
+    required this.radius,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    shader
+      ..setFloat(0, size.width)
+      ..setFloat(1, size.height)
+      ..setFloat(2, time)
+      ..setFloat(3, heat)
+      ..setFloat(4, radius);
+    final paint = Paint()..shader = shader;
+    canvas.drawRect(Offset.zero & size, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CyberFirePainter old) =>
+      old.time != time || old.heat != heat;
 }
 
 /// Wraps a card with a boost glow effect (blue-purple gradient border)
@@ -389,31 +425,6 @@ class _WallPostImage extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-/// Fallback: decodes image from JSON if pre-decoded bytes not available
-class _WallPostImageFallback extends StatelessWidget {
-  final String imageJson;
-
-  const _WallPostImageFallback({required this.imageJson});
-
-  Uint8List? _decodeImage() {
-    try {
-      final map = jsonDecode(imageJson) as Map<String, dynamic>;
-      final data = map['data'] as String?;
-      if (data == null || data.isEmpty) return null;
-      return base64Decode(data);
-    } catch (e) {
-      return null;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bytes = _decodeImage();
-    if (bytes == null) return const SizedBox.shrink();
-    return _WallPostImage(imageBytes: bytes);
   }
 }
 
@@ -617,7 +628,7 @@ class _LazyWallPostImageState extends ConsumerState<_LazyWallPostImage> {
                     _thumbnailBytes!,
                     fit: BoxFit.cover,
                     width: double.infinity,
-                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                    errorBuilder: (_, _, _) => const SizedBox.shrink(),
                   ),
                 ),
                 if (_downloading)

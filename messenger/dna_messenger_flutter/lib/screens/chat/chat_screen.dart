@@ -7,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import '../../ffi/dna_engine.dart';
@@ -1630,11 +1629,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
+              final messenger = ScaffoldMessenger.of(context);
               final success = await ref
                   .read(conversationProvider(contact.fingerprint).notifier)
                   .deleteConversation();
               if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
+                messenger.showSnackBar(
                   SnackBar(
                     content: Text(success
                         ? l10n.chatConversationDeleted
@@ -1813,77 +1813,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       );
     }
-  }
-
-  void _showQrCodeDialog(Contact contact) {
-    final theme = Theme.of(context);
-    final displayName = contact.effectiveName.isNotEmpty
-        ? contact.effectiveName
-        : '${contact.fingerprint.substring(0, 8)}...';
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            const FaIcon(FontAwesomeIcons.qrcode),
-            const SizedBox(width: 8),
-            Expanded(child: Text(displayName, overflow: TextOverflow.ellipsis)),
-          ],
-        ),
-        content: SizedBox(
-          width: 250,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 232,
-                height: 232,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: QrImageView(
-                  data: contact.fingerprint,
-                  version: QrVersions.auto,
-                  size: 200,
-                  backgroundColor: Colors.white,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Scan to add contact',
-                style: theme.textTheme.bodySmall,
-              ),
-              const SizedBox(height: 8),
-              Container(
-                width: 250,
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  contact.fingerprint,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontFamily: 'monospace',
-                    fontSize: 9,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
   }
 
   Future<void> _removeContact(Contact contact) async {

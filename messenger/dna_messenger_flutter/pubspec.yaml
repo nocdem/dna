@@ -2,7 +2,7 @@ name: dna_connect
 description: "Post-quantum encrypted P2P communication with integrated cryptocurrency wallet"
 publish_to: 'none'
 
-version: 1.0.0-rc210+10561
+version: 1.0.0-rc211+10562
 
 environment:
   sdk: ^3.10.0
@@ -109,3 +109,6 @@ flutter:
     - assets/logo-icon.svg
     - assets/icons/crypto/
     - assets/cacert.pem
+
+  shaders:
+    - shaders/cyber_fire.frag

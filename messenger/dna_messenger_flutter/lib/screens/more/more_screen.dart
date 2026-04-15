@@ -72,7 +72,7 @@ class MoreScreen extends ConsumerWidget {
         icon: FontAwesomeIcons.userPlus,
         label: AppLocalizations.of(context).moreInviteFriends,
         onTap: () {
-          final nickname = ref.read(userProfileProvider).valueOrNull?.nickname as String?;
+          final nickname = ref.read(userProfileProvider).valueOrNull?.nickname;
           final username = (nickname != null && nickname.isNotEmpty) ? nickname : 'me';
           final message = AppLocalizations.of(context).inviteFriendsMessage(username);
           Share.share(message);

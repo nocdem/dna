@@ -86,9 +86,7 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
       }
       if (_profile == null && profileCache != null) {
         _profile = profileCache;
-        if (_avatar == null) {
-          _avatar = profileCache.decodeAvatar();
-        }
+        _avatar ??= profileCache.decodeAvatar();
       }
     }
 
@@ -978,8 +976,8 @@ class _UserProfileScreenState extends ConsumerState<UserProfileScreen> {
   }
 
   Future<void> _toggleFollow() async {
-    final engine = await ref.read(engineProvider.future);
     final l10n = AppLocalizations.of(context);
+    final engine = await ref.read(engineProvider.future);
     try {
       if (_isFollowing) {
         await engine.unfollowUser(widget.fingerprint);

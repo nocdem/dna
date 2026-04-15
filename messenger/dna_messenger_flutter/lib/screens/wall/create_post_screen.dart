@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../design_system/design_system.dart';
-import '../../ffi/dna_engine.dart' as engine;
 import '../../providers/providers.dart';
 import '../../services/image_attachment_service.dart';
 import '../../services/media_service.dart';
@@ -34,6 +33,10 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
   final _controller = TextEditingController();
   final _imageService = ImageAttachmentService();
   final _focusNode = FocusNode();
+  // Preserved for API compat with widget.initialAttachment; the screen
+  // currently operates on raw bytes via `_previewBytes`. Routing attachment
+  // metadata into the send path is a separate latent issue.
+  // ignore: unused_field
   ImageAttachment? _attachment;
   Uint8List? _rawImageBytes;
   Uint8List? _previewBytes;
@@ -147,7 +150,7 @@ class _CreatePostScreenState extends ConsumerState<CreatePostScreen>
     final Uint8List? avatarBytes = fullProfile.whenOrNull(
       data: (profile) {
         if (profile == null) return null;
-        return (profile as engine.UserProfile).decodeAvatar();
+        return profile.decodeAvatar();
       },
     );
 

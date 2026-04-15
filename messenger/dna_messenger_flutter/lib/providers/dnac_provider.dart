@@ -58,7 +58,7 @@ class DnacBalanceNotifier extends AsyncNotifier<DnacBalance?>
       return await engine.dnacGetBalance();
     } catch (e) {
       logger.logError('DNAC', 'Balance fetch failed: $e');
-      return this.state.valueOrNull;
+      return state.valueOrNull;
     }
   }
 
@@ -246,7 +246,7 @@ class DnacTokenListNotifier extends AsyncNotifier<List<DnacToken>> {
 // TOKEN BALANCE PROVIDER (per token_id)
 // =============================================================================
 
-/// Family parameter is hex string (NOT List<int>) — strings have value equality
+/// Family parameter is hex string (NOT `List&lt;int&gt;`) — strings have value equality
 /// in Dart, so the same token_id from two rebuilds yields the same provider
 /// instance and avoids infinite re-creation.
 final dnacTokenBalanceProvider =

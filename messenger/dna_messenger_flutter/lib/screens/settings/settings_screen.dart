@@ -355,7 +355,9 @@ class _LanguageContent extends ConsumerWidget {
               return RadioListTile<String>(
                 title: Text(label),
                 value: code,
+                // ignore: deprecated_member_use
                 groupValue: groupValue,
+                // ignore: deprecated_member_use
                 onChanged: (_) {
                   ref.read(localeProvider.notifier).setLocale(
                     code == 'system' ? null : Locale(code),
@@ -540,7 +542,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
             builder: (context) => Dialog(
               insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 32),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              backgroundColor: theme.dialogBackgroundColor,
+              backgroundColor: theme.dialogTheme.backgroundColor ?? theme.colorScheme.surface,
               // SEC-10: FLAG_SECURE is installed on initState and cleared on
               // dispose by SecureDisplayScope, covering all dialog dismissal
               // paths uniformly (copy button, Done button, barrier, back press).

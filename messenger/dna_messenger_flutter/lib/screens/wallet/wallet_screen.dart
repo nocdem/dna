@@ -1,7 +1,6 @@
 // Wallet Screen - Wallet list and balances
 import 'dart:async' show Timer;
 import 'dart:convert' show base64Decode;
-import 'dart:typed_data' show Uint8List;
 import 'dart:ui';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
@@ -12,8 +11,6 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Wallet;
 import '../../providers/addressbook_provider.dart';
-import '../../providers/identity_profile_cache_provider.dart';
-import '../../providers/profile_provider.dart' show fullProfileProvider;
 import '../../providers/portfolio_history_provider.dart';
 import '../../providers/providers.dart' hide UserProfile;
 import '../../design_system/design_system.dart'; // includes DnaColors, DnaGradients, DnaSpacing
@@ -1396,14 +1393,12 @@ class _ChainFilterBar extends ConsumerWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (iconPath != null) ...[
-                        SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: buildCryptoIcon(iconPath),
-                        ),
-                        const SizedBox(width: 6),
-                      ],
+                      SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: buildCryptoIcon(iconPath),
+                      ),
+                      const SizedBox(width: 6),
                       Text(
                         label,
                         style: TextStyle(
@@ -1708,7 +1703,6 @@ class _DnacTokenTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final l10n = AppLocalizations.of(context);
     final hideBalances = ref.watch(walletSettingsProvider).hideBalances;
     final balanceAsync = ref.watch(dnacTokenBalanceProvider(_tokenIdHex(token.tokenId)));
     final confirmed = balanceAsync.valueOrNull?.confirmed ?? 0;
@@ -2812,6 +2806,8 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       );
 
       if (mounted) {
+        final navigator = Navigator.of(context);
+        final messenger = ScaffoldMessenger.of(context);
         String successMsg = l10n.dnacSendSuccess;
         try {
           final engine = await ref.read(engineProvider.future);
@@ -2822,8 +2818,9 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         } catch (_) {
           // Receipt fetch is best-effort — never block UI on it.
         }
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
+        if (!mounted) return;
+        navigator.pop();
+        messenger.showSnackBar(
           SnackBar(
             content: Text(successMsg),
             backgroundColor: DnaColors.snackbarSuccess,
