@@ -477,6 +477,7 @@ typedef union {
     struct {
         char **post_uuids;              /* Heap array of UUID strings (task owns) */
         int post_count;
+        bool cache_only;                /* v0.10.7+: skip DHT phase, return cached counts only */
     } wall_get_engagement;
 
     /* Wall: Boost post (v0.9.71+) */

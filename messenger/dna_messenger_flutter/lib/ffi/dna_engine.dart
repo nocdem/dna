@@ -6545,9 +6545,13 @@ class DnaEngine {
     return completer.future;
   }
 
-  /// Batch fetch engagement data (comments + like count) for multiple posts
+  /// Batch fetch engagement data (comments + like count) for multiple posts.
+  ///
+  /// When [cacheOnly] is true, the C side returns cached counts immediately
+  /// (SQLite only, no DHT round trip). Use for first-paint enrichment; follow
+  /// up with a non-cache-only call to refresh stale entries from DHT.
   Future<List<WallEngagement>> wallGetEngagement(
-      List<String> postUuids) async {
+      List<String> postUuids, {bool cacheOnly = false}) async {
     final completer = Completer<List<WallEngagement>>();
     final localId = _nextLocalId++;
 
@@ -6598,13 +6602,21 @@ class DnaEngine {
         NativeCallable<DnaWallEngagementCbNative>.listener(onComplete);
     _pendingRequests[localId] = _PendingRequest(callback: callback);
 
-    final requestId = _bindings.dna_engine_wall_get_engagement(
-      _engine,
-      nativeUuids,
-      postUuids.length,
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
+    final requestId = cacheOnly
+        ? _bindings.dna_engine_wall_get_engagement_cached(
+            _engine,
+            nativeUuids,
+            postUuids.length,
+            callback.nativeFunction.cast(),
+            nullptr,
+          )
+        : _bindings.dna_engine_wall_get_engagement(
+            _engine,
+            nativeUuids,
+            postUuids.length,
+            callback.nativeFunction.cast(),
+            nullptr,
+          );
 
     if (requestId == 0) {
       for (var i = 0; i < postUuids.length; i++) {

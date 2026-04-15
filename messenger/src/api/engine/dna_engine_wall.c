@@ -1394,6 +1394,20 @@ void dna_handle_wall_get_engagement(dna_engine_t *engine, dna_task_t *task) {
     QGP_LOG_INFO(LOG_TAG, "Engagement batch: %d posts, %d stale comments, %d stale likes",
                  post_count, stale_comment_count, stale_like_count);
 
+    /* Cache-only fast path (v0.10.7+): return phase-1 results without touching DHT */
+    if (task->params.wall_get_engagement.cache_only) {
+        free(need_dht_comments);
+        free(need_dht_likes);
+        for (int i = 0; i < post_count; i++)
+            free(post_uuids[i]);
+        free(post_uuids);
+        task->params.wall_get_engagement.post_uuids = NULL;
+        QGP_LOG_INFO(LOG_TAG, "Batch engagement: %d posts (cache-only, no DHT)", post_count);
+        task->callback.wall_engagement(task->request_id, DNA_OK,
+                                        engagements, post_count, task->user_data);
+        return;
+    }
+
     /* ── Phase 2: Batch fetch stale entries from DHT ── */
     if (stale_comment_count > 0) {
         /* Build keys only for stale comment posts */
@@ -1630,6 +1644,40 @@ dna_request_id_t dna_engine_wall_get_engagement(
     dna_task_params_t params = {0};
     params.wall_get_engagement.post_uuids = uuids_copy;
     params.wall_get_engagement.post_count = post_count;
+    params.wall_get_engagement.cache_only = false;
+
+    dna_task_callback_t cb = {0};
+    cb.wall_engagement = callback;
+
+    return dna_submit_task(engine, TASK_WALL_GET_ENGAGEMENT, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_wall_get_engagement_cached(
+    dna_engine_t *engine,
+    const char **post_uuids,
+    int post_count,
+    dna_wall_engagement_cb callback,
+    void *user_data
+) {
+    if (!engine || !post_uuids || post_count < 1 || !callback)
+        return DNA_REQUEST_ID_INVALID;
+    if (post_count > NODUS_MAX_BATCH_KEYS) post_count = NODUS_MAX_BATCH_KEYS;
+
+    char **uuids_copy = calloc((size_t)post_count, sizeof(char *));
+    if (!uuids_copy) return DNA_REQUEST_ID_INVALID;
+    for (int i = 0; i < post_count; i++) {
+        uuids_copy[i] = strdup(post_uuids[i]);
+        if (!uuids_copy[i]) {
+            for (int j = 0; j < i; j++) free(uuids_copy[j]);
+            free(uuids_copy);
+            return DNA_REQUEST_ID_INVALID;
+        }
+    }
+
+    dna_task_params_t params = {0};
+    params.wall_get_engagement.post_uuids = uuids_copy;
+    params.wall_get_engagement.post_count = post_count;
+    params.wall_get_engagement.cache_only = true;
 
     dna_task_callback_t cb = {0};
     cb.wall_engagement = callback;

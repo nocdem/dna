@@ -4349,6 +4349,25 @@ class DnaBindings {
         engine, postUuids, postCount, callback, userData);
   }
 
+  // Wall Engagement Batch — cache-only variant (v0.10.7+)
+  late final _dna_engine_wall_get_engagement_cached = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Pointer<Utf8>>, Int32,
+          Pointer<DnaWallEngagementCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Pointer<Utf8>>, int,
+          Pointer<DnaWallEngagementCb>, Pointer<Void>)>(
+      'dna_engine_wall_get_engagement_cached');
+
+  int dna_engine_wall_get_engagement_cached(
+    Pointer<dna_engine_t> engine,
+    Pointer<Pointer<Utf8>> postUuids,
+    int postCount,
+    Pointer<DnaWallEngagementCb> callback,
+    Pointer<Void> userData,
+  ) {
+    return _dna_engine_wall_get_engagement_cached(
+        engine, postUuids, postCount, callback, userData);
+  }
+
   late final _dna_free_wall_engagement = _lib.lookupFunction<
       Void Function(Pointer<dna_wall_engagement_t>, Int32),
       void Function(

@@ -3659,6 +3659,21 @@ DNA_API dna_request_id_t dna_engine_wall_get_engagement(
     void *user_data
 );
 
+/**
+ * Wall Engagement Batch — cache-only variant (v0.10.7+)
+ *
+ * Returns cached comment/like counts immediately (SQLite only, no DHT).
+ * Completes in ~ms even for large batches. Use for first paint; follow up
+ * with dna_engine_wall_get_engagement() to refresh stale entries from DHT.
+ */
+DNA_API dna_request_id_t dna_engine_wall_get_engagement_cached(
+    dna_engine_t *engine,
+    const char **post_uuids,
+    int post_count,
+    dna_wall_engagement_cb callback,
+    void *user_data
+);
+
 /** Free engagement array returned by callback */
 DNA_API void dna_free_wall_engagement(dna_wall_engagement_t *engagements, int count);
 

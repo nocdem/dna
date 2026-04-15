@@ -191,30 +191,44 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
         final posts = await engine.wallTimelineCached(fp);
         if (posts.isNotEmpty) {
           var items = await _assembleItems(posts, fp);
+          final uuids = posts.map((p) => p.uuid).toList();
 
-          // Preserve previous engagement (likes/comments) from current state so
-          // we don't flash 0/0 while the async batch is in flight.
-          final prev = state.valueOrNull;
-          if (prev != null && prev.isNotEmpty) {
-            final prevMap = <String, WallFeedItem>{};
-            for (final it in prev) {
-              prevMap[it.post.uuid] = it;
+          // Fast path: cache-only engagement read (SQLite, ~ms) so first paint
+          // carries real like/comment counts — no 0/0 flicker on cold start.
+          try {
+            const batchSize = 32;
+            final futures = <Future<List<WallEngagement>>>[];
+            for (var i = 0; i < uuids.length; i += batchSize) {
+              final chunk = uuids.sublist(
+                  i, i + batchSize > uuids.length ? uuids.length : i + batchSize);
+              futures.add(engine.wallGetEngagement(chunk, cacheOnly: true));
             }
-            items = items.map((item) {
-              final p = prevMap[item.post.uuid];
-              if (p == null) return item;
-              return item.copyWith(
-                likeCount: p.likeCount,
-                isLikedByMe: p.isLikedByMe,
-                commentCount: p.commentCount,
-                previewComments: p.previewComments,
-              );
-            }).toList();
+            final results = await Future.wait(futures);
+            final engagements = results.expand((e) => e).toList();
+            if (engagements.isNotEmpty) {
+              final engMap = <String, WallEngagement>{};
+              for (final e in engagements) {
+                engMap[e.postUuid] = e;
+              }
+              items = items.map((item) {
+                final eng = engMap[item.post.uuid];
+                if (eng == null) return item;
+                final preview = eng.comments.length <= 3
+                    ? eng.comments
+                    : eng.comments.sublist(0, 3);
+                return item.copyWith(
+                  likeCount: eng.likeCount,
+                  isLikedByMe: eng.isLikedByMe,
+                  commentCount: eng.comments.length,
+                  previewComments: preview,
+                );
+              }).toList();
+            }
+          } catch (_) {
+            // Cache-only read failed — fall through, DHT refresh will fill in.
           }
 
-          // Fire-and-forget engagement refresh. Paint immediately; enrich when
-          // the batch returns. Avoids blocking first frame on DHT round trips.
-          final uuids = posts.map((p) => p.uuid).toList();
+          // Background: full engagement refresh (DHT) to update stale entries.
           final baseItems = items;
           Future(() async {
             try {
@@ -232,8 +246,6 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
               for (final e in engagements) {
                 engMap[e.postUuid] = e;
               }
-              // Merge onto whatever is currently in state (may already include
-              // newer items from listener-driven updates).
               final current = state.valueOrNull ?? baseItems;
               final merged = current.map((item) {
                 final eng = engMap[item.post.uuid];
@@ -249,9 +261,9 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
                 );
               }).toList();
               _applyOrDefer(merged);
-              engine.debugLog('WALL_SCROLL', 'ENGAGEMENT_ASYNC_DONE count=${merged.length}');
+              engine.debugLog('WALL_SCROLL', 'ENGAGEMENT_DHT_DONE count=${merged.length}');
             } catch (e) {
-              engine.debugLog('WALL_SCROLL', 'ENGAGEMENT_ASYNC_ERROR $e');
+              engine.debugLog('WALL_SCROLL', 'ENGAGEMENT_DHT_ERROR $e');
             }
           });
 
