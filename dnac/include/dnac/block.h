@@ -114,13 +114,13 @@ typedef struct {
  *     INTEGER column without sign issues
  */
 typedef struct {
-    uint64_t block_height;
-    uint8_t  prev_block_hash[DNAC_BLOCK_HASH_SIZE];
-    uint8_t  state_root[DNAC_BLOCK_HASH_SIZE];
-    uint8_t  tx_root[DNAC_BLOCK_HASH_SIZE];
-    uint32_t tx_count;
-    uint64_t timestamp;
-    uint8_t  proposer_id[DNAC_BLOCK_PROPOSER_SIZE];
+    uint64_t block_height;                          /**< Sequential from 0 */
+    uint8_t  prev_block_hash[DNAC_BLOCK_HASH_SIZE]; /**< SHA3-512 of previous block header */
+    uint8_t  state_root[DNAC_BLOCK_HASH_SIZE];      /**< SHA3-512 over the UTXO set after this block */
+    uint8_t  tx_root[DNAC_BLOCK_HASH_SIZE];         /**< RFC 6962 Merkle root over block TX hashes */
+    uint32_t tx_count;                              /**< Number of TXs (1..NODUS_W_MAX_BLOCK_TXS) */
+    uint64_t timestamp;                             /**< From BFT proposal (deterministic) */
+    uint8_t  proposer_id[DNAC_BLOCK_PROPOSER_SIZE]; /**< Leader who proposed */
 
     /* Genesis-only: meaningful when block_height == 0 (and is_genesis == true).
      * For non-genesis blocks, chain_def is zero-initialized and excluded from
@@ -128,7 +128,7 @@ typedef struct {
     bool                    is_genesis;
     dnac_chain_definition_t chain_def;
 
-    uint8_t  block_hash[DNAC_BLOCK_HASH_SIZE];
+    uint8_t  block_hash[DNAC_BLOCK_HASH_SIZE];      /**< Computed: SHA3-512 of header fields */
 } dnac_block_t;
 
 /* ============================================================================
