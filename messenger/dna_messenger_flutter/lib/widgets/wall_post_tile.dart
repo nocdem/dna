@@ -49,6 +49,7 @@ class WallPostTile extends StatelessWidget {
   final int likeCount;
   final bool isLikedByMe;
   final VoidCallback? onLike;
+  final bool isBoosted;
 
   const WallPostTile({
     super.key,
@@ -69,6 +70,7 @@ class WallPostTile extends StatelessWidget {
     this.likeCount = 0,
     this.isLikedByMe = false,
     this.onLike,
+    this.isBoosted = false,
   });
 
   @override
@@ -236,7 +238,9 @@ class WallPostTile extends StatelessWidget {
     );
 
     if (heat > 0) {
-      card = RepaintBoundary(child: _CyberFireBorder(heat: heat, child: card));
+      card = RepaintBoundary(
+        child: _CyberFireBorder(heat: heat, boost: isBoosted, child: card),
+      );
     }
 
     return card;
@@ -250,8 +254,13 @@ class WallPostTile extends StatelessWidget {
 /// is rendered unchanged — graceful degradation, no crash.
 class _CyberFireBorder extends StatefulWidget {
   final double heat;
+  final bool boost;
   final Widget child;
-  const _CyberFireBorder({required this.heat, required this.child});
+  const _CyberFireBorder({
+    required this.heat,
+    required this.boost,
+    required this.child,
+  });
 
   @override
   State<_CyberFireBorder> createState() => _CyberFireBorderState();
@@ -306,6 +315,7 @@ class _CyberFireBorderState extends State<_CyberFireBorder>
               time: _elapsed,
               heat: widget.heat,
               radius: DnaSpacing.radiusMd,
+              boost: widget.boost ? 1.0 : 0.0,
             ),
           ),
         ),
@@ -319,12 +329,14 @@ class _CyberFirePainter extends CustomPainter {
   final double time;
   final double heat;
   final double radius;
+  final double boost;
 
   _CyberFirePainter({
     required this.shader,
     required this.time,
     required this.heat,
     required this.radius,
+    required this.boost,
   });
 
   @override
@@ -334,7 +346,8 @@ class _CyberFirePainter extends CustomPainter {
       ..setFloat(1, size.height)
       ..setFloat(2, time)
       ..setFloat(3, heat)
-      ..setFloat(4, radius);
+      ..setFloat(4, radius)
+      ..setFloat(5, boost);
     final paint = Paint()
       ..shader = shader
       ..blendMode = BlendMode.plus;
@@ -343,7 +356,7 @@ class _CyberFirePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _CyberFirePainter old) =>
-      old.time != time || old.heat != heat;
+      old.time != time || old.heat != heat || old.boost != boost;
 }
 
 /// Displays an image from pre-decoded bytes (fast path)

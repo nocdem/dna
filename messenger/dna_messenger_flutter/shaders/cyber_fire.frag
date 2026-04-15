@@ -8,6 +8,7 @@ uniform vec2  uSize;
 uniform float uTime;
 uniform float uHeat;
 uniform float uRadius;
+uniform float uBoost;  // 0 = normal (cyan cyber), 1 = boosted (warm amber)
 
 out vec4 fragColor;
 
@@ -84,10 +85,20 @@ void main() {
     float threshold = 0.60 - uHeat * 0.45;
     float flame = smoothstep(threshold, 0.95, n) * profile;
 
-    vec3 cold = vec3(0.000, 0.831, 1.000);  // #00D4FF
-    vec3 mid  = vec3(0.000, 0.400, 1.000);  // #0066FF
-    vec3 hot  = vec3(0.753, 0.518, 0.812);  // #C084CF
-    vec3 core = vec3(1.0);
+    // Normal (cold cyber plasma): cyan → blue → lavender
+    vec3 coldA = vec3(0.000, 0.831, 1.000);  // #00D4FF DnaColors.primary
+    vec3 midA  = vec3(0.000, 0.400, 1.000);  // #0066FF gradientEnd
+    vec3 hotA  = vec3(0.753, 0.518, 0.812);  // #C084CF accent
+
+    // Boosted (warm fire): amber → orange → hot pink
+    vec3 coldB = vec3(0.961, 0.620, 0.043);  // #F59E0B DnaColors.warning
+    vec3 midB  = vec3(0.984, 0.573, 0.235);  // #FB923C orange
+    vec3 hotB  = vec3(0.957, 0.447, 0.714);  // #F472B6 hot pink
+
+    vec3 cold = mix(coldA, coldB, uBoost);
+    vec3 mid  = mix(midA,  midB,  uBoost);
+    vec3 hot  = mix(hotA,  hotB,  uBoost);
+    vec3 core = vec3(1.0);  // white-hot shared by both
 
     vec3 color = mix(cold, mid, flame);
     color = mix(color, hot,  flame * uHeat);

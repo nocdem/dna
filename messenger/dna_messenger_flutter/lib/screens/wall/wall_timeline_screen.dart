@@ -149,6 +149,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                       commentCount: item.commentCount,
                       likeCount: item.likeCount,
                       isLikedByMe: item.isLikedByMe,
+                      isBoosted: item.post.isBoosted,
                       decodedImage: item.decodedImage,
                       onLike: item.isLikedByMe
                           ? null
@@ -219,6 +220,7 @@ class _WallTimelineScreenState extends ConsumerState<WallTimelineScreen> {
                   commentCount: item.commentCount,
                   likeCount: item.likeCount,
                   isLikedByMe: item.isLikedByMe,
+                  isBoosted: item.post.isBoosted,
                   onLike: item.isLikedByMe
                       ? null
                       : () => ref
