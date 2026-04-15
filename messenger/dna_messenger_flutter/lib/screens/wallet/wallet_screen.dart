@@ -2812,26 +2812,24 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       );
 
       if (mounted) {
-        // Phase 13 / Task 13.5 — append witness receipt (block + short tx
-        // hash) to the success snackbar when available. tx_index is always
-        // 0 while batches hold a single TX, so it is unhelpful to display —
-        // show the tx hash prefix instead.
         String successMsg = l10n.dnacSendSuccess;
         try {
           final engine = await ref.read(engineProvider.future);
           final receipt = await engine.dnacLastSendReceipt();
           if (receipt != null) {
-            final shortHash = receipt.txHashHex.length >= 16
-                ? '${receipt.txHashHex.substring(0, 16)}…'
-                : receipt.txHashHex;
-            successMsg = '$successMsg\nBlock ${receipt.blockHeight} · $shortHash';
+            successMsg = '$successMsg\n${receipt.txHashHex}';
           }
         } catch (_) {
           // Receipt fetch is best-effort — never block UI on it.
         }
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(successMsg)),
+          SnackBar(
+            content: Text(successMsg),
+            backgroundColor: DnaColors.snackbarSuccess,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 3),
+          ),
         );
       }
     } catch (e) {
@@ -2840,6 +2838,8 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
           SnackBar(
             content: Text('${l10n.dnacSendFailed}: $e'),
             backgroundColor: DnaColors.snackbarError,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 3),
           ),
         );
       }
