@@ -42,6 +42,56 @@ extern "C" {
 #define DNAC_BLOCK_PROPOSER_SIZE 32  /* Witness ID */
 
 /* ============================================================================
+ * Chain Definition (genesis block only)
+ *
+ * Carried in dnac_block_t.chain_def when block_height == 0 (genesis).
+ * Hash preimage of the genesis block includes every field below, so chain_id
+ * (= genesis block_hash) transitively commits to the entire chain definition.
+ *
+ * This struct is the "constitution" of a chain. Once the genesis is created,
+ * none of these values can change without producing a different chain_id
+ * (i.e. a hard fork).
+ * ========================================================================== */
+
+#define DNAC_CHAIN_NAME_LEN          32
+#define DNAC_GENESIS_MESSAGE_LEN     64
+#define DNAC_TOKEN_SYMBOL_LEN        8
+#define DNAC_TOKEN_ID_SIZE           64
+#define DNAC_PUBKEY_SIZE             2592   /* Dilithium5 */
+#define DNAC_FEE_RECIPIENT_SIZE      32
+
+#ifndef NODUS_W_MAX_WITNESSES
+#define NODUS_W_MAX_WITNESSES        21     /* compile-time cap; runtime uses witness_count */
+#endif
+
+typedef struct {
+    /* Chain identification */
+    char     chain_name[DNAC_CHAIN_NAME_LEN];
+    uint32_t protocol_version;
+    uint8_t  parent_chain_id[DNAC_BLOCK_HASH_SIZE];
+    char     genesis_message[DNAC_GENESIS_MESSAGE_LEN];
+
+    /* Witness set */
+    uint32_t witness_count;
+    uint32_t max_active_witnesses;
+    uint8_t  witness_pubkeys[NODUS_W_MAX_WITNESSES][DNAC_PUBKEY_SIZE];
+
+    /* Consensus parameters */
+    uint32_t block_interval_sec;
+    uint32_t max_txs_per_block;
+    uint32_t view_change_timeout_ms;
+
+    /* Token parameters */
+    char     token_symbol[DNAC_TOKEN_SYMBOL_LEN];
+    uint8_t  token_decimals;
+    uint64_t initial_supply_raw;
+    uint8_t  native_token_id[DNAC_TOKEN_ID_SIZE];
+
+    /* Economic */
+    uint8_t  fee_recipient[DNAC_FEE_RECIPIENT_SIZE];
+} dnac_chain_definition_t;
+
+/* ============================================================================
  * Block Header
  * ========================================================================== */
 
