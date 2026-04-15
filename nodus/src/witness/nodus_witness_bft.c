@@ -2370,6 +2370,12 @@ static void bft_emit_batch_replies(nodus_witness_t *w) {
                 fwd_rsp.fwd_rsp.status = 0;
                 memcpy(fwd_rsp.fwd_rsp.tx_hash, e->tx_hash,
                        NODUS_T3_TX_HASH_LEN);
+                /* Phase 13 / Task 13.2 — populate full receipt fields so
+                 * the forwarder can pass them through to the client
+                 * instead of the legacy hardcoded 0/0. */
+                fwd_rsp.fwd_rsp.block_height = e->committed_block_height;
+                fwd_rsp.fwd_rsp.tx_index = e->committed_tx_index;
+                memcpy(fwd_rsp.fwd_rsp.chain_id, w->chain_id, 32);
                 fill_header(w, &fwd_rsp.header);
                 uint8_t fwd_buf[NODUS_T3_MAX_MSG_SIZE];
                 size_t fwd_len = 0;

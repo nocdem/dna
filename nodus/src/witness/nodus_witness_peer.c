@@ -775,17 +775,18 @@ int nodus_witness_peer_handle_fwd_rsp(nodus_witness_t *w,
         return -1;
     }
 
-    /* Send spend result to original client.
-     * Phase 12 / Task 12.5 — build a minimal stack entry with just the
-     * tx_hash + client routing. block_height / tx_index are 0 because
-     * the fwd_rsp wire does not yet carry them; Phase 13 / Task 13.2
-     * extends fwd_rsp with bnr/ti so this path produces a full receipt. */
+    /* Send spend result to original client. Phase 13 / Task 13.2 — the
+     * fwd_rsp wire now carries block_height / tx_index / chain_id from
+     * the leader, so the forwarder can pass the full receipt through to
+     * the client instead of hardcoding 0/0. */
     if (rsp->status == 0) {
         nodus_witness_mempool_entry_t stack_entry;
         memset(&stack_entry, 0, sizeof(stack_entry));
         memcpy(stack_entry.tx_hash, rsp->tx_hash, NODUS_T3_TX_HASH_LEN);
         stack_entry.client_conn = client_conn;
         stack_entry.client_txn_id = client_txn_id;
+        stack_entry.committed_block_height = rsp->block_height;
+        stack_entry.committed_tx_index = rsp->tx_index;
         nodus_witness_send_spend_result(w, &stack_entry, 0, NULL);
     } else {
         /* Send error response */

@@ -182,10 +182,13 @@ static void enc_fwd_req_args(cbor_encoder_t *enc, const nodus_t3_fwd_req_t *f) {
 }
 
 static void enc_fwd_rsp_args(cbor_encoder_t *enc, const nodus_t3_fwd_rsp_t *f) {
-    cbor_encode_map(enc, 4);
+    cbor_encode_map(enc, 7);
     cbor_encode_cstr(enc, "st");  cbor_encode_uint(enc, f->status);
     cbor_encode_cstr(enc, "txh"); cbor_encode_bstr(enc, f->tx_hash,
                                                     NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "bnr"); cbor_encode_uint(enc, f->block_height);
+    cbor_encode_cstr(enc, "ti");  cbor_encode_uint(enc, (uint64_t)f->tx_index);
+    cbor_encode_cstr(enc, "cid"); cbor_encode_bstr(enc, f->chain_id, 32);
     cbor_encode_cstr(enc, "wc");  cbor_encode_uint(enc, f->witness_count);
     cbor_encode_cstr(enc, "ws");
     cbor_encode_array(enc, f->witness_count);
@@ -754,6 +757,20 @@ static void dec_fwd_rsp_args(cbor_decoder_t *dec, size_t count,
             if (val.type == CBOR_ITEM_BSTR &&
                 val.bstr.len == NODUS_T3_TX_HASH_LEN)
                 memcpy(f->tx_hash, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        }
+        else if (KEY_IS(key, "bnr")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) f->block_height = val.uint_val;
+        }
+        else if (KEY_IS(key, "ti")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                f->tx_index = (uint32_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "cid")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(f->chain_id, val.bstr.ptr, 32);
         }
         else if (KEY_IS(key, "wc")) {
             cbor_item_t val = cbor_decode_next(dec);

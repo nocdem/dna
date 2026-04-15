@@ -180,6 +180,14 @@ typedef struct {
     uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
     uint32_t    witness_count;
     nodus_t3_witness_sig_t witnesses[NODUS_T3_MAX_TX_WITNESSES];
+    /* Phase 13 / Task 13.2 — full receipt data passed through to the
+     * forwarder so the original client sees block_height / tx_index /
+     * chain_id in the spend result. Without these fields on the wire the
+     * forwarder had to hardcode 0/0 and the client UI would display zero
+     * block height even though the TX committed. */
+    uint64_t    block_height;
+    uint32_t    tx_index;
+    uint8_t     chain_id[32];
 } nodus_t3_fwd_rsp_t;
 
 /** w_rost_q: Request roster from peer */

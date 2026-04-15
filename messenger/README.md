@@ -200,7 +200,7 @@ cd messenger
 |-----------|---------|
 | C Library | v0.9.194 |
 | Flutter App | v1.0.0-rc206 |
-| Nodus | v0.12.4 |
+| Nodus | v0.12.6 |
 | DNAC | v0.13.2 |
 
 ---
