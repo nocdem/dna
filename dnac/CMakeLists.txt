@@ -271,6 +271,7 @@ if(DNAC_BUILD_TESTS)
 
     # Fixed-vector test for dnac_merkle_verify_proof (anchored-merkle-proofs Task 17)
     register_dnac_test(test_merkle_verify)
+    register_dnac_test(test_anchor_verify)
 endif()
 
 # ============================================================================
