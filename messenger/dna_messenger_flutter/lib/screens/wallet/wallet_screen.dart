@@ -2812,15 +2812,19 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       );
 
       if (mounted) {
-        // Phase 13 / Task 13.5 — append witness receipt (block, tx_index)
-        // to the success snackbar when available.
+        // Phase 13 / Task 13.5 — append witness receipt (block + short tx
+        // hash) to the success snackbar when available. tx_index is always
+        // 0 while batches hold a single TX, so it is unhelpful to display —
+        // show the tx hash prefix instead.
         String successMsg = l10n.dnacSendSuccess;
         try {
           final engine = await ref.read(engineProvider.future);
           final receipt = await engine.dnacLastSendReceipt();
           if (receipt != null) {
-            successMsg = '$successMsg\nBlock ${receipt.blockHeight} · '
-                'tx_index ${receipt.txIndex}';
+            final shortHash = receipt.txHashHex.length >= 16
+                ? '${receipt.txHashHex.substring(0, 16)}…'
+                : receipt.txHashHex;
+            successMsg = '$successMsg\nBlock ${receipt.blockHeight} · $shortHash';
           }
         } catch (_) {
           // Receipt fetch is best-effort — never block UI on it.
