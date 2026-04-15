@@ -1508,6 +1508,9 @@ class AppLocalizationsIt extends AppLocalizations {
   String get txDetailNetwork => 'Rete';
 
   @override
+  String get txDetailMemo => 'Memo';
+
+  @override
   String get txDetailAddressCopied => 'Indirizzo copiato';
 
   @override

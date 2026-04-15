@@ -1,12 +1,12 @@
 // DNAC History Screen - Transaction history list
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/dnac_provider.dart';
 import '../../l10n/app_localizations.dart';
+import 'wallet_screen.dart' show TransactionDetailSheet;
 
 class DnacHistoryScreen extends ConsumerWidget {
   const DnacHistoryScreen({super.key});
@@ -130,7 +130,10 @@ class _HistoryTile extends StatelessWidget {
         context: context,
         isScrollControlled: true,
         backgroundColor: Colors.transparent,
-        builder: (_) => _DnacTxDetailSheet(tx: tx),
+        builder: (_) => TransactionDetailSheet(
+          transaction: Transaction.fromDnacTxHistory(tx),
+          network: 'dnac',
+        ),
       ),
       leading: Container(
         width: 40,
@@ -180,253 +183,3 @@ class _HistoryTile extends StatelessWidget {
   }
 }
 
-String _hexEncode(Uint8List bytes) {
-  final sb = StringBuffer();
-  for (final b in bytes) {
-    sb.write(b.toRadixString(16).padLeft(2, '0'));
-  }
-  return sb.toString();
-}
-
-String _shortenMiddle(String s, {int head = 10, int tail = 8}) {
-  if (s.length <= head + tail + 3) return s;
-  return '${s.substring(0, head)}...${s.substring(s.length - tail)}';
-}
-
-class _DnacTxDetailSheet extends StatelessWidget {
-  final DnacTxHistory tx;
-
-  const _DnacTxDetailSheet({required this.tx});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final l10n = AppLocalizations.of(context);
-
-    final isGenesis = tx.type == 0;
-    final isBurn = tx.type == 2;
-    final isReceived = !isGenesis && !isBurn && tx.amountDelta > 0;
-    final isSent = !isGenesis && !isBurn && tx.amountDelta < 0;
-
-    final LinearGradient headerGradient;
-    final String typeLabel;
-    if (isGenesis) {
-      headerGradient = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Color(0xFF9C27B0), Color(0xFF6A1B9A)],
-      );
-      typeLabel = l10n.dnacHistoryGenesis;
-    } else if (isBurn) {
-      headerGradient = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Color(0xFFE8871E), Color(0xFFD45B0A)],
-      );
-      typeLabel = l10n.dnacHistoryBurn;
-    } else if (isReceived) {
-      headerGradient = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Color(0xFF00B87A), Color(0xFF00875A)],
-      );
-      typeLabel = l10n.dnacHistoryReceived;
-    } else {
-      headerGradient = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Color(0xFF1E88E5), Color(0xFF1565C0)],
-      );
-      typeLabel = l10n.dnacHistorySent;
-    }
-
-    final sign = tx.amountDelta >= 0 ? '+' : '-';
-    final symbol = tx.isNative ? 'DNAC' : 'TOKEN';
-    final txHashHex = _hexEncode(tx.txHash);
-    final dateStr = DateFormat.yMMMd().add_Hms().format(tx.timestamp);
-
-    return Container(
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      child: SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              margin: const EdgeInsets.only(top: 8),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: theme.dividerColor,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.all(16),
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
-              decoration: BoxDecoration(
-                gradient: headerGradient,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Column(
-                children: [
-                  Text(
-                    '$sign${tx.amountFormatted} $symbol',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 32,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.5,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    typeLabel,
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.85),
-                      fontSize: 15,
-                      fontWeight: FontWeight.w500,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Column(
-                children: [
-                  if (tx.counterparty.isNotEmpty) ...[
-                    _DetailRow(
-                      icon: FontAwesomeIcons.user,
-                      label: isReceived ? l10n.txDetailFrom : l10n.txDetailTo,
-                      value: _shortenMiddle(tx.counterparty),
-                      monospace: true,
-                      onTap: () => _copyAndNotify(
-                          context, tx.counterparty, l10n.txDetailAddressCopied),
-                    ),
-                    const Divider(height: 1),
-                  ],
-                  _DetailRow(
-                    icon: FontAwesomeIcons.hashtag,
-                    label: l10n.txDetailTransactionHash,
-                    value: _shortenMiddle(txHashHex),
-                    monospace: true,
-                    onTap: () => _copyAndNotify(
-                        context, txHashHex, l10n.txDetailHashCopied),
-                  ),
-                  const Divider(height: 1),
-                  _DetailRow(
-                    icon: FontAwesomeIcons.clock,
-                    label: l10n.txDetailTime,
-                    value: dateStr,
-                  ),
-                  if (isSent && tx.fee > 0) ...[
-                    const Divider(height: 1),
-                    _DetailRow(
-                      icon: FontAwesomeIcons.coins,
-                      label: 'Fee',
-                      value: '${tx.feeFormatted} $symbol',
-                    ),
-                  ],
-                  if (tx.memo.isNotEmpty) ...[
-                    const Divider(height: 1),
-                    _DetailRow(
-                      icon: FontAwesomeIcons.noteSticky,
-                      label: 'Memo',
-                      value: tx.memo,
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: SizedBox(
-                width: double.infinity,
-                child: TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(l10n.txDetailClose),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _copyAndNotify(BuildContext context, String text, String message) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 2),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-}
-
-class _DetailRow extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  final bool monospace;
-  final VoidCallback? onTap;
-
-  const _DetailRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-    this.monospace = false,
-    this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 14),
-        child: Row(
-          children: [
-            FaIcon(icon, size: 14, color: theme.colorScheme.primary),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.outline,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    value,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      fontFamily: monospace ? 'monospace' : null,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (onTap != null)
-              FaIcon(FontAwesomeIcons.copy,
-                  size: 12, color: theme.colorScheme.outline),
-          ],
-        ),
-      ),
-    );
-  }
-}

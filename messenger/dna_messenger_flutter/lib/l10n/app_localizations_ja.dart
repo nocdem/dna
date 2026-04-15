@@ -1480,6 +1480,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get txDetailNetwork => 'ネットワーク';
 
   @override
+  String get txDetailMemo => 'Memo';
+
+  @override
   String get txDetailAddressCopied => 'アドレスをコピーしました';
 
   @override

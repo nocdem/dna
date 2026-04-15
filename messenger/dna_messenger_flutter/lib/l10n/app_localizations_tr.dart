@@ -1505,6 +1505,9 @@ class AppLocalizationsTr extends AppLocalizations {
   String get txDetailNetwork => 'Ağ';
 
   @override
+  String get txDetailMemo => 'Not';
+
+  @override
   String get txDetailAddressCopied => 'Adres kopyalandı';
 
   @override

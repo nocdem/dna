@@ -3973,7 +3973,7 @@ class _TransactionTile extends StatelessWidget {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => _TransactionDetailSheet(
+      builder: (context) => TransactionDetailSheet(
         transaction: transaction,
         network: network,
       ),
@@ -3981,12 +3981,15 @@ class _TransactionTile extends StatelessWidget {
   }
 }
 
-/// Modern transaction detail bottom sheet
-class _TransactionDetailSheet extends ConsumerWidget {
+/// Modern transaction detail bottom sheet. Public so DNAC history screens
+/// can share the same design; DNAC-specific fields (memo, genesis/burn
+/// kind) come through the Transaction model's optional fields.
+class TransactionDetailSheet extends ConsumerWidget {
   final Transaction transaction;
   final String network;
 
-  const _TransactionDetailSheet({
+  const TransactionDetailSheet({
+    super.key,
     required this.transaction,
     required this.network,
   });
@@ -3994,13 +3997,23 @@ class _TransactionDetailSheet extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
+    final isGenesis = transaction.kind == 'genesis';
+    final isBurn = transaction.kind == 'burn';
     final isReceived = transaction.direction.toLowerCase() == 'received';
     final isDenied = ['FAILED', 'REJECTED', 'DENIED'].contains(transaction.status.toUpperCase());
     final addressInBook = ref.watch(addressExistsProvider((transaction.otherAddress, network)));
 
-    // Direction-based gradient: blue=send, green=receive, orange=denied
+    // Direction/kind-based gradient:
+    //   genesis=purple, burn=orange, denied=orange, receive=green, send=blue
     final LinearGradient headerGradient;
-    if (isDenied) {
+    if (isGenesis) {
+      headerGradient = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFF9C27B0), Color(0xFF6A1B9A)],
+      );
+    } else if (isBurn || isDenied) {
       headerGradient = const LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
@@ -4016,11 +4029,13 @@ class _TransactionDetailSheet extends ConsumerWidget {
       headerGradient = DnaGradients.primaryVertical;
     }
 
-    final l10n = AppLocalizations.of(context);
-
     // Header subtitle
     final String headerSubtitle;
-    if (isDenied) {
+    if (isGenesis) {
+      headerSubtitle = l10n.dnacHistoryGenesis;
+    } else if (isBurn) {
+      headerSubtitle = l10n.dnacHistoryBurn;
+    } else if (isDenied) {
       headerSubtitle = l10n.txDetailDenied;
     } else if (isReceived) {
       headerSubtitle = l10n.txDetailReceived;
@@ -4090,16 +4105,19 @@ class _TransactionDetailSheet extends ConsumerWidget {
               padding: const EdgeInsets.symmetric(horizontal: DnaSpacing.lg),
               child: Column(
                 children: [
-                  _buildDetailRow(
-                    context,
-                    icon: FontAwesomeIcons.user,
-                    label: isReceived ? l10n.txDetailFrom : l10n.txDetailTo,
-                    value: transaction.resolvedName ?? _formatAddress(transaction.otherAddress),
-                    subtitle: transaction.resolvedName != null ? transaction.otherAddress : null,
-                    monospace: transaction.resolvedName == null,
-                    onTap: () => _copyAndNotify(context, transaction.otherAddress, l10n.txDetailAddressCopied),
-                  ),
-                  _buildDivider(theme),
+                  // Counterparty row — hidden for genesis/burn when empty
+                  if (transaction.otherAddress.isNotEmpty) ...[
+                    _buildDetailRow(
+                      context,
+                      icon: FontAwesomeIcons.user,
+                      label: isReceived ? l10n.txDetailFrom : l10n.txDetailTo,
+                      value: transaction.resolvedName ?? _formatAddress(transaction.otherAddress),
+                      subtitle: transaction.resolvedName != null ? transaction.otherAddress : null,
+                      monospace: transaction.resolvedName == null,
+                      onTap: () => _copyAndNotify(context, transaction.otherAddress, l10n.txDetailAddressCopied),
+                    ),
+                    _buildDivider(theme),
+                  ],
                   _buildDetailRow(
                     context,
                     icon: FontAwesomeIcons.hashtag,
@@ -4122,6 +4140,17 @@ class _TransactionDetailSheet extends ConsumerWidget {
                     label: l10n.txDetailNetwork,
                     value: getNetworkDisplayLabel(network),
                   ),
+                  // DNAC-only memo row
+                  if (transaction.memo != null &&
+                      transaction.memo!.isNotEmpty) ...[
+                    _buildDivider(theme),
+                    _buildDetailRow(
+                      context,
+                      icon: FontAwesomeIcons.noteSticky,
+                      label: l10n.txDetailMemo,
+                      value: transaction.memo!,
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -4377,6 +4406,15 @@ class _DnacTxTile extends StatelessWidget {
         : '';
 
     return ListTile(
+      onTap: () => showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (_) => TransactionDetailSheet(
+          transaction: Transaction.fromDnacTxHistory(tx),
+          network: 'dnac',
+        ),
+      ),
       leading: Container(
         width: 40, height: 40,
         decoration: BoxDecoration(color: color.withAlpha(25), shape: BoxShape.circle),

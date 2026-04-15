@@ -1493,6 +1493,9 @@ class AppLocalizationsAr extends AppLocalizations {
   String get txDetailNetwork => 'الشبكة';
 
   @override
+  String get txDetailMemo => 'Memo';
+
+  @override
   String get txDetailAddressCopied => 'تم نسخ العنوان';
 
   @override

@@ -456,6 +456,7 @@
   "txDetailTransactionHash": "İşlem Kodu",
   "txDetailTime": "Zaman",
   "txDetailNetwork": "Ağ",
+  "txDetailMemo": "Not",
   "txDetailAddressCopied": "Adres kopyalandı",
   "txDetailHashCopied": "İşlem kodu kopyalandı",
   "txDetailAddToAddressBook": "Adres Defterine Ekle",

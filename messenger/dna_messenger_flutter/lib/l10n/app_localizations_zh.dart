@@ -1472,6 +1472,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get txDetailNetwork => '网络';
 
   @override
+  String get txDetailMemo => 'Memo';
+
+  @override
   String get txDetailAddressCopied => '地址已复制';
 
   @override

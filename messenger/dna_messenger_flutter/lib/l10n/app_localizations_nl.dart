@@ -1504,6 +1504,9 @@ class AppLocalizationsNl extends AppLocalizations {
   String get txDetailNetwork => 'Netwerk';
 
   @override
+  String get txDetailMemo => 'Memo';
+
+  @override
   String get txDetailAddressCopied => 'Adres gekopieerd';
 
   @override

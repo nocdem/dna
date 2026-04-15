@@ -650,6 +650,12 @@ class Transaction {
   final String otherAddress;
   final String timestamp;
   final String status;
+  // DNAC-only extras (null for multi-chain transactions).
+  // `memo` is the optional note attached to a DNAC payment.
+  // `kind` overrides the send/receive gradient for DNAC-specific
+  // transaction types — currently "genesis" or "burn".
+  final String? memo;
+  final String? kind;
   String? resolvedName;
 
   Transaction({
@@ -660,6 +666,8 @@ class Transaction {
     required this.otherAddress,
     required this.timestamp,
     required this.status,
+    this.memo,
+    this.kind,
     this.resolvedName,
   });
 
@@ -672,6 +680,36 @@ class Transaction {
       otherAddress: native.other_address.toDartString(120),
       timestamp: native.timestamp.toDartString(32),
       status: native.status.toDartString(32),
+    );
+  }
+
+  /// Adapt a DNAC transaction history entry so it can flow through the
+  /// generic transaction detail sheet. Genesis and burn rows use the
+  /// `kind` override to get their own gradient; normal spends fall back
+  /// to the direction-based colour path.
+  factory Transaction.fromDnacTxHistory(DnacTxHistory tx) {
+    final sb = StringBuffer();
+    for (final b in tx.txHash) {
+      sb.write(b.toRadixString(16).padLeft(2, '0'));
+    }
+    final hashHex = sb.toString();
+    final isPositive = tx.amountDelta >= 0;
+    final String? kind = tx.type == 0
+        ? 'genesis'
+        : tx.type == 2
+            ? 'burn'
+            : null;
+    return Transaction(
+      txHash: hashHex,
+      direction: isPositive ? 'received' : 'sent',
+      amount: tx.amountFormatted,
+      token: tx.isNative ? 'DNAC' : 'TOKEN',
+      otherAddress: tx.counterparty,
+      timestamp:
+          (tx.timestamp.millisecondsSinceEpoch ~/ 1000).toString(),
+      status: 'CONFIRMED',
+      memo: tx.memo.isEmpty ? null : tx.memo,
+      kind: kind,
     );
   }
 }

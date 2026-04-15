@@ -2852,6 +2852,12 @@ abstract class AppLocalizations {
   /// **'Network'**
   String get txDetailNetwork;
 
+  /// No description provided for @txDetailMemo.
+  ///
+  /// In en, this message translates to:
+  /// **'Memo'**
+  String get txDetailMemo;
+
   /// No description provided for @txDetailAddressCopied.
   ///
   /// In en, this message translates to:

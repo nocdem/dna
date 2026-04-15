@@ -789,6 +789,7 @@
   "txDetailTransactionHash": "Transaction Hash",
   "txDetailTime": "Time",
   "txDetailNetwork": "Network",
+  "txDetailMemo": "Memo",
   "txDetailAddressCopied": "Address copied",
   "txDetailHashCopied": "Hash copied",
   "txDetailAddToAddressBook": "Add to Address Book",

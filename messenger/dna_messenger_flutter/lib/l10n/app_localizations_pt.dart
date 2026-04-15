@@ -1509,6 +1509,9 @@ class AppLocalizationsPt extends AppLocalizations {
   String get txDetailNetwork => 'Rede';
 
   @override
+  String get txDetailMemo => 'Memo';
+
+  @override
   String get txDetailAddressCopied => 'Endereço copiado';
 
   @override

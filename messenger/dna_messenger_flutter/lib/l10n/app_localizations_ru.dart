@@ -1506,6 +1506,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get txDetailNetwork => 'Сеть';
 
   @override
+  String get txDetailMemo => 'Memo';
+
+  @override
   String get txDetailAddressCopied => 'Адрес скопирован';
 
   @override
