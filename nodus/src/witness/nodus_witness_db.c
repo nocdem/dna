@@ -812,6 +812,65 @@ int nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,
 
 /* ── Transaction history by owner ────────────────────────────────── */
 
+/* Parse memos out of a raw committed TX blob and stamp them onto the
+ * outputs of `entry` by matching output_index. Silently tolerates
+ * malformed blobs — missing memo leaves output memo_len at 0. Blob
+ * layout mirrors the writer in nodus_witness_bft.c (TX wire format).
+ */
+static void fill_memos_from_raw_tx(nodus_witness_t *w,
+                                    nodus_witness_tx_history_entry_t *entry) {
+    if (!w || !entry) return;
+
+    uint8_t tx_type = 0;
+    uint8_t *tx_data = NULL;
+    uint32_t tx_len = 0;
+    uint64_t bh = 0;
+    if (nodus_witness_tx_get(w, entry->tx_hash, &tx_type, &tx_data,
+                              &tx_len, &bh) != 0 || !tx_data || tx_len < 75) {
+        free(tx_data);
+        return;
+    }
+
+    size_t off = 74; /* header: version+type+timestamp+tx_hash */
+    if (off >= tx_len) { free(tx_data); return; }
+    uint8_t in_count = tx_data[off++];
+    off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
+    if (off >= tx_len) { free(tx_data); return; }
+
+    uint8_t out_count = tx_data[off++];
+    for (int oi = 0; oi < out_count; oi++) {
+        if (off + 235 > tx_len) break;
+        off += 1;     /* version */
+        off += 129;   /* fingerprint */
+        off += 8;     /* amount */
+        off += 64;    /* token_id */
+        off += 32;    /* seed */
+        if (off >= tx_len) break;
+        uint8_t ml = tx_data[off++];
+        if (off + ml > tx_len) break;
+
+        /* Match output_index to entry->outputs[] and copy memo. The
+         * tx_outputs SELECT orders by output_index ASC and uses oi as
+         * the raw blob index, so the on-chain output_index equals the
+         * parse position `oi`. */
+        for (int k = 0; k < entry->output_count; k++) {
+            if (entry->outputs[k].output_index == (uint32_t)oi) {
+                uint8_t copy = ml < NODUS_WITNESS_MEMO_MAX - 1
+                                 ? ml : NODUS_WITNESS_MEMO_MAX - 1;
+                if (copy > 0) {
+                    memcpy(entry->outputs[k].memo, tx_data + off, copy);
+                }
+                entry->outputs[k].memo[copy] = '\0';
+                entry->outputs[k].memo_len = copy;
+                break;
+            }
+        }
+        off += ml;
+    }
+
+    free(tx_data);
+}
+
 int nodus_witness_tx_by_owner(nodus_witness_t *w, const char *owner_fp,
                                  nodus_witness_tx_history_entry_t *out,
                                  int max_entries, int *count_out) {
@@ -885,6 +944,11 @@ int nodus_witness_tx_by_owner(nodus_witness_t *w, const char *owner_fp,
         }
         out[i].output_count = oc;
         sqlite3_finalize(ostmt);
+
+        /* Step 3: memo is not persisted in the tx_outputs table —
+         * re-parse it out of the stored raw TX blob. Best-effort;
+         * entries without a recoverable memo just keep memo_len=0. */
+        fill_memos_from_raw_tx(w, &out[i]);
     }
 
     *count_out = count;

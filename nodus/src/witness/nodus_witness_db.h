@@ -197,12 +197,18 @@ int  nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,
 /* ── Transaction history by owner ────────────────────────────────── */
 
 #define NODUS_WITNESS_MAX_TX_OUTPUTS 8
+#define NODUS_WITNESS_MEMO_MAX       256
 
 typedef struct {
     char        owner_fp[129];
     uint64_t    amount;
     uint32_t    output_index;
     uint8_t     token_id[64];
+    /* Memo attached to this output. Not persisted in the tx_outputs
+     * table — re-parsed from the raw TX blob stored via
+     * nodus_witness_tx_store() whenever a history query asks for it. */
+    char        memo[NODUS_WITNESS_MEMO_MAX];
+    uint8_t     memo_len;
 } nodus_witness_tx_output_t;
 
 typedef struct {

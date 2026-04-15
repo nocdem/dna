@@ -2770,6 +2770,15 @@ int nodus_client_dnac_history(nodus_client_t *client,
                                     cbor_item_t ov = cbor_decode_next(&dec);
                                     if (o && ov.type == CBOR_ITEM_BSTR && ov.bstr.len == 64)
                                         memcpy(o->token_id, ov.bstr.ptr, 64);
+                                } else if (ok.tstr.len == 4 && memcmp(ok.tstr.ptr, "memo", 4) == 0) {
+                                    cbor_item_t ov = cbor_decode_next(&dec);
+                                    if (o && ov.type == CBOR_ITEM_BSTR && ov.bstr.len > 0) {
+                                        size_t mc = ov.bstr.len < sizeof(o->memo) - 1
+                                                      ? ov.bstr.len : sizeof(o->memo) - 1;
+                                        memcpy(o->memo, ov.bstr.ptr, mc);
+                                        o->memo[mc] = '\0';
+                                        o->memo_len = (uint8_t)mc;
+                                    }
                                 } else {
                                     cbor_decode_skip(&dec);
                                 }

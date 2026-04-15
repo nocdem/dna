@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  12
-#define NODUS_VERSION_PATCH  10
-#define NODUS_VERSION_STRING "0.12.10"
+#define NODUS_VERSION_PATCH  11
+#define NODUS_VERSION_STRING "0.12.11"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -384,6 +384,11 @@ typedef struct {
     uint64_t amount;
     uint32_t output_index;
     uint8_t  token_id[64];          /* zeros = native DNAC */
+    /* Optional memo attached to this output (Gap: v0.12.10).
+     * Wire protocol carries it as an optional "memo" CBOR key — older
+     * witness nodes leave memo_len at 0, which is backward compatible. */
+    char     memo[256];
+    uint8_t  memo_len;
 } nodus_dnac_history_output_t;
 
 #define NODUS_DNAC_MAX_TX_OUTPUTS 8

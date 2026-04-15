@@ -703,6 +703,7 @@ int dnac_get_remote_history(dnac_context_t *ctx,
             uint64_t send_amount = 0;
             uint64_t recv_amount = 0;
             bool token_id_set = false;
+            int  memo_src_idx = -1;
 
             for (int oi = 0; oi < e->output_count; oi++) {
                 bool output_is_mine = (strcmp(e->outputs[oi].owner_fp,
@@ -721,14 +722,31 @@ int dnac_get_remote_history(dnac_context_t *ctx,
                             strncpy(h->counterparty,
                                     e->outputs[oi].owner_fp,
                                     DNAC_FINGERPRINT_SIZE - 1);
+                            memo_src_idx = oi;
                         }
                     }
                     /* output_is_mine = change, ignore */
                 } else {
                     if (output_is_mine) {
                         recv_amount += e->outputs[oi].amount;
+                        /* Receiver: memo lives on the output addressed
+                         * to us. Take the first one we see. */
+                        if (memo_src_idx < 0) memo_src_idx = oi;
                     }
                 }
+            }
+
+            /* Copy memo from the most relevant output — the first
+             * non-self output for senders, the first self-owned output
+             * for receivers. Older witnesses leave memo_len at 0 and
+             * the history entry keeps an empty memo, which is fine. */
+            if (memo_src_idx >= 0 &&
+                memo_src_idx < e->output_count &&
+                e->outputs[memo_src_idx].memo_len > 0) {
+                size_t ml = e->outputs[memo_src_idx].memo_len;
+                if (ml >= DNAC_MEMO_MAX_SIZE) ml = DNAC_MEMO_MAX_SIZE - 1;
+                memcpy(h->memo, e->outputs[memo_src_idx].memo, ml);
+                h->memo[ml] = '\0';
             }
 
             if (is_sender) {
