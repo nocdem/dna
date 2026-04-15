@@ -287,18 +287,104 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
         }
     }
 
+    /* Step 2b (Fix #4 B): persist serialized TX + send parameters so a
+     * retry of dnac_send (e.g. after a witness request timeout) can
+     * locate and re-broadcast the exact same tx_hash via
+     * dnac_db_find_active_broadcast(), instead of rebuilding a fresh
+     * TX with a new timestamp/nullifier_seed (which would collide on
+     * committed nullifiers and hit DOUBLE_SPEND). */
+    {
+        /* Identify the primary (non-change) recipient + amount for the
+         * lookup key. Change outputs to ourselves are skipped. */
+        const char *send_recipient = NULL;
+        uint64_t send_amount = 0;
+        for (int i = 0; i < tx->output_count; i++) {
+            if (strcmp(tx->outputs[i].owner_fingerprint, owner_fp) != 0) {
+                send_recipient = tx->outputs[i].owner_fingerprint;
+                send_amount = tx->outputs[i].amount;
+                break;
+            }
+        }
+        if (send_recipient) {
+            /* request.tx_data already holds the canonical serialized TX
+             * (populated in Step 1 above). Reuse it verbatim. */
+            int prc = dnac_db_store_pending_broadcast(
+                db, tx->tx_hash,
+                request.tx_data, request.tx_len,
+                send_recipient, send_amount,
+                tx->outputs[0].token_id,
+                expires_at);
+            if (prc != DNAC_SUCCESS) {
+                /* Non-fatal — we'll just miss the retry optimization. */
+                QGP_LOG_WARN(LOG_TAG,
+                             "Pending broadcast persist failed: %d", prc);
+            }
+        }
+    }
+
     /* Step 3: Request witness signatures */
     dnac_witness_sig_t witnesses[DNAC_TX_MAX_WITNESSES];
     int witness_count = 0;
 
     rc = dnac_witness_request(ctx, &request, witnesses, &witness_count);
+
+    /* Fix #4 B: on timeout, the TX may or may not have been committed
+     * before the response was lost. Probe via dnac_witness_replay to
+     * recover a fresh spndrslt receipt bound to the committed (block,
+     * tx_index). If recovered, treat as success and fall through to
+     * the witness-verify + local-state-update path. */
+    if (rc == DNAC_ERROR_TIMEOUT) {
+        struct timespec ts = { .tv_sec = 2, .tv_nsec = 0 };
+        nanosleep(&ts, NULL);
+
+        dnac_witness_sig_t replayed;
+        int replay_rc = dnac_witness_replay(ctx, tx->tx_hash, &replayed);
+        if (replay_rc == DNAC_SUCCESS) {
+            QGP_LOG_WARN(LOG_TAG,
+                "dnac_spend timed out but replay recovered a committed "
+                "receipt (block=%llu, tx_index=%u) — treating as success",
+                (unsigned long long)replayed.block_height,
+                replayed.tx_index);
+            witnesses[0] = replayed;
+            witness_count = 1;
+            rc = DNAC_SUCCESS;
+        }
+        /* else: genuinely timed out, TX is not in ledger — fall through
+         * to the error branch below. */
+    }
+
     /* BFT mode: 1 attestation proves consensus (quorum agreement happened internally) */
     if (rc != DNAC_SUCCESS || witness_count < 1) {
+        /* Fix #4 B: on DOUBLE_SPEND, the nullifiers are committed but we
+         * don't know if OUR tx_hash is the committing one. Call
+         * dnac_witness_replay with our tx_hash — if it matches a
+         * committed TX, we are the committer (this is the "retry of
+         * cached pending broadcast" path) and should recover the
+         * receipt instead of reporting failure. Otherwise, it's a
+         * genuine double-spend from a different TX. */
+        if (rc == DNAC_ERROR_DOUBLE_SPEND) {
+            dnac_witness_sig_t replayed;
+            int replay_rc = dnac_witness_replay(ctx, tx->tx_hash, &replayed);
+            if (replay_rc == DNAC_SUCCESS) {
+                QGP_LOG_WARN(LOG_TAG,
+                    "DOUBLE_SPEND on our tx_hash — recovered via replay "
+                    "(block=%llu, tx_index=%u), treating as success",
+                    (unsigned long long)replayed.block_height,
+                    replayed.tx_index);
+                witnesses[0] = replayed;
+                witness_count = 1;
+                rc = DNAC_SUCCESS;
+                goto receipt_ok;  /* Fall into Step 4 below */
+            }
+        }
+
         /* Mark pending spends as failed */
         dnac_db_expire_pending_spends(db);
 
-        /* Double-spend: witnesses already committed these nullifiers.
-         * Mark input UTXOs as spent locally so wallet state stays in sync. */
+        /* Genuine double-spend: different TX already committed these
+         * nullifiers. Mark input UTXOs as spent locally so wallet state
+         * stays in sync (real committed tx_hash is unknown from here;
+         * next sync will reconcile from the ledger). */
         if (rc == DNAC_ERROR_DOUBLE_SPEND) {
             for (int i = 0; i < tx->input_count; i++) {
                 dnac_db_mark_utxo_spent(db, tx->inputs[i].nullifier,
@@ -310,6 +396,7 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
          * instead of masking it as generic witness failure. */
         return (rc != DNAC_SUCCESS) ? rc : DNAC_ERROR_WITNESS_FAILED;
     }
+receipt_ok:;
 
     /* Step 4: Verify and add witnesses to transaction.
      *

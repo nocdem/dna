@@ -148,6 +148,62 @@ int dnac_witness_request(dnac_context_t *ctx,
     return DNAC_SUCCESS;
 }
 
+int dnac_witness_replay(dnac_context_t *ctx,
+                         const uint8_t *tx_hash,
+                         dnac_witness_sig_t *witness_out) {
+    if (!ctx || !tx_hash || !witness_out) {
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    memset(witness_out, 0, sizeof(*witness_out));
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        QGP_LOG_ERROR(LOG_TAG, "Nodus singleton not initialized");
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
+
+    nodus_singleton_lock();
+
+    nodus_dnac_spend_result_t result;
+    int rc = nodus_client_dnac_spend_replay(client, tx_hash, &result);
+
+    nodus_singleton_unlock();
+
+    if (rc != 0) {
+        if (rc == NODUS_ERR_NOT_FOUND) {
+            QGP_LOG_DEBUG(LOG_TAG, "Spend replay: tx_hash not committed");
+            return DNAC_ERROR_NOT_FOUND;
+        }
+        if (rc == NODUS_ERR_TIMEOUT) {
+            QGP_LOG_WARN(LOG_TAG, "Spend replay timed out");
+            return DNAC_ERROR_TIMEOUT;
+        }
+        QGP_LOG_ERROR(LOG_TAG, "Spend replay failed: %d", rc);
+        return DNAC_ERROR_NETWORK;
+    }
+
+    if (result.status != NODUS_DNAC_APPROVED) {
+        QGP_LOG_WARN(LOG_TAG, "Spend replay: unexpected status=%d",
+                     result.status);
+        return DNAC_ERROR_NOT_FOUND;
+    }
+
+    /* Mirror the layout of dnac_witness_request's witnesses_out[0]. */
+    memcpy(witness_out->witness_id, result.witness_id, 32);
+    memcpy(witness_out->signature, result.signature, NODUS_SIG_BYTES);
+    memcpy(witness_out->server_pubkey, result.witness_pubkey, NODUS_PK_BYTES);
+    witness_out->timestamp = result.timestamp;
+    witness_out->block_height = result.block_height;
+    witness_out->tx_index = result.tx_index;
+    memcpy(witness_out->chain_id, result.chain_id, 32);
+
+    QGP_LOG_INFO(LOG_TAG, "Spend replay recovered receipt for committed TX "
+                          "(block=%llu, tx_index=%u)",
+                 (unsigned long long)result.block_height, result.tx_index);
+    return DNAC_SUCCESS;
+}
+
 int dnac_witness_check_nullifier(dnac_context_t *ctx,
                                  const uint8_t *nullifier,
                                  bool *is_spent_out) {

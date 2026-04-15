@@ -333,6 +333,26 @@ int dnac_witness_request(dnac_context_t *ctx,
                          int *witness_count_out);
 
 /**
+ * @brief Re-query a committed TX's witness receipt (Fix #4 B)
+ *
+ * Used by dnac_tx_broadcast after a dnac_witness_request timeout to
+ * determine whether the TX actually committed on-chain before the
+ * response was lost. Calls nodus_client_dnac_spend_replay; on found,
+ * populates a single dnac_witness_sig_t with a freshly-signed
+ * spndrslt receipt bound to the original (block_height, tx_index,
+ * chain_id).
+ *
+ * @param ctx DNAC context
+ * @param tx_hash 64-byte TX hash to query
+ * @param witness_out Output: single witness signature on found
+ * @return DNAC_SUCCESS on found, DNAC_ERROR_NOT_FOUND if not committed,
+ *         DNAC_ERROR_NETWORK / DNAC_ERROR_TIMEOUT on transport errors
+ */
+int dnac_witness_replay(dnac_context_t *ctx,
+                         const uint8_t *tx_hash,
+                         dnac_witness_sig_t *witness_out);
+
+/**
  * @brief Check if nullifier has been spent
  *
  * @param ctx DNAC context

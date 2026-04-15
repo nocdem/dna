@@ -312,6 +312,48 @@ int dnac_send_token(dnac_context_t *ctx,
 
     int rc;
 
+    /* Fix #4 B: before building a brand-new TX, check for an active
+     * pending broadcast with the same (recipient, amount, token_id).
+     * If found, re-broadcast that cached TX instead — this preserves
+     * tx_hash across retries so a subsequent dnac_witness_replay can
+     * recover the committed receipt (or the server can idempotently
+     * recognize the re-submission as the already-committed spend). */
+    {
+        sqlite3 *db = dnac_get_db(ctx);
+        if (db) {
+            uint8_t cached_hash[DNAC_TX_HASH_SIZE];
+            uint8_t *cached_tx_data = NULL;
+            size_t cached_tx_len = 0;
+            int frc = dnac_db_find_active_broadcast(
+                db, recipient_fingerprint, amount,
+                token_id, cached_hash,
+                &cached_tx_data, &cached_tx_len);
+            if (frc == DNAC_SUCCESS && cached_tx_data && cached_tx_len > 0) {
+                dnac_transaction_t *cached_tx = NULL;
+                int drc = dnac_tx_deserialize(cached_tx_data,
+                                                cached_tx_len, &cached_tx);
+                free(cached_tx_data);
+                cached_tx_data = NULL;
+                if (drc == DNAC_SUCCESS && cached_tx) {
+                    QGP_LOG_WARN(LOG_TAG,
+                        "Reusing cached pending broadcast for retry "
+                        "(recipient=%.16s... amount=%llu)",
+                        recipient_fingerprint,
+                        (unsigned long long)amount);
+                    rc = dnac_tx_broadcast(ctx, cached_tx,
+                                             callback, user_data);
+                    dnac_free_transaction(cached_tx);
+                    if (rc == DNAC_SUCCESS) {
+                        return DNAC_SUCCESS;
+                    }
+                    QGP_LOG_WARN(LOG_TAG,
+                        "Cached rebroadcast failed: %d; building new TX",
+                        rc);
+                }
+            }
+        }
+    }
+
     /* Step 1: Create transaction builder */
     dnac_tx_builder_t *builder = dnac_tx_builder_create(ctx);
     if (!builder) {
