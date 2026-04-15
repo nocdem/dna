@@ -348,6 +348,27 @@ bool dnac_anchor_verify(const dnac_block_anchor_t *anchor,
                          const dnac_trusted_state_t *trust);
 
 /**
+ * Verify genesis block bytes against a hardcoded chain_id.
+ *
+ * Decodes the input, checks it's genesis (height 0, prev_hash zeros,
+ * is_genesis flag set), recomputes the block hash, and compares to
+ * expected_chain_id. On success, populates trust_out with the verified
+ * chain_def and chain_id. latest_verified_anchor is left zeroed; the
+ * caller must set it via dnac_anchor_verify.
+ *
+ * Pure function — no DB, no network.
+ *
+ * @param bytes             Encoded genesis block (from dnac_block_encode).
+ * @param len               Number of bytes.
+ * @param expected_chain_id Hardcoded 64-byte chain_id to verify against.
+ * @param trust_out         [out] Populated trusted state on success.
+ * @return true on success, false on any verification failure.
+ */
+bool dnac_genesis_verify(const uint8_t *bytes, size_t len,
+                          const uint8_t expected_chain_id[DNAC_BLOCK_HASH_SIZE],
+                          dnac_trusted_state_t *trust_out);
+
+/**
  * @brief P0-2 (v0.7.0): Sync ledger entries in range from witnesses
  *
  * Queries witness servers for a range of ledger entries.

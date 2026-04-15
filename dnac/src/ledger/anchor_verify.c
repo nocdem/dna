@@ -89,3 +89,50 @@ bool dnac_anchor_verify(const dnac_block_anchor_t *anchor,
 
     return valid_count >= quorum;
 }
+
+/* ============================================================================
+ * Genesis verification (Phase 5 — Task 27)
+ *
+ * Bootstrap trust: given encoded genesis block bytes and a hardcoded
+ * chain_id (= SHA3-512 of the genesis header), verify the bytes decode
+ * cleanly, recompute the block hash, and check it matches the expected
+ * chain_id. On success, populate a trusted_state with chain_id + chain_def.
+ * latest_verified_anchor is left zero — the caller bootstraps it by
+ * calling dnac_anchor_verify on the first real anchor fetched.
+ * ========================================================================== */
+
+bool dnac_genesis_verify(const uint8_t *bytes, size_t len,
+                         const uint8_t expected_chain_id[DNAC_BLOCK_HASH_SIZE],
+                         dnac_trusted_state_t *trust_out)
+{
+    if (!bytes || !expected_chain_id || !trust_out) return false;
+
+    /* 1. Decode */
+    dnac_block_t block;
+    memset(&block, 0, sizeof(block));
+    if (dnac_block_decode(bytes, len, &block) != 0) return false;
+
+    /* 2. Sanity — must be a real genesis block */
+    if (block.block_height != 0) return false;
+    if (!block.is_genesis) return false;
+
+    static const uint8_t zero_hash[DNAC_BLOCK_HASH_SIZE] = { 0 };
+    if (memcmp(block.prev_block_hash, zero_hash, DNAC_BLOCK_HASH_SIZE) != 0) {
+        return false;
+    }
+
+    /* 3. Recompute hash from decoded fields and compare to expected_chain_id.
+     *    This also proves the trailing block_hash in the bytes wasn't
+     *    tampered to point at a different chain_id. */
+    if (dnac_block_compute_hash(&block) != 0) return false;
+    if (memcmp(block.block_hash, expected_chain_id, DNAC_BLOCK_HASH_SIZE) != 0) {
+        return false;
+    }
+
+    /* 4. Populate trust_out — latest_verified_anchor left zero. */
+    memset(trust_out, 0, sizeof(*trust_out));
+    memcpy(trust_out->chain_id, expected_chain_id, DNAC_BLOCK_HASH_SIZE);
+    memcpy(&trust_out->chain_def, &block.chain_def, sizeof(block.chain_def));
+
+    return true;
+}
