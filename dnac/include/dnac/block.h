@@ -28,6 +28,7 @@
 #define DNAC_BLOCK_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "dnac.h"
 
@@ -175,6 +176,41 @@ int dnac_block_compute_hash(dnac_block_t *block);
  */
 int dnac_block_set_genesis_def(dnac_block_t *block,
                                 const dnac_chain_definition_t *chain_def);
+
+/**
+ * @brief Serialize a dnac_block_t to a byte buffer.
+ *
+ * The layout matches the hash preimage exactly for the standard header
+ * fields; then a 1-byte is_genesis flag (wire-format only, NOT part of
+ * the hash preimage); then chain_def bytes (via dnac_chain_def_encode)
+ * if is_genesis; then the stored block_hash as a trailer.
+ *
+ * Decoding via dnac_block_decode MUST produce a block whose
+ * dnac_block_compute_hash result equals the trailing block_hash.
+ *
+ * @param block  Source block (must not be NULL).
+ * @param out    Output buffer (caller-allocated).
+ * @param cap    Buffer capacity.
+ * @param len    [out] Bytes written on success.
+ * @return 0 on success, -1 on error.
+ */
+int dnac_block_encode(const dnac_block_t *block,
+                       uint8_t *out, size_t cap, size_t *len);
+
+/**
+ * @brief Deserialize a dnac_block_t from a byte buffer.
+ *
+ * Strict parser — rejects malformed input, wrong length, oversized
+ * witness_count. On success, block_out->is_genesis is set based on
+ * whether the input included a chain_def section.
+ *
+ * @param bytes  Input buffer (must not be NULL).
+ * @param len    Input byte count.
+ * @param block_out  [out] Destination (will be zero-initialized).
+ * @return 0 on success, -1 on error.
+ */
+int dnac_block_decode(const uint8_t *bytes, size_t len,
+                       dnac_block_t *block_out);
 
 /**
  * @brief Verify that block links correctly to previous block

@@ -43,6 +43,7 @@
  */
 
 #include "dnac/block.h"
+#include "dnac/chain_def_codec.h"
 
 #include <string.h>
 
@@ -68,6 +69,22 @@ static inline void enc_u64_le(uint64_t v, uint8_t out[8]) {
         out[i] = (uint8_t)((v >> (i * 8)) & 0xff);
     }
 }
+
+static inline uint32_t dec_u32_le(const uint8_t in[4]) {
+    return (uint32_t)in[0] | ((uint32_t)in[1] << 8) |
+           ((uint32_t)in[2] << 16) | ((uint32_t)in[3] << 24);
+}
+
+static inline uint64_t dec_u64_le(const uint8_t in[8]) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v |= ((uint64_t)in[i]) << (i * 8);
+    return v;
+}
+
+/* Standard header layout matches the hash preimage exactly:
+ *   height(8 LE) || prev_block_hash(64) || state_root(64) || tx_root(64)
+ *   || tx_count(4 LE) || timestamp(8 LE) || proposer_id(32)  = 244 bytes */
+#define DNAC_BLOCK_HEADER_BYTES 244
 
 /* ============================================================================
  * Block hash
@@ -192,6 +209,131 @@ int dnac_block_set_genesis_def(dnac_block_t *block,
     }
     block->is_genesis = true;
     memcpy(&block->chain_def, chain_def, sizeof(*chain_def));
+    return 0;
+}
+
+/* ============================================================================
+ * Block encode / decode (Phase 5 — Task 26)
+ *
+ * Wire layout (byte-exact):
+ *   header(244) || is_genesis_byte(1) [|| chain_def_bytes(var)] || block_hash(64)
+ *
+ * The is_genesis byte is wire-format only — it tells the decoder whether
+ * to expect a chain_def section. It is NOT part of the hash preimage
+ * (see dnac_block_compute_hash, which uses the struct field instead).
+ * ========================================================================== */
+
+int dnac_block_encode(const dnac_block_t *block,
+                       uint8_t *out, size_t cap, size_t *len) {
+    if (!block || !out || !len) return -1;
+
+    size_t needed = DNAC_BLOCK_HEADER_BYTES + 1 + DNAC_BLOCK_HASH_SIZE;
+    size_t cd_len = 0;
+    if (block->is_genesis) {
+        cd_len = dnac_chain_def_encoded_size(&block->chain_def);
+        if (cd_len == 0) return -1;  /* invalid chain_def */
+        needed += cd_len;
+    }
+    if (cap < needed) return -1;
+
+    uint8_t *p = out;
+    uint8_t tmp8[8];
+    uint8_t tmp4[4];
+
+    /* Standard header — same order as hash preimage */
+    enc_u64_le(block->block_height, tmp8);
+    memcpy(p, tmp8, 8); p += 8;
+
+    memcpy(p, block->prev_block_hash, DNAC_BLOCK_HASH_SIZE);
+    p += DNAC_BLOCK_HASH_SIZE;
+    memcpy(p, block->state_root, DNAC_BLOCK_HASH_SIZE);
+    p += DNAC_BLOCK_HASH_SIZE;
+    memcpy(p, block->tx_root, DNAC_BLOCK_HASH_SIZE);
+    p += DNAC_BLOCK_HASH_SIZE;
+
+    enc_u32_le(block->tx_count, tmp4);
+    memcpy(p, tmp4, 4); p += 4;
+
+    enc_u64_le(block->timestamp, tmp8);
+    memcpy(p, tmp8, 8); p += 8;
+
+    memcpy(p, block->proposer_id, DNAC_BLOCK_PROPOSER_SIZE);
+    p += DNAC_BLOCK_PROPOSER_SIZE;
+
+    /* is_genesis flag byte (wire-format only) */
+    *p++ = block->is_genesis ? 1 : 0;
+
+    /* Optional chain_def */
+    if (block->is_genesis) {
+        size_t written = 0;
+        int rc = dnac_chain_def_encode(&block->chain_def, p,
+                                        cap - (size_t)(p - out), &written);
+        if (rc != 0) return -1;
+        if (written != cd_len) return -1;
+        p += written;
+    }
+
+    /* Block hash trailer */
+    memcpy(p, block->block_hash, DNAC_BLOCK_HASH_SIZE);
+    p += DNAC_BLOCK_HASH_SIZE;
+
+    *len = (size_t)(p - out);
+    return 0;
+}
+
+int dnac_block_decode(const uint8_t *bytes, size_t len,
+                       dnac_block_t *block_out) {
+    if (!bytes || !block_out) return -1;
+
+    /* Minimum size: header + is_genesis byte + block_hash */
+    const size_t min_size = DNAC_BLOCK_HEADER_BYTES + 1 + DNAC_BLOCK_HASH_SIZE;
+    if (len < min_size) return -1;
+
+    memset(block_out, 0, sizeof(*block_out));
+
+    const uint8_t *p = bytes;
+    const uint8_t *end = bytes + len;
+
+    /* Standard header */
+    block_out->block_height = dec_u64_le(p); p += 8;
+
+    memcpy(block_out->prev_block_hash, p, DNAC_BLOCK_HASH_SIZE);
+    p += DNAC_BLOCK_HASH_SIZE;
+    memcpy(block_out->state_root, p, DNAC_BLOCK_HASH_SIZE);
+    p += DNAC_BLOCK_HASH_SIZE;
+    memcpy(block_out->tx_root, p, DNAC_BLOCK_HASH_SIZE);
+    p += DNAC_BLOCK_HASH_SIZE;
+
+    block_out->tx_count = dec_u32_le(p); p += 4;
+    block_out->timestamp = dec_u64_le(p); p += 8;
+
+    memcpy(block_out->proposer_id, p, DNAC_BLOCK_PROPOSER_SIZE);
+    p += DNAC_BLOCK_PROPOSER_SIZE;
+
+    /* is_genesis flag byte */
+    uint8_t is_genesis_byte = *p++;
+    if (is_genesis_byte != 0 && is_genesis_byte != 1) return -1;
+    block_out->is_genesis = (is_genesis_byte == 1);
+
+    /* Optional chain_def */
+    if (block_out->is_genesis) {
+        /* Remaining bytes = chain_def + block_hash trailer */
+        if ((size_t)(end - p) < DNAC_BLOCK_HASH_SIZE) return -1;
+        size_t cd_bytes_available = (size_t)(end - p) - DNAC_BLOCK_HASH_SIZE;
+
+        if (dnac_chain_def_decode(p, cd_bytes_available,
+                                   &block_out->chain_def) != 0) {
+            return -1;
+        }
+        p += cd_bytes_available;
+    }
+
+    /* Block hash trailer */
+    if ((size_t)(end - p) != DNAC_BLOCK_HASH_SIZE) return -1;
+    memcpy(block_out->block_hash, p, DNAC_BLOCK_HASH_SIZE);
+    p += DNAC_BLOCK_HASH_SIZE;
+
+    if (p != end) return -1;
     return 0;
 }
 
