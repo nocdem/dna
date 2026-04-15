@@ -23,6 +23,7 @@
 #include "database/profile_cache.h"
 #include "message_backup.h"
 #include "messenger/messages.h"
+#include "dna/reaction_json.h"
 #include "dna_api.h"
 #include "dna_config.h"
 #include "dna/dna_engine.h"
@@ -633,6 +634,23 @@ static void transport_message_received_internal(
         if (plaintext_z) {
             plaintext = plaintext_z;
             plaintext[plaintext_len] = '\0';
+        }
+
+        /* Reaction payload sniff: {"target":"<64hex>","emoji":"...","op":"add|remove"}
+         * has no top-level "type" field, so the json_tokener_parse block below
+         * would otherwise leave message_type=CHAT and the reaction would render
+         * as a raw JSON chat bubble on the receiver. Classify via the same
+         * helpers the sender uses. message_type=3 is shared with DELETE in
+         * message_backup.h, but DELETE is handled below with an early return,
+         * so reaching message_backup_save with 3 unambiguously means reaction. */
+        {
+            char _rx_target[65];
+            char _rx_op[8];
+            if (dna_reaction_parse_target((const char*)plaintext, _rx_target, sizeof(_rx_target)) == 0 &&
+                dna_reaction_parse_op((const char*)plaintext, _rx_op, sizeof(_rx_op)) == 0 &&
+                (strcmp(_rx_op, "add") == 0 || strcmp(_rx_op, "remove") == 0)) {
+                message_type = 3;
+            }
         }
 
         json_object *j_msg = json_tokener_parse((const char*)plaintext);

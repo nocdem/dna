@@ -601,11 +601,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     // Filter messages if searching
     // Defensive: always exclude reaction rows so they never render as chat bubbles,
-    // even if a code path leaks them past the C library's SQL filter.
+    // even if a code path leaks them past the C library's SQL filter. Also
+    // content-sniff the plaintext for legacy rows stored with type=chat before
+    // the receive-path classifier was fixed — they contain raw reaction JSON
+    // like {"target":"<64hex>","emoji":"...","op":"add|remove"} and must not
+    // render as bubbles.
+    bool _looksLikeReactionJson(String s) {
+      if (s.length < 40 || !s.startsWith('{"target":"')) return false;
+      return s.contains('"emoji":"') &&
+          (s.contains('"op":"add"') || s.contains('"op":"remove"'));
+    }
     final filteredMessages = (_searchQuery.isEmpty
-            ? messages.where((m) => m.type != MessageType.reaction)
+            ? messages.where((m) =>
+                m.type != MessageType.reaction &&
+                !_looksLikeReactionJson(m.plaintext))
             : messages.where((m) =>
                 m.type != MessageType.reaction &&
+                !_looksLikeReactionJson(m.plaintext) &&
                 m.plaintext.toLowerCase().contains(_searchQuery)))
         .toList();
 
