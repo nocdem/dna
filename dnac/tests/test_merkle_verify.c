@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <openssl/evp.h>
 
 #include "merkle_vector.inc"
 
@@ -102,6 +103,47 @@ static void test_invalid_depth(void) {
     printf("PASS test_invalid_depth\n");
 }
 
+static void test_single_leaf(void) {
+    /* Single-leaf tree: the root IS the leaf-tagged hash of the
+     * composite leaf digest. proof_length == 0, no siblings. */
+    dnac_merkle_proof_t p;
+    memset(&p, 0, sizeof(p));
+
+    /* Arbitrary 64-byte composite leaf digest (not a real UTXO hash,
+     * but the verifier doesn't care — it's just bytes). */
+    for (int i = 0; i < DNAC_MERKLE_ROOT_SIZE; i++) {
+        p.leaf_hash[i] = (uint8_t)(0x5a ^ i);
+    }
+
+    /* Hand-compute the expected root: SHA3-512(0x00 || leaf_hash). */
+    EVP_MD_CTX *md = EVP_MD_CTX_new();
+    assert(md);
+    assert(EVP_DigestInit_ex(md, EVP_sha3_512(), NULL) == 1);
+    uint8_t prefix = 0x00;
+    assert(EVP_DigestUpdate(md, &prefix, 1) == 1);
+    assert(EVP_DigestUpdate(md, p.leaf_hash, DNAC_MERKLE_ROOT_SIZE) == 1);
+    unsigned int hash_len = 0;
+    assert(EVP_DigestFinal_ex(md, p.root, &hash_len) == 1);
+    assert(hash_len == DNAC_MERKLE_ROOT_SIZE);
+    EVP_MD_CTX_free(md);
+
+    p.proof_length = 0;
+
+    if (!dnac_merkle_verify_proof(&p)) {
+        fprintf(stderr, "FAIL test_single_leaf — verifier rejected valid single-leaf proof\n");
+        assert(0);
+    }
+
+    /* Negative case: flip a bit in the root, expect rejection. */
+    p.root[0] ^= 0x01;
+    if (dnac_merkle_verify_proof(&p)) {
+        fprintf(stderr, "FAIL test_single_leaf — verifier accepted tampered single-leaf root\n");
+        assert(0);
+    }
+
+    printf("PASS test_single_leaf\n");
+}
+
 int main(void) {
     test_positive();
     test_tampered_sibling();
@@ -109,6 +151,7 @@ int main(void) {
     test_tampered_leaf();
     test_null_proof();
     test_invalid_depth();
+    test_single_leaf();
     printf("ALL PASS\n");
     return 0;
 }
