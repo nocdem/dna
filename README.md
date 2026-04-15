@@ -171,8 +171,8 @@ dna/
 
 | Component | Version |
 |-----------|---------|
-| Messenger C Library | v0.10.6 |
-| Flutter App | v1.0.0-rc208 |
+| Messenger C Library | v0.10.7 |
+| Flutter App | v1.0.0-rc209 |
 | Nodus | v0.12.9 |
 | DNAC | v0.14.2 |
 

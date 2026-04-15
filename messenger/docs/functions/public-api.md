@@ -209,6 +209,7 @@ Named channels with flat text posts. Open posting, day-bucket discovery.
 | `dna_request_id_t dna_engine_wall_like(dna_engine_t *engine, const char *post_uuid, dna_wall_likes_cb callback, void *user_data)` | Like a wall post (signed with Dilithium5, max 100 per post) |
 | `dna_request_id_t dna_engine_wall_get_likes(dna_engine_t *engine, const char *post_uuid, dna_wall_likes_cb callback, void *user_data)` | Fetch all likes for a wall post |
 | `dna_request_id_t dna_engine_wall_get_engagement(dna_engine_t *engine, const char **post_uuids, int post_count, dna_wall_engagement_cb callback, void *user_data)` | Batch fetch engagement (comments + like count) for multiple posts. Uses get_batch + count_batch (2 requests instead of N*2). Max 32 posts. (v0.9.124+) |
+| `dna_request_id_t dna_engine_wall_get_engagement_cached(dna_engine_t *engine, const char **post_uuids, int post_count, dna_wall_engagement_cb callback, void *user_data)` | Cache-only variant — returns SQLite-cached counts immediately, skips DHT phase. Use for first-paint enrichment. (v0.10.7+) |
 | `dna_request_id_t dna_engine_wall_load_day(dna_engine_t *engine, const char *fingerprint, const char *date_str, dna_wall_posts_cb callback, void *user_data)` | Load a single day's wall bucket from DHT (v0.9.141+). Used for lazy-loading older days on scroll. |
 | `void dna_free_wall_posts(dna_wall_post_info_t *posts, int count)` | Free wall posts array |
 | `void dna_free_wall_comments(dna_wall_comment_info_t *comments, int count)` | Free wall comments array |
