@@ -15,6 +15,7 @@
 
 #include "witness/nodus_witness.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -149,10 +150,21 @@ typedef struct {
  *
  * Per-TX type lives in committed_transactions.tx_type and is no longer
  * stored on the block row. */
+/* Phase 2 / Task 11 — chain_def_blob parameter.
+ *
+ * For genesis blocks (height 0), pass the encoded chain_def bytes
+ * (see dnac_chain_def_encode in libdna) via chain_def_blob + blob_len.
+ * For non-genesis blocks, pass NULL / 0 — the chain_def_blob column
+ * will be bound as NULL. The write path is the only consumer of the
+ * blob for now; readers (block_get*, block_get_range) intentionally
+ * skip the column to keep the hot path lean. Task 36 (handle_dnac_genesis)
+ * will add the explicit genesis-blob read path. */
 int  nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
                                uint32_t tx_count, uint64_t timestamp,
                                const uint8_t *proposer_id,
-                               const uint8_t *state_root);
+                               const uint8_t *state_root,
+                               const uint8_t *chain_def_blob,
+                               size_t chain_def_blob_len);
 int  nodus_witness_block_get(nodus_witness_t *w, uint64_t height,
                                nodus_witness_block_t *out);
 int  nodus_witness_block_get_latest(nodus_witness_t *w,

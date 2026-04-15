@@ -1071,8 +1071,11 @@ int finalize_block(nodus_witness_t *w,
     }
 
     /* 4. Block row insert. */
+    /* Phase 2 / Task 11 — chain_def_blob is NULL here; the genesis
+     * bootstrap path will pass a real encoded blob in a later task. */
     if (nodus_witness_block_add(w, tx_root, tx_count, timestamp,
-                                  proposer_id, state_root) != 0) {
+                                  proposer_id, state_root,
+                                  NULL, 0) != 0) {
         fprintf(stderr, "%s: finalize_block: block_add failed\n", LOG_TAG);
         return -1;
     }

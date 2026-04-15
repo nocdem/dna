@@ -464,8 +464,14 @@ uint64_t nodus_witness_ledger_count(nodus_witness_t *w) {
 int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
                                uint32_t tx_count, uint64_t timestamp,
                                const uint8_t *proposer_id,
-                               const uint8_t *state_root) {
+                               const uint8_t *state_root,
+                               const uint8_t *chain_def_blob,
+                               size_t chain_def_blob_len) {
     if (!w || !w->db || !tx_root || !state_root) return -1;
+    /* chain_def_blob is optional: non-NULL + non-zero only for genesis
+     * blocks (height 0). See header comment for details. */
+    if (chain_def_blob && chain_def_blob_len == 0) return -1;
+    if (!chain_def_blob && chain_def_blob_len != 0) return -1;
 
     /* Phase 5 / Task 5.2: prev_hash via the shared compute_block_hash
      * helper. Single source of truth with nodus_witness_sync.c. */
@@ -483,10 +489,14 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
     }
     /* Genesis block: prev_hash stays all zeros */
 
+    /* Phase 2 / Task 11 — chain_def_blob column added in schema v14.
+     * Nullable; only genesis blocks populate it. NOTE: this write site
+     * is the sole producer for now. Readers (block_get*, block_get_range)
+     * intentionally skip the column until Task 36 adds handle_dnac_genesis. */
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "INSERT INTO blocks (tx_root, tx_count, timestamp, proposer_id, prev_hash, state_root, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
+        "INSERT INTO blocks (tx_root, tx_count, timestamp, proposer_id, prev_hash, state_root, created_at, chain_def_blob) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: block add prepare failed: %s\n",
                 LOG_TAG, sqlite3_errmsg(w->db));
@@ -503,6 +513,11 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
     sqlite3_bind_blob(stmt, 5, prev_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
     sqlite3_bind_blob(stmt, 6, state_root, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
     sqlite3_bind_int64(stmt, 7, (int64_t)time(NULL));
+    if (chain_def_blob && chain_def_blob_len > 0)
+        sqlite3_bind_blob(stmt, 8, chain_def_blob, (int)chain_def_blob_len,
+                          SQLITE_STATIC);
+    else
+        sqlite3_bind_null(stmt, 8);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
