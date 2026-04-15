@@ -421,7 +421,20 @@ static int nodus_derive_chain_id(const char *genesis_fp,
     memcpy(data, fp_bytes, 64);
     memcpy(data + 64, tx_hash, NODUS_T3_TX_HASH_LEN);
 
-    return qgp_sha3_256(data, sizeof(data), chain_id_out);
+    if (qgp_sha3_256(data, sizeof(data), chain_id_out) != 0)
+        return -1;
+
+    /* Canonical chain_id layout: the first 16 bytes (128 bits) are the
+     * authoritative identifier; bytes 16-31 are ALWAYS zero. This matches
+     * the format produced by witness_scan_chain_db on restart (which only
+     * parses 16 bytes out of the filename) so both paths converge on the
+     * same in-memory value. Without this, a live-genesis node ends up
+     * with full-32-byte chain_id in memory while a restarted node has
+     * 16-byte + 16-zero, causing bogus CHAIN_QUORUM dissent and sticky
+     * quarantine that blocks forwarded dnac_spend requests from ever
+     * reaching the leader's handler. */
+    memset(chain_id_out + 16, 0, 16);
+    return 0;
 }
 
 static int update_utxo_set(nodus_witness_t *w,

@@ -141,12 +141,18 @@ static const char *WITNESS_DB_SCHEMA =
 void nodus_witness_set_chain_id(nodus_witness_t *witness,
                                 const uint8_t *chain_id) {
     if (!witness || !chain_id) return;
-    memcpy(witness->chain_id, chain_id, 32);
+    /* Canonical chain_id is 16 bytes; we store 32 for wire symmetry with
+     * T3 headers but bytes 16-31 are ALWAYS zero. Any path that computes
+     * chain_id (live genesis derive, filename scan, DB load) must agree
+     * on this layout so CHAIN_QUORUM comparisons are stable across
+     * restarts. See nodus_derive_chain_id in nodus_witness_bft.c. */
+    memcpy(witness->chain_id, chain_id, 16);
+    memset(witness->chain_id + 16, 0, 16);
 
-    char hex[17];
-    for (int i = 0; i < 8; i++)
-        snprintf(hex + i * 2, 3, "%02x", chain_id[i]);
-    fprintf(stderr, "%s: chain_id set: %s...\n", LOG_TAG, hex);
+    char hex[33];
+    for (int i = 0; i < 16; i++)
+        snprintf(hex + i * 2, 3, "%02x", witness->chain_id[i]);
+    fprintf(stderr, "%s: chain_id set: %s\n", LOG_TAG, hex);
 }
 
 /* ── Open a witness chain DB by full path ────────────────────────── */

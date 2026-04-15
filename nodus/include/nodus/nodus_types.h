@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  12
-#define NODUS_VERSION_PATCH  3
-#define NODUS_VERSION_STRING "0.12.3"
+#define NODUS_VERSION_PATCH  4
+#define NODUS_VERSION_STRING "0.12.4"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -74,7 +74,7 @@ extern "C" {
 #define NODUS_CHANNEL_RETENTION (7 * 86400) /* 7 days */
 #define NODUS_MAX_HINTED_POSTS  1000
 #define NODUS_HINTED_RETRY_SEC  60
-#define NODUS_HINT_MAX_RETRIES  1       /* Delete hint after N failed delivery attempts */
+#define NODUS_HINT_MAX_RETRIES  3       /* Delete hint after N failed delivery attempts */
 #define NODUS_HINTED_TTL_SEC    86400       /* 24h */
 #define NODUS_MAX_CH_SESSIONS   1024        /* Max channel TCP 4003 connections (must match NODUS_TCP_MAX_CONNS) */
 
@@ -91,7 +91,7 @@ extern "C" {
 #define NODUS_ROUTING_STALE_SEC    3600    /* 1 hour — filter stale entries in find_closest */
 #define NODUS_BUCKET_REFRESH_SEC   900     /* 15 min — bucket refresh via FIND_NODE */
 #define NODUS_REPUBLISH_SEC        600     /* 10 min — periodic republish cycle */
-#define NODUS_MEDIA_REPUBLISH_SEC  600     /* 10 min — match value cycle (was 14400, debug v0.11.11) */
+#define NODUS_MEDIA_REPUBLISH_SEC  14400   /* 4 hours */
 #define NODUS_REPUBLISH_BATCH      5       /* Values per main loop tick during republish */
 #define NODUS_CLEANUP_SEC          3600    /* 1 hour — storage cleanup interval */
 #define NODUS_WAL_CHECKPOINT_SEC   300     /* 5 min — WAL checkpoint interval */
