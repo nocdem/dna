@@ -32,14 +32,12 @@ extern "C" {
 /** Merkle root size (SHA3-512) */
 #define DNAC_MERKLE_ROOT_SIZE       64
 
-/** Maximum Merkle proof depth (log2 of max transactions) */
-#define DNAC_MERKLE_MAX_DEPTH       64
+/** Maximum Merkle proof depth (leaf-to-root path length).
+ *  Matches nodus/src/witness/nodus_witness_merkle.c. */
+#define DNAC_MERKLE_MAX_DEPTH       32
 
 /** Output commitment size */
 #define DNAC_OUTPUT_COMMITMENT_SIZE 64
-
-/** Maximum BFT signatures in a proof (v0.7.1) */
-#define DNAC_PROOF_MAX_SIGNATURES   16
 
 /* ============================================================================
  * Data Types
@@ -71,34 +69,43 @@ typedef struct {
     uint64_t last_sequence;                         /**< Last sequence number */
 } dnac_supply_state_t;
 
-/**
- * @brief BFT signature on epoch root (v0.7.1)
+/* ============================================================================
+ * Merkle Inclusion Proof (Anchored Design — 2026-04-16)
  *
- * Used to anchor Merkle proofs to BFT-signed state.
- */
-typedef struct {
-    uint8_t signer_id[32];                          /**< Witness ID who signed */
-    uint8_t signature[DNAC_SIGNATURE_SIZE];         /**< Dilithium5 signature */
-} dnac_epoch_signature_t;
-
-/**
- * @brief Merkle proof for transaction existence
+ * Generic leaf-to-root proof for any Merkle tree in DNAC. Used for both:
+ *   - UTXO inclusion in state_root  (block.state_root)
+ *   - TX inclusion in tx_root       (block.tx_root)
  *
- * v0.7.1: Added epoch and BFT signatures for trust anchoring.
- * The proof's root must match a BFT-signed epoch root to be trusted.
- */
+ * The "root" field stores the tree root against which this proof verifies.
+ * The caller is responsible for matching the root to a BFT-anchored block
+ * header via dnac_block_anchor_t (Task 20).
+ *
+ * RFC 6962 domain tags (MUST match nodus/src/witness/nodus_witness_merkle.c):
+ *   leaf_hash(d)      = SHA3-512(0x00 || d)
+ *   inner_hash(L, R)  = SHA3-512(0x01 || L || R)
+ * ========================================================================== */
 typedef struct {
-    uint8_t leaf_hash[DNAC_MERKLE_ROOT_SIZE];      /**< Hash of the leaf (tx data) */
-    uint64_t leaf_index;                            /**< Index in the tree */
-    uint8_t siblings[DNAC_MERKLE_MAX_DEPTH][DNAC_MERKLE_ROOT_SIZE]; /**< Sibling hashes */
-    uint8_t directions[DNAC_MERKLE_MAX_DEPTH];     /**< 0=left, 1=right */
-    int proof_length;                               /**< Number of siblings */
-    uint8_t root[DNAC_MERKLE_ROOT_SIZE];           /**< Expected root */
+    /* Composite leaf digest (pre-tag). For UTXO proofs this is the output of
+     * nodus_witness_merkle_leaf_hash(nullifier || owner || amount || token_id
+     *                                 || tx_hash || output_index). For TX
+     * proofs this is the raw tx_hash. In either case, the verifier applies
+     * the 0x00 leaf tag internally. */
+    uint8_t  leaf_hash[DNAC_MERKLE_ROOT_SIZE];
 
-    /* v0.7.1: BFT trust anchor */
-    uint64_t epoch;                                 /**< Epoch this root belongs to */
-    dnac_epoch_signature_t epoch_sigs[DNAC_PROOF_MAX_SIGNATURES]; /**< BFT signatures */
-    int epoch_sig_count;                            /**< Number of signatures (need quorum) */
+    /* Sibling hashes along the leaf-to-root path, leaf level first. */
+    uint8_t  siblings[DNAC_MERKLE_MAX_DEPTH][DNAC_MERKLE_ROOT_SIZE];
+
+    /* Per-level sibling position:
+     *   directions[i] == 1  -> sibling is on the LEFT, cur on RIGHT
+     *   directions[i] == 0  -> sibling is on the RIGHT, cur on LEFT
+     */
+    uint8_t  directions[DNAC_MERKLE_MAX_DEPTH];
+
+    /* Number of valid siblings/directions (0 = single-leaf tree). */
+    int      proof_length;
+
+    /* Expected root (state_root or tx_root). */
+    uint8_t  root[DNAC_MERKLE_ROOT_SIZE];
 } dnac_merkle_proof_t;
 
 /* ============================================================================
@@ -165,15 +172,6 @@ int witness_ledger_get_entry_by_hash(const uint8_t *tx_hash,
                                       dnac_ledger_entry_t *entry_out, void *user_data);
 
 /**
- * @brief Get Merkle proof for transaction
- *
- * @param seq Sequence number of transaction
- * @param proof_out Output proof
- * @return 0 on success, -1 on error
- */
-int witness_ledger_get_proof(uint64_t seq, dnac_merkle_proof_t *proof_out, void *user_data);
-
-/**
  * @brief P0-2 (v0.7.0): Get range of ledger entries
  *
  * Retrieves a range of ledger entries for chain synchronization.
@@ -197,43 +195,6 @@ int witness_ledger_get_range(uint64_t from_seq,
  * @return Total number of entries, or 0 if empty/error
  */
 uint64_t witness_ledger_get_total_entries(void *user_data);
-
-/**
- * @brief v0.7.1: Store BFT signature for epoch root
- *
- * Called when witness signs an epoch root during consensus.
- *
- * @param epoch Epoch number
- * @param signer_id Witness ID who signed
- * @param signature Dilithium5 signature over epoch root data
- * @return 0 on success, -1 on error
- */
-int witness_epoch_signature_add(uint64_t epoch,
-                                 const uint8_t *signer_id,
-                                 const uint8_t *signature, void *user_data);
-
-/**
- * @brief v0.7.1: Get BFT signatures for epoch root
- *
- * @param epoch Epoch number
- * @param sigs_out Output array for signatures
- * @param max_sigs Maximum signatures to return
- * @return Number of signatures retrieved, or -1 on error
- */
-int witness_epoch_signatures_get(uint64_t epoch,
-                                  dnac_epoch_signature_t *sigs_out,
-                                  int max_sigs, void *user_data);
-
-/**
- * @brief v0.7.1: Get Merkle proof with BFT signatures
- *
- * Extended version that includes epoch signatures for trust anchoring.
- *
- * @param seq Sequence number of transaction
- * @param proof_out Output proof with BFT signatures
- * @return 0 on success, -1 on error
- */
-int witness_ledger_get_proof_anchored(uint64_t seq, dnac_merkle_proof_t *proof_out, void *user_data);
 
 /* ============================================================================
  * Supply Tracking Functions
@@ -302,32 +263,19 @@ int dnac_ledger_get_supply(dnac_context_t *ctx,
                            uint64_t *current_out);
 
 /**
- * @brief Verify Merkle proof locally (hash computation only)
+ * @brief Verify a Merkle proof against its embedded root.
  *
- * WARNING: This only verifies the hash computation leads to proof->root.
- * It does NOT verify that the root is BFT-signed. For full security,
- * use dnac_merkle_verify_proof_anchored() instead.
+ * Pure function — no DB, no network, no allocation. Hashes the leaf with
+ * the RFC 6962 leaf tag (0x00), walks up the sibling chain with the inner
+ * tag (0x01), and compares the result to proof->root.
+ *
+ * This does NOT verify that proof->root is BFT-trusted. Pair with
+ * dnac_anchor_verify (Task 20+) for full trust.
  *
  * @param proof Proof to verify
- * @return true if proof is valid
+ * @return true on hash match, false on any mismatch or invalid input.
  */
 bool dnac_merkle_verify_proof(const dnac_merkle_proof_t *proof);
-
-/**
- * @brief Verify Merkle proof with BFT trust anchor (v0.7.1)
- *
- * Verifies both:
- * 1. The hash computation leads to proof->root
- * 2. The root is signed by a BFT quorum of witnesses
- *
- * @param proof Proof to verify (must include epoch_sigs)
- * @param roster Witness roster for signature verification
- * @param quorum_required Minimum signatures needed (typically 2f+1)
- * @return true if proof is valid AND BFT-anchored
- */
-bool dnac_merkle_verify_proof_anchored(const dnac_merkle_proof_t *proof,
-                                        const void *roster,
-                                        int quorum_required);
 
 /**
  * @brief P0-2 (v0.7.0): Sync ledger entries in range from witnesses
