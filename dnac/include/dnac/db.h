@@ -117,6 +117,27 @@ int dnac_db_store_transaction(sqlite3 *db,
                                uint64_t amount_fee);
 
 /**
+ * @brief Upsert a history entry from remote with explicit timestamp
+ *
+ * Used by dnac_get_remote_history to persist remote-seen entries
+ * (especially incoming TXs that the local wallet never produced) into
+ * the local history cache. INSERT OR REPLACE — safe to call repeatedly.
+ * Unlike dnac_db_store_transaction, this preserves the TX's real
+ * timestamp instead of writing "now".
+ *
+ * amount_delta semantics: stored as amount_in=max(delta,0),
+ * amount_out=max(-delta,0) so dnac_db_get_transactions' computation
+ * (amount_in - amount_out) round-trips correctly.
+ */
+int dnac_db_upsert_history_entry(sqlite3 *db,
+                                  const uint8_t *tx_hash,
+                                  dnac_tx_type_t type,
+                                  const char *counterparty_fp,
+                                  int64_t amount_delta,
+                                  uint64_t amount_fee,
+                                  int64_t tx_timestamp);
+
+/**
  * @brief Get transaction by hash
  *
  * @param db SQLite database handle

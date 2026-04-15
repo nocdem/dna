@@ -4160,9 +4160,28 @@ DNA_API dna_request_id_t dna_engine_dnac_sync(
 );
 
 /**
- * Get DNAC transaction history
+ * Get DNAC transaction history from witnesses (authoritative, blocking).
+ * Also persists each entry into the local DB cache as a side effect so
+ * that subsequent dna_engine_dnac_get_history_local calls see incoming
+ * TXs that were previously only visible on the network.
  */
 DNA_API dna_request_id_t dna_engine_dnac_get_history(
+    dna_engine_t *engine,
+    dna_dnac_history_cb callback,
+    void *user_data
+);
+
+/**
+ * Get DNAC transaction history from the local DB cache only.
+ *
+ * Fast and non-blocking — returns whatever the local DB currently has.
+ * Intended for stale-while-revalidate UI patterns: call this first to
+ * paint the history screen immediately, then fire
+ * dna_engine_dnac_get_history in the background to refresh from
+ * witnesses (which will also persist any newly seen incoming TXs into
+ * the local cache).
+ */
+DNA_API dna_request_id_t dna_engine_dnac_get_history_local(
     dna_engine_t *engine,
     dna_dnac_history_cb callback,
     void *user_data

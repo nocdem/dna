@@ -4549,6 +4549,20 @@ class DnaBindings {
     return _dna_engine_dnac_get_history(engine, callback, user_data);
   }
 
+  late final _dna_engine_dnac_get_history_local = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaDnacHistoryCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaDnacHistoryCb>,
+          Pointer<Void>)>('dna_engine_dnac_get_history_local');
+
+  int dna_engine_dnac_get_history_local(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaDnacHistoryCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_get_history_local(engine, callback, user_data);
+  }
+
   late final _dna_engine_dnac_get_utxos = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaDnacUtxosCb>,
           Pointer<Void>),

@@ -465,6 +465,49 @@ int dnac_db_store_transaction(sqlite3 *db,
     return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
 }
 
+int dnac_db_upsert_history_entry(sqlite3 *db,
+                                  const uint8_t *tx_hash,
+                                  dnac_tx_type_t type,
+                                  const char *counterparty_fp,
+                                  int64_t amount_delta,
+                                  uint64_t amount_fee,
+                                  int64_t tx_timestamp) {
+    if (!db || !tx_hash) return DNAC_ERROR_INVALID_PARAM;
+
+    const char *sql =
+        "INSERT OR REPLACE INTO dnac_transactions "
+        "(tx_hash, raw_tx, type, counterparty_fp, created_at, "
+        "amount_in, amount_out, amount_fee) "
+        "VALUES (?, NULL, ?, ?, ?, ?, ?, ?)";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
+
+    /* Split signed delta into unsigned in/out so the existing
+     * dnac_db_get_transactions read path round-trips the signed value:
+     * amount_delta_read = amount_in - amount_out. */
+    uint64_t amt_in  = (amount_delta > 0) ? (uint64_t)amount_delta : 0;
+    uint64_t amt_out = (amount_delta < 0) ? (uint64_t)(-amount_delta) : 0;
+
+    sqlite3_bind_blob(stmt, 1, tx_hash, DNAC_TX_HASH_SIZE, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 2, (int)type);
+    if (counterparty_fp && counterparty_fp[0]) {
+        sqlite3_bind_text(stmt, 3, counterparty_fp, -1, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_null(stmt, 3);
+    }
+    sqlite3_bind_int64(stmt, 4, tx_timestamp);
+    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)amt_in);
+    sqlite3_bind_int64(stmt, 6, (sqlite3_int64)amt_out);
+    sqlite3_bind_int64(stmt, 7, (sqlite3_int64)amount_fee);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
+}
+
 int dnac_db_get_transaction(sqlite3 *db,
                              const uint8_t *tx_hash,
                              uint8_t **raw_tx_out,

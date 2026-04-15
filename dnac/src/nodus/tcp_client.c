@@ -740,6 +740,22 @@ int dnac_get_remote_history(dnac_context_t *ctx,
                 strncpy(h->counterparty, e->sender_fp,
                         DNAC_FINGERPRINT_SIZE - 1);
             }
+
+            /* Persist to local cache so subsequent local-only reads
+             * (stale-while-revalidate UI) see incoming TXs. Best-effort
+             * — DB errors must not break the remote fetch. */
+            sqlite3 *db = dnac_get_db(ctx);
+            if (db) {
+                int urc = dnac_db_upsert_history_entry(
+                    db, h->tx_hash, h->type,
+                    h->counterparty[0] ? h->counterparty : NULL,
+                    h->amount_delta, h->fee, h->timestamp);
+                if (urc != DNAC_SUCCESS) {
+                    QGP_LOG_DEBUG(LOG_TAG,
+                                  "remote_history: cache upsert failed: %d",
+                                  urc);
+                }
+            }
         }
 
         *history_out = history;

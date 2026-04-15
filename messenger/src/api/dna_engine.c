@@ -1172,6 +1172,7 @@ void dna_handle_dnac_get_balance(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_send(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_sync(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_get_history_local(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_get_utxos(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_estimate_fee(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_token_list(dna_engine_t *engine, dna_task_t *task);
@@ -1509,6 +1510,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_DNAC_GET_HISTORY:
             dna_handle_dnac_get_history(engine, task);
+            break;
+        case TASK_DNAC_GET_HISTORY_LOCAL:
+            dna_handle_dnac_get_history_local(engine, task);
             break;
         case TASK_DNAC_GET_UTXOS:
             dna_handle_dnac_get_utxos(engine, task);

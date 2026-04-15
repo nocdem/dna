@@ -7054,8 +7054,26 @@ class DnaEngine {
     return completer.future;
   }
 
-  /// Get DNAC transaction history
-  Future<List<DnacTxHistory>> dnacGetHistory() async {
+  /// Get DNAC transaction history from witnesses (authoritative).
+  ///
+  /// Blocks up to 10 seconds waiting for witness response. On success,
+  /// the C layer also persists every entry into the local history cache
+  /// so subsequent [dnacGetHistoryLocal] calls see incoming TXs.
+  Future<List<DnacTxHistory>> dnacGetHistory() =>
+      _fetchDnacHistory(_bindings.dna_engine_dnac_get_history);
+
+  /// Get DNAC transaction history from the local DB only.
+  ///
+  /// Returns immediately — never touches the network. Used by the
+  /// history screen to paint instantly, then fire [dnacGetHistory] in
+  /// the background to refresh from witnesses (stale-while-revalidate).
+  Future<List<DnacTxHistory>> dnacGetHistoryLocal() =>
+      _fetchDnacHistory(_bindings.dna_engine_dnac_get_history_local);
+
+  Future<List<DnacTxHistory>> _fetchDnacHistory(
+      int Function(Pointer<dna_engine_t>, Pointer<DnaDnacHistoryCb>,
+              Pointer<Void>)
+          submit) async {
     final completer = Completer<List<DnacTxHistory>>();
     final localId = _nextLocalId++;
 
@@ -7094,7 +7112,7 @@ class DnaEngine {
     final callback = NativeCallable<DnaDnacHistoryCbNative>.listener(onComplete);
     _pendingRequests[localId] = _PendingRequest(callback: callback);
 
-    final requestId = _bindings.dna_engine_dnac_get_history(
+    final requestId = submit(
       _engine, callback.nativeFunction.cast(), nullptr);
 
     if (requestId == 0) {

@@ -143,10 +143,30 @@ class DnacHistoryNotifier extends AsyncNotifier<List<DnacTxHistory>> {
 
     try {
       final engine = await ref.read(engineProvider.future);
-      return await engine.dnacGetHistory();
+      // Stale-while-revalidate: return local cache immediately so the
+      // history screen paints without waiting on the witness network.
+      final local = await engine.dnacGetHistoryLocal();
+      // Kick off the remote refresh without awaiting it. When it
+      // completes (up to ~10s later), _refreshFromRemote() swaps the
+      // provider state with the authoritative list, which may include
+      // newly seen incoming TXs that were just persisted to the local
+      // cache as a side effect.
+      unawaited(_refreshFromRemote());
+      return local;
     } catch (e) {
       logger.logError('DNAC', 'History fetch failed: $e');
       return [];
+    }
+  }
+
+  Future<void> _refreshFromRemote() async {
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final remote = await engine.dnacGetHistory();
+      state = AsyncValue.data(remote);
+    } catch (e) {
+      // Remote refresh is best-effort; keep the local list on failure.
+      logger.logError('DNAC', 'Background history refresh failed: $e');
     }
   }
 

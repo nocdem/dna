@@ -184,34 +184,10 @@ void dna_handle_dnac_sync(dna_engine_t *engine, dna_task_t *task) {
     task->callback.completion(task->request_id, 0, task->user_data);
 }
 
-void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task) {
-    dnac_context_t *ctx = ensure_dnac_init(engine);
-    if (!ctx) {
-        task->callback.dnac_history(task->request_id,
-                                     DNA_ENGINE_ERROR_NOT_INITIALIZED,
-                                     NULL, 0, task->user_data);
-        return;
-    }
-
-    dnac_tx_history_t *history = NULL;
-    int count = 0;
-
-    /* Fetch from Nodus (authoritative), fallback to local cache */
-    int ret = dnac_get_remote_history(ctx, &history, &count);
-    if (ret != DNAC_SUCCESS) {
-        QGP_LOG_WARN(LOG_TAG, "remote history failed (%d), falling back to local",
-                     ret);
-        ret = dnac_get_history(ctx, &history, &count);
-    }
-    if (ret != DNAC_SUCCESS) {
-        QGP_LOG_ERROR(LOG_TAG, "dnac_get_history failed: %d (%s)",
-                      ret, dnac_error_string(ret));
-        task->callback.dnac_history(task->request_id, ret,
-                                     NULL, 0, task->user_data);
-        return;
-    }
-
-    /* Convert to engine API type */
+/* Shared emit path: converts dnac_tx_history_t[] to dna_dnac_history_t[]
+ * and fires the task callback. Used by both remote and local handlers. */
+static void emit_dnac_history(dna_task_t *task,
+                               dnac_tx_history_t *history, int count) {
     dna_dnac_history_t *result = NULL;
     if (count > 0) {
         result = calloc(count, sizeof(dna_dnac_history_t));
@@ -235,12 +211,70 @@ void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task) {
             memcpy(result[i].token_id, history[i].token_id, 64);
         }
     }
-
     dnac_free_history(history, count);
-
     QGP_LOG_DEBUG(LOG_TAG, "History: %d transactions", count);
     task->callback.dnac_history(task->request_id, 0, result, count,
                                  task->user_data);
+}
+
+void dna_handle_dnac_get_history(dna_engine_t *engine, dna_task_t *task) {
+    dnac_context_t *ctx = ensure_dnac_init(engine);
+    if (!ctx) {
+        task->callback.dnac_history(task->request_id,
+                                     DNA_ENGINE_ERROR_NOT_INITIALIZED,
+                                     NULL, 0, task->user_data);
+        return;
+    }
+
+    dnac_tx_history_t *history = NULL;
+    int count = 0;
+
+    /* Authoritative path: fetch from witnesses (blocks up to 10s).
+     * dnac_get_remote_history persists each entry to local DB as a side
+     * effect, so subsequent get_history_local calls see incoming TXs. */
+    int ret = dnac_get_remote_history(ctx, &history, &count);
+    if (ret != DNAC_SUCCESS) {
+        QGP_LOG_WARN(LOG_TAG, "remote history failed (%d), falling back to local",
+                     ret);
+        ret = dnac_get_history(ctx, &history, &count);
+    }
+    if (ret != DNAC_SUCCESS) {
+        QGP_LOG_ERROR(LOG_TAG, "dnac_get_history failed: %d (%s)",
+                      ret, dnac_error_string(ret));
+        task->callback.dnac_history(task->request_id, ret,
+                                     NULL, 0, task->user_data);
+        return;
+    }
+
+    emit_dnac_history(task, history, count);
+}
+
+/* Local-only history read: returns immediately from the local DB cache,
+ * never touches the witness network. Used by the history screen's
+ * stale-while-revalidate pattern — Flutter calls this first to populate
+ * the UI, then fires dna_engine_dnac_get_history in the background to
+ * refresh from witnesses (which also persists new incoming TXs). */
+void dna_handle_dnac_get_history_local(dna_engine_t *engine, dna_task_t *task) {
+    dnac_context_t *ctx = ensure_dnac_init(engine);
+    if (!ctx) {
+        task->callback.dnac_history(task->request_id,
+                                     DNA_ENGINE_ERROR_NOT_INITIALIZED,
+                                     NULL, 0, task->user_data);
+        return;
+    }
+
+    dnac_tx_history_t *history = NULL;
+    int count = 0;
+    int ret = dnac_get_history(ctx, &history, &count);
+    if (ret != DNAC_SUCCESS) {
+        QGP_LOG_ERROR(LOG_TAG, "dnac_get_history (local) failed: %d (%s)",
+                      ret, dnac_error_string(ret));
+        task->callback.dnac_history(task->request_id, ret,
+                                     NULL, 0, task->user_data);
+        return;
+    }
+
+    emit_dnac_history(task, history, count);
 }
 
 void dna_handle_dnac_get_utxos(dna_engine_t *engine, dna_task_t *task) {
@@ -385,6 +419,19 @@ dna_request_id_t dna_engine_dnac_get_history(
     dna_task_callback_t cb = {0};
     cb.dnac_history = callback;
     return dna_submit_task(engine, TASK_DNAC_GET_HISTORY, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_dnac_get_history_local(
+    dna_engine_t *engine,
+    dna_dnac_history_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    dna_task_callback_t cb = {0};
+    cb.dnac_history = callback;
+    return dna_submit_task(engine, TASK_DNAC_GET_HISTORY_LOCAL, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_dnac_get_utxos(
