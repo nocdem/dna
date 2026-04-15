@@ -2126,12 +2126,28 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
      * round_state still holds batch_entries with client_conn / forwarder_id
      * routing info, but handle_vote's reply loop will never run (handle_vote
      * bails once phase != PRECOMMIT). Emit replies here so forwarded client
-     * spends don't silently drop their w_fwd_rsp. Helper is idempotent. */
+     * spends don't silently drop their w_fwd_rsp. Helper is idempotent.
+     *
+     * handle_commit calls commit_batch with stack-allocated local_entries
+     * (built from cmt->batch_txs), so commit_batch populates
+     * committed_block_height / committed_tx_index on THOSE stack entries,
+     * not on round_state.batch_entries. Copy the coordinates across so the
+     * helper emits the correct block number / tx index in spend_result and
+     * w_fwd_rsp; otherwise the forwarder path still sees zeros. */
     if (w->round_state.round == hdr->round &&
         w->round_state.batch_count > 0) {
         fprintf(stderr, "%s: remote-COMMIT race — emitting replies for own "
                 "round %lu from handle_commit path\n",
                 LOG_TAG, (unsigned long)hdr->round);
+        uint64_t committed_bh = nodus_witness_block_height(w);
+        for (int bi = 0; bi < w->round_state.batch_count; bi++) {
+            if (w->round_state.batch_entries[bi]) {
+                w->round_state.batch_entries[bi]->committed_block_height =
+                    committed_bh;
+                w->round_state.batch_entries[bi]->committed_tx_index =
+                    (uint32_t)bi;
+            }
+        }
         bft_emit_batch_replies(w);
     }
     if (w->round_state.round == hdr->round) {
