@@ -568,10 +568,18 @@ size_t nodus_ops_listen(const uint8_t *key, size_t key_len,
     nodus_key_t k;
     hash_key(key, key_len, &k);
 
-    /* Register LISTEN on the server */
+    /* Register LISTEN on the server.
+     * NODUS_ERR_TIMEOUT is treated as a "soft success": the server may
+     * already have registered the subscription (only the listen_ok response
+     * was lost). We still install the callback so late push events are
+     * dispatched, and nodus_client_listen has already tracked the key in
+     * its listen_keys[] for reconnect retry. Any other error is a hard fail. */
     int rc = nodus_client_listen(c, &k);
     nodus_singleton_release();
-    if (rc != 0) return 0;
+    if (rc != 0 && rc != NODUS_ERR_TIMEOUT) return 0;
+    if (rc == NODUS_ERR_TIMEOUT) {
+        QGP_LOG_WARN("NODUS_OPS", "nodus_ops_listen: LISTEN timed out, installing callback anyway (soft-success)");
+    }
 
     /* Track locally for callback dispatch */
     size_t token = 0;
@@ -606,9 +614,15 @@ size_t nodus_ops_listen_v2(const uint8_t *key, size_t key_len,
     nodus_key_t k;
     hash_key(key, key_len, &k);
 
+    /* Same soft-success semantics as nodus_ops_listen: NODUS_ERR_TIMEOUT
+     * still installs the callback so late events dispatch and reconnect
+     * resubscribes. Other errors are hard failures. */
     int rc = nodus_client_listen(c, &k);
     nodus_singleton_release();
-    if (rc != 0) return 0;
+    if (rc != 0 && rc != NODUS_ERR_TIMEOUT) return 0;
+    if (rc == NODUS_ERR_TIMEOUT) {
+        QGP_LOG_WARN("NODUS_OPS", "nodus_ops_listen_v2: LISTEN timed out, installing callback anyway (soft-success)");
+    }
 
     size_t token = 0;
     listener_lock();

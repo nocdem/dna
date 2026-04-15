@@ -1222,6 +1222,16 @@ void nodus_client_free_count_result(nodus_count_result_t *results, int count) {
     free(results);
 }
 
+/* Track subscription in client->listen_keys[] so resubscribe_all() retries
+ * it after reconnect. Safe to call from both success and timeout paths. */
+static void track_listen_key(nodus_client_t *client, const nodus_key_t *key) {
+    if (client->listen_count >= NODUS_CLIENT_MAX_LISTENS) return;
+    for (int i = 0; i < client->listen_count; i++) {
+        if (nodus_key_cmp(&client->listen_keys[i], key) == 0) return;
+    }
+    client->listen_keys[client->listen_count++] = *key;
+}
+
 int nodus_client_listen(nodus_client_t *client, const nodus_key_t *key) {
     if (!nodus_client_is_ready(client) || !key) return -1;
 
@@ -1238,22 +1248,25 @@ int nodus_client_listen(nodus_client_t *client, const nodus_key_t *key) {
     free(buf);
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
-    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
-
-    /* Track subscription for re-subscribe on reconnect */
-    if (client->listen_count < NODUS_CLIENT_MAX_LISTENS) {
-        /* Check for duplicate */
-        bool found = false;
-        for (int i = 0; i < client->listen_count; i++) {
-            if (nodus_key_cmp(&client->listen_keys[i], key) == 0) {
-                found = true;
-                break;
-            }
-        }
-        if (!found)
-            client->listen_keys[client->listen_count++] = *key;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        /* Timeout: the LISTEN may or may not have been processed by the
+         * server. Track the key anyway so (a) push events that arrive
+         * before listen_ok are dispatched correctly, and (b) the next
+         * reconnect resubscribes via resubscribe_all(). The alternative
+         * is silent push loss until the caller retries by some other
+         * code path. */
+        track_listen_key(client, key);
+        free_pending(client, req);
+        return NODUS_ERR_TIMEOUT;
     }
+    if (resp->type == 'e') {
+        /* Server actively rejected — do NOT track. */
+        int rc = resp->error_code;
+        free_pending(client, req);
+        return rc;
+    }
+
+    track_listen_key(client, key);
     free_pending(client, req);
     return 0;
 }

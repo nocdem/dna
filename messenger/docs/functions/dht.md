@@ -575,7 +575,20 @@ Convenience wrappers around the Nodus singleton for DHT operations and presence.
 |----------|-------------|
 | `int nodus_ops_put_with_timeout(const uint8_t *key, size_t key_len, const uint8_t *data, size_t data_len, uint32_t ttl, uint64_t vid, int timeout_ms)` | Same as `nodus_ops_put` but overrides the default 10s request timeout. Use for large payloads (debug logs, media) or mobile-link callers that need more time after reconnect bursts. `timeout_ms <= 0` falls back to client default. |
 
-### 12.4 Media Operations (v0.9.147+)
+### 12.4 LISTEN timeout semantics (v0.10.6+)
+
+`nodus_ops_listen()` / `nodus_ops_listen_v2()` treat `NODUS_ERR_TIMEOUT` from
+the underlying client as a **soft success**: the callback is still installed
+in the listener table and a valid token is returned. Rationale: when LISTEN
+times out, the server may already have registered the subscription (only the
+`listen_ok` response was lost). Discarding the callback would cause silent
+push-event loss. The nodus client also tracks the key in `listen_keys[]` so
+`resubscribe_all()` retries the LISTEN on the next reconnect.
+
+Server-side error responses (`type == 'e'`) remain hard failures — no token
+is returned.
+
+### 12.5 Media Operations (v0.9.147+)
 
 | Function | Description |
 |----------|-------------|
