@@ -17,6 +17,7 @@
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_verify.h"
 #include "witness/nodus_witness_mempool.h"
+#include "witness/nodus_witness_merkle.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
 #include "transport/nodus_tcp.h"
@@ -379,8 +380,32 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     fprintf(stderr, "WITNESS_UTXO: owner=%.16s... db=%p rc=%d count=%d\n",
             owner, (void*)w->db, utxo_rc, count);
 
-    /* Encode response — size depends on count */
-    size_t buf_size = 512 + ((size_t)count * 256);
+    /* Phase 2 / Task 38: each UTXO ships with an anchored Merkle inclusion
+     * proof against the current state_root. The top-level response also
+     * carries the latest committed block_height so the client can fetch the
+     * matching block anchor via dnac_block.
+     *
+     * Proof wire format per UTXO (short CBOR keys to match existing
+     * conventions "n", "tid", "bh"):
+     *   pr_s : bstr — flat sibling buffer (depth * 64 bytes)
+     *   pr_p : uint — position bitfield
+     *   pr_d : uint — proof depth
+     *   sr   : bstr — 64-byte state_root (matches block.state_root)
+     *
+     * build_proof is O(N_utxos) per call; for N results in one response
+     * this is O(N^2). Acceptable for the current 100-UTXO cap — revisit
+     * in Phase 11+ if it becomes hot. */
+    #define DNAC_UTXO_PROOF_MAX_DEPTH 32
+    uint64_t latest_height = nodus_witness_block_height(w);
+
+    /* Per UTXO we encode at worst:
+     *   7 base fields  ≈ 256 B (existing budget)
+     *   pr_s siblings  ≤ 32 * 64  = 2048 B
+     *   pr_p / pr_d    ≈ 16 B
+     *   sr             ≈ 70 B
+     *   CBOR overhead  ≈ 64 B
+     * ⇒ round to 2560 B per entry, plus 512 B top-level overhead. */
+    size_t buf_size = 512 + ((size_t)count * 2560);
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
         free(utxos);
@@ -391,16 +416,58 @@ static void handle_dnac_utxo(nodus_witness_t *w,
 
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, buf_size);
-    enc_dnac_response(&enc, txn_id, "dnac_utxo", 2);
+    enc_dnac_response(&enc, txn_id, "dnac_utxo", 3);
 
     cbor_encode_cstr(&enc, "count");
     cbor_encode_uint(&enc, (uint64_t)count);
+
+    cbor_encode_cstr(&enc, "block_height");
+    cbor_encode_uint(&enc, latest_height);
 
     cbor_encode_cstr(&enc, "utxos");
     cbor_encode_array(&enc, (size_t)count);
 
     for (int i = 0; i < count; i++) {
-        cbor_encode_map(&enc, 7);
+        /* Build the anchored state_root proof for this UTXO. On failure
+         * (e.g. empty tree, leaf not yet committed) emit depth=0 empty
+         * proof and a zeroed state_root so the client sees a degraded —
+         * but still structurally valid — entry rather than losing the
+         * UTXO entirely. Client verifies proof before trusting anchor. */
+        uint8_t leaf[NODUS_MERKLE_HASH_LEN];
+        uint8_t siblings[DNAC_UTXO_PROOF_MAX_DEPTH * NODUS_MERKLE_HASH_LEN];
+        uint8_t state_root[NODUS_MERKLE_HASH_LEN];
+        uint32_t positions = 0;
+        int depth = 0;
+        bool have_proof = false;
+
+        memset(siblings, 0, sizeof(siblings));
+        memset(state_root, 0, sizeof(state_root));
+
+        if (nodus_witness_merkle_leaf_hash(utxos[i].nullifier,
+                                             utxos[i].owner,
+                                             utxos[i].amount,
+                                             utxos[i].token_id,
+                                             utxos[i].tx_hash,
+                                             utxos[i].output_index,
+                                             leaf) == 0) {
+            if (nodus_witness_merkle_build_proof(w, leaf, siblings, &positions,
+                                                   DNAC_UTXO_PROOF_MAX_DEPTH,
+                                                   &depth, state_root) == 0) {
+                have_proof = true;
+            }
+        }
+        if (!have_proof) {
+            /* Degraded: zeroed proof + root. Client-side verify will
+             * reject — caller must retry once the witness is caught up. */
+            positions = 0;
+            depth = 0;
+            memset(siblings, 0, sizeof(siblings));
+            memset(state_root, 0, sizeof(state_root));
+        }
+
+        size_t sibs_len = (size_t)depth * NODUS_MERKLE_HASH_LEN;
+
+        cbor_encode_map(&enc, 11);
         cbor_encode_cstr(&enc, "n");
         cbor_encode_bstr(&enc, utxos[i].nullifier, NODUS_T3_NULLIFIER_LEN);
         cbor_encode_cstr(&enc, "owner");
@@ -415,6 +482,14 @@ static void handle_dnac_utxo(nodus_witness_t *w,
         cbor_encode_uint(&enc, utxos[i].output_index);
         cbor_encode_cstr(&enc, "bh");
         cbor_encode_uint(&enc, utxos[i].block_height);
+        cbor_encode_cstr(&enc, "pr_s");
+        cbor_encode_bstr(&enc, siblings, sibs_len);
+        cbor_encode_cstr(&enc, "pr_p");
+        cbor_encode_uint(&enc, (uint64_t)positions);
+        cbor_encode_cstr(&enc, "pr_d");
+        cbor_encode_uint(&enc, (uint64_t)depth);
+        cbor_encode_cstr(&enc, "sr");
+        cbor_encode_bstr(&enc, state_root, NODUS_MERKLE_HASH_LEN);
     }
 
     size_t rlen = cbor_encoder_len(&enc);
