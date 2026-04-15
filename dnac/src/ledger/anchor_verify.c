@@ -136,3 +136,44 @@ bool dnac_genesis_verify(const uint8_t *bytes, size_t len,
 
     return true;
 }
+
+/* ============================================================================
+ * High-level wrappers (Tasks 29+): combine merkle proof + anchor BFT check.
+ * ========================================================================== */
+
+bool dnac_utxo_verify_anchored(const dnac_merkle_proof_t *state_root_proof,
+                                const dnac_block_anchor_t *anchor,
+                                const dnac_trusted_state_t *trust) {
+    if (!state_root_proof || !anchor || !trust) return false;
+
+    /* Proof root must match the block's state_root */
+    if (memcmp(state_root_proof->root, anchor->header.state_root,
+               DNAC_BLOCK_HASH_SIZE) != 0) {
+        return false;
+    }
+
+    /* Anchor must be BFT-valid */
+    if (!dnac_anchor_verify(anchor, trust)) return false;
+
+    /* Proof must verify hash-wise */
+    if (!dnac_merkle_verify_proof(state_root_proof)) return false;
+
+    return true;
+}
+
+bool dnac_tx_verify_anchored(const dnac_merkle_proof_t *tx_root_proof,
+                              const dnac_block_anchor_t *anchor,
+                              const dnac_trusted_state_t *trust) {
+    if (!tx_root_proof || !anchor || !trust) return false;
+
+    /* Proof root must match the block's tx_root */
+    if (memcmp(tx_root_proof->root, anchor->header.tx_root,
+               DNAC_BLOCK_HASH_SIZE) != 0) {
+        return false;
+    }
+
+    if (!dnac_anchor_verify(anchor, trust)) return false;
+    if (!dnac_merkle_verify_proof(tx_root_proof)) return false;
+
+    return true;
+}

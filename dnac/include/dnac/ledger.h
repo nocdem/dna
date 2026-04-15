@@ -22,6 +22,8 @@
 #include "dnac/transaction.h"
 #include "dnac/block.h"
 
+#include <string.h>  /* for memcmp in dnac_is_native_token inline helper */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -367,6 +369,61 @@ bool dnac_anchor_verify(const dnac_block_anchor_t *anchor,
 bool dnac_genesis_verify(const uint8_t *bytes, size_t len,
                           const uint8_t expected_chain_id[DNAC_BLOCK_HASH_SIZE],
                           dnac_trusted_state_t *trust_out);
+
+/* ============================================================================
+ * High-level verification wrappers (Tasks 29+)
+ *
+ * These orchestrate the three primitives (merkle_verify_proof,
+ * anchor_verify, chain_id match) into full end-to-end trust checks that
+ * client code can call directly.
+ * ========================================================================== */
+
+/**
+ * Verify a UTXO belongs to a BFT-finalized state.
+ *
+ * Checks (in order):
+ *   1. proof->root matches anchor->header.state_root
+ *   2. dnac_anchor_verify(anchor, trust) passes
+ *   3. dnac_merkle_verify_proof(proof) passes
+ *
+ * The caller supplies a proof whose leaf_hash is the composite UTXO digest
+ * (see nodus_witness_merkle_leaf_hash for the composition rule).
+ *
+ * @return true only if all three checks succeed.
+ */
+bool dnac_utxo_verify_anchored(const dnac_merkle_proof_t *state_root_proof,
+                                const dnac_block_anchor_t *anchor,
+                                const dnac_trusted_state_t *trust);
+
+/**
+ * Verify a historical TX belongs to a BFT-finalized block.
+ *
+ * Checks (in order):
+ *   1. proof->root matches anchor->header.tx_root
+ *   2. dnac_anchor_verify(anchor, trust) passes
+ *   3. dnac_merkle_verify_proof(proof) passes
+ *
+ * The proof's leaf_hash should be the raw TX hash (the server-side
+ * build_tx_proof applies the 0x00 leaf tag internally, symmetric to the
+ * client verifier).
+ */
+bool dnac_tx_verify_anchored(const dnac_merkle_proof_t *tx_root_proof,
+                              const dnac_block_anchor_t *anchor,
+                              const dnac_trusted_state_t *trust);
+
+/**
+ * Compare a token_id to the chain's native_token_id (committed in genesis).
+ *
+ * Inline — safe to call in hot paths. Not a consensus rule — just a
+ * convenience helper. See dnac/include/dnac/token_types.h for code-level
+ * type prefix constants.
+ */
+static inline bool dnac_is_native_token(const uint8_t token_id[DNAC_TOKEN_ID_SIZE],
+                                         const dnac_trusted_state_t *trust) {
+    if (!token_id || !trust) return false;
+    return memcmp(token_id, trust->chain_def.native_token_id,
+                   DNAC_TOKEN_ID_SIZE) == 0;
+}
 
 /**
  * @brief P0-2 (v0.7.0): Sync ledger entries in range from witnesses
