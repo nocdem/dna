@@ -192,27 +192,50 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
         if (posts.isNotEmpty) {
           var items = await _assembleItems(posts, fp);
 
-          // Synchronous cache-first engagement merge — C side serves stale
-          // cache immediately (~ms) so posts render WITH likes/comments on
-          // first frame, no 0/0 flicker. DHT refresh for stale entries is
-          // triggered by the same call on the C side.
-          try {
-            final uuids = posts.map((p) => p.uuid).toList();
-            const batchSize = 32;
-            final futures = <Future<List<WallEngagement>>>[];
-            for (var i = 0; i < uuids.length; i += batchSize) {
-              final chunk = uuids.sublist(
-                  i, i + batchSize > uuids.length ? uuids.length : i + batchSize);
-              futures.add(engine.wallGetEngagement(chunk));
+          // Preserve previous engagement (likes/comments) from current state so
+          // we don't flash 0/0 while the async batch is in flight.
+          final prev = state.valueOrNull;
+          if (prev != null && prev.isNotEmpty) {
+            final prevMap = <String, WallFeedItem>{};
+            for (final it in prev) {
+              prevMap[it.post.uuid] = it;
             }
-            final results = await Future.wait(futures);
-            final engagements = results.expand((e) => e).toList();
-            if (engagements.isNotEmpty) {
+            items = items.map((item) {
+              final p = prevMap[item.post.uuid];
+              if (p == null) return item;
+              return item.copyWith(
+                likeCount: p.likeCount,
+                isLikedByMe: p.isLikedByMe,
+                commentCount: p.commentCount,
+                previewComments: p.previewComments,
+              );
+            }).toList();
+          }
+
+          // Fire-and-forget engagement refresh. Paint immediately; enrich when
+          // the batch returns. Avoids blocking first frame on DHT round trips.
+          final uuids = posts.map((p) => p.uuid).toList();
+          final baseItems = items;
+          Future(() async {
+            try {
+              const batchSize = 32;
+              final futures = <Future<List<WallEngagement>>>[];
+              for (var i = 0; i < uuids.length; i += batchSize) {
+                final chunk = uuids.sublist(
+                    i, i + batchSize > uuids.length ? uuids.length : i + batchSize);
+                futures.add(engine.wallGetEngagement(chunk));
+              }
+              final results = await Future.wait(futures);
+              final engagements = results.expand((e) => e).toList();
+              if (engagements.isEmpty) return;
               final engMap = <String, WallEngagement>{};
               for (final e in engagements) {
                 engMap[e.postUuid] = e;
               }
-              items = items.map((item) {
+              // Merge onto whatever is currently in state (may already include
+              // newer items from listener-driven updates).
+              final current = state.valueOrNull ?? baseItems;
+              final merged = current.map((item) {
                 final eng = engMap[item.post.uuid];
                 if (eng == null) return item;
                 final preview = eng.comments.length <= 3
@@ -225,30 +248,12 @@ class WallTimelineNotifier extends AsyncNotifier<List<WallFeedItem>> {
                   previewComments: preview,
                 );
               }).toList();
+              _applyOrDefer(merged);
+              engine.debugLog('WALL_SCROLL', 'ENGAGEMENT_ASYNC_DONE count=${merged.length}');
+            } catch (e) {
+              engine.debugLog('WALL_SCROLL', 'ENGAGEMENT_ASYNC_ERROR $e');
             }
-          } catch (_) {}
-
-          // Schedule full DHT refresh in background (boost resolution + fresh data)
-          if (identityLoaded) {
-            final bgFp = fp;
-            final cacheCount = items.length;
-            final cacheFirst = items.isNotEmpty ? items.first.post.uuid.substring(0, 8) : 'empty';
-            engine.debugLog('WALL_SCROLL', 'BG_REFRESH_START cache=$cacheCount first=$cacheFirst');
-            Future.delayed(Duration.zero, () async {
-              try {
-                final dhtItems = await _fetchAndAssemble(engine, bgFp);
-                if (dhtItems.isNotEmpty) {
-                  final oldItems = state.valueOrNull ?? [];
-                  final oldCount = oldItems.length;
-                  final oldFirst = oldItems.isNotEmpty ? oldItems.first.post.uuid.substring(0, 8) : 'empty';
-                  final newCount = dhtItems.length;
-                  final newFirst = dhtItems.first.post.uuid.substring(0, 8);
-                  engine.debugLog('WALL_SCROLL', 'BG_REFRESH_DONE old=$oldCount($oldFirst) new=$newCount($newFirst) changed=${oldCount != newCount || oldFirst != newFirst} scrolling=$_userScrolling');
-                  _applyOrDefer(dhtItems);
-                }
-              } catch (_) {}
-            });
-          }
+          });
 
           engine.debugLog('WALL_SCROLL', 'BUILD_RETURN cache=${items.length} first=${items.isNotEmpty ? items.first.post.uuid.substring(0, 8) : "empty"}');
           return items;

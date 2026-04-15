@@ -6,6 +6,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../../providers/app_lock_provider.dart';
+import '../../providers/wall_provider.dart';
 import '../../design_system/theme/dna_colors.dart';
 import '../../l10n/app_localizations.dart';
 import '../../utils/screen_security.dart';
@@ -48,6 +49,13 @@ class _LockScreenState extends ConsumerState<LockScreen>
       // Request focus for keyboard input on desktop
       _focusNode.requestFocus();
     });
+
+    // Prefetch wall feed in parallel with unlock flow: by the time the user
+    // dismisses the lock screen, cached posts + async engagement are already
+    // in memory so the home wall paints without an extra round-trip wait.
+    // Fire-and-forget; errors are surfaced via the provider itself.
+    // ignore: unused_result
+    ref.read(wallTimelineProvider.future);
   }
 
   @override
