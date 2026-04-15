@@ -222,6 +222,41 @@ int dnac_db_complete_pending_spend(sqlite3 *db, const uint8_t *tx_hash);
  */
 int dnac_db_expire_pending_spends(sqlite3 *db);
 
+/**
+ * @brief Persist serialized TX for retry-safe re-broadcast (Fix #4 B)
+ *
+ * Attaches the full serialized transaction, recipient, amount, and
+ * token_id to an existing ACTIVE pending_spend row so a subsequent
+ * dnac_send retry can locate and re-broadcast the SAME tx_hash via
+ * dnac_db_find_active_broadcast(), instead of rebuilding a fresh TX
+ * with a different tx_hash (which would collide on nullifiers).
+ *
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_db_store_pending_broadcast(sqlite3 *db,
+                                     const uint8_t *tx_hash,
+                                     const uint8_t *tx_data, size_t tx_data_len,
+                                     const char *recipient_fp,
+                                     uint64_t amount,
+                                     const uint8_t token_id[32],
+                                     uint64_t expires_at);
+
+/**
+ * @brief Look up an active pending broadcast by (recipient, amount, token_id)
+ *
+ * Returns DNAC_SUCCESS if a non-expired ACTIVE row exists with matching
+ * fields and tx_data populated, writing tx_hash (64 bytes) and
+ * heap-allocated tx_data into the out parameters. Caller frees
+ * *tx_data_out. Returns DNAC_ERROR_NOT_FOUND if no match.
+ */
+int dnac_db_find_active_broadcast(sqlite3 *db,
+                                    const char *recipient_fp,
+                                    uint64_t amount,
+                                    const uint8_t token_id[32],
+                                    uint8_t *tx_hash_out,
+                                    uint8_t **tx_data_out,
+                                    size_t *tx_data_len_out);
+
 /* ============================================================================
  * Token Registry Functions
  * ========================================================================== */

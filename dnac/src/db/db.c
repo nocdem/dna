@@ -17,7 +17,7 @@
 #define LOG_TAG "DNAC_DB"
 
 /* Database schema version */
-#define DNAC_DB_VERSION 5
+#define DNAC_DB_VERSION 6
 
 /* Pending spend status values */
 #define DNAC_PENDING_STATUS_ACTIVE    0
@@ -215,6 +215,48 @@ int dnac_db_init(sqlite3 *db) {
             }
         }
         dnac_db_set_version(db, 5);
+    }
+
+    /* v6 (Fix #4 B): pending broadcast persistence — lets dnac_send reuse
+     * the same TX across retries instead of rebuilding with a fresh
+     * timestamp (which produces a different tx_hash and hits DOUBLE_SPEND
+     * on the committed nullifiers). The four new columns are additive;
+     * existing rows with NULL values are treated as legacy pending_spends
+     * entries and are invisible to the new find_active_broadcast lookup. */
+    if (current_version < 6) {
+        static const char *const v6_stmts[] = {
+            "ALTER TABLE dnac_pending_spends ADD COLUMN tx_data BLOB;",
+            "ALTER TABLE dnac_pending_spends ADD COLUMN recipient_fp TEXT;",
+            "ALTER TABLE dnac_pending_spends ADD COLUMN amount INTEGER;",
+            "ALTER TABLE dnac_pending_spends ADD COLUMN token_id BLOB;",
+            "CREATE INDEX IF NOT EXISTS idx_pending_recipient "
+            "ON dnac_pending_spends(recipient_fp, status);",
+            NULL
+        };
+
+        for (int i = 0; v6_stmts[i] != NULL; i++) {
+            sqlite3_stmt *mstmt = NULL;
+            rc = sqlite3_prepare_v2(db, v6_stmts[i], -1, &mstmt, NULL);
+            if (rc == SQLITE_OK) {
+                rc = sqlite3_step(mstmt);
+                sqlite3_finalize(mstmt);
+                if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+                    const char *emsg = sqlite3_errmsg(db);
+                    /* Idempotent — ignore duplicate column on re-run. */
+                    if (emsg && strstr(emsg, "duplicate column") == NULL) {
+                        QGP_LOG_ERROR(LOG_TAG, "DB migration v6 step error: %s", emsg);
+                        return DNAC_ERROR_DATABASE;
+                    }
+                }
+            } else {
+                const char *emsg = sqlite3_errmsg(db);
+                if (emsg && strstr(emsg, "duplicate column") == NULL) {
+                    QGP_LOG_ERROR(LOG_TAG, "DB migration v6 prepare error: %s", emsg);
+                    return DNAC_ERROR_DATABASE;
+                }
+            }
+        }
+        dnac_db_set_version(db, 6);
     }
 
     return DNAC_SUCCESS;
@@ -732,6 +774,128 @@ int dnac_db_expire_pending_spends(sqlite3 *db) {
     sqlite3_finalize(stmt);
 
     return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
+}
+
+/* ─── Pending broadcast persistence (Fix #4 B) ─────────────────────── */
+
+/* Persist the full serialized TX alongside the pending_spend record so a
+ * retry of dnac_send can re-broadcast the exact same tx_hash (and thus
+ * hit server-side idempotency via dnac_spend_replay) instead of rebuilding
+ * a fresh TX that would collide on nullifiers. */
+int dnac_db_store_pending_broadcast(sqlite3 *db,
+                                     const uint8_t *tx_hash,
+                                     const uint8_t *tx_data, size_t tx_data_len,
+                                     const char *recipient_fp,
+                                     uint64_t amount,
+                                     const uint8_t token_id[32],
+                                     uint64_t expires_at) {
+    if (!db || !tx_hash || !tx_data || tx_data_len == 0 || !recipient_fp)
+        return DNAC_ERROR_INVALID_PARAM;
+
+    /* Update existing row (inserted by dnac_db_store_pending_spend earlier
+     * in the same flow) with the broadcast-retry payload. Matches by
+     * tx_hash and status=ACTIVE to avoid stomping completed/expired rows. */
+    const char *sql =
+        "UPDATE dnac_pending_spends SET "
+        "    tx_data = ?, recipient_fp = ?, amount = ?, token_id = ?, "
+        "    expires_at = ? "
+        "WHERE tx_hash = ? AND status = 0";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
+
+    sqlite3_bind_blob(stmt, 1, tx_data, (int)tx_data_len, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, recipient_fp, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, (sqlite3_int64)amount);
+    if (token_id) {
+        sqlite3_bind_blob(stmt, 4, token_id, 32, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_null(stmt, 4);
+    }
+    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)expires_at);
+    sqlite3_bind_blob(stmt, 6, tx_hash, DNAC_TX_HASH_SIZE, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? DNAC_SUCCESS : DNAC_ERROR_DATABASE;
+}
+
+/* Look up an active (non-expired, status=ACTIVE) pending broadcast matching
+ * (recipient_fp, amount, token_id). Returns DNAC_SUCCESS on hit with
+ * tx_hash_out + tx_data_out populated (caller frees *tx_data_out), or
+ * DNAC_ERROR_NOT_FOUND otherwise. */
+int dnac_db_find_active_broadcast(sqlite3 *db,
+                                    const char *recipient_fp,
+                                    uint64_t amount,
+                                    const uint8_t token_id[32],
+                                    uint8_t *tx_hash_out,
+                                    uint8_t **tx_data_out,
+                                    size_t *tx_data_len_out) {
+    if (!db || !recipient_fp || !tx_hash_out || !tx_data_out || !tx_data_len_out)
+        return DNAC_ERROR_INVALID_PARAM;
+
+    *tx_data_out = NULL;
+    *tx_data_len_out = 0;
+
+    /* Match on recipient + amount + token_id with token_id comparison
+     * robust to NULL (legacy rows pre-v6). expires_at must still be in
+     * the future so we don't reuse stale TXes whose nullifiers may have
+     * been republished on chain. */
+    const char *sql =
+        "SELECT tx_hash, tx_data FROM dnac_pending_spends "
+        "WHERE recipient_fp = ? AND amount = ? "
+        "  AND (token_id = ? OR (token_id IS NULL AND ? IS NULL)) "
+        "  AND status = 0 "
+        "  AND expires_at > strftime('%s','now') "
+        "  AND tx_data IS NOT NULL "
+        "ORDER BY created_at DESC LIMIT 1";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return DNAC_ERROR_DATABASE;
+
+    sqlite3_bind_text(stmt, 1, recipient_fp, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)amount);
+    if (token_id) {
+        sqlite3_bind_blob(stmt, 3, token_id, 32, SQLITE_STATIC);
+        sqlite3_bind_blob(stmt, 4, token_id, 32, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_null(stmt, 3);
+        sqlite3_bind_null(stmt, 4);
+    }
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return DNAC_ERROR_NOT_FOUND;
+    }
+
+    int hash_bytes = sqlite3_column_bytes(stmt, 0);
+    const void *hash_blob = sqlite3_column_blob(stmt, 0);
+    if (hash_bytes != DNAC_TX_HASH_SIZE || !hash_blob) {
+        sqlite3_finalize(stmt);
+        return DNAC_ERROR_DATABASE;
+    }
+    memcpy(tx_hash_out, hash_blob, DNAC_TX_HASH_SIZE);
+
+    int data_bytes = sqlite3_column_bytes(stmt, 1);
+    const void *data_blob = sqlite3_column_blob(stmt, 1);
+    if (data_bytes <= 0 || !data_blob) {
+        sqlite3_finalize(stmt);
+        return DNAC_ERROR_DATABASE;
+    }
+    *tx_data_out = malloc((size_t)data_bytes);
+    if (!*tx_data_out) {
+        sqlite3_finalize(stmt);
+        return DNAC_ERROR_OUT_OF_MEMORY;
+    }
+    memcpy(*tx_data_out, data_blob, (size_t)data_bytes);
+    *tx_data_len_out = (size_t)data_bytes;
+
+    sqlite3_finalize(stmt);
+    return DNAC_SUCCESS;
 }
 
 int dnac_db_clear_utxos(sqlite3 *db, const char *owner_fp) {
