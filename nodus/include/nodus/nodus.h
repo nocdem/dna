@@ -818,6 +818,26 @@ int nodus_client_dnac_block(nodus_client_t *client,
                               nodus_dnac_block_result_t *result_out);
 
 /**
+ * Query the genesis block (Phase 2 / Task 36).
+ *
+ * Fetches the height-0 block including the serialized chain_def blob
+ * so the client can reassemble a dnac_block_t, recompute the block
+ * hash, and compare against its hardcoded chain_id. Caller must free
+ * result_out with nodus_client_free_genesis_result().
+ *
+ * @param result_out  Genesis result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_genesis(nodus_client_t *client,
+                                nodus_dnac_genesis_result_t *result_out);
+
+/** Free heap-allocated chain_def_blob from dnac_genesis result. */
+void nodus_client_free_genesis_result(nodus_dnac_genesis_result_t *result);
+
+/** Free heap-allocated commit_cert from dnac_block result. */
+void nodus_client_free_block_result(nodus_dnac_block_result_t *result);
+
+/**
  * Query blocks in a height range.
  * Caller must free result_out->blocks when done.
  *

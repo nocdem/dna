@@ -27,6 +27,7 @@
 
 #include "dnac.h"
 #include "dnac/transaction.h"
+#include "dnac/block.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -395,6 +396,24 @@ uint64_t dnac_witness_calculate_fee(uint64_t amount);
 int dnac_witness_ping(dnac_context_t *ctx,
                       const uint8_t *server_id,
                       int *latency_ms_out);
+
+/**
+ * @brief Fetch the genesis block from a witness (Phase 2 / Task 36).
+ *
+ * Wraps nodus_client_dnac_genesis: sends a dnac_genesis query, parses the
+ * response, decodes the serialized chain_def, reassembles a dnac_block_t
+ * with is_genesis=true, and recomputes the block hash. On success the
+ * caller can compare block_out->block_hash to its hardcoded chain_id.
+ *
+ * @param ctx        DNAC client context (with an active nodus connection)
+ * @param block_out  [out] Populated dnac_block_t on success.
+ * @return DNAC_SUCCESS on success,
+ *         DNAC_ERROR_NOT_FOUND if no genesis row exists on the witness,
+ *         DNAC_ERROR_NOT_INITIALIZED / DNAC_ERROR_NETWORK /
+ *         DNAC_ERROR_TIMEOUT on transport failures,
+ *         DNAC_ERROR_INVALID_PARAM on argument or decode errors.
+ */
+int dnac_request_genesis(dnac_context_t *ctx, dnac_block_t *block_out);
 
 #ifdef __cplusplus
 }

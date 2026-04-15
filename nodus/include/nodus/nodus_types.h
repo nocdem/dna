@@ -344,7 +344,18 @@ typedef struct {
     uint8_t  chain_id[32];
 } nodus_dnac_supply_result_t;
 
-/** UTXO entry in query response */
+/** Maximum inclusion-proof depth for anchored UTXO / TX proofs.
+ * Matches the server-side DNAC_UTXO_PROOF_MAX_DEPTH and
+ * DNAC_HISTORY_PROOF_MAX_DEPTH in nodus_witness_handlers.c. */
+#define NODUS_DNAC_PROOF_MAX_DEPTH  32
+#define NODUS_DNAC_PROOF_HASH_LEN   64   /* SHA3-512 */
+
+/** UTXO entry in query response.
+ *
+ * Phase 2 / Task 38 (2026-04-16) — each UTXO ships with an anchored state_root
+ * inclusion proof. Clients verify proof_depth>0 before trusting proof_root;
+ * old witnesses that don't populate these fields leave proof_depth=0 and a
+ * zeroed proof_root, which the verifier rejects. */
 typedef struct {
     uint8_t  nullifier[NODUS_T3_NULLIFIER_LEN];
     char     owner[NODUS_KEY_HEX_LEN];
@@ -353,12 +364,25 @@ typedef struct {
     uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
     uint32_t output_index;
     uint64_t block_height;
+
+    /* Anchored Merkle proof (Task 38). Empty/zero if the witness did not
+     * ship a proof (backward compat with pre-Phase 7 servers). */
+    uint8_t  proof_siblings[NODUS_DNAC_PROOF_MAX_DEPTH *
+                              NODUS_DNAC_PROOF_HASH_LEN];
+    uint32_t proof_positions;       /* bitfield: bit i = direction at level i */
+    uint32_t proof_depth;            /* number of sibling levels (0 = missing) */
+    uint8_t  proof_root[NODUS_DNAC_PROOF_HASH_LEN]; /* state_root */
 } nodus_dnac_utxo_entry_t;
 
-/** UTXO query result */
+/** UTXO query result.
+ *
+ * Phase 7 (Task 38) adds `block_height` — the latest committed block height
+ * at the time of the query, so clients can fetch the matching block anchor
+ * via nodus_client_dnac_block() and verify each UTXO's proof against it. */
 typedef struct {
     int count;
     nodus_dnac_utxo_entry_t *entries;   /* Heap-allocated, caller frees */
+    uint64_t block_height;              /* Latest committed height (anchor target) */
 } nodus_dnac_utxo_result_t;
 
 /** Ledger range entry */
@@ -393,7 +417,11 @@ typedef struct {
 
 #define NODUS_DNAC_MAX_TX_OUTPUTS 8
 
-/** Transaction history entry (per-owner query) */
+/** Transaction history entry (per-owner query).
+ *
+ * Phase 2 / Task 39 (2026-04-16) — each TX ships with an anchored tx_root
+ * inclusion proof against block_height. proof_depth=0 means the witness
+ * did not ship a proof (or could not build one); verifier rejects. */
 typedef struct {
     uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
     uint8_t  tx_type;
@@ -403,6 +431,14 @@ typedef struct {
     uint64_t timestamp;
     nodus_dnac_history_output_t outputs[NODUS_DNAC_MAX_TX_OUTPUTS];
     int      output_count;
+
+    /* Anchored Merkle proof (Task 39). Empty/zero if the witness did not
+     * ship a proof (backward compat with pre-Phase 7 servers). */
+    uint8_t  proof_siblings[NODUS_DNAC_PROOF_MAX_DEPTH *
+                              NODUS_DNAC_PROOF_HASH_LEN];
+    uint32_t proof_positions;       /* bitfield: bit i = direction at level i */
+    uint32_t proof_depth;            /* number of sibling levels (0 = missing) */
+    uint8_t  proof_root[NODUS_DNAC_PROOF_HASH_LEN]; /* tx_root */
 } nodus_dnac_history_entry_t;
 
 /** Transaction history query result */
@@ -440,15 +476,64 @@ typedef struct {
     uint64_t timestamp;
 } nodus_dnac_tx_result_t;
 
-/** Block query result (v0.10.0 hub/spoke) */
+/** Commit certificate entry — one 2f+1 PRECOMMIT APPROVE signature. */
+typedef struct {
+    uint8_t signer_id[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t signature[NODUS_SIG_BYTES];
+} nodus_dnac_commit_sig_t;
+
+/** Block query result (v0.10.0 hub/spoke).
+ *
+ * Phase 2 / Task 37 (2026-04-16) — extended with full header fields
+ * (prev_hash, state_root, tx_root, tx_count) and the BFT commit_cert
+ * (2f+1 PRECOMMIT signatures) so clients can construct a
+ * dnac_block_anchor_t from any block without trusting a single witness.
+ * commit_cert is heap-allocated and must be freed with
+ * nodus_client_free_block_result(). */
 typedef struct {
     bool     found;
     uint64_t height;
+    /* Legacy single-TX field — for multi-TX blocks this now carries the
+     * block's tx_root (see handle_dnac_block doxygen). */
     uint8_t  tx_hash[NODUS_T3_TX_HASH_LEN];
     uint8_t  tx_type;
     uint64_t timestamp;
     uint8_t  proposer_id[NODUS_T3_WITNESS_ID_LEN];
+
+    /* Phase 7 Task 37 extensions */
+    uint8_t  prev_hash[NODUS_T3_TX_HASH_LEN];    /* Parent block hash */
+    uint8_t  state_root[NODUS_T3_TX_HASH_LEN];   /* SHA3-512 over UTXO set */
+    uint8_t  tx_root[NODUS_T3_TX_HASH_LEN];      /* RFC 6962 Merkle root */
+    uint32_t tx_count;
+
+    /* Heap-allocated commit certificate (2f+1 PRECOMMIT sigs). NULL / 0
+     * if the block has no stored cert (e.g. seeded genesis). */
+    nodus_dnac_commit_sig_t *commit_cert;
+    int                      commit_cert_count;
 } nodus_dnac_block_result_t;
+
+/** Genesis block query result (Phase 2 / Task 36).
+ *
+ * Returned by nodus_client_dnac_genesis(). Carries the raw header fields
+ * plus the serialized chain_def blob; the caller reassembles a
+ * dnac_block_t, computes the block hash, and compares against the
+ * hardcoded chain_id.
+ *
+ * chain_def_blob is heap-allocated; free with
+ * nodus_client_free_genesis_result(). */
+typedef struct {
+    bool     found;
+    uint64_t height;
+    uint8_t  prev_hash[NODUS_T3_TX_HASH_LEN];
+    uint8_t  state_root[NODUS_T3_TX_HASH_LEN];
+    uint8_t  tx_root[NODUS_T3_TX_HASH_LEN];
+    uint32_t tx_count;
+    uint64_t timestamp;
+    uint8_t  proposer_id[NODUS_T3_WITNESS_ID_LEN];
+
+    uint8_t  *chain_def_blob;       /* heap-allocated, caller frees */
+    size_t    chain_def_blob_len;
+} nodus_dnac_genesis_result_t;
 
 /** Token info (returned by token_list / token_info queries) */
 #define NODUS_DNAC_MAX_TOKEN_RESULTS  100

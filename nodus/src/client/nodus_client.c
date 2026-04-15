@@ -2297,6 +2297,14 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
             cbor_item_t v = cbor_decode_next(&dec);
             if (v.type == CBOR_ITEM_UINT)
                 count = (int)v.uint_val;
+        } else if (key.tstr.len == 12 &&
+                   memcmp(key.tstr.ptr, "block_height", 12) == 0) {
+            /* Phase 7 / Task 38: latest committed block_height — anchor
+             * target for each UTXO's state_root proof. Pre-Phase 7
+             * witnesses omit this; result_out->block_height stays 0. */
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->block_height = v.uint_val;
         } else if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "utxos", 5) == 0) {
             cbor_item_t arr = cbor_decode_next(&dec);
             if (arr.type != CBOR_ITEM_ARRAY) continue;
@@ -2363,6 +2371,34 @@ int nodus_client_dnac_utxo(nodus_client_t *client,
                         cbor_item_t v = cbor_decode_next(&dec);
                         if (v.type == CBOR_ITEM_UINT)
                             e->block_height = v.uint_val;
+                    } else if (ek.tstr.len == 4 &&
+                               memcmp(ek.tstr.ptr, "pr_s", 4) == 0) {
+                        /* Phase 7 / Task 38: flat sibling buffer
+                         * (depth * 64 bytes). Capped at struct capacity
+                         * — oversize payloads are treated as missing. */
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_BSTR &&
+                            v.bstr.len <= sizeof(e->proof_siblings)) {
+                            memcpy(e->proof_siblings, v.bstr.ptr, v.bstr.len);
+                        }
+                    } else if (ek.tstr.len == 4 &&
+                               memcmp(ek.tstr.ptr, "pr_p", 4) == 0) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT)
+                            e->proof_positions = (uint32_t)v.uint_val;
+                    } else if (ek.tstr.len == 4 &&
+                               memcmp(ek.tstr.ptr, "pr_d", 4) == 0) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT &&
+                            v.uint_val <= NODUS_DNAC_PROOF_MAX_DEPTH)
+                            e->proof_depth = (uint32_t)v.uint_val;
+                    } else if (ek.tstr.len == 2 &&
+                               memcmp(ek.tstr.ptr, "sr", 2) == 0) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_BSTR &&
+                            v.bstr.len == NODUS_DNAC_PROOF_HASH_LEN)
+                            memcpy(e->proof_root, v.bstr.ptr,
+                                   NODUS_DNAC_PROOF_HASH_LEN);
                     } else {
                         cbor_decode_skip(&dec);
                     }
@@ -2740,6 +2776,29 @@ int nodus_client_dnac_history(nodus_client_t *client,
                     } else if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "ts", 2) == 0) {
                         cbor_item_t ev = cbor_decode_next(&dec);
                         if (ev.type == CBOR_ITEM_UINT) e->timestamp = ev.uint_val;
+                    } else if (ek.tstr.len == 4 && memcmp(ek.tstr.ptr, "pr_s", 4) == 0) {
+                        /* Phase 7 / Task 39: per-TX tx_root proof siblings. */
+                        cbor_item_t ev = cbor_decode_next(&dec);
+                        if (ev.type == CBOR_ITEM_BSTR &&
+                            ev.bstr.len <= sizeof(e->proof_siblings)) {
+                            memcpy(e->proof_siblings, ev.bstr.ptr, ev.bstr.len);
+                        }
+                    } else if (ek.tstr.len == 4 && memcmp(ek.tstr.ptr, "pr_p", 4) == 0) {
+                        cbor_item_t ev = cbor_decode_next(&dec);
+                        if (ev.type == CBOR_ITEM_UINT)
+                            e->proof_positions = (uint32_t)ev.uint_val;
+                    } else if (ek.tstr.len == 4 && memcmp(ek.tstr.ptr, "pr_d", 4) == 0) {
+                        cbor_item_t ev = cbor_decode_next(&dec);
+                        if (ev.type == CBOR_ITEM_UINT &&
+                            ev.uint_val <= NODUS_DNAC_PROOF_MAX_DEPTH)
+                            e->proof_depth = (uint32_t)ev.uint_val;
+                    } else if (ek.tstr.len == 2 && memcmp(ek.tstr.ptr, "tr", 2) == 0) {
+                        /* Phase 7 / Task 39: tx_root (matches block.tx_root). */
+                        cbor_item_t ev = cbor_decode_next(&dec);
+                        if (ev.type == CBOR_ITEM_BSTR &&
+                            ev.bstr.len == NODUS_DNAC_PROOF_HASH_LEN)
+                            memcpy(e->proof_root, ev.bstr.ptr,
+                                   NODUS_DNAC_PROOF_HASH_LEN);
                     } else if (ek.tstr.len == 7 && memcmp(ek.tstr.ptr, "outputs", 7) == 0) {
                         cbor_item_t oarr = cbor_decode_next(&dec);
                         if (oarr.type != CBOR_ITEM_ARRAY) continue;
@@ -3063,6 +3122,77 @@ int nodus_client_dnac_block(nodus_client_t *client,
             cbor_item_t v = cbor_decode_next(&dec);
             if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_WITNESS_ID_LEN)
                 memcpy(result_out->proposer_id, v.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
+        } else if (key.tstr.len == 9 && memcmp(key.tstr.ptr, "prev_hash", 9) == 0) {
+            /* Phase 7 / Task 37 extended fields. */
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(result_out->prev_hash, v.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        } else if (key.tstr.len == 10 && memcmp(key.tstr.ptr, "state_root", 10) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(result_out->state_root, v.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        } else if (key.tstr.len == 7 && memcmp(key.tstr.ptr, "tx_root", 7) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(result_out->tx_root, v.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        } else if (key.tstr.len == 8 && memcmp(key.tstr.ptr, "tx_count", 8) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->tx_count = (uint32_t)v.uint_val;
+        } else if (key.tstr.len == 11 && memcmp(key.tstr.ptr, "commit_cert", 11) == 0) {
+            /* Phase 7 / Task 37: array of {signer_id, sig} maps.
+             * Pre-Phase 7 witnesses omit this — commit_cert stays NULL. */
+            cbor_item_t arr = cbor_decode_next(&dec);
+            if (arr.type != CBOR_ITEM_ARRAY) { continue; }
+            if (arr.count > 0 && arr.count <= NODUS_T3_MAX_WITNESSES) {
+                result_out->commit_cert = calloc(arr.count,
+                                                   sizeof(nodus_dnac_commit_sig_t));
+                if (result_out->commit_cert) {
+                    for (size_t ci = 0; ci < arr.count; ci++) {
+                        cbor_item_t cmap = cbor_decode_next(&dec);
+                        if (cmap.type != CBOR_ITEM_MAP) continue;
+                        nodus_dnac_commit_sig_t *sig =
+                            &result_out->commit_cert[result_out->commit_cert_count];
+                        bool have_signer = false, have_sig = false;
+                        for (size_t cm = 0; cm < cmap.count; cm++) {
+                            cbor_item_t ck = cbor_decode_next(&dec);
+                            if (ck.type != CBOR_ITEM_TSTR) {
+                                cbor_decode_skip(&dec); continue;
+                            }
+                            if (ck.tstr.len == 9 &&
+                                memcmp(ck.tstr.ptr, "signer_id", 9) == 0) {
+                                cbor_item_t cv = cbor_decode_next(&dec);
+                                if (cv.type == CBOR_ITEM_BSTR &&
+                                    cv.bstr.len == NODUS_T3_WITNESS_ID_LEN) {
+                                    memcpy(sig->signer_id, cv.bstr.ptr,
+                                           NODUS_T3_WITNESS_ID_LEN);
+                                    have_signer = true;
+                                }
+                            } else if (ck.tstr.len == 3 &&
+                                       memcmp(ck.tstr.ptr, "sig", 3) == 0) {
+                                cbor_item_t cv = cbor_decode_next(&dec);
+                                if (cv.type == CBOR_ITEM_BSTR &&
+                                    cv.bstr.len == NODUS_SIG_BYTES) {
+                                    memcpy(sig->signature, cv.bstr.ptr,
+                                           NODUS_SIG_BYTES);
+                                    have_sig = true;
+                                }
+                            } else {
+                                cbor_decode_skip(&dec);
+                            }
+                        }
+                        if (have_signer && have_sig)
+                            result_out->commit_cert_count++;
+                    }
+                } else {
+                    /* calloc failed — skip the array contents. */
+                    for (size_t ci = 0; ci < arr.count; ci++)
+                        cbor_decode_skip(&dec);
+                }
+            } else {
+                for (size_t ci = 0; ci < arr.count; ci++)
+                    cbor_decode_skip(&dec);
+            }
         } else {
             cbor_decode_skip(&dec);
         }
@@ -3192,6 +3322,114 @@ void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *resul
     free(result->blocks);
     result->blocks = NULL;
     result->count = 0;
+}
+
+void nodus_client_free_block_result(nodus_dnac_block_result_t *result) {
+    if (!result) return;
+    free(result->commit_cert);
+    result->commit_cert = NULL;
+    result->commit_cert_count = 0;
+}
+
+/* ── Genesis Block Query (Phase 2 / Task 36) ────────────────────── */
+
+int nodus_client_dnac_genesis(nodus_client_t *client,
+                                nodus_dnac_genesis_result_t *result_out) {
+    if (!nodus_client_is_ready(client) || !result_out)
+        return -1;
+
+    memset(result_out, 0, sizeof(*result_out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    /* Request: "a" map has no args — pass map_count=0 to enc_dnac_query. */
+    enc_dnac_query(&enc, txn, client->token, "dnac_genesis", 0);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+        if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "found", 5) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BOOL) result_out->found = v.bool_val;
+        } else if (key.tstr.len == 6 && memcmp(key.tstr.ptr, "height", 6) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) result_out->height = v.uint_val;
+        } else if (key.tstr.len == 9 && memcmp(key.tstr.ptr, "prev_hash", 9) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(result_out->prev_hash, v.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        } else if (key.tstr.len == 10 && memcmp(key.tstr.ptr, "state_root", 10) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(result_out->state_root, v.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        } else if (key.tstr.len == 7 && memcmp(key.tstr.ptr, "tx_root", 7) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(result_out->tx_root, v.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        } else if (key.tstr.len == 8 && memcmp(key.tstr.ptr, "tx_count", 8) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT)
+                result_out->tx_count = (uint32_t)v.uint_val;
+        } else if (key.tstr.len == 2 && memcmp(key.tstr.ptr, "ts", 2) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) result_out->timestamp = v.uint_val;
+        } else if (key.tstr.len == 8 && memcmp(key.tstr.ptr, "proposer", 8) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len == NODUS_T3_WITNESS_ID_LEN)
+                memcpy(result_out->proposer_id, v.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
+        } else if (key.tstr.len == 9 && memcmp(key.tstr.ptr, "chain_def", 9) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_BSTR && v.bstr.len > 0) {
+                result_out->chain_def_blob = malloc(v.bstr.len);
+                if (result_out->chain_def_blob) {
+                    memcpy(result_out->chain_def_blob, v.bstr.ptr, v.bstr.len);
+                    result_out->chain_def_blob_len = v.bstr.len;
+                }
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
+void nodus_client_free_genesis_result(nodus_dnac_genesis_result_t *result) {
+    if (!result) return;
+    free(result->chain_def_blob);
+    result->chain_def_blob = NULL;
+    result->chain_def_blob_len = 0;
 }
 
 /* ── Token query functions ───────────────────────────────────────── */
