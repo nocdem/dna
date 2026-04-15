@@ -37,8 +37,15 @@ class DnacBalanceNotifier extends AsyncNotifier<DnacBalance?>
     // Start 30s polling
     _startPolling();
 
-    // Initial balance fetch
-    return _fetchBalance();
+    // Cache-first: paint the local DB balance immediately, then kick
+    // off a witness sync in the background. Restored identities have
+    // an empty local DB but real UTXOs at the witnesses, and
+    // Timer.periodic doesn't fire its first tick for 30s — without
+    // this, the wallet shows 0 DNAC for half a minute on every cold
+    // start.
+    final local = await _fetchBalance();
+    unawaited(sync());
+    return local;
   }
 
   @override
@@ -49,6 +56,7 @@ class DnacBalanceNotifier extends AsyncNotifier<DnacBalance?>
       _syncTimer = null;
     } else if (state == AppLifecycleState.resumed) {
       _startPolling();
+      unawaited(sync());
     }
   }
 
