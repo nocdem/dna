@@ -27,6 +27,9 @@ static int setup_pre_v12(sqlite3 **db_out) {
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) return -1;
 
+    /* Pre-v12 shape: committed_transactions without tx_index, and a
+     * blocks table without the v14 chain_def_blob column. The migration
+     * umbrella (migrate_v12) additively upgrades both. */
     const char *schema =
         "CREATE TABLE committed_transactions ("
         "  tx_hash BLOB PRIMARY KEY,"
@@ -38,7 +41,17 @@ static int setup_pre_v12(sqlite3 **db_out) {
         "  sender_fp TEXT,"
         "  fee INTEGER NOT NULL DEFAULT 0"
         ");"
-        "CREATE INDEX idx_ctx_height ON committed_transactions(block_height);";
+        "CREATE INDEX idx_ctx_height ON committed_transactions(block_height);"
+        "CREATE TABLE blocks ("
+        "  height INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  tx_root BLOB NOT NULL,"
+        "  tx_count INTEGER NOT NULL DEFAULT 1,"
+        "  timestamp INTEGER NOT NULL,"
+        "  proposer_id BLOB,"
+        "  prev_hash BLOB NOT NULL DEFAULT x'',"
+        "  state_root BLOB NOT NULL,"
+        "  created_at INTEGER NOT NULL DEFAULT 0"
+        ");";
 
     char *err = NULL;
     if (sqlite3_exec(db, schema, NULL, NULL, &err) != SQLITE_OK) {
@@ -98,6 +111,10 @@ static void test_migration_adds_tx_index_and_composite_index(void) {
     }
     if (index_exists(db, "idx_ctx_height") != 0) {
         FAIL("idx_ctx_height should have been dropped"); sqlite3_close(db); return;
+    }
+    /* v14: chain_def_blob column on blocks (anchored merkle proofs). */
+    if (column_exists(db, "blocks", "chain_def_blob") != 1) {
+        FAIL("chain_def_blob column missing"); sqlite3_close(db); return;
     }
 
     PASS();

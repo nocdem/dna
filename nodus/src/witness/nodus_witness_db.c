@@ -1531,6 +1531,7 @@ void nodus_witness_compute_block_hash(uint64_t height,
  * trigger WITNESS_DB_MIGRATION_FATAL → abort().
  */
 static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w);
+static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w);
 
 int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
@@ -1589,6 +1590,9 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     /* Phase 11 follow-up — client_pubkey + client_sig columns. */
     nodus_witness_db_migrate_v13_client_fields(w);
 
+    /* Phase 2 / Task 7 (anchored merkle proofs) — chain_def_blob column. */
+    nodus_witness_db_migrate_v14_chain_def(w);
+
     return 0;
 }
 
@@ -1612,5 +1616,29 @@ static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w) {
             }
             if (err) sqlite3_free(err);
         }
+    }
+}
+
+/* Schema v14 migration (Phase 2 / Task 7 - anchored merkle proofs).
+ *
+ * Adds the chain_def_blob column to the blocks table. Nullable; only
+ * populated for genesis blocks (height=0) and stores the serialized
+ * dnac_chain_definition_t. Idempotent via duplicate-column tolerance. */
+static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w) {
+    if (!w || !w->db) return;
+    char *err = NULL;
+    int rc = sqlite3_exec(w->db,
+        "ALTER TABLE blocks ADD COLUMN chain_def_blob BLOB",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        const char *msg = err ? err : "(null)";
+        if (!strstr(msg, "duplicate column name")) {
+            fprintf(stderr,
+                    "MIGRATION FAILURE: ALTER ADD chain_def_blob "
+                    "sqlite error %d: %s\n", rc, msg);
+            if (err) sqlite3_free(err);
+            abort();
+        }
+        if (err) sqlite3_free(err);
     }
 }

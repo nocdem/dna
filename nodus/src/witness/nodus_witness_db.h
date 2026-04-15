@@ -341,18 +341,21 @@ void nodus_witness_compute_block_hash(uint64_t height,
                                        const uint8_t proposer_id[32],
                                        uint8_t out[64]);
 
-/* Schema v12 migration (Phase 1 / Task 1.1).
+/* Schema migration umbrella (Phase 1 / Task 1.1, originally named v12).
  *
- * Adds the `tx_index` column to committed_transactions and replaces the
- * single-column idx_ctx_height with a composite (block_height, tx_index)
- * index named idx_ctx_block. Required by the multi-tx block refactor —
- * each block now contains N transactions and per-block ordering must be
- * queryable. Idempotent: safe to run on a fresh DB or a DB that already
- * has the v12 shape.
+ * Runs all additive schema migrations in order:
+ *   - v12: tx_index column + composite idx_ctx_block index on
+ *          committed_transactions (multi-tx block refactor)
+ *   - v13: client_pubkey + client_sig columns on committed_transactions
+ *          (Phase 11 client binding)
+ *   - v14: chain_def_blob column on blocks (Phase 2 / Task 7 — anchored
+ *          merkle proofs; NULL on non-genesis blocks)
  *
- * Returns 0 on success. On unrecoverable SQLite error the function
- * triggers WITNESS_DB_MIGRATION_FATAL (logs MIGRATION FAILURE then
- * abort()), so callers can assume success on return.
+ * Idempotent: safe to run on a fresh DB or on a DB that already has any
+ * of the above shapes. Returns 0 on success. On unrecoverable SQLite
+ * error the function triggers WITNESS_DB_MIGRATION_FATAL (logs
+ * MIGRATION FAILURE then abort()), so callers can assume success on
+ * return.
  */
 int  nodus_witness_db_migrate_v12(nodus_witness_t *w);
 

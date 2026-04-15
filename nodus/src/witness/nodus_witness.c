@@ -70,6 +70,9 @@ static const char *WITNESS_DB_SCHEMA =
      *   tx_type    = column DELETED. Per-TX type lives on
      *                committed_transactions.tx_type — a block can carry
      *                a mix of GENESIS/SPEND/BURN/TOKEN_CREATE TXs. */
+    /* Schema v14 (Phase 2 / Task 7 — anchored merkle proofs):
+     *   chain_def_blob = serialized dnac_chain_definition_t for genesis
+     *                    blocks only. NULL on non-genesis blocks. */
     "CREATE TABLE IF NOT EXISTS blocks ("
     "  height INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  tx_root BLOB NOT NULL,"
@@ -78,7 +81,8 @@ static const char *WITNESS_DB_SCHEMA =
     "  proposer_id BLOB,"
     "  prev_hash BLOB NOT NULL DEFAULT x'',"
     "  state_root BLOB NOT NULL,"
-    "  created_at INTEGER NOT NULL DEFAULT (strftime('%%s','now'))"
+    "  created_at INTEGER NOT NULL DEFAULT (strftime('%%s','now')),"
+    "  chain_def_blob BLOB"
     ");"
     "CREATE TABLE IF NOT EXISTS genesis_state ("
     "  id INTEGER PRIMARY KEY CHECK(id = 1),"
