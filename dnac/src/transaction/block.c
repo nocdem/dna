@@ -44,6 +44,8 @@
 
 #include "dnac/block.h"
 
+#include <string.h>
+
 #include <openssl/evp.h>
 
 #include "crypto/utils/qgp_log.h"
@@ -92,74 +94,85 @@ int dnac_block_compute_hash(dnac_block_t *block) {
         return -1;
     }
 
+#define UPD(ptr, len) do { \
+    if (EVP_DigestUpdate(md, (ptr), (len)) != 1) { \
+        EVP_MD_CTX_free(md); \
+        return -1; \
+    } \
+} while (0)
+
     /* Standard header (unchanged for non-genesis blocks). */
     uint8_t height_le[8];
     enc_u64_le(block->block_height, height_le);
-    EVP_DigestUpdate(md, height_le, 8);
+    UPD(height_le, 8);
 
-    EVP_DigestUpdate(md, block->prev_block_hash, DNAC_BLOCK_HASH_SIZE);
-    EVP_DigestUpdate(md, block->state_root, DNAC_BLOCK_HASH_SIZE);
-    EVP_DigestUpdate(md, block->tx_root, DNAC_BLOCK_HASH_SIZE);
+    UPD(block->prev_block_hash, DNAC_BLOCK_HASH_SIZE);
+    UPD(block->state_root, DNAC_BLOCK_HASH_SIZE);
+    UPD(block->tx_root, DNAC_BLOCK_HASH_SIZE);
 
     uint8_t tx_count_le[4];
     enc_u32_le(block->tx_count, tx_count_le);
-    EVP_DigestUpdate(md, tx_count_le, 4);
+    UPD(tx_count_le, 4);
 
     uint8_t timestamp_le[8];
     enc_u64_le(block->timestamp, timestamp_le);
-    EVP_DigestUpdate(md, timestamp_le, 8);
+    UPD(timestamp_le, 8);
 
-    EVP_DigestUpdate(md, block->proposer_id, DNAC_BLOCK_PROPOSER_SIZE);
+    UPD(block->proposer_id, DNAC_BLOCK_PROPOSER_SIZE);
 
     /* Genesis-only chain_def fields — see file header for the exact order. */
     if (block->is_genesis) {
         const dnac_chain_definition_t *cd = &block->chain_def;
 
-        EVP_DigestUpdate(md, cd->chain_name, DNAC_CHAIN_NAME_LEN);
+        UPD(cd->chain_name, DNAC_CHAIN_NAME_LEN);
 
         uint8_t pv_le[4];
         enc_u32_le(cd->protocol_version, pv_le);
-        EVP_DigestUpdate(md, pv_le, 4);
+        UPD(pv_le, 4);
 
-        EVP_DigestUpdate(md, cd->parent_chain_id, DNAC_BLOCK_HASH_SIZE);
-        EVP_DigestUpdate(md, cd->genesis_message, DNAC_GENESIS_MESSAGE_LEN);
+        UPD(cd->parent_chain_id, DNAC_BLOCK_HASH_SIZE);
+        UPD(cd->genesis_message, DNAC_GENESIS_MESSAGE_LEN);
 
         uint8_t wc_le[4];
         enc_u32_le(cd->witness_count, wc_le);
-        EVP_DigestUpdate(md, wc_le, 4);
+        UPD(wc_le, 4);
 
         uint8_t maw_le[4];
         enc_u32_le(cd->max_active_witnesses, maw_le);
-        EVP_DigestUpdate(md, maw_le, 4);
+        UPD(maw_le, 4);
 
         /* Only witness_count pubkeys hashed — empty slots excluded. */
         for (uint32_t i = 0; i < cd->witness_count; i++) {
-            EVP_DigestUpdate(md, cd->witness_pubkeys[i], DNAC_PUBKEY_SIZE);
+            UPD(cd->witness_pubkeys[i], DNAC_PUBKEY_SIZE);
         }
 
         uint8_t bis_le[4], mtb_le[4], vct_le[4];
         enc_u32_le(cd->block_interval_sec, bis_le);
         enc_u32_le(cd->max_txs_per_block, mtb_le);
         enc_u32_le(cd->view_change_timeout_ms, vct_le);
-        EVP_DigestUpdate(md, bis_le, 4);
-        EVP_DigestUpdate(md, mtb_le, 4);
-        EVP_DigestUpdate(md, vct_le, 4);
+        UPD(bis_le, 4);
+        UPD(mtb_le, 4);
+        UPD(vct_le, 4);
 
-        EVP_DigestUpdate(md, cd->token_symbol, DNAC_TOKEN_SYMBOL_LEN);
-        EVP_DigestUpdate(md, &cd->token_decimals, 1);
+        UPD(cd->token_symbol, DNAC_TOKEN_SYMBOL_LEN);
+        UPD(&cd->token_decimals, 1);
 
         uint8_t isr_le[8];
         enc_u64_le(cd->initial_supply_raw, isr_le);
-        EVP_DigestUpdate(md, isr_le, 8);
+        UPD(isr_le, 8);
 
-        EVP_DigestUpdate(md, cd->native_token_id, DNAC_TOKEN_ID_SIZE);
-        EVP_DigestUpdate(md, cd->fee_recipient, DNAC_FEE_RECIPIENT_SIZE);
+        UPD(cd->native_token_id, DNAC_TOKEN_ID_SIZE);
+        UPD(cd->fee_recipient, DNAC_FEE_RECIPIENT_SIZE);
     }
 
+    uint8_t tmp[DNAC_BLOCK_HASH_SIZE];
     unsigned int hash_len = 0;
-    int ok = EVP_DigestFinal_ex(md, block->block_hash, &hash_len);
+    int ok = EVP_DigestFinal_ex(md, tmp, &hash_len);
     EVP_MD_CTX_free(md);
+    if (ok != 1 || hash_len != DNAC_BLOCK_HASH_SIZE) return -1;
+    memcpy(block->block_hash, tmp, DNAC_BLOCK_HASH_SIZE);
+    return 0;
 
-    return (ok == 1 && hash_len == DNAC_BLOCK_HASH_SIZE) ? 0 : -1;
+#undef UPD
 }
 
