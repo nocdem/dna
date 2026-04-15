@@ -112,6 +112,16 @@ typedef struct {
  *   - epoch field removed (no longer part of the block hash preimage)
  *   * tx_count widened from uint16 to uint32 to match the witness DB
  *     INTEGER column without sign issues
+ *
+ * @note Genesis-only semantics
+ *
+ * `is_genesis` and `chain_def` are populated only for the height-0 genesis
+ * block. For non-genesis blocks they are zero-initialized and excluded
+ * from the hash preimage by `dnac_block_compute_hash` (see Task 3).
+ *
+ * CALLERS MUST zero-initialize `dnac_block_t` before populating fields
+ * (e.g., `dnac_block_t b = {0};` or `memset(&b, 0, sizeof b)`).
+ * An uninitialized `is_genesis` will cause nondeterministic block hashes.
  */
 typedef struct {
     uint64_t block_height;                          /**< Sequential from 0 */
@@ -122,11 +132,8 @@ typedef struct {
     uint64_t timestamp;                             /**< From BFT proposal (deterministic) */
     uint8_t  proposer_id[DNAC_BLOCK_PROPOSER_SIZE]; /**< Leader who proposed */
 
-    /* Genesis-only: meaningful when block_height == 0 (and is_genesis == true).
-     * For non-genesis blocks, chain_def is zero-initialized and excluded from
-     * the hash preimage. is_genesis must be set explicitly by the constructor. */
-    bool                    is_genesis;
-    dnac_chain_definition_t chain_def;
+    bool                    is_genesis;  /**< True for genesis (height 0); see struct doxygen */
+    dnac_chain_definition_t chain_def;   /**< Genesis-only chain constitution; zero otherwise */
 
     uint8_t  block_hash[DNAC_BLOCK_HASH_SIZE];      /**< Computed: SHA3-512 of header fields */
 } dnac_block_t;
