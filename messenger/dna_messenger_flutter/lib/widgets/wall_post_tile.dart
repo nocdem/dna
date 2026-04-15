@@ -342,7 +342,9 @@ class _CyberFirePainter extends CustomPainter {
       ..setFloat(2, time)
       ..setFloat(3, heat)
       ..setFloat(4, radius);
-    final paint = Paint()..shader = shader;
+    final paint = Paint()
+      ..shader = shader
+      ..blendMode = BlendMode.plus;
     canvas.drawRect(Offset.zero & size, paint);
   }
 
