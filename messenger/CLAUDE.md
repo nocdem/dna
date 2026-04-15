@@ -2,7 +2,7 @@
 
 **Last Updated:** 2026-04-08 | **Status:** RC (Release Candidate) | **Phase:** 7 (Flutter UI)
 
-**Versions:** Library v0.10.8 | Flutter v1.0.0-rc210 | Nodus v0.12.9
+**Versions:** Library v0.10.8 | Flutter v1.0.0-rc216 | Nodus v0.12.9
 
 **Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains messenger-specific guidelines only.
 
@@ -91,7 +91,7 @@ Flutter connects to the C library via `dart:ffi`:
 | Component | Version File | Current | Bump When |
 |-----------|--------------|---------|-----------|
 | C Library | `include/dna/version.h` | v0.10.8 | C code changes |
-| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc210+10561 | Flutter/Dart changes |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v1.0.0-rc216+10567 | Flutter/Dart changes |
 | Nodus | `../nodus/include/nodus/nodus_types.h` | v0.12.9 | Nodus changes |
 
 Flutter app displays **both versions** in Settings:
