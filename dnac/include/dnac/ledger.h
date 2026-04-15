@@ -20,6 +20,7 @@
 
 #include "dnac.h"
 #include "dnac/transaction.h"
+#include "dnac/block.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -276,6 +277,75 @@ int dnac_ledger_get_supply(dnac_context_t *ctx,
  * @return true on hash match, false on any mismatch or invalid input.
  */
 bool dnac_merkle_verify_proof(const dnac_merkle_proof_t *proof);
+
+/* ============================================================================
+ * Block Anchor — binds a block header to its 2f+1 PRECOMMIT signatures
+ *
+ * An anchor proves that a block_hash (and thus the state_root and tx_root it
+ * contains) was finalized by BFT consensus. Clients fetch an anchor, verify
+ * its commit_cert against the trusted_state's roster, and then trust the
+ * state_root/tx_root inside for Merkle proof verification.
+ * ========================================================================== */
+
+#define DNAC_DILITHIUM5_SIG_SIZE 4627
+#define DNAC_WITNESS_ID_SIZE     32
+
+typedef struct {
+    /* Fingerprint of the signing witness — first DNAC_WITNESS_ID_SIZE bytes
+     * of SHA3-512(pubkey). Matches the convention used by the witness cluster
+     * BFT code when identifying signers. */
+    uint8_t signer_id[DNAC_WITNESS_ID_SIZE];
+
+    /* Dilithium5 signature over the block's block_hash. */
+    uint8_t signature[DNAC_DILITHIUM5_SIG_SIZE];
+} dnac_witness_signature_t;
+
+typedef struct {
+    /* The block header whose block_hash is signed. The client MUST
+     * recompute the hash from the header fields before trusting the
+     * stored block_hash (prevents a malicious peer from sending a header
+     * with one hash and signatures over a different hash). */
+    dnac_block_t             header;
+
+    /* Up to DNAC_MAX_WITNESSES_COMPILE_CAP PRECOMMIT signatures.
+     * Duplicate signers are counted once; unknown signers are rejected. */
+    dnac_witness_signature_t sigs[DNAC_MAX_WITNESSES_COMPILE_CAP];
+    int                      sig_count;
+} dnac_block_anchor_t;
+
+/* ============================================================================
+ * Trusted State — per-chain runtime trust anchor
+ *
+ * One instance per chain the client tracks. Populated by dnac_genesis_verify
+ * (Phase 5) from verified genesis bytes. All subsequent block/UTXO/TX
+ * verification goes through this struct — NO hardcoded roster lookups
+ * elsewhere in the code.
+ * ========================================================================== */
+
+typedef struct {
+    /* chain_id (= genesis block hash) — the single hardcoded value this
+     * trust state derives from. */
+    uint8_t                 chain_id[DNAC_BLOCK_HASH_SIZE];
+
+    /* Chain definition (witness pubkeys, params, token info) — extracted
+     * from the verified genesis block. */
+    dnac_chain_definition_t chain_def;
+
+    /* Most recently verified block anchor. Updated as the client follows
+     * the chain. Starts at the genesis block after bootstrap. */
+    dnac_block_anchor_t     latest_verified_anchor;
+} dnac_trusted_state_t;
+
+/**
+ * Verify a block anchor: recomputes the block hash, checks that 2f+1
+ * valid Dilithium5 signatures from the trusted roster cover it.
+ *
+ * Pure function — no DB, no network, no allocation beyond sig verify.
+ *
+ * @return true if the anchor is valid, false otherwise.
+ */
+bool dnac_anchor_verify(const dnac_block_anchor_t *anchor,
+                         const dnac_trusted_state_t *trust);
 
 /**
  * @brief P0-2 (v0.7.0): Sync ledger entries in range from witnesses
