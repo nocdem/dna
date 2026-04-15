@@ -422,8 +422,9 @@ int dna_chain_cmd_history(dnac_context_t *ctx, int limit) {
     int display_count = (limit > 0 && limit < count) ? limit : count;
 
     printf("DNAC Transaction History (%d entries)\n", display_count);
-    printf("%-20s  %-8s  %-16s  %-12s\n", "DATE", "TYPE", "AMOUNT", "COUNTERPARTY");
-    printf("--------------------  --------  ----------------  ------------\n");
+    printf("%-20s  %-8s  %-16s  %-12s  %s\n",
+           "DATE", "TYPE", "AMOUNT", "COUNTERPARTY", "MEMO");
+    printf("--------------------  --------  ----------------  ------------  ----\n");
 
     for (int i = 0; i < display_count; i++) {
         char time_str[32], amount_str[64];
@@ -458,7 +459,8 @@ int dna_chain_cmd_history(dnac_context_t *ctx, int limit) {
             strcat(cp_short, "...");
         }
 
-        printf("%-20s  %-8s  %-16s  %-12s\n", time_str, type_str, amount_str, cp_short);
+        printf("%-20s  %-8s  %-16s  %-12s  %s\n",
+               time_str, type_str, amount_str, cp_short, history[i].memo);
     }
 
     dnac_free_history(history, count);
