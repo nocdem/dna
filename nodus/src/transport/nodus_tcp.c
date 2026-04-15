@@ -326,11 +326,14 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
                         dispatch_payload = dec_buf;
                         dispatch_len = pt_len;
                     } else {
-                        /* Decrypt failed — likely a plaintext frame that was
-                         * in the TCP pipe before crypto activated. Drop it
-                         * silently (periodic data will be re-sent). Only
-                         * disconnect on repeated failures (real attack). */
-                        cc->rx_counter = 0;  /* Reset counter for next valid frame */
+                        /* Decrypt failed — drop the frame, do NOT reset
+                         * rx_counter. A reset opens a silent replay window:
+                         * later legitimate out-of-order frames would be
+                         * (mis)accepted or (mis)rejected against a stale
+                         * baseline. If this is truly an in-flight plaintext
+                         * leftover it is rare and self-heals; if it is a
+                         * real replay/attack we want rx_counter to stay
+                         * strictly monotonic. */
                         conn->decrypt_skip_count++;   /* Phase 3.2a visibility */
                         QGP_LOG_WARN(LOG_TAG_TCP, "decrypt skip: conn=%s:%d frame_len=%u (in-flight plaintext)",
                                      conn->ip, conn->port, (unsigned)frame.payload_len);
@@ -938,8 +941,18 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
 
     size_t needed = conn->wlen + frame_size;
 
-    if (buf_ensure(&conn->wbuf, &conn->wcap, needed) != 0) {
-        /* Phase 3: wbuf can't absorb this frame right now. Route to the
+    /* FIFO order preservation: if the pending queue already has frames
+     * waiting, this new frame MUST go to the pending tail — not jump
+     * ahead via wbuf. Otherwise the receiver sees higher-counter frames
+     * before lower-counter ones on the wire and rejects the later
+     * arrivals as CH_CRYPTO replays, silently dropping them. This
+     * manifests as bursts of "Replay detected: counter=X < expected=Y"
+     * with large gaps during media-repl storms. */
+    bool force_pending = (conn->pending_count > 0);
+
+    if (force_pending || buf_ensure(&conn->wbuf, &conn->wcap, needed) != 0) {
+        /* Phase 3: wbuf can't absorb this frame right now (or pending
+         * already has queued frames we must not reorder). Route to the
          * per-conn pending queue instead of dropping. handle_write will
          * drain it later when the socket makes room.
          *

@@ -182,3 +182,37 @@ PBFT was designed for DNAC witness BFT consensus (transaction validation, double
 ## Pool Leak Fix (2026-03-08, COMPLETED)
 
 **Separate from replication architecture issues.** TCP connection pool leak in `nodus_presence.c` caused nodus-01 to reject all new connections, which prevented replication delivery. Fixed by adding `nodus_tcp_disconnect()` after p_sync send. Deployed to all 3 nodes.
+
+---
+
+## Send-Path Frame Reorder → CH_CRYPTO Replay Drops (2026-04-15, v0.12.10)
+
+**Severity:** Medium (silent data loss during bursts)
+
+**Symptom:** All 7 production nodes logging `[ERR/CH_CRYPTO] Replay detected: counter=X < expected=Y` with large gaps (e.g. `391 < 446`, `559 < 824`), clustered during media-repl bursts. Paired with `[WRN/NODUS_TCP] decrypt skip: ... (in-flight plaintext)`. Affected frames are dropped silently by the receiver.
+
+**Root cause (primary):** FIFO violation in `nodus_tcp_send_progress()`.
+
+The send path encrypts with `cc->tx_counter++` then writes to `wbuf`. If `wbuf` is full it routes the frame to a per-conn pending queue. But subsequent sends that arrive **while the pending queue has frames but wbuf has room again** were writing straight into wbuf — jumping ahead of the already-queued frames. Sequence:
+
+```
+t0: send(A) encrypts counter=1, writes wbuf [A]
+t1: partial socket write, wbuf [A-rest]
+t2: send(B) encrypts counter=2, wbuf full → pending [B]
+t3: send(C) encrypts counter=3, wbuf full → pending [B,C]
+t4: handle_write flushes wbuf → wbuf empty, pending [B,C] untouched
+t5: send(D) encrypts counter=4, buf_ensure OK → wbuf [D]  ← BYPASS
+t6: handle_write: writes wbuf [D] then drains pending [B,C]
+```
+
+On-wire byte order: A, D, B, C. Receiver decrypts A (rx=2), D (rx=5), then B(counter=2) and C(counter=3) both fail `msg_counter < rx_counter` → logged as replay, frame dropped. **Content permanently lost** for that chunk — media-repl, DHT put, heartbeat, whatever.
+
+Counter gaps in the log (up to 331) matched pending queue depths during 512KB media chunk bursts.
+
+**Root cause (secondary):** Decrypt-fail path at `nodus_tcp.c:333` did `cc->rx_counter = 0`, originally to tolerate plaintext frames left in the TCP pipe before crypto activated. After handshake this reset creates a silent replay window — any stale frame with counter=0..N is re-accepted, then legitimate later frames arrive and collide.
+
+**Fix (v0.12.10):**
+1. `nodus_tcp.c` send path: if `conn->pending_count > 0`, force the new frame to the pending tail. Never bypass a non-empty pending queue via wbuf.
+2. `nodus_tcp.c` decrypt-fail path: remove `rx_counter = 0` reset. If decrypt fails, drop the frame but keep `rx_counter` strictly monotonic. Real in-flight plaintext self-heals; real replays stay detected.
+
+**Verification:** deploy to cluster, check that `[ERR/CH_CRYPTO] Replay detected` rate drops to ~0 on all 7 nodes during media-repl bursts (currently bursty 5-10/min per node).
