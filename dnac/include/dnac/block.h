@@ -51,17 +51,20 @@ extern "C" {
  * This struct is the "constitution" of a chain. Once the genesis is created,
  * none of these values can change without producing a different chain_id
  * (i.e. a hard fork).
+ *
+ * Determinism: all `char[]` fields are zero-padded (unused bytes MUST be 0).
+ * This matters because the genesis hash preimage includes these fields byte-
+ * for-byte — "DNAC\0\0\0\0" and "DNAC    " produce different hashes.
  * ========================================================================== */
 
 #define DNAC_CHAIN_NAME_LEN          32
 #define DNAC_GENESIS_MESSAGE_LEN     64
 #define DNAC_TOKEN_SYMBOL_LEN        8
 #define DNAC_TOKEN_ID_SIZE           64
-#define DNAC_PUBKEY_SIZE             2592   /* Dilithium5 */
 #define DNAC_FEE_RECIPIENT_SIZE      32
 
-#ifndef NODUS_W_MAX_WITNESSES
-#define NODUS_W_MAX_WITNESSES        21     /* compile-time cap; runtime uses witness_count */
+#ifndef DNAC_MAX_WITNESSES_COMPILE_CAP
+#define DNAC_MAX_WITNESSES_COMPILE_CAP  21  /* compile-time cap; runtime uses witness_count */
 #endif
 
 typedef struct {
@@ -74,7 +77,7 @@ typedef struct {
     /* Witness set */
     uint32_t witness_count;
     uint32_t max_active_witnesses;
-    uint8_t  witness_pubkeys[NODUS_W_MAX_WITNESSES][DNAC_PUBKEY_SIZE];
+    uint8_t  witness_pubkeys[DNAC_MAX_WITNESSES_COMPILE_CAP][DNAC_PUBKEY_SIZE];
 
     /* Consensus parameters */
     uint32_t block_interval_sec;
