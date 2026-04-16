@@ -153,6 +153,28 @@ target_link_libraries(dnac
 # CLI removed — all DNAC commands are now in dna-connect-cli (messenger/cli/cli_dna_chain.c)
 
 # ============================================================================
+# Operator tools
+# ============================================================================
+
+# gen_genesis: build a DNAC genesis block and print its chain_id.
+# Run once per hard fork; paste chain_id output into
+# dnac/src/ledger/genesis_anchor.c's DNAC_KNOWN_CHAINS[] array.
+add_executable(gen_genesis tools/gen_genesis.c)
+target_link_libraries(gen_genesis dnac)
+if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
+    target_link_libraries(gen_genesis ${DNA_BUILD_DIR}/libdna.so)
+else()
+    target_link_libraries(gen_genesis ${DNA_BUILD_DIR}/libdna.a)
+endif()
+target_link_libraries(gen_genesis
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    ${SQLITE3_LIBRARIES}
+    pthread
+    m
+)
+
+# ============================================================================
 # Tests
 # ============================================================================
 
