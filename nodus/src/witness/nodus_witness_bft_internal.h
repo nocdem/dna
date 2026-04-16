@@ -113,7 +113,9 @@ int finalize_block(nodus_witness_t *w,
                     uint32_t tx_count,
                     const uint8_t *proposer_id,
                     uint64_t timestamp,
-                    uint64_t expected_height);
+                    uint64_t expected_height,
+                    const uint8_t *chain_def_blob,
+                    size_t chain_def_blob_len);
 
 /* Phase 6 commit wrappers.
  *

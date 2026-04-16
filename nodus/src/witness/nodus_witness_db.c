@@ -478,14 +478,43 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
     uint8_t prev_hash[NODUS_T3_TX_HASH_LEN] = {0};
     nodus_witness_block_t prev_block;
     if (nodus_witness_block_get_latest(w, &prev_block) == 0) {
-        nodus_witness_compute_block_hash(prev_block.height,
-                                          prev_block.prev_hash,
-                                          prev_block.state_root,
-                                          prev_block.tx_root,
-                                          prev_block.tx_count,
-                                          prev_block.timestamp,
-                                          prev_block.proposer_id,
-                                          prev_hash);
+        /* If prev_block is genesis (height 0), its block hash includes
+         * chain_def. Load the stored chain_def_blob so the prev_hash
+         * computation matches. For non-genesis prev blocks, pass NULL. */
+        const uint8_t *prev_cd_blob = NULL;
+        size_t prev_cd_len = 0;
+        uint8_t *prev_cd_alloc = NULL;
+        if (prev_block.height == 0) {
+            /* One-shot query: SELECT chain_def_blob FROM blocks WHERE height = 0 */
+            sqlite3_stmt *cdst;
+            if (sqlite3_prepare_v2(w->db,
+                    "SELECT chain_def_blob FROM blocks WHERE height = 0",
+                    -1, &cdst, NULL) == SQLITE_OK) {
+                if (sqlite3_step(cdst) == SQLITE_ROW) {
+                    const void *blob = sqlite3_column_blob(cdst, 0);
+                    int blen = sqlite3_column_bytes(cdst, 0);
+                    if (blob && blen > 0) {
+                        prev_cd_alloc = malloc((size_t)blen);
+                        if (prev_cd_alloc) {
+                            memcpy(prev_cd_alloc, blob, (size_t)blen);
+                            prev_cd_blob = prev_cd_alloc;
+                            prev_cd_len = (size_t)blen;
+                        }
+                    }
+                }
+                sqlite3_finalize(cdst);
+            }
+        }
+        nodus_witness_compute_block_hash_ex(prev_block.height,
+                                              prev_block.prev_hash,
+                                              prev_block.state_root,
+                                              prev_block.tx_root,
+                                              prev_block.tx_count,
+                                              prev_block.timestamp,
+                                              prev_block.proposer_id,
+                                              prev_cd_blob, prev_cd_len,
+                                              prev_hash);
+        free(prev_cd_alloc);
     }
     /* Genesis block: prev_hash stays all zeros */
 
@@ -1567,7 +1596,22 @@ void nodus_witness_compute_block_hash(uint64_t height,
                                        uint64_t timestamp,
                                        const uint8_t proposer_id[32],
                                        uint8_t out[64]) {
-    uint8_t buf[8 + 64 + 64 + 64 + 4 + 8 + 32];  /* 244 bytes */
+    nodus_witness_compute_block_hash_ex(height, prev_hash, state_root,
+                                          tx_root, tx_count, timestamp,
+                                          proposer_id, NULL, 0, out);
+}
+
+void nodus_witness_compute_block_hash_ex(uint64_t height,
+                                           const uint8_t prev_hash[64],
+                                           const uint8_t state_root[64],
+                                           const uint8_t tx_root[64],
+                                           uint32_t tx_count,
+                                           uint64_t timestamp,
+                                           const uint8_t proposer_id[32],
+                                           const uint8_t *chain_def_blob,
+                                           size_t chain_def_blob_len,
+                                           uint8_t out[64]) {
+    uint8_t buf[8 + 64 + 64 + 64 + 4 + 8 + 32];  /* 244 bytes standard header */
     uint8_t *p = buf;
 
     enc_u64_le(height, p);        p += 8;
@@ -1581,6 +1625,15 @@ void nodus_witness_compute_block_hash(uint64_t height,
     EVP_MD_CTX *md = EVP_MD_CTX_new();
     EVP_DigestInit_ex(md, EVP_sha3_512(), NULL);
     EVP_DigestUpdate(md, buf, sizeof(buf));
+
+    /* Anchored genesis: append chain_def bytes verbatim to the preimage.
+     * These bytes are produced by dnac_chain_def_encode and are byte-
+     * identical to the sub-sequence dnac_block_compute_hash appends for
+     * genesis blocks. Both sides hash the same bytes → same block_hash. */
+    if (chain_def_blob && chain_def_blob_len > 0) {
+        EVP_DigestUpdate(md, chain_def_blob, chain_def_blob_len);
+    }
+
     unsigned int n = 0;
     EVP_DigestFinal_ex(md, out, &n);
     EVP_MD_CTX_free(md);

@@ -63,21 +63,44 @@ static int send_sync_req(nodus_witness_t *w, struct nodus_tcp_conn *conn,
 
 /* ── Helper: compute expected prev_hash from a block ────────────── */
 
-static void compute_prev_hash(const nodus_witness_block_t *blk,
+static void compute_prev_hash(nodus_witness_t *w,
+                                const nodus_witness_block_t *blk,
                                 uint8_t *prev_hash_out) {
-    /* Phase 5 / Task 5.3: delegate to the shared compute_block_hash
-     * helper in nodus_witness_db.c. Single source of truth with the
-     * block_add path. Pre-Phase-5 this file had a duplicate inline
-     * SHA3 that was kept in lockstep by hand — the Task 1.2 + Task 5
-     * dance made it obvious the duplication is a bug magnet. */
-    nodus_witness_compute_block_hash(blk->height,
-                                      blk->prev_hash,
-                                      blk->state_root,
-                                      blk->tx_root,
-                                      blk->tx_count,
-                                      blk->timestamp,
-                                      blk->proposer_id,
-                                      prev_hash_out);
+    /* Load chain_def_blob for genesis blocks so prev_hash of block 1
+     * matches the anchored genesis block hash. */
+    const uint8_t *cd_blob = NULL;
+    size_t cd_len = 0;
+    uint8_t *cd_alloc = NULL;
+    if (blk->height == 0 && w && w->db) {
+        sqlite3_stmt *cdst;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT chain_def_blob FROM blocks WHERE height = 0",
+                -1, &cdst, NULL) == SQLITE_OK) {
+            if (sqlite3_step(cdst) == SQLITE_ROW) {
+                const void *blob = sqlite3_column_blob(cdst, 0);
+                int blen = sqlite3_column_bytes(cdst, 0);
+                if (blob && blen > 0) {
+                    cd_alloc = malloc((size_t)blen);
+                    if (cd_alloc) {
+                        memcpy(cd_alloc, blob, (size_t)blen);
+                        cd_blob = cd_alloc;
+                        cd_len = (size_t)blen;
+                    }
+                }
+            }
+            sqlite3_finalize(cdst);
+        }
+    }
+    nodus_witness_compute_block_hash_ex(blk->height,
+                                          blk->prev_hash,
+                                          blk->state_root,
+                                          blk->tx_root,
+                                          blk->tx_count,
+                                          blk->timestamp,
+                                          blk->proposer_id,
+                                          cd_blob, cd_len,
+                                          prev_hash_out);
+    free(cd_alloc);
 }
 
 /* ── Helper: drop witness DB for fork rebuild ───────────────────── */
@@ -500,7 +523,7 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
         nodus_witness_block_t latest;
         if (nodus_witness_block_get_latest(w, &latest) == 0) {
             uint8_t expected_prev[NODUS_T3_TX_HASH_LEN];
-            compute_prev_hash(&latest, expected_prev);
+            compute_prev_hash(w, &latest, expected_prev);
 
             if (memcmp(rsp->prev_hash, expected_prev, NODUS_T3_TX_HASH_LEN) != 0) {
                 fprintf(stderr, "%s: prev_hash mismatch at height %llu, "

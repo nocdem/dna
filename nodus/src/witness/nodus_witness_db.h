@@ -366,6 +366,21 @@ void nodus_witness_compute_block_hash(uint64_t height,
                                        const uint8_t proposer_id[32],
                                        uint8_t out[64]);
 
+/* Extended variant: appends chain_def_blob bytes to the preimage for
+ * anchored-genesis blocks (height 0). For non-genesis blocks, pass
+ * chain_def_blob = NULL and chain_def_blob_len = 0 — result is
+ * identical to the non-extended version. */
+void nodus_witness_compute_block_hash_ex(uint64_t height,
+                                           const uint8_t prev_hash[64],
+                                           const uint8_t state_root[64],
+                                           const uint8_t tx_root[64],
+                                           uint32_t tx_count,
+                                           uint64_t timestamp,
+                                           const uint8_t proposer_id[32],
+                                           const uint8_t *chain_def_blob,
+                                           size_t chain_def_blob_len,
+                                           uint8_t out[64]);
+
 /* Schema migration umbrella (Phase 1 / Task 1.1, originally named v12).
  *
  * Runs all additive schema migrations in order:

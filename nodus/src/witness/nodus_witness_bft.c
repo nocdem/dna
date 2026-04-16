@@ -1037,7 +1037,9 @@ int finalize_block(nodus_witness_t *w,
                     uint32_t tx_count,
                     const uint8_t *proposer_id,
                     uint64_t timestamp,
-                    uint64_t expected_height) {
+                    uint64_t expected_height,
+                    const uint8_t *chain_def_blob,
+                    size_t chain_def_blob_len) {
     if (!w || !w->db) return -1;
     if (!proposer_id) return 0;  /* legacy: skip block_add when no proposer */
     if (tx_count == 0 || tx_count > NODUS_W_MAX_BLOCK_TXS) return -1;
@@ -1071,11 +1073,9 @@ int finalize_block(nodus_witness_t *w,
     }
 
     /* 4. Block row insert. */
-    /* Phase 2 / Task 11 — chain_def_blob is NULL here; the genesis
-     * bootstrap path will pass a real encoded blob in a later task. */
     if (nodus_witness_block_add(w, tx_root, tx_count, timestamp,
                                   proposer_id, state_root,
-                                  NULL, 0) != 0) {
+                                  chain_def_blob, chain_def_blob_len) != 0) {
         fprintf(stderr, "%s: finalize_block: block_add failed\n", LOG_TAG);
         return -1;
     }
@@ -2505,7 +2505,50 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
         nodus_witness_db_rollback(w);
         return -1;
     }
-    if (finalize_block(w, tx_hash, 1, proposer_id, timestamp, bh) != 0) {
+    /* Extract chain_def trailer from genesis TX (if anchored genesis). */
+    const uint8_t *cd_blob = NULL;
+    uint32_t cd_blob_len = 0;
+    {
+        /* Walk TX wire format to find the optional chain_def trailer
+         * appended after sender_signature by the v2 serialize path. */
+        const uint8_t *p = tx_data;
+        const uint8_t *end = tx_data + tx_len;
+        if (tx_len >= 74) {
+            p += 74;  /* header: version + type + timestamp + tx_hash */
+            if (p < end) {
+                uint8_t ic = *p++; p += (size_t)ic * (64 + 8 + 64); /* inputs */
+            }
+            if (p < end) {
+                uint8_t oc = *p++;
+                for (int oi = 0; oi < oc && p < end; oi++) {
+                    p += 1 + 129 + 8 + 64 + 32; /* version+fp+amt+token+seed */
+                    if (p < end) { uint8_t ml = *p++; p += ml; } /* memo */
+                }
+            }
+            if (p < end) {
+                uint8_t wc = *p++; p += (size_t)wc * (32 + NODUS_SIG_BYTES + 8 + NODUS_PK_BYTES); /* witnesses */
+            }
+            p += NODUS_PK_BYTES + NODUS_SIG_BYTES; /* sender pubkey + sig */
+            /* Now at has_chain_def flag byte */
+            if (p < end) {
+                uint8_t has_cd = *p++;
+                if (has_cd && p + 4 <= end) {
+                    cd_blob_len = (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+                                | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+                    p += 4;
+                    if (p + cd_blob_len <= end) {
+                        cd_blob = p;
+                        QGP_LOG_INFO(LOG_TAG, "Genesis TX carries chain_def trailer (%u bytes)", cd_blob_len);
+                    } else {
+                        cd_blob_len = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    if (finalize_block(w, tx_hash, 1, proposer_id, timestamp, bh,
+                       cd_blob, (size_t)cd_blob_len) != 0) {
         nodus_witness_db_rollback(w);
         return -1;
     }
@@ -2598,7 +2641,7 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
     }
 
     if (finalize_block(w, tx_hashes, (uint32_t)count, proposer_id,
-                        timestamp, bh) != 0) {
+                        timestamp, bh, NULL, 0) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "commit_batch: finalize_block failed");
         nodus_witness_db_rollback(w);
         /* fall through to attribution replay */
