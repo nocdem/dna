@@ -97,3 +97,63 @@ bool dnac_merkle_verify_proof(const dnac_merkle_proof_t *proof) {
      * public data), but memcmp is fine for correctness. */
     return memcmp(cur, proof->root, DNAC_MERKLE_ROOT_SIZE) == 0;
 }
+
+/* ============================================================================
+ * UTXO composite leaf hash
+ *
+ * Byte-for-byte mirror of nodus_witness_merkle_leaf_hash in
+ * nodus/src/witness/nodus_witness_merkle.c. Drift here silently breaks
+ * every anchored UTXO proof — do not "refactor" the field layout without
+ * updating both sides in lockstep and re-running test_anchored_proofs.
+ * ========================================================================== */
+
+int dnac_utxo_compute_leaf_hash(const uint8_t *nullifier,
+                                 const char *owner,
+                                 uint64_t amount,
+                                 const uint8_t *token_id,
+                                 const uint8_t *tx_hash,
+                                 uint32_t output_index,
+                                 uint8_t out[DNAC_MERKLE_ROOT_SIZE]) {
+    if (!nullifier || !owner || !token_id || !tx_hash || !out) return -1;
+
+    /* Owner is a NUL-terminated 128-char hex fingerprint. Server hashes
+     * exactly 128 bytes with zero-padding — match that exactly. */
+    size_t owner_len = strlen(owner);
+    if (owner_len > 128) owner_len = 128;
+
+    uint8_t owner_buf[128];
+    memset(owner_buf, 0, sizeof(owner_buf));
+    memcpy(owner_buf, owner, owner_len);
+
+    /* Little-endian scalar encodings (must match enc_u64_le / enc_u32_le
+     * in nodus witness). */
+    uint8_t amount_le[8];
+    for (int i = 0; i < 8; i++) {
+        amount_le[i] = (uint8_t)((amount >> (8 * i)) & 0xFF);
+    }
+    uint8_t oi_le[4];
+    for (int i = 0; i < 4; i++) {
+        oi_le[i] = (uint8_t)((output_index >> (8 * i)) & 0xFF);
+    }
+
+    EVP_MD_CTX *md = EVP_MD_CTX_new();
+    if (!md) return -1;
+
+    int ok =
+        (EVP_DigestInit_ex(md, EVP_sha3_512(), NULL) == 1) &&
+        (EVP_DigestUpdate(md, nullifier, 64) == 1) &&
+        (EVP_DigestUpdate(md, owner_buf, 128) == 1) &&
+        (EVP_DigestUpdate(md, amount_le, 8) == 1) &&
+        (EVP_DigestUpdate(md, token_id, 64) == 1) &&
+        (EVP_DigestUpdate(md, tx_hash, 64) == 1) &&
+        (EVP_DigestUpdate(md, oi_le, 4) == 1);
+
+    unsigned int hash_len = 0;
+    if (ok) {
+        ok = (EVP_DigestFinal_ex(md, out, &hash_len) == 1) &&
+             (hash_len == DNAC_MERKLE_ROOT_SIZE);
+    }
+
+    EVP_MD_CTX_free(md);
+    return ok ? 0 : -1;
+}

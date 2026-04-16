@@ -280,6 +280,41 @@ int dnac_ledger_get_supply(dnac_context_t *ctx,
  */
 bool dnac_merkle_verify_proof(const dnac_merkle_proof_t *proof);
 
+/**
+ * @brief Compute the composite UTXO leaf digest (pre-leaf-tag).
+ *
+ * Mirrors the server-side `nodus_witness_merkle_leaf_hash` byte layout
+ * exactly — a single-bit drift anywhere here silently breaks every
+ * anchored UTXO proof in the chain. Layout (all little-endian):
+ *
+ *   SHA3-512( nullifier(64)
+ *           || owner_fingerprint(128, NUL-padded)
+ *           || amount_le(8)
+ *           || token_id(64)
+ *           || tx_hash(64)
+ *           || output_index_le(4) )
+ *
+ * The output is the "leaf_hash" field of `dnac_merkle_proof_t`. The
+ * verifier (`dnac_merkle_verify_proof`) applies the RFC 6962 0x00 leaf
+ * tag internally, so callers MUST NOT pre-tag.
+ *
+ * @param nullifier     64-byte nullifier.
+ * @param owner         NUL-terminated owner fingerprint (<= 128 bytes used).
+ * @param amount        UTXO amount in raw base units.
+ * @param token_id      64-byte token identifier (zeros = native DNAC).
+ * @param tx_hash       64-byte creating transaction hash.
+ * @param output_index  UTXO index within its transaction.
+ * @param out           Output buffer, DNAC_MERKLE_ROOT_SIZE bytes.
+ * @return 0 on success, -1 on NULL arg or OpenSSL failure.
+ */
+int dnac_utxo_compute_leaf_hash(const uint8_t *nullifier,
+                                 const char *owner,
+                                 uint64_t amount,
+                                 const uint8_t *token_id,
+                                 const uint8_t *tx_hash,
+                                 uint32_t output_index,
+                                 uint8_t out[DNAC_MERKLE_ROOT_SIZE]);
+
 /* ============================================================================
  * Block Anchor — binds a block header to its 2f+1 PRECOMMIT signatures
  *
