@@ -153,6 +153,28 @@ target_link_libraries(dnac
 # CLI removed — all DNAC commands are now in dna-connect-cli (messenger/cli/cli_dna_chain.c)
 
 # ============================================================================
+# Operator tools
+# ============================================================================
+
+# gen_genesis: build a DNAC genesis block and print its chain_id.
+# Run once per hard fork; paste chain_id output into
+# dnac/src/ledger/genesis_anchor.c's DNAC_KNOWN_CHAINS[] array.
+add_executable(gen_genesis tools/gen_genesis.c)
+target_link_libraries(gen_genesis dnac)
+if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
+    target_link_libraries(gen_genesis ${DNA_BUILD_DIR}/libdna.so)
+else()
+    target_link_libraries(gen_genesis ${DNA_BUILD_DIR}/libdna.a)
+endif()
+target_link_libraries(gen_genesis
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    ${SQLITE3_LIBRARIES}
+    pthread
+    m
+)
+
+# ============================================================================
 # Tests
 # ============================================================================
 
@@ -265,6 +287,17 @@ if(DNAC_BUILD_TESTS)
     )
 
     add_test(NAME gaps COMMAND test_gaps)
+
+    # Chain-def codec roundtrip + determinism (anchored-merkle-proofs Task 9)
+    register_dnac_test(test_chain_def_codec)
+
+    # Fixed-vector test for dnac_merkle_verify_proof (anchored-merkle-proofs Task 17)
+    register_dnac_test(test_merkle_verify)
+    register_dnac_test(test_anchor_verify)
+    register_dnac_test(test_genesis_verify)
+
+    # Phase 9 end-to-end: genesis + anchor + merkle proof composition (Tasks 50-53)
+    register_dnac_test(test_anchored_proofs)
 endif()
 
 # ============================================================================

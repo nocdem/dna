@@ -27,6 +27,8 @@
 #ifndef DNAC_BLOCK_H
 #define DNAC_BLOCK_H
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "dnac.h"
 
@@ -40,6 +42,59 @@ extern "C" {
 
 #define DNAC_BLOCK_HASH_SIZE     64  /* SHA3-512 */
 #define DNAC_BLOCK_PROPOSER_SIZE 32  /* Witness ID */
+
+/* ============================================================================
+ * Chain Definition (genesis block only)
+ *
+ * Carried in dnac_block_t.chain_def when block_height == 0 (genesis).
+ * Hash preimage of the genesis block includes every field below, so chain_id
+ * (= genesis block_hash) transitively commits to the entire chain definition.
+ *
+ * This struct is the "constitution" of a chain. Once the genesis is created,
+ * none of these values can change without producing a different chain_id
+ * (i.e. a hard fork).
+ *
+ * Determinism: all `char[]` fields are zero-padded (unused bytes MUST be 0).
+ * This matters because the genesis hash preimage includes these fields byte-
+ * for-byte — "DNAC\0\0\0\0" and "DNAC    " produce different hashes.
+ * ========================================================================== */
+
+#define DNAC_CHAIN_NAME_LEN          32
+#define DNAC_GENESIS_MESSAGE_LEN     64
+#define DNAC_TOKEN_SYMBOL_LEN        8
+#define DNAC_TOKEN_ID_SIZE           64
+#define DNAC_FEE_RECIPIENT_SIZE      32
+
+#ifndef DNAC_MAX_WITNESSES_COMPILE_CAP
+#define DNAC_MAX_WITNESSES_COMPILE_CAP  21  /* compile-time cap; runtime uses witness_count */
+#endif
+
+typedef struct {
+    /* Chain identification */
+    char     chain_name[DNAC_CHAIN_NAME_LEN];
+    uint32_t protocol_version;
+    uint8_t  parent_chain_id[DNAC_BLOCK_HASH_SIZE];
+    char     genesis_message[DNAC_GENESIS_MESSAGE_LEN];
+
+    /* Witness set */
+    uint32_t witness_count;
+    uint32_t max_active_witnesses;
+    uint8_t  witness_pubkeys[DNAC_MAX_WITNESSES_COMPILE_CAP][DNAC_PUBKEY_SIZE];
+
+    /* Consensus parameters */
+    uint32_t block_interval_sec;
+    uint32_t max_txs_per_block;
+    uint32_t view_change_timeout_ms;
+
+    /* Token parameters */
+    char     token_symbol[DNAC_TOKEN_SYMBOL_LEN];
+    uint8_t  token_decimals;
+    uint64_t initial_supply_raw;
+    uint8_t  native_token_id[DNAC_TOKEN_ID_SIZE];
+
+    /* Economic */
+    uint8_t  fee_recipient[DNAC_FEE_RECIPIENT_SIZE];
+} dnac_chain_definition_t;
 
 /* ============================================================================
  * Block Header
@@ -58,6 +113,16 @@ extern "C" {
  *   - epoch field removed (no longer part of the block hash preimage)
  *   * tx_count widened from uint16 to uint32 to match the witness DB
  *     INTEGER column without sign issues
+ *
+ * @note Genesis-only semantics
+ *
+ * `is_genesis` and `chain_def` are populated only for the height-0 genesis
+ * block. For non-genesis blocks they are zero-initialized and excluded
+ * from the hash preimage by `dnac_block_compute_hash` (see Task 3).
+ *
+ * CALLERS MUST zero-initialize `dnac_block_t` before populating fields
+ * (e.g., `dnac_block_t b = {0};` or `memset(&b, 0, sizeof b)`).
+ * An uninitialized `is_genesis` will cause nondeterministic block hashes.
  */
 typedef struct {
     uint64_t block_height;                          /**< Sequential from 0 */
@@ -67,6 +132,10 @@ typedef struct {
     uint32_t tx_count;                              /**< Number of TXs (1..NODUS_W_MAX_BLOCK_TXS) */
     uint64_t timestamp;                             /**< From BFT proposal (deterministic) */
     uint8_t  proposer_id[DNAC_BLOCK_PROPOSER_SIZE]; /**< Leader who proposed */
+
+    bool                    is_genesis;  /**< True for genesis (height 0); see struct doxygen */
+    dnac_chain_definition_t chain_def;   /**< Genesis-only chain constitution; zero otherwise */
+
     uint8_t  block_hash[DNAC_BLOCK_HASH_SIZE];      /**< Computed: SHA3-512 of header fields */
 } dnac_block_t;
 
@@ -86,6 +155,62 @@ typedef struct {
  * @return 0 on success, -1 on error
  */
 int dnac_block_compute_hash(dnac_block_t *block);
+
+/**
+ * @brief Mark a block as genesis and populate its chain_def.
+ *
+ * Must be called before dnac_block_compute_hash for any genesis block
+ * (block_height == 0). For non-genesis blocks, leave is_genesis = false
+ * (default from zero-initialization) and do not call this function —
+ * chain_def will be zero and excluded from the hash preimage.
+ *
+ * The function copies @p chain_def into @p block->chain_def and sets
+ * block->is_genesis = true. It rejects chain_defs whose witness_count
+ * exceeds the compile-time cap DNAC_MAX_WITNESSES_COMPILE_CAP, which
+ * would otherwise make the hash preimage walk past the witness_pubkeys
+ * array.
+ *
+ * @param block      Target block (must be zero-initialized before use).
+ * @param chain_def  Chain definition to copy into block->chain_def.
+ * @return 0 on success, -1 on NULL argument or out-of-range witness_count.
+ */
+int dnac_block_set_genesis_def(dnac_block_t *block,
+                                const dnac_chain_definition_t *chain_def);
+
+/**
+ * @brief Serialize a dnac_block_t to a byte buffer.
+ *
+ * The layout matches the hash preimage exactly for the standard header
+ * fields; then a 1-byte is_genesis flag (wire-format only, NOT part of
+ * the hash preimage); then chain_def bytes (via dnac_chain_def_encode)
+ * if is_genesis; then the stored block_hash as a trailer.
+ *
+ * Decoding via dnac_block_decode MUST produce a block whose
+ * dnac_block_compute_hash result equals the trailing block_hash.
+ *
+ * @param block  Source block (must not be NULL).
+ * @param out    Output buffer (caller-allocated).
+ * @param cap    Buffer capacity.
+ * @param len    [out] Bytes written on success.
+ * @return 0 on success, -1 on error.
+ */
+int dnac_block_encode(const dnac_block_t *block,
+                       uint8_t *out, size_t cap, size_t *len);
+
+/**
+ * @brief Deserialize a dnac_block_t from a byte buffer.
+ *
+ * Strict parser — rejects malformed input, wrong length, oversized
+ * witness_count. On success, block_out->is_genesis is set based on
+ * whether the input included a chain_def section.
+ *
+ * @param bytes  Input buffer (must not be NULL).
+ * @param len    Input byte count.
+ * @param block_out  [out] Destination (will be zero-initialized).
+ * @return 0 on success, -1 on error.
+ */
+int dnac_block_decode(const uint8_t *bytes, size_t len,
+                       dnac_block_t *block_out);
 
 /**
  * @brief Verify that block links correctly to previous block

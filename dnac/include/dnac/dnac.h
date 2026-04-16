@@ -162,6 +162,14 @@ struct dnac_utxo {
     dnac_utxo_status_t status;                   /**< Current status */
     uint64_t received_at;                        /**< Unix timestamp when received */
     uint64_t spent_at;                           /**< Unix timestamp when spent (0 if unspent) */
+
+    /* Phase 12 — Anchored verification state (runtime-only, NOT persisted).
+     * true  = this UTXO has a valid Merkle proof against a BFT-anchored
+     *         state_root (dnac_utxo_verify_anchored succeeded).
+     * false = UTXO is present but unverified (witness didn't ship a proof,
+     *         trust state isn't bootstrapped, or verification failed).
+     * Display code should distinguish verified balance from total balance. */
+    bool verified;
 };
 
 /** Token registry entry */

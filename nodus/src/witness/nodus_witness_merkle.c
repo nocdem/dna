@@ -489,6 +489,99 @@ int nodus_witness_merkle_build_proof(nodus_witness_t *w,
     return 0;
 }
 
+/* ── Public: build inclusion proof for a TX in a block's tx_root ─────
+ *
+ * Symmetric to nodus_witness_merkle_build_proof but scoped to a single
+ * block's tx_root tree. Fetches committed TX hashes for block_height
+ * in commit order (tx_index ASC) — mirrors the ordering used by
+ * nodus_witness_block_txs_get() and therefore by tx_root computation.
+ * Applies the RFC 6962 leaf domain tag (0x00 prefix) to each raw
+ * tx_hash, locates target_tx_hash, and drives the same rfc6962_path
+ * recursion used for UTXO inclusion proofs.
+ */
+int nodus_witness_merkle_build_tx_proof(nodus_witness_t *w,
+                                          uint64_t block_height,
+                                          const uint8_t *target_tx_hash,
+                                          uint8_t *siblings_out,
+                                          uint32_t *positions_out,
+                                          int max_depth,
+                                          int *depth_out,
+                                          uint8_t *root_out) {
+    if (!w || !w->db || !target_tx_hash || !siblings_out || !positions_out ||
+        !depth_out || max_depth <= 0) return -1;
+
+    *depth_out = 0;
+    *positions_out = 0;
+
+    /* Load raw tx_hashes for the block in commit order. Cap at
+     * NODUS_W_MAX_BLOCK_TXS so the leaves stack buffer stays bounded
+     * (10 * 64 = 640 bytes). */
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT tx_hash FROM committed_transactions "
+        "WHERE block_height = ? "
+        "ORDER BY tx_index ASC",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: build_tx_proof prepare failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)block_height);
+
+    uint8_t leaves[NODUS_W_MAX_BLOCK_TXS][64];
+    size_t n = 0;
+    ssize_t target_idx = -1;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (n >= NODUS_W_MAX_BLOCK_TXS) {
+            sqlite3_finalize(stmt);
+            return -1; /* block exceeds per-block cap */
+        }
+        const void *hash_blob = sqlite3_column_blob(stmt, 0);
+        int hash_len = sqlite3_column_bytes(stmt, 0);
+        if (!hash_blob || hash_len != 64) continue;
+
+        /* Match target against the raw tx_hash BEFORE leaf-tagging so
+         * the caller-provided hash is compared in its natural form. */
+        if (target_idx < 0 &&
+            memcmp(hash_blob, target_tx_hash, 64) == 0) {
+            target_idx = (ssize_t)n;
+        }
+
+        if (leaf_hash((const uint8_t *)hash_blob, 64, leaves[n]) != 0) {
+            sqlite3_finalize(stmt);
+            return -1;
+        }
+        n++;
+    }
+    sqlite3_finalize(stmt);
+
+    if (n == 0 || target_idx < 0) return -1;
+
+    /* Single-leaf tree: empty proof, root == the one leaf. */
+    if (n == 1) {
+        if (root_out) memcpy(root_out, leaves[0], 64);
+        return 0;
+    }
+
+    if (rfc6962_path((const uint8_t *)leaves, n, (size_t)target_idx,
+                      siblings_out, positions_out, depth_out, max_depth) != 0) {
+        return -1;
+    }
+
+    /* rfc6962_path collects root-to-leaf; flip to leaf-to-root for the
+     * verifier (same convention as nodus_witness_merkle_build_proof). */
+    reverse_proof(siblings_out, positions_out, *depth_out);
+
+    if (root_out) {
+        if (merkle_root_rfc6962((const uint8_t *)leaves, n, root_out) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* ── Proof verification (pure function, RFC 6962) ───────────────────── */
 
 int nodus_witness_merkle_verify_proof(const uint8_t *leaf,

@@ -464,8 +464,14 @@ uint64_t nodus_witness_ledger_count(nodus_witness_t *w) {
 int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
                                uint32_t tx_count, uint64_t timestamp,
                                const uint8_t *proposer_id,
-                               const uint8_t *state_root) {
+                               const uint8_t *state_root,
+                               const uint8_t *chain_def_blob,
+                               size_t chain_def_blob_len) {
     if (!w || !w->db || !tx_root || !state_root) return -1;
+    /* chain_def_blob is optional: non-NULL + non-zero only for genesis
+     * blocks (height 0). See header comment for details. */
+    if (chain_def_blob && chain_def_blob_len == 0) return -1;
+    if (!chain_def_blob && chain_def_blob_len != 0) return -1;
 
     /* Phase 5 / Task 5.2: prev_hash via the shared compute_block_hash
      * helper. Single source of truth with nodus_witness_sync.c. */
@@ -483,10 +489,14 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
     }
     /* Genesis block: prev_hash stays all zeros */
 
+    /* Phase 2 / Task 11 — chain_def_blob column added in schema v14.
+     * Nullable; only genesis blocks populate it. NOTE: this write site
+     * is the sole producer for now. Readers (block_get*, block_get_range)
+     * intentionally skip the column until Task 36 adds handle_dnac_genesis. */
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "INSERT INTO blocks (tx_root, tx_count, timestamp, proposer_id, prev_hash, state_root, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
+        "INSERT INTO blocks (tx_root, tx_count, timestamp, proposer_id, prev_hash, state_root, created_at, chain_def_blob) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: block add prepare failed: %s\n",
                 LOG_TAG, sqlite3_errmsg(w->db));
@@ -503,6 +513,11 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
     sqlite3_bind_blob(stmt, 5, prev_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
     sqlite3_bind_blob(stmt, 6, state_root, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
     sqlite3_bind_int64(stmt, 7, (int64_t)time(NULL));
+    if (chain_def_blob && chain_def_blob_len > 0)
+        sqlite3_bind_blob(stmt, 8, chain_def_blob, (int)chain_def_blob_len,
+                          SQLITE_STATIC);
+    else
+        sqlite3_bind_null(stmt, 8);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -619,6 +634,55 @@ int nodus_witness_block_get_range(nodus_witness_t *w,
 
     sqlite3_finalize(stmt);
     *count_out = count;
+    return 0;
+}
+
+/* Phase 2 / Task 36 — genesis block fetch with chain_def_blob.
+ *
+ * Returns the genesis block row (height == 0) including the
+ * chain_def_blob column. The blob is returned via malloc'd
+ * *blob_out; caller owns and must free(). If the block has no
+ * chain_def_blob (non-genesis or missing), *blob_out = NULL and
+ * *blob_len_out = 0.
+ *
+ * Returns 0 on success (genesis row found), -1 on error / not found.
+ */
+int nodus_witness_block_get_genesis(nodus_witness_t *w,
+                                      nodus_witness_block_t *out,
+                                      uint8_t **blob_out,
+                                      size_t *blob_len_out) {
+    if (!w || !w->db || !out || !blob_out || !blob_len_out) return -1;
+    *blob_out = NULL;
+    *blob_len_out = 0;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT height, tx_root, tx_count, timestamp, proposer_id, prev_hash, state_root, chain_def_blob "
+        "FROM blocks WHERE height = 0", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    block_from_row(stmt, out);
+
+    const void *blob = sqlite3_column_blob(stmt, 7);
+    int blen = sqlite3_column_bytes(stmt, 7);
+    if (blob && blen > 0) {
+        uint8_t *copy = (uint8_t *)malloc((size_t)blen);
+        if (!copy) {
+            sqlite3_finalize(stmt);
+            return -1;
+        }
+        memcpy(copy, blob, (size_t)blen);
+        *blob_out = copy;
+        *blob_len_out = (size_t)blen;
+    }
+
+    sqlite3_finalize(stmt);
     return 0;
 }
 
@@ -1531,6 +1595,7 @@ void nodus_witness_compute_block_hash(uint64_t height,
  * trigger WITNESS_DB_MIGRATION_FATAL → abort().
  */
 static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w);
+static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w);
 
 int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
@@ -1589,6 +1654,9 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     /* Phase 11 follow-up — client_pubkey + client_sig columns. */
     nodus_witness_db_migrate_v13_client_fields(w);
 
+    /* Phase 2 / Task 7 (anchored merkle proofs) — chain_def_blob column. */
+    nodus_witness_db_migrate_v14_chain_def(w);
+
     return 0;
 }
 
@@ -1612,5 +1680,29 @@ static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w) {
             }
             if (err) sqlite3_free(err);
         }
+    }
+}
+
+/* Schema v14 migration (Phase 2 / Task 7 - anchored merkle proofs).
+ *
+ * Adds the chain_def_blob column to the blocks table. Nullable; only
+ * populated for genesis blocks (height=0) and stores the serialized
+ * dnac_chain_definition_t. Idempotent via duplicate-column tolerance. */
+static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w) {
+    if (!w || !w->db) return;
+    char *err = NULL;
+    int rc = sqlite3_exec(w->db,
+        "ALTER TABLE blocks ADD COLUMN chain_def_blob BLOB",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        const char *msg = err ? err : "(null)";
+        if (!strstr(msg, "duplicate column name")) {
+            fprintf(stderr,
+                    "MIGRATION FAILURE: ALTER ADD chain_def_blob "
+                    "sqlite error %d: %s\n", rc, msg);
+            if (err) sqlite3_free(err);
+            abort();
+        }
+        if (err) sqlite3_free(err);
     }
 }

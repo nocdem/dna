@@ -15,6 +15,7 @@
 #include "dnac/transaction.h"
 #include "dnac/genesis.h"
 #include "dnac/crypto_helpers.h"
+#include "dnac/trusted_state.h"
 #include "dnac/version.h"
 #include <dna/dna_engine.h>
 #include "nodus_ops.h"
@@ -37,25 +38,12 @@
  * ========================================================================== */
 
 /**
- * Format amount for display (with decimal point)
- * Assumes 8 decimal places like satoshis
+ * Format amount for display (with decimal point).
+ *
+ * Phase 11 refactor: decimals come from the current trusted state
+ * (set by wallet init after dnac_genesis_verify). Falls back to 8
+ * when trust is uninitialized so early-boot callers keep working.
  */
-static void format_amount(uint64_t amount, char *buf, size_t buf_len) {
-    uint64_t whole = amount / 100000000;
-    uint64_t frac = amount % 100000000;
-
-    if (frac == 0) {
-        snprintf(buf, buf_len, "%" PRIu64, whole);
-    } else {
-        snprintf(buf, buf_len, "%" PRIu64 ".%08" PRIu64, whole, frac);
-        /* Trim trailing zeros */
-        size_t len = strlen(buf);
-        while (len > 0 && buf[len - 1] == '0') {
-            buf[--len] = '\0';
-        }
-    }
-}
-
 static void format_amount_decimals(uint64_t amount, uint8_t decimals,
                                     char *buf, size_t buf_len) {
     if (decimals == 0) {
@@ -73,6 +61,11 @@ static void format_amount_decimals(uint64_t amount, uint8_t decimals,
         size_t len = strlen(buf);
         while (len > 0 && buf[len - 1] == '0') buf[--len] = '\0';
     }
+}
+
+/** Format a native-token amount using the chain's trusted decimals. */
+static void format_amount(uint64_t amount, char *buf, size_t buf_len) {
+    format_amount_decimals(amount, dnac_current_token_decimals(), buf, buf_len);
 }
 
 /**
@@ -904,9 +897,9 @@ int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
         return 1;
     }
 
-    /* Format amount for display */
-    uint64_t whole = amount / 100000000;
-    uint64_t frac  = amount % 100000000;
+    /* Format amount using chain-defined decimals (trust state). */
+    char amount_str[64];
+    format_amount(amount, amount_str, sizeof(amount_str));
 
     /* Print results */
     printf("\nGenesis TX created (Phase 1 — local only)\n");
@@ -921,12 +914,7 @@ int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
     printf("\n");
 
     printf("Recipient: %s\n", fingerprint);
-
-    if (frac == 0) {
-        printf("Amount:    %" PRIu64 "\n", whole);
-    } else {
-        printf("Amount:    %" PRIu64 ".%08" PRIu64 "\n", whole, frac);
-    }
+    printf("Amount:    %s\n", amount_str);
 
     printf("\nGenesis TX saved to: %s\n", filepath);
 
@@ -1082,13 +1070,9 @@ int dna_chain_cmd_genesis_submit(dnac_context_t *ctx, const char *tx_file) {
     uint64_t total = 0;
     for (int i = 0; i < tx->output_count; i++)
         total += tx->outputs[i].amount;
-    uint64_t whole = total / 100000000;
-    uint64_t frac  = total % 100000000;
-    if (frac == 0) {
-        printf("Supply:     %" PRIu64 " tokens\n", whole);
-    } else {
-        printf("Supply:     %" PRIu64 ".%08" PRIu64 " tokens\n", whole, frac);
-    }
+    char total_str[64];
+    format_amount(total, total_str, sizeof(total_str));
+    printf("Supply:     %s %s\n", total_str, dnac_current_token_symbol());
 
     dnac_free_transaction(tx);
     return 0;

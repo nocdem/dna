@@ -406,6 +406,11 @@ add_executable(test_merkle_proof tests/test_merkle_proof.c)
 target_link_libraries(test_merkle_proof nodus dsa nodus)
 add_test(NAME test_merkle_proof COMMAND test_merkle_proof)
 
+# RFC 6962 tx_root inclusion proof tests (anchored-merkle-proofs / Tasks 32-35)
+add_executable(test_merkle_tx_proof tests/test_merkle_tx_proof.c)
+target_link_libraries(test_merkle_tx_proof nodus dsa nodus)
+add_test(NAME test_merkle_tx_proof COMMAND test_merkle_tx_proof)
+
 # apply_tx_to_state + finalize_block isolation tests (Phase 3 / Task 3.6)
 register_witness_test(test_apply_finalize)
 

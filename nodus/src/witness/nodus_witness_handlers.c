@@ -17,6 +17,7 @@
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_verify.h"
 #include "witness/nodus_witness_mempool.h"
+#include "witness/nodus_witness_merkle.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
 #include "transport/nodus_tcp.h"
@@ -379,8 +380,32 @@ static void handle_dnac_utxo(nodus_witness_t *w,
     fprintf(stderr, "WITNESS_UTXO: owner=%.16s... db=%p rc=%d count=%d\n",
             owner, (void*)w->db, utxo_rc, count);
 
-    /* Encode response — size depends on count */
-    size_t buf_size = 512 + ((size_t)count * 256);
+    /* Phase 2 / Task 38: each UTXO ships with an anchored Merkle inclusion
+     * proof against the current state_root. The top-level response also
+     * carries the latest committed block_height so the client can fetch the
+     * matching block anchor via dnac_block.
+     *
+     * Proof wire format per UTXO (short CBOR keys to match existing
+     * conventions "n", "tid", "bh"):
+     *   pr_s : bstr — flat sibling buffer (depth * 64 bytes)
+     *   pr_p : uint — position bitfield
+     *   pr_d : uint — proof depth
+     *   sr   : bstr — 64-byte state_root (matches block.state_root)
+     *
+     * build_proof is O(N_utxos) per call; for N results in one response
+     * this is O(N^2). Acceptable for the current 100-UTXO cap — revisit
+     * in Phase 11+ if it becomes hot. */
+    #define DNAC_UTXO_PROOF_MAX_DEPTH 32
+    uint64_t latest_height = nodus_witness_block_height(w);
+
+    /* Per UTXO we encode at worst:
+     *   7 base fields  ≈ 256 B (existing budget)
+     *   pr_s siblings  ≤ 32 * 64  = 2048 B
+     *   pr_p / pr_d    ≈ 16 B
+     *   sr             ≈ 70 B
+     *   CBOR overhead  ≈ 64 B
+     * ⇒ round to 2560 B per entry, plus 512 B top-level overhead. */
+    size_t buf_size = 512 + ((size_t)count * 2560);
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
         free(utxos);
@@ -391,16 +416,58 @@ static void handle_dnac_utxo(nodus_witness_t *w,
 
     cbor_encoder_t enc;
     cbor_encoder_init(&enc, buf, buf_size);
-    enc_dnac_response(&enc, txn_id, "dnac_utxo", 2);
+    enc_dnac_response(&enc, txn_id, "dnac_utxo", 3);
 
     cbor_encode_cstr(&enc, "count");
     cbor_encode_uint(&enc, (uint64_t)count);
+
+    cbor_encode_cstr(&enc, "block_height");
+    cbor_encode_uint(&enc, latest_height);
 
     cbor_encode_cstr(&enc, "utxos");
     cbor_encode_array(&enc, (size_t)count);
 
     for (int i = 0; i < count; i++) {
-        cbor_encode_map(&enc, 7);
+        /* Build the anchored state_root proof for this UTXO. On failure
+         * (e.g. empty tree, leaf not yet committed) emit depth=0 empty
+         * proof and a zeroed state_root so the client sees a degraded —
+         * but still structurally valid — entry rather than losing the
+         * UTXO entirely. Client verifies proof before trusting anchor. */
+        uint8_t leaf[NODUS_MERKLE_HASH_LEN];
+        uint8_t siblings[DNAC_UTXO_PROOF_MAX_DEPTH * NODUS_MERKLE_HASH_LEN];
+        uint8_t state_root[NODUS_MERKLE_HASH_LEN];
+        uint32_t positions = 0;
+        int depth = 0;
+        bool have_proof = false;
+
+        memset(siblings, 0, sizeof(siblings));
+        memset(state_root, 0, sizeof(state_root));
+
+        if (nodus_witness_merkle_leaf_hash(utxos[i].nullifier,
+                                             utxos[i].owner,
+                                             utxos[i].amount,
+                                             utxos[i].token_id,
+                                             utxos[i].tx_hash,
+                                             utxos[i].output_index,
+                                             leaf) == 0) {
+            if (nodus_witness_merkle_build_proof(w, leaf, siblings, &positions,
+                                                   DNAC_UTXO_PROOF_MAX_DEPTH,
+                                                   &depth, state_root) == 0) {
+                have_proof = true;
+            }
+        }
+        if (!have_proof) {
+            /* Degraded: zeroed proof + root. Client-side verify will
+             * reject — caller must retry once the witness is caught up. */
+            positions = 0;
+            depth = 0;
+            memset(siblings, 0, sizeof(siblings));
+            memset(state_root, 0, sizeof(state_root));
+        }
+
+        size_t sibs_len = (size_t)depth * NODUS_MERKLE_HASH_LEN;
+
+        cbor_encode_map(&enc, 11);
         cbor_encode_cstr(&enc, "n");
         cbor_encode_bstr(&enc, utxos[i].nullifier, NODUS_T3_NULLIFIER_LEN);
         cbor_encode_cstr(&enc, "owner");
@@ -415,6 +482,14 @@ static void handle_dnac_utxo(nodus_witness_t *w,
         cbor_encode_uint(&enc, utxos[i].output_index);
         cbor_encode_cstr(&enc, "bh");
         cbor_encode_uint(&enc, utxos[i].block_height);
+        cbor_encode_cstr(&enc, "pr_s");
+        cbor_encode_bstr(&enc, siblings, sibs_len);
+        cbor_encode_cstr(&enc, "pr_p");
+        cbor_encode_uint(&enc, (uint64_t)positions);
+        cbor_encode_cstr(&enc, "pr_d");
+        cbor_encode_uint(&enc, (uint64_t)depth);
+        cbor_encode_cstr(&enc, "sr");
+        cbor_encode_bstr(&enc, state_root, NODUS_MERKLE_HASH_LEN);
     }
 
     size_t rlen = cbor_encoder_len(&enc);
@@ -879,9 +954,33 @@ static void handle_dnac_block(nodus_witness_t *w,
     nodus_witness_block_t blk;
     int rc = nodus_witness_block_get(w, height, &blk);
 
-    uint8_t buf[512];
+    /* Phase 2 / Task 37: response now carries the block's commit
+     * certificate (2f+1 PRECOMMIT APPROVE signatures) so clients
+     * can verify anchored merkle proofs without trusting a single
+     * witness. Certs can be large (up to NODUS_T3_MAX_WITNESSES ×
+     * NODUS_SIG_BYTES ≈ 600 KiB worst case), so the response buffer
+     * is heap-allocated. */
+    nodus_witness_vote_record_t certs[NODUS_T3_MAX_WITNESSES];
+    int cert_count = 0;
+    if (rc == 0) {
+        if (nodus_witness_cert_get(w, height, certs,
+                                     NODUS_T3_MAX_WITNESSES,
+                                     &cert_count) != 0) {
+            cert_count = 0;
+        }
+    }
+
+    size_t buf_cap = 1024 + (size_t)cert_count *
+                             (NODUS_SIG_BYTES + NODUS_T3_WITNESS_ID_LEN + 64);
+    uint8_t *buf = (uint8_t *)malloc(buf_cap);
+    if (!buf) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "out of memory");
+        return;
+    }
+
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf, sizeof(buf));
+    cbor_encoder_init(&enc, buf, buf_cap);
 
     if (rc != 0) {
         enc_dnac_response(&enc, txn_id, "dnac_block", 1);
@@ -894,8 +993,13 @@ static void handle_dnac_block(nodus_witness_t *w,
          * Phase 13 client receipt API will report the per-TX type via
          * the new tx_index/block_height path. The "hash" key now carries
          * the block's tx_root (single-TX path: bytes equal to the tx
-         * hash; multi-TX path: bytes equal to the Merkle root). */
-        enc_dnac_response(&enc, txn_id, "dnac_block", 8);
+         * hash; multi-TX path: bytes equal to the Merkle root).
+         *
+         * Phase 2 / Task 37: adds "commit_cert" — array of maps with
+         * {signer_id: bstr(32), sig: bstr(4627)} for each 2f+1
+         * PRECOMMIT APPROVE signer. Empty array if no cert was stored
+         * (e.g., pre-BFT seeded genesis). */
+        enc_dnac_response(&enc, txn_id, "dnac_block", 9);
         cbor_encode_cstr(&enc, "found");
         cbor_encode_bool(&enc, true);
         cbor_encode_cstr(&enc, "height");
@@ -912,6 +1016,17 @@ static void handle_dnac_block(nodus_witness_t *w,
         cbor_encode_bstr(&enc, blk.proposer_id, NODUS_T3_WITNESS_ID_LEN);
         cbor_encode_cstr(&enc, "prev_hash");
         cbor_encode_bstr(&enc, blk.prev_hash, NODUS_T3_TX_HASH_LEN);
+
+        cbor_encode_cstr(&enc, "commit_cert");
+        cbor_encode_array(&enc, (size_t)cert_count);
+        for (int i = 0; i < cert_count; i++) {
+            cbor_encode_map(&enc, 2);
+            cbor_encode_cstr(&enc, "signer_id");
+            cbor_encode_bstr(&enc, certs[i].voter_id,
+                              NODUS_T3_WITNESS_ID_LEN);
+            cbor_encode_cstr(&enc, "sig");
+            cbor_encode_bstr(&enc, certs[i].signature, NODUS_SIG_BYTES);
+        }
     }
 
     size_t rlen = cbor_encoder_len(&enc);
@@ -921,6 +1036,7 @@ static void handle_dnac_block(nodus_witness_t *w,
         send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
                     "response buffer overflow");
     }
+    free(buf);
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -1038,6 +1154,85 @@ static void handle_dnac_block_range(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_genesis — Return the genesis block fields + chain_def blob
+ *
+ * Phase 2 / Task 36 — clients fetch the genesis block from any peer
+ * to verify their hardcoded chain_id. The response carries the raw
+ * header fields plus the serialized chain_def blob; the client
+ * reassembles a dnac_block_t, computes the block hash, and compares
+ * against its hardcoded chain_id.
+ *
+ * Request:  "a": {} (no args)
+ * Response: "r": {"found":bool, "height":uint, "prev_hash":bstr,
+ *                  "state_root":bstr, "tx_root":bstr, "tx_count":uint,
+ *                  "ts":uint, "proposer":bstr, "chain_def":bstr}
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_genesis(nodus_witness_t *w,
+                                   struct nodus_tcp_conn *conn,
+                                   uint32_t txn_id) {
+    nodus_witness_block_t blk;
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    int rc = nodus_witness_block_get_genesis(w, &blk, &blob, &blob_len);
+
+    /* Response buffer sized to comfortably hold header fields plus a
+     * full chain_def blob (dnac_chain_def_encoded_size is bounded by
+     * compile-time witness cap; worst-case well under 64 KiB). */
+    size_t buf_cap = 65536;
+    uint8_t *buf = (uint8_t *)malloc(buf_cap);
+    if (!buf) {
+        free(blob);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "out of memory");
+        return;
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, buf_cap);
+
+    if (rc != 0 || blob == NULL || blob_len == 0) {
+        /* No genesis row, or genesis row with no chain_def_blob —
+         * client cannot verify chain_id without the blob, so treat
+         * as not found. */
+        enc_dnac_response(&enc, txn_id, "dnac_genesis", 1);
+        cbor_encode_cstr(&enc, "found");
+        cbor_encode_bool(&enc, false);
+    } else {
+        enc_dnac_response(&enc, txn_id, "dnac_genesis", 9);
+        cbor_encode_cstr(&enc, "found");
+        cbor_encode_bool(&enc, true);
+        cbor_encode_cstr(&enc, "height");
+        cbor_encode_uint(&enc, blk.height);
+        cbor_encode_cstr(&enc, "prev_hash");
+        cbor_encode_bstr(&enc, blk.prev_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "state_root");
+        cbor_encode_bstr(&enc, blk.state_root, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "tx_root");
+        cbor_encode_bstr(&enc, blk.tx_root, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(&enc, "tx_count");
+        cbor_encode_uint(&enc, blk.tx_count);
+        cbor_encode_cstr(&enc, "ts");
+        cbor_encode_uint(&enc, blk.timestamp);
+        cbor_encode_cstr(&enc, "proposer");
+        cbor_encode_bstr(&enc, blk.proposer_id, NODUS_T3_WITNESS_ID_LEN);
+        cbor_encode_cstr(&enc, "chain_def");
+        cbor_encode_bstr(&enc, blob, blob_len);
+    }
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) {
+        nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
+
+    free(buf);
+    free(blob);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_history — Query transaction history for an owner fingerprint
  *
  * Request:  "a": {"owner": tstr, "limit": uint}
@@ -1099,11 +1294,25 @@ static void handle_dnac_history(nodus_witness_t *w,
     int count = 0;
     nodus_witness_tx_by_owner(w, owner, entries, max_results, &count);
 
+    /* Task 39: each historical TX ships a per-block tx_root Merkle inclusion
+     * proof so clients can verify the TX is anchored in the committed block
+     * identified by `bh`. The proof follows Task 38's CBOR convention:
+     *   pr_s : bstr — flat siblings (depth * 64 bytes)
+     *   pr_p : uint — position bitfield
+     *   pr_d : uint — proof depth
+     *   tr   : bstr — 64-byte tx_root (matches block.tx_root)
+     *
+     * Degraded case (build_tx_proof fails — e.g. block not yet fully
+     * committed, TX missing from tx_root): emit pr_d=0, empty siblings,
+     * zeroed tr. Client-side verify rejects and retries. */
+    #define DNAC_HISTORY_PROOF_MAX_DEPTH 32
+
     /* Encode response.
      * Per-entry budget: ~300B metadata + up to NODUS_WITNESS_MAX_TX_OUTPUTS
-     * outputs × ~260B (128-char fp + token_id + amount + index).
-     * 4096B per entry gives safe headroom for 8+ outputs. */
-    size_t buf_size = 1024 + ((size_t)count * 4096);
+     * outputs × ~260B (128-char fp + token_id + amount + index) +
+     * proof fields (~2048B siblings + 64B root + overhead).
+     * 6656B per entry covers 8+ outputs plus full proof. */
+    size_t buf_size = 1024 + ((size_t)count * 6656);
     uint8_t *buf = malloc(buf_size);
     if (!buf) {
         free(entries);
@@ -1123,7 +1332,36 @@ static void handle_dnac_history(nodus_witness_t *w,
     cbor_encode_array(&enc, (size_t)count);
 
     for (int i = 0; i < count; i++) {
-        cbor_encode_map(&enc, 7);
+        /* Build per-TX tx_root proof anchored to the committing block.
+         * On failure emit a degraded empty proof so the entry structure
+         * stays valid — client verify will reject the degraded entry. */
+        uint8_t siblings[DNAC_HISTORY_PROOF_MAX_DEPTH * NODUS_MERKLE_HASH_LEN];
+        uint8_t tx_root[NODUS_MERKLE_HASH_LEN];
+        uint32_t positions = 0;
+        int depth = 0;
+        bool have_proof = false;
+
+        memset(siblings, 0, sizeof(siblings));
+        memset(tx_root, 0, sizeof(tx_root));
+
+        if (nodus_witness_merkle_build_tx_proof(w,
+                                                  entries[i].block_height,
+                                                  entries[i].tx_hash,
+                                                  siblings, &positions,
+                                                  DNAC_HISTORY_PROOF_MAX_DEPTH,
+                                                  &depth, tx_root) == 0) {
+            have_proof = true;
+        }
+        if (!have_proof) {
+            positions = 0;
+            depth = 0;
+            memset(siblings, 0, sizeof(siblings));
+            memset(tx_root, 0, sizeof(tx_root));
+        }
+
+        size_t sibs_len = (size_t)depth * NODUS_MERKLE_HASH_LEN;
+
+        cbor_encode_map(&enc, 11);
         cbor_encode_cstr(&enc, "hash");
         cbor_encode_bstr(&enc, entries[i].tx_hash, NODUS_T3_TX_HASH_LEN);
         cbor_encode_cstr(&enc, "type");
@@ -1136,6 +1374,14 @@ static void handle_dnac_history(nodus_witness_t *w,
         cbor_encode_uint(&enc, entries[i].block_height);
         cbor_encode_cstr(&enc, "ts");
         cbor_encode_uint(&enc, entries[i].timestamp);
+        cbor_encode_cstr(&enc, "pr_s");
+        cbor_encode_bstr(&enc, siblings, sibs_len);
+        cbor_encode_cstr(&enc, "pr_p");
+        cbor_encode_uint(&enc, (uint64_t)positions);
+        cbor_encode_cstr(&enc, "pr_d");
+        cbor_encode_uint(&enc, (uint64_t)depth);
+        cbor_encode_cstr(&enc, "tr");
+        cbor_encode_bstr(&enc, tx_root, NODUS_MERKLE_HASH_LEN);
 
         /* Per-output array. Output map carries an optional `memo` key —
          * clients that don't know the key ignore it, older witnesses
@@ -1834,6 +2080,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_block(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_block_range") == 0) {
         handle_dnac_block_range(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_genesis") == 0) {
+        handle_dnac_genesis(w, conn, txn_id);
     } else if (strcmp(method, "dnac_history") == 0) {
         handle_dnac_history(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_token_list") == 0) {

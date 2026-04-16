@@ -9,6 +9,8 @@
 
 #include "dnac/nodus.h"
 #include "dnac/wallet.h"
+#include "dnac/block.h"
+#include "dnac/chain_def_codec.h"
 #include <string.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -280,6 +282,79 @@ uint64_t dnac_witness_calculate_fee(uint64_t amount) {
      * For amounts < 1000, this gives 0, so min_fee=1 applies. */
     uint64_t fee = amount / 1000;
     return fee > 0 ? fee : 1;  /* Minimum 1 unit */
+}
+
+int dnac_request_genesis(dnac_context_t *ctx, dnac_block_t *block_out) {
+    if (!ctx || !block_out) return DNAC_ERROR_INVALID_PARAM;
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        QGP_LOG_ERROR(LOG_TAG, "Nodus singleton not initialized");
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
+
+    nodus_dnac_genesis_result_t result;
+    memset(&result, 0, sizeof(result));
+
+    nodus_singleton_lock();
+    int rc = nodus_client_dnac_genesis(client, &result);
+    nodus_singleton_unlock();
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "dnac_genesis query failed: %d", rc);
+        nodus_client_free_genesis_result(&result);
+        if (rc == NODUS_ERR_TIMEOUT) return DNAC_ERROR_TIMEOUT;
+        return DNAC_ERROR_NETWORK;
+    }
+
+    if (!result.found) {
+        QGP_LOG_WARN(LOG_TAG, "dnac_genesis: witness has no genesis row");
+        nodus_client_free_genesis_result(&result);
+        return DNAC_ERROR_NOT_FOUND;
+    }
+
+    if (!result.chain_def_blob || result.chain_def_blob_len == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "dnac_genesis: missing chain_def blob");
+        nodus_client_free_genesis_result(&result);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* Reassemble a dnac_block_t from the raw fields, decode chain_def,
+     * then recompute the block hash. The caller compares block_hash to
+     * its hardcoded chain_id for trust bootstrap. */
+    memset(block_out, 0, sizeof(*block_out));
+    block_out->block_height = result.height;
+    memcpy(block_out->prev_block_hash, result.prev_hash,
+           DNAC_BLOCK_HASH_SIZE);
+    memcpy(block_out->state_root, result.state_root,
+           DNAC_BLOCK_HASH_SIZE);
+    memcpy(block_out->tx_root, result.tx_root, DNAC_BLOCK_HASH_SIZE);
+    block_out->tx_count = result.tx_count;
+    block_out->timestamp = result.timestamp;
+    memcpy(block_out->proposer_id, result.proposer_id,
+           DNAC_BLOCK_PROPOSER_SIZE);
+    block_out->is_genesis = true;
+
+    if (dnac_chain_def_decode(result.chain_def_blob,
+                               result.chain_def_blob_len,
+                               &block_out->chain_def) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "dnac_genesis: chain_def decode failed");
+        nodus_client_free_genesis_result(&result);
+        memset(block_out, 0, sizeof(*block_out));
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    nodus_client_free_genesis_result(&result);
+
+    if (dnac_block_compute_hash(block_out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "dnac_genesis: block_compute_hash failed");
+        memset(block_out, 0, sizeof(*block_out));
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "dnac_genesis: fetched genesis block (height=%llu)",
+                 (unsigned long long)block_out->block_height);
+    return DNAC_SUCCESS;
 }
 
 int dnac_witness_ping(dnac_context_t *ctx,

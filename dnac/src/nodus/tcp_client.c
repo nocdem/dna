@@ -18,6 +18,7 @@
 
 #include "dnac/nodus.h"
 #include "dnac/ledger.h"
+#include "dnac/trusted_state.h"
 #include "dnac/commitment.h"
 #include "dnac/wallet.h"
 #include "dnac/db.h"
@@ -479,6 +480,66 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
         memcpy(utxo.token_id, e->token_id, DNAC_TOKEN_ID_SIZE);
         utxo.status = DNAC_UTXO_UNSPENT;
         utxo.received_at = (uint64_t)time(NULL);
+        /* Phase 12 Task 64b — anchored UTXO verification.
+         *
+         * Gated on:
+         *   1. Trusted state installed (wallet init ran dnac_genesis_verify).
+         *   2. Witness shipped a non-empty proof (proof_depth > 0).
+         *   3. latest_verified_anchor's block_height matches the UTXO's
+         *      block_height. Pre-hardfork the chain_id constant is still a
+         *      placeholder, so bootstrap never installs a real anchor —
+         *      in that case we simply leave verified=false (degraded mode,
+         *      consistent with pre-Phase-12 behavior).
+         *
+         * A dedicated per-block anchor fetch path is out of scope for this
+         * commit (would need a new nodus_client_dnac_block_anchor round-trip
+         * with commit_cert). Falling back to "use latest verified anchor
+         * only if height matches" is the smallest correct slice.
+         */
+        utxo.verified = false;
+        const dnac_trusted_state_t *trust = dnac_current_trusted_state();
+        if (trust && e->proof_depth > 0 && e->block_height > 0 &&
+            e->proof_depth <= DNAC_MERKLE_MAX_DEPTH) {
+
+            const dnac_block_anchor_t *anchor = NULL;
+            if (trust->latest_verified_anchor.header.block_height ==
+                e->block_height) {
+                anchor = &trust->latest_verified_anchor;
+            }
+
+            if (anchor) {
+                dnac_merkle_proof_t proof;
+                memset(&proof, 0, sizeof(proof));
+
+                if (dnac_utxo_compute_leaf_hash(e->nullifier,
+                                                  utxo.owner_fingerprint,
+                                                  e->amount,
+                                                  e->token_id,
+                                                  e->tx_hash,
+                                                  e->output_index,
+                                                  proof.leaf_hash) == 0) {
+                    proof.proof_length = (int)e->proof_depth;
+                    for (uint32_t si = 0; si < e->proof_depth; si++) {
+                        memcpy(proof.siblings[si],
+                               e->proof_siblings + si * NODUS_DNAC_PROOF_HASH_LEN,
+                               NODUS_DNAC_PROOF_HASH_LEN);
+                        proof.directions[si] =
+                            (uint8_t)((e->proof_positions >> si) & 1u);
+                    }
+                    memcpy(proof.root, e->proof_root,
+                           NODUS_DNAC_PROOF_HASH_LEN);
+
+                    if (dnac_utxo_verify_anchored(&proof, anchor, trust)) {
+                        utxo.verified = true;
+                    } else {
+                        QGP_LOG_WARN(LOG_TAG,
+                            "UTXO proof verify failed (height=%llu, idx=%u)",
+                            (unsigned long long)e->block_height,
+                            e->output_index);
+                    }
+                }
+            }
+        }
 
         /* INSERT OR IGNORE — won't overwrite existing entries */
         rc = dnac_db_store_utxo(db, &utxo);

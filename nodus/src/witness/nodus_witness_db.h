@@ -15,6 +15,7 @@
 
 #include "witness/nodus_witness.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -149,10 +150,21 @@ typedef struct {
  *
  * Per-TX type lives in committed_transactions.tx_type and is no longer
  * stored on the block row. */
+/* Phase 2 / Task 11 — chain_def_blob parameter.
+ *
+ * For genesis blocks (height 0), pass the encoded chain_def bytes
+ * (see dnac_chain_def_encode in libdna) via chain_def_blob + blob_len.
+ * For non-genesis blocks, pass NULL / 0 — the chain_def_blob column
+ * will be bound as NULL. The write path is the only consumer of the
+ * blob for now; readers (block_get*, block_get_range) intentionally
+ * skip the column to keep the hot path lean. Task 36 (handle_dnac_genesis)
+ * will add the explicit genesis-blob read path. */
 int  nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
                                uint32_t tx_count, uint64_t timestamp,
                                const uint8_t *proposer_id,
-                               const uint8_t *state_root);
+                               const uint8_t *state_root,
+                               const uint8_t *chain_def_blob,
+                               size_t chain_def_blob_len);
 int  nodus_witness_block_get(nodus_witness_t *w, uint64_t height,
                                nodus_witness_block_t *out);
 int  nodus_witness_block_get_latest(nodus_witness_t *w,
@@ -161,6 +173,19 @@ int  nodus_witness_block_get_range(nodus_witness_t *w,
                                       uint64_t from_height, uint64_t to_height,
                                       nodus_witness_block_t *out,
                                       int max_entries, int *count_out);
+/* Phase 2 / Task 36 — genesis block fetch with chain_def_blob.
+ *
+ * Returns the genesis block row (height == 0) including the
+ * chain_def_blob column. The blob is returned via malloc'd
+ * *blob_out; caller owns and must free(). If the row has no
+ * chain_def_blob, *blob_out = NULL and *blob_len_out = 0.
+ *
+ * Returns 0 on success, -1 on error / not found.
+ */
+int  nodus_witness_block_get_genesis(nodus_witness_t *w,
+                                       nodus_witness_block_t *out,
+                                       uint8_t **blob_out,
+                                       size_t *blob_len_out);
 uint64_t nodus_witness_block_height(nodus_witness_t *w);
 
 /* ── Genesis state ───────────────────────────────────────────────── */
@@ -341,18 +366,21 @@ void nodus_witness_compute_block_hash(uint64_t height,
                                        const uint8_t proposer_id[32],
                                        uint8_t out[64]);
 
-/* Schema v12 migration (Phase 1 / Task 1.1).
+/* Schema migration umbrella (Phase 1 / Task 1.1, originally named v12).
  *
- * Adds the `tx_index` column to committed_transactions and replaces the
- * single-column idx_ctx_height with a composite (block_height, tx_index)
- * index named idx_ctx_block. Required by the multi-tx block refactor —
- * each block now contains N transactions and per-block ordering must be
- * queryable. Idempotent: safe to run on a fresh DB or a DB that already
- * has the v12 shape.
+ * Runs all additive schema migrations in order:
+ *   - v12: tx_index column + composite idx_ctx_block index on
+ *          committed_transactions (multi-tx block refactor)
+ *   - v13: client_pubkey + client_sig columns on committed_transactions
+ *          (Phase 11 client binding)
+ *   - v14: chain_def_blob column on blocks (Phase 2 / Task 7 — anchored
+ *          merkle proofs; NULL on non-genesis blocks)
  *
- * Returns 0 on success. On unrecoverable SQLite error the function
- * triggers WITNESS_DB_MIGRATION_FATAL (logs MIGRATION FAILURE then
- * abort()), so callers can assume success on return.
+ * Idempotent: safe to run on a fresh DB or on a DB that already has any
+ * of the above shapes. Returns 0 on success. On unrecoverable SQLite
+ * error the function triggers WITNESS_DB_MIGRATION_FATAL (logs
+ * MIGRATION FAILURE then abort()), so callers can assume success on
+ * return.
  */
 int  nodus_witness_db_migrate_v12(nodus_witness_t *w);
 
