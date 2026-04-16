@@ -114,8 +114,15 @@ int dna_chain_cmd_query(dnac_context_t *ctx, const char *query);
  * @param amount Amount to allocate
  * @return 0 on success, non-zero on failure
  */
+/**
+ * @param chain_def_file_path  Optional binary file (serialized
+ *                             dnac_chain_definition_t) produced by the
+ *                             pack_chain_def operator tool. NULL for a
+ *                             legacy (non-anchored) genesis.
+ */
 int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
-                            uint64_t amount);
+                            uint64_t amount,
+                            const char *chain_def_file_path);
 
 /**
  * @brief Submit genesis TX to network (Phase 2 — requires witnesses)

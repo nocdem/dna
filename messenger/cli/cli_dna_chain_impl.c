@@ -16,6 +16,7 @@
 #include "dnac/genesis.h"
 #include "dnac/crypto_helpers.h"
 #include "dnac/trusted_state.h"
+#include "dnac/chain_def_codec.h"
 #include "dnac/version.h"
 #include <dna/dna_engine.h>
 #include "nodus_ops.h"
@@ -865,7 +866,8 @@ fail:
  * ========================================================================== */
 
 int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
-                            uint64_t amount) {
+                            uint64_t amount,
+                            const char *chain_def_file_path) {
     /* Build recipient */
     dnac_genesis_recipient_t recipients[1];
     strncpy(recipients[0].fingerprint, fingerprint,
@@ -881,6 +883,44 @@ int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
     if (rc != DNAC_SUCCESS) {
         fprintf(stderr, "Error creating genesis TX: %s\n", dnac_error_string(rc));
         return 1;
+    }
+
+    /* Optional: load chain_def from file and attach to TX (anchored genesis). */
+    if (chain_def_file_path && chain_def_file_path[0]) {
+        FILE *cdf = fopen(chain_def_file_path, "rb");
+        if (!cdf) {
+            fprintf(stderr, "Error: cannot open chain-def-file '%s'\n", chain_def_file_path);
+            dnac_free_transaction(tx);
+            return 1;
+        }
+        fseek(cdf, 0, SEEK_END);
+        long cdlen = ftell(cdf);
+        fseek(cdf, 0, SEEK_SET);
+        if (cdlen <= 0 || (size_t)cdlen > dnac_chain_def_max_size()) {
+            fprintf(stderr, "Error: chain-def-file size %ld out of range\n", cdlen);
+            fclose(cdf);
+            dnac_free_transaction(tx);
+            return 1;
+        }
+        uint8_t *cdbuf = malloc((size_t)cdlen);
+        if (!cdbuf || fread(cdbuf, 1, (size_t)cdlen, cdf) != (size_t)cdlen) {
+            fprintf(stderr, "Error: reading chain-def-file failed\n");
+            free(cdbuf);
+            fclose(cdf);
+            dnac_free_transaction(tx);
+            return 1;
+        }
+        fclose(cdf);
+        if (dnac_chain_def_decode(cdbuf, (size_t)cdlen, &tx->chain_def) != 0) {
+            fprintf(stderr, "Error: chain_def decode failed\n");
+            free(cdbuf);
+            dnac_free_transaction(tx);
+            return 1;
+        }
+        free(cdbuf);
+        tx->has_chain_def = true;
+        printf("Anchored genesis: chain_def loaded from %s (%ld bytes)\n",
+               chain_def_file_path, cdlen);
     }
 
     /* Save to file */

@@ -182,7 +182,12 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
     }
     else if (strcmp(cmd, "genesis-create") == 0) {
         if (sub + 2 >= argc) {
-            fprintf(stderr, "Usage: dna-connect-cli dna genesis-create <fingerprint> <amount>\n");
+            fprintf(stderr, "Usage: dna-connect-cli dna genesis-create <fingerprint> <amount> [--chain-def-file <path>]\n");
+            fprintf(stderr, "  --chain-def-file  Path to binary file containing a serialized\n");
+            fprintf(stderr, "                    dnac_chain_definition_t (see pack_chain_def tool).\n");
+            fprintf(stderr, "                    When provided, the TX carries an anchored-genesis\n");
+            fprintf(stderr, "                    chain_def trailer and witnesses will embed it in\n");
+            fprintf(stderr, "                    the genesis block hash preimage.\n");
             result = 1;
         } else {
             const char *fingerprint = argv[sub + 1];
@@ -193,7 +198,15 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
                 fprintf(stderr, "Error: Invalid amount '%s' (must be > 0)\n", argv[sub + 2]);
                 result = 1;
             } else {
-                result = dna_chain_cmd_genesis_create(ctx, fingerprint, amount);
+                /* Optional --chain-def-file <path> flag */
+                const char *chain_def_file = NULL;
+                for (int i = sub + 3; i + 1 < argc; i++) {
+                    if (strcmp(argv[i], "--chain-def-file") == 0) {
+                        chain_def_file = argv[i + 1];
+                        break;
+                    }
+                }
+                result = dna_chain_cmd_genesis_create(ctx, fingerprint, amount, chain_def_file);
             }
         }
     }
