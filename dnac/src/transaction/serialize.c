@@ -11,6 +11,7 @@
  */
 
 #include "dnac/transaction.h"
+#include "dnac/chain_def_codec.h"  /* for optional genesis chain_def payload */
 #include <string.h>
 #include <stdlib.h>
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
@@ -67,6 +68,15 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     /* Sender */
     size += DNAC_PUBKEY_SIZE;  /* pubkey (2592) */
     size += DNAC_SIGNATURE_SIZE;  /* signature (4627) */
+
+    /* Optional anchored-genesis chain_def trailer (v2 wire extension).
+     * Only present when has_chain_def is true (always 0 for non-genesis).
+     * Layout: flag(1) [|| chain_def_len(4 LE) || chain_def_bytes] */
+    size += 1;  /* has_chain_def flag byte */
+    if (tx->has_chain_def) {
+        size += 4;  /* chain_def_len */
+        size += dnac_chain_def_encoded_size(&tx->chain_def);
+    }
 
     return size;
 }
@@ -125,6 +135,23 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
     /* Sender */
     WRITE_BLOB(ptr, tx->sender_pubkey, DNAC_PUBKEY_SIZE);
     WRITE_BLOB(ptr, tx->sender_signature, DNAC_SIGNATURE_SIZE);
+
+    /* Anchored-genesis chain_def trailer (optional, genesis TX only). */
+    WRITE_U8(ptr, tx->has_chain_def ? 1 : 0);
+    if (tx->has_chain_def) {
+        size_t cd_len = dnac_chain_def_encoded_size(&tx->chain_def);
+        /* Write len as u32 LE (match existing codec convention) */
+        ptr[0] = (uint8_t)(cd_len & 0xff);
+        ptr[1] = (uint8_t)((cd_len >> 8) & 0xff);
+        ptr[2] = (uint8_t)((cd_len >> 16) & 0xff);
+        ptr[3] = (uint8_t)((cd_len >> 24) & 0xff);
+        ptr += 4;
+        size_t written = 0;
+        int rc = dnac_chain_def_encode(&tx->chain_def, ptr,
+                                         buffer_len - (ptr - buffer), &written);
+        if (rc != 0 || written != cd_len) return DNAC_ERROR_INVALID_PARAM;
+        ptr += written;
+    }
 
     *written_out = (size_t)(ptr - buffer);
     return DNAC_SUCCESS;
@@ -234,6 +261,32 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     }
     READ_BLOB(ptr, tx->sender_pubkey, DNAC_PUBKEY_SIZE);
     READ_BLOB(ptr, tx->sender_signature, DNAC_SIGNATURE_SIZE);
+
+    /* Optional anchored-genesis chain_def trailer.
+     *
+     * Backward compat: if ptr reached end, this is a legacy v1 TX with
+     * no trailer — leave has_chain_def = false (already zero via calloc).
+     * If ptr + 1 > end, same thing. Only actively parse when the flag
+     * byte is present. */
+    if (ptr < end) {
+        uint8_t has_cd;
+        READ_U8(ptr, has_cd);
+        if (has_cd) {
+            if (ptr + 4 > end) { free(tx); return DNAC_ERROR_INVALID_PARAM; }
+            uint32_t cd_len = (uint32_t)ptr[0]
+                            | ((uint32_t)ptr[1] << 8)
+                            | ((uint32_t)ptr[2] << 16)
+                            | ((uint32_t)ptr[3] << 24);
+            ptr += 4;
+            if (ptr + cd_len > end) { free(tx); return DNAC_ERROR_INVALID_PARAM; }
+            if (dnac_chain_def_decode(ptr, cd_len, &tx->chain_def) != 0) {
+                free(tx);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            tx->has_chain_def = true;
+            ptr += cd_len;
+        }
+    }
 
     *tx_out = tx;
     return DNAC_SUCCESS;

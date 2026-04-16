@@ -13,6 +13,8 @@
 #define DNAC_TRANSACTION_H
 
 #include "dnac.h"
+#include "block.h"  /* for dnac_chain_definition_t (genesis-only field) */
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -108,6 +110,19 @@ struct dnac_transaction {
     /* Sender authorization (Dilithium5 signature) */
     uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];
     uint8_t sender_signature[DNAC_SIGNATURE_SIZE];
+
+    /* Anchored genesis chain definition (genesis TX only, optional).
+     * When has_chain_def is true AND type == DNAC_TX_GENESIS, the TX
+     * serialization appends the encoded chain_def bytes after the
+     * sender signature. Witnesses read these bytes and include them
+     * verbatim in the genesis block hash preimage — this is how the
+     * single hardcoded chain_id in the client maps to a specific
+     * witness roster + consensus parameters.
+     *
+     * For non-genesis TXs or legacy non-anchored genesis, has_chain_def
+     * remains false and the serialization is byte-identical to v0. */
+    bool                    has_chain_def;
+    dnac_chain_definition_t chain_def;
 };
 
 /* ============================================================================
