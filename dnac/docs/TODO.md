@@ -1,8 +1,22 @@
-# DNAC TODO
+> **⚠️ HISTORICAL — DO NOT USE FOR CURRENT STATE**
+>
+> This file is frozen at **v0.7.1 / 2026-01-22** and refers to the
+> pre-blockchain DHT cash architecture. Many "shipped" items below
+> have since been removed or replaced (DHT transport removed in v0.12.0,
+> 2-of-3 nodus replaced by 2f+1 BFT, multi-tx blocks added in v0.14.0,
+> Merkle state_root added in v0.11.0).
+>
+> **For the current open-gaps list, see [`STATUS.md`](STATUS.md).**
+>
+> Keep this file only for phase history.
+
+---
+
+# DNAC TODO (HISTORICAL — frozen at v0.7.1)
 
 **Current Phase:** Phase 23 Complete - BFT-Anchored Proofs (v0.7.1)
 **Protocol Version:** v1 (Transparent amounts)
-**Updated:** 2026-01-22
+**Updated:** 2026-01-22 (FROZEN — see STATUS.md for current state)
 
 ---
 

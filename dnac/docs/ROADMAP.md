@@ -1,7 +1,20 @@
-# DNAC Implementation Roadmap
+> **⚠️ HISTORICAL — DO NOT USE FOR CURRENT STATE**
+>
+> This roadmap is frozen at **v0.10.2** and reflects the pre-blockchain
+> "DHT cash" architecture that no longer exists. The standalone DHT
+> transport was removed in v0.12.0; DNAC is now a witness-only PQ
+> blockchain on Nodus BFT.
+>
+> **For current component status, see [`STATUS.md`](STATUS.md).**
+>
+> Keep this file only for phase history (Phases 1–24).
+
+---
+
+# DNAC Implementation Roadmap (HISTORICAL — frozen at v0.10.2)
 
 **Project:** DNAC - Post-Quantum Digital Cash over DHT
-**Version:** v0.10.2
+**Version:** v0.10.2 (FROZEN — current is v0.14.3, see STATUS.md)
 **Status:** Phase 24 Complete (P0 Security Audit)
 
 ---
