@@ -273,6 +273,9 @@ if(DNAC_BUILD_TESTS)
     register_dnac_test(test_merkle_verify)
     register_dnac_test(test_anchor_verify)
     register_dnac_test(test_genesis_verify)
+
+    # Phase 9 end-to-end: genesis + anchor + merkle proof composition (Tasks 50-53)
+    register_dnac_test(test_anchored_proofs)
 endif()
 
 # ============================================================================
