@@ -479,6 +479,16 @@ int dnac_wallet_recover_from_witnesses(dnac_context_t *ctx,
         memcpy(utxo.token_id, e->token_id, DNAC_TOKEN_ID_SIZE);
         utxo.status = DNAC_UTXO_UNSPENT;
         utxo.received_at = (uint64_t)time(NULL);
+        /* Phase 12 — verified=false by default. Phase 13 will populate:
+         *   const dnac_trusted_state_t *trust = dnac_current_trusted_state();
+         *   if (trust && entry ships a merkle proof) {
+         *       build dnac_merkle_proof_t from e->proof_*, fetch the block
+         *       anchor for e->block_height, call
+         *       dnac_utxo_verify_anchored(&proof, &anchor, trust).
+         *       On success: utxo.verified = true.
+         *   }
+         * Wire format already carries the proof fields as of Phase 9. */
+        utxo.verified = false;
 
         /* INSERT OR IGNORE — won't overwrite existing entries */
         rc = dnac_db_store_utxo(db, &utxo);

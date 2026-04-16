@@ -10,6 +10,9 @@
 #include "dnac/db.h"
 #include "dnac/ledger.h"
 #include "dnac/commitment.h"
+#include "dnac/genesis_anchor.h"
+#include "dnac/trusted_state.h"
+#include "dnac/block.h"
 #include <dna/dna_engine.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,6 +50,77 @@ struct dnac_context {
 /* ============================================================================
  * Lifecycle Functions
  * ========================================================================== */
+
+/**
+ * Phase 12 — Bootstrap anchored trust state from the hardcoded chain_id.
+ *
+ * Fetches the genesis block from a witness via dnac_request_genesis, compares
+ * its computed block_hash against DNAC_KNOWN_CHAINS[0].chain_id, and if it
+ * matches, populates the process-global trusted state via
+ * dnac_set_current_trusted_state().
+ *
+ * Failure is non-fatal: the wallet continues in "degraded mode" with no
+ * anchored verification. UTXOs remain marked verified=false until Phase 13
+ * lands a real chain_id and the sync path wires full UTXO verification.
+ *
+ * Current reality: DNAC_KNOWN_CHAINS[0].chain_id is all-zero placeholder, so
+ * this function intentionally short-circuits and logs a single INFO line
+ * until Phase 13 replaces the placeholder with the real chain_id.
+ */
+static void bootstrap_trusted_state(dnac_context_t *ctx) {
+    if (!ctx) return;
+
+    if (DNAC_KNOWN_CHAINS_COUNT == 0) {
+        QGP_LOG_WARN(LOG_TAG,
+            "trust: no known chains configured, anchored verification disabled");
+        return;
+    }
+
+    const dnac_known_chain_t *kc = &DNAC_KNOWN_CHAINS[0];
+
+    /* Skip if chain_id is still the all-zero placeholder (pre-Phase-13). */
+    static const uint8_t zero[DNAC_BLOCK_HASH_SIZE] = {0};
+    if (memcmp(kc->chain_id, zero, DNAC_BLOCK_HASH_SIZE) == 0) {
+        QGP_LOG_INFO(LOG_TAG,
+            "trust: chain_id placeholder unset, anchored verification deferred to Phase 13");
+        return;
+    }
+
+    dnac_block_t genesis;
+    memset(&genesis, 0, sizeof(genesis));
+    int rc = dnac_request_genesis(ctx, &genesis);
+    if (rc != DNAC_SUCCESS) {
+        QGP_LOG_WARN(LOG_TAG,
+            "trust: dnac_request_genesis failed (rc=%d), degraded mode", rc);
+        return;
+    }
+
+    if (memcmp(genesis.block_hash, kc->chain_id, DNAC_BLOCK_HASH_SIZE) != 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "trust: genesis chain_id mismatch for '%s' — possible MITM, degraded mode",
+            kc->name ? kc->name : "?");
+        /* Do NOT abort init — Phase 13 will tighten this to hard fail. */
+        return;
+    }
+
+    dnac_trusted_state_t trust;
+    memset(&trust, 0, sizeof(trust));
+    memcpy(trust.chain_id, kc->chain_id, DNAC_BLOCK_HASH_SIZE);
+    memcpy(&trust.chain_def, &genesis.chain_def, sizeof(genesis.chain_def));
+    /* latest_verified_anchor intentionally zeroed — populated on first
+     * anchor_verify in the sync path (Phase 13 wiring). */
+
+    if (dnac_set_current_trusted_state(&trust) != 0) {
+        QGP_LOG_WARN(LOG_TAG,
+            "trust: dnac_set_current_trusted_state failed, degraded mode");
+        return;
+    }
+
+    QGP_LOG_INFO(LOG_TAG,
+        "trust: anchored state initialized: chain='%s', %u witnesses",
+        trust.chain_def.chain_name,
+        (unsigned)trust.chain_def.witness_count);
+}
 
 dnac_context_t* dnac_init(void *dna_engine) {
     if (!dna_engine) return NULL;
@@ -98,6 +172,12 @@ dnac_context_t* dnac_init(void *dna_engine) {
     }
 
     ctx->initialized = 1;
+
+    /* Phase 12 — bootstrap anchored trust state. Best-effort: failure is
+     * logged and the wallet continues in degraded mode (UTXOs stay
+     * verified=false). */
+    bootstrap_trusted_state(ctx);
+
     return ctx;
 }
 
