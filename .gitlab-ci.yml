@@ -52,7 +52,7 @@ build:native-android-arm64:
   stage: build-native
   tags:
     - linux
-  image: ubuntu:24.04
+  image: dna-ci-base:latest
   timeout: 3h
   variables:
     ANDROID_NDK_VERSION: "26b"
@@ -65,8 +65,6 @@ build:native-android-arm64:
       - .cache/android-ndk/
       - .cache/android-deps/
   before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget unzip autoconf automake libtool python3 ninja-build m4 texinfo
     # Download Android NDK
     - |
       export HOME="${CI_PROJECT_DIR}"
@@ -240,7 +238,6 @@ build:native-android-arm64:
         cd "${CI_PROJECT_DIR}"
       fi
     # Build SQLCipher for Android (encrypted SQLite — replaces plain SQLite)
-    - apt-get install -y -qq tcl
     - |
       if [ ! -f "${DEPS_DIR}/sqlite-arm64/lib/libsqlite3.a" ] || ! nm "${DEPS_DIR}/sqlite-arm64/lib/libsqlite3.a" 2>/dev/null | grep -q sqlite3_key; then
         echo "Building SQLCipher v4.6.1 for Android..."
