@@ -118,7 +118,7 @@ static void *read_thread_fn(void *arg) {
                 size_t ping_len = 0;
                 uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
                 if (nodus_t2_ping(txn, client->token, ping_buf, sizeof(ping_buf), &ping_len) == 0) {
-                    nodus_tcp_send(client->conn, ping_buf, ping_len);
+                    send_request(client, ping_buf, ping_len);
                 }
             }
         }
