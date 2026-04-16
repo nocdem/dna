@@ -13,15 +13,15 @@
 const dnac_known_chain_t DNAC_KNOWN_CHAINS[] = {
     {
         .name = "devnet",
-        /* chain_id = SHA3-256(genesis_fp || genesis_tx_hash)
-         * Genesis submitted 2026-04-16, 7 witnesses, 1B DNAC supply.
-         * Witness DB: witness_b74acae6952c51bfb61f8b5bd0236ce5.db */
-        .chain_id = {
-            0xb7, 0x4a, 0xca, 0xe6, 0x95, 0x2c, 0x51, 0xbf,
-            0xb6, 0x1f, 0x8b, 0x5b, 0xd0, 0x23, 0x6c, 0xe5,
-            0x84, 0x15, 0x4a, 0xbc, 0xb6, 0x4b, 0xb3, 0xde,
-            0xd9, 0xed, 0xf1, 0x98, 0xd7, 0x33, 0x19, 0x17,
-        },
+        /* TEMPORARILY zeroed — the 32-byte old chain_id (SHA3-256) doesn't
+         * match the 64-byte DNAC_BLOCK_HASH_SIZE field. The real anchored
+         * chain_id (SHA3-512 of genesis block with chain_def) hasn't been
+         * queried from the cluster yet. Leaving zeros skips the bootstrap
+         * in wallet init so messaging isn't blocked.
+         *
+         * TODO: query the cluster for genesis block 0's block_hash (64 bytes)
+         * via handle_dnac_genesis, paste here, and re-enable bootstrap. */
+        .chain_id = { 0 },
     },
 };
 
