@@ -69,6 +69,12 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     size += 1;  /* signer_count */
     size += tx->signer_count * (DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE);
 
+    /* Type-specific appended fields (Phase 5 Task 16). STAKE carries
+     * commission_bps(2) + unstake_destination_fp(64) + purpose_tag(17). */
+    if (tx->type == DNAC_TX_STAKE) {
+        size += 2 + DNAC_STAKE_UNSTAKE_DEST_FP_SIZE + DNAC_STAKE_PURPOSE_TAG_LEN;
+    }
+
     /* Optional anchored-genesis chain_def trailer (v2 wire extension).
      * Only present when has_chain_def is true (always 0 for non-genesis).
      * Layout: flag(1) [|| chain_def_len(4 LE) || chain_def_bytes] */
@@ -139,6 +145,18 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         WRITE_BLOB(ptr, tx->signers[i].signature, DNAC_SIGNATURE_SIZE);
     }
 
+    /* Type-specific appended fields (Phase 5 Task 16).
+     * STAKE: commission_bps(u16 BE) || unstake_destination_fp[64] ||
+     *        purpose_tag[17] ("DNAC_VALIDATOR_v1"). */
+    if (tx->type == DNAC_TX_STAKE) {
+        ptr[0] = (uint8_t)((tx->stake_fields.commission_bps >> 8) & 0xff);
+        ptr[1] = (uint8_t)(tx->stake_fields.commission_bps & 0xff);
+        ptr += 2;
+        WRITE_BLOB(ptr, tx->stake_fields.unstake_destination_fp,
+                   DNAC_STAKE_UNSTAKE_DEST_FP_SIZE);
+        WRITE_BLOB(ptr, DNAC_STAKE_PURPOSE_TAG, DNAC_STAKE_PURPOSE_TAG_LEN);
+    }
+
     /* Anchored-genesis chain_def trailer (optional, genesis TX only). */
     WRITE_U8(ptr, tx->has_chain_def ? 1 : 0);
     if (tx->has_chain_def) {
@@ -176,8 +194,10 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     /* Header */
     READ_U8(ptr, tx->version);
     READ_U8(ptr, tx->type);
-    /* M-32: Validate tx_type is within known range */
-    if (tx->type > DNAC_TX_TOKEN_CREATE) {
+    /* M-32: Validate tx_type is within known range.
+     * Phase 5 Task 16: admit stake/delegation types (4..9) added in
+     * Task 1 (DNAC_TX_VALIDATOR_UPDATE is the highest defined value). */
+    if (tx->type > DNAC_TX_VALIDATOR_UPDATE) {
         free(tx);
         return DNAC_ERROR_INVALID_PARAM;
     }
@@ -271,6 +291,30 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         }
         READ_BLOB(ptr, tx->signers[i].pubkey, DNAC_PUBKEY_SIZE);
         READ_BLOB(ptr, tx->signers[i].signature, DNAC_SIGNATURE_SIZE);
+    }
+
+    /* Type-specific appended fields (Phase 5 Task 16).
+     * STAKE: commission_bps(u16 BE) || unstake_destination_fp[64] ||
+     *        purpose_tag[17]. Purpose tag MUST match exactly —
+     *        cross-protocol reuse defense (F-CRYPTO-05). */
+    if (tx->type == DNAC_TX_STAKE) {
+        const size_t stake_appended_len = 2 + DNAC_STAKE_UNSTAKE_DEST_FP_SIZE
+                                        + DNAC_STAKE_PURPOSE_TAG_LEN;
+        if (ptr + stake_appended_len > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        tx->stake_fields.commission_bps =
+            ((uint16_t)ptr[0] << 8) | (uint16_t)ptr[1];
+        ptr += 2;
+        READ_BLOB(ptr, tx->stake_fields.unstake_destination_fp,
+                  DNAC_STAKE_UNSTAKE_DEST_FP_SIZE);
+        if (memcmp(ptr, DNAC_STAKE_PURPOSE_TAG,
+                   DNAC_STAKE_PURPOSE_TAG_LEN) != 0) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        ptr += DNAC_STAKE_PURPOSE_TAG_LEN;
     }
 
     /* Optional anchored-genesis chain_def trailer.

@@ -24,6 +24,18 @@
 
 #define LOG_TAG "DNAC_TX"
 
+/* STAKE TX purpose-tag constant (design §2.3, F-CRYPTO-05).
+ *
+ * 17-byte literal. The design spec text says "purpose_tag[16]" but the
+ * literal value "DNAC_VALIDATOR_v1" is 17 ASCII characters and cannot
+ * fit in a 16-byte field. We preserve the literal identifier verbatim
+ * at its natural length (17 bytes, no NUL terminator, no padding) —
+ * the cryptographic purpose of the tag is the unique byte sequence,
+ * not the array size. Flagged as a design-doc inconsistency. */
+const uint8_t DNAC_STAKE_PURPOSE_TAG[DNAC_STAKE_PURPOSE_TAG_LEN] = {
+    'D','N','A','C','_','V','A','L','I','D','A','T','O','R','_','v','1'
+};
+
 /* Forward declarations for verification functions (verify.c) */
 extern int verify_witnesses(const dnac_transaction_t *tx);
 extern int verify_signers(const dnac_transaction_t *tx);
@@ -288,6 +300,18 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
     /* Type-specific appended fields (STAKE, DELEGATE, etc.) land here in
      * Phase 5 Tasks 16-20 of the stake-delegation plan. For v1 TX types
      * (GENESIS/SPEND/BURN/TOKEN_CREATE) the appended section is empty. */
+    if (tx->type == DNAC_TX_STAKE) {
+        /* commission_bps: u16 big-endian */
+        uint8_t commission_be[2];
+        commission_be[0] = (uint8_t)((tx->stake_fields.commission_bps >> 8) & 0xff);
+        commission_be[1] = (uint8_t)(tx->stake_fields.commission_bps & 0xff);
+        EVP_DigestUpdate(ctx, commission_be, sizeof(commission_be));
+        /* unstake_destination_fp: raw 64-byte fingerprint hash */
+        EVP_DigestUpdate(ctx, tx->stake_fields.unstake_destination_fp,
+                         DNAC_STAKE_UNSTAKE_DEST_FP_SIZE);
+        /* purpose_tag: 17-byte literal "DNAC_VALIDATOR_v1" (F-CRYPTO-05) */
+        EVP_DigestUpdate(ctx, DNAC_STAKE_PURPOSE_TAG, DNAC_STAKE_PURPOSE_TAG_LEN);
+    }
 
     unsigned int hash_len;
     if (EVP_DigestFinal_ex(ctx, hash_out, &hash_len) != 1) {

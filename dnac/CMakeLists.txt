@@ -315,6 +315,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 5 Task 15: signer-count truncation invariance
     register_dnac_test(test_signer_canonical)
+
+    # Stake & delegation v1 — Phase 5 Task 16: STAKE appended-field serialization
+    register_dnac_test(test_stake_serialize)
 endif()
 
 # ============================================================================

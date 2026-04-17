@@ -29,6 +29,42 @@ extern "C" {
 #define DNAC_TX_MAX_WITNESSES       3
 #define DNAC_TX_MAX_SIGNERS         4
 
+/* STAKE TX appended fields — wire & preimage constants
+ * (design §2.3, Phase 5 Task 16).
+ *
+ * Wire field `unstake_destination_fp` is the **raw 64-byte binary
+ * fingerprint hash** (SHA3-512 truncated or full digest per §2.3),
+ * NOT the 129-byte hex string used for UTXO ownership elsewhere. */
+#define DNAC_STAKE_UNSTAKE_DEST_FP_SIZE   64
+
+/* Purpose tag bound into the STAKE TX preimage (F-CRYPTO-05 defense
+ * against cross-protocol signature reuse). Design §2.3 specifies the
+ * literal string "DNAC_VALIDATOR_v1" — 17 ASCII bytes with no NUL
+ * terminator, padding, or truncation. The design text says
+ * `purpose_tag[16]` but that is an internal inconsistency: the literal
+ * string is 17 characters and cannot fit in 16 bytes. We implement the
+ * literal string at its natural 17-byte length, preserving the spec's
+ * intended identifier verbatim. */
+#define DNAC_STAKE_PURPOSE_TAG_LEN        17
+extern const uint8_t DNAC_STAKE_PURPOSE_TAG[DNAC_STAKE_PURPOSE_TAG_LEN];
+
+/**
+ * @brief STAKE TX appended fields (design §2.3)
+ *
+ * Populated only when `dnac_transaction_t.type == DNAC_TX_STAKE`.
+ * Serialized on the wire and bound into the TX hash preimage along
+ * with a fixed `DNAC_STAKE_PURPOSE_TAG` suffix.
+ *
+ * `unstake_destination_fp` is IMMUTABLE post-STAKE (Rule T) — no TX
+ * type may update it; the raw fingerprint hash is signed into the
+ * STAKE preimage and becomes a permanent validator property.
+ */
+typedef struct {
+    uint16_t commission_bps;                                    /**< 0..10000 */
+    uint8_t  unstake_destination_fp[DNAC_STAKE_UNSTAKE_DEST_FP_SIZE];
+                                                                /**< raw 64B fingerprint hash */
+} dnac_tx_stake_fields_t;
+
 /**
  * @brief Transaction signer (authorization)
  *
@@ -142,6 +178,12 @@ struct dnac_transaction {
      * until populated. Not serialized on the wire — witnesses already know
      * their chain_id from the chain context. */
     uint8_t chain_id[32];
+
+    /* Per-type appended fields (design §2.3, Phase 5 Tasks 16-20).
+     * Only the arm matching `type` is populated; others are zero. A union
+     * can replace this struct layout later when more TX types ship; today
+     * only STAKE is wired. */
+    dnac_tx_stake_fields_t stake_fields;  /**< valid when type == DNAC_TX_STAKE */
 };
 
 /* ============================================================================
