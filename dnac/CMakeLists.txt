@@ -312,6 +312,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 5 Task 14: TX preimage binds chain_id
     register_dnac_test(test_preimage_binding)
+
+    # Stake & delegation v1 — Phase 5 Task 15: signer-count truncation invariance
+    register_dnac_test(test_signer_canonical)
 endif()
 
 # ============================================================================
