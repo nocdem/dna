@@ -306,6 +306,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 1 Task 3: validator/delegation/reward record structs
     register_dnac_test(test_validator_structs)
+
+    # Stake & delegation v1 — Phase 1 Task 4: version bump marker
+    register_dnac_test(test_version_bump)
 endif()
 
 # ============================================================================
