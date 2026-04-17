@@ -2385,6 +2385,211 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
     return 0;
 }
 
+/* Phase 9 / Task 49 — accumulator update with liveness gate + dust carry.
+ *
+ * Distributes w->block_fee_pool to the current block's committee per
+ * design §3.5 math:
+ *
+ *   per_member = block_fee_pool / |attending|
+ *   for each v in attending:
+ *     if v.total_delegated > 0:
+ *       delegator_share_raw = (per_member * v.total_delegated) /
+ *                             (v.self_stake + v.total_delegated)
+ *       commission_skim     = (delegator_share_raw * v.commission_bps) / 10000
+ *       delegator_pool      = delegator_share_raw - commission_skim
+ *       validator_share     = per_member - delegator_pool  // absorbs truncation
+ *       v.validator_unclaimed += validator_share
+ *       num = (delegator_pool << 64) + v.residual_dust
+ *       inc = num / v.total_delegated
+ *       v.residual_dust = num - inc * v.total_delegated
+ *       v.accumulator  += inc  (u128)
+ *     else:
+ *       v.validator_unclaimed += per_member
+ *
+ * Committee: top_N(7, lookback=block_height-1). Task 51 will cache the
+ * committee at epoch boundaries; for now we recompute deterministically.
+ *
+ * Liveness gate: a committee member participates only if
+ * last_signed_block >= block_height - DNAC_LIVENESS_SHORT_WINDOW_BLOCKS.
+ *
+ * If no one attends the pool carries forward (NOT zeroed); the next
+ * block that has attendees receives the combined total. Design §3.5's
+ * global_unallocated_pool is stored in-place on w->block_fee_pool: we
+ * simply skip the drain when attending_count == 0.
+ *
+ * Called from finalize_block AFTER apply_epoch_boundary_transitions and
+ * BEFORE the state_root recompute so any distributions land in this
+ * block's committed state.
+ *
+ * Returns 0 on success or no-op, -1 on DB/arithmetic error. On error
+ * the caller's outer transaction rolls back.
+ */
+static int apply_accumulator_update(nodus_witness_t *w,
+                                      uint64_t block_height) {
+    if (!w || !w->db) return -1;
+    if (w->block_fee_pool == 0) return 0;
+    if (block_height == 0) return 0;
+
+    /* Committee for this block. Until Task 51 caches the snapshot we
+     * recompute deterministically; all 7 nodes produce the same
+     * ordering because top_N is (stake DESC, pubkey ASC). */
+    dnac_validator_record_t committee[DNAC_COMMITTEE_SIZE];
+    int committee_count = 0;
+    uint64_t lookback = block_height > 0 ? block_height - 1 : 0;
+    if (nodus_validator_top_n(w, DNAC_COMMITTEE_SIZE, lookback,
+                               committee, &committee_count) != 0) {
+        /* Missing validators table (fresh DB / pre-schema test fixture).
+         * Treat as empty committee — pool rolls forward. */
+        QGP_LOG_DEBUG(LOG_TAG,
+            "accumulator: top_n unavailable (pre-schema); pool carries");
+        return 0;
+    }
+
+    if (committee_count == 0) {
+        /* No committee yet (bootstrap / all-retired). Pool rolls
+         * forward untouched. */
+        return 0;
+    }
+
+    /* Liveness gate: short recent-activity window. */
+    uint64_t min_signed = 0;
+    if (block_height > DNAC_LIVENESS_SHORT_WINDOW_BLOCKS) {
+        min_signed = block_height - DNAC_LIVENESS_SHORT_WINDOW_BLOCKS;
+    }
+
+    /* Attending indices into committee[]. */
+    int attending_idx[DNAC_COMMITTEE_SIZE];
+    int attending_count = 0;
+    for (int i = 0; i < committee_count; i++) {
+        if (committee[i].last_signed_block >= min_signed) {
+            attending_idx[attending_count++] = i;
+        }
+    }
+
+    if (attending_count == 0) {
+        /* All committee members offline — pool rolls forward per §3.5. */
+        return 0;
+    }
+
+    uint64_t pool = w->block_fee_pool;
+    uint64_t per_member = pool / (uint64_t)attending_count;
+    /* Any sub-member remainder stays in the pool for next block. The
+     * design names this global_unallocated_pool; implemented by not
+     * draining that portion. */
+    uint64_t sub_member_remainder =
+        pool - per_member * (uint64_t)attending_count;
+
+    if (per_member == 0) {
+        /* Pool too small to split — leave untouched. */
+        return 0;
+    }
+
+    /* Distribute. */
+    for (int ai = 0; ai < attending_count; ai++) {
+        dnac_validator_record_t *v = &committee[attending_idx[ai]];
+
+        dnac_reward_record_t r;
+        int rc = nodus_reward_get(w, v->pubkey, &r);
+        if (rc == 1) {
+            /* No reward row yet — synthesize an empty one (STAKE inserts
+             * this normally; tolerate test bootstrap skipping it). */
+            memset(&r, 0, sizeof(r));
+            memcpy(r.validator_pubkey, v->pubkey, DNAC_PUBKEY_SIZE);
+        } else if (rc != 0) {
+            fprintf(stderr, "%s: accumulator: reward_get failed (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+
+        if (v->total_delegated > 0) {
+            uint64_t total_stake = v->self_stake + v->total_delegated;
+            if (total_stake == 0) {
+                /* Defensive — treat like no-delegator path. */
+                r.validator_unclaimed += per_member;
+            } else {
+                /* delegator_share_raw = per_member * total_delegated / total_stake
+                 * Use u128 to avoid overflow on the multiply. */
+                qgp_u128_t raw = qgp_u128_from_u64(per_member);
+                raw = qgp_u128_mul_u64(raw, v->total_delegated);
+                uint64_t dsr_rem = 0;
+                qgp_u128_t dsr128 = qgp_u128_div_u64(raw, total_stake, &dsr_rem);
+                if (dsr128.hi != 0) {
+                    fprintf(stderr, "%s: accumulator: dsr overflow\n", LOG_TAG);
+                    return -1;
+                }
+                uint64_t delegator_share_raw = dsr128.lo;
+
+                /* commission_skim = delegator_share_raw * commission_bps / 10000 */
+                uint64_t commission_skim = 0;
+                if (v->commission_bps > 0) {
+                    qgp_u128_t cs = qgp_u128_from_u64(delegator_share_raw);
+                    cs = qgp_u128_mul_u64(cs, (uint64_t)v->commission_bps);
+                    uint64_t cs_rem = 0;
+                    qgp_u128_t cs128 = qgp_u128_div_u64(cs, 10000ULL, &cs_rem);
+                    commission_skim = cs128.lo;
+                    if (commission_skim > delegator_share_raw) {
+                        commission_skim = delegator_share_raw;
+                    }
+                }
+
+                uint64_t delegator_pool = delegator_share_raw - commission_skim;
+                /* validator_share absorbs ALL truncation: per_member -
+                 * delegator_pool (design F-ECON-04 piece-sum exact). */
+                uint64_t validator_share = per_member - delegator_pool;
+
+                /* Overflow-safe adds. */
+                if (r.validator_unclaimed > UINT64_MAX - validator_share) {
+                    fprintf(stderr, "%s: accumulator: validator_unclaimed overflow\n",
+                            LOG_TAG);
+                    return -1;
+                }
+                r.validator_unclaimed += validator_share;
+
+                /* Accumulator math (u128 fixed-point):
+                 *   num = (delegator_pool << 64) + residual_dust
+                 *   inc = num / total_delegated
+                 *   residual = num - inc * total_delegated
+                 *   accumulator += inc
+                 */
+                if (delegator_pool > 0 || r.residual_dust > 0) {
+                    qgp_u128_t num = qgp_u128_shl(
+                        qgp_u128_from_u64(delegator_pool), 64);
+                    num = qgp_u128_add(num,
+                            qgp_u128_from_u64(r.residual_dust));
+
+                    uint64_t rem = 0;
+                    qgp_u128_t inc = qgp_u128_div_u64(num,
+                                        v->total_delegated, &rem);
+                    r.residual_dust = rem;
+
+                    qgp_u128_t acc = qgp_u128_deserialize_be(r.accumulator);
+                    acc = qgp_u128_add(acc, inc);
+                    qgp_u128_serialize_be(acc, r.accumulator);
+                }
+            }
+        } else {
+            /* No delegators: validator keeps the full per-member share. */
+            if (r.validator_unclaimed > UINT64_MAX - per_member) {
+                fprintf(stderr, "%s: accumulator: unclaimed overflow\n",
+                        LOG_TAG);
+                return -1;
+            }
+            r.validator_unclaimed += per_member;
+        }
+
+        r.last_update_block = block_height;
+        if (nodus_reward_upsert(w, &r) != 0) {
+            fprintf(stderr, "%s: accumulator: reward_upsert failed\n", LOG_TAG);
+            return -1;
+        }
+    }
+
+    /* Drain the distributed portion. Sub-member remainder stays in the
+     * pool as global_unallocated. */
+    w->block_fee_pool = sub_member_remainder;
+    return 0;
+}
+
 /* Phase 9 / Task 48 — per-block attendance record.
  *
  * For every PRECOMMIT voter whose witness_id maps to an ACTIVE
@@ -2603,6 +2808,18 @@ int finalize_block(nodus_witness_t *w,
         return -1;
     }
 
+    /* Phase 9 / Task 49 — distribute block_fee_pool to the attending
+     * committee per design §3.5. MUST run before state_root recompute
+     * so the reward-tree mutations are reflected in the committed
+     * root. Called AFTER apply_epoch_boundary_transitions so any
+     * validator status flips this block (commission activations,
+     * graduations, auto-retirements) already settled. */
+    if (apply_accumulator_update(w, expected_height) != 0) {
+        fprintf(stderr, "%s: finalize_block: accumulator_update failed\n",
+                LOG_TAG);
+        return -1;
+    }
+
     /* Invalidate the cached UTXO checksum — the per-TX writes from this
      * batch made the previous root stale. Phase 11 renames this to
      * cached_state_root. */
@@ -2641,19 +2858,17 @@ int finalize_block(nodus_witness_t *w,
         return -1;
     }
 
-    /* Phase 6 / Task 31 — reset block_fee_pool after successful commit.
-     *
-     * Phase 9 Task 49 will drain this into the committee reward pool
-     * BEFORE the reset when the distribution path lands. Until then,
-     * the accumulator is simply cleared so the next block starts from
-     * zero. No consensus implication: the fee total is a derived
-     * quantity from the committed TXs, not persisted in the block row. */
+    /* Phase 9 / Task 49 — apply_accumulator_update (called above)
+     * drained the distributable portion into the reward accumulator
+     * and left any sub-member remainder / no-attendance carry in
+     * w->block_fee_pool (design §3.5's global_unallocated_pool). The
+     * unconditional zeroing that lived here pre-Task 49 was a
+     * placeholder; Task 49 owns the pool lifecycle now. */
     if (w->block_fee_pool > 0) {
-        fprintf(stderr, "%s: finalize_block: drained fee pool %llu (block %llu)\n",
-                LOG_TAG,
-                (unsigned long long)w->block_fee_pool,
-                (unsigned long long)expected_height);
-        w->block_fee_pool = 0;
+        QGP_LOG_DEBUG(LOG_TAG,
+            "finalize_block: block_fee_pool carry = %llu (block %llu)",
+            (unsigned long long)w->block_fee_pool,
+            (unsigned long long)expected_height);
     }
 
     return 0;

@@ -334,10 +334,13 @@ int main(void) {
     CHECK_EQ(rc, 0);
     CHECK_EQ(nodus_witness_db_commit(&w), 0);
 
-    /* After finalize: pool reset to 0. */
-    CHECK_EQ(w.block_fee_pool, 0);
+    /* Task 49 — with no committee (validators table missing in this
+     * fixture) apply_accumulator_update is a no-op and the pool rolls
+     * forward. A dedicated distribution scenario lives in
+     * test_accumulator_math.c. */
+    CHECK_EQ(w.block_fee_pool, 350);
     CHECK_EQ(nodus_witness_get_block_fee_pool(&w, &pool), 0);
-    CHECK_EQ(pool, 0);
+    CHECK_EQ(pool, 350);
 
     /* Invariant: block row written. */
     {

@@ -144,6 +144,17 @@ extern "C" {
 /** Number of consecutive missed epochs before AUTO_RETIRED status (Rule N) */
 #define DNAC_AUTO_RETIRE_EPOCHS      3
 
+/** Phase 9 / Task 49 — per-block liveness window for accumulator distribution.
+ *
+ * A committee validator participates in THIS block's reward share only
+ * if last_signed_block >= current_block - DNAC_LIVENESS_SHORT_WINDOW_BLOCKS.
+ * 16 blocks is a short recent-activity window — tighter than the
+ * epoch-level liveness gate (which triggers AUTO_RETIRED). Validators
+ * that miss this gate simply forfeit the one block of reward and stay
+ * ACTIVE; the per-epoch Rule N ejection handles sustained outages.
+ */
+#define DNAC_LIVENESS_SHORT_WINDOW_BLOCKS  16
+
 /** VALIDATOR_UPDATE freshness window: TX rejected if signed_at_block is older than this */
 #define DNAC_SIGN_FRESHNESS_WINDOW   32   /* blocks (~160s at 5s blocks) */
 
