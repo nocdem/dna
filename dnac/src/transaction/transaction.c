@@ -40,6 +40,7 @@ const uint8_t DNAC_STAKE_PURPOSE_TAG[DNAC_STAKE_PURPOSE_TAG_LEN] = {
 extern int verify_witnesses(const dnac_transaction_t *tx);
 extern int verify_signers(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_stake_rules_internal(const dnac_transaction_t *tx);
+extern int dnac_tx_verify_delegate_rules_internal(const dnac_transaction_t *tx);
 
 dnac_transaction_t* dnac_tx_create(dnac_tx_type_t type) {
     dnac_transaction_t *tx = calloc(1, sizeof(dnac_transaction_t));
@@ -179,6 +180,12 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
      * masked by the weaker "inputs >= outputs" check. */
     if (tx->type == DNAC_TX_STAKE) {
         int rc = dnac_tx_verify_stake_rules_internal(tx);
+        if (rc != DNAC_SUCCESS) return rc;
+    }
+
+    /* DELEGATE-type rules (design §2.4, Phase 6 Task 23). */
+    if (tx->type == DNAC_TX_DELEGATE) {
+        int rc = dnac_tx_verify_delegate_rules_internal(tx);
         if (rc != DNAC_SUCCESS) return rc;
     }
 

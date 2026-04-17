@@ -369,6 +369,28 @@ int dnac_tx_verify(const dnac_transaction_t *tx);
 int dnac_tx_verify_stake_rules(const dnac_transaction_t *tx);
 
 /**
+ * @brief Verify DELEGATE-type rules only (design §2.4, Phase 6 Task 23)
+ *
+ * Runs the locally-verifiable DELEGATE rule subset without exercising the
+ * witness-signature or signer-signature paths. Intended primarily for
+ * unit tests and pre-flight client checks.
+ *
+ * Rules enforced:
+ *   - tx->type == DNAC_TX_DELEGATE
+ *   - signer_count == 1
+ *   - signer[0].pubkey != delegate_fields.validator_pubkey (Rule S)
+ *   - Σ DNAC inputs − Σ DNAC outputs >= DNAC_MIN_DELEGATION (Rule J)
+ *
+ * Rules requiring witness-side DB access (Rule B validator status,
+ * Rule G 64-cap per delegator, exact fee) are NOT checked here — they
+ * run at state-apply time in the witness.
+ *
+ * @param tx Transaction (must be DELEGATE type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_delegate_rules(const dnac_transaction_t *tx);
+
+/**
  * @brief Serialize transaction to bytes
  *
  * @param tx Transaction

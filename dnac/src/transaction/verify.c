@@ -142,6 +142,99 @@ int dnac_tx_verify_stake_rules_internal(const dnac_transaction_t *tx) {
 }
 
 /**
+ * @brief Verify DELEGATE-type rules (design §2.4, Phase 6 Task 23).
+ *
+ * Enforces the locally-verifiable subset of the DELEGATE rule set:
+ *
+ *   - signer_count == 1
+ *   - signer[0].pubkey != validator_pubkey  (Rule S: no self-delegation via
+ *     DELEGATE; the validator's own 10M stake flows through STAKE)
+ *   - Σ DNAC inputs − Σ DNAC outputs >= DNAC_MIN_DELEGATION (100 DNAC)
+ *     (Rule J: minimum delegation amount. The net `input − output` is the
+ *     amount being moved into the delegation state minus fee; since fee is
+ *     non-negative, `input − output >= 100 DNAC` is a conservative
+ *     lower bound — if `input − output < 100 DNAC` the actual delegation
+ *     deposit (which is `input − output − fee`) is already below the
+ *     minimum, so the TX is rejectable client-side.)
+ *
+ * Rules requiring witness-side DB access are deferred to state-apply:
+ *   - Rule B: validator_pubkey IN validator_tree AND status == ACTIVE
+ *   - Rule G: count(delegations where delegator==signer[0]) < 64
+ *   - Exact balance: outputs == inputs − delegation_amount − fee
+ */
+static int verify_delegate_rules(const dnac_transaction_t *tx) {
+    /* signer_count == 1 */
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "DELEGATE: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* Rule S: signer[0].pubkey != validator_pubkey. Self-delegation via
+     * DELEGATE is prohibited — validators bond their own 10M via STAKE. */
+    if (memcmp(tx->signers[0].pubkey,
+               tx->delegate_fields.validator_pubkey,
+               DNAC_PUBKEY_SIZE) == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "DELEGATE: self-delegation forbidden (Rule S)");
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* Σ DNAC input − Σ DNAC output >= DNAC_MIN_DELEGATION (Rule J). */
+    uint64_t dnac_in = 0;
+    uint64_t dnac_out = 0;
+    for (int i = 0; i < tx->input_count; i++) {
+        if (memcmp(tx->inputs[i].token_id, DNAC_NATIVE_TOKEN_ID, DNAC_TOKEN_ID_SIZE) != 0)
+            continue;
+        if (safe_add_u64(dnac_in, tx->inputs[i].amount, &dnac_in) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "DELEGATE: input amount overflow");
+            return DNAC_ERROR_OVERFLOW;
+        }
+    }
+    for (int i = 0; i < tx->output_count; i++) {
+        if (memcmp(tx->outputs[i].token_id, DNAC_NATIVE_TOKEN_ID, DNAC_TOKEN_ID_SIZE) != 0)
+            continue;
+        if (safe_add_u64(dnac_out, tx->outputs[i].amount, &dnac_out) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "DELEGATE: output amount overflow");
+            return DNAC_ERROR_OVERFLOW;
+        }
+    }
+    if (dnac_in < dnac_out) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "DELEGATE: inputs=%llu < outputs=%llu",
+                      (unsigned long long)dnac_in,
+                      (unsigned long long)dnac_out);
+        return DNAC_ERROR_INSUFFICIENT_FUNDS;
+    }
+    uint64_t net = dnac_in - dnac_out;
+    if (net < DNAC_MIN_DELEGATION) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "DELEGATE: net=%llu < min=%llu (Rule J)",
+                      (unsigned long long)net,
+                      (unsigned long long)DNAC_MIN_DELEGATION);
+        return DNAC_ERROR_INSUFFICIENT_FUNDS;
+    }
+
+    /* TODO(Phase 8 Task 41 / witness-side):
+     *   - Rule B: validator_pubkey IN validator_tree AND status == ACTIVE
+     *   - Rule G: count(delegations where delegator == signer[0].pubkey) < 64
+     *   - Exact-fee equality: outputs == inputs − delegation_amount − fee
+     * Requires nodus_validator_lookup / nodus_delegation_count; the client
+     * has no witness DB so these run server-side at state-apply. */
+
+    return DNAC_SUCCESS;
+}
+
+int dnac_tx_verify_delegate_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_DELEGATE) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_delegate_rules(tx);
+}
+
+int dnac_tx_verify_delegate_rules_internal(const dnac_transaction_t *tx) {
+    return verify_delegate_rules(tx);
+}
+
+/**
  * @brief Per-token balance verification
  *
  * For each distinct token_id across inputs and outputs:
