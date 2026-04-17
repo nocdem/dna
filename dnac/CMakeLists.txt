@@ -104,6 +104,7 @@ set(DNAC_SOURCES
     src/transaction/token_create.c
     src/transaction/stake.c
     src/transaction/delegate.c
+    src/transaction/claim.c
 
     # Nodus
     src/nodus/client.c
@@ -369,6 +370,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 7 Task 35: DELEGATE / UNDELEGATE builder API
     register_dnac_test(test_delegate_builder)
+
+    # Stake & delegation v1 — Phase 7 Task 36: CLAIM_REWARD builder API
+    register_dnac_test(test_claim_builder)
 endif()
 
 # ============================================================================
