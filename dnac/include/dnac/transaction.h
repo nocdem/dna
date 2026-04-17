@@ -448,6 +448,26 @@ int dnac_tx_verify_undelegate_rules(const dnac_transaction_t *tx);
 int dnac_tx_verify_claim_reward_rules(const dnac_transaction_t *tx);
 
 /**
+ * @brief Verify VALIDATOR_UPDATE-type rules only (design §2.4, Phase 6 Task 27)
+ *
+ * Runs the locally-verifiable VALIDATOR_UPDATE rule subset:
+ *
+ *   - tx->type == DNAC_TX_VALIDATOR_UPDATE
+ *   - signer_count == 1
+ *   - validator_update_fields.new_commission_bps <= DNAC_COMMISSION_BPS_MAX
+ *   - validator_update_fields.signed_at_block > 0
+ *
+ * Rules requiring chain state (validator status ∈ {ACTIVE, RETIRING},
+ * Rule K freshness current_block − signed_at_block < 32, EPOCH_LENGTH
+ * cooldown, pending-commission increase/decrease logic) are NOT checked
+ * here — they run at state-apply time in the witness (Phase 8 Task 45).
+ *
+ * @param tx Transaction (must be VALIDATOR_UPDATE type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx);
+
+/**
  * @brief Serialize transaction to bytes
  *
  * @param tx Transaction

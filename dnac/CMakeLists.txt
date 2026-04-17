@@ -349,6 +349,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 6 Task 26: CLAIM_REWARD verify rules (local subset)
     register_dnac_test(test_claim_reward_verify)
+
+    # Stake & delegation v1 — Phase 6 Task 27: VALIDATOR_UPDATE verify rules (local subset)
+    register_dnac_test(test_validator_update_verify)
 endif()
 
 # ============================================================================

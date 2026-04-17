@@ -391,6 +391,72 @@ int dnac_tx_verify_claim_reward_rules_internal(const dnac_transaction_t *tx) {
 }
 
 /**
+ * @brief Verify VALIDATOR_UPDATE-type rules (design §2.4, Phase 6 Task 27).
+ *
+ * Enforces the locally-verifiable subset of the VALIDATOR_UPDATE rule set:
+ *
+ *   - signer_count == 1
+ *   - new_commission_bps <= DNAC_COMMISSION_BPS_MAX (10000)
+ *   - signed_at_block > 0 (zero is the struct default; a valid update
+ *     must anchor to a specific block for Rule K freshness to work)
+ *
+ * Rules requiring chain state are deferred:
+ *   - signer[0].pubkey IN validator_tree AND status ∈ {ACTIVE, RETIRING}
+ *   - Rule K: current_block − signed_at_block < DNAC_SIGN_FRESHNESS_WINDOW
+ *     (32 blocks)
+ *   - Cooldown: last_validator_update_block + DNAC_EPOCH_LENGTH <= current_block
+ *   - Pending-increase logic: if new_commission_bps > current_commission_bps,
+ *     queue as pending; decrease clears pending
+ * These run at state-apply in the witness (Phase 8 Task 45).
+ */
+static int verify_validator_update_rules(const dnac_transaction_t *tx) {
+    /* signer_count == 1 */
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "VALIDATOR_UPDATE: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* new_commission_bps <= 10000 */
+    if (tx->validator_update_fields.new_commission_bps > DNAC_COMMISSION_BPS_MAX) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "VALIDATOR_UPDATE: new_commission_bps=%u > %u",
+                      (unsigned)tx->validator_update_fields.new_commission_bps,
+                      (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* signed_at_block > 0 — struct default 0 is not a valid anchor. */
+    if (tx->validator_update_fields.signed_at_block == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "VALIDATOR_UPDATE: signed_at_block == 0");
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* TODO(Phase 8 Task 45 / witness-side):
+     *   - signer[0].pubkey IN validator_tree AND status ∈ {ACTIVE, RETIRING}
+     *   - Rule K (freshness): current_block − signed_at_block <
+     *     DNAC_SIGN_FRESHNESS_WINDOW (32 blocks)
+     *   - Cooldown: last_validator_update_block + DNAC_EPOCH_LENGTH <=
+     *     current_block
+     *   - Pending commission logic: if new > current, queue pending;
+     *     if new <= current, apply immediately and clear pending.
+     * Requires nodus_validator_lookup / current_block; client has no
+     * witness state. */
+
+    return DNAC_SUCCESS;
+}
+
+int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_VALIDATOR_UPDATE) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_validator_update_rules(tx);
+}
+
+int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx) {
+    return verify_validator_update_rules(tx);
+}
+
+/**
  * @brief Per-token balance verification
  *
  * For each distinct token_id across inputs and outputs:
