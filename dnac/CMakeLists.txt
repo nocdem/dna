@@ -102,6 +102,7 @@ set(DNAC_SOURCES
     src/transaction/genesis.c
     src/transaction/nullifier.c
     src/transaction/token_create.c
+    src/transaction/stake.c
 
     # Nodus
     src/nodus/client.c
@@ -361,6 +362,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 6 Task 33: cross-protocol STAKE reuse (F-CRYPTO-05)
     register_dnac_test(test_purpose_tag_reuse)
+
+    # Stake & delegation v1 — Phase 7 Task 34: STAKE / UNSTAKE builder API
+    register_dnac_test(test_stake_builder)
 endif()
 
 # ============================================================================

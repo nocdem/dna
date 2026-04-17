@@ -531,6 +531,122 @@ int dnac_estimate_fee(dnac_context_t *ctx, uint64_t amount, uint64_t *fee_out);
 int dnac_get_current_fee(dnac_context_t *ctx, uint64_t *fee_out);
 
 /* ============================================================================
+ * Stake & Delegation Builders (Phase 7)
+ * ========================================================================== */
+
+/**
+ * @brief Submit a STAKE TX — become a validator.
+ *
+ * Consumes DNAC_SELF_STAKE_AMOUNT (10M × 10^8 raw) + current dynamic fee
+ * from caller's native DNAC UTXOs. Change returned to caller. The witness
+ * creates a validator record keyed by the caller's signing pubkey on commit.
+ *
+ * @param ctx                    DNAC context (must have identity + chain_id loaded)
+ * @param commission_bps         Commission rate in basis points (0..10000)
+ * @param unstake_destination_fp 128-char lowercase hex fingerprint that will
+ *                               receive the post-cooldown UTXO when UNSTAKE
+ *                               matures. By convention the caller's own
+ *                               fingerprint, but any recipient is allowed.
+ *                               Immutable once committed (Rule T).
+ * @param callback               Completion callback (can be NULL)
+ * @param user_data              Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_stake(dnac_context_t *ctx,
+               uint16_t commission_bps,
+               const char *unstake_destination_fp,
+               dnac_callback_t callback,
+               void *user_data);
+
+/**
+ * @brief Submit an UNSTAKE TX — trigger validator RETIRING -> UNSTAKED.
+ *
+ * Fee-only TX with no appended fields. Actual self-stake return happens at
+ * the epoch boundary via a locked UTXO whose
+ * unlock_block = commit_block + DNAC_UNSTAKE_COOLDOWN_BLOCKS.
+ *
+ * @param ctx        DNAC context
+ * @param callback   Completion callback (can be NULL)
+ * @param user_data  Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_unstake(dnac_context_t *ctx,
+                 dnac_callback_t callback,
+                 void *user_data);
+
+/**
+ * @brief Submit a DELEGATE TX — stake native DNAC with a validator.
+ *
+ * Consumes (amount + fee) from caller's native DNAC UTXOs. The witness
+ * creates / updates a delegation record on commit.
+ *
+ * @param ctx               DNAC context
+ * @param validator_pubkey  Dilithium5 pubkey of the target validator
+ *                          (DNAC_PUBKEY_SIZE bytes; must differ from caller's
+ *                          signing pubkey — Rule S: no self-delegation)
+ * @param amount            Amount to delegate in raw units
+ *                          (must be >= DNAC_MIN_DELEGATION)
+ * @param callback          Completion callback (can be NULL)
+ * @param user_data         Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_delegate(dnac_context_t *ctx,
+                  const uint8_t *validator_pubkey,
+                  uint64_t amount,
+                  dnac_callback_t callback,
+                  void *user_data);
+
+/**
+ * @brief Submit an UNDELEGATE TX — withdraw (part of) a delegation.
+ *
+ * Fee-only payment; the delegation principal + pending reward split is
+ * emitted by the witness at state-apply time (Rule Q — two UTXOs are
+ * always produced, even when pending < dust, to preserve supply).
+ *
+ * @param ctx               DNAC context
+ * @param validator_pubkey  Validator to unbond from (DNAC_PUBKEY_SIZE bytes)
+ * @param amount            Principal to withdraw in raw units (> 0)
+ * @param callback          Completion callback (can be NULL)
+ * @param user_data         Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_undelegate(dnac_context_t *ctx,
+                    const uint8_t *validator_pubkey,
+                    uint64_t amount,
+                    dnac_callback_t callback,
+                    void *user_data);
+
+/**
+ * @brief Submit a CLAIM_REWARD TX — withdraw accrued staking rewards.
+ *
+ * Builder-level API exposes max_pending_amount and valid_before_block as
+ * explicit parameters so CLI + early Flutter can call it before Phase 14
+ * ships dnac_get_pending_rewards(). A future wrapper
+ * dnac_claim_reward_auto(ctx, validator) will query the witness for the
+ * pending amount + current block height and call this builder.
+ *
+ * @param ctx                     DNAC context
+ * @param target_validator_pubkey Validator whose accrued rewards to claim
+ *                                (DNAC_PUBKEY_SIZE bytes)
+ * @param max_pending_amount      Client-supplied upper bound on the pending
+ *                                reward (replay defense — witness enforces
+ *                                actual_pending <= max_pending_amount)
+ * @param valid_before_block      Block-height expiry — witness rejects the
+ *                                claim when current_block > this value
+ *                                (typically current_block +
+ *                                 DNAC_SIGN_FRESHNESS_WINDOW)
+ * @param callback                Completion callback (can be NULL)
+ * @param user_data               Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_claim_reward(dnac_context_t *ctx,
+                      const uint8_t *target_validator_pubkey,
+                      uint64_t max_pending_amount,
+                      uint64_t valid_before_block,
+                      dnac_callback_t callback,
+                      void *user_data);
+
+/* ============================================================================
  * Transaction Builder (Advanced)
  * ========================================================================== */
 
