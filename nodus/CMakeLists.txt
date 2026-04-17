@@ -584,3 +584,6 @@ register_witness_test(test_reward_db)
 
 # Task 29 — SPEND rejects locked UTXO inputs (Rule D)
 register_witness_test(test_locked_utxo)
+
+# Task 30 — MIN_TENURE (Rule R) committee eligibility boundary
+register_witness_test(test_min_tenure_boundary)
