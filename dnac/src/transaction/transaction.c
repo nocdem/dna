@@ -312,6 +312,11 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
         /* purpose_tag: 17-byte literal "DNAC_VALIDATOR_v1" (F-CRYPTO-05) */
         EVP_DigestUpdate(ctx, DNAC_STAKE_PURPOSE_TAG, DNAC_STAKE_PURPOSE_TAG_LEN);
     }
+    /* Phase 5 Task 17. DELEGATE: validator_pubkey[2592]. */
+    if (tx->type == DNAC_TX_DELEGATE) {
+        EVP_DigestUpdate(ctx, tx->delegate_fields.validator_pubkey,
+                         DNAC_PUBKEY_SIZE);
+    }
 
     unsigned int hash_len;
     if (EVP_DigestFinal_ex(ctx, hash_out, &hash_len) != 1) {

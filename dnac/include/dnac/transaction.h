@@ -66,6 +66,20 @@ typedef struct {
 } dnac_tx_stake_fields_t;
 
 /**
+ * @brief DELEGATE TX appended fields (design §2.3, Phase 5 Task 17)
+ *
+ * Populated only when `dnac_transaction_t.type == DNAC_TX_DELEGATE`.
+ * Serialized on the wire and bound into the TX hash preimage.
+ *
+ * The validator_pubkey identifies which validator the delegator is
+ * staking onto. Amount is carried by the TX inputs/outputs, not by
+ * the appended fields.
+ */
+typedef struct {
+    uint8_t validator_pubkey[DNAC_PUBKEY_SIZE];   /**< Dilithium5 pubkey (2592B) */
+} dnac_tx_delegate_fields_t;
+
+/**
  * @brief Transaction signer (authorization)
  *
  * Each signer provides a Dilithium5 pubkey and signature over tx_hash.
@@ -181,9 +195,9 @@ struct dnac_transaction {
 
     /* Per-type appended fields (design §2.3, Phase 5 Tasks 16-20).
      * Only the arm matching `type` is populated; others are zero. A union
-     * can replace this struct layout later when more TX types ship; today
-     * only STAKE is wired. */
-    dnac_tx_stake_fields_t stake_fields;  /**< valid when type == DNAC_TX_STAKE */
+     * can replace this struct layout later when more TX types ship. */
+    dnac_tx_stake_fields_t    stake_fields;     /**< valid when type == DNAC_TX_STAKE */
+    dnac_tx_delegate_fields_t delegate_fields;  /**< valid when type == DNAC_TX_DELEGATE */
 };
 
 /* ============================================================================

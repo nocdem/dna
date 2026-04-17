@@ -318,6 +318,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 5 Task 16: STAKE appended-field serialization
     register_dnac_test(test_stake_serialize)
+
+    # Stake & delegation v1 — Phase 5 Task 17: DELEGATE appended-field serialization
+    register_dnac_test(test_delegate_serialize)
 endif()
 
 # ============================================================================

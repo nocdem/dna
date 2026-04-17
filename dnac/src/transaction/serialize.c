@@ -74,6 +74,10 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     if (tx->type == DNAC_TX_STAKE) {
         size += 2 + DNAC_STAKE_UNSTAKE_DEST_FP_SIZE + DNAC_STAKE_PURPOSE_TAG_LEN;
     }
+    /* Phase 5 Task 17. DELEGATE carries validator_pubkey(2592). */
+    if (tx->type == DNAC_TX_DELEGATE) {
+        size += DNAC_PUBKEY_SIZE;
+    }
 
     /* Optional anchored-genesis chain_def trailer (v2 wire extension).
      * Only present when has_chain_def is true (always 0 for non-genesis).
@@ -155,6 +159,10 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         WRITE_BLOB(ptr, tx->stake_fields.unstake_destination_fp,
                    DNAC_STAKE_UNSTAKE_DEST_FP_SIZE);
         WRITE_BLOB(ptr, DNAC_STAKE_PURPOSE_TAG, DNAC_STAKE_PURPOSE_TAG_LEN);
+    }
+    /* Phase 5 Task 17. DELEGATE: validator_pubkey[2592]. */
+    if (tx->type == DNAC_TX_DELEGATE) {
+        WRITE_BLOB(ptr, tx->delegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
     }
 
     /* Anchored-genesis chain_def trailer (optional, genesis TX only). */
@@ -315,6 +323,14 @@ int dnac_tx_deserialize(const uint8_t *buffer,
             return DNAC_ERROR_INVALID_PARAM;
         }
         ptr += DNAC_STAKE_PURPOSE_TAG_LEN;
+    }
+    /* Phase 5 Task 17. DELEGATE: validator_pubkey[2592]. */
+    if (tx->type == DNAC_TX_DELEGATE) {
+        if (ptr + DNAC_PUBKEY_SIZE > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        READ_BLOB(ptr, tx->delegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
     }
 
     /* Optional anchored-genesis chain_def trailer.
