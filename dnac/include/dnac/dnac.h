@@ -110,6 +110,50 @@ extern "C" {
     "0000000000000000000000000000000000000000000000000000000000000000"
 
 /* ============================================================================
+ * Stake & Delegation (v1)
+ * ========================================================================== */
+
+/** Fixed self-stake amount per validator: exactly 10,000,000 DNAC */
+#define DNAC_SELF_STAKE_AMOUNT       (10000000ULL * 100000000ULL)   /* 10M × 10^8 raw */
+
+/** Minimum delegation amount: 100 DNAC (raised from 1 per F-DOS-02 audit finding) */
+#define DNAC_MIN_DELEGATION          (100ULL * 100000000ULL)         /* 100 × 10^8 raw */
+
+/** Maximum number of delegations a single delegator can hold */
+#define DNAC_MAX_DELEGATIONS_PER_DELEGATOR   64
+
+/** Maximum number of validator records in the tree (Rule M, F-DOS-01) */
+#define DNAC_MAX_VALIDATORS          128
+
+/** UNSTAKE locked-UTXO cooldown (24h at 5s block interval) */
+#define DNAC_UNSTAKE_COOLDOWN_BLOCKS  17280
+
+/** Epoch length in blocks (~10 min at 5s) */
+#define DNAC_EPOCH_LENGTH            120
+
+/** Minimum tenure in pending pool before committee eligibility (Rule R) */
+#define DNAC_MIN_TENURE_BLOCKS       240  /* 2 × EPOCH_LENGTH */
+
+/** Fixed committee size (v1; v2 sortition may vary) */
+#define DNAC_COMMITTEE_SIZE          7
+
+/** Liveness threshold: fraction of epoch blocks a committee member must sign
+ *  (in basis points — 8000 = 80%) to earn rewards that epoch (Rule N) */
+#define DNAC_LIVENESS_THRESHOLD_BPS  8000
+
+/** Number of consecutive missed epochs before AUTO_RETIRED status (Rule N) */
+#define DNAC_AUTO_RETIRE_EPOCHS      3
+
+/** VALIDATOR_UPDATE freshness window: TX rejected if signed_at_block is older than this */
+#define DNAC_SIGN_FRESHNESS_WINDOW   32   /* blocks (~160s at 5s blocks) */
+
+/** CLAIM_REWARD dust floor in raw units (Rule L — dynamic dust = max(this, 10× current_fee)) */
+#define DNAC_DUST_FLOOR              1000000ULL   /* 0.01 DNAC = 10^6 raw */
+
+/** Maximum commission in basis points (100% = 10000) */
+#define DNAC_COMMISSION_BPS_MAX      10000
+
+/* ============================================================================
  * Forward Declarations
  * ========================================================================== */
 
