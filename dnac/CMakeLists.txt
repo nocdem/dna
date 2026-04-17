@@ -331,6 +331,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 5 Task 20: UNSTAKE signer-only (no appended fields)
     register_dnac_test(test_unstake_serialize)
+
+    # Stake & delegation v1 — Phase 5 Task 21: TX deserialize dispatch consolidation
+    register_dnac_test(test_deserialize_dispatch)
 endif()
 
 # ============================================================================
