@@ -317,6 +317,41 @@ static void handle_dnac_supply(nodus_witness_t *w,
     }
 }
 
+/* ══════════════════════���═════════════════════════════════════════════
+ * dnac_fee_info — Return current dynamic fee parameters
+ *
+ * Response: { base_fee, mempool_count, min_fee }
+ * Client uses min_fee directly when building TX.
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_fee_info(nodus_witness_t *w,
+                                  struct nodus_tcp_conn *conn,
+                                  uint32_t txn_id) {
+    int mp_count = w->mempool.count;
+    uint64_t base_fee = NODUS_W_BASE_TX_FEE;
+    uint64_t min_fee = base_fee * (1 + (uint64_t)mp_count / NODUS_W_FEE_SURGE_STEP);
+
+    uint8_t buf[256];
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, sizeof(buf));
+
+    enc_dnac_response(&enc, txn_id, "dnac_fee_info", 3);
+    cbor_encode_cstr(&enc, "base_fee");
+    cbor_encode_uint(&enc, base_fee);
+    cbor_encode_cstr(&enc, "mempool");
+    cbor_encode_uint(&enc, (uint64_t)mp_count);
+    cbor_encode_cstr(&enc, "min_fee");
+    cbor_encode_uint(&enc, min_fee);
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) {
+        nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
+}
+
 /* ════════════════════════════════════════════════════════════════════
  * dnac_utxo — Query UTXOs by owner fingerprint
  *
@@ -2088,6 +2123,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_token_list(w, conn, txn_id);
     } else if (strcmp(method, "dnac_token_info") == 0) {
         handle_dnac_token_info(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_fee_info") == 0) {
+        handle_dnac_fee_info(w, conn, txn_id);
     } else {
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                     "unknown DNAC method");

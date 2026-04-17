@@ -144,6 +144,12 @@ extern "C" {
 /* Token creation fee: 1% of genesis supply (10M DNAC = 10^15 raw for 1B supply) */
 #define NODUS_W_TOKEN_CREATE_FEE  1000000000000000ULL
 
+/* Dynamic transaction fee (DNAC-only, all TX types except genesis/token-create)
+ * fee_min = BASE_FEE * (1 + mempool_count / SURGE_STEP)
+ *   0 pending → 0.01 DNAC,  8 pending → 0.02,  64 pending → 0.09 */
+#define NODUS_W_BASE_TX_FEE       1000000ULL   /* 0.01 DNAC (10^6 raw) */
+#define NODUS_W_FEE_SURGE_STEP    8            /* fee doubles every 8 pending TXs */
+
 /* Block production (mempool + batch) */
 #define NODUS_W_BLOCK_INTERVAL_MS   5000    /* 5s between block proposals */
 #define NODUS_W_MAX_MEMPOOL         64      /* max pending TXs in mempool */

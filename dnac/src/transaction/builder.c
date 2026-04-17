@@ -34,6 +34,14 @@
 
 #define LOG_TAG "DNAC_BUILDER"
 
+/* Check if token_id is all zeros (native DNAC) */
+static bool is_native_token(const uint8_t *token_id) {
+    for (int i = 0; i < DNAC_TOKEN_ID_SIZE; i++) {
+        if (token_id[i] != 0) return false;
+    }
+    return true;
+}
+
 struct dnac_tx_builder {
     dnac_context_t *ctx;
     dnac_transaction_t *tx;

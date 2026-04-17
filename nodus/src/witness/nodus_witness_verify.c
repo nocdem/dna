@@ -497,18 +497,18 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
             return -1;
         }
 
-        /* ── Check 5: Fee ──────────────────────────────────────── */
+        /* ── Check 5: Dynamic fee (DNAC-only) ─────────────────── */
         uint64_t actual_fee = total_input - total_output;
-        /* Fee = 0.1% of send amount (non-change outputs), min 1 */
-        uint64_t fee_basis = (send_amount > 0) ? send_amount : total_output;
-        uint64_t min_fee = fee_basis / 1000;
-        if (min_fee == 0) min_fee = 1;
+        /* Dynamic fee: base * (1 + mempool_count / surge_step)
+         * Surge increases fee as mempool fills up. */
+        int mp_count = w ? w->mempool.count : 0;
+        uint64_t min_fee = NODUS_W_BASE_TX_FEE * (1 + (uint64_t)mp_count / NODUS_W_FEE_SURGE_STEP);
 
         if (actual_fee < min_fee) {
             snprintf(reject_reason, reason_size,
-                     "fee too low: actual=%lu < min=%lu (output=%lu)",
+                     "fee too low: actual=%lu < min=%lu (mempool=%d)",
                      (unsigned long)actual_fee, (unsigned long)min_fee,
-                     (unsigned long)total_output);
+                     mp_count);
             return -1;
         }
 
