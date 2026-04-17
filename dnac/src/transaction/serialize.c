@@ -7,7 +7,7 @@
  * - Inputs: count(1) + [nullifier(64) + amount(8)]...
  * - Outputs: count(1) + [version(1) + fingerprint(129) + amount(8) + seed(32) + memo_len(1) + memo(n)]...
  * - Witnesses: count(1) + [witness_id(32) + signature(4627) + timestamp(8) + server_pubkey(2592)]...
- * - Sender: pubkey(2592) + signature(4627)
+ * - Signers: count(1) + [pubkey(2592) + signature(4627)]...
  */
 
 #include "dnac/transaction.h"
@@ -65,9 +65,9 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     size += 1;  /* witness_count */
     size += tx->witness_count * (32 + DNAC_SIGNATURE_SIZE + 8 + DNAC_PUBKEY_SIZE);  /* witness_id(32) + sig(4627) + timestamp(8) + pubkey(2592) */
 
-    /* Sender */
-    size += DNAC_PUBKEY_SIZE;  /* pubkey (2592) */
-    size += DNAC_SIGNATURE_SIZE;  /* signature (4627) */
+    /* Signers */
+    size += 1;  /* signer_count */
+    size += tx->signer_count * (DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE);
 
     /* Optional anchored-genesis chain_def trailer (v2 wire extension).
      * Only present when has_chain_def is true (always 0 for non-genesis).
@@ -132,9 +132,12 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         WRITE_BLOB(ptr, tx->witnesses[i].server_pubkey, DNAC_PUBKEY_SIZE);
     }
 
-    /* Sender */
-    WRITE_BLOB(ptr, tx->sender_pubkey, DNAC_PUBKEY_SIZE);
-    WRITE_BLOB(ptr, tx->sender_signature, DNAC_SIGNATURE_SIZE);
+    /* Signers */
+    WRITE_U8(ptr, tx->signer_count);
+    for (int i = 0; i < tx->signer_count; i++) {
+        WRITE_BLOB(ptr, tx->signers[i].pubkey, DNAC_PUBKEY_SIZE);
+        WRITE_BLOB(ptr, tx->signers[i].signature, DNAC_SIGNATURE_SIZE);
+    }
 
     /* Anchored-genesis chain_def trailer (optional, genesis TX only). */
     WRITE_U8(ptr, tx->has_chain_def ? 1 : 0);
@@ -254,13 +257,21 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         READ_BLOB(ptr, tx->witnesses[i].server_pubkey, DNAC_PUBKEY_SIZE);
     }
 
-    /* Sender */
-    if (ptr + DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE > end) {
-        free(tx);
-        return DNAC_ERROR_INVALID_PARAM;
+    /* Signers */
+    if (ptr + 1 > end) { free(tx); return DNAC_ERROR_INVALID_PARAM; }
+    uint8_t signer_count;
+    READ_U8(ptr, signer_count);
+    if (signer_count > DNAC_TX_MAX_SIGNERS) { free(tx); return DNAC_ERROR_INVALID_PARAM; }
+    tx->signer_count = signer_count;
+
+    for (int i = 0; i < signer_count; i++) {
+        if (ptr + DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        READ_BLOB(ptr, tx->signers[i].pubkey, DNAC_PUBKEY_SIZE);
+        READ_BLOB(ptr, tx->signers[i].signature, DNAC_SIGNATURE_SIZE);
     }
-    READ_BLOB(ptr, tx->sender_pubkey, DNAC_PUBKEY_SIZE);
-    READ_BLOB(ptr, tx->sender_signature, DNAC_SIGNATURE_SIZE);
 
     /* Optional anchored-genesis chain_def trailer.
      *
