@@ -1243,6 +1243,51 @@ static int emit_synthetic_utxo(nodus_witness_t *w,
     return 0;
 }
 
+/* Phase 8 Task 46 — Emit a synthetic UTXO directly owned by a precomputed
+ * hex fingerprint. Used by the epoch-boundary graduation path where the
+ * owner is a stored `unstake_destination_fp` (validator record field) and
+ * the validator's own pubkey is not the owner. Mirrors emit_synthetic_utxo
+ * except it skips the SHA3-512(pubkey) fp derivation step.
+ *
+ * owner_fp_hex MUST be the 128-char lowercase hex fingerprint + NUL. The
+ * nullifier derivation, token_id (zeros), and locked-UTXO insert path are
+ * identical to emit_synthetic_utxo so the two helpers share identical
+ * supply-accounting behavior.
+ */
+static int emit_synthetic_utxo_for_fp(nodus_witness_t *w,
+                                         const uint8_t *tx_hash,
+                                         const char *owner_fp_hex,
+                                         uint64_t amount,
+                                         uint64_t block_height,
+                                         uint8_t kind_byte,
+                                         uint32_t output_index,
+                                         uint64_t unlock_block) {
+    /* Same nullifier derivation as emit_synthetic_utxo. */
+    uint8_t preimage[64 + 1 + 4];
+    memcpy(preimage, tx_hash, 64);
+    preimage[64] = kind_byte;
+    preimage[65] = (uint8_t)((output_index >> 24) & 0xff);
+    preimage[66] = (uint8_t)((output_index >> 16) & 0xff);
+    preimage[67] = (uint8_t)((output_index >> 8) & 0xff);
+    preimage[68] = (uint8_t)(output_index & 0xff);
+    uint8_t nullifier[64];
+    qgp_sha3_512(preimage, sizeof(preimage), nullifier);
+
+    uint8_t zero_token_id[64];
+    memset(zero_token_id, 0, sizeof(zero_token_id));
+
+    int rc = nodus_witness_utxo_add_locked(w, nullifier, owner_fp_hex,
+                                             amount, tx_hash, output_index,
+                                             block_height, zero_token_id,
+                                             unlock_block);
+    if (rc != 0) {
+        fprintf(stderr, "%s: emit_synthetic_utxo_for_fp: utxo_add_locked failed (rc=%d, kind=0x%02x, idx=%u)\n",
+                LOG_TAG, rc, kind_byte, output_index);
+        return -1;
+    }
+    return 0;
+}
+
 /* Phase 8 Task 43 — UNDELEGATE state mutation.
  *
  * Parses validator_pubkey[2592] + amount[8 BE] appended fields. Computes
@@ -1931,6 +1976,288 @@ int apply_tx_to_state(nodus_witness_t *w,
     return 0;
 }
 
+/* Phase 8 Task 46 — epoch-boundary state transitions.
+ *
+ * Runs once per block inside finalize_block AFTER all per-TX
+ * apply_tx_to_state calls have finished, but BEFORE state_root is
+ * recomputed. No-op on non-epoch-boundary blocks.
+ *
+ * The three time-driven transitions implemented here:
+ *
+ *   1. Pending commission activation — any validator row whose
+ *      pending_effective_block == block_height and whose
+ *      pending_commission_bps != 0 promotes the pending rate to
+ *      current and clears both pending columns.
+ *
+ *   2. RETIRING → UNSTAKED graduation — any validator in RETIRING
+ *      status emits:
+ *        (a) a time-locked principal UTXO (amount = DNAC_SELF_STAKE_AMOUNT,
+ *            unlock_block = block_height + DNAC_UNSTAKE_COOLDOWN_BLOCKS)
+ *        (b) an immediately-spendable unclaimed-rewards UTXO
+ *            (amount = reward_record.validator_unclaimed, possibly zero
+ *             to preserve supply-accounting symmetry — Rule Q)
+ *      both owned by validator.unstake_destination_fp. Reward record's
+ *      validator_unclaimed is then zeroed, validator transitions to
+ *      UNSTAKED, and validator_stats.active_count is decremented.
+ *
+ *   3. Liveness-based AUTO_RETIRED — deferred. See TODO below.
+ *
+ * Committee election for the next epoch is ALSO an epoch-boundary
+ * operation but lives in Phase 10 / Task 51; only a TODO hook is
+ * present here.
+ *
+ * Synthetic UTXOs emitted at the boundary are not tied to a specific
+ * TX hash (no TX triggered them). We derive a deterministic
+ * pseudo-tx_hash as
+ *   SHA3-512("dnac_epoch_graduation_v1" || block_height[8 BE])
+ * which cannot collide with any real TX hash (real TX hashes are
+ * SHA3-512 over canonical TX preimage) and is deterministic across all
+ * witnesses for the same block.
+ *
+ * Returns 0 on success (including the no-op non-boundary path), -1 on
+ * any failure — caller (finalize_block) should propagate the error so
+ * the outer transaction rolls back.
+ */
+static int apply_epoch_boundary_transitions(nodus_witness_t *w,
+                                               uint64_t block_height) {
+    if (!w || !w->db) return -1;
+
+    /* Epoch-boundary check. block_height==0 would be pre-genesis; the
+     * first real epoch boundary is DNAC_EPOCH_LENGTH itself. */
+    if (block_height == 0 || (block_height % DNAC_EPOCH_LENGTH) != 0) {
+        return 0;
+    }
+
+    /* Derive deterministic pseudo-tx_hash for synthetic UTXOs. */
+    uint8_t boundary_tx_hash[64];
+    {
+        static const char tag[] = "dnac_epoch_graduation_v1";
+        const size_t tag_len = sizeof(tag) - 1;  /* exclude NUL */
+        uint8_t preimage[32 + 8];
+        memset(preimage, 0, sizeof(preimage));
+        memcpy(preimage, tag, tag_len);
+        /* Big-endian encoding of block_height in last 8 bytes. */
+        for (int i = 0; i < 8; i++) {
+            preimage[32 + i] =
+                (uint8_t)((block_height >> (56 - 8 * i)) & 0xff);
+        }
+        qgp_sha3_512(preimage, sizeof(preimage), boundary_tx_hash);
+    }
+
+    /* ─────── 1. Pending commission activation ─────── */
+    {
+        sqlite3_stmt *stmt = NULL;
+        const char *sql =
+            "UPDATE validators "
+            "SET commission_bps = pending_commission_bps, "
+            "    pending_commission_bps = 0, "
+            "    pending_effective_block = 0 "
+            "WHERE pending_effective_block = ? "
+            "  AND pending_commission_bps != 0";
+        int rc = sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "%s: epoch_boundary: prepare pending_commission failed: %s\n",
+                    LOG_TAG, sqlite3_errmsg(w->db));
+            return -1;
+        }
+        sqlite3_bind_int64(stmt, 1, (int64_t)block_height);
+        rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        if (rc != SQLITE_DONE) {
+            fprintf(stderr, "%s: epoch_boundary: exec pending_commission failed (rc=%d): %s\n",
+                    LOG_TAG, rc, sqlite3_errmsg(w->db));
+            return -1;
+        }
+    }
+
+    /* ─────── 2. RETIRING → UNSTAKED graduation ─────── */
+    {
+        /* Collect candidate pubkeys first — we cannot hold a SELECT stmt
+         * open across the subsequent UPDATEs on the same table. */
+        typedef struct {
+            uint8_t pubkey[DNAC_PUBKEY_SIZE];
+        } graduate_t;
+        graduate_t *candidates = NULL;
+        size_t candidate_count = 0, candidate_cap = 0;
+
+        sqlite3_stmt *sel = NULL;
+        int rc = sqlite3_prepare_v2(
+            w->db,
+            "SELECT pubkey FROM validators WHERE status = ?",
+            -1, &sel, NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "%s: epoch_boundary: prepare RETIRING select failed: %s\n",
+                    LOG_TAG, sqlite3_errmsg(w->db));
+            return -1;
+        }
+        sqlite3_bind_int(sel, 1, (int)DNAC_VALIDATOR_RETIRING);
+        while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
+            const void *pk = sqlite3_column_blob(sel, 0);
+            int pk_len = sqlite3_column_bytes(sel, 0);
+            if (!pk || pk_len != DNAC_PUBKEY_SIZE) {
+                fprintf(stderr, "%s: epoch_boundary: RETIRING pubkey wrong size (%d)\n",
+                        LOG_TAG, pk_len);
+                sqlite3_finalize(sel);
+                free(candidates);
+                return -1;
+            }
+            if (candidate_count == candidate_cap) {
+                size_t new_cap = candidate_cap ? candidate_cap * 2 : 8;
+                graduate_t *grown = realloc(candidates,
+                                              new_cap * sizeof(graduate_t));
+                if (!grown) {
+                    fprintf(stderr, "%s: epoch_boundary: OOM collecting RETIRING\n",
+                            LOG_TAG);
+                    sqlite3_finalize(sel);
+                    free(candidates);
+                    return -1;
+                }
+                candidates = grown;
+                candidate_cap = new_cap;
+            }
+            memcpy(candidates[candidate_count].pubkey, pk, DNAC_PUBKEY_SIZE);
+            candidate_count++;
+        }
+        sqlite3_finalize(sel);
+        if (rc != SQLITE_DONE) {
+            fprintf(stderr, "%s: epoch_boundary: RETIRING select step failed (rc=%d): %s\n",
+                    LOG_TAG, rc, sqlite3_errmsg(w->db));
+            free(candidates);
+            return -1;
+        }
+
+        /* Per-graduate: emit 2 UTXOs, zero reward, flip status, dec stat. */
+        for (size_t i = 0; i < candidate_count; i++) {
+            const uint8_t *val_pubkey = candidates[i].pubkey;
+
+            dnac_validator_record_t v;
+            rc = nodus_validator_get(w, val_pubkey, &v);
+            if (rc != 0) {
+                fprintf(stderr, "%s: epoch_boundary: validator_get failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                free(candidates);
+                return -1;
+            }
+
+            dnac_reward_record_t r;
+            rc = nodus_reward_get(w, val_pubkey, &r);
+            if (rc != 0) {
+                /* STAKE always inserts an empty reward row — this is a bug. */
+                fprintf(stderr, "%s: epoch_boundary: reward_get failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                free(candidates);
+                return -1;
+            }
+
+            /* Emit principal 10M locked UTXO (kind 0x10) — unlock_block =
+             * block_height + cooldown. Always emitted regardless of the
+             * self_stake column (which still reads DNAC_SELF_STAKE_AMOUNT
+             * since UNSTAKE phase-1 left it unchanged). */
+            if (emit_synthetic_utxo_for_fp(
+                    w, boundary_tx_hash,
+                    (const char *)v.unstake_destination_fp,
+                    DNAC_SELF_STAKE_AMOUNT,
+                    block_height,
+                    /*kind=*/0x10,
+                    /*output_index=*/200,
+                    /*unlock_block=*/block_height + DNAC_UNSTAKE_COOLDOWN_BLOCKS)
+                != 0) {
+                fprintf(stderr, "%s: epoch_boundary: emit principal UTXO failed\n",
+                        LOG_TAG);
+                free(candidates);
+                return -1;
+            }
+
+            /* Emit pending-unclaimed UTXO (kind 0x11) — ALWAYS even when
+             * r.validator_unclaimed == 0, matching Rule Q supply-symmetry
+             * used by UNDELEGATE/CLAIM_REWARD auto-claim paths. */
+            if (emit_synthetic_utxo_for_fp(
+                    w, boundary_tx_hash,
+                    (const char *)v.unstake_destination_fp,
+                    r.validator_unclaimed,
+                    block_height,
+                    /*kind=*/0x11,
+                    /*output_index=*/201,
+                    /*unlock_block=*/0) != 0) {
+                fprintf(stderr, "%s: epoch_boundary: emit unclaimed UTXO failed\n",
+                        LOG_TAG);
+                free(candidates);
+                return -1;
+            }
+
+            /* Zero validator_unclaimed and persist. */
+            r.validator_unclaimed = 0;
+            r.last_update_block = block_height;
+            rc = nodus_reward_upsert(w, &r);
+            if (rc != 0) {
+                fprintf(stderr, "%s: epoch_boundary: reward_upsert failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                free(candidates);
+                return -1;
+            }
+
+            /* Transition RETIRING → UNSTAKED. */
+            v.status = (uint8_t)DNAC_VALIDATOR_UNSTAKED;
+            rc = nodus_validator_update(w, &v);
+            if (rc != 0) {
+                fprintf(stderr, "%s: epoch_boundary: validator_update failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                free(candidates);
+                return -1;
+            }
+
+            /* Decrement active_count. A RETIRING validator was already
+             * subtracted from the committee by status filter but
+             * active_count still reflected the STAKE bump; graduation
+             * is when the counter actually drops. */
+            char *err = NULL;
+            int src = sqlite3_exec(w->db,
+                "UPDATE validator_stats SET value = value - 1 "
+                "WHERE key = 'active_count'",
+                NULL, NULL, &err);
+            if (src != SQLITE_OK) {
+                fprintf(stderr, "%s: epoch_boundary: active_count dec failed: %s\n",
+                        LOG_TAG, err ? err : "(null)");
+                if (err) sqlite3_free(err);
+                free(candidates);
+                return -1;
+            }
+        }
+
+        free(candidates);
+    }
+
+    /* ─────── 3. Liveness-based AUTO_RETIRED ─────── */
+    /* TODO(Task 48 — liveness attendance tracking): the
+     * consecutive_missed_epochs column is maintained by BFT precommit
+     * attendance accounting, which Task 48 will wire into the consensus
+     * round bookkeeping. Once that counter actually advances, insert
+     * the transition here:
+     *
+     *   UPDATE validators
+     *      SET status = 3          -- DNAC_VALIDATOR_AUTO_RETIRED
+     *    WHERE status = 0          -- DNAC_VALIDATOR_ACTIVE
+     *      AND consecutive_missed_epochs >= DNAC_AUTO_RETIRE_EPOCHS;
+     *
+     * plus one validator_stats.active_count decrement per row flipped.
+     *
+     * For now the counter always reads 0, so no rows would match. We
+     * deliberately leave the code path unwired (not even a zero-row
+     * UPDATE) so the audit trail in this commit is unambiguous about
+     * which responsibilities land in Task 48. */
+    (void)DNAC_AUTO_RETIRE_EPOCHS;   /* reference constant — silence unused */
+
+    /* ─────── 4. Committee election for next epoch ─────── */
+    /* TODO(Task 51 — Phase 10 committee election): compute next-epoch
+     * committee using nodus_validator_top_n with lookback_block =
+     * block_height - DNAC_EPOCH_LENGTH - 1 per design §3.6, cache the
+     * result, and expose it to the BFT peer-set for the next epoch.
+     * No wiring yet — the Task 12 top-N helper already exists and the
+     * committee result has no consumers until Phase 10 lands. */
+
+    return 0;
+}
+
 /* finalize_block — Phase 3 / Task 3.2.
  *
  * Per-block work: invalidate the cached state_root, recompute it from
@@ -1962,7 +2289,23 @@ int finalize_block(nodus_witness_t *w,
     if (tx_count == 0 || tx_count > NODUS_W_MAX_BLOCK_TXS) return -1;
     if (!tx_hashes) return -1;
 
-    (void)expected_height;  /* Phase 6 will assert against block_height(w)+1 */
+    /* Phase 8 Task 46 — epoch-boundary state transitions.
+     *
+     * MUST run AFTER per-TX apply_tx_to_state calls (so pending-commission
+     * rows set by this block's VALIDATOR_UPDATE TXs with
+     * pending_effective_block == block_height are visible) and BEFORE the
+     * state_root recomputation below (so all epoch-driven mutations are
+     * reflected in the committed root). This implements step 5 of design
+     * §4.1's block-commit order.
+     *
+     * `expected_height` is the height the block is being committed at —
+     * passed by all callers (commit_genesis, commit_batch, replay_block).
+     */
+    if (apply_epoch_boundary_transitions(w, expected_height) != 0) {
+        fprintf(stderr, "%s: finalize_block: epoch_boundary failed\n",
+                LOG_TAG);
+        return -1;
+    }
 
     /* Invalidate the cached UTXO checksum — the per-TX writes from this
      * batch made the previous root stale. Phase 11 renames this to

@@ -608,3 +608,7 @@ register_witness_test(test_apply_claim_reward)
 
 # Task 45 — VALIDATOR_UPDATE state mutation with pending semantics
 register_witness_test(test_apply_validator_update)
+
+# Task 46 — Epoch-boundary state transitions (commission activation +
+# RETIRING->UNSTAKED graduation; AUTO_RETIRED + committee TODOs)
+register_witness_test(test_apply_epoch_boundary)
