@@ -98,6 +98,11 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     if (tx->type == DNAC_TX_CLAIM_REWARD) {
         size += DNAC_PUBKEY_SIZE + 8 + 8;
     }
+    /* Phase 5 Task 19. VALIDATOR_UPDATE carries new_commission_bps(u16) +
+     * signed_at_block(u64). */
+    if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
+        size += 2 + 8;
+    }
 
     /* Optional anchored-genesis chain_def trailer (v2 wire extension).
      * Only present when has_chain_def is true (always 0 for non-genesis).
@@ -200,6 +205,16 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         be64_to_bytes(tx->claim_reward_fields.valid_before_block, valid_be);
         WRITE_BLOB(ptr, max_be, 8);
         WRITE_BLOB(ptr, valid_be, 8);
+    }
+    /* Phase 5 Task 19. VALIDATOR_UPDATE: new_commission_bps(u16 BE) ||
+     *        signed_at_block(u64 BE). */
+    if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
+        ptr[0] = (uint8_t)((tx->validator_update_fields.new_commission_bps >> 8) & 0xff);
+        ptr[1] = (uint8_t)(tx->validator_update_fields.new_commission_bps & 0xff);
+        ptr += 2;
+        uint8_t block_be[8];
+        be64_to_bytes(tx->validator_update_fields.signed_at_block, block_be);
+        WRITE_BLOB(ptr, block_be, 8);
     }
 
     /* Anchored-genesis chain_def trailer (optional, genesis TX only). */
@@ -390,6 +405,19 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         tx->claim_reward_fields.max_pending_amount = be64_from_bytes(ptr);
         ptr += 8;
         tx->claim_reward_fields.valid_before_block = be64_from_bytes(ptr);
+        ptr += 8;
+    }
+    /* Phase 5 Task 19. VALIDATOR_UPDATE: new_commission_bps(u16 BE) ||
+     *        signed_at_block(u64 BE). */
+    if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
+        if (ptr + 2 + 8 > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        tx->validator_update_fields.new_commission_bps =
+            ((uint16_t)ptr[0] << 8) | (uint16_t)ptr[1];
+        ptr += 2;
+        tx->validator_update_fields.signed_at_block = be64_from_bytes(ptr);
         ptr += 8;
     }
 

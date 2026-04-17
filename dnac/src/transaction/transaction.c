@@ -336,6 +336,17 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
         tx_be64_into(tx->claim_reward_fields.valid_before_block, be);
         EVP_DigestUpdate(ctx, be, sizeof(be));
     }
+    /* Phase 5 Task 19. VALIDATOR_UPDATE: new_commission_bps(u16 BE) ||
+     *        signed_at_block(u64 BE). */
+    if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
+        uint8_t commission_be[2];
+        commission_be[0] = (uint8_t)((tx->validator_update_fields.new_commission_bps >> 8) & 0xff);
+        commission_be[1] = (uint8_t)(tx->validator_update_fields.new_commission_bps & 0xff);
+        EVP_DigestUpdate(ctx, commission_be, sizeof(commission_be));
+        uint8_t block_be[8];
+        tx_be64_into(tx->validator_update_fields.signed_at_block, block_be);
+        EVP_DigestUpdate(ctx, block_be, sizeof(block_be));
+    }
 
     unsigned int hash_len;
     if (EVP_DigestFinal_ex(ctx, hash_out, &hash_len) != 1) {

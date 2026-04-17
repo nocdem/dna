@@ -325,6 +325,9 @@ if(DNAC_BUILD_TESTS)
     # Stake & delegation v1 — Phase 5 Task 18: UNDELEGATE + CLAIM_REWARD appended fields
     register_dnac_test(test_undelegate_serialize)
     register_dnac_test(test_claim_reward_serialize)
+
+    # Stake & delegation v1 — Phase 5 Task 19: VALIDATOR_UPDATE appended fields
+    register_dnac_test(test_validator_update_serialize)
 endif()
 
 # ============================================================================

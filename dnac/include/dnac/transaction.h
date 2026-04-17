@@ -110,6 +110,21 @@ typedef struct {
 } dnac_tx_claim_reward_fields_t;
 
 /**
+ * @brief VALIDATOR_UPDATE TX appended fields (design §2.3, Phase 5 Task 19)
+ *
+ * Populated only when `dnac_transaction_t.type == DNAC_TX_VALIDATOR_UPDATE`.
+ *
+ * `new_commission_bps` is the validator's updated commission (0..10000 =
+ * 0..100%). `signed_at_block` anchors the update to a specific block
+ * height so replay of an old update-TX is detectable by witnesses
+ * (they reject if signed_at_block < current validator.last_update_block).
+ */
+typedef struct {
+    uint16_t new_commission_bps;   /**< 0..10000 */
+    uint64_t signed_at_block;      /**< Block height at signing */
+} dnac_tx_validator_update_fields_t;
+
+/**
  * @brief Transaction signer (authorization)
  *
  * Each signer provides a Dilithium5 pubkey and signature over tx_hash.
@@ -226,10 +241,11 @@ struct dnac_transaction {
     /* Per-type appended fields (design §2.3, Phase 5 Tasks 16-20).
      * Only the arm matching `type` is populated; others are zero. A union
      * can replace this struct layout later when more TX types ship. */
-    dnac_tx_stake_fields_t        stake_fields;        /**< valid when type == DNAC_TX_STAKE */
-    dnac_tx_delegate_fields_t     delegate_fields;     /**< valid when type == DNAC_TX_DELEGATE */
-    dnac_tx_undelegate_fields_t   undelegate_fields;   /**< valid when type == DNAC_TX_UNDELEGATE */
-    dnac_tx_claim_reward_fields_t claim_reward_fields; /**< valid when type == DNAC_TX_CLAIM_REWARD */
+    dnac_tx_stake_fields_t            stake_fields;            /**< valid when type == DNAC_TX_STAKE */
+    dnac_tx_delegate_fields_t         delegate_fields;         /**< valid when type == DNAC_TX_DELEGATE */
+    dnac_tx_undelegate_fields_t       undelegate_fields;       /**< valid when type == DNAC_TX_UNDELEGATE */
+    dnac_tx_claim_reward_fields_t     claim_reward_fields;     /**< valid when type == DNAC_TX_CLAIM_REWARD */
+    dnac_tx_validator_update_fields_t validator_update_fields; /**< valid when type == DNAC_TX_VALIDATOR_UPDATE */
 };
 
 /* ============================================================================
