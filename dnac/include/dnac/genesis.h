@@ -2,14 +2,15 @@
  * @file genesis.h
  * @brief DNAC Genesis Event API
  *
- * Genesis is a one-time event that creates all tokens in the system.
- * After genesis, no new tokens can be created (only transferred or burned).
+ * Genesis is a one-time event that creates the native DNAC token supply.
+ * Custom tokens can be created later via TOKEN_CREATE transactions.
  *
  * Key properties:
- * - Requires 3-of-3 (unanimous) witness approval
+ * - Requires unanimous (N/N) BFT witness approval (enforced server-side)
+ * - Client receives 1 attestation from the BFT leader as proof of consensus
  * - Can only happen once - attempts after genesis are rejected
  * - Before genesis, only GENESIS transactions are valid
- * - After genesis, only SPEND/BURN transactions are valid
+ * - After genesis, SPEND/BURN/TOKEN_CREATE transactions are valid
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -32,8 +33,10 @@ extern "C" {
 /** Maximum recipients in a genesis transaction */
 #define DNAC_GENESIS_MAX_RECIPIENTS     16
 
-/** Witnesses required for genesis (unanimous approval) */
-#define DNAC_GENESIS_WITNESSES_REQUIRED 3
+/** Minimum attestations the client requires from BFT leader.
+ *  Unanimous (N/N) consensus is enforced server-side during PREVOTE/PRECOMMIT.
+ *  The leader returns 1 attestation representing full quorum agreement. */
+#define DNAC_GENESIS_MIN_ATTESTATIONS   1
 
 /** Genesis commitment size (SHA3-512 hash of genesis data) */
 #define DNAC_GENESIS_COMMITMENT_SIZE    64
@@ -85,8 +88,8 @@ int dnac_tx_create_genesis(const dnac_genesis_recipient_t *recipients,
 /**
  * @brief Authorize GENESIS transaction via witness consensus
  *
- * Requests 3-of-3 (unanimous) witness signatures to authorize genesis.
- * This is a higher bar than normal transactions (which need 2-of-3).
+ * Requests unanimous (N/N) BFT witness consensus to authorize genesis.
+ * This is a higher bar than normal transactions (which need 2f+1 quorum).
  *
  * @param ctx DNAC context
  * @param tx GENESIS transaction to authorize

@@ -59,8 +59,7 @@ extern "C" {
 #define DNAC_ERROR_NOT_IMPLEMENTED     -22  /* Feature not yet implemented */
 #define DNAC_ERROR_OVERFLOW            -23  /* Integer overflow in amount arithmetic */
 
-/* Genesis configuration */
-#define DNAC_GENESIS_WITNESS_REQUIRED  3              /* 3-of-3 (unanimous) for genesis */
+/* Genesis configuration — unanimous (N/N) enforced server-side */
 #define DNAC_DEFAULT_TOTAL_SUPPLY      100000000000000ULL  /* 100 trillion default supply */
 
 /* ============================================================================

@@ -169,9 +169,9 @@ int dnac_tx_authorize_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
     /* BFT mode: leader returns 1 attestation representing full quorum.
      * Unanimous consensus (N/N) is enforced server-side during PREVOTE/PRECOMMIT.
      * Client needs at least 1 valid attestation to prove consensus happened. */
-    if (witness_count < 1) {
-        QGP_LOG_ERROR(LOG_TAG, "Genesis requires at least 1 witness attestation, got %d",
-                      witness_count);
+    if (witness_count < DNAC_GENESIS_MIN_ATTESTATIONS) {
+        QGP_LOG_ERROR(LOG_TAG, "Genesis requires at least %d witness attestation(s), got %d",
+                      DNAC_GENESIS_MIN_ATTESTATIONS, witness_count);
         return DNAC_ERROR_WITNESS_FAILED;
     }
 
@@ -233,9 +233,9 @@ int dnac_tx_broadcast_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
     }
 
     /* Verify we have unanimous witness signatures (H-14: reject partial genesis) */
-    if (tx->witness_count < 1) {
-        QGP_LOG_ERROR(LOG_TAG, "Genesis not authorized - need at least 1 witness, have %d",
-                      tx->witness_count);
+    if (tx->witness_count < DNAC_GENESIS_MIN_ATTESTATIONS) {
+        QGP_LOG_ERROR(LOG_TAG, "Genesis not authorized - need at least %d attestation(s), have %d",
+                      DNAC_GENESIS_MIN_ATTESTATIONS, tx->witness_count);
         return DNAC_ERROR_WITNESS_FAILED;
     }
 
