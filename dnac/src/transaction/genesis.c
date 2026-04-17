@@ -156,7 +156,10 @@ int dnac_tx_authorize_genesis(dnac_context_t *ctx, dnac_transaction_t *tx) {
     dnac_witness_sig_t witnesses[DNAC_TX_MAX_WITNESSES];
     int witness_count = 0;
 
+    fprintf(stderr, "DEBUG authorize_genesis: sending to witness (tx_len=%u, signer_count=%d)\n",
+            request.tx_len, tx->signer_count);
     rc = dnac_witness_request(ctx, &request, witnesses, &witness_count);
+    fprintf(stderr, "DEBUG authorize_genesis: witness_request returned rc=%d witnesses=%d\n", rc, witness_count);
 
     if (rc != DNAC_SUCCESS) {
         QGP_LOG_ERROR(LOG_TAG, "Genesis rejected: rc=%d witnesses=%d", rc, witness_count);

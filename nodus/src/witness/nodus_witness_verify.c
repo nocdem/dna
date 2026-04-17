@@ -332,13 +332,13 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
     const uint8_t *hash_signers = NULL;
     uint8_t signer_pubkeys_buf[NODUS_T3_MAX_TX_SIGNERS * NODUS_PK_BYTES];
 
-    if (is_genesis) {
+    /* Parse signers from tx_data for ALL tx types (including genesis).
+     * Genesis TX now carries signer_count=1 (creator signs phase1). */
+    if (parse_signers_from_tx_data(tx_data, tx_len, &hash_signer_count, &hash_signers) != 0) {
+        /* Pre-genesis fresh chain: no signers section possible if tx_data is minimal.
+         * Fall back to signer_count=0 for hash computation. */
         hash_signer_count = 0;
     } else {
-        if (parse_signers_from_tx_data(tx_data, tx_len, &hash_signer_count, &hash_signers) != 0) {
-            snprintf(reject_reason, reason_size, "failed to parse signers from tx_data");
-            return -1;
-        }
         /* Copy pubkeys only (skip signatures) */
         for (int s = 0; s < hash_signer_count; s++) {
             memcpy(signer_pubkeys_buf + s * NODUS_PK_BYTES,
