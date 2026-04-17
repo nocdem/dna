@@ -150,6 +150,29 @@ int dnac_witness_request(dnac_context_t *ctx,
     return DNAC_SUCCESS;
 }
 
+int dnac_get_current_fee(dnac_context_t *ctx, uint64_t *fee_out) {
+    if (!ctx || !fee_out) return DNAC_ERROR_INVALID_PARAM;
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) return DNAC_ERROR_NOT_INITIALIZED;
+
+    nodus_singleton_lock();
+
+    nodus_dnac_fee_info_t info;
+    int rc = nodus_client_dnac_fee_info(client, &info);
+
+    nodus_singleton_unlock();
+
+    if (rc != 0) {
+        /* Fallback: use base fee if witness unreachable */
+        *fee_out = 1000000;  /* 0.01 DNAC */
+        return DNAC_SUCCESS;
+    }
+
+    *fee_out = info.min_fee;
+    return DNAC_SUCCESS;
+}
+
 int dnac_witness_replay(dnac_context_t *ctx,
                          const uint8_t *tx_hash,
                          dnac_witness_sig_t *witness_out) {

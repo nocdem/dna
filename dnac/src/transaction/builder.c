@@ -105,136 +105,191 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
     int rc;
     *tx_out = NULL;
 
-    /* Estimate fee for initial UTXO selection */
+    bool native_send = is_native_token(builder->token_id);
+
+    /* Query witness for current dynamic fee */
     uint64_t fee = 0;
-    rc = dnac_estimate_fee(builder->ctx, builder->total_output_amount, &fee);
+    rc = dnac_get_current_fee(builder->ctx, &fee);
     if (rc != DNAC_SUCCESS) return rc;
 
-    uint64_t total_needed = 0;
-    if (safe_add_u64(builder->total_output_amount, fee, &total_needed) != 0) {
-        return DNAC_ERROR_OVERFLOW;
-    }
-
-    /* Select UTXOs */
-    dnac_utxo_t *selected = NULL;
-    int selected_count = 0;
-    uint64_t change_amount = 0;
-
-    rc = dnac_wallet_select_utxos_token(builder->ctx, total_needed,
-                                        builder->token_id,
-                                        &selected, &selected_count, &change_amount);
-    if (rc != DNAC_SUCCESS) return rc;
-
-    /* Calculate fee based on send amount (0.1% of transfer, not input).
-     * H-17: Aligned with witness — both use send_amount / 1000 (0.1%), min 1.
-     */
-    uint64_t total_input = 0;
-    for (int i = 0; i < selected_count; i++) {
-        if (safe_add_u64(total_input, selected[i].amount, &total_input) != 0) {
-            free(selected);
+    if (native_send) {
+        /* ═══ Native DNAC send: fee from same token ═══ */
+        uint64_t total_needed = 0;
+        if (safe_add_u64(builder->total_output_amount, fee, &total_needed) != 0)
             return DNAC_ERROR_OVERFLOW;
+
+        dnac_utxo_t *selected = NULL;
+        int selected_count = 0;
+        uint64_t change_amount = 0;
+
+        rc = dnac_wallet_select_utxos_token(builder->ctx, total_needed,
+                                            builder->token_id,
+                                            &selected, &selected_count, &change_amount);
+        if (rc != DNAC_SUCCESS) return rc;
+
+        uint64_t total_input = 0;
+        for (int i = 0; i < selected_count; i++) {
+            if (safe_add_u64(total_input, selected[i].amount, &total_input) != 0) {
+                free(selected);
+                return DNAC_ERROR_OVERFLOW;
+            }
         }
-    }
-    fee = builder->total_output_amount / 1000;
-    if (fee < 1) fee = 1;
 
-    uint64_t output_plus_fee;
-    if (safe_add_u64(builder->total_output_amount, fee, &output_plus_fee) != 0) {
-        free(selected);
-        return DNAC_ERROR_OVERFLOW;
-    }
-    if (output_plus_fee > total_input) {
-        free(selected);
-        return DNAC_ERROR_INSUFFICIENT_FUNDS;
-    }
-    change_amount = total_input - builder->total_output_amount - fee;
-    if (rc != DNAC_SUCCESS) return rc;
-
-    /* Add inputs from selected UTXOs */
-    for (int i = 0; i < selected_count; i++) {
-        rc = dnac_tx_add_input(builder->tx, &selected[i]);
-        if (rc != DNAC_SUCCESS) {
+        if (total_input < builder->total_output_amount + fee) {
             free(selected);
-            return rc;
+            return DNAC_ERROR_INSUFFICIENT_FUNDS;
         }
-    }
+        change_amount = total_input - builder->total_output_amount - fee;
 
-    /* Add outputs (Gap 25: v0.6.0 - includes memo) */
-    for (int i = 0; i < builder->output_count; i++) {
-        uint8_t nullifier_seed[32];
-        uint8_t memo_len = (uint8_t)strnlen(builder->outputs[i].memo, DNAC_MEMO_MAX_SIZE);
-        rc = dnac_tx_add_output_with_memo(builder->tx,
-                                           builder->outputs[i].recipient_fingerprint,
-                                           builder->outputs[i].amount,
-                                           nullifier_seed,
-                                           memo_len > 0 ? builder->outputs[i].memo : NULL,
-                                           memo_len);
-        if (rc != DNAC_SUCCESS) {
-            free(selected);
-            return rc;
+        /* Add inputs */
+        for (int i = 0; i < selected_count; i++) {
+            rc = dnac_tx_add_input(builder->tx, &selected[i]);
+            if (rc != DNAC_SUCCESS) { free(selected); return rc; }
         }
-        /* Set token_id on the just-added output */
-        memcpy(builder->tx->outputs[builder->tx->output_count - 1].token_id,
-               builder->token_id, DNAC_TOKEN_ID_SIZE);
-    }
+        free(selected);
 
-    /* Add change output if needed */
-    if (change_amount > 0) {
+        /* Add outputs */
+        for (int i = 0; i < builder->output_count; i++) {
+            uint8_t nullifier_seed[32];
+            uint8_t memo_len = (uint8_t)strnlen(builder->outputs[i].memo, DNAC_MEMO_MAX_SIZE);
+            rc = dnac_tx_add_output_with_memo(builder->tx,
+                                               builder->outputs[i].recipient_fingerprint,
+                                               builder->outputs[i].amount,
+                                               nullifier_seed,
+                                               memo_len > 0 ? builder->outputs[i].memo : NULL,
+                                               memo_len);
+            if (rc != DNAC_SUCCESS) return rc;
+            /* Native: token_id stays zeros */
+        }
+
+        /* Change output */
+        if (change_amount > 0) {
+            const char *owner_fp = dnac_get_owner_fingerprint(builder->ctx);
+            if (!owner_fp) return DNAC_ERROR_NOT_INITIALIZED;
+            uint8_t change_seed[32];
+            rc = dnac_tx_add_output(builder->tx, owner_fp, change_amount, change_seed);
+            if (rc != DNAC_SUCCESS) return rc;
+        }
+
+    } else {
+        /* ═══ Non-native token: DNAC-only fee (multi-token TX) ═══ */
+
+        /* 1. Select token UTXOs for transfer amount (strict, no fee) */
+        dnac_utxo_t *token_selected = NULL;
+        int token_count = 0;
+        uint64_t token_change = 0;
+
+        rc = dnac_wallet_select_utxos_token(builder->ctx,
+                                            builder->total_output_amount,
+                                            builder->token_id,
+                                            &token_selected, &token_count, &token_change);
+        if (rc != DNAC_SUCCESS) return rc;
+
+        uint64_t token_total = 0;
+        for (int i = 0; i < token_count; i++) {
+            if (safe_add_u64(token_total, token_selected[i].amount, &token_total) != 0) {
+                free(token_selected);
+                return DNAC_ERROR_OVERFLOW;
+            }
+        }
+        token_change = token_total - builder->total_output_amount;
+
+        /* 2. Select DNAC UTXOs for fee */
+        uint8_t native_id[DNAC_TOKEN_ID_SIZE];
+        memset(native_id, 0, DNAC_TOKEN_ID_SIZE);
+
+        dnac_utxo_t *dnac_selected = NULL;
+        int dnac_count = 0;
+        uint64_t dnac_change = 0;
+
+        rc = dnac_wallet_select_utxos_token(builder->ctx, fee, native_id,
+                                            &dnac_selected, &dnac_count, &dnac_change);
+        if (rc != DNAC_SUCCESS) { free(token_selected); return rc; }
+
+        uint64_t dnac_total = 0;
+        for (int i = 0; i < dnac_count; i++) {
+            if (safe_add_u64(dnac_total, dnac_selected[i].amount, &dnac_total) != 0) {
+                free(token_selected); free(dnac_selected);
+                return DNAC_ERROR_OVERFLOW;
+            }
+        }
+        if (dnac_total < fee) {
+            free(token_selected); free(dnac_selected);
+            return DNAC_ERROR_INSUFFICIENT_FUNDS;
+        }
+        dnac_change = dnac_total - fee;
+
+        /* 3. Add inputs: token first, then DNAC */
+        for (int i = 0; i < token_count; i++) {
+            rc = dnac_tx_add_input(builder->tx, &token_selected[i]);
+            if (rc != DNAC_SUCCESS) { free(token_selected); free(dnac_selected); return rc; }
+        }
+        for (int i = 0; i < dnac_count; i++) {
+            rc = dnac_tx_add_input(builder->tx, &dnac_selected[i]);
+            if (rc != DNAC_SUCCESS) { free(token_selected); free(dnac_selected); return rc; }
+        }
+        free(token_selected);
+        free(dnac_selected);
+
+        /* 4. Token outputs (recipient + change) */
+        for (int i = 0; i < builder->output_count; i++) {
+            uint8_t nullifier_seed[32];
+            uint8_t memo_len = (uint8_t)strnlen(builder->outputs[i].memo, DNAC_MEMO_MAX_SIZE);
+            rc = dnac_tx_add_output_with_memo(builder->tx,
+                                               builder->outputs[i].recipient_fingerprint,
+                                               builder->outputs[i].amount,
+                                               nullifier_seed,
+                                               memo_len > 0 ? builder->outputs[i].memo : NULL,
+                                               memo_len);
+            if (rc != DNAC_SUCCESS) return rc;
+            memcpy(builder->tx->outputs[builder->tx->output_count - 1].token_id,
+                   builder->token_id, DNAC_TOKEN_ID_SIZE);
+        }
+
         const char *owner_fp = dnac_get_owner_fingerprint(builder->ctx);
-        if (!owner_fp) {
-            free(selected);
-            return DNAC_ERROR_NOT_INITIALIZED;
+        if (!owner_fp) return DNAC_ERROR_NOT_INITIALIZED;
+
+        if (token_change > 0) {
+            uint8_t change_seed[32];
+            rc = dnac_tx_add_output(builder->tx, owner_fp, token_change, change_seed);
+            if (rc != DNAC_SUCCESS) return rc;
+            memcpy(builder->tx->outputs[builder->tx->output_count - 1].token_id,
+                   builder->token_id, DNAC_TOKEN_ID_SIZE);
         }
 
-        uint8_t change_seed[32];
-        rc = dnac_tx_add_output(builder->tx, owner_fp, change_amount, change_seed);
-        if (rc != DNAC_SUCCESS) {
-            free(selected);
-            return rc;
+        /* 5. DNAC fee change output (token_id = zeros = native) */
+        if (dnac_change > 0) {
+            uint8_t change_seed[32];
+            rc = dnac_tx_add_output(builder->tx, owner_fp, dnac_change, change_seed);
+            if (rc != DNAC_SUCCESS) return rc;
+            /* token_id stays zeros from calloc */
         }
-        /* Set token_id on change output */
-        memcpy(builder->tx->outputs[builder->tx->output_count - 1].token_id,
-               builder->token_id, DNAC_TOKEN_ID_SIZE);
     }
 
-    /* v0.8.0: Fees are burned (removed from circulation).
-     * sum(inputs) > sum(outputs), the difference is the fee.
-     * Fee pool + staking distribution planned for future version. */
-
-    free(selected);
-
-    /* Get sender's public key */
+    /* ═══ Sign TX (common path) ═══ */
     dna_engine_t *engine = dnac_get_engine(builder->ctx);
     if (!engine) return DNAC_ERROR_NOT_INITIALIZED;
 
     uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];
     rc = dna_engine_get_signing_public_key(engine, sender_pubkey, sizeof(sender_pubkey));
-    if (rc < 0) {  /* Returns size on success, negative on error */
-        return DNAC_ERROR_CRYPTO;
-    }
+    if (rc < 0) return DNAC_ERROR_CRYPTO;
 
-    /* Copy public key BEFORE hash (sender_pubkey is part of tx_hash) */
     memcpy(builder->tx->signers[0].pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
     builder->tx->signer_count = 1;
 
-    /* Compute transaction hash (includes sender_pubkey) */
     rc = dnac_tx_compute_hash(builder->tx, builder->tx->tx_hash);
     if (rc != DNAC_SUCCESS) return rc;
 
-    /* Sign transaction hash with Dilithium5 */
     size_t sig_len = 0;
     rc = dna_engine_sign_data(engine,
                                builder->tx->tx_hash,
                                DNAC_TX_HASH_SIZE,
                                builder->tx->signers[0].signature,
                                &sig_len);
-    if (rc != 0) {
-        return DNAC_ERROR_CRYPTO;
-    }
+    if (rc != 0) return DNAC_ERROR_CRYPTO;
 
-    /* Transfer ownership */
     *tx_out = builder->tx;
-    builder->tx = NULL;  /* Prevent double-free */
+    builder->tx = NULL;
 
     return DNAC_SUCCESS;
 }

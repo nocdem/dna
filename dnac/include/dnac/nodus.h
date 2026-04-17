@@ -328,6 +328,13 @@ int dnac_witness_discover(dnac_context_t *ctx,
  * @param witness_count_out Output witness count
  * @return 0 on success, DNAC_ERROR_WITNESS_FAILED if < 2 witnesses
  */
+/** Dynamic fee info from witness */
+typedef struct {
+    uint64_t base_fee;      /**< Base fee in raw units */
+    uint64_t mempool_count; /**< Current pending TXs */
+    uint64_t min_fee;       /**< Current minimum required fee */
+} dnac_fee_info_t;
+
 int dnac_witness_request(dnac_context_t *ctx,
                          const dnac_spend_request_t *request,
                          dnac_witness_sig_t *witnesses_out,

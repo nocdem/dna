@@ -722,6 +722,15 @@ int nodus_client_dnac_supply(nodus_client_t *client,
                                nodus_dnac_supply_result_t *result_out);
 
 /**
+ * @brief Query current dynamic fee info from witness
+ * @param client Connected nodus client
+ * @param result_out Output fee info
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_fee_info(nodus_client_t *client,
+                                nodus_dnac_fee_info_t *result_out);
+
+/**
  * Query UTXOs by owner fingerprint.
  * Caller must free result_out->entries when done.
  *

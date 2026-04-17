@@ -350,6 +350,13 @@ typedef struct {
     uint8_t  chain_id[32];
 } nodus_dnac_supply_result_t;
 
+/** Dynamic fee info result */
+typedef struct {
+    uint64_t base_fee;      /**< Base fee (0.01 DNAC = 1000000 raw) */
+    uint64_t mempool_count; /**< Current mempool pending TX count */
+    uint64_t min_fee;       /**< Current minimum required fee */
+} nodus_dnac_fee_info_t;
+
 /** Maximum inclusion-proof depth for anchored UTXO / TX proofs.
  * Matches the server-side DNAC_UTXO_PROOF_MAX_DEPTH and
  * DNAC_HISTORY_PROOF_MAX_DEPTH in nodus_witness_handlers.c. */

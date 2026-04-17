@@ -438,7 +438,7 @@ int dnac_last_send_receipt(dnac_context_t *ctx,
  * @brief Send a DNAC payment in a specific token
  *
  * Same as dnac_send(), but allows selecting a custom token. Fee is
- * calculated as 0.1% of amount in the SAME token (not native DNAC).
+ * a flat dynamic DNAC fee (queried from witness), paid in native DNAC regardless of token.
  * UTXO selection is token-aware: only UTXOs of the specified token
  * are used as inputs, and change is also emitted in the same token.
  *
@@ -468,6 +468,17 @@ int dnac_send_token(dnac_context_t *ctx,
  * @return DNAC_SUCCESS or error code
  */
 int dnac_estimate_fee(dnac_context_t *ctx, uint64_t amount, uint64_t *fee_out);
+
+/**
+ * @brief Query current dynamic fee from witness
+ *
+ * Returns the exact fee required right now, based on mempool load.
+ *
+ * @param ctx DNAC context
+ * @param fee_out Output minimum fee in raw units
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_get_current_fee(dnac_context_t *ctx, uint64_t *fee_out);
 
 /* ============================================================================
  * Transaction Builder (Advanced)

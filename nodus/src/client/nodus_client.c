@@ -2229,6 +2229,62 @@ int nodus_client_dnac_supply(nodus_client_t *client,
     return 0;
 }
 
+int nodus_client_dnac_fee_info(nodus_client_t *client,
+                                nodus_dnac_fee_info_t *result_out) {
+    if (!nodus_client_is_ready(client) || !result_out)
+        return -1;
+
+    memset(result_out, 0, sizeof(*result_out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_fee_info", 0);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) { free_pending(client, req); free(buf); return -1; }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
+    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+        if (key.tstr.len == 8 && memcmp(key.tstr.ptr, "base_fee", 8) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) result_out->base_fee = v.uint_val;
+        } else if (key.tstr.len == 7 && memcmp(key.tstr.ptr, "mempool", 7) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) result_out->mempool_count = v.uint_val;
+        } else if (key.tstr.len == 7 && memcmp(key.tstr.ptr, "min_fee", 7) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) result_out->min_fee = v.uint_val;
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
 int nodus_client_dnac_utxo(nodus_client_t *client,
                              const char *owner,
                              int max_results,
