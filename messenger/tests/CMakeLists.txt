@@ -311,6 +311,14 @@ target_link_libraries(test_u128_roundtrip ${TEST_LIBS})
 add_test(NAME test_u128_roundtrip COMMAND test_u128_roundtrip)
 
 # =============================================================================
+# Test: Portable u128 KAT (Known Answer Tests)
+# =============================================================================
+# Phase 2 Task 6 of witness stake v1. Cross-compiler determinism lands in Task 7.
+add_executable(test_u128_kat test_u128_kat.c)
+target_link_libraries(test_u128_kat ${TEST_LIBS})
+add_test(NAME test_u128_kat COMMAND test_u128_kat)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()
