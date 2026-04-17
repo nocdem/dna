@@ -9,6 +9,7 @@
 #include "dnac/transaction.h"
 #include "dnac/nodus.h"
 #include "dnac/dnac.h"
+#include "dnac/safe_math.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -22,26 +23,61 @@
 #define LOG_TAG "DNAC_VERIFY"
 
 /**
- * @brief Verify balance (v1: plaintext sum check)
+ * @brief Per-token balance verification
  *
- * GENESIS: no inputs, outputs create coins from nothing (3-of-3 witness authorized)
- * SPEND: sum(inputs) == sum(outputs)
+ * For each distinct token_id across inputs and outputs:
+ *   sum(inputs[token]) >= sum(outputs[token])
+ *
+ * GENESIS: no inputs, outputs create coins (skip).
+ * TOKEN_CREATE: mixed tokens expected (skip — witness handles).
  */
-static int verify_balance_v1(const dnac_transaction_t *tx) {
-    /* GENESIS: no inputs, outputs create coins from nothing (v0.5.0) */
+static int verify_balance_per_token(const dnac_transaction_t *tx) {
     if (tx->type == DNAC_TX_GENESIS) {
-        if (tx->input_count != 0) {
-            return DNAC_ERROR_INVALID_PROOF;
-        }
-        /* Genesis supply is validated by witnesses - no local cap check */
+        if (tx->input_count != 0) return DNAC_ERROR_INVALID_PROOF;
         return DNAC_SUCCESS;
     }
+    if (tx->type == DNAC_TX_TOKEN_CREATE) return DNAC_SUCCESS;
 
-    /* SPEND: sum(inputs) >= sum(outputs), difference is burned fee */
-    uint64_t total_in = dnac_tx_total_input(tx);
-    uint64_t total_out = dnac_tx_total_output(tx);
-    if (total_in < total_out) {
-        return DNAC_ERROR_INVALID_PROOF;
+    /* Collect unique token_ids */
+    uint8_t tokens[32][DNAC_TOKEN_ID_SIZE];
+    int token_count = 0;
+
+    for (int i = 0; i < tx->input_count; i++) {
+        bool found = false;
+        for (int t = 0; t < token_count; t++) {
+            if (memcmp(tokens[t], tx->inputs[i].token_id, DNAC_TOKEN_ID_SIZE) == 0) {
+                found = true; break;
+            }
+        }
+        if (!found && token_count < 32)
+            memcpy(tokens[token_count++], tx->inputs[i].token_id, DNAC_TOKEN_ID_SIZE);
+    }
+    for (int i = 0; i < tx->output_count; i++) {
+        bool found = false;
+        for (int t = 0; t < token_count; t++) {
+            if (memcmp(tokens[t], tx->outputs[i].token_id, DNAC_TOKEN_ID_SIZE) == 0) {
+                found = true; break;
+            }
+        }
+        if (!found && token_count < 32)
+            memcpy(tokens[token_count++], tx->outputs[i].token_id, DNAC_TOKEN_ID_SIZE);
+    }
+
+    for (int t = 0; t < token_count; t++) {
+        uint64_t sum_in = 0, sum_out = 0;
+        for (int i = 0; i < tx->input_count; i++) {
+            if (memcmp(tx->inputs[i].token_id, tokens[t], DNAC_TOKEN_ID_SIZE) == 0) {
+                if (safe_add_u64(sum_in, tx->inputs[i].amount, &sum_in) != 0)
+                    return DNAC_ERROR_OVERFLOW;
+            }
+        }
+        for (int i = 0; i < tx->output_count; i++) {
+            if (memcmp(tx->outputs[i].token_id, tokens[t], DNAC_TOKEN_ID_SIZE) == 0) {
+                if (safe_add_u64(sum_out, tx->outputs[i].amount, &sum_out) != 0)
+                    return DNAC_ERROR_OVERFLOW;
+            }
+        }
+        if (sum_in < sum_out) return DNAC_ERROR_INVALID_PROOF;
     }
     return DNAC_SUCCESS;
 }
@@ -141,39 +177,20 @@ int verify_witnesses(const dnac_transaction_t *tx) {
 }
 
 /**
- * @brief Verify sender signature
- *
- * Verifies the Dilithium5 signature on tx_hash using sender's public key.
+ * @brief Verify all signers' Dilithium5 signatures over tx_hash
  */
-int verify_sender_signature(const dnac_transaction_t *tx) {
-    int ret = qgp_dsa87_verify(tx->sender_signature, DNAC_SIGNATURE_SIZE,
-                               tx->tx_hash, DNAC_TX_HASH_SIZE,
-                               tx->sender_pubkey);
-    return (ret == 0) ? DNAC_SUCCESS : DNAC_ERROR_INVALID_SIGNATURE;
-}
+int verify_signers(const dnac_transaction_t *tx) {
+    if (tx->signer_count == 0) return DNAC_ERROR_INVALID_SIGNATURE;
+    if (tx->signer_count > DNAC_TX_MAX_SIGNERS) return DNAC_ERROR_INVALID_PARAM;
 
-/**
- * @brief Verify all inputs and outputs have the same token_id
- *
- * For SPEND/BURN: all inputs must match, all outputs must match inputs.
- * For TOKEN_CREATE: skip (mixed token_ids expected — fee is DNAC, output is new token).
- * For GENESIS: skip (no inputs).
- */
-static int verify_token_consistency(const dnac_transaction_t *tx) {
-    if (tx->type == DNAC_TX_TOKEN_CREATE || tx->type == DNAC_TX_GENESIS)
-        return DNAC_SUCCESS;
-    if (tx->input_count == 0)
-        return DNAC_SUCCESS;
-
-    const uint8_t *expected = tx->inputs[0].token_id;
-
-    for (int i = 1; i < tx->input_count; i++) {
-        if (memcmp(tx->inputs[i].token_id, expected, DNAC_TOKEN_ID_SIZE) != 0)
-            return DNAC_ERROR_INVALID_PARAM;
-    }
-    for (int i = 0; i < tx->output_count; i++) {
-        if (memcmp(tx->outputs[i].token_id, expected, DNAC_TOKEN_ID_SIZE) != 0)
-            return DNAC_ERROR_INVALID_PARAM;
+    for (int i = 0; i < tx->signer_count; i++) {
+        int ret = qgp_dsa87_verify(tx->signers[i].signature, DNAC_SIGNATURE_SIZE,
+                                   tx->tx_hash, DNAC_TX_HASH_SIZE,
+                                   tx->signers[i].pubkey);
+        if (ret != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "signer %d signature invalid", i);
+            return DNAC_ERROR_INVALID_SIGNATURE;
+        }
     }
     return DNAC_SUCCESS;
 }
@@ -183,24 +200,19 @@ static int verify_token_consistency(const dnac_transaction_t *tx) {
  */
 int dnac_tx_verify_full(const dnac_transaction_t *tx) {
     int rc;
-
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
 
-    /* 0. Verify token_id consistency */
-    rc = verify_token_consistency(tx);
+    /* 1. Per-token balance */
+    rc = verify_balance_per_token(tx);
     if (rc != DNAC_SUCCESS) return rc;
 
-    /* 1. Verify balance (or mint rules) */
-    rc = verify_balance_v1(tx);
-    if (rc != DNAC_SUCCESS) return rc;
-
-    /* 2. Verify witnesses (required for both SPEND and GENESIS) */
+    /* 2. Witnesses */
     rc = verify_witnesses(tx);
     if (rc != DNAC_SUCCESS) return rc;
 
-    /* 3. Sender signature (skip for GENESIS - witnesses authorize) */
+    /* 3. Signer signatures (skip for genesis) */
     if (tx->type != DNAC_TX_GENESIS) {
-        rc = verify_sender_signature(tx);
+        rc = verify_signers(tx);
         if (rc != DNAC_SUCCESS) return rc;
     }
 
