@@ -283,6 +283,17 @@ typedef struct nodus_witness {
     uint8_t         cached_state_root[64];  /* NODUS_KEY_BYTES */
     bool            cached_state_root_valid;
 
+    /* Phase 6 / Task 31 — per-block fee accumulator.
+     *
+     * Collected from every SPEND/TOKEN_CREATE TX in the current block.
+     * Replaces the legacy "fee → burn UTXO" path: fees are no longer
+     * burned to DNAC_BURN_ADDRESS; they accumulate here and Phase 9
+     * Task 49 will drain this pool into the committee reward
+     * accumulator at block finalize time. Cleared on every successful
+     * block commit (finalize_block). Native DNAC only — token-fee
+     * handling deferred to a later phase. */
+    uint64_t        block_fee_pool;
+
     /* Witness database (separate from DHT storage) */
     sqlite3     *db;
     char        data_path[256];             /* For creating chain DB on genesis */
@@ -376,6 +387,21 @@ void nodus_witness_peer_conn_closed(nodus_witness_t *witness,
  */
 int nodus_witness_create_chain_db(nodus_witness_t *witness,
                                     const uint8_t *chain_id);
+
+/**
+ * Phase 6 / Task 31 — read the current block fee pool.
+ *
+ * Returns the accumulated native DNAC fee amount for the in-progress
+ * block. Phase 9 Task 49 will call this inside finalize_block to feed
+ * the committee reward accumulator. Callers pass NULL output to just
+ * sanity-check the pointer.
+ *
+ * @param witness  witness context
+ * @param out      where to write the accumulator value (may be NULL)
+ * @return 0 on success, -1 if witness is NULL
+ */
+int nodus_witness_get_block_fee_pool(const nodus_witness_t *witness,
+                                       uint64_t *out);
 
 #ifdef __cplusplus
 }

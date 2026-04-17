@@ -587,3 +587,6 @@ register_witness_test(test_locked_utxo)
 
 # Task 30 — MIN_TENURE (Rule R) committee eligibility boundary
 register_witness_test(test_min_tenure_boundary)
+
+# Task 31 — SPEND fees route to block_fee_pool (not burn UTXO)
+register_witness_test(test_fee_routing)

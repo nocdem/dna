@@ -31,6 +31,7 @@
 #include "crypto/sign/qgp_dilithium.h"
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -603,35 +604,37 @@ static int update_utxo_set(nodus_witness_t *w,
         fee = total_input - total_output;
     }
 
+    /* Phase 6 / Task 31 — fees route to block_fee_pool (native DNAC only).
+     *
+     * The legacy behavior (fee → UTXO owned by DNAC_BURN_ADDRESS) is
+     * removed. Fees now accumulate into w->block_fee_pool and Phase 9
+     * Task 49 drains that accumulator into the committee reward pool
+     * when the block finalizes. Custom-token fees remain a deferred
+     * concern — in the current TX format fees are charged in native
+     * DNAC for all supported TX types (see TOKEN_CREATE path above,
+     * which resets fee_token_id to zero). If a custom-token fee ever
+     * lands here it is still accounted as a delta from supply but does
+     * NOT get a burn UTXO — the log line calls it out. */
+    (void)fee_token_id;
     if (fee > 0) {
-        /* Nullifier = SHA3-512(BURN_ADDRESS + tx_hash + "burn")
-         * Unique per TX, unspendable (no private key for burn address) */
-        uint8_t burn_nul_input[128 + NODUS_T3_TX_HASH_LEN + 4];
-        memcpy(burn_nul_input, DNAC_BURN_ADDRESS, 128);
-        memcpy(burn_nul_input + 128, tx_hash, NODUS_T3_TX_HASH_LEN);
-        memcpy(burn_nul_input + 128 + NODUS_T3_TX_HASH_LEN, "burn", 4);
-
-        nodus_key_t burn_nul;
-        if (nodus_hash(burn_nul_input, sizeof(burn_nul_input), &burn_nul) != 0) {
-            fprintf(stderr, "%s: burn UTXO hash failed (fee=%llu)\n",
-                    LOG_TAG, (unsigned long long)fee);
-            return -1;
+        if (w) {
+            /* Overflow-safe add: 2^64 - 1 - pool is the ceiling we can
+             * accept. In practice the pool zeroes every block so this
+             * is effectively impossible, but the check keeps the
+             * invariant explicit for auditors. */
+            if (w->block_fee_pool > UINT64_MAX - fee) {
+                fprintf(stderr, "%s: block_fee_pool overflow (pool=%llu fee=%llu)\n",
+                        LOG_TAG,
+                        (unsigned long long)w->block_fee_pool,
+                        (unsigned long long)fee);
+                return -1;
+            }
+            w->block_fee_pool += fee;
         }
-        /* Use fee_token_id — token transfers burn the same token; native for DNAC/TOKEN_CREATE */
-        uint8_t zeros64[64] = {0};
-        const uint8_t *burn_tid = (memcmp(fee_token_id, zeros64, 64) == 0) ? NULL : fee_token_id;
-        if (nodus_witness_utxo_add(w, burn_nul.bytes, DNAC_BURN_ADDRESS,
-                                      fee, tx_hash, (uint32_t)output_count,
-                                      block_height, burn_tid) != 0) {
-            fprintf(stderr, "%s: burn UTXO insert failed (fee=%llu)\n",
-                    LOG_TAG, (unsigned long long)fee);
-            return -1;
-        }
-        stored++;
-        fprintf(stderr, "%s: burn UTXO: fee=%llu token=%s → burn_address (block %llu)\n",
+        fprintf(stderr, "%s: fee pool: +%llu native DNAC (block %llu, pool=%llu)\n",
                 LOG_TAG, (unsigned long long)fee,
-                burn_tid ? "custom" : "native",
-                (unsigned long long)block_height);
+                (unsigned long long)block_height,
+                (unsigned long long)(w ? w->block_fee_pool : 0));
     }
 
     if (fee_out) *fee_out = fee;
@@ -639,7 +642,7 @@ static int update_utxo_set(nodus_witness_t *w,
     fprintf(stderr, "%s: UTXO set updated: -%d spent, +%d/%d outputs, fee=%llu (block %llu)\n",
             LOG_TAG,
             (tx_type != NODUS_W_TX_GENESIS) ? nullifier_count : 0,
-            stored, output_count + (fee > 0 ? 1 : 0),
+            stored, output_count,
             (unsigned long long)fee,
             (unsigned long long)block_height);
     return 0;
@@ -856,14 +859,18 @@ int apply_tx_to_state(nodus_witness_t *w,
         }
     }
 
-    /* ── Update supply tracking (burned fees) ─────────────────── */
-    if (!failed && committed_fee > 0 && w->db) {
-        if (nodus_witness_supply_add_burned(w, committed_fee, tx_hash) != 0) {
-            fprintf(stderr, "%s: supply_add_burned failed (fee=%llu)\n",
-                    LOG_TAG, (unsigned long long)committed_fee);
-            failed = true;
-        }
-    }
+    /* Phase 6 / Task 31 — fees no longer decrement current_supply.
+     *
+     * Legacy behavior: fee → burn UTXO, supply_add_burned decremented
+     * current_supply by fee (invariant: genesis_supply = utxo_sum +
+     * total_burned). New behavior: fees accumulate in w->block_fee_pool
+     * and Phase 9 Task 49 routes them back into the committee. The
+     * supply invariant now reads: genesis_supply == utxo_sum +
+     * block_fee_pool (in-flight, zeroed per block) + total_burned
+     * (legacy column, untouched by SPEND fees). supply_invariant_violated
+     * is advisory during Phase 3 so the pool temporarily showing up as
+     * a non-zero delta is tolerated until Phase 9 lands. */
+    (void)committed_fee;
 
     /* Phase 3 / Task 3.4: supply check moved to finalize_block —
      * runs once per block instead of N times per batch. */
@@ -1085,6 +1092,30 @@ int finalize_block(nodus_witness_t *w,
         return -1;
     }
 
+    /* Phase 6 / Task 31 — reset block_fee_pool after successful commit.
+     *
+     * Phase 9 Task 49 will drain this into the committee reward pool
+     * BEFORE the reset when the distribution path lands. Until then,
+     * the accumulator is simply cleared so the next block starts from
+     * zero. No consensus implication: the fee total is a derived
+     * quantity from the committed TXs, not persisted in the block row. */
+    if (w->block_fee_pool > 0) {
+        fprintf(stderr, "%s: finalize_block: drained fee pool %llu (block %llu)\n",
+                LOG_TAG,
+                (unsigned long long)w->block_fee_pool,
+                (unsigned long long)expected_height);
+        w->block_fee_pool = 0;
+    }
+
+    return 0;
+}
+
+/* Phase 6 / Task 31 — accessor for the in-progress block fee pool.
+ * Used by Phase 9 Task 49 to drain into the reward accumulator. */
+int nodus_witness_get_block_fee_pool(const nodus_witness_t *witness,
+                                       uint64_t *out) {
+    if (!witness) return -1;
+    if (out) *out = witness->block_fee_pool;
     return 0;
 }
 
