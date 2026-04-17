@@ -39,6 +39,17 @@
     buf += (len); \
 } while(0)
 
+/* Big-endian u64 helpers for Phase 5 appended-field encoding (design §2.3).
+ * Local to serialize.c so the wire encoding is BE even on LE hosts. */
+static inline void be64_to_bytes(uint64_t v, uint8_t out[8]) {
+    for (int i = 7; i >= 0; i--) { out[i] = (uint8_t)(v & 0xff); v >>= 8; }
+}
+static inline uint64_t be64_from_bytes(const uint8_t in[8]) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) { v = (v << 8) | (uint64_t)in[i]; }
+    return v;
+}
+
 /* Calculate v1 transaction size */
 static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     size_t size = 0;
@@ -77,6 +88,15 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     /* Phase 5 Task 17. DELEGATE carries validator_pubkey(2592). */
     if (tx->type == DNAC_TX_DELEGATE) {
         size += DNAC_PUBKEY_SIZE;
+    }
+    /* Phase 5 Task 18. UNDELEGATE carries validator_pubkey(2592) + amount(u64). */
+    if (tx->type == DNAC_TX_UNDELEGATE) {
+        size += DNAC_PUBKEY_SIZE + 8;
+    }
+    /* Phase 5 Task 18. CLAIM_REWARD carries target_validator(2592) +
+     * max_pending_amount(u64) + valid_before_block(u64). */
+    if (tx->type == DNAC_TX_CLAIM_REWARD) {
+        size += DNAC_PUBKEY_SIZE + 8 + 8;
     }
 
     /* Optional anchored-genesis chain_def trailer (v2 wire extension).
@@ -163,6 +183,23 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
     /* Phase 5 Task 17. DELEGATE: validator_pubkey[2592]. */
     if (tx->type == DNAC_TX_DELEGATE) {
         WRITE_BLOB(ptr, tx->delegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
+    }
+    /* Phase 5 Task 18. UNDELEGATE: validator_pubkey[2592] || amount(u64 BE). */
+    if (tx->type == DNAC_TX_UNDELEGATE) {
+        WRITE_BLOB(ptr, tx->undelegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
+        uint8_t amount_be[8];
+        be64_to_bytes(tx->undelegate_fields.amount, amount_be);
+        WRITE_BLOB(ptr, amount_be, 8);
+    }
+    /* Phase 5 Task 18. CLAIM_REWARD: target_validator[2592] ||
+     *        max_pending_amount(u64 BE) || valid_before_block(u64 BE). */
+    if (tx->type == DNAC_TX_CLAIM_REWARD) {
+        WRITE_BLOB(ptr, tx->claim_reward_fields.target_validator, DNAC_PUBKEY_SIZE);
+        uint8_t max_be[8], valid_be[8];
+        be64_to_bytes(tx->claim_reward_fields.max_pending_amount, max_be);
+        be64_to_bytes(tx->claim_reward_fields.valid_before_block, valid_be);
+        WRITE_BLOB(ptr, max_be, 8);
+        WRITE_BLOB(ptr, valid_be, 8);
     }
 
     /* Anchored-genesis chain_def trailer (optional, genesis TX only). */
@@ -331,6 +368,29 @@ int dnac_tx_deserialize(const uint8_t *buffer,
             return DNAC_ERROR_INVALID_PARAM;
         }
         READ_BLOB(ptr, tx->delegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
+    }
+    /* Phase 5 Task 18. UNDELEGATE: validator_pubkey[2592] || amount(u64 BE). */
+    if (tx->type == DNAC_TX_UNDELEGATE) {
+        if (ptr + DNAC_PUBKEY_SIZE + 8 > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        READ_BLOB(ptr, tx->undelegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
+        tx->undelegate_fields.amount = be64_from_bytes(ptr);
+        ptr += 8;
+    }
+    /* Phase 5 Task 18. CLAIM_REWARD: target_validator[2592] ||
+     *        max_pending_amount(u64 BE) || valid_before_block(u64 BE). */
+    if (tx->type == DNAC_TX_CLAIM_REWARD) {
+        if (ptr + DNAC_PUBKEY_SIZE + 16 > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        READ_BLOB(ptr, tx->claim_reward_fields.target_validator, DNAC_PUBKEY_SIZE);
+        tx->claim_reward_fields.max_pending_amount = be64_from_bytes(ptr);
+        ptr += 8;
+        tx->claim_reward_fields.valid_before_block = be64_from_bytes(ptr);
+        ptr += 8;
     }
 
     /* Optional anchored-genesis chain_def trailer.

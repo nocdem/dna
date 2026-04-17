@@ -80,6 +80,36 @@ typedef struct {
 } dnac_tx_delegate_fields_t;
 
 /**
+ * @brief UNDELEGATE TX appended fields (design §2.3, Phase 5 Task 18)
+ *
+ * Populated only when `dnac_transaction_t.type == DNAC_TX_UNDELEGATE`.
+ * The validator_pubkey identifies the validator the delegator is
+ * unbonding from; amount is the base-units delegation quantity to
+ * withdraw. Both bound into the TX hash preimage.
+ */
+typedef struct {
+    uint8_t  validator_pubkey[DNAC_PUBKEY_SIZE];  /**< Dilithium5 pubkey */
+    uint64_t amount;                              /**< Undelegate amount (base units) */
+} dnac_tx_undelegate_fields_t;
+
+/**
+ * @brief CLAIM_REWARD TX appended fields (design §2.3, Phase 5 Task 18)
+ *
+ * Populated only when `dnac_transaction_t.type == DNAC_TX_CLAIM_REWARD`.
+ *
+ * `max_pending_amount` caps how much reward the claim may drain (replay
+ * defense if the reward accrual table advanced between sign & submit).
+ * `valid_before_block` is the claim's block-height expiry — the witness
+ * rejects the claim after this height, so a stale offline-signed claim
+ * cannot be submitted later and drain new rewards.
+ */
+typedef struct {
+    uint8_t  target_validator[DNAC_PUBKEY_SIZE];  /**< Validator whose rewards to claim */
+    uint64_t max_pending_amount;                  /**< Upper bound on claimed amount */
+    uint64_t valid_before_block;                  /**< Block-height expiry */
+} dnac_tx_claim_reward_fields_t;
+
+/**
  * @brief Transaction signer (authorization)
  *
  * Each signer provides a Dilithium5 pubkey and signature over tx_hash.
@@ -196,8 +226,10 @@ struct dnac_transaction {
     /* Per-type appended fields (design §2.3, Phase 5 Tasks 16-20).
      * Only the arm matching `type` is populated; others are zero. A union
      * can replace this struct layout later when more TX types ship. */
-    dnac_tx_stake_fields_t    stake_fields;     /**< valid when type == DNAC_TX_STAKE */
-    dnac_tx_delegate_fields_t delegate_fields;  /**< valid when type == DNAC_TX_DELEGATE */
+    dnac_tx_stake_fields_t        stake_fields;        /**< valid when type == DNAC_TX_STAKE */
+    dnac_tx_delegate_fields_t     delegate_fields;     /**< valid when type == DNAC_TX_DELEGATE */
+    dnac_tx_undelegate_fields_t   undelegate_fields;   /**< valid when type == DNAC_TX_UNDELEGATE */
+    dnac_tx_claim_reward_fields_t claim_reward_fields; /**< valid when type == DNAC_TX_CLAIM_REWARD */
 };
 
 /* ============================================================================

@@ -317,6 +317,25 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
         EVP_DigestUpdate(ctx, tx->delegate_fields.validator_pubkey,
                          DNAC_PUBKEY_SIZE);
     }
+    /* Phase 5 Task 18. UNDELEGATE: validator_pubkey[2592] || amount(u64 BE). */
+    if (tx->type == DNAC_TX_UNDELEGATE) {
+        EVP_DigestUpdate(ctx, tx->undelegate_fields.validator_pubkey,
+                         DNAC_PUBKEY_SIZE);
+        uint8_t amount_be[8];
+        tx_be64_into(tx->undelegate_fields.amount, amount_be);
+        EVP_DigestUpdate(ctx, amount_be, sizeof(amount_be));
+    }
+    /* Phase 5 Task 18. CLAIM_REWARD: target_validator[2592] ||
+     *        max_pending_amount(u64 BE) || valid_before_block(u64 BE). */
+    if (tx->type == DNAC_TX_CLAIM_REWARD) {
+        EVP_DigestUpdate(ctx, tx->claim_reward_fields.target_validator,
+                         DNAC_PUBKEY_SIZE);
+        uint8_t be[8];
+        tx_be64_into(tx->claim_reward_fields.max_pending_amount, be);
+        EVP_DigestUpdate(ctx, be, sizeof(be));
+        tx_be64_into(tx->claim_reward_fields.valid_before_block, be);
+        EVP_DigestUpdate(ctx, be, sizeof(be));
+    }
 
     unsigned int hash_len;
     if (EVP_DigestFinal_ex(ctx, hash_out, &hash_len) != 1) {
