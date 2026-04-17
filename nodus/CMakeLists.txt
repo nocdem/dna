@@ -132,6 +132,7 @@ if(NOT WIN32)
         src/witness/nodus_witness_mempool.c
         src/witness/nodus_witness_cert.c
         src/witness/nodus_witness_spend_preimage.c
+        src/witness/nodus_witness_validator.c
     )
 endif()
 
@@ -150,6 +151,7 @@ target_include_directories(nodus PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${SHARED_DIR}
     ${SHARED_DIR}/crypto
+    ${MONOREPO_ROOT}/dnac/include
 )
 # OpenSSL and SQLite3 include dirs — needed regardless of standalone mode.
 # When standalone, find_package above sets these. When within messenger tree,
@@ -570,3 +572,6 @@ if(JSONC_FOUND)
     target_include_directories(nodus-server PRIVATE ${JSONC_INCLUDE_DIRS})
     target_link_libraries(nodus-server ${JSONC_LIBRARIES})
 endif()
+
+# Task 12 — validator tree DB CRUD (witness stake v1 / Phase 4)
+register_witness_test(test_validator_db)
