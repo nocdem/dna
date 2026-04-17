@@ -133,6 +133,8 @@ if(NOT WIN32)
         src/witness/nodus_witness_cert.c
         src/witness/nodus_witness_spend_preimage.c
         src/witness/nodus_witness_validator.c
+        src/witness/nodus_witness_delegation.c
+        src/witness/nodus_witness_reward.c
     )
 endif()
 
@@ -575,3 +577,7 @@ endif()
 
 # Task 12 — validator tree DB CRUD (witness stake v1 / Phase 4)
 register_witness_test(test_validator_db)
+
+# Task 13 — delegation + reward DB CRUD (witness stake v1 / Phase 4)
+register_witness_test(test_delegation_db)
+register_witness_test(test_reward_db)
