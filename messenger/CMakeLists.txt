@@ -233,6 +233,7 @@ if(BUILD_SHARED_LIB)
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/tcp_client.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/token_create.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/stake.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/db/db.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/utils/crypto_helpers.c
         # Modular messenger components
@@ -355,6 +356,7 @@ else()
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/tcp_client.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/token_create.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/stake.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/db/db.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/utils/crypto_helpers.c
         # Modular messenger components
