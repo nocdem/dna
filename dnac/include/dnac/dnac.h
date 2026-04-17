@@ -682,6 +682,46 @@ int dnac_validator_update(dnac_context_t *ctx,
                           void *user_data);
 
 /* ============================================================================
+ * Stake & Delegation — Client-side Query API (Phase 7 Tasks 38, 39)
+ *
+ * The stubs below expose the API shape for reward + validator queries.
+ * The witness-side RPC handlers land in Phase 14 (Tasks 61-63). Until
+ * then these functions log a WARN and return DNAC_ERROR_NOT_IMPLEMENTED;
+ * CLI + Flutter should guard on that return code when rendering UI.
+ * ========================================================================== */
+
+/**
+ * @brief Query the witness for the total pending reward accrued to a
+ *        given claimant across all of their delegations plus any
+ *        validator-side self-claim.
+ *
+ * STUB — the witness-side RPC handler (dnac_pending_rewards_query) lands
+ * in Phase 14 Task 61. Until then this function returns
+ * DNAC_ERROR_NOT_IMPLEMENTED and zeroes *total_pending_out for safety.
+ *
+ * The builder for CLAIM_REWARD already exists (see dnac_claim_reward);
+ * once the Phase 14 RPC is wired the auto-claim helper can call this
+ * function to obtain `max_pending_amount` before building the TX.
+ *
+ * @param ctx              DNAC context
+ * @param claimant_pubkey  Claimant's Dilithium5 pubkey
+ *                         (DNAC_PUBKEY_SIZE bytes). Pass NULL to query
+ *                         the caller's own pending rewards.
+ * @param total_pending_out Total pending amount across all validators
+ *                          (raw units). Always written (0 on error).
+ * @param callback         Completion callback (for async RPC once wired;
+ *                         ignored by the current stub)
+ * @param user_data        Callback user data (ignored by the stub)
+ * @return DNAC_SUCCESS once wired, DNAC_ERROR_NOT_IMPLEMENTED until
+ *         Phase 14, DNAC_ERROR_INVALID_PARAM on NULL total_pending_out
+ */
+int dnac_get_pending_rewards(dnac_context_t *ctx,
+                             const uint8_t *claimant_pubkey,
+                             uint64_t *total_pending_out,
+                             dnac_callback_t callback,
+                             void *user_data);
+
+/* ============================================================================
  * Transaction Builder (Advanced)
  * ========================================================================== */
 
