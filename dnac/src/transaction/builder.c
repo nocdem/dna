@@ -303,6 +303,9 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
         return DNAC_ERROR_INVALID_PARAM;
     }
 
+    /* Pre-sync: fresh UTXO set before broadcast */
+    dnac_sync_wallet(ctx);
+
     int rc;
     dna_engine_t *engine = dnac_get_engine(ctx);
     if (!engine) return DNAC_ERROR_NOT_INITIALIZED;
@@ -605,6 +608,10 @@ receipt_ok:;
     }
 
     free(tx_buffer);
+
+    /* Post-sync: refresh UTXO set after successful broadcast */
+    dnac_sync_wallet(ctx);
+
     return DNAC_SUCCESS;
 }
 
