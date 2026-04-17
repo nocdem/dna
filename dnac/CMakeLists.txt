@@ -358,6 +358,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 6 Task 32: cross-chain DELEGATE replay (F-CRYPTO-10)
     register_dnac_test(test_cross_chain_replay)
+
+    # Stake & delegation v1 — Phase 6 Task 33: cross-protocol STAKE reuse (F-CRYPTO-05)
+    register_dnac_test(test_purpose_tag_reuse)
 endif()
 
 # ============================================================================
