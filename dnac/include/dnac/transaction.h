@@ -27,6 +27,19 @@ extern "C" {
 #define DNAC_TX_MAX_INPUTS          16
 #define DNAC_TX_MAX_OUTPUTS         16
 #define DNAC_TX_MAX_WITNESSES       3
+#define DNAC_TX_MAX_SIGNERS         4
+
+/**
+ * @brief Transaction signer (authorization)
+ *
+ * Each signer provides a Dilithium5 pubkey and signature over tx_hash.
+ * Single-party transactions use signers[0]. Multi-party (atomic swap)
+ * uses 2+ signers. Each input's owner must match some signer's pubkey.
+ */
+typedef struct {
+    uint8_t pubkey[DNAC_PUBKEY_SIZE];       /**< Dilithium5 public key (2592B) */
+    uint8_t signature[DNAC_SIGNATURE_SIZE]; /**< Dilithium5 signature (4627B) */
+} dnac_tx_signer_t;
 
 /* ============================================================================
  * Transaction Structures
@@ -103,13 +116,13 @@ struct dnac_transaction {
     dnac_tx_output_internal_t outputs[DNAC_TX_MAX_OUTPUTS];
     int output_count;
 
-    /* Witness signatures (2 required for valid transaction) */
+    /* Witness signatures (1 required, BFT mode) */
     dnac_witness_sig_t witnesses[DNAC_TX_MAX_WITNESSES];
     int witness_count;
 
-    /* Sender authorization (Dilithium5 signature) */
-    uint8_t sender_pubkey[DNAC_PUBKEY_SIZE];
-    uint8_t sender_signature[DNAC_SIGNATURE_SIZE];
+    /* Signer authorization (Dilithium5 signatures) */
+    dnac_tx_signer_t signers[DNAC_TX_MAX_SIGNERS];
+    uint8_t signer_count;
 
     /* Anchored genesis chain definition (genesis TX only, optional).
      * When has_chain_def is true AND type == DNAC_TX_GENESIS, the TX
@@ -203,6 +216,18 @@ int dnac_tx_finalize(dnac_transaction_t *tx,
 int dnac_tx_add_witness(dnac_transaction_t *tx, const dnac_witness_sig_t *witness);
 
 /**
+ * @brief Add signer to transaction
+ *
+ * @param tx Transaction
+ * @param pubkey Signer's Dilithium5 public key (DNAC_PUBKEY_SIZE bytes)
+ * @param signature Signer's signature over tx_hash (DNAC_SIGNATURE_SIZE bytes)
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_tx_add_signer(dnac_transaction_t *tx,
+                       const uint8_t *pubkey,
+                       const uint8_t *signature);
+
+/**
  * @brief Verify transaction
  *
  * Verifies sum(inputs) == sum(outputs), signature valid, 2+ witnesses.
@@ -270,7 +295,7 @@ uint64_t dnac_tx_total_output(const dnac_transaction_t *tx);
  * a one-time GENESIS event. See include/dnac/genesis.h for the Genesis API.
  *
  * - dnac_tx_create_genesis()    - Create genesis with multiple recipients
- * - dnac_tx_authorize_genesis() - Get 3-of-3 witness approval (unanimous)
+ * - dnac_tx_authorize_genesis() - Get unanimous (N/N) BFT witness approval
  * - dnac_tx_broadcast_genesis() - Send genesis tokens via DHT
  * ========================================================================== */
 
