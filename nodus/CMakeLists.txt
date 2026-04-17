@@ -407,6 +407,11 @@ add_executable(test_merkle_leaf_helpers tests/test_merkle_leaf_helpers.c)
 target_link_libraries(test_merkle_leaf_helpers nodus dsa nodus)
 add_test(NAME test_merkle_leaf_helpers COMMAND test_merkle_leaf_helpers)
 
+# 4-subtree composite state_root KAT (witness stake v1 / Phase 3 Task 10)
+add_executable(test_state_root_4subtree tests/test_state_root_4subtree.c)
+target_link_libraries(test_state_root_4subtree nodus dsa nodus)
+add_test(NAME test_state_root_4subtree COMMAND test_state_root_4subtree)
+
 # UTXO state_root determinism tests (Phase 2 / Task 2.5)
 add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
 target_link_libraries(test_merkle_utxo_root nodus dsa nodus)

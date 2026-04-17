@@ -1052,9 +1052,14 @@ int finalize_block(nodus_witness_t *w,
      * cached_state_root. */
     w->cached_state_root_valid = false;
 
-    /* 1. Compute post-batch state_root. */
+    /* 1. Compute post-batch state_root.
+     *
+     * Phase 3 / Task 10: extended to SHA3-512(utxo || validator ||
+     * delegation || reward) via nodus_witness_merkle_compute_state_root.
+     * validator/delegation/reward subtrees default to empty-root stubs
+     * until Phase 4+ populates them from real state. */
     uint8_t state_root[NODUS_T3_TX_HASH_LEN];
-    if (nodus_witness_merkle_compute_utxo_root(w, state_root) != 0) {
+    if (nodus_witness_merkle_compute_state_root(w, state_root) != 0) {
         fprintf(stderr, "%s: finalize_block: state_root compute failed\n",
                 LOG_TAG);
         return -1;
@@ -1914,14 +1919,17 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     /* Phase 9 cleanup — legacy single-TX commit branch deleted; every
      * round goes through the batch path above since Phase 7. */
 
-    /* Compute UTXO set checksum */
+    /* Compute chain state_root (Phase 3 / Task 10: 4-subtree composite).
+     * The cached_state_root + COMMIT message field must match what
+     * finalize_block wrote into the block row, so we use the same
+     * compute_state_root path here. */
     uint8_t utxo_cksum[NODUS_KEY_BYTES];
-    bool have_cksum = (nodus_witness_merkle_compute_utxo_root(w, utxo_cksum) == 0);
+    bool have_cksum = (nodus_witness_merkle_compute_state_root(w, utxo_cksum) == 0);
     if (have_cksum) {
         char hex[17];
         for (int i = 0; i < 8; i++)
             snprintf(hex + i * 2, 3, "%02x", utxo_cksum[i]);
-        fprintf(stderr, "%s: UTXO checksum after round %llu: %s\n",
+        fprintf(stderr, "%s: state_root after round %llu: %s\n",
                 LOG_TAG, (unsigned long long)w->round_state.round, hex);
         memcpy(w->cached_state_root, utxo_cksum, NODUS_KEY_BYTES);
         w->cached_state_root_valid = true;
@@ -2094,14 +2102,14 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
         nodus_witness_cert_store(w, bh, votes, (int)cmt->n_precommits);
     }
 
-    /* Compute UTXO set checksum and compare with leader's */
+    /* Compute chain state_root and compare with leader's (Phase 3 / Task 10). */
     {
         uint8_t utxo_cksum[NODUS_KEY_BYTES];
-        if (nodus_witness_merkle_compute_utxo_root(w, utxo_cksum) == 0) {
+        if (nodus_witness_merkle_compute_state_root(w, utxo_cksum) == 0) {
             char hex[17];
             for (int i = 0; i < 8; i++)
                 snprintf(hex + i * 2, 3, "%02x", utxo_cksum[i]);
-            QGP_LOG_DEBUG(LOG_TAG, "UTXO checksum after remote commit round %llu: %s",
+            QGP_LOG_DEBUG(LOG_TAG, "state_root after remote commit round %llu: %s",
                          (unsigned long long)hdr->round, hex);
 
             /* Compare with leader's checksum (if present) */
@@ -2109,7 +2117,7 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
             memset(zero_ck, 0, NODUS_KEY_BYTES);
             if (memcmp(cmt->state_root, zero_ck, NODUS_KEY_BYTES) != 0) {
                 if (memcmp(utxo_cksum, cmt->state_root, NODUS_KEY_BYTES) != 0) {
-                    QGP_LOG_WARN(LOG_TAG, "UTXO checksum DIVERGED from "
+                    QGP_LOG_WARN(LOG_TAG, "state_root DIVERGED from "
                                  "leader at round %llu!",
                                  (unsigned long long)hdr->round);
                 }

@@ -213,6 +213,71 @@ void nodus_merkle_leaf_value_hash(uint8_t tree_tag,
  */
 void nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]);
 
+/* ── Composite state_root combiner (witness stake v1 / Phase 3 Task 10) ──
+ *
+ * Per §3.1 of the stake v1 design, the chain-level state_root hashes
+ * four 64-byte subtree roots in a fixed positional order:
+ *
+ *     state_root = SHA3-512(utxo_root        ||
+ *                           validator_root   ||
+ *                           delegation_root  ||
+ *                           reward_root)
+ *
+ * Per-subtree domain separation is baked at the LEAF level via the
+ * NODUS_TREE_TAG_* prefixes (see nodus_merkle_leaf_key /
+ * nodus_merkle_leaf_value_hash). The outer combiner therefore does
+ * NOT add any additional tag byte — positional order alone provides
+ * domain separation at the state_root level. Swapping any two subtree
+ * roots MUST produce a different state_root.
+ *
+ * This deviation from the established RFC 6962 leaf-tag convention is
+ * intentional: the chain never needs to distinguish a state_root preimage
+ * from a plain 4-root concat, because state_root is used only as an
+ * opaque 64-byte chain-header field. See design §3.1 commentary on
+ * F-CRYPTO-04 for the full argument.
+ */
+
+/**
+ * Combine four subtree roots into the chain-level state_root.
+ * Pure function — no allocation, no DB, no logging. Safe to call
+ * from any thread.
+ *
+ * Order is fixed: utxo, validator, delegation, reward. ALL callers
+ * must use this order; any deviation is a consensus fork.
+ *
+ * @param utxo_root        64-byte UTXO subtree root
+ * @param validator_root   64-byte validator subtree root
+ * @param delegation_root  64-byte delegation subtree root
+ * @param reward_root      64-byte reward subtree root
+ * @param out_state_root   [out] 64-byte composite state_root
+ */
+void nodus_merkle_combine_state_root(const uint8_t utxo_root[64],
+                                     const uint8_t validator_root[64],
+                                     const uint8_t delegation_root[64],
+                                     const uint8_t reward_root[64],
+                                     uint8_t out_state_root[64]);
+
+/**
+ * Compute the chain-level state_root from the current witness state.
+ *
+ * Wraps compute_utxo_root (for the UTXO subtree) and combines its
+ * result with validator/delegation/reward subtree roots via
+ * nodus_merkle_combine_state_root. In Phase 3, the validator /
+ * delegation / reward subtrees default to nodus_merkle_empty_root
+ * for their respective tree tags. Phase 4+ replaces those stubs
+ * with real state reads once the DB migration lands.
+ *
+ * Callers that previously used nodus_witness_merkle_compute_utxo_root
+ * as the chain state_root MUST migrate to this function — otherwise
+ * the chain-header state_root diverges from the design §3.1 formula.
+ *
+ * @param w         Witness context (uses w->db)
+ * @param root_out  [out] 64-byte composite state_root
+ * @return 0 on success, -1 on error
+ */
+int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
+                                            uint8_t *root_out);
+
 #ifdef __cplusplus
 }
 #endif

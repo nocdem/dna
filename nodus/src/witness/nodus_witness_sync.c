@@ -183,7 +183,7 @@ void nodus_witness_sync_check(nodus_witness_t *w) {
         uint8_t local_cksum[NODUS_KEY_BYTES];
         if (w->cached_state_root_valid) {
             memcpy(local_cksum, w->cached_state_root, NODUS_KEY_BYTES);
-        } else if (nodus_witness_merkle_compute_utxo_root(w, local_cksum) != 0) {
+        } else if (nodus_witness_merkle_compute_state_root(w, local_cksum) != 0) {
             return;  /* Can't compute checksum */
         }
 
@@ -656,8 +656,8 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
         nodus_witness_cert_store(w, stored_bh, votes, (int)rsp->cert_count);
     }
 
-    /* Update cached UTXO checksum */
-    if (nodus_witness_merkle_compute_utxo_root(w, w->cached_state_root) == 0)
+    /* Update cached state_root (Phase 3 / Task 10: 4-subtree composite). */
+    if (nodus_witness_merkle_compute_state_root(w, w->cached_state_root) == 0)
         w->cached_state_root_valid = true;
 
     fprintf(stderr, "%s: replayed block %llu OK\n",
@@ -673,8 +673,8 @@ next:
                 LOG_TAG, (unsigned long long)final_height);
         w->sync_state.syncing = false;
 
-        /* Update cached UTXO checksum */
-        if (nodus_witness_merkle_compute_utxo_root(w, w->cached_state_root) == 0)
+        /* Update cached state_root (Phase 3 / Task 10: 4-subtree composite). */
+        if (nodus_witness_merkle_compute_state_root(w, w->cached_state_root) == 0)
             w->cached_state_root_valid = true;
 
         return 0;

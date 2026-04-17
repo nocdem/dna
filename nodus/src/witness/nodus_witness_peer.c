@@ -338,7 +338,9 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
     if (w->cached_state_root_valid) {
         memcpy(msg.ident.state_root, w->cached_state_root, NODUS_KEY_BYTES);
     } else {
-        nodus_witness_merkle_compute_utxo_root(w, msg.ident.state_root);
+        /* Phase 3 / Task 10: peer identification advertises the composite
+         * state_root (utxo || validator || delegation || reward). */
+        nodus_witness_merkle_compute_state_root(w, msg.ident.state_root);
     }
     msg.ident.current_view = w->current_view;
     msg.ident.roster_size = w->roster.n_witnesses;

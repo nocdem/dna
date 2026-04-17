@@ -662,6 +662,88 @@ void nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]) {
     }
 }
 
+/* ── Composite state_root combiner (witness stake v1 / Phase 3 Task 10) ──
+ *
+ * state_root = SHA3-512(utxo_root || validator_root || delegation_root
+ *                        || reward_root)
+ *
+ * No outer tag prefix — per-subtree domain separation is baked in at
+ * the leaf level (Task 9). Positional ordering alone separates the
+ * four subtree commitments at the chain-header level. See the header
+ * file for the full design-spec reference.
+ *
+ * Pure function: the four input roots are read-only and the single
+ * 64-byte output is written exactly once. No heap, no DB, no logging.
+ */
+void nodus_merkle_combine_state_root(const uint8_t utxo_root[64],
+                                     const uint8_t validator_root[64],
+                                     const uint8_t delegation_root[64],
+                                     const uint8_t reward_root[64],
+                                     uint8_t out_state_root[64]) {
+    if (!out_state_root) return;
+    if (!utxo_root || !validator_root || !delegation_root || !reward_root) {
+        merkle_tag_hash_zero_on_fail(out_state_root);
+        return;
+    }
+
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) {
+        merkle_tag_hash_zero_on_fail(out_state_root);
+        return;
+    }
+    if (EVP_DigestUpdate(md, utxo_root,       64) != 1 ||
+        EVP_DigestUpdate(md, validator_root,  64) != 1 ||
+        EVP_DigestUpdate(md, delegation_root, 64) != 1 ||
+        EVP_DigestUpdate(md, reward_root,     64) != 1) {
+        EVP_MD_CTX_free(md);
+        merkle_tag_hash_zero_on_fail(out_state_root);
+        return;
+    }
+    if (sha3_512_final(md, out_state_root) != 0) {
+        merkle_tag_hash_zero_on_fail(out_state_root);
+    }
+}
+
+/* ── Composite state_root: compute-from-witness wrapper ──────────────
+ *
+ * Pulls the UTXO subtree root via the existing compute_utxo_root path,
+ * synthesizes the other three subtree roots from nodus_merkle_empty_root
+ * (Phase 3 stubs — Phase 4+ replaces these with real table scans), and
+ * runs the combiner. The per-tag NODUS_TREE_TAG_* constants are defined
+ * in nodus/include/nodus/nodus_types.h.
+ *
+ * NOTE: All existing callers that used compute_utxo_root as the chain
+ * state_root (BFT finalize_block, cached_state_root cache, sync
+ * checksum, peer identification) were migrated to this function in
+ * Task 10. A remaining direct compute_utxo_root caller is
+ * nodus_witness_merkle_build_proof, which returns the UTXO subtree
+ * root for proof verification — that is intentionally unchanged since
+ * proofs anchor to the UTXO subtree, not the composed state_root.
+ */
+int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
+                                            uint8_t *root_out) {
+    if (!w || !root_out) return -1;
+
+    uint8_t utxo_root[64];
+    if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0) {
+        return -1;
+    }
+
+    uint8_t validator_root[64];
+    uint8_t delegation_root[64];
+    uint8_t reward_root[64];
+    nodus_merkle_empty_root(NODUS_TREE_TAG_VALIDATOR,  validator_root);
+    nodus_merkle_empty_root(NODUS_TREE_TAG_DELEGATION, delegation_root);
+    nodus_merkle_empty_root(NODUS_TREE_TAG_REWARD,     reward_root);
+
+    nodus_merkle_combine_state_root(utxo_root,
+                                    validator_root,
+                                    delegation_root,
+                                    reward_root,
+                                    root_out);
+    return 0;
+}
+
 /* ── Proof verification (pure function, RFC 6962) ───────────────────── */
 
 int nodus_witness_merkle_verify_proof(const uint8_t *leaf,
