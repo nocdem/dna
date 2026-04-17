@@ -302,6 +302,46 @@ int nodus_delegation_count_by_delegator(nodus_witness_t *w,
     return ret;
 }
 
+/* Phase 8 Task 42 — count delegations targeting the given validator.
+ * Feeds UNSTAKE Rule A (require NO delegation records exist with
+ * validator == signer[0]). */
+int nodus_delegation_count_by_validator(nodus_witness_t *w,
+                                         const uint8_t *validator_pubkey,
+                                         int *count_out) {
+    if (!w || !w->db || !validator_pubkey || !count_out) return -1;
+
+    uint8_t validator_hash[NODUS_DELEGATION_HASH_LEN];
+    delegation_row_hash(validator_pubkey, validator_hash);
+
+    sqlite3_stmt *stmt = NULL;
+    const char *sql =
+        "SELECT COUNT(*) FROM delegations WHERE validator_hash = ?";
+
+    int rc = sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: count_by_validator prepare failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    sqlite3_bind_blob(stmt, 1, validator_hash, NODUS_DELEGATION_HASH_LEN,
+                      SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    int ret;
+    if (rc == SQLITE_ROW) {
+        *count_out = sqlite3_column_int(stmt, 0);
+        ret = 0;
+    } else {
+        fprintf(stderr, "%s: count_by_validator step failed rc=%d: %s\n",
+                LOG_TAG, rc, sqlite3_errmsg(w->db));
+        ret = -1;
+    }
+
+    sqlite3_finalize(stmt);
+    return ret;
+}
+
 /* ── List by hash column (shared impl) ──────────────────────────── */
 
 static int delegation_list_by_hash(nodus_witness_t *w,

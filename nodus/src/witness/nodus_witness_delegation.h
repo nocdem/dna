@@ -87,6 +87,17 @@ int nodus_delegation_count_by_delegator(nodus_witness_t *w,
                                          int *count_out);
 
 /**
+ * Count the number of delegations targeting the given validator pubkey.
+ * Used by UNSTAKE verify Rule A — UNSTAKE is rejected if any delegation
+ * record references the signer as validator.
+ *
+ * @return 0 on success, -1 on error. *count_out is set on success.
+ */
+int nodus_delegation_count_by_validator(nodus_witness_t *w,
+                                         const uint8_t *validator_pubkey,
+                                         int *count_out);
+
+/**
  * List all delegations owned by the given delegator (up to max_entries).
  * Output records are read in undefined order — caller may sort if needed.
  *

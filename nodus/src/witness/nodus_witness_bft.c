@@ -1110,6 +1110,75 @@ static int apply_stake(nodus_witness_t *w,
     return 0;
 }
 
+/* Phase 8 Task 42 — UNSTAKE state mutation (phase 1 — RETIRING transition).
+ *
+ * UNSTAKE has no type-specific appended fields. The signer[0] pubkey is
+ * the validator requesting retirement. On success:
+ *   - status := RETIRING
+ *   - unstake_commit_block := block_height
+ *
+ * Rule A defense-in-depth: require NO delegation records exist with
+ * validator == signer[0]. Matches Phase 7 UNSTAKE verify rule A; this
+ * is the last-line-of-defense check.
+ *
+ * Graduation to UNSTAKED + cooldown UTXO emission is deferred to phase
+ * 2 (next epoch boundary). Keeps BFT peer set stable mid-epoch.
+ */
+static int apply_unstake(nodus_witness_t *w,
+                          const uint8_t *tx_data, uint32_t tx_len,
+                          uint64_t block_height) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_unstake: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    /* UNSTAKE has no appended fields — not enforced here (Phase 7
+     * UNSTAKE verify is the source of truth for wire-level constraints). */
+
+    /* Fetch validator — must exist and be ACTIVE. */
+    dnac_validator_record_t v;
+    int rc = nodus_validator_get(w, signer_pubkey, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_unstake: validator not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    if (v.status != DNAC_VALIDATOR_ACTIVE) {
+        fprintf(stderr, "%s: apply_unstake: validator not ACTIVE (status=%u)\n",
+                LOG_TAG, v.status);
+        return -1;
+    }
+
+    /* Rule A defense-in-depth: reject if any delegator references this
+     * validator. */
+    int deleg_count = 0;
+    if (nodus_delegation_count_by_validator(w, signer_pubkey,
+                                              &deleg_count) != 0) {
+        fprintf(stderr, "%s: apply_unstake: count_by_validator failed\n",
+                LOG_TAG);
+        return -1;
+    }
+    if (deleg_count != 0) {
+        fprintf(stderr, "%s: apply_unstake: %d delegations still reference this validator (Rule A)\n",
+                LOG_TAG, deleg_count);
+        return -1;
+    }
+
+    v.status               = DNAC_VALIDATOR_RETIRING;
+    v.unstake_commit_block = block_height;
+
+    rc = nodus_validator_update(w, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_unstake: validator_update failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    return 0;
+}
+
 /* apply_tx_to_state — Phase 3 / Task 3.1.
  *
  * Per-TX state mutation: extracts the per-TX body of the legacy
@@ -1246,6 +1315,10 @@ int apply_tx_to_state(nodus_witness_t *w,
         } else if (tx_type == NODUS_W_TX_DELEGATE) {
             if (apply_delegate(w, tx_data, tx_len, block_height,
                                 committed_fee) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_UNSTAKE) {
+            if (apply_unstake(w, tx_data, tx_len, block_height) != 0) {
                 failed = true;
             }
         }

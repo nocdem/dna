@@ -596,3 +596,6 @@ register_witness_test(test_apply_stake)
 
 # Task 41 — DELEGATE state mutation (delegation row + validator totals)
 register_witness_test(test_apply_delegate)
+
+# Task 42 — UNSTAKE phase 1 (RETIRING status transition)
+register_witness_test(test_apply_unstake)
