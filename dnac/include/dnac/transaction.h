@@ -409,6 +409,25 @@ int dnac_tx_verify_delegate_rules(const dnac_transaction_t *tx);
 int dnac_tx_verify_unstake_rules(const dnac_transaction_t *tx);
 
 /**
+ * @brief Verify UNDELEGATE-type rules only (design §2.4, Phase 6 Task 25)
+ *
+ * Runs the locally-verifiable UNDELEGATE rule subset:
+ *
+ *   - tx->type == DNAC_TX_UNDELEGATE
+ *   - signer_count == 1
+ *   - undelegate_fields.amount > 0
+ *
+ * Rules requiring delegation_record state (delegation existence,
+ * amount <= delegation.amount, Rule O hold duration current_block −
+ * delegated_at_block >= EPOCH_LENGTH) are NOT checked here — they run
+ * at state-apply time in the witness (Phase 8 Task 43).
+ *
+ * @param tx Transaction (must be UNDELEGATE type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_undelegate_rules(const dnac_transaction_t *tx);
+
+/**
  * @brief Serialize transaction to bytes
  *
  * @param tx Transaction

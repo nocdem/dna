@@ -343,6 +343,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 6 Task 24: UNSTAKE verify rules (local subset)
     register_dnac_test(test_unstake_verify)
+
+    # Stake & delegation v1 — Phase 6 Task 25: UNDELEGATE verify rules (local subset)
+    register_dnac_test(test_undelegate_verify)
 endif()
 
 # ============================================================================

@@ -279,6 +279,54 @@ int dnac_tx_verify_unstake_rules_internal(const dnac_transaction_t *tx) {
 }
 
 /**
+ * @brief Verify UNDELEGATE-type rules (design §2.4, Phase 6 Task 25).
+ *
+ * Enforces the locally-verifiable subset of the UNDELEGATE rule set:
+ *
+ *   - signer_count == 1
+ *   - undelegate_fields.amount > 0
+ *
+ * Rules requiring witness-side DB access are deferred to state-apply:
+ *   - delegation(signer[0], validator_pubkey) exists
+ *   - amount <= delegation.amount
+ *   - Rule O: current_block − delegation.delegated_at_block >= EPOCH_LENGTH
+ */
+static int verify_undelegate_rules(const dnac_transaction_t *tx) {
+    /* signer_count == 1 */
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "UNDELEGATE: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* amount > 0 — zero-amount undelegate is nonsensical. */
+    if (tx->undelegate_fields.amount == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "UNDELEGATE: amount == 0");
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* TODO(Phase 8 Task 43 / witness-side):
+     *   - delegation(signer[0].pubkey, validator_pubkey) exists
+     *   - amount <= delegation.amount
+     *   - Rule O (hold duration): current_block − delegation.delegated_at_block
+     *     >= DNAC_EPOCH_LENGTH
+     * Requires nodus_delegation_lookup; the client has no witness DB so
+     * these run server-side at state-apply. */
+
+    return DNAC_SUCCESS;
+}
+
+int dnac_tx_verify_undelegate_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_UNDELEGATE) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_undelegate_rules(tx);
+}
+
+int dnac_tx_verify_undelegate_rules_internal(const dnac_transaction_t *tx) {
+    return verify_undelegate_rules(tx);
+}
+
+/**
  * @brief Per-token balance verification
  *
  * For each distinct token_id across inputs and outputs:
