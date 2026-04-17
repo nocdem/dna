@@ -26,7 +26,7 @@
 
 /* Forward declarations for verification functions (verify.c) */
 extern int verify_witnesses(const dnac_transaction_t *tx);
-extern int verify_sender_signature(const dnac_transaction_t *tx);
+extern int verify_signers(const dnac_transaction_t *tx);
 
 dnac_transaction_t* dnac_tx_create(dnac_tx_type_t type) {
     dnac_transaction_t *tx = calloc(1, sizeof(dnac_transaction_t));
@@ -114,10 +114,11 @@ int dnac_tx_finalize(dnac_transaction_t *tx,
         return DNAC_ERROR_INVALID_PROOF;  /* Outputs exceed inputs */
     }
 
-    /* Store sender's public key BEFORE hash (sender_pubkey is part of tx_hash) */
-    memcpy(tx->sender_pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
+    /* Store sender's public key BEFORE hash (signers[0].pubkey is part of tx_hash) */
+    memcpy(tx->signers[0].pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
+    tx->signer_count = 1;
 
-    /* Compute transaction hash (includes sender_pubkey) */
+    /* Compute transaction hash (includes signer pubkeys) */
     int result = dnac_tx_compute_hash(tx, tx->tx_hash);
     if (result != DNAC_SUCCESS) {
         return result;
@@ -125,7 +126,7 @@ int dnac_tx_finalize(dnac_transaction_t *tx,
 
     /* Sign transaction hash with Dilithium5 */
     size_t sig_len = 0;
-    int sign_result = qgp_dsa87_sign(tx->sender_signature, &sig_len,
+    int sign_result = qgp_dsa87_sign(tx->signers[0].signature, &sig_len,
                                      tx->tx_hash, DNAC_TX_HASH_SIZE,
                                      sender_privkey);
     if (sign_result != 0) {
@@ -141,6 +142,18 @@ int dnac_tx_add_witness(dnac_transaction_t *tx, const dnac_witness_sig_t *witnes
 
     memcpy(&tx->witnesses[tx->witness_count], witness, sizeof(dnac_witness_sig_t));
     tx->witness_count++;
+    return DNAC_SUCCESS;
+}
+
+int dnac_tx_add_signer(dnac_transaction_t *tx,
+                       const uint8_t *pubkey,
+                       const uint8_t *signature) {
+    if (!tx || !pubkey || !signature) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->signer_count >= DNAC_TX_MAX_SIGNERS) return DNAC_ERROR_INVALID_PARAM;
+
+    memcpy(tx->signers[tx->signer_count].pubkey, pubkey, DNAC_PUBKEY_SIZE);
+    memcpy(tx->signers[tx->signer_count].signature, signature, DNAC_SIGNATURE_SIZE);
+    tx->signer_count++;
     return DNAC_SUCCESS;
 }
 
@@ -184,9 +197,9 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
 
     /* Sender signature (skip for genesis - witnesses authorize) */
     if (tx->type != DNAC_TX_GENESIS) {
-        rc = verify_sender_signature(tx);
+        rc = verify_signers(tx);
         if (rc != DNAC_SUCCESS) {
-            QGP_LOG_ERROR(LOG_TAG, "verify failed: sender sig verify rc=%d", rc);
+            QGP_LOG_ERROR(LOG_TAG, "verify failed: signer sig verify rc=%d", rc);
             return rc;
         }
     }
@@ -213,8 +226,11 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
     EVP_DigestUpdate(ctx, &type_byte, sizeof(type_byte));
     EVP_DigestUpdate(ctx, &tx->timestamp, sizeof(tx->timestamp));
 
-    /* Hash sender public key (binds TX to sender identity) */
-    EVP_DigestUpdate(ctx, tx->sender_pubkey, DNAC_PUBKEY_SIZE);
+    /* Hash all signer public keys (binds TX to signer identities) */
+    EVP_DigestUpdate(ctx, &tx->signer_count, sizeof(uint8_t));
+    for (int i = 0; i < tx->signer_count; i++) {
+        EVP_DigestUpdate(ctx, tx->signers[i].pubkey, DNAC_PUBKEY_SIZE);
+    }
 
     /* Hash inputs */
     for (int i = 0; i < tx->input_count; i++) {
