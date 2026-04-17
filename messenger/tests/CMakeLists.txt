@@ -303,6 +303,14 @@ target_link_libraries(test_reactions ${TEST_LIBS})
 add_test(NAME test_reactions COMMAND test_reactions)
 
 # =============================================================================
+# Test: Portable u128 round-trip (DNAC reward accumulator)
+# =============================================================================
+# Phase 2 Task 5 of witness stake v1. Full KAT suite lands in Task 6.
+add_executable(test_u128_roundtrip test_u128_roundtrip.c)
+target_link_libraries(test_u128_roundtrip ${TEST_LIBS})
+add_test(NAME test_u128_roundtrip COMMAND test_u128_roundtrip)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()

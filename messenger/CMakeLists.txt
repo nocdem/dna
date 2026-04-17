@@ -156,6 +156,7 @@ set(COMMON_SOURCES
     ${SHARED_DIR}/crypto/sign/secp256k1_sign.c        # secp256k1 ECDSA recoverable signing
     ${SHARED_DIR}/crypto/sign/ed25519_sign.c           # Ed25519 signing (Solana)
     ${SHARED_DIR}/crypto/utils/qgp_utils_standalone.c
+    ${SHARED_DIR}/crypto/utils/qgp_u128.c         # Portable u128 for DNAC reward accumulator (F-CRYPTO-08)
     ${SHARED_DIR}/crypto/utils/threadpool.c       # Centralized thread pool for parallel I/O
     # Cross-platform abstraction layer
     ${PLATFORM_SOURCES}

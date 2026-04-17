@@ -55,6 +55,7 @@ if(NODUS_STANDALONE)
         ${SHARED_DIR}/crypto/enc/kyber_deterministic.c
         ${SHARED_DIR}/crypto/sign/qgp_dilithium.c
         ${SHARED_DIR}/crypto/utils/qgp_random.c
+        ${SHARED_DIR}/crypto/utils/qgp_u128.c
         # qgp_log.c depends on dna_config.h — use nodus_log_shim.c instead
     )
 
