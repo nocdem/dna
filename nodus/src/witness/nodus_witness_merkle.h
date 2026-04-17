@@ -159,6 +159,60 @@ int nodus_witness_merkle_build_tx_proof(nodus_witness_t *w,
                                           int *depth_out,
                                           uint8_t *root_out);
 
+/* ── Tree-tag domain-separated leaf helpers (witness stake v1) ──────
+ *
+ * Per §3.1 of the stake v1 design (F-CRYPTO-04 mitigation), every
+ * Merkle subtree (utxo / validator / delegation / reward) prefixes
+ * a 1-byte NODUS_TREE_TAG_* constant to both its leaf KEYS and its
+ * leaf VALUE HASHES. Without this prefix, a validator pubkey and
+ * a reward-tree pubkey with identical bytes would collide — the
+ * domain tag makes the preimages disjoint.
+ *
+ * These helpers are pure: no allocation, no logging, deterministic.
+ */
+
+/**
+ * Produce the Merkle leaf KEY for a given tree.
+ * Formula: SHA3-512(tree_tag || raw_key_data)
+ * The 64-byte output becomes the tree's leaf identifier.
+ *
+ * @param tree_tag  One of NODUS_TREE_TAG_{UTXO,VALIDATOR,DELEGATION,REWARD}
+ * @param raw_key   Raw key bytes (e.g., validator pubkey, delegator fp)
+ * @param raw_len   Length of raw_key in bytes (may be 0)
+ * @param out_key   [out] 64-byte keyed hash
+ */
+void nodus_merkle_leaf_key(uint8_t tree_tag,
+                           const uint8_t *raw_key, size_t raw_len,
+                           uint8_t out_key[64]);
+
+/**
+ * Produce the Merkle leaf VALUE HASH for a given tree.
+ * Formula: SHA3-512(tree_tag || cbor_serialized_record)
+ * This is what goes into the Merkle tree as the leaf value.
+ *
+ * @param tree_tag  One of NODUS_TREE_TAG_{UTXO,VALIDATOR,DELEGATION,REWARD}
+ * @param cbor      CBOR-serialized record bytes (may be NULL if cbor_len == 0)
+ * @param cbor_len  Length of cbor in bytes (may be 0)
+ * @param out_hash  [out] 64-byte value hash
+ */
+void nodus_merkle_leaf_value_hash(uint8_t tree_tag,
+                                  const uint8_t *cbor, size_t cbor_len,
+                                  uint8_t out_hash[64]);
+
+/**
+ * Produce the canonical "empty tree" root for a given subtree.
+ * Formula: SHA3-512(tree_tag || 0x00)
+ *
+ * Used when a subtree has no leaves (e.g., delegation_tree at
+ * genesis before the first DELEGATE TX). MUST be deterministic
+ * across all 7 witnesses — this value ends up in state_root from
+ * block 1, so any divergence would fork the chain.
+ *
+ * @param tree_tag  One of NODUS_TREE_TAG_{UTXO,VALIDATOR,DELEGATION,REWARD}
+ * @param out_root  [out] 64-byte empty-subtree root
+ */
+void nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]);
+
 #ifdef __cplusplus
 }
 #endif

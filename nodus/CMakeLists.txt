@@ -402,6 +402,11 @@ add_executable(test_merkle_tree_tags tests/test_merkle_tree_tags.c)
 target_link_libraries(test_merkle_tree_tags nodus dsa nodus)
 add_test(NAME test_merkle_tree_tags COMMAND test_merkle_tree_tags)
 
+# Merkle leaf key / value hash / empty-root helpers (witness stake v1 / Phase 3 Task 9)
+add_executable(test_merkle_leaf_helpers tests/test_merkle_leaf_helpers.c)
+target_link_libraries(test_merkle_leaf_helpers nodus dsa nodus)
+add_test(NAME test_merkle_leaf_helpers COMMAND test_merkle_leaf_helpers)
+
 # UTXO state_root determinism tests (Phase 2 / Task 2.5)
 add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
 target_link_libraries(test_merkle_utxo_root nodus dsa nodus)

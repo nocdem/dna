@@ -582,6 +582,86 @@ int nodus_witness_merkle_build_tx_proof(nodus_witness_t *w,
     return 0;
 }
 
+/* ── Tree-tag domain-separated leaf helpers (witness stake v1) ──────
+ *
+ * Per §3.1 of the stake v1 design. Each helper is a 2-write stream
+ * (tag byte, then payload) into a fresh SHA3-512 context. No heap
+ * allocation, no logging. On OpenSSL failure the output buffer is
+ * zeroed so a caller that ignores the (absent) return code cannot
+ * silently consume uninitialised data.
+ *
+ * We use the module's existing EVP wrappers (sha3_512_init /
+ * sha3_512_final) rather than the shared qgp_sha3 one-shot API so
+ * the tag byte and payload can be hashed without an intermediate
+ * concat buffer. This matches the style of leaf_hash / inner_hash
+ * above.
+ */
+
+static void merkle_tag_hash_zero_on_fail(uint8_t out[64]) {
+    memset(out, 0, 64);
+}
+
+void nodus_merkle_leaf_key(uint8_t tree_tag,
+                           const uint8_t *raw_key, size_t raw_len,
+                           uint8_t out_key[64]) {
+    if (!out_key) return;
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) {
+        merkle_tag_hash_zero_on_fail(out_key);
+        return;
+    }
+    if (EVP_DigestUpdate(md, &tree_tag, 1) != 1 ||
+        (raw_len > 0 && raw_key != NULL &&
+         EVP_DigestUpdate(md, raw_key, raw_len) != 1)) {
+        EVP_MD_CTX_free(md);
+        merkle_tag_hash_zero_on_fail(out_key);
+        return;
+    }
+    if (sha3_512_final(md, out_key) != 0) {
+        merkle_tag_hash_zero_on_fail(out_key);
+    }
+}
+
+void nodus_merkle_leaf_value_hash(uint8_t tree_tag,
+                                  const uint8_t *cbor, size_t cbor_len,
+                                  uint8_t out_hash[64]) {
+    if (!out_hash) return;
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) {
+        merkle_tag_hash_zero_on_fail(out_hash);
+        return;
+    }
+    if (EVP_DigestUpdate(md, &tree_tag, 1) != 1 ||
+        (cbor_len > 0 && cbor != NULL &&
+         EVP_DigestUpdate(md, cbor, cbor_len) != 1)) {
+        EVP_MD_CTX_free(md);
+        merkle_tag_hash_zero_on_fail(out_hash);
+        return;
+    }
+    if (sha3_512_final(md, out_hash) != 0) {
+        merkle_tag_hash_zero_on_fail(out_hash);
+    }
+}
+
+void nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]) {
+    if (!out_root) return;
+    const uint8_t zero = 0x00;
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) {
+        merkle_tag_hash_zero_on_fail(out_root);
+        return;
+    }
+    if (EVP_DigestUpdate(md, &tree_tag, 1) != 1 ||
+        EVP_DigestUpdate(md, &zero, 1) != 1) {
+        EVP_MD_CTX_free(md);
+        merkle_tag_hash_zero_on_fail(out_root);
+        return;
+    }
+    if (sha3_512_final(md, out_root) != 0) {
+        merkle_tag_hash_zero_on_fail(out_root);
+    }
+}
+
 /* ── Proof verification (pure function, RFC 6962) ───────────────────── */
 
 int nodus_witness_merkle_verify_proof(const uint8_t *leaf,
