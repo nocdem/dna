@@ -1649,6 +1649,7 @@ void nodus_witness_compute_block_hash_ex(uint64_t height,
  */
 static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w);
 static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w);
+static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w);
 
 int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
@@ -1710,6 +1711,9 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     /* Phase 2 / Task 7 (anchored merkle proofs) — chain_def_blob column. */
     nodus_witness_db_migrate_v14_chain_def(w);
 
+    /* Task 11 (stake delegation) — utxo_set.unlock_block column. */
+    nodus_witness_db_migrate_v15_stake_delegation(w);
+
     return 0;
 }
 
@@ -1752,6 +1756,33 @@ static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w) {
         if (!strstr(msg, "duplicate column name")) {
             fprintf(stderr,
                     "MIGRATION FAILURE: ALTER ADD chain_def_blob "
+                    "sqlite error %d: %s\n", rc, msg);
+            if (err) sqlite3_free(err);
+            abort();
+        }
+        if (err) sqlite3_free(err);
+    }
+}
+
+/* Schema v15 migration (Task 11 — stake/delegation).
+ *
+ * Adds the unlock_block column to the utxo_set table. Used to lock
+ * stake/delegation UTXOs until a future block height (unbonding
+ * cooldown). Default 0 means "already spendable"; zero value preserves
+ * pre-Task-11 semantics for every existing UTXO. Idempotent via
+ * duplicate-column tolerance. */
+static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w) {
+    if (!w || !w->db) return;
+    char *err = NULL;
+    int rc = sqlite3_exec(w->db,
+        "ALTER TABLE utxo_set "
+        "ADD COLUMN unlock_block INTEGER NOT NULL DEFAULT 0",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        const char *msg = err ? err : "(null)";
+        if (!strstr(msg, "duplicate column name")) {
+            fprintf(stderr,
+                    "MIGRATION FAILURE: ALTER ADD unlock_block "
                     "sqlite error %d: %s\n", rc, msg);
             if (err) sqlite3_free(err);
             abort();

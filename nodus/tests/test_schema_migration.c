@@ -27,9 +27,10 @@ static int setup_pre_v12(sqlite3 **db_out) {
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) return -1;
 
-    /* Pre-v12 shape: committed_transactions without tx_index, and a
-     * blocks table without the v14 chain_def_blob column. The migration
-     * umbrella (migrate_v12) additively upgrades both. */
+    /* Pre-v12 shape: committed_transactions without tx_index, a blocks
+     * table without the v14 chain_def_blob column, and a utxo_set table
+     * without the v15 unlock_block column. The migration umbrella
+     * (migrate_v12) additively upgrades all three. */
     const char *schema =
         "CREATE TABLE committed_transactions ("
         "  tx_hash BLOB PRIMARY KEY,"
@@ -50,6 +51,16 @@ static int setup_pre_v12(sqlite3 **db_out) {
         "  proposer_id BLOB,"
         "  prev_hash BLOB NOT NULL DEFAULT x'',"
         "  state_root BLOB NOT NULL,"
+        "  created_at INTEGER NOT NULL DEFAULT 0"
+        ");"
+        "CREATE TABLE utxo_set ("
+        "  nullifier BLOB PRIMARY KEY,"
+        "  owner TEXT NOT NULL,"
+        "  amount INTEGER NOT NULL,"
+        "  token_id BLOB NOT NULL,"
+        "  tx_hash BLOB NOT NULL,"
+        "  output_index INTEGER NOT NULL,"
+        "  block_height INTEGER NOT NULL DEFAULT 0,"
         "  created_at INTEGER NOT NULL DEFAULT 0"
         ");";
 
@@ -115,6 +126,10 @@ static void test_migration_adds_tx_index_and_composite_index(void) {
     /* v14: chain_def_blob column on blocks (anchored merkle proofs). */
     if (column_exists(db, "blocks", "chain_def_blob") != 1) {
         FAIL("chain_def_blob column missing"); sqlite3_close(db); return;
+    }
+    /* v15: unlock_block column on utxo_set (Task 11 stake delegation). */
+    if (column_exists(db, "utxo_set", "unlock_block") != 1) {
+        FAIL("unlock_block column missing"); sqlite3_close(db); return;
     }
 
     PASS();

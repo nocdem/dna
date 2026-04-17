@@ -390,6 +390,8 @@ void nodus_witness_compute_block_hash_ex(uint64_t height,
  *          (Phase 11 client binding)
  *   - v14: chain_def_blob column on blocks (Phase 2 / Task 7 — anchored
  *          merkle proofs; NULL on non-genesis blocks)
+ *   - v15: unlock_block column on utxo_set (Task 11 — stake delegation
+ *          unbonding cooldown; 0 = already spendable)
  *
  * Idempotent: safe to run on a fresh DB or on a DB that already has any
  * of the above shapes. Returns 0 on success. On unrecoverable SQLite

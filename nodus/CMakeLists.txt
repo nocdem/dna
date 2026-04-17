@@ -490,6 +490,9 @@ add_executable(test_witness_merkle tests/test_witness_merkle.c)
 target_link_libraries(test_witness_merkle nodus dsa nodus)
 add_test(NAME test_witness_merkle COMMAND test_witness_merkle)
 
+# Task 11 — stake/delegation schema migration test
+register_witness_test(test_stake_schema)
+
 # Spend replay DB helper test (Fix #4 B)
 add_executable(test_spend_replay tests/test_spend_replay.c)
 target_link_libraries(test_spend_replay nodus dsa nodus)
