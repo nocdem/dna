@@ -105,6 +105,7 @@ set(DNAC_SOURCES
     src/transaction/stake.c
     src/transaction/delegate.c
     src/transaction/claim.c
+    src/transaction/validator_update.c
 
     # Nodus
     src/nodus/client.c
@@ -373,6 +374,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 7 Task 36: CLAIM_REWARD builder API
     register_dnac_test(test_claim_builder)
+
+    # Stake & delegation v1 — Phase 7 Task 37: VALIDATOR_UPDATE builder API
+    register_dnac_test(test_validator_update_builder)
 endif()
 
 # ============================================================================

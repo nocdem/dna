@@ -646,6 +646,41 @@ int dnac_claim_reward(dnac_context_t *ctx,
                       dnac_callback_t callback,
                       void *user_data);
 
+/**
+ * @brief Submit a VALIDATOR_UPDATE TX — change validator commission rate.
+ *
+ * Fee-only TX. Must be called by the validator operator (signer pubkey
+ * must match an existing active validator record). An increase takes
+ * effect at the next epoch boundary (>= 1 full epoch notice per Rule K);
+ * a decrease is immediate and clears any pending increase. Rule K also
+ * enforces freshness: the witness requires
+ *   current_block - signed_at_block <= DNAC_SIGN_FRESHNESS_WINDOW
+ * so the caller must populate `signed_at_block` with a recent block
+ * height.
+ *
+ * Builder-level API takes `signed_at_block` as an explicit parameter
+ * because no client-side RPC exists yet for querying the witness's
+ * current block height — that ships in Phase 14. A future wrapper
+ * `dnac_validator_update_auto(ctx, new_commission_bps)` will query the
+ * witness internally and call this builder; the signature of this
+ * function is stable for the life of the protocol.
+ *
+ * @param ctx                 DNAC context
+ * @param new_commission_bps  New commission rate in basis points
+ *                            (0..DNAC_COMMISSION_BPS_MAX == 10000)
+ * @param signed_at_block     Block-height anchor for Rule K freshness
+ *                            (witness rejects if the value is stale).
+ *                            Must be > 0.
+ * @param callback            Completion callback (can be NULL)
+ * @param user_data           Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_validator_update(dnac_context_t *ctx,
+                          uint16_t new_commission_bps,
+                          uint64_t signed_at_block,
+                          dnac_callback_t callback,
+                          void *user_data);
+
 /* ============================================================================
  * Transaction Builder (Advanced)
  * ========================================================================== */
