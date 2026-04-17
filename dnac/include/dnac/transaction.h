@@ -391,6 +391,24 @@ int dnac_tx_verify_stake_rules(const dnac_transaction_t *tx);
 int dnac_tx_verify_delegate_rules(const dnac_transaction_t *tx);
 
 /**
+ * @brief Verify UNSTAKE-type rules only (design §2.4, Phase 6 Task 24)
+ *
+ * Runs the locally-verifiable UNSTAKE rule subset. UNSTAKE has no
+ * appended fields, so the local check is minimal:
+ *
+ *   - tx->type == DNAC_TX_UNSTAKE
+ *   - signer_count == 1
+ *
+ * Rule A (NO delegation records with validator == signer[0]; literal
+ * drain-before-exit), validator status gate, and fee checks require
+ * witness-side DB access and run at state-apply time (Phase 8 Task 42).
+ *
+ * @param tx Transaction (must be UNSTAKE type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_unstake_rules(const dnac_transaction_t *tx);
+
+/**
  * @brief Serialize transaction to bytes
  *
  * @param tx Transaction

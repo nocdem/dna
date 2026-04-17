@@ -235,6 +235,50 @@ int dnac_tx_verify_delegate_rules_internal(const dnac_transaction_t *tx) {
 }
 
 /**
+ * @brief Verify UNSTAKE-type rules (design §2.4, Phase 6 Task 24).
+ *
+ * UNSTAKE has no appended fields, no amount fields, no commission.
+ * The single locally-verifiable rule is:
+ *
+ *   - signer_count == 1
+ *
+ * All substantive checks require witness-side DB access:
+ *   - Rule A (literal): NO delegation records exist with
+ *     validator == signer[0].pubkey — validator must drain external
+ *     delegators before exiting
+ *   - signer[0].pubkey IN validator_tree AND status == ACTIVE
+ *   - Fee paid per current fee schedule
+ * These are deferred to Phase 8 Task 42 state-apply.
+ */
+static int verify_unstake_rules(const dnac_transaction_t *tx) {
+    /* signer_count == 1 */
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "UNSTAKE: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* TODO(Phase 8 Task 42 / witness-side):
+     *   - signer[0].pubkey IN validator_tree AND status == ACTIVE
+     *   - Rule A (literal): NO delegation records where
+     *     validator == signer[0].pubkey (drain-before-exit)
+     *   - Fee paid per current fee schedule
+     * Requires nodus_validator_lookup / nodus_delegation_count_by_validator. */
+
+    return DNAC_SUCCESS;
+}
+
+int dnac_tx_verify_unstake_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_UNSTAKE) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_unstake_rules(tx);
+}
+
+int dnac_tx_verify_unstake_rules_internal(const dnac_transaction_t *tx) {
+    return verify_unstake_rules(tx);
+}
+
+/**
  * @brief Per-token balance verification
  *
  * For each distinct token_id across inputs and outputs:
