@@ -581,3 +581,6 @@ register_witness_test(test_validator_db)
 # Task 13 — delegation + reward DB CRUD (witness stake v1 / Phase 4)
 register_witness_test(test_delegation_db)
 register_witness_test(test_reward_db)
+
+# Task 29 — SPEND rejects locked UTXO inputs (Rule D)
+register_witness_test(test_locked_utxo)

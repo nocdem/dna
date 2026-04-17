@@ -425,16 +425,35 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
 
     uint64_t total_input = 0;
 
+    /* Task 29 (Rule D): SPEND rejects locked UTXO inputs. The current
+     * chain tip (block height of the last committed block) is the cutoff:
+     * a UTXO with unlock_block > current_block is still in its post-UNSTAKE
+     * cooldown window and cannot be spent yet. UTXOs with unlock_block == 0
+     * are the normal unlocked case (default for all non-UNSTAKE outputs). */
+    uint64_t current_block = nodus_witness_block_height(w);
+
     for (int i = 0; i < nullifier_count; i++) {
         const uint8_t *nul = nullifiers + i * NODUS_T3_NULLIFIER_LEN;
         uint64_t utxo_amount = 0;
         char owner[129] = {0};
         uint8_t utxo_token_id[64] = {0};
+        uint64_t utxo_unlock_block = 0;
 
-        if (nodus_witness_utxo_lookup(w, nul, &utxo_amount, owner,
-                                       is_token_create ? NULL : utxo_token_id) != 0) {
+        if (nodus_witness_utxo_lookup_ex(w, nul, &utxo_amount, owner,
+                                          is_token_create ? NULL : utxo_token_id,
+                                          &utxo_unlock_block) != 0) {
             snprintf(reject_reason, reason_size,
                      "input %d: UTXO not found in set", i);
+            return -1;
+        }
+
+        /* Rule D: locked UTXO (unlock_block > current chain height) — reject. */
+        if (utxo_unlock_block > current_block) {
+            snprintf(reject_reason, reason_size,
+                     "input %d: UTXO locked (unlock_block=%lu > current=%lu)",
+                     i,
+                     (unsigned long)utxo_unlock_block,
+                     (unsigned long)current_block);
             return -1;
         }
 

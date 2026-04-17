@@ -90,14 +90,16 @@ int nodus_witness_nullifier_add(nodus_witness_t *w, const uint8_t *nullifier,
 
 /* ── UTXO set operations ─────────────────────────────────────────── */
 
-int nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
-                                uint64_t *amount_out, char *owner_out,
-                                uint8_t *token_id_out) {
+int nodus_witness_utxo_lookup_ex(nodus_witness_t *w, const uint8_t *nullifier,
+                                   uint64_t *amount_out, char *owner_out,
+                                   uint8_t *token_id_out,
+                                   uint64_t *unlock_block_out) {
     if (!w || !w->db || !nullifier) return -1;
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT amount, owner, token_id FROM utxo_set WHERE nullifier = ?",
+        "SELECT amount, owner, token_id, unlock_block FROM utxo_set "
+        "WHERE nullifier = ?",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
@@ -130,15 +132,26 @@ int nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
         }
     }
 
+    if (unlock_block_out)
+        *unlock_block_out = (uint64_t)sqlite3_column_int64(stmt, 3);
+
     sqlite3_finalize(stmt);
     return 0;
 }
 
-int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
-                              const char *owner, uint64_t amount,
-                              const uint8_t *tx_hash, uint32_t index,
-                              uint64_t block_height,
-                              const uint8_t *token_id) {
+int nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
+                                uint64_t *amount_out, char *owner_out,
+                                uint8_t *token_id_out) {
+    return nodus_witness_utxo_lookup_ex(w, nullifier, amount_out, owner_out,
+                                         token_id_out, NULL);
+}
+
+int nodus_witness_utxo_add_locked(nodus_witness_t *w, const uint8_t *nullifier,
+                                    const char *owner, uint64_t amount,
+                                    const uint8_t *tx_hash, uint32_t index,
+                                    uint64_t block_height,
+                                    const uint8_t *token_id,
+                                    uint64_t unlock_block) {
     if (!w || !w->db || !nullifier || !owner || !tx_hash) return -1;
 
     /* Default to native DNAC (64 zero bytes) when token_id is NULL */
@@ -148,8 +161,9 @@ int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
         "INSERT OR IGNORE INTO utxo_set "
-        "(nullifier, owner, amount, token_id, tx_hash, output_index, block_height, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
+        "(nullifier, owner, amount, token_id, tx_hash, output_index, "
+        " block_height, created_at, unlock_block) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: utxo add prepare failed: %s\n",
                 LOG_TAG, sqlite3_errmsg(w->db));
@@ -164,6 +178,7 @@ int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
     sqlite3_bind_int(stmt, 6, (int)index);
     sqlite3_bind_int64(stmt, 7, (int64_t)block_height);
     sqlite3_bind_int64(stmt, 8, (int64_t)time(NULL));
+    sqlite3_bind_int64(stmt, 9, (int64_t)unlock_block);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -174,6 +189,17 @@ int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
         return -1;
     }
     return 0;
+}
+
+int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
+                              const char *owner, uint64_t amount,
+                              const uint8_t *tx_hash, uint32_t index,
+                              uint64_t block_height,
+                              const uint8_t *token_id) {
+    /* Legacy path: unlock_block == 0 means UTXO is already spendable. */
+    return nodus_witness_utxo_add_locked(w, nullifier, owner, amount,
+                                          tx_hash, index, block_height,
+                                          token_id, 0);
 }
 
 int nodus_witness_utxo_remove(nodus_witness_t *w, const uint8_t *nullifier) {

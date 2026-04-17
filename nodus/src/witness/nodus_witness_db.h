@@ -33,11 +33,44 @@ int  nodus_witness_nullifier_add(nodus_witness_t *w, const uint8_t *nullifier,
 int  nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
                                 uint64_t *amount_out, char *owner_out,
                                 uint8_t *token_id_out);
+
+/**
+ * Lookup a UTXO, also returning its unlock_block (v15 schema column).
+ *
+ * unlock_block > current_block ⇒ UTXO is locked (post-UNSTAKE cooldown).
+ * Caller (witness SPEND verify) uses this to enforce Rule D — reject
+ * SPEND TXs that consume still-locked UTXOs.
+ *
+ * Behaves identically to nodus_witness_utxo_lookup() for the existing
+ * out-parameters; unlock_block_out is the sole addition. Pass NULL for
+ * any *_out you don't care about.
+ */
+int  nodus_witness_utxo_lookup_ex(nodus_witness_t *w, const uint8_t *nullifier,
+                                    uint64_t *amount_out, char *owner_out,
+                                    uint8_t *token_id_out,
+                                    uint64_t *unlock_block_out);
+
 int  nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
                               const char *owner, uint64_t amount,
                               const uint8_t *tx_hash, uint32_t index,
                               uint64_t block_height,
                               const uint8_t *token_id);
+
+/**
+ * Add a UTXO with an explicit unlock_block (locked UTXO helper).
+ *
+ * unlock_block == 0 ⇒ already spendable (same as nodus_witness_utxo_add).
+ * unlock_block > 0  ⇒ UTXO is locked until chain height > unlock_block.
+ *
+ * Used by UNSTAKE commit to produce the time-locked return UTXO
+ * (unlock_block = commit_block + DNAC_UNSTAKE_COOLDOWN_BLOCKS).
+ */
+int  nodus_witness_utxo_add_locked(nodus_witness_t *w, const uint8_t *nullifier,
+                                     const char *owner, uint64_t amount,
+                                     const uint8_t *tx_hash, uint32_t index,
+                                     uint64_t block_height,
+                                     const uint8_t *token_id,
+                                     uint64_t unlock_block);
 int  nodus_witness_utxo_remove(nodus_witness_t *w, const uint8_t *nullifier);
 int  nodus_witness_utxo_count(nodus_witness_t *w, uint64_t *count_out);
 int  nodus_witness_utxo_sum(nodus_witness_t *w, uint64_t *sum_out);

@@ -62,7 +62,16 @@ static int setup_witness(nodus_witness_t *w) {
         "  tx_hash BLOB NOT NULL,"
         "  output_index INTEGER NOT NULL,"
         "  block_height INTEGER NOT NULL DEFAULT 0,"
-        "  created_at INTEGER NOT NULL DEFAULT 0"
+        "  created_at INTEGER NOT NULL DEFAULT 0,"
+        /* Task 11 v15 migration column — matches production schema so
+         * nodus_witness_utxo_add (which now writes unlock_block) works. */
+        "  unlock_block INTEGER NOT NULL DEFAULT 0"
+        ");"
+        /* blocks table required so nodus_witness_block_height() (called
+         * by the SPEND verify Rule D check) can issue MAX(height) without
+         * failing on a missing table. Empty → height == 0. */
+        "CREATE TABLE IF NOT EXISTS blocks ("
+        "  height INTEGER PRIMARY KEY"
         ");";
 
     char *err = NULL;
