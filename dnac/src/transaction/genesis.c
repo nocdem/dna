@@ -404,6 +404,13 @@ int dnac_genesis_phase1_create(dnac_context_t *ctx,
     }
     tx->signer_count = 1;
 
+    /* Recompute tx_hash now that signer pubkey is set (hash includes signer_count + pubkeys) */
+    rc = dnac_tx_compute_hash(tx, tx->tx_hash);
+    if (rc != DNAC_SUCCESS) {
+        dnac_free_transaction(tx);
+        return rc;
+    }
+
     size_t sig_len = DNAC_SIGNATURE_SIZE;
     rc = dna_engine_sign_data(engine, tx->tx_hash, DNAC_TX_HASH_SIZE,
                                tx->signers[0].signature, &sig_len);
