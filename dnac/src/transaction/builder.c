@@ -206,7 +206,8 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
     }
 
     /* Copy public key BEFORE hash (sender_pubkey is part of tx_hash) */
-    memcpy(builder->tx->sender_pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
+    memcpy(builder->tx->signers[0].pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
+    builder->tx->signer_count = 1;
 
     /* Compute transaction hash (includes sender_pubkey) */
     rc = dnac_tx_compute_hash(builder->tx, builder->tx->tx_hash);
@@ -217,7 +218,7 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
     rc = dna_engine_sign_data(engine,
                                builder->tx->tx_hash,
                                DNAC_TX_HASH_SIZE,
-                               builder->tx->sender_signature,
+                               builder->tx->signers[0].signature,
                                &sig_len);
     if (rc != 0) {
         return DNAC_ERROR_CRYPTO;
@@ -259,8 +260,8 @@ int dnac_tx_broadcast(dnac_context_t *ctx,
      */
     dnac_spend_request_t request = {0};
     memcpy(request.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
-    memcpy(request.sender_pubkey, tx->sender_pubkey, DNAC_PUBKEY_SIZE);
-    memcpy(request.signature, tx->sender_signature, DNAC_SIGNATURE_SIZE);
+    memcpy(request.sender_pubkey, tx->signers[0].pubkey, DNAC_PUBKEY_SIZE);
+    memcpy(request.signature, tx->signers[0].signature, DNAC_SIGNATURE_SIZE);
     request.timestamp = (uint64_t)time(NULL);
 
     /* Serialize full transaction into request */

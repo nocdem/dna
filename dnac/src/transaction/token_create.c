@@ -189,7 +189,8 @@ int dnac_token_create(dnac_context_t *ctx,
         return DNAC_ERROR_CRYPTO;
     }
 
-    memcpy(tx->sender_pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
+    memcpy(tx->signers[0].pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
+    tx->signer_count = 1;
 
     rc = dnac_tx_compute_hash(tx, tx->tx_hash);
     if (rc != DNAC_SUCCESS) {
@@ -200,7 +201,7 @@ int dnac_token_create(dnac_context_t *ctx,
     size_t sig_len = 0;
     rc = dna_engine_sign_data(engine,
                               tx->tx_hash, DNAC_TX_HASH_SIZE,
-                              tx->sender_signature, &sig_len);
+                              tx->signers[0].signature, &sig_len);
     if (rc != 0) {
         dnac_free_transaction(tx);
         return DNAC_ERROR_CRYPTO;
@@ -209,8 +210,8 @@ int dnac_token_create(dnac_context_t *ctx,
     /* 7. Serialize + send to witness */
     dnac_spend_request_t request = {0};
     memcpy(request.tx_hash, tx->tx_hash, DNAC_TX_HASH_SIZE);
-    memcpy(request.sender_pubkey, tx->sender_pubkey, DNAC_PUBKEY_SIZE);
-    memcpy(request.signature, tx->sender_signature, DNAC_SIGNATURE_SIZE);
+    memcpy(request.sender_pubkey, tx->signers[0].pubkey, DNAC_PUBKEY_SIZE);
+    memcpy(request.signature, tx->signers[0].signature, DNAC_SIGNATURE_SIZE);
     request.timestamp = (uint64_t)time(NULL);
 
     size_t tx_serialized_len = 0;

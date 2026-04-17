@@ -396,16 +396,17 @@ int dnac_genesis_phase1_create(dnac_context_t *ctx,
     }
 
     /* Phase 1b: Sign tx_hash with sender's Dilithium5 key */
-    rc = dna_engine_get_signing_public_key(engine, tx->sender_pubkey,
+    rc = dna_engine_get_signing_public_key(engine, tx->signers[0].pubkey,
                                            DNAC_PUBKEY_SIZE);
     if (rc < 0) {
         dnac_free_transaction(tx);
         return DNAC_ERROR_CRYPTO;
     }
+    tx->signer_count = 1;
 
     size_t sig_len = DNAC_SIGNATURE_SIZE;
     rc = dna_engine_sign_data(engine, tx->tx_hash, DNAC_TX_HASH_SIZE,
-                               tx->sender_signature, &sig_len);
+                               tx->signers[0].signature, &sig_len);
     if (rc < 0) {
         dnac_free_transaction(tx);
         return DNAC_ERROR_SIGN_FAILED;
