@@ -328,6 +328,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 5 Task 19: VALIDATOR_UPDATE appended fields
     register_dnac_test(test_validator_update_serialize)
+
+    # Stake & delegation v1 — Phase 5 Task 20: UNSTAKE signer-only (no appended fields)
+    register_dnac_test(test_unstake_serialize)
 endif()
 
 # ============================================================================
