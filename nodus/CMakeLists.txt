@@ -605,3 +605,6 @@ register_witness_test(test_apply_undelegate)
 
 # Task 44 — CLAIM_REWARD state mutation (validator + delegator paths)
 register_witness_test(test_apply_claim_reward)
+
+# Task 45 — VALIDATOR_UPDATE state mutation with pending semantics
+register_witness_test(test_apply_validator_update)

@@ -1519,6 +1519,96 @@ static int apply_claim_reward(nodus_witness_t *w,
     return 0;
 }
 
+/* Phase 8 Task 45 — VALIDATOR_UPDATE state mutation.
+ *
+ * Appended fields (design §2.3):
+ *   new_commission_bps[2 BE] || signed_at_block[8 BE]  (10 bytes total)
+ *
+ * Commission-change semantics (design §3.9):
+ *   - Increase (new > current): defer — set pending_commission_bps +
+ *     pending_effective_block := max(next_epoch_boundary, current_block +
+ *     DNAC_EPOCH_LENGTH). Delegators get a full epoch of notice.
+ *   - Decrease (new <= current): immediate — current_commission_bps :=
+ *     new, pending fields cleared. Decreases are always delegator-safe,
+ *     no notice needed.
+ *   - Equal (new == current): falls through the decrease branch; the
+ *     net effect is clearing any stale pending entry without mutating
+ *     current. Benign.
+ *
+ * Always: v.last_validator_update_block := block_height (Rule K cooldown).
+ *
+ * Requires the validator row to exist with status ∈ {ACTIVE, RETIRING}.
+ * UNSTAKED / AUTO_RETIRED validators cannot update commissions — their
+ * stake is frozen.
+ *
+ * signed_at_block is a verify-time field (freshness); not consumed here.
+ */
+static int apply_validator_update(nodus_witness_t *w,
+                                     const uint8_t *tx_data, uint32_t tx_len,
+                                     uint64_t block_height) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_validator_update: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    /* Appended: new_commission_bps[2 BE] + signed_at_block[8 BE]. */
+    if (off + 2 + 8 > tx_len) {
+        fprintf(stderr, "%s: apply_validator_update: truncated appended fields\n", LOG_TAG);
+        return -1;
+    }
+    uint16_t new_bps = ((uint16_t)tx_data[off] << 8) |
+                        (uint16_t)tx_data[off + 1];
+    /* signed_at_block at off+2..off+9 — verify-time, ignored here. */
+
+    if (new_bps > DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr, "%s: apply_validator_update: new_bps %u > max %u\n",
+                LOG_TAG, new_bps, DNAC_COMMISSION_BPS_MAX);
+        return -1;
+    }
+
+    dnac_validator_record_t v;
+    int rc = nodus_validator_get(w, signer_pubkey, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_validator_update: validator not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    if (v.status != DNAC_VALIDATOR_ACTIVE &&
+        v.status != DNAC_VALIDATOR_RETIRING) {
+        fprintf(stderr, "%s: apply_validator_update: validator status=%u not updatable\n",
+                LOG_TAG, v.status);
+        return -1;
+    }
+
+    if (new_bps > v.commission_bps) {
+        /* Increase — defer one full epoch. */
+        v.pending_commission_bps  = new_bps;
+        uint64_t next_epoch_boundary =
+            ((block_height / DNAC_EPOCH_LENGTH) + 1) * DNAC_EPOCH_LENGTH;
+        uint64_t plus_epoch = block_height + DNAC_EPOCH_LENGTH;
+        v.pending_effective_block = (next_epoch_boundary > plus_epoch)
+                                     ? next_epoch_boundary
+                                     : plus_epoch;
+    } else {
+        /* Decrease (or equal) — immediate + clear pending. */
+        v.commission_bps          = new_bps;
+        v.pending_commission_bps  = 0;
+        v.pending_effective_block = 0;
+    }
+    v.last_validator_update_block = block_height;
+
+    rc = nodus_validator_update(w, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_validator_update: validator_update failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    return 0;
+}
+
 /* apply_tx_to_state — Phase 3 / Task 3.1.
  *
  * Per-TX state mutation: extracts the per-TX body of the legacy
@@ -1669,6 +1759,11 @@ int apply_tx_to_state(nodus_witness_t *w,
         } else if (tx_type == NODUS_W_TX_CLAIM_REWARD) {
             if (apply_claim_reward(w, tx_data, tx_len, block_height,
                                      tx_hash) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_VALIDATOR_UPDATE) {
+            if (apply_validator_update(w, tx_data, tx_len,
+                                         block_height) != 0) {
                 failed = true;
             }
         }
