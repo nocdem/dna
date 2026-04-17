@@ -593,3 +593,6 @@ register_witness_test(test_fee_routing)
 
 # Task 40 — STAKE state mutation (validator insert + active_count bump)
 register_witness_test(test_apply_stake)
+
+# Task 41 — DELEGATE state mutation (delegation row + validator totals)
+register_witness_test(test_apply_delegate)

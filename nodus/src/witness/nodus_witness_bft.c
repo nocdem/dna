@@ -810,6 +810,213 @@ static int compute_appended_fields_offset(const uint8_t *tx_data,
     return 0;
 }
 
+/* Sum native-DNAC (token_id all-zero) input and output amounts. Needed
+ * by DELEGATE for exact delegation_amount = in - out - fee. Returns 0
+ * on success, -1 on malformed tx_data. */
+static int sum_native_dnac_in_out(const uint8_t *tx_data,
+                                    uint32_t tx_len,
+                                    uint64_t *in_sum_out,
+                                    uint64_t *out_sum_out) {
+    static const uint8_t zero_tid[64] = {0};
+
+    if (!tx_data || !in_sum_out || !out_sum_out) return -1;
+    if (tx_len < 74) return -1;
+
+    uint64_t in_sum = 0;
+    uint64_t out_sum = 0;
+
+    size_t off = 74;
+
+    if (off >= tx_len) return -1;
+    uint8_t input_count = tx_data[off++];
+    for (int i = 0; i < input_count; i++) {
+        if (off + NODUS_T3_NULLIFIER_LEN + 8 + 64 > tx_len) return -1;
+        off += NODUS_T3_NULLIFIER_LEN;
+        uint64_t amt;
+        memcpy(&amt, tx_data + off, 8);
+        off += 8;
+        const uint8_t *tid = tx_data + off;
+        off += 64;
+        if (memcmp(tid, zero_tid, 64) == 0) {
+            in_sum += amt;
+        }
+    }
+
+    if (off >= tx_len) return -1;
+    uint8_t output_count = tx_data[off++];
+    for (int i = 0; i < output_count; i++) {
+        if (off + 235 > tx_len) return -1;
+        off += 1 + 129;
+        uint64_t amt;
+        memcpy(&amt, tx_data + off, 8);
+        off += 8;
+        const uint8_t *tid = tx_data + off;
+        off += 64;
+        off += 32;
+        uint8_t memo_len = tx_data[off++];
+        if (memo_len > tx_len - off) return -1;
+        off += memo_len;
+        if (memcmp(tid, zero_tid, 64) == 0) {
+            out_sum += amt;
+        }
+    }
+
+    *in_sum_out = in_sum;
+    *out_sum_out = out_sum;
+    return 0;
+}
+
+/* Phase 8 Task 41 — DELEGATE state mutation.
+ *
+ * Parses validator_pubkey[2592] appended field, fetches target validator
+ * + current reward accumulator, inserts (or updates) delegation row with
+ * reward_snapshot = V.accumulator, bumps V.total_delegated +
+ * V.external_delegated.
+ *
+ * delegation_amount is computed as
+ *     native_input_sum - native_output_sum - committed_fee
+ * (DELEGATE consumes DNAC inputs >= amount + fee, outputs are change
+ * only; see design 2.4).
+ */
+static int apply_delegate(nodus_witness_t *w,
+                           const uint8_t *tx_data, uint32_t tx_len,
+                           uint64_t block_height,
+                           uint64_t committed_fee) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_delegate: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    if (off + DNAC_PUBKEY_SIZE > tx_len) {
+        fprintf(stderr, "%s: apply_delegate: truncated appended fields\n", LOG_TAG);
+        return -1;
+    }
+    const uint8_t *validator_pubkey = tx_data + off;
+
+    /* Rule S defense-in-depth: reject self-delegation. */
+    if (memcmp(signer_pubkey, validator_pubkey, DNAC_PUBKEY_SIZE) == 0) {
+        fprintf(stderr, "%s: apply_delegate: self-delegation rejected (Rule S)\n",
+                LOG_TAG);
+        return -1;
+    }
+
+    /* Compute delegation_amount from native-DNAC flows.
+     *
+     * DELEGATE wire semantics (design 2.2): inputs = amount + fee + change,
+     * outputs = change only. So (input_sum - output_sum) == amount + fee.
+     *
+     * update_utxo_set currently assigns the entire (input - output)
+     * excess to block_fee_pool as "fee", which double-counts the
+     * staked amount on this path. Deferred to Phase 9 (Task 48-51
+     * block_fee_pool routing) — then the fee routing will become
+     * TX-type aware and committed_fee here will be the true fee.
+     *
+     * For now, Phase 8 records delegation_amount = input_sum - output_sum
+     * (which includes the fee as noise, bounded by current_fee ~0.01% of
+     * amount). The committed_fee parameter is accepted but unused
+     * pending the fee-routing fix. Once update_utxo_set learns DELEGATE
+     * semantics, switch to the exact formula
+     *     delegation_amount = input_sum - output_sum - committed_fee
+     */
+    (void)committed_fee;
+    uint64_t input_sum = 0, output_sum = 0;
+    if (sum_native_dnac_in_out(tx_data, tx_len, &input_sum, &output_sum) != 0) {
+        fprintf(stderr, "%s: apply_delegate: sum_native_dnac_in_out failed\n",
+                LOG_TAG);
+        return -1;
+    }
+    if (input_sum <= output_sum) {
+        fprintf(stderr, "%s: apply_delegate: input_sum (%llu) <= output_sum (%llu)\n",
+                LOG_TAG,
+                (unsigned long long)input_sum,
+                (unsigned long long)output_sum);
+        return -1;
+    }
+    uint64_t delegation_amount = input_sum - output_sum;
+
+    /* Fetch target validator. */
+    dnac_validator_record_t v;
+    int rc = nodus_validator_get(w, validator_pubkey, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_delegate: validator not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    if (v.status != DNAC_VALIDATOR_ACTIVE) {
+        fprintf(stderr, "%s: apply_delegate: validator not ACTIVE (status=%u)\n",
+                LOG_TAG, v.status);
+        return -1;
+    }
+
+    /* Fetch current reward accumulator for snapshot. */
+    dnac_reward_record_t r;
+    rc = nodus_reward_get(w, validator_pubkey, &r);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_delegate: reward record missing (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    /* Insert (or update if already exists) delegation row. */
+    dnac_delegation_record_t d;
+    memset(&d, 0, sizeof(d));
+    memcpy(d.delegator_pubkey, signer_pubkey, DNAC_PUBKEY_SIZE);
+    memcpy(d.validator_pubkey, validator_pubkey, DNAC_PUBKEY_SIZE);
+    d.amount             = delegation_amount;
+    d.delegated_at_block = block_height;
+    memcpy(d.reward_snapshot, r.accumulator, 16);
+
+    rc = nodus_delegation_insert(w, &d);
+    if (rc == -2) {
+        /* Existing row — top up amount and refresh snapshot + Rule O block.
+         * Note: Rule O's "1 epoch min hold" is measured from the most
+         * recent delegated_at_block, so resetting here imposes a fresh
+         * hold period on the added amount. */
+        dnac_delegation_record_t existing;
+        int gr = nodus_delegation_get(w, signer_pubkey, validator_pubkey,
+                                       &existing);
+        if (gr != 0) {
+            fprintf(stderr, "%s: apply_delegate: PK collision but get failed (rc=%d)\n",
+                    LOG_TAG, gr);
+            return -1;
+        }
+        /* Overflow guard */
+        if (existing.amount > UINT64_MAX - delegation_amount) {
+            fprintf(stderr, "%s: apply_delegate: amount overflow\n", LOG_TAG);
+            return -1;
+        }
+        existing.amount += delegation_amount;
+        existing.delegated_at_block = block_height;
+        memcpy(existing.reward_snapshot, r.accumulator, 16);
+        rc = nodus_delegation_update(w, &existing);
+    }
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_delegate: delegation insert/update failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    /* Bump validator totals. Rule S blocks self-delegation so every
+     * delegation is external. */
+    if (v.total_delegated > UINT64_MAX - delegation_amount ||
+        v.external_delegated > UINT64_MAX - delegation_amount) {
+        fprintf(stderr, "%s: apply_delegate: validator totals overflow\n", LOG_TAG);
+        return -1;
+    }
+    v.total_delegated    += delegation_amount;
+    v.external_delegated += delegation_amount;
+    rc = nodus_validator_update(w, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_delegate: validator_update failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    return 0;
+}
+
 /* Phase 8 Task 40 — STAKE state mutation.
  *
  * Parses the type-specific appended fields (commission_bps +
@@ -1034,6 +1241,11 @@ int apply_tx_to_state(nodus_witness_t *w,
     if (!failed && tx_data && tx_len > 0) {
         if (tx_type == NODUS_W_TX_STAKE) {
             if (apply_stake(w, tx_data, tx_len, block_height) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_DELEGATE) {
+            if (apply_delegate(w, tx_data, tx_len, block_height,
+                                committed_fee) != 0) {
                 failed = true;
             }
         }
