@@ -334,6 +334,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 5 Task 21: TX deserialize dispatch consolidation
     register_dnac_test(test_deserialize_dispatch)
+
+    # Stake & delegation v1 — Phase 6 Task 22: STAKE verify rules (local subset)
+    register_dnac_test(test_stake_verify)
 endif()
 
 # ============================================================================

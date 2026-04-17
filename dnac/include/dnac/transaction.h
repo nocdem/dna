@@ -348,6 +348,27 @@ int dnac_tx_add_signer(dnac_transaction_t *tx,
 int dnac_tx_verify(const dnac_transaction_t *tx);
 
 /**
+ * @brief Verify STAKE-type rules only (design §2.4, Phase 6 Task 22)
+ *
+ * Runs the locally-verifiable STAKE rule subset without exercising the
+ * witness-signature or signer-signature paths. Intended primarily for
+ * unit tests and pre-flight client checks.
+ *
+ * Rules enforced:
+ *   - tx->type == DNAC_TX_STAKE
+ *   - signer_count == 1
+ *   - stake_fields.commission_bps <= DNAC_COMMISSION_BPS_MAX (10000)
+ *   - Σ DNAC inputs >= DNAC_SELF_STAKE_AMOUNT + Σ DNAC outputs
+ *
+ * Rules requiring witness-side DB access (Rule I / Rule M / exact fee)
+ * are NOT checked here — they run at state-apply time in the witness.
+ *
+ * @param tx Transaction (must be STAKE type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_stake_rules(const dnac_transaction_t *tx);
+
+/**
  * @brief Serialize transaction to bytes
  *
  * @param tx Transaction

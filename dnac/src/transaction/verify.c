@@ -22,6 +22,125 @@
 
 #define LOG_TAG "DNAC_VERIFY"
 
+/* Zero-filled token_id buffer — matches a native DNAC input/output. */
+static const uint8_t DNAC_NATIVE_TOKEN_ID[DNAC_TOKEN_ID_SIZE] = {0};
+
+/**
+ * @brief Verify STAKE-type rules (design §2.4, Phase 6 Task 22).
+ *
+ * Enforces the locally-verifiable subset of the STAKE rule set — rules
+ * that a client can check without access to the witness validator_tree
+ * database:
+ *
+ *   - signer_count == 1
+ *   - commission_bps <= DNAC_COMMISSION_BPS_MAX
+ *   - purpose_tag == DNAC_STAKE_PURPOSE_TAG (defense-in-depth; the wire
+ *     layer already rejects mismatches at deserialize time, see Task 16)
+ *   - sum(DNAC inputs) >= DNAC_SELF_STAKE_AMOUNT + sum(DNAC outputs)
+ *     (equivalently: inputs >= 10M + outputs, which implicitly covers
+ *      "inputs >= 10M + fee" for any non-negative fee since
+ *      fee == inputs − outputs − 10M)
+ *
+ * Rules I (pubkey NOT in validator_tree) and M (|validator_tree| < 128)
+ * require DB access and are enforced by the witness at state-apply time
+ * — Phase 8 Task 40 territory.
+ *
+ * The stricter "outputs == inputs − 10M − fee" equality check requires
+ * knowing the fee externally; the witness enforces the exact fee value
+ * against its mempool schedule separately. Client-side can only verify
+ * the inequality bound — a TX satisfying the inequality implies SOME
+ * non-negative fee == inputs − outputs − 10M is consistent; the witness
+ * validates whether that value matches policy.
+ */
+static int verify_stake_rules(const dnac_transaction_t *tx) {
+    /* signer_count == 1 */
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "STAKE: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* commission_bps <= 10000 */
+    if (tx->stake_fields.commission_bps > DNAC_COMMISSION_BPS_MAX) {
+        QGP_LOG_ERROR(LOG_TAG, "STAKE: commission_bps=%u > %u",
+                      (unsigned)tx->stake_fields.commission_bps,
+                      (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* purpose_tag match — defense-in-depth. The deserialize path (Task 16)
+     * already rejects any mismatched tag on the wire; an in-memory TX
+     * reaching verify should never fail this check unless it was
+     * constructed directly without round-tripping through the wire. */
+    /* purpose_tag lives on the wire / in the preimage, not as a struct
+     * field — it is implicitly validated by dnac_tx_deserialize() and
+     * by dnac_tx_compute_hash() binding the literal into the preimage.
+     * No runtime field to re-check here. */
+
+    /* Σ DNAC input >= DNAC_SELF_STAKE_AMOUNT + Σ DNAC output.
+     * Filter to native DNAC token (token_id == zeros); other tokens are
+     * not part of the self-stake accounting and pass through verify_balance_per_token. */
+    uint64_t dnac_in = 0;
+    uint64_t dnac_out = 0;
+    for (int i = 0; i < tx->input_count; i++) {
+        if (memcmp(tx->inputs[i].token_id, DNAC_NATIVE_TOKEN_ID, DNAC_TOKEN_ID_SIZE) != 0)
+            continue;
+        if (safe_add_u64(dnac_in, tx->inputs[i].amount, &dnac_in) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "STAKE: input amount overflow");
+            return DNAC_ERROR_OVERFLOW;
+        }
+    }
+    for (int i = 0; i < tx->output_count; i++) {
+        if (memcmp(tx->outputs[i].token_id, DNAC_NATIVE_TOKEN_ID, DNAC_TOKEN_ID_SIZE) != 0)
+            continue;
+        if (safe_add_u64(dnac_out, tx->outputs[i].amount, &dnac_out) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "STAKE: output amount overflow");
+            return DNAC_ERROR_OVERFLOW;
+        }
+    }
+
+    uint64_t required;
+    if (safe_add_u64(DNAC_SELF_STAKE_AMOUNT, dnac_out, &required) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "STAKE: required-sum overflow");
+        return DNAC_ERROR_OVERFLOW;
+    }
+    if (dnac_in < required) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "STAKE: inputs=%llu < 10M + outputs=%llu (required=%llu)",
+                      (unsigned long long)dnac_in,
+                      (unsigned long long)dnac_out,
+                      (unsigned long long)required);
+        return DNAC_ERROR_INSUFFICIENT_FUNDS;
+    }
+
+    /* TODO(Phase 8 Task 40 / witness-side):
+     *   - Rule I: NO record exists in validator_tree with signer[0].pubkey
+     *     (covers F-STATE-07 pubkey-reuse — ALL statuses block, not just ACTIVE)
+     *   - Rule M: validator_stats.active_count < DNAC_MAX_VALIDATORS (128)
+     *   - Exact-fee check: inputs − outputs − 10M == current_fee
+     * Requires nodus_validator_lookup / nodus_validator_active_count; the
+     * client has no witness DB so these run server-side at state-apply. */
+
+    return DNAC_SUCCESS;
+}
+
+/* Public entry point for STAKE rule verification.
+ *
+ * Exposed so unit tests can exercise the rule layer without assembling
+ * real Dilithium5 signer signatures and witness attestations. The normal
+ * verify path (dnac_tx_verify) also calls verify_stake_rules internally
+ * for STAKE-typed TXs. */
+int dnac_tx_verify_stake_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_STAKE) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_stake_rules(tx);
+}
+
+/* Internal linkage for transaction.c's dnac_tx_verify to dispatch into. */
+int dnac_tx_verify_stake_rules_internal(const dnac_transaction_t *tx) {
+    return verify_stake_rules(tx);
+}
+
 /**
  * @brief Per-token balance verification
  *

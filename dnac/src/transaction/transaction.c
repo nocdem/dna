@@ -39,6 +39,7 @@ const uint8_t DNAC_STAKE_PURPOSE_TAG[DNAC_STAKE_PURPOSE_TAG_LEN] = {
 /* Forward declarations for verification functions (verify.c) */
 extern int verify_witnesses(const dnac_transaction_t *tx);
 extern int verify_signers(const dnac_transaction_t *tx);
+extern int dnac_tx_verify_stake_rules_internal(const dnac_transaction_t *tx);
 
 dnac_transaction_t* dnac_tx_create(dnac_tx_type_t type) {
     dnac_transaction_t *tx = calloc(1, sizeof(dnac_transaction_t));
@@ -171,6 +172,15 @@ int dnac_tx_add_signer(dnac_transaction_t *tx,
 
 int dnac_tx_verify(const dnac_transaction_t *tx) {
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
+
+    /* STAKE-type rules (design §2.4, Phase 6 Task 22) — runs before the
+     * generic balance/witness/signer checks so rule violations surface with
+     * specific error codes (e.g. commission > 10000) rather than being
+     * masked by the weaker "inputs >= outputs" check. */
+    if (tx->type == DNAC_TX_STAKE) {
+        int rc = dnac_tx_verify_stake_rules_internal(tx);
+        if (rc != DNAC_SUCCESS) return rc;
+    }
 
     /* Genesis: 0 inputs, outputs create coins (witness-authorized) */
     if (tx->type == DNAC_TX_GENESIS) {
