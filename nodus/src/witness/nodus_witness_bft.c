@@ -2289,6 +2289,18 @@ int finalize_block(nodus_witness_t *w,
     if (tx_count == 0 || tx_count > NODUS_W_MAX_BLOCK_TXS) return -1;
     if (!tx_hashes) return -1;
 
+    /* Phase 9 / Task 47 — finalize_block MUST run inside the outer
+     * single-transaction block wrapper. The commit_genesis /
+     * commit_batch / replay_block callers open BEGIN IMMEDIATE before
+     * the first apply_tx_to_state and either COMMIT on success or
+     * ROLLBACK on any error (design F-STATE-02). Catch callers that
+     * bypass the wrapper here — they would silently partial-commit. */
+    if (!w->in_block_transaction) {
+        fprintf(stderr, "%s: finalize_block: called outside block "
+                "transaction (F-STATE-02 violation)\n", LOG_TAG);
+        return -1;
+    }
+
     /* Phase 8 Task 46 — epoch-boundary state transitions.
      *
      * MUST run AFTER per-TX apply_tx_to_state calls (so pending-commission

@@ -1525,13 +1525,24 @@ int nodus_witness_token_list(nodus_witness_t *w,
 
 int nodus_witness_db_begin(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
+    /* Phase 9 / Task 47 — upgraded to BEGIN IMMEDIATE per design F-STATE-02.
+     *
+     * IMMEDIATE acquires the RESERVED lock synchronously: any concurrent
+     * write attempt fails fast instead of waiting for the commit barrier.
+     * This makes "nested begin" bugs (re-entrant block commits) surface as
+     * loud SQLITE_BUSY on the second BEGIN rather than silently succeeding.
+     *
+     * The block commit path (commit_genesis / commit_batch / replay_block)
+     * is the sole writer, so IMMEDIATE never contends in production; the
+     * upgrade is a correctness guard, not a performance change. */
     char *err = NULL;
-    int rc = sqlite3_exec(w->db, "BEGIN TRANSACTION", NULL, NULL, &err);
+    int rc = sqlite3_exec(w->db, "BEGIN IMMEDIATE", NULL, NULL, &err);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "%s: BEGIN failed: %s\n", LOG_TAG, err);
+        fprintf(stderr, "%s: BEGIN IMMEDIATE failed: %s\n", LOG_TAG, err);
         sqlite3_free(err);
         return -1;
     }
+    w->in_block_transaction = true;
     return 0;
 }
 
@@ -1544,6 +1555,7 @@ int nodus_witness_db_commit(nodus_witness_t *w) {
         sqlite3_free(err);
         return -1;
     }
+    w->in_block_transaction = false;
     return 0;
 }
 
@@ -1556,6 +1568,7 @@ int nodus_witness_db_rollback(nodus_witness_t *w) {
         sqlite3_free(err);
         return -1;
     }
+    w->in_block_transaction = false;
     return 0;
 }
 

@@ -150,8 +150,16 @@ static void test_finalize_block_writes_row(void) {
     uint8_t proposer[32];
     for (int i = 0; i < 32; i++) proposer[i] = (uint8_t)(0xAA + i);
 
+    /* Task 47 — finalize_block asserts in_block_transaction. Wrap. */
+    if (nodus_witness_db_begin(&w) != 0) {
+        FAIL("begin"); sqlite3_close(w.db); return;
+    }
     int rc = finalize_block(&w, fake_tx_hash, 1, proposer, 1700000000, 1, NULL, 0);
-    if (rc != 0) { FAIL("finalize_block returned non-zero"); sqlite3_close(w.db); return; }
+    if (rc != 0) {
+        nodus_witness_db_rollback(&w);
+        FAIL("finalize_block returned non-zero"); sqlite3_close(w.db); return;
+    }
+    nodus_witness_db_commit(&w);
 
     sqlite3_stmt *stmt;
     sqlite3_prepare_v2(w.db,

@@ -306,6 +306,14 @@ typedef struct nodus_witness {
     sqlite3     *db;
     char        data_path[256];             /* For creating chain DB on genesis */
 
+    /* Phase 9 / Task 47 — single-transaction block commit tracker.
+     *
+     * Set true in nodus_witness_db_begin(), cleared in
+     * nodus_witness_db_commit() / nodus_witness_db_rollback(). Used by
+     * debug assertions + tests that verify the block commit path stays
+     * inside exactly one outer transaction (design F-STATE-02). */
+    bool        in_block_transaction;
+
     bool        running;
 } nodus_witness_t;
 

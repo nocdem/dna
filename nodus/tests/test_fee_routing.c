@@ -328,8 +328,11 @@ int main(void) {
     uint8_t proposer[32];
     memset(proposer, 0x9E, 32);
 
+    /* Task 47 — finalize_block asserts in_block_transaction. Wrap. */
+    CHECK_EQ(nodus_witness_db_begin(&w), 0);
     rc = finalize_block(&w, tx_hashes, 2, proposer, 1700000001, 1, NULL, 0);
     CHECK_EQ(rc, 0);
+    CHECK_EQ(nodus_witness_db_commit(&w), 0);
 
     /* After finalize: pool reset to 0. */
     CHECK_EQ(w.block_fee_pool, 0);

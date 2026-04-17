@@ -612,3 +612,6 @@ register_witness_test(test_apply_validator_update)
 # Task 46 — Epoch-boundary state transitions (commission activation +
 # RETIRING->UNSTAKED graduation; AUTO_RETIRED + committee TODOs)
 register_witness_test(test_apply_epoch_boundary)
+
+# Task 47 — single-SQLite-transaction block commit + rollback on abort
+register_witness_test(test_commit_atomicity)
