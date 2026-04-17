@@ -59,6 +59,92 @@ static int derive_nullifier_for_genesis(const char *owner_fp, const uint8_t *see
     return qgp_sha3_512(data, offset, nullifier_out);
 }
 
+/* Zero-filled token_id buffer — matches a native DNAC output. */
+static const uint8_t GENESIS_NATIVE_TOKEN_ID[DNAC_TOKEN_ID_SIZE] = {0};
+
+/**
+ * @brief Verify GENESIS-type rules (design §2.4, Phase 6 Task 28 — Rule P).
+ *
+ * Rule P per design §5.2 (F-STATE-04):
+ *   (1) chain_def.initial_validator_count == 7
+ *   (2) Σ outputs.amount + Σ initial_validators[i].self_stake == DNAC_TOTAL_SUPPLY
+ *   (3) all 7 initial_validators[i].pubkey distinct
+ *
+ * SCOPE NOTE — current chain_def_t.initial_validators[] / initial_validator_count
+ * fields do NOT exist yet in dnac_chain_definition_t (block.h). They are
+ * scheduled for Task 56 in Phase 12 which extends the genesis schema.
+ *
+ * This task enforces the locally-checkable subset that DOES work today:
+ *
+ *   - tx->type == DNAC_TX_GENESIS
+ *   - tx->input_count == 0 (genesis creates coins, never spends)
+ *   - Σ outputs.amount (native DNAC only) == DNAC_DEFAULT_TOTAL_SUPPLY
+ *
+ * When Task 56 lands the initial_validators[] fields, this helper extends
+ * to full Rule P (count==7, distinct pubkeys, sum+7×10M invariant).
+ */
+static int verify_genesis_rules(const dnac_transaction_t *tx) {
+    if (tx->type != DNAC_TX_GENESIS) {
+        return DNAC_ERROR_INVALID_TX_TYPE;
+    }
+
+    /* GENESIS creates coins — no inputs allowed. Existing dnac_tx_verify
+     * already enforces this, but the rule helper re-checks for defense
+     * in depth and so the unit test can exercise it directly. */
+    if (tx->input_count != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "GENESIS: input_count=%d != 0", tx->input_count);
+        return DNAC_ERROR_INVALID_PROOF;
+    }
+
+    /* Σ outputs.amount (native DNAC only) == DNAC_DEFAULT_TOTAL_SUPPLY.
+     * Non-native tokens are not part of the supply accounting — foreign
+     * tokens MUST be created via TOKEN_CREATE, not genesis. */
+    uint64_t outputs_sum = 0;
+    for (int i = 0; i < tx->output_count; i++) {
+        if (memcmp(tx->outputs[i].token_id,
+                   GENESIS_NATIVE_TOKEN_ID,
+                   DNAC_TOKEN_ID_SIZE) != 0) {
+            continue;  /* non-native token output — skip */
+        }
+        if (safe_add_u64(outputs_sum, tx->outputs[i].amount, &outputs_sum) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "GENESIS: output amount overflow");
+            return DNAC_ERROR_OVERFLOW;
+        }
+    }
+
+    if (outputs_sum != DNAC_DEFAULT_TOTAL_SUPPLY) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "GENESIS: outputs_sum=%llu != total_supply=%llu (Rule P)",
+                      (unsigned long long)outputs_sum,
+                      (unsigned long long)DNAC_DEFAULT_TOTAL_SUPPLY);
+        return DNAC_ERROR_INVALID_PROOF;
+    }
+
+    /* TODO(Task 56 / Phase 12):
+     *   When dnac_chain_definition_t gains initial_validators[7] and
+     *   initial_validator_count, extend Rule P to full spec:
+     *     - chain_def.initial_validator_count == DNAC_COMMITTEE_SIZE (7)
+     *     - Σ outputs + 7 × DNAC_SELF_STAKE_AMOUNT == DNAC_DEFAULT_TOTAL_SUPPLY
+     *     - all 7 initial_validators[i].pubkey pairwise distinct (O(N^2))
+     *   Until that ships, only the pre-stake supply invariant applies here
+     *   (genesis distributes the full 1B supply; no self-stake carve-out
+     *   is encoded in chain_def yet). */
+
+    return DNAC_SUCCESS;
+}
+
+/* Public entry point for GENESIS rule verification. Mirrors the pattern of
+ * the other per-type rule helpers (Phase 6 Tasks 22-27). */
+int dnac_tx_verify_genesis_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_GENESIS) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_genesis_rules(tx);
+}
+
+int dnac_tx_verify_genesis_rules_internal(const dnac_transaction_t *tx) {
+    return verify_genesis_rules(tx);
+}
+
 int dnac_tx_create_genesis(const dnac_genesis_recipient_t *recipients,
                            int recipient_count,
                            dnac_transaction_t **tx_out) {

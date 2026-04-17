@@ -352,6 +352,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 6 Task 27: VALIDATOR_UPDATE verify rules (local subset)
     register_dnac_test(test_validator_update_verify)
+
+    # Stake & delegation v1 — Phase 6 Task 28: GENESIS verify (Rule P supply invariance)
+    register_dnac_test(test_genesis_verify_rule_p)
 endif()
 
 # ============================================================================

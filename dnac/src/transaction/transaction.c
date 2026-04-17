@@ -45,6 +45,7 @@ extern int dnac_tx_verify_unstake_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_undelegate_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_claim_reward_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx);
+extern int dnac_tx_verify_genesis_rules_internal(const dnac_transaction_t *tx);
 
 dnac_transaction_t* dnac_tx_create(dnac_tx_type_t type) {
     dnac_transaction_t *tx = calloc(1, sizeof(dnac_transaction_t));
@@ -217,11 +218,14 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
         if (rc != DNAC_SUCCESS) return rc;
     }
 
-    /* Genesis: 0 inputs, outputs create coins (witness-authorized) */
+    /* Genesis: 0 inputs, outputs create coins (witness-authorized).
+     * GENESIS-type rule verify (design §2.4 / §5.2 Rule P, Phase 6 Task 28)
+     * — enforces Σ outputs == DNAC_DEFAULT_TOTAL_SUPPLY supply invariance. */
     if (tx->type == DNAC_TX_GENESIS) {
-        if (tx->input_count != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "verify failed: genesis must have 0 inputs");
-            return DNAC_ERROR_INVALID_PROOF;
+        int rc = dnac_tx_verify_genesis_rules_internal(tx);
+        if (rc != DNAC_SUCCESS) {
+            QGP_LOG_ERROR(LOG_TAG, "verify failed: genesis rule check rc=%d", rc);
+            return rc;
         }
     } else {
         /* v0.8.0: sum(inputs) >= sum(outputs), difference is burned fee */
