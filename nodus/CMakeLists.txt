@@ -615,3 +615,6 @@ register_witness_test(test_apply_epoch_boundary)
 
 # Task 47 — single-SQLite-transaction block commit + rollback on abort
 register_witness_test(test_commit_atomicity)
+
+# Task 48 — per-block attendance tracking + liveness-based AUTO_RETIRED
+register_witness_test(test_liveness_attendance)

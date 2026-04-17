@@ -2228,24 +2228,151 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
     }
 
     /* ─────── 3. Liveness-based AUTO_RETIRED ─────── */
-    /* TODO(Task 48 — liveness attendance tracking): the
-     * consecutive_missed_epochs column is maintained by BFT precommit
-     * attendance accounting, which Task 48 will wire into the consensus
-     * round bookkeeping. Once that counter actually advances, insert
-     * the transition here:
+    /* Phase 9 / Task 48 — liveness attendance transition.
      *
-     *   UPDATE validators
-     *      SET status = 3          -- DNAC_VALIDATOR_AUTO_RETIRED
-     *    WHERE status = 0          -- DNAC_VALIDATOR_ACTIVE
-     *      AND consecutive_missed_epochs >= DNAC_AUTO_RETIRE_EPOCHS;
+     * Per design §3 (Rule N): a validator that misses the liveness
+     * threshold for DNAC_AUTO_RETIRE_EPOCHS consecutive epochs is
+     * auto-retired. The per-block attendance watermark
+     * (validator.last_signed_block) is maintained by
+     * nodus_witness_record_attendance (called after cert_store in the
+     * BFT commit path). Here at the epoch boundary we read that
+     * watermark to decide who attended the past epoch.
      *
-     * plus one validator_stats.active_count decrement per row flipped.
+     * Semantics (v1 simplification): "present" == signed ANY block in
+     * the past epoch. This is stricter than the 80% threshold in
+     * design §3.5 (a validator that signed 95/120 is treated the same
+     * as one that signed 120/120) but it is a safe
+     * over-approximation: anyone counted "present" here would also
+     * clear the 80% bar. The DNAC_LIVENESS_THRESHOLD_BPS constant is
+     * retained for the accumulator-side liveness gate in Task 49.
      *
-     * For now the counter always reads 0, so no rows would match. We
-     * deliberately leave the code path unwired (not even a zero-row
-     * UPDATE) so the audit trail in this commit is unambiguous about
-     * which responsibilities land in Task 48. */
-    (void)DNAC_AUTO_RETIRE_EPOCHS;   /* reference constant — silence unused */
+     * A future v2 refinement would add a per-epoch signed-block
+     * counter to validator_stats and compare against
+     * DNAC_LIVENESS_THRESHOLD_BPS exactly. */
+    {
+        uint64_t epoch_start = 0;
+        if (block_height > DNAC_EPOCH_LENGTH) {
+            epoch_start = block_height - DNAC_EPOCH_LENGTH;
+        }
+
+        /* Step 3a: increment consecutive_missed_epochs for ACTIVE
+         * validators whose last_signed_block is older than the past
+         * epoch start. Reset to 0 for those who signed within it. */
+        sqlite3_stmt *inc = NULL;
+        int rc = sqlite3_prepare_v2(w->db,
+            "UPDATE validators "
+            "SET consecutive_missed_epochs = consecutive_missed_epochs + 1 "
+            "WHERE status = ? AND last_signed_block < ? "
+            "  AND active_since_block + ? <= ?",
+            -1, &inc, NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "%s: epoch_boundary: prepare miss_inc failed: %s\n",
+                    LOG_TAG, sqlite3_errmsg(w->db));
+            return -1;
+        }
+        sqlite3_bind_int(inc, 1, (int)DNAC_VALIDATOR_ACTIVE);
+        sqlite3_bind_int64(inc, 2, (int64_t)epoch_start);
+        /* MIN_TENURE gate: a validator that just staked in the epoch
+         * being evaluated cannot be blamed for missing it. */
+        sqlite3_bind_int64(inc, 3, (int64_t)DNAC_MIN_TENURE_BLOCKS);
+        sqlite3_bind_int64(inc, 4, (int64_t)block_height);
+        rc = sqlite3_step(inc);
+        sqlite3_finalize(inc);
+        if (rc != SQLITE_DONE) {
+            fprintf(stderr, "%s: epoch_boundary: miss_inc step failed (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+
+        sqlite3_stmt *rst = NULL;
+        rc = sqlite3_prepare_v2(w->db,
+            "UPDATE validators SET consecutive_missed_epochs = 0 "
+            "WHERE status = ? AND last_signed_block >= ?",
+            -1, &rst, NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "%s: epoch_boundary: prepare miss_reset failed: %s\n",
+                    LOG_TAG, sqlite3_errmsg(w->db));
+            return -1;
+        }
+        sqlite3_bind_int(rst, 1, (int)DNAC_VALIDATOR_ACTIVE);
+        sqlite3_bind_int64(rst, 2, (int64_t)epoch_start);
+        rc = sqlite3_step(rst);
+        sqlite3_finalize(rst);
+        if (rc != SQLITE_DONE) {
+            fprintf(stderr, "%s: epoch_boundary: miss_reset step failed (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+
+        /* Step 3b: flip ACTIVE validators that crossed
+         * DNAC_AUTO_RETIRE_EPOCHS to AUTO_RETIRED. Count the flipped
+         * rows so active_count can be decremented once per flip. */
+        sqlite3_stmt *count = NULL;
+        rc = sqlite3_prepare_v2(w->db,
+            "SELECT COUNT(*) FROM validators "
+            "WHERE status = ? AND consecutive_missed_epochs >= ?",
+            -1, &count, NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "%s: epoch_boundary: prepare auto_retire count failed\n",
+                    LOG_TAG);
+            return -1;
+        }
+        sqlite3_bind_int(count, 1, (int)DNAC_VALIDATOR_ACTIVE);
+        sqlite3_bind_int64(count, 2, (int64_t)DNAC_AUTO_RETIRE_EPOCHS);
+        int retire_count = 0;
+        if (sqlite3_step(count) == SQLITE_ROW)
+            retire_count = sqlite3_column_int(count, 0);
+        sqlite3_finalize(count);
+
+        if (retire_count > 0) {
+            sqlite3_stmt *ar = NULL;
+            rc = sqlite3_prepare_v2(w->db,
+                "UPDATE validators SET status = ? "
+                "WHERE status = ? AND consecutive_missed_epochs >= ?",
+                -1, &ar, NULL);
+            if (rc != SQLITE_OK) {
+                fprintf(stderr, "%s: epoch_boundary: prepare auto_retire failed\n",
+                        LOG_TAG);
+                return -1;
+            }
+            sqlite3_bind_int(ar, 1, (int)DNAC_VALIDATOR_AUTO_RETIRED);
+            sqlite3_bind_int(ar, 2, (int)DNAC_VALIDATOR_ACTIVE);
+            sqlite3_bind_int64(ar, 3, (int64_t)DNAC_AUTO_RETIRE_EPOCHS);
+            rc = sqlite3_step(ar);
+            sqlite3_finalize(ar);
+            if (rc != SQLITE_DONE) {
+                fprintf(stderr, "%s: epoch_boundary: auto_retire step failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                return -1;
+            }
+
+            /* Decrement validator_stats.active_count by retire_count.
+             * Using a parameterized UPDATE to avoid embedding a raw
+             * integer in the SQL string. */
+            sqlite3_stmt *dec = NULL;
+            rc = sqlite3_prepare_v2(w->db,
+                "UPDATE validator_stats "
+                "SET value = value - ? WHERE key = 'active_count'",
+                -1, &dec, NULL);
+            if (rc != SQLITE_OK) {
+                fprintf(stderr, "%s: epoch_boundary: prepare active_count dec failed\n",
+                        LOG_TAG);
+                return -1;
+            }
+            sqlite3_bind_int64(dec, 1, (int64_t)retire_count);
+            rc = sqlite3_step(dec);
+            sqlite3_finalize(dec);
+            if (rc != SQLITE_DONE) {
+                fprintf(stderr, "%s: epoch_boundary: active_count dec step failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                return -1;
+            }
+
+            QGP_LOG_INFO(LOG_TAG,
+                "auto-retired %d validator(s) at epoch boundary block %llu",
+                retire_count, (unsigned long long)block_height);
+        }
+    }
 
     /* ─────── 4. Committee election for next epoch ─────── */
     /* TODO(Task 51 — Phase 10 committee election): compute next-epoch
@@ -2255,6 +2382,163 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
      * No wiring yet — the Task 12 top-N helper already exists and the
      * committee result has no consumers until Phase 10 lands. */
 
+    return 0;
+}
+
+/* Phase 9 / Task 48 — per-block attendance record.
+ *
+ * For every PRECOMMIT voter whose witness_id maps to an ACTIVE
+ * validator row, update validator.last_signed_block = block_height.
+ * Used at the epoch boundary (apply_epoch_boundary_transitions) to
+ * decide whether each validator was "present" during the past epoch.
+ *
+ * voter_id is the first 32 bytes of SHA3-512(validator_pubkey) — the
+ * same truncation the DHT identity layer uses (see
+ * witness_setup_identity). We scan all rows with status in
+ * {ACTIVE, RETIRING}, hash their pubkey, and match. A RETIRING
+ * validator may still be on the committee for the current epoch so
+ * we bump its last_signed_block too; only ACTIVE rows are considered
+ * at the liveness check, however.
+ *
+ * Opens its OWN short-lived SQLite transaction separate from the
+ * block commit transaction. Rationale: Task 47 closed the block
+ * commit transaction inside the three wrapper functions before
+ * cert_store is called. A failed attendance update only costs a
+ * single block of credit for one validator; the epoch-boundary
+ * enforcement gate uses last_signed_block as a monotonic watermark
+ * so one missed bump is tolerable (a validator with enough
+ * attendance will still clear the threshold).
+ *
+ * Returns 0 on success, -1 on DB error.
+ */
+int nodus_witness_record_attendance(nodus_witness_t *w,
+                                      uint64_t block_height,
+                                      const nodus_witness_vote_record_t *votes,
+                                      int vote_count) {
+    if (!w || !w->db || !votes || vote_count <= 0) return 0;
+
+    /* Collect candidate validator rows once (bounded by MAX_VALIDATORS). */
+    typedef struct {
+        uint8_t pubkey[DNAC_PUBKEY_SIZE];
+        uint8_t voter_id[NODUS_T3_WITNESS_ID_LEN];
+        uint64_t last_signed_block;
+    } cand_t;
+
+    cand_t *cands = NULL;
+    size_t cand_count = 0, cand_cap = 0;
+
+    sqlite3_stmt *sel = NULL;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT pubkey, last_signed_block FROM validators "
+        "WHERE status IN (?, ?)",
+        -1, &sel, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: record_attendance: prepare select failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+    sqlite3_bind_int(sel, 1, (int)DNAC_VALIDATOR_ACTIVE);
+    sqlite3_bind_int(sel, 2, (int)DNAC_VALIDATOR_RETIRING);
+
+    while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
+        const void *pk = sqlite3_column_blob(sel, 0);
+        int pk_len = sqlite3_column_bytes(sel, 0);
+        if (!pk || pk_len != DNAC_PUBKEY_SIZE) continue;
+
+        if (cand_count == cand_cap) {
+            size_t new_cap = cand_cap ? cand_cap * 2 : 16;
+            cand_t *grown = realloc(cands, new_cap * sizeof(cand_t));
+            if (!grown) { sqlite3_finalize(sel); free(cands); return -1; }
+            cands = grown;
+            cand_cap = new_cap;
+        }
+        memcpy(cands[cand_count].pubkey, pk, DNAC_PUBKEY_SIZE);
+        cands[cand_count].last_signed_block =
+            (uint64_t)sqlite3_column_int64(sel, 1);
+        /* Derive voter_id = SHA3-512(pubkey)[0:32] — matches
+         * witness_setup_identity's truncation of nodus_fingerprint. */
+        uint8_t digest[64];
+        qgp_sha3_512(cands[cand_count].pubkey, DNAC_PUBKEY_SIZE, digest);
+        memcpy(cands[cand_count].voter_id, digest,
+               NODUS_T3_WITNESS_ID_LEN);
+        cand_count++;
+    }
+    sqlite3_finalize(sel);
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "%s: record_attendance: select step failed (rc=%d)\n",
+                LOG_TAG, rc);
+        free(cands);
+        return -1;
+    }
+
+    if (cand_count == 0) { free(cands); return 0; }
+
+    /* Attendance update runs in its own transaction. */
+    char *err = NULL;
+    if (sqlite3_exec(w->db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "%s: record_attendance: BEGIN failed: %s\n",
+                LOG_TAG, err ? err : "(null)");
+        if (err) sqlite3_free(err);
+        free(cands);
+        return -1;
+    }
+
+    sqlite3_stmt *upd = NULL;
+    rc = sqlite3_prepare_v2(w->db,
+        "UPDATE validators SET last_signed_block = ? WHERE pubkey = ?",
+        -1, &upd, NULL);
+    if (rc != SQLITE_OK) {
+        sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        free(cands);
+        return -1;
+    }
+
+    int matched = 0;
+    for (int i = 0; i < vote_count; i++) {
+        /* Skip non-APPROVE votes (disapproval means no credit). */
+        if (votes[i].vote != NODUS_W_VOTE_APPROVE) continue;
+        for (size_t j = 0; j < cand_count; j++) {
+            if (memcmp(votes[i].voter_id, cands[j].voter_id,
+                       NODUS_T3_WITNESS_ID_LEN) != 0) continue;
+            /* Monotonic watermark — do not step backwards if block_height
+             * is somehow older than the stored value. */
+            if (block_height <= cands[j].last_signed_block) break;
+
+            sqlite3_reset(upd);
+            sqlite3_bind_int64(upd, 1, (int64_t)block_height);
+            sqlite3_bind_blob(upd, 2, cands[j].pubkey,
+                              DNAC_PUBKEY_SIZE, SQLITE_STATIC);
+            if (sqlite3_step(upd) != SQLITE_DONE) {
+                fprintf(stderr, "%s: record_attendance: update failed: %s\n",
+                        LOG_TAG, sqlite3_errmsg(w->db));
+                sqlite3_finalize(upd);
+                sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+                free(cands);
+                return -1;
+            }
+            cands[j].last_signed_block = block_height;
+            matched++;
+            break;
+        }
+    }
+    sqlite3_finalize(upd);
+
+    if (sqlite3_exec(w->db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "%s: record_attendance: COMMIT failed: %s\n",
+                LOG_TAG, err ? err : "(null)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        free(cands);
+        return -1;
+    }
+
+    if (matched > 0) {
+        QGP_LOG_DEBUG(LOG_TAG,
+            "record_attendance: block %llu — %d/%d voters credited",
+            (unsigned long long)block_height, matched, vote_count);
+    }
+
+    free(cands);
     return 0;
 }
 
@@ -3206,6 +3490,13 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             nodus_witness_cert_store(w, bh, w->round_state.precommits,
                                       w->round_state.precommit_count);
 
+            /* Phase 9 / Task 48 — liveness attendance. Update
+             * validator.last_signed_block for every APPROVE PRECOMMIT
+             * voter whose witness_id matches an ACTIVE/RETIRING row. */
+            nodus_witness_record_attendance(w, bh,
+                                              w->round_state.precommits,
+                                              w->round_state.precommit_count);
+
             fprintf(stderr, "%s: BATCH COMMITTED round %lu (%d TXs, height %llu)\n",
                     LOG_TAG, (unsigned long)w->round_state.round,
                     w->round_state.batch_count,
@@ -3396,6 +3687,12 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                    NODUS_SIG_BYTES);
         }
         nodus_witness_cert_store(w, bh, votes, (int)cmt->n_precommits);
+
+        /* Phase 9 / Task 48 — liveness attendance. Follower path: votes
+         * were transcribed from cmt->certs; all certs are APPROVE by
+         * construction (leader only aggregates APPROVE precommits). */
+        nodus_witness_record_attendance(w, bh, votes,
+                                          (int)cmt->n_precommits);
     }
 
     /* Compute chain state_root and compare with leader's (Phase 3 / Task 10). */

@@ -654,6 +654,13 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
                    NODUS_SIG_BYTES);
         }
         nodus_witness_cert_store(w, stored_bh, votes, (int)rsp->cert_count);
+
+        /* Phase 9 / Task 48 — liveness attendance during sync replay.
+         * Replaying an old block still credits the voters that signed
+         * it, maintaining the same last_signed_block watermark a live
+         * follower would have recorded. */
+        nodus_witness_record_attendance(w, stored_bh, votes,
+                                          (int)rsp->cert_count);
     }
 
     /* Update cached state_root (Phase 3 / Task 10: 4-subtree composite). */
