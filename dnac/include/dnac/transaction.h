@@ -428,6 +428,26 @@ int dnac_tx_verify_unstake_rules(const dnac_transaction_t *tx);
 int dnac_tx_verify_undelegate_rules(const dnac_transaction_t *tx);
 
 /**
+ * @brief Verify CLAIM_REWARD-type rules only (design §2.4, Phase 6 Task 26)
+ *
+ * Runs the locally-verifiable CLAIM_REWARD rule subset:
+ *
+ *   - tx->type == DNAC_TX_CLAIM_REWARD
+ *   - signer_count == 1
+ *   - claim_reward_fields.max_pending_amount > 0
+ *   - claim_reward_fields.valid_before_block > 0
+ *
+ * Rules requiring chain state (current_block <= valid_before_block
+ * freshness, pending-reward computation, cap check, Rule L dynamic
+ * dust threshold) are NOT checked here — they run at state-apply
+ * time in the witness (Phase 8 Task 44).
+ *
+ * @param tx Transaction (must be CLAIM_REWARD type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_claim_reward_rules(const dnac_transaction_t *tx);
+
+/**
  * @brief Serialize transaction to bytes
  *
  * @param tx Transaction

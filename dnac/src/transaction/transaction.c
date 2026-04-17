@@ -43,6 +43,7 @@ extern int dnac_tx_verify_stake_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_delegate_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_unstake_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_undelegate_rules_internal(const dnac_transaction_t *tx);
+extern int dnac_tx_verify_claim_reward_rules_internal(const dnac_transaction_t *tx);
 
 dnac_transaction_t* dnac_tx_create(dnac_tx_type_t type) {
     dnac_transaction_t *tx = calloc(1, sizeof(dnac_transaction_t));
@@ -200,6 +201,12 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
     /* UNDELEGATE-type rules (design §2.4, Phase 6 Task 25). */
     if (tx->type == DNAC_TX_UNDELEGATE) {
         int rc = dnac_tx_verify_undelegate_rules_internal(tx);
+        if (rc != DNAC_SUCCESS) return rc;
+    }
+
+    /* CLAIM_REWARD-type rules (design §2.4, Phase 6 Task 26). */
+    if (tx->type == DNAC_TX_CLAIM_REWARD) {
+        int rc = dnac_tx_verify_claim_reward_rules_internal(tx);
         if (rc != DNAC_SUCCESS) return rc;
     }
 
