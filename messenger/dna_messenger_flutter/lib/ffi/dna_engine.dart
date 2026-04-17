@@ -6988,8 +6988,8 @@ class DnaEngine {
   /// Send DNAC payment (native or custom token).
   ///
   /// If [tokenId] is null, sends native DNAC. If provided, must be exactly
-  /// 64 bytes and the fee (0.1%) is calculated in the same token — native
-  /// DNAC balance is not consumed.
+  /// 64 bytes. Fee is a flat dynamic DNAC amount (queried from witness),
+  /// always paid in native DNAC regardless of token.
   Future<void> dnacSend({
     required String recipientFingerprint,
     required int amount,

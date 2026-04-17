@@ -499,13 +499,10 @@ int dnac_send(dnac_context_t *ctx,
 int dnac_estimate_fee(dnac_context_t *ctx, uint64_t amount, uint64_t *fee_out) {
     if (!ctx || !fee_out) return DNAC_ERROR_INVALID_PARAM;
 
-    /* Fee: 0.1% (10 basis points)
-     * Use amount/1000 instead of (amount*10)/10000 to avoid overflow.
-     * For amounts < 1000, this gives 0, so min_fee=1 applies. */
-    *fee_out = amount / 1000;
-    if (*fee_out < 1) *fee_out = 1; /* Minimum fee */
+    (void)amount;  /* Fee is flat, not proportional */
 
-    return DNAC_SUCCESS;
+    /* Query witness for current dynamic fee */
+    return dnac_get_current_fee(ctx, fee_out);
 }
 
 /* ============================================================================
