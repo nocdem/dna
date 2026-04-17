@@ -98,6 +98,11 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
     size += 1;  /* output_count */
     /* Each output: version(1)+fp(129)+amount(8)+token_id(64)+seed(32)+memo_len(1) = 235 */
     size += output_count * (1 + FP_LEN + 8 + TOKEN_ID_LEN + SEED_LEN + 1);
+    /* Witnesses: count(1) + 0 witnesses */
+    size += 1;
+    /* Signers: count(1) + [pubkey(2592) + sig(4627)] * (sender ? 1 : 0) */
+    size += 1;
+    if (sender_pubkey) size += NODUS_PK_BYTES + NODUS_SIG_BYTES;
 
     uint8_t *buf = calloc(1, size);
     if (!buf) return NULL;
@@ -141,22 +146,67 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
         *p++ = 0;  /* memo_len = 0 */
     }
 
+    /* Witnesses: count=0 */
+    *p++ = 0;
+
+    /* Signers — signature placeholder, caller patches after signing tx_hash.
+     * Signer sig starts at offset (p - buf) + 1 + NODUS_PK_BYTES. */
+    if (sender_pubkey) {
+        *p++ = 1;  /* signer_count */
+        memcpy(p, sender_pubkey, NODUS_PK_BYTES);
+        p += NODUS_PK_BYTES;
+        /* signature zeros — caller must patch via embed_signer_sig() */
+        p += NODUS_SIG_BYTES;
+    } else {
+        *p++ = 0;  /* signer_count = 0 (genesis) */
+    }
+
     *out_len = (uint32_t)(p - buf);
 
     /* Now compute the correct tx_hash and embed it */
     uint8_t hash[64];
-    /* Use zero pubkey if none provided (for genesis) */
-    uint8_t zero_pk[NODUS_PK_BYTES];
-    const uint8_t *pk = sender_pubkey;
-    if (!pk) {
-        memset(zero_pk, 0, sizeof(zero_pk));
-        pk = zero_pk;
-    }
-    if (nodus_witness_recompute_tx_hash(buf, *out_len, pk, hash) == 0) {
+    /* Use sender pubkey as single signer for hash (0 signers for genesis) */
+    uint8_t signer_count = sender_pubkey ? 1 : 0;
+    if (nodus_witness_recompute_tx_hash(buf, *out_len, sender_pubkey, signer_count, hash) == 0) {
         memcpy(buf + 10, hash, TX_HASH_LEN);
     }
 
     return buf;
+}
+
+/* Embed signer signature into serialized tx_data.
+ * Walks the wire format to find the signer signature slot. */
+static void embed_signer_sig(uint8_t *tx_data, uint32_t tx_len,
+                              const uint8_t *sig_bytes) {
+    /* Skip: header(74) + inputs + outputs + witnesses → signer_count(1) + pubkey → sig */
+    const uint8_t *p = tx_data + 74;  /* after header */
+    size_t remaining = tx_len - 74;
+
+    /* Skip inputs */
+    uint8_t ic = *p++; remaining--;
+    size_t isz = (size_t)ic * (64 + 8 + 64);
+    p += isz; remaining -= isz;
+
+    /* Skip outputs */
+    uint8_t oc = *p++; remaining--;
+    for (int i = 0; i < oc; i++) {
+        uint8_t ml = p[1 + 129 + 8 + 64 + 32];  /* memo_len at fixed offset */
+        size_t os = (1 + 129 + 8 + 64 + 32 + 1) + ml;
+        p += os; remaining -= os;
+    }
+
+    /* Skip witnesses */
+    uint8_t wc = *p++; remaining--;
+    size_t wsz = (size_t)wc * (32 + NODUS_SIG_BYTES + 8 + NODUS_PK_BYTES);
+    p += wsz; remaining -= wsz;
+
+    /* signer_count */
+    uint8_t sc = *p++; remaining--;
+    if (sc == 0) return;
+
+    /* Skip pubkey, write signature */
+    size_t sig_offset = (p - tx_data) + NODUS_PK_BYTES;
+    memcpy(tx_data + sig_offset, sig_bytes, NODUS_SIG_BYTES);
 }
 
 /* Add a UTXO to the witness DB */
@@ -217,11 +267,12 @@ static void test_valid_spend(void) {
     uint8_t tx_hash[64];
     memcpy(tx_hash, tx_data + 10, 64);
 
-    /* Sign the tx_hash with sender's key */
+    /* Sign the tx_hash with sender's key and embed in signer section */
     nodus_sig_t sig;
     if (nodus_sign(&sig, tx_hash, 64, &sender.sk) != 0) {
         FAIL("sign"); free(tx_data); cleanup_witness(&w); return;
     }
+    embed_signer_sig(tx_data, tx_len, sig.bytes);
 
     char reason[256] = {0};
     int rc = nodus_witness_verify_transaction(&w, tx_data, tx_len, tx_hash,
@@ -326,6 +377,7 @@ static void test_invalid_signature(void) {
     uint8_t wrong_data[64];
     memset(wrong_data, 0xFF, 64);
     nodus_sign(&bad_sig, wrong_data, 64, &sender.sk);
+    embed_signer_sig(tx_data, tx_len, bad_sig.bytes);
 
     char reason[256] = {0};
     int rc = nodus_witness_verify_transaction(&w, tx_data, tx_len, tx_hash,
@@ -385,6 +437,7 @@ static void test_insufficient_balance(void) {
 
     nodus_sig_t sig;
     nodus_sign(&sig, tx_hash, 64, &sender.sk);
+    embed_signer_sig(tx_data, tx_len, sig.bytes);
 
     char reason[256] = {0};
     int rc = nodus_witness_verify_transaction(&w, tx_data, tx_len, tx_hash,
@@ -444,6 +497,7 @@ static void test_fee_too_low(void) {
 
     nodus_sig_t sig;
     nodus_sign(&sig, tx_hash, 64, &sender.sk);
+    embed_signer_sig(tx_data, tx_len, sig.bytes);
 
     char reason[256] = {0};
     int rc = nodus_witness_verify_transaction(&w, tx_data, tx_len, tx_hash,
@@ -624,6 +678,7 @@ static void test_double_spend(void) {
 
     nodus_sig_t sig;
     nodus_sign(&sig, tx_hash, 64, &sender.sk);
+    embed_signer_sig(tx_data, tx_len, sig.bytes);
 
     char reason[256] = {0};
     int rc = nodus_witness_verify_transaction(&w, tx_data, tx_len, tx_hash,

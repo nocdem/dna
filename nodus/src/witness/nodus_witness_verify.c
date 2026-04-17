@@ -7,10 +7,13 @@
  *
  * Wire format (from dnac/src/transaction/serialize.c):
  *   Header: version(1) + type(1) + timestamp(8) + tx_hash(64) = 74 bytes
- *   Inputs: count(1) + [nullifier(64) + amount(8)]*N
- *   Outputs: count(1) + [version(1) + fingerprint(129) + amount(8) + seed(32) + memo_len(1) + memo(n)]*M
+ *   Inputs: count(1) + [nullifier(64) + amount(8) + token_id(64)]*N
+ *   Outputs: count(1) + [version(1) + fingerprint(129) + amount(8) + token_id(64) + seed(32) + memo_len(1) + memo(n)]*M
+ *   Witnesses: count(1) + [witness_id(32) + sig(4627) + timestamp(8) + pubkey(2592)]*W
+ *   Signers: count(1) + [pubkey(2592) + sig(4627)]*S
  *
- * Hash covers: version + type + timestamp + inputs + outputs (no counts, no embedded hash)
+ * Hash covers: version + type + timestamp + signer_count + signer_pubkeys + inputs + outputs
+ *              (no counts for inputs/outputs, no embedded hash, no signer signatures)
  *
  * @file nodus_witness_verify.c
  */
@@ -53,18 +56,25 @@
 /* Fee: 0.1% (10 basis points), minimum 1 unit */
 #define FEE_RATE_BPS 10
 
+/* Multi-signer constants */
+#define NODUS_T3_MAX_TX_SIGNERS 4
+#define SIGNER_SIZE (NODUS_PK_BYTES + NODUS_SIG_BYTES)
+
 /* ════════════════════════════════════════════════════════════════════
  * Recompute TX hash from serialized data
  * ════════════════════════════════════════════════════════════════════ */
 
 int nodus_witness_recompute_tx_hash(const uint8_t *tx_data, uint32_t tx_len,
-                                     const uint8_t *client_pubkey,
+                                     const uint8_t *signer_pubkeys,
+                                     uint8_t signer_count,
                                      uint8_t *hash_out) {
-    if (!tx_data || !hash_out || !client_pubkey || tx_len < TX_HEADER_SIZE + 1)
+    if (!tx_data || !hash_out || tx_len < TX_HEADER_SIZE + 1)
+        return -1;
+    if (!signer_pubkeys && signer_count > 0)
         return -1;
 
-    /* Allocate buffer to assemble hash input (tx_len + pubkey) */
-    uint8_t *buf = malloc(tx_len + NODUS_PK_BYTES);
+    /* Allocate buffer to assemble hash input (tx_len + signer_count + all signer pubkeys) */
+    uint8_t *buf = malloc(tx_len + 1 + NODUS_T3_MAX_TX_SIGNERS * NODUS_PK_BYTES);
     if (!buf) return -1;
 
     size_t buf_pos = 0;
@@ -78,9 +88,12 @@ int nodus_witness_recompute_tx_hash(const uint8_t *tx_data, uint32_t tx_len,
     p += 10;
     remaining -= 10;
 
-    /* Include sender_pubkey in hash (binds TX to sender identity) */
-    memcpy(buf + buf_pos, client_pubkey, NODUS_PK_BYTES);
-    buf_pos += NODUS_PK_BYTES;
+    /* Include signer_count + all signer pubkeys in hash */
+    buf[buf_pos++] = signer_count;
+    for (int i = 0; i < signer_count; i++) {
+        memcpy(buf + buf_pos, signer_pubkeys + i * NODUS_PK_BYTES, NODUS_PK_BYTES);
+        buf_pos += NODUS_PK_BYTES;
+    }
 
     /* Skip embedded tx_hash (64 bytes) */
     if (remaining < 64) { free(buf); return -1; }
@@ -210,6 +223,67 @@ static int parse_output_total(const uint8_t *tx_data, uint32_t tx_len,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * Parse signers section from serialized tx_data
+ * ════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Parse signers section from serialized tx_data.
+ * Skips: header -> inputs -> outputs -> witnesses -> reads signers.
+ *
+ * Returns signer_count and pointer to first signer in tx_data.
+ * Caller gets pointers INTO tx_data (no copies).
+ */
+static int parse_signers_from_tx_data(const uint8_t *tx_data, uint32_t tx_len,
+                                       uint8_t *signer_count_out,
+                                       const uint8_t **signers_start_out) {
+    if (!tx_data || tx_len < TX_HEADER_SIZE + 1) return -1;
+
+    const uint8_t *p = tx_data + TX_INPUTS_OFF;
+    size_t remaining = tx_len - TX_INPUTS_OFF;
+
+    /* Skip inputs */
+    if (remaining < 1) return -1;
+    uint8_t input_count = *p++; remaining--;
+    if (input_count > NODUS_T3_MAX_TX_INPUTS) return -1;
+    size_t inputs_size = (size_t)input_count * INPUT_SIZE;
+    if (remaining < inputs_size) return -1;
+    p += inputs_size; remaining -= inputs_size;
+
+    /* Skip outputs */
+    if (remaining < 1) return -1;
+    uint8_t output_count = *p++; remaining--;
+    if (output_count > NODUS_T3_MAX_TX_OUTPUTS) return -1;
+    for (int i = 0; i < output_count; i++) {
+        if (remaining < OUTPUT_FIXED_SIZE) return -1;
+        uint8_t memo_len = p[OUTPUT_FIXED_SIZE - 1];
+        size_t out_total = OUTPUT_FIXED_SIZE + memo_len;
+        if (remaining < out_total) return -1;
+        p += out_total; remaining -= out_total;
+    }
+
+    /* Skip witnesses */
+    if (remaining < 1) return -1;
+    uint8_t witness_count = *p++; remaining--;
+    size_t witness_size = 32 + NODUS_SIG_BYTES + 8 + NODUS_PK_BYTES;  /* id+sig+ts+pk */
+    size_t witnesses_total = (size_t)witness_count * witness_size;
+    if (remaining < witnesses_total) return -1;
+    p += witnesses_total; remaining -= witnesses_total;
+
+    /* Read signer_count */
+    if (remaining < 1) return -1;
+    uint8_t sc = *p++; remaining--;
+    if (sc > NODUS_T3_MAX_TX_SIGNERS) return -1;
+
+    /* Validate remaining space for signers */
+    size_t signers_total = (size_t)sc * SIGNER_SIZE;
+    if (remaining < signers_total) return -1;
+
+    *signer_count_out = sc;
+    *signers_start_out = p;  /* Points to first signer's pubkey */
+    return 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * Full transaction verification
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -253,14 +327,29 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
     }
 
     uint8_t computed_hash[NODUS_KEY_BYTES];
-    /* Use all-zero pubkey for genesis (no sender), actual pubkey for spends */
-    const uint8_t *hash_pubkey = client_pubkey;
-    uint8_t zero_pk[NODUS_PK_BYTES];
+    /* Extract signer pubkeys for hash computation */
+    uint8_t hash_signer_count = 0;
+    const uint8_t *hash_signers = NULL;
+    uint8_t signer_pubkeys_buf[NODUS_T3_MAX_TX_SIGNERS * NODUS_PK_BYTES];
+
     if (is_genesis) {
-        memset(zero_pk, 0, NODUS_PK_BYTES);
-        hash_pubkey = zero_pk;
+        hash_signer_count = 0;
+    } else {
+        if (parse_signers_from_tx_data(tx_data, tx_len, &hash_signer_count, &hash_signers) != 0) {
+            snprintf(reject_reason, reason_size, "failed to parse signers from tx_data");
+            return -1;
+        }
+        /* Copy pubkeys only (skip signatures) */
+        for (int s = 0; s < hash_signer_count; s++) {
+            memcpy(signer_pubkeys_buf + s * NODUS_PK_BYTES,
+                   hash_signers + s * SIGNER_SIZE, NODUS_PK_BYTES);
+        }
     }
-    if (nodus_witness_recompute_tx_hash(tx_data, tx_len, hash_pubkey, computed_hash) != 0) {
+
+    if (nodus_witness_recompute_tx_hash(tx_data, tx_len,
+                                         hash_signer_count > 0 ? signer_pubkeys_buf : NULL,
+                                         hash_signer_count,
+                                         computed_hash) != 0) {
         snprintf(reject_reason, reason_size, "tx_hash recomputation failed (truncated tx_data)");
         return -1;
     }
@@ -275,34 +364,35 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
     if (is_genesis)
         return 0;
 
-    /* ── Check 3: Sender signature ─────────────────────────────── */
-    if (!client_pubkey || !client_signature) {
-        snprintf(reject_reason, reason_size,
-                 "missing sender pubkey or signature");
+    /* ── Check 3: Signer signatures ───────────────────────────── */
+    if (!hash_signers || hash_signer_count == 0) {
+        snprintf(reject_reason, reason_size, "no signers in transaction");
         return -1;
     }
 
-    /* Check pubkey is not all-zero (unset) */
-    {
+    for (int s = 0; s < hash_signer_count; s++) {
+        const uint8_t *spk = hash_signers + s * SIGNER_SIZE;
+        const uint8_t *ssig = hash_signers + s * SIGNER_SIZE + NODUS_PK_BYTES;
+
+        /* Check pubkey not all-zero */
         bool pk_zero = true;
-        for (int i = 0; i < 32 && pk_zero; i++) {
-            if (client_pubkey[i] != 0) pk_zero = false;
+        for (int k = 0; k < 32 && pk_zero; k++) {
+            if (spk[k] != 0) pk_zero = false;
         }
         if (pk_zero) {
-            snprintf(reject_reason, reason_size, "sender pubkey is zero (unset)");
+            snprintf(reject_reason, reason_size, "signer %d pubkey is zero", s);
             return -1;
         }
-    }
 
-    /* Copy into typed structs to avoid aliasing issues */
-    nodus_sig_t sig;
-    nodus_pubkey_t pk;
-    memcpy(sig.bytes, client_signature, NODUS_SIG_BYTES);
-    memcpy(pk.bytes, client_pubkey, NODUS_PK_BYTES);
+        nodus_sig_t sig;
+        nodus_pubkey_t pk;
+        memcpy(sig.bytes, ssig, NODUS_SIG_BYTES);
+        memcpy(pk.bytes, spk, NODUS_PK_BYTES);
 
-    if (nodus_verify(&sig, tx_hash, NODUS_T3_TX_HASH_LEN, &pk) != 0) {
-        snprintf(reject_reason, reason_size, "sender signature invalid");
-        return -1;
+        if (nodus_verify(&sig, tx_hash, NODUS_T3_TX_HASH_LEN, &pk) != 0) {
+            snprintf(reject_reason, reason_size, "signer %d signature invalid", s);
+            return -1;
+        }
     }
 
     /* ── Check 4: Balance ──────────────────────────────────────── */
@@ -311,21 +401,29 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
         return -1;
     }
 
-    /* Compute sender fingerprint from pubkey for ownership check */
-    char sender_fp[129] = {0};
-    {
-        nodus_pubkey_t sender_pk;
-        memcpy(sender_pk.bytes, client_pubkey, NODUS_PK_BYTES);
-        if (nodus_fingerprint_hex(&sender_pk, sender_fp) != 0) {
-            snprintf(reject_reason, reason_size,
-                     "failed to compute sender fingerprint");
-            return -1;
+    /* Compute fingerprints for all signers */
+    uint8_t parsed_signer_count = 0;
+    const uint8_t *signers_data = NULL;
+    char signer_fps[NODUS_T3_MAX_TX_SIGNERS][129];
+    int n_signer_fps = 0;
+
+    if (parse_signers_from_tx_data(tx_data, tx_len, &parsed_signer_count, &signers_data) == 0) {
+        for (int s = 0; s < parsed_signer_count; s++) {
+            nodus_pubkey_t spk;
+            memcpy(spk.bytes, signers_data + s * SIGNER_SIZE, NODUS_PK_BYTES);
+            if (nodus_fingerprint_hex(&spk, signer_fps[n_signer_fps]) == 0)
+                n_signer_fps++;
         }
     }
 
+    /* Use first signer as "sender" for fee calculation (change output detection) */
+    char sender_fp[129] = {0};
+    if (n_signer_fps > 0) {
+        memcpy(sender_fp, signer_fps[0], 128);
+        sender_fp[128] = '\0';
+    }
+
     uint64_t total_input = 0;
-    uint8_t expected_token_id[64];
-    bool token_id_set = false;
 
     for (int i = 0; i < nullifier_count; i++) {
         const uint8_t *nul = nullifiers + i * NODUS_T3_NULLIFIER_LEN;
@@ -340,22 +438,15 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
             return -1;
         }
 
-        /* CRITICAL-4: Verify UTXO is owned by the sender */
-        if (owner[0] != '\0' && strcmp(owner, sender_fp) != 0) {
-            snprintf(reject_reason, reason_size,
-                     "input %d: UTXO not owned by sender", i);
-            return -1;
-        }
-
-        /* CRITICAL-5: Verify all input UTXOs have the same token_id
-         * (skip for TOKEN_CREATE — inputs are DNAC fee payment) */
-        if (!is_token_create) {
-            if (!token_id_set) {
-                memcpy(expected_token_id, utxo_token_id, 64);
-                token_id_set = true;
-            } else if (memcmp(utxo_token_id, expected_token_id, 64) != 0) {
+        /* CRITICAL-4: Verify UTXO is owned by some signer */
+        if (owner[0] != '\0') {
+            bool owned = false;
+            for (int s = 0; s < n_signer_fps; s++) {
+                if (strcmp(owner, signer_fps[s]) == 0) { owned = true; break; }
+            }
+            if (!owned) {
                 snprintf(reject_reason, reason_size,
-                         "input %d: token_id mismatch (mixed tokens in SPEND)", i);
+                         "input %d: UTXO not owned by any signer", i);
                 return -1;
             }
         }
