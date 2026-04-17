@@ -1389,6 +1389,136 @@ static int apply_undelegate(nodus_witness_t *w,
     return 0;
 }
 
+/* Phase 8 Task 44 — CLAIM_REWARD state mutation (dual path).
+ *
+ * Appended fields (design §2.3):
+ *   target_validator[2592] || max_pending_amount[8 BE] || valid_before_block[8 BE]
+ *
+ * Two disjoint paths:
+ *  1. VALIDATOR path (signer == target_validator): the claim drains
+ *     the validator's own reward bucket (self-stake share + commission
+ *     skim). Emits one synthetic UTXO amount = V.validator_unclaimed;
+ *     zeroes validator_unclaimed.
+ *  2. DELEGATOR path: computes pending via u128 (design §3.5) as in
+ *     apply_undelegate — pending = ((V.accumulator − D.reward_snapshot)
+ *     × D.amount) >> 64. Emits one UTXO at pending; advances
+ *     D.reward_snapshot := V.accumulator.
+ *
+ * `max_pending_amount` is the caller's cap from TX signing time —
+ * replay/race defense. If actual pending exceeds the cap, the TX is
+ * REJECTED (strict interpretation; matches design §2.4 Rule "pending
+ * <= max_pending_amount" on the verify side).
+ *
+ * `valid_before_block` is freshness; enforced in the verify path, not
+ * here.
+ */
+static int apply_claim_reward(nodus_witness_t *w,
+                                const uint8_t *tx_data, uint32_t tx_len,
+                                uint64_t block_height,
+                                const uint8_t *tx_hash) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_claim_reward: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    /* Appended: target_validator[2592] + max_pending[8 BE] + valid_before[8 BE]. */
+    if (off + DNAC_PUBKEY_SIZE + 8 + 8 > tx_len) {
+        fprintf(stderr, "%s: apply_claim_reward: truncated appended fields\n", LOG_TAG);
+        return -1;
+    }
+    const uint8_t *target = tx_data + off;
+    uint64_t max_pending = 0;
+    for (int i = 0; i < 8; i++) {
+        max_pending = (max_pending << 8) | (uint64_t)tx_data[off + DNAC_PUBKEY_SIZE + i];
+    }
+    /* valid_before_block is at off + DNAC_PUBKEY_SIZE + 8; not consumed
+     * here (verify-time). */
+
+    /* Fetch validator + reward row. */
+    dnac_validator_record_t v;
+    int rc = nodus_validator_get(w, target, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_claim_reward: validator not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    dnac_reward_record_t r;
+    rc = nodus_reward_get(w, target, &r);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_claim_reward: reward row missing (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    uint64_t pending = 0;
+    bool reward_dirty = false;
+
+    if (memcmp(signer_pubkey, target, DNAC_PUBKEY_SIZE) == 0) {
+        /* VALIDATOR path — drain validator_unclaimed. */
+        pending = r.validator_unclaimed;
+        r.validator_unclaimed = 0;
+        reward_dirty = true;
+    } else {
+        /* DELEGATOR path — pending from accumulator diff × amount >> 64. */
+        dnac_delegation_record_t d;
+        rc = nodus_delegation_get(w, signer_pubkey, target, &d);
+        if (rc != 0) {
+            fprintf(stderr, "%s: apply_claim_reward: delegation not found (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+        qgp_u128_t acc  = qgp_u128_deserialize_be(r.accumulator);
+        qgp_u128_t snap = qgp_u128_deserialize_be(d.reward_snapshot);
+        if (qgp_u128_cmp(acc, snap) < 0) {
+            fprintf(stderr, "%s: apply_claim_reward: snap > acc (impossible)\n",
+                    LOG_TAG);
+            return -1;
+        }
+        qgp_u128_t diff    = qgp_u128_sub(acc, snap);
+        qgp_u128_t wide    = qgp_u128_mul_u64(diff, d.amount);
+        /* >> 64 ⇒ take hi limb (design §3.5). */
+        pending = wide.hi;
+
+        qgp_u128_serialize_be(acc, d.reward_snapshot);
+        rc = nodus_delegation_update(w, &d);
+        if (rc != 0) {
+            fprintf(stderr, "%s: apply_claim_reward: delegation_update failed (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+    }
+
+    /* max_pending cap (design §2.4). */
+    if (pending > max_pending) {
+        fprintf(stderr, "%s: apply_claim_reward: pending %llu > max_pending %llu\n",
+                LOG_TAG,
+                (unsigned long long)pending,
+                (unsigned long long)max_pending);
+        return -1;
+    }
+
+    /* Emit reward UTXO (kind 0x03). */
+    if (emit_synthetic_utxo(w, tx_hash, signer_pubkey, pending,
+                              block_height, /*kind=*/0x03,
+                              /*output_index=*/100, /*unlock=*/0) != 0) {
+        return -1;
+    }
+
+    if (reward_dirty) {
+        r.last_update_block = block_height;
+        rc = nodus_reward_upsert(w, &r);
+        if (rc != 0) {
+            fprintf(stderr, "%s: apply_claim_reward: reward_upsert failed (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 /* apply_tx_to_state — Phase 3 / Task 3.1.
  *
  * Per-TX state mutation: extracts the per-TX body of the legacy
@@ -1534,6 +1664,11 @@ int apply_tx_to_state(nodus_witness_t *w,
         } else if (tx_type == NODUS_W_TX_UNDELEGATE) {
             if (apply_undelegate(w, tx_data, tx_len, block_height,
                                   tx_hash) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_CLAIM_REWARD) {
+            if (apply_claim_reward(w, tx_data, tx_len, block_height,
+                                     tx_hash) != 0) {
                 failed = true;
             }
         }

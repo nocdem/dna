@@ -602,3 +602,6 @@ register_witness_test(test_apply_unstake)
 
 # Task 43 — UNDELEGATE state mutation (dual-UTXO auto-claim, always-emit)
 register_witness_test(test_apply_undelegate)
+
+# Task 44 — CLAIM_REWARD state mutation (validator + delegator paths)
+register_witness_test(test_apply_claim_reward)
