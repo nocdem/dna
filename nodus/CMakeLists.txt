@@ -590,3 +590,6 @@ register_witness_test(test_min_tenure_boundary)
 
 # Task 31 — SPEND fees route to block_fee_pool (not burn UTXO)
 register_witness_test(test_fee_routing)
+
+# Task 40 — STAKE state mutation (validator insert + active_count bump)
+register_witness_test(test_apply_stake)

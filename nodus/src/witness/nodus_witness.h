@@ -70,6 +70,14 @@ typedef struct {
 #define NODUS_W_TX_SPEND         1
 #define NODUS_W_TX_BURN          2
 #define NODUS_W_TX_TOKEN_CREATE  3
+/* Phase 8 — stake & delegation TX types. Values MUST match
+ * dnac_tx_type_t in dnac/transaction.h (DNAC_TX_STAKE .. DNAC_TX_VALIDATOR_UPDATE). */
+#define NODUS_W_TX_STAKE             4
+#define NODUS_W_TX_DELEGATE          5
+#define NODUS_W_TX_UNSTAKE           6
+#define NODUS_W_TX_UNDELEGATE        7
+#define NODUS_W_TX_CLAIM_REWARD      8
+#define NODUS_W_TX_VALIDATOR_UPDATE  9
 
 /* ── Vote types ──────────────────────────────────────────────────── */
 

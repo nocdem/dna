@@ -22,6 +22,9 @@
 #include "witness/nodus_witness_verify.h"
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_cert.h"
+#include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_reward.h"
+#include "witness/nodus_witness_delegation.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
 #include "transport/nodus_tcp.h"
@@ -29,6 +32,10 @@
 
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
+
+#include "dnac/dnac.h"
+#include "dnac/validator.h"
+#include "dnac/transaction.h"   /* DNAC_STAKE_PURPOSE_TAG_LEN */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -736,6 +743,166 @@ bool supply_invariant_violated(nodus_witness_t *w) {
     return violated;
 }
 
+/* ── Phase 8: Stake & delegation state mutation helpers ───────────── */
+
+/* Compute the offset in tx_data at which the type-specific appended
+ * fields begin (i.e. the byte right after the last signer's signature),
+ * and (optionally) return a pointer to signers[0].pubkey inside tx_data.
+ *
+ * Wire layout (design 2.3; see dnac/src/transaction/serialize.c):
+ *   header(74) then input_count(1) then inputs then output_count(1) then outputs
+ *   then witness_count(1) then witnesses then signer_count(1) then signers
+ *   then type-specific appended fields
+ *   then has_chain_def(1) then optional chain_def blob.
+ *
+ * Returns 0 on success, -1 on malformed / truncated input. signer_pk_out
+ * may be NULL.
+ */
+static int compute_appended_fields_offset(const uint8_t *tx_data,
+                                            uint32_t tx_len,
+                                            size_t *off_out,
+                                            const uint8_t **signer_pk_out) {
+    if (!tx_data || !off_out) return -1;
+
+    /* header: version(1) + type(1) + timestamp(8) + tx_hash(64) = 74 */
+    if (tx_len < 74) return -1;
+    size_t off = 74;
+
+    /* Inputs */
+    if (off >= tx_len) return -1;
+    uint8_t input_count = tx_data[off++];
+    const size_t input_size = NODUS_T3_NULLIFIER_LEN + 8 + 64;
+    if ((size_t)input_count * input_size > tx_len - off) return -1;
+    off += (size_t)input_count * input_size;
+
+    /* Outputs (variable memo) */
+    if (off >= tx_len) return -1;
+    uint8_t output_count = tx_data[off++];
+    for (int i = 0; i < output_count; i++) {
+        if (off + 235 > tx_len) return -1;
+        off += 1 + 129 + 8 + 64 + 32;   /* version + fp + amount + token_id + seed */
+        uint8_t memo_len = tx_data[off++];
+        if (memo_len > tx_len - off) return -1;
+        off += memo_len;
+    }
+
+    /* Witnesses */
+    if (off >= tx_len) return -1;
+    uint8_t witness_count = tx_data[off++];
+    const size_t witness_size = 32 + DNAC_SIGNATURE_SIZE + 8 + DNAC_PUBKEY_SIZE;
+    if ((size_t)witness_count * witness_size > tx_len - off) return -1;
+    off += (size_t)witness_count * witness_size;
+
+    /* Signers */
+    if (off >= tx_len) return -1;
+    uint8_t signer_count = tx_data[off++];
+    if (signer_count == 0) return -1;
+    const size_t signer_size = DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE;
+    if ((size_t)signer_count * signer_size > tx_len - off) return -1;
+
+    if (signer_pk_out) {
+        /* signers[0].pubkey sits at current offset (pubkey first, sig after). */
+        *signer_pk_out = tx_data + off;
+    }
+    off += (size_t)signer_count * signer_size;
+
+    *off_out = off;
+    return 0;
+}
+
+/* Phase 8 Task 40 — STAKE state mutation.
+ *
+ * Parses the type-specific appended fields (commission_bps +
+ * unstake_destination_fp + purpose_tag), inserts a new validator row
+ * with self_stake=10M, seeds an empty reward row, bumps
+ * validator_stats.active_count.
+ */
+static int apply_stake(nodus_witness_t *w,
+                        const uint8_t *tx_data, uint32_t tx_len,
+                        uint64_t block_height) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_stake: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    if (off + 2 + 64 + DNAC_STAKE_PURPOSE_TAG_LEN > tx_len) {
+        fprintf(stderr, "%s: apply_stake: truncated appended fields\n", LOG_TAG);
+        return -1;
+    }
+
+    uint16_t commission_bps = ((uint16_t)tx_data[off] << 8) |
+                               (uint16_t)tx_data[off + 1];
+    const uint8_t *unstake_fp_raw = tx_data + off + 2;
+    /* purpose_tag bytes are validated by Phase 7 STAKE verify; we trust
+     * them here. */
+
+    dnac_validator_record_t v;
+    memset(&v, 0, sizeof(v));
+    memcpy(v.pubkey, signer_pubkey, DNAC_PUBKEY_SIZE);
+    v.self_stake              = DNAC_SELF_STAKE_AMOUNT;
+    v.total_delegated         = 0;
+    v.external_delegated      = 0;
+    v.commission_bps          = commission_bps;
+    v.pending_commission_bps  = 0;
+    v.pending_effective_block = 0;
+    v.status                  = DNAC_VALIDATOR_ACTIVE;
+    v.active_since_block      = block_height;
+    v.unstake_commit_block    = 0;
+    v.last_validator_update_block = 0;
+    v.consecutive_missed_epochs   = 0;
+    v.last_signed_block           = 0;
+
+    /* Convert 64 raw bytes to 128-char hex + NUL for the TEXT schema. */
+    static const char hex_digits[] = "0123456789abcdef";
+    for (int i = 0; i < 64; i++) {
+        v.unstake_destination_fp[2*i]     = hex_digits[unstake_fp_raw[i] >> 4];
+        v.unstake_destination_fp[2*i + 1] = hex_digits[unstake_fp_raw[i] & 0xf];
+    }
+    v.unstake_destination_fp[128] = '\0';
+
+    /* If the destination fingerprint derives from the signer's own
+     * pubkey, populate unstake_destination_pubkey immediately so the
+     * post-cooldown SPEND can verify. Otherwise leave zero. */
+    uint8_t signer_fp_raw[64];
+    qgp_sha3_512(signer_pubkey, DNAC_PUBKEY_SIZE, signer_fp_raw);
+    if (memcmp(signer_fp_raw, unstake_fp_raw, 64) == 0) {
+        memcpy(v.unstake_destination_pubkey, signer_pubkey, DNAC_PUBKEY_SIZE);
+    }
+
+    int rc = nodus_validator_insert(w, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_stake: validator_insert failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    dnac_reward_record_t r;
+    memset(&r, 0, sizeof(r));
+    memcpy(r.validator_pubkey, signer_pubkey, DNAC_PUBKEY_SIZE);
+    r.last_update_block = block_height;
+    rc = nodus_reward_upsert(w, &r);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_stake: reward_upsert failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    char *err = NULL;
+    int src = sqlite3_exec(w->db,
+        "UPDATE validator_stats SET value = value + 1 WHERE key = 'active_count'",
+        NULL, NULL, &err);
+    if (src != SQLITE_OK) {
+        fprintf(stderr, "%s: apply_stake: active_count bump failed: %s\n",
+                LOG_TAG, err ? err : "(null)");
+        if (err) sqlite3_free(err);
+        return -1;
+    }
+
+    return 0;
+}
+
 /* apply_tx_to_state — Phase 3 / Task 3.1.
  *
  * Per-TX state mutation: extracts the per-TX body of the legacy
@@ -856,6 +1023,19 @@ int apply_tx_to_state(nodus_witness_t *w,
                                tx_data, tx_len, &committed_fee) != 0) {
             fprintf(stderr, "%s: UTXO set update failed\n", LOG_TAG);
             failed = true;
+        }
+    }
+
+    /* Phase 8 — stake & delegation state mutation. Runs AFTER
+     * update_utxo_set so committed_fee is known (needed by DELEGATE for
+     * exact amount calculation). Each helper is additive on top of the
+     * nullifier/UTXO updates handled above: STAKE/DELEGATE/UNSTAKE all
+     * still have at least one fee input whose nullifier was added. */
+    if (!failed && tx_data && tx_len > 0) {
+        if (tx_type == NODUS_W_TX_STAKE) {
+            if (apply_stake(w, tx_data, tx_len, block_height) != 0) {
+                failed = true;
+            }
         }
     }
 
