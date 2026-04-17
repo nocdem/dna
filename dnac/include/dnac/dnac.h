@@ -138,10 +138,16 @@ typedef enum {
  * v0.5.0: DNAC_TX_MINT removed. All tokens created via one-time genesis.
  */
 typedef enum {
-    DNAC_TX_GENESIS      = 0,   /**< One-time token creation (replaces MINT) */
-    DNAC_TX_SPEND        = 1,   /**< Standard spend transaction */
-    DNAC_TX_BURN         = 2,   /**< Destroy coins (optional) */
-    DNAC_TX_TOKEN_CREATE = 3    /**< Create a new custom token */
+    DNAC_TX_GENESIS          = 0,   /**< One-time token creation (replaces MINT) */
+    DNAC_TX_SPEND            = 1,   /**< Standard spend transaction */
+    DNAC_TX_BURN             = 2,   /**< Destroy coins (optional) */
+    DNAC_TX_TOKEN_CREATE     = 3,   /**< Create a new custom token */
+    DNAC_TX_STAKE            = 4,   /**< Witness self-stake (validator bond) */
+    DNAC_TX_DELEGATE         = 5,   /**< Delegator stakes onto a validator */
+    DNAC_TX_UNSTAKE          = 6,   /**< Validator withdraws self-stake (unbonding) */
+    DNAC_TX_UNDELEGATE       = 7,   /**< Delegator withdraws delegation (unbonding) */
+    DNAC_TX_CLAIM_REWARD     = 8,   /**< Claim accrued staking/delegation rewards */
+    DNAC_TX_VALIDATOR_UPDATE = 9    /**< Update validator metadata (commission, moniker, etc.) */
 } dnac_tx_type_t;
 
 /**

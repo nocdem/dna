@@ -297,6 +297,9 @@ if(DNAC_BUILD_TESTS)
 
     # Phase 9 end-to-end: genesis + anchor + merkle proof composition (Tasks 50-53)
     register_dnac_test(test_anchored_proofs)
+
+    # Stake & delegation v1 — Phase 1 Task 1: TX type enum values
+    register_dnac_test(test_tx_types)
 endif()
 
 # ============================================================================
