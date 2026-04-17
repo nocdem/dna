@@ -60,7 +60,7 @@ extern "C" {
 #define DNAC_ERROR_OVERFLOW            -23  /* Integer overflow in amount arithmetic */
 
 /* Genesis configuration — unanimous (N/N) enforced server-side */
-#define DNAC_DEFAULT_TOTAL_SUPPLY      100000000000000ULL  /* 100 trillion default supply */
+#define DNAC_DEFAULT_TOTAL_SUPPLY      100000000000000000ULL  /* 1B DNAC (10^17 raw, 8 decimals) */
 
 /* ============================================================================
  * Protocol Versions
@@ -687,7 +687,7 @@ int dnac_query_block_range(dnac_context_t *ctx,
 /**
  * @brief Create a new token
  *
- * Burns TOKEN_CREATE_FEE (1 DNAC) and creates a new custom token.
+ * Burns TOKEN_CREATE_FEE (1% of genesis supply, 10M DNAC) and creates a new custom token.
  * On success, the full supply is assigned to the creator as a genesis UTXO.
  *
  * @param ctx DNAC context

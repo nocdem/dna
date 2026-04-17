@@ -38,9 +38,9 @@ extern void nodus_singleton_unlock(void);
 
 #define LOG_TAG "DNAC_TOKEN"
 
-/** Fee for creating a token: 1 DNAC = 100,000,000 raw units.
+/** Fee for creating a token: 1% of genesis supply (10M DNAC for 1B supply).
  *  Must match NODUS_W_TOKEN_CREATE_FEE in nodus_types.h. */
-#define TOKEN_CREATE_FEE  100000000ULL
+#define TOKEN_CREATE_FEE  1000000000000000ULL  /* 10M DNAC = 10^15 raw */
 
 /* ============================================================================
  * dnac_token_create — Build and broadcast TX_TOKEN_CREATE
