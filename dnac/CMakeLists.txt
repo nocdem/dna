@@ -266,6 +266,27 @@ if(DNAC_BUILD_TESTS)
 
     add_test(NAME gaps COMMAND test_gaps)
 
+    # Multi-asset TX foundation tests (offline, no network)
+    add_executable(test_multi_asset tests/test_multi_asset.c)
+
+    target_link_libraries(test_multi_asset dnac)
+
+    if(EXISTS "${DNA_BUILD_DIR}/libdna.so")
+        target_link_libraries(test_multi_asset ${DNA_BUILD_DIR}/libdna.so)
+    else()
+        target_link_libraries(test_multi_asset ${DNA_BUILD_DIR}/libdna.a)
+    endif()
+
+    target_link_libraries(test_multi_asset
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        ${SQLITE3_LIBRARIES}
+        pthread
+        m
+    )
+
+    add_test(NAME multi_asset COMMAND test_multi_asset)
+
     # Chain-def codec roundtrip + determinism (anchored-merkle-proofs Task 9)
     register_dnac_test(test_chain_def_codec)
 
