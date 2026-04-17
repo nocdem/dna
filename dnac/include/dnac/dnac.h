@@ -721,6 +721,71 @@ int dnac_get_pending_rewards(dnac_context_t *ctx,
                              dnac_callback_t callback,
                              void *user_data);
 
+/**
+ * @brief One validator's summary, as returned by dnac_validator_list()
+ *        and dnac_get_committee().
+ *
+ * Matches the witness-side validator record projection (see
+ * dnac/include/dnac/validator.h for the authoritative struct); only
+ * the fields that external callers actually need are exposed here.
+ */
+typedef struct {
+    uint8_t  pubkey[DNAC_PUBKEY_SIZE];  /**< Dilithium5 pubkey (2592B) */
+    uint64_t self_stake;                 /**< Operator's own stake (raw units) */
+    uint64_t total_delegated;            /**< Sum of all delegations (raw units) */
+    uint16_t commission_bps;             /**< Commission 0..10000 */
+    uint8_t  status;                     /**< dnac_validator_status_t */
+    uint64_t active_since_block;         /**< Block height when ACTIVE */
+} dnac_validator_list_entry_t;
+
+/**
+ * @brief List validators known to the witness, optionally filtered by
+ *        status.
+ *
+ * STUB — the witness-side RPC handler lands in Phase 14 Task 63. Until
+ * then this function logs a WARN, writes *count_out = 0, and returns
+ * DNAC_ERROR_NOT_IMPLEMENTED. Callers should gate validator-list UI on
+ * that return code.
+ *
+ * @param ctx            DNAC context
+ * @param filter_status  Filter by dnac_validator_status_t value, or -1
+ *                       to include all statuses.
+ * @param out            Caller-allocated array of validator entries
+ * @param max_entries    Capacity of out[] (must be > 0 when out != NULL)
+ * @param count_out      Number of entries filled (always written)
+ * @return DNAC_SUCCESS once wired, DNAC_ERROR_NOT_IMPLEMENTED until
+ *         Phase 14, DNAC_ERROR_INVALID_PARAM on bad args
+ */
+int dnac_validator_list(dnac_context_t *ctx,
+                        int filter_status,
+                        dnac_validator_list_entry_t *out,
+                        int max_entries,
+                        int *count_out);
+
+/**
+ * @brief Fetch the current epoch's committee (top-N validators up to
+ *        DNAC_COMMITTEE_SIZE).
+ *
+ * STUB — the witness-side RPC handler lands in Phase 14 Task 62. Until
+ * then this function logs a WARN, writes *count_out = 0, and returns
+ * DNAC_ERROR_NOT_IMPLEMENTED.
+ *
+ * During bootstrap the committee may be smaller than
+ * DNAC_COMMITTEE_SIZE; callers must trust *count_out rather than
+ * assuming a full committee.
+ *
+ * @param ctx        DNAC context
+ * @param out        Caller-allocated array of >= DNAC_COMMITTEE_SIZE
+ *                   entries
+ * @param count_out  Number of committee members returned (always
+ *                   written)
+ * @return DNAC_SUCCESS once wired, DNAC_ERROR_NOT_IMPLEMENTED until
+ *         Phase 14, DNAC_ERROR_INVALID_PARAM on bad args
+ */
+int dnac_get_committee(dnac_context_t *ctx,
+                       dnac_validator_list_entry_t *out,
+                       int *count_out);
+
 /* ============================================================================
  * Transaction Builder (Advanced)
  * ========================================================================== */
