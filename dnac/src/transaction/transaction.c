@@ -208,6 +208,16 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
     return DNAC_SUCCESS;
 }
 
+/* Big-endian serialization helpers for the canonical TX hash preimage.
+ * Design §2.3 (F-CRYPTO-10) requires multi-byte integers in the preimage
+ * to be big-endian so signatures are platform-independent. */
+static void tx_be64_into(uint64_t v, uint8_t out[8]) {
+    for (int i = 7; i >= 0; i--) {
+        out[i] = (uint8_t)(v & 0xff);
+        v >>= 8;
+    }
+}
+
 int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
     if (!tx || !hash_out) return DNAC_ERROR_INVALID_PARAM;
 
@@ -219,31 +229,46 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
         return DNAC_ERROR_CRYPTO;
     }
 
-    /* Hash header fields — type must be cast to uint8_t to match wire format.
-     * dnac_tx_type_t is an enum (sizeof(int) = 4), but wire uses 1 byte. */
+    /* ──────────────────────────────────────────────────────────────────
+     * Canonical TX hash preimage (design §2.3, F-CRYPTO-10):
+     *
+     *   version (u8) || type (u8) || timestamp (u64 BE) || chain_id[32] ||
+     *   inputs[0..input_count]      each: nullifier(64) || amount(u64 BE) || token_id(32) ||
+     *   outputs[0..output_count]    each: version(u8) || fp(129) || amount(u64 BE) ||
+     *                                     token_id(32) || seed(32) || memo_len(u8) || memo(memo_len) ||
+     *   signer_count (u8) || signers[0..signer_count].pubkey ||
+     *   type_specific_appended_fields
+     *
+     * All multi-byte integers are BIG-ENDIAN so the hash is identical
+     * across platforms. Byte-arrays (nullifier, token_id, pubkey, fp,
+     * seed, memo) are hashed verbatim (no endianness).
+     * ────────────────────────────────────────────────────────────────── */
+
+    /* Header: version, type, timestamp (BE), chain_id */
     uint8_t type_byte = (uint8_t)tx->type;
+    uint8_t ts_be[8];
+    tx_be64_into(tx->timestamp, ts_be);
     EVP_DigestUpdate(ctx, &tx->version, sizeof(tx->version));
     EVP_DigestUpdate(ctx, &type_byte, sizeof(type_byte));
-    EVP_DigestUpdate(ctx, &tx->timestamp, sizeof(tx->timestamp));
+    EVP_DigestUpdate(ctx, ts_be, sizeof(ts_be));
+    EVP_DigestUpdate(ctx, tx->chain_id, sizeof(tx->chain_id));
 
-    /* Hash all signer public keys (binds TX to signer identities) */
-    EVP_DigestUpdate(ctx, &tx->signer_count, sizeof(uint8_t));
-    for (int i = 0; i < tx->signer_count; i++) {
-        EVP_DigestUpdate(ctx, tx->signers[i].pubkey, DNAC_PUBKEY_SIZE);
-    }
-
-    /* Hash inputs */
+    /* Inputs: nullifier || amount (BE) || token_id */
     for (int i = 0; i < tx->input_count; i++) {
+        uint8_t amt_be[8];
+        tx_be64_into(tx->inputs[i].amount, amt_be);
         EVP_DigestUpdate(ctx, tx->inputs[i].nullifier, DNAC_NULLIFIER_SIZE);
-        EVP_DigestUpdate(ctx, &tx->inputs[i].amount, sizeof(uint64_t));
+        EVP_DigestUpdate(ctx, amt_be, sizeof(amt_be));
         EVP_DigestUpdate(ctx, tx->inputs[i].token_id, DNAC_TOKEN_ID_SIZE);
     }
 
-    /* Hash outputs (Gap 25: v0.6.0 - includes memo) */
+    /* Outputs: version || fp || amount (BE) || token_id || seed || memo_len || memo */
     for (int i = 0; i < tx->output_count; i++) {
+        uint8_t amt_be[8];
+        tx_be64_into(tx->outputs[i].amount, amt_be);
         EVP_DigestUpdate(ctx, &tx->outputs[i].version, sizeof(uint8_t));
         EVP_DigestUpdate(ctx, tx->outputs[i].owner_fingerprint, DNAC_FINGERPRINT_SIZE);
-        EVP_DigestUpdate(ctx, &tx->outputs[i].amount, sizeof(uint64_t));
+        EVP_DigestUpdate(ctx, amt_be, sizeof(amt_be));
         EVP_DigestUpdate(ctx, tx->outputs[i].token_id, DNAC_TOKEN_ID_SIZE);
         EVP_DigestUpdate(ctx, tx->outputs[i].nullifier_seed, 32);
         EVP_DigestUpdate(ctx, &tx->outputs[i].memo_len, sizeof(uint8_t));
@@ -251,6 +276,18 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
             EVP_DigestUpdate(ctx, tx->outputs[i].memo, tx->outputs[i].memo_len);
         }
     }
+
+    /* Signers: count || pubkeys (truncated at signer_count — fixed-array
+     * tail bytes are NOT hashed, so mutating signers[signer_count..] does
+     * not change the preimage). */
+    EVP_DigestUpdate(ctx, &tx->signer_count, sizeof(uint8_t));
+    for (int i = 0; i < tx->signer_count; i++) {
+        EVP_DigestUpdate(ctx, tx->signers[i].pubkey, DNAC_PUBKEY_SIZE);
+    }
+
+    /* Type-specific appended fields (STAKE, DELEGATE, etc.) land here in
+     * Phase 5 Tasks 16-20 of the stake-delegation plan. For v1 TX types
+     * (GENESIS/SPEND/BURN/TOKEN_CREATE) the appended section is empty. */
 
     unsigned int hash_len;
     if (EVP_DigestFinal_ex(ctx, hash_out, &hash_len) != 1) {

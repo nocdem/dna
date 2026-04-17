@@ -309,6 +309,9 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 1 Task 4: version bump marker
     register_dnac_test(test_version_bump)
+
+    # Stake & delegation v1 — Phase 5 Task 14: TX preimage binds chain_id
+    register_dnac_test(test_preimage_binding)
 endif()
 
 # ============================================================================

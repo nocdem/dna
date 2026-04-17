@@ -136,6 +136,12 @@ struct dnac_transaction {
      * remains false and the serialization is byte-identical to v0. */
     bool                    has_chain_def;
     dnac_chain_definition_t chain_def;
+
+    /* Chain_id bound into the TX hash preimage (design §2.3, F-CRYPTO-10).
+     * Set by builder from dnac_get_chain_id(ctx); zero on freshly created TX
+     * until populated. Not serialized on the wire — witnesses already know
+     * their chain_id from the chain context. */
+    uint8_t chain_id[32];
 };
 
 /* ============================================================================

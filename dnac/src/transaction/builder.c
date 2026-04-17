@@ -277,6 +277,14 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
     memcpy(builder->tx->signers[0].pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
     builder->tx->signer_count = 1;
 
+    /* Task 14 / design §2.3 — bind chain_id into the TX hash preimage.
+     * dnac_get_chain_id returns NULL pre-genesis; in that case the
+     * chain_id field stays zero (signature binds to the zero chain). */
+    const uint8_t *cid = dnac_get_chain_id(builder->ctx);
+    if (cid) {
+        memcpy(builder->tx->chain_id, cid, 32);
+    }
+
     rc = dnac_tx_compute_hash(builder->tx, builder->tx->tx_hash);
     if (rc != DNAC_SUCCESS) return rc;
 
