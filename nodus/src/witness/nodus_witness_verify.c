@@ -15,6 +15,22 @@
  * Hash covers: version + type + timestamp + signer_count + signer_pubkeys + inputs + outputs
  *              (no counts for inputs/outputs, no embedded hash, no signer signatures)
  *
+ * F-CONS-06 — Mandatory independent verification on PREVOTE:
+ *   Functions in this file are the ONLY consensus primitives a follower
+ *   runs before broadcasting PREVOTE APPROVE. They recompute every
+ *   security-relevant value from the raw TX bytes (tx_hash, signer
+ *   signatures, nullifier state, fee, ownership) — no field is trusted
+ *   from the leader's PROPOSE message without independent recompute.
+ *
+ *   Post-commit state_root binding is enforced separately in
+ *   nodus_witness_bft.c::nodus_witness_bft_handle_commit, where each
+ *   follower independently computes state_root via
+ *   nodus_witness_merkle_compute_state_root() and compares the result
+ *   against the leader's COMMIT-message state_root. A compromised
+ *   leader therefore cannot force followers to adopt an invalid
+ *   post-block state. See tests/test_prevote_state_root_mutation.c for
+ *   the regression guard.
+ *
  * @file nodus_witness_verify.c
  */
 

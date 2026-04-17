@@ -3249,6 +3249,28 @@ int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
 
 /* ════════════════════════════════════════════════════════════════════
  * Handle PROPOSAL (follower receives from leader)
+ *
+ * F-CONS-06 invariant (mandatory independent state_root recompute):
+ *   The wire-format nodus_t3_propose_t does NOT carry a leader-claimed
+ *   state_root, and no code path below signs PREVOTE on the basis of
+ *   a leader-supplied state_root. Every follower runs
+ *   nodus_witness_verify_transaction() on each batch TX and validates
+ *   block_hash from the batch's own tx_hashes — no "trust-leader"
+ *   fast-path exists.
+ *
+ *   After COMMIT, each follower calls
+ *   nodus_witness_merkle_compute_state_root() against its own DB
+ *   (see handle_commit at the bottom of this file) and compares the
+ *   result against the leader's COMMIT-message state_root. A
+ *   compromised leader therefore cannot force followers to adopt an
+ *   invalid post-block state.
+ *
+ *   DO NOT add a field to nodus_t3_propose_t that carries a leader-
+ *   claimed state_root followers sign without local recompute — that
+ *   would reintroduce the exact fast-path F-CONS-06 forbids. See
+ *   design doc 2026-04-17-witness-stake-delegation-design.md §F-CONS-06
+ *   and the regression test tests/test_prevote_state_root_mutation.c
+ *   before editing this flow.
  * ════════════════════════════════════════════════════════════════════ */
 
 int nodus_witness_bft_handle_propose(nodus_witness_t *w,
@@ -3910,7 +3932,19 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                                           (int)cmt->n_precommits);
     }
 
-    /* Compute chain state_root and compare with leader's (Phase 3 / Task 10). */
+    /* Compute chain state_root and compare with leader's (Phase 3 / Task 10).
+     *
+     * F-CONS-06 — Independent state_root recompute.
+     * The follower ALWAYS calls nodus_witness_merkle_compute_state_root()
+     * against its own freshly-committed DB state. The leader's claimed
+     * state_root (cmt->state_root, sourced from the COMMIT message) is
+     * NEVER copied into w->cached_state_root; only the locally-computed
+     * utxo_cksum value is retained. That guarantees a compromised leader
+     * cannot propagate an invalid post-block state into follower caches
+     * — even a WARN-level divergence leaves the follower with its own
+     * honest state_root for every downstream consumer (cert preimages,
+     * block header assembly, Merkle proof anchoring).
+     * Regression: tests/test_prevote_state_root_mutation.c. */
     {
         uint8_t utxo_cksum[NODUS_KEY_BYTES];
         if (nodus_witness_merkle_compute_state_root(w, utxo_cksum) == 0) {
@@ -3930,6 +3964,8 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                                  (unsigned long long)hdr->round);
                 }
             }
+            /* F-CONS-06: retain locally-computed value only, never the
+             * leader's claim. */
             memcpy(w->cached_state_root, utxo_cksum, NODUS_KEY_BYTES);
             w->cached_state_root_valid = true;
         }

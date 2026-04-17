@@ -621,3 +621,6 @@ register_witness_test(test_liveness_attendance)
 
 # Task 49 — accumulator update with liveness gate + residual dust
 register_witness_test(test_accumulator_math)
+
+# Task 50 — F-CONS-06 mandatory independent state_root recompute on PREVOTE
+register_witness_test(test_prevote_state_root_mutation)
