@@ -2667,25 +2667,10 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   }
 
   Future<void> _estimateDnacFee() async {
-    final amountText = _amountController.text.trim();
-    if (amountText.isEmpty) {
-      setState(() {
-        _estimatedDnacFee = null;
-        _isEstimatingDnacFee = false;
-      });
-      return;
-    }
-
-    int rawAmount;
-    try {
-      rawAmount = parseDnacAmount(amountText);
-    } catch (_) {
-      setState(() {
-        _estimatedDnacFee = null;
-        _isEstimatingDnacFee = false;
-      });
-      return;
-    }
+    /* Fee is flat (not proportional to amount), but we still need a
+     * non-zero amount to trigger the estimate. Pass 1 as dummy — the
+     * C library queries the witness for the actual dynamic fee. */
+    final int rawAmount = 1;
 
     if (rawAmount <= 0) return;
 
@@ -2747,15 +2732,22 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       return;
     }
 
-    // Check balance (include fee). For token sends, fee is in the same
-    // token (0.1% of amount) and is checked against the token balance.
-    // For native sends, fee is native and checked against native balance.
-    final tokenFee = rawAmount ~/ 1000 < 1 ? 1 : rawAmount ~/ 1000;
+    // Check balance: token amount against token balance, DNAC fee against
+    // native DNAC balance. Fee is always in DNAC regardless of token.
+    final dnacFee = _estimatedDnacFee ?? 0;
     if (isTokenSend) {
+      // Check token balance for transfer amount (no fee from token)
       final tokenIdHex = _DnacTokenTile._tokenIdHex(dnacToken.tokenId);
       final tokBal = ref.read(dnacTokenBalanceProvider(tokenIdHex)).valueOrNull;
-      final totalCost = rawAmount + tokenFee;
-      if (tokBal != null && totalCost > tokBal.confirmed) {
+      if (tokBal != null && rawAmount > tokBal.confirmed) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.dnacInsufficientFunds)),
+        );
+        return;
+      }
+      // Check DNAC balance for fee
+      final nativeBal = ref.read(dnacBalanceProvider).valueOrNull;
+      if (nativeBal != null && dnacFee > nativeBal.confirmed) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(l10n.dnacInsufficientFunds)),
         );
@@ -2763,7 +2755,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       }
     } else {
       final balance = ref.read(dnacBalanceProvider).valueOrNull;
-      final totalCost = rawAmount + (_estimatedDnacFee ?? 0);
+      final totalCost = rawAmount + dnacFee;
       if (balance != null && totalCost > balance.confirmed) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(l10n.dnacInsufficientFunds)),
@@ -3089,24 +3081,14 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                         : parseDnacAmount(_amountController.text.trim());
                   } catch (_) {}
 
-                  // Fee: for token sends, compute locally (0.1%, min 1) in
-                  // the same token — no engine round-trip. For native, use
-                  // the async-estimated fee.
-                  int? feeRaw;
-                  bool feeLoading = false;
-                  if (tok != null) {
-                    if (rawAmount != null && rawAmount > 0) {
-                      feeRaw = rawAmount ~/ 1000;
-                      if (feeRaw < 1) feeRaw = 1;
-                    }
-                  } else {
-                    feeRaw = _estimatedDnacFee;
-                    feeLoading = _isEstimatingDnacFee;
-                  }
+                  // Fee is always in native DNAC (flat dynamic fee from witness).
+                  // Use async-estimated fee for both native and token sends.
+                  int? feeRaw = _estimatedDnacFee;
+                  bool feeLoading = _isEstimatingDnacFee;
 
-                  String formatAmt(int raw) => tok != null
-                      ? '${formatTokenAmount(raw, tok.decimals)} ${tok.symbol}'
-                      : l10n.dnacAmountWithToken(formatDnacAmount(raw));
+                  // Fee always displayed in DNAC regardless of token
+                  String formatAmt(int raw) =>
+                      l10n.dnacAmountWithToken(formatDnacAmount(raw));
 
                   return Container(
                     padding: const EdgeInsets.all(16),
