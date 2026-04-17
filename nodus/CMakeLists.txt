@@ -599,3 +599,6 @@ register_witness_test(test_apply_delegate)
 
 # Task 42 — UNSTAKE phase 1 (RETIRING status transition)
 register_witness_test(test_apply_unstake)
+
+# Task 43 — UNDELEGATE state mutation (dual-UTXO auto-claim, always-emit)
+register_witness_test(test_apply_undelegate)

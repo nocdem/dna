@@ -32,6 +32,7 @@
 
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
+#include "crypto/utils/qgp_u128.h"
 
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
@@ -1179,6 +1180,215 @@ static int apply_unstake(nodus_witness_t *w,
     return 0;
 }
 
+/* Emit a synthetic native-DNAC UTXO owned by `owner_pubkey`. Used by
+ * UNDELEGATE and CLAIM_REWARD which produce payouts that are NOT
+ * encoded as wire-format outputs in tx_data (update_utxo_set doesn't
+ * see them).
+ *
+ * The nullifier is derived deterministically as
+ *   SHA3-512(tx_hash || kind_byte || u32_be(output_index))
+ * where kind_byte disambiguates multiple synthetic UTXOs from the same
+ * TX (e.g. UNDELEGATE emits 0x01 = principal and 0x02 = pending-reward).
+ *
+ * `output_index` MUST NOT collide with any wire-format output index used
+ * by update_utxo_set. Callers pass a high base (e.g. 100+) to stay
+ * clear of wire outputs which start at 0.
+ *
+ * Returns 0 on success, -1 on error. `unlock_block = 0` ⇒ immediately
+ * spendable.
+ */
+static int emit_synthetic_utxo(nodus_witness_t *w,
+                                 const uint8_t *tx_hash,
+                                 const uint8_t *owner_pubkey,
+                                 uint64_t amount,
+                                 uint64_t block_height,
+                                 uint8_t kind_byte,
+                                 uint32_t output_index,
+                                 uint64_t unlock_block) {
+    /* Derive synthetic nullifier: SHA3-512(tx_hash || kind || index_be). */
+    uint8_t preimage[64 + 1 + 4];
+    memcpy(preimage, tx_hash, 64);
+    preimage[64] = kind_byte;
+    preimage[65] = (uint8_t)((output_index >> 24) & 0xff);
+    preimage[66] = (uint8_t)((output_index >> 16) & 0xff);
+    preimage[67] = (uint8_t)((output_index >> 8) & 0xff);
+    preimage[68] = (uint8_t)(output_index & 0xff);
+    uint8_t nullifier[64];
+    qgp_sha3_512(preimage, sizeof(preimage), nullifier);
+
+    /* Owner fingerprint = hex-encoded SHA3-512(owner_pubkey). */
+    uint8_t owner_fp_raw[64];
+    qgp_sha3_512(owner_pubkey, DNAC_PUBKEY_SIZE, owner_fp_raw);
+    static const char hex_digits[] = "0123456789abcdef";
+    char owner_fp_hex[129];
+    for (int i = 0; i < 64; i++) {
+        owner_fp_hex[2*i]     = hex_digits[owner_fp_raw[i] >> 4];
+        owner_fp_hex[2*i + 1] = hex_digits[owner_fp_raw[i] & 0xf];
+    }
+    owner_fp_hex[128] = '\0';
+
+    /* Native DNAC token_id = 64 zeros. */
+    uint8_t zero_token_id[64];
+    memset(zero_token_id, 0, sizeof(zero_token_id));
+
+    int rc = nodus_witness_utxo_add_locked(w, nullifier, owner_fp_hex,
+                                             amount, tx_hash, output_index,
+                                             block_height, zero_token_id,
+                                             unlock_block);
+    if (rc != 0) {
+        fprintf(stderr, "%s: emit_synthetic_utxo: utxo_add_locked failed (rc=%d, kind=0x%02x, idx=%u)\n",
+                LOG_TAG, rc, kind_byte, output_index);
+        return -1;
+    }
+    return 0;
+}
+
+/* Phase 8 Task 43 — UNDELEGATE state mutation.
+ *
+ * Parses validator_pubkey[2592] + amount[8 BE] appended fields. Computes
+ * pending reward from the u128 accumulator math (design §3.5):
+ *     diff       = V.accumulator − D.reward_snapshot              (u128 BE)
+ *     pending_w  = (diff × D.amount) >> 64                        (u128)
+ *     pending    = (uint64) pending_w.lo                          (design §3.5: shift 64)
+ *
+ * Emits TWO synthetic UTXOs (Rule Q — always both, even if pending==0
+ * to preserve supply accounting invariants):
+ *   kind 0x01 = principal UTXO (amount = undelegate_amount)
+ *   kind 0x02 = pending-reward UTXO (amount = pending)
+ *
+ * Advances D.reward_snapshot := V.accumulator. If the delegation is
+ * fully drained (undelegate_amount == D.amount), deletes the row;
+ * otherwise decrements D.amount. Decrements V.total_delegated and
+ * V.external_delegated (Rule S — all delegations are external).
+ *
+ * No validator status gate: UNDELEGATE is permitted against any status
+ * so delegators of an AUTO_RETIRED / RETIRING / UNSTAKED validator can
+ * always pull their principal. Rule B only restricts new DELEGATEs.
+ */
+static int apply_undelegate(nodus_witness_t *w,
+                             const uint8_t *tx_data, uint32_t tx_len,
+                             uint64_t block_height,
+                             const uint8_t *tx_hash) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_undelegate: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    /* Appended: validator_pubkey[2592] + amount[8 BE] = 2600 bytes. */
+    if (off + DNAC_PUBKEY_SIZE + 8 > tx_len) {
+        fprintf(stderr, "%s: apply_undelegate: truncated appended fields\n", LOG_TAG);
+        return -1;
+    }
+    const uint8_t *validator_pubkey = tx_data + off;
+    uint64_t undelegate_amount = 0;
+    for (int i = 0; i < 8; i++) {
+        undelegate_amount = (undelegate_amount << 8) |
+                             (uint64_t)tx_data[off + DNAC_PUBKEY_SIZE + i];
+    }
+
+    /* Fetch delegation. */
+    dnac_delegation_record_t d;
+    int rc = nodus_delegation_get(w, signer_pubkey, validator_pubkey, &d);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_undelegate: delegation not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    if (undelegate_amount == 0 || undelegate_amount > d.amount) {
+        fprintf(stderr, "%s: apply_undelegate: invalid amount (req=%llu, have=%llu)\n",
+                LOG_TAG,
+                (unsigned long long)undelegate_amount,
+                (unsigned long long)d.amount);
+        return -1;
+    }
+
+    /* Fetch validator + reward. */
+    dnac_validator_record_t v;
+    rc = nodus_validator_get(w, validator_pubkey, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_undelegate: validator not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    dnac_reward_record_t r;
+    rc = nodus_reward_get(w, validator_pubkey, &r);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_undelegate: reward row missing (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    /* Pending reward math (design §3.5 — accumulator is u128 BE with
+     * fractional part in low 64 bits; pending = (acc − snap) × amount >> 64). */
+    qgp_u128_t acc  = qgp_u128_deserialize_be(r.accumulator);
+    qgp_u128_t snap = qgp_u128_deserialize_be(d.reward_snapshot);
+    if (qgp_u128_cmp(acc, snap) < 0) {
+        fprintf(stderr, "%s: apply_undelegate: snap > acc (impossible)\n", LOG_TAG);
+        return -1;
+    }
+    qgp_u128_t diff    = qgp_u128_sub(acc, snap);
+    qgp_u128_t pending_wide = qgp_u128_mul_u64(diff, d.amount);
+    /* >> 64 ⇒ take hi limb. High 64 bits of (pending_wide) is pending. */
+    uint64_t pending = pending_wide.hi;
+
+    /* Overflow guard: pending as u64 limits fit within one UTXO. If
+     * pending >> 64 didn't fit in u64 (i.e. the shifted result itself
+     * exceeded 2^64), that's a supply anomaly — abort. pending_wide.hi
+     * fitting in uint64_t is tautological; the real guard is that
+     * pending_wide itself must not have anything in a hypothetical
+     * >2^128 bucket, which qgp_u128_mul_u64 enforces via overflow abort. */
+
+    /* Emit principal UTXO (kind 0x01) — always spendable immediately. */
+    if (emit_synthetic_utxo(w, tx_hash, signer_pubkey, undelegate_amount,
+                              block_height, /*kind=*/0x01,
+                              /*output_index=*/100, /*unlock=*/0) != 0) {
+        return -1;
+    }
+    /* Emit pending-reward UTXO (kind 0x02) — ALWAYS, even if pending==0.
+     * Rule Q: keeps supply-accounting invariants symmetric across
+     * UNDELEGATE TXs regardless of accumulator state. */
+    if (emit_synthetic_utxo(w, tx_hash, signer_pubkey, pending,
+                              block_height, /*kind=*/0x02,
+                              /*output_index=*/101, /*unlock=*/0) != 0) {
+        return -1;
+    }
+
+    /* Advance delegation's snapshot. */
+    qgp_u128_serialize_be(acc, d.reward_snapshot);
+
+    if (undelegate_amount == d.amount) {
+        /* Fully drained — remove the row. */
+        rc = nodus_delegation_delete(w, signer_pubkey, validator_pubkey);
+    } else {
+        d.amount -= undelegate_amount;
+        rc = nodus_delegation_update(w, &d);
+    }
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_undelegate: delegation update/delete failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    /* Decrement validator totals. Rule S ⇒ all delegations are external. */
+    if (v.total_delegated < undelegate_amount ||
+        v.external_delegated < undelegate_amount) {
+        fprintf(stderr, "%s: apply_undelegate: validator total underflow\n", LOG_TAG);
+        return -1;
+    }
+    v.total_delegated    -= undelegate_amount;
+    v.external_delegated -= undelegate_amount;
+    rc = nodus_validator_update(w, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_undelegate: validator_update failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    return 0;
+}
+
 /* apply_tx_to_state — Phase 3 / Task 3.1.
  *
  * Per-TX state mutation: extracts the per-TX body of the legacy
@@ -1319,6 +1529,11 @@ int apply_tx_to_state(nodus_witness_t *w,
             }
         } else if (tx_type == NODUS_W_TX_UNSTAKE) {
             if (apply_unstake(w, tx_data, tx_len, block_height) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_UNDELEGATE) {
+            if (apply_undelegate(w, tx_data, tx_len, block_height,
+                                  tx_hash) != 0) {
                 failed = true;
             }
         }
