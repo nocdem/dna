@@ -136,6 +136,7 @@ if(NOT WIN32)
         src/witness/nodus_witness_delegation.c
         src/witness/nodus_witness_reward.c
         src/witness/nodus_witness_committee.c
+        src/witness/nodus_witness_genesis_seed.c
     )
 endif()
 
@@ -637,3 +638,6 @@ register_witness_test(test_integration_undelegate_claim)
 
 # Task 55 — UNSTAKE two-phase graduation + locked-UTXO unlock
 register_witness_test(test_integration_unstake_two_phase)
+
+# Task 57 — Genesis seeds validator_tree + reward_tree from chain_def
+register_witness_test(test_genesis_seed_validators)

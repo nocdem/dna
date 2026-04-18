@@ -26,6 +26,7 @@
 #include "witness/nodus_witness_reward.h"
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_delegation.h"
+#include "witness/nodus_witness_genesis_seed.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
 #include "transport/nodus_tcp.h"
@@ -4433,6 +4434,16 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
                 }
             }
         }
+    }
+
+    /* Phase 12 Task 57 — seed validator_tree + reward_tree from the
+     * initial_validators[] block of the chain_def. Runs inside the same
+     * db transaction as apply_tx_to_state / finalize_block, so a failure
+     * rolls back atomically with the genesis commit. */
+    if (nodus_witness_genesis_seed_validators(w, cd_blob, (size_t)cd_blob_len) != 0) {
+        fprintf(stderr, "%s: genesis_seed_validators failed\n", LOG_TAG);
+        nodus_witness_db_rollback(w);
+        return -1;
     }
 
     if (finalize_block(w, tx_hash, 1, proposer_id, timestamp, bh,
