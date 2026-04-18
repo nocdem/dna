@@ -206,6 +206,121 @@ void dna_chain_cmd_print_help(void);
  */
 void dna_chain_cmd_print_version(void);
 
+/* ============================================================================
+ * Stake & Delegation CLI (Phase 15 / Tasks 65-69)
+ *
+ * Thin wrappers around the Phase 7 builder APIs + Phase 14 query RPCs.
+ * Validator identifiers are accepted as hex-encoded Dilithium5 pubkeys
+ * (2 * DNAC_PUBKEY_SIZE = 5184 chars). Name/fingerprint → pubkey
+ * resolution is deferred to a later polish commit (no direct helper
+ * currently exists; would require iterating the full validator table).
+ * ========================================================================== */
+
+/**
+ * @brief `dna stake` verb — become a validator.
+ *
+ * Defaults:
+ *   - commission_bps = 500 (5%)
+ *   - unstake_destination_fp = caller's own fingerprint
+ *
+ * @param ctx             DNAC context
+ * @param commission_bps  Commission in basis points (0..DNAC_COMMISSION_BPS_MAX)
+ * @param unstake_to_fp   Optional 128-char hex fingerprint (NULL = use own fp)
+ * @return 0 on success, non-zero on failure
+ */
+int dna_chain_cmd_stake(dnac_context_t *ctx,
+                        uint16_t commission_bps,
+                        const char *unstake_to_fp);
+
+/**
+ * @brief `dna unstake` verb — trigger validator retirement.
+ *
+ * Fee-only TX. Caller must be an active validator. Actual self-stake
+ * return happens at the next epoch boundary via a locked UTXO.
+ *
+ * @param ctx  DNAC context
+ * @return 0 on success, non-zero on failure
+ */
+int dna_chain_cmd_unstake(dnac_context_t *ctx);
+
+/**
+ * @brief `dna delegate` verb — stake native DNAC with a validator.
+ *
+ * @param ctx                   DNAC context
+ * @param validator_pubkey_hex  Hex-encoded Dilithium5 pubkey (5184 chars)
+ * @param amount                Amount in raw units (>= DNAC_MIN_DELEGATION)
+ * @param memo                  Optional memo (currently unused; reserved)
+ * @return 0 on success, non-zero on failure
+ */
+int dna_chain_cmd_delegate(dnac_context_t *ctx,
+                           const char *validator_pubkey_hex,
+                           uint64_t amount,
+                           const char *memo);
+
+/**
+ * @brief `dna undelegate` verb — withdraw (part of) a delegation.
+ *
+ * @param ctx                   DNAC context
+ * @param validator_pubkey_hex  Hex-encoded Dilithium5 pubkey (5184 chars)
+ * @param amount                Principal to withdraw in raw units (> 0)
+ * @return 0 on success, non-zero on failure
+ */
+int dna_chain_cmd_undelegate(dnac_context_t *ctx,
+                             const char *validator_pubkey_hex,
+                             uint64_t amount);
+
+/**
+ * @brief `dna claim` verb — withdraw accrued staking rewards.
+ *
+ * Internally queries pending rewards via Phase 14 RPC, sets
+ * max_pending_amount = pending, valid_before_block = current + freshness,
+ * then submits a CLAIM_REWARD TX.
+ *
+ * @param ctx                   DNAC context
+ * @param validator_pubkey_hex  Hex-encoded Dilithium5 pubkey (5184 chars)
+ * @return 0 on success, non-zero on failure
+ */
+int dna_chain_cmd_claim(dnac_context_t *ctx,
+                        const char *validator_pubkey_hex);
+
+/**
+ * @brief `dna validator-update` verb — change commission rate.
+ *
+ * Queries witness for current block height internally to populate
+ * signed_at_block (Rule K freshness).
+ *
+ * @param ctx             DNAC context
+ * @param commission_bps  New commission in basis points (0..DNAC_COMMISSION_BPS_MAX)
+ * @return 0 on success, non-zero on failure
+ */
+int dna_chain_cmd_validator_update(dnac_context_t *ctx,
+                                   uint16_t commission_bps);
+
+/**
+ * @brief `dna validator-list` verb — dump validator table.
+ *
+ * @param ctx            DNAC context
+ * @param filter_status  -1 = all, 0..3 = filter by dnac_validator_status_t
+ * @return 0 on success, non-zero on failure
+ */
+int dna_chain_cmd_validator_list(dnac_context_t *ctx, int filter_status);
+
+/**
+ * @brief `dna committee` verb — dump current epoch's top-7 committee.
+ */
+int dna_chain_cmd_committee(dnac_context_t *ctx);
+
+/**
+ * @brief `dna pending-rewards` verb — show accrued rewards for caller
+ *        (or a specified claimant pubkey).
+ *
+ * @param ctx                 DNAC context
+ * @param claimant_pubkey_hex Optional hex-encoded pubkey (NULL = caller)
+ * @return 0 on success, non-zero on failure
+ */
+int dna_chain_cmd_pending_rewards(dnac_context_t *ctx,
+                                  const char *claimant_pubkey_hex);
+
 /**
  * @brief Read-only TX file inspector
  *

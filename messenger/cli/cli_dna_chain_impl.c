@@ -1549,3 +1549,90 @@ int dna_chain_cmd_genesis_prepare(dnac_context_t *ctx, const char *config_path) 
             blob_len, blob_len * 2);
     return 0;
 }
+
+/* ============================================================================
+ * Phase 15 / Stake & Delegation CLI helpers
+ * ========================================================================== */
+
+#include "dnac/validator.h"
+
+/**
+ * Parse a lowercase-hex Dilithium5 pubkey (5184 chars = 2 * DNAC_PUBKEY_SIZE)
+ * into a caller-supplied buffer (DNAC_PUBKEY_SIZE bytes).
+ *
+ * Returns 0 on success, -1 on length mismatch or invalid hex.
+ */
+static int parse_validator_pubkey_hex(const char *hex,
+                                      uint8_t out[DNAC_PUBKEY_SIZE]) {
+    if (!hex || !out) return -1;
+    size_t expected = (size_t)DNAC_PUBKEY_SIZE * 2;
+    if (strlen(hex) != expected) return -1;
+    return hex_to_bytes(hex, out, DNAC_PUBKEY_SIZE);
+}
+
+/* ============================================================================
+ * Task 65 — `dna stake` verb
+ * ========================================================================== */
+
+int dna_chain_cmd_stake(dnac_context_t *ctx,
+                        uint16_t commission_bps,
+                        const char *unstake_to_fp) {
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) {
+        fprintf(stderr, "Error: Engine not initialized\n");
+        return 1;
+    }
+
+    if (commission_bps > DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr,
+                "Error: commission_bps %u out of range (0..%u)\n",
+                (unsigned)commission_bps,
+                (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return 1;
+    }
+
+    /* Default unstake destination: caller's own fingerprint. */
+    char self_fp[129] = {0};
+    if (!unstake_to_fp || !*unstake_to_fp) {
+        const char *fp = dna_engine_get_fingerprint(engine);
+        if (!fp) {
+            fprintf(stderr, "Error: Identity not loaded\n");
+            return 1;
+        }
+        strncpy(self_fp, fp, 128);
+        self_fp[128] = '\0';
+        unstake_to_fp = self_fp;
+    } else {
+        /* Validate user-supplied fingerprint format. */
+        if (strlen(unstake_to_fp) != 128) {
+            fprintf(stderr,
+                    "Error: --unstake-to fingerprint must be 128 hex chars\n");
+            return 1;
+        }
+        for (size_t i = 0; i < 128; i++) {
+            char c = unstake_to_fp[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+                fprintf(stderr,
+                        "Error: --unstake-to must be lowercase hex\n");
+                return 1;
+            }
+        }
+    }
+
+    char stake_str[64];
+    format_amount(DNAC_SELF_STAKE_AMOUNT, stake_str, sizeof(stake_str));
+    printf("Becoming a validator...\n");
+    printf("  Self-stake:       %s DNAC\n", stake_str);
+    printf("  Commission:       %u bps (%.2f%%)\n",
+           (unsigned)commission_bps, (double)commission_bps / 100.0);
+    printf("  Unstake dest:     %.16s...\n", unstake_to_fp);
+
+    int rc = dnac_stake(ctx, commission_bps, unstake_to_fp, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+
+    printf("STAKE TX submitted successfully.\n");
+    return 0;
+}

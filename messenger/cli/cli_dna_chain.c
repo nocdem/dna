@@ -57,6 +57,9 @@ static void print_dna_chain_help(void) {
     printf("  genesis-submit [tx_file]      Submit genesis TX to network (Phase 2)\n");
     printf("  genesis-prepare <config>      Build chain_def blob from operator config (hex stdout)\n");
     printf("  parse-tx <tx_file>            Inspect a serialized TX file (read-only)\n\n");
+    printf("Stake & Delegation:\n");
+    printf("  stake [--commission-bps N] [--unstake-to FP]\n");
+    printf("                                Become a validator (self-stake 10M DNAC)\n\n");
     printf("Token Commands:\n");
     printf("  token-create <name> <sym> <supply>  Create a new token\n");
     printf("  token-list                          List all known tokens\n");
@@ -254,6 +257,39 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
     }
     else if (strcmp(cmd, "token-list") == 0) {
         result = dna_chain_cmd_token_list(ctx);
+    }
+    else if (strcmp(cmd, "stake") == 0) {
+        /* Syntax: dna stake [--commission-bps N] [--unstake-to FP] */
+        uint16_t commission_bps = 500;  /* Default 5% */
+        const char *unstake_to = NULL;
+        int i = sub + 1;
+        while (i < argc) {
+            if (strcmp(argv[i], "--commission-bps") == 0 && i + 1 < argc) {
+                char *endptr = NULL;
+                errno = 0;
+                unsigned long v = strtoul(argv[i + 1], &endptr, 10);
+                if (errno != 0 || !endptr || *endptr != '\0' || v > 10000) {
+                    fprintf(stderr,
+                            "Error: invalid --commission-bps '%s' (0..10000)\n",
+                            argv[i + 1]);
+                    result = 1;
+                    goto stake_done;
+                }
+                commission_bps = (uint16_t)v;
+                i += 2;
+            } else if (strcmp(argv[i], "--unstake-to") == 0 && i + 1 < argc) {
+                unstake_to = argv[i + 1];
+                i += 2;
+            } else {
+                fprintf(stderr,
+                        "Usage: dna-connect-cli dna stake"
+                        " [--commission-bps N] [--unstake-to FP]\n");
+                result = 1;
+                goto stake_done;
+            }
+        }
+        result = dna_chain_cmd_stake(ctx, commission_bps, unstake_to);
+    stake_done: ;
     }
     else if (strcmp(cmd, "token-info") == 0) {
         if (sub + 1 >= argc) {
