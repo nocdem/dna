@@ -13,6 +13,7 @@
  */
 
 #include "witness/nodus_witness_db.h"
+#include "nodus/nodus_chain_config.h"  /* Hard-Fork v1 schema migration */
 #include "crypto/nodus_sign.h"
 #include <string.h>
 #include <time.h>
@@ -1752,6 +1753,9 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
 
     /* Task 11 (stake delegation) — utxo_set.unlock_block column. */
     nodus_witness_db_migrate_v15_stake_delegation(w);
+
+    /* Hard-Fork v1 — chain_config_history table (CREATE TABLE IF NOT EXISTS). */
+    nodus_chain_config_db_migrate(w);
 
     return 0;
 }

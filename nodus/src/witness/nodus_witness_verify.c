@@ -93,6 +93,7 @@
 #define TX_TYPE_UNDELEGATE           NODUS_W_TX_UNDELEGATE         /* 7 */
 #define TX_TYPE_CLAIM_REWARD         NODUS_W_TX_CLAIM_REWARD       /* 8 */
 #define TX_TYPE_VALIDATOR_UPDATE     NODUS_W_TX_VALIDATOR_UPDATE   /* 9 */
+#define TX_TYPE_CHAIN_CONFIG         NODUS_W_TX_CHAIN_CONFIG       /* 10 */
 
 /* F-CRYPTO-05: "DNAC_VALIDATOR_v1" — 17 bytes, no padding. Matches
  * dnac/include/dnac/transaction.h DNAC_STAKE_PURPOSE_TAG_LEN = 17. */
@@ -307,6 +308,31 @@ int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
         buf_pos += need;
         p += need;
         remaining -= need;
+    } else if (type_byte == TX_TYPE_CHAIN_CONFIG) {
+        /* Hard-Fork v1 CHAIN_CONFIG variable-length appended:
+         *   param_id(1) + new_value(8) + effective_block(8) +
+         *   proposal_nonce(8) + signed_at_block(8) + valid_before_block(8) +
+         *   committee_sig_count(1) + votes[n] each: witness_id(32) +
+         *   signature(DNAC_SIGNATURE_SIZE = NODUS_SIG_BYTES).
+         * All BE integers on both wire and preimage so we can memcpy. */
+        size_t fixed = 1 + 8 + 8 + 8 + 8 + 8 + 1;
+        if (remaining < fixed) goto fail;
+        memcpy(buf + buf_pos, p, fixed);
+        buf_pos += fixed;
+        uint8_t cc_sig_count = p[fixed - 1];
+        p += fixed;
+        remaining -= fixed;
+        /* Bound check: <= compile-time committee cap, matches client. */
+        if (cc_sig_count > NODUS_T3_MAX_WITNESSES) goto fail;
+        size_t per_vote = 32 + NODUS_SIG_BYTES;
+        size_t votes_total = (size_t)cc_sig_count * per_vote;
+        if (remaining < votes_total) goto fail;
+        if (votes_total > 0) {
+            memcpy(buf + buf_pos, p, votes_total);
+            buf_pos += votes_total;
+            p += votes_total;
+            remaining -= votes_total;
+        }
     }
     /* UNSTAKE, GENESIS, SPEND, BURN, TOKEN_CREATE: no appended fields. */
 

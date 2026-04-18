@@ -251,11 +251,32 @@ void nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]);
  * @param reward_root      64-byte reward subtree root
  * @param out_state_root   [out] 64-byte composite state_root
  */
+/* Hard-Fork v1: this name remains a source-compat alias for the legacy
+ * 4-input formula. New code paths MUST use nodus_merkle_combine_state_root_v2
+ * (5-input, 0x02 version byte). See CC-AUDIT-002 / design §5.7. */
 void nodus_merkle_combine_state_root(const uint8_t utxo_root[64],
                                      const uint8_t validator_root[64],
                                      const uint8_t delegation_root[64],
                                      const uint8_t reward_root[64],
                                      uint8_t out_state_root[64]);
+
+/* Legacy 4-input combiner retained for archive-replay / forensic use
+ * (Q3 / CC-OPS-007 mitigation). Marked __attribute__((cold)) in the
+ * implementation — not on the hot path post-activation. */
+void nodus_merkle_combine_state_root_v1_legacy(const uint8_t utxo_root[64],
+                                                const uint8_t validator_root[64],
+                                                const uint8_t delegation_root[64],
+                                                const uint8_t reward_root[64],
+                                                uint8_t out_state_root[64]);
+
+/* Hard-Fork v1 — 5-input combiner with outer version byte 0x02 and
+ * chain_config_root contributor. ALL live-chain callers use this. */
+void nodus_merkle_combine_state_root_v2(const uint8_t utxo_root[64],
+                                         const uint8_t validator_root[64],
+                                         const uint8_t delegation_root[64],
+                                         const uint8_t reward_root[64],
+                                         const uint8_t chain_config_root[64],
+                                         uint8_t out_state_root[64]);
 
 /**
  * Compute the chain-level state_root from the current witness state.

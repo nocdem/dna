@@ -27,6 +27,7 @@
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_delegation.h"
 #include "witness/nodus_witness_genesis_seed.h"
+#include "nodus/nodus_chain_config.h"          /* Hard-Fork v1 apply dispatch */
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
 #include "transport/nodus_tcp.h"
@@ -1832,6 +1833,11 @@ int apply_tx_to_state(nodus_witness_t *w,
         } else if (tx_type == NODUS_W_TX_VALIDATOR_UPDATE) {
             if (apply_validator_update(w, tx_data, tx_len,
                                          block_height) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_CHAIN_CONFIG) {
+            if (nodus_chain_config_apply(w, tx_data, tx_len,
+                                          block_height) != 0) {
                 failed = true;
             }
         }

@@ -57,7 +57,7 @@ int main(void) {
     nodus_merkle_empty_root(NODUS_TREE_TAG_REWARD,     reward_root);
 
     uint8_t state_root[64];
-    nodus_merkle_combine_state_root(utxo_root, validator_root,
+    nodus_merkle_combine_state_root_v1_legacy(utxo_root, validator_root,
                                     delegation_root, reward_root,
                                     state_root);
 
@@ -77,7 +77,7 @@ int main(void) {
 
     /* Order sensitivity: swapping any two subtree roots MUST change output. */
     uint8_t swapped[64];
-    nodus_merkle_combine_state_root(validator_root, utxo_root,
+    nodus_merkle_combine_state_root_v1_legacy(validator_root, utxo_root,
                                     delegation_root, reward_root,
                                     swapped);
     if (memcmp(state_root, swapped, 64) == 0) {
@@ -86,7 +86,7 @@ int main(void) {
         return 1;
     }
 
-    nodus_merkle_combine_state_root(utxo_root, validator_root,
+    nodus_merkle_combine_state_root_v1_legacy(utxo_root, validator_root,
                                     reward_root, delegation_root,
                                     swapped);
     if (memcmp(state_root, swapped, 64) == 0) {
@@ -97,7 +97,7 @@ int main(void) {
 
     /* Determinism: re-running with identical inputs yields identical output. */
     uint8_t again[64];
-    nodus_merkle_combine_state_root(utxo_root, validator_root,
+    nodus_merkle_combine_state_root_v1_legacy(utxo_root, validator_root,
                                     delegation_root, reward_root,
                                     again);
     if (check_bytes("determinism", again, state_root))

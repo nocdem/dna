@@ -9,6 +9,7 @@
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_db.h"
 #include "nodus/nodus_types.h"
+#include "nodus/nodus_chain_config.h"  /* Hard-Fork v1: chain_config_root in compute_state_root */
 
 #include <openssl/evp.h>
 #include <sqlite3.h>
@@ -662,24 +663,22 @@ void nodus_merkle_empty_root(uint8_t tree_tag, uint8_t out_root[64]) {
     }
 }
 
-/* ── Composite state_root combiner (witness stake v1 / Phase 3 Task 10) ──
+/* ── Composite state_root combiner — LEGACY 4-input (pre Hard-Fork v1) ──
  *
- * state_root = SHA3-512(utxo_root || validator_root || delegation_root
- *                        || reward_root)
+ * Retained for archive-replay / forensic reconstruction of pre-Hard-Fork-v1
+ * chain histories only (Q3 / CC-OPS-007 mitigation). NOT called on the
+ * live chain post-activation. Marked cold so the hot-path TLB/icache is
+ * not polluted.
  *
- * No outer tag prefix — per-subtree domain separation is baked in at
- * the leaf level (Task 9). Positional ordering alone separates the
- * four subtree commitments at the chain-header level. See the header
- * file for the full design-spec reference.
- *
- * Pure function: the four input roots are read-only and the single
- * 64-byte output is written exactly once. No heap, no DB, no logging.
+ * state_root_v1 = SHA3-512(utxo_root || validator_root || delegation_root
+ *                           || reward_root)
  */
-void nodus_merkle_combine_state_root(const uint8_t utxo_root[64],
-                                     const uint8_t validator_root[64],
-                                     const uint8_t delegation_root[64],
-                                     const uint8_t reward_root[64],
-                                     uint8_t out_state_root[64]) {
+__attribute__((cold))
+void nodus_merkle_combine_state_root_v1_legacy(const uint8_t utxo_root[64],
+                                                const uint8_t validator_root[64],
+                                                const uint8_t delegation_root[64],
+                                                const uint8_t reward_root[64],
+                                                uint8_t out_state_root[64]) {
     if (!out_state_root) return;
     if (!utxo_root || !validator_root || !delegation_root || !reward_root) {
         merkle_tag_hash_zero_on_fail(out_state_root);
@@ -695,6 +694,67 @@ void nodus_merkle_combine_state_root(const uint8_t utxo_root[64],
         EVP_DigestUpdate(md, validator_root,  64) != 1 ||
         EVP_DigestUpdate(md, delegation_root, 64) != 1 ||
         EVP_DigestUpdate(md, reward_root,     64) != 1) {
+        EVP_MD_CTX_free(md);
+        merkle_tag_hash_zero_on_fail(out_state_root);
+        return;
+    }
+    if (sha3_512_final(md, out_state_root) != 0) {
+        merkle_tag_hash_zero_on_fail(out_state_root);
+    }
+}
+
+/* Source-compat alias so older callers / tests referring to the unversioned
+ * name resolve to the legacy formula. New code MUST call the _v2 variant
+ * below (prefixed with the NODUS_STATE_ROOT_VERSION_V1 version byte would
+ * break the legacy byte-for-byte KAT, so the alias points at _v1_legacy). */
+void nodus_merkle_combine_state_root(const uint8_t utxo_root[64],
+                                     const uint8_t validator_root[64],
+                                     const uint8_t delegation_root[64],
+                                     const uint8_t reward_root[64],
+                                     uint8_t out_state_root[64]) {
+    nodus_merkle_combine_state_root_v1_legacy(utxo_root, validator_root,
+                                                delegation_root, reward_root,
+                                                out_state_root);
+}
+
+/* ── Composite state_root combiner — 5-input (Hard-Fork v1) ──────────
+ *
+ * state_root_v2 = SHA3-512( NODUS_STATE_ROOT_VERSION_V2 (1 byte)
+ *                           || utxo_root(64) || validator_root(64)
+ *                           || delegation_root(64) || reward_root(64)
+ *                           || chain_config_root(64) )
+ *
+ * The leading version byte (CC-AUDIT-002 / Q1 mitigation) structurally
+ * separates legacy v1 preimages from v2, preventing cross-version replay
+ * even though both outputs are opaque 64-byte SHA3-512 digests.
+ *
+ * Pure function; safe to call from any thread.
+ */
+void nodus_merkle_combine_state_root_v2(const uint8_t utxo_root[64],
+                                         const uint8_t validator_root[64],
+                                         const uint8_t delegation_root[64],
+                                         const uint8_t reward_root[64],
+                                         const uint8_t chain_config_root[64],
+                                         uint8_t out_state_root[64]) {
+    if (!out_state_root) return;
+    if (!utxo_root || !validator_root || !delegation_root ||
+        !reward_root || !chain_config_root) {
+        merkle_tag_hash_zero_on_fail(out_state_root);
+        return;
+    }
+
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) {
+        merkle_tag_hash_zero_on_fail(out_state_root);
+        return;
+    }
+    const uint8_t version = NODUS_STATE_ROOT_VERSION_V2;
+    if (EVP_DigestUpdate(md, &version,          1)  != 1 ||
+        EVP_DigestUpdate(md, utxo_root,         64) != 1 ||
+        EVP_DigestUpdate(md, validator_root,    64) != 1 ||
+        EVP_DigestUpdate(md, delegation_root,   64) != 1 ||
+        EVP_DigestUpdate(md, reward_root,       64) != 1 ||
+        EVP_DigestUpdate(md, chain_config_root, 64) != 1) {
         EVP_MD_CTX_free(md);
         merkle_tag_hash_zero_on_fail(out_state_root);
         return;
@@ -736,11 +796,22 @@ int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
     nodus_merkle_empty_root(NODUS_TREE_TAG_DELEGATION, delegation_root);
     nodus_merkle_empty_root(NODUS_TREE_TAG_REWARD,     reward_root);
 
-    nodus_merkle_combine_state_root(utxo_root,
-                                    validator_root,
-                                    delegation_root,
-                                    reward_root,
-                                    root_out);
+    /* Hard-Fork v1 — 5-input combiner with chain_config_root. Empty
+     * chain_config_history produces the tagged-empty sentinel
+     * nodus_merkle_empty_root(NODUS_TREE_TAG_CHAIN_CONFIG). */
+    uint8_t chain_config_root[64];
+    if (nodus_chain_config_compute_root(w, chain_config_root) != 0) {
+        /* Fall back to empty sentinel on DB error so a transient fault
+         * doesn't produce a structurally-invalid state_root. */
+        nodus_merkle_empty_root(NODUS_TREE_TAG_CHAIN_CONFIG, chain_config_root);
+    }
+
+    nodus_merkle_combine_state_root_v2(utxo_root,
+                                        validator_root,
+                                        delegation_root,
+                                        reward_root,
+                                        chain_config_root,
+                                        root_out);
     return 0;
 }
 

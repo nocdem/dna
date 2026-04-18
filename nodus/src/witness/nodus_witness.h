@@ -80,6 +80,7 @@ typedef struct {
 #define NODUS_W_TX_UNDELEGATE        7
 #define NODUS_W_TX_CLAIM_REWARD      8
 #define NODUS_W_TX_VALIDATOR_UPDATE  9
+#define NODUS_W_TX_CHAIN_CONFIG     10   /* Hard-Fork v1 parameter change */
 
 /* ── Vote types ──────────────────────────────────────────────────── */
 

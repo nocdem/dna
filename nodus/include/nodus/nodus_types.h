@@ -174,10 +174,18 @@ extern "C" {
  * tree's tag byte.
  *
  * See design §3.1 / §3.2–§3.4 for per-tree usage. */
-#define NODUS_TREE_TAG_UTXO        0x01u
-#define NODUS_TREE_TAG_VALIDATOR   0x02u
-#define NODUS_TREE_TAG_DELEGATION  0x03u
-#define NODUS_TREE_TAG_REWARD      0x04u
+#define NODUS_TREE_TAG_UTXO         0x01u
+#define NODUS_TREE_TAG_VALIDATOR    0x02u
+#define NODUS_TREE_TAG_DELEGATION   0x03u
+#define NODUS_TREE_TAG_REWARD       0x04u
+#define NODUS_TREE_TAG_CHAIN_CONFIG 0x05u  /* Hard-Fork v1 — chain_config_history tree */
+
+/* Composite state_root version byte (CC-AUDIT-002 / Q1 mitigation).
+ * Prefixed to the outer SHA3-512 combiner input so cross-version replay
+ * between the legacy 4-input and new 5-input composites is structurally
+ * impossible. 0x01 = legacy 4-input formula; 0x02 = 5-input with chain_config. */
+#define NODUS_STATE_ROOT_VERSION_V1 0x01u  /* legacy 4-input */
+#define NODUS_STATE_ROOT_VERSION_V2 0x02u  /* 5-input, includes chain_config_root */
 
 /* Burn address: all-zero fingerprint (128 hex zero = 64 bytes zero)
  * Fee UTXOs are recorded here. Unspendable — no private key exists. */

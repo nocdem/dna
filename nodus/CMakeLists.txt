@@ -138,6 +138,7 @@ if(NOT WIN32)
         src/witness/nodus_witness_reward.c
         src/witness/nodus_witness_committee.c
         src/witness/nodus_witness_genesis_seed.c
+        src/witness/nodus_witness_chain_config.c
     )
 endif()
 
@@ -425,6 +426,11 @@ add_test(NAME test_merkle_leaf_helpers COMMAND test_merkle_leaf_helpers)
 add_executable(test_state_root_4subtree tests/test_state_root_4subtree.c)
 target_link_libraries(test_state_root_4subtree nodus dsa nodus)
 add_test(NAME test_state_root_4subtree COMMAND test_state_root_4subtree)
+
+# Hard-Fork v1 — witness-side chain_config lookup + merkle + 5-input combiner
+add_executable(test_chain_config_witness tests/test_chain_config_witness.c)
+target_link_libraries(test_chain_config_witness nodus dsa nodus)
+add_test(NAME test_chain_config_witness COMMAND test_chain_config_witness)
 
 # UTXO state_root determinism tests (Phase 2 / Task 2.5)
 add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
