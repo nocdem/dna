@@ -67,7 +67,10 @@ static void print_dna_chain_help(void) {
     printf("  claim <validator_pubkey_hex> Claim accrued staking rewards\n");
     printf("  unstake                       Trigger validator retirement (fee-only)\n");
     printf("  validator-update --commission-bps N\n");
-    printf("                                Change validator commission rate\n\n");
+    printf("                                Change validator commission rate\n");
+    printf("  validator-list [--status N]   List validators (N: 0=ACTIVE, 1=RETIRING, 2=UNSTAKED, 3=AUTO_RETIRED)\n");
+    printf("  committee                     Show current epoch's top-7 committee\n");
+    printf("  pending-rewards [pubkey_hex]  Show pending rewards (default: caller)\n\n");
     printf("Token Commands:\n");
     printf("  token-create <name> <sym> <supply>  Create a new token\n");
     printf("  token-list                          List all known tokens\n");
@@ -298,6 +301,34 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
         }
         result = dna_chain_cmd_stake(ctx, commission_bps, unstake_to);
     stake_done: ;
+    }
+    else if (strcmp(cmd, "validator-list") == 0) {
+        /* Syntax: dna validator-list [--status N]   (N in 0..3, omit = all) */
+        int filter_status = -1;
+        if (sub + 2 < argc && strcmp(argv[sub + 1], "--status") == 0) {
+            char *endptr = NULL;
+            errno = 0;
+            long v = strtol(argv[sub + 2], &endptr, 10);
+            if (errno != 0 || !endptr || *endptr != '\0' || v < 0 || v > 3) {
+                fprintf(stderr,
+                        "Error: --status must be 0..3 (0=ACTIVE, 1=RETIRING,"
+                        " 2=UNSTAKED, 3=AUTO_RETIRED)\n");
+                result = 1;
+            } else {
+                filter_status = (int)v;
+            }
+        }
+        if (result == 0) {
+            result = dna_chain_cmd_validator_list(ctx, filter_status);
+        }
+    }
+    else if (strcmp(cmd, "committee") == 0) {
+        result = dna_chain_cmd_committee(ctx);
+    }
+    else if (strcmp(cmd, "pending-rewards") == 0) {
+        /* Syntax: dna pending-rewards [<claimant_pubkey_hex>] */
+        const char *claimant = (sub + 1 < argc) ? argv[sub + 1] : NULL;
+        result = dna_chain_cmd_pending_rewards(ctx, claimant);
     }
     else if (strcmp(cmd, "unstake") == 0) {
         /* Syntax: dna unstake (no args) */

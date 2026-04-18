@@ -1883,3 +1883,190 @@ int dna_chain_cmd_validator_update(dnac_context_t *ctx,
     printf("VALIDATOR_UPDATE TX submitted successfully.\n");
     return 0;
 }
+
+/* ============================================================================
+ * Task 69 — Read-only verbs:
+ *   `dna validator-list`, `dna committee`, `dna pending-rewards`
+ *
+ * All three query the witness directly via the nodus client Phase 14
+ * RPCs (bypassing the dnac_*_list / dnac_get_committee wrappers so the
+ * CLI can surface witness-side fields like block_height + epoch_start
+ * that the slimmer dnac_validator_list_entry_t does not carry).
+ * ========================================================================== */
+
+static const char *validator_status_str(uint8_t status) {
+    switch (status) {
+        case DNAC_VALIDATOR_ACTIVE:       return "ACTIVE";
+        case DNAC_VALIDATOR_RETIRING:     return "RETIRING";
+        case DNAC_VALIDATOR_UNSTAKED:     return "UNSTAKED";
+        case DNAC_VALIDATOR_AUTO_RETIRED: return "AUTO_RETIRED";
+        default:                          return "?";
+    }
+}
+
+/** Print the first 16 hex chars of a DNAC pubkey (short form). */
+static void pubkey_short(const uint8_t *pubkey, char out[17]) {
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < 8; i++) {
+        out[i * 2]     = hexd[pubkey[i] >> 4];
+        out[i * 2 + 1] = hexd[pubkey[i] & 0xf];
+    }
+    out[16] = '\0';
+}
+
+int dna_chain_cmd_validator_list(dnac_context_t *ctx, int filter_status) {
+    (void)ctx;  /* only need nodus singleton */
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        fprintf(stderr, "Error: nodus not connected\n");
+        return 1;
+    }
+
+    nodus_dnac_validator_list_result_t res = {0};
+    nodus_singleton_lock();
+    int rc = nodus_client_dnac_validator_list(
+            client, filter_status, /*offset=*/0, /*limit=*/100, &res);
+    nodus_singleton_unlock();
+    if (rc != 0) {
+        fprintf(stderr,
+                "Error: nodus_client_dnac_validator_list failed (%d)\n",
+                rc);
+        return 1;
+    }
+
+    printf("DNAC Validators (%d of %d total", res.count, res.total);
+    if (filter_status >= 0) {
+        printf(", status=%s", validator_status_str((uint8_t)filter_status));
+    }
+    printf(")\n");
+    printf("%-16s  %-14s  %-18s  %-18s  %-6s  %-12s  %s\n",
+           "PUBKEY", "STATUS", "SELF_STAKE", "TOTAL_DELEGATED",
+           "COMM%", "EXT_DELEG", "ACTIVE_SINCE");
+    printf("----------------  --------------  ------------------"
+           "  ------------------  ------  ------------  ------------\n");
+    for (int i = 0; i < res.count; i++) {
+        const nodus_dnac_validator_list_entry_t *e = &res.entries[i];
+        char pk_short[17];
+        pubkey_short(e->pubkey, pk_short);
+        char self_str[32], total_str[32], ext_str[32];
+        format_amount(e->self_stake, self_str, sizeof(self_str));
+        format_amount(e->total_delegated, total_str, sizeof(total_str));
+        format_amount(e->external_delegated, ext_str, sizeof(ext_str));
+        printf("%-16s  %-14s  %-18s  %-18s  %5.2f  %-12s  %" PRIu64 "\n",
+               pk_short,
+               validator_status_str(e->status),
+               self_str, total_str,
+               (double)e->commission_bps / 100.0,
+               ext_str,
+               e->active_since_block);
+    }
+    nodus_client_free_validator_list_result(&res);
+    return 0;
+}
+
+int dna_chain_cmd_committee(dnac_context_t *ctx) {
+    (void)ctx;
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        fprintf(stderr, "Error: nodus not connected\n");
+        return 1;
+    }
+
+    nodus_dnac_committee_result_t res = {0};
+    nodus_singleton_lock();
+    int rc = nodus_client_dnac_committee(client, &res);
+    nodus_singleton_unlock();
+    if (rc != 0) {
+        fprintf(stderr,
+                "Error: nodus_client_dnac_committee failed (%d)\n", rc);
+        return 1;
+    }
+
+    printf("DNAC Committee (epoch_start=%" PRIu64 ", head=%" PRIu64 ")\n",
+           res.epoch_start, res.block_height);
+    printf("%-4s  %-16s  %-14s  %-18s  %-6s  %s\n",
+           "SLOT", "PUBKEY", "STATUS", "TOTAL_STAKE", "COMM%", "ADDRESS");
+    printf("----  ----------------  --------------  ------------------"
+           "  ------  ----------------------------------\n");
+    for (int i = 0; i < res.count; i++) {
+        const nodus_dnac_committee_entry_t *e = &res.entries[i];
+        char pk_short[17];
+        pubkey_short(e->pubkey, pk_short);
+        char stake_str[32];
+        format_amount(e->total_stake, stake_str, sizeof(stake_str));
+        printf("%-4d  %-16s  %-14s  %-18s  %5.2f  %s\n",
+               i, pk_short,
+               validator_status_str(e->status),
+               stake_str,
+               (double)e->commission_bps / 100.0,
+               e->address[0] ? e->address : "(unknown)");
+    }
+    return 0;
+}
+
+int dna_chain_cmd_pending_rewards(dnac_context_t *ctx,
+                                  const char *claimant_pubkey_hex) {
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) {
+        fprintf(stderr, "Error: Engine not initialized\n");
+        return 1;
+    }
+
+    uint8_t claimant_pubkey[DNAC_PUBKEY_SIZE];
+    if (claimant_pubkey_hex && *claimant_pubkey_hex) {
+        if (parse_validator_pubkey_hex(claimant_pubkey_hex,
+                                       claimant_pubkey) != 0) {
+            fprintf(stderr,
+                    "Error: claimant pubkey must be %u lowercase hex chars\n",
+                    (unsigned)(DNAC_PUBKEY_SIZE * 2));
+            return 1;
+        }
+    } else {
+        /* Default: caller's own pubkey. */
+        int pk_rc = dna_engine_get_signing_public_key(
+                engine, claimant_pubkey, sizeof(claimant_pubkey));
+        if (pk_rc < 0) {
+            fprintf(stderr,
+                    "Error: failed to read caller's signing pubkey (%d)\n",
+                    pk_rc);
+            return 1;
+        }
+    }
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        fprintf(stderr, "Error: nodus not connected\n");
+        return 1;
+    }
+
+    nodus_dnac_pending_rewards_result_t res = {0};
+    nodus_singleton_lock();
+    int rc = nodus_client_dnac_pending_rewards(
+            client, claimant_pubkey, &res);
+    nodus_singleton_unlock();
+    if (rc != 0) {
+        fprintf(stderr,
+                "Error: nodus_client_dnac_pending_rewards failed (%d)\n",
+                rc);
+        return 1;
+    }
+
+    char total_str[64];
+    format_amount(res.total, total_str, sizeof(total_str));
+    printf("Pending rewards total: %s DNAC (%d validator(s))\n",
+           total_str, res.count);
+    if (res.count > 0) {
+        printf("%-4s  %-16s  %s\n", "#", "VALIDATOR", "AMOUNT");
+        printf("----  ----------------  ----------------------\n");
+        for (int i = 0; i < res.count; i++) {
+            const nodus_dnac_pending_entry_t *e = &res.entries[i];
+            char pk_short[17];
+            pubkey_short(e->validator_pubkey, pk_short);
+            char amt_str[32];
+            format_amount(e->amount, amt_str, sizeof(amt_str));
+            printf("%-4d  %-16s  %s\n", i, pk_short, amt_str);
+        }
+    }
+    nodus_client_free_pending_rewards_result(&res);
+    return 0;
+}
