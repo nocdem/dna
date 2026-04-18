@@ -3673,6 +3673,138 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{amount} DNAC ready to claim'**
   String rewardsHomeCardAmount(String amount);
+
+  /// Operator panel for a user who is a validator (earner). Controls for commission + unstake.
+  ///
+  /// In en, this message translates to:
+  /// **'Earner settings'**
+  String get validatorPanelTitle;
+
+  /// No description provided for @validatorPanelNotValidator.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'re not running an earner right now. Start one from the DNAC command line.'**
+  String get validatorPanelNotValidator;
+
+  /// No description provided for @validatorStatusLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Earner {id}'**
+  String validatorStatusLabel(String id);
+
+  /// No description provided for @validatorFieldSelfStake.
+  ///
+  /// In en, this message translates to:
+  /// **'Your own stake'**
+  String get validatorFieldSelfStake;
+
+  /// No description provided for @validatorFieldDelegated.
+  ///
+  /// In en, this message translates to:
+  /// **'Supporters\' stake'**
+  String get validatorFieldDelegated;
+
+  /// No description provided for @validatorFieldCommission.
+  ///
+  /// In en, this message translates to:
+  /// **'Fee you keep'**
+  String get validatorFieldCommission;
+
+  /// No description provided for @validatorCommissionSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Fee rate'**
+  String get validatorCommissionSection;
+
+  /// No description provided for @validatorCommissionHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Decrease takes effect now. Increase takes effect at the next round so supporters can leave first.'**
+  String get validatorCommissionHelp;
+
+  /// No description provided for @validatorCommissionRange.
+  ///
+  /// In en, this message translates to:
+  /// **'0 – 100'**
+  String get validatorCommissionRange;
+
+  /// No description provided for @validatorCommissionInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a value between 0 and 100.'**
+  String get validatorCommissionInvalid;
+
+  /// No description provided for @validatorNewCommissionLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'New fee'**
+  String get validatorNewCommissionLabel;
+
+  /// No description provided for @validatorUpdateCommissionButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Save fee'**
+  String get validatorUpdateCommissionButton;
+
+  /// No description provided for @validatorUpdateSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Fee updated.'**
+  String get validatorUpdateSuccess;
+
+  /// No description provided for @validatorUpdateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t update the fee — please try again.'**
+  String get validatorUpdateFailed;
+
+  /// No description provided for @validatorUnstakeSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Shut down earner'**
+  String get validatorUnstakeSection;
+
+  /// No description provided for @validatorUnstakeWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'This will stop your earner and start the cool-down. Your supporters will be notified and their stake will unwind.'**
+  String get validatorUnstakeWarning;
+
+  /// No description provided for @validatorUnstakeButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Shut down earner'**
+  String get validatorUnstakeButton;
+
+  /// No description provided for @validatorUnstakeConfirmTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Shut down this earner?'**
+  String get validatorUnstakeConfirmTitle;
+
+  /// No description provided for @validatorUnstakeConfirmBody.
+  ///
+  /// In en, this message translates to:
+  /// **'This cannot be undone. Your self-stake will come back after the cool-down and your supporters will have their stake returned.'**
+  String get validatorUnstakeConfirmBody;
+
+  /// No description provided for @validatorUnstakeConfirmAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Yes, shut down'**
+  String get validatorUnstakeConfirmAction;
+
+  /// No description provided for @validatorUnstakeSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Earner shutting down.'**
+  String get validatorUnstakeSuccess;
+
+  /// No description provided for @validatorUnstakeFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t shut down — please try again.'**
+  String get validatorUnstakeFailed;
 }
 
 class _AppLocalizationsDelegate

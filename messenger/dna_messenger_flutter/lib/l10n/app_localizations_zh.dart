@@ -1919,4 +1919,78 @@ class AppLocalizationsZh extends AppLocalizations {
   String rewardsHomeCardAmount(String amount) {
     return '$amount DNAC ready to claim';
   }
+
+  @override
+  String get validatorPanelTitle => 'Earner settings';
+
+  @override
+  String get validatorPanelNotValidator =>
+      'You\'re not running an earner right now. Start one from the DNAC command line.';
+
+  @override
+  String validatorStatusLabel(String id) {
+    return 'Earner $id';
+  }
+
+  @override
+  String get validatorFieldSelfStake => 'Your own stake';
+
+  @override
+  String get validatorFieldDelegated => 'Supporters\' stake';
+
+  @override
+  String get validatorFieldCommission => 'Fee you keep';
+
+  @override
+  String get validatorCommissionSection => 'Fee rate';
+
+  @override
+  String get validatorCommissionHelp =>
+      'Decrease takes effect now. Increase takes effect at the next round so supporters can leave first.';
+
+  @override
+  String get validatorCommissionRange => '0 – 100';
+
+  @override
+  String get validatorCommissionInvalid => 'Enter a value between 0 and 100.';
+
+  @override
+  String get validatorNewCommissionLabel => 'New fee';
+
+  @override
+  String get validatorUpdateCommissionButton => 'Save fee';
+
+  @override
+  String get validatorUpdateSuccess => 'Fee updated.';
+
+  @override
+  String get validatorUpdateFailed =>
+      'Couldn\'t update the fee — please try again.';
+
+  @override
+  String get validatorUnstakeSection => 'Shut down earner';
+
+  @override
+  String get validatorUnstakeWarning =>
+      'This will stop your earner and start the cool-down. Your supporters will be notified and their stake will unwind.';
+
+  @override
+  String get validatorUnstakeButton => 'Shut down earner';
+
+  @override
+  String get validatorUnstakeConfirmTitle => 'Shut down this earner?';
+
+  @override
+  String get validatorUnstakeConfirmBody =>
+      'This cannot be undone. Your self-stake will come back after the cool-down and your supporters will have their stake returned.';
+
+  @override
+  String get validatorUnstakeConfirmAction => 'Yes, shut down';
+
+  @override
+  String get validatorUnstakeSuccess => 'Earner shutting down.';
+
+  @override
+  String get validatorUnstakeFailed =>
+      'Couldn\'t shut down — please try again.';
 }

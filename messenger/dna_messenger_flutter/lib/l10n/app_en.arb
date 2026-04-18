@@ -1002,5 +1002,34 @@
   "rewardsHomeCardAmount": "{amount} DNAC ready to claim",
   "@rewardsHomeCardAmount": {
     "placeholders": { "amount": { "type": "String" } }
-  }
+  },
+
+  "validatorPanelTitle": "Earner settings",
+  "@validatorPanelTitle": {
+    "description": "Operator panel for a user who is a validator (earner). Controls for commission + unstake."
+  },
+  "validatorPanelNotValidator": "You're not running an earner right now. Start one from the DNAC command line.",
+  "validatorStatusLabel": "Earner {id}",
+  "@validatorStatusLabel": {
+    "placeholders": { "id": { "type": "String" } }
+  },
+  "validatorFieldSelfStake": "Your own stake",
+  "validatorFieldDelegated": "Supporters' stake",
+  "validatorFieldCommission": "Fee you keep",
+  "validatorCommissionSection": "Fee rate",
+  "validatorCommissionHelp": "Decrease takes effect now. Increase takes effect at the next round so supporters can leave first.",
+  "validatorCommissionRange": "0 – 100",
+  "validatorCommissionInvalid": "Enter a value between 0 and 100.",
+  "validatorNewCommissionLabel": "New fee",
+  "validatorUpdateCommissionButton": "Save fee",
+  "validatorUpdateSuccess": "Fee updated.",
+  "validatorUpdateFailed": "Couldn't update the fee — please try again.",
+  "validatorUnstakeSection": "Shut down earner",
+  "validatorUnstakeWarning": "This will stop your earner and start the cool-down. Your supporters will be notified and their stake will unwind.",
+  "validatorUnstakeButton": "Shut down earner",
+  "validatorUnstakeConfirmTitle": "Shut down this earner?",
+  "validatorUnstakeConfirmBody": "This cannot be undone. Your self-stake will come back after the cool-down and your supporters will have their stake returned.",
+  "validatorUnstakeConfirmAction": "Yes, shut down",
+  "validatorUnstakeSuccess": "Earner shutting down.",
+  "validatorUnstakeFailed": "Couldn't shut down — please try again."
 }
