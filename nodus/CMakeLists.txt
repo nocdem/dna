@@ -644,3 +644,6 @@ register_witness_test(test_genesis_seed_validators)
 
 # Task 59 — BFT roster sourced from committee snapshot (chain-authoritative)
 register_witness_test(test_bft_roster_committee)
+
+# Task 60 — RETIRING validator stays in epoch committee until graduation
+register_witness_test(test_retiring_committee_membership)
