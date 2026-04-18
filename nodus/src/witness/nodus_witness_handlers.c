@@ -2377,6 +2377,114 @@ static void handle_dnac_pending_rewards_query(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_committee_query — Phase 14 / Task 62.
+ *
+ * Returns the committee that governs the NEXT block (height+1), which
+ * matches what the BFT layer actually uses for PROPOSE/PREVOTE/PRECOMMIT.
+ * Each entry reports pubkey + stake + commission; status is resolved from
+ * the validator table (so CLI/UI can surface RETIRING vs ACTIVE). The
+ * endpoint field is best-effort: when the committee pubkey matches a
+ * witness in the server's roster we populate the address, otherwise
+ * leave it empty so the client falls back to the DHT/roster path.
+ *
+ * Request:  "a": {}
+ * Response: "r": {"block_height": u64,
+ *                 "epoch_start":  u64,
+ *                 "committee": [
+ *                   {"pk": bstr(2592), "stake": u64,
+ *                    "comm": u16, "status": u8, "addr": tstr},
+ *                   ... up to DNAC_COMMITTEE_SIZE
+ *                 ]}
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_committee_query(nodus_witness_t *w,
+                                          struct nodus_tcp_conn *conn,
+                                          uint32_t txn_id) {
+    uint64_t height      = nodus_witness_block_height(w);
+    uint64_t target_h    = height + 1;   /* committee that signs next block */
+    uint64_t epoch_start = (target_h / (uint64_t)DNAC_EPOCH_LENGTH) *
+                             (uint64_t)DNAC_EPOCH_LENGTH;
+
+    nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+    int count = 0;
+    int rc = nodus_committee_get_for_block(w, target_h, committee,
+                                             DNAC_COMMITTEE_SIZE, &count);
+    if (rc != 0) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "committee lookup failed");
+        return;
+    }
+
+    /* Response: 3 top-level keys; each committee entry packs ~2700 bytes
+     * (2592 pubkey + address 256 + overhead). Budget comfortably. */
+    size_t buf_size = 512 + (size_t)DNAC_COMMITTEE_SIZE * 3200;
+    uint8_t *buf = malloc(buf_size);
+    if (!buf) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "alloc failed");
+        return;
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, buf_size);
+    enc_dnac_response(&enc, txn_id, "dnac_committee_query", 3);
+
+    cbor_encode_cstr(&enc, "block_height");
+    cbor_encode_uint(&enc, target_h);
+
+    cbor_encode_cstr(&enc, "epoch_start");
+    cbor_encode_uint(&enc, epoch_start);
+
+    cbor_encode_cstr(&enc, "committee");
+    cbor_encode_array(&enc, (size_t)count);
+
+    for (int i = 0; i < count; i++) {
+        /* Status defaults to ACTIVE (0); pull real status from validator row. */
+        uint8_t status = (uint8_t)DNAC_VALIDATOR_ACTIVE;
+        dnac_validator_record_t v_rec;
+        if (nodus_validator_get(w, committee[i].pubkey, &v_rec) == 0) {
+            status = v_rec.status;
+        }
+
+        /* Roster endpoint lookup: committee pubkey matches a witness
+         * pubkey when the committee member is running a witness node.
+         * Every committee member MUST be running a witness node for
+         * BFT to work, but during rollout we tolerate no-match and
+         * ship empty addr. */
+        const char *addr = "";
+        for (uint32_t j = 0; j < w->roster.n_witnesses; j++) {
+            if (memcmp(w->roster.witnesses[j].pubkey, committee[i].pubkey,
+                       DNAC_PUBKEY_SIZE) == 0) {
+                addr = w->roster.witnesses[j].address;
+                break;
+            }
+        }
+
+        cbor_encode_map(&enc, 5);
+        cbor_encode_cstr(&enc, "pk");
+        cbor_encode_bstr(&enc, committee[i].pubkey, DNAC_PUBKEY_SIZE);
+        cbor_encode_cstr(&enc, "stake");
+        cbor_encode_uint(&enc, committee[i].total_stake);
+        cbor_encode_cstr(&enc, "comm");
+        cbor_encode_uint(&enc, committee[i].commission_bps);
+        cbor_encode_cstr(&enc, "status");
+        cbor_encode_uint(&enc, status);
+        cbor_encode_cstr(&enc, "addr");
+        cbor_encode_cstr(&enc, addr);
+    }
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) {
+        nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
+
+    free(buf);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * Dispatch router
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -2420,6 +2528,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_fee_info(w, conn, txn_id);
     } else if (strcmp(method, "dnac_pending_rewards_query") == 0) {
         handle_dnac_pending_rewards_query(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_committee_query") == 0) {
+        handle_dnac_committee_query(w, conn, txn_id);
     } else {
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                     "unknown DNAC method");
