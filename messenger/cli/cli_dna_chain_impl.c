@@ -1636,3 +1636,76 @@ int dna_chain_cmd_stake(dnac_context_t *ctx,
     printf("STAKE TX submitted successfully.\n");
     return 0;
 }
+
+/* ============================================================================
+ * Task 66 — `dna delegate` + `dna undelegate` verbs
+ *
+ * Validator identifier = hex-encoded Dilithium5 pubkey (5184 chars).
+ * Name/fp → pubkey resolution deferred: no direct helper currently
+ * exists, and adding one would require iterating the full validator
+ * table. Callers can obtain the pubkey via `dna validator-list`.
+ * ========================================================================== */
+
+int dna_chain_cmd_delegate(dnac_context_t *ctx,
+                           const char *validator_pubkey_hex,
+                           uint64_t amount,
+                           const char *memo) {
+    (void)memo;  /* Reserved for future use (builder does not take a memo) */
+    uint8_t pubkey[DNAC_PUBKEY_SIZE];
+    if (parse_validator_pubkey_hex(validator_pubkey_hex, pubkey) != 0) {
+        fprintf(stderr,
+                "Error: validator pubkey must be %u lowercase hex chars\n",
+                (unsigned)(DNAC_PUBKEY_SIZE * 2));
+        return 1;
+    }
+    if (amount < DNAC_MIN_DELEGATION) {
+        char min_str[64];
+        format_amount(DNAC_MIN_DELEGATION, min_str, sizeof(min_str));
+        fprintf(stderr,
+                "Error: amount %" PRIu64 " below DNAC_MIN_DELEGATION (%s)\n",
+                amount, min_str);
+        return 1;
+    }
+
+    char amount_str[64];
+    format_amount(amount, amount_str, sizeof(amount_str));
+    printf("Delegating %s DNAC to validator %.16s...\n",
+           amount_str, validator_pubkey_hex);
+
+    int rc = dnac_delegate(ctx, pubkey, amount, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+    printf("DELEGATE TX submitted successfully.\n");
+    return 0;
+}
+
+int dna_chain_cmd_undelegate(dnac_context_t *ctx,
+                             const char *validator_pubkey_hex,
+                             uint64_t amount) {
+    uint8_t pubkey[DNAC_PUBKEY_SIZE];
+    if (parse_validator_pubkey_hex(validator_pubkey_hex, pubkey) != 0) {
+        fprintf(stderr,
+                "Error: validator pubkey must be %u lowercase hex chars\n",
+                (unsigned)(DNAC_PUBKEY_SIZE * 2));
+        return 1;
+    }
+    if (amount == 0) {
+        fprintf(stderr, "Error: undelegate amount must be > 0\n");
+        return 1;
+    }
+
+    char amount_str[64];
+    format_amount(amount, amount_str, sizeof(amount_str));
+    printf("Undelegating %s DNAC from validator %.16s...\n",
+           amount_str, validator_pubkey_hex);
+
+    int rc = dnac_undelegate(ctx, pubkey, amount, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+    printf("UNDELEGATE TX submitted successfully.\n");
+    return 0;
+}

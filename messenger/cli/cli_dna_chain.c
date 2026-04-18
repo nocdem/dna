@@ -59,7 +59,11 @@ static void print_dna_chain_help(void) {
     printf("  parse-tx <tx_file>            Inspect a serialized TX file (read-only)\n\n");
     printf("Stake & Delegation:\n");
     printf("  stake [--commission-bps N] [--unstake-to FP]\n");
-    printf("                                Become a validator (self-stake 10M DNAC)\n\n");
+    printf("                                Become a validator (self-stake 10M DNAC)\n");
+    printf("  delegate <pubkey_hex> <amount_raw> [memo]\n");
+    printf("                                Delegate DNAC to a validator\n");
+    printf("  undelegate <pubkey_hex> <amount_raw>\n");
+    printf("                                Withdraw (part of) a delegation\n\n");
     printf("Token Commands:\n");
     printf("  token-create <name> <sym> <supply>  Create a new token\n");
     printf("  token-list                          List all known tokens\n");
@@ -290,6 +294,42 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
         }
         result = dna_chain_cmd_stake(ctx, commission_bps, unstake_to);
     stake_done: ;
+    }
+    else if (strcmp(cmd, "delegate") == 0 || strcmp(cmd, "undelegate") == 0) {
+        /* Syntax: dna delegate   <validator_pubkey_hex> <amount> [memo]
+         *         dna undelegate <validator_pubkey_hex> <amount>
+         *
+         * Note: validator identifier is the full hex-encoded Dilithium5
+         * pubkey. Name/fp → pubkey resolution deferred (see commit body).
+         */
+        bool is_delegate = (strcmp(cmd, "delegate") == 0);
+        if (sub + 2 >= argc) {
+            if (is_delegate) {
+                fprintf(stderr,
+                        "Usage: dna-connect-cli dna delegate"
+                        " <validator_pubkey_hex> <amount_raw> [memo]\n");
+            } else {
+                fprintf(stderr,
+                        "Usage: dna-connect-cli dna undelegate"
+                        " <validator_pubkey_hex> <amount_raw>\n");
+            }
+            result = 1;
+        } else {
+            const char *pubkey_hex = argv[sub + 1];
+            char *endptr = NULL;
+            errno = 0;
+            uint64_t amount = strtoull(argv[sub + 2], &endptr, 10);
+            if (errno == ERANGE || !endptr || *endptr != '\0' || amount == 0) {
+                fprintf(stderr,
+                        "Error: Invalid amount '%s'\n", argv[sub + 2]);
+                result = 1;
+            } else if (is_delegate) {
+                const char *memo = (sub + 3 < argc) ? argv[sub + 3] : NULL;
+                result = dna_chain_cmd_delegate(ctx, pubkey_hex, amount, memo);
+            } else {
+                result = dna_chain_cmd_undelegate(ctx, pubkey_hex, amount);
+            }
+        }
     }
     else if (strcmp(cmd, "token-info") == 0) {
         if (sub + 1 >= argc) {
