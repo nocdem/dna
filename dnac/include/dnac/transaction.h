@@ -124,6 +124,50 @@ typedef struct {
     uint64_t signed_at_block;      /**< Block height at signing */
 } dnac_tx_validator_update_fields_t;
 
+/* ============================================================================
+ * Chain-Config TX fields (hard-fork mechanism v1, design §5.3)
+ * ========================================================================== */
+
+/** Chain-Config purpose-tag bytes, bound into the proposal preimage.
+ *  Literal ASCII "DNAC_CC_v1" NUL-padded to 16 bytes (design §5.3). */
+#define DNAC_CHAIN_CONFIG_PURPOSE_TAG_LEN   16
+extern const uint8_t DNAC_CHAIN_CONFIG_PURPOSE_TAG[DNAC_CHAIN_CONFIG_PURPOSE_TAG_LEN];
+
+/** One committee member's vote on a chain-config proposal (design §5.3). */
+typedef struct {
+    uint8_t witness_id[32];                  /**< first 32B of SHA3-512(pubkey) */
+    uint8_t signature[DNAC_SIGNATURE_SIZE];  /**< Dilithium5 over proposal preimage */
+} dnac_chain_config_vote_t;
+
+/**
+ * @brief CHAIN_CONFIG TX appended fields (design §5.3, §5.4, §5.5).
+ *
+ * Populated only when `dnac_transaction_t.type == DNAC_TX_CHAIN_CONFIG`.
+ * Committee members independently sign the proposal preimage
+ *   (DNAC_CHAIN_CONFIG_PURPOSE_TAG || chain_id || param_id || new_value_BE ||
+ *    effective_block_BE || proposal_nonce_BE || signed_at_block_BE ||
+ *    valid_before_block_BE)
+ * and the proposer aggregates >=5 votes before submitting.
+ *
+ * `committee_sig_count` is the number of occupied slots in
+ * `committee_votes[]`. Must land in [DNAC_CHAIN_CONFIG_MIN_SIGS,
+ * DNAC_CHAIN_CONFIG_MAX_SIGS] = [5, 7]. Unused trailing slots are zero.
+ *
+ * `signed_at_block` is bound into the proposal preimage (CC-AUDIT-004 / Q2)
+ * so a vote cannot be replayed onto a different commit window than signers
+ * intended.
+ */
+typedef struct {
+    uint8_t                  param_id;                              /**< dnac_chain_config_param_id_t */
+    uint64_t                 new_value;                             /**< BE-encoded in preimages */
+    uint64_t                 effective_block_height;                /**< BE-encoded in preimages */
+    uint64_t                 proposal_nonce;                        /**< BE-encoded; preimage entropy */
+    uint64_t                 signed_at_block;                       /**< BE-encoded; sign-time anchor */
+    uint64_t                 valid_before_block;                    /**< BE-encoded; freshness window */
+    uint8_t                  committee_sig_count;                   /**< 5..7 */
+    dnac_chain_config_vote_t committee_votes[DNAC_COMMITTEE_SIZE];  /**< canonical subset (Q13) */
+} dnac_tx_chain_config_fields_t;
+
 /**
  * @brief Transaction signer (authorization)
  *
@@ -246,6 +290,7 @@ struct dnac_transaction {
     dnac_tx_undelegate_fields_t       undelegate_fields;       /**< valid when type == DNAC_TX_UNDELEGATE */
     dnac_tx_claim_reward_fields_t     claim_reward_fields;     /**< valid when type == DNAC_TX_CLAIM_REWARD */
     dnac_tx_validator_update_fields_t validator_update_fields; /**< valid when type == DNAC_TX_VALIDATOR_UPDATE */
+    dnac_tx_chain_config_fields_t     chain_config_fields;     /**< valid when type == DNAC_TX_CHAIN_CONFIG */
 };
 
 /* ============================================================================
@@ -466,6 +511,31 @@ int dnac_tx_verify_claim_reward_rules(const dnac_transaction_t *tx);
  * @return DNAC_SUCCESS if valid, error code otherwise
  */
 int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx);
+
+/**
+ * @brief Verify CHAIN_CONFIG-type local rules (design §6.3, Hard-Fork v1).
+ *
+ * Runs the locally-verifiable CHAIN_CONFIG rule subset — rules that don't
+ * require witness chain state. Enforced:
+ *
+ *   - tx->type == DNAC_TX_CHAIN_CONFIG
+ *   - signer_count == 1
+ *   - chain_config_fields.param_id ∈ {1..DNAC_CFG_PARAM_MAX_ID}
+ *   - chain_config_fields.new_value in per-param range (design §5.2)
+ *   - chain_config_fields.signed_at_block > 0
+ *   - chain_config_fields.valid_before_block > chain_config_fields.effective_block_height
+ *   - chain_config_fields.valid_before_block > chain_config_fields.signed_at_block
+ *   - chain_config_fields.committee_sig_count ∈ [5, 7]
+ *   - committee_votes[0..sig_count-1].witness_id pairwise distinct
+ *
+ * Rules requiring chain state (current committee membership, signature
+ * verification against committee pubkeys, current_block freshness, epoch
+ * grace period) run witness-side only (design §6.4, Stage B).
+ *
+ * @param tx Transaction (must be CHAIN_CONFIG type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_chain_config_rules(const dnac_transaction_t *tx);
 
 /**
  * @brief Verify GENESIS-type rules only (design §2.4 / §5.2 Rule P, full

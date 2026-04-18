@@ -297,8 +297,35 @@ typedef enum {
     DNAC_TX_UNSTAKE          = 6,   /**< Validator withdraws self-stake (unbonding) */
     DNAC_TX_UNDELEGATE       = 7,   /**< Delegator withdraws delegation (unbonding) */
     DNAC_TX_CLAIM_REWARD     = 8,   /**< Claim accrued staking/delegation rewards */
-    DNAC_TX_VALIDATOR_UPDATE = 9    /**< Update validator metadata (commission, moniker, etc.) */
+    DNAC_TX_VALIDATOR_UPDATE = 9,   /**< Update validator metadata (commission, moniker, etc.) */
+    DNAC_TX_CHAIN_CONFIG     = 10   /**< Committee-voted consensus parameter change (hard-fork mechanism v1) */
 } dnac_tx_type_t;
+
+/* ============================================================================
+ * Hard-Fork Mechanism v1 — Chain Config
+ *
+ * See dnac/docs/plans/2026-04-19-hard-fork-mechanism-design.md
+ * ========================================================================== */
+
+/** Parameter IDs allowed by DNAC_TX_CHAIN_CONFIG (v1 allowlist, design §5.2). */
+typedef enum {
+    DNAC_CFG_MAX_TXS_PER_BLOCK     = 1,  /**< overrides chain_def.max_txs_per_block */
+    DNAC_CFG_BLOCK_INTERVAL_SEC    = 2,  /**< overrides chain_def.block_interval_sec */
+    DNAC_CFG_INFLATION_START_BLOCK = 3,  /**< overrides default 1 (0 = inflation off) */
+    DNAC_CFG_PARAM_MAX_ID          = DNAC_CFG_INFLATION_START_BLOCK
+} dnac_chain_config_param_id_t;
+
+/** Value range bounds — consensus-critical (client + witness reject out-of-range).
+ *  The compile-time cap mirrors NODUS_W_MAX_BLOCK_TXS in nodus_types.h so
+ *  on-wire-wire values never exceed the committed buffer sizes witness-side. */
+#define DNAC_CFG_MAX_TXS_HARD_CAP           10ULL
+#define DNAC_CFG_MIN_BLOCK_INTERVAL_SEC     1ULL
+#define DNAC_CFG_MAX_BLOCK_INTERVAL_SEC     15ULL   /* Q6 default — tightened from 60 */
+#define DNAC_CFG_MAX_INFLATION_START_BLOCK  281474976710656ULL  /* 2^48 */
+
+/** BFT supermajority threshold for chain_config_tx (2f+1 for N=DNAC_COMMITTEE_SIZE=7). */
+#define DNAC_CHAIN_CONFIG_MIN_SIGS          5
+#define DNAC_CHAIN_CONFIG_MAX_SIGS          DNAC_COMMITTEE_SIZE
 
 /**
  * @brief Unspent Transaction Output

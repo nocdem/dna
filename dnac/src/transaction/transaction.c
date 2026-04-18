@@ -36,6 +36,15 @@ const uint8_t DNAC_STAKE_PURPOSE_TAG[DNAC_STAKE_PURPOSE_TAG_LEN] = {
     'D','N','A','C','_','V','A','L','I','D','A','T','O','R','_','v','1'
 };
 
+/* CHAIN_CONFIG TX purpose-tag constant (design §5.3, Hard-Fork v1).
+ *
+ * 16-byte literal "DNAC_CC_v1" NUL-padded. Bound into the proposal preimage
+ * that committee members sign (see §5.4). Domain-separates chain_config
+ * votes from other Dilithium5 signatures in the system. */
+const uint8_t DNAC_CHAIN_CONFIG_PURPOSE_TAG[DNAC_CHAIN_CONFIG_PURPOSE_TAG_LEN] = {
+    'D','N','A','C','_','C','C','_','v','1',0,0,0,0,0,0
+};
+
 /* Forward declarations for verification functions (verify.c) */
 extern int verify_witnesses(const dnac_transaction_t *tx);
 extern int verify_signers(const dnac_transaction_t *tx);
@@ -45,6 +54,7 @@ extern int dnac_tx_verify_unstake_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_undelegate_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_claim_reward_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx);
+extern int dnac_tx_verify_chain_config_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_genesis_rules_internal(const dnac_transaction_t *tx);
 
 dnac_transaction_t* dnac_tx_create(dnac_tx_type_t type) {
@@ -215,6 +225,12 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
     /* VALIDATOR_UPDATE-type rules (design §2.4, Phase 6 Task 27). */
     if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
         int rc = dnac_tx_verify_validator_update_rules_internal(tx);
+        if (rc != DNAC_SUCCESS) return rc;
+    }
+
+    /* CHAIN_CONFIG-type rules (hard-fork v1, design §6.3). */
+    if (tx->type == DNAC_TX_CHAIN_CONFIG) {
+        int rc = dnac_tx_verify_chain_config_rules_internal(tx);
         if (rc != DNAC_SUCCESS) return rc;
     }
 
@@ -395,6 +411,37 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
         uint8_t block_be[8];
         tx_be64_into(tx->validator_update_fields.signed_at_block, block_be);
         EVP_DigestUpdate(ctx, block_be, sizeof(block_be));
+    }
+
+    /* Hard-Fork v1. CHAIN_CONFIG: param_id(u8) || new_value(u64 BE) ||
+     *        effective_block(u64 BE) || proposal_nonce(u64 BE) ||
+     *        signed_at_block(u64 BE) || valid_before_block(u64 BE) ||
+     *        committee_sig_count(u8) ||
+     *        committee_votes[0..sig_count-1] each: witness_id[32] ||
+     *                                              signature[DNAC_SIGNATURE_SIZE].
+     * Binding committee_votes[] into tx_hash prevents relay-stripping
+     * (see design §5.5). Trailing zero-padded slots are NOT hashed. */
+    if (tx->type == DNAC_TX_CHAIN_CONFIG) {
+        const dnac_tx_chain_config_fields_t *cc = &tx->chain_config_fields;
+        uint8_t u64_be[8];
+        EVP_DigestUpdate(ctx, &cc->param_id, sizeof(uint8_t));
+        tx_be64_into(cc->new_value, u64_be);
+        EVP_DigestUpdate(ctx, u64_be, sizeof(u64_be));
+        tx_be64_into(cc->effective_block_height, u64_be);
+        EVP_DigestUpdate(ctx, u64_be, sizeof(u64_be));
+        tx_be64_into(cc->proposal_nonce, u64_be);
+        EVP_DigestUpdate(ctx, u64_be, sizeof(u64_be));
+        tx_be64_into(cc->signed_at_block, u64_be);
+        EVP_DigestUpdate(ctx, u64_be, sizeof(u64_be));
+        tx_be64_into(cc->valid_before_block, u64_be);
+        EVP_DigestUpdate(ctx, u64_be, sizeof(u64_be));
+        EVP_DigestUpdate(ctx, &cc->committee_sig_count, sizeof(uint8_t));
+        uint8_t n = cc->committee_sig_count;
+        if (n > DNAC_COMMITTEE_SIZE) n = DNAC_COMMITTEE_SIZE;  /* defense-in-depth */
+        for (uint8_t i = 0; i < n; i++) {
+            EVP_DigestUpdate(ctx, cc->committee_votes[i].witness_id, 32);
+            EVP_DigestUpdate(ctx, cc->committee_votes[i].signature, DNAC_SIGNATURE_SIZE);
+        }
     }
 
     unsigned int hash_len;

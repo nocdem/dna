@@ -103,6 +103,16 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
         size += 2 + 8;
     }
+    /* Hard-Fork v1. CHAIN_CONFIG fixed header: param_id(1) + new_value(8) +
+     * effective_block(8) + proposal_nonce(8) + signed_at_block(8) +
+     * valid_before_block(8) + committee_sig_count(1) = 42 bytes.
+     * Per-vote: witness_id(32) + signature(DNAC_SIGNATURE_SIZE). */
+    if (tx->type == DNAC_TX_CHAIN_CONFIG) {
+        uint8_t n = tx->chain_config_fields.committee_sig_count;
+        if (n > DNAC_COMMITTEE_SIZE) n = DNAC_COMMITTEE_SIZE;
+        size += 1 + 8 + 8 + 8 + 8 + 8 + 1;
+        size += (size_t)n * (32 + DNAC_SIGNATURE_SIZE);
+    }
 
     /* Optional anchored-genesis chain_def trailer (v2 wire extension).
      * Only present when has_chain_def is true (always 0 for non-genesis).
@@ -216,6 +226,34 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         be64_to_bytes(tx->validator_update_fields.signed_at_block, block_be);
         WRITE_BLOB(ptr, block_be, 8);
     }
+    /* Hard-Fork v1. CHAIN_CONFIG: param_id(u8) || new_value(u64 BE) ||
+     *        effective_block(u64 BE) || proposal_nonce(u64 BE) ||
+     *        signed_at_block(u64 BE) || valid_before_block(u64 BE) ||
+     *        committee_sig_count(u8) || votes[n] where each vote =
+     *        witness_id(32) || signature(DNAC_SIGNATURE_SIZE).
+     * Trailing padded slots beyond committee_sig_count are NOT serialized. */
+    if (tx->type == DNAC_TX_CHAIN_CONFIG) {
+        const dnac_tx_chain_config_fields_t *cc = &tx->chain_config_fields;
+        uint8_t u64_be[8];
+        WRITE_U8(ptr, cc->param_id);
+        be64_to_bytes(cc->new_value, u64_be);
+        WRITE_BLOB(ptr, u64_be, 8);
+        be64_to_bytes(cc->effective_block_height, u64_be);
+        WRITE_BLOB(ptr, u64_be, 8);
+        be64_to_bytes(cc->proposal_nonce, u64_be);
+        WRITE_BLOB(ptr, u64_be, 8);
+        be64_to_bytes(cc->signed_at_block, u64_be);
+        WRITE_BLOB(ptr, u64_be, 8);
+        be64_to_bytes(cc->valid_before_block, u64_be);
+        WRITE_BLOB(ptr, u64_be, 8);
+        uint8_t n = cc->committee_sig_count;
+        if (n > DNAC_COMMITTEE_SIZE) n = DNAC_COMMITTEE_SIZE;
+        WRITE_U8(ptr, n);
+        for (uint8_t i = 0; i < n; i++) {
+            WRITE_BLOB(ptr, cc->committee_votes[i].witness_id, 32);
+            WRITE_BLOB(ptr, cc->committee_votes[i].signature, DNAC_SIGNATURE_SIZE);
+        }
+    }
 
     /* Anchored-genesis chain_def trailer (optional, genesis TX only). */
     WRITE_U8(ptr, tx->has_chain_def ? 1 : 0);
@@ -255,9 +293,9 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     READ_U8(ptr, tx->version);
     READ_U8(ptr, tx->type);
     /* M-32: Validate tx_type is within known range.
-     * Phase 5 Task 16: admit stake/delegation types (4..9) added in
-     * Task 1 (DNAC_TX_VALIDATOR_UPDATE is the highest defined value). */
-    if (tx->type > DNAC_TX_VALIDATOR_UPDATE) {
+     * Phase 5 Task 16 admitted stake/delegation types (4..9).
+     * Hard-Fork v1 adds DNAC_TX_CHAIN_CONFIG (10). */
+    if (tx->type > DNAC_TX_CHAIN_CONFIG) {
         free(tx);
         return DNAC_ERROR_INVALID_PARAM;
     }
@@ -419,6 +457,37 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         ptr += 2;
         tx->validator_update_fields.signed_at_block = be64_from_bytes(ptr);
         ptr += 8;
+    }
+    /* Hard-Fork v1. CHAIN_CONFIG — see serialize arm above for layout. */
+    if (tx->type == DNAC_TX_CHAIN_CONFIG) {
+        const size_t cc_fixed_len = 1 + 8 + 8 + 8 + 8 + 8 + 1;  /* 42 bytes */
+        if (ptr + cc_fixed_len > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        dnac_tx_chain_config_fields_t *cc = &tx->chain_config_fields;
+        READ_U8(ptr, cc->param_id);
+        cc->new_value              = be64_from_bytes(ptr); ptr += 8;
+        cc->effective_block_height = be64_from_bytes(ptr); ptr += 8;
+        cc->proposal_nonce         = be64_from_bytes(ptr); ptr += 8;
+        cc->signed_at_block        = be64_from_bytes(ptr); ptr += 8;
+        cc->valid_before_block     = be64_from_bytes(ptr); ptr += 8;
+        uint8_t n;
+        READ_U8(ptr, n);
+        if (n > DNAC_COMMITTEE_SIZE) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        cc->committee_sig_count = n;
+        const size_t per_vote = 32 + DNAC_SIGNATURE_SIZE;
+        if (ptr + (size_t)n * per_vote > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        for (uint8_t i = 0; i < n; i++) {
+            READ_BLOB(ptr, cc->committee_votes[i].witness_id, 32);
+            READ_BLOB(ptr, cc->committee_votes[i].signature, DNAC_SIGNATURE_SIZE);
+        }
     }
 
     /* Optional anchored-genesis chain_def trailer.

@@ -457,6 +457,151 @@ int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx)
 }
 
 /**
+ * @brief Verify CHAIN_CONFIG local rules (Hard-Fork v1, design §6.3).
+ *
+ * Locally-verifiable rule subset — does NOT exercise committee-membership
+ * lookup or Dilithium5 signature verification (witness-side, §6.4).
+ *
+ *   - signer_count == 1
+ *   - chain_config_fields.param_id ∈ {1..DNAC_CFG_PARAM_MAX_ID}
+ *   - chain_config_fields.new_value in per-param range (§5.2):
+ *       MAX_TXS_PER_BLOCK      : [1, DNAC_CFG_MAX_TXS_HARD_CAP=10]
+ *       BLOCK_INTERVAL_SEC     : [1, 15]
+ *       INFLATION_START_BLOCK  : [0, 2^48]  (0 allowed at design-time —
+ *                                 witness-side monotonicity rule Q5 kicks
+ *                                 the "can't set to 0 once enabled" check
+ *                                 on top of this)
+ *   - signed_at_block > 0                (CC-AUDIT-008)
+ *   - valid_before_block > effective_block_height
+ *   - valid_before_block > signed_at_block
+ *   - committee_sig_count ∈ [5, 7]
+ *   - committee_votes[0..sig_count-1].witness_id pairwise distinct
+ */
+static int verify_chain_config_rules(const dnac_transaction_t *tx) {
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "CHAIN_CONFIG: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    const dnac_tx_chain_config_fields_t *cc = &tx->chain_config_fields;
+
+    /* param_id in whitelisted range (Rule CC-A). */
+    if (cc->param_id < 1 || cc->param_id > DNAC_CFG_PARAM_MAX_ID) {
+        QGP_LOG_ERROR(LOG_TAG, "CHAIN_CONFIG: param_id=%u out of range",
+                      (unsigned)cc->param_id);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* new_value in per-param range (Rule CC-B). */
+    switch ((dnac_chain_config_param_id_t)cc->param_id) {
+        case DNAC_CFG_MAX_TXS_PER_BLOCK:
+            if (cc->new_value < 1ULL || cc->new_value > DNAC_CFG_MAX_TXS_HARD_CAP) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: MAX_TXS_PER_BLOCK=%llu out of [1,%llu]",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_MAX_TXS_HARD_CAP);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_BLOCK_INTERVAL_SEC:
+            if (cc->new_value < DNAC_CFG_MIN_BLOCK_INTERVAL_SEC ||
+                cc->new_value > DNAC_CFG_MAX_BLOCK_INTERVAL_SEC) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: BLOCK_INTERVAL_SEC=%llu out of [%llu,%llu]",
+                              (unsigned long long)cc->new_value,
+                              (unsigned long long)DNAC_CFG_MIN_BLOCK_INTERVAL_SEC,
+                              (unsigned long long)DNAC_CFG_MAX_BLOCK_INTERVAL_SEC);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        case DNAC_CFG_INFLATION_START_BLOCK:
+            if (cc->new_value > DNAC_CFG_MAX_INFLATION_START_BLOCK) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: INFLATION_START_BLOCK=%llu > 2^48",
+                              (unsigned long long)cc->new_value);
+                return DNAC_ERROR_INVALID_PARAM;
+            }
+            break;
+        default:
+            return DNAC_ERROR_INVALID_PARAM;  /* Unreachable given bound check above */
+    }
+
+    /* Freshness anchor must be non-zero (CC-AUDIT-008). */
+    if (cc->signed_at_block == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "CHAIN_CONFIG: signed_at_block == 0");
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* Effective ordering: valid_before > effective_block (proposal must not
+     * expire before it can activate) AND valid_before > signed_at (vote
+     * can't expire before it was signed). */
+    if (cc->valid_before_block <= cc->effective_block_height) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "CHAIN_CONFIG: valid_before=%llu <= effective=%llu",
+                      (unsigned long long)cc->valid_before_block,
+                      (unsigned long long)cc->effective_block_height);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+    if (cc->valid_before_block <= cc->signed_at_block) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "CHAIN_CONFIG: valid_before=%llu <= signed_at=%llu",
+                      (unsigned long long)cc->valid_before_block,
+                      (unsigned long long)cc->signed_at_block);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* Committee-sig count within BFT supermajority window (5..7). */
+    if (cc->committee_sig_count < DNAC_CHAIN_CONFIG_MIN_SIGS ||
+        cc->committee_sig_count > DNAC_CHAIN_CONFIG_MAX_SIGS) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "CHAIN_CONFIG: committee_sig_count=%u outside [%d,%d]",
+                      (unsigned)cc->committee_sig_count,
+                      DNAC_CHAIN_CONFIG_MIN_SIGS,
+                      DNAC_CHAIN_CONFIG_MAX_SIGS);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* Distinct witness_ids across the included votes. */
+    for (uint8_t i = 0; i < cc->committee_sig_count; i++) {
+        for (uint8_t j = (uint8_t)(i + 1); j < cc->committee_sig_count; j++) {
+            if (memcmp(cc->committee_votes[i].witness_id,
+                       cc->committee_votes[j].witness_id, 32) == 0) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "CHAIN_CONFIG: duplicate witness_id at votes[%u]==votes[%u]",
+                              (unsigned)i, (unsigned)j);
+                return DNAC_ERROR_INVALID_SIGNATURE;
+            }
+        }
+    }
+
+    /* TODO(Stage B / witness-side §6.4):
+     *   - Each committee_votes[i].witness_id IN current top-7 committee
+     *     at commit_block - 1.
+     *   - Each signature valid against committee member's Dilithium5 pubkey
+     *     over proposal preimage (§5.4).
+     *   - commit_block + DNAC_EPOCH_LENGTH <= effective_block_height
+     *     (for safety-critical params: 12 × EPOCH per Q4 Option B).
+     *   - commit_block <= valid_before_block (freshness).
+     *   - INFLATION_START_BLOCK monotonicity (Q5): once non-zero committed,
+     *     reject new_value == 0 and reject new_value > current_block.
+     *   - Exclusive-block rule (Q7): block containing chain_config_tx has
+     *     tx_count == 1. */
+
+    return DNAC_SUCCESS;
+}
+
+int dnac_tx_verify_chain_config_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_CHAIN_CONFIG) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_chain_config_rules(tx);
+}
+
+int dnac_tx_verify_chain_config_rules_internal(const dnac_transaction_t *tx) {
+    return verify_chain_config_rules(tx);
+}
+
+/**
  * @brief Per-token balance verification
  *
  * For each distinct token_id across inputs and outputs:
