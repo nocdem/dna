@@ -161,15 +161,28 @@ extern "C" {
 /* ============================================================================
  * Block-Reward Inflation (v1) — validator incentive
  *
- * Schedule: yearly halving from 16 DNAC/block, floor at 1 DNAC/block.
- *   year 0:  16 DNAC/block   (100.9M/year,  ~10% first-year inflation)
- *   year 1:   8 DNAC/block   (50.5M/year)
- *   year 2:   4 DNAC/block
- *   year 3:   2 DNAC/block
- *   year 4:   1 DNAC/block   (permanent floor — perpetual validator incentive)
- *   year 5+:  1 DNAC/block   (sustainable long-term)
+ * Halving is pinned to BLOCK COUNT, not real time. If the block interval
+ * is tuned down later (e.g. 5s → 2.5s), halving cycles compress in real
+ * time but the per-block reward curve stays identical — tokenomics stay
+ * predictable from the ledger's own clock, independent of transport
+ * latency choices.
  *
- * Total first-4-year mint: ~189M DNAC. Thereafter ~6.3M DNAC/year perpetual.
+ * Schedule: halving every DNAC_HALVING_INTERVAL_BLOCKS, floor at 1 DNAC.
+ *   halving 0:  16 DNAC/block
+ *   halving 1:   8 DNAC/block
+ *   halving 2:   4 DNAC/block
+ *   halving 3:   2 DNAC/block
+ *   halving 4+:  1 DNAC/block   (permanent floor)
+ *
+ * Per-halving mint: BASE × INTERVAL (halving 0 = 16 × 6.307M = 100.9M DNAC).
+ * First-4-halving total: ~189M DNAC. Thereafter 1 × INTERVAL per halving
+ * window, forever — sustainable perpetual validator incentive.
+ *
+ * At the current 5s block interval, INTERVAL = 6,307,200 blocks ≈ 1 year,
+ * matching Bitcoin-style annual halving. At 2.5s, the same INTERVAL is
+ * ~6 months. At 2s, ~4.8 months. Tune block interval per performance
+ * needs without touching the halving-curve semantics.
+ *
  * Minted DNAC flows into block_fee_pool and is distributed through the
  * existing Phase 9 Task 49 committee-reward pipeline (proportional to
  * total_stake, minus validator commission).
@@ -181,16 +194,19 @@ extern "C" {
 /** Floor block reward after halving converges (1 DNAC × 10^8 raw). */
 #define DNAC_INFLATION_FLOOR_REWARD  (1ULL * 100000000ULL)
 
-/** Blocks per year at 5s block interval (365 × 24 × 3600 / 5). */
-#define DNAC_BLOCKS_PER_YEAR         6307200ULL
+/** Blocks between successive halvings — tokenomic clock, block-count based
+ *  (NOT seconds-based). 6,307,200 is ≈ 1 year at the current 5s interval;
+ *  if the block interval is retuned the halving cycle compresses/expands
+ *  in real time but the per-block reward curve is unchanged. */
+#define DNAC_HALVING_INTERVAL_BLOCKS 6307200ULL
 
 /**
  * @brief Block reward at a given chain height (deterministic).
  *
  * Returns raw DNAC to mint at @p block_height. Before @p start_block,
  * or when start_block == 0 (disabled), returns 0. Halves every
- * DNAC_BLOCKS_PER_YEAR blocks until reaching DNAC_INFLATION_FLOOR_REWARD,
- * then stays at the floor forever.
+ * DNAC_HALVING_INTERVAL_BLOCKS blocks until reaching
+ * DNAC_INFLATION_FLOOR_REWARD, then stays at the floor forever.
  *
  * Implemented `static inline` so both dnac and nodus (whose build does
  * not compile dnac sources) get the same codepath without duplicating
@@ -200,7 +216,7 @@ static inline uint64_t dnac_block_reward(uint64_t block_height,
                                            uint64_t start_block) {
     if (start_block == 0 || block_height < start_block) return 0;
     uint64_t elapsed  = block_height - start_block;
-    uint64_t halvings = elapsed / DNAC_BLOCKS_PER_YEAR;
+    uint64_t halvings = elapsed / DNAC_HALVING_INTERVAL_BLOCKS;
     /* log2(BASE/FLOOR) = 4 halvings (16→8→4→2→1). Floor thereafter. */
     if (halvings >= 4) return DNAC_INFLATION_FLOOR_REWARD;
     uint64_t reward = DNAC_INFLATION_BASE_REWARD >> halvings;
@@ -221,12 +237,12 @@ static inline uint64_t dnac_total_minted_at(uint64_t block_height,
     uint64_t elapsed = block_height - start_block;
     uint64_t total   = 0;
     uint64_t reward  = DNAC_INFLATION_BASE_REWARD;
-    for (int y = 0; y < 4; y++) {
+    for (int h = 0; h < 4; h++) {
         if (elapsed == 0) return total;
-        uint64_t year_blocks = (elapsed >= DNAC_BLOCKS_PER_YEAR)
-                               ? DNAC_BLOCKS_PER_YEAR : elapsed;
-        total   += reward * year_blocks;
-        elapsed -= year_blocks;
+        uint64_t window_blocks = (elapsed >= DNAC_HALVING_INTERVAL_BLOCKS)
+                                  ? DNAC_HALVING_INTERVAL_BLOCKS : elapsed;
+        total   += reward * window_blocks;
+        elapsed -= window_blocks;
         reward >>= 1;
         if (reward < DNAC_INFLATION_FLOOR_REWARD) {
             reward = DNAC_INFLATION_FLOOR_REWARD;
