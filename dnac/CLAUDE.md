@@ -148,6 +148,64 @@ See `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` for the full
 
 ---
 
+## Hard-Fork Mechanism v1 (`DNAC_TX_CHAIN_CONFIG`, 2026-04-19)
+
+Committee-voted consensus parameter changes without chain wipe. A 5-of-7
+committee signs a proposal preimage and a `DNAC_TX_CHAIN_CONFIG` TX is
+broadcast carrying the votes; on commit the override is stored in
+`chain_config_history` and contributes to `state_root` via
+`chain_config_root`. Consumer sites read active overrides via
+`nodus_chain_config_get_u64(param_id, current_block, default)`.
+
+**Supported parameters (v1):**
+
+| param_id | Constant | Range | Consumer |
+|----------|----------|-------|----------|
+| 1 | `DNAC_CFG_MAX_TXS_PER_BLOCK` | `[1, 10]` | BFT batch cap |
+| 2 | `DNAC_CFG_BLOCK_INTERVAL_SEC` | `[1, 15]` | Proposer timer (future) |
+| 3 | `DNAC_CFG_INFLATION_START_BLOCK` | `[0, 2^48]` | Inflation mint |
+
+**Consensus rules** (enforced in `nodus_chain_config_apply`):
+- Min 5-of-7 Dilithium5 signatures from CURRENT committee at
+  `commit_block - 1`
+- Grace: `effective_block >= commit_block + EPOCH_LENGTH` (ergonomic
+  params) / `12 × EPOCH_LENGTH` (safety-critical: block_interval,
+  inflation)
+- Freshness: `commit_block <= valid_before_block`
+- `INFLATION_START_BLOCK` monotonicity: once non-zero committed, cannot
+  be disabled (set to 0) or moved past current_block
+- PK `(param_id, effective_block)` replay rejection
+
+**state_root composition (post-activation):**
+```
+state_root = SHA3-512( 0x02 || utxo_root || validator_root ||
+                        delegation_root || reward_root || chain_config_root )
+```
+The `0x02` version byte is domain separation from the legacy 4-input
+formula (`nodus_merkle_combine_state_root_v1_legacy`, retained
+`__attribute__((cold))` for archive-replay).
+
+**Design doc:** `dnac/docs/plans/2026-04-19-hard-fork-mechanism-design.md`
+(contains full 29-finding red-team audit).
+
+**Shipped:**
+- Stage A — TX wire format + client verify (commit `69c4e44e`)
+- Stage B — witness apply + DB schema + 5-input state_root (`ca628df1`)
+- Stage C — vote primitives (digest / sign / verify) (`fd1e194e`)
+- Stage D — finalize_block consumer wiring (`08baa4d1`)
+
+**Pending:**
+- Stage C.2 — tier-2 vote-collect RPC wire format + peer handler +
+  rate-limit
+- Stage E — CLI verbs (`dna chain-config propose/list/history`)
+- Stage F — local 3-node integration test harness
+
+These three land together once the tier-2 RPC is designed — shipping E
+without C.2 would require the CLI to drive collection via ad-hoc TCP
+calls, which is brittle.
+
+---
+
 ## Security Considerations
 
 1. **Nullifiers** — SHA3-512(secret || UTXO data) to prevent linking
