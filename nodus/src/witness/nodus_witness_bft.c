@@ -2884,9 +2884,21 @@ int finalize_block(nodus_witness_t *w,
      * the new block_fee_pool value is consensus-safe.
      *
      * start_block = 1 means inflation activates from block 1 onward
-     * (block 0 is genesis — no reward). Set to 0 to disable. */
+     * (block 0 is genesis — no reward). Set to 0 to disable.
+     *
+     * Hard-Fork v1 / Stage D: the start_block is now read from
+     * chain_config_history (DNAC_CFG_INFLATION_START_BLOCK). Default 1ULL
+     * preserves current semantics when no override is committed. The Q5
+     * monotonicity rule enforced in nodus_chain_config_apply prevents a
+     * malicious coalition from disabling inflation by setting it to 0
+     * once a non-zero value has been committed. */
     {
-        uint64_t mint = dnac_block_reward(expected_height, 1ULL);
+        uint64_t inflation_start =
+            nodus_chain_config_get_u64(w,
+                                        DNAC_CFG_INFLATION_START_BLOCK,
+                                        expected_height,
+                                        1ULL);
+        uint64_t mint = dnac_block_reward(expected_height, inflation_start);
         if (mint > 0) {
             if (w->block_fee_pool > UINT64_MAX - mint) {
                 fprintf(stderr, "%s: finalize_block: block_fee_pool overflow "
@@ -3216,10 +3228,40 @@ static int nodus_extract_output_nullifiers(const uint8_t *tx_data, uint32_t tx_l
 int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
     if (!w || w->mempool.count == 0) return -1;
 
-    /* Pop batch from mempool (highest fee first) */
+    /* Pop batch from mempool (highest fee first).
+     *
+     * Hard-Fork v1 / Stage D: the effective batch cap is
+     *     min(NODUS_W_MAX_BLOCK_TXS, chain_config.max_txs_per_block)
+     * Compile-time NODUS_W_MAX_BLOCK_TXS stays the hard upper bound so
+     * the stack-allocated batch[] array remains size-safe; runtime
+     * override only tightens. Default when no override exists: the
+     * compile-time cap, preserving current semantics. */
+    uint64_t current_tip = 0;
+    if (w->db) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT MAX(block_height) FROM blocks",
+                -1, &st, NULL) == SQLITE_OK) {
+            if (sqlite3_step(st) == SQLITE_ROW &&
+                sqlite3_column_type(st, 0) != SQLITE_NULL) {
+                current_tip = (uint64_t)sqlite3_column_int64(st, 0);
+            }
+            sqlite3_finalize(st);
+        }
+    }
+    uint64_t max_override =
+        nodus_chain_config_get_u64(w,
+                                    DNAC_CFG_MAX_TXS_PER_BLOCK,
+                                    current_tip,
+                                    (uint64_t)NODUS_W_MAX_BLOCK_TXS);
+    int effective_max = (max_override < (uint64_t)NODUS_W_MAX_BLOCK_TXS)
+                         ? (int)max_override
+                         : NODUS_W_MAX_BLOCK_TXS;
+    if (effective_max < 1) effective_max = 1;
+
     nodus_witness_mempool_entry_t *batch[NODUS_W_MAX_BLOCK_TXS];
     int count = nodus_witness_mempool_pop_batch(&w->mempool, batch,
-                                                  NODUS_W_MAX_BLOCK_TXS);
+                                                  effective_max);
     if (count <= 0) return -1;
 
     /* Re-verify each TX (mempool entries may be stale due to
