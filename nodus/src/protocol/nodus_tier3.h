@@ -223,6 +223,13 @@ typedef struct {
     uint32_t        roster_size;                        /* sender's roster n_witnesses */
     uint64_t        ts_local;                           /* Phase 10 / Task 10.4 — sender wall clock for skew probe */
     bool            has_block_height;                   /* true if bh/sr/view present */
+    /* CC-OPS-002 / Q14 — binary-skew detection. Fields carry the sender's
+     * packed (MAJOR<<16)|(MINOR<<8)|PATCH nodus version and the
+     * chain_config schema version the sender was compiled with. Legacy
+     * peers (pre hard-fork v1) don't send these — decoder leaves both
+     * at 0, which receivers interpret as "legacy binary". */
+    uint32_t        nodus_version;                      /* 0 = legacy peer */
+    uint32_t        chain_config_schema;                /* 0 = legacy peer */
 } nodus_t3_ident_t;
 
 /** w_sync_req: Request block at height N for sync */

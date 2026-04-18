@@ -348,6 +348,15 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
     msg.ident.ts_local = (uint64_t)time(NULL);  /* Phase 10 / Task 10.4 */
     msg.ident.has_block_height = true;
 
+    /* CC-OPS-002 / Q14 — advertise binary + schema version so peers can
+     * detect skew at handshake time instead of via silent state_root
+     * divergence post-first-block. Packed version: MAJOR<<16 | MINOR<<8 | PATCH. */
+    msg.ident.nodus_version =
+        ((uint32_t)NODUS_VERSION_MAJOR << 16) |
+        ((uint32_t)NODUS_VERSION_MINOR <<  8) |
+        ((uint32_t)NODUS_VERSION_PATCH);
+    msg.ident.chain_config_schema = NODUS_CHAIN_CONFIG_SCHEMA_VERSION;
+
     /* Fill header */
     msg.header.version = NODUS_T3_BFT_PROTOCOL_VER;
     msg.header.round = 0;
@@ -553,6 +562,39 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
                 QGP_LOG_WARN(LOG_TAG, "clock skew %lld s vs peer %s",
                              (long long)skew, w->peers[pi].address);
             }
+        }
+
+        /* CC-OPS-002 / Q14 — binary-skew / schema mismatch probe.
+         * Legacy peers (pre hard-fork v1) don't send nv/ccs → both 0 →
+         * treated as incompatible. Matching peers run the same binary
+         * and schema → compatible. Mismatch logged once per handshake
+         * with the pinned "PEER SCHEMA MISMATCH" literal so ops
+         * log-tripwires fire instead of waiting for state_root divergence
+         * at the next block. */
+        {
+            uint32_t local_nv =
+                ((uint32_t)NODUS_VERSION_MAJOR << 16) |
+                ((uint32_t)NODUS_VERSION_MINOR <<  8) |
+                ((uint32_t)NODUS_VERSION_PATCH);
+            uint32_t local_ccs = NODUS_CHAIN_CONFIG_SCHEMA_VERSION;
+            w->peers[pi].remote_nodus_version       = ident->nodus_version;
+            w->peers[pi].remote_chain_config_schema = ident->chain_config_schema;
+            bool compat = (ident->nodus_version == local_nv) &&
+                          (ident->chain_config_schema == local_ccs);
+            /* Log on every incompatible handshake so ops tripwires see
+             * every instance of a mismatched peer re-identifying. We
+             * deliberately don't gate on previous state — peers that
+             * never went compatible still need to show up. */
+            if (!compat) {
+                QGP_LOG_ERROR(LOG_TAG,
+                    "PEER SCHEMA MISMATCH peer=%s local_nv=0x%06x "
+                    "local_ccs=%u remote_nv=0x%06x remote_ccs=%u",
+                    w->peers[pi].address,
+                    (unsigned)local_nv, (unsigned)local_ccs,
+                    (unsigned)ident->nodus_version,
+                    (unsigned)ident->chain_config_schema);
+            }
+            w->peers[pi].version_compatible = compat;
         }
 
         /* Store peer's chain state for sync decisions */

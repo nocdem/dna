@@ -187,6 +187,13 @@ extern "C" {
 #define NODUS_STATE_ROOT_VERSION_V1 0x01u  /* legacy 4-input */
 #define NODUS_STATE_ROOT_VERSION_V2 0x02u  /* 5-input, includes chain_config_root */
 
+/* CC-OPS-002 / Q14 — Chain-config schema version advertised in w_ident
+ * handshake so binary skew (6-of-7 new binary + 1 old) is detected at
+ * connect time with a pinned "PEER SCHEMA MISMATCH" log literal instead
+ * of silently degrading via state_root divergence. Bump when any on-disk
+ * or on-wire consensus-affecting schema changes materially. */
+#define NODUS_CHAIN_CONFIG_SCHEMA_VERSION  1u
+
 /* Burn address: all-zero fingerprint (128 hex zero = 64 bytes zero)
  * Fee UTXOs are recorded here. Unspendable — no private key exists. */
 #define DNAC_BURN_ADDRESS \

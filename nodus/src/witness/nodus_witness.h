@@ -200,6 +200,16 @@ typedef struct {
 
     /* Gossip rate limit */
     uint64_t    last_rost_q_time;           /* last w_rost_q sent to this peer */
+
+    /* CC-OPS-002 / Q14 — peer binary + schema version advertised in w_ident.
+     * Both 0 for legacy peers (pre hard-fork v1). When either mismatches
+     * the local values, handle_ident emits PEER SCHEMA MISMATCH log and
+     * marks version_compatible = false. BFT participation gate lives in
+     * Q14 v2 — for now this is observability-only so quorum math is not
+     * inadvertently degraded. */
+    uint32_t    remote_nodus_version;
+    uint32_t    remote_chain_config_schema;
+    bool        version_compatible;         /* false if schema/version mismatch */
 } nodus_witness_peer_t;
 
 /* ── Main witness context ────────────────────────────────────────── */

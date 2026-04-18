@@ -238,14 +238,20 @@ static void enc_rost_r_args(cbor_encoder_t *enc, const nodus_t3_rost_r_t *r) {
 }
 
 static void enc_ident_args(cbor_encoder_t *enc, const nodus_t3_ident_t *id) {
-    /* Phase 10 / Task 10.4 — bump map count by 1 for ts_local. */
-    cbor_encode_map(enc, id->has_block_height ? 8 : 4);
+    /* Map count: wid, pk, addr, tsl, nv, ccs = 6 base;
+     * +4 for bh, sr, vw, rn when has_block_height. CC-OPS-002 / Q14
+     * adds nv + ccs unconditionally so legacy-peer detection works even
+     * before a peer starts reporting block_height. */
+    cbor_encode_map(enc, id->has_block_height ? 10 : 6);
     cbor_encode_cstr(enc, "wid");  cbor_encode_bstr(enc, id->witness_id,
                                                      NODUS_T3_WITNESS_ID_LEN);
     cbor_encode_cstr(enc, "pk");   cbor_encode_bstr(enc, id->pubkey,
                                                      NODUS_PK_BYTES);
     cbor_encode_cstr(enc, "addr"); cbor_encode_cstr(enc, id->address);
     cbor_encode_cstr(enc, "tsl");  cbor_encode_uint(enc, id->ts_local);
+    /* CC-OPS-002 / Q14 — binary-skew / schema advertisement. */
+    cbor_encode_cstr(enc, "nv");   cbor_encode_uint(enc, id->nodus_version);
+    cbor_encode_cstr(enc, "ccs");  cbor_encode_uint(enc, id->chain_config_schema);
     if (id->has_block_height) {
         cbor_encode_cstr(enc, "bh");  cbor_encode_uint(enc, id->block_height);
         cbor_encode_cstr(enc, "sr"); cbor_encode_bstr(enc, id->state_root,
@@ -989,6 +995,18 @@ static void dec_ident_args(cbor_decoder_t *dec, size_t count,
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_UINT)
                 id->ts_local = val.uint_val;
+        }
+        else if (KEY_IS(key, "nv")) {
+            /* CC-OPS-002 / Q14 — sender nodus_version */
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                id->nodus_version = (uint32_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "ccs")) {
+            /* CC-OPS-002 / Q14 — sender chain_config_schema */
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                id->chain_config_schema = (uint32_t)val.uint_val;
         }
         else {
             cbor_decode_skip(dec);
