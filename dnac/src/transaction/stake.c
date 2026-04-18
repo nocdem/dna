@@ -29,36 +29,13 @@
 #include <dna/dna_engine.h>
 
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_fingerprint.h"
 #include "nodus_init.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 #define LOG_TAG "DNAC_STAKE"
-
-/**
- * @brief Convert a 128-char lowercase-hex fingerprint into its raw 64-byte hash.
- *
- * STAKE's wire field `unstake_destination_fp[64]` stores the raw digest
- * (not the hex string used elsewhere for UTXO ownership). Returns 0 on
- * success, -1 on malformed input.
- */
-static int fp_hex_to_raw(const char *hex, uint8_t out[64]) {
-    if (!hex || strlen(hex) != 128) return -1;
-    for (int i = 0; i < 64; i++) {
-        char h = hex[2 * i];
-        char l = hex[2 * i + 1];
-        int hi, lo;
-        if      (h >= '0' && h <= '9') hi = h - '0';
-        else if (h >= 'a' && h <= 'f') hi = h - 'a' + 10;
-        else                           return -1;
-        if      (l >= '0' && l <= '9') lo = l - '0';
-        else if (l >= 'a' && l <= 'f') lo = l - 'a' + 10;
-        else                           return -1;
-        out[i] = (uint8_t)((hi << 4) | lo);
-    }
-    return 0;
-}
 
 /* ============================================================================
  * dnac_stake — build and broadcast a DNAC_TX_STAKE
@@ -78,7 +55,7 @@ int dnac_stake(dnac_context_t *ctx,
 
     /* Convert & validate destination fp up front. */
     uint8_t dest_fp_raw[DNAC_STAKE_UNSTAKE_DEST_FP_SIZE];
-    if (fp_hex_to_raw(unstake_destination_fp, dest_fp_raw) != 0) {
+    if (qgp_fp_hex_to_raw(unstake_destination_fp, dest_fp_raw) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "invalid unstake_destination_fp (128-hex expected)");
         return DNAC_ERROR_INVALID_PARAM;
     }

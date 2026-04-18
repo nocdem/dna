@@ -35,6 +35,7 @@
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_u128.h"
+#include "crypto/utils/qgp_fingerprint.h"
 
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
@@ -1065,12 +1066,7 @@ static int apply_stake(nodus_witness_t *w,
     v.last_signed_block           = 0;
 
     /* Convert 64 raw bytes to 128-char hex + NUL for the TEXT schema. */
-    static const char hex_digits[] = "0123456789abcdef";
-    for (int i = 0; i < 64; i++) {
-        v.unstake_destination_fp[2*i]     = hex_digits[unstake_fp_raw[i] >> 4];
-        v.unstake_destination_fp[2*i + 1] = hex_digits[unstake_fp_raw[i] & 0xf];
-    }
-    v.unstake_destination_fp[128] = '\0';
+    qgp_fp_raw_to_hex(unstake_fp_raw, (char *)v.unstake_destination_fp);
 
     /* If the destination fingerprint derives from the signer's own
      * pubkey, populate unstake_destination_pubkey immediately so the
@@ -1219,15 +1215,10 @@ static int emit_synthetic_utxo(nodus_witness_t *w,
     qgp_sha3_512(preimage, sizeof(preimage), nullifier);
 
     /* Owner fingerprint = hex-encoded SHA3-512(owner_pubkey). */
-    uint8_t owner_fp_raw[64];
+    uint8_t owner_fp_raw[QGP_FP_RAW_BYTES];
     qgp_sha3_512(owner_pubkey, DNAC_PUBKEY_SIZE, owner_fp_raw);
-    static const char hex_digits[] = "0123456789abcdef";
-    char owner_fp_hex[129];
-    for (int i = 0; i < 64; i++) {
-        owner_fp_hex[2*i]     = hex_digits[owner_fp_raw[i] >> 4];
-        owner_fp_hex[2*i + 1] = hex_digits[owner_fp_raw[i] & 0xf];
-    }
-    owner_fp_hex[128] = '\0';
+    char owner_fp_hex[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(owner_fp_raw, owner_fp_hex);
 
     /* Native DNAC token_id = 64 zeros. */
     uint8_t zero_token_id[64];

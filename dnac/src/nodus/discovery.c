@@ -16,6 +16,7 @@
 /* Shared crypto */
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_fingerprint.h"
 
 /* Nodus client SDK */
 #include "nodus/nodus.h"
@@ -105,19 +106,17 @@ static int discover_from_committee(dnac_witness_info_t **out, int *count_out) {
 
         /* id: hex(SHA3-512(pubkey))[:64] — same derivation as witness_id
          * used in the roster path, and stable across callers. */
-        uint8_t fp_hash[64];
+        uint8_t fp_hash[QGP_FP_RAW_BYTES];
         if (qgp_sha3_512(e->pubkey, NODUS_PK_BYTES, fp_hash) == 0) {
+            /* Short id: first 16 bytes of the full fp, as 32 hex chars. */
             for (int j = 0; j < 16; j++) {
                 info->id[j * 2]     = hex[(fp_hash[j] >> 4) & 0xF];
                 info->id[j * 2 + 1] = hex[fp_hash[j] & 0xF];
             }
             info->id[32] = '\0';
 
-            for (int j = 0; j < 64; j++) {
-                info->fingerprint[j * 2]     = hex[(fp_hash[j] >> 4) & 0xF];
-                info->fingerprint[j * 2 + 1] = hex[fp_hash[j] & 0xF];
-            }
-            info->fingerprint[128] = '\0';
+            /* Full 128-hex fingerprint via shared helper. */
+            qgp_fp_raw_to_hex(fp_hash, info->fingerprint);
         }
 
         strncpy(info->address, e->address, sizeof(info->address) - 1);
@@ -233,13 +232,9 @@ int dnac_witness_discover(dnac_context_t *ctx,
         info->is_available = entry->active;
 
         /* Derive fingerprint from public key: hex(SHA3-512(pubkey)) */
-        uint8_t fp_hash[64];
+        uint8_t fp_hash[QGP_FP_RAW_BYTES];
         if (qgp_sha3_512(entry->pubkey, NODUS_PK_BYTES, fp_hash) == 0) {
-            for (int j = 0; j < 64; j++) {
-                info->fingerprint[j * 2] = hex[(fp_hash[j] >> 4) & 0xF];
-                info->fingerprint[j * 2 + 1] = hex[fp_hash[j] & 0xF];
-            }
-            info->fingerprint[128] = '\0';
+            qgp_fp_raw_to_hex(fp_hash, info->fingerprint);
         }
     }
 

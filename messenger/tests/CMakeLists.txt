@@ -319,6 +319,14 @@ target_link_libraries(test_u128_kat ${TEST_LIBS})
 add_test(NAME test_u128_kat COMMAND test_u128_kat)
 
 # =============================================================================
+# Test: Fingerprint hex<->raw converters
+# =============================================================================
+# Round-trip + error-path coverage for shared/crypto/utils/qgp_fingerprint.{h,c}
+add_executable(test_fp_converter test_fp_converter.c)
+target_link_libraries(test_fp_converter ${TEST_LIBS})
+add_test(NAME test_fp_converter COMMAND test_fp_converter)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()

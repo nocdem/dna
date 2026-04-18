@@ -24,6 +24,7 @@
 #include "dnac/db.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_fingerprint.h"
 #include "crypto/hash/qgp_sha3.h"
 
 /* Nodus client SDK (public API) */
@@ -166,13 +167,9 @@ int dnac_bft_discover_witnesses(void *dna_engine,
         info->is_available = entry->active;
 
         /* Derive fingerprint from public key: hex(SHA3-512(pubkey)) */
-        uint8_t fp_hash[64];
+        uint8_t fp_hash[QGP_FP_RAW_BYTES];
         if (qgp_sha3_512(entry->pubkey, NODUS_PK_BYTES, fp_hash) == 0) {
-            for (int j = 0; j < 64; j++) {
-                info->fingerprint[j * 2] = hex[(fp_hash[j] >> 4) & 0xF];
-                info->fingerprint[j * 2 + 1] = hex[fp_hash[j] & 0xF];
-            }
-            info->fingerprint[128] = '\0';
+            qgp_fp_raw_to_hex(fp_hash, info->fingerprint);
         }
     }
 
