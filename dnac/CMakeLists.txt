@@ -102,6 +102,12 @@ set(DNAC_SOURCES
     src/transaction/genesis.c
     src/transaction/nullifier.c
     src/transaction/token_create.c
+    src/transaction/stake.c
+    src/transaction/delegate.c
+    src/transaction/claim.c
+    src/transaction/validator_update.c
+    src/transaction/rewards_query.c
+    src/transaction/validator_queries.c
 
     # Nodus
     src/nodus/client.c
@@ -297,6 +303,97 @@ if(DNAC_BUILD_TESTS)
 
     # Phase 9 end-to-end: genesis + anchor + merkle proof composition (Tasks 50-53)
     register_dnac_test(test_anchored_proofs)
+
+    # Stake & delegation v1 — Phase 1 Task 1: TX type enum values
+    register_dnac_test(test_tx_types)
+
+    # Stake & delegation v1 — Phase 1 Task 2: stake/committee/timing constants
+    register_dnac_test(test_stake_constants)
+
+    # Stake & delegation v1 — Phase 1 Task 3: validator/delegation/reward record structs
+    register_dnac_test(test_validator_structs)
+
+    # Stake & delegation v1 — Phase 1 Task 4: version bump marker
+    register_dnac_test(test_version_bump)
+
+    # Stake & delegation v1 — Phase 5 Task 14: TX preimage binds chain_id
+    register_dnac_test(test_preimage_binding)
+
+    # Stake & delegation v1 — Phase 5 Task 15: signer-count truncation invariance
+    register_dnac_test(test_signer_canonical)
+
+    # Stake & delegation v1 — Phase 5 Task 16: STAKE appended-field serialization
+    register_dnac_test(test_stake_serialize)
+
+    # Stake & delegation v1 — Phase 5 Task 17: DELEGATE appended-field serialization
+    register_dnac_test(test_delegate_serialize)
+
+    # Stake & delegation v1 — Phase 5 Task 18: UNDELEGATE + CLAIM_REWARD appended fields
+    register_dnac_test(test_undelegate_serialize)
+    register_dnac_test(test_claim_reward_serialize)
+
+    # Stake & delegation v1 — Phase 5 Task 19: VALIDATOR_UPDATE appended fields
+    register_dnac_test(test_validator_update_serialize)
+
+    # Stake & delegation v1 — Phase 5 Task 20: UNSTAKE signer-only (no appended fields)
+    register_dnac_test(test_unstake_serialize)
+
+    # Stake & delegation v1 — Phase 5 Task 21: TX deserialize dispatch consolidation
+    register_dnac_test(test_deserialize_dispatch)
+
+    # Stake & delegation v1 — Phase 6 Task 22: STAKE verify rules (local subset)
+    register_dnac_test(test_stake_verify)
+
+    # Stake & delegation v1 — Phase 6 Task 23: DELEGATE verify rules (local subset)
+    register_dnac_test(test_delegate_verify)
+
+    # Stake & delegation v1 — Phase 6 Task 24: UNSTAKE verify rules (local subset)
+    register_dnac_test(test_unstake_verify)
+
+    # Stake & delegation v1 — Phase 6 Task 25: UNDELEGATE verify rules (local subset)
+    register_dnac_test(test_undelegate_verify)
+
+    # Stake & delegation v1 — Phase 6 Task 26: CLAIM_REWARD verify rules (local subset)
+    register_dnac_test(test_claim_reward_verify)
+
+    # Stake & delegation v1 — Phase 6 Task 27: VALIDATOR_UPDATE verify rules (local subset)
+    register_dnac_test(test_validator_update_verify)
+
+    # Stake & delegation v1 — Phase 6 Task 28: GENESIS verify (Rule P supply invariance)
+    register_dnac_test(test_genesis_verify_rule_p)
+
+    # Stake & delegation v1 — Phase 12 Task 56: initial_validators[] codec
+    register_dnac_test(test_chain_def_initial_validators)
+
+    # Stake & delegation v1 — Phase 12 Task 56: full Rule P (count + distinctness)
+    register_dnac_test(test_genesis_verify_rule_p_extended)
+
+    # Stake & delegation v1 — Phase 12 Task 58: genesis-prepare lib function
+    register_dnac_test(test_genesis_prepare)
+
+    # Stake & delegation v1 — Phase 6 Task 32: cross-chain DELEGATE replay (F-CRYPTO-10)
+    register_dnac_test(test_cross_chain_replay)
+
+    # Stake & delegation v1 — Phase 6 Task 33: cross-protocol STAKE reuse (F-CRYPTO-05)
+    register_dnac_test(test_purpose_tag_reuse)
+
+    # Stake & delegation v1 — Phase 7 Task 34: STAKE / UNSTAKE builder API
+    register_dnac_test(test_stake_builder)
+
+    # Stake & delegation v1 — Phase 7 Task 35: DELEGATE / UNDELEGATE builder API
+    register_dnac_test(test_delegate_builder)
+
+    # Stake & delegation v1 — Phase 7 Task 36: CLAIM_REWARD builder API
+    register_dnac_test(test_claim_builder)
+
+    # Stake & delegation v1 — Phase 7 Task 37: VALIDATOR_UPDATE builder API
+    register_dnac_test(test_validator_update_builder)
+
+    # Stake & delegation v1 — Phase 7 Task 38: pending-rewards query (stub)
+    register_dnac_test(test_rewards_query_stub)
+
+    # Stake & delegation v1 — Phase 7 Task 39: validator_list + committee (stubs)
+    register_dnac_test(test_validator_queries_stub)
 endif()
 
 # ============================================================================

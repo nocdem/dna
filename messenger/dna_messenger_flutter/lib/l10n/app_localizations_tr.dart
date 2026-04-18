@@ -1809,4 +1809,222 @@ class AppLocalizationsTr extends AppLocalizations {
   String reactionNotificationBody(String name, String emoji) {
     return '$name mesajınıza $emoji ile tepki verdi';
   }
+
+  @override
+  String get stakeDashboardTitle => 'Kazananlar';
+
+  @override
+  String get stakeRefresh => 'Yenile';
+
+  @override
+  String get stakeEarnersHeader => 'Birlikte kazananlar';
+
+  @override
+  String stakeEarnersSubtitle(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count aktif kazanan',
+      one: '1 aktif kazanan',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String stakeEarnerName(String id) {
+    return 'Kazanan $id';
+  }
+
+  @override
+  String stakeEarnerCommission(String pct) {
+    return 'Ödüllerin %$pct kısmını alır';
+  }
+
+  @override
+  String stakeEarnerTotalLocked(String amount) {
+    return 'Destek olarak $amount DNAC bağlı';
+  }
+
+  @override
+  String get stakeTrustedBadge => 'Güvenilir';
+
+  @override
+  String get stakeNoEarners => 'Henüz kazanan yok';
+
+  @override
+  String get stakeNoEarnersSubtitle =>
+      'Birkaç dakika sonra tekrar bakın — ağ henüz başlıyor.';
+
+  @override
+  String get stakeLoadFailed => 'Kazananlar yüklenemedi';
+
+  @override
+  String delegationTitle(String id) {
+    return '$id kazananına destek ol';
+  }
+
+  @override
+  String delegationEarnerLabel(String id) {
+    return 'Kazanan $id';
+  }
+
+  @override
+  String get delegationAmountLabel => 'Tutar';
+
+  @override
+  String get delegationAmountHelper => 'En az 100 DNAC';
+
+  @override
+  String get delegationAmountRequired => 'Bir tutar girin';
+
+  @override
+  String get delegationAmountInvalid => 'Geçerli bir tutar girin';
+
+  @override
+  String get delegationAmountTooSmall => 'En az 100 DNAC olmalı';
+
+  @override
+  String get delegationHoldInfo =>
+      'Destek olduktan sonra yaklaşık 10 dakika bekleme süresi var.';
+
+  @override
+  String get delegationRewardInfo =>
+      'Her blokta kazananın ödüllerinden pay alırsınız.';
+
+  @override
+  String get delegationSupportButton => 'Bu kazanana destek ol';
+
+  @override
+  String get delegationStopButton => 'Desteği bırak';
+
+  @override
+  String get delegationSubmitting => 'İşleniyor...';
+
+  @override
+  String get delegationSupportSuccess => 'Bu kazanana destek oluyorsunuz.';
+
+  @override
+  String get delegationSupportFailed =>
+      'İşlem tamamlanamadı — lütfen tekrar deneyin.';
+
+  @override
+  String get delegationStopSuccess => 'Bu kazananın desteği bırakıldı.';
+
+  @override
+  String get delegationStopFailed => 'Durdurulamadı — lütfen tekrar deneyin.';
+
+  @override
+  String delegationStopDialogTitle(String id) {
+    return '$id kazananının desteğini bırak';
+  }
+
+  @override
+  String get delegationStopDialogBody =>
+      'Ne kadarını geri çekmek istersiniz? Kısa bir bekleme süresinden sonra iade edilir.';
+
+  @override
+  String get rewardsTitle => 'Ödülleriniz';
+
+  @override
+  String get rewardsPendingLabel => 'Çekilebilir tutar';
+
+  @override
+  String get rewardsClaimButton => 'Topla';
+
+  @override
+  String get rewardsClaimFromHeader => 'Bir kazanandan topla';
+
+  @override
+  String get rewardsClaimSuccess => 'Ödül toplandı.';
+
+  @override
+  String get rewardsClaimFailed => 'Toplanamadı — lütfen tekrar deneyin.';
+
+  @override
+  String get rewardsEmptyList => 'Henüz toplayacak bir kazanan yok.';
+
+  @override
+  String get rewardsLoadFailed => 'Ödüller yüklenemedi';
+
+  @override
+  String get rewardsHomeCardTitle => 'Ödülleriniz';
+
+  @override
+  String rewardsHomeCardAmount(String amount) {
+    return 'Toplamaya hazır $amount DNAC';
+  }
+
+  @override
+  String get validatorPanelTitle => 'Kazanan ayarları';
+
+  @override
+  String get validatorPanelNotValidator =>
+      'Şu anda bir kazanan çalıştırmıyorsunuz. DNAC komut satırından başlatabilirsiniz.';
+
+  @override
+  String validatorStatusLabel(String id) {
+    return 'Kazanan $id';
+  }
+
+  @override
+  String get validatorFieldSelfStake => 'Kendi bağlı tutarınız';
+
+  @override
+  String get validatorFieldDelegated => 'Destekçilerin bağlı tutarı';
+
+  @override
+  String get validatorFieldCommission => 'Aldığınız pay';
+
+  @override
+  String get validatorCommissionSection => 'Alacağınız pay oranı';
+
+  @override
+  String get validatorCommissionHelp =>
+      'Azaltma hemen uygulanır. Artış bir sonraki turda uygulanır ki destekçiler önce ayrılabilsin.';
+
+  @override
+  String get validatorCommissionRange => '0 – 100';
+
+  @override
+  String get validatorCommissionInvalid =>
+      '0 ile 100 arasında bir değer girin.';
+
+  @override
+  String get validatorNewCommissionLabel => 'Yeni pay';
+
+  @override
+  String get validatorUpdateCommissionButton => 'Payı kaydet';
+
+  @override
+  String get validatorUpdateSuccess => 'Pay güncellendi.';
+
+  @override
+  String get validatorUpdateFailed =>
+      'Pay güncellenemedi — lütfen tekrar deneyin.';
+
+  @override
+  String get validatorUnstakeSection => 'Kazananı kapat';
+
+  @override
+  String get validatorUnstakeWarning =>
+      'Bu, kazananınızı durdurur ve bekleme süresini başlatır. Destekçilere haber verilir ve bağlı tutarları iade edilir.';
+
+  @override
+  String get validatorUnstakeButton => 'Kazananı kapat';
+
+  @override
+  String get validatorUnstakeConfirmTitle => 'Bu kazanan kapatılsın mı?';
+
+  @override
+  String get validatorUnstakeConfirmBody =>
+      'Bu işlem geri alınamaz. Kendi bağlı tutarınız bekleme süresinden sonra geri gelir ve destekçilerinizin tutarları iade edilir.';
+
+  @override
+  String get validatorUnstakeConfirmAction => 'Evet, kapat';
+
+  @override
+  String get validatorUnstakeSuccess => 'Kazanan kapanıyor.';
+
+  @override
+  String get validatorUnstakeFailed => 'Kapatılamadı — lütfen tekrar deneyin.';
 }

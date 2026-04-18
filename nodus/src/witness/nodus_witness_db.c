@@ -90,14 +90,16 @@ int nodus_witness_nullifier_add(nodus_witness_t *w, const uint8_t *nullifier,
 
 /* ── UTXO set operations ─────────────────────────────────────────── */
 
-int nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
-                                uint64_t *amount_out, char *owner_out,
-                                uint8_t *token_id_out) {
+int nodus_witness_utxo_lookup_ex(nodus_witness_t *w, const uint8_t *nullifier,
+                                   uint64_t *amount_out, char *owner_out,
+                                   uint8_t *token_id_out,
+                                   uint64_t *unlock_block_out) {
     if (!w || !w->db || !nullifier) return -1;
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
-        "SELECT amount, owner, token_id FROM utxo_set WHERE nullifier = ?",
+        "SELECT amount, owner, token_id, unlock_block FROM utxo_set "
+        "WHERE nullifier = ?",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
@@ -130,15 +132,26 @@ int nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
         }
     }
 
+    if (unlock_block_out)
+        *unlock_block_out = (uint64_t)sqlite3_column_int64(stmt, 3);
+
     sqlite3_finalize(stmt);
     return 0;
 }
 
-int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
-                              const char *owner, uint64_t amount,
-                              const uint8_t *tx_hash, uint32_t index,
-                              uint64_t block_height,
-                              const uint8_t *token_id) {
+int nodus_witness_utxo_lookup(nodus_witness_t *w, const uint8_t *nullifier,
+                                uint64_t *amount_out, char *owner_out,
+                                uint8_t *token_id_out) {
+    return nodus_witness_utxo_lookup_ex(w, nullifier, amount_out, owner_out,
+                                         token_id_out, NULL);
+}
+
+int nodus_witness_utxo_add_locked(nodus_witness_t *w, const uint8_t *nullifier,
+                                    const char *owner, uint64_t amount,
+                                    const uint8_t *tx_hash, uint32_t index,
+                                    uint64_t block_height,
+                                    const uint8_t *token_id,
+                                    uint64_t unlock_block) {
     if (!w || !w->db || !nullifier || !owner || !tx_hash) return -1;
 
     /* Default to native DNAC (64 zero bytes) when token_id is NULL */
@@ -148,8 +161,9 @@ int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
         "INSERT OR IGNORE INTO utxo_set "
-        "(nullifier, owner, amount, token_id, tx_hash, output_index, block_height, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
+        "(nullifier, owner, amount, token_id, tx_hash, output_index, "
+        " block_height, created_at, unlock_block) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: utxo add prepare failed: %s\n",
                 LOG_TAG, sqlite3_errmsg(w->db));
@@ -164,6 +178,7 @@ int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
     sqlite3_bind_int(stmt, 6, (int)index);
     sqlite3_bind_int64(stmt, 7, (int64_t)block_height);
     sqlite3_bind_int64(stmt, 8, (int64_t)time(NULL));
+    sqlite3_bind_int64(stmt, 9, (int64_t)unlock_block);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -174,6 +189,17 @@ int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
         return -1;
     }
     return 0;
+}
+
+int nodus_witness_utxo_add(nodus_witness_t *w, const uint8_t *nullifier,
+                              const char *owner, uint64_t amount,
+                              const uint8_t *tx_hash, uint32_t index,
+                              uint64_t block_height,
+                              const uint8_t *token_id) {
+    /* Legacy path: unlock_block == 0 means UTXO is already spendable. */
+    return nodus_witness_utxo_add_locked(w, nullifier, owner, amount,
+                                          tx_hash, index, block_height,
+                                          token_id, 0);
 }
 
 int nodus_witness_utxo_remove(nodus_witness_t *w, const uint8_t *nullifier) {
@@ -1499,13 +1525,24 @@ int nodus_witness_token_list(nodus_witness_t *w,
 
 int nodus_witness_db_begin(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
+    /* Phase 9 / Task 47 — upgraded to BEGIN IMMEDIATE per design F-STATE-02.
+     *
+     * IMMEDIATE acquires the RESERVED lock synchronously: any concurrent
+     * write attempt fails fast instead of waiting for the commit barrier.
+     * This makes "nested begin" bugs (re-entrant block commits) surface as
+     * loud SQLITE_BUSY on the second BEGIN rather than silently succeeding.
+     *
+     * The block commit path (commit_genesis / commit_batch / replay_block)
+     * is the sole writer, so IMMEDIATE never contends in production; the
+     * upgrade is a correctness guard, not a performance change. */
     char *err = NULL;
-    int rc = sqlite3_exec(w->db, "BEGIN TRANSACTION", NULL, NULL, &err);
+    int rc = sqlite3_exec(w->db, "BEGIN IMMEDIATE", NULL, NULL, &err);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "%s: BEGIN failed: %s\n", LOG_TAG, err);
+        fprintf(stderr, "%s: BEGIN IMMEDIATE failed: %s\n", LOG_TAG, err);
         sqlite3_free(err);
         return -1;
     }
+    w->in_block_transaction = true;
     return 0;
 }
 
@@ -1518,6 +1555,7 @@ int nodus_witness_db_commit(nodus_witness_t *w) {
         sqlite3_free(err);
         return -1;
     }
+    w->in_block_transaction = false;
     return 0;
 }
 
@@ -1530,6 +1568,7 @@ int nodus_witness_db_rollback(nodus_witness_t *w) {
         sqlite3_free(err);
         return -1;
     }
+    w->in_block_transaction = false;
     return 0;
 }
 
@@ -1649,6 +1688,7 @@ void nodus_witness_compute_block_hash_ex(uint64_t height,
  */
 static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w);
 static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w);
+static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w);
 
 int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
@@ -1710,6 +1750,9 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     /* Phase 2 / Task 7 (anchored merkle proofs) — chain_def_blob column. */
     nodus_witness_db_migrate_v14_chain_def(w);
 
+    /* Task 11 (stake delegation) — utxo_set.unlock_block column. */
+    nodus_witness_db_migrate_v15_stake_delegation(w);
+
     return 0;
 }
 
@@ -1752,6 +1795,33 @@ static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w) {
         if (!strstr(msg, "duplicate column name")) {
             fprintf(stderr,
                     "MIGRATION FAILURE: ALTER ADD chain_def_blob "
+                    "sqlite error %d: %s\n", rc, msg);
+            if (err) sqlite3_free(err);
+            abort();
+        }
+        if (err) sqlite3_free(err);
+    }
+}
+
+/* Schema v15 migration (Task 11 — stake/delegation).
+ *
+ * Adds the unlock_block column to the utxo_set table. Used to lock
+ * stake/delegation UTXOs until a future block height (unbonding
+ * cooldown). Default 0 means "already spendable"; zero value preserves
+ * pre-Task-11 semantics for every existing UTXO. Idempotent via
+ * duplicate-column tolerance. */
+static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w) {
+    if (!w || !w->db) return;
+    char *err = NULL;
+    int rc = sqlite3_exec(w->db,
+        "ALTER TABLE utxo_set "
+        "ADD COLUMN unlock_block INTEGER NOT NULL DEFAULT 0",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        const char *msg = err ? err : "(null)";
+        if (!strstr(msg, "duplicate column name")) {
+            fprintf(stderr,
+                    "MIGRATION FAILURE: ALTER ADD unlock_block "
                     "sqlite error %d: %s\n", rc, msg);
             if (err) sqlite3_free(err);
             abort();

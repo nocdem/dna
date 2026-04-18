@@ -167,6 +167,9 @@ int nodus_witness_replay_block(nodus_witness_t *w,
                                  uint64_t timestamp,
                                  const uint8_t *proposer_id);
 
+/* Phase 9 / Task 48 — nodus_witness_record_attendance is declared
+ * publicly in nodus_witness_bft.h. Tests include that header. */
+
 #ifdef __cplusplus
 }
 #endif

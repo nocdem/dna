@@ -4641,6 +4641,171 @@ class DnaBindings {
   void dna_engine_dnac_free_tokens(Pointer<dna_dnac_token_t> tokens, int count) {
     _dna_engine_dnac_free_tokens(tokens, count);
   }
+
+  // ===========================================================================
+  // DNAC Stake & Delegation (Phase 16 Task 71)
+  // ===========================================================================
+
+  late final _dna_engine_dnac_stake = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Uint16, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, int, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_dnac_stake');
+
+  int dna_engine_dnac_stake(
+    Pointer<dna_engine_t> engine,
+    int commission_bps,
+    Pointer<Utf8> unstake_destination_fp,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_stake(engine, commission_bps,
+        unstake_destination_fp, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_unstake = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_dnac_unstake');
+
+  int dna_engine_dnac_unstake(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_unstake(engine, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_delegate = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Uint8>, Uint64,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Uint8>, int,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_dnac_delegate');
+
+  int dna_engine_dnac_delegate(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> validator_pubkey,
+    int amount,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_delegate(
+        engine, validator_pubkey, amount, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_undelegate = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Uint8>, Uint64,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Uint8>, int,
+          Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_dnac_undelegate');
+
+  int dna_engine_dnac_undelegate(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> validator_pubkey,
+    int amount,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_undelegate(
+        engine, validator_pubkey, amount, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_claim_reward = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Uint8>, Uint64, Uint64,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Uint8>, int, int,
+          Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_dnac_claim_reward');
+
+  int dna_engine_dnac_claim_reward(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> target_validator_pubkey,
+    int max_pending_amount,
+    int valid_before_block,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_claim_reward(engine, target_validator_pubkey,
+        max_pending_amount, valid_before_block, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_validator_update = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Uint16, Uint64,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, int, int,
+          Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_dnac_validator_update');
+
+  int dna_engine_dnac_validator_update(
+    Pointer<dna_engine_t> engine,
+    int new_commission_bps,
+    int signed_at_block,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_validator_update(engine, new_commission_bps,
+        signed_at_block, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_get_pending_rewards = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Uint8>,
+          Pointer<DnaDnacFeeCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Uint8>,
+          Pointer<DnaDnacFeeCb>,
+          Pointer<Void>)>('dna_engine_dnac_get_pending_rewards');
+
+  int dna_engine_dnac_get_pending_rewards(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> claimant_pubkey,
+    Pointer<DnaDnacFeeCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_get_pending_rewards(
+        engine, claimant_pubkey, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_validator_list = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Int32,
+          Pointer<DnaDnacValidatorListCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, int,
+          Pointer<DnaDnacValidatorListCb>,
+          Pointer<Void>)>('dna_engine_dnac_validator_list');
+
+  int dna_engine_dnac_validator_list(
+    Pointer<dna_engine_t> engine,
+    int filter_status,
+    Pointer<DnaDnacValidatorListCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_validator_list(
+        engine, filter_status, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_get_committee = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaDnacValidatorListCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaDnacValidatorListCb>,
+          Pointer<Void>)>('dna_engine_dnac_get_committee');
+
+  int dna_engine_dnac_get_committee(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaDnacValidatorListCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_get_committee(engine, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_free_validator_entries = _lib.lookupFunction<
+      Void Function(Pointer<dna_dnac_validator_entry_t>, Int32),
+      void Function(Pointer<dna_dnac_validator_entry_t>,
+          int)>('dna_engine_dnac_free_validator_entries');
+
+  void dna_engine_dnac_free_validator_entries(
+      Pointer<dna_dnac_validator_entry_t> entries, int count) {
+    _dna_engine_dnac_free_validator_entries(entries, count);
+  }
 }
 
 // =============================================================================
@@ -4784,6 +4949,49 @@ typedef DnaDnacFeeCb = NativeFunction<DnaDnacFeeCbNative>;
 /// DNAC token list callback
 typedef DnaDnacTokenListCbNative = Void Function(Uint64 request_id, Int32 error, Pointer<dna_dnac_token_t> tokens, Int32 count, Pointer<Void> user_data);
 typedef DnaDnacTokenListCb = NativeFunction<DnaDnacTokenListCbNative>;
+
+// =============================================================================
+// DNAC STAKE & DELEGATION (Phase 16 Task 71)
+// =============================================================================
+
+/// Validator list entry — mirrors dna_dnac_validator_entry_t in
+/// messenger/include/dna/dna_engine.h. Total size with alignment:
+///   pubkey[2592] + self_stake(8) + total_delegated(8) + commission_bps(2)
+///   + status(1) + pad(5) + active_since_block(8)
+/// = 2624 bytes (2592 + 32 tail).
+final class dna_dnac_validator_entry_t extends Struct {
+  @Array(2592)
+  external Array<Uint8> pubkey;
+
+  @Uint64()
+  external int self_stake;
+
+  @Uint64()
+  external int total_delegated;
+
+  @Uint16()
+  external int commission_bps;
+
+  @Uint8()
+  external int status;
+
+  // 5 bytes padding to align uint64_t to 8-byte boundary
+  @Array(5)
+  external Array<Uint8> _padding1;
+
+  @Uint64()
+  external int active_since_block;
+}
+
+/// Validator list / committee callback — native
+typedef DnaDnacValidatorListCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_dnac_validator_entry_t> entries,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaDnacValidatorListCb = NativeFunction<DnaDnacValidatorListCbNative>;
 
 // =============================================================================
 // HELPER EXTENSIONS

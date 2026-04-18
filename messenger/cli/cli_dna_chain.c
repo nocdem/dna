@@ -41,27 +41,54 @@ static dnac_context_t* dna_chain_init(dna_engine_t *engine) {
 
 static void print_dna_chain_help(void) {
     printf("DNA Chain — Post-Quantum Blockchain\n\n");
-    printf("Usage: dna-connect-cli dna <command> [arguments]\n\n");
-    printf("Commands:\n");
-    printf("  info                          Show chain wallet info and status\n");
-    printf("  address                       Show wallet address (fingerprint)\n");
-    printf("  query <name|fp>               Lookup identity by name or fingerprint\n");
-    printf("  balance                       Show wallet balance\n");
-    printf("  utxos                         List unspent transaction outputs\n");
-    printf("  send <name|fp> <amount> [memo] Send payment to name or fingerprint\n");
-    printf("  sync                          Sync wallet from network\n");
-    printf("  history [n]                   Show transaction history (last n entries)\n");
-    printf("  tx <hash>                     Show transaction details\n");
-    printf("  witnesses                     List witness servers\n");
-    printf("  genesis-create <fp> <amount>  Create genesis TX locally (Phase 1)\n");
-    printf("  genesis-submit [tx_file]      Submit genesis TX to network (Phase 2)\n");
-    printf("  parse-tx <tx_file>            Inspect a serialized TX file (read-only)\n\n");
-    printf("Token Commands:\n");
-    printf("  token-create <name> <sym> <supply>  Create a new token\n");
-    printf("  token-list                          List all known tokens\n");
-    printf("  token-info <id|symbol>              Show token details\n");
-    printf("  balance --token <id>                Show balance for a specific token\n");
-    printf("  send --token <id> <name|fp> <amt> [memo] Send token payment\n");
+    printf("Usage: dna-connect-cli dna <command> [arguments]\n");
+    printf("Amounts are in raw base units (10^8 per DNAC) unless otherwise noted.\n\n");
+
+    printf("Wallet:\n");
+    printf("  info                            Show chain wallet info and status\n");
+    printf("  address                         Show wallet address (fingerprint)\n");
+    printf("  query <name|fp>                 Lookup identity by name or fingerprint\n");
+    printf("  balance [--token <id>]          Show wallet balance\n");
+    printf("  utxos                           List unspent transaction outputs\n");
+    printf("  send [--token <id>] <name|fp> <amount> [memo]\n");
+    printf("                                  Send payment (raw base units)\n");
+    printf("  sync                            Sync wallet from network\n");
+    printf("  history [n]                     Show transaction history (last n entries)\n");
+    printf("  tx <hash>                       Show transaction details\n");
+    printf("  witnesses                       List witness servers\n\n");
+
+    printf("Stake & Delegation:\n");
+    printf("  stake [--commission-bps N] [--unstake-to FP]\n");
+    printf("                                  Become a validator (self-stake 10M DNAC;\n");
+    printf("                                  default commission 500 = 5%%, unstake-to = self)\n");
+    printf("  unstake                         Trigger validator retirement (fee-only TX;\n");
+    printf("                                  self-stake unlocks after cooldown)\n");
+    printf("  validator-update --commission-bps N\n");
+    printf("                                  Change validator commission rate (0..10000)\n");
+    printf("  delegate <validator_pubkey_hex> <amount> [memo]\n");
+    printf("                                  Delegate DNAC to a validator\n");
+    printf("                                  (amount >= DNAC_MIN_DELEGATION, raw units)\n");
+    printf("  undelegate <validator_pubkey_hex> <amount>\n");
+    printf("                                  Withdraw (part of) a delegation (raw units)\n");
+    printf("  claim <validator_pubkey_hex>    Claim accrued staking rewards\n");
+    printf("                                  (auto-queries pending + chain head)\n");
+    printf("  validator-list [--status N]     List validators; N = 0..3\n");
+    printf("                                  (0=ACTIVE, 1=RETIRING, 2=UNSTAKED, 3=AUTO_RETIRED)\n");
+    printf("  committee                       Show current epoch's top-7 committee\n");
+    printf("  pending-rewards [pubkey_hex]    Show pending rewards (default: caller)\n\n");
+
+    printf("Tokens:\n");
+    printf("  token-create <name> <sym> <supply>\n");
+    printf("                                  Create a new token\n");
+    printf("  token-list                      List all known tokens\n");
+    printf("  token-info <id|symbol>          Show token details\n\n");
+
+    printf("Genesis & Chain-def (operator tools):\n");
+    printf("  genesis-create <fp> <amount> [--chain-def-file <path>]\n");
+    printf("                                  Create genesis TX locally (Phase 1)\n");
+    printf("  genesis-submit [tx_file]        Submit genesis TX to network (Phase 2)\n");
+    printf("  genesis-prepare <config>        Build chain_def blob from operator config (hex stdout)\n");
+    printf("  parse-tx <tx_file>              Inspect a serialized TX file (read-only)\n");
 }
 
 /* ============================================================================
@@ -214,6 +241,17 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
         const char *tx_file = (sub + 1 < argc) ? argv[sub + 1] : NULL;
         result = dna_chain_cmd_genesis_submit(ctx, tx_file);
     }
+    else if (strcmp(cmd, "genesis-prepare") == 0) {
+        if (sub + 1 >= argc) {
+            fprintf(stderr, "Usage: dna-connect-cli dna genesis-prepare <config_file>\n");
+            fprintf(stderr, "  Reads key=value operator config and prints the hex-encoded\n");
+            fprintf(stderr, "  chain_def blob (including 7 initial_validators) to stdout.\n");
+            fprintf(stderr, "  See dnac/include/dnac/genesis_prepare.h for the config schema.\n");
+            result = 1;
+        } else {
+            result = dna_chain_cmd_genesis_prepare(ctx, argv[sub + 1]);
+        }
+    }
     else if (strcmp(cmd, "parse-tx") == 0) {
         if (sub + 1 >= argc) {
             fprintf(stderr, "Usage: dna-connect-cli dna parse-tx <tx_file>\n");
@@ -242,6 +280,155 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
     }
     else if (strcmp(cmd, "token-list") == 0) {
         result = dna_chain_cmd_token_list(ctx);
+    }
+    else if (strcmp(cmd, "stake") == 0) {
+        /* Syntax: dna stake [--commission-bps N] [--unstake-to FP] */
+        uint16_t commission_bps = 500;  /* Default 5% */
+        const char *unstake_to = NULL;
+        int i = sub + 1;
+        while (i < argc) {
+            if (strcmp(argv[i], "--commission-bps") == 0 && i + 1 < argc) {
+                char *endptr = NULL;
+                errno = 0;
+                unsigned long v = strtoul(argv[i + 1], &endptr, 10);
+                if (errno != 0 || !endptr || *endptr != '\0' || v > 10000) {
+                    fprintf(stderr,
+                            "Error: invalid --commission-bps '%s' (0..10000)\n",
+                            argv[i + 1]);
+                    result = 1;
+                    goto stake_done;
+                }
+                commission_bps = (uint16_t)v;
+                i += 2;
+            } else if (strcmp(argv[i], "--unstake-to") == 0 && i + 1 < argc) {
+                unstake_to = argv[i + 1];
+                i += 2;
+            } else {
+                fprintf(stderr,
+                        "Usage: dna-connect-cli dna stake"
+                        " [--commission-bps N] [--unstake-to FP]\n");
+                result = 1;
+                goto stake_done;
+            }
+        }
+        result = dna_chain_cmd_stake(ctx, commission_bps, unstake_to);
+    stake_done: ;
+    }
+    else if (strcmp(cmd, "validator-list") == 0) {
+        /* Syntax: dna validator-list [--status N]   (N in 0..3, omit = all) */
+        int filter_status = -1;
+        if (sub + 2 < argc && strcmp(argv[sub + 1], "--status") == 0) {
+            char *endptr = NULL;
+            errno = 0;
+            long v = strtol(argv[sub + 2], &endptr, 10);
+            if (errno != 0 || !endptr || *endptr != '\0' || v < 0 || v > 3) {
+                fprintf(stderr,
+                        "Error: --status must be 0..3 (0=ACTIVE, 1=RETIRING,"
+                        " 2=UNSTAKED, 3=AUTO_RETIRED)\n");
+                result = 1;
+            } else {
+                filter_status = (int)v;
+            }
+        }
+        if (result == 0) {
+            result = dna_chain_cmd_validator_list(ctx, filter_status);
+        }
+    }
+    else if (strcmp(cmd, "committee") == 0) {
+        result = dna_chain_cmd_committee(ctx);
+    }
+    else if (strcmp(cmd, "pending-rewards") == 0) {
+        /* Syntax: dna pending-rewards [<claimant_pubkey_hex>] */
+        const char *claimant = (sub + 1 < argc) ? argv[sub + 1] : NULL;
+        result = dna_chain_cmd_pending_rewards(ctx, claimant);
+    }
+    else if (strcmp(cmd, "unstake") == 0) {
+        /* Syntax: dna unstake (no args) */
+        result = dna_chain_cmd_unstake(ctx);
+    }
+    else if (strcmp(cmd, "validator-update") == 0) {
+        /* Syntax: dna validator-update --commission-bps N */
+        int commission_bps = -1;
+        int i = sub + 1;
+        while (i < argc) {
+            if (strcmp(argv[i], "--commission-bps") == 0 && i + 1 < argc) {
+                char *endptr = NULL;
+                errno = 0;
+                unsigned long v = strtoul(argv[i + 1], &endptr, 10);
+                if (errno != 0 || !endptr || *endptr != '\0' || v > 10000) {
+                    fprintf(stderr,
+                            "Error: invalid --commission-bps '%s' (0..10000)\n",
+                            argv[i + 1]);
+                    result = 1;
+                    goto validator_update_done;
+                }
+                commission_bps = (int)v;
+                i += 2;
+            } else {
+                fprintf(stderr,
+                        "Usage: dna-connect-cli dna validator-update"
+                        " --commission-bps N\n");
+                result = 1;
+                goto validator_update_done;
+            }
+        }
+        if (commission_bps < 0) {
+            fprintf(stderr,
+                    "Usage: dna-connect-cli dna validator-update"
+                    " --commission-bps N\n");
+            result = 1;
+        } else {
+            result = dna_chain_cmd_validator_update(
+                    ctx, (uint16_t)commission_bps);
+        }
+    validator_update_done: ;
+    }
+    else if (strcmp(cmd, "claim") == 0) {
+        /* Syntax: dna claim <validator_pubkey_hex> */
+        if (sub + 1 >= argc) {
+            fprintf(stderr,
+                    "Usage: dna-connect-cli dna claim"
+                    " <validator_pubkey_hex>\n");
+            result = 1;
+        } else {
+            result = dna_chain_cmd_claim(ctx, argv[sub + 1]);
+        }
+    }
+    else if (strcmp(cmd, "delegate") == 0 || strcmp(cmd, "undelegate") == 0) {
+        /* Syntax: dna delegate   <validator_pubkey_hex> <amount> [memo]
+         *         dna undelegate <validator_pubkey_hex> <amount>
+         *
+         * Note: validator identifier is the full hex-encoded Dilithium5
+         * pubkey. Name/fp → pubkey resolution deferred (see commit body).
+         */
+        bool is_delegate = (strcmp(cmd, "delegate") == 0);
+        if (sub + 2 >= argc) {
+            if (is_delegate) {
+                fprintf(stderr,
+                        "Usage: dna-connect-cli dna delegate"
+                        " <validator_pubkey_hex> <amount_raw> [memo]\n");
+            } else {
+                fprintf(stderr,
+                        "Usage: dna-connect-cli dna undelegate"
+                        " <validator_pubkey_hex> <amount_raw>\n");
+            }
+            result = 1;
+        } else {
+            const char *pubkey_hex = argv[sub + 1];
+            char *endptr = NULL;
+            errno = 0;
+            uint64_t amount = strtoull(argv[sub + 2], &endptr, 10);
+            if (errno == ERANGE || !endptr || *endptr != '\0' || amount == 0) {
+                fprintf(stderr,
+                        "Error: Invalid amount '%s'\n", argv[sub + 2]);
+                result = 1;
+            } else if (is_delegate) {
+                const char *memo = (sub + 3 < argc) ? argv[sub + 3] : NULL;
+                result = dna_chain_cmd_delegate(ctx, pubkey_hex, amount, memo);
+            } else {
+                result = dna_chain_cmd_undelegate(ctx, pubkey_hex, amount);
+            }
+        }
     }
     else if (strcmp(cmd, "token-info") == 0) {
         if (sub + 1 >= argc) {

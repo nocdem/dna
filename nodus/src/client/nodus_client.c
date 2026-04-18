@@ -3695,6 +3695,361 @@ void nodus_client_free_token_list_result(nodus_dnac_token_list_result_t *result)
     result->count = 0;
 }
 
+/* ── Phase 14 / stake-delegation v1 RPCs (Task 64) ────────────────── */
+
+/* CBOR key-string match helper, mirrors roster-query pattern. */
+#define KEY_EQ(k, s) \
+    ((k).tstr.len == (sizeof(s) - 1) && \
+     memcmp((k).tstr.ptr, (s), sizeof(s) - 1) == 0)
+
+int nodus_client_dnac_pending_rewards(nodus_client_t *client,
+                                        const uint8_t *claimant_pubkey,
+                                        nodus_dnac_pending_rewards_result_t *result_out) {
+    if (!nodus_client_is_ready(client) || !claimant_pubkey || !result_out)
+        return -1;
+
+    memset(result_out, 0, sizeof(*result_out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_pending_rewards_query", 1);
+    cbor_encode_cstr(&enc, "claimant");
+    cbor_encode_bstr(&enc, claimant_pubkey, NODUS_PK_BYTES);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+        if (KEY_EQ(key, "total")) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) result_out->total = v.uint_val;
+        } else if (KEY_EQ(key, "entries")) {
+            cbor_item_t arr = cbor_decode_next(&dec);
+            if (arr.type != CBOR_ITEM_ARRAY) continue;
+
+            result_out->count = 0;
+            if (arr.count > 0) {
+                result_out->entries =
+                    calloc(arr.count, sizeof(nodus_dnac_pending_entry_t));
+                if (!result_out->entries) {
+                    free_pending(client, req);
+                    return NODUS_ERR_INTERNAL_ERROR;
+                }
+            }
+            for (size_t j = 0; j < arr.count; j++) {
+                cbor_item_t emap = cbor_decode_next(&dec);
+                if (emap.type != CBOR_ITEM_MAP) continue;
+                nodus_dnac_pending_entry_t *e =
+                    &result_out->entries[result_out->count];
+                memset(e, 0, sizeof(*e));
+                for (size_t k = 0; k < emap.count; k++) {
+                    cbor_item_t ek = cbor_decode_next(&dec);
+                    if (ek.type != CBOR_ITEM_TSTR) {
+                        cbor_decode_skip(&dec); continue;
+                    }
+                    if (KEY_EQ(ek, "v")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_BSTR &&
+                            v.bstr.len == NODUS_PK_BYTES) {
+                            memcpy(e->validator_pubkey, v.bstr.ptr, NODUS_PK_BYTES);
+                        }
+                    } else if (KEY_EQ(ek, "amt")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT) e->amount = v.uint_val;
+                    } else {
+                        cbor_decode_skip(&dec);
+                    }
+                }
+                result_out->count++;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
+void nodus_client_free_pending_rewards_result(nodus_dnac_pending_rewards_result_t *result) {
+    if (!result) return;
+    free(result->entries);
+    result->entries = NULL;
+    result->count = 0;
+    result->total = 0;
+}
+
+int nodus_client_dnac_committee(nodus_client_t *client,
+                                  nodus_dnac_committee_result_t *result_out) {
+    if (!nodus_client_is_ready(client) || !result_out) return -1;
+
+    memset(result_out, 0, sizeof(*result_out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_committee_query", 0);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+        if (KEY_EQ(key, "block_height")) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) result_out->block_height = v.uint_val;
+        } else if (KEY_EQ(key, "epoch_start")) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) result_out->epoch_start = v.uint_val;
+        } else if (KEY_EQ(key, "committee")) {
+            cbor_item_t arr = cbor_decode_next(&dec);
+            if (arr.type != CBOR_ITEM_ARRAY) continue;
+            size_t cap = sizeof(result_out->entries) /
+                          sizeof(result_out->entries[0]);
+            for (size_t j = 0; j < arr.count && result_out->count < (int)cap; j++) {
+                cbor_item_t emap = cbor_decode_next(&dec);
+                if (emap.type != CBOR_ITEM_MAP) continue;
+                nodus_dnac_committee_entry_t *e =
+                    &result_out->entries[result_out->count];
+                memset(e, 0, sizeof(*e));
+                for (size_t k = 0; k < emap.count; k++) {
+                    cbor_item_t ek = cbor_decode_next(&dec);
+                    if (ek.type != CBOR_ITEM_TSTR) {
+                        cbor_decode_skip(&dec); continue;
+                    }
+                    if (KEY_EQ(ek, "pk")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_BSTR &&
+                            v.bstr.len == NODUS_PK_BYTES) {
+                            memcpy(e->pubkey, v.bstr.ptr, NODUS_PK_BYTES);
+                        }
+                    } else if (KEY_EQ(ek, "stake")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT) e->total_stake = v.uint_val;
+                    } else if (KEY_EQ(ek, "comm")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT)
+                            e->commission_bps = (uint16_t)v.uint_val;
+                    } else if (KEY_EQ(ek, "status")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT)
+                            e->status = (uint8_t)v.uint_val;
+                    } else if (KEY_EQ(ek, "addr")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_TSTR) {
+                            size_t cl = v.tstr.len < sizeof(e->address) - 1 ?
+                                        v.tstr.len : sizeof(e->address) - 1;
+                            memcpy(e->address, v.tstr.ptr, cl);
+                            e->address[cl] = '\0';
+                        }
+                    } else {
+                        cbor_decode_skip(&dec);
+                    }
+                }
+                result_out->count++;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
+int nodus_client_dnac_validator_list(nodus_client_t *client,
+                                       int filter_status,
+                                       int offset,
+                                       int limit,
+                                       nodus_dnac_validator_list_result_t *result_out) {
+    if (!nodus_client_is_ready(client) || !result_out) return -1;
+
+    memset(result_out, 0, sizeof(*result_out));
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    /* status encoded as UINT when specific; omitted to mean "all". */
+    int args_count = 2; /* limit, offset always present */
+    if (filter_status >= 0) args_count = 3;
+    enc_dnac_query(&enc, txn, client->token,
+                    "dnac_validator_list_query", (size_t)args_count);
+    if (filter_status >= 0) {
+        cbor_encode_cstr(&enc, "status");
+        cbor_encode_uint(&enc, (uint64_t)filter_status);
+    }
+    cbor_encode_cstr(&enc, "limit");
+    cbor_encode_uint(&enc, (uint64_t)(limit > 0 ? limit : 100));
+    cbor_encode_cstr(&enc, "offset");
+    cbor_encode_uint(&enc, (uint64_t)(offset > 0 ? offset : 0));
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+        if (KEY_EQ(key, "count")) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            /* parsed per-array below — consume and continue */
+            (void)v;
+        } else if (KEY_EQ(key, "total")) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            if (v.type == CBOR_ITEM_UINT) result_out->total = (int)v.uint_val;
+        } else if (KEY_EQ(key, "validators")) {
+            cbor_item_t arr = cbor_decode_next(&dec);
+            if (arr.type != CBOR_ITEM_ARRAY) continue;
+            if (arr.count > 0) {
+                result_out->entries =
+                    calloc(arr.count, sizeof(nodus_dnac_validator_list_entry_t));
+                if (!result_out->entries) {
+                    free_pending(client, req);
+                    return NODUS_ERR_INTERNAL_ERROR;
+                }
+            }
+            for (size_t j = 0; j < arr.count; j++) {
+                cbor_item_t emap = cbor_decode_next(&dec);
+                if (emap.type != CBOR_ITEM_MAP) continue;
+                nodus_dnac_validator_list_entry_t *e =
+                    &result_out->entries[result_out->count];
+                memset(e, 0, sizeof(*e));
+                for (size_t k = 0; k < emap.count; k++) {
+                    cbor_item_t ek = cbor_decode_next(&dec);
+                    if (ek.type != CBOR_ITEM_TSTR) {
+                        cbor_decode_skip(&dec); continue;
+                    }
+                    if (KEY_EQ(ek, "pk")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_BSTR &&
+                            v.bstr.len == NODUS_PK_BYTES)
+                            memcpy(e->pubkey, v.bstr.ptr, NODUS_PK_BYTES);
+                    } else if (KEY_EQ(ek, "self")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT) e->self_stake = v.uint_val;
+                    } else if (KEY_EQ(ek, "total")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT) e->total_delegated = v.uint_val;
+                    } else if (KEY_EQ(ek, "ext")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT) e->external_delegated = v.uint_val;
+                    } else if (KEY_EQ(ek, "comm")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT)
+                            e->commission_bps = (uint16_t)v.uint_val;
+                    } else if (KEY_EQ(ek, "status")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT)
+                            e->status = (uint8_t)v.uint_val;
+                    } else if (KEY_EQ(ek, "since")) {
+                        cbor_item_t v = cbor_decode_next(&dec);
+                        if (v.type == CBOR_ITEM_UINT) e->active_since_block = v.uint_val;
+                    } else {
+                        cbor_decode_skip(&dec);
+                    }
+                }
+                result_out->count++;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
+void nodus_client_free_validator_list_result(nodus_dnac_validator_list_result_t *result) {
+    if (!result) return;
+    free(result->entries);
+    result->entries = NULL;
+    result->count = 0;
+    result->total = 0;
+}
+
+#undef KEY_EQ
+
 /* ── Channel Connection (TCP 4003) Implementation ──────────────── */
 
 #define LOG_TAG_CH  "NODUS_CH_CONN"

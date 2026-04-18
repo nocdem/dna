@@ -64,10 +64,30 @@ extern "C" {
 #define DNAC_TOKEN_SYMBOL_LEN        8
 #define DNAC_TOKEN_ID_SIZE           64
 #define DNAC_FEE_RECIPIENT_SIZE      32
+#define DNAC_INITIAL_VALIDATOR_ENDPOINT_LEN 128  /* host:port hint (zero-padded) */
 
 #ifndef DNAC_MAX_WITNESSES_COMPILE_CAP
 #define DNAC_MAX_WITNESSES_COMPILE_CAP  21  /* compile-time cap; runtime uses witness_count */
 #endif
+
+/**
+ * @brief Initial validator entry — seeds the Phase 10 committee at genesis.
+ *
+ * One of these appears per seat in dnac_chain_definition_t.initial_validators[].
+ * The full struct is hashed byte-for-byte into the genesis preimage (via
+ * dnac_block_compute_hash + dnac_chain_def_encode), so all char/uint8_t array
+ * fields MUST be fully zero-padded — trailing post-NUL bytes participate in
+ * the hash. This prevents malleability where mutating padding leaves the
+ * decoded string unchanged but alters the chain_id.
+ *
+ * Field order is consensus-critical (serialization order is pinned).
+ */
+typedef struct {
+    uint8_t  pubkey[DNAC_PUBKEY_SIZE];                          /**< Dilithium5 validator pubkey */
+    char     unstake_destination_fp[DNAC_FINGERPRINT_SIZE];     /**< Hex fp receiving 10M on unstake */
+    uint16_t commission_bps;                                    /**< Initial commission (0-10000) */
+    char     endpoint[DNAC_INITIAL_VALIDATOR_ENDPOINT_LEN];     /**< DHT endpoint hint (host:port) */
+} dnac_chain_initial_validator_t;
 
 typedef struct {
     /* Chain identification */
@@ -94,6 +114,25 @@ typedef struct {
 
     /* Economic */
     uint8_t  fee_recipient[DNAC_FEE_RECIPIENT_SIZE];
+
+    /* Initial validator set (Phase 12 — Task 56).
+     *
+     * MUST appear at the end of this struct to keep existing encoding order
+     * stable. Field order within this block is appended to the genesis
+     * preimage AFTER fee_recipient.
+     *
+     * Wire layout (appended after fee_recipient):
+     *   initial_validator_count (u8)
+     *   initial_validators[0..count-1] ×
+     *     pubkey(2592) || unstake_destination_fp(129) ||
+     *     commission_bps(u16 BE) || endpoint(128)
+     *
+     * initial_validator_count MUST equal DNAC_COMMITTEE_SIZE (=7) for genesis
+     * to satisfy Rule P. A zero count is accepted at the codec layer for
+     * legacy chain_defs, but rejected by the GENESIS verify Rule P.
+     */
+    uint8_t                        initial_validator_count;
+    dnac_chain_initial_validator_t initial_validators[DNAC_COMMITTEE_SIZE];
 } dnac_chain_definition_t;
 
 /* ============================================================================

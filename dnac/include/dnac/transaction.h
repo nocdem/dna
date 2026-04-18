@@ -29,6 +29,101 @@ extern "C" {
 #define DNAC_TX_MAX_WITNESSES       3
 #define DNAC_TX_MAX_SIGNERS         4
 
+/* STAKE TX appended fields — wire & preimage constants
+ * (design §2.3, Phase 5 Task 16).
+ *
+ * Wire field `unstake_destination_fp` is the **raw 64-byte binary
+ * fingerprint hash** (SHA3-512 truncated or full digest per §2.3),
+ * NOT the 129-byte hex string used for UTXO ownership elsewhere. */
+#define DNAC_STAKE_UNSTAKE_DEST_FP_SIZE   64
+
+/* Purpose tag bound into the STAKE TX preimage (F-CRYPTO-05 defense
+ * against cross-protocol signature reuse). Design §2.3 specifies the
+ * literal string "DNAC_VALIDATOR_v1" — 17 ASCII bytes with no NUL
+ * terminator, padding, or truncation. The design text says
+ * `purpose_tag[16]` but that is an internal inconsistency: the literal
+ * string is 17 characters and cannot fit in 16 bytes. We implement the
+ * literal string at its natural 17-byte length, preserving the spec's
+ * intended identifier verbatim. */
+#define DNAC_STAKE_PURPOSE_TAG_LEN        17
+extern const uint8_t DNAC_STAKE_PURPOSE_TAG[DNAC_STAKE_PURPOSE_TAG_LEN];
+
+/**
+ * @brief STAKE TX appended fields (design §2.3)
+ *
+ * Populated only when `dnac_transaction_t.type == DNAC_TX_STAKE`.
+ * Serialized on the wire and bound into the TX hash preimage along
+ * with a fixed `DNAC_STAKE_PURPOSE_TAG` suffix.
+ *
+ * `unstake_destination_fp` is IMMUTABLE post-STAKE (Rule T) — no TX
+ * type may update it; the raw fingerprint hash is signed into the
+ * STAKE preimage and becomes a permanent validator property.
+ */
+typedef struct {
+    uint16_t commission_bps;                                    /**< 0..10000 */
+    uint8_t  unstake_destination_fp[DNAC_STAKE_UNSTAKE_DEST_FP_SIZE];
+                                                                /**< raw 64B fingerprint hash */
+} dnac_tx_stake_fields_t;
+
+/**
+ * @brief DELEGATE TX appended fields (design §2.3, Phase 5 Task 17)
+ *
+ * Populated only when `dnac_transaction_t.type == DNAC_TX_DELEGATE`.
+ * Serialized on the wire and bound into the TX hash preimage.
+ *
+ * The validator_pubkey identifies which validator the delegator is
+ * staking onto. Amount is carried by the TX inputs/outputs, not by
+ * the appended fields.
+ */
+typedef struct {
+    uint8_t validator_pubkey[DNAC_PUBKEY_SIZE];   /**< Dilithium5 pubkey (2592B) */
+} dnac_tx_delegate_fields_t;
+
+/**
+ * @brief UNDELEGATE TX appended fields (design §2.3, Phase 5 Task 18)
+ *
+ * Populated only when `dnac_transaction_t.type == DNAC_TX_UNDELEGATE`.
+ * The validator_pubkey identifies the validator the delegator is
+ * unbonding from; amount is the base-units delegation quantity to
+ * withdraw. Both bound into the TX hash preimage.
+ */
+typedef struct {
+    uint8_t  validator_pubkey[DNAC_PUBKEY_SIZE];  /**< Dilithium5 pubkey */
+    uint64_t amount;                              /**< Undelegate amount (base units) */
+} dnac_tx_undelegate_fields_t;
+
+/**
+ * @brief CLAIM_REWARD TX appended fields (design §2.3, Phase 5 Task 18)
+ *
+ * Populated only when `dnac_transaction_t.type == DNAC_TX_CLAIM_REWARD`.
+ *
+ * `max_pending_amount` caps how much reward the claim may drain (replay
+ * defense if the reward accrual table advanced between sign & submit).
+ * `valid_before_block` is the claim's block-height expiry — the witness
+ * rejects the claim after this height, so a stale offline-signed claim
+ * cannot be submitted later and drain new rewards.
+ */
+typedef struct {
+    uint8_t  target_validator[DNAC_PUBKEY_SIZE];  /**< Validator whose rewards to claim */
+    uint64_t max_pending_amount;                  /**< Upper bound on claimed amount */
+    uint64_t valid_before_block;                  /**< Block-height expiry */
+} dnac_tx_claim_reward_fields_t;
+
+/**
+ * @brief VALIDATOR_UPDATE TX appended fields (design §2.3, Phase 5 Task 19)
+ *
+ * Populated only when `dnac_transaction_t.type == DNAC_TX_VALIDATOR_UPDATE`.
+ *
+ * `new_commission_bps` is the validator's updated commission (0..10000 =
+ * 0..100%). `signed_at_block` anchors the update to a specific block
+ * height so replay of an old update-TX is detectable by witnesses
+ * (they reject if signed_at_block < current validator.last_update_block).
+ */
+typedef struct {
+    uint16_t new_commission_bps;   /**< 0..10000 */
+    uint64_t signed_at_block;      /**< Block height at signing */
+} dnac_tx_validator_update_fields_t;
+
 /**
  * @brief Transaction signer (authorization)
  *
@@ -136,6 +231,21 @@ struct dnac_transaction {
      * remains false and the serialization is byte-identical to v0. */
     bool                    has_chain_def;
     dnac_chain_definition_t chain_def;
+
+    /* Chain_id bound into the TX hash preimage (design §2.3, F-CRYPTO-10).
+     * Set by builder from dnac_get_chain_id(ctx); zero on freshly created TX
+     * until populated. Not serialized on the wire — witnesses already know
+     * their chain_id from the chain context. */
+    uint8_t chain_id[32];
+
+    /* Per-type appended fields (design §2.3, Phase 5 Tasks 16-20).
+     * Only the arm matching `type` is populated; others are zero. A union
+     * can replace this struct layout later when more TX types ship. */
+    dnac_tx_stake_fields_t            stake_fields;            /**< valid when type == DNAC_TX_STAKE */
+    dnac_tx_delegate_fields_t         delegate_fields;         /**< valid when type == DNAC_TX_DELEGATE */
+    dnac_tx_undelegate_fields_t       undelegate_fields;       /**< valid when type == DNAC_TX_UNDELEGATE */
+    dnac_tx_claim_reward_fields_t     claim_reward_fields;     /**< valid when type == DNAC_TX_CLAIM_REWARD */
+    dnac_tx_validator_update_fields_t validator_update_fields; /**< valid when type == DNAC_TX_VALIDATOR_UPDATE */
 };
 
 /* ============================================================================
@@ -236,6 +346,150 @@ int dnac_tx_add_signer(dnac_transaction_t *tx,
  * @return DNAC_SUCCESS if valid, error code otherwise
  */
 int dnac_tx_verify(const dnac_transaction_t *tx);
+
+/**
+ * @brief Verify STAKE-type rules only (design §2.4, Phase 6 Task 22)
+ *
+ * Runs the locally-verifiable STAKE rule subset without exercising the
+ * witness-signature or signer-signature paths. Intended primarily for
+ * unit tests and pre-flight client checks.
+ *
+ * Rules enforced:
+ *   - tx->type == DNAC_TX_STAKE
+ *   - signer_count == 1
+ *   - stake_fields.commission_bps <= DNAC_COMMISSION_BPS_MAX (10000)
+ *   - Σ DNAC inputs >= DNAC_SELF_STAKE_AMOUNT + Σ DNAC outputs
+ *
+ * Rules requiring witness-side DB access (Rule I / Rule M / exact fee)
+ * are NOT checked here — they run at state-apply time in the witness.
+ *
+ * @param tx Transaction (must be STAKE type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_stake_rules(const dnac_transaction_t *tx);
+
+/**
+ * @brief Verify DELEGATE-type rules only (design §2.4, Phase 6 Task 23)
+ *
+ * Runs the locally-verifiable DELEGATE rule subset without exercising the
+ * witness-signature or signer-signature paths. Intended primarily for
+ * unit tests and pre-flight client checks.
+ *
+ * Rules enforced:
+ *   - tx->type == DNAC_TX_DELEGATE
+ *   - signer_count == 1
+ *   - signer[0].pubkey != delegate_fields.validator_pubkey (Rule S)
+ *   - Σ DNAC inputs − Σ DNAC outputs >= DNAC_MIN_DELEGATION (Rule J)
+ *
+ * Rules requiring witness-side DB access (Rule B validator status,
+ * Rule G 64-cap per delegator, exact fee) are NOT checked here — they
+ * run at state-apply time in the witness.
+ *
+ * @param tx Transaction (must be DELEGATE type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_delegate_rules(const dnac_transaction_t *tx);
+
+/**
+ * @brief Verify UNSTAKE-type rules only (design §2.4, Phase 6 Task 24)
+ *
+ * Runs the locally-verifiable UNSTAKE rule subset. UNSTAKE has no
+ * appended fields, so the local check is minimal:
+ *
+ *   - tx->type == DNAC_TX_UNSTAKE
+ *   - signer_count == 1
+ *
+ * Rule A (NO delegation records with validator == signer[0]; literal
+ * drain-before-exit), validator status gate, and fee checks require
+ * witness-side DB access and run at state-apply time (Phase 8 Task 42).
+ *
+ * @param tx Transaction (must be UNSTAKE type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_unstake_rules(const dnac_transaction_t *tx);
+
+/**
+ * @brief Verify UNDELEGATE-type rules only (design §2.4, Phase 6 Task 25)
+ *
+ * Runs the locally-verifiable UNDELEGATE rule subset:
+ *
+ *   - tx->type == DNAC_TX_UNDELEGATE
+ *   - signer_count == 1
+ *   - undelegate_fields.amount > 0
+ *
+ * Rules requiring delegation_record state (delegation existence,
+ * amount <= delegation.amount, Rule O hold duration current_block −
+ * delegated_at_block >= EPOCH_LENGTH) are NOT checked here — they run
+ * at state-apply time in the witness (Phase 8 Task 43).
+ *
+ * @param tx Transaction (must be UNDELEGATE type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_undelegate_rules(const dnac_transaction_t *tx);
+
+/**
+ * @brief Verify CLAIM_REWARD-type rules only (design §2.4, Phase 6 Task 26)
+ *
+ * Runs the locally-verifiable CLAIM_REWARD rule subset:
+ *
+ *   - tx->type == DNAC_TX_CLAIM_REWARD
+ *   - signer_count == 1
+ *   - claim_reward_fields.max_pending_amount > 0
+ *   - claim_reward_fields.valid_before_block > 0
+ *
+ * Rules requiring chain state (current_block <= valid_before_block
+ * freshness, pending-reward computation, cap check, Rule L dynamic
+ * dust threshold) are NOT checked here — they run at state-apply
+ * time in the witness (Phase 8 Task 44).
+ *
+ * @param tx Transaction (must be CLAIM_REWARD type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_claim_reward_rules(const dnac_transaction_t *tx);
+
+/**
+ * @brief Verify VALIDATOR_UPDATE-type rules only (design §2.4, Phase 6 Task 27)
+ *
+ * Runs the locally-verifiable VALIDATOR_UPDATE rule subset:
+ *
+ *   - tx->type == DNAC_TX_VALIDATOR_UPDATE
+ *   - signer_count == 1
+ *   - validator_update_fields.new_commission_bps <= DNAC_COMMISSION_BPS_MAX
+ *   - validator_update_fields.signed_at_block > 0
+ *
+ * Rules requiring chain state (validator status ∈ {ACTIVE, RETIRING},
+ * Rule K freshness current_block − signed_at_block < 32, EPOCH_LENGTH
+ * cooldown, pending-commission increase/decrease logic) are NOT checked
+ * here — they run at state-apply time in the witness (Phase 8 Task 45).
+ *
+ * @param tx Transaction (must be VALIDATOR_UPDATE type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx);
+
+/**
+ * @brief Verify GENESIS-type rules only (design §2.4 / §5.2 Rule P, full
+ *        spec enforced as of Phase 12 Task 56).
+ *
+ * Runs the locally-verifiable GENESIS rule subset — the supply invariance,
+ * initial-validator-count, and distinctness checks that a fresh client can
+ * perform without touching chain state.
+ *
+ * Rules enforced:
+ *   - tx->type == DNAC_TX_GENESIS
+ *   - tx->input_count == 0 (no spends; genesis creates coins)
+ *   - If tx->has_chain_def (new TXs, required for Task 56+):
+ *     - chain_def.initial_validator_count == DNAC_COMMITTEE_SIZE (7)
+ *     - Σ outputs (native DNAC) + 7 × DNAC_SELF_STAKE_AMOUNT ==
+ *       DNAC_DEFAULT_TOTAL_SUPPLY
+ *     - initial_validators[0..6].pubkey pairwise distinct
+ *   - Else (legacy archive replay):
+ *     - Σ outputs.amount (native DNAC) == DNAC_DEFAULT_TOTAL_SUPPLY
+ *
+ * @param tx Transaction (must be GENESIS type)
+ * @return DNAC_SUCCESS if valid, error code otherwise
+ */
+int dnac_tx_verify_genesis_rules(const dnac_transaction_t *tx);
 
 /**
  * @brief Serialize transaction to bytes

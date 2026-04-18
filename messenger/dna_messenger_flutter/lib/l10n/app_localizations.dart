@@ -3439,6 +3439,372 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{name} reacted {emoji} to your message'**
   String reactionNotificationBody(String name, String emoji);
+
+  /// App bar title for the validator list screen. 'Earners' is the non-technical framing — the real thing is a validator.
+  ///
+  /// In en, this message translates to:
+  /// **'Earners'**
+  String get stakeDashboardTitle;
+
+  /// No description provided for @stakeRefresh.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh'**
+  String get stakeRefresh;
+
+  /// No description provided for @stakeEarnersHeader.
+  ///
+  /// In en, this message translates to:
+  /// **'People earning together'**
+  String get stakeEarnersHeader;
+
+  /// No description provided for @stakeEarnersSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 active earner} other{{count} active earners}}'**
+  String stakeEarnersSubtitle(int count);
+
+  /// No description provided for @stakeEarnerName.
+  ///
+  /// In en, this message translates to:
+  /// **'Earner {id}'**
+  String stakeEarnerName(String id);
+
+  /// Commission — fraction of rewards the validator keeps before distributing the rest to delegators.
+  ///
+  /// In en, this message translates to:
+  /// **'Keeps {pct}% of rewards'**
+  String stakeEarnerCommission(String pct);
+
+  /// No description provided for @stakeEarnerTotalLocked.
+  ///
+  /// In en, this message translates to:
+  /// **'{amount} DNAC locked in support'**
+  String stakeEarnerTotalLocked(String amount);
+
+  /// Badge shown on validators currently in the BFT committee — they are actively trusted to write blocks this epoch.
+  ///
+  /// In en, this message translates to:
+  /// **'Trusted'**
+  String get stakeTrustedBadge;
+
+  /// No description provided for @stakeNoEarners.
+  ///
+  /// In en, this message translates to:
+  /// **'No earners yet'**
+  String get stakeNoEarners;
+
+  /// No description provided for @stakeNoEarnersSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Come back in a few minutes — the network is getting started.'**
+  String get stakeNoEarnersSubtitle;
+
+  /// No description provided for @stakeLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load earners'**
+  String get stakeLoadFailed;
+
+  /// No description provided for @delegationTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Support earner {id}'**
+  String delegationTitle(String id);
+
+  /// No description provided for @delegationEarnerLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Earner {id}'**
+  String delegationEarnerLabel(String id);
+
+  /// No description provided for @delegationAmountLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Amount'**
+  String get delegationAmountLabel;
+
+  /// No description provided for @delegationAmountHelper.
+  ///
+  /// In en, this message translates to:
+  /// **'Minimum 100 DNAC'**
+  String get delegationAmountHelper;
+
+  /// No description provided for @delegationAmountRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter an amount'**
+  String get delegationAmountRequired;
+
+  /// No description provided for @delegationAmountInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a valid amount'**
+  String get delegationAmountInvalid;
+
+  /// No description provided for @delegationAmountTooSmall.
+  ///
+  /// In en, this message translates to:
+  /// **'Minimum is 100 DNAC'**
+  String get delegationAmountTooSmall;
+
+  /// No description provided for @delegationHoldInfo.
+  ///
+  /// In en, this message translates to:
+  /// **'About a 10 minute hold before you can stop supporting this earner again.'**
+  String get delegationHoldInfo;
+
+  /// No description provided for @delegationRewardInfo.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'ll share in the earner\'s rewards every block.'**
+  String get delegationRewardInfo;
+
+  /// No description provided for @delegationSupportButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Support this earner'**
+  String get delegationSupportButton;
+
+  /// No description provided for @delegationStopButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop supporting'**
+  String get delegationStopButton;
+
+  /// No description provided for @delegationSubmitting.
+  ///
+  /// In en, this message translates to:
+  /// **'Working...'**
+  String get delegationSubmitting;
+
+  /// No description provided for @delegationSupportSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'re now supporting this earner.'**
+  String get delegationSupportSuccess;
+
+  /// No description provided for @delegationSupportFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t complete — please try again.'**
+  String get delegationSupportFailed;
+
+  /// No description provided for @delegationStopSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopped supporting this earner.'**
+  String get delegationStopSuccess;
+
+  /// No description provided for @delegationStopFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t stop — please try again.'**
+  String get delegationStopFailed;
+
+  /// No description provided for @delegationStopDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop supporting earner {id}'**
+  String delegationStopDialogTitle(String id);
+
+  /// No description provided for @delegationStopDialogBody.
+  ///
+  /// In en, this message translates to:
+  /// **'How much would you like to pull back? You\'ll get it back after a short hold.'**
+  String get delegationStopDialogBody;
+
+  /// No description provided for @rewardsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Your rewards'**
+  String get rewardsTitle;
+
+  /// No description provided for @rewardsPendingLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Available to claim'**
+  String get rewardsPendingLabel;
+
+  /// No description provided for @rewardsClaimButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Claim'**
+  String get rewardsClaimButton;
+
+  /// No description provided for @rewardsClaimFromHeader.
+  ///
+  /// In en, this message translates to:
+  /// **'Claim from an earner'**
+  String get rewardsClaimFromHeader;
+
+  /// No description provided for @rewardsClaimSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Reward claimed.'**
+  String get rewardsClaimSuccess;
+
+  /// No description provided for @rewardsClaimFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t claim — please try again.'**
+  String get rewardsClaimFailed;
+
+  /// No description provided for @rewardsEmptyList.
+  ///
+  /// In en, this message translates to:
+  /// **'No earners available to claim from yet.'**
+  String get rewardsEmptyList;
+
+  /// No description provided for @rewardsLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load rewards'**
+  String get rewardsLoadFailed;
+
+  /// No description provided for @rewardsHomeCardTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Your rewards'**
+  String get rewardsHomeCardTitle;
+
+  /// No description provided for @rewardsHomeCardAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'{amount} DNAC ready to claim'**
+  String rewardsHomeCardAmount(String amount);
+
+  /// Operator panel for a user who is a validator (earner). Controls for commission + unstake.
+  ///
+  /// In en, this message translates to:
+  /// **'Earner settings'**
+  String get validatorPanelTitle;
+
+  /// No description provided for @validatorPanelNotValidator.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'re not running an earner right now. Start one from the DNAC command line.'**
+  String get validatorPanelNotValidator;
+
+  /// No description provided for @validatorStatusLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Earner {id}'**
+  String validatorStatusLabel(String id);
+
+  /// No description provided for @validatorFieldSelfStake.
+  ///
+  /// In en, this message translates to:
+  /// **'Your own stake'**
+  String get validatorFieldSelfStake;
+
+  /// No description provided for @validatorFieldDelegated.
+  ///
+  /// In en, this message translates to:
+  /// **'Supporters\' stake'**
+  String get validatorFieldDelegated;
+
+  /// No description provided for @validatorFieldCommission.
+  ///
+  /// In en, this message translates to:
+  /// **'Fee you keep'**
+  String get validatorFieldCommission;
+
+  /// No description provided for @validatorCommissionSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Fee rate'**
+  String get validatorCommissionSection;
+
+  /// No description provided for @validatorCommissionHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Decrease takes effect now. Increase takes effect at the next round so supporters can leave first.'**
+  String get validatorCommissionHelp;
+
+  /// No description provided for @validatorCommissionRange.
+  ///
+  /// In en, this message translates to:
+  /// **'0 – 100'**
+  String get validatorCommissionRange;
+
+  /// No description provided for @validatorCommissionInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a value between 0 and 100.'**
+  String get validatorCommissionInvalid;
+
+  /// No description provided for @validatorNewCommissionLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'New fee'**
+  String get validatorNewCommissionLabel;
+
+  /// No description provided for @validatorUpdateCommissionButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Save fee'**
+  String get validatorUpdateCommissionButton;
+
+  /// No description provided for @validatorUpdateSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Fee updated.'**
+  String get validatorUpdateSuccess;
+
+  /// No description provided for @validatorUpdateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t update the fee — please try again.'**
+  String get validatorUpdateFailed;
+
+  /// No description provided for @validatorUnstakeSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Shut down earner'**
+  String get validatorUnstakeSection;
+
+  /// No description provided for @validatorUnstakeWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'This will stop your earner and start the cool-down. Your supporters will be notified and their stake will unwind.'**
+  String get validatorUnstakeWarning;
+
+  /// No description provided for @validatorUnstakeButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Shut down earner'**
+  String get validatorUnstakeButton;
+
+  /// No description provided for @validatorUnstakeConfirmTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Shut down this earner?'**
+  String get validatorUnstakeConfirmTitle;
+
+  /// No description provided for @validatorUnstakeConfirmBody.
+  ///
+  /// In en, this message translates to:
+  /// **'This cannot be undone. Your self-stake will come back after the cool-down and your supporters will have their stake returned.'**
+  String get validatorUnstakeConfirmBody;
+
+  /// No description provided for @validatorUnstakeConfirmAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Yes, shut down'**
+  String get validatorUnstakeConfirmAction;
+
+  /// No description provided for @validatorUnstakeSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Earner shutting down.'**
+  String get validatorUnstakeSuccess;
+
+  /// No description provided for @validatorUnstakeFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t shut down — please try again.'**
+  String get validatorUnstakeFailed;
 }
 
 class _AppLocalizationsDelegate

@@ -22,8 +22,10 @@
 
 #include "nodus/nodus_types.h"
 #include "witness/nodus_witness_mempool.h"
+#include "dnac/dnac.h"        /* DNAC_COMMITTEE_SIZE, DNAC_PUBKEY_SIZE */
 #include <sqlite3.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -70,6 +72,14 @@ typedef struct {
 #define NODUS_W_TX_SPEND         1
 #define NODUS_W_TX_BURN          2
 #define NODUS_W_TX_TOKEN_CREATE  3
+/* Phase 8 — stake & delegation TX types. Values MUST match
+ * dnac_tx_type_t in dnac/transaction.h (DNAC_TX_STAKE .. DNAC_TX_VALIDATOR_UPDATE). */
+#define NODUS_W_TX_STAKE             4
+#define NODUS_W_TX_DELEGATE          5
+#define NODUS_W_TX_UNSTAKE           6
+#define NODUS_W_TX_UNDELEGATE        7
+#define NODUS_W_TX_CLAIM_REWARD      8
+#define NODUS_W_TX_VALIDATOR_UPDATE  9
 
 /* ── Vote types ──────────────────────────────────────────────────── */
 
@@ -283,9 +293,52 @@ typedef struct nodus_witness {
     uint8_t         cached_state_root[64];  /* NODUS_KEY_BYTES */
     bool            cached_state_root_valid;
 
+    /* Phase 6 / Task 31 — per-block fee accumulator.
+     *
+     * Collected from every SPEND/TOKEN_CREATE TX in the current block.
+     * Replaces the legacy "fee → burn UTXO" path: fees are no longer
+     * burned to DNAC_BURN_ADDRESS; they accumulate here and Phase 9
+     * Task 49 will drain this pool into the committee reward
+     * accumulator at block finalize time. Cleared on every successful
+     * block commit (finalize_block). Native DNAC only — token-fee
+     * handling deferred to a later phase. */
+    uint64_t        block_fee_pool;
+
+    /* Phase 10 / Task 53 — per-epoch committee cache.
+     *
+     * Populated on the first committee query within an epoch by
+     * nodus_committee_get_for_block() and reused for every subsequent
+     * query in the same epoch. The cache is effectively invalidated
+     * when block_height crosses an epoch boundary (the next lookup
+     * sees a different e_start and triggers a recompute).
+     *
+     * cached_committee_epoch_start == UINT64_MAX marks the slot as
+     * uninitialised (set at init + on recompute failure). The layout
+     * uses raw bytes because the committee member struct is defined
+     * in witness/nodus_witness_committee.h, which would be a circular
+     * include. Callers MUST go through the get_for_block accessor
+     * rather than touching these fields directly.
+     *
+     * DNAC_COMMITTEE_SIZE (7) members × (2592 pubkey + 8 stake + 2
+     * commission + padding) ≈ 18.4 KB. Kept in-struct rather than
+     * malloc-d because nodus_witness_t itself is already heap-allocated. */
+    uint64_t        cached_committee_epoch_start;
+    int             cached_committee_count;
+    uint8_t         cached_committee_pubkeys[DNAC_COMMITTEE_SIZE][DNAC_PUBKEY_SIZE];
+    uint64_t        cached_committee_stakes[DNAC_COMMITTEE_SIZE];
+    uint16_t        cached_committee_commission_bps[DNAC_COMMITTEE_SIZE];
+
     /* Witness database (separate from DHT storage) */
     sqlite3     *db;
     char        data_path[256];             /* For creating chain DB on genesis */
+
+    /* Phase 9 / Task 47 — single-transaction block commit tracker.
+     *
+     * Set true in nodus_witness_db_begin(), cleared in
+     * nodus_witness_db_commit() / nodus_witness_db_rollback(). Used by
+     * debug assertions + tests that verify the block commit path stays
+     * inside exactly one outer transaction (design F-STATE-02). */
+    bool        in_block_transaction;
 
     bool        running;
 } nodus_witness_t;
@@ -376,6 +429,21 @@ void nodus_witness_peer_conn_closed(nodus_witness_t *witness,
  */
 int nodus_witness_create_chain_db(nodus_witness_t *witness,
                                     const uint8_t *chain_id);
+
+/**
+ * Phase 6 / Task 31 — read the current block fee pool.
+ *
+ * Returns the accumulated native DNAC fee amount for the in-progress
+ * block. Phase 9 Task 49 will call this inside finalize_block to feed
+ * the committee reward accumulator. Callers pass NULL output to just
+ * sanity-check the pointer.
+ *
+ * @param witness  witness context
+ * @param out      where to write the accumulator value (may be NULL)
+ * @return 0 on success, -1 if witness is NULL
+ */
+int nodus_witness_get_block_fee_pool(const nodus_witness_t *witness,
+                                       uint64_t *out);
 
 #ifdef __cplusplus
 }

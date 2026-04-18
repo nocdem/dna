@@ -4240,6 +4240,129 @@ DNA_API dna_request_id_t dna_engine_dnac_token_balance(dna_engine_t *engine,
     const uint8_t *token_id, dna_dnac_balance_cb callback, void *user_data);
 DNA_API void dna_engine_dnac_free_tokens(dna_dnac_token_t *tokens, int count);
 
+/* ============================================================================
+ * DNAC Stake & Delegation (v1.0.0-rc221+ — Phase 16 Task 71)
+ *
+ * Thin async wrappers around libdnac's stake/delegate/reward APIs. Builders
+ * submit TXs and return via dna_completion_cb; queries return array / scalar
+ * results via dedicated callbacks.
+ * ========================================================================== */
+
+/**
+ * Validator list entry (mirror of dnac_validator_list_entry_t).
+ *
+ * pubkey: Dilithium5 public key (2592B).
+ * status: 0=ACTIVE, 1=RETIRING, 2=UNSTAKED (matches dnac_validator_status_t).
+ */
+typedef struct {
+    uint8_t  pubkey[2592];
+    uint64_t self_stake;
+    uint64_t total_delegated;
+    uint16_t commission_bps;
+    uint8_t  status;
+    uint64_t active_since_block;
+} dna_dnac_validator_entry_t;
+
+/** Validator list / committee result callback */
+typedef void (*dna_dnac_validator_list_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const dna_dnac_validator_entry_t *entries,
+    int count,
+    void *user_data
+);
+
+/** Free the validator entry array allocated by the engine on callback. */
+DNA_API void dna_engine_dnac_free_validator_entries(
+    dna_dnac_validator_entry_t *entries, int count);
+
+/**
+ * Stake: become a validator.
+ * Consumes DNAC_SELF_STAKE_AMOUNT + fee from caller's UTXOs.
+ *
+ * @param commission_bps          0..10000
+ * @param unstake_destination_fp  128-hex recipient for post-cooldown UTXO
+ */
+DNA_API dna_request_id_t dna_engine_dnac_stake(
+    dna_engine_t *engine,
+    uint16_t commission_bps,
+    const char *unstake_destination_fp,
+    dna_completion_cb callback,
+    void *user_data);
+
+/** Unstake: trigger RETIRING -> UNSTAKED for caller's validator record. */
+DNA_API dna_request_id_t dna_engine_dnac_unstake(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data);
+
+/**
+ * Delegate native DNAC to a validator.
+ *
+ * @param validator_pubkey  2592-byte Dilithium5 pubkey
+ * @param amount            Raw units, >= DNAC_MIN_DELEGATION
+ */
+DNA_API dna_request_id_t dna_engine_dnac_delegate(
+    dna_engine_t *engine,
+    const uint8_t *validator_pubkey,
+    uint64_t amount,
+    dna_completion_cb callback,
+    void *user_data);
+
+/** Undelegate: withdraw (part of) a delegation. */
+DNA_API dna_request_id_t dna_engine_dnac_undelegate(
+    dna_engine_t *engine,
+    const uint8_t *validator_pubkey,
+    uint64_t amount,
+    dna_completion_cb callback,
+    void *user_data);
+
+/** Claim accrued staking rewards. */
+DNA_API dna_request_id_t dna_engine_dnac_claim_reward(
+    dna_engine_t *engine,
+    const uint8_t *target_validator_pubkey,
+    uint64_t max_pending_amount,
+    uint64_t valid_before_block,
+    dna_completion_cb callback,
+    void *user_data);
+
+/** Validator operator — change commission (takes effect next epoch). */
+DNA_API dna_request_id_t dna_engine_dnac_validator_update(
+    dna_engine_t *engine,
+    uint16_t new_commission_bps,
+    uint64_t signed_at_block,
+    dna_completion_cb callback,
+    void *user_data);
+
+/**
+ * Query total pending rewards for a claimant.
+ * Passes through dna_dnac_fee_cb (uint64_t payload).
+ *
+ * @param claimant_pubkey  NULL to query caller's own rewards
+ */
+DNA_API dna_request_id_t dna_engine_dnac_get_pending_rewards(
+    dna_engine_t *engine,
+    const uint8_t *claimant_pubkey,
+    dna_dnac_fee_cb callback,
+    void *user_data);
+
+/**
+ * List validators (optionally filtered by status).
+ *
+ * @param filter_status  -1 for all, or dnac_validator_status_t value
+ */
+DNA_API dna_request_id_t dna_engine_dnac_validator_list(
+    dna_engine_t *engine,
+    int filter_status,
+    dna_dnac_validator_list_cb callback,
+    void *user_data);
+
+/** Fetch the current epoch's BFT committee (top-N validators). */
+DNA_API dna_request_id_t dna_engine_dnac_get_committee(
+    dna_engine_t *engine,
+    dna_dnac_validator_list_cb callback,
+    void *user_data);
+
 #ifdef __cplusplus
 }
 #endif

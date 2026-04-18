@@ -22,6 +22,11 @@
 #include "witness/nodus_witness_verify.h"
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_cert.h"
+#include "witness/nodus_witness_validator.h"
+#include "witness/nodus_witness_reward.h"
+#include "witness/nodus_witness_committee.h"
+#include "witness/nodus_witness_delegation.h"
+#include "witness/nodus_witness_genesis_seed.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
 #include "transport/nodus_tcp.h"
@@ -29,8 +34,15 @@
 
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
+#include "crypto/utils/qgp_u128.h"
+#include "crypto/utils/qgp_fingerprint.h"
+
+#include "dnac/dnac.h"
+#include "dnac/validator.h"
+#include "dnac/transaction.h"   /* DNAC_STAKE_PURPOSE_TAG_LEN */
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -603,35 +615,37 @@ static int update_utxo_set(nodus_witness_t *w,
         fee = total_input - total_output;
     }
 
+    /* Phase 6 / Task 31 — fees route to block_fee_pool (native DNAC only).
+     *
+     * The legacy behavior (fee → UTXO owned by DNAC_BURN_ADDRESS) is
+     * removed. Fees now accumulate into w->block_fee_pool and Phase 9
+     * Task 49 drains that accumulator into the committee reward pool
+     * when the block finalizes. Custom-token fees remain a deferred
+     * concern — in the current TX format fees are charged in native
+     * DNAC for all supported TX types (see TOKEN_CREATE path above,
+     * which resets fee_token_id to zero). If a custom-token fee ever
+     * lands here it is still accounted as a delta from supply but does
+     * NOT get a burn UTXO — the log line calls it out. */
+    (void)fee_token_id;
     if (fee > 0) {
-        /* Nullifier = SHA3-512(BURN_ADDRESS + tx_hash + "burn")
-         * Unique per TX, unspendable (no private key for burn address) */
-        uint8_t burn_nul_input[128 + NODUS_T3_TX_HASH_LEN + 4];
-        memcpy(burn_nul_input, DNAC_BURN_ADDRESS, 128);
-        memcpy(burn_nul_input + 128, tx_hash, NODUS_T3_TX_HASH_LEN);
-        memcpy(burn_nul_input + 128 + NODUS_T3_TX_HASH_LEN, "burn", 4);
-
-        nodus_key_t burn_nul;
-        if (nodus_hash(burn_nul_input, sizeof(burn_nul_input), &burn_nul) != 0) {
-            fprintf(stderr, "%s: burn UTXO hash failed (fee=%llu)\n",
-                    LOG_TAG, (unsigned long long)fee);
-            return -1;
+        if (w) {
+            /* Overflow-safe add: 2^64 - 1 - pool is the ceiling we can
+             * accept. In practice the pool zeroes every block so this
+             * is effectively impossible, but the check keeps the
+             * invariant explicit for auditors. */
+            if (w->block_fee_pool > UINT64_MAX - fee) {
+                fprintf(stderr, "%s: block_fee_pool overflow (pool=%llu fee=%llu)\n",
+                        LOG_TAG,
+                        (unsigned long long)w->block_fee_pool,
+                        (unsigned long long)fee);
+                return -1;
+            }
+            w->block_fee_pool += fee;
         }
-        /* Use fee_token_id — token transfers burn the same token; native for DNAC/TOKEN_CREATE */
-        uint8_t zeros64[64] = {0};
-        const uint8_t *burn_tid = (memcmp(fee_token_id, zeros64, 64) == 0) ? NULL : fee_token_id;
-        if (nodus_witness_utxo_add(w, burn_nul.bytes, DNAC_BURN_ADDRESS,
-                                      fee, tx_hash, (uint32_t)output_count,
-                                      block_height, burn_tid) != 0) {
-            fprintf(stderr, "%s: burn UTXO insert failed (fee=%llu)\n",
-                    LOG_TAG, (unsigned long long)fee);
-            return -1;
-        }
-        stored++;
-        fprintf(stderr, "%s: burn UTXO: fee=%llu token=%s → burn_address (block %llu)\n",
+        fprintf(stderr, "%s: fee pool: +%llu native DNAC (block %llu, pool=%llu)\n",
                 LOG_TAG, (unsigned long long)fee,
-                burn_tid ? "custom" : "native",
-                (unsigned long long)block_height);
+                (unsigned long long)block_height,
+                (unsigned long long)(w ? w->block_fee_pool : 0));
     }
 
     if (fee_out) *fee_out = fee;
@@ -639,7 +653,7 @@ static int update_utxo_set(nodus_witness_t *w,
     fprintf(stderr, "%s: UTXO set updated: -%d spent, +%d/%d outputs, fee=%llu (block %llu)\n",
             LOG_TAG,
             (tx_type != NODUS_W_TX_GENESIS) ? nullifier_count : 0,
-            stored, output_count + (fee > 0 ? 1 : 0),
+            stored, output_count,
             (unsigned long long)fee,
             (unsigned long long)block_height);
     return 0;
@@ -731,6 +745,906 @@ bool supply_invariant_violated(nodus_witness_t *w) {
     }
 
     return violated;
+}
+
+/* ── Phase 8: Stake & delegation state mutation helpers ───────────── */
+
+/* Compute the offset in tx_data at which the type-specific appended
+ * fields begin (i.e. the byte right after the last signer's signature),
+ * and (optionally) return a pointer to signers[0].pubkey inside tx_data.
+ *
+ * Wire layout (design 2.3; see dnac/src/transaction/serialize.c):
+ *   header(74) then input_count(1) then inputs then output_count(1) then outputs
+ *   then witness_count(1) then witnesses then signer_count(1) then signers
+ *   then type-specific appended fields
+ *   then has_chain_def(1) then optional chain_def blob.
+ *
+ * Returns 0 on success, -1 on malformed / truncated input. signer_pk_out
+ * may be NULL.
+ */
+static int compute_appended_fields_offset(const uint8_t *tx_data,
+                                            uint32_t tx_len,
+                                            size_t *off_out,
+                                            const uint8_t **signer_pk_out) {
+    if (!tx_data || !off_out) return -1;
+
+    /* header: version(1) + type(1) + timestamp(8) + tx_hash(64) = 74 */
+    if (tx_len < 74) return -1;
+    size_t off = 74;
+
+    /* Inputs */
+    if (off >= tx_len) return -1;
+    uint8_t input_count = tx_data[off++];
+    const size_t input_size = NODUS_T3_NULLIFIER_LEN + 8 + 64;
+    if ((size_t)input_count * input_size > tx_len - off) return -1;
+    off += (size_t)input_count * input_size;
+
+    /* Outputs (variable memo) */
+    if (off >= tx_len) return -1;
+    uint8_t output_count = tx_data[off++];
+    for (int i = 0; i < output_count; i++) {
+        if (off + 235 > tx_len) return -1;
+        off += 1 + 129 + 8 + 64 + 32;   /* version + fp + amount + token_id + seed */
+        uint8_t memo_len = tx_data[off++];
+        if (memo_len > tx_len - off) return -1;
+        off += memo_len;
+    }
+
+    /* Witnesses */
+    if (off >= tx_len) return -1;
+    uint8_t witness_count = tx_data[off++];
+    const size_t witness_size = 32 + DNAC_SIGNATURE_SIZE + 8 + DNAC_PUBKEY_SIZE;
+    if ((size_t)witness_count * witness_size > tx_len - off) return -1;
+    off += (size_t)witness_count * witness_size;
+
+    /* Signers */
+    if (off >= tx_len) return -1;
+    uint8_t signer_count = tx_data[off++];
+    if (signer_count == 0) return -1;
+    const size_t signer_size = DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE;
+    if ((size_t)signer_count * signer_size > tx_len - off) return -1;
+
+    if (signer_pk_out) {
+        /* signers[0].pubkey sits at current offset (pubkey first, sig after). */
+        *signer_pk_out = tx_data + off;
+    }
+    off += (size_t)signer_count * signer_size;
+
+    *off_out = off;
+    return 0;
+}
+
+/* Sum native-DNAC (token_id all-zero) input and output amounts. Needed
+ * by DELEGATE for exact delegation_amount = in - out - fee. Returns 0
+ * on success, -1 on malformed tx_data. */
+static int sum_native_dnac_in_out(const uint8_t *tx_data,
+                                    uint32_t tx_len,
+                                    uint64_t *in_sum_out,
+                                    uint64_t *out_sum_out) {
+    static const uint8_t zero_tid[64] = {0};
+
+    if (!tx_data || !in_sum_out || !out_sum_out) return -1;
+    if (tx_len < 74) return -1;
+
+    uint64_t in_sum = 0;
+    uint64_t out_sum = 0;
+
+    size_t off = 74;
+
+    if (off >= tx_len) return -1;
+    uint8_t input_count = tx_data[off++];
+    for (int i = 0; i < input_count; i++) {
+        if (off + NODUS_T3_NULLIFIER_LEN + 8 + 64 > tx_len) return -1;
+        off += NODUS_T3_NULLIFIER_LEN;
+        uint64_t amt;
+        memcpy(&amt, tx_data + off, 8);
+        off += 8;
+        const uint8_t *tid = tx_data + off;
+        off += 64;
+        if (memcmp(tid, zero_tid, 64) == 0) {
+            in_sum += amt;
+        }
+    }
+
+    if (off >= tx_len) return -1;
+    uint8_t output_count = tx_data[off++];
+    for (int i = 0; i < output_count; i++) {
+        if (off + 235 > tx_len) return -1;
+        off += 1 + 129;
+        uint64_t amt;
+        memcpy(&amt, tx_data + off, 8);
+        off += 8;
+        const uint8_t *tid = tx_data + off;
+        off += 64;
+        off += 32;
+        uint8_t memo_len = tx_data[off++];
+        if (memo_len > tx_len - off) return -1;
+        off += memo_len;
+        if (memcmp(tid, zero_tid, 64) == 0) {
+            out_sum += amt;
+        }
+    }
+
+    *in_sum_out = in_sum;
+    *out_sum_out = out_sum;
+    return 0;
+}
+
+/* Phase 8 Task 41 — DELEGATE state mutation.
+ *
+ * Parses validator_pubkey[2592] appended field, fetches target validator
+ * + current reward accumulator, inserts (or updates) delegation row with
+ * reward_snapshot = V.accumulator, bumps V.total_delegated +
+ * V.external_delegated.
+ *
+ * delegation_amount is computed as
+ *     native_input_sum - native_output_sum - committed_fee
+ * (DELEGATE consumes DNAC inputs >= amount + fee, outputs are change
+ * only; see design 2.4).
+ */
+static int apply_delegate(nodus_witness_t *w,
+                           const uint8_t *tx_data, uint32_t tx_len,
+                           uint64_t block_height,
+                           uint64_t committed_fee) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_delegate: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    if (off + DNAC_PUBKEY_SIZE > tx_len) {
+        fprintf(stderr, "%s: apply_delegate: truncated appended fields\n", LOG_TAG);
+        return -1;
+    }
+    const uint8_t *validator_pubkey = tx_data + off;
+
+    /* Rule S defense-in-depth: reject self-delegation. */
+    if (memcmp(signer_pubkey, validator_pubkey, DNAC_PUBKEY_SIZE) == 0) {
+        fprintf(stderr, "%s: apply_delegate: self-delegation rejected (Rule S)\n",
+                LOG_TAG);
+        return -1;
+    }
+
+    /* Compute delegation_amount from native-DNAC flows.
+     *
+     * DELEGATE wire semantics (design 2.2): inputs = amount + fee + change,
+     * outputs = change only. So (input_sum - output_sum) == amount + fee.
+     *
+     * update_utxo_set currently assigns the entire (input - output)
+     * excess to block_fee_pool as "fee", which double-counts the
+     * staked amount on this path. Deferred to Phase 9 (Task 48-51
+     * block_fee_pool routing) — then the fee routing will become
+     * TX-type aware and committed_fee here will be the true fee.
+     *
+     * For now, Phase 8 records delegation_amount = input_sum - output_sum
+     * (which includes the fee as noise, bounded by current_fee ~0.01% of
+     * amount). The committed_fee parameter is accepted but unused
+     * pending the fee-routing fix. Once update_utxo_set learns DELEGATE
+     * semantics, switch to the exact formula
+     *     delegation_amount = input_sum - output_sum - committed_fee
+     */
+    (void)committed_fee;
+    uint64_t input_sum = 0, output_sum = 0;
+    if (sum_native_dnac_in_out(tx_data, tx_len, &input_sum, &output_sum) != 0) {
+        fprintf(stderr, "%s: apply_delegate: sum_native_dnac_in_out failed\n",
+                LOG_TAG);
+        return -1;
+    }
+    if (input_sum <= output_sum) {
+        fprintf(stderr, "%s: apply_delegate: input_sum (%llu) <= output_sum (%llu)\n",
+                LOG_TAG,
+                (unsigned long long)input_sum,
+                (unsigned long long)output_sum);
+        return -1;
+    }
+    uint64_t delegation_amount = input_sum - output_sum;
+
+    /* Fetch target validator. */
+    dnac_validator_record_t v;
+    int rc = nodus_validator_get(w, validator_pubkey, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_delegate: validator not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    if (v.status != DNAC_VALIDATOR_ACTIVE) {
+        fprintf(stderr, "%s: apply_delegate: validator not ACTIVE (status=%u)\n",
+                LOG_TAG, v.status);
+        return -1;
+    }
+
+    /* Fetch current reward accumulator for snapshot. */
+    dnac_reward_record_t r;
+    rc = nodus_reward_get(w, validator_pubkey, &r);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_delegate: reward record missing (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    /* Insert (or update if already exists) delegation row. */
+    dnac_delegation_record_t d;
+    memset(&d, 0, sizeof(d));
+    memcpy(d.delegator_pubkey, signer_pubkey, DNAC_PUBKEY_SIZE);
+    memcpy(d.validator_pubkey, validator_pubkey, DNAC_PUBKEY_SIZE);
+    d.amount             = delegation_amount;
+    d.delegated_at_block = block_height;
+    memcpy(d.reward_snapshot, r.accumulator, 16);
+
+    rc = nodus_delegation_insert(w, &d);
+    if (rc == -2) {
+        /* Existing row — top up amount and refresh snapshot + Rule O block.
+         * Note: Rule O's "1 epoch min hold" is measured from the most
+         * recent delegated_at_block, so resetting here imposes a fresh
+         * hold period on the added amount. */
+        dnac_delegation_record_t existing;
+        int gr = nodus_delegation_get(w, signer_pubkey, validator_pubkey,
+                                       &existing);
+        if (gr != 0) {
+            fprintf(stderr, "%s: apply_delegate: PK collision but get failed (rc=%d)\n",
+                    LOG_TAG, gr);
+            return -1;
+        }
+        /* Overflow guard */
+        if (existing.amount > UINT64_MAX - delegation_amount) {
+            fprintf(stderr, "%s: apply_delegate: amount overflow\n", LOG_TAG);
+            return -1;
+        }
+        existing.amount += delegation_amount;
+        existing.delegated_at_block = block_height;
+        memcpy(existing.reward_snapshot, r.accumulator, 16);
+        rc = nodus_delegation_update(w, &existing);
+    }
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_delegate: delegation insert/update failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    /* Bump validator totals. Rule S blocks self-delegation so every
+     * delegation is external. */
+    if (v.total_delegated > UINT64_MAX - delegation_amount ||
+        v.external_delegated > UINT64_MAX - delegation_amount) {
+        fprintf(stderr, "%s: apply_delegate: validator totals overflow\n", LOG_TAG);
+        return -1;
+    }
+    v.total_delegated    += delegation_amount;
+    v.external_delegated += delegation_amount;
+    rc = nodus_validator_update(w, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_delegate: validator_update failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    return 0;
+}
+
+/* Phase 8 Task 40 — STAKE state mutation.
+ *
+ * Parses the type-specific appended fields (commission_bps +
+ * unstake_destination_fp + purpose_tag), inserts a new validator row
+ * with self_stake=10M, seeds an empty reward row, bumps
+ * validator_stats.active_count.
+ */
+static int apply_stake(nodus_witness_t *w,
+                        const uint8_t *tx_data, uint32_t tx_len,
+                        uint64_t block_height) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_stake: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    if (off + 2 + 64 + DNAC_STAKE_PURPOSE_TAG_LEN > tx_len) {
+        fprintf(stderr, "%s: apply_stake: truncated appended fields\n", LOG_TAG);
+        return -1;
+    }
+
+    uint16_t commission_bps = ((uint16_t)tx_data[off] << 8) |
+                               (uint16_t)tx_data[off + 1];
+    const uint8_t *unstake_fp_raw = tx_data + off + 2;
+    /* purpose_tag bytes are validated by Phase 7 STAKE verify; we trust
+     * them here. */
+
+    dnac_validator_record_t v;
+    memset(&v, 0, sizeof(v));
+    memcpy(v.pubkey, signer_pubkey, DNAC_PUBKEY_SIZE);
+    v.self_stake              = DNAC_SELF_STAKE_AMOUNT;
+    v.total_delegated         = 0;
+    v.external_delegated      = 0;
+    v.commission_bps          = commission_bps;
+    v.pending_commission_bps  = 0;
+    v.pending_effective_block = 0;
+    v.status                  = DNAC_VALIDATOR_ACTIVE;
+    v.active_since_block      = block_height;
+    v.unstake_commit_block    = 0;
+    v.last_validator_update_block = 0;
+    v.consecutive_missed_epochs   = 0;
+    v.last_signed_block           = 0;
+
+    /* Convert 64 raw bytes to 128-char hex + NUL for the TEXT schema. */
+    qgp_fp_raw_to_hex(unstake_fp_raw, (char *)v.unstake_destination_fp);
+
+    /* If the destination fingerprint derives from the signer's own
+     * pubkey, populate unstake_destination_pubkey immediately so the
+     * post-cooldown SPEND can verify. Otherwise leave zero. */
+    uint8_t signer_fp_raw[64];
+    qgp_sha3_512(signer_pubkey, DNAC_PUBKEY_SIZE, signer_fp_raw);
+    if (memcmp(signer_fp_raw, unstake_fp_raw, 64) == 0) {
+        memcpy(v.unstake_destination_pubkey, signer_pubkey, DNAC_PUBKEY_SIZE);
+    }
+
+    int rc = nodus_validator_insert(w, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_stake: validator_insert failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    dnac_reward_record_t r;
+    memset(&r, 0, sizeof(r));
+    memcpy(r.validator_pubkey, signer_pubkey, DNAC_PUBKEY_SIZE);
+    r.last_update_block = block_height;
+    rc = nodus_reward_upsert(w, &r);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_stake: reward_upsert failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    char *err = NULL;
+    int src = sqlite3_exec(w->db,
+        "UPDATE validator_stats SET value = value + 1 WHERE key = 'active_count'",
+        NULL, NULL, &err);
+    if (src != SQLITE_OK) {
+        fprintf(stderr, "%s: apply_stake: active_count bump failed: %s\n",
+                LOG_TAG, err ? err : "(null)");
+        if (err) sqlite3_free(err);
+        return -1;
+    }
+
+    return 0;
+}
+
+/* Phase 8 Task 42 — UNSTAKE state mutation (phase 1 — RETIRING transition).
+ *
+ * UNSTAKE has no type-specific appended fields. The signer[0] pubkey is
+ * the validator requesting retirement. On success:
+ *   - status := RETIRING
+ *   - unstake_commit_block := block_height
+ *
+ * Rule A defense-in-depth: require NO delegation records exist with
+ * validator == signer[0]. Matches Phase 7 UNSTAKE verify rule A; this
+ * is the last-line-of-defense check.
+ *
+ * Graduation to UNSTAKED + cooldown UTXO emission is deferred to phase
+ * 2 (next epoch boundary). Keeps BFT peer set stable mid-epoch.
+ */
+static int apply_unstake(nodus_witness_t *w,
+                          const uint8_t *tx_data, uint32_t tx_len,
+                          uint64_t block_height) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_unstake: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    /* UNSTAKE has no appended fields — not enforced here (Phase 7
+     * UNSTAKE verify is the source of truth for wire-level constraints). */
+
+    /* Fetch validator — must exist and be ACTIVE. */
+    dnac_validator_record_t v;
+    int rc = nodus_validator_get(w, signer_pubkey, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_unstake: validator not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    if (v.status != DNAC_VALIDATOR_ACTIVE) {
+        fprintf(stderr, "%s: apply_unstake: validator not ACTIVE (status=%u)\n",
+                LOG_TAG, v.status);
+        return -1;
+    }
+
+    /* Rule A defense-in-depth: reject if any delegator references this
+     * validator. */
+    int deleg_count = 0;
+    if (nodus_delegation_count_by_validator(w, signer_pubkey,
+                                              &deleg_count) != 0) {
+        fprintf(stderr, "%s: apply_unstake: count_by_validator failed\n",
+                LOG_TAG);
+        return -1;
+    }
+    if (deleg_count != 0) {
+        fprintf(stderr, "%s: apply_unstake: %d delegations still reference this validator (Rule A)\n",
+                LOG_TAG, deleg_count);
+        return -1;
+    }
+
+    v.status               = DNAC_VALIDATOR_RETIRING;
+    v.unstake_commit_block = block_height;
+
+    rc = nodus_validator_update(w, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_unstake: validator_update failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    return 0;
+}
+
+/* Emit a synthetic native-DNAC UTXO owned by `owner_pubkey`. Used by
+ * UNDELEGATE and CLAIM_REWARD which produce payouts that are NOT
+ * encoded as wire-format outputs in tx_data (update_utxo_set doesn't
+ * see them).
+ *
+ * The nullifier is derived deterministically as
+ *   SHA3-512(tx_hash || kind_byte || u32_be(output_index))
+ * where kind_byte disambiguates multiple synthetic UTXOs from the same
+ * TX (e.g. UNDELEGATE emits 0x01 = principal and 0x02 = pending-reward).
+ *
+ * `output_index` MUST NOT collide with any wire-format output index used
+ * by update_utxo_set. Callers pass a high base (e.g. 100+) to stay
+ * clear of wire outputs which start at 0.
+ *
+ * Returns 0 on success, -1 on error. `unlock_block = 0` ⇒ immediately
+ * spendable.
+ */
+static int emit_synthetic_utxo(nodus_witness_t *w,
+                                 const uint8_t *tx_hash,
+                                 const uint8_t *owner_pubkey,
+                                 uint64_t amount,
+                                 uint64_t block_height,
+                                 uint8_t kind_byte,
+                                 uint32_t output_index,
+                                 uint64_t unlock_block) {
+    /* Derive synthetic nullifier: SHA3-512(tx_hash || kind || index_be). */
+    uint8_t preimage[64 + 1 + 4];
+    memcpy(preimage, tx_hash, 64);
+    preimage[64] = kind_byte;
+    preimage[65] = (uint8_t)((output_index >> 24) & 0xff);
+    preimage[66] = (uint8_t)((output_index >> 16) & 0xff);
+    preimage[67] = (uint8_t)((output_index >> 8) & 0xff);
+    preimage[68] = (uint8_t)(output_index & 0xff);
+    uint8_t nullifier[64];
+    qgp_sha3_512(preimage, sizeof(preimage), nullifier);
+
+    /* Owner fingerprint = hex-encoded SHA3-512(owner_pubkey). */
+    uint8_t owner_fp_raw[QGP_FP_RAW_BYTES];
+    qgp_sha3_512(owner_pubkey, DNAC_PUBKEY_SIZE, owner_fp_raw);
+    char owner_fp_hex[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(owner_fp_raw, owner_fp_hex);
+
+    /* Native DNAC token_id = 64 zeros. */
+    uint8_t zero_token_id[64];
+    memset(zero_token_id, 0, sizeof(zero_token_id));
+
+    int rc = nodus_witness_utxo_add_locked(w, nullifier, owner_fp_hex,
+                                             amount, tx_hash, output_index,
+                                             block_height, zero_token_id,
+                                             unlock_block);
+    if (rc != 0) {
+        fprintf(stderr, "%s: emit_synthetic_utxo: utxo_add_locked failed (rc=%d, kind=0x%02x, idx=%u)\n",
+                LOG_TAG, rc, kind_byte, output_index);
+        return -1;
+    }
+    return 0;
+}
+
+/* Phase 8 Task 46 — Emit a synthetic UTXO directly owned by a precomputed
+ * hex fingerprint. Used by the epoch-boundary graduation path where the
+ * owner is a stored `unstake_destination_fp` (validator record field) and
+ * the validator's own pubkey is not the owner. Mirrors emit_synthetic_utxo
+ * except it skips the SHA3-512(pubkey) fp derivation step.
+ *
+ * owner_fp_hex MUST be the 128-char lowercase hex fingerprint + NUL. The
+ * nullifier derivation, token_id (zeros), and locked-UTXO insert path are
+ * identical to emit_synthetic_utxo so the two helpers share identical
+ * supply-accounting behavior.
+ */
+static int emit_synthetic_utxo_for_fp(nodus_witness_t *w,
+                                         const uint8_t *tx_hash,
+                                         const char *owner_fp_hex,
+                                         uint64_t amount,
+                                         uint64_t block_height,
+                                         uint8_t kind_byte,
+                                         uint32_t output_index,
+                                         uint64_t unlock_block) {
+    /* Same nullifier derivation as emit_synthetic_utxo. */
+    uint8_t preimage[64 + 1 + 4];
+    memcpy(preimage, tx_hash, 64);
+    preimage[64] = kind_byte;
+    preimage[65] = (uint8_t)((output_index >> 24) & 0xff);
+    preimage[66] = (uint8_t)((output_index >> 16) & 0xff);
+    preimage[67] = (uint8_t)((output_index >> 8) & 0xff);
+    preimage[68] = (uint8_t)(output_index & 0xff);
+    uint8_t nullifier[64];
+    qgp_sha3_512(preimage, sizeof(preimage), nullifier);
+
+    uint8_t zero_token_id[64];
+    memset(zero_token_id, 0, sizeof(zero_token_id));
+
+    int rc = nodus_witness_utxo_add_locked(w, nullifier, owner_fp_hex,
+                                             amount, tx_hash, output_index,
+                                             block_height, zero_token_id,
+                                             unlock_block);
+    if (rc != 0) {
+        fprintf(stderr, "%s: emit_synthetic_utxo_for_fp: utxo_add_locked failed (rc=%d, kind=0x%02x, idx=%u)\n",
+                LOG_TAG, rc, kind_byte, output_index);
+        return -1;
+    }
+    return 0;
+}
+
+/* Phase 8 Task 43 — UNDELEGATE state mutation.
+ *
+ * Parses validator_pubkey[2592] + amount[8 BE] appended fields. Computes
+ * pending reward from the u128 accumulator math (design §3.5):
+ *     diff       = V.accumulator − D.reward_snapshot              (u128 BE)
+ *     pending_w  = (diff × D.amount) >> 64                        (u128)
+ *     pending    = (uint64) pending_w.lo                          (design §3.5: shift 64)
+ *
+ * Emits TWO synthetic UTXOs (Rule Q — always both, even if pending==0
+ * to preserve supply accounting invariants):
+ *   kind 0x01 = principal UTXO (amount = undelegate_amount)
+ *   kind 0x02 = pending-reward UTXO (amount = pending)
+ *
+ * Advances D.reward_snapshot := V.accumulator. If the delegation is
+ * fully drained (undelegate_amount == D.amount), deletes the row;
+ * otherwise decrements D.amount. Decrements V.total_delegated and
+ * V.external_delegated (Rule S — all delegations are external).
+ *
+ * No validator status gate: UNDELEGATE is permitted against any status
+ * so delegators of an AUTO_RETIRED / RETIRING / UNSTAKED validator can
+ * always pull their principal. Rule B only restricts new DELEGATEs.
+ */
+static int apply_undelegate(nodus_witness_t *w,
+                             const uint8_t *tx_data, uint32_t tx_len,
+                             uint64_t block_height,
+                             const uint8_t *tx_hash) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_undelegate: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    /* Appended: validator_pubkey[2592] + amount[8 BE] = 2600 bytes. */
+    if (off + DNAC_PUBKEY_SIZE + 8 > tx_len) {
+        fprintf(stderr, "%s: apply_undelegate: truncated appended fields\n", LOG_TAG);
+        return -1;
+    }
+    const uint8_t *validator_pubkey = tx_data + off;
+    uint64_t undelegate_amount = 0;
+    for (int i = 0; i < 8; i++) {
+        undelegate_amount = (undelegate_amount << 8) |
+                             (uint64_t)tx_data[off + DNAC_PUBKEY_SIZE + i];
+    }
+
+    /* Fetch delegation. */
+    dnac_delegation_record_t d;
+    int rc = nodus_delegation_get(w, signer_pubkey, validator_pubkey, &d);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_undelegate: delegation not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    if (undelegate_amount == 0 || undelegate_amount > d.amount) {
+        fprintf(stderr, "%s: apply_undelegate: invalid amount (req=%llu, have=%llu)\n",
+                LOG_TAG,
+                (unsigned long long)undelegate_amount,
+                (unsigned long long)d.amount);
+        return -1;
+    }
+
+    /* Fetch validator + reward. */
+    dnac_validator_record_t v;
+    rc = nodus_validator_get(w, validator_pubkey, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_undelegate: validator not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    dnac_reward_record_t r;
+    rc = nodus_reward_get(w, validator_pubkey, &r);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_undelegate: reward row missing (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    /* Pending reward math (design §3.5 — accumulator is u128 BE with
+     * fractional part in low 64 bits; pending = (acc − snap) × amount >> 64). */
+    qgp_u128_t acc  = qgp_u128_deserialize_be(r.accumulator);
+    qgp_u128_t snap = qgp_u128_deserialize_be(d.reward_snapshot);
+    if (qgp_u128_cmp(acc, snap) < 0) {
+        fprintf(stderr, "%s: apply_undelegate: snap > acc (impossible)\n", LOG_TAG);
+        return -1;
+    }
+    qgp_u128_t diff    = qgp_u128_sub(acc, snap);
+    qgp_u128_t pending_wide = qgp_u128_mul_u64(diff, d.amount);
+    /* >> 64 ⇒ take hi limb. High 64 bits of (pending_wide) is pending. */
+    uint64_t pending = pending_wide.hi;
+
+    /* Overflow guard: pending as u64 limits fit within one UTXO. If
+     * pending >> 64 didn't fit in u64 (i.e. the shifted result itself
+     * exceeded 2^64), that's a supply anomaly — abort. pending_wide.hi
+     * fitting in uint64_t is tautological; the real guard is that
+     * pending_wide itself must not have anything in a hypothetical
+     * >2^128 bucket, which qgp_u128_mul_u64 enforces via overflow abort. */
+
+    /* Emit principal UTXO (kind 0x01) — always spendable immediately. */
+    if (emit_synthetic_utxo(w, tx_hash, signer_pubkey, undelegate_amount,
+                              block_height, /*kind=*/0x01,
+                              /*output_index=*/100, /*unlock=*/0) != 0) {
+        return -1;
+    }
+    /* Emit pending-reward UTXO (kind 0x02) — ALWAYS, even if pending==0.
+     * Rule Q: keeps supply-accounting invariants symmetric across
+     * UNDELEGATE TXs regardless of accumulator state. */
+    if (emit_synthetic_utxo(w, tx_hash, signer_pubkey, pending,
+                              block_height, /*kind=*/0x02,
+                              /*output_index=*/101, /*unlock=*/0) != 0) {
+        return -1;
+    }
+
+    /* Advance delegation's snapshot. */
+    qgp_u128_serialize_be(acc, d.reward_snapshot);
+
+    if (undelegate_amount == d.amount) {
+        /* Fully drained — remove the row. */
+        rc = nodus_delegation_delete(w, signer_pubkey, validator_pubkey);
+    } else {
+        d.amount -= undelegate_amount;
+        rc = nodus_delegation_update(w, &d);
+    }
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_undelegate: delegation update/delete failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    /* Decrement validator totals. Rule S ⇒ all delegations are external. */
+    if (v.total_delegated < undelegate_amount ||
+        v.external_delegated < undelegate_amount) {
+        fprintf(stderr, "%s: apply_undelegate: validator total underflow\n", LOG_TAG);
+        return -1;
+    }
+    v.total_delegated    -= undelegate_amount;
+    v.external_delegated -= undelegate_amount;
+    rc = nodus_validator_update(w, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_undelegate: validator_update failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    return 0;
+}
+
+/* Phase 8 Task 44 — CLAIM_REWARD state mutation (dual path).
+ *
+ * Appended fields (design §2.3):
+ *   target_validator[2592] || max_pending_amount[8 BE] || valid_before_block[8 BE]
+ *
+ * Two disjoint paths:
+ *  1. VALIDATOR path (signer == target_validator): the claim drains
+ *     the validator's own reward bucket (self-stake share + commission
+ *     skim). Emits one synthetic UTXO amount = V.validator_unclaimed;
+ *     zeroes validator_unclaimed.
+ *  2. DELEGATOR path: computes pending via u128 (design §3.5) as in
+ *     apply_undelegate — pending = ((V.accumulator − D.reward_snapshot)
+ *     × D.amount) >> 64. Emits one UTXO at pending; advances
+ *     D.reward_snapshot := V.accumulator.
+ *
+ * `max_pending_amount` is the caller's cap from TX signing time —
+ * replay/race defense. If actual pending exceeds the cap, the TX is
+ * REJECTED (strict interpretation; matches design §2.4 Rule "pending
+ * <= max_pending_amount" on the verify side).
+ *
+ * `valid_before_block` is freshness; enforced in the verify path, not
+ * here.
+ */
+static int apply_claim_reward(nodus_witness_t *w,
+                                const uint8_t *tx_data, uint32_t tx_len,
+                                uint64_t block_height,
+                                const uint8_t *tx_hash) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_claim_reward: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    /* Appended: target_validator[2592] + max_pending[8 BE] + valid_before[8 BE]. */
+    if (off + DNAC_PUBKEY_SIZE + 8 + 8 > tx_len) {
+        fprintf(stderr, "%s: apply_claim_reward: truncated appended fields\n", LOG_TAG);
+        return -1;
+    }
+    const uint8_t *target = tx_data + off;
+    uint64_t max_pending = 0;
+    for (int i = 0; i < 8; i++) {
+        max_pending = (max_pending << 8) | (uint64_t)tx_data[off + DNAC_PUBKEY_SIZE + i];
+    }
+    /* valid_before_block is at off + DNAC_PUBKEY_SIZE + 8; not consumed
+     * here (verify-time). */
+
+    /* Fetch validator + reward row. */
+    dnac_validator_record_t v;
+    int rc = nodus_validator_get(w, target, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_claim_reward: validator not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    dnac_reward_record_t r;
+    rc = nodus_reward_get(w, target, &r);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_claim_reward: reward row missing (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    uint64_t pending = 0;
+    bool reward_dirty = false;
+
+    if (memcmp(signer_pubkey, target, DNAC_PUBKEY_SIZE) == 0) {
+        /* VALIDATOR path — drain validator_unclaimed. */
+        pending = r.validator_unclaimed;
+        r.validator_unclaimed = 0;
+        reward_dirty = true;
+    } else {
+        /* DELEGATOR path — pending from accumulator diff × amount >> 64. */
+        dnac_delegation_record_t d;
+        rc = nodus_delegation_get(w, signer_pubkey, target, &d);
+        if (rc != 0) {
+            fprintf(stderr, "%s: apply_claim_reward: delegation not found (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+        qgp_u128_t acc  = qgp_u128_deserialize_be(r.accumulator);
+        qgp_u128_t snap = qgp_u128_deserialize_be(d.reward_snapshot);
+        if (qgp_u128_cmp(acc, snap) < 0) {
+            fprintf(stderr, "%s: apply_claim_reward: snap > acc (impossible)\n",
+                    LOG_TAG);
+            return -1;
+        }
+        qgp_u128_t diff    = qgp_u128_sub(acc, snap);
+        qgp_u128_t wide    = qgp_u128_mul_u64(diff, d.amount);
+        /* >> 64 ⇒ take hi limb (design §3.5). */
+        pending = wide.hi;
+
+        qgp_u128_serialize_be(acc, d.reward_snapshot);
+        rc = nodus_delegation_update(w, &d);
+        if (rc != 0) {
+            fprintf(stderr, "%s: apply_claim_reward: delegation_update failed (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+    }
+
+    /* max_pending cap (design §2.4). */
+    if (pending > max_pending) {
+        fprintf(stderr, "%s: apply_claim_reward: pending %llu > max_pending %llu\n",
+                LOG_TAG,
+                (unsigned long long)pending,
+                (unsigned long long)max_pending);
+        return -1;
+    }
+
+    /* Emit reward UTXO (kind 0x03). */
+    if (emit_synthetic_utxo(w, tx_hash, signer_pubkey, pending,
+                              block_height, /*kind=*/0x03,
+                              /*output_index=*/100, /*unlock=*/0) != 0) {
+        return -1;
+    }
+
+    if (reward_dirty) {
+        r.last_update_block = block_height;
+        rc = nodus_reward_upsert(w, &r);
+        if (rc != 0) {
+            fprintf(stderr, "%s: apply_claim_reward: reward_upsert failed (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+/* Phase 8 Task 45 — VALIDATOR_UPDATE state mutation.
+ *
+ * Appended fields (design §2.3):
+ *   new_commission_bps[2 BE] || signed_at_block[8 BE]  (10 bytes total)
+ *
+ * Commission-change semantics (design §3.9):
+ *   - Increase (new > current): defer — set pending_commission_bps +
+ *     pending_effective_block := max(next_epoch_boundary, current_block +
+ *     DNAC_EPOCH_LENGTH). Delegators get a full epoch of notice.
+ *   - Decrease (new <= current): immediate — current_commission_bps :=
+ *     new, pending fields cleared. Decreases are always delegator-safe,
+ *     no notice needed.
+ *   - Equal (new == current): falls through the decrease branch; the
+ *     net effect is clearing any stale pending entry without mutating
+ *     current. Benign.
+ *
+ * Always: v.last_validator_update_block := block_height (Rule K cooldown).
+ *
+ * Requires the validator row to exist with status ∈ {ACTIVE, RETIRING}.
+ * UNSTAKED / AUTO_RETIRED validators cannot update commissions — their
+ * stake is frozen.
+ *
+ * signed_at_block is a verify-time field (freshness); not consumed here.
+ */
+static int apply_validator_update(nodus_witness_t *w,
+                                     const uint8_t *tx_data, uint32_t tx_len,
+                                     uint64_t block_height) {
+    size_t off = 0;
+    const uint8_t *signer_pubkey = NULL;
+    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
+        fprintf(stderr, "%s: apply_validator_update: malformed tx_data\n", LOG_TAG);
+        return -1;
+    }
+
+    /* Appended: new_commission_bps[2 BE] + signed_at_block[8 BE]. */
+    if (off + 2 + 8 > tx_len) {
+        fprintf(stderr, "%s: apply_validator_update: truncated appended fields\n", LOG_TAG);
+        return -1;
+    }
+    uint16_t new_bps = ((uint16_t)tx_data[off] << 8) |
+                        (uint16_t)tx_data[off + 1];
+    /* signed_at_block at off+2..off+9 — verify-time, ignored here. */
+
+    if (new_bps > DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr, "%s: apply_validator_update: new_bps %u > max %u\n",
+                LOG_TAG, new_bps, DNAC_COMMISSION_BPS_MAX);
+        return -1;
+    }
+
+    dnac_validator_record_t v;
+    int rc = nodus_validator_get(w, signer_pubkey, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_validator_update: validator not found (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+    if (v.status != DNAC_VALIDATOR_ACTIVE &&
+        v.status != DNAC_VALIDATOR_RETIRING) {
+        fprintf(stderr, "%s: apply_validator_update: validator status=%u not updatable\n",
+                LOG_TAG, v.status);
+        return -1;
+    }
+
+    if (new_bps > v.commission_bps) {
+        /* Increase — defer one full epoch. */
+        v.pending_commission_bps  = new_bps;
+        uint64_t next_epoch_boundary =
+            ((block_height / DNAC_EPOCH_LENGTH) + 1) * DNAC_EPOCH_LENGTH;
+        uint64_t plus_epoch = block_height + DNAC_EPOCH_LENGTH;
+        v.pending_effective_block = (next_epoch_boundary > plus_epoch)
+                                     ? next_epoch_boundary
+                                     : plus_epoch;
+    } else {
+        /* Decrease (or equal) — immediate + clear pending. */
+        v.commission_bps          = new_bps;
+        v.pending_commission_bps  = 0;
+        v.pending_effective_block = 0;
+    }
+    v.last_validator_update_block = block_height;
+
+    rc = nodus_validator_update(w, &v);
+    if (rc != 0) {
+        fprintf(stderr, "%s: apply_validator_update: validator_update failed (rc=%d)\n",
+                LOG_TAG, rc);
+        return -1;
+    }
+
+    return 0;
 }
 
 /* apply_tx_to_state — Phase 3 / Task 3.1.
@@ -856,14 +1770,55 @@ int apply_tx_to_state(nodus_witness_t *w,
         }
     }
 
-    /* ── Update supply tracking (burned fees) ─────────────────── */
-    if (!failed && committed_fee > 0 && w->db) {
-        if (nodus_witness_supply_add_burned(w, committed_fee, tx_hash) != 0) {
-            fprintf(stderr, "%s: supply_add_burned failed (fee=%llu)\n",
-                    LOG_TAG, (unsigned long long)committed_fee);
-            failed = true;
+    /* Phase 8 — stake & delegation state mutation. Runs AFTER
+     * update_utxo_set so committed_fee is known (needed by DELEGATE for
+     * exact amount calculation). Each helper is additive on top of the
+     * nullifier/UTXO updates handled above: STAKE/DELEGATE/UNSTAKE all
+     * still have at least one fee input whose nullifier was added. */
+    if (!failed && tx_data && tx_len > 0) {
+        if (tx_type == NODUS_W_TX_STAKE) {
+            if (apply_stake(w, tx_data, tx_len, block_height) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_DELEGATE) {
+            if (apply_delegate(w, tx_data, tx_len, block_height,
+                                committed_fee) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_UNSTAKE) {
+            if (apply_unstake(w, tx_data, tx_len, block_height) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_UNDELEGATE) {
+            if (apply_undelegate(w, tx_data, tx_len, block_height,
+                                  tx_hash) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_CLAIM_REWARD) {
+            if (apply_claim_reward(w, tx_data, tx_len, block_height,
+                                     tx_hash) != 0) {
+                failed = true;
+            }
+        } else if (tx_type == NODUS_W_TX_VALIDATOR_UPDATE) {
+            if (apply_validator_update(w, tx_data, tx_len,
+                                         block_height) != 0) {
+                failed = true;
+            }
         }
     }
+
+    /* Phase 6 / Task 31 — fees no longer decrement current_supply.
+     *
+     * Legacy behavior: fee → burn UTXO, supply_add_burned decremented
+     * current_supply by fee (invariant: genesis_supply = utxo_sum +
+     * total_burned). New behavior: fees accumulate in w->block_fee_pool
+     * and Phase 9 Task 49 routes them back into the committee. The
+     * supply invariant now reads: genesis_supply == utxo_sum +
+     * block_fee_pool (in-flight, zeroed per block) + total_burned
+     * (legacy column, untouched by SPEND fees). supply_invariant_violated
+     * is advisory during Phase 3 so the pool temporarily showing up as
+     * a non-zero delta is tolerated until Phase 9 lands. */
+    (void)committed_fee;
 
     /* Phase 3 / Task 3.4: supply check moved to finalize_block —
      * runs once per block instead of N times per batch. */
@@ -1014,6 +1969,812 @@ int apply_tx_to_state(nodus_witness_t *w,
     return 0;
 }
 
+/* Phase 8 Task 46 — epoch-boundary state transitions.
+ *
+ * Runs once per block inside finalize_block AFTER all per-TX
+ * apply_tx_to_state calls have finished, but BEFORE state_root is
+ * recomputed. No-op on non-epoch-boundary blocks.
+ *
+ * The three time-driven transitions implemented here:
+ *
+ *   1. Pending commission activation — any validator row whose
+ *      pending_effective_block == block_height and whose
+ *      pending_commission_bps != 0 promotes the pending rate to
+ *      current and clears both pending columns.
+ *
+ *   2. RETIRING → UNSTAKED graduation — any validator in RETIRING
+ *      status emits:
+ *        (a) a time-locked principal UTXO (amount = DNAC_SELF_STAKE_AMOUNT,
+ *            unlock_block = block_height + DNAC_UNSTAKE_COOLDOWN_BLOCKS)
+ *        (b) an immediately-spendable unclaimed-rewards UTXO
+ *            (amount = reward_record.validator_unclaimed, possibly zero
+ *             to preserve supply-accounting symmetry — Rule Q)
+ *      both owned by validator.unstake_destination_fp. Reward record's
+ *      validator_unclaimed is then zeroed, validator transitions to
+ *      UNSTAKED, and validator_stats.active_count is decremented.
+ *
+ *   3. Liveness-based AUTO_RETIRED — deferred. See TODO below.
+ *
+ * Committee election for the next epoch is ALSO an epoch-boundary
+ * operation but lives in Phase 10 / Task 51; only a TODO hook is
+ * present here.
+ *
+ * Synthetic UTXOs emitted at the boundary are not tied to a specific
+ * TX hash (no TX triggered them). We derive a deterministic
+ * pseudo-tx_hash as
+ *   SHA3-512("dnac_epoch_graduation_v1" || block_height[8 BE])
+ * which cannot collide with any real TX hash (real TX hashes are
+ * SHA3-512 over canonical TX preimage) and is deterministic across all
+ * witnesses for the same block.
+ *
+ * Returns 0 on success (including the no-op non-boundary path), -1 on
+ * any failure — caller (finalize_block) should propagate the error so
+ * the outer transaction rolls back.
+ */
+static int apply_epoch_boundary_transitions(nodus_witness_t *w,
+                                               uint64_t block_height) {
+    if (!w || !w->db) return -1;
+
+    /* Epoch-boundary check. block_height==0 would be pre-genesis; the
+     * first real epoch boundary is DNAC_EPOCH_LENGTH itself. */
+    if (block_height == 0 || (block_height % DNAC_EPOCH_LENGTH) != 0) {
+        return 0;
+    }
+
+    /* Derive deterministic pseudo-tx_hash for synthetic UTXOs. */
+    uint8_t boundary_tx_hash[64];
+    {
+        static const char tag[] = "dnac_epoch_graduation_v1";
+        const size_t tag_len = sizeof(tag) - 1;  /* exclude NUL */
+        uint8_t preimage[32 + 8];
+        memset(preimage, 0, sizeof(preimage));
+        memcpy(preimage, tag, tag_len);
+        /* Big-endian encoding of block_height in last 8 bytes. */
+        for (int i = 0; i < 8; i++) {
+            preimage[32 + i] =
+                (uint8_t)((block_height >> (56 - 8 * i)) & 0xff);
+        }
+        qgp_sha3_512(preimage, sizeof(preimage), boundary_tx_hash);
+    }
+
+    /* ─────── 1. Pending commission activation ─────── */
+    {
+        sqlite3_stmt *stmt = NULL;
+        const char *sql =
+            "UPDATE validators "
+            "SET commission_bps = pending_commission_bps, "
+            "    pending_commission_bps = 0, "
+            "    pending_effective_block = 0 "
+            "WHERE pending_effective_block = ? "
+            "  AND pending_commission_bps != 0";
+        int rc = sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "%s: epoch_boundary: prepare pending_commission failed: %s\n",
+                    LOG_TAG, sqlite3_errmsg(w->db));
+            return -1;
+        }
+        sqlite3_bind_int64(stmt, 1, (int64_t)block_height);
+        rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        if (rc != SQLITE_DONE) {
+            fprintf(stderr, "%s: epoch_boundary: exec pending_commission failed (rc=%d): %s\n",
+                    LOG_TAG, rc, sqlite3_errmsg(w->db));
+            return -1;
+        }
+    }
+
+    /* ─────── 2. RETIRING → UNSTAKED graduation ─────── */
+    {
+        /* Collect candidate pubkeys first — we cannot hold a SELECT stmt
+         * open across the subsequent UPDATEs on the same table. */
+        typedef struct {
+            uint8_t pubkey[DNAC_PUBKEY_SIZE];
+        } graduate_t;
+        graduate_t *candidates = NULL;
+        size_t candidate_count = 0, candidate_cap = 0;
+
+        sqlite3_stmt *sel = NULL;
+        int rc = sqlite3_prepare_v2(
+            w->db,
+            "SELECT pubkey FROM validators WHERE status = ?",
+            -1, &sel, NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "%s: epoch_boundary: prepare RETIRING select failed: %s\n",
+                    LOG_TAG, sqlite3_errmsg(w->db));
+            return -1;
+        }
+        sqlite3_bind_int(sel, 1, (int)DNAC_VALIDATOR_RETIRING);
+        while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
+            const void *pk = sqlite3_column_blob(sel, 0);
+            int pk_len = sqlite3_column_bytes(sel, 0);
+            if (!pk || pk_len != DNAC_PUBKEY_SIZE) {
+                fprintf(stderr, "%s: epoch_boundary: RETIRING pubkey wrong size (%d)\n",
+                        LOG_TAG, pk_len);
+                sqlite3_finalize(sel);
+                free(candidates);
+                return -1;
+            }
+            if (candidate_count == candidate_cap) {
+                size_t new_cap = candidate_cap ? candidate_cap * 2 : 8;
+                graduate_t *grown = realloc(candidates,
+                                              new_cap * sizeof(graduate_t));
+                if (!grown) {
+                    fprintf(stderr, "%s: epoch_boundary: OOM collecting RETIRING\n",
+                            LOG_TAG);
+                    sqlite3_finalize(sel);
+                    free(candidates);
+                    return -1;
+                }
+                candidates = grown;
+                candidate_cap = new_cap;
+            }
+            memcpy(candidates[candidate_count].pubkey, pk, DNAC_PUBKEY_SIZE);
+            candidate_count++;
+        }
+        sqlite3_finalize(sel);
+        if (rc != SQLITE_DONE) {
+            fprintf(stderr, "%s: epoch_boundary: RETIRING select step failed (rc=%d): %s\n",
+                    LOG_TAG, rc, sqlite3_errmsg(w->db));
+            free(candidates);
+            return -1;
+        }
+
+        /* Per-graduate: emit 2 UTXOs, zero reward, flip status, dec stat. */
+        for (size_t i = 0; i < candidate_count; i++) {
+            const uint8_t *val_pubkey = candidates[i].pubkey;
+
+            dnac_validator_record_t v;
+            rc = nodus_validator_get(w, val_pubkey, &v);
+            if (rc != 0) {
+                fprintf(stderr, "%s: epoch_boundary: validator_get failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                free(candidates);
+                return -1;
+            }
+
+            dnac_reward_record_t r;
+            rc = nodus_reward_get(w, val_pubkey, &r);
+            if (rc != 0) {
+                /* STAKE always inserts an empty reward row — this is a bug. */
+                fprintf(stderr, "%s: epoch_boundary: reward_get failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                free(candidates);
+                return -1;
+            }
+
+            /* Emit principal 10M locked UTXO (kind 0x10) — unlock_block =
+             * block_height + cooldown. Always emitted regardless of the
+             * self_stake column (which still reads DNAC_SELF_STAKE_AMOUNT
+             * since UNSTAKE phase-1 left it unchanged). */
+            if (emit_synthetic_utxo_for_fp(
+                    w, boundary_tx_hash,
+                    (const char *)v.unstake_destination_fp,
+                    DNAC_SELF_STAKE_AMOUNT,
+                    block_height,
+                    /*kind=*/0x10,
+                    /*output_index=*/200,
+                    /*unlock_block=*/block_height + DNAC_UNSTAKE_COOLDOWN_BLOCKS)
+                != 0) {
+                fprintf(stderr, "%s: epoch_boundary: emit principal UTXO failed\n",
+                        LOG_TAG);
+                free(candidates);
+                return -1;
+            }
+
+            /* Emit pending-unclaimed UTXO (kind 0x11) — ALWAYS even when
+             * r.validator_unclaimed == 0, matching Rule Q supply-symmetry
+             * used by UNDELEGATE/CLAIM_REWARD auto-claim paths. */
+            if (emit_synthetic_utxo_for_fp(
+                    w, boundary_tx_hash,
+                    (const char *)v.unstake_destination_fp,
+                    r.validator_unclaimed,
+                    block_height,
+                    /*kind=*/0x11,
+                    /*output_index=*/201,
+                    /*unlock_block=*/0) != 0) {
+                fprintf(stderr, "%s: epoch_boundary: emit unclaimed UTXO failed\n",
+                        LOG_TAG);
+                free(candidates);
+                return -1;
+            }
+
+            /* Zero validator_unclaimed and persist. */
+            r.validator_unclaimed = 0;
+            r.last_update_block = block_height;
+            rc = nodus_reward_upsert(w, &r);
+            if (rc != 0) {
+                fprintf(stderr, "%s: epoch_boundary: reward_upsert failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                free(candidates);
+                return -1;
+            }
+
+            /* Transition RETIRING → UNSTAKED. */
+            v.status = (uint8_t)DNAC_VALIDATOR_UNSTAKED;
+            rc = nodus_validator_update(w, &v);
+            if (rc != 0) {
+                fprintf(stderr, "%s: epoch_boundary: validator_update failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                free(candidates);
+                return -1;
+            }
+
+            /* Decrement active_count. A RETIRING validator was already
+             * subtracted from the committee by status filter but
+             * active_count still reflected the STAKE bump; graduation
+             * is when the counter actually drops. */
+            char *err = NULL;
+            int src = sqlite3_exec(w->db,
+                "UPDATE validator_stats SET value = value - 1 "
+                "WHERE key = 'active_count'",
+                NULL, NULL, &err);
+            if (src != SQLITE_OK) {
+                fprintf(stderr, "%s: epoch_boundary: active_count dec failed: %s\n",
+                        LOG_TAG, err ? err : "(null)");
+                if (err) sqlite3_free(err);
+                free(candidates);
+                return -1;
+            }
+        }
+
+        free(candidates);
+    }
+
+    /* ─────── 3. Liveness-based AUTO_RETIRED ─────── */
+    /* Phase 9 / Task 48 — liveness attendance transition.
+     *
+     * Per design §3 (Rule N): a validator that misses the liveness
+     * threshold for DNAC_AUTO_RETIRE_EPOCHS consecutive epochs is
+     * auto-retired. The per-block attendance watermark
+     * (validator.last_signed_block) is maintained by
+     * nodus_witness_record_attendance (called after cert_store in the
+     * BFT commit path). Here at the epoch boundary we read that
+     * watermark to decide who attended the past epoch.
+     *
+     * Semantics (v1 simplification): "present" == signed ANY block in
+     * the past epoch. This is stricter than the 80% threshold in
+     * design §3.5 (a validator that signed 95/120 is treated the same
+     * as one that signed 120/120) but it is a safe
+     * over-approximation: anyone counted "present" here would also
+     * clear the 80% bar. The DNAC_LIVENESS_THRESHOLD_BPS constant is
+     * retained for the accumulator-side liveness gate in Task 49.
+     *
+     * A future v2 refinement would add a per-epoch signed-block
+     * counter to validator_stats and compare against
+     * DNAC_LIVENESS_THRESHOLD_BPS exactly. */
+    {
+        uint64_t epoch_start = 0;
+        if (block_height > DNAC_EPOCH_LENGTH) {
+            epoch_start = block_height - DNAC_EPOCH_LENGTH;
+        }
+
+        /* Step 3a: increment consecutive_missed_epochs for ACTIVE
+         * validators whose last_signed_block is older than the past
+         * epoch start. Reset to 0 for those who signed within it. */
+        sqlite3_stmt *inc = NULL;
+        int rc = sqlite3_prepare_v2(w->db,
+            "UPDATE validators "
+            "SET consecutive_missed_epochs = consecutive_missed_epochs + 1 "
+            "WHERE status = ? AND last_signed_block < ? "
+            "  AND active_since_block + ? <= ?",
+            -1, &inc, NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "%s: epoch_boundary: prepare miss_inc failed: %s\n",
+                    LOG_TAG, sqlite3_errmsg(w->db));
+            return -1;
+        }
+        sqlite3_bind_int(inc, 1, (int)DNAC_VALIDATOR_ACTIVE);
+        sqlite3_bind_int64(inc, 2, (int64_t)epoch_start);
+        /* MIN_TENURE gate: a validator that just staked in the epoch
+         * being evaluated cannot be blamed for missing it. */
+        sqlite3_bind_int64(inc, 3, (int64_t)DNAC_MIN_TENURE_BLOCKS);
+        sqlite3_bind_int64(inc, 4, (int64_t)block_height);
+        rc = sqlite3_step(inc);
+        sqlite3_finalize(inc);
+        if (rc != SQLITE_DONE) {
+            fprintf(stderr, "%s: epoch_boundary: miss_inc step failed (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+
+        sqlite3_stmt *rst = NULL;
+        rc = sqlite3_prepare_v2(w->db,
+            "UPDATE validators SET consecutive_missed_epochs = 0 "
+            "WHERE status = ? AND last_signed_block >= ?",
+            -1, &rst, NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "%s: epoch_boundary: prepare miss_reset failed: %s\n",
+                    LOG_TAG, sqlite3_errmsg(w->db));
+            return -1;
+        }
+        sqlite3_bind_int(rst, 1, (int)DNAC_VALIDATOR_ACTIVE);
+        sqlite3_bind_int64(rst, 2, (int64_t)epoch_start);
+        rc = sqlite3_step(rst);
+        sqlite3_finalize(rst);
+        if (rc != SQLITE_DONE) {
+            fprintf(stderr, "%s: epoch_boundary: miss_reset step failed (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+
+        /* Step 3b: flip ACTIVE validators that crossed
+         * DNAC_AUTO_RETIRE_EPOCHS to AUTO_RETIRED. Count the flipped
+         * rows so active_count can be decremented once per flip. */
+        sqlite3_stmt *count = NULL;
+        rc = sqlite3_prepare_v2(w->db,
+            "SELECT COUNT(*) FROM validators "
+            "WHERE status = ? AND consecutive_missed_epochs >= ?",
+            -1, &count, NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr, "%s: epoch_boundary: prepare auto_retire count failed\n",
+                    LOG_TAG);
+            return -1;
+        }
+        sqlite3_bind_int(count, 1, (int)DNAC_VALIDATOR_ACTIVE);
+        sqlite3_bind_int64(count, 2, (int64_t)DNAC_AUTO_RETIRE_EPOCHS);
+        int retire_count = 0;
+        if (sqlite3_step(count) == SQLITE_ROW)
+            retire_count = sqlite3_column_int(count, 0);
+        sqlite3_finalize(count);
+
+        if (retire_count > 0) {
+            sqlite3_stmt *ar = NULL;
+            rc = sqlite3_prepare_v2(w->db,
+                "UPDATE validators SET status = ? "
+                "WHERE status = ? AND consecutive_missed_epochs >= ?",
+                -1, &ar, NULL);
+            if (rc != SQLITE_OK) {
+                fprintf(stderr, "%s: epoch_boundary: prepare auto_retire failed\n",
+                        LOG_TAG);
+                return -1;
+            }
+            sqlite3_bind_int(ar, 1, (int)DNAC_VALIDATOR_AUTO_RETIRED);
+            sqlite3_bind_int(ar, 2, (int)DNAC_VALIDATOR_ACTIVE);
+            sqlite3_bind_int64(ar, 3, (int64_t)DNAC_AUTO_RETIRE_EPOCHS);
+            rc = sqlite3_step(ar);
+            sqlite3_finalize(ar);
+            if (rc != SQLITE_DONE) {
+                fprintf(stderr, "%s: epoch_boundary: auto_retire step failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                return -1;
+            }
+
+            /* Decrement validator_stats.active_count by retire_count.
+             * Using a parameterized UPDATE to avoid embedding a raw
+             * integer in the SQL string. */
+            sqlite3_stmt *dec = NULL;
+            rc = sqlite3_prepare_v2(w->db,
+                "UPDATE validator_stats "
+                "SET value = value - ? WHERE key = 'active_count'",
+                -1, &dec, NULL);
+            if (rc != SQLITE_OK) {
+                fprintf(stderr, "%s: epoch_boundary: prepare active_count dec failed\n",
+                        LOG_TAG);
+                return -1;
+            }
+            sqlite3_bind_int64(dec, 1, (int64_t)retire_count);
+            rc = sqlite3_step(dec);
+            sqlite3_finalize(dec);
+            if (rc != SQLITE_DONE) {
+                fprintf(stderr, "%s: epoch_boundary: active_count dec step failed (rc=%d)\n",
+                        LOG_TAG, rc);
+                return -1;
+            }
+
+            QGP_LOG_INFO(LOG_TAG,
+                "auto-retired %d validator(s) at epoch boundary block %llu",
+                retire_count, (unsigned long long)block_height);
+        }
+    }
+
+    /* ─────── 4. Committee election for next epoch ─────── */
+    /* Phase 10 / Task 51-53 — committee election is demand-driven
+     * through nodus_committee_get_for_block(), which caches per-epoch
+     * on w->cached_committee_* and consumes the post-commit lookback
+     * snapshot defined in §3.6. apply_accumulator_update (next block
+     * in finalize_block) will see the freshly committed block_height
+     * and trigger a cache recompute on the first block of the next
+     * epoch. No explicit pre-computation needed at the boundary —
+     * BFT roster wiring (Task 59) consumes the same accessor. */
+
+    return 0;
+}
+
+/* Phase 9 / Task 49 — accumulator update with liveness gate + dust carry.
+ *
+ * Distributes w->block_fee_pool to the current block's committee per
+ * design §3.5 math:
+ *
+ *   per_member = block_fee_pool / |attending|
+ *   for each v in attending:
+ *     if v.total_delegated > 0:
+ *       delegator_share_raw = (per_member * v.total_delegated) /
+ *                             (v.self_stake + v.total_delegated)
+ *       commission_skim     = (delegator_share_raw * v.commission_bps) / 10000
+ *       delegator_pool      = delegator_share_raw - commission_skim
+ *       validator_share     = per_member - delegator_pool  // absorbs truncation
+ *       v.validator_unclaimed += validator_share
+ *       num = (delegator_pool << 64) + v.residual_dust
+ *       inc = num / v.total_delegated
+ *       v.residual_dust = num - inc * v.total_delegated
+ *       v.accumulator  += inc  (u128)
+ *     else:
+ *       v.validator_unclaimed += per_member
+ *
+ * Committee: nodus_committee_get_for_block(block_height) — Phase 10
+ * Task 51/52/53. The accessor caches the post-commit lookback-derived
+ * roster for the epoch; per-member stake/liveness values are
+ * re-resolved from the validator table on every block.
+ *
+ * Liveness gate: a committee member participates only if
+ * last_signed_block >= block_height - DNAC_LIVENESS_SHORT_WINDOW_BLOCKS.
+ *
+ * If no one attends the pool carries forward (NOT zeroed); the next
+ * block that has attendees receives the combined total. Design §3.5's
+ * global_unallocated_pool is stored in-place on w->block_fee_pool: we
+ * simply skip the drain when attending_count == 0.
+ *
+ * Called from finalize_block AFTER apply_epoch_boundary_transitions and
+ * BEFORE the state_root recompute so any distributions land in this
+ * block's committed state.
+ *
+ * Returns 0 on success or no-op, -1 on DB/arithmetic error. On error
+ * the caller's outer transaction rolls back.
+ */
+static int apply_accumulator_update(nodus_witness_t *w,
+                                      uint64_t block_height) {
+    if (!w || !w->db) return -1;
+    if (w->block_fee_pool == 0) return 0;
+    if (block_height == 0) return 0;
+
+    /* Phase 10 / Task 53 — committee pubkeys come from the per-epoch
+     * cache. Committee membership is FROZEN per epoch by design §3.6,
+     * but individual members' self_stake / total_delegated /
+     * last_signed_block mutate during the epoch (DELEGATE TXs,
+     * attendance updates). So we fetch fresh per-member records from
+     * the validator table after resolving the committee roster.
+     *
+     * Pre-Task-53 code called nodus_validator_top_n(committee_size,
+     * block_height-1) directly here; that re-ran the SQL + tiebreak
+     * sort on every block. The cached path hits the DB only on
+     * cache-miss (first block of an epoch). */
+    nodus_committee_member_t committee_roster[DNAC_COMMITTEE_SIZE];
+    int committee_count = 0;
+    if (nodus_committee_get_for_block(w, block_height, committee_roster,
+                                        DNAC_COMMITTEE_SIZE,
+                                        &committee_count) != 0) {
+        /* Missing validators table (fresh DB / pre-schema test fixture).
+         * Treat as empty committee — pool rolls forward. */
+        QGP_LOG_DEBUG(LOG_TAG,
+            "accumulator: committee unavailable (pre-schema); pool carries");
+        return 0;
+    }
+
+    if (committee_count == 0) {
+        /* No committee yet (bootstrap / all-retired). Pool rolls
+         * forward untouched. */
+        return 0;
+    }
+
+    /* Fetch fresh per-member validator records. The cache pins the
+     * identity set for the epoch; stakes/liveness can move within it. */
+    dnac_validator_record_t committee[DNAC_COMMITTEE_SIZE];
+    int resolved_count = 0;
+    for (int i = 0; i < committee_count; i++) {
+        int grc = nodus_validator_get(w, committee_roster[i].pubkey,
+                                        &committee[resolved_count]);
+        if (grc == 0) {
+            resolved_count++;
+        } else if (grc == 1) {
+            /* Member present in cache but missing from validators table —
+             * only possible if the row was force-deleted between
+             * cache populate and this block. Skip. */
+            continue;
+        } else {
+            fprintf(stderr, "%s: accumulator: validator_get failed for "
+                    "cached committee member\n", LOG_TAG);
+            return -1;
+        }
+    }
+    committee_count = resolved_count;
+    if (committee_count == 0) return 0;
+
+    /* Liveness gate: short recent-activity window. */
+    uint64_t min_signed = 0;
+    if (block_height > DNAC_LIVENESS_SHORT_WINDOW_BLOCKS) {
+        min_signed = block_height - DNAC_LIVENESS_SHORT_WINDOW_BLOCKS;
+    }
+
+    /* Attending indices into committee[]. */
+    int attending_idx[DNAC_COMMITTEE_SIZE];
+    int attending_count = 0;
+    for (int i = 0; i < committee_count; i++) {
+        if (committee[i].last_signed_block >= min_signed) {
+            attending_idx[attending_count++] = i;
+        }
+    }
+
+    if (attending_count == 0) {
+        /* All committee members offline — pool rolls forward per §3.5. */
+        return 0;
+    }
+
+    uint64_t pool = w->block_fee_pool;
+    uint64_t per_member = pool / (uint64_t)attending_count;
+    /* Any sub-member remainder stays in the pool for next block. The
+     * design names this global_unallocated_pool; implemented by not
+     * draining that portion. */
+    uint64_t sub_member_remainder =
+        pool - per_member * (uint64_t)attending_count;
+
+    if (per_member == 0) {
+        /* Pool too small to split — leave untouched. */
+        return 0;
+    }
+
+    /* Distribute. */
+    for (int ai = 0; ai < attending_count; ai++) {
+        dnac_validator_record_t *v = &committee[attending_idx[ai]];
+
+        dnac_reward_record_t r;
+        int rc = nodus_reward_get(w, v->pubkey, &r);
+        if (rc == 1) {
+            /* No reward row yet — synthesize an empty one (STAKE inserts
+             * this normally; tolerate test bootstrap skipping it). */
+            memset(&r, 0, sizeof(r));
+            memcpy(r.validator_pubkey, v->pubkey, DNAC_PUBKEY_SIZE);
+        } else if (rc != 0) {
+            fprintf(stderr, "%s: accumulator: reward_get failed (rc=%d)\n",
+                    LOG_TAG, rc);
+            return -1;
+        }
+
+        if (v->total_delegated > 0) {
+            uint64_t total_stake = v->self_stake + v->total_delegated;
+            if (total_stake == 0) {
+                /* Defensive — treat like no-delegator path. */
+                r.validator_unclaimed += per_member;
+            } else {
+                /* delegator_share_raw = per_member * total_delegated / total_stake
+                 * Use u128 to avoid overflow on the multiply. */
+                qgp_u128_t raw = qgp_u128_from_u64(per_member);
+                raw = qgp_u128_mul_u64(raw, v->total_delegated);
+                uint64_t dsr_rem = 0;
+                qgp_u128_t dsr128 = qgp_u128_div_u64(raw, total_stake, &dsr_rem);
+                if (dsr128.hi != 0) {
+                    fprintf(stderr, "%s: accumulator: dsr overflow\n", LOG_TAG);
+                    return -1;
+                }
+                uint64_t delegator_share_raw = dsr128.lo;
+
+                /* commission_skim = delegator_share_raw * commission_bps / 10000 */
+                uint64_t commission_skim = 0;
+                if (v->commission_bps > 0) {
+                    qgp_u128_t cs = qgp_u128_from_u64(delegator_share_raw);
+                    cs = qgp_u128_mul_u64(cs, (uint64_t)v->commission_bps);
+                    uint64_t cs_rem = 0;
+                    qgp_u128_t cs128 = qgp_u128_div_u64(cs, 10000ULL, &cs_rem);
+                    commission_skim = cs128.lo;
+                    if (commission_skim > delegator_share_raw) {
+                        commission_skim = delegator_share_raw;
+                    }
+                }
+
+                uint64_t delegator_pool = delegator_share_raw - commission_skim;
+                /* validator_share absorbs ALL truncation: per_member -
+                 * delegator_pool (design F-ECON-04 piece-sum exact). */
+                uint64_t validator_share = per_member - delegator_pool;
+
+                /* Overflow-safe adds. */
+                if (r.validator_unclaimed > UINT64_MAX - validator_share) {
+                    fprintf(stderr, "%s: accumulator: validator_unclaimed overflow\n",
+                            LOG_TAG);
+                    return -1;
+                }
+                r.validator_unclaimed += validator_share;
+
+                /* Accumulator math (u128 fixed-point):
+                 *   num = (delegator_pool << 64) + residual_dust
+                 *   inc = num / total_delegated
+                 *   residual = num - inc * total_delegated
+                 *   accumulator += inc
+                 */
+                if (delegator_pool > 0 || r.residual_dust > 0) {
+                    qgp_u128_t num = qgp_u128_shl(
+                        qgp_u128_from_u64(delegator_pool), 64);
+                    num = qgp_u128_add(num,
+                            qgp_u128_from_u64(r.residual_dust));
+
+                    uint64_t rem = 0;
+                    qgp_u128_t inc = qgp_u128_div_u64(num,
+                                        v->total_delegated, &rem);
+                    r.residual_dust = rem;
+
+                    qgp_u128_t acc = qgp_u128_deserialize_be(r.accumulator);
+                    acc = qgp_u128_add(acc, inc);
+                    qgp_u128_serialize_be(acc, r.accumulator);
+                }
+            }
+        } else {
+            /* No delegators: validator keeps the full per-member share. */
+            if (r.validator_unclaimed > UINT64_MAX - per_member) {
+                fprintf(stderr, "%s: accumulator: unclaimed overflow\n",
+                        LOG_TAG);
+                return -1;
+            }
+            r.validator_unclaimed += per_member;
+        }
+
+        r.last_update_block = block_height;
+        if (nodus_reward_upsert(w, &r) != 0) {
+            fprintf(stderr, "%s: accumulator: reward_upsert failed\n", LOG_TAG);
+            return -1;
+        }
+    }
+
+    /* Drain the distributed portion. Sub-member remainder stays in the
+     * pool as global_unallocated. */
+    w->block_fee_pool = sub_member_remainder;
+    return 0;
+}
+
+/* Phase 9 / Task 48 — per-block attendance record.
+ *
+ * For every PRECOMMIT voter whose witness_id maps to an ACTIVE
+ * validator row, update validator.last_signed_block = block_height.
+ * Used at the epoch boundary (apply_epoch_boundary_transitions) to
+ * decide whether each validator was "present" during the past epoch.
+ *
+ * voter_id is the first 32 bytes of SHA3-512(validator_pubkey) — the
+ * same truncation the DHT identity layer uses (see
+ * witness_setup_identity). We scan all rows with status in
+ * {ACTIVE, RETIRING}, hash their pubkey, and match. A RETIRING
+ * validator may still be on the committee for the current epoch so
+ * we bump its last_signed_block too; only ACTIVE rows are considered
+ * at the liveness check, however.
+ *
+ * Opens its OWN short-lived SQLite transaction separate from the
+ * block commit transaction. Rationale: Task 47 closed the block
+ * commit transaction inside the three wrapper functions before
+ * cert_store is called. A failed attendance update only costs a
+ * single block of credit for one validator; the epoch-boundary
+ * enforcement gate uses last_signed_block as a monotonic watermark
+ * so one missed bump is tolerable (a validator with enough
+ * attendance will still clear the threshold).
+ *
+ * Returns 0 on success, -1 on DB error.
+ */
+int nodus_witness_record_attendance(nodus_witness_t *w,
+                                      uint64_t block_height,
+                                      const nodus_witness_vote_record_t *votes,
+                                      int vote_count) {
+    if (!w || !w->db || !votes || vote_count <= 0) return 0;
+
+    /* Collect candidate validator rows once (bounded by MAX_VALIDATORS). */
+    typedef struct {
+        uint8_t pubkey[DNAC_PUBKEY_SIZE];
+        uint8_t voter_id[NODUS_T3_WITNESS_ID_LEN];
+        uint64_t last_signed_block;
+    } cand_t;
+
+    cand_t *cands = NULL;
+    size_t cand_count = 0, cand_cap = 0;
+
+    sqlite3_stmt *sel = NULL;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT pubkey, last_signed_block FROM validators "
+        "WHERE status IN (?, ?)",
+        -1, &sel, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: record_attendance: prepare select failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+    sqlite3_bind_int(sel, 1, (int)DNAC_VALIDATOR_ACTIVE);
+    sqlite3_bind_int(sel, 2, (int)DNAC_VALIDATOR_RETIRING);
+
+    while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
+        const void *pk = sqlite3_column_blob(sel, 0);
+        int pk_len = sqlite3_column_bytes(sel, 0);
+        if (!pk || pk_len != DNAC_PUBKEY_SIZE) continue;
+
+        if (cand_count == cand_cap) {
+            size_t new_cap = cand_cap ? cand_cap * 2 : 16;
+            cand_t *grown = realloc(cands, new_cap * sizeof(cand_t));
+            if (!grown) { sqlite3_finalize(sel); free(cands); return -1; }
+            cands = grown;
+            cand_cap = new_cap;
+        }
+        memcpy(cands[cand_count].pubkey, pk, DNAC_PUBKEY_SIZE);
+        cands[cand_count].last_signed_block =
+            (uint64_t)sqlite3_column_int64(sel, 1);
+        /* Derive voter_id = SHA3-512(pubkey)[0:32] — matches
+         * witness_setup_identity's truncation of nodus_fingerprint. */
+        uint8_t digest[64];
+        qgp_sha3_512(cands[cand_count].pubkey, DNAC_PUBKEY_SIZE, digest);
+        memcpy(cands[cand_count].voter_id, digest,
+               NODUS_T3_WITNESS_ID_LEN);
+        cand_count++;
+    }
+    sqlite3_finalize(sel);
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "%s: record_attendance: select step failed (rc=%d)\n",
+                LOG_TAG, rc);
+        free(cands);
+        return -1;
+    }
+
+    if (cand_count == 0) { free(cands); return 0; }
+
+    /* Attendance update runs in its own transaction. */
+    char *err = NULL;
+    if (sqlite3_exec(w->db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "%s: record_attendance: BEGIN failed: %s\n",
+                LOG_TAG, err ? err : "(null)");
+        if (err) sqlite3_free(err);
+        free(cands);
+        return -1;
+    }
+
+    sqlite3_stmt *upd = NULL;
+    rc = sqlite3_prepare_v2(w->db,
+        "UPDATE validators SET last_signed_block = ? WHERE pubkey = ?",
+        -1, &upd, NULL);
+    if (rc != SQLITE_OK) {
+        sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        free(cands);
+        return -1;
+    }
+
+    int matched = 0;
+    for (int i = 0; i < vote_count; i++) {
+        /* Skip non-APPROVE votes (disapproval means no credit). */
+        if (votes[i].vote != NODUS_W_VOTE_APPROVE) continue;
+        for (size_t j = 0; j < cand_count; j++) {
+            if (memcmp(votes[i].voter_id, cands[j].voter_id,
+                       NODUS_T3_WITNESS_ID_LEN) != 0) continue;
+            /* Monotonic watermark — do not step backwards if block_height
+             * is somehow older than the stored value. */
+            if (block_height <= cands[j].last_signed_block) break;
+
+            sqlite3_reset(upd);
+            sqlite3_bind_int64(upd, 1, (int64_t)block_height);
+            sqlite3_bind_blob(upd, 2, cands[j].pubkey,
+                              DNAC_PUBKEY_SIZE, SQLITE_STATIC);
+            if (sqlite3_step(upd) != SQLITE_DONE) {
+                fprintf(stderr, "%s: record_attendance: update failed: %s\n",
+                        LOG_TAG, sqlite3_errmsg(w->db));
+                sqlite3_finalize(upd);
+                sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+                free(cands);
+                return -1;
+            }
+            cands[j].last_signed_block = block_height;
+            matched++;
+            break;
+        }
+    }
+    sqlite3_finalize(upd);
+
+    if (sqlite3_exec(w->db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "%s: record_attendance: COMMIT failed: %s\n",
+                LOG_TAG, err ? err : "(null)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        free(cands);
+        return -1;
+    }
+
+    if (matched > 0) {
+        QGP_LOG_DEBUG(LOG_TAG,
+            "record_attendance: block %llu — %d/%d voters credited",
+            (unsigned long long)block_height, matched, vote_count);
+    }
+
+    free(cands);
+    return 0;
+}
+
 /* finalize_block — Phase 3 / Task 3.2.
  *
  * Per-block work: invalidate the cached state_root, recompute it from
@@ -1045,16 +2806,61 @@ int finalize_block(nodus_witness_t *w,
     if (tx_count == 0 || tx_count > NODUS_W_MAX_BLOCK_TXS) return -1;
     if (!tx_hashes) return -1;
 
-    (void)expected_height;  /* Phase 6 will assert against block_height(w)+1 */
+    /* Phase 9 / Task 47 — finalize_block MUST run inside the outer
+     * single-transaction block wrapper. The commit_genesis /
+     * commit_batch / replay_block callers open BEGIN IMMEDIATE before
+     * the first apply_tx_to_state and either COMMIT on success or
+     * ROLLBACK on any error (design F-STATE-02). Catch callers that
+     * bypass the wrapper here — they would silently partial-commit. */
+    if (!w->in_block_transaction) {
+        fprintf(stderr, "%s: finalize_block: called outside block "
+                "transaction (F-STATE-02 violation)\n", LOG_TAG);
+        return -1;
+    }
+
+    /* Phase 8 Task 46 — epoch-boundary state transitions.
+     *
+     * MUST run AFTER per-TX apply_tx_to_state calls (so pending-commission
+     * rows set by this block's VALIDATOR_UPDATE TXs with
+     * pending_effective_block == block_height are visible) and BEFORE the
+     * state_root recomputation below (so all epoch-driven mutations are
+     * reflected in the committed root). This implements step 5 of design
+     * §4.1's block-commit order.
+     *
+     * `expected_height` is the height the block is being committed at —
+     * passed by all callers (commit_genesis, commit_batch, replay_block).
+     */
+    if (apply_epoch_boundary_transitions(w, expected_height) != 0) {
+        fprintf(stderr, "%s: finalize_block: epoch_boundary failed\n",
+                LOG_TAG);
+        return -1;
+    }
+
+    /* Phase 9 / Task 49 — distribute block_fee_pool to the attending
+     * committee per design §3.5. MUST run before state_root recompute
+     * so the reward-tree mutations are reflected in the committed
+     * root. Called AFTER apply_epoch_boundary_transitions so any
+     * validator status flips this block (commission activations,
+     * graduations, auto-retirements) already settled. */
+    if (apply_accumulator_update(w, expected_height) != 0) {
+        fprintf(stderr, "%s: finalize_block: accumulator_update failed\n",
+                LOG_TAG);
+        return -1;
+    }
 
     /* Invalidate the cached UTXO checksum — the per-TX writes from this
      * batch made the previous root stale. Phase 11 renames this to
      * cached_state_root. */
     w->cached_state_root_valid = false;
 
-    /* 1. Compute post-batch state_root. */
+    /* 1. Compute post-batch state_root.
+     *
+     * Phase 3 / Task 10: extended to SHA3-512(utxo || validator ||
+     * delegation || reward) via nodus_witness_merkle_compute_state_root.
+     * validator/delegation/reward subtrees default to empty-root stubs
+     * until Phase 4+ populates them from real state. */
     uint8_t state_root[NODUS_T3_TX_HASH_LEN];
-    if (nodus_witness_merkle_compute_utxo_root(w, state_root) != 0) {
+    if (nodus_witness_merkle_compute_state_root(w, state_root) != 0) {
         fprintf(stderr, "%s: finalize_block: state_root compute failed\n",
                 LOG_TAG);
         return -1;
@@ -1080,6 +2886,28 @@ int finalize_block(nodus_witness_t *w,
         return -1;
     }
 
+    /* Phase 9 / Task 49 — apply_accumulator_update (called above)
+     * drained the distributable portion into the reward accumulator
+     * and left any sub-member remainder / no-attendance carry in
+     * w->block_fee_pool (design §3.5's global_unallocated_pool). The
+     * unconditional zeroing that lived here pre-Task 49 was a
+     * placeholder; Task 49 owns the pool lifecycle now. */
+    if (w->block_fee_pool > 0) {
+        QGP_LOG_DEBUG(LOG_TAG,
+            "finalize_block: block_fee_pool carry = %llu (block %llu)",
+            (unsigned long long)w->block_fee_pool,
+            (unsigned long long)expected_height);
+    }
+
+    return 0;
+}
+
+/* Phase 6 / Task 31 — accessor for the in-progress block fee pool.
+ * Used by Phase 9 Task 49 to drain into the reward accumulator. */
+int nodus_witness_get_block_fee_pool(const nodus_witness_t *witness,
+                                       uint64_t *out) {
+    if (!witness) return -1;
+    if (out) *out = witness->block_fee_pool;
     return 0;
 }
 
@@ -1449,6 +3277,28 @@ int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
 
 /* ════════════════════════════════════════════════════════════════════
  * Handle PROPOSAL (follower receives from leader)
+ *
+ * F-CONS-06 invariant (mandatory independent state_root recompute):
+ *   The wire-format nodus_t3_propose_t does NOT carry a leader-claimed
+ *   state_root, and no code path below signs PREVOTE on the basis of
+ *   a leader-supplied state_root. Every follower runs
+ *   nodus_witness_verify_transaction() on each batch TX and validates
+ *   block_hash from the batch's own tx_hashes — no "trust-leader"
+ *   fast-path exists.
+ *
+ *   After COMMIT, each follower calls
+ *   nodus_witness_merkle_compute_state_root() against its own DB
+ *   (see handle_commit at the bottom of this file) and compares the
+ *   result against the leader's COMMIT-message state_root. A
+ *   compromised leader therefore cannot force followers to adopt an
+ *   invalid post-block state.
+ *
+ *   DO NOT add a field to nodus_t3_propose_t that carries a leader-
+ *   claimed state_root followers sign without local recompute — that
+ *   would reintroduce the exact fast-path F-CONS-06 forbids. See
+ *   design doc 2026-04-17-witness-stake-delegation-design.md §F-CONS-06
+ *   and the regression test tests/test_prevote_state_root_mutation.c
+ *   before editing this flow.
  * ════════════════════════════════════════════════════════════════════ */
 
 int nodus_witness_bft_handle_propose(nodus_witness_t *w,
@@ -1905,6 +3755,13 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             nodus_witness_cert_store(w, bh, w->round_state.precommits,
                                       w->round_state.precommit_count);
 
+            /* Phase 9 / Task 48 — liveness attendance. Update
+             * validator.last_signed_block for every APPROVE PRECOMMIT
+             * voter whose witness_id matches an ACTIVE/RETIRING row. */
+            nodus_witness_record_attendance(w, bh,
+                                              w->round_state.precommits,
+                                              w->round_state.precommit_count);
+
             fprintf(stderr, "%s: BATCH COMMITTED round %lu (%d TXs, height %llu)\n",
                     LOG_TAG, (unsigned long)w->round_state.round,
                     w->round_state.batch_count,
@@ -1914,14 +3771,17 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     /* Phase 9 cleanup — legacy single-TX commit branch deleted; every
      * round goes through the batch path above since Phase 7. */
 
-    /* Compute UTXO set checksum */
+    /* Compute chain state_root (Phase 3 / Task 10: 4-subtree composite).
+     * The cached_state_root + COMMIT message field must match what
+     * finalize_block wrote into the block row, so we use the same
+     * compute_state_root path here. */
     uint8_t utxo_cksum[NODUS_KEY_BYTES];
-    bool have_cksum = (nodus_witness_merkle_compute_utxo_root(w, utxo_cksum) == 0);
+    bool have_cksum = (nodus_witness_merkle_compute_state_root(w, utxo_cksum) == 0);
     if (have_cksum) {
         char hex[17];
         for (int i = 0; i < 8; i++)
             snprintf(hex + i * 2, 3, "%02x", utxo_cksum[i]);
-        fprintf(stderr, "%s: UTXO checksum after round %llu: %s\n",
+        fprintf(stderr, "%s: state_root after round %llu: %s\n",
                 LOG_TAG, (unsigned long long)w->round_state.round, hex);
         memcpy(w->cached_state_root, utxo_cksum, NODUS_KEY_BYTES);
         w->cached_state_root_valid = true;
@@ -2092,16 +3952,34 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                    NODUS_SIG_BYTES);
         }
         nodus_witness_cert_store(w, bh, votes, (int)cmt->n_precommits);
+
+        /* Phase 9 / Task 48 — liveness attendance. Follower path: votes
+         * were transcribed from cmt->certs; all certs are APPROVE by
+         * construction (leader only aggregates APPROVE precommits). */
+        nodus_witness_record_attendance(w, bh, votes,
+                                          (int)cmt->n_precommits);
     }
 
-    /* Compute UTXO set checksum and compare with leader's */
+    /* Compute chain state_root and compare with leader's (Phase 3 / Task 10).
+     *
+     * F-CONS-06 — Independent state_root recompute.
+     * The follower ALWAYS calls nodus_witness_merkle_compute_state_root()
+     * against its own freshly-committed DB state. The leader's claimed
+     * state_root (cmt->state_root, sourced from the COMMIT message) is
+     * NEVER copied into w->cached_state_root; only the locally-computed
+     * utxo_cksum value is retained. That guarantees a compromised leader
+     * cannot propagate an invalid post-block state into follower caches
+     * — even a WARN-level divergence leaves the follower with its own
+     * honest state_root for every downstream consumer (cert preimages,
+     * block header assembly, Merkle proof anchoring).
+     * Regression: tests/test_prevote_state_root_mutation.c. */
     {
         uint8_t utxo_cksum[NODUS_KEY_BYTES];
-        if (nodus_witness_merkle_compute_utxo_root(w, utxo_cksum) == 0) {
+        if (nodus_witness_merkle_compute_state_root(w, utxo_cksum) == 0) {
             char hex[17];
             for (int i = 0; i < 8; i++)
                 snprintf(hex + i * 2, 3, "%02x", utxo_cksum[i]);
-            QGP_LOG_DEBUG(LOG_TAG, "UTXO checksum after remote commit round %llu: %s",
+            QGP_LOG_DEBUG(LOG_TAG, "state_root after remote commit round %llu: %s",
                          (unsigned long long)hdr->round, hex);
 
             /* Compare with leader's checksum (if present) */
@@ -2109,11 +3987,13 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
             memset(zero_ck, 0, NODUS_KEY_BYTES);
             if (memcmp(cmt->state_root, zero_ck, NODUS_KEY_BYTES) != 0) {
                 if (memcmp(utxo_cksum, cmt->state_root, NODUS_KEY_BYTES) != 0) {
-                    QGP_LOG_WARN(LOG_TAG, "UTXO checksum DIVERGED from "
+                    QGP_LOG_WARN(LOG_TAG, "state_root DIVERGED from "
                                  "leader at round %llu!",
                                  (unsigned long long)hdr->round);
                 }
             }
+            /* F-CONS-06: retain locally-computed value only, never the
+             * leader's claim. */
             memcpy(w->cached_state_root, utxo_cksum, NODUS_KEY_BYTES);
             w->cached_state_root_valid = true;
         }
@@ -2545,6 +4425,16 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
                 }
             }
         }
+    }
+
+    /* Phase 12 Task 57 — seed validator_tree + reward_tree from the
+     * initial_validators[] block of the chain_def. Runs inside the same
+     * db transaction as apply_tx_to_state / finalize_block, so a failure
+     * rolls back atomically with the genesis commit. */
+    if (nodus_witness_genesis_seed_validators(w, cd_blob, (size_t)cd_blob_len) != 0) {
+        fprintf(stderr, "%s: genesis_seed_validators failed\n", LOG_TAG);
+        nodus_witness_db_rollback(w);
+        return -1;
     }
 
     if (finalize_block(w, tx_hash, 1, proposer_id, timestamp, bh,

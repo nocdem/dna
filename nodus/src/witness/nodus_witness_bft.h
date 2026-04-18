@@ -99,6 +99,20 @@ int nodus_witness_replay_block(nodus_witness_t *w,
                                  uint64_t timestamp,
                                  const uint8_t *proposer_id);
 
+/* Phase 9 / Task 48 — per-block liveness attendance record.
+ *
+ * For each APPROVE PRECOMMIT voter whose witness_id matches a validator
+ * row (status ACTIVE or RETIRING), set last_signed_block = block_height.
+ * Opens its own short-lived SQLite transaction (the block commit
+ * transaction is already closed by the time the BFT / sync layer calls
+ * this after nodus_witness_cert_store). Monotonic — never walks
+ * last_signed_block backwards. Safe with votes == NULL or vote_count <= 0.
+ */
+int nodus_witness_record_attendance(nodus_witness_t *w,
+                                      uint64_t block_height,
+                                      const nodus_witness_vote_record_t *votes,
+                                      int vote_count);
+
 /** Handle decoded PROPOSAL message. */
 int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                                        const nodus_t3_msg_t *msg);

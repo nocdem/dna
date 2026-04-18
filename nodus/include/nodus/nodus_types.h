@@ -21,9 +21,9 @@ extern "C" {
 /* ── Protocol constants ──────────────────────────────────────────── */
 
 #define NODUS_VERSION_MAJOR  0
-#define NODUS_VERSION_MINOR  12
-#define NODUS_VERSION_PATCH  14
-#define NODUS_VERSION_STRING "0.12.14"
+#define NODUS_VERSION_MINOR  13
+#define NODUS_VERSION_PATCH  0
+#define NODUS_VERSION_STRING "0.13.0-stake.wip"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -155,6 +155,29 @@ extern "C" {
 #define NODUS_W_MAX_MEMPOOL         64      /* max pending TXs in mempool */
 #define NODUS_W_MAX_BLOCK_TXS       10      /* max TXs per batch/block */
 #define NODUS_W_MAX_PENDING_FWD     16      /* max pending forward slots */
+
+/* Stake & Committee (v1) — mirrored from dnac.h so the witness side can
+ * reference committee sizing / epoch timing / liveness thresholds without
+ * pulling in dnac public headers. Client-side builder constants
+ * (DNAC_SELF_STAKE_AMOUNT, DNAC_MIN_DELEGATION, etc.) live only in dnac.h. */
+#define NODUS_COMMITTEE_SIZE            7
+#define NODUS_EPOCH_LENGTH              120
+#define NODUS_MIN_TENURE_BLOCKS         240
+#define NODUS_UNSTAKE_COOLDOWN_BLOCKS   17280
+#define NODUS_LIVENESS_THRESHOLD_BPS    8000
+#define NODUS_AUTO_RETIRE_EPOCHS        3
+#define NODUS_MAX_VALIDATORS            128
+
+/* Merkle tree tags (v1 stake/delegation) — domain separators preventing
+ * cross-tree leaf-key collisions (F-CRYPTO-04 red-team mitigation).
+ * Every Merkle leaf key and value hash MUST be prefixed with its
+ * tree's tag byte.
+ *
+ * See design §3.1 / §3.2–§3.4 for per-tree usage. */
+#define NODUS_TREE_TAG_UTXO        0x01u
+#define NODUS_TREE_TAG_VALIDATOR   0x02u
+#define NODUS_TREE_TAG_DELEGATION  0x03u
+#define NODUS_TREE_TAG_REWARD      0x04u
 
 /* Burn address: all-zero fingerprint (128 hex zero = 64 bytes zero)
  * Fee UTXOs are recorded here. Unspendable — no private key exists. */
@@ -572,6 +595,63 @@ typedef struct {
     int      count;
     nodus_dnac_block_result_t *blocks;  /* Heap-allocated, caller frees */
 } nodus_dnac_block_range_result_t;
+
+/* ── Phase 14 / Stake-delegation v1 query results ─────────────────── */
+
+/** Per-validator pending-rewards entry (Phase 14 / Task 61). */
+typedef struct {
+    uint8_t  validator_pubkey[2592];   /* DNAC_PUBKEY_SIZE */
+    uint64_t amount;
+} nodus_dnac_pending_entry_t;
+
+/** Pending-rewards query result.
+ *
+ * Owns a heap-allocated entries array; caller MUST free via
+ * nodus_client_free_pending_rewards_result(). */
+typedef struct {
+    uint64_t total;
+    int      count;
+    nodus_dnac_pending_entry_t *entries;
+} nodus_dnac_pending_rewards_result_t;
+
+/** Committee member entry returned by dnac_committee_query. */
+typedef struct {
+    uint8_t  pubkey[2592];
+    uint64_t total_stake;
+    uint16_t commission_bps;
+    uint8_t  status;             /* dnac_validator_status_t */
+    char     address[256];       /* Empty string if unknown. */
+} nodus_dnac_committee_entry_t;
+
+/** Committee query result. Fixed-size entries[] array sized to
+ * DNAC_COMMITTEE_SIZE (=7). */
+typedef struct {
+    uint64_t block_height;
+    uint64_t epoch_start;
+    int      count;
+    nodus_dnac_committee_entry_t entries[7];   /* DNAC_COMMITTEE_SIZE */
+} nodus_dnac_committee_result_t;
+
+/** Validator list entry (Phase 14 / Task 63). Same field layout as
+ * dnac_validator_list_entry_t in dnac.h — kept separate so nodus doesn't
+ * depend on dnac headers. */
+typedef struct {
+    uint8_t  pubkey[2592];
+    uint64_t self_stake;
+    uint64_t total_delegated;
+    uint64_t external_delegated;
+    uint16_t commission_bps;
+    uint8_t  status;
+    uint64_t active_since_block;
+} nodus_dnac_validator_list_entry_t;
+
+/** Validator list query result. entries is heap; caller frees via
+ * nodus_client_free_validator_list_result(). */
+typedef struct {
+    int      count;
+    int      total;            /* Total matching filter (pre-pagination). */
+    nodus_dnac_validator_list_entry_t *entries;
+} nodus_dnac_validator_list_result_t;
 
 /* ── Utility ─────────────────────────────────────────────────────── */
 

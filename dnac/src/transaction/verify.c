@@ -22,6 +22,440 @@
 
 #define LOG_TAG "DNAC_VERIFY"
 
+/* Zero-filled token_id buffer — matches a native DNAC input/output. */
+static const uint8_t DNAC_NATIVE_TOKEN_ID[DNAC_TOKEN_ID_SIZE] = {0};
+
+/**
+ * @brief Verify STAKE-type rules (design §2.4, Phase 6 Task 22).
+ *
+ * Enforces the locally-verifiable subset of the STAKE rule set — rules
+ * that a client can check without access to the witness validator_tree
+ * database:
+ *
+ *   - signer_count == 1
+ *   - commission_bps <= DNAC_COMMISSION_BPS_MAX
+ *   - purpose_tag == DNAC_STAKE_PURPOSE_TAG (defense-in-depth; the wire
+ *     layer already rejects mismatches at deserialize time, see Task 16)
+ *   - sum(DNAC inputs) >= DNAC_SELF_STAKE_AMOUNT + sum(DNAC outputs)
+ *     (equivalently: inputs >= 10M + outputs, which implicitly covers
+ *      "inputs >= 10M + fee" for any non-negative fee since
+ *      fee == inputs − outputs − 10M)
+ *
+ * Rules I (pubkey NOT in validator_tree) and M (|validator_tree| < 128)
+ * require DB access and are enforced by the witness at state-apply time
+ * — Phase 8 Task 40 territory.
+ *
+ * The stricter "outputs == inputs − 10M − fee" equality check requires
+ * knowing the fee externally; the witness enforces the exact fee value
+ * against its mempool schedule separately. Client-side can only verify
+ * the inequality bound — a TX satisfying the inequality implies SOME
+ * non-negative fee == inputs − outputs − 10M is consistent; the witness
+ * validates whether that value matches policy.
+ */
+static int verify_stake_rules(const dnac_transaction_t *tx) {
+    /* signer_count == 1 */
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "STAKE: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* commission_bps <= 10000 */
+    if (tx->stake_fields.commission_bps > DNAC_COMMISSION_BPS_MAX) {
+        QGP_LOG_ERROR(LOG_TAG, "STAKE: commission_bps=%u > %u",
+                      (unsigned)tx->stake_fields.commission_bps,
+                      (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* purpose_tag match — defense-in-depth. The deserialize path (Task 16)
+     * already rejects any mismatched tag on the wire; an in-memory TX
+     * reaching verify should never fail this check unless it was
+     * constructed directly without round-tripping through the wire. */
+    /* purpose_tag lives on the wire / in the preimage, not as a struct
+     * field — it is implicitly validated by dnac_tx_deserialize() and
+     * by dnac_tx_compute_hash() binding the literal into the preimage.
+     * No runtime field to re-check here. */
+
+    /* Σ DNAC input >= DNAC_SELF_STAKE_AMOUNT + Σ DNAC output.
+     * Filter to native DNAC token (token_id == zeros); other tokens are
+     * not part of the self-stake accounting and pass through verify_balance_per_token. */
+    uint64_t dnac_in = 0;
+    uint64_t dnac_out = 0;
+    for (int i = 0; i < tx->input_count; i++) {
+        if (memcmp(tx->inputs[i].token_id, DNAC_NATIVE_TOKEN_ID, DNAC_TOKEN_ID_SIZE) != 0)
+            continue;
+        if (safe_add_u64(dnac_in, tx->inputs[i].amount, &dnac_in) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "STAKE: input amount overflow");
+            return DNAC_ERROR_OVERFLOW;
+        }
+    }
+    for (int i = 0; i < tx->output_count; i++) {
+        if (memcmp(tx->outputs[i].token_id, DNAC_NATIVE_TOKEN_ID, DNAC_TOKEN_ID_SIZE) != 0)
+            continue;
+        if (safe_add_u64(dnac_out, tx->outputs[i].amount, &dnac_out) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "STAKE: output amount overflow");
+            return DNAC_ERROR_OVERFLOW;
+        }
+    }
+
+    uint64_t required;
+    if (safe_add_u64(DNAC_SELF_STAKE_AMOUNT, dnac_out, &required) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "STAKE: required-sum overflow");
+        return DNAC_ERROR_OVERFLOW;
+    }
+    if (dnac_in < required) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "STAKE: inputs=%llu < 10M + outputs=%llu (required=%llu)",
+                      (unsigned long long)dnac_in,
+                      (unsigned long long)dnac_out,
+                      (unsigned long long)required);
+        return DNAC_ERROR_INSUFFICIENT_FUNDS;
+    }
+
+    /* TODO(Phase 8 Task 40 / witness-side):
+     *   - Rule I: NO record exists in validator_tree with signer[0].pubkey
+     *     (covers F-STATE-07 pubkey-reuse — ALL statuses block, not just ACTIVE)
+     *   - Rule M: validator_stats.active_count < DNAC_MAX_VALIDATORS (128)
+     *   - Exact-fee check: inputs − outputs − 10M == current_fee
+     * Requires nodus_validator_lookup / nodus_validator_active_count; the
+     * client has no witness DB so these run server-side at state-apply. */
+
+    return DNAC_SUCCESS;
+}
+
+/* Public entry point for STAKE rule verification.
+ *
+ * Exposed so unit tests can exercise the rule layer without assembling
+ * real Dilithium5 signer signatures and witness attestations. The normal
+ * verify path (dnac_tx_verify) also calls verify_stake_rules internally
+ * for STAKE-typed TXs. */
+int dnac_tx_verify_stake_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_STAKE) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_stake_rules(tx);
+}
+
+/* Internal linkage for transaction.c's dnac_tx_verify to dispatch into. */
+int dnac_tx_verify_stake_rules_internal(const dnac_transaction_t *tx) {
+    return verify_stake_rules(tx);
+}
+
+/**
+ * @brief Verify DELEGATE-type rules (design §2.4, Phase 6 Task 23).
+ *
+ * Enforces the locally-verifiable subset of the DELEGATE rule set:
+ *
+ *   - signer_count == 1
+ *   - signer[0].pubkey != validator_pubkey  (Rule S: no self-delegation via
+ *     DELEGATE; the validator's own 10M stake flows through STAKE)
+ *   - Σ DNAC inputs − Σ DNAC outputs >= DNAC_MIN_DELEGATION (100 DNAC)
+ *     (Rule J: minimum delegation amount. The net `input − output` is the
+ *     amount being moved into the delegation state minus fee; since fee is
+ *     non-negative, `input − output >= 100 DNAC` is a conservative
+ *     lower bound — if `input − output < 100 DNAC` the actual delegation
+ *     deposit (which is `input − output − fee`) is already below the
+ *     minimum, so the TX is rejectable client-side.)
+ *
+ * Rules requiring witness-side DB access are deferred to state-apply:
+ *   - Rule B: validator_pubkey IN validator_tree AND status == ACTIVE
+ *   - Rule G: count(delegations where delegator==signer[0]) < 64
+ *   - Exact balance: outputs == inputs − delegation_amount − fee
+ */
+static int verify_delegate_rules(const dnac_transaction_t *tx) {
+    /* signer_count == 1 */
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "DELEGATE: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* Rule S: signer[0].pubkey != validator_pubkey. Self-delegation via
+     * DELEGATE is prohibited — validators bond their own 10M via STAKE. */
+    if (memcmp(tx->signers[0].pubkey,
+               tx->delegate_fields.validator_pubkey,
+               DNAC_PUBKEY_SIZE) == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "DELEGATE: self-delegation forbidden (Rule S)");
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* Σ DNAC input − Σ DNAC output >= DNAC_MIN_DELEGATION (Rule J). */
+    uint64_t dnac_in = 0;
+    uint64_t dnac_out = 0;
+    for (int i = 0; i < tx->input_count; i++) {
+        if (memcmp(tx->inputs[i].token_id, DNAC_NATIVE_TOKEN_ID, DNAC_TOKEN_ID_SIZE) != 0)
+            continue;
+        if (safe_add_u64(dnac_in, tx->inputs[i].amount, &dnac_in) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "DELEGATE: input amount overflow");
+            return DNAC_ERROR_OVERFLOW;
+        }
+    }
+    for (int i = 0; i < tx->output_count; i++) {
+        if (memcmp(tx->outputs[i].token_id, DNAC_NATIVE_TOKEN_ID, DNAC_TOKEN_ID_SIZE) != 0)
+            continue;
+        if (safe_add_u64(dnac_out, tx->outputs[i].amount, &dnac_out) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "DELEGATE: output amount overflow");
+            return DNAC_ERROR_OVERFLOW;
+        }
+    }
+    if (dnac_in < dnac_out) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "DELEGATE: inputs=%llu < outputs=%llu",
+                      (unsigned long long)dnac_in,
+                      (unsigned long long)dnac_out);
+        return DNAC_ERROR_INSUFFICIENT_FUNDS;
+    }
+    uint64_t net = dnac_in - dnac_out;
+    if (net < DNAC_MIN_DELEGATION) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "DELEGATE: net=%llu < min=%llu (Rule J)",
+                      (unsigned long long)net,
+                      (unsigned long long)DNAC_MIN_DELEGATION);
+        return DNAC_ERROR_INSUFFICIENT_FUNDS;
+    }
+
+    /* TODO(Phase 8 Task 41 / witness-side):
+     *   - Rule B: validator_pubkey IN validator_tree AND status == ACTIVE
+     *   - Rule G: count(delegations where delegator == signer[0].pubkey) < 64
+     *   - Exact-fee equality: outputs == inputs − delegation_amount − fee
+     * Requires nodus_validator_lookup / nodus_delegation_count; the client
+     * has no witness DB so these run server-side at state-apply. */
+
+    return DNAC_SUCCESS;
+}
+
+int dnac_tx_verify_delegate_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_DELEGATE) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_delegate_rules(tx);
+}
+
+int dnac_tx_verify_delegate_rules_internal(const dnac_transaction_t *tx) {
+    return verify_delegate_rules(tx);
+}
+
+/**
+ * @brief Verify UNSTAKE-type rules (design §2.4, Phase 6 Task 24).
+ *
+ * UNSTAKE has no appended fields, no amount fields, no commission.
+ * The single locally-verifiable rule is:
+ *
+ *   - signer_count == 1
+ *
+ * All substantive checks require witness-side DB access:
+ *   - Rule A (literal): NO delegation records exist with
+ *     validator == signer[0].pubkey — validator must drain external
+ *     delegators before exiting
+ *   - signer[0].pubkey IN validator_tree AND status == ACTIVE
+ *   - Fee paid per current fee schedule
+ * These are deferred to Phase 8 Task 42 state-apply.
+ */
+static int verify_unstake_rules(const dnac_transaction_t *tx) {
+    /* signer_count == 1 */
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "UNSTAKE: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* TODO(Phase 8 Task 42 / witness-side):
+     *   - signer[0].pubkey IN validator_tree AND status == ACTIVE
+     *   - Rule A (literal): NO delegation records where
+     *     validator == signer[0].pubkey (drain-before-exit)
+     *   - Fee paid per current fee schedule
+     * Requires nodus_validator_lookup / nodus_delegation_count_by_validator. */
+
+    return DNAC_SUCCESS;
+}
+
+int dnac_tx_verify_unstake_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_UNSTAKE) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_unstake_rules(tx);
+}
+
+int dnac_tx_verify_unstake_rules_internal(const dnac_transaction_t *tx) {
+    return verify_unstake_rules(tx);
+}
+
+/**
+ * @brief Verify UNDELEGATE-type rules (design §2.4, Phase 6 Task 25).
+ *
+ * Enforces the locally-verifiable subset of the UNDELEGATE rule set:
+ *
+ *   - signer_count == 1
+ *   - undelegate_fields.amount > 0
+ *
+ * Rules requiring witness-side DB access are deferred to state-apply:
+ *   - delegation(signer[0], validator_pubkey) exists
+ *   - amount <= delegation.amount
+ *   - Rule O: current_block − delegation.delegated_at_block >= EPOCH_LENGTH
+ */
+static int verify_undelegate_rules(const dnac_transaction_t *tx) {
+    /* signer_count == 1 */
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "UNDELEGATE: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* amount > 0 — zero-amount undelegate is nonsensical. */
+    if (tx->undelegate_fields.amount == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "UNDELEGATE: amount == 0");
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* TODO(Phase 8 Task 43 / witness-side):
+     *   - delegation(signer[0].pubkey, validator_pubkey) exists
+     *   - amount <= delegation.amount
+     *   - Rule O (hold duration): current_block − delegation.delegated_at_block
+     *     >= DNAC_EPOCH_LENGTH
+     * Requires nodus_delegation_lookup; the client has no witness DB so
+     * these run server-side at state-apply. */
+
+    return DNAC_SUCCESS;
+}
+
+int dnac_tx_verify_undelegate_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_UNDELEGATE) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_undelegate_rules(tx);
+}
+
+int dnac_tx_verify_undelegate_rules_internal(const dnac_transaction_t *tx) {
+    return verify_undelegate_rules(tx);
+}
+
+/**
+ * @brief Verify CLAIM_REWARD-type rules (design §2.4, Phase 6 Task 26).
+ *
+ * Enforces the locally-verifiable subset of the CLAIM_REWARD rule set:
+ *
+ *   - signer_count == 1
+ *   - claim_reward_fields.max_pending_amount > 0
+ *     (zero cap would never allow a claim to succeed — nonsensical)
+ *   - claim_reward_fields.valid_before_block > 0
+ *     (zero is the struct's default; a valid claim must set an explicit
+ *      block-height expiry for freshness replay defense)
+ *
+ * Rules requiring chain state / witness DB access are deferred:
+ *   - current_block <= valid_before_block (freshness)
+ *   - pending = compute_pending(validator, delegation) (either
+ *     validator-self or delegator branch per §2.4)
+ *   - pending <= max_pending_amount (claim cap)
+ *   - Rule L: pending >= max(10^6, 10 × current_fee) (dynamic dust)
+ * These run at state-apply in the witness (Phase 8 Task 44).
+ */
+static int verify_claim_reward_rules(const dnac_transaction_t *tx) {
+    /* signer_count == 1 */
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "CLAIM_REWARD: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* max_pending_amount > 0 */
+    if (tx->claim_reward_fields.max_pending_amount == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "CLAIM_REWARD: max_pending_amount == 0");
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* valid_before_block > 0 (explicit freshness bound required) */
+    if (tx->claim_reward_fields.valid_before_block == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "CLAIM_REWARD: valid_before_block == 0");
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* TODO(Phase 8 Task 44 / witness-side):
+     *   - current_block <= valid_before_block (freshness)
+     *   - Compute pending via per-branch formula:
+     *       if signer == target_validator: pending = validator.unclaimed
+     *       else: pending = ((validator.accumulator −
+     *           delegation.reward_snapshot) × delegation.amount) >> 64
+     *   - pending <= max_pending_amount (claim cap)
+     *   - Rule L: pending >= max(10^6, 10 × current_fee) (dynamic dust)
+     * Requires nodus_validator_lookup / nodus_delegation_lookup /
+     * current_fee / current_block; the client has no witness state. */
+
+    return DNAC_SUCCESS;
+}
+
+int dnac_tx_verify_claim_reward_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_CLAIM_REWARD) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_claim_reward_rules(tx);
+}
+
+int dnac_tx_verify_claim_reward_rules_internal(const dnac_transaction_t *tx) {
+    return verify_claim_reward_rules(tx);
+}
+
+/**
+ * @brief Verify VALIDATOR_UPDATE-type rules (design §2.4, Phase 6 Task 27).
+ *
+ * Enforces the locally-verifiable subset of the VALIDATOR_UPDATE rule set:
+ *
+ *   - signer_count == 1
+ *   - new_commission_bps <= DNAC_COMMISSION_BPS_MAX (10000)
+ *   - signed_at_block > 0 (zero is the struct default; a valid update
+ *     must anchor to a specific block for Rule K freshness to work)
+ *
+ * Rules requiring chain state are deferred:
+ *   - signer[0].pubkey IN validator_tree AND status ∈ {ACTIVE, RETIRING}
+ *   - Rule K: current_block − signed_at_block < DNAC_SIGN_FRESHNESS_WINDOW
+ *     (32 blocks)
+ *   - Cooldown: last_validator_update_block + DNAC_EPOCH_LENGTH <= current_block
+ *   - Pending-increase logic: if new_commission_bps > current_commission_bps,
+ *     queue as pending; decrease clears pending
+ * These run at state-apply in the witness (Phase 8 Task 45).
+ */
+static int verify_validator_update_rules(const dnac_transaction_t *tx) {
+    /* signer_count == 1 */
+    if (tx->signer_count != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "VALIDATOR_UPDATE: signer_count=%u != 1",
+                      (unsigned)tx->signer_count);
+        return DNAC_ERROR_INVALID_SIGNATURE;
+    }
+
+    /* new_commission_bps <= 10000 */
+    if (tx->validator_update_fields.new_commission_bps > DNAC_COMMISSION_BPS_MAX) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "VALIDATOR_UPDATE: new_commission_bps=%u > %u",
+                      (unsigned)tx->validator_update_fields.new_commission_bps,
+                      (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* signed_at_block > 0 — struct default 0 is not a valid anchor. */
+    if (tx->validator_update_fields.signed_at_block == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "VALIDATOR_UPDATE: signed_at_block == 0");
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+
+    /* TODO(Phase 8 Task 45 / witness-side):
+     *   - signer[0].pubkey IN validator_tree AND status ∈ {ACTIVE, RETIRING}
+     *   - Rule K (freshness): current_block − signed_at_block <
+     *     DNAC_SIGN_FRESHNESS_WINDOW (32 blocks)
+     *   - Cooldown: last_validator_update_block + DNAC_EPOCH_LENGTH <=
+     *     current_block
+     *   - Pending commission logic: if new > current, queue pending;
+     *     if new <= current, apply immediately and clear pending.
+     * Requires nodus_validator_lookup / current_block; client has no
+     * witness state. */
+
+    return DNAC_SUCCESS;
+}
+
+int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx) {
+    if (!tx) return DNAC_ERROR_INVALID_PARAM;
+    if (tx->type != DNAC_TX_VALIDATOR_UPDATE) return DNAC_ERROR_INVALID_TX_TYPE;
+    return verify_validator_update_rules(tx);
+}
+
+int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx) {
+    return verify_validator_update_rules(tx);
+}
+
 /**
  * @brief Per-token balance verification
  *

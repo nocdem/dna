@@ -156,6 +156,8 @@ set(COMMON_SOURCES
     ${SHARED_DIR}/crypto/sign/secp256k1_sign.c        # secp256k1 ECDSA recoverable signing
     ${SHARED_DIR}/crypto/sign/ed25519_sign.c           # Ed25519 signing (Solana)
     ${SHARED_DIR}/crypto/utils/qgp_utils_standalone.c
+    ${SHARED_DIR}/crypto/utils/qgp_u128.c         # Portable u128 for DNAC reward accumulator (F-CRYPTO-08)
+    ${SHARED_DIR}/crypto/utils/qgp_fingerprint.c  # Shared fp hex<->raw converters
     ${SHARED_DIR}/crypto/utils/threadpool.c       # Centralized thread pool for parallel I/O
     # Cross-platform abstraction layer
     ${PLATFORM_SOURCES}
@@ -224,6 +226,7 @@ if(BUILD_SHARED_LIB)
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/block.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/genesis_anchor.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/chain_def_codec.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/genesis_prepare.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/merkle_verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/anchor_verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/current_trust.c
@@ -231,6 +234,12 @@ if(BUILD_SHARED_LIB)
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/discovery.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/tcp_client.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/token_create.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/stake.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/claim.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_update.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/rewards_query.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/db/db.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/utils/crypto_helpers.c
         # Modular messenger components
@@ -345,6 +354,7 @@ else()
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/block.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/genesis_anchor.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/chain_def_codec.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/genesis_prepare.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/merkle_verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/anchor_verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/current_trust.c
@@ -352,6 +362,12 @@ else()
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/discovery.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/nodus/tcp_client.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/token_create.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/stake.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/claim.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_update.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/rewards_query.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/db/db.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/utils/crypto_helpers.c
         # Modular messenger components

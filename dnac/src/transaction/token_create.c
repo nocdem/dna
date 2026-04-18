@@ -192,6 +192,14 @@ int dnac_token_create(dnac_context_t *ctx,
     memcpy(tx->signers[0].pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
     tx->signer_count = 1;
 
+    /* Task 14 / design §2.3 — bind chain_id into the TX hash preimage. */
+    {
+        const uint8_t *cid = dnac_get_chain_id(ctx);
+        if (cid) {
+            memcpy(tx->chain_id, cid, 32);
+        }
+    }
+
     rc = dnac_tx_compute_hash(tx, tx->tx_hash);
     if (rc != DNAC_SUCCESS) {
         dnac_free_transaction(tx);

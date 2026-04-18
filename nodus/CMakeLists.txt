@@ -55,6 +55,8 @@ if(NODUS_STANDALONE)
         ${SHARED_DIR}/crypto/enc/kyber_deterministic.c
         ${SHARED_DIR}/crypto/sign/qgp_dilithium.c
         ${SHARED_DIR}/crypto/utils/qgp_random.c
+        ${SHARED_DIR}/crypto/utils/qgp_u128.c
+        ${SHARED_DIR}/crypto/utils/qgp_fingerprint.c
         # qgp_log.c depends on dna_config.h — use nodus_log_shim.c instead
     )
 
@@ -131,6 +133,11 @@ if(NOT WIN32)
         src/witness/nodus_witness_mempool.c
         src/witness/nodus_witness_cert.c
         src/witness/nodus_witness_spend_preimage.c
+        src/witness/nodus_witness_validator.c
+        src/witness/nodus_witness_delegation.c
+        src/witness/nodus_witness_reward.c
+        src/witness/nodus_witness_committee.c
+        src/witness/nodus_witness_genesis_seed.c
     )
 endif()
 
@@ -149,6 +156,7 @@ target_include_directories(nodus PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${SHARED_DIR}
     ${SHARED_DIR}/crypto
+    ${MONOREPO_ROOT}/dnac/include
 )
 # OpenSSL and SQLite3 include dirs — needed regardless of standalone mode.
 # When standalone, find_package above sets these. When within messenger tree,
@@ -371,6 +379,13 @@ add_executable(test_witness_verify tests/test_witness_verify.c)
 target_link_libraries(test_witness_verify nodus dsa nodus)
 add_test(NAME test_witness_verify COMMAND test_witness_verify)
 
+# Witness ↔ DNAC tx_hash parity test (F-CRYPTO-10 chain_id binding +
+# per-type appended fields). Ensures nodus_witness_recompute_tx_hash
+# matches dnac_tx_compute_hash() byte-for-byte for every TX type.
+add_executable(test_witness_tx_hash_parity tests/test_witness_tx_hash_parity.c)
+target_link_libraries(test_witness_tx_hash_parity nodus dsa nodus crypto)
+add_test(NAME test_witness_tx_hash_parity COMMAND test_witness_tx_hash_parity)
+
 # Witness chain DB archive test (Fix 1 — orphan DB prevention)
 add_executable(test_witness_chain_archive tests/test_witness_chain_archive.c)
 target_link_libraries(test_witness_chain_archive nodus dsa nodus)
@@ -395,6 +410,21 @@ add_test(NAME test_schema_migration COMMAND test_schema_migration)
 add_executable(test_merkle_domain_tags tests/test_merkle_domain_tags.c)
 target_link_libraries(test_merkle_domain_tags nodus dsa nodus crypto)
 add_test(NAME test_merkle_domain_tags COMMAND test_merkle_domain_tags)
+
+# Merkle tree-tag domain separator constants (witness stake v1 / Phase 3 Task 8)
+add_executable(test_merkle_tree_tags tests/test_merkle_tree_tags.c)
+target_link_libraries(test_merkle_tree_tags nodus dsa nodus)
+add_test(NAME test_merkle_tree_tags COMMAND test_merkle_tree_tags)
+
+# Merkle leaf key / value hash / empty-root helpers (witness stake v1 / Phase 3 Task 9)
+add_executable(test_merkle_leaf_helpers tests/test_merkle_leaf_helpers.c)
+target_link_libraries(test_merkle_leaf_helpers nodus dsa nodus)
+add_test(NAME test_merkle_leaf_helpers COMMAND test_merkle_leaf_helpers)
+
+# 4-subtree composite state_root KAT (witness stake v1 / Phase 3 Task 10)
+add_executable(test_state_root_4subtree tests/test_state_root_4subtree.c)
+target_link_libraries(test_state_root_4subtree nodus dsa nodus)
+add_test(NAME test_state_root_4subtree COMMAND test_state_root_4subtree)
 
 # UTXO state_root determinism tests (Phase 2 / Task 2.5)
 add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
@@ -474,6 +504,9 @@ add_executable(test_witness_merkle tests/test_witness_merkle.c)
 target_link_libraries(test_witness_merkle nodus dsa nodus)
 add_test(NAME test_witness_merkle COMMAND test_witness_merkle)
 
+# Task 11 — stake/delegation schema migration test
+register_witness_test(test_stake_schema)
+
 # Spend replay DB helper test (Fix #4 B)
 add_executable(test_spend_replay tests/test_spend_replay.c)
 target_link_libraries(test_spend_replay nodus dsa nodus)
@@ -551,3 +584,90 @@ if(JSONC_FOUND)
     target_include_directories(nodus-server PRIVATE ${JSONC_INCLUDE_DIRS})
     target_link_libraries(nodus-server ${JSONC_LIBRARIES})
 endif()
+
+# Task 12 — validator tree DB CRUD (witness stake v1 / Phase 4)
+register_witness_test(test_validator_db)
+
+# Task 13 — delegation + reward DB CRUD (witness stake v1 / Phase 4)
+register_witness_test(test_delegation_db)
+register_witness_test(test_reward_db)
+
+# Task 61 — dnac_pending_rewards_query RPC helper (Phase 14)
+register_witness_test(test_pending_rewards_rpc)
+
+# Task 62 — dnac_committee_query RPC shape (Phase 14)
+register_witness_test(test_committee_query_rpc)
+
+# Task 63 — dnac_validator_list_query paged helper (Phase 14)
+register_witness_test(test_validator_list_query_rpc)
+
+# Task 29 — SPEND rejects locked UTXO inputs (Rule D)
+register_witness_test(test_locked_utxo)
+
+# Task 30 — MIN_TENURE (Rule R) committee eligibility boundary
+register_witness_test(test_min_tenure_boundary)
+
+# Task 31 — SPEND fees route to block_fee_pool (not burn UTXO)
+register_witness_test(test_fee_routing)
+
+# Task 40 — STAKE state mutation (validator insert + active_count bump)
+register_witness_test(test_apply_stake)
+
+# Task 41 — DELEGATE state mutation (delegation row + validator totals)
+register_witness_test(test_apply_delegate)
+
+# Task 42 — UNSTAKE phase 1 (RETIRING status transition)
+register_witness_test(test_apply_unstake)
+
+# Task 43 — UNDELEGATE state mutation (dual-UTXO auto-claim, always-emit)
+register_witness_test(test_apply_undelegate)
+
+# Task 44 — CLAIM_REWARD state mutation (validator + delegator paths)
+register_witness_test(test_apply_claim_reward)
+
+# Task 45 — VALIDATOR_UPDATE state mutation with pending semantics
+register_witness_test(test_apply_validator_update)
+
+# Task 46 — Epoch-boundary state transitions (commission activation +
+# RETIRING->UNSTAKED graduation; AUTO_RETIRED + committee TODOs)
+register_witness_test(test_apply_epoch_boundary)
+
+# Task 47 — single-SQLite-transaction block commit + rollback on abort
+register_witness_test(test_commit_atomicity)
+
+# Task 48 — per-block attendance tracking + liveness-based AUTO_RETIRED
+register_witness_test(test_liveness_attendance)
+
+# Task 49 — accumulator update with liveness gate + residual dust
+register_witness_test(test_accumulator_math)
+
+# Task 50 — F-CONS-06 mandatory independent state_root recompute on PREVOTE
+register_witness_test(test_prevote_state_root_mutation)
+
+# Task 51 — committee election (post-commit lookback + state_seed tiebreak)
+register_witness_test(test_committee_election)
+
+# Task 53 — per-epoch committee cache
+register_witness_test(test_committee_cache)
+
+# Task 54 — UNDELEGATE auto-claim end-to-end integration
+register_witness_test(test_integration_undelegate_claim)
+
+# Task 55 — UNSTAKE two-phase graduation + locked-UTXO unlock
+register_witness_test(test_integration_unstake_two_phase)
+
+# Task 57 — Genesis seeds validator_tree + reward_tree from chain_def
+register_witness_test(test_genesis_seed_validators)
+
+# Task 59 — BFT roster sourced from committee snapshot (chain-authoritative)
+register_witness_test(test_bft_roster_committee)
+
+# Task 60 — RETIRING validator stays in epoch committee until graduation
+register_witness_test(test_retiring_committee_membership)
+
+# Task 81 — supply invariance property test (Phase 17).
+# Pure-C simulated state machine — does NOT need the witness internal
+# API, only DNAC public enum + constants. Linked without NODUS_WITNESS_INTERNAL_API.
+add_executable(test_supply_invariant tests/test_supply_invariant.c)
+target_link_libraries(test_supply_invariant nodus dsa nodus)
+add_test(NAME test_supply_invariant COMMAND test_supply_invariant)

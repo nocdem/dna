@@ -303,6 +303,30 @@ target_link_libraries(test_reactions ${TEST_LIBS})
 add_test(NAME test_reactions COMMAND test_reactions)
 
 # =============================================================================
+# Test: Portable u128 round-trip (DNAC reward accumulator)
+# =============================================================================
+# Phase 2 Task 5 of witness stake v1. Full KAT suite lands in Task 6.
+add_executable(test_u128_roundtrip test_u128_roundtrip.c)
+target_link_libraries(test_u128_roundtrip ${TEST_LIBS})
+add_test(NAME test_u128_roundtrip COMMAND test_u128_roundtrip)
+
+# =============================================================================
+# Test: Portable u128 KAT (Known Answer Tests)
+# =============================================================================
+# Phase 2 Task 6 of witness stake v1. Cross-compiler determinism lands in Task 7.
+add_executable(test_u128_kat test_u128_kat.c)
+target_link_libraries(test_u128_kat ${TEST_LIBS})
+add_test(NAME test_u128_kat COMMAND test_u128_kat)
+
+# =============================================================================
+# Test: Fingerprint hex<->raw converters
+# =============================================================================
+# Round-trip + error-path coverage for shared/crypto/utils/qgp_fingerprint.{h,c}
+add_executable(test_fp_converter test_fp_converter.c)
+target_link_libraries(test_fp_converter ${TEST_LIBS})
+add_test(NAME test_fp_converter COMMAND test_fp_converter)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()

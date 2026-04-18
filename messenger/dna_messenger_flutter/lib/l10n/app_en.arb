@@ -921,5 +921,115 @@
       "name": { "type": "String" },
       "emoji": { "type": "String" }
     }
-  }
+  },
+
+  "stakeDashboardTitle": "Earners",
+  "@stakeDashboardTitle": {
+    "description": "App bar title for the validator list screen. 'Earners' is the non-technical framing — the real thing is a validator."
+  },
+  "stakeRefresh": "Refresh",
+  "stakeEarnersHeader": "People earning together",
+  "stakeEarnersSubtitle": "{count, plural, =1{1 active earner} other{{count} active earners}}",
+  "@stakeEarnersSubtitle": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "stakeEarnerName": "Earner {id}",
+  "@stakeEarnerName": {
+    "placeholders": {
+      "id": { "type": "String" }
+    }
+  },
+  "stakeEarnerCommission": "Keeps {pct}% of rewards",
+  "@stakeEarnerCommission": {
+    "description": "Commission — fraction of rewards the validator keeps before distributing the rest to delegators.",
+    "placeholders": {
+      "pct": { "type": "String" }
+    }
+  },
+  "stakeEarnerTotalLocked": "{amount} DNAC locked in support",
+  "@stakeEarnerTotalLocked": {
+    "placeholders": {
+      "amount": { "type": "String" }
+    }
+  },
+  "stakeTrustedBadge": "Trusted",
+  "@stakeTrustedBadge": {
+    "description": "Badge shown on validators currently in the BFT committee — they are actively trusted to write blocks this epoch."
+  },
+  "stakeNoEarners": "No earners yet",
+  "stakeNoEarnersSubtitle": "Come back in a few minutes — the network is getting started.",
+  "stakeLoadFailed": "Couldn't load earners",
+
+  "delegationTitle": "Support earner {id}",
+  "@delegationTitle": {
+    "placeholders": { "id": { "type": "String" } }
+  },
+  "delegationEarnerLabel": "Earner {id}",
+  "@delegationEarnerLabel": {
+    "placeholders": { "id": { "type": "String" } }
+  },
+  "delegationAmountLabel": "Amount",
+  "delegationAmountHelper": "Minimum 100 DNAC",
+  "delegationAmountRequired": "Enter an amount",
+  "delegationAmountInvalid": "Enter a valid amount",
+  "delegationAmountTooSmall": "Minimum is 100 DNAC",
+  "delegationHoldInfo": "About a 10 minute hold before you can stop supporting this earner again.",
+  "delegationRewardInfo": "You'll share in the earner's rewards every block.",
+  "delegationSupportButton": "Support this earner",
+  "delegationStopButton": "Stop supporting",
+  "delegationSubmitting": "Working...",
+  "delegationSupportSuccess": "You're now supporting this earner.",
+  "delegationSupportFailed": "Couldn't complete — please try again.",
+  "delegationStopSuccess": "Stopped supporting this earner.",
+  "delegationStopFailed": "Couldn't stop — please try again.",
+  "delegationStopDialogTitle": "Stop supporting earner {id}",
+  "@delegationStopDialogTitle": {
+    "placeholders": { "id": { "type": "String" } }
+  },
+  "delegationStopDialogBody": "How much would you like to pull back? You'll get it back after a short hold.",
+
+  "rewardsTitle": "Your rewards",
+  "rewardsPendingLabel": "Available to claim",
+  "rewardsClaimButton": "Claim",
+  "rewardsClaimFromHeader": "Claim from an earner",
+  "rewardsClaimSuccess": "Reward claimed.",
+  "rewardsClaimFailed": "Couldn't claim — please try again.",
+  "rewardsEmptyList": "No earners available to claim from yet.",
+  "rewardsLoadFailed": "Couldn't load rewards",
+  "rewardsHomeCardTitle": "Your rewards",
+  "rewardsHomeCardAmount": "{amount} DNAC ready to claim",
+  "@rewardsHomeCardAmount": {
+    "placeholders": { "amount": { "type": "String" } }
+  },
+
+  "validatorPanelTitle": "Earner settings",
+  "@validatorPanelTitle": {
+    "description": "Operator panel for a user who is a validator (earner). Controls for commission + unstake."
+  },
+  "validatorPanelNotValidator": "You're not running an earner right now. Start one from the DNAC command line.",
+  "validatorStatusLabel": "Earner {id}",
+  "@validatorStatusLabel": {
+    "placeholders": { "id": { "type": "String" } }
+  },
+  "validatorFieldSelfStake": "Your own stake",
+  "validatorFieldDelegated": "Supporters' stake",
+  "validatorFieldCommission": "Fee you keep",
+  "validatorCommissionSection": "Fee rate",
+  "validatorCommissionHelp": "Decrease takes effect now. Increase takes effect at the next round so supporters can leave first.",
+  "validatorCommissionRange": "0 – 100",
+  "validatorCommissionInvalid": "Enter a value between 0 and 100.",
+  "validatorNewCommissionLabel": "New fee",
+  "validatorUpdateCommissionButton": "Save fee",
+  "validatorUpdateSuccess": "Fee updated.",
+  "validatorUpdateFailed": "Couldn't update the fee — please try again.",
+  "validatorUnstakeSection": "Shut down earner",
+  "validatorUnstakeWarning": "This will stop your earner and start the cool-down. Your supporters will be notified and their stake will unwind.",
+  "validatorUnstakeButton": "Shut down earner",
+  "validatorUnstakeConfirmTitle": "Shut down this earner?",
+  "validatorUnstakeConfirmBody": "This cannot be undone. Your self-stake will come back after the cool-down and your supporters will have their stake returned.",
+  "validatorUnstakeConfirmAction": "Yes, shut down",
+  "validatorUnstakeSuccess": "Earner shutting down.",
+  "validatorUnstakeFailed": "Couldn't shut down — please try again."
 }

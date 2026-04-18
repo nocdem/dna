@@ -202,6 +202,18 @@ typedef enum {
     TASK_DNAC_TOKEN_LIST,
     TASK_DNAC_TOKEN_CREATE,
     TASK_DNAC_TOKEN_BALANCE,
+
+    /* DNAC stake & delegation (v1.0.0-rc221+) — Phase 16 Task 71 */
+    TASK_DNAC_STAKE,
+    TASK_DNAC_UNSTAKE,
+    TASK_DNAC_DELEGATE,
+    TASK_DNAC_UNDELEGATE,
+    TASK_DNAC_CLAIM_REWARD,
+    TASK_DNAC_VALIDATOR_UPDATE,
+    TASK_DNAC_GET_PENDING_REWARDS,
+    TASK_DNAC_VALIDATOR_LIST,
+    TASK_DNAC_GET_COMMITTEE,
+
     TASK_SEND_REACTION,
     TASK_GET_REACTIONS
 } dna_task_type_t;
@@ -617,6 +629,42 @@ typedef union {
         uint8_t token_id[64];
     } dnac_token_balance;
 
+    /* DNAC stake & delegation (v1.0.0-rc221+) — Phase 16 */
+    struct {
+        uint16_t commission_bps;
+        char     unstake_destination_fp[129];  /* 128 hex + NUL */
+    } dnac_stake;
+
+    struct {
+        uint8_t  validator_pubkey[2592];       /* Dilithium5 pubkey */
+        uint64_t amount;                       /* raw units */
+    } dnac_delegate;
+
+    struct {
+        uint8_t  validator_pubkey[2592];
+        uint64_t amount;                       /* raw units */
+    } dnac_undelegate;
+
+    struct {
+        uint8_t  target_validator_pubkey[2592];
+        uint64_t max_pending_amount;
+        uint64_t valid_before_block;
+    } dnac_claim_reward;
+
+    struct {
+        uint16_t new_commission_bps;
+        uint64_t signed_at_block;
+    } dnac_validator_update;
+
+    struct {
+        uint8_t  claimant_pubkey[2592];
+        bool     has_claimant_pubkey;          /* false == use caller's own */
+    } dnac_pending_rewards;
+
+    struct {
+        int filter_status;                     /* -1 for all */
+    } dnac_validator_list;
+
 } dna_task_params_t;
 
 /**
@@ -669,6 +717,7 @@ typedef union {
     dna_dnac_utxos_cb dnac_utxos;
     dna_dnac_fee_cb dnac_fee;
     dna_dnac_token_list_cb dnac_token_list;
+    dna_dnac_validator_list_cb dnac_validator_list;
 } dna_task_callback_t;
 
 /**

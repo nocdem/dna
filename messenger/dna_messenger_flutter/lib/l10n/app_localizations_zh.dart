@@ -1775,4 +1775,222 @@ class AppLocalizationsZh extends AppLocalizations {
   String reactionNotificationBody(String name, String emoji) {
     return '$name reacted $emoji to your message';
   }
+
+  @override
+  String get stakeDashboardTitle => 'Earners';
+
+  @override
+  String get stakeRefresh => 'Refresh';
+
+  @override
+  String get stakeEarnersHeader => 'People earning together';
+
+  @override
+  String stakeEarnersSubtitle(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count active earners',
+      one: '1 active earner',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String stakeEarnerName(String id) {
+    return 'Earner $id';
+  }
+
+  @override
+  String stakeEarnerCommission(String pct) {
+    return 'Keeps $pct% of rewards';
+  }
+
+  @override
+  String stakeEarnerTotalLocked(String amount) {
+    return '$amount DNAC locked in support';
+  }
+
+  @override
+  String get stakeTrustedBadge => 'Trusted';
+
+  @override
+  String get stakeNoEarners => 'No earners yet';
+
+  @override
+  String get stakeNoEarnersSubtitle =>
+      'Come back in a few minutes — the network is getting started.';
+
+  @override
+  String get stakeLoadFailed => 'Couldn\'t load earners';
+
+  @override
+  String delegationTitle(String id) {
+    return 'Support earner $id';
+  }
+
+  @override
+  String delegationEarnerLabel(String id) {
+    return 'Earner $id';
+  }
+
+  @override
+  String get delegationAmountLabel => 'Amount';
+
+  @override
+  String get delegationAmountHelper => 'Minimum 100 DNAC';
+
+  @override
+  String get delegationAmountRequired => 'Enter an amount';
+
+  @override
+  String get delegationAmountInvalid => 'Enter a valid amount';
+
+  @override
+  String get delegationAmountTooSmall => 'Minimum is 100 DNAC';
+
+  @override
+  String get delegationHoldInfo =>
+      'About a 10 minute hold before you can stop supporting this earner again.';
+
+  @override
+  String get delegationRewardInfo =>
+      'You\'ll share in the earner\'s rewards every block.';
+
+  @override
+  String get delegationSupportButton => 'Support this earner';
+
+  @override
+  String get delegationStopButton => 'Stop supporting';
+
+  @override
+  String get delegationSubmitting => 'Working...';
+
+  @override
+  String get delegationSupportSuccess => 'You\'re now supporting this earner.';
+
+  @override
+  String get delegationSupportFailed =>
+      'Couldn\'t complete — please try again.';
+
+  @override
+  String get delegationStopSuccess => 'Stopped supporting this earner.';
+
+  @override
+  String get delegationStopFailed => 'Couldn\'t stop — please try again.';
+
+  @override
+  String delegationStopDialogTitle(String id) {
+    return 'Stop supporting earner $id';
+  }
+
+  @override
+  String get delegationStopDialogBody =>
+      'How much would you like to pull back? You\'ll get it back after a short hold.';
+
+  @override
+  String get rewardsTitle => 'Your rewards';
+
+  @override
+  String get rewardsPendingLabel => 'Available to claim';
+
+  @override
+  String get rewardsClaimButton => 'Claim';
+
+  @override
+  String get rewardsClaimFromHeader => 'Claim from an earner';
+
+  @override
+  String get rewardsClaimSuccess => 'Reward claimed.';
+
+  @override
+  String get rewardsClaimFailed => 'Couldn\'t claim — please try again.';
+
+  @override
+  String get rewardsEmptyList => 'No earners available to claim from yet.';
+
+  @override
+  String get rewardsLoadFailed => 'Couldn\'t load rewards';
+
+  @override
+  String get rewardsHomeCardTitle => 'Your rewards';
+
+  @override
+  String rewardsHomeCardAmount(String amount) {
+    return '$amount DNAC ready to claim';
+  }
+
+  @override
+  String get validatorPanelTitle => 'Earner settings';
+
+  @override
+  String get validatorPanelNotValidator =>
+      'You\'re not running an earner right now. Start one from the DNAC command line.';
+
+  @override
+  String validatorStatusLabel(String id) {
+    return 'Earner $id';
+  }
+
+  @override
+  String get validatorFieldSelfStake => 'Your own stake';
+
+  @override
+  String get validatorFieldDelegated => 'Supporters\' stake';
+
+  @override
+  String get validatorFieldCommission => 'Fee you keep';
+
+  @override
+  String get validatorCommissionSection => 'Fee rate';
+
+  @override
+  String get validatorCommissionHelp =>
+      'Decrease takes effect now. Increase takes effect at the next round so supporters can leave first.';
+
+  @override
+  String get validatorCommissionRange => '0 – 100';
+
+  @override
+  String get validatorCommissionInvalid => 'Enter a value between 0 and 100.';
+
+  @override
+  String get validatorNewCommissionLabel => 'New fee';
+
+  @override
+  String get validatorUpdateCommissionButton => 'Save fee';
+
+  @override
+  String get validatorUpdateSuccess => 'Fee updated.';
+
+  @override
+  String get validatorUpdateFailed =>
+      'Couldn\'t update the fee — please try again.';
+
+  @override
+  String get validatorUnstakeSection => 'Shut down earner';
+
+  @override
+  String get validatorUnstakeWarning =>
+      'This will stop your earner and start the cool-down. Your supporters will be notified and their stake will unwind.';
+
+  @override
+  String get validatorUnstakeButton => 'Shut down earner';
+
+  @override
+  String get validatorUnstakeConfirmTitle => 'Shut down this earner?';
+
+  @override
+  String get validatorUnstakeConfirmBody =>
+      'This cannot be undone. Your self-stake will come back after the cool-down and your supporters will have their stake returned.';
+
+  @override
+  String get validatorUnstakeConfirmAction => 'Yes, shut down';
+
+  @override
+  String get validatorUnstakeSuccess => 'Earner shutting down.';
+
+  @override
+  String get validatorUnstakeFailed =>
+      'Couldn\'t shut down — please try again.';
 }

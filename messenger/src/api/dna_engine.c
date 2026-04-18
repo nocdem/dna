@@ -1036,6 +1036,15 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_DNAC_TOKEN_LIST:
         case TASK_DNAC_TOKEN_CREATE:
         case TASK_DNAC_TOKEN_BALANCE:
+        case TASK_DNAC_STAKE:
+        case TASK_DNAC_UNSTAKE:
+        case TASK_DNAC_DELEGATE:
+        case TASK_DNAC_UNDELEGATE:
+        case TASK_DNAC_CLAIM_REWARD:
+        case TASK_DNAC_VALIDATOR_UPDATE:
+        case TASK_DNAC_GET_PENDING_REWARDS:
+        case TASK_DNAC_VALIDATOR_LIST:
+        case TASK_DNAC_GET_COMMITTEE:
         default:
             break;
     }
@@ -1178,6 +1187,16 @@ void dna_handle_dnac_estimate_fee(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_token_list(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_token_create(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_token_balance(dna_engine_t *engine, dna_task_t *task);
+/* Stake & delegation (Phase 16 Task 71) */
+void dna_handle_dnac_stake(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_unstake(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_delegate(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_undelegate(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_claim_reward(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_validator_update(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_get_pending_rewards(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_validator_list(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_get_committee(dna_engine_t *engine, dna_task_t *task);
 
 void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
     switch (task->type) {
@@ -1528,6 +1547,35 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_DNAC_TOKEN_BALANCE:
             dna_handle_dnac_token_balance(engine, task);
+            break;
+
+        /* DNAC stake & delegation (Phase 16 Task 71) */
+        case TASK_DNAC_STAKE:
+            dna_handle_dnac_stake(engine, task);
+            break;
+        case TASK_DNAC_UNSTAKE:
+            dna_handle_dnac_unstake(engine, task);
+            break;
+        case TASK_DNAC_DELEGATE:
+            dna_handle_dnac_delegate(engine, task);
+            break;
+        case TASK_DNAC_UNDELEGATE:
+            dna_handle_dnac_undelegate(engine, task);
+            break;
+        case TASK_DNAC_CLAIM_REWARD:
+            dna_handle_dnac_claim_reward(engine, task);
+            break;
+        case TASK_DNAC_VALIDATOR_UPDATE:
+            dna_handle_dnac_validator_update(engine, task);
+            break;
+        case TASK_DNAC_GET_PENDING_REWARDS:
+            dna_handle_dnac_get_pending_rewards(engine, task);
+            break;
+        case TASK_DNAC_VALIDATOR_LIST:
+            dna_handle_dnac_validator_list(engine, task);
+            break;
+        case TASK_DNAC_GET_COMMITTEE:
+            dna_handle_dnac_get_committee(engine, task);
             break;
     }
 }

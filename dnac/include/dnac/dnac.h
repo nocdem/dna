@@ -110,6 +110,61 @@ extern "C" {
     "0000000000000000000000000000000000000000000000000000000000000000"
 
 /* ============================================================================
+ * Stake & Delegation (v1)
+ * ========================================================================== */
+
+/** Fixed self-stake amount per validator: exactly 10,000,000 DNAC */
+#define DNAC_SELF_STAKE_AMOUNT       (10000000ULL * 100000000ULL)   /* 10M × 10^8 raw */
+
+/** Minimum delegation amount: 100 DNAC (raised from 1 per F-DOS-02 audit finding) */
+#define DNAC_MIN_DELEGATION          (100ULL * 100000000ULL)         /* 100 × 10^8 raw */
+
+/** Maximum number of delegations a single delegator can hold */
+#define DNAC_MAX_DELEGATIONS_PER_DELEGATOR   64
+
+/** Maximum number of validator records in the tree (Rule M, F-DOS-01) */
+#define DNAC_MAX_VALIDATORS          128
+
+/** UNSTAKE locked-UTXO cooldown (24h at 5s block interval) */
+#define DNAC_UNSTAKE_COOLDOWN_BLOCKS  17280
+
+/** Epoch length in blocks (~10 min at 5s) */
+#define DNAC_EPOCH_LENGTH            120
+
+/** Minimum tenure in pending pool before committee eligibility (Rule R) */
+#define DNAC_MIN_TENURE_BLOCKS       240  /* 2 × EPOCH_LENGTH */
+
+/** Fixed committee size (v1; v2 sortition may vary) */
+#define DNAC_COMMITTEE_SIZE          7
+
+/** Liveness threshold: fraction of epoch blocks a committee member must sign
+ *  (in basis points — 8000 = 80%) to earn rewards that epoch (Rule N) */
+#define DNAC_LIVENESS_THRESHOLD_BPS  8000
+
+/** Number of consecutive missed epochs before AUTO_RETIRED status (Rule N) */
+#define DNAC_AUTO_RETIRE_EPOCHS      3
+
+/** Phase 9 / Task 49 — per-block liveness window for accumulator distribution.
+ *
+ * A committee validator participates in THIS block's reward share only
+ * if last_signed_block >= current_block - DNAC_LIVENESS_SHORT_WINDOW_BLOCKS.
+ * 16 blocks is a short recent-activity window — tighter than the
+ * epoch-level liveness gate (which triggers AUTO_RETIRED). Validators
+ * that miss this gate simply forfeit the one block of reward and stay
+ * ACTIVE; the per-epoch Rule N ejection handles sustained outages.
+ */
+#define DNAC_LIVENESS_SHORT_WINDOW_BLOCKS  16
+
+/** VALIDATOR_UPDATE freshness window: TX rejected if signed_at_block is older than this */
+#define DNAC_SIGN_FRESHNESS_WINDOW   32   /* blocks (~160s at 5s blocks) */
+
+/** CLAIM_REWARD dust floor in raw units (Rule L — dynamic dust = max(this, 10× current_fee)) */
+#define DNAC_DUST_FLOOR              1000000ULL   /* 0.01 DNAC = 10^6 raw */
+
+/** Maximum commission in basis points (100% = 10000) */
+#define DNAC_COMMISSION_BPS_MAX      10000
+
+/* ============================================================================
  * Forward Declarations
  * ========================================================================== */
 
@@ -138,10 +193,16 @@ typedef enum {
  * v0.5.0: DNAC_TX_MINT removed. All tokens created via one-time genesis.
  */
 typedef enum {
-    DNAC_TX_GENESIS      = 0,   /**< One-time token creation (replaces MINT) */
-    DNAC_TX_SPEND        = 1,   /**< Standard spend transaction */
-    DNAC_TX_BURN         = 2,   /**< Destroy coins (optional) */
-    DNAC_TX_TOKEN_CREATE = 3    /**< Create a new custom token */
+    DNAC_TX_GENESIS          = 0,   /**< One-time token creation (replaces MINT) */
+    DNAC_TX_SPEND            = 1,   /**< Standard spend transaction */
+    DNAC_TX_BURN             = 2,   /**< Destroy coins (optional) */
+    DNAC_TX_TOKEN_CREATE     = 3,   /**< Create a new custom token */
+    DNAC_TX_STAKE            = 4,   /**< Witness self-stake (validator bond) */
+    DNAC_TX_DELEGATE         = 5,   /**< Delegator stakes onto a validator */
+    DNAC_TX_UNSTAKE          = 6,   /**< Validator withdraws self-stake (unbonding) */
+    DNAC_TX_UNDELEGATE       = 7,   /**< Delegator withdraws delegation (unbonding) */
+    DNAC_TX_CLAIM_REWARD     = 8,   /**< Claim accrued staking/delegation rewards */
+    DNAC_TX_VALIDATOR_UPDATE = 9    /**< Update validator metadata (commission, moniker, etc.) */
 } dnac_tx_type_t;
 
 /**
@@ -479,6 +540,262 @@ int dnac_estimate_fee(dnac_context_t *ctx, uint64_t amount, uint64_t *fee_out);
  * @return DNAC_SUCCESS or error code
  */
 int dnac_get_current_fee(dnac_context_t *ctx, uint64_t *fee_out);
+
+/* ============================================================================
+ * Stake & Delegation Builders (Phase 7)
+ * ========================================================================== */
+
+/**
+ * @brief Submit a STAKE TX — become a validator.
+ *
+ * Consumes DNAC_SELF_STAKE_AMOUNT (10M × 10^8 raw) + current dynamic fee
+ * from caller's native DNAC UTXOs. Change returned to caller. The witness
+ * creates a validator record keyed by the caller's signing pubkey on commit.
+ *
+ * @param ctx                    DNAC context (must have identity + chain_id loaded)
+ * @param commission_bps         Commission rate in basis points (0..10000)
+ * @param unstake_destination_fp 128-char lowercase hex fingerprint that will
+ *                               receive the post-cooldown UTXO when UNSTAKE
+ *                               matures. By convention the caller's own
+ *                               fingerprint, but any recipient is allowed.
+ *                               Immutable once committed (Rule T).
+ * @param callback               Completion callback (can be NULL)
+ * @param user_data              Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_stake(dnac_context_t *ctx,
+               uint16_t commission_bps,
+               const char *unstake_destination_fp,
+               dnac_callback_t callback,
+               void *user_data);
+
+/**
+ * @brief Submit an UNSTAKE TX — trigger validator RETIRING -> UNSTAKED.
+ *
+ * Fee-only TX with no appended fields. Actual self-stake return happens at
+ * the epoch boundary via a locked UTXO whose
+ * unlock_block = commit_block + DNAC_UNSTAKE_COOLDOWN_BLOCKS.
+ *
+ * @param ctx        DNAC context
+ * @param callback   Completion callback (can be NULL)
+ * @param user_data  Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_unstake(dnac_context_t *ctx,
+                 dnac_callback_t callback,
+                 void *user_data);
+
+/**
+ * @brief Submit a DELEGATE TX — stake native DNAC with a validator.
+ *
+ * Consumes (amount + fee) from caller's native DNAC UTXOs. The witness
+ * creates / updates a delegation record on commit.
+ *
+ * @param ctx               DNAC context
+ * @param validator_pubkey  Dilithium5 pubkey of the target validator
+ *                          (DNAC_PUBKEY_SIZE bytes; must differ from caller's
+ *                          signing pubkey — Rule S: no self-delegation)
+ * @param amount            Amount to delegate in raw units
+ *                          (must be >= DNAC_MIN_DELEGATION)
+ * @param callback          Completion callback (can be NULL)
+ * @param user_data         Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_delegate(dnac_context_t *ctx,
+                  const uint8_t *validator_pubkey,
+                  uint64_t amount,
+                  dnac_callback_t callback,
+                  void *user_data);
+
+/**
+ * @brief Submit an UNDELEGATE TX — withdraw (part of) a delegation.
+ *
+ * Fee-only payment; the delegation principal + pending reward split is
+ * emitted by the witness at state-apply time (Rule Q — two UTXOs are
+ * always produced, even when pending < dust, to preserve supply).
+ *
+ * @param ctx               DNAC context
+ * @param validator_pubkey  Validator to unbond from (DNAC_PUBKEY_SIZE bytes)
+ * @param amount            Principal to withdraw in raw units (> 0)
+ * @param callback          Completion callback (can be NULL)
+ * @param user_data         Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_undelegate(dnac_context_t *ctx,
+                    const uint8_t *validator_pubkey,
+                    uint64_t amount,
+                    dnac_callback_t callback,
+                    void *user_data);
+
+/**
+ * @brief Submit a CLAIM_REWARD TX — withdraw accrued staking rewards.
+ *
+ * Builder-level API exposes max_pending_amount and valid_before_block as
+ * explicit parameters so CLI + early Flutter can call it before Phase 14
+ * ships dnac_get_pending_rewards(). A future wrapper
+ * dnac_claim_reward_auto(ctx, validator) will query the witness for the
+ * pending amount + current block height and call this builder.
+ *
+ * @param ctx                     DNAC context
+ * @param target_validator_pubkey Validator whose accrued rewards to claim
+ *                                (DNAC_PUBKEY_SIZE bytes)
+ * @param max_pending_amount      Client-supplied upper bound on the pending
+ *                                reward (replay defense — witness enforces
+ *                                actual_pending <= max_pending_amount)
+ * @param valid_before_block      Block-height expiry — witness rejects the
+ *                                claim when current_block > this value
+ *                                (typically current_block +
+ *                                 DNAC_SIGN_FRESHNESS_WINDOW)
+ * @param callback                Completion callback (can be NULL)
+ * @param user_data               Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_claim_reward(dnac_context_t *ctx,
+                      const uint8_t *target_validator_pubkey,
+                      uint64_t max_pending_amount,
+                      uint64_t valid_before_block,
+                      dnac_callback_t callback,
+                      void *user_data);
+
+/**
+ * @brief Submit a VALIDATOR_UPDATE TX — change validator commission rate.
+ *
+ * Fee-only TX. Must be called by the validator operator (signer pubkey
+ * must match an existing active validator record). An increase takes
+ * effect at the next epoch boundary (>= 1 full epoch notice per Rule K);
+ * a decrease is immediate and clears any pending increase. Rule K also
+ * enforces freshness: the witness requires
+ *   current_block - signed_at_block <= DNAC_SIGN_FRESHNESS_WINDOW
+ * so the caller must populate `signed_at_block` with a recent block
+ * height.
+ *
+ * Builder-level API takes `signed_at_block` as an explicit parameter
+ * because no client-side RPC exists yet for querying the witness's
+ * current block height — that ships in Phase 14. A future wrapper
+ * `dnac_validator_update_auto(ctx, new_commission_bps)` will query the
+ * witness internally and call this builder; the signature of this
+ * function is stable for the life of the protocol.
+ *
+ * @param ctx                 DNAC context
+ * @param new_commission_bps  New commission rate in basis points
+ *                            (0..DNAC_COMMISSION_BPS_MAX == 10000)
+ * @param signed_at_block     Block-height anchor for Rule K freshness
+ *                            (witness rejects if the value is stale).
+ *                            Must be > 0.
+ * @param callback            Completion callback (can be NULL)
+ * @param user_data           Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+int dnac_validator_update(dnac_context_t *ctx,
+                          uint16_t new_commission_bps,
+                          uint64_t signed_at_block,
+                          dnac_callback_t callback,
+                          void *user_data);
+
+/* ============================================================================
+ * Stake & Delegation — Client-side Query API (Phase 7 Tasks 38, 39)
+ *
+ * The stubs below expose the API shape for reward + validator queries.
+ * The witness-side RPC handlers land in Phase 14 (Tasks 61-63). Until
+ * then these functions log a WARN and return DNAC_ERROR_NOT_IMPLEMENTED;
+ * CLI + Flutter should guard on that return code when rendering UI.
+ * ========================================================================== */
+
+/**
+ * @brief Query the witness for the total pending reward accrued to a
+ *        given claimant across all of their delegations plus any
+ *        validator-side self-claim.
+ *
+ * STUB — the witness-side RPC handler (dnac_pending_rewards_query) lands
+ * in Phase 14 Task 61. Until then this function returns
+ * DNAC_ERROR_NOT_IMPLEMENTED and zeroes *total_pending_out for safety.
+ *
+ * The builder for CLAIM_REWARD already exists (see dnac_claim_reward);
+ * once the Phase 14 RPC is wired the auto-claim helper can call this
+ * function to obtain `max_pending_amount` before building the TX.
+ *
+ * @param ctx              DNAC context
+ * @param claimant_pubkey  Claimant's Dilithium5 pubkey
+ *                         (DNAC_PUBKEY_SIZE bytes). Pass NULL to query
+ *                         the caller's own pending rewards.
+ * @param total_pending_out Total pending amount across all validators
+ *                          (raw units). Always written (0 on error).
+ * @param callback         Completion callback (for async RPC once wired;
+ *                         ignored by the current stub)
+ * @param user_data        Callback user data (ignored by the stub)
+ * @return DNAC_SUCCESS once wired, DNAC_ERROR_NOT_IMPLEMENTED until
+ *         Phase 14, DNAC_ERROR_INVALID_PARAM on NULL total_pending_out
+ */
+int dnac_get_pending_rewards(dnac_context_t *ctx,
+                             const uint8_t *claimant_pubkey,
+                             uint64_t *total_pending_out,
+                             dnac_callback_t callback,
+                             void *user_data);
+
+/**
+ * @brief One validator's summary, as returned by dnac_validator_list()
+ *        and dnac_get_committee().
+ *
+ * Matches the witness-side validator record projection (see
+ * dnac/include/dnac/validator.h for the authoritative struct); only
+ * the fields that external callers actually need are exposed here.
+ */
+typedef struct {
+    uint8_t  pubkey[DNAC_PUBKEY_SIZE];  /**< Dilithium5 pubkey (2592B) */
+    uint64_t self_stake;                 /**< Operator's own stake (raw units) */
+    uint64_t total_delegated;            /**< Sum of all delegations (raw units) */
+    uint16_t commission_bps;             /**< Commission 0..10000 */
+    uint8_t  status;                     /**< dnac_validator_status_t */
+    uint64_t active_since_block;         /**< Block height when ACTIVE */
+} dnac_validator_list_entry_t;
+
+/**
+ * @brief List validators known to the witness, optionally filtered by
+ *        status.
+ *
+ * STUB — the witness-side RPC handler lands in Phase 14 Task 63. Until
+ * then this function logs a WARN, writes *count_out = 0, and returns
+ * DNAC_ERROR_NOT_IMPLEMENTED. Callers should gate validator-list UI on
+ * that return code.
+ *
+ * @param ctx            DNAC context
+ * @param filter_status  Filter by dnac_validator_status_t value, or -1
+ *                       to include all statuses.
+ * @param out            Caller-allocated array of validator entries
+ * @param max_entries    Capacity of out[] (must be > 0 when out != NULL)
+ * @param count_out      Number of entries filled (always written)
+ * @return DNAC_SUCCESS once wired, DNAC_ERROR_NOT_IMPLEMENTED until
+ *         Phase 14, DNAC_ERROR_INVALID_PARAM on bad args
+ */
+int dnac_validator_list(dnac_context_t *ctx,
+                        int filter_status,
+                        dnac_validator_list_entry_t *out,
+                        int max_entries,
+                        int *count_out);
+
+/**
+ * @brief Fetch the current epoch's committee (top-N validators up to
+ *        DNAC_COMMITTEE_SIZE).
+ *
+ * STUB — the witness-side RPC handler lands in Phase 14 Task 62. Until
+ * then this function logs a WARN, writes *count_out = 0, and returns
+ * DNAC_ERROR_NOT_IMPLEMENTED.
+ *
+ * During bootstrap the committee may be smaller than
+ * DNAC_COMMITTEE_SIZE; callers must trust *count_out rather than
+ * assuming a full committee.
+ *
+ * @param ctx        DNAC context
+ * @param out        Caller-allocated array of >= DNAC_COMMITTEE_SIZE
+ *                   entries
+ * @param count_out  Number of committee members returned (always
+ *                   written)
+ * @return DNAC_SUCCESS once wired, DNAC_ERROR_NOT_IMPLEMENTED until
+ *         Phase 14, DNAC_ERROR_INVALID_PARAM on bad args
+ */
+int dnac_get_committee(dnac_context_t *ctx,
+                       dnac_validator_list_entry_t *out,
+                       int *count_out);
 
 /* ============================================================================
  * Transaction Builder (Advanced)

@@ -25,7 +25,8 @@ extern "C" {
 
 /**
  * Maximum possible serialized chain_def size (when witness_count ==
- * DNAC_MAX_WITNESSES_COMPILE_CAP). Caller can use this to pre-allocate.
+ * DNAC_MAX_WITNESSES_COMPILE_CAP AND initial_validator_count ==
+ * DNAC_COMMITTEE_SIZE). Caller can use this to pre-allocate.
  */
 size_t dnac_chain_def_max_size(void);
 

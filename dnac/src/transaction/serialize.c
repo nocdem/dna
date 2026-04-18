@@ -39,6 +39,17 @@
     buf += (len); \
 } while(0)
 
+/* Big-endian u64 helpers for Phase 5 appended-field encoding (design §2.3).
+ * Local to serialize.c so the wire encoding is BE even on LE hosts. */
+static inline void be64_to_bytes(uint64_t v, uint8_t out[8]) {
+    for (int i = 7; i >= 0; i--) { out[i] = (uint8_t)(v & 0xff); v >>= 8; }
+}
+static inline uint64_t be64_from_bytes(const uint8_t in[8]) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) { v = (v << 8) | (uint64_t)in[i]; }
+    return v;
+}
+
 /* Calculate v1 transaction size */
 static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     size_t size = 0;
@@ -68,6 +79,30 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     /* Signers */
     size += 1;  /* signer_count */
     size += tx->signer_count * (DNAC_PUBKEY_SIZE + DNAC_SIGNATURE_SIZE);
+
+    /* Type-specific appended fields (Phase 5 Task 16). STAKE carries
+     * commission_bps(2) + unstake_destination_fp(64) + purpose_tag(17). */
+    if (tx->type == DNAC_TX_STAKE) {
+        size += 2 + DNAC_STAKE_UNSTAKE_DEST_FP_SIZE + DNAC_STAKE_PURPOSE_TAG_LEN;
+    }
+    /* Phase 5 Task 17. DELEGATE carries validator_pubkey(2592). */
+    if (tx->type == DNAC_TX_DELEGATE) {
+        size += DNAC_PUBKEY_SIZE;
+    }
+    /* Phase 5 Task 18. UNDELEGATE carries validator_pubkey(2592) + amount(u64). */
+    if (tx->type == DNAC_TX_UNDELEGATE) {
+        size += DNAC_PUBKEY_SIZE + 8;
+    }
+    /* Phase 5 Task 18. CLAIM_REWARD carries target_validator(2592) +
+     * max_pending_amount(u64) + valid_before_block(u64). */
+    if (tx->type == DNAC_TX_CLAIM_REWARD) {
+        size += DNAC_PUBKEY_SIZE + 8 + 8;
+    }
+    /* Phase 5 Task 19. VALIDATOR_UPDATE carries new_commission_bps(u16) +
+     * signed_at_block(u64). */
+    if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
+        size += 2 + 8;
+    }
 
     /* Optional anchored-genesis chain_def trailer (v2 wire extension).
      * Only present when has_chain_def is true (always 0 for non-genesis).
@@ -139,6 +174,49 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         WRITE_BLOB(ptr, tx->signers[i].signature, DNAC_SIGNATURE_SIZE);
     }
 
+    /* Type-specific appended fields (Phase 5 Task 16).
+     * STAKE: commission_bps(u16 BE) || unstake_destination_fp[64] ||
+     *        purpose_tag[17] ("DNAC_VALIDATOR_v1"). */
+    if (tx->type == DNAC_TX_STAKE) {
+        ptr[0] = (uint8_t)((tx->stake_fields.commission_bps >> 8) & 0xff);
+        ptr[1] = (uint8_t)(tx->stake_fields.commission_bps & 0xff);
+        ptr += 2;
+        WRITE_BLOB(ptr, tx->stake_fields.unstake_destination_fp,
+                   DNAC_STAKE_UNSTAKE_DEST_FP_SIZE);
+        WRITE_BLOB(ptr, DNAC_STAKE_PURPOSE_TAG, DNAC_STAKE_PURPOSE_TAG_LEN);
+    }
+    /* Phase 5 Task 17. DELEGATE: validator_pubkey[2592]. */
+    if (tx->type == DNAC_TX_DELEGATE) {
+        WRITE_BLOB(ptr, tx->delegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
+    }
+    /* Phase 5 Task 18. UNDELEGATE: validator_pubkey[2592] || amount(u64 BE). */
+    if (tx->type == DNAC_TX_UNDELEGATE) {
+        WRITE_BLOB(ptr, tx->undelegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
+        uint8_t amount_be[8];
+        be64_to_bytes(tx->undelegate_fields.amount, amount_be);
+        WRITE_BLOB(ptr, amount_be, 8);
+    }
+    /* Phase 5 Task 18. CLAIM_REWARD: target_validator[2592] ||
+     *        max_pending_amount(u64 BE) || valid_before_block(u64 BE). */
+    if (tx->type == DNAC_TX_CLAIM_REWARD) {
+        WRITE_BLOB(ptr, tx->claim_reward_fields.target_validator, DNAC_PUBKEY_SIZE);
+        uint8_t max_be[8], valid_be[8];
+        be64_to_bytes(tx->claim_reward_fields.max_pending_amount, max_be);
+        be64_to_bytes(tx->claim_reward_fields.valid_before_block, valid_be);
+        WRITE_BLOB(ptr, max_be, 8);
+        WRITE_BLOB(ptr, valid_be, 8);
+    }
+    /* Phase 5 Task 19. VALIDATOR_UPDATE: new_commission_bps(u16 BE) ||
+     *        signed_at_block(u64 BE). */
+    if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
+        ptr[0] = (uint8_t)((tx->validator_update_fields.new_commission_bps >> 8) & 0xff);
+        ptr[1] = (uint8_t)(tx->validator_update_fields.new_commission_bps & 0xff);
+        ptr += 2;
+        uint8_t block_be[8];
+        be64_to_bytes(tx->validator_update_fields.signed_at_block, block_be);
+        WRITE_BLOB(ptr, block_be, 8);
+    }
+
     /* Anchored-genesis chain_def trailer (optional, genesis TX only). */
     WRITE_U8(ptr, tx->has_chain_def ? 1 : 0);
     if (tx->has_chain_def) {
@@ -176,8 +254,10 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     /* Header */
     READ_U8(ptr, tx->version);
     READ_U8(ptr, tx->type);
-    /* M-32: Validate tx_type is within known range */
-    if (tx->type > DNAC_TX_TOKEN_CREATE) {
+    /* M-32: Validate tx_type is within known range.
+     * Phase 5 Task 16: admit stake/delegation types (4..9) added in
+     * Task 1 (DNAC_TX_VALIDATOR_UPDATE is the highest defined value). */
+    if (tx->type > DNAC_TX_VALIDATOR_UPDATE) {
         free(tx);
         return DNAC_ERROR_INVALID_PARAM;
     }
@@ -271,6 +351,74 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         }
         READ_BLOB(ptr, tx->signers[i].pubkey, DNAC_PUBKEY_SIZE);
         READ_BLOB(ptr, tx->signers[i].signature, DNAC_SIGNATURE_SIZE);
+    }
+
+    /* Type-specific appended fields (Phase 5 Task 16).
+     * STAKE: commission_bps(u16 BE) || unstake_destination_fp[64] ||
+     *        purpose_tag[17]. Purpose tag MUST match exactly —
+     *        cross-protocol reuse defense (F-CRYPTO-05). */
+    if (tx->type == DNAC_TX_STAKE) {
+        const size_t stake_appended_len = 2 + DNAC_STAKE_UNSTAKE_DEST_FP_SIZE
+                                        + DNAC_STAKE_PURPOSE_TAG_LEN;
+        if (ptr + stake_appended_len > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        tx->stake_fields.commission_bps =
+            ((uint16_t)ptr[0] << 8) | (uint16_t)ptr[1];
+        ptr += 2;
+        READ_BLOB(ptr, tx->stake_fields.unstake_destination_fp,
+                  DNAC_STAKE_UNSTAKE_DEST_FP_SIZE);
+        if (memcmp(ptr, DNAC_STAKE_PURPOSE_TAG,
+                   DNAC_STAKE_PURPOSE_TAG_LEN) != 0) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        ptr += DNAC_STAKE_PURPOSE_TAG_LEN;
+    }
+    /* Phase 5 Task 17. DELEGATE: validator_pubkey[2592]. */
+    if (tx->type == DNAC_TX_DELEGATE) {
+        if (ptr + DNAC_PUBKEY_SIZE > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        READ_BLOB(ptr, tx->delegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
+    }
+    /* Phase 5 Task 18. UNDELEGATE: validator_pubkey[2592] || amount(u64 BE). */
+    if (tx->type == DNAC_TX_UNDELEGATE) {
+        if (ptr + DNAC_PUBKEY_SIZE + 8 > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        READ_BLOB(ptr, tx->undelegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
+        tx->undelegate_fields.amount = be64_from_bytes(ptr);
+        ptr += 8;
+    }
+    /* Phase 5 Task 18. CLAIM_REWARD: target_validator[2592] ||
+     *        max_pending_amount(u64 BE) || valid_before_block(u64 BE). */
+    if (tx->type == DNAC_TX_CLAIM_REWARD) {
+        if (ptr + DNAC_PUBKEY_SIZE + 16 > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        READ_BLOB(ptr, tx->claim_reward_fields.target_validator, DNAC_PUBKEY_SIZE);
+        tx->claim_reward_fields.max_pending_amount = be64_from_bytes(ptr);
+        ptr += 8;
+        tx->claim_reward_fields.valid_before_block = be64_from_bytes(ptr);
+        ptr += 8;
+    }
+    /* Phase 5 Task 19. VALIDATOR_UPDATE: new_commission_bps(u16 BE) ||
+     *        signed_at_block(u64 BE). */
+    if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
+        if (ptr + 2 + 8 > end) {
+            free(tx);
+            return DNAC_ERROR_INVALID_PARAM;
+        }
+        tx->validator_update_fields.new_commission_bps =
+            ((uint16_t)ptr[0] << 8) | (uint16_t)ptr[1];
+        ptr += 2;
+        tx->validator_update_fields.signed_at_block = be64_from_bytes(ptr);
+        ptr += 8;
     }
 
     /* Optional anchored-genesis chain_def trailer.

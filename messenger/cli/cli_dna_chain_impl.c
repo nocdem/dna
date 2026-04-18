@@ -17,6 +17,7 @@
 #include "dnac/crypto_helpers.h"
 #include "dnac/trusted_state.h"
 #include "dnac/chain_def_codec.h"
+#include "dnac/genesis_prepare.h"
 #include "dnac/version.h"
 #include <dna/dna_engine.h>
 #include "nodus_ops.h"
@@ -1501,5 +1502,571 @@ int dna_chain_cmd_parse_tx(dnac_context_t *ctx, const char *tx_file) {
     printf("witnesses:  %d\n", tx->witness_count);
 
     free(tx);
+    return 0;
+}
+
+/* ============================================================================
+ * Phase 12 Task 58 — genesis-prepare (operator tool)
+ * ========================================================================== */
+
+int dna_chain_cmd_genesis_prepare(dnac_context_t *ctx, const char *config_path) {
+    (void)ctx;
+    if (!config_path) {
+        fprintf(stderr, "Error: config_path is NULL\n");
+        return 1;
+    }
+
+    /* Upper bound on chain_def blob size. chain_def_codec.c caps
+     * witness_count at 21 and initial_validator_count at 7 — the
+     * dnac_chain_def_max_size() helper computes the exact upper bound
+     * but we just use a comfortable static buffer here. */
+    uint8_t blob[65536];
+    size_t  blob_len = 0;
+    char    err[256];
+    err[0] = '\0';
+
+    int rc = dnac_cli_genesis_prepare_blob(config_path,
+                                             blob, sizeof(blob),
+                                             &blob_len,
+                                             err, sizeof(err));
+    if (rc != 0) {
+        fprintf(stderr, "genesis-prepare: %s\n",
+                err[0] ? err : "(no error message)");
+        return 1;
+    }
+
+    /* Hex-print to stdout so the operator can redirect into a file
+     * (`... > chain_def.hex`) or pipe into `xxd -r -p` to recover the
+     * binary blob for `dna genesis-create --chain-def-file`. */
+    static const char hex_digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < blob_len; i++) {
+        putchar(hex_digits[blob[i] >> 4]);
+        putchar(hex_digits[blob[i] & 0xf]);
+    }
+    putchar('\n');
+
+    fprintf(stderr, "genesis-prepare: wrote %zu bytes (hex %zu chars)\n",
+            blob_len, blob_len * 2);
+    return 0;
+}
+
+/* ============================================================================
+ * Phase 15 / Stake & Delegation CLI helpers
+ * ========================================================================== */
+
+#include "dnac/validator.h"
+
+/**
+ * Parse a lowercase-hex Dilithium5 pubkey (5184 chars = 2 * DNAC_PUBKEY_SIZE)
+ * into a caller-supplied buffer (DNAC_PUBKEY_SIZE bytes).
+ *
+ * Returns 0 on success, -1 on length mismatch or invalid hex.
+ */
+static int parse_validator_pubkey_hex(const char *hex,
+                                      uint8_t out[DNAC_PUBKEY_SIZE]) {
+    if (!hex || !out) return -1;
+    size_t expected = (size_t)DNAC_PUBKEY_SIZE * 2;
+    if (strlen(hex) != expected) return -1;
+    return hex_to_bytes(hex, out, DNAC_PUBKEY_SIZE);
+}
+
+/* ============================================================================
+ * Task 65 — `dna stake` verb
+ * ========================================================================== */
+
+int dna_chain_cmd_stake(dnac_context_t *ctx,
+                        uint16_t commission_bps,
+                        const char *unstake_to_fp) {
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) {
+        fprintf(stderr, "Error: Engine not initialized\n");
+        return 1;
+    }
+
+    if (commission_bps > DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr,
+                "Error: commission_bps %u out of range (0..%u)\n",
+                (unsigned)commission_bps,
+                (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return 1;
+    }
+
+    /* Default unstake destination: caller's own fingerprint. */
+    char self_fp[129] = {0};
+    if (!unstake_to_fp || !*unstake_to_fp) {
+        const char *fp = dna_engine_get_fingerprint(engine);
+        if (!fp) {
+            fprintf(stderr, "Error: Identity not loaded\n");
+            return 1;
+        }
+        strncpy(self_fp, fp, 128);
+        self_fp[128] = '\0';
+        unstake_to_fp = self_fp;
+    } else {
+        /* Validate user-supplied fingerprint format. */
+        if (strlen(unstake_to_fp) != 128) {
+            fprintf(stderr,
+                    "Error: --unstake-to fingerprint must be 128 hex chars\n");
+            return 1;
+        }
+        for (size_t i = 0; i < 128; i++) {
+            char c = unstake_to_fp[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+                fprintf(stderr,
+                        "Error: --unstake-to must be lowercase hex\n");
+                return 1;
+            }
+        }
+    }
+
+    char stake_str[64];
+    format_amount(DNAC_SELF_STAKE_AMOUNT, stake_str, sizeof(stake_str));
+    printf("Becoming a validator...\n");
+    printf("  Self-stake:       %s DNAC\n", stake_str);
+    printf("  Commission:       %u bps (%.2f%%)\n",
+           (unsigned)commission_bps, (double)commission_bps / 100.0);
+    printf("  Unstake dest:     %.16s...\n", unstake_to_fp);
+
+    int rc = dnac_stake(ctx, commission_bps, unstake_to_fp, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+
+    printf("STAKE TX submitted successfully.\n");
+    return 0;
+}
+
+/* ============================================================================
+ * Task 66 — `dna delegate` + `dna undelegate` verbs
+ *
+ * Validator identifier = hex-encoded Dilithium5 pubkey (5184 chars).
+ * Name/fp → pubkey resolution deferred: no direct helper currently
+ * exists, and adding one would require iterating the full validator
+ * table. Callers can obtain the pubkey via `dna validator-list`.
+ * ========================================================================== */
+
+int dna_chain_cmd_delegate(dnac_context_t *ctx,
+                           const char *validator_pubkey_hex,
+                           uint64_t amount,
+                           const char *memo) {
+    (void)memo;  /* Reserved for future use (builder does not take a memo) */
+    uint8_t pubkey[DNAC_PUBKEY_SIZE];
+    if (parse_validator_pubkey_hex(validator_pubkey_hex, pubkey) != 0) {
+        fprintf(stderr,
+                "Error: validator pubkey must be %u lowercase hex chars\n",
+                (unsigned)(DNAC_PUBKEY_SIZE * 2));
+        return 1;
+    }
+    if (amount < DNAC_MIN_DELEGATION) {
+        char min_str[64];
+        format_amount(DNAC_MIN_DELEGATION, min_str, sizeof(min_str));
+        fprintf(stderr,
+                "Error: amount %" PRIu64 " below DNAC_MIN_DELEGATION (%s)\n",
+                amount, min_str);
+        return 1;
+    }
+
+    char amount_str[64];
+    format_amount(amount, amount_str, sizeof(amount_str));
+    printf("Delegating %s DNAC to validator %.16s...\n",
+           amount_str, validator_pubkey_hex);
+
+    int rc = dnac_delegate(ctx, pubkey, amount, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+    printf("DELEGATE TX submitted successfully.\n");
+    return 0;
+}
+
+int dna_chain_cmd_undelegate(dnac_context_t *ctx,
+                             const char *validator_pubkey_hex,
+                             uint64_t amount) {
+    uint8_t pubkey[DNAC_PUBKEY_SIZE];
+    if (parse_validator_pubkey_hex(validator_pubkey_hex, pubkey) != 0) {
+        fprintf(stderr,
+                "Error: validator pubkey must be %u lowercase hex chars\n",
+                (unsigned)(DNAC_PUBKEY_SIZE * 2));
+        return 1;
+    }
+    if (amount == 0) {
+        fprintf(stderr, "Error: undelegate amount must be > 0\n");
+        return 1;
+    }
+
+    char amount_str[64];
+    format_amount(amount, amount_str, sizeof(amount_str));
+    printf("Undelegating %s DNAC from validator %.16s...\n",
+           amount_str, validator_pubkey_hex);
+
+    int rc = dnac_undelegate(ctx, pubkey, amount, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+    printf("UNDELEGATE TX submitted successfully.\n");
+    return 0;
+}
+
+/* ============================================================================
+ * Task 67 — `dna claim` verb
+ *
+ * Flow:
+ *   1. Query pending rewards for the target validator via Phase 14 RPC.
+ *   2. Query current committee snapshot to learn chain head block height.
+ *   3. Submit CLAIM_REWARD with max_pending_amount = pending,
+ *      valid_before_block = head + DNAC_SIGN_FRESHNESS_WINDOW.
+ *
+ * `claimant_pubkey` for the pending-rewards query is the caller's own
+ * Dilithium5 pubkey (pulled from dna_engine_get_signing_public_key).
+ * ========================================================================== */
+
+extern nodus_client_t *nodus_singleton_get(void);
+extern void nodus_singleton_lock(void);
+extern void nodus_singleton_unlock(void);
+
+/**
+ * Query the witness-side current block height via the committee RPC.
+ * Writes *out_height on success; returns 0 on success, -1 on failure.
+ */
+static int query_current_block_height(uint64_t *out_height) {
+    if (!out_height) return -1;
+    *out_height = 0;
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        fprintf(stderr, "Error: nodus not connected\n");
+        return -1;
+    }
+
+    nodus_dnac_committee_result_t res = {0};
+    nodus_singleton_lock();
+    int rc = nodus_client_dnac_committee(client, &res);
+    nodus_singleton_unlock();
+    if (rc != 0) {
+        fprintf(stderr,
+                "Error: nodus_client_dnac_committee failed (%d)\n", rc);
+        return -1;
+    }
+    *out_height = res.block_height;
+    return 0;
+}
+
+int dna_chain_cmd_claim(dnac_context_t *ctx,
+                        const char *validator_pubkey_hex) {
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) {
+        fprintf(stderr, "Error: Engine not initialized\n");
+        return 1;
+    }
+
+    uint8_t validator_pubkey[DNAC_PUBKEY_SIZE];
+    if (parse_validator_pubkey_hex(validator_pubkey_hex,
+                                   validator_pubkey) != 0) {
+        fprintf(stderr,
+                "Error: validator pubkey must be %u lowercase hex chars\n",
+                (unsigned)(DNAC_PUBKEY_SIZE * 2));
+        return 1;
+    }
+
+    /* Caller's own pubkey drives the pending-rewards lookup. */
+    uint8_t claimant_pubkey[DNAC_PUBKEY_SIZE];
+    int pk_rc = dna_engine_get_signing_public_key(
+            engine, claimant_pubkey, sizeof(claimant_pubkey));
+    if (pk_rc < 0) {
+        fprintf(stderr,
+                "Error: failed to read caller's signing pubkey (%d)\n",
+                pk_rc);
+        return 1;
+    }
+
+    /* Step 1: query pending rewards. */
+    uint64_t total_pending = 0;
+    int rc = dnac_get_pending_rewards(ctx, claimant_pubkey,
+                                       &total_pending, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr,
+                "Error: pending-rewards query failed: %s\n",
+                dnac_error_string(rc));
+        return 1;
+    }
+    if (total_pending == 0) {
+        fprintf(stderr,
+                "No pending rewards for caller across any validator.\n");
+        return 1;
+    }
+
+    char pending_str[64];
+    format_amount(total_pending, pending_str, sizeof(pending_str));
+    printf("Total pending rewards: %s DNAC\n", pending_str);
+
+    /* Step 2: chain head block for Rule K freshness. */
+    uint64_t head_block = 0;
+    if (query_current_block_height(&head_block) != 0) {
+        return 1;
+    }
+    uint64_t valid_before_block = head_block + DNAC_SIGN_FRESHNESS_WINDOW;
+    printf("Chain head:            %" PRIu64 "\n", head_block);
+    printf("Valid until block:     %" PRIu64 "\n", valid_before_block);
+
+    /* Step 3: submit CLAIM_REWARD. */
+    rc = dnac_claim_reward(ctx, validator_pubkey,
+                           total_pending, valid_before_block,
+                           NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+    printf("CLAIM_REWARD TX submitted successfully.\n");
+    return 0;
+}
+
+/* ============================================================================
+ * Task 68 — `dna unstake` + `dna validator-update` verbs
+ *
+ * unstake: fee-only TX, no appended fields. Witness enforces the
+ *          "delegator_count == 0" invariant authoritatively; the CLI
+ *          relies on that return code rather than attempting a pre-
+ *          flight pubkey→record lookup (which would require iterating
+ *          the validator table for every unstake).
+ *
+ * validator-update: queries chain head via the committee RPC to
+ *          populate signed_at_block (Rule K freshness anchor).
+ * ========================================================================== */
+
+int dna_chain_cmd_unstake(dnac_context_t *ctx) {
+    printf("Submitting UNSTAKE TX...\n");
+    printf("  (validator will transition ACTIVE -> RETIRING,\n"
+           "   self-stake unlocks after DNAC_UNSTAKE_COOLDOWN_BLOCKS)\n");
+
+    int rc = dnac_unstake(ctx, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+    printf("UNSTAKE TX submitted successfully.\n");
+    return 0;
+}
+
+int dna_chain_cmd_validator_update(dnac_context_t *ctx,
+                                   uint16_t commission_bps) {
+    if (commission_bps > DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr,
+                "Error: commission_bps %u out of range (0..%u)\n",
+                (unsigned)commission_bps,
+                (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return 1;
+    }
+
+    uint64_t head_block = 0;
+    if (query_current_block_height(&head_block) != 0) {
+        return 1;
+    }
+    if (head_block == 0) {
+        fprintf(stderr,
+                "Error: witness returned zero block height — chain not ready\n");
+        return 1;
+    }
+
+    printf("Updating commission to %u bps (%.2f%%)...\n",
+           (unsigned)commission_bps, (double)commission_bps / 100.0);
+    printf("  signed_at_block = %" PRIu64 "\n", head_block);
+
+    int rc = dnac_validator_update(ctx, commission_bps,
+                                    head_block, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+    printf("VALIDATOR_UPDATE TX submitted successfully.\n");
+    return 0;
+}
+
+/* ============================================================================
+ * Task 69 — Read-only verbs:
+ *   `dna validator-list`, `dna committee`, `dna pending-rewards`
+ *
+ * All three query the witness directly via the nodus client Phase 14
+ * RPCs (bypassing the dnac_*_list / dnac_get_committee wrappers so the
+ * CLI can surface witness-side fields like block_height + epoch_start
+ * that the slimmer dnac_validator_list_entry_t does not carry).
+ * ========================================================================== */
+
+static const char *validator_status_str(uint8_t status) {
+    switch (status) {
+        case DNAC_VALIDATOR_ACTIVE:       return "ACTIVE";
+        case DNAC_VALIDATOR_RETIRING:     return "RETIRING";
+        case DNAC_VALIDATOR_UNSTAKED:     return "UNSTAKED";
+        case DNAC_VALIDATOR_AUTO_RETIRED: return "AUTO_RETIRED";
+        default:                          return "?";
+    }
+}
+
+/** Print the first 16 hex chars of a DNAC pubkey (short form). */
+static void pubkey_short(const uint8_t *pubkey, char out[17]) {
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < 8; i++) {
+        out[i * 2]     = hexd[pubkey[i] >> 4];
+        out[i * 2 + 1] = hexd[pubkey[i] & 0xf];
+    }
+    out[16] = '\0';
+}
+
+int dna_chain_cmd_validator_list(dnac_context_t *ctx, int filter_status) {
+    (void)ctx;  /* only need nodus singleton */
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        fprintf(stderr, "Error: nodus not connected\n");
+        return 1;
+    }
+
+    nodus_dnac_validator_list_result_t res = {0};
+    nodus_singleton_lock();
+    int rc = nodus_client_dnac_validator_list(
+            client, filter_status, /*offset=*/0, /*limit=*/100, &res);
+    nodus_singleton_unlock();
+    if (rc != 0) {
+        fprintf(stderr,
+                "Error: nodus_client_dnac_validator_list failed (%d)\n",
+                rc);
+        return 1;
+    }
+
+    printf("DNAC Validators (%d of %d total", res.count, res.total);
+    if (filter_status >= 0) {
+        printf(", status=%s", validator_status_str((uint8_t)filter_status));
+    }
+    printf(")\n");
+    printf("%-16s  %-14s  %-18s  %-18s  %-6s  %-12s  %s\n",
+           "PUBKEY", "STATUS", "SELF_STAKE", "TOTAL_DELEGATED",
+           "COMM%", "EXT_DELEG", "ACTIVE_SINCE");
+    printf("----------------  --------------  ------------------"
+           "  ------------------  ------  ------------  ------------\n");
+    for (int i = 0; i < res.count; i++) {
+        const nodus_dnac_validator_list_entry_t *e = &res.entries[i];
+        char pk_short[17];
+        pubkey_short(e->pubkey, pk_short);
+        char self_str[32], total_str[32], ext_str[32];
+        format_amount(e->self_stake, self_str, sizeof(self_str));
+        format_amount(e->total_delegated, total_str, sizeof(total_str));
+        format_amount(e->external_delegated, ext_str, sizeof(ext_str));
+        printf("%-16s  %-14s  %-18s  %-18s  %5.2f  %-12s  %" PRIu64 "\n",
+               pk_short,
+               validator_status_str(e->status),
+               self_str, total_str,
+               (double)e->commission_bps / 100.0,
+               ext_str,
+               e->active_since_block);
+    }
+    nodus_client_free_validator_list_result(&res);
+    return 0;
+}
+
+int dna_chain_cmd_committee(dnac_context_t *ctx) {
+    (void)ctx;
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        fprintf(stderr, "Error: nodus not connected\n");
+        return 1;
+    }
+
+    nodus_dnac_committee_result_t res = {0};
+    nodus_singleton_lock();
+    int rc = nodus_client_dnac_committee(client, &res);
+    nodus_singleton_unlock();
+    if (rc != 0) {
+        fprintf(stderr,
+                "Error: nodus_client_dnac_committee failed (%d)\n", rc);
+        return 1;
+    }
+
+    printf("DNAC Committee (epoch_start=%" PRIu64 ", head=%" PRIu64 ")\n",
+           res.epoch_start, res.block_height);
+    printf("%-4s  %-16s  %-14s  %-18s  %-6s  %s\n",
+           "SLOT", "PUBKEY", "STATUS", "TOTAL_STAKE", "COMM%", "ADDRESS");
+    printf("----  ----------------  --------------  ------------------"
+           "  ------  ----------------------------------\n");
+    for (int i = 0; i < res.count; i++) {
+        const nodus_dnac_committee_entry_t *e = &res.entries[i];
+        char pk_short[17];
+        pubkey_short(e->pubkey, pk_short);
+        char stake_str[32];
+        format_amount(e->total_stake, stake_str, sizeof(stake_str));
+        printf("%-4d  %-16s  %-14s  %-18s  %5.2f  %s\n",
+               i, pk_short,
+               validator_status_str(e->status),
+               stake_str,
+               (double)e->commission_bps / 100.0,
+               e->address[0] ? e->address : "(unknown)");
+    }
+    return 0;
+}
+
+int dna_chain_cmd_pending_rewards(dnac_context_t *ctx,
+                                  const char *claimant_pubkey_hex) {
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) {
+        fprintf(stderr, "Error: Engine not initialized\n");
+        return 1;
+    }
+
+    uint8_t claimant_pubkey[DNAC_PUBKEY_SIZE];
+    if (claimant_pubkey_hex && *claimant_pubkey_hex) {
+        if (parse_validator_pubkey_hex(claimant_pubkey_hex,
+                                       claimant_pubkey) != 0) {
+            fprintf(stderr,
+                    "Error: claimant pubkey must be %u lowercase hex chars\n",
+                    (unsigned)(DNAC_PUBKEY_SIZE * 2));
+            return 1;
+        }
+    } else {
+        /* Default: caller's own pubkey. */
+        int pk_rc = dna_engine_get_signing_public_key(
+                engine, claimant_pubkey, sizeof(claimant_pubkey));
+        if (pk_rc < 0) {
+            fprintf(stderr,
+                    "Error: failed to read caller's signing pubkey (%d)\n",
+                    pk_rc);
+            return 1;
+        }
+    }
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        fprintf(stderr, "Error: nodus not connected\n");
+        return 1;
+    }
+
+    nodus_dnac_pending_rewards_result_t res = {0};
+    nodus_singleton_lock();
+    int rc = nodus_client_dnac_pending_rewards(
+            client, claimant_pubkey, &res);
+    nodus_singleton_unlock();
+    if (rc != 0) {
+        fprintf(stderr,
+                "Error: nodus_client_dnac_pending_rewards failed (%d)\n",
+                rc);
+        return 1;
+    }
+
+    char total_str[64];
+    format_amount(res.total, total_str, sizeof(total_str));
+    printf("Pending rewards total: %s DNAC (%d validator(s))\n",
+           total_str, res.count);
+    if (res.count > 0) {
+        printf("%-4s  %-16s  %s\n", "#", "VALIDATOR", "AMOUNT");
+        printf("----  ----------------  ----------------------\n");
+        for (int i = 0; i < res.count; i++) {
+            const nodus_dnac_pending_entry_t *e = &res.entries[i];
+            char pk_short[17];
+            pubkey_short(e->validator_pubkey, pk_short);
+            char amt_str[32];
+            format_amount(e->amount, amt_str, sizeof(amt_str));
+            printf("%-4d  %-16s  %s\n", i, pk_short, amt_str);
+        }
+    }
+    nodus_client_free_pending_rewards_result(&res);
     return 0;
 }

@@ -15,6 +15,22 @@
  * Hash covers: version + type + timestamp + signer_count + signer_pubkeys + inputs + outputs
  *              (no counts for inputs/outputs, no embedded hash, no signer signatures)
  *
+ * F-CONS-06 — Mandatory independent verification on PREVOTE:
+ *   Functions in this file are the ONLY consensus primitives a follower
+ *   runs before broadcasting PREVOTE APPROVE. They recompute every
+ *   security-relevant value from the raw TX bytes (tx_hash, signer
+ *   signatures, nullifier state, fee, ownership) — no field is trusted
+ *   from the leader's PROPOSE message without independent recompute.
+ *
+ *   Post-commit state_root binding is enforced separately in
+ *   nodus_witness_bft.c::nodus_witness_bft_handle_commit, where each
+ *   follower independently computes state_root via
+ *   nodus_witness_merkle_compute_state_root() and compares the result
+ *   against the leader's COMMIT-message state_root. A compromised
+ *   leader therefore cannot force followers to adopt an invalid
+ *   post-block state. See tests/test_prevote_state_root_mutation.c for
+ *   the regression guard.
+ *
  * @file nodus_witness_verify.c
  */
 
@@ -64,82 +80,238 @@
  * Recompute TX hash from serialized data
  * ════════════════════════════════════════════════════════════════════ */
 
-int nodus_witness_recompute_tx_hash(const uint8_t *tx_data, uint32_t tx_len,
+/* DNAC TX type codes (mirror messenger tree — kept local to avoid a
+ * cross-tree dependency). Values MUST match dnac/include/dnac/transaction.h
+ * and nodus_witness.h NODUS_W_TX_* above. */
+#define TX_TYPE_GENESIS              NODUS_W_TX_GENESIS            /* 0 */
+#define TX_TYPE_SPEND                NODUS_W_TX_SPEND              /* 1 */
+#define TX_TYPE_BURN                 NODUS_W_TX_BURN               /* 2 */
+#define TX_TYPE_TOKEN_CREATE         NODUS_W_TX_TOKEN_CREATE       /* 3 */
+#define TX_TYPE_STAKE                NODUS_W_TX_STAKE              /* 4 */
+#define TX_TYPE_DELEGATE             NODUS_W_TX_DELEGATE           /* 5 */
+#define TX_TYPE_UNSTAKE              NODUS_W_TX_UNSTAKE            /* 6 */
+#define TX_TYPE_UNDELEGATE           NODUS_W_TX_UNDELEGATE         /* 7 */
+#define TX_TYPE_CLAIM_REWARD         NODUS_W_TX_CLAIM_REWARD       /* 8 */
+#define TX_TYPE_VALIDATOR_UPDATE     NODUS_W_TX_VALIDATOR_UPDATE   /* 9 */
+
+/* F-CRYPTO-05: "DNAC_VALIDATOR_v1" — 17 bytes, no padding. Matches
+ * dnac/include/dnac/transaction.h DNAC_STAKE_PURPOSE_TAG_LEN = 17. */
+#define TX_STAKE_PURPOSE_TAG_LEN     17
+#define TX_STAKE_UNSTAKE_DEST_FP_LEN 64
+
+/* Chain ID length (matches DNAC chain_id[32]). */
+#define TX_CHAIN_ID_LEN              32
+
+/* Big-endian u64 writer for preimage encoding. Matches
+ * dnac/src/transaction/transaction.c::tx_be64_into. */
+static void be64_into(uint64_t v, uint8_t out[8]) {
+    for (int i = 7; i >= 0; i--) {
+        out[i] = (uint8_t)(v & 0xff);
+        v >>= 8;
+    }
+}
+
+/* LE u64 reader for parsing wire-format timestamp and amounts. The wire
+ * format uses native (LE on x86) via memcpy — see
+ * dnac/src/transaction/serialize.c WRITE_U64/READ_U64. */
+static uint64_t le64_read(const uint8_t *p) {
+    uint64_t v;
+    memcpy(&v, p, 8);
+    return v;
+}
+
+int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
+                                     const uint8_t *tx_data, uint32_t tx_len,
                                      const uint8_t *signer_pubkeys,
                                      uint8_t signer_count,
                                      uint8_t *hash_out) {
-    if (!tx_data || !hash_out || tx_len < TX_HEADER_SIZE + 1)
+    if (!chain_id || !tx_data || !hash_out || tx_len < TX_HEADER_SIZE + 1)
         return -1;
     if (!signer_pubkeys && signer_count > 0)
         return -1;
+    if (signer_count > NODUS_T3_MAX_TX_SIGNERS)
+        return -1;
 
-    /* Allocate buffer to assemble hash input (tx_len + signer_count + all signer pubkeys) */
-    uint8_t *buf = malloc(tx_len + 1 + NODUS_T3_MAX_TX_SIGNERS * NODUS_PK_BYTES);
+    /* Assemble the canonical preimage in a single growable buffer, then
+     * SHA3-512 it. Upper bound: tx_len (all wire bytes we may echo) +
+     * chain_id(32) + 1 + signer_count * NODUS_PK_BYTES + tx_len (type-spec). */
+    size_t upper = (size_t)tx_len + TX_CHAIN_ID_LEN + 1
+                 + (size_t)NODUS_T3_MAX_TX_SIGNERS * NODUS_PK_BYTES
+                 + (size_t)tx_len;
+    uint8_t *buf = malloc(upper);
     if (!buf) return -1;
 
     size_t buf_pos = 0;
     const uint8_t *p = tx_data;
     size_t remaining = tx_len;
 
-    /* Copy version(1) + type(1) + timestamp(8) = 10 bytes */
-    if (remaining < 10) { free(buf); return -1; }
-    memcpy(buf + buf_pos, p, 10);
-    buf_pos += 10;
+    /* ── Header: version(u8) || type(u8) || timestamp(u64 BE) || chain_id[32] ── */
+    if (remaining < 10) goto fail;
+    uint8_t version_byte = p[0];
+    uint8_t type_byte    = p[1];
+    uint64_t timestamp   = le64_read(p + 2);
     p += 10;
     remaining -= 10;
 
-    /* Include signer_count + all signer pubkeys in hash */
-    buf[buf_pos++] = signer_count;
-    for (int i = 0; i < signer_count; i++) {
-        memcpy(buf + buf_pos, signer_pubkeys + i * NODUS_PK_BYTES, NODUS_PK_BYTES);
-        buf_pos += NODUS_PK_BYTES;
-    }
+    buf[buf_pos++] = version_byte;
+    buf[buf_pos++] = type_byte;
+    be64_into(timestamp, buf + buf_pos);
+    buf_pos += 8;
+    memcpy(buf + buf_pos, chain_id, TX_CHAIN_ID_LEN);
+    buf_pos += TX_CHAIN_ID_LEN;
 
     /* Skip embedded tx_hash (64 bytes) */
-    if (remaining < 64) { free(buf); return -1; }
+    if (remaining < 64) goto fail;
     p += 64;
     remaining -= 64;
 
-    /* Parse input_count (NOT copied to hash buffer) */
-    if (remaining < 1) { free(buf); return -1; }
-    uint8_t input_count = *p;
-    p++;
+    /* ── Inputs: nullifier(64) || amount(u64 BE) || token_id(64) ── */
+    if (remaining < 1) goto fail;
+    uint8_t input_count = *p++;
     remaining--;
+    if (input_count > NODUS_T3_MAX_TX_INPUTS) goto fail;
 
-    if (input_count > NODUS_T3_MAX_TX_INPUTS) { free(buf); return -1; }
-
-    /* Copy each input's nullifier(64) + amount(8) + token_id(64) */
     for (int i = 0; i < input_count; i++) {
-        if (remaining < INPUT_SIZE) { free(buf); return -1; }
-        memcpy(buf + buf_pos, p, INPUT_SIZE);
-        buf_pos += INPUT_SIZE;
+        if (remaining < INPUT_SIZE) goto fail;
+        /* nullifier */
+        memcpy(buf + buf_pos, p, INPUT_NULLIFIER_LEN);
+        buf_pos += INPUT_NULLIFIER_LEN;
+        /* amount: read LE from wire, encode BE into preimage */
+        uint64_t amt = le64_read(p + INPUT_NULLIFIER_LEN);
+        be64_into(amt, buf + buf_pos);
+        buf_pos += 8;
+        /* token_id */
+        memcpy(buf + buf_pos, p + INPUT_NULLIFIER_LEN + 8, INPUT_TOKEN_ID_LEN);
+        buf_pos += INPUT_TOKEN_ID_LEN;
+
         p += INPUT_SIZE;
         remaining -= INPUT_SIZE;
     }
 
-    /* Parse output_count (NOT copied to hash buffer) */
-    if (remaining < 1) { free(buf); return -1; }
-    uint8_t output_count = *p;
-    p++;
+    /* ── Outputs: version(u8) || fp(129) || amount(u64 BE) || token_id(64) ||
+     *           seed(32) || memo_len(u8) || memo(memo_len) ── */
+    if (remaining < 1) goto fail;
+    uint8_t output_count = *p++;
     remaining--;
+    if (output_count > NODUS_T3_MAX_TX_OUTPUTS) goto fail;
 
-    if (output_count > NODUS_T3_MAX_TX_OUTPUTS) { free(buf); return -1; }
-
-    /* Copy each output's fields */
     for (int i = 0; i < output_count; i++) {
-        if (remaining < OUTPUT_FIXED_SIZE) { free(buf); return -1; }
+        if (remaining < OUTPUT_FIXED_SIZE) goto fail;
 
-        /* Read memo_len (at offset OUTPUT_FIXED_SIZE - 1 within the output) */
         uint8_t memo_len = p[OUTPUT_FIXED_SIZE - 1];
         size_t output_total = OUTPUT_FIXED_SIZE + memo_len;
+        if (remaining < output_total) goto fail;
 
-        if (remaining < output_total) { free(buf); return -1; }
+        /* version */
+        buf[buf_pos++] = p[0];
+        /* fp(129) */
+        memcpy(buf + buf_pos, p + OUTPUT_VERSION_LEN, OUTPUT_FP_LEN);
+        buf_pos += OUTPUT_FP_LEN;
+        /* amount: LE on wire → BE in preimage */
+        uint64_t amt = le64_read(p + OUTPUT_VERSION_LEN + OUTPUT_FP_LEN);
+        be64_into(amt, buf + buf_pos);
+        buf_pos += 8;
+        /* token_id + seed */
+        memcpy(buf + buf_pos,
+               p + OUTPUT_VERSION_LEN + OUTPUT_FP_LEN + OUTPUT_AMOUNT_LEN,
+               OUTPUT_TOKEN_ID_LEN + OUTPUT_SEED_LEN);
+        buf_pos += OUTPUT_TOKEN_ID_LEN + OUTPUT_SEED_LEN;
+        /* memo_len */
+        buf[buf_pos++] = memo_len;
+        /* memo bytes */
+        if (memo_len > 0) {
+            memcpy(buf + buf_pos, p + OUTPUT_FIXED_SIZE, memo_len);
+            buf_pos += memo_len;
+        }
 
-        memcpy(buf + buf_pos, p, output_total);
-        buf_pos += output_total;
         p += output_total;
         remaining -= output_total;
     }
+
+    /* ── Signers: signer_count(u8) || signer_pubkeys[0..signer_count] ──
+     * The caller supplies the pubkey concatenation (already extracted from
+     * tx_data). This matches the client-side preimage exactly: signatures
+     * are NOT hashed. */
+    buf[buf_pos++] = signer_count;
+    for (int i = 0; i < signer_count; i++) {
+        memcpy(buf + buf_pos,
+               signer_pubkeys + (size_t)i * NODUS_PK_BYTES,
+               NODUS_PK_BYTES);
+        buf_pos += NODUS_PK_BYTES;
+    }
+
+    /* ── Type-specific appended fields ──
+     * At this point the wire cursor `p` is already positioned after signers
+     * (we walked inputs/outputs above but NOT the wire signers/witnesses
+     * sections — the wire has witnesses then signers between outputs and
+     * the type-specific tail). Rather than re-walk, we jump the wire cursor
+     * past witnesses + signers to reach the appended section. */
+
+    /* Skip witnesses(count + count * (32+sig+8+pk)) on the wire */
+    if (remaining < 1) goto fail;
+    uint8_t witness_count = *p++;
+    remaining--;
+    {
+        size_t witness_size = 32 + NODUS_SIG_BYTES + 8 + NODUS_PK_BYTES;
+        size_t witnesses_total = (size_t)witness_count * witness_size;
+        if (remaining < witnesses_total) goto fail;
+        p += witnesses_total;
+        remaining -= witnesses_total;
+    }
+
+    /* Skip signers on the wire */
+    if (remaining < 1) goto fail;
+    uint8_t wire_signer_count = *p++;
+    remaining--;
+    if (wire_signer_count > NODUS_T3_MAX_TX_SIGNERS) goto fail;
+    {
+        size_t signers_total = (size_t)wire_signer_count * SIGNER_SIZE;
+        if (remaining < signers_total) goto fail;
+        p += signers_total;
+        remaining -= signers_total;
+    }
+
+    /* Per-type appended — wire already encodes u16/u64 BE here, so we can
+     * memcpy directly into the preimage. */
+    if (type_byte == TX_TYPE_STAKE) {
+        size_t need = 2 + TX_STAKE_UNSTAKE_DEST_FP_LEN + TX_STAKE_PURPOSE_TAG_LEN;
+        if (remaining < need) goto fail;
+        memcpy(buf + buf_pos, p, need);
+        buf_pos += need;
+        p += need;
+        remaining -= need;
+    } else if (type_byte == TX_TYPE_DELEGATE) {
+        if (remaining < NODUS_PK_BYTES) goto fail;
+        memcpy(buf + buf_pos, p, NODUS_PK_BYTES);
+        buf_pos += NODUS_PK_BYTES;
+        p += NODUS_PK_BYTES;
+        remaining -= NODUS_PK_BYTES;
+    } else if (type_byte == TX_TYPE_UNDELEGATE) {
+        size_t need = NODUS_PK_BYTES + 8;
+        if (remaining < need) goto fail;
+        memcpy(buf + buf_pos, p, need);
+        buf_pos += need;
+        p += need;
+        remaining -= need;
+    } else if (type_byte == TX_TYPE_CLAIM_REWARD) {
+        size_t need = NODUS_PK_BYTES + 8 + 8;
+        if (remaining < need) goto fail;
+        memcpy(buf + buf_pos, p, need);
+        buf_pos += need;
+        p += need;
+        remaining -= need;
+    } else if (type_byte == TX_TYPE_VALIDATOR_UPDATE) {
+        size_t need = 2 + 8;
+        if (remaining < need) goto fail;
+        memcpy(buf + buf_pos, p, need);
+        buf_pos += need;
+        p += need;
+        remaining -= need;
+    }
+    /* UNSTAKE, GENESIS, SPEND, BURN, TOKEN_CREATE: no appended fields. */
+
+    /* Suppress unused-variable warnings for optimized paths. */
+    (void)version_byte;
 
     /* Hash the assembled buffer with SHA3-512 */
     nodus_key_t hash;
@@ -150,6 +322,10 @@ int nodus_witness_recompute_tx_hash(const uint8_t *tx_data, uint32_t tx_len,
 
     memcpy(hash_out, hash.bytes, NODUS_KEY_BYTES);
     return 0;
+
+fail:
+    free(buf);
+    return -1;
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -346,7 +522,7 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
         }
     }
 
-    if (nodus_witness_recompute_tx_hash(tx_data, tx_len,
+    if (nodus_witness_recompute_tx_hash(w->chain_id, tx_data, tx_len,
                                          hash_signer_count > 0 ? signer_pubkeys_buf : NULL,
                                          hash_signer_count,
                                          computed_hash) != 0) {
@@ -425,16 +601,35 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
 
     uint64_t total_input = 0;
 
+    /* Task 29 (Rule D): SPEND rejects locked UTXO inputs. The current
+     * chain tip (block height of the last committed block) is the cutoff:
+     * a UTXO with unlock_block > current_block is still in its post-UNSTAKE
+     * cooldown window and cannot be spent yet. UTXOs with unlock_block == 0
+     * are the normal unlocked case (default for all non-UNSTAKE outputs). */
+    uint64_t current_block = nodus_witness_block_height(w);
+
     for (int i = 0; i < nullifier_count; i++) {
         const uint8_t *nul = nullifiers + i * NODUS_T3_NULLIFIER_LEN;
         uint64_t utxo_amount = 0;
         char owner[129] = {0};
         uint8_t utxo_token_id[64] = {0};
+        uint64_t utxo_unlock_block = 0;
 
-        if (nodus_witness_utxo_lookup(w, nul, &utxo_amount, owner,
-                                       is_token_create ? NULL : utxo_token_id) != 0) {
+        if (nodus_witness_utxo_lookup_ex(w, nul, &utxo_amount, owner,
+                                          is_token_create ? NULL : utxo_token_id,
+                                          &utxo_unlock_block) != 0) {
             snprintf(reject_reason, reason_size,
                      "input %d: UTXO not found in set", i);
+            return -1;
+        }
+
+        /* Rule D: locked UTXO (unlock_block > current chain height) — reject. */
+        if (utxo_unlock_block > current_block) {
+            snprintf(reject_reason, reason_size,
+                     "input %d: UTXO locked (unlock_block=%lu > current=%lu)",
+                     i,
+                     (unsigned long)utxo_unlock_block,
+                     (unsigned long)current_block);
             return -1;
         }
 

@@ -62,7 +62,16 @@ static int setup_witness(nodus_witness_t *w) {
         "  tx_hash BLOB NOT NULL,"
         "  output_index INTEGER NOT NULL,"
         "  block_height INTEGER NOT NULL DEFAULT 0,"
-        "  created_at INTEGER NOT NULL DEFAULT 0"
+        "  created_at INTEGER NOT NULL DEFAULT 0,"
+        /* Task 11 v15 migration column — matches production schema so
+         * nodus_witness_utxo_add (which now writes unlock_block) works. */
+        "  unlock_block INTEGER NOT NULL DEFAULT 0"
+        ");"
+        /* blocks table required so nodus_witness_block_height() (called
+         * by the SPEND verify Rule D check) can issue MAX(height) without
+         * failing on a missing table. Empty → height == 0. */
+        "CREATE TABLE IF NOT EXISTS blocks ("
+        "  height INTEGER PRIMARY KEY"
         ");";
 
     char *err = NULL;
@@ -167,7 +176,10 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
     uint8_t hash[64];
     /* Use sender pubkey as single signer for hash (0 signers for genesis) */
     uint8_t signer_count = sender_pubkey ? 1 : 0;
-    if (nodus_witness_recompute_tx_hash(buf, *out_len, sender_pubkey, signer_count, hash) == 0) {
+    /* Test fixture chain_id: all zeros, matches setup_witness() memset. */
+    uint8_t zero_chain_id[32] = {0};
+    if (nodus_witness_recompute_tx_hash(zero_chain_id, buf, *out_len,
+                                         sender_pubkey, signer_count, hash) == 0) {
         memcpy(buf + 10, hash, TX_HASH_LEN);
     }
 
