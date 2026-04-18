@@ -24,14 +24,24 @@ extern "C" {
 /**
  * Recompute SHA3-512 hash from serialized tx_data.
  *
- * Matches dnac_tx_compute_hash() byte-for-byte:
- * Hashes version(1) + type(1) + timestamp(8) + signer_count(1) +
- * signer_pubkeys[](N*2592), then each input's nullifier(64) + amount(8) +
- * token_id(64), then each output's version(1) + fingerprint(129) + amount(8) +
- * token_id(64) + seed(32) + memo_len(1) + memo(n).
- * Count bytes (input/output) and the embedded tx_hash are NOT included.
- * Signer signatures are NOT included — only their pubkeys.
+ * Matches dnac_tx_compute_hash() byte-for-byte (design §2.3, F-CRYPTO-10):
  *
+ *   version(u8) || type(u8) || timestamp(u64 BE) || chain_id[32] ||
+ *   inputs[0..input_count]  each: nullifier(64) || amount(u64 BE) || token_id(64) ||
+ *   outputs[0..output_count] each: version(u8) || fp(129) || amount(u64 BE) ||
+ *                                  token_id(64) || seed(32) || memo_len(u8) || memo(memo_len) ||
+ *   signer_count(u8) || signer_pubkeys[0..signer_count] (each NODUS_PK_BYTES) ||
+ *   type_specific_appended
+ *
+ * Count bytes for inputs/outputs are NOT hashed (derived from wire-format
+ * prefixes). The embedded tx_hash inside tx_data (at offset 10, 64 bytes) is
+ * skipped. Signer signatures are NOT hashed — only their pubkeys.
+ *
+ * Type-specific appended (for STAKE/DELEGATE/etc.) is parsed from tx_data
+ * directly since the wire bytes for those fields already use BE u64 encoding
+ * (see dnac/src/transaction/serialize.c).
+ *
+ * @param chain_id         32-byte chain_id (witness's own; bound into preimage)
  * @param tx_data          Serialized transaction bytes
  * @param tx_len           Length of tx_data
  * @param signer_pubkeys   Concatenated signer public keys (signer_count * NODUS_PK_BYTES)
@@ -39,7 +49,8 @@ extern "C" {
  * @param hash_out         Output 64-byte SHA3-512 hash
  * @return 0 on success, -1 on error (truncated data, etc.)
  */
-int nodus_witness_recompute_tx_hash(const uint8_t *tx_data, uint32_t tx_len,
+int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
+                                     const uint8_t *tx_data, uint32_t tx_len,
                                      const uint8_t *signer_pubkeys,
                                      uint8_t signer_count,
                                      uint8_t *hash_out);

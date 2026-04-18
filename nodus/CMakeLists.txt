@@ -378,6 +378,13 @@ add_executable(test_witness_verify tests/test_witness_verify.c)
 target_link_libraries(test_witness_verify nodus dsa nodus)
 add_test(NAME test_witness_verify COMMAND test_witness_verify)
 
+# Witness ↔ DNAC tx_hash parity test (F-CRYPTO-10 chain_id binding +
+# per-type appended fields). Ensures nodus_witness_recompute_tx_hash
+# matches dnac_tx_compute_hash() byte-for-byte for every TX type.
+add_executable(test_witness_tx_hash_parity tests/test_witness_tx_hash_parity.c)
+target_link_libraries(test_witness_tx_hash_parity nodus dsa nodus crypto)
+add_test(NAME test_witness_tx_hash_parity COMMAND test_witness_tx_hash_parity)
+
 # Witness chain DB archive test (Fix 1 — orphan DB prevention)
 add_executable(test_witness_chain_archive tests/test_witness_chain_archive.c)
 target_link_libraries(test_witness_chain_archive nodus dsa nodus)

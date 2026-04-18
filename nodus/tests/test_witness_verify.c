@@ -176,7 +176,10 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
     uint8_t hash[64];
     /* Use sender pubkey as single signer for hash (0 signers for genesis) */
     uint8_t signer_count = sender_pubkey ? 1 : 0;
-    if (nodus_witness_recompute_tx_hash(buf, *out_len, sender_pubkey, signer_count, hash) == 0) {
+    /* Test fixture chain_id: all zeros, matches setup_witness() memset. */
+    uint8_t zero_chain_id[32] = {0};
+    if (nodus_witness_recompute_tx_hash(zero_chain_id, buf, *out_len,
+                                         sender_pubkey, signer_count, hash) == 0) {
         memcpy(buf + 10, hash, TX_HASH_LEN);
     }
 
