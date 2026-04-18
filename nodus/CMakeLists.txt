@@ -135,6 +135,7 @@ if(NOT WIN32)
         src/witness/nodus_witness_validator.c
         src/witness/nodus_witness_delegation.c
         src/witness/nodus_witness_reward.c
+        src/witness/nodus_witness_committee.c
     )
 endif()
 
@@ -624,3 +625,6 @@ register_witness_test(test_accumulator_math)
 
 # Task 50 — F-CONS-06 mandatory independent state_root recompute on PREVOTE
 register_witness_test(test_prevote_state_root_mutation)
+
+# Task 51 — committee election (post-commit lookback + state_seed tiebreak)
+register_witness_test(test_committee_election)
