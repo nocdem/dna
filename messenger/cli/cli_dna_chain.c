@@ -55,6 +55,7 @@ static void print_dna_chain_help(void) {
     printf("  witnesses                     List witness servers\n");
     printf("  genesis-create <fp> <amount>  Create genesis TX locally (Phase 1)\n");
     printf("  genesis-submit [tx_file]      Submit genesis TX to network (Phase 2)\n");
+    printf("  genesis-prepare <config>      Build chain_def blob from operator config (hex stdout)\n");
     printf("  parse-tx <tx_file>            Inspect a serialized TX file (read-only)\n\n");
     printf("Token Commands:\n");
     printf("  token-create <name> <sym> <supply>  Create a new token\n");
@@ -213,6 +214,17 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
     else if (strcmp(cmd, "genesis-submit") == 0) {
         const char *tx_file = (sub + 1 < argc) ? argv[sub + 1] : NULL;
         result = dna_chain_cmd_genesis_submit(ctx, tx_file);
+    }
+    else if (strcmp(cmd, "genesis-prepare") == 0) {
+        if (sub + 1 >= argc) {
+            fprintf(stderr, "Usage: dna-connect-cli dna genesis-prepare <config_file>\n");
+            fprintf(stderr, "  Reads key=value operator config and prints the hex-encoded\n");
+            fprintf(stderr, "  chain_def blob (including 7 initial_validators) to stdout.\n");
+            fprintf(stderr, "  See dnac/include/dnac/genesis_prepare.h for the config schema.\n");
+            result = 1;
+        } else {
+            result = dna_chain_cmd_genesis_prepare(ctx, argv[sub + 1]);
+        }
     }
     else if (strcmp(cmd, "parse-tx") == 0) {
         if (sub + 1 >= argc) {

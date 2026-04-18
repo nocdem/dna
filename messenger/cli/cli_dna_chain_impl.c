@@ -17,6 +17,7 @@
 #include "dnac/crypto_helpers.h"
 #include "dnac/trusted_state.h"
 #include "dnac/chain_def_codec.h"
+#include "dnac/genesis_prepare.h"
 #include "dnac/version.h"
 #include <dna/dna_engine.h>
 #include "nodus_ops.h"
@@ -1501,5 +1502,50 @@ int dna_chain_cmd_parse_tx(dnac_context_t *ctx, const char *tx_file) {
     printf("witnesses:  %d\n", tx->witness_count);
 
     free(tx);
+    return 0;
+}
+
+/* ============================================================================
+ * Phase 12 Task 58 — genesis-prepare (operator tool)
+ * ========================================================================== */
+
+int dna_chain_cmd_genesis_prepare(dnac_context_t *ctx, const char *config_path) {
+    (void)ctx;
+    if (!config_path) {
+        fprintf(stderr, "Error: config_path is NULL\n");
+        return 1;
+    }
+
+    /* Upper bound on chain_def blob size. chain_def_codec.c caps
+     * witness_count at 21 and initial_validator_count at 7 — the
+     * dnac_chain_def_max_size() helper computes the exact upper bound
+     * but we just use a comfortable static buffer here. */
+    uint8_t blob[65536];
+    size_t  blob_len = 0;
+    char    err[256];
+    err[0] = '\0';
+
+    int rc = dnac_cli_genesis_prepare_blob(config_path,
+                                             blob, sizeof(blob),
+                                             &blob_len,
+                                             err, sizeof(err));
+    if (rc != 0) {
+        fprintf(stderr, "genesis-prepare: %s\n",
+                err[0] ? err : "(no error message)");
+        return 1;
+    }
+
+    /* Hex-print to stdout so the operator can redirect into a file
+     * (`... > chain_def.hex`) or pipe into `xxd -r -p` to recover the
+     * binary blob for `dna genesis-create --chain-def-file`. */
+    static const char hex_digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < blob_len; i++) {
+        putchar(hex_digits[blob[i] >> 4]);
+        putchar(hex_digits[blob[i] & 0xf]);
+    }
+    putchar('\n');
+
+    fprintf(stderr, "genesis-prepare: wrote %zu bytes (hex %zu chars)\n",
+            blob_len, blob_len * 2);
     return 0;
 }

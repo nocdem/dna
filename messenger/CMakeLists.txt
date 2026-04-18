@@ -225,6 +225,7 @@ if(BUILD_SHARED_LIB)
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/block.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/genesis_anchor.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/chain_def_codec.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/genesis_prepare.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/merkle_verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/anchor_verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/current_trust.c
@@ -352,6 +353,7 @@ else()
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/block.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/genesis_anchor.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/chain_def_codec.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/genesis_prepare.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/merkle_verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/anchor_verify.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/ledger/current_trust.c

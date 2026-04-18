@@ -136,6 +136,20 @@ int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
 int dna_chain_cmd_genesis_submit(dnac_context_t *ctx, const char *tx_file);
 
 /**
+ * @brief Build a chain_def blob from an operator config file.
+ *
+ * Thin wrapper around dnac_cli_genesis_prepare_blob — reads the config,
+ * encodes the canonical chain_def blob (including 7 initial_validators),
+ * and hex-prints it to stdout. ctx is currently unused (accepted for
+ * dispatcher symmetry).
+ *
+ * @param ctx          DNAC context (unused).
+ * @param config_path  Path to key=value operator config.
+ * @return 0 on success, non-zero on failure.
+ */
+int dna_chain_cmd_genesis_prepare(dnac_context_t *ctx, const char *config_path);
+
+/**
  * @brief Create a new token
  * @param ctx DNAC context
  * @param name Token name

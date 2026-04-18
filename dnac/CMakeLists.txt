@@ -368,6 +368,9 @@ if(DNAC_BUILD_TESTS)
     # Stake & delegation v1 — Phase 12 Task 56: full Rule P (count + distinctness)
     register_dnac_test(test_genesis_verify_rule_p_extended)
 
+    # Stake & delegation v1 — Phase 12 Task 58: genesis-prepare lib function
+    register_dnac_test(test_genesis_prepare)
+
     # Stake & delegation v1 — Phase 6 Task 32: cross-chain DELEGATE replay (F-CRYPTO-10)
     register_dnac_test(test_cross_chain_replay)
 
