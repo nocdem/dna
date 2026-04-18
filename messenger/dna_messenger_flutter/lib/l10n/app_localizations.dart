@@ -3439,6 +3439,72 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{name} reacted {emoji} to your message'**
   String reactionNotificationBody(String name, String emoji);
+
+  /// App bar title for the validator list screen. 'Earners' is the non-technical framing — the real thing is a validator.
+  ///
+  /// In en, this message translates to:
+  /// **'Earners'**
+  String get stakeDashboardTitle;
+
+  /// No description provided for @stakeRefresh.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh'**
+  String get stakeRefresh;
+
+  /// No description provided for @stakeEarnersHeader.
+  ///
+  /// In en, this message translates to:
+  /// **'People earning together'**
+  String get stakeEarnersHeader;
+
+  /// No description provided for @stakeEarnersSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 active earner} other{{count} active earners}}'**
+  String stakeEarnersSubtitle(int count);
+
+  /// No description provided for @stakeEarnerName.
+  ///
+  /// In en, this message translates to:
+  /// **'Earner {id}'**
+  String stakeEarnerName(String id);
+
+  /// Commission — fraction of rewards the validator keeps before distributing the rest to delegators.
+  ///
+  /// In en, this message translates to:
+  /// **'Keeps {pct}% of rewards'**
+  String stakeEarnerCommission(String pct);
+
+  /// No description provided for @stakeEarnerTotalLocked.
+  ///
+  /// In en, this message translates to:
+  /// **'{amount} DNAC locked in support'**
+  String stakeEarnerTotalLocked(String amount);
+
+  /// Badge shown on validators currently in the BFT committee — they are actively trusted to write blocks this epoch.
+  ///
+  /// In en, this message translates to:
+  /// **'Trusted'**
+  String get stakeTrustedBadge;
+
+  /// No description provided for @stakeNoEarners.
+  ///
+  /// In en, this message translates to:
+  /// **'No earners yet'**
+  String get stakeNoEarners;
+
+  /// No description provided for @stakeNoEarnersSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Come back in a few minutes — the network is getting started.'**
+  String get stakeNoEarnersSubtitle;
+
+  /// No description provided for @stakeLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load earners'**
+  String get stakeLoadFailed;
 }
 
 class _AppLocalizationsDelegate

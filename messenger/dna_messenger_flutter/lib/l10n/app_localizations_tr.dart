@@ -1809,4 +1809,52 @@ class AppLocalizationsTr extends AppLocalizations {
   String reactionNotificationBody(String name, String emoji) {
     return '$name mesajınıza $emoji ile tepki verdi';
   }
+
+  @override
+  String get stakeDashboardTitle => 'Earners';
+
+  @override
+  String get stakeRefresh => 'Refresh';
+
+  @override
+  String get stakeEarnersHeader => 'People earning together';
+
+  @override
+  String stakeEarnersSubtitle(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count active earners',
+      one: '1 active earner',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String stakeEarnerName(String id) {
+    return 'Earner $id';
+  }
+
+  @override
+  String stakeEarnerCommission(String pct) {
+    return 'Keeps $pct% of rewards';
+  }
+
+  @override
+  String stakeEarnerTotalLocked(String amount) {
+    return '$amount DNAC locked in support';
+  }
+
+  @override
+  String get stakeTrustedBadge => 'Trusted';
+
+  @override
+  String get stakeNoEarners => 'No earners yet';
+
+  @override
+  String get stakeNoEarnersSubtitle =>
+      'Come back in a few minutes — the network is getting started.';
+
+  @override
+  String get stakeLoadFailed => 'Couldn\'t load earners';
 }

@@ -921,5 +921,44 @@
       "name": { "type": "String" },
       "emoji": { "type": "String" }
     }
-  }
+  },
+
+  "stakeDashboardTitle": "Earners",
+  "@stakeDashboardTitle": {
+    "description": "App bar title for the validator list screen. 'Earners' is the non-technical framing — the real thing is a validator."
+  },
+  "stakeRefresh": "Refresh",
+  "stakeEarnersHeader": "People earning together",
+  "stakeEarnersSubtitle": "{count, plural, =1{1 active earner} other{{count} active earners}}",
+  "@stakeEarnersSubtitle": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "stakeEarnerName": "Earner {id}",
+  "@stakeEarnerName": {
+    "placeholders": {
+      "id": { "type": "String" }
+    }
+  },
+  "stakeEarnerCommission": "Keeps {pct}% of rewards",
+  "@stakeEarnerCommission": {
+    "description": "Commission — fraction of rewards the validator keeps before distributing the rest to delegators.",
+    "placeholders": {
+      "pct": { "type": "String" }
+    }
+  },
+  "stakeEarnerTotalLocked": "{amount} DNAC locked in support",
+  "@stakeEarnerTotalLocked": {
+    "placeholders": {
+      "amount": { "type": "String" }
+    }
+  },
+  "stakeTrustedBadge": "Trusted",
+  "@stakeTrustedBadge": {
+    "description": "Badge shown on validators currently in the BFT committee — they are actively trusted to write blocks this epoch."
+  },
+  "stakeNoEarners": "No earners yet",
+  "stakeNoEarnersSubtitle": "Come back in a few minutes — the network is getting started.",
+  "stakeLoadFailed": "Couldn't load earners"
 }
