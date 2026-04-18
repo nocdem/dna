@@ -910,6 +910,57 @@ void nodus_client_free_tx_result(nodus_dnac_tx_result_t *result);
  */
 void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *result);
 
+/* ── Phase 14 / stake-delegation v1 RPCs ───────────────────────────── */
+
+/**
+ * Query the witness for every pending reward owed to `claimant_pubkey`.
+ *
+ * One entry per active delegation with non-zero pending, plus a
+ * self-entry when the claimant is itself a validator with unclaimed
+ * commission.
+ *
+ * Caller MUST free result_out with nodus_client_free_pending_rewards_result().
+ *
+ * @param claimant_pubkey  DNAC_PUBKEY_SIZE (2592) bytes
+ * @param result_out       Query result (entries heap-allocated)
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_pending_rewards(nodus_client_t *client,
+                                        const uint8_t *claimant_pubkey,
+                                        nodus_dnac_pending_rewards_result_t *result_out);
+
+/** Free heap allocation inside a pending-rewards result. */
+void nodus_client_free_pending_rewards_result(nodus_dnac_pending_rewards_result_t *result);
+
+/**
+ * Query the witness for the current epoch's committee (chain-authoritative).
+ *
+ * @param result_out   Committee result (fixed-size internal array)
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_committee(nodus_client_t *client,
+                                  nodus_dnac_committee_result_t *result_out);
+
+/**
+ * Page through the full validator table on the witness (all statuses).
+ *
+ * Caller MUST free result_out with nodus_client_free_validator_list_result().
+ *
+ * @param filter_status  -1 = all statuses, 0..3 = filter by status
+ * @param offset         Page offset (0-based)
+ * @param limit          Max entries to return (server-side cap applies)
+ * @param result_out     Query result (entries heap-allocated)
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_validator_list(nodus_client_t *client,
+                                       int filter_status,
+                                       int offset,
+                                       int limit,
+                                       nodus_dnac_validator_list_result_t *result_out);
+
+/** Free heap allocation inside a validator-list result. */
+void nodus_client_free_validator_list_result(nodus_dnac_validator_list_result_t *result);
+
 /* ── Media Operations ──────────────────────────────────────────────── */
 
 /**

@@ -1,8 +1,8 @@
-/* Task 38 — verifies the dnac_get_pending_rewards() stub returns
- * DNAC_ERROR_NOT_IMPLEMENTED cleanly, doesn't crash, and always zeroes
- * *total_pending_out so callers can't act on uninitialised values.
- *
- * Full coverage of the real RPC lands in Phase 14 Task 61 + Phase 17.
+/* Phase 14 Task 64 — dnac_get_pending_rewards now wires through to the
+ * witness RPC. Without a live witness this test can only cover the
+ * input-validation gates and the "not initialised" fast-path (nodus
+ * singleton absent in a unit-test process). Full coverage lands in
+ * Phase 17 integration tests with a running witness.
  */
 
 #include "dnac/dnac.h"
@@ -23,23 +23,26 @@
 int main(void) {
     uint64_t pending = 0xDEADBEEFDEADBEEFULL;
 
-    /* NULL ctx + NULL claimant — stub still zeroes output and returns
-     * NOT_IMPLEMENTED. */
-    int rc = dnac_get_pending_rewards(NULL, NULL, &pending, NULL, NULL);
-    CHECK(rc == DNAC_ERROR_NOT_IMPLEMENTED);
+    /* NULL total_pending_out → INVALID_PARAM. */
+    int rc = dnac_get_pending_rewards(NULL, NULL, NULL, NULL, NULL);
+    CHECK(rc == DNAC_ERROR_INVALID_PARAM);
+
+    /* NULL ctx → INVALID_PARAM, output zeroed. */
+    pending = 0xCAFEBABECAFEBABEULL;
+    rc = dnac_get_pending_rewards(NULL, NULL, &pending, NULL, NULL);
+    CHECK(rc == DNAC_ERROR_INVALID_PARAM);
     CHECK(pending == 0);
 
-    /* Poison output again; confirm the stub re-zeroes on every call. */
-    pending = 0xCAFEBABECAFEBABEULL;
+    /* Poisoned pending survives the explicit-claimant path too. The
+     * real RPC call cannot happen in a unit-test (no nodus singleton),
+     * so we expect either INVALID_PARAM (NULL ctx gate) or
+     * NOT_INITIALIZED downstream. */
+    pending = 0x1122334455667788ULL;
     uint8_t pub[DNAC_PUBKEY_SIZE];
     memset(pub, 0x11, sizeof(pub));
     rc = dnac_get_pending_rewards(NULL, pub, &pending, NULL, NULL);
-    CHECK(rc == DNAC_ERROR_NOT_IMPLEMENTED);
-    CHECK(pending == 0);
-
-    /* NULL total_pending_out — input-validation gate. */
-    rc = dnac_get_pending_rewards(NULL, NULL, NULL, NULL, NULL);
     CHECK(rc == DNAC_ERROR_INVALID_PARAM);
+    CHECK(pending == 0);
 
     printf("test_rewards_query_stub: ALL CHECKS PASSED\n");
     return 0;

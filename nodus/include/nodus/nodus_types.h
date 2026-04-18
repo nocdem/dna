@@ -596,6 +596,63 @@ typedef struct {
     nodus_dnac_block_result_t *blocks;  /* Heap-allocated, caller frees */
 } nodus_dnac_block_range_result_t;
 
+/* ── Phase 14 / Stake-delegation v1 query results ─────────────────── */
+
+/** Per-validator pending-rewards entry (Phase 14 / Task 61). */
+typedef struct {
+    uint8_t  validator_pubkey[2592];   /* DNAC_PUBKEY_SIZE */
+    uint64_t amount;
+} nodus_dnac_pending_entry_t;
+
+/** Pending-rewards query result.
+ *
+ * Owns a heap-allocated entries array; caller MUST free via
+ * nodus_client_free_pending_rewards_result(). */
+typedef struct {
+    uint64_t total;
+    int      count;
+    nodus_dnac_pending_entry_t *entries;
+} nodus_dnac_pending_rewards_result_t;
+
+/** Committee member entry returned by dnac_committee_query. */
+typedef struct {
+    uint8_t  pubkey[2592];
+    uint64_t total_stake;
+    uint16_t commission_bps;
+    uint8_t  status;             /* dnac_validator_status_t */
+    char     address[256];       /* Empty string if unknown. */
+} nodus_dnac_committee_entry_t;
+
+/** Committee query result. Fixed-size entries[] array sized to
+ * DNAC_COMMITTEE_SIZE (=7). */
+typedef struct {
+    uint64_t block_height;
+    uint64_t epoch_start;
+    int      count;
+    nodus_dnac_committee_entry_t entries[7];   /* DNAC_COMMITTEE_SIZE */
+} nodus_dnac_committee_result_t;
+
+/** Validator list entry (Phase 14 / Task 63). Same field layout as
+ * dnac_validator_list_entry_t in dnac.h — kept separate so nodus doesn't
+ * depend on dnac headers. */
+typedef struct {
+    uint8_t  pubkey[2592];
+    uint64_t self_stake;
+    uint64_t total_delegated;
+    uint64_t external_delegated;
+    uint16_t commission_bps;
+    uint8_t  status;
+    uint64_t active_since_block;
+} nodus_dnac_validator_list_entry_t;
+
+/** Validator list query result. entries is heap; caller frees via
+ * nodus_client_free_validator_list_result(). */
+typedef struct {
+    int      count;
+    int      total;            /* Total matching filter (pre-pagination). */
+    nodus_dnac_validator_list_entry_t *entries;
+} nodus_dnac_validator_list_result_t;
+
 /* ── Utility ─────────────────────────────────────────────────────── */
 
 /** Compare two nodus keys (memcmp wrapper) */
