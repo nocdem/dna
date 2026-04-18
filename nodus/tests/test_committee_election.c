@@ -329,6 +329,125 @@ int main(void) {
     w.db = NULL;
     rmrf(data_path);
 
-    printf("\nAll Task 51 committee election tests passed.\n");
+    /* ────────────────────────────────────────────────────────────
+     * Task 52 bootstrap scenarios — e_start too small for the
+     * post-commit lookback rule. Fresh DB, fresh validators.
+     * ──────────────────────────────────────────────────────────── */
+    char data_path_b[] = "/tmp/test_committee_bootstrap_XXXXXX";
+    CHECK(mkdtemp(data_path_b) != NULL);
+
+    nodus_witness_t wb;
+    memset(&wb, 0, sizeof(wb));
+    snprintf(wb.data_path, sizeof(wb.data_path), "%s", data_path_b);
+    uint8_t chain_id_b[16];
+    memset(chain_id_b, 0xC2, sizeof(chain_id_b));
+    CHECK_EQ(nodus_witness_create_chain_db(&wb, chain_id_b), 0);
+
+    /* Seed genesis block with a known state_seed so the tiebreak is
+     * reproducible in-test. */
+    uint8_t genesis_seed[64];
+    memset(genesis_seed, 0x5A, sizeof(genesis_seed));
+    insert_block_row(&wb, 0, genesis_seed);
+
+    /* Two fresh validators — active_since_block = 1. In the non-bootstrap
+     * path they would fail MIN_TENURE against any lookback < 241, but
+     * the bootstrap variant skips the tenure check. */
+    dnac_validator_record_t vg1, vg2;
+    init_validator(&vg1, 0x71, 1, 100, 0, DNAC_VALIDATOR_ACTIVE);
+    init_validator(&vg2, 0x72, 1, 200, 0, DNAC_VALIDATOR_ACTIVE);
+    CHECK_EQ(nodus_validator_insert(&wb, &vg1), 0);
+    CHECK_EQ(nodus_validator_insert(&wb, &vg2), 0);
+
+    /* Scenario B1: e_start = 0. Entirely in the bootstrap zone. */
+    printf("  (B1) bootstrap — e_start = 0\n");
+    CHECK_EQ(nodus_committee_compute_for_epoch(&wb, 0, out,
+                                                 DNAC_COMMITTEE_SIZE, &count), 0);
+    CHECK_EQ(count, 2);
+    /* Ranked by stake DESC — vg2(200) before vg1(100). */
+    CHECK(find_pubkey(out, count, 0x72) == 0);
+    CHECK(find_pubkey(out, count, 0x71) == 1);
+
+    /* Scenario B2: e_start = EPOCH_LENGTH. lookback would be -1 → still
+     * bootstrap zone (< EPOCH_LENGTH + 1). */
+    printf("  (B2) bootstrap — e_start = EPOCH_LENGTH\n");
+    CHECK_EQ(nodus_committee_compute_for_epoch(&wb,
+                                                 (uint64_t)DNAC_EPOCH_LENGTH,
+                                                 out,
+                                                 DNAC_COMMITTEE_SIZE, &count), 0);
+    CHECK_EQ(count, 2);
+    CHECK(find_pubkey(out, count, 0x72) == 0);
+    CHECK(find_pubkey(out, count, 0x71) == 1);
+
+    /* Scenario B3: e_start = EPOCH_LENGTH + 1 → FIRST non-bootstrap
+     * epoch. Lookback = 0 (genesis block). MIN_TENURE check applies:
+     * active_since=1 + 240 = 241 > 0 → both validators filtered out.
+     * This is the ugly corner the design carves out (only chain_def
+     * bootstrap validators survive the transition). Verify behaviour:
+     * committee is empty until validators accumulate tenure. */
+    printf("  (B3) non-bootstrap — lookback=0 excludes fresh validators\n");
+    CHECK_EQ(nodus_committee_compute_for_epoch(&wb,
+                                                 (uint64_t)DNAC_EPOCH_LENGTH + 1,
+                                                 out,
+                                                 DNAC_COMMITTEE_SIZE, &count), 0);
+    CHECK_EQ(count, 0);
+
+    /* Scenario B4: bootstrap tiebreak also uses state_seed. Add two
+     * tied-stake validators; check that ordering matches the manual
+     * SHA3-512(0x02 || pubkey || genesis_state_root) comparison. */
+    printf("  (B4) bootstrap tiebreak uses genesis state_seed\n");
+    dnac_validator_record_t vg_a, vg_b;
+    init_validator(&vg_a, 0x81, 1, 500, 0, DNAC_VALIDATOR_ACTIVE);
+    init_validator(&vg_b, 0x82, 1, 500, 0, DNAC_VALIDATOR_ACTIVE);
+    CHECK_EQ(nodus_validator_insert(&wb, &vg_a), 0);
+    CHECK_EQ(nodus_validator_insert(&wb, &vg_b), 0);
+
+    CHECK_EQ(nodus_committee_compute_for_epoch(&wb, 0, out, 4, &count), 0);
+    CHECK_EQ(count, 4);
+    int idx_vga = find_pubkey(out, count, 0x81);
+    int idx_vgb = find_pubkey(out, count, 0x82);
+    CHECK(idx_vga >= 0 && idx_vgb >= 0);
+
+    uint8_t bbuf_a[1 + DNAC_PUBKEY_SIZE + 64];
+    uint8_t bbuf_b[1 + DNAC_PUBKEY_SIZE + 64];
+    bbuf_a[0] = NODUS_TREE_TAG_VALIDATOR;
+    memcpy(&bbuf_a[1], vg_a.pubkey, DNAC_PUBKEY_SIZE);
+    memcpy(&bbuf_a[1 + DNAC_PUBKEY_SIZE], genesis_seed, 64);
+    bbuf_b[0] = NODUS_TREE_TAG_VALIDATOR;
+    memcpy(&bbuf_b[1], vg_b.pubkey, DNAC_PUBKEY_SIZE);
+    memcpy(&bbuf_b[1 + DNAC_PUBKEY_SIZE], genesis_seed, 64);
+    uint8_t bhash_a[64], bhash_b[64];
+    qgp_sha3_512(bbuf_a, sizeof(bbuf_a), bhash_a);
+    qgp_sha3_512(bbuf_b, sizeof(bbuf_b), bhash_b);
+    int b_expected_a_first = (memcmp(bhash_a, bhash_b, 64) < 0);
+    int b_got_a_first = (idx_vga < idx_vgb);
+    CHECK_EQ(b_expected_a_first, b_got_a_first);
+
+    /* Scenario B5: bootstrap with NO genesis block row — helper still
+     * succeeds with a zero-filled state_seed. Fresh DB, no block_add. */
+    printf("  (B5) bootstrap with missing genesis block — zero seed\n");
+    char data_path_c[] = "/tmp/test_committee_nogenesis_XXXXXX";
+    CHECK(mkdtemp(data_path_c) != NULL);
+    nodus_witness_t wc;
+    memset(&wc, 0, sizeof(wc));
+    snprintf(wc.data_path, sizeof(wc.data_path), "%s", data_path_c);
+    uint8_t chain_id_c[16];
+    memset(chain_id_c, 0xC3, sizeof(chain_id_c));
+    CHECK_EQ(nodus_witness_create_chain_db(&wc, chain_id_c), 0);
+    dnac_validator_record_t vn;
+    init_validator(&vn, 0x91, 1, 42, 0, DNAC_VALIDATOR_ACTIVE);
+    CHECK_EQ(nodus_validator_insert(&wc, &vn), 0);
+    CHECK_EQ(nodus_committee_compute_for_epoch(&wc, 0, out,
+                                                 DNAC_COMMITTEE_SIZE, &count), 0);
+    CHECK_EQ(count, 1);
+    CHECK(find_pubkey(out, count, 0x91) == 0);
+    sqlite3_close(wc.db);
+    wc.db = NULL;
+    rmrf(data_path_c);
+
+    sqlite3_close(wb.db);
+    wb.db = NULL;
+    rmrf(data_path_b);
+
+    printf("\nAll Task 51 + Task 52 committee election tests passed.\n");
     return 0;
 }

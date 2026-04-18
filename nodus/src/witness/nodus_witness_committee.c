@@ -155,20 +155,117 @@ int nodus_committee_compute_for_epoch(nodus_witness_t *w,
     return 0;
 }
 
-/* Bootstrap — Task 52 implements. Stubbed here so Task 51 does not link
- * against an unresolved symbol; returns -1 to surface the missing
- * implementation loudly in any pre-Task-52 test run. */
-int __attribute__((weak))
-nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
-                                      uint64_t e_start,
-                                      nodus_committee_member_t *out,
-                                      int max_entries,
-                                      int *count_out) {
-    (void)w; (void)e_start; (void)out; (void)max_entries;
-    if (count_out) *count_out = 0;
-    fprintf(stderr, "%s: bootstrap_for_epoch stub — pending Task 52\n",
-            LOG_TAG);
-    return -1;
+/* Bootstrap — Phase 10 / Task 52.
+ *
+ * Fires for e_start < EPOCH_LENGTH + 1, where the post-commit lookback
+ * (e_start - EPOCH_LENGTH - 1) would underflow. Two bootstrap concerns:
+ *
+ *   1. state_seed: no usable lookback block. We read the genesis block
+ *      (height 0) state_root as seed. This is deterministic — every
+ *      witness sees the same genesis state_root once the genesis TX
+ *      has been committed.
+ *
+ *   2. MIN_TENURE gate: validators seeded at genesis have
+ *      active_since_block = 1, and with MIN_TENURE = 240 they cannot
+ *      satisfy `active_since + 240 <= lookback_block` for any small
+ *      lookback — no one would qualify. Design §3.6 explicitly carves
+ *      out this case (the chain_def bootstrap path). Until
+ *      chain_def.initial_validators lands (Task 56), we approximate
+ *      the carve-out by passing lookback = INT64_MAX to
+ *      nodus_validator_top_n, which effectively disables the tenure
+ *      filter (active_since + 240 is never greater than INT64_MAX
+ *      for any realistic active_since). INT64_MAX (not UINT64_MAX)
+ *      because the helper binds its lookback parameter via
+ *      sqlite3_bind_int64 (signed).
+ *
+ * Task 56 (Phase 12) will replace the INT64_MAX path with a read
+ * from the genesis block's chain_def_blob, which names the initial
+ * validator set explicitly.
+ */
+int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
+                                          uint64_t e_start,
+                                          nodus_committee_member_t *out,
+                                          int max_entries,
+                                          int *count_out) {
+    if (!w || !out || !count_out || max_entries <= 0) return -1;
+    *count_out = 0;
+    (void)e_start;   /* unused: bootstrap always seeds from genesis */
+
+    /* state_seed from genesis block. If genesis block is not present
+     * (fresh DB / pre-genesis state) fall back to an all-zero seed —
+     * any committee we compute in that state is advisory and will be
+     * discarded once the real genesis commits. */
+    uint8_t state_seed[64];
+    nodus_witness_block_t genesis_block;
+    int rc = nodus_witness_block_get(w, 0, &genesis_block);
+    if (rc == 0) {
+        memcpy(state_seed, genesis_block.state_root, 64);
+    } else {
+        memset(state_seed, 0, sizeof(state_seed));
+    }
+
+    /* Admit every ACTIVE validator regardless of MIN_TENURE. The SQL
+     * predicate in nodus_validator_top_n binds lookback_block via
+     * sqlite3_bind_int64 (signed), so the upper bound we can safely
+     * pass is INT64_MAX. active_since_block + 240 is <= INT64_MAX for
+     * any realistic active_since — effectively disables the tenure
+     * filter.
+     *
+     * Fetch the full table to keep behavior well-defined when N is
+     * small: bootstrap chains may have only a handful of validators. */
+    dnac_validator_record_t *candidates =
+        calloc((size_t)DNAC_MAX_VALIDATORS, sizeof(*candidates));
+    if (!candidates) return -1;
+
+    int cand_count = 0;
+    if (nodus_validator_top_n(w, DNAC_MAX_VALIDATORS,
+                               (uint64_t)INT64_MAX,
+                               candidates, &cand_count) != 0) {
+        free(candidates);
+        return -1;
+    }
+
+    if (cand_count == 0) {
+        free(candidates);
+        return 0;
+    }
+
+    /* Build the work table and apply the state_seed tiebreak sort.
+     * Same in-group re-sort as the normal path — top_n established
+     * stake DESC + pubkey ASC; we only replace the secondary. */
+    committee_work_t *work =
+        calloc((size_t)cand_count, sizeof(*work));
+    if (!work) { free(candidates); return -1; }
+
+    for (int i = 0; i < cand_count; i++) {
+        work[i].rec = &candidates[i];
+        work[i].total_stake =
+            candidates[i].self_stake + candidates[i].external_delegated;
+        compute_tiebreak_hash(candidates[i].pubkey, state_seed,
+                              work[i].tiebreak);
+    }
+    for (int i = 0; i < cand_count; ) {
+        int j = i + 1;
+        while (j < cand_count &&
+               work[j].total_stake == work[i].total_stake) {
+            j++;
+        }
+        if (j - i > 1) {
+            qsort(&work[i], (size_t)(j - i), sizeof(work[0]),
+                  cmp_tiebreak_asc);
+        }
+        i = j;
+    }
+
+    int final_count = (cand_count < max_entries) ? cand_count : max_entries;
+    for (int i = 0; i < final_count; i++) {
+        emit_member(&work[i], &out[i]);
+    }
+    *count_out = final_count;
+
+    free(work);
+    free(candidates);
+    return 0;
 }
 
 /* Cache accessor — Task 53 implements. Same weak-stub rationale. */
