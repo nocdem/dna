@@ -398,28 +398,36 @@ static int verify_cc_local_rules(const cc_fields_t *cc) {
  * Apply
  * ========================================================================== */
 
-static int derive_witness_id(const uint8_t pubkey[CC_PUBKEY_SIZE],
-                              uint8_t out_id[32]) {
+/* ============================================================================
+ * Vote primitives (Stage C — public API, pure functions)
+ * ========================================================================== */
+
+int nodus_chain_config_derive_witness_id(const uint8_t pubkey[NODUS_CC_PUBKEY_SIZE],
+                                          uint8_t out_witness_id[NODUS_CC_WITNESS_ID_SIZE]) {
+    if (!pubkey || !out_witness_id) return -1;
     uint8_t full[64];
     EVP_MD_CTX *md = EVP_MD_CTX_new();
     if (!md) return -1;
     if (EVP_DigestInit_ex(md, EVP_sha3_512(), NULL) != 1 ||
-        EVP_DigestUpdate(md, pubkey, CC_PUBKEY_SIZE) != 1 ||
+        EVP_DigestUpdate(md, pubkey, NODUS_CC_PUBKEY_SIZE) != 1 ||
         EVP_DigestFinal_ex(md, full, NULL) != 1) {
         EVP_MD_CTX_free(md);
         return -1;
     }
     EVP_MD_CTX_free(md);
-    memcpy(out_id, full, 32);
+    memcpy(out_witness_id, full, NODUS_CC_WITNESS_ID_SIZE);
     return 0;
 }
 
-/* digest = SHA3-512( PURPOSE_TAG(16) || chain_id(32) || param_id(1) ||
- *                    new_value_BE(8) || effective_BE(8) || nonce_BE(8) ||
- *                    signed_at_BE(8) || valid_before_BE(8) )             */
-static int compute_proposal_digest(const uint8_t chain_id[32],
-                                    const cc_fields_t *cc,
-                                    uint8_t digest[64]) {
+int nodus_chain_config_compute_digest(const uint8_t chain_id[32],
+                                       uint8_t  param_id,
+                                       uint64_t new_value,
+                                       uint64_t effective_block_height,
+                                       uint64_t proposal_nonce,
+                                       uint64_t signed_at_block,
+                                       uint64_t valid_before_block,
+                                       uint8_t  out_digest[NODUS_CC_DIGEST_SIZE]) {
+    if (!chain_id || !out_digest) return -1;
     EVP_MD_CTX *md = EVP_MD_CTX_new();
     if (!md) return -1;
     uint8_t u64_be[8];
@@ -427,20 +435,72 @@ static int compute_proposal_digest(const uint8_t chain_id[32],
         EVP_DigestInit_ex(md, EVP_sha3_512(), NULL) == 1 &&
         EVP_DigestUpdate(md, CC_PURPOSE_TAG, CC_PURPOSE_TAG_LEN) == 1 &&
         EVP_DigestUpdate(md, chain_id, 32) == 1 &&
-        EVP_DigestUpdate(md, &cc->param_id, 1) == 1;
-    if (ok) { be64_into(cc->new_value, u64_be);
+        EVP_DigestUpdate(md, &param_id, 1) == 1;
+    if (ok) { be64_into(new_value, u64_be);
               ok &= EVP_DigestUpdate(md, u64_be, 8) == 1; }
-    if (ok) { be64_into(cc->effective_block_height, u64_be);
+    if (ok) { be64_into(effective_block_height, u64_be);
               ok &= EVP_DigestUpdate(md, u64_be, 8) == 1; }
-    if (ok) { be64_into(cc->proposal_nonce, u64_be);
+    if (ok) { be64_into(proposal_nonce, u64_be);
               ok &= EVP_DigestUpdate(md, u64_be, 8) == 1; }
-    if (ok) { be64_into(cc->signed_at_block, u64_be);
+    if (ok) { be64_into(signed_at_block, u64_be);
               ok &= EVP_DigestUpdate(md, u64_be, 8) == 1; }
-    if (ok) { be64_into(cc->valid_before_block, u64_be);
+    if (ok) { be64_into(valid_before_block, u64_be);
               ok &= EVP_DigestUpdate(md, u64_be, 8) == 1; }
-    ok &= EVP_DigestFinal_ex(md, digest, NULL) == 1;
+    ok &= EVP_DigestFinal_ex(md, out_digest, NULL) == 1;
     EVP_MD_CTX_free(md);
     return ok ? 0 : -1;
+}
+
+int nodus_chain_config_sign_vote(const uint8_t pubkey[NODUS_CC_PUBKEY_SIZE],
+                                  const uint8_t seckey[NODUS_CC_SECKEY_SIZE],
+                                  const uint8_t digest[NODUS_CC_DIGEST_SIZE],
+                                  uint8_t out_witness_id[NODUS_CC_WITNESS_ID_SIZE],
+                                  uint8_t out_signature[NODUS_CC_SIG_SIZE]) {
+    if (!pubkey || !seckey || !digest || !out_witness_id || !out_signature)
+        return -1;
+    if (nodus_chain_config_derive_witness_id(pubkey, out_witness_id) != 0)
+        return -1;
+    size_t siglen = 0;
+    if (qgp_dsa87_sign(out_signature, &siglen,
+                        digest, NODUS_CC_DIGEST_SIZE, seckey) != 0) {
+        return -1;
+    }
+    /* Dilithium5 signatures are fixed-length; any deviation indicates a
+     * corrupt key or library bug — bail rather than ship a short sig. */
+    if (siglen != NODUS_CC_SIG_SIZE) return -1;
+    return 0;
+}
+
+int nodus_chain_config_verify_vote(const uint8_t pubkey[NODUS_CC_PUBKEY_SIZE],
+                                    const uint8_t digest[NODUS_CC_DIGEST_SIZE],
+                                    const uint8_t signature[NODUS_CC_SIG_SIZE]) {
+    if (!pubkey || !digest || !signature) return -1;
+    if (qgp_dsa87_verify(signature, NODUS_CC_SIG_SIZE,
+                          digest, NODUS_CC_DIGEST_SIZE, pubkey) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+/* Internal wrapper so the apply function's call site stays compact;
+ * delegates to the public primitive so the formula is single-sourced. */
+static int compute_proposal_digest(const uint8_t chain_id[32],
+                                    const cc_fields_t *cc,
+                                    uint8_t digest[64]) {
+    return nodus_chain_config_compute_digest(chain_id,
+                                              cc->param_id,
+                                              cc->new_value,
+                                              cc->effective_block_height,
+                                              cc->proposal_nonce,
+                                              cc->signed_at_block,
+                                              cc->valid_before_block,
+                                              digest);
+}
+
+/* Internal alias kept for readability at the apply call site. */
+static int derive_witness_id(const uint8_t pubkey[CC_PUBKEY_SIZE],
+                              uint8_t out_id[32]) {
+    return nodus_chain_config_derive_witness_id(pubkey, out_id);
 }
 
 /* Per-param grace minimum (Q4 Option B, CC-GOV-004 mitigation). */

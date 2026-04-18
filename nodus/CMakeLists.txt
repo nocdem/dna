@@ -432,6 +432,11 @@ add_executable(test_chain_config_witness tests/test_chain_config_witness.c)
 target_link_libraries(test_chain_config_witness nodus dsa nodus)
 add_test(NAME test_chain_config_witness COMMAND test_chain_config_witness)
 
+# Hard-Fork v1 Stage C — vote primitives (digest + sign + verify + derive)
+add_executable(test_chain_config_votes tests/test_chain_config_votes.c)
+target_link_libraries(test_chain_config_votes nodus dsa nodus)
+add_test(NAME test_chain_config_votes COMMAND test_chain_config_votes)
+
 # UTXO state_root determinism tests (Phase 2 / Task 2.5)
 add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
 target_link_libraries(test_merkle_utxo_root nodus dsa nodus)

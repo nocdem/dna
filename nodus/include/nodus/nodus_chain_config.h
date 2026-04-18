@@ -144,6 +144,71 @@ int nodus_chain_config_apply(nodus_witness_t *w,
                               uint32_t tx_len,
                               uint64_t block_height);
 
+/* ============================================================================
+ * Vote primitives (Stage C — pure functions used by CLI + RPC handlers)
+ * ========================================================================== */
+
+/** Size constants mirror dnac.h — kept local so the nodus standalone build
+ *  does not need libdna. Verified against dnac constants in test. */
+#define NODUS_CC_PUBKEY_SIZE     2592  /* Dilithium5 pubkey */
+#define NODUS_CC_SECKEY_SIZE     4896  /* Dilithium5 secret key */
+#define NODUS_CC_SIG_SIZE        4627  /* Dilithium5 signature */
+#define NODUS_CC_DIGEST_SIZE     64    /* SHA3-512 proposal digest */
+#define NODUS_CC_WITNESS_ID_SIZE 32    /* first 32B of SHA3-512(pubkey) */
+
+/**
+ * Compute the proposal-preimage digest that committee members sign.
+ *
+ *   digest = SHA3-512( DNAC_CHAIN_CONFIG_PURPOSE_TAG(16) || chain_id(32) ||
+ *                      param_id(1) || new_value_BE(8) ||
+ *                      effective_block_height_BE(8) || proposal_nonce_BE(8) ||
+ *                      signed_at_block_BE(8) || valid_before_block_BE(8) )
+ *
+ * All multi-byte integers are big-endian (CC-AUDIT-007). Pure function.
+ *
+ * @return 0 on success, -1 on null args or OpenSSL failure.
+ */
+int nodus_chain_config_compute_digest(const uint8_t chain_id[32],
+                                       uint8_t  param_id,
+                                       uint64_t new_value,
+                                       uint64_t effective_block_height,
+                                       uint64_t proposal_nonce,
+                                       uint64_t signed_at_block,
+                                       uint64_t valid_before_block,
+                                       uint8_t  out_digest[NODUS_CC_DIGEST_SIZE]);
+
+/**
+ * Sign a proposal digest with a committee member's Dilithium5 secret key.
+ * Populates out_witness_id = first 32B of SHA3-512(pubkey). Pure function —
+ * takes raw key material so it can be called from a CLI tool, RPC handler,
+ * or test scaffold without needing a live witness context.
+ *
+ * @return 0 on success, -1 on null args or sign failure.
+ */
+int nodus_chain_config_sign_vote(const uint8_t pubkey[NODUS_CC_PUBKEY_SIZE],
+                                  const uint8_t seckey[NODUS_CC_SECKEY_SIZE],
+                                  const uint8_t digest[NODUS_CC_DIGEST_SIZE],
+                                  uint8_t out_witness_id[NODUS_CC_WITNESS_ID_SIZE],
+                                  uint8_t out_signature[NODUS_CC_SIG_SIZE]);
+
+/**
+ * Verify a vote signature against a committee member's Dilithium5 pubkey.
+ * Pure function. Returns 0 on valid signature, -1 on mismatch or null args.
+ */
+int nodus_chain_config_verify_vote(const uint8_t pubkey[NODUS_CC_PUBKEY_SIZE],
+                                    const uint8_t digest[NODUS_CC_DIGEST_SIZE],
+                                    const uint8_t signature[NODUS_CC_SIG_SIZE]);
+
+/**
+ * Derive a witness_id from a Dilithium5 pubkey — first 32 bytes of
+ * SHA3-512(pubkey). Matches the on-wire witness_id in
+ * dnac_chain_config_vote_t. Pure function.
+ *
+ * @return 0 on success, -1 on null args or OpenSSL failure.
+ */
+int nodus_chain_config_derive_witness_id(const uint8_t pubkey[NODUS_CC_PUBKEY_SIZE],
+                                          uint8_t out_witness_id[NODUS_CC_WITNESS_ID_SIZE]);
+
 #ifdef __cplusplus
 }
 #endif
