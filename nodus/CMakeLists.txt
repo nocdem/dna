@@ -584,6 +584,9 @@ register_witness_test(test_validator_db)
 register_witness_test(test_delegation_db)
 register_witness_test(test_reward_db)
 
+# Task 61 — dnac_pending_rewards_query RPC helper (Phase 14)
+register_witness_test(test_pending_rewards_rpc)
+
 # Task 29 — SPEND rejects locked UTXO inputs (Rule D)
 register_witness_test(test_locked_utxo)
 
