@@ -1577,6 +1577,14 @@ class DnaEngine {
   /// Check if engine has been disposed
   bool get isDisposed => _isDisposed;
 
+  /// Internal: raw C bindings used by feature-specific FFI extensions
+  /// (e.g. `dnac_bindings.dart`). Not part of the public API — prefer the
+  /// typed methods on [DnaEngine] for normal use.
+  DnaBindings get bindings => _bindings;
+
+  /// Internal: underlying native engine handle. See [bindings].
+  Pointer<dna_engine_t> get engine => _engine;
+
   DnaEngine._();
 
   /// Create and initialize the DNA engine
