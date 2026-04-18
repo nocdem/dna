@@ -631,3 +631,6 @@ register_witness_test(test_committee_election)
 
 # Task 53 — per-epoch committee cache
 register_witness_test(test_committee_cache)
+
+# Task 54 — UNDELEGATE auto-claim end-to-end integration
+register_witness_test(test_integration_undelegate_claim)
