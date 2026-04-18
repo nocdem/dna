@@ -468,24 +468,23 @@ int dnac_tx_verify_claim_reward_rules(const dnac_transaction_t *tx);
 int dnac_tx_verify_validator_update_rules(const dnac_transaction_t *tx);
 
 /**
- * @brief Verify GENESIS-type rules only (design §2.4 / §5.2 Rule P, Phase 6
- *        Task 28).
+ * @brief Verify GENESIS-type rules only (design §2.4 / §5.2 Rule P, full
+ *        spec enforced as of Phase 12 Task 56).
  *
- * Runs the locally-verifiable GENESIS rule subset — the supply invariance
- * check that a fresh client can perform without touching chain state.
+ * Runs the locally-verifiable GENESIS rule subset — the supply invariance,
+ * initial-validator-count, and distinctness checks that a fresh client can
+ * perform without touching chain state.
  *
  * Rules enforced:
  *   - tx->type == DNAC_TX_GENESIS
  *   - tx->input_count == 0 (no spends; genesis creates coins)
- *   - Σ outputs.amount (native DNAC only) == DNAC_DEFAULT_TOTAL_SUPPLY
- *
- * Scope note: full Rule P per design §5.2 also requires
- *   chain_def.initial_validator_count == 7
- *   Σ outputs + 7 × DNAC_SELF_STAKE_AMOUNT == DNAC_DEFAULT_TOTAL_SUPPLY
- *   pairwise-distinct initial_validators[i].pubkey
- * Those fields don't exist in dnac_chain_definition_t yet — they land in
- * Task 56 (Phase 12). Until then this helper enforces the pre-stake
- * supply invariant only.
+ *   - If tx->has_chain_def (new TXs, required for Task 56+):
+ *     - chain_def.initial_validator_count == DNAC_COMMITTEE_SIZE (7)
+ *     - Σ outputs (native DNAC) + 7 × DNAC_SELF_STAKE_AMOUNT ==
+ *       DNAC_DEFAULT_TOTAL_SUPPLY
+ *     - initial_validators[0..6].pubkey pairwise distinct
+ *   - Else (legacy archive replay):
+ *     - Σ outputs.amount (native DNAC) == DNAC_DEFAULT_TOTAL_SUPPLY
  *
  * @param tx Transaction (must be GENESIS type)
  * @return DNAC_SUCCESS if valid, error code otherwise

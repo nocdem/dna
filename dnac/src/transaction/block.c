@@ -94,13 +94,21 @@ int dnac_block_compute_hash(dnac_block_t *block) {
     if (!block) return -1;
 
     /* Guard against a corrupted chain_def that would walk past the
-     * compile-time-capped witness_pubkeys array. */
+     * compile-time-capped witness_pubkeys / initial_validators arrays. */
     if (block->is_genesis &&
         block->chain_def.witness_count > DNAC_MAX_WITNESSES_COMPILE_CAP) {
         QGP_LOG_ERROR(LOG_TAG,
                       "genesis witness_count %u exceeds compile cap %u",
                       block->chain_def.witness_count,
                       (unsigned)DNAC_MAX_WITNESSES_COMPILE_CAP);
+        return -1;
+    }
+    if (block->is_genesis &&
+        block->chain_def.initial_validator_count > DNAC_COMMITTEE_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "genesis initial_validator_count %u exceeds committee cap %u",
+                      (unsigned)block->chain_def.initial_validator_count,
+                      (unsigned)DNAC_COMMITTEE_SIZE);
         return -1;
     }
 
@@ -180,6 +188,31 @@ int dnac_block_compute_hash(dnac_block_t *block) {
 
         UPD(cd->native_token_id, DNAC_TOKEN_ID_SIZE);
         UPD(cd->fee_recipient, DNAC_FEE_RECIPIENT_SIZE);
+
+        /* Phase 12 Task 56 — initial_validators trailer.
+         *
+         * Hash layout (matches dnac_chain_def_encode byte-for-byte):
+         *   initial_validator_count(1) ||
+         *   iv[0..count-1] ×
+         *     pubkey(2592) || unstake_destination_fp(129) ||
+         *     commission_bps(u16 BE) || endpoint(128)
+         *
+         * The full fixed-size fp/endpoint buffers participate so post-NUL
+         * padding bytes can't be mutated without changing the chain_id. */
+        UPD(&cd->initial_validator_count, 1);
+        for (uint8_t i = 0; i < cd->initial_validator_count; i++) {
+            const dnac_chain_initial_validator_t *iv = &cd->initial_validators[i];
+
+            UPD(iv->pubkey, DNAC_PUBKEY_SIZE);
+            UPD(iv->unstake_destination_fp, DNAC_FINGERPRINT_SIZE);
+
+            uint8_t cbps_be[2];
+            cbps_be[0] = (uint8_t)((iv->commission_bps >> 8) & 0xff);
+            cbps_be[1] = (uint8_t)(iv->commission_bps & 0xff);
+            UPD(cbps_be, 2);
+
+            UPD(iv->endpoint, DNAC_INITIAL_VALIDATOR_ENDPOINT_LEN);
+        }
     }
 
     uint8_t tmp[DNAC_BLOCK_HASH_SIZE];
@@ -205,6 +238,13 @@ int dnac_block_set_genesis_def(dnac_block_t *block,
                       "chain_def witness_count %u exceeds compile cap %u",
                       chain_def->witness_count,
                       (unsigned)DNAC_MAX_WITNESSES_COMPILE_CAP);
+        return -1;
+    }
+    if (chain_def->initial_validator_count > DNAC_COMMITTEE_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "chain_def initial_validator_count %u exceeds committee cap %u",
+                      (unsigned)chain_def->initial_validator_count,
+                      (unsigned)DNAC_COMMITTEE_SIZE);
         return -1;
     }
     block->is_genesis = true;

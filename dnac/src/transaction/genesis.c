@@ -63,25 +63,19 @@ static int derive_nullifier_for_genesis(const char *owner_fp, const uint8_t *see
 static const uint8_t GENESIS_NATIVE_TOKEN_ID[DNAC_TOKEN_ID_SIZE] = {0};
 
 /**
- * @brief Verify GENESIS-type rules (design §2.4, Phase 6 Task 28 — Rule P).
+ * @brief Verify GENESIS-type rules (design §2.4 / §5.2 F-STATE-04 — Rule P).
  *
- * Rule P per design §5.2 (F-STATE-04):
- *   (1) chain_def.initial_validator_count == 7
- *   (2) Σ outputs.amount + Σ initial_validators[i].self_stake == DNAC_TOTAL_SUPPLY
- *   (3) all 7 initial_validators[i].pubkey distinct
+ * Rule P (full spec, enforced here as of Phase 12 Task 56):
+ *   (1) chain_def.initial_validator_count == DNAC_COMMITTEE_SIZE (7)
+ *   (2) Σ outputs.amount (native DNAC) + 7 × DNAC_SELF_STAKE_AMOUNT ==
+ *       DNAC_DEFAULT_TOTAL_SUPPLY  (self-stake locked out of circulation
+ *       at genesis)
+ *   (3) all 7 initial_validators[i].pubkey pairwise distinct
+ *   (4) tx->input_count == 0 (genesis creates coins, never spends)
  *
- * SCOPE NOTE — current chain_def_t.initial_validators[] / initial_validator_count
- * fields do NOT exist yet in dnac_chain_definition_t (block.h). They are
- * scheduled for Task 56 in Phase 12 which extends the genesis schema.
- *
- * This task enforces the locally-checkable subset that DOES work today:
- *
- *   - tx->type == DNAC_TX_GENESIS
- *   - tx->input_count == 0 (genesis creates coins, never spends)
- *   - Σ outputs.amount (native DNAC only) == DNAC_DEFAULT_TOTAL_SUPPLY
- *
- * When Task 56 lands the initial_validators[] fields, this helper extends
- * to full Rule P (count==7, distinct pubkeys, sum+7×10M invariant).
+ * Backwards compatibility: if tx->has_chain_def is false, the supply check
+ * falls back to the legacy pre-Task-56 form (Σ outputs == total_supply)
+ * to keep pre-initial_validator genesis TXs verifiable for archive replay.
  */
 static int verify_genesis_rules(const dnac_transaction_t *tx) {
     if (tx->type != DNAC_TX_GENESIS) {
@@ -96,9 +90,9 @@ static int verify_genesis_rules(const dnac_transaction_t *tx) {
         return DNAC_ERROR_INVALID_PROOF;
     }
 
-    /* Σ outputs.amount (native DNAC only) == DNAC_DEFAULT_TOTAL_SUPPLY.
-     * Non-native tokens are not part of the supply accounting — foreign
-     * tokens MUST be created via TOKEN_CREATE, not genesis. */
+    /* Σ outputs.amount (native DNAC only). Non-native tokens are not part
+     * of the supply accounting — foreign tokens MUST be created via
+     * TOKEN_CREATE, not genesis. */
     uint64_t outputs_sum = 0;
     for (int i = 0; i < tx->output_count; i++) {
         if (memcmp(tx->outputs[i].token_id,
@@ -112,23 +106,65 @@ static int verify_genesis_rules(const dnac_transaction_t *tx) {
         }
     }
 
-    if (outputs_sum != DNAC_DEFAULT_TOTAL_SUPPLY) {
-        QGP_LOG_ERROR(LOG_TAG,
-                      "GENESIS: outputs_sum=%llu != total_supply=%llu (Rule P)",
-                      (unsigned long long)outputs_sum,
-                      (unsigned long long)DNAC_DEFAULT_TOTAL_SUPPLY);
-        return DNAC_ERROR_INVALID_PROOF;
-    }
+    if (tx->has_chain_def) {
+        /* Rule P.1 — exactly 7 initial validators. */
+        if (tx->chain_def.initial_validator_count != DNAC_COMMITTEE_SIZE) {
+            QGP_LOG_ERROR(LOG_TAG,
+                          "GENESIS: initial_validator_count=%u != %u (Rule P.1)",
+                          (unsigned)tx->chain_def.initial_validator_count,
+                          (unsigned)DNAC_COMMITTEE_SIZE);
+            return DNAC_ERROR_INVALID_PROOF;
+        }
 
-    /* TODO(Task 56 / Phase 12):
-     *   When dnac_chain_definition_t gains initial_validators[7] and
-     *   initial_validator_count, extend Rule P to full spec:
-     *     - chain_def.initial_validator_count == DNAC_COMMITTEE_SIZE (7)
-     *     - Σ outputs + 7 × DNAC_SELF_STAKE_AMOUNT == DNAC_DEFAULT_TOTAL_SUPPLY
-     *     - all 7 initial_validators[i].pubkey pairwise distinct (O(N^2))
-     *   Until that ships, only the pre-stake supply invariant applies here
-     *   (genesis distributes the full 1B supply; no self-stake carve-out
-     *   is encoded in chain_def yet). */
+        /* Rule P.2 — outputs + 7 × 10M == total supply.
+         * 10M × 10^8 × 7 = 7×10^15, fits easily in uint64 (no overflow).
+         * safe_mul_u64 is defensive even though the inputs are compile-
+         * time constants — keeps the overflow-safe style consistent with
+         * the rest of DNAC. */
+        uint64_t expected_stake_locked = 0;
+        if (safe_mul_u64(DNAC_SELF_STAKE_AMOUNT,
+                         (uint64_t)DNAC_COMMITTEE_SIZE,
+                         &expected_stake_locked) != 0) {
+            return DNAC_ERROR_OVERFLOW;
+        }
+        if (expected_stake_locked > DNAC_DEFAULT_TOTAL_SUPPLY) {
+            QGP_LOG_ERROR(LOG_TAG, "GENESIS: stake-lock exceeds total_supply (Rule P.2)");
+            return DNAC_ERROR_OVERFLOW;
+        }
+        uint64_t expected_outputs_sum = DNAC_DEFAULT_TOTAL_SUPPLY - expected_stake_locked;
+        if (outputs_sum != expected_outputs_sum) {
+            QGP_LOG_ERROR(LOG_TAG,
+                          "GENESIS: outputs_sum=%llu + 7×10M != total_supply=%llu (Rule P.2)",
+                          (unsigned long long)outputs_sum,
+                          (unsigned long long)DNAC_DEFAULT_TOTAL_SUPPLY);
+            return DNAC_ERROR_INVALID_PROOF;
+        }
+
+        /* Rule P.3 — pairwise distinct initial_validator pubkeys (O(N²/2)=21 cmps). */
+        for (uint8_t i = 0; i < DNAC_COMMITTEE_SIZE; i++) {
+            for (uint8_t j = (uint8_t)(i + 1); j < DNAC_COMMITTEE_SIZE; j++) {
+                if (memcmp(tx->chain_def.initial_validators[i].pubkey,
+                           tx->chain_def.initial_validators[j].pubkey,
+                           DNAC_PUBKEY_SIZE) == 0) {
+                    QGP_LOG_ERROR(LOG_TAG,
+                                  "GENESIS: duplicate initial_validator pubkey at %u/%u (Rule P.3)",
+                                  (unsigned)i, (unsigned)j);
+                    return DNAC_ERROR_INVALID_PROOF;
+                }
+            }
+        }
+    } else {
+        /* Legacy path — no initial_validators trailer. Enforce the pre-stake
+         * supply invariant (Σ outputs == total) for archive-TX replay. New
+         * genesis TXs (Task 56+) MUST carry has_chain_def=true. */
+        if (outputs_sum != DNAC_DEFAULT_TOTAL_SUPPLY) {
+            QGP_LOG_ERROR(LOG_TAG,
+                          "GENESIS: legacy outputs_sum=%llu != total_supply=%llu",
+                          (unsigned long long)outputs_sum,
+                          (unsigned long long)DNAC_DEFAULT_TOTAL_SUPPLY);
+            return DNAC_ERROR_INVALID_PROOF;
+        }
+    }
 
     return DNAC_SUCCESS;
 }

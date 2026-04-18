@@ -5,9 +5,12 @@
  *   (2) Σ outputs.amount + Σ initial_validators[i].self_stake == DNAC_TOTAL_SUPPLY
  *   (3) all 7 initial_validators[i].pubkey pairwise distinct
  *
- * Scope today: dnac_chain_definition_t has no initial_validators[] yet —
- * that field ships in Task 56 (Phase 12). Until then we enforce the
- * pre-stake supply invariant: Σ DNAC outputs == DNAC_DEFAULT_TOTAL_SUPPLY.
+ * Legacy path (has_chain_def == false) preserves the pre-Task-56 invariant:
+ *   Σ DNAC outputs == DNAC_DEFAULT_TOTAL_SUPPLY.
+ *
+ * This test covers BOTH paths: the legacy test vectors (has_chain_def=false)
+ * remain untouched; Task 56 full Rule P is covered in
+ * test_genesis_verify_rule_p_extended.c.
  *
  * The test exercises the rule layer directly via
  * dnac_tx_verify_genesis_rules() so we don't need real Dilithium5 signer
