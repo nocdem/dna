@@ -183,6 +183,28 @@ int main(void) {
     memset(chain_id, 0xE2, sizeof(chain_id));
     CHECK_EQ(nodus_witness_create_chain_db(&w, chain_id), 0);
 
+    /* Hard-Fork v1 Stage D: finalize_block reads inflation_start_block
+     * from chain_config_history; default 1 mints 16 DNAC at every block
+     * which would dominate the tiny pool values these scenarios use
+     * (1000, 700, 100, etc.). Insert an override row setting
+     * INFLATION_START_BLOCK = 0 BEFORE the first finalize so the mint
+     * is always 0 — isolating the accumulator math from the inflation
+     * contribution. This direct INSERT bypasses nodus_chain_config_apply
+     * monotonicity intentionally (test scaffold, not production path). */
+    {
+        sqlite3_stmt *st = NULL;
+        uint8_t tx_hash[64] = {0};
+        CHECK_EQ(sqlite3_prepare_v2(w.db,
+            "INSERT INTO chain_config_history "
+            "(param_id, new_value, effective_block, commit_block, tx_hash, "
+            " proposal_nonce, created_at_unix) "
+            "VALUES (?, 0, 0, 0, ?, 0, 0)", -1, &st, NULL), SQLITE_OK);
+        sqlite3_bind_int(st, 1, 3 /* DNAC_CFG_INFLATION_START_BLOCK */);
+        sqlite3_bind_blob(st, 2, tx_hash, 64, SQLITE_STATIC);
+        CHECK_EQ(sqlite3_step(st), SQLITE_DONE);
+        sqlite3_finalize(st);
+    }
+
     /* Phase 10 / Task 51 — seed the lookback block so committee
      * computation at e_start = 480 (block heights 500..505 all map to
      * this epoch) can read a state_root. lookback = e_start - EPOCH_LENGTH

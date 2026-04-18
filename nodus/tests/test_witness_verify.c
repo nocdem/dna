@@ -258,13 +258,17 @@ static void test_valid_spend(void) {
     uint8_t nullifier[NULLIFIER_LEN];
     memset(nullifier, 0xAA, NULLIFIER_LEN);
 
-    /* Add UTXO: 1000 units (owned by sender) */
-    add_utxo(&w, nullifier, sender_fp, 1000);
+    /* Add UTXO: 2,000,000 raw = 0.02 DNAC (owned by sender).
+     * Flat-base dynamic fee model: NODUS_W_BASE_TX_FEE = 1,000,000 raw
+     * (0.01 DNAC) is the absolute minimum acceptable fee regardless of
+     * TX size. Test sizes must exceed this or witness verify rejects
+     * "fee too low". */
+    add_utxo(&w, nullifier, sender_fp, 2000000);
 
-    /* Output: 999 units (fee = 1, min fee for 999 = 1) */
-    uint64_t in_amt = 1000;
-    uint64_t out_amt = 999;
-    uint64_t fee = 1;
+    /* Output: 1,000,000 raw; fee = 1,000,000 = NODUS_W_BASE_TX_FEE min. */
+    uint64_t in_amt = 2000000;
+    uint64_t out_amt = 1000000;
+    uint64_t fee = 1000000;
     uint8_t out_fp[FP_LEN];
     memset(out_fp, 0xBB, FP_LEN);
 
@@ -668,13 +672,14 @@ static void test_double_spend(void) {
     uint8_t nullifier[NULLIFIER_LEN];
     memset(nullifier, 0xBB, NULLIFIER_LEN);
 
-    /* Add UTXO AND mark nullifier as spent (owned by sender) */
-    add_utxo(&w, nullifier, sender_fp, 1000);
+    /* Add UTXO AND mark nullifier as spent (owned by sender).
+     * Amounts must clear NODUS_W_BASE_TX_FEE = 1,000,000 raw min. */
+    add_utxo(&w, nullifier, sender_fp, 2000000);
     add_nullifier(&w, nullifier);
 
-    uint64_t in_amt = 1000;
-    uint64_t out_amt = 999;
-    uint64_t fee = 1;
+    uint64_t in_amt = 2000000;
+    uint64_t out_amt = 1000000;
+    uint64_t fee = 1000000;
     uint8_t out_fp[FP_LEN];
     memset(out_fp, 0xCC, FP_LEN);
 

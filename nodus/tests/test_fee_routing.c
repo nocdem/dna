@@ -32,6 +32,7 @@
 #include "witness/nodus_witness_bft_internal.h"
 #include "witness/nodus_witness_db.h"
 #include "nodus/nodus_types.h"
+#include "dnac/dnac.h"   /* DNAC_INFLATION_BASE_REWARD — used by finalize_block mint */
 
 #include <errno.h>
 #include <stdint.h>
@@ -337,10 +338,16 @@ int main(void) {
     /* Task 49 — with no committee (validators table missing in this
      * fixture) apply_accumulator_update is a no-op and the pool rolls
      * forward. A dedicated distribution scenario lives in
-     * test_accumulator_math.c. */
-    CHECK_EQ(w.block_fee_pool, 350);
+     * test_accumulator_math.c.
+     *
+     * Inflation note (hard-fork v1 Stage D): finalize_block at height 1
+     * with default inflation_start_block = 1 mints DNAC_INFLATION_BASE_REWARD
+     * (16 DNAC = 1.6e9 raw) into the pool via the mint hook. Expected pool
+     * after finalize is therefore fees(350) + mint(1.6e9). */
+    uint64_t expected_mint = DNAC_INFLATION_BASE_REWARD;  /* block 1 — halving 0 */
+    CHECK_EQ(w.block_fee_pool, 350 + expected_mint);
     CHECK_EQ(nodus_witness_get_block_fee_pool(&w, &pool), 0);
-    CHECK_EQ(pool, 350);
+    CHECK_EQ(pool, 350 + expected_mint);
 
     /* Invariant: block row written. */
     {
