@@ -445,6 +445,12 @@ int nodus_witness_init(nodus_witness_t *witness,
     witness->my_index = -1;
     witness->running = true;
 
+    /* Phase 10 / Task 53 — invalidate the committee cache. UINT64_MAX
+     * is the sentinel meaning "no epoch cached yet"; a real epoch
+     * start is always < UINT64_MAX. */
+    witness->cached_committee_epoch_start = UINT64_MAX;
+    witness->cached_committee_count = 0;
+
     /* Setup identity from server keys */
     witness_setup_identity(witness);
 

@@ -268,17 +268,79 @@ int nodus_committee_bootstrap_for_epoch(nodus_witness_t *w,
     return 0;
 }
 
-/* Cache accessor — Task 53 implements. Same weak-stub rationale. */
-int __attribute__((weak))
-nodus_committee_get_for_block(nodus_witness_t *w,
-                                uint64_t block_height,
-                                nodus_committee_member_t *out,
-                                int max_entries,
-                                int *count_out) {
-    /* Default: uncached recompute at the epoch start for the block. */
+/* Cache accessor — Phase 10 / Task 53.
+ *
+ * Returns the committee active for `block_height`, computing + caching
+ * on the first call within a given epoch and serving subsequent calls
+ * from the cache. Cache lives on nodus_witness_t and is invalidated
+ * implicitly when e_start changes (the lookup key differs).
+ *
+ * Consumers within a single block (apply_accumulator_update, BFT
+ * roster — Task 59) call this rather than nodus_committee_compute_for_epoch
+ * directly to amortise the SQL + SHA3 cost.
+ *
+ * Cache invalidation semantics (design §3.6):
+ *   - Epoch-boundary transitions (Task 46) can change the committee,
+ *     but the NEW committee applies to the NEXT epoch, so the cache
+ *     for the current e_start stays valid until the caller advances
+ *     to a new e_start.
+ *   - STAKE/DELEGATE during the epoch alters rankings but NOT the
+ *     frozen committee — the cache intentionally ignores them.
+ */
+int nodus_committee_get_for_block(nodus_witness_t *w,
+                                    uint64_t block_height,
+                                    nodus_committee_member_t *out,
+                                    int max_entries,
+                                    int *count_out) {
     if (!w || !out || !count_out || max_entries <= 0) return -1;
+
+    /* Epoch boundary: block_height / EPOCH_LENGTH rounded down, times
+     * EPOCH_LENGTH. Block 0..EPOCH_LENGTH-1 share e_start = 0, etc. */
     uint64_t e_start = (block_height / (uint64_t)DNAC_EPOCH_LENGTH)
                        * (uint64_t)DNAC_EPOCH_LENGTH;
-    return nodus_committee_compute_for_epoch(w, e_start, out,
-                                               max_entries, count_out);
+
+    /* Cache hit. */
+    if (w->cached_committee_epoch_start == e_start &&
+        w->cached_committee_count >= 0) {
+        int n = w->cached_committee_count < max_entries
+                ? w->cached_committee_count : max_entries;
+        for (int i = 0; i < n; i++) {
+            memcpy(out[i].pubkey, w->cached_committee_pubkeys[i],
+                   DNAC_PUBKEY_SIZE);
+            out[i].total_stake    = w->cached_committee_stakes[i];
+            out[i].commission_bps = w->cached_committee_commission_bps[i];
+        }
+        *count_out = n;
+        return 0;
+    }
+
+    /* Cache miss — compute and store. */
+    nodus_committee_member_t tmp[DNAC_COMMITTEE_SIZE];
+    int tmp_count = 0;
+    int rc = nodus_committee_compute_for_epoch(w, e_start, tmp,
+                                                  DNAC_COMMITTEE_SIZE,
+                                                  &tmp_count);
+    if (rc != 0) {
+        /* Leave the cache invalid so the next call retries. */
+        w->cached_committee_epoch_start = UINT64_MAX;
+        w->cached_committee_count = 0;
+        *count_out = 0;
+        return rc;
+    }
+
+    for (int i = 0; i < tmp_count; i++) {
+        memcpy(w->cached_committee_pubkeys[i], tmp[i].pubkey,
+               DNAC_PUBKEY_SIZE);
+        w->cached_committee_stakes[i]           = tmp[i].total_stake;
+        w->cached_committee_commission_bps[i]   = tmp[i].commission_bps;
+    }
+    w->cached_committee_count = tmp_count;
+    w->cached_committee_epoch_start = e_start;
+
+    int n = tmp_count < max_entries ? tmp_count : max_entries;
+    for (int i = 0; i < n; i++) {
+        out[i] = tmp[i];
+    }
+    *count_out = n;
+    return 0;
 }

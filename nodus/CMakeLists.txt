@@ -628,3 +628,6 @@ register_witness_test(test_prevote_state_root_mutation)
 
 # Task 51 — committee election (post-commit lookback + state_seed tiebreak)
 register_witness_test(test_committee_election)
+
+# Task 53 — per-epoch committee cache
+register_witness_test(test_committee_cache)

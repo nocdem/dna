@@ -24,6 +24,7 @@
 #include "witness/nodus_witness_cert.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_reward.h"
+#include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_delegation.h"
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
@@ -2375,12 +2376,14 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
     }
 
     /* ─────── 4. Committee election for next epoch ─────── */
-    /* TODO(Task 51 — Phase 10 committee election): compute next-epoch
-     * committee using nodus_validator_top_n with lookback_block =
-     * block_height - DNAC_EPOCH_LENGTH - 1 per design §3.6, cache the
-     * result, and expose it to the BFT peer-set for the next epoch.
-     * No wiring yet — the Task 12 top-N helper already exists and the
-     * committee result has no consumers until Phase 10 lands. */
+    /* Phase 10 / Task 51-53 — committee election is demand-driven
+     * through nodus_committee_get_for_block(), which caches per-epoch
+     * on w->cached_committee_* and consumes the post-commit lookback
+     * snapshot defined in §3.6. apply_accumulator_update (next block
+     * in finalize_block) will see the freshly committed block_height
+     * and trigger a cache recompute on the first block of the next
+     * epoch. No explicit pre-computation needed at the boundary —
+     * BFT roster wiring (Task 59) consumes the same accessor. */
 
     return 0;
 }
@@ -2406,8 +2409,10 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
  *     else:
  *       v.validator_unclaimed += per_member
  *
- * Committee: top_N(7, lookback=block_height-1). Task 51 will cache the
- * committee at epoch boundaries; for now we recompute deterministically.
+ * Committee: nodus_committee_get_for_block(block_height) — Phase 10
+ * Task 51/52/53. The accessor caches the post-commit lookback-derived
+ * roster for the epoch; per-member stake/liveness values are
+ * re-resolved from the validator table on every block.
  *
  * Liveness gate: a committee member participates only if
  * last_signed_block >= block_height - DNAC_LIVENESS_SHORT_WINDOW_BLOCKS.
@@ -2430,18 +2435,26 @@ static int apply_accumulator_update(nodus_witness_t *w,
     if (w->block_fee_pool == 0) return 0;
     if (block_height == 0) return 0;
 
-    /* Committee for this block. Until Task 51 caches the snapshot we
-     * recompute deterministically; all 7 nodes produce the same
-     * ordering because top_N is (stake DESC, pubkey ASC). */
-    dnac_validator_record_t committee[DNAC_COMMITTEE_SIZE];
+    /* Phase 10 / Task 53 — committee pubkeys come from the per-epoch
+     * cache. Committee membership is FROZEN per epoch by design §3.6,
+     * but individual members' self_stake / total_delegated /
+     * last_signed_block mutate during the epoch (DELEGATE TXs,
+     * attendance updates). So we fetch fresh per-member records from
+     * the validator table after resolving the committee roster.
+     *
+     * Pre-Task-53 code called nodus_validator_top_n(committee_size,
+     * block_height-1) directly here; that re-ran the SQL + tiebreak
+     * sort on every block. The cached path hits the DB only on
+     * cache-miss (first block of an epoch). */
+    nodus_committee_member_t committee_roster[DNAC_COMMITTEE_SIZE];
     int committee_count = 0;
-    uint64_t lookback = block_height > 0 ? block_height - 1 : 0;
-    if (nodus_validator_top_n(w, DNAC_COMMITTEE_SIZE, lookback,
-                               committee, &committee_count) != 0) {
+    if (nodus_committee_get_for_block(w, block_height, committee_roster,
+                                        DNAC_COMMITTEE_SIZE,
+                                        &committee_count) != 0) {
         /* Missing validators table (fresh DB / pre-schema test fixture).
          * Treat as empty committee — pool rolls forward. */
         QGP_LOG_DEBUG(LOG_TAG,
-            "accumulator: top_n unavailable (pre-schema); pool carries");
+            "accumulator: committee unavailable (pre-schema); pool carries");
         return 0;
     }
 
@@ -2450,6 +2463,29 @@ static int apply_accumulator_update(nodus_witness_t *w,
          * forward untouched. */
         return 0;
     }
+
+    /* Fetch fresh per-member validator records. The cache pins the
+     * identity set for the epoch; stakes/liveness can move within it. */
+    dnac_validator_record_t committee[DNAC_COMMITTEE_SIZE];
+    int resolved_count = 0;
+    for (int i = 0; i < committee_count; i++) {
+        int grc = nodus_validator_get(w, committee_roster[i].pubkey,
+                                        &committee[resolved_count]);
+        if (grc == 0) {
+            resolved_count++;
+        } else if (grc == 1) {
+            /* Member present in cache but missing from validators table —
+             * only possible if the row was force-deleted between
+             * cache populate and this block. Skip. */
+            continue;
+        } else {
+            fprintf(stderr, "%s: accumulator: validator_get failed for "
+                    "cached committee member\n", LOG_TAG);
+            return -1;
+        }
+    }
+    committee_count = resolved_count;
+    if (committee_count == 0) return 0;
 
     /* Liveness gate: short recent-activity window. */
     uint64_t min_signed = 0;

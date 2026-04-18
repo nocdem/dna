@@ -114,6 +114,16 @@ static int run_finalize(nodus_witness_t *w, uint64_t expected_height) {
     return nodus_witness_db_commit(w);
 }
 
+/* Phase 10 / Task 53 — tests add validators dynamically across
+ * scenarios within the same epoch; committee is frozen per epoch by
+ * design, but for test pedagogy we invalidate the cache after each
+ * insert so that the new validator becomes visible on the next
+ * finalize. Production paths never invalidate mid-epoch. */
+static void invalidate_committee_cache(nodus_witness_t *w) {
+    w->cached_committee_epoch_start = UINT64_MAX;
+    w->cached_committee_count = 0;
+}
+
 static void bump_active_count(nodus_witness_t *w) {
     char *err = NULL;
     int rc = sqlite3_exec(w->db,
@@ -164,10 +174,41 @@ int main(void) {
     nodus_witness_t w;
     memset(&w, 0, sizeof(w));
     snprintf(w.data_path, sizeof(w.data_path), "%s", data_path);
+    /* Phase 10 / Task 53 — committee cache sentinel. Production path
+     * sets this in nodus_witness_init; the test bypasses init to stay
+     * standalone, so apply the same sentinel here. */
+    w.cached_committee_epoch_start = UINT64_MAX;
 
     uint8_t chain_id[16];
     memset(chain_id, 0xE2, sizeof(chain_id));
     CHECK_EQ(nodus_witness_create_chain_db(&w, chain_id), 0);
+
+    /* Phase 10 / Task 51 — seed the lookback block so committee
+     * computation at e_start = 480 (block heights 500..505 all map to
+     * this epoch) can read a state_root. lookback = e_start - EPOCH_LENGTH
+     * - 1 = 359. */
+    {
+        sqlite3_stmt *stmt = NULL;
+        int rcb = sqlite3_prepare_v2(w.db,
+            "INSERT OR REPLACE INTO blocks "
+            "(height, tx_root, tx_count, timestamp, proposer_id, "
+            " prev_hash, state_root) VALUES (?, ?, 0, ?, ?, ?, ?)",
+            -1, &stmt, NULL);
+        CHECK_EQ(rcb, SQLITE_OK);
+        uint8_t zeros[64] = {0};
+        uint8_t proposer[32];
+        memset(proposer, 0xAA, sizeof(proposer));
+        uint8_t seed[64];
+        memset(seed, 0x77, sizeof(seed));
+        sqlite3_bind_int64(stmt, 1, (int64_t)359);
+        sqlite3_bind_blob (stmt, 2, zeros, 64, SQLITE_STATIC);
+        sqlite3_bind_int64(stmt, 3, 1000);
+        sqlite3_bind_blob (stmt, 4, proposer, sizeof(proposer), SQLITE_STATIC);
+        sqlite3_bind_blob (stmt, 5, zeros, 64, SQLITE_STATIC);
+        sqlite3_bind_blob (stmt, 6, seed, 64, SQLITE_STATIC);
+        CHECK_EQ(sqlite3_step(stmt), SQLITE_DONE);
+        sqlite3_finalize(stmt);
+    }
 
     /* Scenario 1 */
     printf("  single validator, no delegators\n");
@@ -175,6 +216,7 @@ int main(void) {
     init_validator(&va, 0x01, 1, 0, 0);
     CHECK_EQ(nodus_validator_insert(&w, &va), 0);
     bump_active_count(&w);
+    invalidate_committee_cache(&w);
     dnac_reward_record_t ra0;
     memset(&ra0, 0, sizeof(ra0));
     memcpy(ra0.validator_pubkey, va.pubkey, DNAC_PUBKEY_SIZE);
@@ -198,6 +240,7 @@ int main(void) {
     vb.self_stake = 0;
     CHECK_EQ(nodus_validator_insert(&w, &vb), 0);
     bump_active_count(&w);
+    invalidate_committee_cache(&w);
     /* insert set self_stake from the record, but the DB column is
      * NOT NULL with default -> re-enforce via our helper to be safe. */
     force_stake(&w, vb.pubkey, 0, 500);
@@ -238,6 +281,7 @@ int main(void) {
     init_validator(&vc, 0x03, 1, 0, 0);
     CHECK_EQ(nodus_validator_insert(&w, &vc), 0);
     bump_active_count(&w);
+    invalidate_committee_cache(&w);
     dnac_reward_record_t rc0;
     memset(&rc0, 0, sizeof(rc0));
     memcpy(rc0.validator_pubkey, vc.pubkey, DNAC_PUBKEY_SIZE);
@@ -282,6 +326,7 @@ int main(void) {
     vd.self_stake = 0;
     CHECK_EQ(nodus_validator_insert(&w, &vd), 0);
     bump_active_count(&w);
+    invalidate_committee_cache(&w);
     force_stake(&w, vd.pubkey, 0, 7);
     dnac_reward_record_t rd0;
     memset(&rd0, 0, sizeof(rd0));

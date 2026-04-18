@@ -22,8 +22,10 @@
 
 #include "nodus/nodus_types.h"
 #include "witness/nodus_witness_mempool.h"
+#include "dnac/dnac.h"        /* DNAC_COMMITTEE_SIZE, DNAC_PUBKEY_SIZE */
 #include <sqlite3.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -301,6 +303,30 @@ typedef struct nodus_witness {
      * block commit (finalize_block). Native DNAC only — token-fee
      * handling deferred to a later phase. */
     uint64_t        block_fee_pool;
+
+    /* Phase 10 / Task 53 — per-epoch committee cache.
+     *
+     * Populated on the first committee query within an epoch by
+     * nodus_committee_get_for_block() and reused for every subsequent
+     * query in the same epoch. The cache is effectively invalidated
+     * when block_height crosses an epoch boundary (the next lookup
+     * sees a different e_start and triggers a recompute).
+     *
+     * cached_committee_epoch_start == UINT64_MAX marks the slot as
+     * uninitialised (set at init + on recompute failure). The layout
+     * uses raw bytes because the committee member struct is defined
+     * in witness/nodus_witness_committee.h, which would be a circular
+     * include. Callers MUST go through the get_for_block accessor
+     * rather than touching these fields directly.
+     *
+     * DNAC_COMMITTEE_SIZE (7) members × (2592 pubkey + 8 stake + 2
+     * commission + padding) ≈ 18.4 KB. Kept in-struct rather than
+     * malloc-d because nodus_witness_t itself is already heap-allocated. */
+    uint64_t        cached_committee_epoch_start;
+    int             cached_committee_count;
+    uint8_t         cached_committee_pubkeys[DNAC_COMMITTEE_SIZE][DNAC_PUBKEY_SIZE];
+    uint64_t        cached_committee_stakes[DNAC_COMMITTEE_SIZE];
+    uint16_t        cached_committee_commission_bps[DNAC_COMMITTEE_SIZE];
 
     /* Witness database (separate from DHT storage) */
     sqlite3     *db;
