@@ -189,17 +189,15 @@ static int pr_rate_check(const char *ip) {
     if (g_pr_rate_count >= DNAC_PR_RATE_MAX_ENTRIES) {
         /* Compact failed — overwrite slot 0. */
         g_pr_rate_count = 1;
-        strncpy(g_pr_rate_table[0].ip, ip, sizeof(g_pr_rate_table[0].ip) - 1);
-        g_pr_rate_table[0].ip[sizeof(g_pr_rate_table[0].ip) - 1] = '\0';
+        snprintf(g_pr_rate_table[0].ip, sizeof(g_pr_rate_table[0].ip),
+                 "%s", ip);
         g_pr_rate_table[0].window_start = now;
         g_pr_rate_table[0].count = 1;
         return 1;
     }
 
-    strncpy(g_pr_rate_table[g_pr_rate_count].ip, ip,
-            sizeof(g_pr_rate_table[g_pr_rate_count].ip) - 1);
-    g_pr_rate_table[g_pr_rate_count].ip[
-        sizeof(g_pr_rate_table[g_pr_rate_count].ip) - 1] = '\0';
+    snprintf(g_pr_rate_table[g_pr_rate_count].ip,
+             sizeof(g_pr_rate_table[g_pr_rate_count].ip), "%s", ip);
     g_pr_rate_table[g_pr_rate_count].window_start = now;
     g_pr_rate_table[g_pr_rate_count].count = 1;
     g_pr_rate_count++;
