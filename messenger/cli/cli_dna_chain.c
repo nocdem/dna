@@ -41,42 +41,54 @@ static dnac_context_t* dna_chain_init(dna_engine_t *engine) {
 
 static void print_dna_chain_help(void) {
     printf("DNA Chain — Post-Quantum Blockchain\n\n");
-    printf("Usage: dna-connect-cli dna <command> [arguments]\n\n");
-    printf("Commands:\n");
-    printf("  info                          Show chain wallet info and status\n");
-    printf("  address                       Show wallet address (fingerprint)\n");
-    printf("  query <name|fp>               Lookup identity by name or fingerprint\n");
-    printf("  balance                       Show wallet balance\n");
-    printf("  utxos                         List unspent transaction outputs\n");
-    printf("  send <name|fp> <amount> [memo] Send payment to name or fingerprint\n");
-    printf("  sync                          Sync wallet from network\n");
-    printf("  history [n]                   Show transaction history (last n entries)\n");
-    printf("  tx <hash>                     Show transaction details\n");
-    printf("  witnesses                     List witness servers\n");
-    printf("  genesis-create <fp> <amount>  Create genesis TX locally (Phase 1)\n");
-    printf("  genesis-submit [tx_file]      Submit genesis TX to network (Phase 2)\n");
-    printf("  genesis-prepare <config>      Build chain_def blob from operator config (hex stdout)\n");
-    printf("  parse-tx <tx_file>            Inspect a serialized TX file (read-only)\n\n");
+    printf("Usage: dna-connect-cli dna <command> [arguments]\n");
+    printf("Amounts are in raw base units (10^8 per DNAC) unless otherwise noted.\n\n");
+
+    printf("Wallet:\n");
+    printf("  info                            Show chain wallet info and status\n");
+    printf("  address                         Show wallet address (fingerprint)\n");
+    printf("  query <name|fp>                 Lookup identity by name or fingerprint\n");
+    printf("  balance [--token <id>]          Show wallet balance\n");
+    printf("  utxos                           List unspent transaction outputs\n");
+    printf("  send [--token <id>] <name|fp> <amount> [memo]\n");
+    printf("                                  Send payment (raw base units)\n");
+    printf("  sync                            Sync wallet from network\n");
+    printf("  history [n]                     Show transaction history (last n entries)\n");
+    printf("  tx <hash>                       Show transaction details\n");
+    printf("  witnesses                       List witness servers\n\n");
+
     printf("Stake & Delegation:\n");
     printf("  stake [--commission-bps N] [--unstake-to FP]\n");
-    printf("                                Become a validator (self-stake 10M DNAC)\n");
-    printf("  delegate <pubkey_hex> <amount_raw> [memo]\n");
-    printf("                                Delegate DNAC to a validator\n");
-    printf("  undelegate <pubkey_hex> <amount_raw>\n");
-    printf("                                Withdraw (part of) a delegation\n");
-    printf("  claim <validator_pubkey_hex> Claim accrued staking rewards\n");
-    printf("  unstake                       Trigger validator retirement (fee-only)\n");
+    printf("                                  Become a validator (self-stake 10M DNAC;\n");
+    printf("                                  default commission 500 = 5%%, unstake-to = self)\n");
+    printf("  unstake                         Trigger validator retirement (fee-only TX;\n");
+    printf("                                  self-stake unlocks after cooldown)\n");
     printf("  validator-update --commission-bps N\n");
-    printf("                                Change validator commission rate\n");
-    printf("  validator-list [--status N]   List validators (N: 0=ACTIVE, 1=RETIRING, 2=UNSTAKED, 3=AUTO_RETIRED)\n");
-    printf("  committee                     Show current epoch's top-7 committee\n");
-    printf("  pending-rewards [pubkey_hex]  Show pending rewards (default: caller)\n\n");
-    printf("Token Commands:\n");
-    printf("  token-create <name> <sym> <supply>  Create a new token\n");
-    printf("  token-list                          List all known tokens\n");
-    printf("  token-info <id|symbol>              Show token details\n");
-    printf("  balance --token <id>                Show balance for a specific token\n");
-    printf("  send --token <id> <name|fp> <amt> [memo] Send token payment\n");
+    printf("                                  Change validator commission rate (0..10000)\n");
+    printf("  delegate <validator_pubkey_hex> <amount> [memo]\n");
+    printf("                                  Delegate DNAC to a validator\n");
+    printf("                                  (amount >= DNAC_MIN_DELEGATION, raw units)\n");
+    printf("  undelegate <validator_pubkey_hex> <amount>\n");
+    printf("                                  Withdraw (part of) a delegation (raw units)\n");
+    printf("  claim <validator_pubkey_hex>    Claim accrued staking rewards\n");
+    printf("                                  (auto-queries pending + chain head)\n");
+    printf("  validator-list [--status N]     List validators; N = 0..3\n");
+    printf("                                  (0=ACTIVE, 1=RETIRING, 2=UNSTAKED, 3=AUTO_RETIRED)\n");
+    printf("  committee                       Show current epoch's top-7 committee\n");
+    printf("  pending-rewards [pubkey_hex]    Show pending rewards (default: caller)\n\n");
+
+    printf("Tokens:\n");
+    printf("  token-create <name> <sym> <supply>\n");
+    printf("                                  Create a new token\n");
+    printf("  token-list                      List all known tokens\n");
+    printf("  token-info <id|symbol>          Show token details\n\n");
+
+    printf("Genesis & Chain-def (operator tools):\n");
+    printf("  genesis-create <fp> <amount> [--chain-def-file <path>]\n");
+    printf("                                  Create genesis TX locally (Phase 1)\n");
+    printf("  genesis-submit [tx_file]        Submit genesis TX to network (Phase 2)\n");
+    printf("  genesis-prepare <config>        Build chain_def blob from operator config (hex stdout)\n");
+    printf("  parse-tx <tx_file>              Inspect a serialized TX file (read-only)\n");
 }
 
 /* ============================================================================
