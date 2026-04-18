@@ -327,6 +327,88 @@ int nodus_validator_top_n(nodus_witness_t *w,
     return 0;
 }
 
+/* ── Paged list (Task 63) ──────────────────────────────────────────── */
+
+int nodus_validator_list_paged(nodus_witness_t *w,
+                                int filter_status,
+                                int offset,
+                                int limit,
+                                dnac_validator_record_t *out,
+                                int *count_out,
+                                int *total_out) {
+    if (!w || !w->db || !out || !count_out || !total_out ||
+        limit <= 0 || offset < 0) return -1;
+    *count_out = 0;
+    *total_out = 0;
+
+    /* Total count with filter (no offset/limit). */
+    sqlite3_stmt *stmt = NULL;
+    const char *count_sql = (filter_status < 0)
+        ? "SELECT COUNT(*) FROM validators"
+        : "SELECT COUNT(*) FROM validators WHERE status = ?";
+    int rc = sqlite3_prepare_v2(w->db, count_sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: list_paged count prepare failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+    if (filter_status >= 0) {
+        sqlite3_bind_int(stmt, 1, filter_status);
+    }
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        *total_out = (int)sqlite3_column_int64(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    stmt = NULL;
+
+    /* Page the filtered rows. */
+    const char *list_sql = (filter_status < 0)
+        ? "SELECT pubkey, self_stake, total_delegated, external_delegated,"
+          "       commission_bps, pending_commission_bps,"
+          "       pending_effective_block, status, active_since_block,"
+          "       unstake_commit_block, unstake_destination_fp,"
+          "       unstake_destination_pubkey, last_validator_update_block,"
+          "       consecutive_missed_epochs, last_signed_block "
+          "FROM validators "
+          "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC "
+          "LIMIT ? OFFSET ?"
+        : "SELECT pubkey, self_stake, total_delegated, external_delegated,"
+          "       commission_bps, pending_commission_bps,"
+          "       pending_effective_block, status, active_since_block,"
+          "       unstake_commit_block, unstake_destination_fp,"
+          "       unstake_destination_pubkey, last_validator_update_block,"
+          "       consecutive_missed_epochs, last_signed_block "
+          "FROM validators WHERE status = ? "
+          "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC "
+          "LIMIT ? OFFSET ?";
+
+    rc = sqlite3_prepare_v2(w->db, list_sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: list_paged prepare failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    int idx = 1;
+    if (filter_status >= 0) {
+        sqlite3_bind_int(stmt, idx++, filter_status);
+    }
+    sqlite3_bind_int(stmt, idx++, limit);
+    sqlite3_bind_int(stmt, idx++, offset);
+
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && count < limit) {
+        if (row_to_record(stmt, &out[count]) != 0) {
+            sqlite3_finalize(stmt);
+            return -1;
+        }
+        count++;
+    }
+    sqlite3_finalize(stmt);
+    *count_out = count;
+    return 0;
+}
+
 /* ── Active count ───────────────────────────────────────────────────── */
 
 int nodus_validator_active_count(nodus_witness_t *w, int *count_out) {

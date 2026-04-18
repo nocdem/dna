@@ -88,6 +88,36 @@ int nodus_validator_top_n(nodus_witness_t *w,
  */
 int nodus_validator_active_count(nodus_witness_t *w, int *count_out);
 
+/**
+ * Paged validator listing for the dnac_validator_list RPC
+ * (Phase 14 / Task 63).
+ *
+ * Unlike nodus_validator_top_n this helper does NOT force status=ACTIVE
+ * and does NOT gate on MIN_TENURE — it is a raw view of the validators
+ * table with an optional status filter and standard offset/limit
+ * pagination.
+ *
+ *   filter_status < 0  : all statuses.
+ *   filter_status >= 0 : rows where status == filter_status.
+ *
+ * Results are ordered by (self_stake + external_delegated) DESC,
+ * pubkey ASC — identical to top_n so rankings remain stable across
+ * calls regardless of filter.
+ *
+ * On success *count_out holds the number of rows written to `out`, and
+ * *total_out holds the total row count matching the filter (ignoring
+ * offset/limit) so callers can drive pagination UIs.
+ *
+ * @return 0 on success, -1 on error.
+ */
+int nodus_validator_list_paged(nodus_witness_t *w,
+                                int filter_status,
+                                int offset,
+                                int limit,
+                                dnac_validator_record_t *out,
+                                int *count_out,
+                                int *total_out);
+
 #ifdef __cplusplus
 }
 #endif

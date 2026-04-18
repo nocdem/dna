@@ -2485,6 +2485,140 @@ static void handle_dnac_committee_query(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_validator_list_query — Phase 14 / Task 63.
+ *
+ * Paged, status-filtered view of the validators table for CLI/UI.
+ *
+ * Request:  "a": {"status": i8 (-1 = all, 0..3 = specific),
+ *                  "limit":  u16 (1..DNAC_VALIDATOR_LIST_MAX_RESULTS),
+ *                  "offset": u16}
+ * Response: "r": {"count": u16, "total": u16,
+ *                 "validators": [
+ *                   {"pk":bstr(2592), "self":u64, "total":u64,
+ *                    "ext":u64, "comm":u16, "status":u8,
+ *                    "since":u64}, ... ]}
+ *
+ * Ordering: (self_stake + external_delegated) DESC, pubkey ASC. Same
+ * ordering as top_n so rankings remain stable regardless of filter.
+ *
+ * `total` reports the total matching-filter row count (pre-pagination)
+ * so clients can drive "next page" UIs.
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_validator_list_query(nodus_witness_t *w,
+                                                struct nodus_tcp_conn *conn,
+                                                const uint8_t *payload, size_t len,
+                                                uint32_t txn_id) {
+    cbor_decoder_t dec;
+    size_t args_count = 0;
+
+    int filter_status = -1;
+    int limit         = DNAC_VALIDATOR_LIST_MAX_RESULTS;
+    int offset        = 0;
+
+    /* Args map is optional — treat missing "a" as "defaults". */
+    if (decode_args(payload, len, &dec, &args_count) == 0) {
+        for (size_t i = 0; i < args_count; i++) {
+            cbor_item_t key = cbor_decode_next(&dec);
+            if (key_match(&key, "status")) {
+                cbor_item_t val = cbor_decode_next(&dec);
+                /* Encoded as UINT (0..3 for specific filter) or absent /
+                 * non-UINT meaning "all statuses". This decoder does not
+                 * surface CBOR NINT separately — clients that want "all"
+                 * should either omit the key entirely or pass a NULL /
+                 * boolean tombstone; a non-UINT value is treated as
+                 * "all". */
+                if (val.type == CBOR_ITEM_UINT) filter_status = (int)val.uint_val;
+                else                            filter_status = -1;
+            } else if (key_match(&key, "limit")) {
+                cbor_item_t val = cbor_decode_next(&dec);
+                if (val.type == CBOR_ITEM_UINT) {
+                    limit = (int)val.uint_val;
+                }
+            } else if (key_match(&key, "offset")) {
+                cbor_item_t val = cbor_decode_next(&dec);
+                if (val.type == CBOR_ITEM_UINT) {
+                    offset = (int)val.uint_val;
+                }
+            } else {
+                cbor_decode_skip(&dec);
+            }
+        }
+    }
+
+    /* Cap + sanitize. */
+    if (limit <= 0 || limit > DNAC_VALIDATOR_LIST_MAX_RESULTS) {
+        limit = DNAC_VALIDATOR_LIST_MAX_RESULTS;
+    }
+    if (offset < 0) offset = 0;
+
+    dnac_validator_record_t *vals =
+        calloc((size_t)limit, sizeof(*vals));
+    if (!vals) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "alloc failed");
+        return;
+    }
+
+    int count = 0, total = 0;
+    if (nodus_validator_list_paged(w, filter_status, offset, limit,
+                                     vals, &count, &total) != 0) {
+        free(vals);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "validator list query failed");
+        return;
+    }
+
+    /* Each entry ships pubkey (2592B) + ~7 small ints. Budget 2700B. */
+    size_t buf_size = 256 + (size_t)count * 2800;
+    uint8_t *buf = malloc(buf_size);
+    if (!buf) {
+        free(vals);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "alloc failed");
+        return;
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, buf_size);
+    enc_dnac_response(&enc, txn_id, "dnac_validator_list_query", 3);
+
+    cbor_encode_cstr(&enc, "count");
+    cbor_encode_uint(&enc, (uint64_t)count);
+    cbor_encode_cstr(&enc, "total");
+    cbor_encode_uint(&enc, (uint64_t)total);
+
+    cbor_encode_cstr(&enc, "validators");
+    cbor_encode_array(&enc, (size_t)count);
+    for (int i = 0; i < count; i++) {
+        cbor_encode_map(&enc, 7);
+        cbor_encode_cstr(&enc, "pk");
+        cbor_encode_bstr(&enc, vals[i].pubkey, DNAC_PUBKEY_SIZE);
+        cbor_encode_cstr(&enc, "self");
+        cbor_encode_uint(&enc, vals[i].self_stake);
+        cbor_encode_cstr(&enc, "total");
+        cbor_encode_uint(&enc, vals[i].total_delegated);
+        cbor_encode_cstr(&enc, "ext");
+        cbor_encode_uint(&enc, vals[i].external_delegated);
+        cbor_encode_cstr(&enc, "comm");
+        cbor_encode_uint(&enc, vals[i].commission_bps);
+        cbor_encode_cstr(&enc, "status");
+        cbor_encode_uint(&enc, vals[i].status);
+        cbor_encode_cstr(&enc, "since");
+        cbor_encode_uint(&enc, vals[i].active_since_block);
+    }
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) {
+        nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
+
+    free(buf);
+    free(vals);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * Dispatch router
  * ════════════════════════════════════════════════════════════════════ */
 
@@ -2530,6 +2664,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_pending_rewards_query(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_committee_query") == 0) {
         handle_dnac_committee_query(w, conn, txn_id);
+    } else if (strcmp(method, "dnac_validator_list_query") == 0) {
+        handle_dnac_validator_list_query(w, conn, payload, len, txn_id);
     } else {
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                     "unknown DNAC method");

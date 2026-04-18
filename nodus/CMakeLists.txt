@@ -590,6 +590,9 @@ register_witness_test(test_pending_rewards_rpc)
 # Task 62 — dnac_committee_query RPC shape (Phase 14)
 register_witness_test(test_committee_query_rpc)
 
+# Task 63 — dnac_validator_list_query paged helper (Phase 14)
+register_witness_test(test_validator_list_query_rpc)
+
 # Task 29 — SPEND rejects locked UTXO inputs (Rule D)
 register_witness_test(test_locked_utxo)
 
