@@ -64,7 +64,10 @@ static void print_dna_chain_help(void) {
     printf("                                Delegate DNAC to a validator\n");
     printf("  undelegate <pubkey_hex> <amount_raw>\n");
     printf("                                Withdraw (part of) a delegation\n");
-    printf("  claim <validator_pubkey_hex> Claim accrued staking rewards\n\n");
+    printf("  claim <validator_pubkey_hex> Claim accrued staking rewards\n");
+    printf("  unstake                       Trigger validator retirement (fee-only)\n");
+    printf("  validator-update --commission-bps N\n");
+    printf("                                Change validator commission rate\n\n");
     printf("Token Commands:\n");
     printf("  token-create <name> <sym> <supply>  Create a new token\n");
     printf("  token-list                          List all known tokens\n");
@@ -295,6 +298,47 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
         }
         result = dna_chain_cmd_stake(ctx, commission_bps, unstake_to);
     stake_done: ;
+    }
+    else if (strcmp(cmd, "unstake") == 0) {
+        /* Syntax: dna unstake (no args) */
+        result = dna_chain_cmd_unstake(ctx);
+    }
+    else if (strcmp(cmd, "validator-update") == 0) {
+        /* Syntax: dna validator-update --commission-bps N */
+        int commission_bps = -1;
+        int i = sub + 1;
+        while (i < argc) {
+            if (strcmp(argv[i], "--commission-bps") == 0 && i + 1 < argc) {
+                char *endptr = NULL;
+                errno = 0;
+                unsigned long v = strtoul(argv[i + 1], &endptr, 10);
+                if (errno != 0 || !endptr || *endptr != '\0' || v > 10000) {
+                    fprintf(stderr,
+                            "Error: invalid --commission-bps '%s' (0..10000)\n",
+                            argv[i + 1]);
+                    result = 1;
+                    goto validator_update_done;
+                }
+                commission_bps = (int)v;
+                i += 2;
+            } else {
+                fprintf(stderr,
+                        "Usage: dna-connect-cli dna validator-update"
+                        " --commission-bps N\n");
+                result = 1;
+                goto validator_update_done;
+            }
+        }
+        if (commission_bps < 0) {
+            fprintf(stderr,
+                    "Usage: dna-connect-cli dna validator-update"
+                    " --commission-bps N\n");
+            result = 1;
+        } else {
+            result = dna_chain_cmd_validator_update(
+                    ctx, (uint16_t)commission_bps);
+        }
+    validator_update_done: ;
     }
     else if (strcmp(cmd, "claim") == 0) {
         /* Syntax: dna claim <validator_pubkey_hex> */

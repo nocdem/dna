@@ -1822,3 +1822,64 @@ int dna_chain_cmd_claim(dnac_context_t *ctx,
     printf("CLAIM_REWARD TX submitted successfully.\n");
     return 0;
 }
+
+/* ============================================================================
+ * Task 68 — `dna unstake` + `dna validator-update` verbs
+ *
+ * unstake: fee-only TX, no appended fields. Witness enforces the
+ *          "delegator_count == 0" invariant authoritatively; the CLI
+ *          relies on that return code rather than attempting a pre-
+ *          flight pubkey→record lookup (which would require iterating
+ *          the validator table for every unstake).
+ *
+ * validator-update: queries chain head via the committee RPC to
+ *          populate signed_at_block (Rule K freshness anchor).
+ * ========================================================================== */
+
+int dna_chain_cmd_unstake(dnac_context_t *ctx) {
+    printf("Submitting UNSTAKE TX...\n");
+    printf("  (validator will transition ACTIVE -> RETIRING,\n"
+           "   self-stake unlocks after DNAC_UNSTAKE_COOLDOWN_BLOCKS)\n");
+
+    int rc = dnac_unstake(ctx, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+    printf("UNSTAKE TX submitted successfully.\n");
+    return 0;
+}
+
+int dna_chain_cmd_validator_update(dnac_context_t *ctx,
+                                   uint16_t commission_bps) {
+    if (commission_bps > DNAC_COMMISSION_BPS_MAX) {
+        fprintf(stderr,
+                "Error: commission_bps %u out of range (0..%u)\n",
+                (unsigned)commission_bps,
+                (unsigned)DNAC_COMMISSION_BPS_MAX);
+        return 1;
+    }
+
+    uint64_t head_block = 0;
+    if (query_current_block_height(&head_block) != 0) {
+        return 1;
+    }
+    if (head_block == 0) {
+        fprintf(stderr,
+                "Error: witness returned zero block height — chain not ready\n");
+        return 1;
+    }
+
+    printf("Updating commission to %u bps (%.2f%%)...\n",
+           (unsigned)commission_bps, (double)commission_bps / 100.0);
+    printf("  signed_at_block = %" PRIu64 "\n", head_block);
+
+    int rc = dnac_validator_update(ctx, commission_bps,
+                                    head_block, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+    printf("VALIDATOR_UPDATE TX submitted successfully.\n");
+    return 0;
+}
