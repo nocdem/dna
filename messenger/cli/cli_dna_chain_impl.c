@@ -1709,3 +1709,116 @@ int dna_chain_cmd_undelegate(dnac_context_t *ctx,
     printf("UNDELEGATE TX submitted successfully.\n");
     return 0;
 }
+
+/* ============================================================================
+ * Task 67 — `dna claim` verb
+ *
+ * Flow:
+ *   1. Query pending rewards for the target validator via Phase 14 RPC.
+ *   2. Query current committee snapshot to learn chain head block height.
+ *   3. Submit CLAIM_REWARD with max_pending_amount = pending,
+ *      valid_before_block = head + DNAC_SIGN_FRESHNESS_WINDOW.
+ *
+ * `claimant_pubkey` for the pending-rewards query is the caller's own
+ * Dilithium5 pubkey (pulled from dna_engine_get_signing_public_key).
+ * ========================================================================== */
+
+extern nodus_client_t *nodus_singleton_get(void);
+extern void nodus_singleton_lock(void);
+extern void nodus_singleton_unlock(void);
+
+/**
+ * Query the witness-side current block height via the committee RPC.
+ * Writes *out_height on success; returns 0 on success, -1 on failure.
+ */
+static int query_current_block_height(uint64_t *out_height) {
+    if (!out_height) return -1;
+    *out_height = 0;
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        fprintf(stderr, "Error: nodus not connected\n");
+        return -1;
+    }
+
+    nodus_dnac_committee_result_t res = {0};
+    nodus_singleton_lock();
+    int rc = nodus_client_dnac_committee(client, &res);
+    nodus_singleton_unlock();
+    if (rc != 0) {
+        fprintf(stderr,
+                "Error: nodus_client_dnac_committee failed (%d)\n", rc);
+        return -1;
+    }
+    *out_height = res.block_height;
+    return 0;
+}
+
+int dna_chain_cmd_claim(dnac_context_t *ctx,
+                        const char *validator_pubkey_hex) {
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) {
+        fprintf(stderr, "Error: Engine not initialized\n");
+        return 1;
+    }
+
+    uint8_t validator_pubkey[DNAC_PUBKEY_SIZE];
+    if (parse_validator_pubkey_hex(validator_pubkey_hex,
+                                   validator_pubkey) != 0) {
+        fprintf(stderr,
+                "Error: validator pubkey must be %u lowercase hex chars\n",
+                (unsigned)(DNAC_PUBKEY_SIZE * 2));
+        return 1;
+    }
+
+    /* Caller's own pubkey drives the pending-rewards lookup. */
+    uint8_t claimant_pubkey[DNAC_PUBKEY_SIZE];
+    int pk_rc = dna_engine_get_signing_public_key(
+            engine, claimant_pubkey, sizeof(claimant_pubkey));
+    if (pk_rc < 0) {
+        fprintf(stderr,
+                "Error: failed to read caller's signing pubkey (%d)\n",
+                pk_rc);
+        return 1;
+    }
+
+    /* Step 1: query pending rewards. */
+    uint64_t total_pending = 0;
+    int rc = dnac_get_pending_rewards(ctx, claimant_pubkey,
+                                       &total_pending, NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr,
+                "Error: pending-rewards query failed: %s\n",
+                dnac_error_string(rc));
+        return 1;
+    }
+    if (total_pending == 0) {
+        fprintf(stderr,
+                "No pending rewards for caller across any validator.\n");
+        return 1;
+    }
+
+    char pending_str[64];
+    format_amount(total_pending, pending_str, sizeof(pending_str));
+    printf("Total pending rewards: %s DNAC\n", pending_str);
+
+    /* Step 2: chain head block for Rule K freshness. */
+    uint64_t head_block = 0;
+    if (query_current_block_height(&head_block) != 0) {
+        return 1;
+    }
+    uint64_t valid_before_block = head_block + DNAC_SIGN_FRESHNESS_WINDOW;
+    printf("Chain head:            %" PRIu64 "\n", head_block);
+    printf("Valid until block:     %" PRIu64 "\n", valid_before_block);
+
+    /* Step 3: submit CLAIM_REWARD. */
+    rc = dnac_claim_reward(ctx, validator_pubkey,
+                           total_pending, valid_before_block,
+                           NULL, NULL);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+    printf("CLAIM_REWARD TX submitted successfully.\n");
+    return 0;
+}

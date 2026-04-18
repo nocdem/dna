@@ -63,7 +63,8 @@ static void print_dna_chain_help(void) {
     printf("  delegate <pubkey_hex> <amount_raw> [memo]\n");
     printf("                                Delegate DNAC to a validator\n");
     printf("  undelegate <pubkey_hex> <amount_raw>\n");
-    printf("                                Withdraw (part of) a delegation\n\n");
+    printf("                                Withdraw (part of) a delegation\n");
+    printf("  claim <validator_pubkey_hex> Claim accrued staking rewards\n\n");
     printf("Token Commands:\n");
     printf("  token-create <name> <sym> <supply>  Create a new token\n");
     printf("  token-list                          List all known tokens\n");
@@ -294,6 +295,17 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
         }
         result = dna_chain_cmd_stake(ctx, commission_bps, unstake_to);
     stake_done: ;
+    }
+    else if (strcmp(cmd, "claim") == 0) {
+        /* Syntax: dna claim <validator_pubkey_hex> */
+        if (sub + 1 >= argc) {
+            fprintf(stderr,
+                    "Usage: dna-connect-cli dna claim"
+                    " <validator_pubkey_hex>\n");
+            result = 1;
+        } else {
+            result = dna_chain_cmd_claim(ctx, argv[sub + 1]);
+        }
     }
     else if (strcmp(cmd, "delegate") == 0 || strcmp(cmd, "undelegate") == 0) {
         /* Syntax: dna delegate   <validator_pubkey_hex> <amount> [memo]
