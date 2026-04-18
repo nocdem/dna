@@ -1277,6 +1277,19 @@ Minimal transaction builder for DNA name registration and token transfers.
 | Solana Mainnet | SOL | Ed25519 | ✅ Active |
 | BNB Smart Chain | BNB, BEP-20 | secp256k1 | ✅ Active |
 
+### 9.9 DNAC Witness Consensus (Chain-State-Authoritative Roster)
+
+DNAC (DNA Cash) is the project's own UTXO cash system. Double-spend prevention uses PBFT witnessing embedded in `nodus-server` (not a separate binary). In `main`, the witness roster is *dynamic* — any online nodus node that is reachable via Kademlia routing participates automatically.
+
+On the `stake-delegation-v1` feature branch this is **replaced with a stake-weighted deterministic top-7 committee derived from on-chain state**. The witness roster and the client-side discovery path (`dnac_discover_witnesses()`) both consult the committee snapshot committed to chain via Merkle `state_root` — not DHT registrations, not TCP 4002 peer lists, not any routing-derived heuristic. Consequences:
+
+- Roster authority moves from the DHT / routing layer to the chain itself. Membership is reproducible from block history alone.
+- Self-stake is a fixed 10,000,000 DNAC per witness; delegators may stake on top. Committee = top 7 by total stake.
+- New TX types are added for `STAKE` / `UNSTAKE` / `DELEGATE` / `UNDELEGATE` / `CLAIM_REWARD` / `VALIDATOR_UPDATE`. Existing multi-signer TX plumbing (v0.11 `signers[]`) and BFT (`N = 3f+1`, `2f+1` quorum) are preserved.
+- The prior dynamic-witness / DHT-registry paths (documented in `nodus/docs/DYNAMIC_WITNESS_DESIGN.md`) are superseded by this chain-state path once the feature branch merges.
+
+See `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` for the full design (incl. red-team audit) and `dnac/CLAUDE.md` for the current branch status.
+
 ---
 
 ## 10. Public API

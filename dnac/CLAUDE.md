@@ -1,8 +1,10 @@
 # DNAC - Development Guidelines
 
-**Last Updated:** 2026-04-07 | **Status:** DESIGN | **Version:** v0.12.0
+**Last Updated:** 2026-04-17 | **Status:** DESIGN | **Version:** v0.17.0-stake.wip (feature branch `stake-delegation-v1`)
 
 **Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains DNAC-specific guidelines only.
+
+**Active feature branch:** `stake-delegation-v1` — stake-weighted top-7 committee, delegation, per-block reward accrual, pull-based claim. Design doc: `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md`. Implementation plan: `dnac/docs/plans/2026-04-17-witness-stake-delegation-implementation.md`. Not yet merged to `main`; chain wipe required at deploy time.
 
 ---
 
@@ -121,6 +123,28 @@ The standalone `dnac-witness` binary was removed in v0.10.3. Witness logic runs 
 | Max View Changes | 3 | Per request before error |
 
 **Phases:** PROPOSE → PREVOTE → PRECOMMIT → COMMIT
+
+---
+
+## Committee, Stake & Delegation (feature branch `stake-delegation-v1`)
+
+The witness roster in `main` is *dynamic* — every online nodus node automatically participates as a witness. On the `stake-delegation-v1` branch this is replaced with a **stake-weighted deterministic top-7 committee** whose membership is derived entirely from on-chain state. Witness discovery and BFT roster both consult chain state — not DHT registrations, not TCP 4002 peer lists.
+
+**Key properties (v1):**
+
+| Property | Value |
+|----------|-------|
+| Committee size | 7 (top by total stake; self + delegations) |
+| Self-stake | Fixed exactly 10,000,000 DNAC per witness |
+| Delegator stake | Unbounded (any holder may delegate any amount) |
+| Rotation | Per-epoch (deterministic re-rank from chain snapshot) |
+| Rewards | Per-block fee-pool accrual, pull-based `CLAIM_REWARD` TX |
+| Commission | Per-validator bps (set via `VALIDATOR_UPDATE`) |
+| Slashing | Not in v1 (deferred to v2 with sortition) |
+
+**New TX types (v0.17):** `STAKE`, `UNSTAKE`, `DELEGATE`, `UNDELEGATE`, `CLAIM_REWARD`, `VALIDATOR_UPDATE`. Existing BFT (PBFT, `N = 3f+1`), multi-signer TX infrastructure (v0.11 `signers[]` array), and Merkle `state_root` are preserved. Roster authority moves from DHT/routing-based auto-join to chain-derived top-7 by total stake, which replaces the paths documented in `nodus/docs/DYNAMIC_WITNESS_DESIGN.md` (now superseded).
+
+See `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md` for the full design + red-team audit.
 
 ---
 
