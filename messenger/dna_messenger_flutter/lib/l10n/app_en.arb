@@ -960,5 +960,33 @@
   },
   "stakeNoEarners": "No earners yet",
   "stakeNoEarnersSubtitle": "Come back in a few minutes — the network is getting started.",
-  "stakeLoadFailed": "Couldn't load earners"
+  "stakeLoadFailed": "Couldn't load earners",
+
+  "delegationTitle": "Support earner {id}",
+  "@delegationTitle": {
+    "placeholders": { "id": { "type": "String" } }
+  },
+  "delegationEarnerLabel": "Earner {id}",
+  "@delegationEarnerLabel": {
+    "placeholders": { "id": { "type": "String" } }
+  },
+  "delegationAmountLabel": "Amount",
+  "delegationAmountHelper": "Minimum 100 DNAC",
+  "delegationAmountRequired": "Enter an amount",
+  "delegationAmountInvalid": "Enter a valid amount",
+  "delegationAmountTooSmall": "Minimum is 100 DNAC",
+  "delegationHoldInfo": "About a 10 minute hold before you can stop supporting this earner again.",
+  "delegationRewardInfo": "You'll share in the earner's rewards every block.",
+  "delegationSupportButton": "Support this earner",
+  "delegationStopButton": "Stop supporting",
+  "delegationSubmitting": "Working...",
+  "delegationSupportSuccess": "You're now supporting this earner.",
+  "delegationSupportFailed": "Couldn't complete — please try again.",
+  "delegationStopSuccess": "Stopped supporting this earner.",
+  "delegationStopFailed": "Couldn't stop — please try again.",
+  "delegationStopDialogTitle": "Stop supporting earner {id}",
+  "@delegationStopDialogTitle": {
+    "placeholders": { "id": { "type": "String" } }
+  },
+  "delegationStopDialogBody": "How much would you like to pull back? You'll get it back after a short hold."
 }

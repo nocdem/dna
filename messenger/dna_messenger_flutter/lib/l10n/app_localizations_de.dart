@@ -1867,4 +1867,68 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get stakeLoadFailed => 'Couldn\'t load earners';
+
+  @override
+  String delegationTitle(String id) {
+    return 'Support earner $id';
+  }
+
+  @override
+  String delegationEarnerLabel(String id) {
+    return 'Earner $id';
+  }
+
+  @override
+  String get delegationAmountLabel => 'Amount';
+
+  @override
+  String get delegationAmountHelper => 'Minimum 100 DNAC';
+
+  @override
+  String get delegationAmountRequired => 'Enter an amount';
+
+  @override
+  String get delegationAmountInvalid => 'Enter a valid amount';
+
+  @override
+  String get delegationAmountTooSmall => 'Minimum is 100 DNAC';
+
+  @override
+  String get delegationHoldInfo =>
+      'About a 10 minute hold before you can stop supporting this earner again.';
+
+  @override
+  String get delegationRewardInfo =>
+      'You\'ll share in the earner\'s rewards every block.';
+
+  @override
+  String get delegationSupportButton => 'Support this earner';
+
+  @override
+  String get delegationStopButton => 'Stop supporting';
+
+  @override
+  String get delegationSubmitting => 'Working...';
+
+  @override
+  String get delegationSupportSuccess => 'You\'re now supporting this earner.';
+
+  @override
+  String get delegationSupportFailed =>
+      'Couldn\'t complete — please try again.';
+
+  @override
+  String get delegationStopSuccess => 'Stopped supporting this earner.';
+
+  @override
+  String get delegationStopFailed => 'Couldn\'t stop — please try again.';
+
+  @override
+  String delegationStopDialogTitle(String id) {
+    return 'Stop supporting earner $id';
+  }
+
+  @override
+  String get delegationStopDialogBody =>
+      'How much would you like to pull back? You\'ll get it back after a short hold.';
 }

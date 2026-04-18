@@ -3505,6 +3505,114 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Couldn\'t load earners'**
   String get stakeLoadFailed;
+
+  /// No description provided for @delegationTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Support earner {id}'**
+  String delegationTitle(String id);
+
+  /// No description provided for @delegationEarnerLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Earner {id}'**
+  String delegationEarnerLabel(String id);
+
+  /// No description provided for @delegationAmountLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Amount'**
+  String get delegationAmountLabel;
+
+  /// No description provided for @delegationAmountHelper.
+  ///
+  /// In en, this message translates to:
+  /// **'Minimum 100 DNAC'**
+  String get delegationAmountHelper;
+
+  /// No description provided for @delegationAmountRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter an amount'**
+  String get delegationAmountRequired;
+
+  /// No description provided for @delegationAmountInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a valid amount'**
+  String get delegationAmountInvalid;
+
+  /// No description provided for @delegationAmountTooSmall.
+  ///
+  /// In en, this message translates to:
+  /// **'Minimum is 100 DNAC'**
+  String get delegationAmountTooSmall;
+
+  /// No description provided for @delegationHoldInfo.
+  ///
+  /// In en, this message translates to:
+  /// **'About a 10 minute hold before you can stop supporting this earner again.'**
+  String get delegationHoldInfo;
+
+  /// No description provided for @delegationRewardInfo.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'ll share in the earner\'s rewards every block.'**
+  String get delegationRewardInfo;
+
+  /// No description provided for @delegationSupportButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Support this earner'**
+  String get delegationSupportButton;
+
+  /// No description provided for @delegationStopButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop supporting'**
+  String get delegationStopButton;
+
+  /// No description provided for @delegationSubmitting.
+  ///
+  /// In en, this message translates to:
+  /// **'Working...'**
+  String get delegationSubmitting;
+
+  /// No description provided for @delegationSupportSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'re now supporting this earner.'**
+  String get delegationSupportSuccess;
+
+  /// No description provided for @delegationSupportFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t complete — please try again.'**
+  String get delegationSupportFailed;
+
+  /// No description provided for @delegationStopSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopped supporting this earner.'**
+  String get delegationStopSuccess;
+
+  /// No description provided for @delegationStopFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t stop — please try again.'**
+  String get delegationStopFailed;
+
+  /// No description provided for @delegationStopDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop supporting earner {id}'**
+  String delegationStopDialogTitle(String id);
+
+  /// No description provided for @delegationStopDialogBody.
+  ///
+  /// In en, this message translates to:
+  /// **'How much would you like to pull back? You\'ll get it back after a short hold.'**
+  String get delegationStopDialogBody;
 }
 
 class _AppLocalizationsDelegate
