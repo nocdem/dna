@@ -710,14 +710,44 @@ bool supply_invariant_violated(nodus_witness_t *w) {
     uint64_t utxo_total = 0;
     if (nodus_witness_supply_get(w, &sup) == 0 &&
         nodus_witness_utxo_sum_by_token(w, NULL, &utxo_total) == 0) {
-        if (sup.genesis_supply != utxo_total) {
+
+        /* Effective supply = genesis + cumulative inflation-mint at current
+         * height. Locks (validator.self_stake, delegation.amount) and pools
+         * (validator.accumulator, block_fee_pool) are NOT in utxo_total but
+         * ARE in effective_supply — so effective_supply > utxo_total is the
+         * healthy case. Violation = utxo_total > effective_supply (impossible
+         * without a bug) OR the delta exceeds known locks+pools sum. The
+         * latter requires aggregating validator/delegation tables — left as
+         * a Phase 10+ TODO; for now this check is advisory. */
+        uint64_t block_h  = nodus_witness_block_height(w);
+        uint64_t minted   = dnac_total_minted_at(block_h, 1ULL);
+        uint64_t effective = sup.genesis_supply;
+        /* Saturating add to guard against a pathological mint overflow. */
+        if (minted > UINT64_MAX - effective) effective = UINT64_MAX;
+        else effective += minted;
+
+        if (utxo_total > effective) {
             QGP_LOG_ERROR(LOG_TAG,
-                "SUPPLY INVARIANT VIOLATION: genesis=%llu != utxo_sum=%llu "
-                "(delta=%lld)",
-                (unsigned long long)sup.genesis_supply,
+                "SUPPLY INVARIANT VIOLATION (impossible): utxo_sum=%llu > "
+                "effective=%llu (genesis=%llu minted=%llu height=%llu delta=%lld)",
                 (unsigned long long)utxo_total,
-                (long long)(sup.genesis_supply - utxo_total));
+                (unsigned long long)effective,
+                (unsigned long long)sup.genesis_supply,
+                (unsigned long long)minted,
+                (unsigned long long)block_h,
+                (long long)(utxo_total - effective));
             violated = true;
+        } else if (sup.genesis_supply != utxo_total) {
+            /* Advisory: delta should equal locks + pools. Full check TODO. */
+            QGP_LOG_DEBUG(LOG_TAG,
+                "supply: genesis=%llu minted=%llu effective=%llu utxo_sum=%llu "
+                "locks+pools=%llu (height=%llu)",
+                (unsigned long long)sup.genesis_supply,
+                (unsigned long long)minted,
+                (unsigned long long)effective,
+                (unsigned long long)utxo_total,
+                (unsigned long long)(effective - utxo_total),
+                (unsigned long long)block_h);
         }
     }
 
@@ -2834,6 +2864,34 @@ int finalize_block(nodus_witness_t *w,
         fprintf(stderr, "%s: finalize_block: epoch_boundary failed\n",
                 LOG_TAG);
         return -1;
+    }
+
+    /* Block-reward inflation (v1) — mint new DNAC into block_fee_pool
+     * BEFORE the Phase 9 / Task 49 committee distribution. Inflation
+     * flows through the same accumulator pipeline as TX fees, so no
+     * new distribution code is needed; minted DNAC is split to the
+     * attending committee proportional to total_stake, then through
+     * validator commission to delegators.
+     *
+     * Schedule: 16 DNAC/block year 1, halving yearly to 1 DNAC floor.
+     * Deterministic (same height → same reward on every witness), so
+     * the new block_fee_pool value is consensus-safe.
+     *
+     * start_block = 1 means inflation activates from block 1 onward
+     * (block 0 is genesis — no reward). Set to 0 to disable. */
+    {
+        uint64_t mint = dnac_block_reward(expected_height, 1ULL);
+        if (mint > 0) {
+            if (w->block_fee_pool > UINT64_MAX - mint) {
+                fprintf(stderr, "%s: finalize_block: block_fee_pool overflow "
+                        "on mint (pool=%llu mint=%llu)\n",
+                        LOG_TAG,
+                        (unsigned long long)w->block_fee_pool,
+                        (unsigned long long)mint);
+                return -1;
+            }
+            w->block_fee_pool += mint;
+        }
     }
 
     /* Phase 9 / Task 49 — distribute block_fee_pool to the attending

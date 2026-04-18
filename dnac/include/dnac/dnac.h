@@ -158,6 +158,85 @@ extern "C" {
 /** VALIDATOR_UPDATE freshness window: TX rejected if signed_at_block is older than this */
 #define DNAC_SIGN_FRESHNESS_WINDOW   32   /* blocks (~160s at 5s blocks) */
 
+/* ============================================================================
+ * Block-Reward Inflation (v1) — validator incentive
+ *
+ * Schedule: yearly halving from 16 DNAC/block, floor at 1 DNAC/block.
+ *   year 0:  16 DNAC/block   (100.9M/year,  ~10% first-year inflation)
+ *   year 1:   8 DNAC/block   (50.5M/year)
+ *   year 2:   4 DNAC/block
+ *   year 3:   2 DNAC/block
+ *   year 4:   1 DNAC/block   (permanent floor — perpetual validator incentive)
+ *   year 5+:  1 DNAC/block   (sustainable long-term)
+ *
+ * Total first-4-year mint: ~189M DNAC. Thereafter ~6.3M DNAC/year perpetual.
+ * Minted DNAC flows into block_fee_pool and is distributed through the
+ * existing Phase 9 Task 49 committee-reward pipeline (proportional to
+ * total_stake, minus validator commission).
+ * ========================================================================== */
+
+/** Base block reward at inflation_start_block (16 DNAC × 10^8 raw). */
+#define DNAC_INFLATION_BASE_REWARD   (16ULL * 100000000ULL)
+
+/** Floor block reward after halving converges (1 DNAC × 10^8 raw). */
+#define DNAC_INFLATION_FLOOR_REWARD  (1ULL * 100000000ULL)
+
+/** Blocks per year at 5s block interval (365 × 24 × 3600 / 5). */
+#define DNAC_BLOCKS_PER_YEAR         6307200ULL
+
+/**
+ * @brief Block reward at a given chain height (deterministic).
+ *
+ * Returns raw DNAC to mint at @p block_height. Before @p start_block,
+ * or when start_block == 0 (disabled), returns 0. Halves every
+ * DNAC_BLOCKS_PER_YEAR blocks until reaching DNAC_INFLATION_FLOOR_REWARD,
+ * then stays at the floor forever.
+ *
+ * Implemented `static inline` so both dnac and nodus (whose build does
+ * not compile dnac sources) get the same codepath without duplicating
+ * translation units. Math is tight — loops only in total_minted_at.
+ */
+static inline uint64_t dnac_block_reward(uint64_t block_height,
+                                           uint64_t start_block) {
+    if (start_block == 0 || block_height < start_block) return 0;
+    uint64_t elapsed  = block_height - start_block;
+    uint64_t halvings = elapsed / DNAC_BLOCKS_PER_YEAR;
+    /* log2(BASE/FLOOR) = 4 halvings (16→8→4→2→1). Floor thereafter. */
+    if (halvings >= 4) return DNAC_INFLATION_FLOOR_REWARD;
+    uint64_t reward = DNAC_INFLATION_BASE_REWARD >> halvings;
+    if (reward < DNAC_INFLATION_FLOOR_REWARD) reward = DNAC_INFLATION_FLOOR_REWARD;
+    return reward;
+}
+
+/**
+ * @brief Cumulative DNAC minted from @p start_block through @p block_height
+ *        inclusive (used by supply invariant).
+ *
+ * Deterministic — every witness reaches the same value for the same
+ * (height, start) pair, so supply-invariant consensus is preserved.
+ */
+static inline uint64_t dnac_total_minted_at(uint64_t block_height,
+                                              uint64_t start_block) {
+    if (start_block == 0 || block_height < start_block) return 0;
+    uint64_t elapsed = block_height - start_block;
+    uint64_t total   = 0;
+    uint64_t reward  = DNAC_INFLATION_BASE_REWARD;
+    for (int y = 0; y < 4; y++) {
+        if (elapsed == 0) return total;
+        uint64_t year_blocks = (elapsed >= DNAC_BLOCKS_PER_YEAR)
+                               ? DNAC_BLOCKS_PER_YEAR : elapsed;
+        total   += reward * year_blocks;
+        elapsed -= year_blocks;
+        reward >>= 1;
+        if (reward < DNAC_INFLATION_FLOOR_REWARD) {
+            reward = DNAC_INFLATION_FLOOR_REWARD;
+            break;
+        }
+    }
+    if (elapsed > 0) total += DNAC_INFLATION_FLOOR_REWARD * elapsed;
+    return total;
+}
+
 /** CLAIM_REWARD dust floor in raw units (Rule L — dynamic dust = max(this, 10× current_fee)) */
 #define DNAC_DUST_FLOOR              1000000ULL   /* 0.01 DNAC = 10^6 raw */
 
