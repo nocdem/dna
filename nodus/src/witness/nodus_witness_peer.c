@@ -14,6 +14,7 @@
 
 #include "witness/nodus_witness_peer.h"
 #include "witness/nodus_witness_bft.h"
+#include "witness/nodus_witness_committee.h"   /* Task 59 — committee roster */
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_handlers.h"
@@ -1344,6 +1345,34 @@ void nodus_witness_peer_conn_closed(nodus_witness_t *w,
             w->round_state.batch_entries[bi]->client_conn = NULL;
         }
     }
+}
+
+/* ── Phase 13 / Task 59 — Committee-snapshot BFT roster ──────────── */
+
+/**
+ * Return the BFT peer set (committee) authoritative for a given block
+ * height. Thin pass-through over the Task 53 committee cache.
+ *
+ * Invariants:
+ *   - For every block height within a single epoch, all 7 witnesses
+ *     derive bit-identical committees from the same committed DB state
+ *     (design §3.6: post-commit lookback + state_seed tiebreak).
+ *   - The underlying cache is keyed on e_start; the transition to a
+ *     new epoch is observed transparently on the first query whose
+ *     block_height crosses the boundary.
+ *   - Mid-epoch STAKE / DELEGATE / UNSTAKE mutate the validator table
+ *     but NOT the frozen committee membership — the cache intentionally
+ *     ignores them. BFT quorum on block N therefore never races a
+ *     mid-block stake change.
+ */
+int nodus_witness_peer_current_set(nodus_witness_t *w,
+                                     uint64_t block_height,
+                                     nodus_committee_member_t *out,
+                                     int max_entries,
+                                     int *count_out) {
+    if (!w || !out || !count_out || max_entries <= 0) return -1;
+    return nodus_committee_get_for_block(w, block_height, out,
+                                           max_entries, count_out);
 }
 
 /* ── Close ───────────────────────────────────────────────────────── */

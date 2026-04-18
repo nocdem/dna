@@ -641,3 +641,6 @@ register_witness_test(test_integration_unstake_two_phase)
 
 # Task 57 — Genesis seeds validator_tree + reward_tree from chain_def
 register_witness_test(test_genesis_seed_validators)
+
+# Task 59 — BFT roster sourced from committee snapshot (chain-authoritative)
+register_witness_test(test_bft_roster_committee)
