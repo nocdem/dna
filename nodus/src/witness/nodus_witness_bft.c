@@ -4408,7 +4408,9 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
             if (p < end) {
                 uint8_t wc = *p++; p += (size_t)wc * (32 + NODUS_SIG_BYTES + 8 + NODUS_PK_BYTES); /* witnesses */
             }
-            p += NODUS_PK_BYTES + NODUS_SIG_BYTES; /* sender pubkey + sig */
+            if (p < end) {
+                uint8_t sc = *p++; p += (size_t)sc * (NODUS_PK_BYTES + NODUS_SIG_BYTES); /* signers */
+            }
             /* Now at has_chain_def flag byte */
             if (p < end) {
                 uint8_t has_cd = *p++;
