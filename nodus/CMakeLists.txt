@@ -634,3 +634,6 @@ register_witness_test(test_committee_cache)
 
 # Task 54 — UNDELEGATE auto-claim end-to-end integration
 register_witness_test(test_integration_undelegate_claim)
+
+# Task 55 — UNSTAKE two-phase graduation + locked-UTXO unlock
+register_witness_test(test_integration_unstake_two_phase)
