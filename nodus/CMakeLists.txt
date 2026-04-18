@@ -656,3 +656,10 @@ register_witness_test(test_bft_roster_committee)
 
 # Task 60 — RETIRING validator stays in epoch committee until graduation
 register_witness_test(test_retiring_committee_membership)
+
+# Task 81 — supply invariance property test (Phase 17).
+# Pure-C simulated state machine — does NOT need the witness internal
+# API, only DNAC public enum + constants. Linked without NODUS_WITNESS_INTERNAL_API.
+add_executable(test_supply_invariant tests/test_supply_invariant.c)
+target_link_libraries(test_supply_invariant nodus dsa nodus)
+add_test(NAME test_supply_invariant COMMAND test_supply_invariant)
