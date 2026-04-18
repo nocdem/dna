@@ -1931,4 +1931,36 @@ class AppLocalizationsDe extends AppLocalizations {
   @override
   String get delegationStopDialogBody =>
       'How much would you like to pull back? You\'ll get it back after a short hold.';
+
+  @override
+  String get rewardsTitle => 'Your rewards';
+
+  @override
+  String get rewardsPendingLabel => 'Available to claim';
+
+  @override
+  String get rewardsClaimButton => 'Claim';
+
+  @override
+  String get rewardsClaimFromHeader => 'Claim from an earner';
+
+  @override
+  String get rewardsClaimSuccess => 'Reward claimed.';
+
+  @override
+  String get rewardsClaimFailed => 'Couldn\'t claim — please try again.';
+
+  @override
+  String get rewardsEmptyList => 'No earners available to claim from yet.';
+
+  @override
+  String get rewardsLoadFailed => 'Couldn\'t load rewards';
+
+  @override
+  String get rewardsHomeCardTitle => 'Your rewards';
+
+  @override
+  String rewardsHomeCardAmount(String amount) {
+    return '$amount DNAC ready to claim';
+  }
 }

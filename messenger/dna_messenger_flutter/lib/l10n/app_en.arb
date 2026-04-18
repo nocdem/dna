@@ -988,5 +988,19 @@
   "@delegationStopDialogTitle": {
     "placeholders": { "id": { "type": "String" } }
   },
-  "delegationStopDialogBody": "How much would you like to pull back? You'll get it back after a short hold."
+  "delegationStopDialogBody": "How much would you like to pull back? You'll get it back after a short hold.",
+
+  "rewardsTitle": "Your rewards",
+  "rewardsPendingLabel": "Available to claim",
+  "rewardsClaimButton": "Claim",
+  "rewardsClaimFromHeader": "Claim from an earner",
+  "rewardsClaimSuccess": "Reward claimed.",
+  "rewardsClaimFailed": "Couldn't claim — please try again.",
+  "rewardsEmptyList": "No earners available to claim from yet.",
+  "rewardsLoadFailed": "Couldn't load rewards",
+  "rewardsHomeCardTitle": "Your rewards",
+  "rewardsHomeCardAmount": "{amount} DNAC ready to claim",
+  "@rewardsHomeCardAmount": {
+    "placeholders": { "amount": { "type": "String" } }
+  }
 }

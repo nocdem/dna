@@ -3613,6 +3613,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'How much would you like to pull back? You\'ll get it back after a short hold.'**
   String get delegationStopDialogBody;
+
+  /// No description provided for @rewardsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Your rewards'**
+  String get rewardsTitle;
+
+  /// No description provided for @rewardsPendingLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Available to claim'**
+  String get rewardsPendingLabel;
+
+  /// No description provided for @rewardsClaimButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Claim'**
+  String get rewardsClaimButton;
+
+  /// No description provided for @rewardsClaimFromHeader.
+  ///
+  /// In en, this message translates to:
+  /// **'Claim from an earner'**
+  String get rewardsClaimFromHeader;
+
+  /// No description provided for @rewardsClaimSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Reward claimed.'**
+  String get rewardsClaimSuccess;
+
+  /// No description provided for @rewardsClaimFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t claim — please try again.'**
+  String get rewardsClaimFailed;
+
+  /// No description provided for @rewardsEmptyList.
+  ///
+  /// In en, this message translates to:
+  /// **'No earners available to claim from yet.'**
+  String get rewardsEmptyList;
+
+  /// No description provided for @rewardsLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load rewards'**
+  String get rewardsLoadFailed;
+
+  /// No description provided for @rewardsHomeCardTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Your rewards'**
+  String get rewardsHomeCardTitle;
+
+  /// No description provided for @rewardsHomeCardAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'{amount} DNAC ready to claim'**
+  String rewardsHomeCardAmount(String amount);
 }
 
 class _AppLocalizationsDelegate
