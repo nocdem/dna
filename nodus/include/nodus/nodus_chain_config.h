@@ -218,6 +218,27 @@ int nodus_chain_config_derive_witness_id(const uint8_t pubkey[NODUS_CC_PUBKEY_SI
  */
 void nodus_chain_config_log_stats(nodus_witness_t *w);
 
+/* Forward decl — full definitions in nodus_tier3.h / nodus_tcp.h;
+ * callers that actually invoke nodus_witness_handle_cc_vote_req must
+ * include those headers too (this avoids a deep include-chain for
+ * chain_config consumers that only need the primitive API above). */
+struct nodus_t3_msg_t_tag;  /* nodus_t3_msg_t is an anonymous-struct typedef */
+struct nodus_tcp_conn;
+
+/**
+ * Handle an incoming w_cc_vote_req (Stage C.2). Peer-side of the
+ * committee vote-collect RPC: proposer sends a proposal, this handler
+ * runs local-rule checks, signs the proposal digest with the local
+ * Dilithium5 key, and replies with a w_cc_vote_rsp carrying
+ * (witness_id, signature). Rejection returns a reason string.
+ *
+ * msg is declared `const void *` to avoid a circular include with
+ * nodus_tier3.h; callers pass `&nodus_t3_msg_t_instance`.
+ */
+int nodus_witness_handle_cc_vote_req(nodus_witness_t *w,
+                                      struct nodus_tcp_conn *conn,
+                                      const void *msg);
+
 #ifdef __cplusplus
 }
 #endif

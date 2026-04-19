@@ -39,6 +39,8 @@ const char *nodus_t3_type_to_method(nodus_t3_msg_type_t type) {
         case NODUS_T3_IDENT:     return "w_ident";
         case NODUS_T3_SYNC_REQ:  return "w_sync_req";
         case NODUS_T3_SYNC_RSP:  return "w_sync_rsp";
+        case NODUS_T3_CC_VOTE_REQ: return "w_cc_vote_req";
+        case NODUS_T3_CC_VOTE_RSP: return "w_cc_vote_rsp";
         default:                 return NULL;
     }
 }
@@ -58,6 +60,8 @@ nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
     if (strcmp(method, "w_ident") == 0)      return NODUS_T3_IDENT;
     if (strcmp(method, "w_sync_req") == 0)  return NODUS_T3_SYNC_REQ;
     if (strcmp(method, "w_sync_rsp") == 0)  return NODUS_T3_SYNC_RSP;
+    if (strcmp(method, "w_cc_vote_req") == 0) return NODUS_T3_CC_VOTE_REQ;
+    if (strcmp(method, "w_cc_vote_rsp") == 0) return NODUS_T3_CC_VOTE_RSP;
     return 0;
 }
 
@@ -237,6 +241,34 @@ static void enc_rost_r_args(cbor_encoder_t *enc, const nodus_t3_rost_r_t *r) {
     }
 }
 
+/* ── w_cc_vote_req / w_cc_vote_rsp args (Hard-Fork v1 Stage C.2) ──── */
+
+static void enc_cc_vote_req_args(cbor_encoder_t *enc,
+                                   const nodus_t3_cc_vote_req_t *r) {
+    cbor_encode_map(enc, 6);
+    cbor_encode_cstr(enc, "pid"); cbor_encode_uint(enc, r->param_id);
+    cbor_encode_cstr(enc, "nv");  cbor_encode_uint(enc, r->new_value);
+    cbor_encode_cstr(enc, "eb");  cbor_encode_uint(enc, r->effective_block_height);
+    cbor_encode_cstr(enc, "pn");  cbor_encode_uint(enc, r->proposal_nonce);
+    cbor_encode_cstr(enc, "sab"); cbor_encode_uint(enc, r->signed_at_block);
+    cbor_encode_cstr(enc, "vbb"); cbor_encode_uint(enc, r->valid_before_block);
+}
+
+static void enc_cc_vote_rsp_args(cbor_encoder_t *enc,
+                                   const nodus_t3_cc_vote_rsp_t *r) {
+    if (r->accepted) {
+        cbor_encode_map(enc, 3);
+        cbor_encode_cstr(enc, "ok");  cbor_encode_uint(enc, 1);
+        cbor_encode_cstr(enc, "wid"); cbor_encode_bstr(enc, r->witness_id, 32);
+        cbor_encode_cstr(enc, "sig"); cbor_encode_bstr(enc, r->signature,
+                                                         NODUS_SIG_BYTES);
+    } else {
+        cbor_encode_map(enc, 2);
+        cbor_encode_cstr(enc, "ok");  cbor_encode_uint(enc, 0);
+        cbor_encode_cstr(enc, "rr");  cbor_encode_cstr(enc, r->reject_reason);
+    }
+}
+
 static void enc_ident_args(cbor_encoder_t *enc, const nodus_t3_ident_t *id) {
     /* Map count: wid, pk, addr, tsl, nv, ccs = 6 base;
      * +4 for bh, sr, vw, rn when has_block_height. CC-OPS-002 / Q14
@@ -311,6 +343,8 @@ static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
         case NODUS_T3_ROST_Q:    enc_rost_q_args(enc, &msg->rost_q);     break;
         case NODUS_T3_ROST_R:    enc_rost_r_args(enc, &msg->rost_r);     break;
         case NODUS_T3_IDENT:     enc_ident_args(enc, &msg->ident);       break;
+        case NODUS_T3_CC_VOTE_REQ: enc_cc_vote_req_args(enc, &msg->cc_vote_req); break;
+        case NODUS_T3_CC_VOTE_RSP: enc_cc_vote_rsp_args(enc, &msg->cc_vote_rsp); break;
         case NODUS_T3_SYNC_REQ:  enc_sync_req_args(enc, &msg->sync_req); break;
         case NODUS_T3_SYNC_RSP:  enc_sync_rsp_args(enc, &msg->sync_rsp); break;
         default: return -1;
@@ -1032,6 +1066,67 @@ static void dec_sync_req_args(cbor_decoder_t *dec, size_t count,
     }
 }
 
+/* ── w_cc_vote_req / w_cc_vote_rsp decoders (Hard-Fork v1 Stage C.2) ── */
+
+static void dec_cc_vote_req_args(cbor_decoder_t *dec, size_t count,
+                                   nodus_t3_cc_vote_req_t *r) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (KEY_IS(key, "pid")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) r->param_id = (uint8_t)val.uint_val;
+        } else if (KEY_IS(key, "nv")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) r->new_value = val.uint_val;
+        } else if (KEY_IS(key, "eb")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) r->effective_block_height = val.uint_val;
+        } else if (KEY_IS(key, "pn")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) r->proposal_nonce = val.uint_val;
+        } else if (KEY_IS(key, "sab")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) r->signed_at_block = val.uint_val;
+        } else if (KEY_IS(key, "vbb")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) r->valid_before_block = val.uint_val;
+        } else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
+static void dec_cc_vote_rsp_args(cbor_decoder_t *dec, size_t count,
+                                   nodus_t3_cc_vote_rsp_t *r) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+        if (KEY_IS(key, "ok")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) r->accepted = (val.uint_val != 0);
+        } else if (KEY_IS(key, "wid")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(r->witness_id, val.bstr.ptr, 32);
+        } else if (KEY_IS(key, "sig")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == NODUS_SIG_BYTES)
+                memcpy(r->signature, val.bstr.ptr, NODUS_SIG_BYTES);
+        } else if (KEY_IS(key, "rr")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_TSTR) {
+                size_t clen = val.tstr.len < sizeof(r->reject_reason) - 1
+                            ? val.tstr.len : sizeof(r->reject_reason) - 1;
+                memcpy(r->reject_reason, val.tstr.ptr, clen);
+                r->reject_reason[clen] = '\0';
+            }
+        } else {
+            cbor_decode_skip(dec);
+        }
+    }
+}
+
 static void dec_sync_rsp_args(cbor_decoder_t *dec, size_t count,
                                nodus_t3_sync_rsp_t *r) {
     /* Phase 11 / Task 11.2 — multi-tx sync_rsp decoder. */
@@ -1245,6 +1340,12 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
                     break;
                 case NODUS_T3_SYNC_RSP:
                     dec_sync_rsp_args(&dec, args.count, &msg->sync_rsp);
+                    break;
+                case NODUS_T3_CC_VOTE_REQ:
+                    dec_cc_vote_req_args(&dec, args.count, &msg->cc_vote_req);
+                    break;
+                case NODUS_T3_CC_VOTE_RSP:
+                    dec_cc_vote_rsp_args(&dec, args.count, &msg->cc_vote_rsp);
                     break;
                 default:
                     break;

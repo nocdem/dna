@@ -64,6 +64,9 @@ typedef enum {
     NODUS_T3_IDENT      = 11,
     NODUS_T3_SYNC_REQ   = 12,
     NODUS_T3_SYNC_RSP   = 13,
+    /* Hard-Fork v1 Stage C.2 — chain_config vote-collect RPC. */
+    NODUS_T3_CC_VOTE_REQ = 14,  /* proposer asks peer to sign a proposal */
+    NODUS_T3_CC_VOTE_RSP = 15,  /* peer returns (witness_id, signature) or reject */
 } nodus_t3_msg_type_t;
 
 /* ── Common witness header ───────────────────────────────────────── */
@@ -243,6 +246,34 @@ typedef struct {
     uint8_t     signature[NODUS_SIG_BYTES];
 } nodus_t3_sync_cert_t;
 
+/** w_cc_vote_req: Proposer asks a committee peer to sign a chain_config
+ *  proposal preimage. Hard-Fork v1 Stage C.2. The peer runs its local
+ *  signing-policy check (params-in-range + other soft rules) before
+ *  deciding to sign; see nodus_witness_handle_cc_vote_req. */
+typedef struct {
+    uint8_t     param_id;
+    uint64_t    new_value;
+    uint64_t    effective_block_height;
+    uint64_t    proposal_nonce;
+    uint64_t    signed_at_block;
+    uint64_t    valid_before_block;
+    /* chain_id lives in the T3 header "cid" field — same binding as
+     * proposal preimage (see nodus_chain_config_compute_digest). Not
+     * duplicated here. */
+} nodus_t3_cc_vote_req_t;
+
+/** w_cc_vote_rsp: Peer's response to a vote request. Either carries a
+ *  signed vote (accepted=true) or a reject with a human-readable reason
+ *  (accepted=false). */
+typedef struct {
+    bool            accepted;
+    /* Valid only when accepted == true: */
+    uint8_t         witness_id[32];
+    uint8_t         signature[NODUS_SIG_BYTES];
+    /* Valid only when accepted == false (UTF-8, NUL-terminated): */
+    char            reject_reason[128];
+} nodus_t3_cc_vote_rsp_t;
+
 /** w_sync_rsp: Full block data for sync (Phase 11 / Task 11.1).
  *
  * Multi-tx replay payload: the sender serializes EVERY committed
@@ -293,6 +324,8 @@ typedef struct {
         nodus_t3_ident_t    ident;
         nodus_t3_sync_req_t sync_req;
         nodus_t3_sync_rsp_t sync_rsp;
+        nodus_t3_cc_vote_req_t cc_vote_req;
+        nodus_t3_cc_vote_rsp_t cc_vote_rsp;
     };
 } nodus_t3_msg_t;
 

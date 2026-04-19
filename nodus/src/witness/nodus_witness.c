@@ -12,6 +12,7 @@
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_sync.h"
 #include "witness/nodus_witness_mempool.h"
+#include "nodus/nodus_chain_config.h"  /* Stage C.2 vote-req handler */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "protocol/nodus_tier3.h"
@@ -746,6 +747,16 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
         break;
     case NODUS_T3_SYNC_RSP:
         nodus_witness_sync_handle_rsp(witness, &msg);
+        break;
+
+    /* Hard-Fork v1 Stage C.2 — chain_config vote-collect. */
+    case NODUS_T3_CC_VOTE_REQ:
+        nodus_witness_handle_cc_vote_req(witness, conn, &msg);
+        break;
+    case NODUS_T3_CC_VOTE_RSP:
+        /* Receiver-side: handled by CLI proposer's client helper when
+         * it ships in Stage E. A nodus-server that isn't expecting a
+         * response (i.e., didn't open the session) can safely ignore. */
         break;
 
     default:

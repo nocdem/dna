@@ -17,7 +17,10 @@
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_merkle.h"
 
-#include "protocol/nodus_tier3.h"     /* NODUS_T3_NULLIFIER_LEN etc. */
+#include "protocol/nodus_tier3.h"     /* NODUS_T3_NULLIFIER_LEN, cc_vote_{req,rsp} */
+#include "transport/nodus_tcp.h"      /* nodus_tcp_send — Stage C.2 reply path */
+#include "server/nodus_server.h"      /* w->server->identity fields */
+#include "crypto/nodus_sign.h"        /* nodus_random for header nonce */
 
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -544,6 +547,117 @@ int nodus_chain_config_verify_vote(const uint8_t pubkey[NODUS_CC_PUBKEY_SIZE],
         return -1;
     }
     return 0;
+}
+
+/* ============================================================================
+ * Stage C.2 — committee vote-collect RPC server-side handler.
+ * ========================================================================== */
+
+/* Rule check shared with verify_cc_local_rules (without the full-TX
+ * fields like signer_count). Returns NULL on accept, else a short
+ * human-readable reason string. */
+static const char *vote_req_local_check(const nodus_t3_cc_vote_req_t *r) {
+    if (r->param_id < 1 || r->param_id > CC_PARAM_MAX_ID)
+        return "param_id out of range";
+    switch (r->param_id) {
+        case CC_PARAM_MAX_TXS:
+            if (r->new_value < 1ULL || r->new_value > CC_MAX_TXS_HARD_CAP)
+                return "MAX_TXS out of [1..10]";
+            break;
+        case CC_PARAM_BLOCK_INTERVAL:
+            if (r->new_value < CC_MIN_BLOCK_INTERVAL_SEC ||
+                r->new_value > CC_MAX_BLOCK_INTERVAL_SEC)
+                return "BLOCK_INTERVAL out of [1..15]";
+            break;
+        case CC_PARAM_INFLATION_START:
+            if (r->new_value > CC_MAX_INFLATION_START)
+                return "INFLATION_START > 2^48";
+            break;
+        default: return "unknown param_id";
+    }
+    if (r->signed_at_block == 0)
+        return "signed_at_block == 0";
+    if (r->valid_before_block <= r->effective_block_height)
+        return "valid_before <= effective";
+    if (r->valid_before_block <= r->signed_at_block)
+        return "valid_before <= signed_at";
+    return NULL;
+}
+
+int nodus_witness_handle_cc_vote_req(nodus_witness_t *w,
+                                      struct nodus_tcp_conn *conn,
+                                      const void *imsg) {
+    if (!w || !conn || !imsg) return -1;
+    const nodus_t3_msg_t *in = (const nodus_t3_msg_t *)imsg;
+
+    nodus_t3_msg_t rsp;
+    memset(&rsp, 0, sizeof(rsp));
+    rsp.type = NODUS_T3_CC_VOTE_RSP;
+    rsp.txn_id = ++w->next_txn_id;
+    rsp.header.version = NODUS_T3_BFT_PROTOCOL_VER;
+    memcpy(rsp.header.sender_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
+    rsp.header.timestamp = (uint64_t)time(NULL);
+    nodus_random((uint8_t *)&rsp.header.nonce, sizeof(rsp.header.nonce));
+    memcpy(rsp.header.chain_id, w->chain_id, 32);
+
+    const nodus_t3_cc_vote_req_t *req = &in->cc_vote_req;
+
+    /* Local-rule check. */
+    const char *reject = vote_req_local_check(req);
+    if (reject) {
+        rsp.cc_vote_rsp.accepted = false;
+        snprintf(rsp.cc_vote_rsp.reject_reason,
+                 sizeof(rsp.cc_vote_rsp.reject_reason),
+                 "%s", reject);
+        goto send;
+    }
+
+    /* Compute proposal digest binding the sender's chain_id (from the
+     * incoming header, which the caller's wsig already authenticated). */
+    uint8_t digest[NODUS_CC_DIGEST_SIZE];
+    if (nodus_chain_config_compute_digest(in->header.chain_id,
+                                            req->param_id,
+                                            req->new_value,
+                                            req->effective_block_height,
+                                            req->proposal_nonce,
+                                            req->signed_at_block,
+                                            req->valid_before_block,
+                                            digest) != 0) {
+        rsp.cc_vote_rsp.accepted = false;
+        snprintf(rsp.cc_vote_rsp.reject_reason,
+                 sizeof(rsp.cc_vote_rsp.reject_reason),
+                 "digest compute failed");
+        goto send;
+    }
+
+    /* Sign with local witness identity. */
+    if (nodus_chain_config_sign_vote(w->server->identity.pk.bytes,
+                                       w->server->identity.sk.bytes,
+                                       digest,
+                                       rsp.cc_vote_rsp.witness_id,
+                                       rsp.cc_vote_rsp.signature) != 0) {
+        rsp.cc_vote_rsp.accepted = false;
+        snprintf(rsp.cc_vote_rsp.reject_reason,
+                 sizeof(rsp.cc_vote_rsp.reject_reason),
+                 "sign failed");
+        goto send;
+    }
+    rsp.cc_vote_rsp.accepted = true;
+    QGP_LOG_INFO(LOG_TAG,
+        "CC_VOTE_SIGNED param=%u value=%llu effective=%llu",
+        (unsigned)req->param_id,
+        (unsigned long long)req->new_value,
+        (unsigned long long)req->effective_block_height);
+
+send:
+    {
+        uint8_t buf[NODUS_T3_MAX_MSG_SIZE];
+        size_t len = 0;
+        if (nodus_t3_encode(&rsp, &w->server->identity.sk,
+                             buf, sizeof(buf), &len) != 0)
+            return -1;
+        return nodus_tcp_send((nodus_tcp_conn_t *)conn, buf, len);
+    }
 }
 
 /* Q17 / CC-OPS-005 — observability dump. Single-line structured log
