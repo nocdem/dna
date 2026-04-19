@@ -958,21 +958,24 @@ int nodus_client_dnac_committee(nodus_client_t *client,
  * callers surface as a timeout (-2) rather than a visible error.
  *
  * @param peer_address       "ip:port" of the target committee member
+ * @param caller_pk          Proposer Dilithium5 public key (T2 hello)
  * @param caller_sk          Proposer Dilithium5 secret key (wsig source)
  * @param caller_witness_id  first 32B of SHA3-512(caller_pk) — t3 sender_id
  * @param expected_peer_pk   Target member's Dilithium5 pubkey (rsp verify)
  * @param chain_id           Current chain_id (32 bytes) — t3 header cid
  * @param req                Proposal fields to sign
- * @param timeout_ms         Total deadline (connect + send + recv combined)
+ * @param timeout_ms         Total deadline (handshake + send + recv combined)
  * @param rsp_out            Decoded response on success
  *
  * @return  0   on verified response (callers check rsp_out->accepted
  *              to distinguish accept vs reject)
  *         -1   invalid args / encode / transport failure
- *         -2   timeout (connect or response)
+ *         -2   timeout at any phase
  *         -3   response decoded but wsig verification failed
+ *         -4   peer rejected T2 auth (see stderr for code+msg)
  */
 int nodus_client_cc_vote_send(const char *peer_address,
+                                const nodus_pubkey_t *caller_pk,
                                 const nodus_seckey_t *caller_sk,
                                 const uint8_t caller_witness_id[32],
                                 const nodus_pubkey_t *expected_peer_pk,

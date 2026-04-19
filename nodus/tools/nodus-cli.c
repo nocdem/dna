@@ -1039,7 +1039,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         memcpy(peer_pk.bytes, peer->pubkey, NODUS_PK_BYTES);
 
         nodus_t3_cc_vote_rsp_t rsp;
-        int vrc = nodus_client_cc_vote_send(peer->address, &identity.sk,
+        int vrc = nodus_client_cc_vote_send(peer->address,
+                                              &identity.pk, &identity.sk,
                                               caller_wid, &peer_pk,
                                               supply.chain_id, &req,
                                               5000, &rsp);

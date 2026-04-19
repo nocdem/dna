@@ -44,19 +44,21 @@ static void test_null_args_rejected(void) {
     memset(&req, 0, sizeof(req));
     memset(&rsp, 0, sizeof(rsp));
 
-    CHECK(nodus_client_cc_vote_send(NULL, &sk, wid, &pk, cid,
+    CHECK(nodus_client_cc_vote_send(NULL, &pk, &sk, wid, &pk, cid,
                                      &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", NULL, wid, &pk, cid,
+    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", NULL, &sk, wid, &pk, cid,
                                      &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &sk, NULL, &pk, cid,
+    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, NULL, wid, &pk, cid,
                                      &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &sk, wid, NULL, cid,
+    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, &sk, NULL, &pk, cid,
                                      &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &sk, wid, &pk, NULL,
+    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, &sk, wid, NULL, cid,
                                      &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &sk, wid, &pk, cid,
+    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, &sk, wid, &pk, NULL,
+                                     &req, 100, &rsp) == -1);
+    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, &sk, wid, &pk, cid,
                                      NULL, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &sk, wid, &pk, cid,
+    CHECK(nodus_client_cc_vote_send("127.0.0.1:4004", &pk, &sk, wid, &pk, cid,
                                      &req, 100, NULL) == -1);
 }
 
@@ -74,15 +76,15 @@ static void test_malformed_address_rejected(void) {
     memset(&rsp, 0, sizeof(rsp));
 
     /* Empty string, no port number, port out of range. */
-    CHECK(nodus_client_cc_vote_send("", &sk, wid, &pk, cid,
+    CHECK(nodus_client_cc_vote_send("", &pk, &sk, wid, &pk, cid,
                                      &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:99999", &sk, wid, &pk, cid,
+    CHECK(nodus_client_cc_vote_send("127.0.0.1:99999", &pk, &sk, wid, &pk, cid,
                                      &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:0", &sk, wid, &pk, cid,
+    CHECK(nodus_client_cc_vote_send("127.0.0.1:0", &pk, &sk, wid, &pk, cid,
                                      &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send("127.0.0.1:-5", &sk, wid, &pk, cid,
+    CHECK(nodus_client_cc_vote_send("127.0.0.1:-5", &pk, &sk, wid, &pk, cid,
                                      &req, 100, &rsp) == -1);
-    CHECK(nodus_client_cc_vote_send(":4004", &sk, wid, &pk, cid,
+    CHECK(nodus_client_cc_vote_send(":4004", &pk, &sk, wid, &pk, cid,
                                      &req, 100, &rsp) == -1);
 }
 
@@ -106,7 +108,7 @@ static void test_timeout_on_dead_peer(void) {
 
     /* Port 1 is reserved and never has a listener on Linux. */
     time_t t0 = time(NULL);
-    int rc = nodus_client_cc_vote_send("127.0.0.1:1", &sk, wid, &pk, cid,
+    int rc = nodus_client_cc_vote_send("127.0.0.1:1", &pk, &sk, wid, &pk, cid,
                                         &req, 200, &rsp);
     time_t t1 = time(NULL);
     CHECK(rc == -1 || rc == -2);
