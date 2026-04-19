@@ -452,6 +452,13 @@ add_executable(test_cc_client tests/test_cc_client.c)
 target_link_libraries(test_cc_client nodus dsa nodus)
 add_test(NAME test_cc_client COMMAND test_cc_client)
 
+# Hard-Fork v1 Stage C.3 — per-proposer rate-limit pure-function tests
+add_executable(test_chain_config_rate_limit
+    tests/test_chain_config_rate_limit.c)
+target_link_libraries(test_chain_config_rate_limit nodus dsa nodus)
+add_test(NAME test_chain_config_rate_limit
+         COMMAND test_chain_config_rate_limit)
+
 # UTXO state_root determinism tests (Phase 2 / Task 2.5)
 add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
 target_link_libraries(test_merkle_utxo_root nodus dsa nodus)

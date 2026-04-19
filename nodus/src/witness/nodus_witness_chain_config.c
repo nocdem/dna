@@ -526,6 +526,77 @@ int nodus_chain_config_verify_vote(const uint8_t pubkey[NODUS_CC_PUBKEY_SIZE],
 }
 
 /* ============================================================================
+ * Stage C.3 — per-proposer rate-limit (CC-OPS-003 / Q15)
+ *
+ * Linear-scan over a committee-sized slot array. Lookup is O(7) worst case,
+ * fine for the handler hot path and avoids a hash-table dependency.
+ * ========================================================================== */
+
+int nodus_cc_rate_limit_check(nodus_cc_rate_limit_table_t *t,
+                               const uint8_t sender_id[NODUS_CC_WITNESS_ID_SIZE],
+                               uint64_t now_ms,
+                               uint64_t *elapsed_ms_out) {
+    if (!t || !sender_id) return -1;
+
+    for (uint32_t i = 0; i < NODUS_CC_RATE_LIMIT_MAX_PROPOSERS; i++) {
+        const nodus_cc_rate_limit_slot_t *s = &t->slots[i];
+        if (!s->in_use) continue;
+        if (memcmp(s->witness_id, sender_id,
+                    NODUS_CC_WITNESS_ID_SIZE) != 0) continue;
+
+        /* Clock-skew defense: if now_ms < last_accepted_ms, treat as zero
+         * elapsed (aggressive) rather than wrap to huge elapsed (permissive).
+         * The monotonic clock used by nodus_time_now_ms() should never
+         * regress in practice, but be safe. */
+        uint64_t elapsed = (now_ms >= s->last_accepted_ms)
+                            ? (now_ms - s->last_accepted_ms) : 0;
+
+        if (elapsed < NODUS_CC_RATE_LIMIT_WINDOW_MS) {
+            if (elapsed_ms_out) *elapsed_ms_out = elapsed;
+            return -1;
+        }
+        /* Cooldown elapsed — allow. */
+        return 0;
+    }
+    /* Sender not yet tracked — allow. */
+    return 0;
+}
+
+void nodus_cc_rate_limit_record(nodus_cc_rate_limit_table_t *t,
+                                 const uint8_t sender_id[NODUS_CC_WITNESS_ID_SIZE],
+                                 uint64_t now_ms) {
+    if (!t || !sender_id) return;
+
+    int free_slot = -1;
+    int oldest_slot = 0;
+    uint64_t oldest_ms = UINT64_MAX;
+
+    for (uint32_t i = 0; i < NODUS_CC_RATE_LIMIT_MAX_PROPOSERS; i++) {
+        nodus_cc_rate_limit_slot_t *s = &t->slots[i];
+        if (s->in_use && memcmp(s->witness_id, sender_id,
+                                  NODUS_CC_WITNESS_ID_SIZE) == 0) {
+            s->last_accepted_ms = now_ms;
+            return;
+        }
+        if (!s->in_use && free_slot < 0) free_slot = (int)i;
+        if (s->in_use && s->last_accepted_ms < oldest_ms) {
+            oldest_ms = s->last_accepted_ms;
+            oldest_slot = (int)i;
+        }
+    }
+
+    /* Claim free slot first; else evict oldest (LRU). Eviction only
+     * happens if a non-committee sender ever slips past the dispatch
+     * guard — in the normal 7-committee case we have exactly enough
+     * slots and no eviction ever occurs. */
+    int target = (free_slot >= 0) ? free_slot : oldest_slot;
+    nodus_cc_rate_limit_slot_t *s = &t->slots[target];
+    memcpy(s->witness_id, sender_id, NODUS_CC_WITNESS_ID_SIZE);
+    s->last_accepted_ms = now_ms;
+    s->in_use = true;
+}
+
+/* ============================================================================
  * Stage C.2 — committee vote-collect RPC server-side handler.
  * ========================================================================== */
 
@@ -588,6 +659,26 @@ int nodus_witness_handle_cc_vote_req(nodus_witness_t *w,
         goto send;
     }
 
+    /* CC-OPS-003 / Stage C.3 — per-proposer cooldown. Check before the
+     * expensive digest + Dilithium5 sign so a hostile proposer cannot
+     * burn CPU by spamming. */
+    {
+        uint64_t now_ms = nodus_time_now_ms();
+        uint64_t elapsed_ms = 0;
+        if (nodus_cc_rate_limit_check(&w->cc_rate_limit,
+                                        in->header.sender_id,
+                                        now_ms, &elapsed_ms) != 0) {
+            w->cc_rate_limit.rate_limited_count++;
+            rsp.cc_vote_rsp.accepted = false;
+            snprintf(rsp.cc_vote_rsp.reject_reason,
+                     sizeof(rsp.cc_vote_rsp.reject_reason),
+                     "rate-limited (cooldown %ums, elapsed %llums)",
+                     (unsigned)NODUS_CC_RATE_LIMIT_WINDOW_MS,
+                     (unsigned long long)elapsed_ms);
+            goto send;
+        }
+    }
+
     /* Compute proposal digest binding the sender's chain_id (from the
      * incoming header, which the caller's wsig already authenticated). */
     uint8_t digest[NODUS_CC_DIGEST_SIZE];
@@ -619,6 +710,15 @@ int nodus_witness_handle_cc_vote_req(nodus_witness_t *w,
         goto send;
     }
     rsp.cc_vote_rsp.accepted = true;
+
+    /* Stage C.3 — record on the accept path. Rate-limiter must only
+     * track proposers that passed every other rule, so a buggy peer
+     * whose requests keep failing local rules doesn't lock its own
+     * slot and starve a retry. */
+    nodus_cc_rate_limit_record(&w->cc_rate_limit,
+                                 in->header.sender_id,
+                                 nodus_time_now_ms());
+
     QGP_LOG_INFO(LOG_TAG,
         "CC_VOTE_SIGNED param=%u value=%llu effective=%llu",
         (unsigned)req->param_id,
@@ -642,12 +742,14 @@ void nodus_chain_config_log_stats(nodus_witness_t *w) {
     if (!w) return;
     QGP_LOG_INFO(LOG_TAG,
         "CHAIN_CONFIG_STATS committed=%llu rejected=%llu "
-        "cache_hits=%llu cache_misses=%llu peer_schema_mismatch=%llu",
+        "cache_hits=%llu cache_misses=%llu peer_schema_mismatch=%llu "
+        "rate_limited=%llu",
         (unsigned long long)w->chain_config_proposals_committed,
         (unsigned long long)w->chain_config_proposals_rejected,
         (unsigned long long)w->chain_config_cache_hits,
         (unsigned long long)w->chain_config_cache_misses,
-        (unsigned long long)w->chain_config_peer_schema_mismatch);
+        (unsigned long long)w->chain_config_peer_schema_mismatch,
+        (unsigned long long)w->cc_rate_limit.rate_limited_count);
 }
 
 /* Internal wrapper so the apply function's call site stays compact;

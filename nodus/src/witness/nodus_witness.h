@@ -21,6 +21,7 @@
 #define NODUS_WITNESS_H
 
 #include "nodus/nodus_types.h"
+#include "nodus/nodus_chain_config.h"  /* nodus_cc_rate_limit_table_t */
 #include "witness/nodus_witness_mempool.h"
 #include "dnac/dnac.h"        /* DNAC_COMMITTEE_SIZE, DNAC_PUBKEY_SIZE */
 #include <sqlite3.h>
@@ -272,6 +273,11 @@ typedef struct nodus_witness {
     uint64_t    chain_config_cache_hits;            /* get_u64 cache hit */
     uint64_t    chain_config_cache_misses;          /* get_u64 cache miss / warm-up */
     uint64_t    chain_config_peer_schema_mismatch;  /* CC-OPS-002 mismatch counter */
+
+    /* CC-OPS-003 / Q15 Stage C.3 — per-proposer rate-limit state for the
+     * w_cc_vote_req handler. Embedded (not heap) so it's zero-initialized
+     * with the rest of the witness struct and needs no explicit free. */
+    nodus_cc_rate_limit_table_t  cc_rate_limit;
 
     /* CC-OPS-004 / Q16 — chain_config_history lookup cache.
      *

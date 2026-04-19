@@ -239,6 +239,75 @@ int nodus_witness_handle_cc_vote_req(nodus_witness_t *w,
                                       struct nodus_tcp_conn *conn,
                                       const void *msg);
 
+/* ============================================================================
+ * Stage C.3 — per-proposer rate-limit on w_cc_vote_req (CC-OPS-003 / Q15)
+ *
+ * Prevents a hostile or buggy committee peer from amplifying load by
+ * spamming w_cc_vote_req. Per-sender cooldown of NODUS_CC_RATE_LIMIT_
+ * WINDOW_MS milliseconds between accepted requests.
+ *
+ * Scope note: the design doc (§Q15) calls for BOTH a 5s timeout AND
+ * "1 in-flight per epoch". Only the 5s cooldown is implemented here —
+ * the per-epoch hard cap is implicitly covered by the existing
+ * (param_id, effective_block) PRIMARY KEY replay rejection in
+ * chain_config_apply, which no duplicate proposal can bypass even if a
+ * proposer floods the network within one epoch.
+ *
+ * In-memory only (by design — a persisted table would have to flush on
+ * every accepted request and restarts can reset the counter safely).
+ * ========================================================================== */
+
+#define NODUS_CC_RATE_LIMIT_WINDOW_MS        5000u
+#define NODUS_CC_RATE_LIMIT_MAX_PROPOSERS    7u    /* = DNAC_COMMITTEE_SIZE */
+
+/** One tracked proposer. `in_use` false = free slot. */
+typedef struct {
+    uint8_t   witness_id[NODUS_CC_WITNESS_ID_SIZE];
+    uint64_t  last_accepted_ms;
+    bool      in_use;
+} nodus_cc_rate_limit_slot_t;
+
+/** Per-witness state — embed one copy in nodus_witness_t. */
+typedef struct {
+    nodus_cc_rate_limit_slot_t slots[NODUS_CC_RATE_LIMIT_MAX_PROPOSERS];
+    uint64_t                    rate_limited_count;  /* lifetime total */
+} nodus_cc_rate_limit_table_t;
+
+/**
+ * Decide whether to accept a new w_cc_vote_req from `sender_id` at `now_ms`.
+ *
+ * Side-effect-free: no slot mutation. Call nodus_cc_rate_limit_record() on
+ * the accept path AFTER all other validation passes, so rejected-by-rule
+ * requests do not starve future valid requests from the same sender.
+ *
+ * @param t              Table (must be zero-initialized before first use).
+ * @param sender_id      Proposer witness_id (first 32B of SHA3-512(pk)).
+ * @param now_ms         Current monotonic wall clock (nodus_time_now_ms()).
+ * @param elapsed_ms_out (optional) When rate-limited, populated with ms
+ *                       since last accepted request from this sender.
+ *                       Not touched on accept.
+ *
+ * @return  0 — allow (no cooldown hit)
+ *         -1 — rate-limited (reject with cooldown message)
+ */
+int nodus_cc_rate_limit_check(nodus_cc_rate_limit_table_t *t,
+                               const uint8_t sender_id[NODUS_CC_WITNESS_ID_SIZE],
+                               uint64_t now_ms,
+                               uint64_t *elapsed_ms_out);
+
+/**
+ * Record an accepted w_cc_vote_req. Upserts into an existing slot if
+ * `sender_id` is already tracked, else claims the first free slot, else
+ * evicts the oldest entry (LRU) — the table is sized to the committee
+ * so eviction only happens if a non-committee witness_id somehow slips
+ * through, in which case the oldest legitimate entry is preserved.
+ *
+ * The rate_limited_count counter is NOT touched here — only on reject.
+ */
+void nodus_cc_rate_limit_record(nodus_cc_rate_limit_table_t *t,
+                                 const uint8_t sender_id[NODUS_CC_WITNESS_ID_SIZE],
+                                 uint64_t now_ms);
+
 #ifdef __cplusplus
 }
 #endif
