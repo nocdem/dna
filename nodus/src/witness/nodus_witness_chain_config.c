@@ -640,7 +640,11 @@ int nodus_witness_handle_cc_vote_req(nodus_witness_t *w,
     nodus_t3_msg_t rsp;
     memset(&rsp, 0, sizeof(rsp));
     rsp.type = NODUS_T3_CC_VOTE_RSP;
-    rsp.txn_id = ++w->next_txn_id;
+    /* Echo the request's txn_id so the proposer's short-lived RPC can
+     * correlate response-to-request on its single connection. Without
+     * this, the proposer's cc_on_frame filter drops every response and
+     * the CLI reports TIMEOUT even though voting succeeded server-side. */
+    rsp.txn_id = in->txn_id;
     rsp.header.version = NODUS_T3_BFT_PROTOCOL_VER;
     memcpy(rsp.header.sender_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
     rsp.header.timestamp = (uint64_t)time(NULL);
