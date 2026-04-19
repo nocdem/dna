@@ -221,18 +221,25 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
             char *gc_endptr = NULL;
             errno = 0;
             uint64_t amount = strtoull(argv[sub + 2], &gc_endptr, 10);
-            if (errno == ERANGE || !gc_endptr || *gc_endptr != '\0' || amount == 0) {
-                fprintf(stderr, "Error: Invalid amount '%s' (must be > 0)\n", argv[sub + 2]);
+            /* Optional --chain-def-file <path> flag */
+            const char *chain_def_file = NULL;
+            for (int i = sub + 3; i + 1 < argc; i++) {
+                if (strcmp(argv[i], "--chain-def-file") == 0) {
+                    chain_def_file = argv[i + 1];
+                    break;
+                }
+            }
+            /* amount=0 allowed ONLY when --chain-def-file is provided —
+             * handler auto-computes from initial_supply_raw minus validator
+             * self-stake locks (genesis ghost-stake fix, 2026-04-19). */
+            bool invalid = (errno == ERANGE || !gc_endptr || *gc_endptr != '\0');
+            bool zero_allowed = (chain_def_file != NULL);
+            if (invalid || (amount == 0 && !zero_allowed)) {
+                fprintf(stderr, "Error: Invalid amount '%s' "
+                                "(must be > 0, or pass 0 with --chain-def-file "
+                                "to auto-compute)\n", argv[sub + 2]);
                 result = 1;
             } else {
-                /* Optional --chain-def-file <path> flag */
-                const char *chain_def_file = NULL;
-                for (int i = sub + 3; i + 1 < argc; i++) {
-                    if (strcmp(argv[i], "--chain-def-file") == 0) {
-                        chain_def_file = argv[i + 1];
-                        break;
-                    }
-                }
                 result = dna_chain_cmd_genesis_create(ctx, fingerprint, amount, chain_def_file);
             }
         }

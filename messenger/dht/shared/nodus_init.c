@@ -768,6 +768,16 @@ static bool is_invalid_server_ip(const char *ip) {
 }
 
 static void start_rtt_probe(void) {
+    /* Skip entirely under DNA_NO_FALLBACK=1 — rtt_probe_thread
+     * connects to every hardcoded fallback IP unconditionally, which
+     * TOFU-upserts them into known_nodes. For isolated test clusters
+     * (Stage F harness) this would leak production IPs into a
+     * supposedly-clean HOME. */
+    if (getenv("DNA_NO_FALLBACK") != NULL) {
+        QGP_LOG_INFO(LOG_TAG, "DNA_NO_FALLBACK set — skipping RTT probe");
+        return;
+    }
+
     rtt_probe_ctx_t *ctx = calloc(1, sizeof(rtt_probe_ctx_t));
     if (!ctx) return;
 
@@ -834,7 +844,7 @@ static void* nodus_connect_thread_fn(void *arg) {
     int rc = nodus_singleton_connect();
     fprintf(stderr, "[NODUS_INIT] Singleton connect rc=%d\n", rc);
 
-    if (rc != 0) {
+    if (rc != 0 && getenv("DNA_NO_FALLBACK") == NULL) {
         QGP_LOG_WARN(LOG_TAG, "Connect failed, retrying with hardcoded fallback nodes");
         nodus_singleton_close();
 
@@ -971,8 +981,14 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
         }
     }
 
-    /* Source 3: Hardcoded fallback (merge remaining) */
-    {
+    /* Source 3: Hardcoded fallback (merge remaining).
+     * Skipped when DNA_NO_FALLBACK=1 — used by the Stage F integration
+     * harness to keep localhost-only test clusters isolated from
+     * production bootstrap IPs. (Without this, TOFU upserts against
+     * the fallback pollute known_nodes + preferred_node with
+     * production endpoints, and even HOME-isolated tests can leak
+     * state into the real network.) */
+    if (getenv("DNA_NO_FALLBACK") == NULL) {
         nodus_client_config_t tmp;
         memset(&tmp, 0, sizeof(tmp));
         load_fallback_nodes(&tmp);
@@ -990,6 +1006,8 @@ int nodus_messenger_init(const nodus_identity_t *identity) {
                 nconfig.server_count++;
             }
         }
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "DNA_NO_FALLBACK set — skipping hardcoded bootstrap fallback");
     }
 
     if (nconfig.server_count == 0) {

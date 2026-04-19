@@ -51,14 +51,19 @@ int dna_config_load(dna_config_t *config) {
         config->log_max_size_kb = 51200; // 50 MB
         config->log_max_files = 3;       // Keep 3 rotated files
 
-        // Default bootstrap nodes (all 6 nodus servers)
-        snprintf(config->bootstrap_nodes[0], sizeof(config->bootstrap_nodes[0]), "154.38.182.161:4001");
-        snprintf(config->bootstrap_nodes[1], sizeof(config->bootstrap_nodes[1]), "164.68.105.227:4001");
-        snprintf(config->bootstrap_nodes[2], sizeof(config->bootstrap_nodes[2]), "164.68.116.180:4001");
-        snprintf(config->bootstrap_nodes[3], sizeof(config->bootstrap_nodes[3]), "161.97.85.25:4001");
-        snprintf(config->bootstrap_nodes[4], sizeof(config->bootstrap_nodes[4]), "156.67.24.125:4001");
-        snprintf(config->bootstrap_nodes[5], sizeof(config->bootstrap_nodes[5]), "156.67.25.251:4001");
-        config->bootstrap_count = 6;
+        // Default bootstrap nodes (all 6 nodus servers).
+        // Skipped under DNA_NO_FALLBACK=1 so Stage F harness tests
+        // can keep the bootstrap list empty and rely purely on the
+        // pre-written config file. See stagef/README.md.
+        if (getenv("DNA_NO_FALLBACK") == NULL) {
+            snprintf(config->bootstrap_nodes[0], sizeof(config->bootstrap_nodes[0]), "154.38.182.161:4001");
+            snprintf(config->bootstrap_nodes[1], sizeof(config->bootstrap_nodes[1]), "164.68.105.227:4001");
+            snprintf(config->bootstrap_nodes[2], sizeof(config->bootstrap_nodes[2]), "164.68.116.180:4001");
+            snprintf(config->bootstrap_nodes[3], sizeof(config->bootstrap_nodes[3]), "161.97.85.25:4001");
+            snprintf(config->bootstrap_nodes[4], sizeof(config->bootstrap_nodes[4]), "156.67.24.125:4001");
+            snprintf(config->bootstrap_nodes[5], sizeof(config->bootstrap_nodes[5]), "156.67.25.251:4001");
+            config->bootstrap_count = 6;
+        }
 
         // Create default config file
         dna_config_save(config);
@@ -148,8 +153,9 @@ int dna_config_load(dna_config_t *config) {
             }
         }
 
-        // Replace with full 6-node list if stale (fewer than 6 nodes)
-        if (config->bootstrap_count < 6) {
+        // Replace with full 6-node list if stale (fewer than 6 nodes).
+        // Skipped when DNA_NO_FALLBACK=1 (Stage F harness isolation).
+        if (config->bootstrap_count < 6 && getenv("DNA_NO_FALLBACK") == NULL) {
             snprintf(config->bootstrap_nodes[0], sizeof(config->bootstrap_nodes[0]), "154.38.182.161:4001");
             snprintf(config->bootstrap_nodes[1], sizeof(config->bootstrap_nodes[1]), "164.68.105.227:4001");
             snprintf(config->bootstrap_nodes[2], sizeof(config->bootstrap_nodes[2]), "164.68.116.180:4001");

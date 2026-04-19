@@ -1025,7 +1025,7 @@ int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
     printf("  1. Configure witnesses with chain_id: ");
     for (int i = 0; i < DNAC_CHAIN_ID_SIZE; i++) printf("%02x", chain_id[i]);
     printf("\n");
-    printf("  2. Run: dnac-cli genesis-submit\n");
+    printf("  2. Run: dna-connect-cli dna genesis-submit\n");
 
     dnac_free_transaction(tx);
     return 0;
@@ -1425,44 +1425,9 @@ int dna_chain_cmd_send_token(dnac_context_t *ctx, const char *recipient,
     return 0;
 }
 
-void dna_chain_cmd_print_help(void) {
-    printf("dnac-cli - DNAC Wallet Command Line Interface\n\n");
-    printf("Usage: dnac-cli [options] <command> [arguments]\n\n");
-    printf("Options:\n");
-    printf("  -h, --help       Show this help message\n");
-    printf("  -v, --version    Show version information\n");
-    printf("  -d, --data-dir   Data directory (default: ~/.dna)\n\n");
-    printf("Commands:\n");
-    printf("  info             Show wallet info and status\n");
-    printf("  address          Show wallet address (fingerprint)\n");
-    printf("  query <name|fp>  Lookup identity by name or fingerprint\n");
-    printf("  balance          Show wallet balance\n");
-    printf("  utxos            List unspent transaction outputs\n");
-    printf("  send <fp> <amt>  Send payment to fingerprint\n");
-    printf("  sync             Sync wallet from network (clears + rebuilds)\n");
-    printf("  history [n]      Show transaction history (last n entries)\n");
-    printf("  tx <hash>        Show transaction details\n");
-    printf("  nodus-list       List Nodus servers\n");
-    printf("  genesis-create <fp> <amount>   Create genesis TX locally (Phase 1)\n");
-    printf("  genesis-submit [tx_file]       Submit genesis TX to network (Phase 2)\n\n");
-    printf("Token Commands:\n");
-    printf("  token-create <name> <symbol> <supply>  Create a new token\n");
-    printf("  token-list                             List all known tokens\n");
-    printf("  token-info <id|symbol>                 Show token details\n");
-    printf("  balance --token <id>                   Show balance for a specific token\n");
-    printf("  send --token <id> <fp> <amt> [memo]    Send token payment\n\n");
-    printf("Examples:\n");
-    printf("  dnac-cli balance\n");
-    printf("  dnac-cli send abc123...def 1000000\n");
-    printf("  dnac-cli sync\n");
-    printf("  dnac-cli history 10\n");
-}
-
-void dna_chain_cmd_print_version(void) {
-    printf("dna-connect-cli dna group version %s\n", DNAC_VERSION_STRING);
-    printf("DNAC - Post-Quantum Digital Cash over DHT\n");
-    printf("Protocol version: v%d\n", DNAC_PROTOCOL_VERSION);
-}
+/* dna_chain_cmd_print_help / dna_chain_cmd_print_version removed
+ * 2026-04-19 — dead code (never called, stale `dnac-cli` text).
+ * The live help is in cli_dna_chain.c group-help handlers. */
 
 /* ============================================================================
  * parse-tx (Phase 0 / Task 0.7)

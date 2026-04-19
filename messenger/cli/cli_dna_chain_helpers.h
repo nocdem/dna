@@ -197,14 +197,10 @@ int dna_chain_cmd_send_token(dnac_context_t *ctx, const char *recipient,
                         const char *memo);
 
 /**
- * @brief Print CLI help
+ * dna_chain_cmd_print_help / dna_chain_cmd_print_version removed
+ * 2026-04-19 — dead code (never called, stale `dnac-cli` text).
+ * Group help lives in cli_dna_chain.c dispatch.
  */
-void dna_chain_cmd_print_help(void);
-
-/**
- * @brief Print CLI version
- */
-void dna_chain_cmd_print_version(void);
 
 /* ============================================================================
  * Stake & Delegation CLI (Phase 15 / Tasks 65-69)
