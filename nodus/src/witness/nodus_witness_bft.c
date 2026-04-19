@@ -2515,31 +2515,24 @@ static int apply_accumulator_update(nodus_witness_t *w,
     committee_count = resolved_count;
     if (committee_count == 0) return 0;
 
-    /* Consensus fix 2026-04-19: record_attendance (Task 48) feeds
-     * validator.last_signed_block from the local node's observed
-     * round_state.precommits, which varies per node due to TCP-delivery
-     * timing (each node may commit the block after seeing any 5–7
-     * precommits; the exact set differs). Using last_signed_block here
-     * produces divergent attending_count → divergent per_member →
-     * divergent state_root, halting the chain on the first
-     * UNDELEGATE/CLAIM after delegation accrual starts (observed on
-     * chain d8d4d9c2, block 25, 4-way state_root split across 7 nodes).
-     *
-     * Short-term fix: treat every committee member as attending on
-     * every block, so accumulator math is purely a function of
-     * committee_count + pool + per-member stake — all deterministic
-     * chain state. Liveness-based reward slashing is lost; a malicious
-     * offline committee member still earns pro-rata share. Testnet-
-     * acceptable, must revisit before mainnet.
-     *
-     * Proper fix (deferred): derive attending set from the
-     * block's COMMIT certificate (deterministic across nodes) rather
-     * than round_state.precommits. Requires passing the cert through
-     * the apply_accumulator_update call path. */
+    /* Liveness gate — proposer-based attendance (2026-04-19 proper fix).
+     * record_attendance now updates validator.last_signed_block only for
+     * the block's proposer_id (deterministic across all nodes — it's in
+     * the committed block header). With round-robin leader election over
+     * a 7-member committee and a 16-block liveness window, healthy
+     * members always pass the gate; offline members fall out after
+     * ~2 full rotations. */
+    uint64_t min_signed = 0;
+    if (block_height > DNAC_LIVENESS_SHORT_WINDOW_BLOCKS) {
+        min_signed = block_height - DNAC_LIVENESS_SHORT_WINDOW_BLOCKS;
+    }
+
     int attending_idx[DNAC_COMMITTEE_SIZE];
     int attending_count = 0;
     for (int i = 0; i < committee_count; i++) {
-        attending_idx[attending_count++] = i;
+        if (committee[i].last_signed_block >= min_signed) {
+            attending_idx[attending_count++] = i;
+        }
     }
 
     if (attending_count == 0) {
@@ -2694,20 +2687,17 @@ static int apply_accumulator_update(nodus_witness_t *w,
  */
 int nodus_witness_record_attendance(nodus_witness_t *w,
                                       uint64_t block_height,
-                                      const nodus_witness_vote_record_t *votes,
-                                      int vote_count) {
-    if (!w || !w->db || !votes || vote_count <= 0) return 0;
+                                      const uint8_t *proposer_id) {
+    if (!w || !w->db || !proposer_id || block_height == 0) return 0;
 
-    /* Collect candidate validator rows once (bounded by MAX_VALIDATORS). */
-    typedef struct {
-        uint8_t pubkey[DNAC_PUBKEY_SIZE];
-        uint8_t voter_id[NODUS_T3_WITNESS_ID_LEN];
-        uint64_t last_signed_block;
-    } cand_t;
-
-    cand_t *cands = NULL;
-    size_t cand_count = 0, cand_cap = 0;
-
+    /* Proposer-based attendance (2026-04-19 fix). The block's proposer_id
+     * is part of the committed block header and is deterministic across
+     * all nodes. Record attendance only for the proposer. Over a healthy
+     * 7-member committee with round-robin leader election, each member
+     * proposes roughly every 7 blocks — well within the 16-block
+     * DNAC_LIVENESS_SHORT_WINDOW_BLOCKS. An offline member misses their
+     * slots → falls out of the liveness window → accumulator excludes
+     * them from the per-member fee split. */
     sqlite3_stmt *sel = NULL;
     int rc = sqlite3_prepare_v2(w->db,
         "SELECT pubkey, last_signed_block FROM validators "
@@ -2721,46 +2711,35 @@ int nodus_witness_record_attendance(nodus_witness_t *w,
     sqlite3_bind_int(sel, 1, (int)DNAC_VALIDATOR_ACTIVE);
     sqlite3_bind_int(sel, 2, (int)DNAC_VALIDATOR_RETIRING);
 
-    while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
+    uint8_t match_pubkey[DNAC_PUBKEY_SIZE];
+    uint64_t match_last_signed = 0;
+    bool matched = false;
+
+    while (sqlite3_step(sel) == SQLITE_ROW) {
         const void *pk = sqlite3_column_blob(sel, 0);
         int pk_len = sqlite3_column_bytes(sel, 0);
         if (!pk || pk_len != DNAC_PUBKEY_SIZE) continue;
 
-        if (cand_count == cand_cap) {
-            size_t new_cap = cand_cap ? cand_cap * 2 : 16;
-            cand_t *grown = realloc(cands, new_cap * sizeof(cand_t));
-            if (!grown) { sqlite3_finalize(sel); free(cands); return -1; }
-            cands = grown;
-            cand_cap = new_cap;
-        }
-        memcpy(cands[cand_count].pubkey, pk, DNAC_PUBKEY_SIZE);
-        cands[cand_count].last_signed_block =
-            (uint64_t)sqlite3_column_int64(sel, 1);
-        /* Derive voter_id = SHA3-512(pubkey)[0:32] — matches
-         * witness_setup_identity's truncation of nodus_fingerprint. */
         uint8_t digest[64];
-        qgp_sha3_512(cands[cand_count].pubkey, DNAC_PUBKEY_SIZE, digest);
-        memcpy(cands[cand_count].voter_id, digest,
-               NODUS_T3_WITNESS_ID_LEN);
-        cand_count++;
+        qgp_sha3_512(pk, DNAC_PUBKEY_SIZE, digest);
+        if (memcmp(digest, proposer_id, NODUS_T3_WITNESS_ID_LEN) != 0)
+            continue;
+
+        memcpy(match_pubkey, pk, DNAC_PUBKEY_SIZE);
+        match_last_signed = (uint64_t)sqlite3_column_int64(sel, 1);
+        matched = true;
+        break;
     }
     sqlite3_finalize(sel);
-    if (rc != SQLITE_DONE) {
-        fprintf(stderr, "%s: record_attendance: select step failed (rc=%d)\n",
-                LOG_TAG, rc);
-        free(cands);
-        return -1;
-    }
 
-    if (cand_count == 0) { free(cands); return 0; }
+    if (!matched) return 0;  /* proposer not a known validator — skip */
+    if (block_height <= match_last_signed) return 0;  /* monotonic */
 
-    /* Attendance update runs in its own transaction. */
     char *err = NULL;
     if (sqlite3_exec(w->db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         fprintf(stderr, "%s: record_attendance: BEGIN failed: %s\n",
                 LOG_TAG, err ? err : "(null)");
         if (err) sqlite3_free(err);
-        free(cands);
         return -1;
     }
 
@@ -2770,56 +2749,28 @@ int nodus_witness_record_attendance(nodus_witness_t *w,
         -1, &upd, NULL);
     if (rc != SQLITE_OK) {
         sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
-        free(cands);
         return -1;
     }
-
-    int matched = 0;
-    for (int i = 0; i < vote_count; i++) {
-        /* Skip non-APPROVE votes (disapproval means no credit). */
-        if (votes[i].vote != NODUS_W_VOTE_APPROVE) continue;
-        for (size_t j = 0; j < cand_count; j++) {
-            if (memcmp(votes[i].voter_id, cands[j].voter_id,
-                       NODUS_T3_WITNESS_ID_LEN) != 0) continue;
-            /* Monotonic watermark — do not step backwards if block_height
-             * is somehow older than the stored value. */
-            if (block_height <= cands[j].last_signed_block) break;
-
-            sqlite3_reset(upd);
-            sqlite3_bind_int64(upd, 1, (int64_t)block_height);
-            sqlite3_bind_blob(upd, 2, cands[j].pubkey,
-                              DNAC_PUBKEY_SIZE, SQLITE_STATIC);
-            if (sqlite3_step(upd) != SQLITE_DONE) {
-                fprintf(stderr, "%s: record_attendance: update failed: %s\n",
-                        LOG_TAG, sqlite3_errmsg(w->db));
-                sqlite3_finalize(upd);
-                sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
-                free(cands);
-                return -1;
-            }
-            cands[j].last_signed_block = block_height;
-            matched++;
-            break;
-        }
-    }
+    sqlite3_bind_int64(upd, 1, (int64_t)block_height);
+    sqlite3_bind_blob(upd, 2, match_pubkey, DNAC_PUBKEY_SIZE, SQLITE_STATIC);
+    int urc = sqlite3_step(upd);
     sqlite3_finalize(upd);
+    if (urc != SQLITE_DONE) {
+        sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
+        return -1;
+    }
 
     if (sqlite3_exec(w->db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
         fprintf(stderr, "%s: record_attendance: COMMIT failed: %s\n",
                 LOG_TAG, err ? err : "(null)");
         if (err) sqlite3_free(err);
         sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
-        free(cands);
         return -1;
     }
 
-    if (matched > 0) {
-        QGP_LOG_DEBUG(LOG_TAG,
-            "record_attendance: block %llu — %d/%d voters credited",
-            (unsigned long long)block_height, matched, vote_count);
-    }
-
-    free(cands);
+    QGP_LOG_DEBUG(LOG_TAG,
+        "record_attendance: block %llu — proposer credited",
+        (unsigned long long)block_height);
     return 0;
 }
 
@@ -3930,12 +3881,11 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             nodus_witness_cert_store(w, bh, w->round_state.precommits,
                                       w->round_state.precommit_count);
 
-            /* Phase 9 / Task 48 — liveness attendance. Update
-             * validator.last_signed_block for every APPROVE PRECOMMIT
-             * voter whose witness_id matches an ACTIVE/RETIRING row. */
+            /* Phase 9 / Task 48 — liveness attendance. Credit the block's
+             * proposer (deterministic across all nodes — proposer_id is
+             * in the committed block header). See record_attendance. */
             nodus_witness_record_attendance(w, bh,
-                                              w->round_state.precommits,
-                                              w->round_state.precommit_count);
+                                              w->round_state.proposer_id);
 
             fprintf(stderr, "%s: BATCH COMMITTED round %lu (%d TXs, height %llu)\n",
                     LOG_TAG, (unsigned long)w->round_state.round,
@@ -4128,11 +4078,10 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
         }
         nodus_witness_cert_store(w, bh, votes, (int)cmt->n_precommits);
 
-        /* Phase 9 / Task 48 — liveness attendance. Follower path: votes
-         * were transcribed from cmt->certs; all certs are APPROVE by
-         * construction (leader only aggregates APPROVE precommits). */
-        nodus_witness_record_attendance(w, bh, votes,
-                                          (int)cmt->n_precommits);
+        /* Phase 9 / Task 48 — liveness attendance. Credit this block's
+         * proposer (cmt->proposer_id), not the precommit voters — the
+         * voter set diverges per node, the proposer_id does not. */
+        nodus_witness_record_attendance(w, bh, cmt->proposer_id);
     }
 
     /* Compute chain state_root and compare with leader's (Phase 3 / Task 10).

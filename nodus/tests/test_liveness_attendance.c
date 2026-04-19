@@ -173,15 +173,18 @@ int main(void) {
 
     CHECK_EQ(read_active_count(&w), 2);
 
-    printf("  record_attendance credits matching voters\n");
-    nodus_witness_vote_record_t votes[2];
-    memset(votes, 0, sizeof(votes));
-    derive_voter_id(va.pubkey, votes[0].voter_id);
-    votes[0].vote = NODUS_W_VOTE_APPROVE;
-    derive_voter_id(vb.pubkey, votes[1].voter_id);
-    votes[1].vote = NODUS_W_VOTE_APPROVE;
+    printf("  record_attendance credits block proposer\n");
+    /* New API (2026-04-19): attendance credits the block's proposer only.
+     * Simulate 2 blocks: block 50 proposed by va, then block 50 proposed
+     * by vb (blocks are uniquely numbered but here we bump both to 50 to
+     * match the original test's invariant). Single call per block. */
+    uint8_t va_vid[NODUS_T3_WITNESS_ID_LEN];
+    uint8_t vb_vid[NODUS_T3_WITNESS_ID_LEN];
+    derive_voter_id(va.pubkey, va_vid);
+    derive_voter_id(vb.pubkey, vb_vid);
 
-    CHECK_EQ(nodus_witness_record_attendance(&w, 50, votes, 2), 0);
+    CHECK_EQ(nodus_witness_record_attendance(&w, 50, va_vid), 0);
+    CHECK_EQ(nodus_witness_record_attendance(&w, 50, vb_vid), 0);
 
     dnac_validator_record_t chk;
     CHECK_EQ(nodus_validator_get(&w, va.pubkey, &chk), 0);
@@ -190,23 +193,23 @@ int main(void) {
     CHECK_EQ(chk.last_signed_block, 50);
 
     printf("  monotonic watermark: older block does not step backwards\n");
-    CHECK_EQ(nodus_witness_record_attendance(&w, 40, votes, 2), 0);
+    CHECK_EQ(nodus_witness_record_attendance(&w, 40, va_vid), 0);
+    CHECK_EQ(nodus_witness_record_attendance(&w, 40, vb_vid), 0);
     CHECK_EQ(nodus_validator_get(&w, va.pubkey, &chk), 0);
     CHECK_EQ(chk.last_signed_block, 50);
 
-    printf("  unknown voter_id is ignored\n");
-    nodus_witness_vote_record_t stranger;
-    memset(&stranger, 0, sizeof(stranger));
-    memset(stranger.voter_id, 0xFF, 32);
-    stranger.vote = NODUS_W_VOTE_APPROVE;
-    CHECK_EQ(nodus_witness_record_attendance(&w, 60, &stranger, 1), 0);
+    printf("  unknown proposer_id is ignored\n");
+    uint8_t stranger_vid[NODUS_T3_WITNESS_ID_LEN];
+    memset(stranger_vid, 0xFF, sizeof(stranger_vid));
+    CHECK_EQ(nodus_witness_record_attendance(&w, 60, stranger_vid), 0);
     CHECK_EQ(nodus_validator_get(&w, va.pubkey, &chk), 0);
     CHECK_EQ(chk.last_signed_block, 50);
     CHECK_EQ(nodus_validator_get(&w, vb.pubkey, &chk), 0);
     CHECK_EQ(chk.last_signed_block, 50);
 
     /* Record attendance at 250 (within epoch [120..240] and [240..360]). */
-    CHECK_EQ(nodus_witness_record_attendance(&w, 250, votes, 2), 0);
+    CHECK_EQ(nodus_witness_record_attendance(&w, 250, va_vid), 0);
+    CHECK_EQ(nodus_witness_record_attendance(&w, 250, vb_vid), 0);
 
     /* Epoch boundary at 360 with last_signed_block=250 (>= epoch_start=240).
      * consecutive_missed_epochs stays 0. */
@@ -253,11 +256,9 @@ int main(void) {
     memcpy(rc_row.validator_pubkey, vc.pubkey, DNAC_PUBKEY_SIZE);
     CHECK_EQ(nodus_reward_upsert(&w, &rc_row), 0);
 
-    nodus_witness_vote_record_t vc_vote;
-    memset(&vc_vote, 0, sizeof(vc_vote));
-    derive_voter_id(vc.pubkey, vc_vote.voter_id);
-    vc_vote.vote = NODUS_W_VOTE_APPROVE;
-    CHECK_EQ(nodus_witness_record_attendance(&w, 400, &vc_vote, 1), 0);
+    uint8_t vc_vid[NODUS_T3_WITNESS_ID_LEN];
+    derive_voter_id(vc.pubkey, vc_vid);
+    CHECK_EQ(nodus_witness_record_attendance(&w, 400, vc_vid), 0);
 
     rc = run_finalize(&w, 840);
     CHECK_EQ(rc, 0);
@@ -269,7 +270,7 @@ int main(void) {
     CHECK_EQ(nodus_validator_get(&w, vc.pubkey, &chk), 0);
     CHECK_EQ(chk.consecutive_missed_epochs, 2);
 
-    CHECK_EQ(nodus_witness_record_attendance(&w, 1000, &vc_vote, 1), 0);
+    CHECK_EQ(nodus_witness_record_attendance(&w, 1000, vc_vid), 0);
 
     rc = run_finalize(&w, 1080);
     CHECK_EQ(rc, 0);

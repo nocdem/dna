@@ -656,11 +656,10 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
         nodus_witness_cert_store(w, stored_bh, votes, (int)rsp->cert_count);
 
         /* Phase 9 / Task 48 — liveness attendance during sync replay.
-         * Replaying an old block still credits the voters that signed
-         * it, maintaining the same last_signed_block watermark a live
-         * follower would have recorded. */
-        nodus_witness_record_attendance(w, stored_bh, votes,
-                                          (int)rsp->cert_count);
+         * Credit this block's proposer (deterministic across nodes),
+         * matching the live-follower behavior. Precommit voter set
+         * diverges per node; proposer_id does not. */
+        nodus_witness_record_attendance(w, stored_bh, rsp->proposer_id);
     }
 
     /* Update cached state_root (Phase 3 / Task 10: 4-subtree composite). */

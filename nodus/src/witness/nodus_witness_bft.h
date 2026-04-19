@@ -101,17 +101,26 @@ int nodus_witness_replay_block(nodus_witness_t *w,
 
 /* Phase 9 / Task 48 — per-block liveness attendance record.
  *
- * For each APPROVE PRECOMMIT voter whose witness_id matches a validator
- * row (status ACTIVE or RETIRING), set last_signed_block = block_height.
+ * Deterministic attendance (2026-04-19 fix): record attendance based on
+ * the block's proposer_id — a field in the committed block header that
+ * every node agrees on. Previous design used local round_state.precommits
+ * which varied per node due to TCP-delivery timing and precommit races,
+ * producing divergent validator.last_signed_block and hence divergent
+ * state_root at the next apply_accumulator_update (chain-halt observed
+ * on d8d4d9c2 block 25). Under PROPOSER-based attendance, each
+ * committee member earns attendance on blocks they proposed — with
+ * round-robin leader election (epoch+view mod N), a healthy committee
+ * of 7 rotates every 7 blocks, well within the 16-block liveness
+ * window.
+ *
  * Opens its own short-lived SQLite transaction (the block commit
  * transaction is already closed by the time the BFT / sync layer calls
  * this after nodus_witness_cert_store). Monotonic — never walks
- * last_signed_block backwards. Safe with votes == NULL or vote_count <= 0.
+ * last_signed_block backwards. Safe with proposer_id == NULL.
  */
 int nodus_witness_record_attendance(nodus_witness_t *w,
                                       uint64_t block_height,
-                                      const nodus_witness_vote_record_t *votes,
-                                      int vote_count);
+                                      const uint8_t *proposer_id);
 
 /** Handle decoded PROPOSAL message. */
 int nodus_witness_bft_handle_propose(nodus_witness_t *w,
