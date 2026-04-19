@@ -4035,7 +4035,41 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
             }
             e->tx_data = (uint8_t *)btx->tx_data;
             e->tx_len = btx->tx_len;
+            /* F02 — carry client_pubkey / client_sig / fee through so the
+             * verify loop below sees the same signer material as
+             * handle_propose did on the leader's proposal path. */
+            if (btx->client_pubkey)
+                memcpy(e->client_pubkey, btx->client_pubkey, NODUS_PK_BYTES);
+            if (btx->client_sig)
+                memcpy(e->client_sig, btx->client_sig, NODUS_SIG_BYTES);
+            e->fee = btx->fee;
             entry_ptrs[bi] = e;
+        }
+
+        /* F02 — re-verify every batch TX before applying to state.
+         * handle_propose verifies on the proposal path; handle_commit's
+         * fast-path (non-leader peer reaches precommit quorum and
+         * broadcasts COMMIT before local_vote accumulates) previously
+         * skipped verify, letting a Byzantine proposer substitute signed
+         * TXs between PRECOMMIT and COMMIT. Mirrors the loop at line
+         * 3562. Cost: ≤10 Dilithium5 verifies per COMMIT (bounded by
+         * NODUS_W_MAX_BLOCK_TXS). */
+        for (int bi = 0; bi < cmt->batch_count; bi++) {
+            nodus_witness_mempool_entry_t *e = &local_entries[bi];
+            char f02_reject[256];
+            int f02_vrc = nodus_witness_verify_transaction(w,
+                              e->tx_data, e->tx_len,
+                              e->tx_hash, e->tx_type,
+                              (const uint8_t *)e->nullifiers,
+                              e->nullifier_count,
+                              e->client_pubkey, e->client_sig,
+                              e->fee, f02_reject, sizeof(f02_reject));
+            if (f02_vrc != 0) {
+                QGP_LOG_ERROR(LOG_TAG,
+                              "commit-path verify rejected batch TX %d: %s",
+                              bi, f02_reject);
+                return -1;
+            }
         }
 
         if (cmt->batch_count == 1 &&
