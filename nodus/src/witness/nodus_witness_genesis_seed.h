@@ -49,6 +49,22 @@ int nodus_witness_genesis_seed_validators(nodus_witness_t *w,
                                             const uint8_t *cd_blob,
                                             size_t cd_blob_len);
 
+/**
+ * Parse the supply-accounting fields out of a genesis chain_def blob.
+ *
+ * @param cd_blob                      Raw dnac_chain_def_encode output.
+ * @param cd_blob_len                  Length of cd_blob in bytes.
+ * @param initial_supply_raw_out       On success, gross supply per chain_def.
+ * @param initial_validator_count_out  On success, number of bootstrap validators.
+ * @return 0 on success, -1 on parse error / truncation.
+ *
+ * Used by Rule P.2 enforcement on the witness side (genesis ghost stake fix,
+ * 2026-04-19). Pure read-only — no DB touch.
+ */
+int nodus_witness_parse_cd_supply(const uint8_t *cd_blob, size_t cd_blob_len,
+                                    uint64_t *initial_supply_raw_out,
+                                    uint8_t  *initial_validator_count_out);
+
 #ifdef __cplusplus
 }
 #endif

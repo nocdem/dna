@@ -869,6 +869,95 @@ fail:
 int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
                             uint64_t amount,
                             const char *chain_def_file_path) {
+    /* If --chain-def-file is provided, load + decode it FIRST so we can
+     * auto-compute the correct recipient amount (initial_supply_raw minus
+     * the validator self-stake lock). Without this pre-computation an
+     * operator who passes the gross initial_supply_raw as `amount` produces
+     * a TX that the witness will reject via Rule P.2 — AND, if the witness
+     * path doesn't enforce Rule P.2, a ghost supply on chain.
+     * See dnac/docs/plans/2026-04-19-genesis-ghost-stake-fix.md. */
+    uint8_t *cdbuf = NULL;
+    long cdlen = 0;
+    dnac_chain_definition_t preloaded_cd;
+    bool have_preloaded_cd = false;
+    memset(&preloaded_cd, 0, sizeof(preloaded_cd));
+
+    if (chain_def_file_path && chain_def_file_path[0]) {
+        FILE *cdf = fopen(chain_def_file_path, "rb");
+        if (!cdf) {
+            fprintf(stderr, "Error: cannot open chain-def-file '%s'\n", chain_def_file_path);
+            return 1;
+        }
+        fseek(cdf, 0, SEEK_END);
+        cdlen = ftell(cdf);
+        fseek(cdf, 0, SEEK_SET);
+        if (cdlen <= 0 || (size_t)cdlen > dnac_chain_def_max_size()) {
+            fprintf(stderr, "Error: chain-def-file size %ld out of range\n", cdlen);
+            fclose(cdf);
+            return 1;
+        }
+        cdbuf = malloc((size_t)cdlen);
+        if (!cdbuf || fread(cdbuf, 1, (size_t)cdlen, cdf) != (size_t)cdlen) {
+            fprintf(stderr, "Error: reading chain-def-file failed\n");
+            free(cdbuf);
+            fclose(cdf);
+            return 1;
+        }
+        fclose(cdf);
+        if (dnac_chain_def_decode(cdbuf, (size_t)cdlen, &preloaded_cd) != 0) {
+            fprintf(stderr, "Error: chain_def decode failed\n");
+            free(cdbuf);
+            return 1;
+        }
+        have_preloaded_cd = true;
+
+        /* Auto-compute / validate amount against Rule P.2. */
+        if (preloaded_cd.initial_validator_count > 0) {
+            uint64_t stake_locked =
+                (uint64_t)preloaded_cd.initial_validator_count *
+                DNAC_SELF_STAKE_AMOUNT;
+            if (stake_locked > preloaded_cd.initial_supply_raw) {
+                fprintf(stderr,
+                    "Error: chain_def.initial_supply_raw=%llu < required "
+                    "stake_lock=%llu (%u validators x %llu). Fix operator "
+                    "config.\n",
+                    (unsigned long long)preloaded_cd.initial_supply_raw,
+                    (unsigned long long)stake_locked,
+                    (unsigned)preloaded_cd.initial_validator_count,
+                    (unsigned long long)DNAC_SELF_STAKE_AMOUNT);
+                free(cdbuf);
+                return 1;
+            }
+            uint64_t expected_amount =
+                preloaded_cd.initial_supply_raw - stake_locked;
+
+            if (amount == 0) {
+                fprintf(stderr,
+                    "Auto-computed recipient amount = %llu "
+                    "(initial_supply_raw %llu − %u × %llu stake = %llu)\n",
+                    (unsigned long long)expected_amount,
+                    (unsigned long long)preloaded_cd.initial_supply_raw,
+                    (unsigned)preloaded_cd.initial_validator_count,
+                    (unsigned long long)DNAC_SELF_STAKE_AMOUNT,
+                    (unsigned long long)expected_amount);
+                amount = expected_amount;
+            } else if (amount != expected_amount) {
+                fprintf(stderr,
+                    "Error: amount=%llu != expected=%llu "
+                    "(initial_supply_raw %llu − %u × %llu stake). "
+                    "Pass amount=0 to auto-compute, or fix the operator "
+                    "config before running.\n",
+                    (unsigned long long)amount,
+                    (unsigned long long)expected_amount,
+                    (unsigned long long)preloaded_cd.initial_supply_raw,
+                    (unsigned)preloaded_cd.initial_validator_count,
+                    (unsigned long long)DNAC_SELF_STAKE_AMOUNT);
+                free(cdbuf);
+                return 1;
+            }
+        }
+    }
+
     /* Build recipient */
     dnac_genesis_recipient_t recipients[1];
     strncpy(recipients[0].fingerprint, fingerprint,
@@ -883,45 +972,18 @@ int dna_chain_cmd_genesis_create(dnac_context_t *ctx, const char *fingerprint,
     int rc = dnac_genesis_phase1_create(ctx, recipients, 1, &tx, chain_id);
     if (rc != DNAC_SUCCESS) {
         fprintf(stderr, "Error creating genesis TX: %s\n", dnac_error_string(rc));
+        free(cdbuf);
         return 1;
     }
 
-    /* Optional: load chain_def from file and attach to TX (anchored genesis). */
-    if (chain_def_file_path && chain_def_file_path[0]) {
-        FILE *cdf = fopen(chain_def_file_path, "rb");
-        if (!cdf) {
-            fprintf(stderr, "Error: cannot open chain-def-file '%s'\n", chain_def_file_path);
-            dnac_free_transaction(tx);
-            return 1;
-        }
-        fseek(cdf, 0, SEEK_END);
-        long cdlen = ftell(cdf);
-        fseek(cdf, 0, SEEK_SET);
-        if (cdlen <= 0 || (size_t)cdlen > dnac_chain_def_max_size()) {
-            fprintf(stderr, "Error: chain-def-file size %ld out of range\n", cdlen);
-            fclose(cdf);
-            dnac_free_transaction(tx);
-            return 1;
-        }
-        uint8_t *cdbuf = malloc((size_t)cdlen);
-        if (!cdbuf || fread(cdbuf, 1, (size_t)cdlen, cdf) != (size_t)cdlen) {
-            fprintf(stderr, "Error: reading chain-def-file failed\n");
-            free(cdbuf);
-            fclose(cdf);
-            dnac_free_transaction(tx);
-            return 1;
-        }
-        fclose(cdf);
-        if (dnac_chain_def_decode(cdbuf, (size_t)cdlen, &tx->chain_def) != 0) {
-            fprintf(stderr, "Error: chain_def decode failed\n");
-            free(cdbuf);
-            dnac_free_transaction(tx);
-            return 1;
-        }
-        free(cdbuf);
+    /* Attach pre-loaded chain_def (if any). */
+    if (have_preloaded_cd) {
+        tx->chain_def = preloaded_cd;
         tx->has_chain_def = true;
         printf("Anchored genesis: chain_def loaded from %s (%ld bytes)\n",
                chain_def_file_path, cdlen);
+        free(cdbuf);
+        cdbuf = NULL;
     }
 
     /* Save to file */

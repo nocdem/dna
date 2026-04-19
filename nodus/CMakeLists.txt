@@ -716,6 +716,9 @@ register_witness_test(test_integration_unstake_two_phase)
 # Task 57 — Genesis seeds validator_tree + reward_tree from chain_def
 register_witness_test(test_genesis_seed_validators)
 
+# 2026-04-19 — Genesis ghost-stake fix: parse_cd_supply helper for Rule P.2
+register_witness_test(test_parse_cd_supply)
+
 # Task 59 — BFT roster sourced from committee snapshot (chain-authoritative)
 register_witness_test(test_bft_roster_committee)
 

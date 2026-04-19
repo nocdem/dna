@@ -160,3 +160,45 @@ int nodus_witness_genesis_seed_validators(nodus_witness_t *w,
             LOG_TAG, (unsigned)iv_count);
     return 0;
 }
+
+int nodus_witness_parse_cd_supply(const uint8_t *cd_blob, size_t cd_blob_len,
+                                    uint64_t *initial_supply_raw_out,
+                                    uint8_t  *initial_validator_count_out) {
+    if (!cd_blob || cd_blob_len == 0 ||
+        !initial_supply_raw_out || !initial_validator_count_out) {
+        return -1;
+    }
+    if (cd_blob_len < CD_FIXED_BYTES) return -1;
+
+    /* witness_count is u32 LE at offset 164 (chain_name 32 + protocol_version 4
+     * + parent_chain_id 64 + genesis_message 64). */
+    const uint8_t *p_wc = cd_blob + 32 + 4 + 64 + 64;
+    uint32_t witness_count = (uint32_t)p_wc[0]
+                           | ((uint32_t)p_wc[1] << 8)
+                           | ((uint32_t)p_wc[2] << 16)
+                           | ((uint32_t)p_wc[3] << 24);
+    if (witness_count > 21) return -1;
+
+    /* initial_supply_raw is u64 LE at offset
+     *   32 + 4 + 64 + 64 + 4 + 4 + witness_count*PUBKEY + 4 + 4 + 4 + 8 + 1
+     * = 193 + witness_count * DNAC_PUBKEY_SIZE. */
+    size_t isr_off = 193 + (size_t)witness_count * DNAC_PUBKEY_SIZE;
+    if (cd_blob_len < isr_off + 8) return -1;
+    const uint8_t *p = cd_blob + isr_off;
+    uint64_t supply = 0;
+    for (int i = 0; i < 8; i++) supply |= ((uint64_t)p[i]) << (i * 8);
+
+    /* initial_validator_count is u8 at CD_FIXED_BYTES + witness_count * PUBKEY
+     * (same offset the seeder uses). */
+    size_t iv_count_off = CD_FIXED_BYTES
+                        + (size_t)witness_count * DNAC_PUBKEY_SIZE;
+    if (cd_blob_len < iv_count_off + 1) {
+        /* Legacy blob without trailer — report count=0 but supply is valid. */
+        *initial_supply_raw_out = supply;
+        *initial_validator_count_out = 0;
+        return 0;
+    }
+    *initial_supply_raw_out = supply;
+    *initial_validator_count_out = cd_blob[iv_count_off];
+    return 0;
+}

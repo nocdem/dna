@@ -4539,16 +4539,10 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
         }
     }
 
-    if (nodus_witness_db_begin(w) != 0) return -1;
-
-    uint64_t bh = nodus_witness_block_height(w) + 1;
-    if (apply_tx_to_state(w, tx_hash, NODUS_W_TX_GENESIS, NULL, 0,
-                           tx_data, tx_len, bh, NULL,
-                           NULL, NULL) != 0) {
-        nodus_witness_db_rollback(w);
-        return -1;
-    }
-    /* Extract chain_def trailer from genesis TX (if anchored genesis). */
+    /* Extract chain_def trailer from genesis TX (if anchored genesis).
+     * Moved BEFORE apply_tx_to_state so Rule P.2 can reject ghost-stake
+     * genesis TXs before any state mutation — see
+     * dnac/docs/plans/2026-04-19-genesis-ghost-stake-fix.md. */
     const uint8_t *cd_blob = NULL;
     uint32_t cd_blob_len = 0;
     {
@@ -4590,6 +4584,86 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
                 }
             }
         }
+    }
+
+    /* Rule P.2 — outputs_sum + initial_validator_count * SELF_STAKE ==
+     * initial_supply_raw. Prevents ghost-stake genesis where an operator
+     * (or buggy client) creates a recipient UTXO equal to gross supply
+     * without deducting validator self-stake locks. */
+    if (cd_blob && cd_blob_len > 0) {
+        uint64_t cd_supply = 0;
+        uint8_t  cd_vcount = 0;
+        if (nodus_witness_parse_cd_supply(cd_blob, (size_t)cd_blob_len,
+                                           &cd_supply, &cd_vcount) != 0) {
+            fprintf(stderr, "%s: Rule P.2 — chain_def parse failed\n", LOG_TAG);
+            return -1;
+        }
+        if (cd_vcount > 0) {
+            /* Parse outputs_sum (native DNAC only) from tx_data. */
+            uint64_t outputs_sum = 0;
+            if (tx_len > 75) {
+                size_t off = 74;
+                uint8_t in_count = tx_data[off++];
+                off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
+                if (off < tx_len) {
+                    uint8_t out_count = tx_data[off++];
+                    for (int i = 0; i < out_count && off + 235 <= tx_len; i++) {
+                        off += 1;    /* version */
+                        off += 129;  /* fingerprint */
+                        uint64_t amt;
+                        memcpy(&amt, tx_data + off, 8);
+                        off += 8;
+                        const uint8_t *tid = tx_data + off;
+                        off += 64;
+                        off += 32;  /* nullifier_seed */
+                        uint8_t ml = tx_data[off++];
+                        off += ml;
+                        /* Native DNAC only — token_id == all zeros. */
+                        bool is_native = true;
+                        for (int bi = 0; bi < 64; bi++) if (tid[bi] != 0) { is_native = false; break; }
+                        if (is_native) outputs_sum += amt;
+                    }
+                }
+            }
+            uint64_t stake_locked = (uint64_t)cd_vcount * DNAC_SELF_STAKE_AMOUNT;
+            if (stake_locked > cd_supply) {
+                fprintf(stderr,
+                    "%s: Rule P.2 — stake_lock=%llu > initial_supply_raw=%llu\n",
+                    LOG_TAG,
+                    (unsigned long long)stake_locked,
+                    (unsigned long long)cd_supply);
+                return -1;
+            }
+            uint64_t expected = cd_supply - stake_locked;
+            if (outputs_sum != expected) {
+                fprintf(stderr,
+                    "%s: Rule P.2 REJECT — outputs_sum=%llu != expected=%llu "
+                    "(initial_supply=%llu minus %u x self_stake=%llu). "
+                    "Genesis TX would create ghost stake — rejecting.\n",
+                    LOG_TAG,
+                    (unsigned long long)outputs_sum,
+                    (unsigned long long)expected,
+                    (unsigned long long)cd_supply,
+                    (unsigned)cd_vcount,
+                    (unsigned long long)stake_locked);
+                return -1;
+            }
+            QGP_LOG_INFO(LOG_TAG,
+                "Rule P.2 OK — outputs_sum=%llu, stake_lock=%llu, total=%llu",
+                (unsigned long long)outputs_sum,
+                (unsigned long long)stake_locked,
+                (unsigned long long)cd_supply);
+        }
+    }
+
+    if (nodus_witness_db_begin(w) != 0) return -1;
+
+    uint64_t bh = nodus_witness_block_height(w) + 1;
+    if (apply_tx_to_state(w, tx_hash, NODUS_W_TX_GENESIS, NULL, 0,
+                           tx_data, tx_len, bh, NULL,
+                           NULL, NULL) != 0) {
+        nodus_witness_db_rollback(w);
+        return -1;
     }
 
     /* Phase 12 Task 57 — seed validator_tree + reward_tree from the
