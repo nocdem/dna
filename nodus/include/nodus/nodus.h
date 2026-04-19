@@ -23,6 +23,7 @@
 #include "core/nodus_media_storage.h"
 #include "channel/nodus_channel_store.h"
 #include "crypto/nodus_channel_crypto.h"
+#include "protocol/nodus_tier3.h"    /* Stage E.2 — cc_vote_{req,rsp} types */
 #include <pthread.h>
 #include <stdatomic.h>
 
@@ -940,6 +941,45 @@ void nodus_client_free_pending_rewards_result(nodus_dnac_pending_rewards_result_
  */
 int nodus_client_dnac_committee(nodus_client_t *client,
                                   nodus_dnac_committee_result_t *result_out);
+
+/**
+ * Hard-Fork v1 Stage E.2 — proposer-side helper to ask ONE committee peer
+ * to sign a chain_config proposal preimage.
+ *
+ * Opens a short-lived TCP connection to `peer_address` (format "ip:port";
+ * port defaults to NODUS_DEFAULT_WITNESS_PORT when omitted), sends a
+ * single w_cc_vote_req signed with `caller_sk`, waits up to `timeout_ms`
+ * for the corresponding w_cc_vote_rsp, verifies the response wsig against
+ * `expected_peer_pk`, and writes the decoded response to `*rsp_out`.
+ *
+ * The CLI proposer must be a committee member — the receiving peer drops
+ * any tier-3 request from an unknown sender_id (see
+ * nodus/src/witness/nodus_witness.c dispatch guard). Out-of-committee
+ * callers surface as a timeout (-2) rather than a visible error.
+ *
+ * @param peer_address       "ip:port" of the target committee member
+ * @param caller_sk          Proposer Dilithium5 secret key (wsig source)
+ * @param caller_witness_id  first 32B of SHA3-512(caller_pk) — t3 sender_id
+ * @param expected_peer_pk   Target member's Dilithium5 pubkey (rsp verify)
+ * @param chain_id           Current chain_id (32 bytes) — t3 header cid
+ * @param req                Proposal fields to sign
+ * @param timeout_ms         Total deadline (connect + send + recv combined)
+ * @param rsp_out            Decoded response on success
+ *
+ * @return  0   on verified response (callers check rsp_out->accepted
+ *              to distinguish accept vs reject)
+ *         -1   invalid args / encode / transport failure
+ *         -2   timeout (connect or response)
+ *         -3   response decoded but wsig verification failed
+ */
+int nodus_client_cc_vote_send(const char *peer_address,
+                                const nodus_seckey_t *caller_sk,
+                                const uint8_t caller_witness_id[32],
+                                const nodus_pubkey_t *expected_peer_pk,
+                                const uint8_t chain_id[32],
+                                const nodus_t3_cc_vote_req_t *req,
+                                uint32_t timeout_ms,
+                                nodus_t3_cc_vote_rsp_t *rsp_out);
 
 /**
  * Page through the full validator table on the witness (all statuses).

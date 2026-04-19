@@ -102,6 +102,7 @@ set(NODUS_SOURCES
     src/client/nodus_client.c
     src/client/nodus_singleton.c
     src/client/nodus_republish.c
+    src/client/nodus_cc_client.c
 
     # Shared dnac wire format (Hard-Fork v1 — single source of truth for
     # the CHAIN_CONFIG TX extension block encoder/decoder shared with dnac)
@@ -445,6 +446,11 @@ add_test(NAME test_chain_config_votes COMMAND test_chain_config_votes)
 add_executable(test_cc_wire ${SHARED_DIR}/dnac/tests/test_cc_wire.c)
 target_link_libraries(test_cc_wire nodus)
 add_test(NAME test_cc_wire COMMAND test_cc_wire)
+
+# Hard-Fork v1 Stage E.2 — tier-3 client helper guard-path tests
+add_executable(test_cc_client tests/test_cc_client.c)
+target_link_libraries(test_cc_client nodus dsa nodus)
+add_test(NAME test_cc_client COMMAND test_cc_client)
 
 # UTXO state_root determinism tests (Phase 2 / Task 2.5)
 add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)
