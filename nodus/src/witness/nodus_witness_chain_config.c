@@ -12,6 +12,7 @@
 
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"        /* NODUS_TREE_TAG_CHAIN_CONFIG */
+#include "dnac/chain_config_wire.h"   /* shared CHAIN_CONFIG extension codec */
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_committee.h"
@@ -67,27 +68,18 @@ static const uint8_t CC_PURPOSE_TAG[CC_PURPOSE_TAG_LEN] = {
 #define CC_FINGERPRINT_LEN   129
 #define CC_SEED_LEN          32
 
-/* Parsed chain_config fields (mirror of dnac_tx_chain_config_fields_t). */
-typedef struct {
-    uint8_t  param_id;
-    uint64_t new_value;
-    uint64_t effective_block_height;
-    uint64_t proposal_nonce;
-    uint64_t signed_at_block;
-    uint64_t valid_before_block;
-    uint8_t  committee_sig_count;
-    uint8_t  witness_ids[CC_COMMITTEE_SIZE][32];
-    uint8_t  signatures[CC_COMMITTEE_SIZE][CC_SIGNATURE_SIZE];
-} cc_fields_t;
+/* Pin the nodus-local CC_* mirror macros against the shared wire constants
+ * — drift between libnodus and libdna would silently break consensus. The
+ * parsed-field struct itself is now the shared dnac_cc_wire_ext_t. */
+_Static_assert(CC_SIGNATURE_SIZE == DNAC_CC_WIRE_SIGNATURE_SIZE,
+               "CC_SIGNATURE_SIZE drift vs shared wire");
+_Static_assert(CC_COMMITTEE_SIZE == DNAC_CC_WIRE_COMMITTEE_SIZE,
+               "CC_COMMITTEE_SIZE drift vs shared wire");
+_Static_assert(CC_MIN_SIGS == DNAC_CC_WIRE_MIN_SIGS,
+               "CC_MIN_SIGS drift vs shared wire");
 
 static void be64_into(uint64_t v, uint8_t out[8]) {
     for (int i = 7; i >= 0; i--) { out[i] = (uint8_t)(v & 0xff); v >>= 8; }
-}
-
-static uint64_t be64_from(const uint8_t *p) {
-    uint64_t v = 0;
-    for (int i = 0; i < 8; i++) v = (v << 8) | (uint64_t)p[i];
-    return v;
 }
 
 /* ============================================================================
@@ -395,38 +387,21 @@ static int find_cc_appended_offset(const uint8_t *tx_data, uint32_t tx_len,
     return 0;
 }
 
-/* Parse the CHAIN_CONFIG appended fields starting at `off`. Validates
- * that committee_sig_count is within [MIN, MAX] and that the byte-range
- * fits in tx_len. Returns 0 on success. */
+/* Parse the CHAIN_CONFIG appended fields starting at `off`. Thin wrapper
+ * over the shared dnac_cc_wire_decode — returns 0 on success. The shared
+ * decoder enforces the count-cap and per-vote byte-range checks. */
 static int parse_cc_fields(const uint8_t *tx_data, uint32_t tx_len, size_t off,
-                            cc_fields_t *out) {
-    const size_t fixed_len = 1 + 8 + 8 + 8 + 8 + 8 + 1;  /* 42 */
-    if (off + fixed_len > tx_len) return -1;
-
-    out->param_id               = tx_data[off];                    off += 1;
-    out->new_value              = be64_from(tx_data + off);        off += 8;
-    out->effective_block_height = be64_from(tx_data + off);        off += 8;
-    out->proposal_nonce         = be64_from(tx_data + off);        off += 8;
-    out->signed_at_block        = be64_from(tx_data + off);        off += 8;
-    out->valid_before_block     = be64_from(tx_data + off);        off += 8;
-    out->committee_sig_count    = tx_data[off];                    off += 1;
-
-    if (out->committee_sig_count > CC_MAX_SIGS) return -1;
-    const size_t per_vote = 32 + CC_SIGNATURE_SIZE;
-    size_t votes_total = (size_t)out->committee_sig_count * per_vote;
-    if (off + votes_total > tx_len) return -1;
-
-    for (uint8_t i = 0; i < out->committee_sig_count; i++) {
-        memcpy(out->witness_ids[i], tx_data + off, 32);   off += 32;
-        memcpy(out->signatures[i],  tx_data + off, CC_SIGNATURE_SIZE);
-        off += CC_SIGNATURE_SIZE;
-    }
-    return 0;
+                            dnac_cc_wire_ext_t *out) {
+    if (off > tx_len) return -1;
+    size_t consumed = 0;
+    return dnac_cc_wire_decode(tx_data + off,
+                                (size_t)(tx_len - off),
+                                out, &consumed);
 }
 
 /* Client-side local rule subset (mirror of dnac_tx_verify_chain_config_rules
  * in dnac/src/transaction/verify.c). Returns 0 on success. */
-static int verify_cc_local_rules(const cc_fields_t *cc) {
+static int verify_cc_local_rules(const dnac_cc_wire_ext_t *cc) {
     if (cc->param_id < 1 || cc->param_id > CC_PARAM_MAX_ID) return -1;
 
     switch (cc->param_id) {
@@ -454,7 +429,8 @@ static int verify_cc_local_rules(const cc_fields_t *cc) {
     /* pairwise-distinct witness_ids */
     for (uint8_t i = 0; i < cc->committee_sig_count; i++) {
         for (uint8_t j = (uint8_t)(i + 1); j < cc->committee_sig_count; j++) {
-            if (memcmp(cc->witness_ids[i], cc->witness_ids[j], 32) == 0)
+            if (memcmp(cc->votes[i].witness_id,
+                       cc->votes[j].witness_id, 32) == 0)
                 return -1;
         }
     }
@@ -677,7 +653,7 @@ void nodus_chain_config_log_stats(nodus_witness_t *w) {
 /* Internal wrapper so the apply function's call site stays compact;
  * delegates to the public primitive so the formula is single-sourced. */
 static int compute_proposal_digest(const uint8_t chain_id[32],
-                                    const cc_fields_t *cc,
+                                    const dnac_cc_wire_ext_t *cc,
                                     uint8_t digest[64]) {
     return nodus_chain_config_compute_digest(chain_id,
                                               cc->param_id,
@@ -741,7 +717,7 @@ int nodus_chain_config_apply(nodus_witness_t *w,
         return -1;
     }
 
-    cc_fields_t cc;
+    dnac_cc_wire_ext_t cc;
     if (parse_cc_fields(tx_data, tx_len, off, &cc) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "apply: malformed appended fields");
         return -1;
@@ -808,7 +784,7 @@ int nodus_chain_config_apply(nodus_witness_t *w,
     for (uint8_t v = 0; v < cc.committee_sig_count; v++) {
         int match = -1;
         for (int c = 0; c < committee_count; c++) {
-            if (memcmp(cc.witness_ids[v], committee_ids[c], 32) == 0) {
+            if (memcmp(cc.votes[v].witness_id, committee_ids[c], 32) == 0) {
                 match = c;
                 break;
             }
@@ -819,7 +795,7 @@ int nodus_chain_config_apply(nodus_witness_t *w,
                           (unsigned)v);
             return -1;
         }
-        if (qgp_dsa87_verify(cc.signatures[v], CC_SIGNATURE_SIZE,
+        if (qgp_dsa87_verify(cc.votes[v].signature, CC_SIGNATURE_SIZE,
                               digest, sizeof(digest),
                               committee[match].pubkey) != 0) {
             QGP_LOG_ERROR(LOG_TAG,

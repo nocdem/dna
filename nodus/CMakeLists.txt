@@ -103,6 +103,10 @@ set(NODUS_SOURCES
     src/client/nodus_singleton.c
     src/client/nodus_republish.c
 
+    # Shared dnac wire format (Hard-Fork v1 — single source of truth for
+    # the CHAIN_CONFIG TX extension block encoder/decoder shared with dnac)
+    ${SHARED_DIR}/dnac/chain_config_wire.c
+
     # Shared crypto (standalone only — messenger tree provides these via dht_lib)
     ${SHARED_CRYPTO_SOURCES}
 )
@@ -436,6 +440,11 @@ add_test(NAME test_chain_config_witness COMMAND test_chain_config_witness)
 add_executable(test_chain_config_votes tests/test_chain_config_votes.c)
 target_link_libraries(test_chain_config_votes nodus dsa nodus)
 add_test(NAME test_chain_config_votes COMMAND test_chain_config_votes)
+
+# Hard-Fork v1 Stage E — shared CHAIN_CONFIG TX extension wire format
+add_executable(test_cc_wire ${SHARED_DIR}/dnac/tests/test_cc_wire.c)
+target_link_libraries(test_cc_wire nodus)
+add_test(NAME test_cc_wire COMMAND test_cc_wire)
 
 # UTXO state_root determinism tests (Phase 2 / Task 2.5)
 add_executable(test_merkle_utxo_root tests/test_merkle_utxo_root.c)

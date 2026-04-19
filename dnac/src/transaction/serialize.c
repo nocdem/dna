@@ -12,9 +12,19 @@
 
 #include "dnac/transaction.h"
 #include "dnac/chain_def_codec.h"  /* for optional genesis chain_def payload */
+#include "dnac/chain_config_wire.h"  /* shared CHAIN_CONFIG extension codec */
 #include <string.h>
 #include <stdlib.h>
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+
+/* Pin shared wire constants against dnac's authoritative values — any
+ * drift between libnodus and libdna would silently break consensus. */
+_Static_assert(DNAC_CC_WIRE_SIGNATURE_SIZE == DNAC_SIGNATURE_SIZE,
+               "chain_config signature size drift");
+_Static_assert(DNAC_CC_WIRE_COMMITTEE_SIZE == DNAC_COMMITTEE_SIZE,
+               "chain_config committee size drift");
+_Static_assert(DNAC_CC_WIRE_MIN_SIGS == DNAC_CHAIN_CONFIG_MIN_SIGS,
+               "chain_config min-sigs drift");
 
 /* Helper macros for serialization */
 #define WRITE_U8(buf, val) do { *(buf)++ = (uint8_t)(val); } while(0)
@@ -103,15 +113,13 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
         size += 2 + 8;
     }
-    /* Hard-Fork v1. CHAIN_CONFIG fixed header: param_id(1) + new_value(8) +
-     * effective_block(8) + proposal_nonce(8) + signed_at_block(8) +
-     * valid_before_block(8) + committee_sig_count(1) = 42 bytes.
-     * Per-vote: witness_id(32) + signature(DNAC_SIGNATURE_SIZE). */
+    /* Hard-Fork v1. CHAIN_CONFIG fixed header + votes — see shared
+     * dnac/chain_config_wire.h for the authoritative layout. */
     if (tx->type == DNAC_TX_CHAIN_CONFIG) {
         uint8_t n = tx->chain_config_fields.committee_sig_count;
-        if (n > DNAC_COMMITTEE_SIZE) n = DNAC_COMMITTEE_SIZE;
-        size += 1 + 8 + 8 + 8 + 8 + 8 + 1;
-        size += (size_t)n * (32 + DNAC_SIGNATURE_SIZE);
+        if (n > DNAC_CC_WIRE_COMMITTEE_SIZE) n = DNAC_CC_WIRE_COMMITTEE_SIZE;
+        size += DNAC_CC_WIRE_FIXED_LEN +
+                (size_t)n * DNAC_CC_WIRE_PER_VOTE;
     }
 
     /* Optional anchored-genesis chain_def trailer (v2 wire extension).
@@ -226,33 +234,36 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         be64_to_bytes(tx->validator_update_fields.signed_at_block, block_be);
         WRITE_BLOB(ptr, block_be, 8);
     }
-    /* Hard-Fork v1. CHAIN_CONFIG: param_id(u8) || new_value(u64 BE) ||
-     *        effective_block(u64 BE) || proposal_nonce(u64 BE) ||
-     *        signed_at_block(u64 BE) || valid_before_block(u64 BE) ||
-     *        committee_sig_count(u8) || votes[n] where each vote =
-     *        witness_id(32) || signature(DNAC_SIGNATURE_SIZE).
-     * Trailing padded slots beyond committee_sig_count are NOT serialized. */
+    /* Hard-Fork v1. CHAIN_CONFIG — delegated to shared encoder so drift
+     * between libdna and libnodus cannot silently break consensus. See
+     * shared/dnac/chain_config_wire.h for the byte layout. */
     if (tx->type == DNAC_TX_CHAIN_CONFIG) {
         const dnac_tx_chain_config_fields_t *cc = &tx->chain_config_fields;
-        uint8_t u64_be[8];
-        WRITE_U8(ptr, cc->param_id);
-        be64_to_bytes(cc->new_value, u64_be);
-        WRITE_BLOB(ptr, u64_be, 8);
-        be64_to_bytes(cc->effective_block_height, u64_be);
-        WRITE_BLOB(ptr, u64_be, 8);
-        be64_to_bytes(cc->proposal_nonce, u64_be);
-        WRITE_BLOB(ptr, u64_be, 8);
-        be64_to_bytes(cc->signed_at_block, u64_be);
-        WRITE_BLOB(ptr, u64_be, 8);
-        be64_to_bytes(cc->valid_before_block, u64_be);
-        WRITE_BLOB(ptr, u64_be, 8);
-        uint8_t n = cc->committee_sig_count;
-        if (n > DNAC_COMMITTEE_SIZE) n = DNAC_COMMITTEE_SIZE;
-        WRITE_U8(ptr, n);
-        for (uint8_t i = 0; i < n; i++) {
-            WRITE_BLOB(ptr, cc->committee_votes[i].witness_id, 32);
-            WRITE_BLOB(ptr, cc->committee_votes[i].signature, DNAC_SIGNATURE_SIZE);
+        dnac_cc_wire_ext_t wire = {
+            .param_id               = cc->param_id,
+            .new_value              = cc->new_value,
+            .effective_block_height = cc->effective_block_height,
+            .proposal_nonce         = cc->proposal_nonce,
+            .signed_at_block        = cc->signed_at_block,
+            .valid_before_block     = cc->valid_before_block,
+            .committee_sig_count    = cc->committee_sig_count,
+        };
+        uint8_t n_wire = wire.committee_sig_count;
+        if (n_wire > DNAC_CC_WIRE_COMMITTEE_SIZE)
+            n_wire = DNAC_CC_WIRE_COMMITTEE_SIZE;
+        for (uint8_t i = 0; i < n_wire; i++) {
+            memcpy(wire.votes[i].witness_id,
+                   cc->committee_votes[i].witness_id,
+                   DNAC_CC_WIRE_WITNESS_ID_SIZE);
+            memcpy(wire.votes[i].signature,
+                   cc->committee_votes[i].signature,
+                   DNAC_CC_WIRE_SIGNATURE_SIZE);
         }
+        size_t written = 0;
+        size_t cap = buffer_len - (size_t)(ptr - buffer);
+        if (dnac_cc_wire_encode(&wire, ptr, cap, &written) != 0)
+            return DNAC_ERROR_INVALID_PARAM;
+        ptr += written;
     }
 
     /* Anchored-genesis chain_def trailer (optional, genesis TX only). */
@@ -458,36 +469,32 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         tx->validator_update_fields.signed_at_block = be64_from_bytes(ptr);
         ptr += 8;
     }
-    /* Hard-Fork v1. CHAIN_CONFIG — see serialize arm above for layout. */
+    /* Hard-Fork v1. CHAIN_CONFIG — delegated to shared decoder. */
     if (tx->type == DNAC_TX_CHAIN_CONFIG) {
-        const size_t cc_fixed_len = 1 + 8 + 8 + 8 + 8 + 8 + 1;  /* 42 bytes */
-        if (ptr + cc_fixed_len > end) {
+        dnac_cc_wire_ext_t wire;
+        size_t consumed = 0;
+        if (dnac_cc_wire_decode(ptr, (size_t)(end - ptr),
+                                 &wire, &consumed) != 0) {
             free(tx);
             return DNAC_ERROR_INVALID_PARAM;
         }
         dnac_tx_chain_config_fields_t *cc = &tx->chain_config_fields;
-        READ_U8(ptr, cc->param_id);
-        cc->new_value              = be64_from_bytes(ptr); ptr += 8;
-        cc->effective_block_height = be64_from_bytes(ptr); ptr += 8;
-        cc->proposal_nonce         = be64_from_bytes(ptr); ptr += 8;
-        cc->signed_at_block        = be64_from_bytes(ptr); ptr += 8;
-        cc->valid_before_block     = be64_from_bytes(ptr); ptr += 8;
-        uint8_t n;
-        READ_U8(ptr, n);
-        if (n > DNAC_COMMITTEE_SIZE) {
-            free(tx);
-            return DNAC_ERROR_INVALID_PARAM;
+        cc->param_id               = wire.param_id;
+        cc->new_value              = wire.new_value;
+        cc->effective_block_height = wire.effective_block_height;
+        cc->proposal_nonce         = wire.proposal_nonce;
+        cc->signed_at_block        = wire.signed_at_block;
+        cc->valid_before_block     = wire.valid_before_block;
+        cc->committee_sig_count    = wire.committee_sig_count;
+        for (uint8_t i = 0; i < wire.committee_sig_count; i++) {
+            memcpy(cc->committee_votes[i].witness_id,
+                   wire.votes[i].witness_id,
+                   DNAC_CC_WIRE_WITNESS_ID_SIZE);
+            memcpy(cc->committee_votes[i].signature,
+                   wire.votes[i].signature,
+                   DNAC_CC_WIRE_SIGNATURE_SIZE);
         }
-        cc->committee_sig_count = n;
-        const size_t per_vote = 32 + DNAC_SIGNATURE_SIZE;
-        if (ptr + (size_t)n * per_vote > end) {
-            free(tx);
-            return DNAC_ERROR_INVALID_PARAM;
-        }
-        for (uint8_t i = 0; i < n; i++) {
-            READ_BLOB(ptr, cc->committee_votes[i].witness_id, 32);
-            READ_BLOB(ptr, cc->committee_votes[i].signature, DNAC_SIGNATURE_SIZE);
-        }
+        ptr += consumed;
     }
 
     /* Optional anchored-genesis chain_def trailer.
