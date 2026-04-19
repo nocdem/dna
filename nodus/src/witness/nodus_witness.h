@@ -255,6 +255,24 @@ typedef struct nodus_witness {
     /* Zone chain ID */
     uint8_t     chain_id[32];
 
+    /* CC-OPS-005 / Q17 — chain_config observability counters.
+     *
+     * Framework-agnostic: plain uint64_t counters on the witness struct,
+     * bumped by the apply path. Ops can poll these via the existing
+     * nodus-status surface or a periodic journal dump (see
+     * nodus_witness_chain_config_log_stats). Matches the
+     * CHAIN_CONFIG_PROPOSAL log literal used as a tripwire elsewhere;
+     * these counters provide the "how many" alongside each log line's
+     * "which".
+     *
+     * Not atomic — nodus witness thread model treats these as single-
+     * writer from the apply path. */
+    uint64_t    chain_config_proposals_committed;   /* INSERT success */
+    uint64_t    chain_config_proposals_rejected;    /* apply path rejected */
+    uint64_t    chain_config_cache_hits;            /* get_u64 cache hit */
+    uint64_t    chain_config_cache_misses;          /* get_u64 cache miss / warm-up */
+    uint64_t    chain_config_peer_schema_mismatch;  /* CC-OPS-002 mismatch counter */
+
     /* CC-OPS-004 / Q16 — chain_config_history lookup cache.
      *
      * Every finalize_block + every proposer round consults

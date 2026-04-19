@@ -184,6 +184,7 @@ uint64_t nodus_chain_config_get_u64(nodus_witness_t *w,
     /* Fast path: walk cache backwards (rows sorted by effective_block
      * ascending), first row with effective_block <= current_block wins. */
     if (w->chain_config_cache_warm) {
+        w->chain_config_cache_hits++;
         int n = w->chain_config_cache_count[param_id];
         for (int i = n - 1; i >= 0; i--) {
             if (w->chain_config_cache[param_id][i].effective_block
@@ -194,6 +195,7 @@ uint64_t nodus_chain_config_get_u64(nodus_witness_t *w,
         /* No row active at current_block — return default. */
         return default_value;
     }
+    w->chain_config_cache_misses++;
 
     /* Cache warm-up failed — fall back to direct DB lookup so we never
      * return wrong value because of transient cache failure. */
@@ -544,6 +546,20 @@ int nodus_chain_config_verify_vote(const uint8_t pubkey[NODUS_CC_PUBKEY_SIZE],
     return 0;
 }
 
+/* Q17 / CC-OPS-005 — observability dump. Single-line structured log
+ * so external scrapers / grafana agents can tail journalctl. */
+void nodus_chain_config_log_stats(nodus_witness_t *w) {
+    if (!w) return;
+    QGP_LOG_INFO(LOG_TAG,
+        "CHAIN_CONFIG_STATS committed=%llu rejected=%llu "
+        "cache_hits=%llu cache_misses=%llu peer_schema_mismatch=%llu",
+        (unsigned long long)w->chain_config_proposals_committed,
+        (unsigned long long)w->chain_config_proposals_rejected,
+        (unsigned long long)w->chain_config_cache_hits,
+        (unsigned long long)w->chain_config_cache_misses,
+        (unsigned long long)w->chain_config_peer_schema_mismatch);
+}
+
 /* Internal wrapper so the apply function's call site stays compact;
  * delegates to the public primitive so the formula is single-sourced. */
 static int compute_proposal_digest(const uint8_t chain_id[32],
@@ -585,6 +601,11 @@ int nodus_chain_config_apply(nodus_witness_t *w,
         QGP_LOG_ERROR(LOG_TAG, "apply: invalid args");
         return -1;
     }
+    /* Q17 / CC-OPS-005 — pessimistic counter bump: assume rejected, then
+     * decrement + bump committed at the single success path. This keeps
+     * the counter correct across the many early-return paths below
+     * without per-site bookkeeping. */
+    w->chain_config_proposals_rejected++;
     if (tx_len < CC_TX_HEADER_SIZE) {
         QGP_LOG_ERROR(LOG_TAG, "apply: tx_len < header");
         return -1;
@@ -761,6 +782,11 @@ int nodus_chain_config_apply(nodus_witness_t *w,
      * from DB, which will NOT have the rolled-back row. Cache coherence
      * preserved in both commit and rollback paths. */
     w->chain_config_cache_warm = false;
+
+    /* Q17 / CC-OPS-005 — correct the pessimistic counter bump: this
+     * apply succeeded. */
+    w->chain_config_proposals_rejected--;
+    w->chain_config_proposals_committed++;
 
     QGP_LOG_WARN(LOG_TAG,
                  "CHAIN_CONFIG_PROPOSAL committed: param_id=%u new_value=%llu "

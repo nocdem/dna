@@ -209,6 +209,15 @@ int nodus_chain_config_verify_vote(const uint8_t pubkey[NODUS_CC_PUBKEY_SIZE],
 int nodus_chain_config_derive_witness_id(const uint8_t pubkey[NODUS_CC_PUBKEY_SIZE],
                                           uint8_t out_witness_id[NODUS_CC_WITNESS_ID_SIZE]);
 
+/**
+ * Log a single-line summary of chain_config observability counters
+ * (Q17 / CC-OPS-005). Call from any periodic tick (e.g., per epoch,
+ * per heartbeat) or on-demand via a signal handler. Framework-agnostic
+ * — produces a structured log line that downstream grafana/prometheus
+ * scrapers can parse if needed. Safe to call at any time.
+ */
+void nodus_chain_config_log_stats(nodus_witness_t *w);
+
 #ifdef __cplusplus
 }
 #endif

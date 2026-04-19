@@ -593,6 +593,8 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
                     (unsigned)local_nv, (unsigned)local_ccs,
                     (unsigned)ident->nodus_version,
                     (unsigned)ident->chain_config_schema);
+                /* Q17 / CC-OPS-005 — counter for downstream ops dashboards. */
+                w->chain_config_peer_schema_mismatch++;
             }
             w->peers[pi].version_compatible = compat;
         }
