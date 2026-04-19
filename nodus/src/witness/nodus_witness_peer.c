@@ -595,8 +595,22 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
          * fills address when unset; explicit overwrite keeps it fresh. */
         snprintf(w->peers[pi].address, sizeof(w->peers[pi].address),
                  "%s", ident->address);
+        bool first_ident = !w->peers[pi].identified;
         w->peers[pi].identified = true;
         w->peers[pi].connect_failures = 0;
+
+        /* Eager roster rebuild on first IDENT from this peer. Without this
+         * the roster grows only on the 60s epoch tick (WITNESS_EPOCH_SECS
+         * in nodus_witness.c), which is far slower than fresh-cluster
+         * bootstrap needs — a genesis TX arriving in the first 60s after
+         * startup would hit `consensus disabled (n=1 < 5)` even with all
+         * witness peers already connected + identified. Setting last_epoch
+         * to 0 forces the next nodus_witness_tick (~50ms) to run the full
+         * rebuild + swap path. Idempotent on re-IDENT because the
+         * first_ident gate prevents retriggering on steady-state peers. */
+        if (first_ident) {
+            w->last_epoch = 0;
+        }
 
         /* Phase 10 / Task 10.4 — clock skew probe */
         {
@@ -1327,6 +1341,58 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
             w->peers[pi].connect_failures = 0;
             w->peers[pi].last_attempt = now;
         }
+    }
+
+    /* Seed-bootstrap retry. The roster-driven reconnect loop above only
+     * retries peers that already appear in w->roster — at fresh-cluster
+     * startup the roster is {self} and everything else arrives via IDENT.
+     * Seed-bootstrap entries created by peer_init carry witness_id=0
+     * (not yet identified). If their initial TCP connect failed (e.g.,
+     * the remote wasn't listening yet during a spawn race), they'd never
+     * be retried: the roster reconnect skips them, so auth + IDENT can
+     * never complete and the roster can never grow. Retry them here.
+     * The hello send + auth handshake is driven by on_witness_connect
+     * in nodus_server.c — gated on config.require_peer_auth, which must
+     * be enabled for the witness mesh to form on a fresh cluster. */
+    static const uint8_t zero_id_seed[NODUS_T3_WITNESS_ID_LEN] = {0};
+    for (int i = 0; i < w->peer_count; i++) {
+        if (w->peers[i].conn &&
+            w->peers[i].conn->state == NODUS_CONN_CONNECTED)
+            continue;
+        if (memcmp(w->peers[i].witness_id, zero_id_seed,
+                   NODUS_T3_WITNESS_ID_LEN) != 0)
+            continue;  /* roster-linked; handled above */
+        if (!w->peers[i].address[0]) continue;
+
+        uint64_t backoff = RECONNECT_BASE_SEC;
+        if (w->peers[i].connect_failures > 0) {
+            int shift = w->peers[i].connect_failures > RECONNECT_MAX_SHIFT
+                        ? RECONNECT_MAX_SHIFT
+                        : w->peers[i].connect_failures;
+            backoff <<= shift;
+        }
+        if (now - w->peers[i].last_attempt < backoff) continue;
+
+        char ip[64];
+        uint16_t port;
+        if (parse_address(w->peers[i].address, ip, sizeof(ip), &port) != 0)
+            continue;
+
+        nodus_tcp_conn_t *existing = nodus_tcp_find_by_addr(wtcp, ip, port);
+        if (existing && existing->state == NODUS_CONN_CONNECTED) {
+            w->peers[i].conn = existing;
+            w->peers[i].connect_failures = 0;
+            continue;
+        }
+
+        nodus_tcp_conn_t *conn = nodus_tcp_connect(wtcp, ip, port);
+        w->peers[i].last_attempt = now;
+        if (!conn) {
+            w->peers[i].connect_failures++;
+            continue;
+        }
+        w->peers[i].conn = conn;
+        w->peers[i].auth_state = PEER_AUTH_NONE;
     }
 
     /* Mark peers as identified when their TCP connection is established.

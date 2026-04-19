@@ -168,11 +168,21 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     SEEDS="$SEEDS -s 127.0.0.1:$(stagef_udp_port "$n")"
 done
 
+# Shared JSON config: enable require_peer_auth so the Dilithium5 handshake
+# runs on the witness TCP port (4004/+stride). Without this, on_witness_frame
+# ignores hello messages and on_witness_connect never sends hello — the
+# witness mesh cannot form on a fresh cluster. Production sets this via
+# /etc/nodus.conf; stagef needs the same knob. CLI args override JSON.
+cat > "$BASE_DIR/nodus.json" <<EOF
+{ "require_peer_auth": true }
+EOF
+
 : > "$BASE_DIR/pids.txt"
 for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     node_dir=$(stagef_node_dir "$n")
     # shellcheck disable=SC2086
     "$STAGEF_NODUS_BIN" \
+        -c "$BASE_DIR/nodus.json" \
         -b 127.0.0.1 \
         -u "$(stagef_udp_port "$n")" \
         -t "$(stagef_tcp_port "$n")" \
@@ -208,7 +218,31 @@ echo "[ok] all $STAGEF_COMMITTEE_SIZE nodes listening"
 # trigger fallback to hardcoded production IPs (see known_nodes TOFU
 # upsert in nodus_init.c — that's how production leaks into what
 # should be a fully isolated HOME).
-sleep 10
+#
+# Also: leader election + roster convergence are multi-stage. 10 s was
+# not enough: the genesis TX could reach a node whose roster/leader
+# view was still settling, triggering w_fwd_req to a non-leader and a
+# 30 s pending-forward timeout. Poll the committee on each node until
+# each reports the full 7-member roster with non-zero quorum, or 30 s
+# elapses. Cheap loop; no impact on stable clusters.
+deadline=$(( SECONDS + 30 ))
+while [ $SECONDS -lt $deadline ]; do
+    ready=1
+    for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
+        log="$(stagef_node_dir "$n")/nodus.log"
+        if ! grep -q "epoch roster swap: $STAGEF_COMMITTEE_SIZE witnesses, quorum=5" "$log" 2>/dev/null; then
+            ready=0
+            break
+        fi
+    done
+    [ $ready -eq 1 ] && break
+    sleep 1
+done
+if [ $ready -eq 1 ]; then
+    echo "[ok] all $STAGEF_COMMITTEE_SIZE nodes reached roster=$STAGEF_COMMITTEE_SIZE"
+else
+    echo "[warn] not all nodes reached full roster within 30 s; continuing anyway"
+fi
 
 # Pre-populate known_nodes cache with stagef entries so Source 1 of
 # nodus_init's bootstrap order is already stagef-biased. Format:
