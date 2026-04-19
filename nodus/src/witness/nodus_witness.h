@@ -255,6 +255,35 @@ typedef struct nodus_witness {
     /* Zone chain ID */
     uint8_t     chain_id[32];
 
+    /* CC-OPS-004 / Q16 — chain_config_history lookup cache.
+     *
+     * Every finalize_block + every proposer round consults
+     * nodus_chain_config_get_u64 for param overrides (inflation_start,
+     * max_txs_per_block). Without a cache each lookup is a fresh SQLite
+     * prepared-statement + row read (~1us). With a cache, lookup is a
+     * walk over a short in-memory array (typically < 10 rows per
+     * param across a chain's lifetime).
+     *
+     * Coherence model:
+     *   - chain_config_cache_warm = false on startup / after every
+     *     successful chain_config_apply INSERT (even before the outer
+     *     DB transaction commits — matches CC-OPS-004's
+     *     "invalidate-before-commit" mitigation).
+     *   - Next lookup with !warm reloads all rows from DB and sets
+     *     warm = true. Re-warm cost = single indexed SELECT.
+     *   - On crash between INSERT and flag-clear: process is dead;
+     *     restart warms from DB which has the (maybe) committed state.
+     *     No stale cache can survive a restart.
+     *
+     * Sized to hold 3 params × 64 rows — far more than any chain
+     * governance would ever produce. */
+    struct {
+        uint64_t new_value;
+        uint64_t effective_block;
+    }           chain_config_cache[4 /* DNAC_CFG_PARAM_MAX_ID + 1 */][64];
+    int         chain_config_cache_count[4];   /* rows per param */
+    bool        chain_config_cache_warm;
+
     /* Startup chain_id quorum verification (Fix 3 — fork detection).
      * Tracks distinct peers that agree/disagree with our local chain_id
      * during the first 300s after activation. If a strict majority of

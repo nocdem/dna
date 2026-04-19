@@ -129,12 +129,74 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w) {
  * Active-override lookup
  * ========================================================================== */
 
+/* Cache warm-up (CC-OPS-004 / Q16). Pulls every row from
+ * chain_config_history grouped by param_id, sorted ascending by
+ * effective_block so lookup can walk backwards for latest-effective-wins.
+ * Called on first get_u64 after cache_warm == false. */
+static int cc_cache_warm_from_db(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+
+    /* Clear counts */
+    for (int i = 0; i < 4; i++) w->chain_config_cache_count[i] = 0;
+
+    const char *sql =
+        "SELECT param_id, new_value, effective_block "
+        "FROM chain_config_history "
+        "ORDER BY param_id ASC, effective_block ASC";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        QGP_LOG_WARN(LOG_TAG, "cache warm: prepare failed: %s",
+                     sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        int param_id = sqlite3_column_int(stmt, 0);
+        if (param_id < 0 || param_id >= 4) continue;  /* defense */
+        int slot = w->chain_config_cache_count[param_id];
+        if (slot >= 64) continue;  /* cache full — unlikely */
+        w->chain_config_cache[param_id][slot].new_value =
+            (uint64_t)sqlite3_column_int64(stmt, 1);
+        w->chain_config_cache[param_id][slot].effective_block =
+            (uint64_t)sqlite3_column_int64(stmt, 2);
+        w->chain_config_cache_count[param_id] = slot + 1;
+    }
+    sqlite3_finalize(stmt);
+    w->chain_config_cache_warm = true;
+    return 0;
+}
+
 uint64_t nodus_chain_config_get_u64(nodus_witness_t *w,
                                      uint8_t param_id,
                                      uint64_t current_block,
                                      uint64_t default_value) {
     if (!w || !w->db) return default_value;
+    if (param_id >= 4) return default_value;  /* defense */
 
+    /* Cache warm-up if needed (CC-OPS-004 / Q16). */
+    if (!w->chain_config_cache_warm) {
+        if (cc_cache_warm_from_db(w) != 0) {
+            /* Warm-up failed — fall through to DB-direct lookup below
+             * so we never return a WRONG value due to cache miss. */
+        }
+    }
+
+    /* Fast path: walk cache backwards (rows sorted by effective_block
+     * ascending), first row with effective_block <= current_block wins. */
+    if (w->chain_config_cache_warm) {
+        int n = w->chain_config_cache_count[param_id];
+        for (int i = n - 1; i >= 0; i--) {
+            if (w->chain_config_cache[param_id][i].effective_block
+                <= current_block) {
+                return w->chain_config_cache[param_id][i].new_value;
+            }
+        }
+        /* No row active at current_block — return default. */
+        return default_value;
+    }
+
+    /* Cache warm-up failed — fall back to direct DB lookup so we never
+     * return wrong value because of transient cache failure. */
     const char *sql =
         "SELECT new_value FROM chain_config_history "
         "WHERE param_id = ? AND effective_block <= ? "
@@ -692,6 +754,13 @@ int nodus_chain_config_apply(nodus_witness_t *w,
         QGP_LOG_ERROR(LOG_TAG, "apply: insert failed rc=%d", srv);
         return -1;
     }
+
+    /* CC-OPS-004 / Q16 — invalidate cache BEFORE outer transaction
+     * commits. Rationale: if outer tx rolls back after this point the
+     * cache being stale (flag=false) just means next lookup re-warms
+     * from DB, which will NOT have the rolled-back row. Cache coherence
+     * preserved in both commit and rollback paths. */
+    w->chain_config_cache_warm = false;
 
     QGP_LOG_WARN(LOG_TAG,
                  "CHAIN_CONFIG_PROPOSAL committed: param_id=%u new_value=%llu "
