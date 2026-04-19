@@ -2515,19 +2515,31 @@ static int apply_accumulator_update(nodus_witness_t *w,
     committee_count = resolved_count;
     if (committee_count == 0) return 0;
 
-    /* Liveness gate: short recent-activity window. */
-    uint64_t min_signed = 0;
-    if (block_height > DNAC_LIVENESS_SHORT_WINDOW_BLOCKS) {
-        min_signed = block_height - DNAC_LIVENESS_SHORT_WINDOW_BLOCKS;
-    }
-
-    /* Attending indices into committee[]. */
+    /* Consensus fix 2026-04-19: record_attendance (Task 48) feeds
+     * validator.last_signed_block from the local node's observed
+     * round_state.precommits, which varies per node due to TCP-delivery
+     * timing (each node may commit the block after seeing any 5–7
+     * precommits; the exact set differs). Using last_signed_block here
+     * produces divergent attending_count → divergent per_member →
+     * divergent state_root, halting the chain on the first
+     * UNDELEGATE/CLAIM after delegation accrual starts (observed on
+     * chain d8d4d9c2, block 25, 4-way state_root split across 7 nodes).
+     *
+     * Short-term fix: treat every committee member as attending on
+     * every block, so accumulator math is purely a function of
+     * committee_count + pool + per-member stake — all deterministic
+     * chain state. Liveness-based reward slashing is lost; a malicious
+     * offline committee member still earns pro-rata share. Testnet-
+     * acceptable, must revisit before mainnet.
+     *
+     * Proper fix (deferred): derive attending set from the
+     * block's COMMIT certificate (deterministic across nodes) rather
+     * than round_state.precommits. Requires passing the cert through
+     * the apply_accumulator_update call path. */
     int attending_idx[DNAC_COMMITTEE_SIZE];
     int attending_count = 0;
     for (int i = 0; i < committee_count; i++) {
-        if (committee[i].last_signed_block >= min_signed) {
-            attending_idx[attending_count++] = i;
-        }
+        attending_idx[attending_count++] = i;
     }
 
     if (attending_count == 0) {
