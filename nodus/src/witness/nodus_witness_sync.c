@@ -285,7 +285,10 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
         nodus_t3_msg_t rsp;
         memset(&rsp, 0, sizeof(rsp));
         rsp.type = NODUS_T3_SYNC_RSP;
-        rsp.txn_id = ++w->next_txn_id;
+        /* F20 — echo request txn_id so the requester's RPC correlation
+         * filter accepts the response. Mirrors the CC_VOTE_RSP fix in
+         * nodus_witness_chain_config.c (commit f334b3ff). */
+        rsp.txn_id = msg->txn_id;
         rsp.sync_rsp.found = false;
         rsp.sync_rsp.height = height;
 
@@ -328,7 +331,8 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
     nodus_t3_msg_t rsp;
     memset(&rsp, 0, sizeof(rsp));
     rsp.type = NODUS_T3_SYNC_RSP;
-    rsp.txn_id = ++w->next_txn_id;
+    /* F20 — echo request txn_id (see block-not-found branch above). */
+    rsp.txn_id = msg->txn_id;
 
     rsp.sync_rsp.found = true;
     rsp.sync_rsp.height = height;

@@ -959,7 +959,10 @@ int nodus_witness_peer_handle_rost_q(nodus_witness_t *w,
     nodus_t3_msg_t rsp;
     memset(&rsp, 0, sizeof(rsp));
     rsp.type = NODUS_T3_ROST_R;
-    rsp.txn_id = ++w->next_txn_id;
+    /* F20 — echo request txn_id so the proposer's short-lived RPC can
+     * correlate response-to-request on its single connection. Mirrors
+     * the CC_VOTE_RSP fix (commit f334b3ff). */
+    rsp.txn_id = msg->txn_id;
     snprintf(rsp.method, sizeof(rsp.method), "w_rost_r");
 
     rsp.rost_r.version = w->roster.version;
