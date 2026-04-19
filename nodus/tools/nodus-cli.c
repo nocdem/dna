@@ -1234,7 +1234,10 @@ int main(int argc, char **argv) {
     const char *identity_dir = NULL;
     int opt;
 
-    while ((opt = getopt(argc, argv, "s:p:i:h")) != -1) {
+    /* Leading "+" makes getopt stop at the first non-option argument so
+     * sub-command long options (e.g. `chain-config propose --param ...`)
+     * are not consumed here and instead reach the command handler. */
+    while ((opt = getopt(argc, argv, "+s:p:i:h")) != -1) {
         switch (opt) {
         case 's': {
             /* Support host:port format */

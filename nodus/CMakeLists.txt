@@ -605,40 +605,33 @@ target_link_libraries(test_channel_crypto nodus dsa kem nodus)
 add_test(NAME test_channel_crypto COMMAND test_channel_crypto)
 
 # ── Tools ────────────────────────────────────────────────────────────
-add_executable(nodus-cli tools/nodus-cli.c)
+#
+# Hard-Fork v1 Stage E.3 `chain-config propose` verb needs pure DNAC TX
+# wire functions (tx_create / add_input / add_output / compute_hash /
+# serialize).  We link the minimal set of dnac source files directly into
+# the nodus-cli target instead of the whole libdna.so — keeps nodus's
+# "pure C, no libdna" rule: no engine, no DHT, no database in the binary.
+#
+# Note: these sources live under dnac/src/ and intentionally dependency-free
+# on libdna (only pull in dnac headers + crypto primitives already provided
+# by libnodus / dsa).  When the tx wire layout changes, `test_cc_wire` and
+# the dnac ctest suite catch byte drift on both link sites.
+set(DNAC_TX_WIRE_SOURCES
+    ${MONOREPO_ROOT}/dnac/src/transaction/transaction.c
+    ${MONOREPO_ROOT}/dnac/src/transaction/serialize.c
+    ${MONOREPO_ROOT}/dnac/src/ledger/chain_def_codec.c)
+
+add_executable(nodus-cli
+    tools/nodus-cli.c
+    ${DNAC_TX_WIRE_SOURCES})
 target_link_libraries(nodus-cli nodus dsa nodus)
 target_compile_options(nodus-cli PRIVATE -Wall -Wextra -Wno-unused-parameter)
-
-# Hard-Fork v1 Stage E.3 — chain-config propose verb depends on libdna for
-# TX serialize/compute_hash (pure wire functions). Build messenger tree
-# first to produce libdna.so, then this optional link enables the verb.
-# When libdna.so is missing (e.g., first-ever clean build, or a nodus-only
-# standalone bring-up), the verb is compiled out and nodus-cli stays
-# functional for its DHT / witness commands.
-#
-# Tech debt: this direct link violates nodus's "pure C, no libdna" rule.
-# See memory project_nodus_cli_libdna_decouple.md for the proper refactor
-# (move serialize.c to shared/dnac/tx_wire.c) that retires the dependency.
-find_library(DNA_SO dna PATHS
-    ${MONOREPO_ROOT}/messenger/build
-    ${MONOREPO_ROOT}/messenger/build-asan
-    NO_DEFAULT_PATH)
-if(DNA_SO)
-    message(STATUS "nodus-cli: libdna.so found at ${DNA_SO} — chain-config propose enabled")
-    target_link_libraries(nodus-cli ${DNA_SO})
-    target_include_directories(nodus-cli PRIVATE
-        ${MONOREPO_ROOT}/dnac/include
-        ${MONOREPO_ROOT}/messenger/include)
-    target_compile_definitions(nodus-cli PRIVATE NODUS_CLI_HAS_DNAC=1)
-    # RPATH so `nodus-cli` finds libdna.so at runtime without LD_LIBRARY_PATH.
-    get_filename_component(DNA_SO_DIR "${DNA_SO}" DIRECTORY)
-    set_target_properties(nodus-cli PROPERTIES
-        BUILD_RPATH   "${DNA_SO_DIR}"
-        INSTALL_RPATH "${DNA_SO_DIR}")
-else()
-    message(STATUS "nodus-cli: libdna.so NOT found — chain-config propose disabled "
-                    "(build messenger/build first to enable).")
-endif()
+target_include_directories(nodus-cli PRIVATE
+    ${MONOREPO_ROOT}/dnac/include
+    ${MONOREPO_ROOT}/messenger/include)
+target_compile_definitions(nodus-cli PRIVATE
+    NODUS_CLI_HAS_DNAC=1
+    DNAC_TX_BUILDER_ONLY=1)
 
 add_executable(nodus-server tools/nodus-server.c)
 target_link_libraries(nodus-server nodus dsa nodus)

@@ -80,6 +80,88 @@ static int find_peer_by_id(const nodus_witness_t *w,
     return -1;
 }
 
+/**
+ * Find-or-create a peer entry, deduping on witness_id, conn pointer, AND
+ * address.  Pass NULL or zero for unknown fields.  Previously each of four
+ * call sites did its own (different) dedup, so a seed bootstrap entry with
+ * zero witness_id and outbound conn would not get merged when the same
+ * peer's w_ident arrived on an inbound conn — broadcast ended up sending
+ * to the same logical peer via two slots ("sent=11" with 6 real peers).
+ * A single routine matches on whichever identifier is present, in order
+ * from strongest to weakest: witness_id → conn → address.
+ *
+ * Returns peer index (>= 0), or -1 if the table is full.
+ *
+ * Identifier fields on the matched slot are upgraded from unset to the
+ * caller-supplied value.  For conn, an already-live connection wins over
+ * a new one to preserve bidirectional broadcast for high-latency peers.
+ */
+static int witness_peer_upsert(nodus_witness_t *w,
+                                 const uint8_t *witness_id,
+                                 struct nodus_tcp_conn *conn,
+                                 const char *address) {
+    if (!w) return -1;
+
+    static const uint8_t zero_id[NODUS_T3_WITNESS_ID_LEN] = {0};
+    bool id_valid = witness_id && memcmp(witness_id, zero_id,
+                                          NODUS_T3_WITNESS_ID_LEN) != 0;
+    bool addr_valid = address && address[0];
+
+    int pi = -1;
+
+    /* 1. Match by witness_id (globally unique identity) */
+    if (id_valid) {
+        for (int i = 0; i < w->peer_count; i++) {
+            if (memcmp(w->peers[i].witness_id, witness_id,
+                       NODUS_T3_WITNESS_ID_LEN) == 0) { pi = i; break; }
+        }
+    }
+
+    /* 2. Match by conn pointer */
+    if (pi < 0 && conn) {
+        for (int i = 0; i < w->peer_count; i++) {
+            if (w->peers[i].conn == conn) { pi = i; break; }
+        }
+    }
+
+    /* 3. Match by address (logical endpoint — catches seed-bootstrap
+     * entries that haven't learned their real witness_id yet) */
+    if (pi < 0 && addr_valid) {
+        for (int i = 0; i < w->peer_count; i++) {
+            if (strcmp(w->peers[i].address, address) == 0) { pi = i; break; }
+        }
+    }
+
+    /* No match → allocate new slot if space is available */
+    if (pi < 0) {
+        if (w->peer_count >= NODUS_T3_MAX_WITNESSES) return -1;
+        pi = w->peer_count++;
+        memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
+    }
+
+    /* Upgrade fields — only fill what was previously unset, so later
+     * partial callers can't stomp authoritative data written earlier. */
+    if (id_valid) {
+        memcpy(w->peers[pi].witness_id, witness_id,
+               NODUS_T3_WITNESS_ID_LEN);
+    }
+    if (conn) {
+        if (!w->peers[pi].conn ||
+            w->peers[pi].conn->state != NODUS_CONN_CONNECTED) {
+            w->peers[pi].conn = conn;
+        }
+    }
+    if (addr_valid && !w->peers[pi].address[0]) {
+        size_t n = strlen(address);
+        if (n >= sizeof(w->peers[pi].address))
+            n = sizeof(w->peers[pi].address) - 1;
+        memcpy(w->peers[pi].address, address, n);
+        w->peers[pi].address[n] = '\0';
+    }
+
+    return pi;
+}
+
 /* ── Ensure peer entry for inbound connection ────────────────────── */
 
 /**
@@ -102,40 +184,20 @@ void nodus_witness_peer_ensure(nodus_witness_t *w,
     if (memcmp(witness_id, w->my_id, NODUS_T3_WITNESS_ID_LEN) == 0)
         return;
 
-    int pi = find_peer_by_id(w, witness_id);
-
-    if (pi >= 0) {
-        /* Peer exists — keep active outbound conn, update dead one */
-        if (w->peers[pi].conn &&
-            w->peers[pi].conn->state == NODUS_CONN_CONNECTED)
-            return;  /* Already has a live connection — prefer outbound */
-
-        /* Dead or null conn — adopt this inbound connection */
-        w->peers[pi].conn = conn;
-        w->peers[pi].identified = true;
-        w->peers[pi].connect_failures = 0;
-        return;
-    }
-
-    /* Not found — create new peer entry if space available */
-    if (w->peer_count >= NODUS_T3_MAX_WITNESSES) return;
-
+    /* Upsert handles the witness_id / conn / address dedup; address is
+     * pulled from the roster so a seed-bootstrap entry (zero id, same
+     * address) gets adopted instead of creating a duplicate slot. */
     int ri = nodus_witness_roster_find(&w->roster, witness_id);
-    pi = w->peer_count++;
-    memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
-    memcpy(w->peers[pi].witness_id, witness_id, NODUS_T3_WITNESS_ID_LEN);
-    w->peers[pi].conn = conn;
-    w->peers[pi].identified = true;
+    const char *ri_addr =
+        (ri >= 0 && w->roster.witnesses[ri].address[0])
+            ? w->roster.witnesses[ri].address
+            : NULL;
 
-    /* Copy address from roster if available (use memcpy to avoid
-     * restrict-overlap warning — both src and dst live inside *w) */
-    if (ri >= 0 && w->roster.witnesses[ri].address[0]) {
-        size_t alen = strlen(w->roster.witnesses[ri].address);
-        if (alen >= sizeof(w->peers[pi].address))
-            alen = sizeof(w->peers[pi].address) - 1;
-        memcpy(w->peers[pi].address, w->roster.witnesses[ri].address, alen);
-        w->peers[pi].address[alen] = '\0';
-    }
+    int pi = witness_peer_upsert(w, witness_id, conn, ri_addr);
+    if (pi < 0) return;
+
+    w->peers[pi].identified = true;
+    w->peers[pi].connect_failures = 0;
 }
 
 /* find_peer_by_addr and find_peer_by_conn removed — DHT is primary discovery */
@@ -520,35 +582,19 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
         }
     }
 
-    /* Update or create peer record (dedup by witness_id, then conn) */
-    int pi = find_peer_by_id(w, ident->witness_id);
-    if (pi < 0) {
-        /* Check if existing peer uses this connection (e.g., seed peer
-         * with zero witness_id). Reuse slot instead of creating duplicate. */
-        for (int j = 0; j < w->peer_count; j++) {
-            if (w->peers[j].conn == conn) {
-                pi = j;
-                break;
-            }
-        }
-    }
-    if (pi < 0 && w->peer_count < NODUS_T3_MAX_WITNESSES) {
-        pi = w->peer_count++;
-        memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
-    }
+    /* Unified upsert: dedups on witness_id, conn, AND address — matches
+     * a prior seed-bootstrap slot (zero id, same address, outbound conn)
+     * when the peer's w_ident lands on a separate inbound conn, avoiding
+     * the dual-slot "sent=11" broadcast fanout.  The address is already
+     * present in the ident message. */
+    int pi = witness_peer_upsert(w, ident->witness_id, conn, ident->address);
 
     if (pi >= 0) {
-        memcpy(w->peers[pi].witness_id, ident->witness_id,
-               NODUS_T3_WITNESS_ID_LEN);
+        /* Refresh address in case the ident carries a more canonical
+         * form (e.g., external IP vs. bootstrap seed IP). Upsert only
+         * fills address when unset; explicit overwrite keeps it fresh. */
         snprintf(w->peers[pi].address, sizeof(w->peers[pi].address),
                  "%s", ident->address);
-        /* Only update conn if existing one is dead — prefer outbound.
-         * handle_ident runs on inbound conns; blindly overwriting would
-         * replace a working outbound conn with an inbound one, breaking
-         * bidirectional broadcast for nodes behind high-latency links. */
-        if (!w->peers[pi].conn ||
-            w->peers[pi].conn->state != NODUS_CONN_CONNECTED)
-            w->peers[pi].conn = conn;
         w->peers[pi].identified = true;
         w->peers[pi].connect_failures = 0;
 
@@ -1177,15 +1223,14 @@ int nodus_witness_peer_init(nodus_witness_t *w) {
 
         nodus_tcp_conn_t *conn = nodus_tcp_connect(wtcp, seed_ip, seed_witness_port);
         if (conn) {
-            /* Create peer record (witness_id unknown until w_ident) */
-            if (w->peer_count < NODUS_T3_MAX_WITNESSES) {
-                int pi = w->peer_count++;
-                memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
-                w->peers[pi].conn = conn;
+            /* witness_id stays unknown until w_ident — upsert by address so
+             * a later identified peer merges into this slot instead of
+             * forking a duplicate entry. */
+            char addr[256];
+            snprintf(addr, sizeof(addr), "%s:%u", seed_ip, seed_witness_port);
+            int pi = witness_peer_upsert(w, NULL, conn, addr);
+            if (pi >= 0)
                 w->peers[pi].last_attempt = nodus_time_now();
-                snprintf(w->peers[pi].address, sizeof(w->peers[pi].address),
-                         "%s:%u", seed_ip, seed_witness_port);
-            }
         }
     }
 
@@ -1266,33 +1311,18 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
             continue;
         }
 
-        /* Before creating a new peer, check if an existing peer matches
-         * by address (e.g., seed peer created with zero witness_id).
-         * Merge by updating witness_id instead of creating a duplicate. */
-        if (pi < 0) {
-            for (int j = 0; j < w->peer_count; j++) {
-                if (strcmp(w->peers[j].address,
-                           w->roster.witnesses[i].address) == 0) {
-                    pi = j;
-                    memcpy(w->peers[j].witness_id,
-                           w->roster.witnesses[i].witness_id,
-                           NODUS_T3_WITNESS_ID_LEN);
-                    break;
-                }
-            }
-        }
-
-        if (pi < 0 && w->peer_count < NODUS_T3_MAX_WITNESSES) {
-            pi = w->peer_count++;
-            memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
-            memcpy(w->peers[pi].witness_id,
-                   w->roster.witnesses[i].witness_id,
-                   NODUS_T3_WITNESS_ID_LEN);
-            snprintf(w->peers[pi].address, sizeof(w->peers[pi].address),
-                     "%s", w->roster.witnesses[i].address);
-        }
+        /* Merge-or-create via unified upsert: catches the seed-bootstrap
+         * slot (zero id, same address) so reconnection adopts the slot
+         * instead of forking a duplicate. */
+        pi = witness_peer_upsert(w,
+                                   w->roster.witnesses[i].witness_id,
+                                   conn,
+                                   w->roster.witnesses[i].address);
 
         if (pi >= 0) {
+            /* Unconditionally refresh conn during reconnect — the old
+             * slot's conn may be dead/closed and this is the authoritative
+             * fresh connection just opened for this roster entry. */
             w->peers[pi].conn = conn;
             w->peers[pi].connect_failures = 0;
             w->peers[pi].last_attempt = now;

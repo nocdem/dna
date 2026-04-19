@@ -3801,10 +3801,13 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             vote->vote == NODUS_W_VOTE_APPROVE ? "APPROVE" : "REJECT",
             *approve_count, *vote_count, w->bft_config.quorum);
 
-    /* Check for quorum (genesis requires unanimous) */
+    /* Check for quorum. All TX types use standard BFT 2f+1, including
+     * genesis — unanimity was over-specified and blocked liveness when
+     * one witness had message delivery asymmetry. Safety still holds:
+     * 2f+1 is sufficient to bind a single value across the cluster, and
+     * genesis TX content is validated independently (sig, validators,
+     * chain_def). Lagging witnesses catch up via block sync. */
     uint32_t required = w->bft_config.quorum;
-    if (w->round_state.tx_type == NODUS_W_TX_GENESIS)
-        required = w->bft_config.n_witnesses;
 
     if ((uint32_t)*approve_count < required)
         return 0;  /* Not yet quorum */

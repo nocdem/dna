@@ -132,8 +132,10 @@ typedef struct {
      * by construction. Kept as a separate field only so vote message
      * dispatch does not have to know about block_hash semantics. */
     uint8_t     tx_hash[NODUS_T3_TX_HASH_LEN];
-    /* tx_type retained for the genesis-quorum-unanimous decision in
-     * handle_vote (genesis still requires unanimous approval). Set by
+    /* tx_type carried for diagnostics / future per-type handling. All TX
+     * types (including genesis) now use standard BFT 2f+1 quorum — the
+     * former genesis-unanimous override was removed because it blocked
+     * liveness without providing additional safety. Set by
      * bft_start_round_internal from entries[0]->tx_type. */
     uint8_t     tx_type;
 

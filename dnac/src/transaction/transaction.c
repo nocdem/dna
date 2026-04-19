@@ -186,6 +186,17 @@ int dnac_tx_add_signer(dnac_transaction_t *tx,
     return DNAC_SUCCESS;
 }
 
+/* dnac_tx_verify pulls in the full menagerie of per-tx-type rule
+ * modules (stake/delegate/unstake/undelegate/claim/validator_update/
+ * chain_config/genesis) plus witness + signer signature verify.  These
+ * modules depend on the libdna engine (db, DHT, nodus client singleton).
+ * Pure-builder consumers (e.g. nodus-cli's chain-config propose verb)
+ * only need create/add_input/add_output/finalize/compute_hash/serialize
+ * and would drag the entire engine into their binary otherwise.  The
+ * `DNAC_TX_BUILDER_ONLY` guard compiles verify out of those lighter
+ * builds.  libdna itself (messenger tree) leaves the guard undefined and
+ * gets the full surface. */
+#ifndef DNAC_TX_BUILDER_ONLY
 int dnac_tx_verify(const dnac_transaction_t *tx) {
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
 
@@ -284,6 +295,7 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
     QGP_LOG_DEBUG(LOG_TAG, "verify OK");
     return DNAC_SUCCESS;
 }
+#endif /* DNAC_TX_BUILDER_ONLY */
 
 /* Big-endian serialization helpers for the canonical TX hash preimage.
  * Design §2.3 (F-CRYPTO-10) requires multi-byte integers in the preimage
