@@ -238,6 +238,7 @@ if(BUILD_SHARED_LIB)
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/claim.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_update.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/chain_config.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/rewards_query.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/db/db.c
@@ -366,6 +367,7 @@ else()
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/delegate.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/claim.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_update.c
+        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/chain_config.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/rewards_query.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/db/db.c

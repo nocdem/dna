@@ -814,6 +814,51 @@ int dnac_validator_update(dnac_context_t *ctx,
                           dnac_callback_t callback,
                           void *user_data);
 
+/**
+ * @brief Submit a DNAC_TX_CHAIN_CONFIG TX (Hard-Fork v1 Stage E).
+ *
+ * Committee-voted consensus parameter change. Caller has already
+ * collected >= DNAC_CHAIN_CONFIG_MIN_SIGS (5) Dilithium5 signatures
+ * from distinct committee members over the proposal preimage
+ * (typically via the Stage C.2 w_cc_vote_req RPC or the Stage C
+ * local sign primitive for the proposer's own vote).
+ *
+ * Fee-only TX with no non-change outputs; the override row is written
+ * to chain_config_history by the witness at state-apply time.
+ *
+ * @param ctx              DNAC context
+ * @param param_id         dnac_chain_config_param_id_t value (1..3)
+ * @param new_value        Per-param range-checked in dnac_tx_verify_chain_config_rules
+ * @param effective_block  Block height at which override activates
+ *                         (witness enforces >= commit + grace tier)
+ * @param proposal_nonce   Preimage entropy (any 64-bit random value)
+ * @param signed_at_block  Sign-time anchor (committee members signed
+ *                         against this height)
+ * @param valid_before     Freshness expiry (witness rejects if
+ *                         commit_block > this)
+ * @param votes            Array of collected (witness_id, signature) tuples
+ * @param vote_count       Number of votes — must be in [5, 7]
+ * @param callback         Completion callback (can be NULL)
+ * @param user_data        Callback user data
+ * @return DNAC_SUCCESS or error code
+ */
+typedef struct {
+    uint8_t witness_id[32];
+    uint8_t signature[DNAC_SIGNATURE_SIZE];
+} dnac_chain_config_collected_vote_t;
+
+int dnac_chain_config_propose(dnac_context_t *ctx,
+                               uint8_t  param_id,
+                               uint64_t new_value,
+                               uint64_t effective_block,
+                               uint64_t proposal_nonce,
+                               uint64_t signed_at_block,
+                               uint64_t valid_before,
+                               const dnac_chain_config_collected_vote_t *votes,
+                               uint8_t  vote_count,
+                               dnac_callback_t callback,
+                               void *user_data);
+
 /* ============================================================================
  * Stake & Delegation — Client-side Query API (Phase 7 Tasks 38, 39)
  *

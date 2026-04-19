@@ -106,6 +106,7 @@ set(DNAC_SOURCES
     src/transaction/delegate.c
     src/transaction/claim.c
     src/transaction/validator_update.c
+    src/transaction/chain_config.c
     src/transaction/rewards_query.c
     src/transaction/validator_queries.c
 
