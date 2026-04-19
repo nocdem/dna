@@ -3264,6 +3264,41 @@ int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
                                                   effective_max);
     if (count <= 0) return -1;
 
+    /* Q7 / CC-GOV-008 — exclusive-block rule for chain_config_tx.
+     * If the popped batch contains a DNAC_TX_CHAIN_CONFIG TX mixed with
+     * other TX types, strip down to just the chain_config and push the
+     * others back into mempool for a future round. This ensures
+     * governance events always occupy their own block — unmissable in
+     * block explorers, impossible to bury under unrelated spends.
+     * Follower-side rejection of violating proposals lives below in
+     * the propose handler (layer 2 defense). */
+    {
+        int cc_idx = -1;
+        for (int i = 0; i < count; i++) {
+            if (batch[i]->tx_type == NODUS_W_TX_CHAIN_CONFIG) {
+                cc_idx = i;
+                break;
+            }
+        }
+        if (cc_idx >= 0 && count > 1) {
+            /* Push non-cc entries back to mempool (re-sorted by fee),
+             * keep only the chain_config entry. */
+            nodus_witness_mempool_entry_t *keep = batch[cc_idx];
+            for (int i = 0; i < count; i++) {
+                if (i != cc_idx) {
+                    if (nodus_witness_mempool_add(&w->mempool, batch[i]) != 0) {
+                        /* mempool full — free rather than drop on floor */
+                        nodus_witness_mempool_entry_free(batch[i]);
+                    }
+                }
+            }
+            batch[0] = keep;
+            count = 1;
+            QGP_LOG_INFO(LOG_TAG,
+                "Q7: chain_config_tx batch-isolated (others requeued)");
+        }
+    }
+
     /* Re-verify each TX (mempool entries may be stale due to
      * double-spend from a concurrent batch on another view) */
     /* Track all nullifiers seen in this batch to prevent intra-batch double-spend.
@@ -3496,6 +3531,25 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
             tx_invalid = true;
             snprintf(reject_reason, sizeof(reject_reason),
                      "block_hash mismatch");
+        }
+
+        /* Q7 / CC-GOV-008 — exclusive-block rule. A proposal containing
+         * a DNAC_TX_CHAIN_CONFIG MUST contain only that TX. Rejects
+         * proposers that try to bury governance events among spends. */
+        if (!tx_invalid) {
+            for (int i = 0; i < prop->batch_count; i++) {
+                if (prop->batch_txs[i].tx_type == NODUS_W_TX_CHAIN_CONFIG &&
+                    prop->batch_count != 1) {
+                    fprintf(stderr,
+                        "%s: Q7 exclusive-block violation — "
+                        "chain_config_tx in batch of %d\n",
+                        LOG_TAG, prop->batch_count);
+                    tx_invalid = true;
+                    snprintf(reject_reason, sizeof(reject_reason),
+                             "chain_config_tx must occupy its own block");
+                    break;
+                }
+            }
         }
 
         /* Allocate batch entries from proposal data.
