@@ -726,11 +726,10 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
 
     const nodus_t3_fwd_req_t *fwd = &msg->fwd_req;
 
-    /* Force roster swap if pending */
+    /* F17 A2 — transport-layer roster swap (no BFT config copy). */
     if (w->pending_roster_ready &&
         w->pending_roster.n_witnesses != w->roster.n_witnesses) {
         memcpy(&w->roster, &w->pending_roster, sizeof(w->roster));
-        memcpy(&w->bft_config, &w->pending_bft_config, sizeof(w->bft_config));
         w->pending_roster_ready = false;
         w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
     }
@@ -1190,14 +1189,12 @@ int nodus_witness_peer_handle_rost_r(nodus_witness_t *w,
         }
         w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
 
-        /* Recompute BFT config for new roster size */
-        nodus_witness_bft_config_init(&w->bft_config,
-                                       w->roster.n_witnesses);
+        /* F17 A2 — BFT config NOT recomputed from gossip. Refreshed
+         * from the chain committee at round-start. */
 
-        QGP_LOG_INFO(LOG_TAG, "roster gossip merged: %u -> %u witnesses, "
-                "quorum=%u, my_index=%d",
-                old_count, w->roster.n_witnesses,
-                w->bft_config.quorum, w->my_index);
+        QGP_LOG_INFO(LOG_TAG, "roster gossip merged: %u -> %u witnesses "
+                "(transport), my_index=%d",
+                old_count, w->roster.n_witnesses, w->my_index);
     }
 
     return 0;
@@ -1210,9 +1207,11 @@ int nodus_witness_peer_init(nodus_witness_t *w) {
 
     /* Dynamic roster — initial build from DHT registry + witness peers.
      * At init time, witness TCP connections may not be established yet.
-     * Full roster will be built on first epoch tick (60s). */
+     * Full roster will be built on first epoch tick (60s).
+     *
+     * F17 A2 — roster is transport-only; BFT config is refreshed from
+     * the chain committee at round-start, not from this init. */
     nodus_witness_rebuild_roster_from_peers(w, &w->roster);
-    nodus_witness_bft_config_init(&w->bft_config, w->roster.n_witnesses);
 
     /* Update my_index in roster */
     w->my_index = -1;

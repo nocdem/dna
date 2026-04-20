@@ -556,10 +556,10 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     if (now - witness->last_epoch >= WITNESS_EPOCH_SECS) {
         witness->last_epoch = now;
 
-        /* Build new roster from DHT registry + witness peer connections */
+        /* F17 A2 — rebuild transport-layer peer discovery roster. BFT
+         * config is NOT derived from this roster; it's recomputed from
+         * the chain-derived committee at round-start. */
         nodus_witness_rebuild_roster_from_peers(witness, &witness->pending_roster);
-        nodus_witness_bft_config_init(&witness->pending_bft_config,
-                                       witness->pending_roster.n_witnesses);
 
         /* Check if roster actually changed */
         bool changed = (witness->pending_roster.n_witnesses != witness->roster.n_witnesses);
@@ -581,21 +581,20 @@ void nodus_witness_tick(nodus_witness_t *witness) {
 
         /* Try to swap immediately if IDLE */
         if (witness->round_state.phase == NODUS_W_PHASE_IDLE) {
-            /* Swap roster */
+            /* F17 A2 — transport-only swap. BFT config is now refreshed
+             * from the chain committee at round-start (no gossip-driven
+             * quorum changes). */
             memcpy(&witness->roster, &witness->pending_roster,
                    sizeof(nodus_witness_roster_t));
-            memcpy(&witness->bft_config, &witness->pending_bft_config,
-                   sizeof(nodus_witness_bft_config_t));
             witness->pending_roster_ready = false;
 
             /* Recalculate my_index */
             witness->my_index = nodus_witness_roster_find(&witness->roster,
                                                             witness->my_id);
 
-            fprintf(stderr, "WITNESS: epoch roster swap: %u witnesses, "
-                    "quorum=%u, my_index=%d\n",
+            fprintf(stderr, "WITNESS: epoch roster swap: %u witnesses "
+                    "(transport), my_index=%d\n",
                     witness->roster.n_witnesses,
-                    witness->bft_config.quorum,
                     witness->my_index);
         } else {
             /* Round active — defer swap to next IDLE */
@@ -610,19 +609,18 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     /* Check if deferred roster swap can happen now */
     if (witness->pending_roster_ready &&
         witness->round_state.phase == NODUS_W_PHASE_IDLE) {
+        /* F17 A2 — transport-only swap (see comment at immediate-swap
+         * branch above). */
         memcpy(&witness->roster, &witness->pending_roster,
                sizeof(nodus_witness_roster_t));
-        memcpy(&witness->bft_config, &witness->pending_bft_config,
-               sizeof(nodus_witness_bft_config_t));
         witness->pending_roster_ready = false;
 
         witness->my_index = nodus_witness_roster_find(&witness->roster,
                                                         witness->my_id);
 
-        fprintf(stderr, "WITNESS: deferred roster swap: %u witnesses, "
-                "quorum=%u, my_index=%d\n",
+        fprintf(stderr, "WITNESS: deferred roster swap: %u witnesses "
+                "(transport), my_index=%d\n",
                 witness->roster.n_witnesses,
-                witness->bft_config.quorum,
                 witness->my_index);
     }
 

@@ -219,6 +219,57 @@ static uint64_t generate_nonce(void) {
     return nonce;
 }
 
+/* ── F17 A2: committee helpers ───────────────────────────────────────
+ *
+ * Under F17 consensus authority comes from the chain-derived committee,
+ * not the gossip roster. These helpers centralize the lookup + pubkey-
+ * based membership checks used by is_leader, handle_propose, handle_vote
+ * and the round-start path.
+ *
+ * The committee accessor (nodus_committee_get_for_block) hits a
+ * per-epoch cache, so repeated calls within the same epoch are O(1).
+ * ──────────────────────────────────────────────────────────────────── */
+
+/** Load the committee authoritative for a given block height.
+ *
+ * @return 0 on success (count_out populated, possibly 0 for pre-genesis),
+ *         -1 on DB error.
+ *
+ * Additional helpers (committee_find_pubkey, my_committee_index_for_block)
+ * land in A3 when is_leader / handle_propose / handle_vote consume them. */
+static int load_committee_at_height(nodus_witness_t *w,
+                                      uint64_t block_height,
+                                      nodus_committee_member_t *out,
+                                      int max_entries,
+                                      int *count_out) {
+    if (!w || !out || !count_out) return -1;
+    *count_out = 0;
+    return nodus_committee_get_for_block(w, block_height, out,
+                                           max_entries, count_out);
+}
+
+/** Recompute w->bft_config from the committee for `block_height`.
+ *
+ * Authoritative source for quorum/f_tolerance. Replaces the legacy
+ * gossip-roster-driven bft_config_init called from roster_add /
+ * epoch-tick paths.
+ *
+ * @return 0 on success (consensus_active may be true or false based on
+ *         committee size), -1 on DB error (w->bft_config left
+ *         untouched, caller should fail-closed). */
+static int refresh_bft_config_from_committee(nodus_witness_t *w,
+                                                uint64_t block_height) {
+    if (!w) return -1;
+    nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+    int count = 0;
+    if (load_committee_at_height(w, block_height, committee,
+                                   DNAC_COMMITTEE_SIZE, &count) != 0) {
+        return -1;
+    }
+    nodus_witness_bft_config_init(&w->bft_config, (uint32_t)count);
+    return 0;
+}
+
 /* ── Config ──────────────────────────────────────────────────────── */
 
 void nodus_witness_bft_config_init(nodus_witness_bft_config_t *cfg,
@@ -318,14 +369,17 @@ int nodus_witness_roster_add(nodus_witness_t *w,
     w->roster.n_witnesses++;
     w->roster.version++;
 
-    /* Recalculate BFT config */
-    nodus_witness_bft_config_init(&w->bft_config, w->roster.n_witnesses);
+    /* F17 A2 — BFT config is NOT derived from gossip roster. It's
+     * refreshed from the chain committee at round-start. Roster is now
+     * transport-only (peer discovery + witness_id↔pubkey map). */
 
-    /* Update our index */
+    /* Update our transport-layer index (still used for cert_preimage's
+     * voter_id and spend_result routing). A4 will remove my_index
+     * entirely; until then it's a gossip-roster index only. */
     w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
 
-    fprintf(stderr, "%s: roster add (now %u witnesses, quorum=%u)\n",
-            LOG_TAG, w->roster.n_witnesses, w->bft_config.quorum);
+    fprintf(stderr, "%s: roster add (now %u witnesses, transport)\n",
+            LOG_TAG, w->roster.n_witnesses);
     return 0;
 }
 
@@ -2987,21 +3041,30 @@ static int bft_start_round_internal(nodus_witness_t *w,
                                       int count) {
     if (!w || !entries || count <= 0) return -1;
 
-    /* Force roster swap if pending */
+    /* F17 A2 — transport-layer roster swap (gossip discovery). Consensus
+     * authority is NOT tied to this swap anymore; bft_config is refreshed
+     * from committee just below. */
     if (w->pending_roster_ready &&
         w->pending_roster.n_witnesses != w->roster.n_witnesses) {
         memcpy(&w->roster, &w->pending_roster, sizeof(nodus_witness_roster_t));
-        memcpy(&w->bft_config, &w->pending_bft_config,
-               sizeof(nodus_witness_bft_config_t));
         w->pending_roster_ready = false;
         w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
-        fprintf(stderr, "%s: force roster swap before batch: %u witnesses, "
-                "quorum=%u, my_index=%d\n", LOG_TAG,
-                w->roster.n_witnesses, w->bft_config.quorum, w->my_index);
+        fprintf(stderr, "%s: force roster swap before batch: %u witnesses "
+                "(transport), my_index=%d\n", LOG_TAG,
+                w->roster.n_witnesses, w->my_index);
+    }
+
+    /* F17 A2 — recompute BFT config from the chain-derived committee
+     * for the next block. This is the authoritative quorum source. */
+    uint64_t next_bh = nodus_witness_block_height(w) + 1;
+    if (refresh_bft_config_from_committee(w, next_bh) != 0) {
+        fprintf(stderr, "%s: failed to load committee for block %llu\n",
+                LOG_TAG, (unsigned long long)next_bh);
+        return -1;
     }
 
     if (!nodus_witness_bft_consensus_active(w)) {
-        fprintf(stderr, "%s: consensus disabled (n=%u < %d)\n",
+        fprintf(stderr, "%s: consensus disabled (committee_count=%u < %d)\n",
                 LOG_TAG, w->bft_config.n_witnesses, NODUS_T3_MIN_WITNESSES);
         return -1;
     }
@@ -3431,14 +3494,26 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     if (!verify_chain_id(w, hdr->chain_id))
         return -1;
 
-    /* Force roster swap if pending — ensures consistent leader calculation */
+    /* F17 A2 — transport-layer roster swap (gossip discovery). Consensus
+     * authority is NOT tied to this swap anymore; bft_config refreshes
+     * from committee below. */
     if (w->pending_roster_ready &&
         w->pending_roster.n_witnesses != w->roster.n_witnesses) {
         memcpy(&w->roster, &w->pending_roster, sizeof(nodus_witness_roster_t));
-        memcpy(&w->bft_config, &w->pending_bft_config,
-               sizeof(nodus_witness_bft_config_t));
         w->pending_roster_ready = false;
         w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
+    }
+
+    /* F17 A2 — recompute BFT config from the chain-derived committee
+     * for the block this proposal is for. A3 will additionally gate
+     * the leader check against this committee (not w->roster). */
+    {
+        uint64_t next_bh = nodus_witness_block_height(w) + 1;
+        if (refresh_bft_config_from_committee(w, next_bh) != 0) {
+            fprintf(stderr, "%s: failed to load committee for block %llu\n",
+                    LOG_TAG, (unsigned long long)next_bh);
+            return -1;
+        }
     }
 
     /* Check for existing round in progress */

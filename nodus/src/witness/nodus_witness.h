@@ -269,10 +269,11 @@ typedef struct nodus_witness {
     /* BFT config (computed from roster) */
     nodus_witness_bft_config_t  bft_config;
 
-    /* Dynamic roster — epoch-based refresh */
+    /* Dynamic roster — epoch-based refresh. F17 A2: transport-only now
+     * (peer discovery / witness_id→pubkey lookup). BFT config comes
+     * from the chain committee at round-start, not from this roster. */
     uint64_t    last_epoch;                     /* Timestamp of last roster rebuild */
     nodus_witness_roster_t  pending_roster;     /* Built each epoch from DHT + peers */
-    nodus_witness_bft_config_t pending_bft_config;
     bool        pending_roster_ready;           /* Pending roster waiting to swap */
 
     /* Zone chain ID */
