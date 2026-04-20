@@ -4920,6 +4920,16 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
     nodus_witness_batch_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
 
+    /* F17 determinism fix: snapshot RAM state that apply_tx_to_state +
+     * apply_accumulator_update mutate in-place. On any rollback path
+     * below we MUST restore these so retried/attribution-replay passes
+     * don't pump w->block_fee_pool above the pre-batch value. Failure
+     * to restore made pool divergent across nodes (nodes with more
+     * failed attempts had higher pool → higher per_member at next
+     * successful block → divergent UTXO amounts on UNDELEGATE payouts
+     * → divergent state_root). */
+    uint64_t saved_block_fee_pool = w->block_fee_pool;
+
     if (nodus_witness_db_begin(w) != 0) return -1;
 
     uint64_t bh = nodus_witness_block_height(w) + 1;
@@ -4929,7 +4939,11 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
 
     for (int i = 0; i < count; i++) {
         nodus_witness_mempool_entry_t *e = entries[i];
-        if (!e) { nodus_witness_db_rollback(w); return -1; }
+        if (!e) {
+            nodus_witness_db_rollback(w);
+            w->block_fee_pool = saved_block_fee_pool;
+            return -1;
+        }
 
         const uint8_t *nul_ptrs[NODUS_T3_MAX_TX_INPUTS];
         for (int j = 0; j < e->nullifier_count; j++)
@@ -4941,6 +4955,7 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
                                e->client_pubkey, e->client_sig) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "commit_batch: TX %d apply_tx failed", i);
             nodus_witness_db_rollback(w);
+            w->block_fee_pool = saved_block_fee_pool;
             return -1;
         }
 
@@ -5027,6 +5042,10 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
             }
             nodus_witness_db_rollback(w);
         }
+        /* Restore RAM state that apply_tx_to_state / attribution replay
+         * mutated in-place. DB is fully rolled back; the pool must
+         * match. */
+        w->block_fee_pool = saved_block_fee_pool;
         return -1;
     }
 

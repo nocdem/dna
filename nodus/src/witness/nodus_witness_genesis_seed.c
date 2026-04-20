@@ -25,6 +25,7 @@
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_reward.h"
+#include "witness/nodus_witness_committee.h"
 
 #include "dnac/dnac.h"
 #include "dnac/validator.h"
@@ -156,8 +157,35 @@ int nodus_witness_genesis_seed_validators(nodus_witness_t *w,
         return -1;
     }
 
-    fprintf(stderr, "%s: seeded %u initial validators + rewards\n",
-            LOG_TAG, (unsigned)iv_count);
+    /* F17 determinism fix: populate committee cache atomically at genesis.
+     * All 7 witnesses execute this on the same DB state (initial validators
+     * just seeded), so every node caches bit-identical identity set for the
+     * bootstrap epoch (e_start=0). Frozen-per-epoch invariant (design §3.6)
+     * is preserved — subsequent STAKE/DELEGATE do NOT shift the cached
+     * roster until the next epoch, eliminating the populate-timing drift
+     * that caused state_root divergence under F17 round-start refresh. */
+    nodus_committee_member_t boot[DNAC_COMMITTEE_SIZE];
+    int boot_count = 0;
+    int rc2 = nodus_committee_compute_for_epoch(w, 0ULL, boot,
+                                                  DNAC_COMMITTEE_SIZE,
+                                                  &boot_count);
+    if (rc2 != 0) {
+        fprintf(stderr, "%s: committee_compute_for_epoch(0) failed rc=%d\n",
+                LOG_TAG, rc2);
+        return -1;
+    }
+    for (int i = 0; i < boot_count; i++) {
+        memcpy(w->cached_committee_pubkeys[i], boot[i].pubkey,
+               DNAC_PUBKEY_SIZE);
+        w->cached_committee_stakes[i]         = boot[i].total_stake;
+        w->cached_committee_commission_bps[i] = boot[i].commission_bps;
+    }
+    w->cached_committee_count       = boot_count;
+    w->cached_committee_epoch_start = 0ULL;
+
+    fprintf(stderr, "%s: seeded %u initial validators + rewards; "
+                    "committee cache locked (bootstrap epoch, %d members)\n",
+            LOG_TAG, (unsigned)iv_count, boot_count);
     return 0;
 }
 
