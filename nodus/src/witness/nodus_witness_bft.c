@@ -225,6 +225,14 @@ void nodus_witness_bft_config_init(nodus_witness_bft_config_t *cfg,
                                      uint32_t n) {
     if (!cfg) return;
 
+    /* F17 A1 — clamp at committee size. Callers may pass gossip-roster
+     * size (up to NODUS_T3_MAX_WITNESSES = 128) during the A1→A3
+     * interim, but vote arrays only hold DNAC_COMMITTEE_SIZE entries.
+     * Computing quorum against a larger n would yield an unreachable
+     * threshold. A3 will eliminate the gossip-roster path entirely;
+     * this clamp is the safety net until then. */
+    if (n > DNAC_COMMITTEE_SIZE) n = DNAC_COMMITTEE_SIZE;
+
     cfg->n_witnesses = n;
 
     /* Below minimum — consensus disabled */
@@ -3052,6 +3060,9 @@ static int bft_start_round_internal(nodus_witness_t *w,
     /* Record our own PREVOTE */
     memcpy(w->round_state.prevotes[0].voter_id, w->my_id,
            NODUS_T3_WITNESS_ID_LEN);
+    /* F17 A1 — carry our pubkey alongside for committee authorization. */
+    memcpy(w->round_state.prevotes[0].pubkey,
+           w->server->identity.pk.bytes, DNAC_PUBKEY_SIZE);
     w->round_state.prevotes[0].vote = NODUS_W_VOTE_APPROVE;
     w->round_state.prevote_count = 1;
     w->round_state.prevote_approve_count = 1;
@@ -3639,6 +3650,9 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     /* Record our own PREVOTE */
     memcpy(w->round_state.prevotes[0].voter_id, w->my_id,
            NODUS_T3_WITNESS_ID_LEN);
+    /* F17 A1 — carry our pubkey alongside for committee authorization. */
+    memcpy(w->round_state.prevotes[0].pubkey,
+           w->server->identity.pk.bytes, DNAC_PUBKEY_SIZE);
     w->round_state.prevotes[0].vote = my_vote;
     w->round_state.prevote_count = 1;
     w->round_state.prevote_approve_count =
@@ -3738,12 +3752,23 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
         return -1;
     }
 
-    /* Record vote */
-    if (*vote_count >= NODUS_T3_MAX_WITNESSES)
+    /* Record vote — vote arrays sized to DNAC_COMMITTEE_SIZE per F17
+     * A1 (committee is the voting authority). Reject if somehow we've
+     * accumulated more votes than committee slots. */
+    if (*vote_count >= DNAC_COMMITTEE_SIZE)
         return -1;
 
     memcpy(votes[*vote_count].voter_id, hdr->sender_id,
            NODUS_T3_WITNESS_ID_LEN);
+    /* F17 A1 — carry sender's pubkey via gossip roster lookup. Safe
+     * because witness_id = SHA3-512(pubkey)[0:32] (nodus_chain_config.h
+     * :157), so the roster's (witness_id, pubkey) pairs are
+     * cryptographically bound and cannot be poisoned with a forged
+     * victim-witness_id mapping. Envelope sig has already been
+     * verified against this same pubkey at witness.c:657-678 before
+     * this handler was invoked. */
+    memcpy(votes[*vote_count].pubkey,
+           w->roster.witnesses[sender_idx].pubkey, DNAC_PUBKEY_SIZE);
     votes[*vote_count].vote = (nodus_witness_vote_t)vote->vote;
     /* Phase 7.5 / Task 7.5.2 — store the wire-supplied cert_sig.
      * Only PRECOMMIT messages carry a meaningful cert_sig; PREVOTE
@@ -3822,6 +3847,9 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
         /* Record our own precommit first */
         memcpy(w->round_state.precommits[0].voter_id, w->my_id,
                NODUS_T3_WITNESS_ID_LEN);
+        /* F17 A1 — carry our pubkey alongside for committee authorization. */
+        memcpy(w->round_state.precommits[0].pubkey,
+               w->server->identity.pk.bytes, DNAC_PUBKEY_SIZE);
         w->round_state.precommits[0].vote = NODUS_W_VOTE_APPROVE;
         memcpy(w->round_state.precommits[0].signature, cert_sig,
                NODUS_SIG_BYTES);
@@ -4278,7 +4306,7 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
             return 0;
     }
 
-    if (w->view_change_count < NODUS_T3_MAX_WITNESSES) {
+    if (w->view_change_count < DNAC_COMMITTEE_SIZE) {
         memcpy(w->view_changes[w->view_change_count].voter_id,
                hdr->sender_id, NODUS_T3_WITNESS_ID_LEN);
         w->view_changes[w->view_change_count].target_view = vc->new_view;

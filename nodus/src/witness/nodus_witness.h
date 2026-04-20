@@ -118,6 +118,19 @@ typedef struct {
     uint8_t     voter_id[NODUS_T3_WITNESS_ID_LEN];
     nodus_witness_vote_t vote;
     uint8_t     signature[NODUS_SIG_BYTES];
+    /* F17 A1 — voter's Dilithium5 public key. In-memory only; NOT
+     * persisted to the commit_certificates table nor carried on the T3
+     * wire format (both fields remain witness_id + signature only).
+     * Populated at vote-record-write time:
+     *   - self-votes: from w->server->identity.pk.bytes
+     *   - incoming votes: from gossip roster's pubkey map at handle_vote
+     *     time (safe because witness_id = H(pubkey) per
+     *     nodus_chain_config.h:157, see F17 design A15).
+     * Cert reads from DB (nodus_witness_cert_get) leave this field
+     * ZERO — callers on the read path MUST NOT trust pubkey. The read
+     * path is used only by sync verification, which resolves pubkey
+     * separately via nodus_witness_verify_sync_certs. */
+    uint8_t     pubkey[DNAC_PUBKEY_SIZE];
 } nodus_witness_vote_record_t;
 
 /* ── Round state ─────────────────────────────────────────────────── */
@@ -139,12 +152,19 @@ typedef struct {
      * bft_start_round_internal from entries[0]->tx_type. */
     uint8_t     tx_type;
 
-    /* Votes */
-    nodus_witness_vote_record_t prevotes[NODUS_T3_MAX_WITNESSES];
+    /* Votes — sized to DNAC_COMMITTEE_SIZE per F17: consensus is
+     * committee-bound, so vote arrays hold at most committee-many
+     * entries. Previously these were NODUS_T3_MAX_WITNESSES (128)
+     * legacy gossip-roster cap, which cost ~1.7 MB per round_state
+     * after A1's pubkey widening — enough to stack-overflow test
+     * binaries that allocate nodus_witness_t on the stack. Type
+     * enforces F17 invariant: "vote_count can never exceed committee
+     * size." */
+    nodus_witness_vote_record_t prevotes[DNAC_COMMITTEE_SIZE];
     int         prevote_count;
     int         prevote_approve_count;
 
-    nodus_witness_vote_record_t precommits[NODUS_T3_MAX_WITNESSES];
+    nodus_witness_vote_record_t precommits[DNAC_COMMITTEE_SIZE];
     int         precommit_count;
     int         precommit_approve_count;
 
@@ -241,7 +261,7 @@ typedef struct nodus_witness {
     nodus_witness_round_state_t round_state;
 
     /* View change tracking */
-    nodus_witness_vc_record_t view_changes[NODUS_T3_MAX_WITNESSES];
+    nodus_witness_vc_record_t view_changes[DNAC_COMMITTEE_SIZE];
     int         view_change_count;
     uint32_t    view_change_target;
     bool        view_change_in_progress;

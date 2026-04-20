@@ -1372,6 +1372,13 @@ int nodus_witness_cert_get(nodus_witness_t *w, uint64_t block_height,
         if (sig && sig_len == NODUS_SIG_BYTES)
             memcpy(votes_out[count].signature, sig, NODUS_SIG_BYTES);
 
+        /* F17 A1 — pubkey is NOT persisted in commit_certificates schema.
+         * Explicit zero so callers see a deterministic zero field rather
+         * than stack garbage. Sync verification (verify_sync_certs) does
+         * not consult this field — it resolves pubkey via the roster
+         * keyed on voter_id. */
+        memset(votes_out[count].pubkey, 0, DNAC_PUBKEY_SIZE);
+
         count++;
     }
 

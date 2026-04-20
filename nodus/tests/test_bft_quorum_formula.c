@@ -1,14 +1,17 @@
 /**
  * Nodus — BFT quorum formula tests
  *
- * Phase 8 / Tasks 8.1 + 8.2 + 8.3 — verifies the new (2n)/3 + 1
- * formula yields the correct quorum for every cluster size, including:
- *   - n below NODUS_T3_MIN_WITNESSES (consensus disabled, q=0)
- *   - n == 3f+1 (unchanged vs the legacy formula)
- *   - n not of the form 3f+1 (where the legacy 2f+1 was UNSAFE)
+ * Phase 8 / Tasks 8.1 + 8.2 + 8.3 — verifies the (2n)/3 + 1 formula
+ * yields the correct quorum across the supported committee range.
+ *
+ * F17 A1 — nodus_witness_bft_config_init clamps n at DNAC_COMMITTEE_SIZE.
+ * Consensus is committee-bound, so any n > 7 is compressed to the
+ * committee-sized quorum. The pure formula math is still exercised
+ * separately via test_formula_identity to guard against refactors.
  */
 
 #include "witness/nodus_witness_bft.h"
+#include "dnac/dnac.h"   /* DNAC_COMMITTEE_SIZE */
 
 #include <stdio.h>
 #include <string.h>
@@ -21,37 +24,32 @@
 static int passed = 0;
 static int failed = 0;
 
-/* Expected quorums per (2n)/3 + 1, with n < NODUS_T3_MIN_WITNESSES(5)
- * disabled (q=0). */
+/* In-range cases (n <= DNAC_COMMITTEE_SIZE): config_init must yield
+ * the exact (2n)/3 + 1 quorum. */
 struct case_row { uint32_t n; uint32_t expected_q; };
-static const struct case_row cases[] = {
+static const struct case_row in_range_cases[] = {
     {0, 0}, {1, 0}, {2, 0}, {3, 0}, {4, 0},   /* below minimum */
     {5, 4},   /* safety upgrade: legacy q=3 was unsafe here */
     {6, 5},
-    {7, 5},   /* n=3f+1 unchanged */
-    {8, 6},   /* safety upgrade: legacy q=5 was unsafe here */
-    {9, 7},
-    {10, 7},  /* n=3f+1 unchanged */
-    {11, 8},  /* safety upgrade */
-    {13, 9},  /* n=3f+1 unchanged */
-    {21, 15},
-    {22, 15},
-    {42, 29},
-    {100, 67},
+    {7, 5},   /* n=3f+1 production committee */
 };
 
-static void test_quorum_table(void) {
-    TEST("quorum formula yields expected value for every n");
+/* Out-of-range cases: config_init clamps at DNAC_COMMITTEE_SIZE so
+ * any n > 7 returns the same cfg as n = 7. */
+static const uint32_t clamp_cases[] = {8, 9, 10, 13, 21, 42, 100};
 
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+static void test_in_range_quorum(void) {
+    TEST("in-range quorum (n <= DNAC_COMMITTEE_SIZE)");
+
+    for (size_t i = 0; i < sizeof(in_range_cases) / sizeof(in_range_cases[0]); i++) {
         nodus_witness_bft_config_t cfg;
         memset(&cfg, 0, sizeof(cfg));
-        nodus_witness_bft_config_init(&cfg, cases[i].n);
+        nodus_witness_bft_config_init(&cfg, in_range_cases[i].n);
 
-        if (cfg.quorum != cases[i].expected_q) {
+        if (cfg.quorum != in_range_cases[i].expected_q) {
             char buf[80];
             snprintf(buf, sizeof(buf), "n=%u expected q=%u got q=%u",
-                     cases[i].n, cases[i].expected_q, cfg.quorum);
+                     in_range_cases[i].n, in_range_cases[i].expected_q, cfg.quorum);
             FAIL(buf);
             return;
         }
@@ -59,12 +57,41 @@ static void test_quorum_table(void) {
     PASS();
 }
 
-static void test_n3f_plus_1_unchanged(void) {
-    TEST("n ∈ {4,7,10,13} (3f+1) yields the same q as the legacy formula");
+static void test_clamp_at_committee_size(void) {
+    TEST("n > DNAC_COMMITTEE_SIZE clamps to committee-sized quorum");
+
+    /* F17 A1 invariant: config_init clamps n at DNAC_COMMITTEE_SIZE,
+     * so any n > 7 yields the same cfg as n=7. Vote arrays are sized
+     * to DNAC_COMMITTEE_SIZE; quorums larger than that would be
+     * unreachable. */
+    nodus_witness_bft_config_t baseline;
+    memset(&baseline, 0, sizeof(baseline));
+    nodus_witness_bft_config_init(&baseline, DNAC_COMMITTEE_SIZE);
+
+    for (size_t i = 0; i < sizeof(clamp_cases) / sizeof(clamp_cases[0]); i++) {
+        nodus_witness_bft_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        nodus_witness_bft_config_init(&cfg, clamp_cases[i]);
+
+        if (cfg.quorum != baseline.quorum) {
+            char buf[80];
+            snprintf(buf, sizeof(buf),
+                     "n=%u clamp expected q=%u got q=%u",
+                     clamp_cases[i], baseline.quorum, cfg.quorum);
+            FAIL(buf);
+            return;
+        }
+    }
+    PASS();
+}
+
+static void test_formula_identity(void) {
+    TEST("(2n)/3 + 1 == 2f+1 for all n = 3f+1 (pure math, no config_init)");
 
     /* For n = 3f+1, (2n)/3+1 == 2f+1 algebraically. This regression
      * test guards against accidental refactors that break the
-     * production n=7 cluster's existing quorum. */
+     * production n=7 cluster's existing quorum. Pure math — does NOT
+     * call config_init, so the F17 clamp doesn't affect it. */
     uint32_t ns[] = {4, 7, 10, 13, 16, 19, 22, 25};
     for (size_t i = 0; i < sizeof(ns) / sizeof(ns[0]); i++) {
         uint32_t n = ns[i];
@@ -76,17 +103,6 @@ static void test_n3f_plus_1_unchanged(void) {
                      "n=%u legacy=%u new=%u", n, legacy_q, new_q);
             FAIL(buf);
             return;
-        }
-
-        /* Also verify the live config init matches, for n ≥ minimum. */
-        if (n >= 5) {
-            nodus_witness_bft_config_t cfg;
-            memset(&cfg, 0, sizeof(cfg));
-            nodus_witness_bft_config_init(&cfg, n);
-            if (cfg.quorum != new_q) {
-                FAIL("config_init mismatch");
-                return;
-            }
         }
     }
     PASS();
@@ -109,8 +125,9 @@ int main(void) {
     printf("==========================================\n\n");
 
     test_below_minimum_disables();
-    test_n3f_plus_1_unchanged();
-    test_quorum_table();
+    test_formula_identity();
+    test_in_range_quorum();
+    test_clamp_at_committee_size();
 
     printf("\n==========================================\n");
     printf("Results: %d passed, %d failed\n\n", passed, failed);
