@@ -132,10 +132,24 @@ static int witness_peer_upsert(nodus_witness_t *w,
         }
     }
 
-    /* No match → allocate new slot if space is available */
+    /* No match → prefer reusing a dead slot (conn dropped + not
+     * identified) before extending peer_count. conn_closed leaves
+     * such slots in a recoverable state; without this reuse path the
+     * table grows monotonically toward NODUS_T3_MAX_WITNESSES over
+     * the node lifetime on NAT-rebind / pre-ident reconnect edge
+     * cases. Dedup passes above still match live peers to their
+     * existing slot, so reuse only fires for genuinely fresh peers. */
     if (pi < 0) {
-        if (w->peer_count >= NODUS_T3_MAX_WITNESSES) return -1;
-        pi = w->peer_count++;
+        for (int i = 0; i < w->peer_count; i++) {
+            if (!w->peers[i].conn && !w->peers[i].identified) {
+                pi = i;
+                break;
+            }
+        }
+        if (pi < 0) {
+            if (w->peer_count >= NODUS_T3_MAX_WITNESSES) return -1;
+            pi = w->peer_count++;
+        }
         memset(&w->peers[pi], 0, sizeof(w->peers[pi]));
     }
 
