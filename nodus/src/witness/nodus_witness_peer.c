@@ -528,6 +528,44 @@ int nodus_witness_peer_handle_ident(nodus_witness_t *w,
         return -1;
     }
 
+    /* F17 B1 — TCP 4004 admission gate. After the handshake has
+     * revealed the peer's pubkey, reject the connection if the peer
+     * is not a member of the chain-derived committee for the next
+     * block. This is defense-in-depth on top of A3's vote-time
+     * authorization: non-committee peers cannot vote (A3) and also
+     * cannot consume a gossip-roster slot or TCP 4004 resources (B1).
+     *
+     * Pre-genesis (committee empty) is handled liberally — the check
+     * is a no-op until the chain has any validators. Otherwise,
+     * reject ident from any pubkey not in the current committee. */
+    {
+        nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+        int cm_count = 0;
+        if (nodus_committee_get_for_block(w,
+                                            nodus_witness_block_height(w) + 1,
+                                            committee,
+                                            DNAC_COMMITTEE_SIZE,
+                                            &cm_count) == 0 && cm_count > 0) {
+            bool in_committee = false;
+            for (int i = 0; i < cm_count; i++) {
+                if (memcmp(committee[i].pubkey, ident->pubkey,
+                            DNAC_PUBKEY_SIZE) == 0) {
+                    in_committee = true;
+                    break;
+                }
+            }
+            if (!in_committee) {
+                fprintf(stderr,
+                        "%s: w_ident rejected — peer pubkey not in "
+                        "current committee (transport admission gate)\n",
+                        LOG_TAG);
+                return -1;
+            }
+        }
+        /* cm_count == 0: pre-genesis / bootstrap — accept liberally so
+         * committee can be established. */
+    }
+
     /* Fix 3: chain_id quorum tracking — piggybacks on T3 message header */
     witness_chain_quorum_observe(w, ident->witness_id, msg->header.chain_id);
 
