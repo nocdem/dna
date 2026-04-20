@@ -731,7 +731,6 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
         w->pending_roster.n_witnesses != w->roster.n_witnesses) {
         memcpy(&w->roster, &w->pending_roster, sizeof(w->roster));
         w->pending_roster_ready = false;
-        w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
     }
 
     /* Only leader handles forward requests */
@@ -1187,14 +1186,12 @@ int nodus_witness_peer_handle_rost_r(nodus_witness_t *w,
             qsort(w->roster.witnesses, w->roster.n_witnesses,
                   sizeof(nodus_witness_roster_entry_t), roster_cmp);
         }
-        w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
-
         /* F17 A2 — BFT config NOT recomputed from gossip. Refreshed
          * from the chain committee at round-start. */
 
         QGP_LOG_INFO(LOG_TAG, "roster gossip merged: %u -> %u witnesses "
-                "(transport), my_index=%d",
-                old_count, w->roster.n_witnesses, w->my_index);
+                "(transport)",
+                old_count, w->roster.n_witnesses);
     }
 
     return 0;
@@ -1209,19 +1206,10 @@ int nodus_witness_peer_init(nodus_witness_t *w) {
      * At init time, witness TCP connections may not be established yet.
      * Full roster will be built on first epoch tick (60s).
      *
-     * F17 A2 — roster is transport-only; BFT config is refreshed from
-     * the chain committee at round-start, not from this init. */
+     * F17 A2/A4 — roster is transport-only; BFT config is refreshed
+     * from the chain committee at round-start, and self-identity
+     * queries resolve through the committee pubkey lookup. */
     nodus_witness_rebuild_roster_from_peers(w, &w->roster);
-
-    /* Update my_index in roster */
-    w->my_index = -1;
-    for (uint32_t i = 0; i < w->roster.n_witnesses; i++) {
-        if (memcmp(w->roster.witnesses[i].witness_id,
-                   w->my_id, NODUS_T3_WITNESS_ID_LEN) == 0) {
-            w->my_index = (int)i;
-            break;
-        }
-    }
 
     /* Bootstrap: connect to all seed nodes on witness TCP port (4004).
      * Seed nodes are configured as IP:UDP_port, witness_port = UDP + 4.
@@ -1278,7 +1266,9 @@ void nodus_witness_peer_tick(nodus_witness_t *w) {
      * Witness TCP 4004 connections are NOT managed by Kademlia (which uses UDP 4000),
      * so the witness module must actively connect to discovered peers. */
     for (uint32_t i = 0; i < w->roster.n_witnesses; i++) {
-        if ((int)i == w->my_index) continue;
+        /* F17 A4 — skip self via witness_id comparison (no my_index). */
+        if (memcmp(w->roster.witnesses[i].witness_id, w->my_id,
+                    NODUS_T3_WITNESS_ID_LEN) == 0) continue;
         if (!w->roster.witnesses[i].active) continue;
         if (!w->roster.witnesses[i].address[0]) continue;
 

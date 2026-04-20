@@ -1700,10 +1700,8 @@ static void handle_dnac_spend(nodus_witness_t *w,
         w->pending_roster.n_witnesses != w->roster.n_witnesses) {
         memcpy(&w->roster, &w->pending_roster, sizeof(w->roster));
         w->pending_roster_ready = false;
-        w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
         fprintf(stderr, "%s: force roster swap on spend: %u witnesses "
-                "(transport), my_index=%d\n", LOG_TAG,
-                w->roster.n_witnesses, w->my_index);
+                "(transport)\n", LOG_TAG, w->roster.n_witnesses);
     }
 
     /* Check if we are leader */
@@ -1844,28 +1842,60 @@ static void handle_dnac_spend(nodus_witness_t *w,
         w->pending_forwards[pf_slot].started_at = (uint64_t)time(NULL);
         w->pending_forward_count++;
 
-        /* Find leader peer */
-        uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
-        int leader_idx = nodus_witness_bft_leader_index(
-            epoch, w->current_view, w->roster.n_witnesses);
-
-        if (leader_idx < 0 || leader_idx == w->my_index) {
-            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                        "no leader available");
-            w->pending_forwards[pf_slot].active = false;
-            w->pending_forward_count--;
-            return;
-        }
-
-        /* Find peer connection for leader */
+        /* F17 A4 — find the chain-committee-derived leader for the next
+         * block, then resolve its peer connection. Uses committee
+         * pubkey (not gossip roster slot) as the authoritative leader
+         * identity. */
         struct nodus_tcp_conn *leader_conn = NULL;
-        for (int i = 0; i < w->peer_count; i++) {
-            int ri = nodus_witness_roster_find(
-                &w->roster, w->peers[i].witness_id);
-            if (ri == leader_idx && w->peers[i].conn &&
-                w->peers[i].identified) {
-                leader_conn = w->peers[i].conn;
-                break;
+        {
+            uint64_t next_bh = nodus_witness_block_height(w) + 1;
+            nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+            int cm_count = 0;
+            if (nodus_committee_get_for_block(w, next_bh, committee,
+                                                DNAC_COMMITTEE_SIZE,
+                                                &cm_count) != 0 ||
+                cm_count == 0) {
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "no committee available");
+                w->pending_forwards[pf_slot].active = false;
+                w->pending_forward_count--;
+                return;
+            }
+
+            uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
+            int leader_slot = nodus_witness_bft_leader_index(
+                epoch, w->current_view, cm_count);
+            if (leader_slot < 0) {
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "no leader available");
+                w->pending_forwards[pf_slot].active = false;
+                w->pending_forward_count--;
+                return;
+            }
+            const uint8_t *leader_pk = committee[leader_slot].pubkey;
+
+            /* Reject if we ARE the leader — this forward path is for
+             * non-leaders only. */
+            if (memcmp(leader_pk, w->server->identity.pk.bytes,
+                        DNAC_PUBKEY_SIZE) == 0) {
+                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                            "we are the leader, nothing to forward");
+                w->pending_forwards[pf_slot].active = false;
+                w->pending_forward_count--;
+                return;
+            }
+
+            /* Find peer connection whose roster pubkey matches leader_pk. */
+            for (int i = 0; i < w->peer_count; i++) {
+                int ri = nodus_witness_roster_find(
+                    &w->roster, w->peers[i].witness_id);
+                if (ri < 0) continue;
+                if (memcmp(w->roster.witnesses[ri].pubkey, leader_pk,
+                            DNAC_PUBKEY_SIZE) == 0 &&
+                    w->peers[i].conn && w->peers[i].identified) {
+                    leader_conn = w->peers[i].conn;
+                    break;
+                }
             }
         }
 
@@ -1923,8 +1953,8 @@ static void handle_dnac_spend(nodus_witness_t *w,
             return;
         }
 
-        fprintf(stderr, "%s: forwarded spend to leader (roster %d, slot %d)\n",
-                LOG_TAG, leader_idx, pf_slot);
+        fprintf(stderr, "%s: forwarded spend to committee leader (slot %d)\n",
+                LOG_TAG, pf_slot);
         /* Response will arrive via w_fwd_rsp */
     }
 }

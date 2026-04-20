@@ -390,14 +390,11 @@ int nodus_witness_roster_add(nodus_witness_t *w,
     w->roster.n_witnesses++;
     w->roster.version++;
 
-    /* F17 A2 — BFT config is NOT derived from gossip roster. It's
-     * refreshed from the chain committee at round-start. Roster is now
-     * transport-only (peer discovery + witness_id↔pubkey map). */
-
-    /* Update our transport-layer index (still used for cert_preimage's
-     * voter_id and spend_result routing). A4 will remove my_index
-     * entirely; until then it's a gossip-roster index only. */
-    w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
+    /* F17 A4 — roster is now transport-only (peer discovery +
+     * witness_id↔pubkey map). BFT config is refreshed from the chain
+     * committee at round-start. No my_index tracking needed: self-
+     * identity in consensus paths is resolved via
+     * w->server->identity.pk against the committee pubkey list. */
 
     fprintf(stderr, "%s: roster add (now %u witnesses, transport)\n",
             LOG_TAG, w->roster.n_witnesses);
@@ -3069,10 +3066,8 @@ static int bft_start_round_internal(nodus_witness_t *w,
         w->pending_roster.n_witnesses != w->roster.n_witnesses) {
         memcpy(&w->roster, &w->pending_roster, sizeof(nodus_witness_roster_t));
         w->pending_roster_ready = false;
-        w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
         fprintf(stderr, "%s: force roster swap before batch: %u witnesses "
-                "(transport), my_index=%d\n", LOG_TAG,
-                w->roster.n_witnesses, w->my_index);
+                "(transport)\n", LOG_TAG, w->roster.n_witnesses);
     }
 
     /* F17 A2 — recompute BFT config from the chain-derived committee
@@ -3522,7 +3517,6 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
         w->pending_roster.n_witnesses != w->roster.n_witnesses) {
         memcpy(&w->roster, &w->pending_roster, sizeof(nodus_witness_roster_t));
         w->pending_roster_ready = false;
-        w->my_index = nodus_witness_roster_find(&w->roster, w->my_id);
     }
 
     /* F17 A2 — recompute BFT config from the chain-derived committee
@@ -4485,12 +4479,11 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
     w->view_change_in_progress = false;
     w->round_state.phase = NODUS_W_PHASE_IDLE;
 
-    /* If we are new leader, broadcast NEW_VIEW */
-    uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
-    int new_leader = nodus_witness_bft_leader_index(epoch, w->current_view,
-                                                      w->roster.n_witnesses);
-
-    if (new_leader == w->my_index) {
+    /* F17 A4 — if we are the committee-derived new leader for the new
+     * view, broadcast NEW_VIEW. is_leader already consults the chain
+     * committee for the next block's target; current_view was just
+     * updated above so the modulus picks up the new view. */
+    if (nodus_witness_bft_is_leader(w)) {
         fprintf(stderr, "%s: we are new leader for view %u\n",
                 LOG_TAG, w->current_view);
 

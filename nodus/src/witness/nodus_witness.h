@@ -249,7 +249,10 @@ typedef struct nodus_witness {
 
     /* Identity */
     uint8_t     my_id[NODUS_T3_WITNESS_ID_LEN];
-    int         my_index;                   /* Index in roster (-1 if not in) */
+    /* F17 A4 — my_index field removed. Consensus paths resolve
+     * self-identity on-demand via committee_find_pubkey against
+     * w->server->identity.pk.bytes. Transport paths that need
+     * "skip self" use memcmp of witness_id against w->my_id. */
 
     /* Roster */
     nodus_witness_roster_t  roster;

@@ -425,7 +425,6 @@ static void witness_setup_identity(nodus_witness_t *witness) {
 static void witness_init_roster(nodus_witness_t *witness) {
     memset(&witness->roster, 0, sizeof(witness->roster));
     witness->roster.version = 1;
-    witness->my_index = -1;
     witness->last_epoch = 0;
     witness->pending_roster_ready = false;
 }
@@ -443,7 +442,6 @@ int nodus_witness_init(nodus_witness_t *witness,
     witness->server = server;
     witness->tcp = saved_tcp;  /* Restore dedicated witness TCP transport */
     witness->config = *config;
-    witness->my_index = -1;
     witness->running = true;
 
     /* Phase 10 / Task 53 — invalidate the committee cache. UINT64_MAX
@@ -482,9 +480,9 @@ int nodus_witness_init(nodus_witness_t *witness,
     /* Initialize peer mesh (builds roster, connects seeds on witness port) */
     nodus_witness_peer_init(witness);
 
-    fprintf(stderr, "%s: initialized (roster=%d witnesses, my_index=%d, "
+    fprintf(stderr, "%s: initialized (roster=%d witnesses, "
             "chain_db=%s)\n",
-            LOG_TAG, witness->roster.n_witnesses, witness->my_index,
+            LOG_TAG, witness->roster.n_witnesses,
             witness->db ? "active" : "pre-genesis");
 
     return 0;
@@ -588,14 +586,9 @@ void nodus_witness_tick(nodus_witness_t *witness) {
                    sizeof(nodus_witness_roster_t));
             witness->pending_roster_ready = false;
 
-            /* Recalculate my_index */
-            witness->my_index = nodus_witness_roster_find(&witness->roster,
-                                                            witness->my_id);
-
             fprintf(stderr, "WITNESS: epoch roster swap: %u witnesses "
-                    "(transport), my_index=%d\n",
-                    witness->roster.n_witnesses,
-                    witness->my_index);
+                    "(transport)\n",
+                    witness->roster.n_witnesses);
         } else {
             /* Round active — defer swap to next IDLE */
             witness->pending_roster_ready = true;
@@ -615,13 +608,9 @@ void nodus_witness_tick(nodus_witness_t *witness) {
                sizeof(nodus_witness_roster_t));
         witness->pending_roster_ready = false;
 
-        witness->my_index = nodus_witness_roster_find(&witness->roster,
-                                                        witness->my_id);
-
         fprintf(stderr, "WITNESS: deferred roster swap: %u witnesses "
-                "(transport), my_index=%d\n",
-                witness->roster.n_witnesses,
-                witness->my_index);
+                "(transport)\n",
+                witness->roster.n_witnesses);
     }
 
     /* State sync: check if behind peers and need to catch up */
