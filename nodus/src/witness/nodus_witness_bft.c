@@ -230,13 +230,20 @@ static uint64_t generate_nonce(void) {
  * per-epoch cache, so repeated calls within the same epoch are O(1).
  * ──────────────────────────────────────────────────────────────────── */
 
+/** Find a pubkey in a committee array. Returns the slot index or -1. */
+static int committee_find_pubkey(const nodus_committee_member_t *arr,
+                                   int count, const uint8_t *pk) {
+    if (!arr || !pk) return -1;
+    for (int i = 0; i < count; i++) {
+        if (memcmp(arr[i].pubkey, pk, DNAC_PUBKEY_SIZE) == 0) return i;
+    }
+    return -1;
+}
+
 /** Load the committee authoritative for a given block height.
  *
  * @return 0 on success (count_out populated, possibly 0 for pre-genesis),
- *         -1 on DB error.
- *
- * Additional helpers (committee_find_pubkey, my_committee_index_for_block)
- * land in A3 when is_leader / handle_propose / handle_vote consume them. */
+ *         -1 on DB error. */
 static int load_committee_at_height(nodus_witness_t *w,
                                       uint64_t block_height,
                                       nodus_committee_member_t *out,
@@ -331,12 +338,26 @@ int nodus_witness_bft_leader_index(uint64_t epoch, uint32_t view, int n) {
 }
 
 bool nodus_witness_bft_is_leader(nodus_witness_t *w) {
-    if (!w || w->my_index < 0) return false;
+    if (!w) return false;
+
+    /* F17 A3 — leader is determined by the chain-derived committee for
+     * the next block, not by the gossip roster's size/ordering. */
+    uint64_t next_bh = nodus_witness_block_height(w) + 1;
+    nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+    int count = 0;
+    if (load_committee_at_height(w, next_bh, committee,
+                                   DNAC_COMMITTEE_SIZE, &count) != 0 ||
+        count == 0) {
+        return false;
+    }
+    int my_cm_idx = committee_find_pubkey(committee, count,
+                                            w->server->identity.pk.bytes);
+    if (my_cm_idx < 0) return false;
 
     uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
     int leader = nodus_witness_bft_leader_index(epoch, w->current_view,
-                                                  w->roster.n_witnesses);
-    return leader == w->my_index;
+                                                  count);
+    return leader == my_cm_idx;
 }
 
 /* ── Roster ──────────────────────────────────────────────────────── */
@@ -3523,15 +3544,39 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
         return -1;
     }
 
-    /* Verify proposal is from current leader */
-    uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
-    int leader = nodus_witness_bft_leader_index(epoch, hdr->view,
-                                                  w->roster.n_witnesses);
-    int sender_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
-    if (sender_idx != leader) {
-        fprintf(stderr, "%s: proposal from non-leader (sender %d, leader %d)\n",
-                LOG_TAG, sender_idx, leader);
-        return -1;
+    /* F17 A3 — verify proposal is from the committee-derived leader for
+     * the target block. Committee membership is pubkey-based; resolve
+     * sender_id→pubkey via the gossip roster (safe per A15: witness_id
+     * = SHA3-512(pubkey)[0:32] cryptographic binding). */
+    {
+        uint64_t next_bh = nodus_witness_block_height(w) + 1;
+        nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+        int count = 0;
+        if (load_committee_at_height(w, next_bh, committee,
+                                       DNAC_COMMITTEE_SIZE, &count) != 0 ||
+            count == 0) {
+            fprintf(stderr, "%s: proposal rejected — no committee for block %llu\n",
+                    LOG_TAG, (unsigned long long)next_bh);
+            return -1;
+        }
+
+        int gossip_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
+        if (gossip_idx < 0) {
+            fprintf(stderr, "%s: proposal from unknown sender_id\n", LOG_TAG);
+            return -1;
+        }
+        int sender_cm = committee_find_pubkey(committee, count,
+                                                w->roster.witnesses[gossip_idx].pubkey);
+
+        uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
+        int leader = nodus_witness_bft_leader_index(epoch, hdr->view, count);
+        if (sender_cm < 0 || sender_cm != leader) {
+            fprintf(stderr,
+                    "%s: proposal from non-committee-leader "
+                    "(sender_cm=%d, leader=%d, committee=%d)\n",
+                    LOG_TAG, sender_cm, leader, count);
+            return -1;
+        }
     }
 
     /* Initialize round state from proposal */
@@ -3813,18 +3858,46 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     if (w->round_state.phase != expected_phase)
         return 0;  /* Wrong phase, ignore */
 
-    /* Duplicate check */
+    /* F17 A3 — resolve sender's pubkey via gossip roster (witness_id →
+     * pubkey mapping, safe by A15 because witness_id = H(pubkey)).
+     * Envelope sig already verified against this pubkey at
+     * witness.c:657-678 before this handler was invoked. */
+    int gossip_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
+    if (gossip_idx < 0) {
+        fprintf(stderr, "%s: vote from unknown sender\n", LOG_TAG);
+        return -1;
+    }
+    const uint8_t *sender_pk = w->roster.witnesses[gossip_idx].pubkey;
+
+    /* F17 A17 — duplicate check by pubkey (canonical identity).
+     * Historical voter_id-based dedup could in principle be bypassed
+     * by a node advertising the same pubkey under two witness_ids
+     * in gossip. Pubkey dedup closes that edge. */
     for (int i = 0; i < *vote_count; i++) {
-        if (memcmp(votes[i].voter_id, hdr->sender_id,
-                   NODUS_T3_WITNESS_ID_LEN) == 0)
+        if (memcmp(votes[i].pubkey, sender_pk, DNAC_PUBKEY_SIZE) == 0)
             return 0;  /* Already received */
     }
 
-    /* Verify sender is in roster */
-    int sender_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
-    if (sender_idx < 0) {
-        fprintf(stderr, "%s: vote from unknown sender\n", LOG_TAG);
-        return -1;
+    /* F17 A3 — committee membership gate. Sender MUST be in the chain-
+     * derived committee for the round's target block; gossip roster
+     * alone is not sufficient authority. Uses w->round_state.round
+     * (already validated above as equal to hdr->round) as the block
+     * height, since each round commits exactly one block. */
+    {
+        nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+        int count = 0;
+        if (load_committee_at_height(w, w->round_state.round, committee,
+                                       DNAC_COMMITTEE_SIZE, &count) != 0 ||
+            count == 0) {
+            return -1;
+        }
+        if (committee_find_pubkey(committee, count, sender_pk) < 0) {
+            fprintf(stderr,
+                    "%s: vote from non-committee member (round=%llu)\n",
+                    LOG_TAG,
+                    (unsigned long long)w->round_state.round);
+            return -1;
+        }
     }
 
     /* Record vote — vote arrays sized to DNAC_COMMITTEE_SIZE per F17
@@ -3835,15 +3908,7 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
 
     memcpy(votes[*vote_count].voter_id, hdr->sender_id,
            NODUS_T3_WITNESS_ID_LEN);
-    /* F17 A1 — carry sender's pubkey via gossip roster lookup. Safe
-     * because witness_id = SHA3-512(pubkey)[0:32] (nodus_chain_config.h
-     * :157), so the roster's (witness_id, pubkey) pairs are
-     * cryptographically bound and cannot be poisoned with a forged
-     * victim-witness_id mapping. Envelope sig has already been
-     * verified against this same pubkey at witness.c:657-678 before
-     * this handler was invoked. */
-    memcpy(votes[*vote_count].pubkey,
-           w->roster.witnesses[sender_idx].pubkey, DNAC_PUBKEY_SIZE);
+    memcpy(votes[*vote_count].pubkey, sender_pk, DNAC_PUBKEY_SIZE);
     votes[*vote_count].vote = (nodus_witness_vote_t)vote->vote;
     /* Phase 7.5 / Task 7.5.2 — store the wire-supplied cert_sig.
      * Only PRECOMMIT messages carry a meaningful cert_sig; PREVOTE
@@ -3857,10 +3922,10 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     if (vote->vote == NODUS_W_VOTE_APPROVE)
         (*approve_count)++;
 
-    fprintf(stderr, "%s: %s from roster %d: %s (approve=%d/%d, quorum=%u)\n",
+    fprintf(stderr, "%s: %s from gossip %d: %s (approve=%d/%d, quorum=%u)\n",
             LOG_TAG,
             msg->type == NODUS_T3_PREVOTE ? "PREVOTE" : "PRECOMMIT",
-            sender_idx,
+            gossip_idx,
             vote->vote == NODUS_W_VOTE_APPROVE ? "APPROVE" : "REJECT",
             *approve_count, *vote_count, w->bft_config.quorum);
 
@@ -4354,10 +4419,24 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
     if (!verify_chain_id(w, hdr->chain_id))
         return -1;
 
-    /* Verify sender is in roster */
-    int sender_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
-    if (sender_idx < 0)
-        return -1;
+    /* F17 A3 — VIEW_CHANGE sender must be a committee member (pubkey
+     * gate via gossip roster's witness_id→pubkey map, safe by A15). */
+    int gossip_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
+    if (gossip_idx < 0) return -1;
+    const uint8_t *sender_pk = w->roster.witnesses[gossip_idx].pubkey;
+    {
+        uint64_t next_bh = nodus_witness_block_height(w) + 1;
+        nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+        int count = 0;
+        if (load_committee_at_height(w, next_bh, committee,
+                                       DNAC_COMMITTEE_SIZE, &count) != 0 ||
+            count == 0 ||
+            committee_find_pubkey(committee, count, sender_pk) < 0) {
+            fprintf(stderr,
+                    "%s: VIEW_CHANGE from non-committee sender\n", LOG_TAG);
+            return -1;
+        }
+    }
 
     /* Must be for a future view */
     if (vc->new_view <= w->current_view)
@@ -4390,8 +4469,8 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
         w->view_change_count++;
     }
 
-    fprintf(stderr, "%s: VIEW_CHANGE from roster %d: view %u (%d/%u)\n",
-            LOG_TAG, sender_idx, vc->new_view,
+    fprintf(stderr, "%s: VIEW_CHANGE from gossip %d: view %u (%d/%u)\n",
+            LOG_TAG, gossip_idx, vc->new_view,
             w->view_change_count, w->bft_config.quorum);
 
     /* Check for quorum */
@@ -4439,14 +4518,32 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
     if (!verify_chain_id(w, hdr->chain_id))
         return -1;
 
-    /* Verify sender is expected new leader */
+    /* F17 A3 — verify sender is the committee-derived expected leader
+     * for the new view. Committee is pubkey-indexed; resolve sender
+     * pubkey via gossip roster (safe per A15). */
+    uint64_t next_bh = nodus_witness_block_height(w) + 1;
+    nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
+    int count = 0;
+    if (load_committee_at_height(w, next_bh, committee,
+                                   DNAC_COMMITTEE_SIZE, &count) != 0 ||
+        count == 0) {
+        fprintf(stderr, "%s: NEW_VIEW rejected — no committee\n", LOG_TAG);
+        return -1;
+    }
+
+    int gossip_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
+    if (gossip_idx < 0) {
+        fprintf(stderr, "%s: NEW_VIEW from unknown sender_id\n", LOG_TAG);
+        return -1;
+    }
+    int sender_cm = committee_find_pubkey(committee, count,
+                                            w->roster.witnesses[gossip_idx].pubkey);
+
     uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
     int expected_leader = nodus_witness_bft_leader_index(
-        epoch, nv->new_view, w->roster.n_witnesses);
-
-    int sender_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
-    if (sender_idx != expected_leader) {
-        fprintf(stderr, "%s: NEW_VIEW from non-leader\n", LOG_TAG);
+        epoch, nv->new_view, count);
+    if (sender_cm < 0 || sender_cm != expected_leader) {
+        fprintf(stderr, "%s: NEW_VIEW from non-committee-leader\n", LOG_TAG);
         return -1;
     }
 
@@ -4458,7 +4555,7 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         w->round_state.phase = NODUS_W_PHASE_IDLE;
 
         fprintf(stderr, "%s: accepted NEW_VIEW %u from leader %d\n",
-                LOG_TAG, nv->new_view, sender_idx);
+                LOG_TAG, nv->new_view, sender_cm);
     }
 
     return 0;
