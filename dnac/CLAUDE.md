@@ -111,7 +111,9 @@ make -j$(nproc)
 
 ## Witness System (Embedded in Nodus)
 
-The standalone `dnac-witness` binary was removed in v0.10.3. Witness logic runs inside `nodus-server` via `nodus/src/witness/`. The witness roster is dynamic — nodus-server nodes with witness capability announce themselves and are discovered at runtime via `dnac_discover_witnesses()`.
+The standalone `dnac-witness` binary was removed in v0.10.3. Witness logic runs inside `nodus-server` via `nodus/src/witness/`.
+
+Since nodus v0.15.0 (F17 committee enforcement), the BFT **voting authority** is the chain-derived top-7 committee — leader election, quorum, and vote counting all consult `nodus_committee_get_for_block()`, not the gossip roster. The **gossip roster** is now transport-only: it serves peer discovery (`dnac_discover_witnesses()`, TCP 4004 handshake) and a `witness_id → pubkey` lookup table, but does not gate consensus participation.
 
 ### BFT Consensus
 
