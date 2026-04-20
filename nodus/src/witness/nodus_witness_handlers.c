@@ -1843,46 +1843,65 @@ static void handle_dnac_spend(nodus_witness_t *w,
         w->pending_forward_count++;
 
         /* F17 A4 — find the chain-committee-derived leader for the next
-         * block, then resolve its peer connection. Uses committee
-         * pubkey (not gossip roster slot) as the authoritative leader
-         * identity. */
+         * block, then resolve its peer connection. F17 A5 bootstrap —
+         * if committee empty (pre-genesis), fall back to gossip-roster-
+         * based leader lookup so genesis forwarding works. */
         struct nodus_tcp_conn *leader_conn = NULL;
         {
             uint64_t next_bh = nodus_witness_block_height(w) + 1;
             nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
             int cm_count = 0;
-            if (nodus_committee_get_for_block(w, next_bh, committee,
-                                                DNAC_COMMITTEE_SIZE,
-                                                &cm_count) != 0 ||
-                cm_count == 0) {
-                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                            "no committee available");
-                w->pending_forwards[pf_slot].active = false;
-                w->pending_forward_count--;
-                return;
-            }
+            (void)nodus_committee_get_for_block(w, next_bh, committee,
+                                                  DNAC_COMMITTEE_SIZE,
+                                                  &cm_count);
 
             uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
-            int leader_slot = nodus_witness_bft_leader_index(
-                epoch, w->current_view, cm_count);
-            if (leader_slot < 0) {
-                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                            "no leader available");
-                w->pending_forwards[pf_slot].active = false;
-                w->pending_forward_count--;
-                return;
-            }
-            const uint8_t *leader_pk = committee[leader_slot].pubkey;
+            const uint8_t *leader_pk = NULL;
+            int leader_roster_idx = -1;
 
-            /* Reject if we ARE the leader — this forward path is for
-             * non-leaders only. */
-            if (memcmp(leader_pk, w->server->identity.pk.bytes,
-                        DNAC_PUBKEY_SIZE) == 0) {
-                send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                            "we are the leader, nothing to forward");
-                w->pending_forwards[pf_slot].active = false;
-                w->pending_forward_count--;
-                return;
+            if (cm_count > 0) {
+                /* Post-genesis: committee-derived leader. */
+                int leader_slot = nodus_witness_bft_leader_index(
+                    epoch, w->current_view, cm_count);
+                if (leader_slot < 0) {
+                    send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                                "no leader available");
+                    w->pending_forwards[pf_slot].active = false;
+                    w->pending_forward_count--;
+                    return;
+                }
+                leader_pk = committee[leader_slot].pubkey;
+                if (memcmp(leader_pk, w->server->identity.pk.bytes,
+                            DNAC_PUBKEY_SIZE) == 0) {
+                    send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                                "we are the leader, nothing to forward");
+                    w->pending_forwards[pf_slot].active = false;
+                    w->pending_forward_count--;
+                    return;
+                }
+            } else {
+                /* Pre-genesis bootstrap: gossip-roster-based leader. */
+                int gossip_count = (int)w->roster.n_witnesses;
+                if (gossip_count == 0) {
+                    send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                                "no witnesses known");
+                    w->pending_forwards[pf_slot].active = false;
+                    w->pending_forward_count--;
+                    return;
+                }
+                leader_roster_idx = nodus_witness_bft_leader_index(
+                    epoch, w->current_view, gossip_count);
+                int my_roster_idx = nodus_witness_roster_find(
+                    &w->roster, w->my_id);
+                if (leader_roster_idx < 0 ||
+                    leader_roster_idx == my_roster_idx) {
+                    send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                                "we are the leader (bootstrap)");
+                    w->pending_forwards[pf_slot].active = false;
+                    w->pending_forward_count--;
+                    return;
+                }
+                leader_pk = w->roster.witnesses[leader_roster_idx].pubkey;
             }
 
             /* Find peer connection whose roster pubkey matches leader_pk. */

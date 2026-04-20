@@ -242,8 +242,14 @@ static int committee_find_pubkey(const nodus_committee_member_t *arr,
 
 /** Load the committee authoritative for a given block height.
  *
- * @return 0 on success (count_out populated, possibly 0 for pre-genesis),
- *         -1 on DB error. */
+ * F17 A5 — pre-genesis the chain DB is not yet created (w->db == NULL),
+ * so nodus_committee_get_for_block would return -1. Treat that case
+ * as "empty committee" (count=0, rc=0) so callers can take the
+ * gossip-roster bootstrap fallback. This matches the semantic
+ * "no on-chain validator set exists yet."
+ *
+ * @return 0 on success (count_out populated, possibly 0 for pre-genesis
+ *         or empty validator table), -1 on DB error after DB is open. */
 static int load_committee_at_height(nodus_witness_t *w,
                                       uint64_t block_height,
                                       nodus_committee_member_t *out,
@@ -251,6 +257,7 @@ static int load_committee_at_height(nodus_witness_t *w,
                                       int *count_out) {
     if (!w || !out || !count_out) return -1;
     *count_out = 0;
+    if (!w->db) return 0;   /* pre-genesis: no chain DB, no committee */
     return nodus_committee_get_for_block(w, block_height, out,
                                            max_entries, count_out);
 }
@@ -261,8 +268,17 @@ static int load_committee_at_height(nodus_witness_t *w,
  * gossip-roster-driven bft_config_init called from roster_add /
  * epoch-tick paths.
  *
+ * F17 A5 bootstrap — if the committee is empty (chain has no
+ * validators yet, i.e. pre-genesis) the function falls back to the
+ * gossip-roster-derived quorum. This is ONLY reachable for the
+ * genesis consensus round itself; once genesis commits and inserts
+ * initial_validators into the validators table, subsequent rounds
+ * always see a populated committee. Genesis security comes from
+ * genesis_verify (Rule P — distinct pubkeys, supply invariant) +
+ * honest-majority, not from committee gating.
+ *
  * @return 0 on success (consensus_active may be true or false based on
- *         committee size), -1 on DB error (w->bft_config left
+ *         config state), -1 on DB error (w->bft_config left
  *         untouched, caller should fail-closed). */
 static int refresh_bft_config_from_committee(nodus_witness_t *w,
                                                 uint64_t block_height) {
@@ -273,7 +289,13 @@ static int refresh_bft_config_from_committee(nodus_witness_t *w,
                                    DNAC_COMMITTEE_SIZE, &count) != 0) {
         return -1;
     }
-    nodus_witness_bft_config_init(&w->bft_config, (uint32_t)count);
+    if (count == 0) {
+        /* F17 A5 bootstrap — pre-genesis fallback to gossip roster. */
+        nodus_witness_bft_config_init(&w->bft_config,
+                                        w->roster.n_witnesses);
+    } else {
+        nodus_witness_bft_config_init(&w->bft_config, (uint32_t)count);
+    }
     return 0;
 }
 
@@ -341,23 +363,29 @@ bool nodus_witness_bft_is_leader(nodus_witness_t *w) {
     if (!w) return false;
 
     /* F17 A3 — leader is determined by the chain-derived committee for
-     * the next block, not by the gossip roster's size/ordering. */
+     * the next block. F17 A5 bootstrap — if committee empty (pre-
+     * genesis), fall back to gossip roster. */
     uint64_t next_bh = nodus_witness_block_height(w) + 1;
     nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
     int count = 0;
+    int my_idx = -1;
     if (load_committee_at_height(w, next_bh, committee,
-                                   DNAC_COMMITTEE_SIZE, &count) != 0 ||
-        count == 0) {
-        return false;
+                                   DNAC_COMMITTEE_SIZE, &count) == 0 &&
+        count > 0) {
+        my_idx = committee_find_pubkey(committee, count,
+                                         w->server->identity.pk.bytes);
+    } else {
+        /* Pre-genesis bootstrap: gossip-roster-based leader selection.
+         * Only active for the genesis round itself. */
+        count = (int)w->roster.n_witnesses;
+        my_idx = nodus_witness_roster_find(&w->roster, w->my_id);
     }
-    int my_cm_idx = committee_find_pubkey(committee, count,
-                                            w->server->identity.pk.bytes);
-    if (my_cm_idx < 0) return false;
 
+    if (my_idx < 0 || count <= 0) return false;
     uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
     int leader = nodus_witness_bft_leader_index(epoch, w->current_view,
                                                   count);
-    return leader == my_cm_idx;
+    return leader == my_idx;
 }
 
 /* ── Roster ──────────────────────────────────────────────────────── */
@@ -3539,36 +3567,38 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     }
 
     /* F17 A3 — verify proposal is from the committee-derived leader for
-     * the target block. Committee membership is pubkey-based; resolve
-     * sender_id→pubkey via the gossip roster (safe per A15: witness_id
-     * = SHA3-512(pubkey)[0:32] cryptographic binding). */
+     * the target block. F17 A5 bootstrap — if committee empty (pre-
+     * genesis), fall back to gossip roster. */
     {
         uint64_t next_bh = nodus_witness_block_height(w) + 1;
         nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
         int count = 0;
-        if (load_committee_at_height(w, next_bh, committee,
-                                       DNAC_COMMITTEE_SIZE, &count) != 0 ||
-            count == 0) {
-            fprintf(stderr, "%s: proposal rejected — no committee for block %llu\n",
-                    LOG_TAG, (unsigned long long)next_bh);
-            return -1;
-        }
+        int sender_idx = -1;
 
         int gossip_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
         if (gossip_idx < 0) {
             fprintf(stderr, "%s: proposal from unknown sender_id\n", LOG_TAG);
             return -1;
         }
-        int sender_cm = committee_find_pubkey(committee, count,
-                                                w->roster.witnesses[gossip_idx].pubkey);
+
+        if (load_committee_at_height(w, next_bh, committee,
+                                       DNAC_COMMITTEE_SIZE, &count) == 0 &&
+            count > 0) {
+            sender_idx = committee_find_pubkey(committee, count,
+                                                 w->roster.witnesses[gossip_idx].pubkey);
+        } else {
+            /* Pre-genesis bootstrap: leader is a gossip-roster slot. */
+            count = (int)w->roster.n_witnesses;
+            sender_idx = gossip_idx;
+        }
 
         uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
         int leader = nodus_witness_bft_leader_index(epoch, hdr->view, count);
-        if (sender_cm < 0 || sender_cm != leader) {
+        if (sender_idx < 0 || sender_idx != leader) {
             fprintf(stderr,
-                    "%s: proposal from non-committee-leader "
-                    "(sender_cm=%d, leader=%d, committee=%d)\n",
-                    LOG_TAG, sender_cm, leader, count);
+                    "%s: proposal from non-leader "
+                    "(sender_idx=%d, leader=%d, count=%d)\n",
+                    LOG_TAG, sender_idx, leader, count);
             return -1;
         }
     }
@@ -3872,26 +3902,25 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             return 0;  /* Already received */
     }
 
-    /* F17 A3 — committee membership gate. Sender MUST be in the chain-
-     * derived committee for the round's target block; gossip roster
-     * alone is not sufficient authority. Uses w->round_state.round
-     * (already validated above as equal to hdr->round) as the block
-     * height, since each round commits exactly one block. */
+    /* F17 A3 — committee membership gate. F17 A5 bootstrap — if
+     * committee empty (pre-genesis), gossip_idx >= 0 is already
+     * sufficient authorization (gossip peer = legitimate pre-genesis
+     * witness). Only active for the genesis round itself. */
     {
         nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
         int count = 0;
         if (load_committee_at_height(w, w->round_state.round, committee,
-                                       DNAC_COMMITTEE_SIZE, &count) != 0 ||
-            count == 0) {
-            return -1;
+                                       DNAC_COMMITTEE_SIZE, &count) == 0 &&
+            count > 0) {
+            if (committee_find_pubkey(committee, count, sender_pk) < 0) {
+                fprintf(stderr,
+                        "%s: vote from non-committee member (round=%llu)\n",
+                        LOG_TAG,
+                        (unsigned long long)w->round_state.round);
+                return -1;
+            }
         }
-        if (committee_find_pubkey(committee, count, sender_pk) < 0) {
-            fprintf(stderr,
-                    "%s: vote from non-committee member (round=%llu)\n",
-                    LOG_TAG,
-                    (unsigned long long)w->round_state.round);
-            return -1;
-        }
+        /* else: pre-genesis, gossip_idx check above is sufficient. */
     }
 
     /* Record vote — vote arrays sized to DNAC_COMMITTEE_SIZE per F17
@@ -4413,8 +4442,9 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
     if (!verify_chain_id(w, hdr->chain_id))
         return -1;
 
-    /* F17 A3 — VIEW_CHANGE sender must be a committee member (pubkey
-     * gate via gossip roster's witness_id→pubkey map, safe by A15). */
+    /* F17 A3 — VIEW_CHANGE sender must be a committee member. F17 A5
+     * bootstrap — pre-genesis (no committee), gossip_idx >= 0 is
+     * sufficient authorization. */
     int gossip_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
     if (gossip_idx < 0) return -1;
     const uint8_t *sender_pk = w->roster.witnesses[gossip_idx].pubkey;
@@ -4423,13 +4453,14 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
         nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
         int count = 0;
         if (load_committee_at_height(w, next_bh, committee,
-                                       DNAC_COMMITTEE_SIZE, &count) != 0 ||
-            count == 0 ||
+                                       DNAC_COMMITTEE_SIZE, &count) == 0 &&
+            count > 0 &&
             committee_find_pubkey(committee, count, sender_pk) < 0) {
             fprintf(stderr,
                     "%s: VIEW_CHANGE from non-committee sender\n", LOG_TAG);
             return -1;
         }
+        /* else: pre-genesis or committee member, accept. */
     }
 
     /* Must be for a future view */
@@ -4512,33 +4543,39 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         return -1;
 
     /* F17 A3 — verify sender is the committee-derived expected leader
-     * for the new view. Committee is pubkey-indexed; resolve sender
-     * pubkey via gossip roster (safe per A15). */
+     * for the new view. F17 A5 bootstrap — fall back to gossip roster
+     * when committee is empty (pre-genesis). */
     uint64_t next_bh = nodus_witness_block_height(w) + 1;
     nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
     int count = 0;
-    if (load_committee_at_height(w, next_bh, committee,
-                                   DNAC_COMMITTEE_SIZE, &count) != 0 ||
-        count == 0) {
-        fprintf(stderr, "%s: NEW_VIEW rejected — no committee\n", LOG_TAG);
-        return -1;
-    }
+    int sender_idx = -1;
 
     int gossip_idx = nodus_witness_roster_find(&w->roster, hdr->sender_id);
     if (gossip_idx < 0) {
         fprintf(stderr, "%s: NEW_VIEW from unknown sender_id\n", LOG_TAG);
         return -1;
     }
-    int sender_cm = committee_find_pubkey(committee, count,
-                                            w->roster.witnesses[gossip_idx].pubkey);
+
+    if (load_committee_at_height(w, next_bh, committee,
+                                   DNAC_COMMITTEE_SIZE, &count) == 0 &&
+        count > 0) {
+        sender_idx = committee_find_pubkey(committee, count,
+                                             w->roster.witnesses[gossip_idx].pubkey);
+    } else {
+        /* Pre-genesis bootstrap: leader is a gossip-roster slot. */
+        count = (int)w->roster.n_witnesses;
+        sender_idx = gossip_idx;
+    }
 
     uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
     int expected_leader = nodus_witness_bft_leader_index(
         epoch, nv->new_view, count);
-    if (sender_cm < 0 || sender_cm != expected_leader) {
-        fprintf(stderr, "%s: NEW_VIEW from non-committee-leader\n", LOG_TAG);
+    if (sender_idx < 0 || sender_idx != expected_leader) {
+        fprintf(stderr, "%s: NEW_VIEW from non-leader\n", LOG_TAG);
         return -1;
     }
+
+    int sender_cm = sender_idx;  /* for downstream log */
 
     /* Accept new view if higher than current */
     if (nv->new_view > w->current_view) {
