@@ -209,7 +209,6 @@ typedef enum {
     TASK_DNAC_DELEGATE,
     TASK_DNAC_UNDELEGATE,
     TASK_DNAC_VALIDATOR_UPDATE,
-    TASK_DNAC_GET_PENDING_REWARDS,
     TASK_DNAC_VALIDATOR_LIST,
     TASK_DNAC_GET_COMMITTEE,
 
@@ -648,11 +647,6 @@ typedef union {
         uint16_t new_commission_bps;
         uint64_t signed_at_block;
     } dnac_validator_update;
-
-    struct {
-        uint8_t  claimant_pubkey[2592];
-        bool     has_claimant_pubkey;          /* false == use caller's own */
-    } dnac_pending_rewards;
 
     struct {
         int filter_status;                     /* -1 for all */

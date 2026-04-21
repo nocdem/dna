@@ -1,19 +1,19 @@
 /**
  * @file validator.h
- * @brief DNAC - Validator / Delegation / Reward Merkle-tree record types
+ * @brief DNAC - Validator / Delegation Merkle-tree record types
  *
- * Defines the three Merkle-tree leaf record structs used by the
- * witness stake & delegation v1 system:
+ * Defines the Merkle-tree leaf record structs used by the witness stake
+ * & delegation v1 system:
  *
  * - dnac_validator_record_t  (validator tree, one leaf per validator)
  * - dnac_delegation_record_t (delegation tree, one leaf per (delegator, validator) pair)
- * - dnac_reward_record_t     (reward accumulator tree, one leaf per validator)
+ *
+ * (v0.16: dnac_reward_record_t and its tree were removed with the
+ * accumulator-based reward system; push-per-epoch settlement holds no
+ * per-validator reward state.)
  *
  * Field layouts are frozen — they feed the deterministic CBOR serializer
  * which in turn feeds the Merkle leaf hashes. Any reorder is consensus-breaking.
- *
- * See design spec: dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md
- * (§3.2 validator, §3.3 delegation, §3.4 reward).
  *
  * Copyright (c) 2026 nocdem
  * SPDX-License-Identifier: MIT
@@ -128,39 +128,7 @@ typedef struct {
 
     /** Block height this delegation was created/last-modified (Rule O min-hold tracker). */
     uint64_t delegated_at_block;
-
-    /** Snapshot of validator reward accumulator at last claim (u128 big-endian). */
-    uint8_t  reward_snapshot[16];
 } dnac_delegation_record_t;
-
-/* ============================================================================
- * Reward Record — design §3.4
- * ========================================================================== */
-
-/**
- * @brief Reward accumulator tree leaf value.
- *
- * One record per validator. Holds the per-unit reward accumulator (u128 BE,
- * 18-decimal fixed-point) that delegators snapshot at claim time, plus the
- * validator-specific unclaimed balance (self-stake share + commission skim)
- * and truncation dust carry (per F-ECON-04 / F-STATE-09).
- */
-typedef struct {
-    /** Validator Dilithium5 pubkey. */
-    uint8_t  validator_pubkey[DNAC_PUBKEY_SIZE];
-
-    /** Per-unit reward accumulator, u128 big-endian, 18-decimal fixed-point. */
-    uint8_t  accumulator[16];
-
-    /** Validator's unclaimed balance: self-stake share + commission skim. */
-    uint64_t validator_unclaimed;
-
-    /** Block height the accumulator was last updated. */
-    uint64_t last_update_block;
-
-    /** Truncation dust carry (F-ECON-04 / F-STATE-09). */
-    uint64_t residual_dust;
-} dnac_reward_record_t;
 
 #ifdef __cplusplus
 }

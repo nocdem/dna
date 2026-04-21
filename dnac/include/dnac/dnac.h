@@ -834,36 +834,9 @@ int dnac_chain_config_propose(dnac_context_t *ctx,
  * CLI + Flutter should guard on that return code when rendering UI.
  * ========================================================================== */
 
-/**
- * @brief Query the witness for the total pending reward accrued to a
- *        given claimant across all of their delegations plus any
- *        validator-side self-claim.
- *
- * STUB — the witness-side RPC handler (dnac_pending_rewards_query) lands
- * in Phase 14 Task 61. Until then this function returns
- * DNAC_ERROR_NOT_IMPLEMENTED and zeroes *total_pending_out for safety.
- *
- * v0.16 NOTE: the pending-rewards query is slated for removal in stage
- * A.3 alongside the rewards table. Left here so the RPC wiring still
- * resolves until then.
- *
- * @param ctx              DNAC context
- * @param claimant_pubkey  Claimant's Dilithium5 pubkey
- *                         (DNAC_PUBKEY_SIZE bytes). Pass NULL to query
- *                         the caller's own pending rewards.
- * @param total_pending_out Total pending amount across all validators
- *                          (raw units). Always written (0 on error).
- * @param callback         Completion callback (for async RPC once wired;
- *                         ignored by the current stub)
- * @param user_data        Callback user data (ignored by the stub)
- * @return DNAC_SUCCESS once wired, DNAC_ERROR_NOT_IMPLEMENTED until
- *         Phase 14, DNAC_ERROR_INVALID_PARAM on NULL total_pending_out
- */
-int dnac_get_pending_rewards(dnac_context_t *ctx,
-                             const uint8_t *claimant_pubkey,
-                             uint64_t *total_pending_out,
-                             dnac_callback_t callback,
-                             void *user_data);
+/* v0.16: dnac_get_pending_rewards removed with the accumulator reward
+ * system. Push-settlement emits UTXOs directly at epoch boundaries, so
+ * there is no "pending" balance for a client to query. */
 
 /**
  * @brief One validator's summary, as returned by dnac_validator_list()

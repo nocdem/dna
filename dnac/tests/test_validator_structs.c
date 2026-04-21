@@ -41,14 +41,13 @@ int main(void) {
     dnac_delegation_record_t d;
     CHECK_EQ(sizeof(d.delegator_pubkey), DNAC_PUBKEY_SIZE);
     CHECK_EQ(sizeof(d.validator_pubkey), DNAC_PUBKEY_SIZE);
-    CHECK_EQ(sizeof(d.reward_snapshot), 16);
 
-    dnac_reward_record_t r;
-    CHECK_EQ(sizeof(r.validator_pubkey), DNAC_PUBKEY_SIZE);
-    CHECK_EQ(sizeof(r.accumulator), 16);
+    /* v0.16: dnac_reward_record_t + d.reward_snapshot removed with the
+     * accumulator reward system. Push-settlement emits UTXOs at epoch
+     * boundaries so there is no per-validator reward leaf anymore. */
 
     /* Suppress unused-variable warnings for fields we only check by sizeof */
-    (void)v; (void)d; (void)r;
+    (void)v; (void)d;
 
     printf("test_validator_structs: PASS\n");
     return 0;

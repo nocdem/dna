@@ -258,7 +258,6 @@ void dna_handle_dnac_unstake(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_delegate(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_undelegate(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_validator_update(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_dnac_get_pending_rewards(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_validator_list(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_get_committee(dna_engine_t *engine, dna_task_t *task);
 

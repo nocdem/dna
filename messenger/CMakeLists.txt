@@ -240,7 +240,6 @@ if(BUILD_SHARED_LIB)
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/chain_config.c
         # Note: shared/dnac/chain_config_wire.c (Hard-Fork v1) is linked in
         # via libnodus.a — no separate entry needed here. See nodus/CMakeLists.txt.
-        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/rewards_query.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/db/db.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/utils/crypto_helpers.c
@@ -370,7 +369,6 @@ else()
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/chain_config.c
         # Note: shared/dnac/chain_config_wire.c (Hard-Fork v1) is linked in
         # via libnodus.a — no separate entry needed here. See nodus/CMakeLists.txt.
-        ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/rewards_query.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/transaction/validator_queries.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/db/db.c
         ${CMAKE_SOURCE_DIR}/../dnac/src/utils/crypto_helpers.c

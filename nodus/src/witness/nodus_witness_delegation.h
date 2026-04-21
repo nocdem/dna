@@ -58,7 +58,7 @@ int nodus_delegation_get(nodus_witness_t *w,
                           dnac_delegation_record_t *out);
 
 /**
- * Update a delegation row (amount, delegated_at_block, reward_snapshot).
+ * Update a delegation row (amount, delegated_at_block).
  * Delegator and validator keys are immutable — identified by the
  * composite PK derived from the record's pubkey fields.
  *

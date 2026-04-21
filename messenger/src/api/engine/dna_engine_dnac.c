@@ -655,28 +655,6 @@ void dna_handle_dnac_validator_update(dna_engine_t *engine, dna_task_t *task) {
     task->callback.completion(task->request_id, ret, task->user_data);
 }
 
-void dna_handle_dnac_get_pending_rewards(dna_engine_t *engine, dna_task_t *task) {
-    dnac_context_t *ctx = ensure_dnac_init(engine);
-    if (!ctx) {
-        task->callback.dnac_fee(task->request_id,
-                                 DNA_ENGINE_ERROR_NOT_INITIALIZED,
-                                 0, task->user_data);
-        return;
-    }
-    const uint8_t *pk = task->params.dnac_pending_rewards.has_claimant_pubkey
-                        ? task->params.dnac_pending_rewards.claimant_pubkey
-                        : NULL;
-    uint64_t total = 0;
-    int ret = dnac_get_pending_rewards(ctx, pk, &total, NULL, NULL);
-    if (ret != DNAC_SUCCESS) {
-        QGP_LOG_DEBUG(LOG_TAG, "dnac_get_pending_rewards: %d (%s)",
-                      ret, dnac_error_string(ret));
-        task->callback.dnac_fee(task->request_id, ret, 0, task->user_data);
-        return;
-    }
-    task->callback.dnac_fee(task->request_id, 0, total, task->user_data);
-}
-
 /* Shared: convert C dnac_validator_list_entry_t[] to dna_dnac_validator_entry_t[]
  * (heap allocated; Dart side frees via dna_engine_dnac_free_validator_entries). */
 static void emit_validator_list(dna_task_t *task,
@@ -829,25 +807,6 @@ dna_request_id_t dna_engine_dnac_validator_update(dna_engine_t *engine,
     dna_task_callback_t cb = {0};
     cb.completion = callback;
     return dna_submit_task(engine, TASK_DNAC_VALIDATOR_UPDATE, &params, cb,
-                            user_data);
-}
-
-dna_request_id_t dna_engine_dnac_get_pending_rewards(dna_engine_t *engine,
-                                                      const uint8_t *claimant_pubkey,
-                                                      dna_dnac_fee_cb callback,
-                                                      void *user_data) {
-    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
-    dna_task_params_t params = {0};
-    if (claimant_pubkey) {
-        memcpy(params.dnac_pending_rewards.claimant_pubkey,
-               claimant_pubkey, DNAC_PUBKEY_SIZE);
-        params.dnac_pending_rewards.has_claimant_pubkey = true;
-    } else {
-        params.dnac_pending_rewards.has_claimant_pubkey = false;
-    }
-    dna_task_callback_t cb = {0};
-    cb.dnac_fee = callback;
-    return dna_submit_task(engine, TASK_DNAC_GET_PENDING_REWARDS, &params, cb,
                             user_data);
 }
 

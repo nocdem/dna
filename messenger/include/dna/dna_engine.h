@@ -4326,18 +4326,6 @@ DNA_API dna_request_id_t dna_engine_dnac_validator_update(
     void *user_data);
 
 /**
- * Query total pending rewards for a claimant.
- * Passes through dna_dnac_fee_cb (uint64_t payload).
- *
- * @param claimant_pubkey  NULL to query caller's own rewards
- */
-DNA_API dna_request_id_t dna_engine_dnac_get_pending_rewards(
-    dna_engine_t *engine,
-    const uint8_t *claimant_pubkey,
-    dna_dnac_fee_cb callback,
-    void *user_data);
-
-/**
  * List validators (optionally filtered by status).
  *
  * @param filter_status  -1 for all, or dnac_validator_status_t value

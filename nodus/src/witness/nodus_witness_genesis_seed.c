@@ -24,7 +24,6 @@
 #include "witness/nodus_witness_genesis_seed.h"
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_validator.h"
-#include "witness/nodus_witness_reward.h"
 #include "witness/nodus_witness_committee.h"
 
 #include "dnac/dnac.h"
@@ -128,17 +127,9 @@ int nodus_witness_genesis_seed_validators(nodus_witness_t *w,
             return -1;
         }
 
-        dnac_reward_record_t r;
-        memset(&r, 0, sizeof(r));
-        memcpy(r.validator_pubkey, iv_pubkey, DNAC_PUBKEY_SIZE);
-        r.last_update_block = 1ULL;
-
-        rc = nodus_reward_upsert(w, &r);
-        if (rc != 0) {
-            fprintf(stderr, "%s: reward_upsert [%u] failed rc=%d\n",
-                    LOG_TAG, (unsigned)i, rc);
-            return -1;
-        }
+        /* v0.16: reward row seeding removed — the push-settlement model
+         * has no per-validator reward state. epoch_state[0] is seeded by
+         * genesis instead (Stage B.1). */
     }
 
     if (!w->db) {

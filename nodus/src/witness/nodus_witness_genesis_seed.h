@@ -1,12 +1,13 @@
 /**
  * @file nodus_witness_genesis_seed.h
- * @brief Phase 12 Task 57 — seed validator_tree + reward_tree from
- *        genesis chain_def at commit time.
+ * @brief Phase 12 Task 57 — seed validator_tree from the genesis
+ *        chain_def at commit time.
  *
  * On genesis commit, the GENESIS TX carries a chain_def trailer whose
  * initial_validators[] block lists the 7 bootstrap committee members.
- * This helper inserts one dnac_validator_record_t + dnac_reward_record_t
- * per entry and sets validator_stats.active_count = count.
+ * This helper inserts one dnac_validator_record_t per entry and sets
+ * validator_stats.active_count = count. (v0.16 removed the reward-tree
+ * seeding that used to live here.)
  *
  * The parse is inline (does NOT link against libdna) — we only need the
  * initial_validators trailer, not the full chain_def_decode. Layout is
@@ -25,8 +26,8 @@ extern "C" {
 #endif
 
 /**
- * Seed validator_tree + reward_tree from the initial_validators[] section
- * of the genesis chain_def blob.
+ * Seed validator_tree from the initial_validators[] section of the
+ * genesis chain_def blob.
  *
  * @param w              Witness handle (must be in an open DB transaction).
  * @param cd_blob        Raw dnac_chain_def_encode output (MUST include the
@@ -38,8 +39,6 @@ extern "C" {
  * Side effects:
  *   - Inserts N dnac_validator_record_t rows (status=ACTIVE,
  *     active_since_block=1, self_stake=DNAC_SELF_STAKE_AMOUNT).
- *   - Inserts N empty dnac_reward_record_t rows (accumulator=0,
- *     last_update_block=1).
  *   - Sets validator_stats.active_count = N.
  *
  * For a zero initial_validator_count (legacy chain_def), returns 0

@@ -286,48 +286,6 @@ extension DnacStakeDelegation on DnaEngine {
   // Queries (Phase 14)
   // ===========================================================================
 
-  /// Query total pending rewards for a claimant. Pass null to query self.
-  ///
-  /// Returns raw units (1 DNAC = 10^8 raw). Returns 0 if the witness has
-  /// no record (not yet live on all witnesses during rollout).
-  Future<int> dnacGetPendingRewards({Uint8List? claimantPubkey}) async {
-    final completer = Completer<int>();
-    void onComplete(
-        int requestId, int error, int fee, Pointer<Void> userData) {
-      if (error == 0) {
-        completer.complete(fee);
-      } else {
-        // NOT_IMPLEMENTED / NETWORK error — treat as zero pending for UI
-        // rather than throwing; staking UI shows "–" when the query isn't
-        // reachable.
-        logger.log('DNAC_STAKE', 'pending_rewards query error $error');
-        completer.complete(0);
-      }
-    }
-
-    final cb = NativeCallable<DnaDnacFeeCbNative>.listener(onComplete);
-    Pointer<Uint8> pkPtr = nullptr;
-    if (claimantPubkey != null) {
-      pkPtr = _pubkeyToNative(claimantPubkey);
-    }
-    try {
-      final requestId = bindings.dna_engine_dnac_get_pending_rewards(
-        engine,
-        pkPtr,
-        cb.nativeFunction.cast(),
-        nullptr,
-      );
-      if (requestId == 0) {
-        throw DnaEngineException(
-            -1, 'Failed to submit DNAC pending-rewards request');
-      }
-      return await completer.future;
-    } finally {
-      if (pkPtr != nullptr) calloc.free(pkPtr);
-      cb.close();
-    }
-  }
-
   /// List validators (optionally filtered by status).
   ///
   /// Pass -1 to include all statuses, or a DnacValidatorStatus constant.

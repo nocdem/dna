@@ -1041,7 +1041,6 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_DNAC_DELEGATE:
         case TASK_DNAC_UNDELEGATE:
         case TASK_DNAC_VALIDATOR_UPDATE:
-        case TASK_DNAC_GET_PENDING_REWARDS:
         case TASK_DNAC_VALIDATOR_LIST:
         case TASK_DNAC_GET_COMMITTEE:
         default:
@@ -1192,7 +1191,6 @@ void dna_handle_dnac_unstake(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_delegate(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_undelegate(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_validator_update(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_dnac_get_pending_rewards(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_validator_list(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_get_committee(dna_engine_t *engine, dna_task_t *task);
 
@@ -1562,9 +1560,6 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_DNAC_VALIDATOR_UPDATE:
             dna_handle_dnac_validator_update(engine, task);
-            break;
-        case TASK_DNAC_GET_PENDING_REWARDS:
-            dna_handle_dnac_get_pending_rewards(engine, task);
             break;
         case TASK_DNAC_VALIDATOR_LIST:
             dna_handle_dnac_validator_list(engine, task);

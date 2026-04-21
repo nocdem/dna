@@ -152,16 +152,16 @@ int main(void) {
     CHECK_EQ(rc, 0);
     CHECK_TRUE(w.db != NULL);
 
-    /* Tables: 4 new stake-delegation tables exist */
+    /* Tables: stake-delegation tables exist. The `rewards` table was
+     * dropped in v0.16 stage A.3; epoch_state (Stage B.1) replaces it. */
     CHECK_EQ(sqlite_master_count(w.db, "table", "validators"), 1);
     CHECK_EQ(sqlite_master_count(w.db, "table", "delegations"), 1);
-    CHECK_EQ(sqlite_master_count(w.db, "table", "rewards"), 1);
+    CHECK_EQ(sqlite_master_count(w.db, "table", "rewards"), 0);
     CHECK_EQ(sqlite_master_count(w.db, "table", "validator_stats"), 1);
 
-    /* Column counts match the design (§3.7) */
+    /* Column counts match v0.16 schema (delegations dropped reward_snapshot). */
     CHECK_EQ(table_column_count(w.db, "validators"), 16);
-    CHECK_EQ(table_column_count(w.db, "delegations"), 7);
-    CHECK_EQ(table_column_count(w.db, "rewards"), 5);
+    CHECK_EQ(table_column_count(w.db, "delegations"), 6);
     CHECK_EQ(table_column_count(w.db, "validator_stats"), 2);
 
     /* validator_stats seeded with ('active_count', 0) */
@@ -184,10 +184,11 @@ int main(void) {
     CHECK_EQ(rc, 0);
     CHECK_TRUE(w.db != NULL);
 
-    /* All tables still present — no errors from re-running schema */
+    /* All tables still present — no errors from re-running schema
+     * (rewards table intentionally absent after v0.16 stage A.3). */
     CHECK_EQ(sqlite_master_count(w.db, "table", "validators"), 1);
     CHECK_EQ(sqlite_master_count(w.db, "table", "delegations"), 1);
-    CHECK_EQ(sqlite_master_count(w.db, "table", "rewards"), 1);
+    CHECK_EQ(sqlite_master_count(w.db, "table", "rewards"), 0);
     CHECK_EQ(sqlite_master_count(w.db, "table", "validator_stats"), 1);
 
     /* Seed row did NOT get duplicated */

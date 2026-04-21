@@ -613,21 +613,9 @@ typedef struct {
 
 /* ── Phase 14 / Stake-delegation v1 query results ─────────────────── */
 
-/** Per-validator pending-rewards entry (Phase 14 / Task 61). */
-typedef struct {
-    uint8_t  validator_pubkey[2592];   /* DNAC_PUBKEY_SIZE */
-    uint64_t amount;
-} nodus_dnac_pending_entry_t;
-
-/** Pending-rewards query result.
- *
- * Owns a heap-allocated entries array; caller MUST free via
- * nodus_client_free_pending_rewards_result(). */
-typedef struct {
-    uint64_t total;
-    int      count;
-    nodus_dnac_pending_entry_t *entries;
-} nodus_dnac_pending_rewards_result_t;
+/* v0.16: nodus_dnac_pending_entry_t and
+ * nodus_dnac_pending_rewards_result_t were removed with the
+ * dnac_pending_rewards_query RPC. */
 
 /** Committee member entry returned by dnac_committee_query. */
 typedef struct {

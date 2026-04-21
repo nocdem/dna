@@ -20,7 +20,6 @@
 #include "witness/nodus_witness_merkle.h"
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_delegation.h"
-#include "witness/nodus_witness_reward.h"
 #include "witness/nodus_witness_committee.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
@@ -54,19 +53,6 @@
 #define DNAC_STATUS_APPROVED   0
 #define DNAC_STATUS_REJECTED   1
 #define DNAC_STATUS_ERROR      2
-
-/* Max delegations scanned per pending_rewards_query (mirror
- * DNAC_MAX_DELEGATIONS_PER_DELEGATOR). 64 is the STAKE verify rule G cap. */
-#define DNAC_PENDING_REWARDS_MAX_DELEGATIONS   64
-
-/* Rate limit for pending_rewards_query: 10 queries per client per second.
- * F-DOS-05. Tracked via a simple per-IP sliding window below. The per-IP
- * key is imprecise (multiple clients behind NAT share a bucket) but
- * sufficient as a basic throttle; a per-session counter attached to the
- * session struct is a later refinement. */
-#define DNAC_PR_RATE_MAX_QPS       10
-#define DNAC_PR_RATE_MAX_ENTRIES   128
-#define DNAC_PR_RATE_EXPIRE_SEC    60
 
 /* Max validator entries returned per validator_list_query. Page size cap. */
 #define DNAC_VALIDATOR_LIST_MAX_RESULTS   256
@@ -134,74 +120,6 @@ static int decode_args(const uint8_t *payload, size_t len,
     }
 
     return -1;  /* "a" key not found */
-}
-
-/* ── Pending-rewards rate limit (F-DOS-05) ──────────────────────────
- *
- * Per-client throttle for dnac_pending_rewards_query: DNAC_PR_RATE_MAX_QPS
- * queries per second per client IP. Keyed by conn->ip so one process
- * tracks all dispatchers. The table is a tiny fixed array with LRU
- * eviction; on cap exhaust the oldest-window entry is replaced. For more
- * precise per-session tracking we would hang a counter off nodus_session,
- * but this handler runs on the witness port and the existing session
- * struct is not visible here — a connection-struct refinement is left as
- * a TODO. Meanwhile the per-IP bucket prevents the obvious flood path. */
-typedef struct {
-    char     ip[64];
-    uint64_t window_start;
-    int      count;
-} dnac_pr_rate_entry_t;
-
-static dnac_pr_rate_entry_t g_pr_rate_table[DNAC_PR_RATE_MAX_ENTRIES];
-static int                  g_pr_rate_count = 0;
-
-/** Returns 1 if the query should proceed, 0 if rate-limited. */
-static int pr_rate_check(const char *ip) {
-    if (!ip || ip[0] == '\0') return 1;   /* no IP -> do not throttle */
-
-    uint64_t now = (uint64_t)time(NULL);
-
-    /* Existing entry lookup. */
-    for (int i = 0; i < g_pr_rate_count; i++) {
-        if (strcmp(g_pr_rate_table[i].ip, ip) == 0) {
-            if (now - g_pr_rate_table[i].window_start >= 1) {
-                g_pr_rate_table[i].window_start = now;
-                g_pr_rate_table[i].count = 1;
-                return 1;
-            }
-            g_pr_rate_table[i].count++;
-            if (g_pr_rate_table[i].count > DNAC_PR_RATE_MAX_QPS) return 0;
-            return 1;
-        }
-    }
-
-    /* New entry — evict stale if full. */
-    if (g_pr_rate_count >= DNAC_PR_RATE_MAX_ENTRIES) {
-        int j = 0;
-        for (int i = 0; i < g_pr_rate_count; i++) {
-            if (now - g_pr_rate_table[i].window_start < DNAC_PR_RATE_EXPIRE_SEC) {
-                if (i != j) g_pr_rate_table[j] = g_pr_rate_table[i];
-                j++;
-            }
-        }
-        g_pr_rate_count = j;
-    }
-    if (g_pr_rate_count >= DNAC_PR_RATE_MAX_ENTRIES) {
-        /* Compact failed — overwrite slot 0. */
-        g_pr_rate_count = 1;
-        snprintf(g_pr_rate_table[0].ip, sizeof(g_pr_rate_table[0].ip),
-                 "%s", ip);
-        g_pr_rate_table[0].window_start = now;
-        g_pr_rate_table[0].count = 1;
-        return 1;
-    }
-
-    snprintf(g_pr_rate_table[g_pr_rate_count].ip,
-             sizeof(g_pr_rate_table[g_pr_rate_count].ip), "%s", ip);
-    g_pr_rate_table[g_pr_rate_count].window_start = now;
-    g_pr_rate_table[g_pr_rate_count].count = 1;
-    g_pr_rate_count++;
-    return 1;
 }
 
 /** Match a CBOR text key against a C string. */
@@ -2221,207 +2139,10 @@ static void handle_dnac_token_info(nodus_witness_t *w,
     }
 }
 
-/* ════════════════════════════════════════════════════════════════════
- * dnac_pending_rewards_query — Phase 14 / Task 61.
- *
- * Sums every pending reward owed to `claimant_pubkey` — delegator share
- * (one entry per active delegation) plus, when the claimant is itself a
- * validator, the validator_unclaimed balance from its reward row.
- *
- * Request:  "a": {"claimant": bstr(2592)}
- * Response: "r": {"total": u64, "entries":[{"v":bstr(2592), "amt":u64}, ...]}
- *
- * Math (accumulator-based; slated for removal in v0.16 stage A.3):
- *
- *   delegator pending = ((V.accumulator − D.reward_snapshot) × D.amount) >> 64
- *   validator pending = R.validator_unclaimed
- *
- * Rate-limited to DNAC_PR_RATE_MAX_QPS per client (F-DOS-05). Rows where
- * the validator or reward row is missing are silently skipped — those
- * delegations cannot yield rewards today anyway.
- *
- * Max 64 delegation entries scanned (matches STAKE rule G cap); over-cap
- * rows are truncated and the response carries only the first 64 entries
- * plus a potential validator-self entry.
- * ════════════════════════════════════════════════════════════════════ */
-
-/* dnac_pending_entry_t is declared in witness/nodus_witness_handlers.h
- * so tests can include it without pulling in the whole implementation. */
-
-int nodus_witness_compute_pending_rewards(nodus_witness_t *w,
-                                            const uint8_t *claimant_pubkey,
-                                            dnac_pending_entry_t *entries_out,
-                                            int *entry_count_out,
-                                            uint64_t *total_out) {
-    if (!w || !claimant_pubkey || !entries_out ||
-        !entry_count_out || !total_out) return -1;
-
-    *entry_count_out = 0;
-    *total_out = 0;
-
-    dnac_delegation_record_t *dels =
-        calloc(DNAC_PENDING_REWARDS_MAX_DELEGATIONS, sizeof(*dels));
-    if (!dels) return -1;
-
-    int del_count = 0;
-    int rc = nodus_delegation_list_by_delegator(w, claimant_pubkey, dels,
-                                                  DNAC_PENDING_REWARDS_MAX_DELEGATIONS,
-                                                  &del_count);
-    if (rc != 0) {
-        free(dels);
-        return -1;
-    }
-
-    int count = 0;
-    uint64_t total = 0;
-
-    for (int i = 0; i < del_count; i++) {
-        dnac_delegation_record_t *d = &dels[i];
-
-        /* Orphan delegation (validator or reward row gone) can not accrue;
-         * silently skip. */
-        dnac_validator_record_t v;
-        if (nodus_validator_get(w, d->validator_pubkey, &v) != 0) continue;
-
-        dnac_reward_record_t r;
-        if (nodus_reward_get(w, d->validator_pubkey, &r) != 0) continue;
-
-        qgp_u128_t acc  = qgp_u128_deserialize_be(r.accumulator);
-        qgp_u128_t snap = qgp_u128_deserialize_be(d->reward_snapshot);
-        if (qgp_u128_cmp(acc, snap) < 0) continue;   /* impossible; skip */
-
-        qgp_u128_t diff = qgp_u128_sub(acc, snap);
-        qgp_u128_t wide = qgp_u128_mul_u64(diff, d->amount);
-        /* >> 64: take hi limb (design §3.5). */
-        uint64_t pending = wide.hi;
-        if (pending == 0) continue;
-
-        memcpy(entries_out[count].validator_pubkey, d->validator_pubkey,
-               DNAC_PUBKEY_SIZE);
-        entries_out[count].amount = pending;
-        count++;
-        total += pending;
-    }
-
-    /* Validator-self path. */
-    dnac_validator_record_t self_v;
-    if (nodus_validator_get(w, claimant_pubkey, &self_v) == 0) {
-        dnac_reward_record_t self_r;
-        if (nodus_reward_get(w, claimant_pubkey, &self_r) == 0 &&
-            self_r.validator_unclaimed > 0) {
-            memcpy(entries_out[count].validator_pubkey, self_v.pubkey,
-                   DNAC_PUBKEY_SIZE);
-            entries_out[count].amount = self_r.validator_unclaimed;
-            count++;
-            total += self_r.validator_unclaimed;
-        }
-    }
-
-    free(dels);
-
-    *entry_count_out = count;
-    *total_out = total;
-    return 0;
-}
-
-static void handle_dnac_pending_rewards_query(nodus_witness_t *w,
-                                                struct nodus_tcp_conn *conn,
-                                                const uint8_t *payload, size_t len,
-                                                uint32_t txn_id) {
-    /* Rate limit FIRST — reject without doing DB work. */
-    if (!pr_rate_check(conn->ip)) {
-        send_error(conn, txn_id, NODUS_ERR_RATE_LIMITED,
-                    "pending_rewards query rate limited");
-        return;
-    }
-
-    cbor_decoder_t dec;
-    size_t args_count;
-    if (decode_args(payload, len, &dec, &args_count) != 0) {
-        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                    "missing args map");
-        return;
-    }
-
-    const uint8_t *claimant = NULL;
-    size_t claimant_len = 0;
-
-    for (size_t i = 0; i < args_count; i++) {
-        cbor_item_t key = cbor_decode_next(&dec);
-        if (key_match(&key, "claimant")) {
-            cbor_item_t val = cbor_decode_next(&dec);
-            if (val.type == CBOR_ITEM_BSTR &&
-                val.bstr.len == DNAC_PUBKEY_SIZE) {
-                claimant = val.bstr.ptr;
-                claimant_len = val.bstr.len;
-            }
-        } else {
-            cbor_decode_skip(&dec);
-        }
-    }
-
-    if (!claimant || claimant_len != DNAC_PUBKEY_SIZE) {
-        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                    "missing or invalid claimant pubkey");
-        return;
-    }
-
-    size_t cap = DNAC_PENDING_REWARDS_MAX_DELEGATIONS + 1;
-    dnac_pending_entry_t *entries = calloc(cap, sizeof(*entries));
-    if (!entries) {
-        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "alloc failed");
-        return;
-    }
-
-    int entry_count = 0;
-    uint64_t total_pending = 0;
-    if (nodus_witness_compute_pending_rewards(w, claimant, entries,
-                                                &entry_count,
-                                                &total_pending) != 0) {
-        free(entries);
-        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                    "pending rewards query failed");
-        return;
-    }
-
-    /* Response: 2 top-level keys + per-entry (validator 2592B + uint).
-     * Budget ~2700 B/entry conservatively. */
-    size_t buf_size = 256 + (size_t)entry_count * 2700;
-    uint8_t *buf = malloc(buf_size);
-    if (!buf) {
-        free(entries);
-        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR, "alloc failed");
-        return;
-    }
-
-    cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf, buf_size);
-    enc_dnac_response(&enc, txn_id, "dnac_pending_rewards_query", 2);
-
-    cbor_encode_cstr(&enc, "total");
-    cbor_encode_uint(&enc, total_pending);
-
-    cbor_encode_cstr(&enc, "entries");
-    cbor_encode_array(&enc, (size_t)entry_count);
-    for (int i = 0; i < entry_count; i++) {
-        cbor_encode_map(&enc, 2);
-        cbor_encode_cstr(&enc, "v");
-        cbor_encode_bstr(&enc, entries[i].validator_pubkey, DNAC_PUBKEY_SIZE);
-        cbor_encode_cstr(&enc, "amt");
-        cbor_encode_uint(&enc, entries[i].amount);
-    }
-
-    size_t rlen = cbor_encoder_len(&enc);
-    if (rlen > 0) {
-        nodus_tcp_send(conn, buf, rlen);
-    } else {
-        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
-                    "response buffer overflow");
-    }
-
-    free(buf);
-    free(entries);
-}
+/* v0.16: dnac_pending_rewards_query RPC + nodus_witness_compute_pending_rewards
+ * removed — push-settlement distributes rewards as UTXOs at each epoch
+ * boundary so the client has no pending-balance to query. Rate-limit
+ * state (g_pr_rate_table, pr_rate_check) retired with this handler. */
 
 /* ════════════════════════════════════════════════════════════════════
  * dnac_committee_query — Phase 14 / Task 62.
@@ -2707,8 +2428,6 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_token_info(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_fee_info") == 0) {
         handle_dnac_fee_info(w, conn, txn_id);
-    } else if (strcmp(method, "dnac_pending_rewards_query") == 0) {
-        handle_dnac_pending_rewards_query(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_committee_query") == 0) {
         handle_dnac_committee_query(w, conn, txn_id);
     } else if (strcmp(method, "dnac_validator_list_query") == 0) {

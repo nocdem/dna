@@ -106,7 +106,6 @@ set(DNAC_SOURCES
     src/transaction/delegate.c
     src/transaction/validator_update.c
     src/transaction/chain_config.c
-    src/transaction/rewards_query.c
     src/transaction/validator_queries.c
 
     # Nodus
@@ -384,9 +383,6 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 7 Task 37: VALIDATOR_UPDATE builder API
     register_dnac_test(test_validator_update_builder)
-
-    # Stake & delegation v1 — Phase 7 Task 38: pending-rewards query (stub)
-    register_dnac_test(test_rewards_query_stub)
 
     # Stake & delegation v1 — Phase 7 Task 39: validator_list + committee (stubs)
     register_dnac_test(test_validator_queries_stub)

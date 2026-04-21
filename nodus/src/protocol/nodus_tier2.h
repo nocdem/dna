@@ -478,7 +478,7 @@ int nodus_t2_ch_ring_rejoin(uint32_t txn,
 typedef struct {
     uint32_t        txn_id;
     char            type;           /* 'q', 'r', 'e' */
-    char            method[64];  /* longest: "dnac_pending_rewards_query" (26ch); 64 for headroom */
+    char            method[64];  /* longest: "dnac_validator_list_query" (25ch); 64 for headroom */
     uint8_t         token[NODUS_SESSION_TOKEN_LEN];
     bool            has_token;
 
