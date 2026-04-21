@@ -21,8 +21,8 @@ extern "C" {
 /* ── Protocol constants ──────────────────────────────────────────── */
 
 #define NODUS_VERSION_MAJOR  0
-#define NODUS_VERSION_MINOR  15
-#define NODUS_VERSION_PATCH  2
+#define NODUS_VERSION_MINOR  16
+#define NODUS_VERSION_PATCH  0
 #define NODUS_VERSION_STRING "0.15.2"
 
 /* Wire frame */

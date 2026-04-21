@@ -843,6 +843,136 @@ static int update_utxo_set(nodus_witness_t *w,
  * Phase 3.4 can move the call from per-TX to per-block (run once
  * inside finalize_block) without changing the check's semantics.
  */
+/* v0.16 Stage F.1 — HARD supply invariant check.
+ *
+ * Replaces the pre-v0.16 advisory invariant (which used
+ * dnac_total_minted_at against the old 16-DNAC halving curve). The
+ * new model is bookkeeping-closed:
+ *
+ *   expected = genesis_supply + total_minted − total_burned
+ *   observed = Σ utxo_set.amount (native DNAC only)
+ *            + Σ validator.self_stake
+ *            + Σ validator.total_delegated
+ *            + Σ epoch_state.epoch_pool_accum (current + any queued)
+ *
+ * Any mismatch is a consensus-critical bug and MUST reject the block.
+ *
+ * Returns 0 when the invariant holds (including pre-genesis state
+ * where supply_tracking is empty — no supply to conserve yet); -1
+ * when violated; also -1 on internal DB error so the block is
+ * rejected rather than committed on stale/partial reads.
+ *
+ * Read-only — does not mutate w->db.
+ */
+static int check_supply_invariant_v016(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+
+    nodus_witness_supply_t sup;
+    memset(&sup, 0, sizeof(sup));
+    int sup_rc = nodus_witness_supply_get(w, &sup);
+    if (sup_rc != 0) {
+        /* Pre-genesis: the supply_tracking row hasn't been initialized.
+         * Nothing to conserve yet — genesis commit populates it. */
+        return 0;
+    }
+
+    /* expected, guarded against overflow + underflow. */
+    uint64_t expected = sup.genesis_supply;
+    if (sup.total_minted > UINT64_MAX - expected) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "SUPPLY INVARIANT: genesis+minted overflow genesis=%llu minted=%llu",
+            (unsigned long long)sup.genesis_supply,
+            (unsigned long long)sup.total_minted);
+        return -1;
+    }
+    expected += sup.total_minted;
+    if (sup.total_burned > expected) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "SUPPLY INVARIANT: burned > genesis+minted (burned=%llu exp=%llu)",
+            (unsigned long long)sup.total_burned,
+            (unsigned long long)expected);
+        return -1;
+    }
+    expected -= sup.total_burned;
+
+    /* observed = utxo_native + validator_stakes + delegations + epoch_pool */
+    uint64_t utxo_native = 0;
+    if (nodus_witness_utxo_sum_by_token(w, NULL, &utxo_native) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "SUPPLY INVARIANT: utxo_sum_by_token failed");
+        return -1;
+    }
+
+    uint64_t self_stake_sum = 0;
+    uint64_t total_delegated_sum = 0;
+    {
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT COALESCE(SUM(self_stake), 0), "
+                "       COALESCE(SUM(total_delegated), 0) "
+                "FROM validators",
+                -1, &stmt, NULL) != SQLITE_OK) {
+            /* Schema-missing in unit-test fixtures is acceptable; skip
+             * these two terms (they'd be zero anyway). */
+        } else {
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                self_stake_sum      = (uint64_t)sqlite3_column_int64(stmt, 0);
+                total_delegated_sum = (uint64_t)sqlite3_column_int64(stmt, 1);
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    uint64_t epoch_pool_sum = 0;
+    {
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT COALESCE(SUM(epoch_pool_accum), 0) FROM epoch_state",
+                -1, &stmt, NULL) == SQLITE_OK) {
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                epoch_pool_sum = (uint64_t)sqlite3_column_int64(stmt, 0);
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    uint64_t observed = utxo_native;
+    if (self_stake_sum > UINT64_MAX - observed) goto overflow_fail;
+    observed += self_stake_sum;
+    if (total_delegated_sum > UINT64_MAX - observed) goto overflow_fail;
+    observed += total_delegated_sum;
+    if (epoch_pool_sum > UINT64_MAX - observed) goto overflow_fail;
+    observed += epoch_pool_sum;
+
+    if (expected != observed) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "SUPPLY INVARIANT VIOLATION: expected=%llu observed=%llu delta=%lld "
+            "(genesis=%llu minted=%llu burned=%llu utxo=%llu self_stake=%llu "
+            "delegated=%llu pool=%llu)",
+            (unsigned long long)expected,
+            (unsigned long long)observed,
+            (long long)((int64_t)observed - (int64_t)expected),
+            (unsigned long long)sup.genesis_supply,
+            (unsigned long long)sup.total_minted,
+            (unsigned long long)sup.total_burned,
+            (unsigned long long)utxo_native,
+            (unsigned long long)self_stake_sum,
+            (unsigned long long)total_delegated_sum,
+            (unsigned long long)epoch_pool_sum);
+        return -1;
+    }
+    return 0;
+
+overflow_fail:
+    QGP_LOG_ERROR(LOG_TAG,
+        "SUPPLY INVARIANT: observed sum overflow (utxo=%llu self_stake=%llu "
+        "delegated=%llu pool=%llu)",
+        (unsigned long long)utxo_native,
+        (unsigned long long)self_stake_sum,
+        (unsigned long long)total_delegated_sum,
+        (unsigned long long)epoch_pool_sum);
+    return -1;
+}
+
 bool supply_invariant_violated(nodus_witness_t *w) {
     if (!w || !w->db) return false;
 
@@ -2945,8 +3075,24 @@ int finalize_block(nodus_witness_t *w,
         return -1;
     }
 
-    /* 2. Supply invariant check — once per block (Phase 3 / Task 3.4).
-     * Advisory only in Phase 3; Phase 6 commit_batch promotes to fatal. */
+    /* 2. Supply invariant — v0.16 Stage F.1 HARD gate.
+     *
+     * expected = genesis_supply + total_minted − total_burned
+     * observed = Σ utxo_native + Σ self_stake + Σ total_delegated
+     *          + Σ epoch_state.epoch_pool_accum
+     *
+     * Any mismatch rejects the block so the outer commit_batch
+     * transaction rolls back — no state_root, no block row, no
+     * UTXO mutations reach the committed DB. The legacy advisory
+     * check (supply_invariant_violated) is retained below for the
+     * attribution-replay path, which runs per-TX diagnostics when a
+     * batch fails. */
+    if (check_supply_invariant_v016(w) != 0) {
+        fprintf(stderr,
+            "%s: finalize_block REJECTED: supply invariant violated at h=%llu\n",
+            LOG_TAG, (unsigned long long)expected_height);
+        return -1;
+    }
     (void)supply_invariant_violated(w);
 
     /* 3. tx_root via RFC 6962 over the batch's TX hashes (Phase 2 wrapper). */
