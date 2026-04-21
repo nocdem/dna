@@ -74,40 +74,49 @@ int messenger_generate_keys_from_seeds(
         return -1;
     }
 
+    int ret = -1;
+    qgp_key_t *sign_key = NULL;
+    uint8_t *dilithium_pk = NULL;
+    uint8_t *dilithium_sk = NULL;
+    uint8_t *dilithium_pubkey_copy = NULL;
+    uint8_t *dilithium_privkey_copy = NULL;
+    size_t dilithium_privkey_size = 0;
+    qgp_key_t *enc_key = NULL;
+    uint8_t *kyber_pk = NULL;
+    uint8_t *kyber_sk = NULL;
+    uint8_t *kyber_pubkey_copy = NULL;
+
     // Generate Dilithium5 (ML-DSA-87) signing key from seed FIRST (need fingerprint for directory)
-    qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
+    sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
     if (!sign_key) {
         QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for signing key");
-        return -1;
+        goto cleanup;
     }
 
-    uint8_t *dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
-    uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
+    dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
+    dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
     if (!dilithium_pk || !dilithium_sk) {
         QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for DSA-87 buffers");
-        free(dilithium_pk);
-        free(dilithium_sk);
-        qgp_key_free(sign_key);
-        return -1;
+        goto cleanup;
     }
 
     if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "DSA-87 key generation from seed failed");
-        free(dilithium_pk);
-        free(dilithium_sk);
-        qgp_key_free(sign_key);
-        return -1;
+        goto cleanup;
     }
 
     sign_key->public_key = dilithium_pk;
     sign_key->public_key_size = QGP_DSA87_PUBLICKEYBYTES;
     sign_key->private_key = dilithium_sk;
     sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
+    /* Ownership transferred to sign_key; qgp_key_free will release these buffers */
+    dilithium_pk = NULL;
+    dilithium_sk = NULL;
 
     // Compute fingerprint from public key (SHA3-512 hash)
     char fingerprint[129];
-    dna_compute_fingerprint(dilithium_pk, fingerprint);
+    dna_compute_fingerprint(sign_key->public_key, fingerprint);
 
     // v0.3.0: Single-user flat storage (no fingerprint in path)
     // Create directory structure: <data_dir>/keys/, <data_dir>/wallets/, <data_dir>/db/
@@ -123,8 +132,7 @@ int messenger_generate_keys_from_seeds(
     if (!qgp_platform_is_directory(data_dir)) {
         if (qgp_platform_mkdir(data_dir) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Cannot create directory: %s", data_dir);
-            qgp_key_free(sign_key);
-            return -1;
+            goto cleanup;
         }
     }
 
@@ -132,8 +140,7 @@ int messenger_generate_keys_from_seeds(
     if (!qgp_platform_is_directory(keys_dir)) {
         if (qgp_platform_mkdir(keys_dir) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Cannot create directory: %s", keys_dir);
-            qgp_key_free(sign_key);
-            return -1;
+            goto cleanup;
         }
     }
 
@@ -141,8 +148,7 @@ int messenger_generate_keys_from_seeds(
     if (!qgp_platform_is_directory(wallets_dir)) {
         if (qgp_platform_mkdir(wallets_dir) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Cannot create directory: %s", wallets_dir);
-            qgp_key_free(sign_key);
-            return -1;
+            goto cleanup;
         }
     }
 
@@ -150,8 +156,7 @@ int messenger_generate_keys_from_seeds(
     if (!qgp_platform_is_directory(db_dir)) {
         if (qgp_platform_mkdir(db_dir) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Cannot create directory: %s", db_dir);
-            qgp_key_free(sign_key);
-            return -1;
+            goto cleanup;
         }
     }
 
@@ -167,8 +172,7 @@ int messenger_generate_keys_from_seeds(
 
     if (qgp_key_save_encrypted(sign_key, dilithium_path, password) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to save signing key");
-        qgp_key_free(sign_key);
-        return -1;
+        goto cleanup;
     }
 
     if (password && strlen(password) > 0) {
@@ -176,51 +180,46 @@ int messenger_generate_keys_from_seeds(
     }
 
     // Keep copies of keys for DHT publishing (before freeing)
-    uint8_t *dilithium_pubkey_copy = malloc(sign_key->public_key_size);
-    uint8_t *dilithium_privkey_copy = malloc(sign_key->private_key_size);
+    dilithium_pubkey_copy = malloc(sign_key->public_key_size);
+    dilithium_privkey_copy = malloc(sign_key->private_key_size);
     if (!dilithium_pubkey_copy || !dilithium_privkey_copy) {
         QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
-        free(dilithium_pubkey_copy);
-        free(dilithium_privkey_copy);
-        qgp_key_free(sign_key);
-        return -1;
+        goto cleanup;
     }
     memcpy(dilithium_pubkey_copy, sign_key->public_key, sign_key->public_key_size);
     memcpy(dilithium_privkey_copy, sign_key->private_key, sign_key->private_key_size);
-    size_t dilithium_privkey_size = sign_key->private_key_size;
+    dilithium_privkey_size = sign_key->private_key_size;
 
     qgp_key_free(sign_key);
+    sign_key = NULL;
 
     // Generate Kyber1024 (ML-KEM-1024) encryption key from seed
-    qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
+    enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
     if (!enc_key) {
         QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for encryption key");
-        return -1;
+        goto cleanup;
     }
 
-    uint8_t *kyber_pk = calloc(1, 1568);  // Kyber1024 public key size
-    uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
+    kyber_pk = calloc(1, 1568);  // Kyber1024 public key size
+    kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
 
     if (!kyber_pk || !kyber_sk) {
         QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for KEM-1024 buffers");
-        free(kyber_pk);
-        free(kyber_sk);
-        qgp_key_free(enc_key);
-        return -1;
+        goto cleanup;
     }
 
     if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "KEM-1024 key generation from seed failed");
-        free(kyber_pk);
-        free(kyber_sk);
-        qgp_key_free(enc_key);
-        return -1;
+        goto cleanup;
     }
 
     enc_key->public_key = kyber_pk;
     enc_key->public_key_size = 1568;  // Kyber1024 public key size
     enc_key->private_key = kyber_sk;
     enc_key->private_key_size = 3168;  // Kyber1024 secret key size
+    /* Ownership transferred to enc_key; qgp_key_free will release these buffers */
+    kyber_pk = NULL;
+    kyber_sk = NULL;
 
     // Save to keys directory (optionally encrypted with password)
     // v0.3.0: Flat structure - keys/identity.kem instead of keys/<fingerprint>.kem
@@ -229,10 +228,7 @@ int messenger_generate_keys_from_seeds(
 
     if (qgp_key_save_encrypted(enc_key, kyber_path, password) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to save encryption key");
-        qgp_key_free(enc_key);
-        free(dilithium_pubkey_copy);
-        free(dilithium_privkey_copy);
-        return -1;
+        goto cleanup;
     }
 
     printf("✓ ML-KEM-1024 encryption key generated from seed\n");
@@ -242,13 +238,10 @@ int messenger_generate_keys_from_seeds(
     }
 
     // Keep copies of public keys for DHT publishing (before freeing)
-    uint8_t *kyber_pubkey_copy = malloc(enc_key->public_key_size);
+    kyber_pubkey_copy = malloc(enc_key->public_key_size);
     if (!kyber_pubkey_copy) {
         QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
-        qgp_key_free(enc_key);
-        free(dilithium_pubkey_copy);
-        free(dilithium_privkey_copy);
-        return -1;
+        goto cleanup;
     }
     memcpy(kyber_pubkey_copy, enc_key->public_key, enc_key->public_key_size);
 
@@ -286,7 +279,7 @@ int messenger_generate_keys_from_seeds(
     // This reduces attack surface: only mnemonic.enc needs to be protected
     // v0.3.0: Flat structure - mnemonic.enc in root data dir
     if (mnemonic && strlen(mnemonic) > 0) {
-        if (mnemonic_storage_save(mnemonic, kyber_pk, data_dir) == 0) {
+        if (mnemonic_storage_save(mnemonic, kyber_pubkey_copy, data_dir) == 0) {
             QGP_LOG_INFO(LOG_TAG, "✓ Encrypted mnemonic saved (wallet keys derived on-demand)\n");
         } else {
             QGP_LOG_WARN(LOG_TAG, "Warning: Failed to save encrypted mnemonic\n");
@@ -295,16 +288,6 @@ int messenger_generate_keys_from_seeds(
         QGP_LOG_WARN(LOG_TAG, "No mnemonic provided - wallet recovery will not be possible\n");
     }
 
-    qgp_key_free(enc_key);
-
-    // Securely wipe and free key copies
-    if (dilithium_privkey_copy) {
-        qgp_secure_memzero(dilithium_privkey_copy, dilithium_privkey_size);
-        free(dilithium_privkey_copy);
-    }
-    free(dilithium_pubkey_copy);
-    free(kyber_pubkey_copy);
-
     // Copy fingerprint to output parameter
     strncpy(fingerprint_out, fingerprint, 128);
     fingerprint_out[128] = '\0';
@@ -312,7 +295,23 @@ int messenger_generate_keys_from_seeds(
     printf("✓ Identity created successfully!\n");
     printf("✓ Fingerprint: %s\n", fingerprint);
     printf("\nNote: Register a name via Settings menu to allow others to find you.\n");
-    return 0;
+
+    ret = 0;
+
+cleanup:
+    if (sign_key) qgp_key_free(sign_key);
+    free(dilithium_pk);
+    free(dilithium_sk);
+    if (enc_key) qgp_key_free(enc_key);
+    free(kyber_pk);
+    free(kyber_sk);
+    if (dilithium_privkey_copy) {
+        qgp_secure_memzero(dilithium_privkey_copy, dilithium_privkey_size);
+        free(dilithium_privkey_copy);
+    }
+    free(dilithium_pubkey_copy);
+    free(kyber_pubkey_copy);
+    return ret;
 }
 
 int messenger_register_name(
