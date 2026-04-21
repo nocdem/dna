@@ -798,9 +798,15 @@ static int update_utxo_set(nodus_witness_t *w,
                              ? fee - DNAC_SELF_STAKE_AMOUNT : 0;
                 break;
             case NODUS_W_TX_DELEGATE:
-            case NODUS_W_TX_UNDELEGATE:
-                actual_fee = 0; /* absorbed into state transition */
+                /* apply_delegate computes delegation_amount = input - output,
+                 * which implicitly absorbs the user fee into the delegation.
+                 * Pre-committed_fee wire field this is the v0.16 SB-1 contract. */
+                actual_fee = 0;
                 break;
+            /* UNDELEGATE falls through to default: apply_undelegate emits a
+             * synthetic UTXO for the wire-field amount (separate from TX
+             * outputs), so fee = input - output is NOT absorbed by any state
+             * transition — burn it like other fee-only TXs. */
             case NODUS_W_TX_GENESIS:
                 actual_fee = 0;
                 break;
