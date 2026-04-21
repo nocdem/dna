@@ -162,18 +162,6 @@ extern "C" {
 #define NODUS_W_MAX_BLOCK_TXS       10      /* max TXs per batch/block */
 #define NODUS_W_MAX_PENDING_FWD     16      /* max pending forward slots */
 
-/* Stake & Committee (v1) — mirrored from dnac.h so the witness side can
- * reference committee sizing / epoch timing / liveness thresholds without
- * pulling in dnac public headers. Client-side builder constants
- * (DNAC_SELF_STAKE_AMOUNT, DNAC_MIN_DELEGATION, etc.) live only in dnac.h. */
-#define NODUS_COMMITTEE_SIZE            7
-#define NODUS_EPOCH_LENGTH              120
-#define NODUS_MIN_TENURE_BLOCKS         240
-#define NODUS_UNSTAKE_COOLDOWN_BLOCKS   17280
-#define NODUS_LIVENESS_THRESHOLD_BPS    8000
-#define NODUS_AUTO_RETIRE_EPOCHS        3
-#define NODUS_MAX_VALIDATORS            128
-
 /* Merkle tree tags (v1 stake/delegation) — domain separators preventing
  * cross-tree leaf-key collisions (F-CRYPTO-04 red-team mitigation).
  * Every Merkle leaf key and value hash MUST be prefixed with its
