@@ -55,9 +55,14 @@ bool nodus_witness_nullifier_exists(nodus_witness_t *w, const uint8_t *nullifier
     }
 
     sqlite3_bind_blob(stmt, 1, nullifier, NODUS_T3_NULLIFIER_LEN, SQLITE_STATIC);
-    bool exists = (sqlite3_step(stmt) == SQLITE_ROW);
+    int rc_step = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    return exists;
+    /* HIGH-10: fail-closed — step errors (BUSY/LOCKED/IOERR/CORRUPT) assume spent */
+    if (rc_step == SQLITE_ROW) return true;
+    if (rc_step == SQLITE_DONE) return false;
+    fprintf(stderr, "%s: nullifier step failed rc=%d - assuming spent (fail-closed)\n",
+            LOG_TAG, rc_step);
+    return true;
 }
 
 int nodus_witness_nullifier_add(nodus_witness_t *w, const uint8_t *nullifier,

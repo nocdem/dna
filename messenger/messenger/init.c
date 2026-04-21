@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
+#include <sys/stat.h>
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -482,6 +483,9 @@ int messenger_load_dht_identity(const char *fingerprint) {
             if (cache_f) {
                 fwrite(dht_id_buffer, 1, dht_id_size, cache_f);
                 fclose(cache_f);
+#ifndef _WIN32
+                chmod(dht_id_path, S_IRUSR | S_IWUSR);
+#endif
                 QGP_LOG_INFO(LOG_TAG_DHT, "Cached DHT identity for future loads");
             }
             free(dht_id_buffer);

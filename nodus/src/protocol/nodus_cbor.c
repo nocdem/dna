@@ -115,7 +115,10 @@ size_t cbor_encoder_len(const cbor_encoder_t *enc) {
 /* ── Decoder internals ───────────────────────────────────────────── */
 
 static inline bool dec_has(const cbor_decoder_t *dec, size_t need) {
-    return !dec->error && dec->pos + need <= dec->len;
+    /* Overflow-safe: compare against remaining bytes, never add attacker-controlled `need`. */
+    if (dec->error) return false;
+    if (dec->pos > dec->len) return false;
+    return need <= dec->len - dec->pos;
 }
 
 static inline uint8_t dec_byte(cbor_decoder_t *dec) {

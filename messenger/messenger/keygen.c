@@ -14,6 +14,7 @@
 #include <string.h>
 #include <time.h>
 #include <dirent.h>
+#include <sys/stat.h>
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -261,6 +262,9 @@ int messenger_generate_keys_from_seeds(
                 if (f) {
                     fwrite(dht_id_buffer, 1, dht_id_size, f);
                     fclose(f);
+#ifndef _WIN32
+                    chmod(dht_id_path, S_IRUSR | S_IWUSR);
+#endif
                     QGP_LOG_INFO(LOG_TAG, "Nodus identity saved to %s", dht_id_path);
                 }
                 free(dht_id_buffer);
