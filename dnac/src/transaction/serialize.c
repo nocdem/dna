@@ -103,11 +103,6 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     if (tx->type == DNAC_TX_UNDELEGATE) {
         size += DNAC_PUBKEY_SIZE + 8;
     }
-    /* Phase 5 Task 18. CLAIM_REWARD carries target_validator(2592) +
-     * max_pending_amount(u64) + valid_before_block(u64). */
-    if (tx->type == DNAC_TX_CLAIM_REWARD) {
-        size += DNAC_PUBKEY_SIZE + 8 + 8;
-    }
     /* Phase 5 Task 19. VALIDATOR_UPDATE carries new_commission_bps(u16) +
      * signed_at_block(u64). */
     if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
@@ -213,16 +208,6 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
         uint8_t amount_be[8];
         be64_to_bytes(tx->undelegate_fields.amount, amount_be);
         WRITE_BLOB(ptr, amount_be, 8);
-    }
-    /* Phase 5 Task 18. CLAIM_REWARD: target_validator[2592] ||
-     *        max_pending_amount(u64 BE) || valid_before_block(u64 BE). */
-    if (tx->type == DNAC_TX_CLAIM_REWARD) {
-        WRITE_BLOB(ptr, tx->claim_reward_fields.target_validator, DNAC_PUBKEY_SIZE);
-        uint8_t max_be[8], valid_be[8];
-        be64_to_bytes(tx->claim_reward_fields.max_pending_amount, max_be);
-        be64_to_bytes(tx->claim_reward_fields.valid_before_block, valid_be);
-        WRITE_BLOB(ptr, max_be, 8);
-        WRITE_BLOB(ptr, valid_be, 8);
     }
     /* Phase 5 Task 19. VALIDATOR_UPDATE: new_commission_bps(u16 BE) ||
      *        signed_at_block(u64 BE). */
@@ -441,19 +426,6 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         }
         READ_BLOB(ptr, tx->undelegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
         tx->undelegate_fields.amount = be64_from_bytes(ptr);
-        ptr += 8;
-    }
-    /* Phase 5 Task 18. CLAIM_REWARD: target_validator[2592] ||
-     *        max_pending_amount(u64 BE) || valid_before_block(u64 BE). */
-    if (tx->type == DNAC_TX_CLAIM_REWARD) {
-        if (ptr + DNAC_PUBKEY_SIZE + 16 > end) {
-            free(tx);
-            return DNAC_ERROR_INVALID_PARAM;
-        }
-        READ_BLOB(ptr, tx->claim_reward_fields.target_validator, DNAC_PUBKEY_SIZE);
-        tx->claim_reward_fields.max_pending_amount = be64_from_bytes(ptr);
-        ptr += 8;
-        tx->claim_reward_fields.valid_before_block = be64_from_bytes(ptr);
         ptr += 8;
     }
     /* Phase 5 Task 19. VALIDATOR_UPDATE: new_commission_bps(u16 BE) ||

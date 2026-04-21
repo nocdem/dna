@@ -636,26 +636,6 @@ void dna_handle_dnac_undelegate(dna_engine_t *engine, dna_task_t *task) {
     task->callback.completion(task->request_id, ret, task->user_data);
 }
 
-void dna_handle_dnac_claim_reward(dna_engine_t *engine, dna_task_t *task) {
-    dnac_context_t *ctx = ensure_dnac_init(engine);
-    if (!ctx) {
-        task->callback.completion(task->request_id,
-                                   DNA_ENGINE_ERROR_NOT_INITIALIZED,
-                                   task->user_data);
-        return;
-    }
-    int ret = dnac_claim_reward(ctx,
-        task->params.dnac_claim_reward.target_validator_pubkey,
-        task->params.dnac_claim_reward.max_pending_amount,
-        task->params.dnac_claim_reward.valid_before_block,
-        NULL, NULL);
-    if (ret != DNAC_SUCCESS) {
-        QGP_LOG_ERROR(LOG_TAG, "dnac_claim_reward failed: %d (%s)", ret,
-                      dnac_error_string(ret));
-    }
-    task->callback.completion(task->request_id, ret, task->user_data);
-}
-
 void dna_handle_dnac_validator_update(dna_engine_t *engine, dna_task_t *task) {
     dnac_context_t *ctx = ensure_dnac_init(engine);
     if (!ctx) {
@@ -673,28 +653,6 @@ void dna_handle_dnac_validator_update(dna_engine_t *engine, dna_task_t *task) {
                       dnac_error_string(ret));
     }
     task->callback.completion(task->request_id, ret, task->user_data);
-}
-
-void dna_handle_dnac_get_pending_rewards(dna_engine_t *engine, dna_task_t *task) {
-    dnac_context_t *ctx = ensure_dnac_init(engine);
-    if (!ctx) {
-        task->callback.dnac_fee(task->request_id,
-                                 DNA_ENGINE_ERROR_NOT_INITIALIZED,
-                                 0, task->user_data);
-        return;
-    }
-    const uint8_t *pk = task->params.dnac_pending_rewards.has_claimant_pubkey
-                        ? task->params.dnac_pending_rewards.claimant_pubkey
-                        : NULL;
-    uint64_t total = 0;
-    int ret = dnac_get_pending_rewards(ctx, pk, &total, NULL, NULL);
-    if (ret != DNAC_SUCCESS) {
-        QGP_LOG_DEBUG(LOG_TAG, "dnac_get_pending_rewards: %d (%s)",
-                      ret, dnac_error_string(ret));
-        task->callback.dnac_fee(task->request_id, ret, 0, task->user_data);
-        return;
-    }
-    task->callback.dnac_fee(task->request_id, 0, total, task->user_data);
 }
 
 /* Shared: convert C dnac_validator_list_entry_t[] to dna_dnac_validator_entry_t[]
@@ -837,25 +795,6 @@ dna_request_id_t dna_engine_dnac_undelegate(dna_engine_t *engine,
     return dna_submit_task(engine, TASK_DNAC_UNDELEGATE, &params, cb, user_data);
 }
 
-dna_request_id_t dna_engine_dnac_claim_reward(dna_engine_t *engine,
-                                               const uint8_t *target_validator_pubkey,
-                                               uint64_t max_pending_amount,
-                                               uint64_t valid_before_block,
-                                               dna_completion_cb callback,
-                                               void *user_data) {
-    if (!engine || !target_validator_pubkey || !callback)
-        return DNA_REQUEST_ID_INVALID;
-    dna_task_params_t params = {0};
-    memcpy(params.dnac_claim_reward.target_validator_pubkey,
-           target_validator_pubkey, DNAC_PUBKEY_SIZE);
-    params.dnac_claim_reward.max_pending_amount = max_pending_amount;
-    params.dnac_claim_reward.valid_before_block = valid_before_block;
-    dna_task_callback_t cb = {0};
-    cb.completion = callback;
-    return dna_submit_task(engine, TASK_DNAC_CLAIM_REWARD, &params, cb,
-                            user_data);
-}
-
 dna_request_id_t dna_engine_dnac_validator_update(dna_engine_t *engine,
                                                    uint16_t new_commission_bps,
                                                    uint64_t signed_at_block,
@@ -868,25 +807,6 @@ dna_request_id_t dna_engine_dnac_validator_update(dna_engine_t *engine,
     dna_task_callback_t cb = {0};
     cb.completion = callback;
     return dna_submit_task(engine, TASK_DNAC_VALIDATOR_UPDATE, &params, cb,
-                            user_data);
-}
-
-dna_request_id_t dna_engine_dnac_get_pending_rewards(dna_engine_t *engine,
-                                                      const uint8_t *claimant_pubkey,
-                                                      dna_dnac_fee_cb callback,
-                                                      void *user_data) {
-    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
-    dna_task_params_t params = {0};
-    if (claimant_pubkey) {
-        memcpy(params.dnac_pending_rewards.claimant_pubkey,
-               claimant_pubkey, DNAC_PUBKEY_SIZE);
-        params.dnac_pending_rewards.has_claimant_pubkey = true;
-    } else {
-        params.dnac_pending_rewards.has_claimant_pubkey = false;
-    }
-    dna_task_callback_t cb = {0};
-    cb.dnac_fee = callback;
-    return dna_submit_task(engine, TASK_DNAC_GET_PENDING_REWARDS, &params, cb,
                             user_data);
 }
 

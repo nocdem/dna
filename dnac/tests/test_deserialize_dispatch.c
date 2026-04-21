@@ -74,15 +74,6 @@ int main(void) {
     CHECK(dnac_tx_compute_hash(&tx, tx.tx_hash) == DNAC_SUCCESS);
     CHECK(roundtrip(&tx));
 
-    /* CLAIM_REWARD */
-    common_fields(&tx);
-    tx.type = DNAC_TX_CLAIM_REWARD;
-    memset(tx.claim_reward_fields.target_validator, 0x44, DNAC_PUBKEY_SIZE);
-    tx.claim_reward_fields.max_pending_amount = 500ULL;
-    tx.claim_reward_fields.valid_before_block = 100ULL;
-    CHECK(dnac_tx_compute_hash(&tx, tx.tx_hash) == DNAC_SUCCESS);
-    CHECK(roundtrip(&tx));
-
     /* VALIDATOR_UPDATE */
     common_fields(&tx);
     tx.type = DNAC_TX_VALIDATOR_UPDATE;

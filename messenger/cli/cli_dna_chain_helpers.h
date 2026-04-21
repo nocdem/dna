@@ -266,20 +266,6 @@ int dna_chain_cmd_undelegate(dnac_context_t *ctx,
                              uint64_t amount);
 
 /**
- * @brief `dna claim` verb — withdraw accrued staking rewards.
- *
- * Internally queries pending rewards via Phase 14 RPC, sets
- * max_pending_amount = pending, valid_before_block = current + freshness,
- * then submits a CLAIM_REWARD TX.
- *
- * @param ctx                   DNAC context
- * @param validator_pubkey_hex  Hex-encoded Dilithium5 pubkey (5184 chars)
- * @return 0 on success, non-zero on failure
- */
-int dna_chain_cmd_claim(dnac_context_t *ctx,
-                        const char *validator_pubkey_hex);
-
-/**
  * @brief `dna validator-update` verb — change commission rate.
  *
  * Queries witness for current block height internally to populate
@@ -305,17 +291,6 @@ int dna_chain_cmd_validator_list(dnac_context_t *ctx, int filter_status);
  * @brief `dna committee` verb — dump current epoch's top-7 committee.
  */
 int dna_chain_cmd_committee(dnac_context_t *ctx);
-
-/**
- * @brief `dna pending-rewards` verb — show accrued rewards for caller
- *        (or a specified claimant pubkey).
- *
- * @param ctx                 DNAC context
- * @param claimant_pubkey_hex Optional hex-encoded pubkey (NULL = caller)
- * @return 0 on success, non-zero on failure
- */
-int dna_chain_cmd_pending_rewards(dnac_context_t *ctx,
-                                  const char *claimant_pubkey_hex);
 
 /**
  * @brief Read-only TX file inspector

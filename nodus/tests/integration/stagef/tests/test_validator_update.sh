@@ -23,26 +23,20 @@ if [ -z "${BASE_DIR:-}" ] || [ ! -d "$BASE_DIR" ]; then
     exit 1
 fi
 
-USER_FP=$(cat "$BASE_DIR/user_fp.txt")
+# Create a fresh funded test user, stake them (ACTIVE), then test VALIDATOR_UPDATE.
+# Self-contained — avoids ordering collisions with test_delegate_to_retiring
+# (which retires stagef_user) or test_unstake.
+TEST_HOME=$(stagef_mk_funded_user "valup" 1200000000000000) || exit 1
+USER_FP=$(cat "$TEST_HOME/fp.txt")
 
-# Ensure the user is an ACTIVE validator. If not, stake first.
 db0=$(stagef_node_chain_db 1)
-user_status=$(sqlite3 "$db0" \
-  "SELECT status FROM validators \
-   WHERE unstake_destination_fp = '$USER_FP';" 2>/dev/null || echo "")
-if [ -z "$user_status" ]; then
-    echo "[info] user not yet a validator — staking first"
-    stagef_dna -q dna stake > "$BASE_DIR/test_vu_prestake.log" 2>&1 || {
-        echo "[FAIL] pre-stake failed" >&2
-        tail -10 "$BASE_DIR/test_vu_prestake.log" >&2
-        exit 2
-    }
-    sleep 8
-elif [ "$user_status" != "0" ]; then
-    echo "[FAIL] user validator status=$user_status; needs to be ACTIVE(0)." \
-         "Run on a fresh harness or after stake only." >&2
+echo "[info] staking test user before VALIDATOR_UPDATE"
+stagef_dna_as "$TEST_HOME" -q dna stake > "$BASE_DIR/test_vu_prestake.log" 2>&1 || {
+    echo "[FAIL] pre-stake failed" >&2
+    tail -10 "$BASE_DIR/test_vu_prestake.log" >&2
     exit 2
-fi
+}
+sleep 8
 
 bash "$(dirname "$0")/../stagef_diff.sh" "pre-VALIDATOR_UPDATE"
 
@@ -56,7 +50,7 @@ echo "[info] before: commission|pending|effective = $row_before"
 NEW_BPS=777
 echo ""
 echo "== VALIDATOR_UPDATE commission → $NEW_BPS bps (7.77%) =="
-stagef_dna -q dna validator-update --commission-bps "$NEW_BPS" \
+stagef_dna_as "$TEST_HOME" -q dna validator-update --commission-bps "$NEW_BPS" \
     > "$BASE_DIR/test_validator_update.log" 2>&1 || {
     echo "[FAIL] validator-update submit failed" >&2
     tail -10 "$BASE_DIR/test_validator_update.log" >&2

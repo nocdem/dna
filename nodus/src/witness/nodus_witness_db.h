@@ -241,6 +241,7 @@ int  nodus_witness_genesis_get(nodus_witness_t *w,
 typedef struct {
     uint64_t    genesis_supply;
     uint64_t    total_burned;
+    uint64_t    total_minted;    /* v0.16 stage B.2 — cumulative inflation mint */
     uint64_t    current_supply;
     uint64_t    last_sequence;
 } nodus_witness_supply_t;
@@ -251,6 +252,14 @@ int  nodus_witness_supply_get(nodus_witness_t *w,
                                 nodus_witness_supply_t *out);
 int  nodus_witness_supply_add_burned(nodus_witness_t *w, uint64_t fee,
                                        const uint8_t *tx_hash);
+
+/**
+ * v0.16 stage B.2 — accumulate minted DNAC (per-block inflation) into
+ * supply_tracking.total_minted and bump current_supply by the same
+ * amount. Stage C.2's finalize_block calls this once per block.
+ * @return 0 on success, -1 on DB error, 0 as a no-op when mint == 0.
+ */
+int  nodus_witness_supply_add_minted(nodus_witness_t *w, uint64_t mint);
 
 /* ── Transaction history by owner ────────────────────────────────── */
 

@@ -3,7 +3,7 @@
  *
  * Verifies nodus_witness_recompute_tx_hash() produces byte-identical
  * output to dnac_tx_compute_hash() (messenger tree) for every TX type
- * (SPEND + STAKE/DELEGATE/UNSTAKE/UNDELEGATE/CLAIM_REWARD/VALIDATOR_UPDATE).
+ * (SPEND + STAKE/DELEGATE/UNSTAKE/UNDELEGATE/VALIDATOR_UPDATE).
  *
  * Since the nodus standalone build does NOT link libdna, we reimplement
  * the canonical preimage construction here byte-for-byte (mirroring
@@ -53,7 +53,7 @@
 #define TX_DELEGATE             5
 #define TX_UNSTAKE              6
 #define TX_UNDELEGATE           7
-#define TX_CLAIM_REWARD         8
+/* 8 was TX_CLAIM_REWARD — removed in v0.16 reward redesign. */
 #define TX_VALIDATOR_UPDATE     9
 
 /* Purpose tag used by STAKE (matches DNAC_STAKE_PURPOSE_TAG). */
@@ -227,8 +227,6 @@ static int reference_hash(const tx_t *t, const uint8_t chain_id[CHAIN_ID_LEN],
         PUT(t->tail, t->tail_len);  /* validator_pubkey(2592) */
     } else if (t->type == TX_UNDELEGATE) {
         PUT(t->tail, t->tail_len);  /* pubkey(2592) + amount(u64 BE) */
-    } else if (t->type == TX_CLAIM_REWARD) {
-        PUT(t->tail, t->tail_len);  /* target(2592) + max(u64 BE) + valid(u64 BE) */
     } else if (t->type == TX_VALIDATOR_UPDATE) {
         PUT(t->tail, t->tail_len);  /* new_bps(u16 BE) + signed_at(u64 BE) */
     }
@@ -367,18 +365,6 @@ int main(void) {
         memcpy(tp, be8, 8); tp += 8;
         t.tail_len = (size_t)(tp - t.tail);
         if (run_scenario("UNDELEGATE parity", &t, chain_id) != 0) failed++;
-    }
-
-    /* Scenario 6: CLAIM_REWARD — target(2592) + max(u64 BE) + valid(u64 BE) */
-    {
-        tx_t t; populate_baseline(&t, TX_CLAIM_REWARD);
-        uint8_t *tp = t.tail;
-        for (int i = 0; i < PK_BYTES; i++) *tp++ = (uint8_t)((i * 13) & 0xff);
-        uint8_t be8[8];
-        be64_into(100000ULL, be8); memcpy(tp, be8, 8); tp += 8;
-        be64_into(999999ULL, be8); memcpy(tp, be8, 8); tp += 8;
-        t.tail_len = (size_t)(tp - t.tail);
-        if (run_scenario("CLAIM_REWARD parity", &t, chain_id) != 0) failed++;
     }
 
     /* Scenario 7: VALIDATOR_UPDATE — new_bps(u16 BE) + signed_at(u64 BE) */

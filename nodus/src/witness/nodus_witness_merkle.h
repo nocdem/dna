@@ -270,13 +270,48 @@ void nodus_merkle_combine_state_root_v1_legacy(const uint8_t utxo_root[64],
                                                 uint8_t out_state_root[64]);
 
 /* Hard-Fork v1 — 5-input combiner with outer version byte 0x02 and
- * chain_config_root contributor. ALL live-chain callers use this. */
+ * chain_config_root contributor. v0.16 retains this cold for archive-
+ * replay of pre-wipe blocks; live callers use combine_v3. */
 void nodus_merkle_combine_state_root_v2(const uint8_t utxo_root[64],
                                          const uint8_t validator_root[64],
                                          const uint8_t delegation_root[64],
                                          const uint8_t reward_root[64],
                                          const uint8_t chain_config_root[64],
                                          uint8_t out_state_root[64]);
+
+/* v0.16 — 5-input combiner with outer version byte 0x03 that replaces
+ * the reward subtree slot with epoch_state. ALL live-chain callers
+ * use this post-wipe. */
+void nodus_merkle_combine_state_root_v3(const uint8_t utxo_root[64],
+                                         const uint8_t validator_root[64],
+                                         const uint8_t delegation_root[64],
+                                         const uint8_t epoch_state_root[64],
+                                         const uint8_t chain_config_root[64],
+                                         uint8_t out_state_root[64]);
+
+/**
+ * v0.16 — Compute the validator subtree Merkle root directly from the
+ * `validators` table. See load_validator_leaves in nodus_witness_merkle.c
+ * for the canonical leaf layout (tag || pubkey || serialized fields).
+ */
+int nodus_witness_merkle_compute_validator_root(nodus_witness_t *w,
+                                                 uint8_t *root_out);
+
+/**
+ * v0.16 — Compute the delegation subtree Merkle root directly from the
+ * `delegations` table, sorted by (validator_pubkey, delegator_pubkey) ASC.
+ */
+int nodus_witness_merkle_compute_delegation_root(nodus_witness_t *w,
+                                                  uint8_t *root_out);
+
+/**
+ * v0.16 — Compute the epoch_state subtree Merkle root from the
+ * `epoch_state` table. Leaves embed the global total_minted/total_burned
+ * counters from supply_tracking so supply-invariant coverage is included
+ * in the top-level state_root.
+ */
+int nodus_witness_merkle_compute_epoch_state_root(nodus_witness_t *w,
+                                                   uint8_t *root_out);
 
 /**
  * Compute the chain-level state_root from the current witness state.

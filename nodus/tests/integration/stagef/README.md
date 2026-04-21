@@ -75,7 +75,6 @@ bash /opt/dna/nodus/tests/integration/stagef/stagef_down.sh
 | `stagef_diff.sh` | Read state_root from each node's witness DB, assert identical, print |
 | `stagef_env.sh` | Sourced by other scripts; exports BASE_DIR, ports, pubkey file paths |
 | `tests/test_undelegate.sh` | DELEGATE → UNDELEGATE → assert state_root 3/3 |
-| `tests/test_claim.sh` | (TODO) CLAIM_REWARD → assert state_root 3/3 |
 | `tests/test_stake.sh` | (TODO) STAKE (new validator) → assert state_root 3/3 |
 
 ## Design notes

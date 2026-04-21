@@ -77,3 +77,68 @@ stagef_dna() {
     fi
     HOME="$(stagef_user_home)" DNA_NO_FALLBACK=1 "$STAGEF_DNACLI_BIN" "$@"
 }
+
+# ──────────────────────────────────────────────────────────────────────
+# Test-user helpers — for tests that need their own validator state
+# without contaminating or depending on stagef_user.
+# ──────────────────────────────────────────────────────────────────────
+
+# stagef_mk_funded_user LABEL [FUND_RAW]
+#   Creates a fresh identity in an isolated HOME under $BASE_DIR/tusers/,
+#   funds it FUND_RAW raw DNAC from stagef_user, waits 8s for block commit.
+#   Prints HOME path to stdout on success. Caller reads fp from $HOME/fp.txt.
+#   Default FUND_RAW = 12M DNAC (enough for 10M STAKE + fee + buffer).
+stagef_mk_funded_user() {
+    local label="$1"
+    local fund_raw="${2:-1200000000000000}"
+    local test_home="$BASE_DIR/tusers/${label}_$$"
+    mkdir -p "$test_home/.dna"
+    cp "$(stagef_user_home)/.dna/config" "$test_home/.dna/config"
+    # Retry identity create — back-to-back test runs sometimes hit
+    # contention on keyserver publish or local KV init.
+    local fp=""
+    for _ in 1 2 3; do
+        HOME="$test_home" DNA_NO_FALLBACK=1 "$STAGEF_DNACLI_BIN" \
+            -q identity create "$label" "stagefpw" > "$test_home/create.log" 2>&1 || true
+        fp=$(HOME="$test_home" DNA_NO_FALLBACK=1 "$STAGEF_DNACLI_BIN" \
+            -q identity whoami 2>&1 | awk '/^Current identity:/ {print $3; exit}')
+        if [ -n "$fp" ] && [ ${#fp} -ge 64 ]; then
+            break
+        fi
+        sleep 2
+    done
+    if [ -z "$fp" ] || [ ${#fp} -lt 64 ]; then
+        echo "[FAIL] stagef_mk_funded_user: could not create $label after retries" >&2
+        tail -10 "$test_home/create.log" >&2
+        return 1
+    fi
+    echo "$fp" > "$test_home/fp.txt"
+    stagef_dna -q dna send "$fp" "$fund_raw" "stagef_fund_$label" \
+        > "$test_home/fund.log" 2>&1 || {
+        echo "[FAIL] stagef_mk_funded_user: fund failed for $label" >&2
+        tail -10 "$test_home/fund.log" >&2
+        return 1
+    }
+    sleep 8
+    # Sync the new user's wallet so subsequent CLI calls see the incoming
+    # UTXO. Without this, the next `dna stake` fails with "Insufficient
+    # funds" even though the chain has the fund TX committed.
+    HOME="$test_home" DNA_NO_FALLBACK=1 "$STAGEF_DNACLI_BIN" \
+        -q dna sync > "$test_home/sync.log" 2>&1 || {
+        echo "[FAIL] stagef_mk_funded_user: sync failed for $label" >&2
+        tail -10 "$test_home/sync.log" >&2
+        return 1
+    }
+    echo "$test_home"
+}
+
+# stagef_dna_as TEST_HOME <CLI args>
+#   Runs dna-connect-cli with HOME pointing at a test user's isolated home,
+#   scrubbing the known_nodes/preferred_node cache first (same belt & braces
+#   as stagef_dna).
+stagef_dna_as() {
+    local test_home="$1"
+    shift
+    rm -f "$test_home/.dna/known_nodes" "$test_home/.dna/preferred_node"
+    HOME="$test_home" DNA_NO_FALLBACK=1 "$STAGEF_DNACLI_BIN" "$@"
+}

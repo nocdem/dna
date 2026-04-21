@@ -351,19 +351,42 @@ echo "[ok] chain_def.bin built ($(stat -c%s "$CD_BIN") bytes)"
         > "$BASE_DIR/genesis_submit.log" 2>&1 || true
 ) || true
 
-# Wait for witness DB to appear on all 3 nodes.
+# Wait for genesis block to actually commit on all nodes.
+# DB file existence is not sufficient — the witness subsystem creates
+# the file as soon as genesis TX is received, regardless of whether it
+# commits. Poll blocks-table row count to confirm the genesis block
+# (height=0) was actually written. Catches supply-invariant rejections
+# and other post-receive / pre-commit failures that would otherwise
+# silently advance the harness into tests against an empty chain.
 for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
+    # First wait for the DB file to appear (witness init).
     for _ in $(seq 1 30); do
         if [ -n "$(stagef_node_chain_db "$n")" ]; then break; fi
         sleep 0.5
     done
-    if [ -z "$(stagef_node_chain_db "$n")" ]; then
+    db=$(stagef_node_chain_db "$n")
+    if [ -z "$db" ]; then
         echo "[FAIL] node $n never got witness DB" >&2
         echo "       check $(stagef_node_dir "$n")/nodus.log" >&2
         exit 10
     fi
+    # Then poll for at least one block row.
+    cnt=0
+    for _ in $(seq 1 60); do
+        cnt=$(sqlite3 "$db" "SELECT COUNT(*) FROM blocks;" 2>/dev/null || echo 0)
+        if [ "$cnt" -ge 1 ]; then break; fi
+        sleep 0.5
+    done
+    if [ "$cnt" -lt 1 ]; then
+        echo "[FAIL] node $n witness DB exists but no blocks committed" >&2
+        echo "       likely a supply-invariant or finalize_block rejection —" >&2
+        echo "       relevant lines from $(stagef_node_dir "$n")/nodus.log:" >&2
+        grep -iE "SUPPLY INVARIANT|REJECTED|invariant|BATCH COMMIT FAILED" \
+            "$(stagef_node_dir "$n")/nodus.log" 2>/dev/null | tail -5 >&2 || true
+        exit 10
+    fi
 done
-echo "[ok] genesis committed on all 3 nodes"
+echo "[ok] genesis committed on all $STAGEF_COMMITTEE_SIZE nodes"
 
 echo ""
 echo "=== Stage F harness UP ==="

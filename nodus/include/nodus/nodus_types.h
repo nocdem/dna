@@ -21,9 +21,9 @@ extern "C" {
 /* ── Protocol constants ──────────────────────────────────────────── */
 
 #define NODUS_VERSION_MAJOR  0
-#define NODUS_VERSION_MINOR  15
+#define NODUS_VERSION_MINOR  16
 #define NODUS_VERSION_PATCH  2
-#define NODUS_VERSION_STRING "0.15.2"
+#define NODUS_VERSION_STRING "0.16.2"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -177,15 +177,20 @@ extern "C" {
 #define NODUS_TREE_TAG_UTXO         0x01u
 #define NODUS_TREE_TAG_VALIDATOR    0x02u
 #define NODUS_TREE_TAG_DELEGATION   0x03u
-#define NODUS_TREE_TAG_REWARD       0x04u
+#define NODUS_TREE_TAG_REWARD       0x04u  /* Legacy — retired in v0.16 reward redesign;
+                                            * kept defined for combine_v2 archive-replay. */
 #define NODUS_TREE_TAG_CHAIN_CONFIG 0x05u  /* Hard-Fork v1 — chain_config_history tree */
+#define NODUS_TREE_TAG_EPOCH_STATE  0x06u  /* v0.16 — push-settlement epoch state tree */
 
 /* Composite state_root version byte (CC-AUDIT-002 / Q1 mitigation).
  * Prefixed to the outer SHA3-512 combiner input so cross-version replay
- * between the legacy 4-input and new 5-input composites is structurally
- * impossible. 0x01 = legacy 4-input formula; 0x02 = 5-input with chain_config. */
-#define NODUS_STATE_ROOT_VERSION_V1 0x01u  /* legacy 4-input */
-#define NODUS_STATE_ROOT_VERSION_V2 0x02u  /* 5-input, includes chain_config_root */
+ * between combiners is structurally impossible.
+ *   0x01 = legacy 4-input formula (utxo || validator || delegation || reward)
+ *   0x02 = 5-input (adds chain_config_root)
+ *   0x03 = 5-input (v0.16: replaces reward_root with epoch_state_root) */
+#define NODUS_STATE_ROOT_VERSION_V1 0x01u
+#define NODUS_STATE_ROOT_VERSION_V2 0x02u
+#define NODUS_STATE_ROOT_VERSION_V3 0x03u
 
 /* CC-OPS-002 / Q14 — Chain-config schema version advertised in w_ident
  * handshake so binary skew (6-of-7 new binary + 1 old) is detected at
@@ -613,21 +618,9 @@ typedef struct {
 
 /* ── Phase 14 / Stake-delegation v1 query results ─────────────────── */
 
-/** Per-validator pending-rewards entry (Phase 14 / Task 61). */
-typedef struct {
-    uint8_t  validator_pubkey[2592];   /* DNAC_PUBKEY_SIZE */
-    uint64_t amount;
-} nodus_dnac_pending_entry_t;
-
-/** Pending-rewards query result.
- *
- * Owns a heap-allocated entries array; caller MUST free via
- * nodus_client_free_pending_rewards_result(). */
-typedef struct {
-    uint64_t total;
-    int      count;
-    nodus_dnac_pending_entry_t *entries;
-} nodus_dnac_pending_rewards_result_t;
+/* v0.16: nodus_dnac_pending_entry_t and
+ * nodus_dnac_pending_rewards_result_t were removed with the
+ * dnac_pending_rewards_query RPC. */
 
 /** Committee member entry returned by dnac_committee_query. */
 typedef struct {

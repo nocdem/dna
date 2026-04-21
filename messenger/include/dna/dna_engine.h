@@ -4317,33 +4317,12 @@ DNA_API dna_request_id_t dna_engine_dnac_undelegate(
     dna_completion_cb callback,
     void *user_data);
 
-/** Claim accrued staking rewards. */
-DNA_API dna_request_id_t dna_engine_dnac_claim_reward(
-    dna_engine_t *engine,
-    const uint8_t *target_validator_pubkey,
-    uint64_t max_pending_amount,
-    uint64_t valid_before_block,
-    dna_completion_cb callback,
-    void *user_data);
-
 /** Validator operator — change commission (takes effect next epoch). */
 DNA_API dna_request_id_t dna_engine_dnac_validator_update(
     dna_engine_t *engine,
     uint16_t new_commission_bps,
     uint64_t signed_at_block,
     dna_completion_cb callback,
-    void *user_data);
-
-/**
- * Query total pending rewards for a claimant.
- * Passes through dna_dnac_fee_cb (uint64_t payload).
- *
- * @param claimant_pubkey  NULL to query caller's own rewards
- */
-DNA_API dna_request_id_t dna_engine_dnac_get_pending_rewards(
-    dna_engine_t *engine,
-    const uint8_t *claimant_pubkey,
-    dna_dnac_fee_cb callback,
     void *user_data);
 
 /**

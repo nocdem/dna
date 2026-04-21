@@ -31,35 +31,6 @@ extern "C" {
 /* Forward declarations */
 struct nodus_tcp_conn;
 
-/** Per-entry output for pending rewards RPC (Phase 14 / Task 61). */
-typedef struct {
-    uint8_t  validator_pubkey[DNAC_PUBKEY_SIZE];
-    uint64_t amount;
-} dnac_pending_entry_t;
-
-/**
- * Compute pending rewards for `claimant_pubkey`. Mirrors the u128 math
- * in apply_claim_reward (commit 5d46d5c2). One entry per active
- * delegation with non-zero pending, plus a final entry for the
- * validator-self path if the claimant is itself a validator with
- * validator_unclaimed > 0.
- *
- * Used by dnac_pending_rewards_query handler. Exposed in the header for
- * unit-test direct invocation without a TCP conn.
- *
- * @param w              Witness context (DB open).
- * @param claimant_pubkey  DNAC_PUBKEY_SIZE bytes.
- * @param entries_out    Caller-allocated, >= 65 slots.
- * @param entry_count_out [out] Number populated.
- * @param total_out      [out] Sum of all entries.
- * @return 0 on success, -1 on DB error.
- */
-int nodus_witness_compute_pending_rewards(nodus_witness_t *w,
-                                            const uint8_t *claimant_pubkey,
-                                            dnac_pending_entry_t *entries_out,
-                                            int *entry_count_out,
-                                            uint64_t *total_out);
-
 /**
  * Dispatch a DNAC client query to the appropriate handler.
  *

@@ -52,7 +52,6 @@ extern int dnac_tx_verify_stake_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_delegate_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_unstake_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_undelegate_rules_internal(const dnac_transaction_t *tx);
-extern int dnac_tx_verify_claim_reward_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_chain_config_rules_internal(const dnac_transaction_t *tx);
 extern int dnac_tx_verify_genesis_rules_internal(const dnac_transaction_t *tx);
@@ -227,12 +226,6 @@ int dnac_tx_verify(const dnac_transaction_t *tx) {
         if (rc != DNAC_SUCCESS) return rc;
     }
 
-    /* CLAIM_REWARD-type rules (design §2.4, Phase 6 Task 26). */
-    if (tx->type == DNAC_TX_CLAIM_REWARD) {
-        int rc = dnac_tx_verify_claim_reward_rules_internal(tx);
-        if (rc != DNAC_SUCCESS) return rc;
-    }
-
     /* VALIDATOR_UPDATE-type rules (design §2.4, Phase 6 Task 27). */
     if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
         int rc = dnac_tx_verify_validator_update_rules_internal(tx);
@@ -401,17 +394,6 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
         uint8_t amount_be[8];
         tx_be64_into(tx->undelegate_fields.amount, amount_be);
         EVP_DigestUpdate(ctx, amount_be, sizeof(amount_be));
-    }
-    /* Phase 5 Task 18. CLAIM_REWARD: target_validator[2592] ||
-     *        max_pending_amount(u64 BE) || valid_before_block(u64 BE). */
-    if (tx->type == DNAC_TX_CLAIM_REWARD) {
-        EVP_DigestUpdate(ctx, tx->claim_reward_fields.target_validator,
-                         DNAC_PUBKEY_SIZE);
-        uint8_t be[8];
-        tx_be64_into(tx->claim_reward_fields.max_pending_amount, be);
-        EVP_DigestUpdate(ctx, be, sizeof(be));
-        tx_be64_into(tx->claim_reward_fields.valid_before_block, be);
-        EVP_DigestUpdate(ctx, be, sizeof(be));
     }
     /* Phase 5 Task 19. VALIDATOR_UPDATE: new_commission_bps(u16 BE) ||
      *        signed_at_block(u64 BE). */

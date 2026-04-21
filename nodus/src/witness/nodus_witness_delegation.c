@@ -57,8 +57,8 @@ int nodus_delegation_insert(nodus_witness_t *w,
     const char *sql =
         "INSERT INTO delegations "
         "(delegator_hash, validator_hash, delegator_pubkey, validator_pubkey, "
-        " amount, delegated_at_block, reward_snapshot) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)";
+        " amount, delegated_at_block) "
+        "VALUES (?, ?, ?, ?, ?, ?)";
 
     int rc = sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
@@ -77,8 +77,6 @@ int nodus_delegation_insert(nodus_witness_t *w,
                       NODUS_DELEGATION_PUBKEY_LEN, SQLITE_STATIC);
     sqlite3_bind_int64(stmt, 5, (sqlite3_int64)d->amount);
     sqlite3_bind_int64(stmt, 6, (sqlite3_int64)d->delegated_at_block);
-    sqlite3_bind_blob(stmt, 7, d->reward_snapshot,
-                      (int)sizeof(d->reward_snapshot), SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -100,7 +98,6 @@ static void delegation_row_read(sqlite3_stmt *stmt,
      *   1: validator_pubkey (BLOB 2592)
      *   2: amount            (INTEGER)
      *   3: delegated_at_block(INTEGER)
-     *   4: reward_snapshot   (BLOB 16)
      */
     memset(out, 0, sizeof(*out));
 
@@ -118,12 +115,6 @@ static void delegation_row_read(sqlite3_stmt *stmt,
 
     out->amount = (uint64_t)sqlite3_column_int64(stmt, 2);
     out->delegated_at_block = (uint64_t)sqlite3_column_int64(stmt, 3);
-
-    const void *rs = sqlite3_column_blob(stmt, 4);
-    int rs_len = sqlite3_column_bytes(stmt, 4);
-    if (rs && rs_len == (int)sizeof(out->reward_snapshot)) {
-        memcpy(out->reward_snapshot, rs, sizeof(out->reward_snapshot));
-    }
 }
 
 /* ── Get by (delegator, validator) ──────────────────────────────── */
@@ -144,7 +135,7 @@ int nodus_delegation_get(nodus_witness_t *w,
     sqlite3_stmt *stmt = NULL;
     const char *sql =
         "SELECT delegator_pubkey, validator_pubkey, amount, "
-        "       delegated_at_block, reward_snapshot "
+        "       delegated_at_block "
         "FROM delegations "
         "WHERE delegator_hash = ? AND validator_hash = ?";
 
@@ -177,7 +168,7 @@ int nodus_delegation_get(nodus_witness_t *w,
     return ret;
 }
 
-/* ── Update (amount, delegated_at_block, reward_snapshot) ───────── */
+/* ── Update (amount, delegated_at_block) ────────────────────────── */
 
 int nodus_delegation_update(nodus_witness_t *w,
                              const dnac_delegation_record_t *d) {
@@ -191,7 +182,7 @@ int nodus_delegation_update(nodus_witness_t *w,
     sqlite3_stmt *stmt = NULL;
     const char *sql =
         "UPDATE delegations "
-        "SET amount = ?, delegated_at_block = ?, reward_snapshot = ? "
+        "SET amount = ?, delegated_at_block = ? "
         "WHERE delegator_hash = ? AND validator_hash = ?";
 
     int rc = sqlite3_prepare_v2(w->db, sql, -1, &stmt, NULL);
@@ -203,11 +194,9 @@ int nodus_delegation_update(nodus_witness_t *w,
 
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)d->amount);
     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)d->delegated_at_block);
-    sqlite3_bind_blob(stmt, 3, d->reward_snapshot,
-                      (int)sizeof(d->reward_snapshot), SQLITE_STATIC);
-    sqlite3_bind_blob(stmt, 4, delegator_hash, NODUS_DELEGATION_HASH_LEN,
+    sqlite3_bind_blob(stmt, 3, delegator_hash, NODUS_DELEGATION_HASH_LEN,
                       SQLITE_STATIC);
-    sqlite3_bind_blob(stmt, 5, validator_hash, NODUS_DELEGATION_HASH_LEN,
+    sqlite3_bind_blob(stmt, 4, validator_hash, NODUS_DELEGATION_HASH_LEN,
                       SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
@@ -358,7 +347,7 @@ static int delegation_list_by_hash(nodus_witness_t *w,
     char sql[256];
     snprintf(sql, sizeof(sql),
         "SELECT delegator_pubkey, validator_pubkey, amount, "
-        "       delegated_at_block, reward_snapshot "
+        "       delegated_at_block "
         "FROM delegations WHERE %s = ? LIMIT ?", hash_col);
 
     sqlite3_stmt *stmt = NULL;

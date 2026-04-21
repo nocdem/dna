@@ -70,12 +70,9 @@ static void print_dna_chain_help(void) {
     printf("                                  (amount >= DNAC_MIN_DELEGATION, raw units)\n");
     printf("  undelegate <validator_pubkey_hex> <amount>\n");
     printf("                                  Withdraw (part of) a delegation (raw units)\n");
-    printf("  claim <validator_pubkey_hex>    Claim accrued staking rewards\n");
-    printf("                                  (auto-queries pending + chain head)\n");
     printf("  validator-list [--status N]     List validators; N = 0..3\n");
     printf("                                  (0=ACTIVE, 1=RETIRING, 2=UNSTAKED, 3=AUTO_RETIRED)\n");
-    printf("  committee                       Show current epoch's top-7 committee\n");
-    printf("  pending-rewards [pubkey_hex]    Show pending rewards (default: caller)\n\n");
+    printf("  committee                       Show current epoch's top-7 committee\n\n");
 
     printf("Tokens:\n");
     printf("  token-create <name> <sym> <supply>\n");
@@ -108,7 +105,29 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
         return 0;
     }
 
-    /* All commands need DNAC context */
+    /* Pure-local operator verbs: no DHT, no dnac_init. These commands only
+     * read a file and print to stdout, so skipping ctx setup avoids an
+     * unnecessary TCP connect + Dilithium5 auth + Kyber handshake. Handlers
+     * accept a NULL ctx — see the (void)ctx; marker in cli_dna_chain_impl.c. */
+    if (strcmp(cmd, "genesis-prepare") == 0) {
+        if (sub + 1 >= argc) {
+            fprintf(stderr, "Usage: dna-connect-cli dna genesis-prepare <config_file>\n");
+            fprintf(stderr, "  Reads key=value operator config and prints the hex-encoded\n");
+            fprintf(stderr, "  chain_def blob (including 7 initial_validators) to stdout.\n");
+            fprintf(stderr, "  See dnac/include/dnac/genesis_prepare.h for the config schema.\n");
+            return 1;
+        }
+        return dna_chain_cmd_genesis_prepare(NULL, argv[sub + 1]);
+    }
+    if (strcmp(cmd, "parse-tx") == 0) {
+        if (sub + 1 >= argc) {
+            fprintf(stderr, "Usage: dna-connect-cli dna parse-tx <tx_file>\n");
+            return 1;
+        }
+        return dna_chain_cmd_parse_tx(NULL, argv[sub + 1]);
+    }
+
+    /* All remaining commands need DNAC context */
     dnac_context_t *ctx = dna_chain_init(engine);
     if (!ctx) return 1;
 
@@ -248,25 +267,6 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
         const char *tx_file = (sub + 1 < argc) ? argv[sub + 1] : NULL;
         result = dna_chain_cmd_genesis_submit(ctx, tx_file);
     }
-    else if (strcmp(cmd, "genesis-prepare") == 0) {
-        if (sub + 1 >= argc) {
-            fprintf(stderr, "Usage: dna-connect-cli dna genesis-prepare <config_file>\n");
-            fprintf(stderr, "  Reads key=value operator config and prints the hex-encoded\n");
-            fprintf(stderr, "  chain_def blob (including 7 initial_validators) to stdout.\n");
-            fprintf(stderr, "  See dnac/include/dnac/genesis_prepare.h for the config schema.\n");
-            result = 1;
-        } else {
-            result = dna_chain_cmd_genesis_prepare(ctx, argv[sub + 1]);
-        }
-    }
-    else if (strcmp(cmd, "parse-tx") == 0) {
-        if (sub + 1 >= argc) {
-            fprintf(stderr, "Usage: dna-connect-cli dna parse-tx <tx_file>\n");
-            result = 1;
-        } else {
-            result = dna_chain_cmd_parse_tx(ctx, argv[sub + 1]);
-        }
-    }
     else if (strcmp(cmd, "token-create") == 0) {
         if (sub + 3 >= argc) {
             fprintf(stderr, "Usage: dna-connect-cli dna token-create <name> <symbol> <supply>\n");
@@ -344,11 +344,6 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
     else if (strcmp(cmd, "committee") == 0) {
         result = dna_chain_cmd_committee(ctx);
     }
-    else if (strcmp(cmd, "pending-rewards") == 0) {
-        /* Syntax: dna pending-rewards [<claimant_pubkey_hex>] */
-        const char *claimant = (sub + 1 < argc) ? argv[sub + 1] : NULL;
-        result = dna_chain_cmd_pending_rewards(ctx, claimant);
-    }
     else if (strcmp(cmd, "unstake") == 0) {
         /* Syntax: dna unstake (no args) */
         result = dna_chain_cmd_unstake(ctx);
@@ -389,17 +384,6 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
                     ctx, (uint16_t)commission_bps);
         }
     validator_update_done: ;
-    }
-    else if (strcmp(cmd, "claim") == 0) {
-        /* Syntax: dna claim <validator_pubkey_hex> */
-        if (sub + 1 >= argc) {
-            fprintf(stderr,
-                    "Usage: dna-connect-cli dna claim"
-                    " <validator_pubkey_hex>\n");
-            result = 1;
-        } else {
-            result = dna_chain_cmd_claim(ctx, argv[sub + 1]);
-        }
     }
     else if (strcmp(cmd, "delegate") == 0 || strcmp(cmd, "undelegate") == 0) {
         /* Syntax: dna delegate   <validator_pubkey_hex> <amount> [memo]

@@ -93,23 +93,6 @@ typedef struct {
 } dnac_tx_undelegate_fields_t;
 
 /**
- * @brief CLAIM_REWARD TX appended fields (design §2.3, Phase 5 Task 18)
- *
- * Populated only when `dnac_transaction_t.type == DNAC_TX_CLAIM_REWARD`.
- *
- * `max_pending_amount` caps how much reward the claim may drain (replay
- * defense if the reward accrual table advanced between sign & submit).
- * `valid_before_block` is the claim's block-height expiry — the witness
- * rejects the claim after this height, so a stale offline-signed claim
- * cannot be submitted later and drain new rewards.
- */
-typedef struct {
-    uint8_t  target_validator[DNAC_PUBKEY_SIZE];  /**< Validator whose rewards to claim */
-    uint64_t max_pending_amount;                  /**< Upper bound on claimed amount */
-    uint64_t valid_before_block;                  /**< Block-height expiry */
-} dnac_tx_claim_reward_fields_t;
-
-/**
  * @brief VALIDATOR_UPDATE TX appended fields (design §2.3, Phase 5 Task 19)
  *
  * Populated only when `dnac_transaction_t.type == DNAC_TX_VALIDATOR_UPDATE`.
@@ -288,7 +271,6 @@ struct dnac_transaction {
     dnac_tx_stake_fields_t            stake_fields;            /**< valid when type == DNAC_TX_STAKE */
     dnac_tx_delegate_fields_t         delegate_fields;         /**< valid when type == DNAC_TX_DELEGATE */
     dnac_tx_undelegate_fields_t       undelegate_fields;       /**< valid when type == DNAC_TX_UNDELEGATE */
-    dnac_tx_claim_reward_fields_t     claim_reward_fields;     /**< valid when type == DNAC_TX_CLAIM_REWARD */
     dnac_tx_validator_update_fields_t validator_update_fields; /**< valid when type == DNAC_TX_VALIDATOR_UPDATE */
     dnac_tx_chain_config_fields_t     chain_config_fields;     /**< valid when type == DNAC_TX_CHAIN_CONFIG */
 };
@@ -471,26 +453,6 @@ int dnac_tx_verify_unstake_rules(const dnac_transaction_t *tx);
  * @return DNAC_SUCCESS if valid, error code otherwise
  */
 int dnac_tx_verify_undelegate_rules(const dnac_transaction_t *tx);
-
-/**
- * @brief Verify CLAIM_REWARD-type rules only (design §2.4, Phase 6 Task 26)
- *
- * Runs the locally-verifiable CLAIM_REWARD rule subset:
- *
- *   - tx->type == DNAC_TX_CLAIM_REWARD
- *   - signer_count == 1
- *   - claim_reward_fields.max_pending_amount > 0
- *   - claim_reward_fields.valid_before_block > 0
- *
- * Rules requiring chain state (current_block <= valid_before_block
- * freshness, pending-reward computation, cap check, Rule L dynamic
- * dust threshold) are NOT checked here — they run at state-apply
- * time in the witness (Phase 8 Task 44).
- *
- * @param tx Transaction (must be CLAIM_REWARD type)
- * @return DNAC_SUCCESS if valid, error code otherwise
- */
-int dnac_tx_verify_claim_reward_rules(const dnac_transaction_t *tx);
 
 /**
  * @brief Verify VALIDATOR_UPDATE-type rules only (design §2.4, Phase 6 Task 27)

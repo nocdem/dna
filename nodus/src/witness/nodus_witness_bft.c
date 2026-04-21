@@ -23,9 +23,10 @@
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_cert.h"
 #include "witness/nodus_witness_validator.h"
-#include "witness/nodus_witness_reward.h"
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_delegation.h"
+#include "witness/nodus_witness_epoch.h"
+#include "witness/nodus_witness_emission.h"
 #include "witness/nodus_witness_genesis_seed.h"
 #include "nodus/nodus_chain_config.h"          /* Hard-Fork v1 apply dispatch */
 #include "protocol/nodus_tier3.h"
@@ -558,6 +559,31 @@ static int nodus_derive_chain_id(const char *genesis_fp,
     return 0;
 }
 
+/* v0.16 stage C.3 — TX-type-aware fee burn helper.
+ *
+ * In v0.16 the reward system moved from "fees pooled + redistributed"
+ * (accumulator model) to "fees burn immediately + rewards come from
+ * inflation mint" (push-settlement model). route_tx_fee is the single
+ * destination for every TX's committed_fee — it always adds to
+ * supply_tracking.total_burned, regardless of tx_type.
+ *
+ * The tx_type parameter is kept in the signature for future variants
+ * (e.g. per-type burn fraction); today it is intentionally unused.
+ *
+ * @param w            witness context (DB must be open)
+ * @param tx_type      NODUS_W_TX_* (unused in v0.16 — see above)
+ * @param committed_fee  fee amount in raw DNAC units (may be 0)
+ * @param tx_hash      tx_hash the fee came from (for the
+ *                     supply_tracking.last_tx_hash audit trail)
+ * @return 0 on success or no-op (fee == 0), -1 on overflow / DB error
+ */
+static int route_tx_fee(nodus_witness_t *w, uint32_t tx_type,
+                          uint64_t committed_fee, const uint8_t *tx_hash) {
+    (void)tx_type;
+    if (committed_fee == 0) return 0;
+    return nodus_witness_supply_add_burned(w, committed_fee, tx_hash);
+}
+
 static int update_utxo_set(nodus_witness_t *w,
                               const uint8_t *tx_hash,
                               uint8_t tx_type,
@@ -724,37 +750,86 @@ static int update_utxo_set(nodus_witness_t *w,
         fee = total_input - total_output;
     }
 
-    /* Phase 6 / Task 31 — fees route to block_fee_pool (native DNAC only).
+    /* v0.16 stage C.3 — fees burn directly into total_burned.
      *
-     * The legacy behavior (fee → UTXO owned by DNAC_BURN_ADDRESS) is
-     * removed. Fees now accumulate into w->block_fee_pool and Phase 9
-     * Task 49 drains that accumulator into the committee reward pool
-     * when the block finalizes. Custom-token fees remain a deferred
-     * concern — in the current TX format fees are charged in native
-     * DNAC for all supported TX types (see TOKEN_CREATE path above,
-     * which resets fee_token_id to zero). If a custom-token fee ever
-     * lands here it is still accounted as a delta from supply but does
-     * NOT get a burn UTXO — the log line calls it out. */
-    (void)fee_token_id;
-    if (fee > 0) {
-        if (w) {
-            /* Overflow-safe add: 2^64 - 1 - pool is the ceiling we can
-             * accept. In practice the pool zeroes every block so this
-             * is effectively impossible, but the check keeps the
-             * invariant explicit for auditors. */
-            if (w->block_fee_pool > UINT64_MAX - fee) {
-                fprintf(stderr, "%s: block_fee_pool overflow (pool=%llu fee=%llu)\n",
-                        LOG_TAG,
-                        (unsigned long long)w->block_fee_pool,
-                        (unsigned long long)fee);
+     * route_tx_fee ignores tx_type in v0.16 (all fees burn regardless
+     * of TX type), but carries the type parameter per design §2.2 so
+     * future per-type routing variants (e.g. congestion-dependent
+     * burn fraction) can slot in without another signature change.
+     *
+     * ⚠ Transitional SB-1 note:
+     *   For SPEND + TOKEN_CREATE the implicit `fee = input_sum −
+     *   output_sum` equals the user-intended fee — correctly burned.
+     *   For STAKE / DELEGATE / UNDELEGATE / UNSTAKE the same
+     *   subtraction inflates the fee by the stake/delegation amount
+     *   (SB-1 original cause). Routing THAT figure to burn would
+     *   reintroduce supply deflation. Until a committed_fee wire
+     *   field lands (separate change), these TX types burn ZERO:
+     *   apply_delegate + siblings treat all input − output as state-
+     *   transition amount, and fee routing is skipped.
+     *
+     * Token-fee handling remains deferred: if fee_token_id is
+     * non-zero (custom-token burn path), we also skip for v0.16.
+     */
+    /* v0.16 stage C.3 — fee routing, per-TX-type.
+     *
+     * SPEND/TOKEN_CREATE: fee = input - output IS the user fee — burn all.
+     * STAKE: appended self_stake is fixed at DNAC_SELF_STAKE_AMOUNT, so
+     *   actual_fee = fee - DNAC_SELF_STAKE_AMOUNT — burn the residual.
+     * UNSTAKE/VALIDATOR_UPDATE/CHAIN_CONFIG: fee-only TXs (no state
+     *   amount moved) — burn full fee.
+     * DELEGATE/UNDELEGATE: variable state amount; apply_delegate /
+     *   apply_undelegate absorb the implicit fee into delegation_amount
+     *   (preserves invariant from their side). Separating actual fee
+     *   from state amount requires the committed_fee wire field
+     *   (tracked as SB-1) — no burn here until then.
+     * GENESIS: no fee concept.
+     *
+     * Pre-v0.16.1 this function blanket-skipped all stake-family TXs,
+     * leaking exactly one fee's worth per TX past the supply-invariant
+     * hard gate (which rejected every stake-family block). */
+    uint8_t zeros_tok[64] = {0};
+    bool native_fee = (memcmp(fee_token_id, zeros_tok, 64) == 0);
+    uint64_t actual_fee = 0;
+    if (fee > 0 && native_fee) {
+        switch (tx_type) {
+            case NODUS_W_TX_STAKE:
+                actual_fee = (fee > DNAC_SELF_STAKE_AMOUNT)
+                             ? fee - DNAC_SELF_STAKE_AMOUNT : 0;
+                break;
+            case NODUS_W_TX_DELEGATE:
+                /* apply_delegate computes delegation_amount = input - output,
+                 * which implicitly absorbs the user fee into the delegation.
+                 * Pre-committed_fee wire field this is the v0.16 SB-1 contract. */
+                actual_fee = 0;
+                break;
+            /* UNDELEGATE falls through to default: apply_undelegate emits a
+             * synthetic UTXO for the wire-field amount (separate from TX
+             * outputs), so fee = input - output is NOT absorbed by any state
+             * transition — burn it like other fee-only TXs. */
+            case NODUS_W_TX_GENESIS:
+                actual_fee = 0;
+                break;
+            default:
+                /* SPEND, TOKEN_CREATE, UNSTAKE, VALIDATOR_UPDATE, CHAIN_CONFIG. */
+                actual_fee = fee;
+                break;
+        }
+        if (actual_fee > 0) {
+            if (route_tx_fee(w, tx_type, actual_fee, tx_hash) != 0) {
+                fprintf(stderr, "%s: route_tx_fee failed (fee=%llu actual=%llu)\n",
+                        LOG_TAG, (unsigned long long)fee,
+                        (unsigned long long)actual_fee);
                 return -1;
             }
-            w->block_fee_pool += fee;
         }
-        fprintf(stderr, "%s: fee pool: +%llu native DNAC (block %llu, pool=%llu)\n",
+    }
+    if (fee > 0 && actual_fee != fee) {
+        fprintf(stderr,
+                "%s: fee observed %llu routed %llu (tx_type=%u, %llu absorbed by state transition)\n",
                 LOG_TAG, (unsigned long long)fee,
-                (unsigned long long)block_height,
-                (unsigned long long)(w ? w->block_fee_pool : 0));
+                (unsigned long long)actual_fee, (unsigned)tx_type,
+                (unsigned long long)(fee - actual_fee));
     }
 
     if (fee_out) *fee_out = fee;
@@ -810,6 +885,136 @@ static int update_utxo_set(nodus_witness_t *w,
  * Phase 3.4 can move the call from per-TX to per-block (run once
  * inside finalize_block) without changing the check's semantics.
  */
+/* v0.16 Stage F.1 — HARD supply invariant check.
+ *
+ * Replaces the pre-v0.16 advisory invariant (which used
+ * dnac_total_minted_at against the old 16-DNAC halving curve). The
+ * new model is bookkeeping-closed:
+ *
+ *   expected = genesis_supply + total_minted − total_burned
+ *   observed = Σ utxo_set.amount (native DNAC only)
+ *            + Σ validator.self_stake
+ *            + Σ validator.total_delegated
+ *            + Σ epoch_state.epoch_pool_accum (current + any queued)
+ *
+ * Any mismatch is a consensus-critical bug and MUST reject the block.
+ *
+ * Returns 0 when the invariant holds (including pre-genesis state
+ * where supply_tracking is empty — no supply to conserve yet); -1
+ * when violated; also -1 on internal DB error so the block is
+ * rejected rather than committed on stale/partial reads.
+ *
+ * Read-only — does not mutate w->db.
+ */
+static int check_supply_invariant_v016(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+
+    nodus_witness_supply_t sup;
+    memset(&sup, 0, sizeof(sup));
+    int sup_rc = nodus_witness_supply_get(w, &sup);
+    if (sup_rc != 0) {
+        /* Pre-genesis: the supply_tracking row hasn't been initialized.
+         * Nothing to conserve yet — genesis commit populates it. */
+        return 0;
+    }
+
+    /* expected, guarded against overflow + underflow. */
+    uint64_t expected = sup.genesis_supply;
+    if (sup.total_minted > UINT64_MAX - expected) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "SUPPLY INVARIANT: genesis+minted overflow genesis=%llu minted=%llu",
+            (unsigned long long)sup.genesis_supply,
+            (unsigned long long)sup.total_minted);
+        return -1;
+    }
+    expected += sup.total_minted;
+    if (sup.total_burned > expected) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "SUPPLY INVARIANT: burned > genesis+minted (burned=%llu exp=%llu)",
+            (unsigned long long)sup.total_burned,
+            (unsigned long long)expected);
+        return -1;
+    }
+    expected -= sup.total_burned;
+
+    /* observed = utxo_native + validator_stakes + delegations + epoch_pool */
+    uint64_t utxo_native = 0;
+    if (nodus_witness_utxo_sum_by_token(w, NULL, &utxo_native) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "SUPPLY INVARIANT: utxo_sum_by_token failed");
+        return -1;
+    }
+
+    uint64_t self_stake_sum = 0;
+    uint64_t total_delegated_sum = 0;
+    {
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT COALESCE(SUM(self_stake), 0), "
+                "       COALESCE(SUM(total_delegated), 0) "
+                "FROM validators",
+                -1, &stmt, NULL) != SQLITE_OK) {
+            /* Schema-missing in unit-test fixtures is acceptable; skip
+             * these two terms (they'd be zero anyway). */
+        } else {
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                self_stake_sum      = (uint64_t)sqlite3_column_int64(stmt, 0);
+                total_delegated_sum = (uint64_t)sqlite3_column_int64(stmt, 1);
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    uint64_t epoch_pool_sum = 0;
+    {
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(w->db,
+                "SELECT COALESCE(SUM(epoch_pool_accum), 0) FROM epoch_state",
+                -1, &stmt, NULL) == SQLITE_OK) {
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                epoch_pool_sum = (uint64_t)sqlite3_column_int64(stmt, 0);
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    uint64_t observed = utxo_native;
+    if (self_stake_sum > UINT64_MAX - observed) goto overflow_fail;
+    observed += self_stake_sum;
+    if (total_delegated_sum > UINT64_MAX - observed) goto overflow_fail;
+    observed += total_delegated_sum;
+    if (epoch_pool_sum > UINT64_MAX - observed) goto overflow_fail;
+    observed += epoch_pool_sum;
+
+    if (expected != observed) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "SUPPLY INVARIANT VIOLATION: expected=%llu observed=%llu delta=%lld "
+            "(genesis=%llu minted=%llu burned=%llu utxo=%llu self_stake=%llu "
+            "delegated=%llu pool=%llu)",
+            (unsigned long long)expected,
+            (unsigned long long)observed,
+            (long long)((int64_t)observed - (int64_t)expected),
+            (unsigned long long)sup.genesis_supply,
+            (unsigned long long)sup.total_minted,
+            (unsigned long long)sup.total_burned,
+            (unsigned long long)utxo_native,
+            (unsigned long long)self_stake_sum,
+            (unsigned long long)total_delegated_sum,
+            (unsigned long long)epoch_pool_sum);
+        return -1;
+    }
+    return 0;
+
+overflow_fail:
+    QGP_LOG_ERROR(LOG_TAG,
+        "SUPPLY INVARIANT: observed sum overflow (utxo=%llu self_stake=%llu "
+        "delegated=%llu pool=%llu)",
+        (unsigned long long)utxo_native,
+        (unsigned long long)self_stake_sum,
+        (unsigned long long)total_delegated_sum,
+        (unsigned long long)epoch_pool_sum);
+    return -1;
+}
+
 bool supply_invariant_violated(nodus_witness_t *w) {
     if (!w || !w->db) return false;
 
@@ -1047,21 +1252,19 @@ static int apply_delegate(nodus_witness_t *w,
 
     /* Compute delegation_amount from native-DNAC flows.
      *
-     * DELEGATE wire semantics (design 2.2): inputs = amount + fee + change,
-     * outputs = change only. So (input_sum - output_sum) == amount + fee.
+     * v0.16 transitional state (Stage C.4): DELEGATE carries zero
+     * protocol fee because the TX wire format does not yet include an
+     * explicit `committed_fee` field. update_utxo_set's fee routing
+     * (Stage C.3) also skips the stake-family TX types for the same
+     * reason. With fee ≡ 0, (input_sum − output_sum) equals the
+     * delegation amount exactly and the SB-1 supply-inflation class is
+     * neutralized (no fee is double-counted into total_burned).
      *
-     * update_utxo_set currently assigns the entire (input - output)
-     * excess to block_fee_pool as "fee", which double-counts the
-     * staked amount on this path. Deferred to Phase 9 (Task 48-51
-     * block_fee_pool routing) — then the fee routing will become
-     * TX-type aware and committed_fee here will be the true fee.
-     *
-     * For now, Phase 8 records delegation_amount = input_sum - output_sum
-     * (which includes the fee as noise, bounded by current_fee ~0.01% of
-     * amount). The committed_fee parameter is accepted but unused
-     * pending the fee-routing fix. Once update_utxo_set learns DELEGATE
-     * semantics, switch to the exact formula
-     *     delegation_amount = input_sum - output_sum - committed_fee
+     * Final fix — add an explicit fee field to the TX wire body and
+     * switch to
+     *     delegation_amount = input_sum − output_sum − committed_fee;
+     * the committed_fee parameter below is kept in the signature so
+     * that upgrade is a local edit.
      */
     (void)committed_fee;
     uint64_t input_sum = 0, output_sum = 0;
@@ -1093,14 +1296,9 @@ static int apply_delegate(nodus_witness_t *w,
         return -1;
     }
 
-    /* Fetch current reward accumulator for snapshot. */
-    dnac_reward_record_t r;
-    rc = nodus_reward_get(w, validator_pubkey, &r);
-    if (rc != 0) {
-        fprintf(stderr, "%s: apply_delegate: reward record missing (rc=%d)\n",
-                LOG_TAG, rc);
-        return -1;
-    }
+    /* v0.16: reward accumulator snapshot removed — distribution is now
+     * push-per-epoch via apply_epoch_settlement (Stage E). Delegations
+     * applied mid-epoch become eligible at the NEXT epoch snapshot. */
 
     /* Insert (or update if already exists) delegation row. */
     dnac_delegation_record_t d;
@@ -1109,11 +1307,10 @@ static int apply_delegate(nodus_witness_t *w,
     memcpy(d.validator_pubkey, validator_pubkey, DNAC_PUBKEY_SIZE);
     d.amount             = delegation_amount;
     d.delegated_at_block = block_height;
-    memcpy(d.reward_snapshot, r.accumulator, 16);
 
-    rc = nodus_delegation_insert(w, &d);
-    if (rc == -2) {
-        /* Existing row — top up amount and refresh snapshot + Rule O block.
+    int rc2 = nodus_delegation_insert(w, &d);
+    if (rc2 == -2) {
+        /* Existing row — top up amount + refresh Rule O block.
          * Note: Rule O's "1 epoch min hold" is measured from the most
          * recent delegated_at_block, so resetting here imposes a fresh
          * hold period on the added amount. */
@@ -1132,9 +1329,9 @@ static int apply_delegate(nodus_witness_t *w,
         }
         existing.amount += delegation_amount;
         existing.delegated_at_block = block_height;
-        memcpy(existing.reward_snapshot, r.accumulator, 16);
-        rc = nodus_delegation_update(w, &existing);
+        rc2 = nodus_delegation_update(w, &existing);
     }
+    rc = rc2;
     if (rc != 0) {
         fprintf(stderr, "%s: apply_delegate: delegation insert/update failed (rc=%d)\n",
                 LOG_TAG, rc);
@@ -1164,8 +1361,9 @@ static int apply_delegate(nodus_witness_t *w,
  *
  * Parses the type-specific appended fields (commission_bps +
  * unstake_destination_fp + purpose_tag), inserts a new validator row
- * with self_stake=10M, seeds an empty reward row, bumps
- * validator_stats.active_count.
+ * with self_stake=10M, bumps validator_stats.active_count.
+ * (v0.16: reward row seeding removed — push-settlement model has no
+ * per-validator reward state.)
  */
 static int apply_stake(nodus_witness_t *w,
                         const uint8_t *tx_data, uint32_t tx_len,
@@ -1219,17 +1417,6 @@ static int apply_stake(nodus_witness_t *w,
     int rc = nodus_validator_insert(w, &v);
     if (rc != 0) {
         fprintf(stderr, "%s: apply_stake: validator_insert failed (rc=%d)\n",
-                LOG_TAG, rc);
-        return -1;
-    }
-
-    dnac_reward_record_t r;
-    memset(&r, 0, sizeof(r));
-    memcpy(r.validator_pubkey, signer_pubkey, DNAC_PUBKEY_SIZE);
-    r.last_update_block = block_height;
-    rc = nodus_reward_upsert(w, &r);
-    if (rc != 0) {
-        fprintf(stderr, "%s: apply_stake: reward_upsert failed (rc=%d)\n",
                 LOG_TAG, rc);
         return -1;
     }
@@ -1318,9 +1505,8 @@ static int apply_unstake(nodus_witness_t *w,
 }
 
 /* Emit a synthetic native-DNAC UTXO owned by `owner_pubkey`. Used by
- * UNDELEGATE and CLAIM_REWARD which produce payouts that are NOT
- * encoded as wire-format outputs in tx_data (update_utxo_set doesn't
- * see them).
+ * UNDELEGATE which produces payouts that are NOT encoded as wire-format
+ * outputs in tx_data (update_utxo_set doesn't see them).
  *
  * The nullifier is derived deterministically as
  *   SHA3-512(tx_hash || kind_byte || u32_be(output_index))
@@ -1481,7 +1667,7 @@ static int apply_undelegate(nodus_witness_t *w,
         return -1;
     }
 
-    /* Fetch validator + reward. */
+    /* Fetch validator. */
     dnac_validator_record_t v;
     rc = nodus_validator_get(w, validator_pubkey, &v);
     if (rc != 0) {
@@ -1489,33 +1675,10 @@ static int apply_undelegate(nodus_witness_t *w,
                 LOG_TAG, rc);
         return -1;
     }
-    dnac_reward_record_t r;
-    rc = nodus_reward_get(w, validator_pubkey, &r);
-    if (rc != 0) {
-        fprintf(stderr, "%s: apply_undelegate: reward row missing (rc=%d)\n",
-                LOG_TAG, rc);
-        return -1;
-    }
 
-    /* Pending reward math (design §3.5 — accumulator is u128 BE with
-     * fractional part in low 64 bits; pending = (acc − snap) × amount >> 64). */
-    qgp_u128_t acc  = qgp_u128_deserialize_be(r.accumulator);
-    qgp_u128_t snap = qgp_u128_deserialize_be(d.reward_snapshot);
-    if (qgp_u128_cmp(acc, snap) < 0) {
-        fprintf(stderr, "%s: apply_undelegate: snap > acc (impossible)\n", LOG_TAG);
-        return -1;
-    }
-    qgp_u128_t diff    = qgp_u128_sub(acc, snap);
-    qgp_u128_t pending_wide = qgp_u128_mul_u64(diff, d.amount);
-    /* >> 64 ⇒ take hi limb. High 64 bits of (pending_wide) is pending. */
-    uint64_t pending = pending_wide.hi;
-
-    /* Overflow guard: pending as u64 limits fit within one UTXO. If
-     * pending >> 64 didn't fit in u64 (i.e. the shifted result itself
-     * exceeded 2^64), that's a supply anomaly — abort. pending_wide.hi
-     * fitting in uint64_t is tautological; the real guard is that
-     * pending_wide itself must not have anything in a hypothetical
-     * >2^128 bucket, which qgp_u128_mul_u64 enforces via overflow abort. */
+    /* v0.16: reward auto-claim removed — push-settlement distributes
+     * accrued rewards at each epoch boundary regardless of UNDELEGATE
+     * timing. UNDELEGATE only returns the principal. */
 
     /* Emit principal UTXO (kind 0x01) — always spendable immediately. */
     if (emit_synthetic_utxo(w, tx_hash, signer_pubkey, undelegate_amount,
@@ -1523,17 +1686,6 @@ static int apply_undelegate(nodus_witness_t *w,
                               /*output_index=*/100, /*unlock=*/0) != 0) {
         return -1;
     }
-    /* Emit pending-reward UTXO (kind 0x02) — ALWAYS, even if pending==0.
-     * Rule Q: keeps supply-accounting invariants symmetric across
-     * UNDELEGATE TXs regardless of accumulator state. */
-    if (emit_synthetic_utxo(w, tx_hash, signer_pubkey, pending,
-                              block_height, /*kind=*/0x02,
-                              /*output_index=*/101, /*unlock=*/0) != 0) {
-        return -1;
-    }
-
-    /* Advance delegation's snapshot. */
-    qgp_u128_serialize_be(acc, d.reward_snapshot);
 
     if (undelegate_amount == d.amount) {
         /* Fully drained — remove the row. */
@@ -1561,136 +1713,6 @@ static int apply_undelegate(nodus_witness_t *w,
         fprintf(stderr, "%s: apply_undelegate: validator_update failed (rc=%d)\n",
                 LOG_TAG, rc);
         return -1;
-    }
-
-    return 0;
-}
-
-/* Phase 8 Task 44 — CLAIM_REWARD state mutation (dual path).
- *
- * Appended fields (design §2.3):
- *   target_validator[2592] || max_pending_amount[8 BE] || valid_before_block[8 BE]
- *
- * Two disjoint paths:
- *  1. VALIDATOR path (signer == target_validator): the claim drains
- *     the validator's own reward bucket (self-stake share + commission
- *     skim). Emits one synthetic UTXO amount = V.validator_unclaimed;
- *     zeroes validator_unclaimed.
- *  2. DELEGATOR path: computes pending via u128 (design §3.5) as in
- *     apply_undelegate — pending = ((V.accumulator − D.reward_snapshot)
- *     × D.amount) >> 64. Emits one UTXO at pending; advances
- *     D.reward_snapshot := V.accumulator.
- *
- * `max_pending_amount` is the caller's cap from TX signing time —
- * replay/race defense. If actual pending exceeds the cap, the TX is
- * REJECTED (strict interpretation; matches design §2.4 Rule "pending
- * <= max_pending_amount" on the verify side).
- *
- * `valid_before_block` is freshness; enforced in the verify path, not
- * here.
- */
-static int apply_claim_reward(nodus_witness_t *w,
-                                const uint8_t *tx_data, uint32_t tx_len,
-                                uint64_t block_height,
-                                const uint8_t *tx_hash) {
-    size_t off = 0;
-    const uint8_t *signer_pubkey = NULL;
-    if (compute_appended_fields_offset(tx_data, tx_len, &off, &signer_pubkey) != 0) {
-        fprintf(stderr, "%s: apply_claim_reward: malformed tx_data\n", LOG_TAG);
-        return -1;
-    }
-
-    /* Appended: target_validator[2592] + max_pending[8 BE] + valid_before[8 BE]. */
-    if (off + DNAC_PUBKEY_SIZE + 8 + 8 > tx_len) {
-        fprintf(stderr, "%s: apply_claim_reward: truncated appended fields\n", LOG_TAG);
-        return -1;
-    }
-    const uint8_t *target = tx_data + off;
-    uint64_t max_pending = 0;
-    for (int i = 0; i < 8; i++) {
-        max_pending = (max_pending << 8) | (uint64_t)tx_data[off + DNAC_PUBKEY_SIZE + i];
-    }
-    /* valid_before_block is at off + DNAC_PUBKEY_SIZE + 8; not consumed
-     * here (verify-time). */
-
-    /* Fetch validator + reward row. */
-    dnac_validator_record_t v;
-    int rc = nodus_validator_get(w, target, &v);
-    if (rc != 0) {
-        fprintf(stderr, "%s: apply_claim_reward: validator not found (rc=%d)\n",
-                LOG_TAG, rc);
-        return -1;
-    }
-    dnac_reward_record_t r;
-    rc = nodus_reward_get(w, target, &r);
-    if (rc != 0) {
-        fprintf(stderr, "%s: apply_claim_reward: reward row missing (rc=%d)\n",
-                LOG_TAG, rc);
-        return -1;
-    }
-
-    uint64_t pending = 0;
-    bool reward_dirty = false;
-
-    if (memcmp(signer_pubkey, target, DNAC_PUBKEY_SIZE) == 0) {
-        /* VALIDATOR path — drain validator_unclaimed. */
-        pending = r.validator_unclaimed;
-        r.validator_unclaimed = 0;
-        reward_dirty = true;
-    } else {
-        /* DELEGATOR path — pending from accumulator diff × amount >> 64. */
-        dnac_delegation_record_t d;
-        rc = nodus_delegation_get(w, signer_pubkey, target, &d);
-        if (rc != 0) {
-            fprintf(stderr, "%s: apply_claim_reward: delegation not found (rc=%d)\n",
-                    LOG_TAG, rc);
-            return -1;
-        }
-        qgp_u128_t acc  = qgp_u128_deserialize_be(r.accumulator);
-        qgp_u128_t snap = qgp_u128_deserialize_be(d.reward_snapshot);
-        if (qgp_u128_cmp(acc, snap) < 0) {
-            fprintf(stderr, "%s: apply_claim_reward: snap > acc (impossible)\n",
-                    LOG_TAG);
-            return -1;
-        }
-        qgp_u128_t diff    = qgp_u128_sub(acc, snap);
-        qgp_u128_t wide    = qgp_u128_mul_u64(diff, d.amount);
-        /* >> 64 ⇒ take hi limb (design §3.5). */
-        pending = wide.hi;
-
-        qgp_u128_serialize_be(acc, d.reward_snapshot);
-        rc = nodus_delegation_update(w, &d);
-        if (rc != 0) {
-            fprintf(stderr, "%s: apply_claim_reward: delegation_update failed (rc=%d)\n",
-                    LOG_TAG, rc);
-            return -1;
-        }
-    }
-
-    /* max_pending cap (design §2.4). */
-    if (pending > max_pending) {
-        fprintf(stderr, "%s: apply_claim_reward: pending %llu > max_pending %llu\n",
-                LOG_TAG,
-                (unsigned long long)pending,
-                (unsigned long long)max_pending);
-        return -1;
-    }
-
-    /* Emit reward UTXO (kind 0x03). */
-    if (emit_synthetic_utxo(w, tx_hash, signer_pubkey, pending,
-                              block_height, /*kind=*/0x03,
-                              /*output_index=*/100, /*unlock=*/0) != 0) {
-        return -1;
-    }
-
-    if (reward_dirty) {
-        r.last_update_block = block_height;
-        rc = nodus_reward_upsert(w, &r);
-        if (rc != 0) {
-            fprintf(stderr, "%s: apply_claim_reward: reward_upsert failed (rc=%d)\n",
-                    LOG_TAG, rc);
-            return -1;
-        }
     }
 
     return 0;
@@ -1849,47 +1871,15 @@ int apply_tx_to_state(nodus_witness_t *w,
         }
     }
 
-    if (tx_type == NODUS_W_TX_GENESIS) {
-        /* Phase 3 / Task 3.1: total_supply param dropped from the per-TX
-         * primitive — always derive supply from tx_data outputs. The
-         * legacy single-TX caller used to pass an explicit total_supply
-         * for optimization, but the fallback path was always present and
-         * dead-equivalent. */
-        uint64_t supply = 0;
-        if (supply == 0 && tx_data && tx_len > 75) {
-            size_t off = 74;
-            uint8_t in_count = tx_data[off++];
-            off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64); /* nullifier + amount + token_id */
-            if (off < tx_len) {
-                uint8_t out_count = tx_data[off++];
-                for (int i = 0; i < out_count && off + 235 <= tx_len; i++) {
-                    off += 1;   /* version */
-                    off += 129; /* fingerprint */
-                    uint64_t amt;
-                    memcpy(&amt, tx_data + off, 8);
-                    supply += amt;
-                    off += 8;   /* amount */
-                    off += 64;  /* token_id */
-                    off += 32;  /* seed */
-                    uint8_t ml = tx_data[off++]; /* memo_len */
-                    off += ml;
-                }
-            }
-        }
-        int rc = nodus_witness_genesis_set(w, tx_hash, supply, tx_hash);
-        if (rc != 0 && rc != -2) {
-            fprintf(stderr, "%s: genesis record failed: %d\n", LOG_TAG, rc);
-            failed = true;
-        }
-        /* Initialize supply tracking table for invariant checks */
-        if (!failed) {
-            int src = nodus_witness_supply_init(w, supply, tx_hash);
-            if (src != 0 && src != -2) {
-                fprintf(stderr, "%s: supply_init failed: %d\n", LOG_TAG, src);
-                failed = true;
-            }
-        }
-    } else {
+    /* Genesis-specific DB init (genesis_set + supply_init) moved to
+     * commit_genesis — the only caller with tx_type==NODUS_W_TX_GENESIS.
+     * commit_genesis has cd_supply from the chain_def trailer, which is
+     * the correct initial_supply_raw. Deriving supply from output amounts
+     * here missed the validator self-stake locks seeded by
+     * genesis_seed_validators and tripped the supply invariant by exactly
+     * stake_locked on every block. Restores this function's stated role
+     * as pure per-TX state mutation (see function doc at top). */
+    if (tx_type != NODUS_W_TX_GENESIS) {
         for (int i = 0; i < nullifier_count; i++) {
             int rc = nodus_witness_nullifier_add(w, nullifiers[i], tx_hash);
             if (rc != 0 && rc != -2) {
@@ -1931,11 +1921,6 @@ int apply_tx_to_state(nodus_witness_t *w,
         } else if (tx_type == NODUS_W_TX_UNDELEGATE) {
             if (apply_undelegate(w, tx_data, tx_len, block_height,
                                   tx_hash) != 0) {
-                failed = true;
-            }
-        } else if (tx_type == NODUS_W_TX_CLAIM_REWARD) {
-            if (apply_claim_reward(w, tx_data, tx_len, block_height,
-                                     tx_hash) != 0) {
                 failed = true;
             }
         } else if (tx_type == NODUS_W_TX_VALIDATOR_UPDATE) {
@@ -2263,7 +2248,10 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
             return -1;
         }
 
-        /* Per-graduate: emit 2 UTXOs, zero reward, flip status, dec stat. */
+        /* Per-graduate: emit principal UTXO, flip status, dec stat.
+         * (v0.16: reward auto-claim on graduation removed — push-settlement
+         * distributes rewards at epoch boundary independently of RETIRING
+         * graduation.) */
         for (size_t i = 0; i < candidate_count; i++) {
             const uint8_t *val_pubkey = candidates[i].pubkey;
 
@@ -2276,20 +2264,8 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
                 return -1;
             }
 
-            dnac_reward_record_t r;
-            rc = nodus_reward_get(w, val_pubkey, &r);
-            if (rc != 0) {
-                /* STAKE always inserts an empty reward row — this is a bug. */
-                fprintf(stderr, "%s: epoch_boundary: reward_get failed (rc=%d)\n",
-                        LOG_TAG, rc);
-                free(candidates);
-                return -1;
-            }
-
             /* Emit principal 10M locked UTXO (kind 0x10) — unlock_block =
-             * block_height + cooldown. Always emitted regardless of the
-             * self_stake column (which still reads DNAC_SELF_STAKE_AMOUNT
-             * since UNSTAKE phase-1 left it unchanged). */
+             * block_height + cooldown. */
             if (emit_synthetic_utxo_for_fp(
                     w, boundary_tx_hash,
                     (const char *)v.unstake_destination_fp,
@@ -2301,34 +2277,6 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
                 != 0) {
                 fprintf(stderr, "%s: epoch_boundary: emit principal UTXO failed\n",
                         LOG_TAG);
-                free(candidates);
-                return -1;
-            }
-
-            /* Emit pending-unclaimed UTXO (kind 0x11) — ALWAYS even when
-             * r.validator_unclaimed == 0, matching Rule Q supply-symmetry
-             * used by UNDELEGATE/CLAIM_REWARD auto-claim paths. */
-            if (emit_synthetic_utxo_for_fp(
-                    w, boundary_tx_hash,
-                    (const char *)v.unstake_destination_fp,
-                    r.validator_unclaimed,
-                    block_height,
-                    /*kind=*/0x11,
-                    /*output_index=*/201,
-                    /*unlock_block=*/0) != 0) {
-                fprintf(stderr, "%s: epoch_boundary: emit unclaimed UTXO failed\n",
-                        LOG_TAG);
-                free(candidates);
-                return -1;
-            }
-
-            /* Zero validator_unclaimed and persist. */
-            r.validator_unclaimed = 0;
-            r.last_update_block = block_height;
-            rc = nodus_reward_upsert(w, &r);
-            if (rc != 0) {
-                fprintf(stderr, "%s: epoch_boundary: reward_upsert failed (rc=%d)\n",
-                        LOG_TAG, rc);
                 free(candidates);
                 return -1;
             }
@@ -2515,255 +2463,324 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
     /* Phase 10 / Task 51-53 — committee election is demand-driven
      * through nodus_committee_get_for_block(), which caches per-epoch
      * on w->cached_committee_* and consumes the post-commit lookback
-     * snapshot defined in §3.6. apply_accumulator_update (next block
-     * in finalize_block) will see the freshly committed block_height
-     * and trigger a cache recompute on the first block of the next
-     * epoch. No explicit pre-computation needed at the boundary —
-     * BFT roster wiring (Task 59) consumes the same accessor. */
+     * snapshot defined in §3.6. BFT roster wiring (Task 59) consumes
+     * the same accessor. */
 
     return 0;
 }
 
-/* Phase 9 / Task 49 — accumulator update with liveness gate + dust carry.
- *
- * Distributes w->block_fee_pool to the current block's committee per
- * design §3.5 math:
- *
- *   per_member = block_fee_pool / |attending|
- *   for each v in attending:
- *     if v.total_delegated > 0:
- *       delegator_share_raw = (per_member * v.total_delegated) /
- *                             (v.self_stake + v.total_delegated)
- *       commission_skim     = (delegator_share_raw * v.commission_bps) / 10000
- *       delegator_pool      = delegator_share_raw - commission_skim
- *       validator_share     = per_member - delegator_pool  // absorbs truncation
- *       v.validator_unclaimed += validator_share
- *       num = (delegator_pool << 64) + v.residual_dust
- *       inc = num / v.total_delegated
- *       v.residual_dust = num - inc * v.total_delegated
- *       v.accumulator  += inc  (u128)
- *     else:
- *       v.validator_unclaimed += per_member
- *
- * Committee: nodus_committee_get_for_block(block_height) — Phase 10
- * Task 51/52/53. The accessor caches the post-commit lookback-derived
- * roster for the epoch; per-member stake/liveness values are
- * re-resolved from the validator table on every block.
- *
- * Liveness gate: a committee member participates only if
- * last_signed_block >= block_height - DNAC_LIVENESS_SHORT_WINDOW_BLOCKS.
- *
- * If no one attends the pool carries forward (NOT zeroed); the next
- * block that has attendees receives the combined total. Design §3.5's
- * global_unallocated_pool is stored in-place on w->block_fee_pool: we
- * simply skip the drain when attending_count == 0.
- *
- * Called from finalize_block AFTER apply_epoch_boundary_transitions and
- * BEFORE the state_root recompute so any distributions land in this
- * block's committed state.
- *
- * Returns 0 on success or no-op, -1 on DB/arithmetic error. On error
- * the caller's outer transaction rolls back.
- */
-static int apply_accumulator_update(nodus_witness_t *w,
-                                      uint64_t block_height) {
-    if (!w || !w->db) return -1;
-    if (w->block_fee_pool == 0) return 0;
-    if (block_height == 0) return 0;
+/* v0.16: apply_accumulator_update removed. The accumulator/residual-dust
+ * u128 reward-distribution model has been replaced by the push-per-epoch
+ * UTXO settlement arriving in Stage E (apply_epoch_settlement). TX fees
+ * now burn directly to total_burned; validator rewards come from
+ * inflation mint only, distributed atomically at block_height % 120 == 0. */
 
-    /* Phase 10 / Task 53 — committee pubkeys come from the per-epoch
-     * cache. Committee membership is FROZEN per epoch by design §3.6,
-     * but individual members' self_stake / total_delegated /
-     * last_signed_block mutate during the epoch (DELEGATE TXs,
-     * attendance updates). So we fetch fresh per-member records from
-     * the validator table after resolving the committee roster.
-     *
-     * Pre-Task-53 code called nodus_validator_top_n(committee_size,
-     * block_height-1) directly here; that re-ran the SQL + tiebreak
-     * sort on every block. The cached path hits the DB only on
-     * cache-miss (first block of an epoch). */
-    nodus_committee_member_t committee_roster[DNAC_COMMITTEE_SIZE];
-    int committee_count = 0;
-    if (nodus_committee_get_for_block(w, block_height, committee_roster,
-                                        DNAC_COMMITTEE_SIZE,
-                                        &committee_count) != 0) {
-        /* Missing validators table (fresh DB / pre-schema test fixture).
-         * Treat as empty committee — pool rolls forward. */
-        QGP_LOG_DEBUG(LOG_TAG,
-            "accumulator: committee unavailable (pre-schema); pool carries");
+/* ── Stage E — apply_epoch_settlement ─────────────────────────────────
+ *
+ * Fires at finalize_block whenever block_height > 0 &&
+ * block_height % DNAC_EPOCH_LENGTH == 0 — i.e. the first block of a
+ * new epoch. Settles the epoch that JUST ENDED (settling_epoch_start
+ * = block_height − DNAC_EPOCH_LENGTH).
+ *
+ * Reads the snapshot_blob captured at epoch start (Stage D.1) —
+ * committee list + per-delegation amounts — and drains
+ * epoch_state.epoch_pool_accum into UTXOs + burn according to the
+ * design §3.4 pseudocode:
+ *
+ *   per_slot   = pool / committee_count
+ *   outer_dust = pool − per_slot * committee_count → burn (D8)
+ *
+ *   for each committee validator V:
+ *     if V did NOT sign ANY block in the epoch:
+ *       per_slot → burn  (D7 offline-share)
+ *       continue
+ *     if V has no delegations:
+ *       emit_utxo(V.pubkey, per_slot)
+ *     else:
+ *       total_stake = V.self_stake + V.total_delegated
+ *       validator_base  = per_slot * V.self_stake / total_stake
+ *       delegator_gross = per_slot − validator_base
+ *       commission      = delegator_gross * V.commission_bps / 10000
+ *       validator_total = validator_base + commission
+ *       delegator_net   = delegator_gross − commission
+ *       for each delegation D of V (snapshot):
+ *         share = delegator_net * D.amount / V.total_delegated
+ *         emit_utxo(D.delegator_pubkey, share)
+ *       inner_dust = delegator_net − Σ shares → burn
+ *       emit_utxo(V.pubkey, validator_total)
+ *
+ *   delete epoch_state[settling_epoch_start]
+ *
+ * Attendance check (D6): we read validator.last_signed_block. A
+ * validator whose last_signed_block is within the settled epoch
+ * range is considered present. This is a coarser gate than the
+ * plan's "proposed ≥ 1 block" — last_signed_block is bumped in
+ * record_attendance for the BLOCK PROPOSER, so the two are
+ * equivalent in practice on a committed chain.
+ */
+static uint32_t be32_load(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] <<  8) |  (uint32_t)p[3];
+}
+static uint16_t be16_load(const uint8_t *p) {
+    return ((uint16_t)p[0] << 8) | (uint16_t)p[1];
+}
+static uint64_t be64_load(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v = (v << 8) | (uint64_t)p[i];
+    return v;
+}
+
+/* Settlement-UTXO tx_hash derivation: deterministic per epoch boundary.
+ *   tx_hash = SHA3-512("settlement" || epoch_start_height BE)
+ * Collision-free with any real TX hash (which is SHA3-512 over full
+ * TX body) modulo second-preimage resistance. */
+static void settlement_tx_hash(uint64_t settling_epoch_start,
+                                uint8_t out[64]) {
+    uint8_t preimage[10 + 8];
+    memcpy(preimage, "settlement", 10);
+    for (int i = 7; i >= 0; i--) {
+        preimage[10 + i] = (uint8_t)(settling_epoch_start & 0xff);
+        settling_epoch_start >>= 8;
+    }
+    qgp_sha3_512(preimage, sizeof(preimage), out);
+}
+
+/* Scan the delegations portion of the snapshot for rows whose
+ * validator_pubkey matches `validator_pubkey`. Caller owns
+ * dels_out — an array sized by the total delegation_count in the
+ * snapshot.
+ *
+ * Returns count written into dels_out / amount_out.
+ */
+typedef struct {
+    uint8_t  delegator_pubkey[DNAC_PUBKEY_SIZE];
+    uint64_t amount;
+} settlement_deleg_t;
+
+static int collect_delegations_for_validator(
+    const uint8_t *deleg_base, uint32_t deleg_count,
+    const uint8_t *validator_pubkey,
+    settlement_deleg_t *out, int max_out) {
+    const size_t per_row = DNAC_PUBKEY_SIZE + DNAC_PUBKEY_SIZE + 8;
+    int written = 0;
+    for (uint32_t i = 0; i < deleg_count && written < max_out; i++) {
+        const uint8_t *row = deleg_base + (size_t)i * per_row;
+        const uint8_t *dpk = row;
+        const uint8_t *vpk = row + DNAC_PUBKEY_SIZE;
+        if (memcmp(vpk, validator_pubkey, DNAC_PUBKEY_SIZE) != 0) continue;
+        uint64_t amt = be64_load(row + 2 * DNAC_PUBKEY_SIZE);
+        memcpy(out[written].delegator_pubkey, dpk, DNAC_PUBKEY_SIZE);
+        out[written].amount = amt;
+        written++;
+    }
+    return written;
+}
+
+/* Output-index reservation: one epoch's settlement may emit up to
+ * 7 committee validators × 65 (1 commission + 64 delegations) = 455
+ * UTXOs. We start synthetic output_index at 400 to stay clear of the
+ * UNDELEGATE principal/reward range (100-101) and the
+ * apply_epoch_boundary_transitions RETIRING graduation range (200-201). */
+#define NODUS_EPOCH_SETTLE_OUTPUT_INDEX_BASE 400
+
+static int apply_epoch_settlement(nodus_witness_t *w,
+                                    uint64_t settling_epoch_start) {
+    if (!w || !w->db) return -1;
+
+    /* Load the epoch_state row for the settling epoch. Missing row is
+     * fine — nothing to settle (first boundary in a fresh chain). */
+    nodus_epoch_state_t es = {0};
+    int grc = nodus_witness_epoch_get(w, settling_epoch_start, &es);
+    if (grc != 0) return 0;
+
+    uint64_t pool = es.epoch_pool_accum;
+    const uint8_t *blob = es.snapshot_blob;
+    size_t blob_len = es.snapshot_blob_len;
+
+    /* Canonical empty snapshot (Stage D.2) is 6 bytes: 0x0000 || 0x00000000.
+     * In that case there's no committee to distribute to — burn the
+     * whole pool (keeps supply bookkeeping closed) and retire the row. */
+    if (!blob || blob_len < 6) {
+        if (pool > 0) nodus_witness_supply_add_burned(w, pool, es.snapshot_hash);
+        nodus_witness_epoch_free(&es);
+        nodus_witness_epoch_delete(w, settling_epoch_start);
         return 0;
     }
+
+    size_t off = 0;
+    uint16_t committee_count = be16_load(blob + off); off += 2;
+
+    const size_t VAL_ROW = DNAC_PUBKEY_SIZE + 8 + 8 + 2 + 1;  /* 2611 */
+    if (off + (size_t)committee_count * VAL_ROW + 4 > blob_len) {
+        fprintf(stderr, "%s: epoch_settlement: truncated snapshot_blob\n",
+                LOG_TAG);
+        nodus_witness_epoch_free(&es);
+        return -1;
+    }
+    const uint8_t *val_base = blob + off;
+    off += (size_t)committee_count * VAL_ROW;
+
+    uint32_t deleg_count = be32_load(blob + off); off += 4;
+    const size_t DEL_ROW = DNAC_PUBKEY_SIZE + DNAC_PUBKEY_SIZE + 8;  /* 5192 */
+    if (off + (size_t)deleg_count * DEL_ROW > blob_len) {
+        fprintf(stderr, "%s: epoch_settlement: truncated snapshot delegations\n",
+                LOG_TAG);
+        nodus_witness_epoch_free(&es);
+        return -1;
+    }
+    const uint8_t *deleg_base = blob + off;
 
     if (committee_count == 0) {
-        /* No committee yet (bootstrap / all-retired). Pool rolls
-         * forward untouched. */
+        /* Empty committee but non-zero pool → burn it all. */
+        if (pool > 0) nodus_witness_supply_add_burned(w, pool, es.snapshot_hash);
+        nodus_witness_epoch_free(&es);
+        nodus_witness_epoch_delete(w, settling_epoch_start);
         return 0;
     }
 
-    /* Fetch fresh per-member validator records. The cache pins the
-     * identity set for the epoch; stakes/liveness can move within it. */
-    dnac_validator_record_t committee[DNAC_COMMITTEE_SIZE];
-    int resolved_count = 0;
-    for (int i = 0; i < committee_count; i++) {
-        int grc = nodus_validator_get(w, committee_roster[i].pubkey,
-                                        &committee[resolved_count]);
-        if (grc == 0) {
-            resolved_count++;
-        } else if (grc == 1) {
-            /* Member present in cache but missing from validators table —
-             * only possible if the row was force-deleted between
-             * cache populate and this block. Skip. */
-            continue;
-        } else {
-            fprintf(stderr, "%s: accumulator: validator_get failed for "
-                    "cached committee member\n", LOG_TAG);
+    uint64_t per_slot = pool / (uint64_t)committee_count;
+    uint64_t outer_dust = pool - per_slot * (uint64_t)committee_count;
+
+    uint8_t tx_hash[64];
+    settlement_tx_hash(settling_epoch_start, tx_hash);
+
+    uint32_t out_idx = NODUS_EPOCH_SETTLE_OUTPUT_INDEX_BASE;
+    uint64_t total_burned_here = outer_dust;
+
+    /* Temporary buffer for per-validator delegation list — sized to
+     * the worst case (all delegations belong to one validator). */
+    settlement_deleg_t *dels = NULL;
+    if (deleg_count > 0) {
+        dels = calloc(deleg_count, sizeof(*dels));
+        if (!dels) {
+            nodus_witness_epoch_free(&es);
             return -1;
         }
     }
-    committee_count = resolved_count;
-    if (committee_count == 0) return 0;
 
-    /* Liveness gate — proposer-based attendance (2026-04-19 proper fix).
-     * record_attendance now updates validator.last_signed_block only for
-     * the block's proposer_id (deterministic across all nodes — it's in
-     * the committed block header). With round-robin leader election over
-     * a 7-member committee and a 16-block liveness window, healthy
-     * members always pass the gate; offline members fall out after
-     * ~2 full rotations. */
-    uint64_t min_signed = 0;
-    if (block_height > DNAC_LIVENESS_SHORT_WINDOW_BLOCKS) {
-        min_signed = block_height - DNAC_LIVENESS_SHORT_WINDOW_BLOCKS;
-    }
+    for (uint16_t vi = 0; vi < committee_count; vi++) {
+        const uint8_t *vrow = val_base + (size_t)vi * VAL_ROW;
+        const uint8_t *vpk = vrow;
+        uint64_t self_stake      = be64_load(vrow + DNAC_PUBKEY_SIZE);
+        uint64_t total_delegated = be64_load(vrow + DNAC_PUBKEY_SIZE + 8);
+        uint16_t commission_bps  = be16_load(vrow + DNAC_PUBKEY_SIZE + 16);
+        /* status byte at vrow + 2610 — unused here (RETIRING members stay
+         * in committee for the epoch per design §3.6). */
 
-    int attending_idx[DNAC_COMMITTEE_SIZE];
-    int attending_count = 0;
-    for (int i = 0; i < committee_count; i++) {
-        if (committee[i].last_signed_block >= min_signed) {
-            attending_idx[attending_count++] = i;
-        }
-    }
-
-    if (attending_count == 0) {
-        /* All committee members offline — pool rolls forward per §3.5. */
-        return 0;
-    }
-
-    uint64_t pool = w->block_fee_pool;
-    uint64_t per_member = pool / (uint64_t)attending_count;
-    /* Any sub-member remainder stays in the pool for next block. The
-     * design names this global_unallocated_pool; implemented by not
-     * draining that portion. */
-    uint64_t sub_member_remainder =
-        pool - per_member * (uint64_t)attending_count;
-
-    if (per_member == 0) {
-        /* Pool too small to split — leave untouched. */
-        return 0;
-    }
-
-    /* Distribute. */
-    for (int ai = 0; ai < attending_count; ai++) {
-        dnac_validator_record_t *v = &committee[attending_idx[ai]];
-
-        dnac_reward_record_t r;
-        int rc = nodus_reward_get(w, v->pubkey, &r);
-        if (rc == 1) {
-            /* No reward row yet — synthesize an empty one (STAKE inserts
-             * this normally; tolerate test bootstrap skipping it). */
-            memset(&r, 0, sizeof(r));
-            memcpy(r.validator_pubkey, v->pubkey, DNAC_PUBKEY_SIZE);
-        } else if (rc != 0) {
-            fprintf(stderr, "%s: accumulator: reward_get failed (rc=%d)\n",
-                    LOG_TAG, rc);
-            return -1;
-        }
-
-        if (v->total_delegated > 0) {
-            uint64_t total_stake = v->self_stake + v->total_delegated;
-            if (total_stake == 0) {
-                /* Defensive — treat like no-delegator path. */
-                r.validator_unclaimed += per_member;
-            } else {
-                /* delegator_share_raw = per_member * total_delegated / total_stake
-                 * Use u128 to avoid overflow on the multiply. */
-                qgp_u128_t raw = qgp_u128_from_u64(per_member);
-                raw = qgp_u128_mul_u64(raw, v->total_delegated);
-                uint64_t dsr_rem = 0;
-                qgp_u128_t dsr128 = qgp_u128_div_u64(raw, total_stake, &dsr_rem);
-                if (dsr128.hi != 0) {
-                    fprintf(stderr, "%s: accumulator: dsr overflow\n", LOG_TAG);
-                    return -1;
-                }
-                uint64_t delegator_share_raw = dsr128.lo;
-
-                /* commission_skim = delegator_share_raw * commission_bps / 10000 */
-                uint64_t commission_skim = 0;
-                if (v->commission_bps > 0) {
-                    qgp_u128_t cs = qgp_u128_from_u64(delegator_share_raw);
-                    cs = qgp_u128_mul_u64(cs, (uint64_t)v->commission_bps);
-                    uint64_t cs_rem = 0;
-                    qgp_u128_t cs128 = qgp_u128_div_u64(cs, 10000ULL, &cs_rem);
-                    commission_skim = cs128.lo;
-                    if (commission_skim > delegator_share_raw) {
-                        commission_skim = delegator_share_raw;
-                    }
-                }
-
-                uint64_t delegator_pool = delegator_share_raw - commission_skim;
-                /* validator_share absorbs ALL truncation: per_member -
-                 * delegator_pool (design F-ECON-04 piece-sum exact). */
-                uint64_t validator_share = per_member - delegator_pool;
-
-                /* Overflow-safe adds. */
-                if (r.validator_unclaimed > UINT64_MAX - validator_share) {
-                    fprintf(stderr, "%s: accumulator: validator_unclaimed overflow\n",
-                            LOG_TAG);
-                    return -1;
-                }
-                r.validator_unclaimed += validator_share;
-
-                /* Accumulator math (u128 fixed-point):
-                 *   num = (delegator_pool << 64) + residual_dust
-                 *   inc = num / total_delegated
-                 *   residual = num - inc * total_delegated
-                 *   accumulator += inc
-                 */
-                if (delegator_pool > 0 || r.residual_dust > 0) {
-                    qgp_u128_t num = qgp_u128_shl(
-                        qgp_u128_from_u64(delegator_pool), 64);
-                    num = qgp_u128_add(num,
-                            qgp_u128_from_u64(r.residual_dust));
-
-                    uint64_t rem = 0;
-                    qgp_u128_t inc = qgp_u128_div_u64(num,
-                                        v->total_delegated, &rem);
-                    r.residual_dust = rem;
-
-                    qgp_u128_t acc = qgp_u128_deserialize_be(r.accumulator);
-                    acc = qgp_u128_add(acc, inc);
-                    qgp_u128_serialize_be(acc, r.accumulator);
-                }
+        /* Attendance gate (D6). We query validator.last_signed_block
+         * from the current validators table — it reflects the latest
+         * block the validator signed, so any value >= epoch_start
+         * means they were present at least once in the epoch. */
+        dnac_validator_record_t current_v;
+        bool present = false;
+        if (nodus_validator_get(w, vpk, &current_v) == 0) {
+            uint64_t epoch_end = settling_epoch_start +
+                                 (uint64_t)DNAC_EPOCH_LENGTH - 1;
+            if (current_v.last_signed_block >= settling_epoch_start &&
+                current_v.last_signed_block <= epoch_end) {
+                present = true;
             }
-        } else {
-            /* No delegators: validator keeps the full per-member share. */
-            if (r.validator_unclaimed > UINT64_MAX - per_member) {
-                fprintf(stderr, "%s: accumulator: unclaimed overflow\n",
-                        LOG_TAG);
+        }
+        if (!present) {
+            total_burned_here += per_slot;
+            continue;
+        }
+
+        if (per_slot == 0) continue;  /* pool too small to split */
+
+        if (total_delegated == 0 || deleg_count == 0) {
+            /* Pure validator share. */
+            if (emit_synthetic_utxo(w, tx_hash, vpk, per_slot,
+                                      settling_epoch_start,
+                                      /*kind=*/0x20,
+                                      out_idx++, /*unlock=*/0) != 0) {
+                free(dels);
+                nodus_witness_epoch_free(&es);
                 return -1;
             }
-            r.validator_unclaimed += per_member;
+            continue;
         }
 
-        r.last_update_block = block_height;
-        if (nodus_reward_upsert(w, &r) != 0) {
-            fprintf(stderr, "%s: accumulator: reward_upsert failed\n", LOG_TAG);
-            return -1;
+        uint64_t total_stake = self_stake + total_delegated;
+        if (total_stake == 0) total_stake = 1;   /* defensive */
+
+        /* Use u128 for the multiply to avoid overflow. */
+        qgp_u128_t num = qgp_u128_from_u64(per_slot);
+        num = qgp_u128_mul_u64(num, self_stake);
+        uint64_t rem = 0;
+        qgp_u128_t q = qgp_u128_div_u64(num, total_stake, &rem);
+        uint64_t validator_base = q.lo;   /* high limb provably 0 here
+                                             since per_slot * self_stake
+                                             < 2^128 and /total_stake
+                                             compresses further */
+
+        uint64_t delegator_gross = (per_slot > validator_base)
+                                    ? (per_slot - validator_base) : 0;
+
+        uint64_t commission = 0;
+        if (commission_bps > 0 && delegator_gross > 0) {
+            qgp_u128_t cn = qgp_u128_from_u64(delegator_gross);
+            cn = qgp_u128_mul_u64(cn, (uint64_t)commission_bps);
+            qgp_u128_t cq = qgp_u128_div_u64(cn, 10000ULL, &rem);
+            commission = cq.lo;
+            if (commission > delegator_gross) commission = delegator_gross;
+        }
+        uint64_t validator_total = validator_base + commission;
+        uint64_t delegator_net   = delegator_gross - commission;
+
+        /* Collect this validator's delegations from snapshot. */
+        int n_dels = collect_delegations_for_validator(
+            deleg_base, deleg_count, vpk, dels, (int)deleg_count);
+
+        uint64_t distributed = 0;
+        for (int di = 0; di < n_dels; di++) {
+            /* share = delegator_net * D.amount / total_delegated */
+            qgp_u128_t sn = qgp_u128_from_u64(delegator_net);
+            sn = qgp_u128_mul_u64(sn, dels[di].amount);
+            qgp_u128_t sq = qgp_u128_div_u64(sn, total_delegated, &rem);
+            uint64_t share = sq.lo;
+
+            if (share > 0) {
+                if (emit_synthetic_utxo(w, tx_hash, dels[di].delegator_pubkey,
+                                         share, settling_epoch_start,
+                                         /*kind=*/0x21,
+                                         out_idx++, /*unlock=*/0) != 0) {
+                    free(dels);
+                    nodus_witness_epoch_free(&es);
+                    return -1;
+                }
+                distributed += share;
+            }
+        }
+        if (distributed > delegator_net) distributed = delegator_net;
+        uint64_t inner_dust = delegator_net - distributed;
+        total_burned_here += inner_dust;
+
+        /* Validator's consolidated UTXO (base + commission). */
+        if (validator_total > 0) {
+            if (emit_synthetic_utxo(w, tx_hash, vpk, validator_total,
+                                      settling_epoch_start,
+                                      /*kind=*/0x20,
+                                      out_idx++, /*unlock=*/0) != 0) {
+                free(dels);
+                nodus_witness_epoch_free(&es);
+                return -1;
+            }
         }
     }
 
-    /* Drain the distributed portion. Sub-member remainder stays in the
-     * pool as global_unallocated. */
-    w->block_fee_pool = sub_member_remainder;
+    free(dels);
+
+    /* Burn aggregated dust + offline shares. */
+    if (total_burned_here > 0) {
+        (void)nodus_witness_supply_add_burned(w, total_burned_here, tx_hash);
+    }
+
+    nodus_witness_epoch_free(&es);
+    /* Retire the settled epoch row. Design §3.1 — only the current
+     * epoch carries a live row; previous-epoch snapshot is discarded. */
+    nodus_witness_epoch_delete(w, settling_epoch_start);
     return 0;
 }
 
@@ -2943,56 +2960,111 @@ int finalize_block(nodus_witness_t *w,
         return -1;
     }
 
-    /* Block-reward inflation (v1) — mint new DNAC into block_fee_pool
-     * BEFORE the Phase 9 / Task 49 committee distribution. Inflation
-     * flows through the same accumulator pipeline as TX fees, so no
-     * new distribution code is needed; minted DNAC is split to the
-     * attending committee proportional to total_stake, then through
-     * validator commission to delegators.
+    /* v0.16 stage C.2 — per-block inflation emission.
      *
-     * Schedule: 16 DNAC/block year 1, halving yearly to 1 DNAC floor.
-     * Deterministic (same height → same reward on every witness), so
-     * the new block_fee_pool value is consensus-safe.
+     * Every block height mints nodus_emission_per_block(bh) raw DNAC
+     * (see nodus_witness_emission.h for the 32→16→8→4→2→1 schedule).
+     * The mint accrues into:
+     *   (a) supply_tracking.total_minted — bumps current_supply too.
+     *   (b) epoch_state.epoch_pool_accum — Stage E's
+     *       apply_epoch_settlement drains this into UTXOs.
      *
-     * start_block = 1 means inflation activates from block 1 onward
-     * (block 0 is genesis — no reward). Set to 0 to disable.
-     *
-     * Hard-Fork v1 / Stage D: the start_block is now read from
-     * chain_config_history (DNAC_CFG_INFLATION_START_BLOCK). Default 1ULL
-     * preserves current semantics when no override is committed. The Q5
-     * monotonicity rule enforced in nodus_chain_config_apply prevents a
-     * malicious coalition from disabling inflation by setting it to 0
-     * once a non-zero value has been committed. */
+     * Hard-Fork v1: the INFLATION_START_BLOCK override (chain_config)
+     * gates activation. Pre-wipe chains passed 0 (=disabled) here;
+     * v0.16 chains default to 1 (active from block 1). An unfetchable
+     * override is treated as 1ULL so that a transient DB fault cannot
+     * silently turn off emission cross-nodes.
+     */
     {
         uint64_t inflation_start =
             nodus_chain_config_get_u64(w,
                                         DNAC_CFG_INFLATION_START_BLOCK,
                                         expected_height,
                                         1ULL);
-        uint64_t mint = dnac_block_reward(expected_height, inflation_start);
-        if (mint > 0) {
-            if (w->block_fee_pool > UINT64_MAX - mint) {
-                fprintf(stderr, "%s: finalize_block: block_fee_pool overflow "
-                        "on mint (pool=%llu mint=%llu)\n",
-                        LOG_TAG,
-                        (unsigned long long)w->block_fee_pool,
-                        (unsigned long long)mint);
+        uint64_t emission = 0;
+        if (inflation_start != 0 && expected_height >= inflation_start) {
+            emission = nodus_emission_per_block(expected_height);
+        }
+
+        if (emission > 0) {
+            /* Global supply counters. */
+            if (nodus_witness_supply_add_minted(w, emission) != 0) {
+                fprintf(stderr, "%s: finalize_block: supply_add_minted failed\n",
+                        LOG_TAG);
                 return -1;
             }
-            w->block_fee_pool += mint;
+
+            /* Per-epoch pool accumulator. Canonical epoch_start_height
+             * formula: floor(block_height / DNAC_EPOCH_LENGTH) *
+             * DNAC_EPOCH_LENGTH. Auto-seed the row on first touch per
+             * epoch; Stage D.1 will layer snapshot_hash + snapshot_blob
+             * on top of it at the first block of each new epoch. */
+            uint64_t epoch_start = (expected_height / (uint64_t)DNAC_EPOCH_LENGTH) *
+                                   (uint64_t)DNAC_EPOCH_LENGTH;
+            int add_rc = nodus_witness_epoch_add_pool(w, epoch_start, emission);
+            if (add_rc == 1) {
+                /* Row missing — seed with zeroed snapshot_hash and the
+                 * current mint as the starting pool. Stage D.1
+                 * overwrites snapshot_hash at epoch-start. */
+                nodus_epoch_state_t seed = {0};
+                seed.epoch_start_height = epoch_start;
+                seed.epoch_pool_accum   = emission;
+                int ins_rc = nodus_witness_epoch_insert(w, &seed);
+                if (ins_rc != 0 && ins_rc != -2) {
+                    fprintf(stderr,
+                        "%s: finalize_block: epoch_insert seed failed rc=%d\n",
+                        LOG_TAG, ins_rc);
+                    return -1;
+                }
+                /* If -2 (another path raced us), retry add_pool. */
+                if (ins_rc == -2) {
+                    if (nodus_witness_epoch_add_pool(w, epoch_start, emission)
+                        != 0) {
+                        fprintf(stderr,
+                            "%s: finalize_block: epoch_add_pool retry failed\n",
+                            LOG_TAG);
+                        return -1;
+                    }
+                }
+
+                /* Stage D.1: first time an epoch_state row is seeded,
+                 * capture the committee + delegation snapshot for
+                 * this epoch. Idempotent — a retry with the same
+                 * state produces the same snapshot_hash. */
+                if (nodus_witness_epoch_snapshot_apply(w, epoch_start) != 0) {
+                    fprintf(stderr,
+                        "%s: finalize_block: epoch_snapshot_apply failed\n",
+                        LOG_TAG);
+                    return -1;
+                }
+            } else if (add_rc != 0) {
+                fprintf(stderr,
+                    "%s: finalize_block: epoch_add_pool failed rc=%d\n",
+                    LOG_TAG, add_rc);
+                return -1;
+            }
         }
     }
 
-    /* Phase 9 / Task 49 — distribute block_fee_pool to the attending
-     * committee per design §3.5. MUST run before state_root recompute
-     * so the reward-tree mutations are reflected in the committed
-     * root. Called AFTER apply_epoch_boundary_transitions so any
-     * validator status flips this block (commission activations,
-     * graduations, auto-retirements) already settled. */
-    if (apply_accumulator_update(w, expected_height) != 0) {
-        fprintf(stderr, "%s: finalize_block: accumulator_update failed\n",
-                LOG_TAG);
-        return -1;
+    /* Stage E — epoch settlement trigger.
+     *
+     * Fires strictly on block_height % DNAC_EPOCH_LENGTH == 0 &&
+     * block_height > 0 (RT-C1: no round/view dependency). Drains the
+     * prior epoch's epoch_pool_accum into UTXOs per the Stage E
+     * distribution rules and retires that epoch_state row. The NEW
+     * epoch's row was already auto-seeded by the C.2 path above, so
+     * compute_state_root below sees the updated table (settled row
+     * gone, new row present). */
+    if (expected_height > 0 &&
+        (expected_height % (uint64_t)DNAC_EPOCH_LENGTH) == 0) {
+        uint64_t settling_epoch_start =
+            expected_height - (uint64_t)DNAC_EPOCH_LENGTH;
+        if (apply_epoch_settlement(w, settling_epoch_start) != 0) {
+            fprintf(stderr,
+                "%s: finalize_block: epoch_settlement failed (epoch_start=%llu)\n",
+                LOG_TAG, (unsigned long long)settling_epoch_start);
+            return -1;
+        }
     }
 
     /* Invalidate the cached UTXO checksum — the per-TX writes from this
@@ -3013,8 +3085,24 @@ int finalize_block(nodus_witness_t *w,
         return -1;
     }
 
-    /* 2. Supply invariant check — once per block (Phase 3 / Task 3.4).
-     * Advisory only in Phase 3; Phase 6 commit_batch promotes to fatal. */
+    /* 2. Supply invariant — v0.16 Stage F.1 HARD gate.
+     *
+     * expected = genesis_supply + total_minted − total_burned
+     * observed = Σ utxo_native + Σ self_stake + Σ total_delegated
+     *          + Σ epoch_state.epoch_pool_accum
+     *
+     * Any mismatch rejects the block so the outer commit_batch
+     * transaction rolls back — no state_root, no block row, no
+     * UTXO mutations reach the committed DB. The legacy advisory
+     * check (supply_invariant_violated) is retained below for the
+     * attribution-replay path, which runs per-TX diagnostics when a
+     * batch fails. */
+    if (check_supply_invariant_v016(w) != 0) {
+        fprintf(stderr,
+            "%s: finalize_block REJECTED: supply invariant violated at h=%llu\n",
+            LOG_TAG, (unsigned long long)expected_height);
+        return -1;
+    }
     (void)supply_invariant_violated(w);
 
     /* 3. tx_root via RFC 6962 over the batch's TX hashes (Phase 2 wrapper). */
@@ -3033,30 +3121,12 @@ int finalize_block(nodus_witness_t *w,
         return -1;
     }
 
-    /* Phase 9 / Task 49 — apply_accumulator_update (called above)
-     * drained the distributable portion into the reward accumulator
-     * and left any sub-member remainder / no-attendance carry in
-     * w->block_fee_pool (design §3.5's global_unallocated_pool). The
-     * unconditional zeroing that lived here pre-Task 49 was a
-     * placeholder; Task 49 owns the pool lifecycle now. */
-    if (w->block_fee_pool > 0) {
-        QGP_LOG_DEBUG(LOG_TAG,
-            "finalize_block: block_fee_pool carry = %llu (block %llu)",
-            (unsigned long long)w->block_fee_pool,
-            (unsigned long long)expected_height);
-    }
-
     return 0;
 }
 
-/* Phase 6 / Task 31 — accessor for the in-progress block fee pool.
- * Used by Phase 9 Task 49 to drain into the reward accumulator. */
-int nodus_witness_get_block_fee_pool(const nodus_witness_t *witness,
-                                       uint64_t *out) {
-    if (!witness) return -1;
-    if (out) *out = witness->block_fee_pool;
-    return 0;
-}
+/* v0.16 stage A.5: nodus_witness_get_block_fee_pool accessor removed
+ * with the block_fee_pool field itself. Stage C.3 replaces the
+ * concept with total_burned (fees) and epoch_pool_accum (mint). */
 
 /* nodus_witness_commit_block — DELETED in Phase 11 partial.
  *
@@ -4770,6 +4840,8 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
      * dnac/docs/plans/2026-04-19-genesis-ghost-stake-fix.md. */
     const uint8_t *cd_blob = NULL;
     uint32_t cd_blob_len = 0;
+    uint64_t cd_supply = 0;
+    uint8_t  cd_vcount = 0;
     {
         /* Walk TX wire format to find the optional chain_def trailer
          * appended after sender_signature by the v2 serialize path. */
@@ -4816,8 +4888,6 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
      * (or buggy client) creates a recipient UTXO equal to gross supply
      * without deducting validator self-stake locks. */
     if (cd_blob && cd_blob_len > 0) {
-        uint64_t cd_supply = 0;
-        uint8_t  cd_vcount = 0;
         if (nodus_witness_parse_cd_supply(cd_blob, (size_t)cd_blob_len,
                                            &cd_supply, &cd_vcount) != 0) {
             fprintf(stderr, "%s: Rule P.2 — chain_def parse failed\n", LOG_TAG);
@@ -4891,6 +4961,29 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
         return -1;
     }
 
+    /* v0.16 supply-invariant fix — write genesis_state + supply_tracking
+     * with the full initial_supply_raw from chain_def (cd_supply), not
+     * the outputs_sum. The supply invariant at finalize_block observes
+     * utxo + self_stake + delegated + pool; self_stake for the 7 bootstrap
+     * validators (7 × DNAC_SELF_STAKE_AMOUNT) is seeded next by
+     * genesis_seed_validators. Using cd_supply keeps
+     * expected = genesis_supply + minted − burned balanced against
+     * observed for every block starting at h=1. */
+    {
+        int rc = nodus_witness_genesis_set(w, tx_hash, cd_supply, tx_hash);
+        if (rc != 0 && rc != -2) {
+            fprintf(stderr, "%s: genesis record failed: %d\n", LOG_TAG, rc);
+            nodus_witness_db_rollback(w);
+            return -1;
+        }
+        int src = nodus_witness_supply_init(w, cd_supply, tx_hash);
+        if (src != 0 && src != -2) {
+            fprintf(stderr, "%s: supply_init failed: %d\n", LOG_TAG, src);
+            nodus_witness_db_rollback(w);
+            return -1;
+        }
+    }
+
     /* Phase 12 Task 57 — seed validator_tree + reward_tree from the
      * initial_validators[] block of the chain_def. Runs inside the same
      * db transaction as apply_tx_to_state / finalize_block, so a failure
@@ -4920,15 +5013,12 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
     nodus_witness_batch_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
 
-    /* F17 determinism fix: snapshot RAM state that apply_tx_to_state +
-     * apply_accumulator_update mutate in-place. On any rollback path
-     * below we MUST restore these so retried/attribution-replay passes
-     * don't pump w->block_fee_pool above the pre-batch value. Failure
-     * to restore made pool divergent across nodes (nodes with more
-     * failed attempts had higher pool → higher per_member at next
-     * successful block → divergent UTXO amounts on UNDELEGATE payouts
-     * → divergent state_root). */
-    uint64_t saved_block_fee_pool = w->block_fee_pool;
+    /* F17 determinism fix historically snapshotted w->block_fee_pool
+     * here so rollback paths could restore it on retried/attribution-
+     * replay passes. v0.16 stage A.5 deletes the field outright — fees
+     * no longer live in RAM state at all — so the snapshot becomes a
+     * no-op. Stage F.1 re-enforces determinism through the hard supply
+     * invariant at finalize_block. */
 
     if (nodus_witness_db_begin(w) != 0) return -1;
 
@@ -4941,7 +5031,6 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
         nodus_witness_mempool_entry_t *e = entries[i];
         if (!e) {
             nodus_witness_db_rollback(w);
-            w->block_fee_pool = saved_block_fee_pool;
             return -1;
         }
 
@@ -4955,7 +5044,6 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
                                e->client_pubkey, e->client_sig) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "commit_batch: TX %d apply_tx failed", i);
             nodus_witness_db_rollback(w);
-            w->block_fee_pool = saved_block_fee_pool;
             return -1;
         }
 
@@ -5042,10 +5130,6 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
             }
             nodus_witness_db_rollback(w);
         }
-        /* Restore RAM state that apply_tx_to_state / attribution replay
-         * mutated in-place. DB is fully rolled back; the pool must
-         * match. */
-        w->block_fee_pool = saved_block_fee_pool;
         return -1;
     }
 

@@ -140,7 +140,8 @@ if(NOT WIN32)
         src/witness/nodus_witness_spend_preimage.c
         src/witness/nodus_witness_validator.c
         src/witness/nodus_witness_delegation.c
-        src/witness/nodus_witness_reward.c
+        src/witness/nodus_witness_epoch.c
+        src/witness/nodus_witness_emission.c
         src/witness/nodus_witness_committee.c
         src/witness/nodus_witness_genesis_seed.c
         src/witness/nodus_witness_chain_config.c
@@ -645,12 +646,14 @@ endif()
 # Task 12 — validator tree DB CRUD (witness stake v1 / Phase 4)
 register_witness_test(test_validator_db)
 
-# Task 13 — delegation + reward DB CRUD (witness stake v1 / Phase 4)
-register_witness_test(test_delegation_db)
-register_witness_test(test_reward_db)
+# v0.16 Stage B.1 — epoch_state table CRUD smoke test
+register_witness_test(test_epoch_state)
 
-# Task 61 — dnac_pending_rewards_query RPC helper (Phase 14)
-register_witness_test(test_pending_rewards_rpc)
+# v0.16 Stage C.1 — emission_per_block halving-boundary KAT (RT-C2)
+register_witness_test(test_emission_boundaries)
+
+# v0.16 Stage D.2 — epoch snapshot empty-chain hash + idempotence smoke
+register_witness_test(test_epoch_snapshot)
 
 # Task 62 — dnac_committee_query RPC shape (Phase 14)
 register_witness_test(test_committee_query_rpc)
@@ -664,39 +667,15 @@ register_witness_test(test_locked_utxo)
 # Task 30 — MIN_TENURE (Rule R) committee eligibility boundary
 register_witness_test(test_min_tenure_boundary)
 
-# Task 31 — SPEND fees route to block_fee_pool (not burn UTXO)
-register_witness_test(test_fee_routing)
+# Task 31 (test_fee_routing) retired in v0.16 stage A.5 — block_fee_pool
+# field is gone; Stage C.3's route_tx_fee test will replace coverage.
 
-# Task 40 — STAKE state mutation (validator insert + active_count bump)
-register_witness_test(test_apply_stake)
-
-# Task 41 — DELEGATE state mutation (delegation row + validator totals)
-register_witness_test(test_apply_delegate)
-
-# Task 42 — UNSTAKE phase 1 (RETIRING status transition)
-register_witness_test(test_apply_unstake)
-
-# Task 43 — UNDELEGATE state mutation (dual-UTXO auto-claim, always-emit)
-register_witness_test(test_apply_undelegate)
-
-# Task 44 — CLAIM_REWARD state mutation (validator + delegator paths)
-register_witness_test(test_apply_claim_reward)
-
-# Task 45 — VALIDATOR_UPDATE state mutation with pending semantics
-register_witness_test(test_apply_validator_update)
-
-# Task 46 — Epoch-boundary state transitions (commission activation +
-# RETIRING->UNSTAKED graduation; AUTO_RETIRED + committee TODOs)
-register_witness_test(test_apply_epoch_boundary)
+# Tasks 40-48 apply_* tests retired in v0.16 stage A.3 — the old
+# reward-state-touching unit tests are superseded by the Stage E/F
+# push-settlement test suite.
 
 # Task 47 — single-SQLite-transaction block commit + rollback on abort
 register_witness_test(test_commit_atomicity)
-
-# Task 48 — per-block attendance tracking + liveness-based AUTO_RETIRED
-register_witness_test(test_liveness_attendance)
-
-# Task 49 — accumulator update with liveness gate + residual dust
-register_witness_test(test_accumulator_math)
 
 # Task 50 — F-CONS-06 mandatory independent state_root recompute on PREVOTE
 register_witness_test(test_prevote_state_root_mutation)
@@ -707,14 +686,8 @@ register_witness_test(test_committee_election)
 # Task 53 — per-epoch committee cache
 register_witness_test(test_committee_cache)
 
-# Task 54 — UNDELEGATE auto-claim end-to-end integration
-register_witness_test(test_integration_undelegate_claim)
-
-# Task 55 — UNSTAKE two-phase graduation + locked-UTXO unlock
-register_witness_test(test_integration_unstake_two_phase)
-
-# Task 57 — Genesis seeds validator_tree + reward_tree from chain_def
-register_witness_test(test_genesis_seed_validators)
+# Tasks 55 + 57 integration/genesis-seed tests retired in v0.16 stage A.3
+# (exercised the old reward-table seeding + auto-claim paths).
 
 # 2026-04-19 — Genesis ghost-stake fix: parse_cd_supply helper for Rule P.2
 register_witness_test(test_parse_cd_supply)

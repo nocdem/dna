@@ -913,25 +913,10 @@ void nodus_client_free_block_range_result(nodus_dnac_block_range_result_t *resul
 
 /* ── Phase 14 / stake-delegation v1 RPCs ───────────────────────────── */
 
-/**
- * Query the witness for every pending reward owed to `claimant_pubkey`.
- *
- * One entry per active delegation with non-zero pending, plus a
- * self-entry when the claimant is itself a validator with unclaimed
- * commission.
- *
- * Caller MUST free result_out with nodus_client_free_pending_rewards_result().
- *
- * @param claimant_pubkey  DNAC_PUBKEY_SIZE (2592) bytes
- * @param result_out       Query result (entries heap-allocated)
- * @return 0 on success, error code on failure
- */
-int nodus_client_dnac_pending_rewards(nodus_client_t *client,
-                                        const uint8_t *claimant_pubkey,
-                                        nodus_dnac_pending_rewards_result_t *result_out);
-
-/** Free heap allocation inside a pending-rewards result. */
-void nodus_client_free_pending_rewards_result(nodus_dnac_pending_rewards_result_t *result);
+/* v0.16: nodus_client_dnac_pending_rewards +
+ * nodus_client_free_pending_rewards_result removed. Rewards are pushed
+ * out as UTXOs at each epoch boundary, so there is no pending balance
+ * to query. */
 
 /**
  * Query the witness for the current epoch's committee (chain-authoritative).
