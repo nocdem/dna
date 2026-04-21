@@ -244,6 +244,20 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /* Pure-local dna operator verbs: no engine, no DHT, no identity. These
+     * subcommands only read a file and print to stdout. Skipping engine init
+     * avoids a TCP connect + Dilithium5 auth + Kyber handshake, and on a real
+     * operator laptop prevents accidental TOFU-caching of production IPs into
+     * ~/.dna/known_nodes when `genesis-prepare` is run before the cluster
+     * exists. The dispatcher's matching early-return handles NULL engine for
+     * these verbs (see cli_dna_chain.c). */
+    if (strcmp(command, "dna") == 0 && optind + 1 < argc) {
+        const char *sub = argv[optind + 1];
+        if (strcmp(sub, "genesis-prepare") == 0 || strcmp(sub, "parse-tx") == 0) {
+            return dispatch_dna_chain(NULL, argc, argv, optind + 1);
+        }
+    }
+
     /* Install signal handlers */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
