@@ -104,6 +104,15 @@ typedef struct {
 
     /** Block height of the most recent block this validator signed. */
     uint64_t last_signed_block;
+
+    /** Blocks this validator has been credited as proposer within the
+     *  current epoch (incremented on every committed block whose
+     *  proposer_id matches this validator). Reset to 0 at epoch-boundary
+     *  settlement. Gates reward eligibility via
+     *  `signed_blocks_this_epoch * 10000 >=
+     *   (EPOCH_LENGTH / COMMITTEE_SIZE) * LIVENESS_THRESHOLD_BPS`
+     *  (Rule N, post-EPOCH_LENGTH=720 attendance redesign). */
+    uint64_t signed_blocks_this_epoch;
 } dnac_validator_record_t;
 
 /* ============================================================================

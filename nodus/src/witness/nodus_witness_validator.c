@@ -72,6 +72,7 @@ static void bind_validator_mutable_fields(sqlite3_stmt *stmt, int start,
     sqlite3_bind_int64(stmt, start + 12,
                        (int64_t)v->consecutive_missed_epochs);
     sqlite3_bind_int64(stmt, start + 13, (int64_t)v->last_signed_block);
+    sqlite3_bind_int64(stmt, start + 14, (int64_t)v->signed_blocks_this_epoch);
 }
 
 /* Populate a dnac_validator_record_t from a SELECT row. Column layout
@@ -140,6 +141,8 @@ static int row_to_record(sqlite3_stmt *stmt, dnac_validator_record_t *out) {
         (uint64_t)sqlite3_column_int64(stmt, 13);
     out->last_signed_block =
         (uint64_t)sqlite3_column_int64(stmt, 14);
+    out->signed_blocks_this_epoch =
+        (uint64_t)sqlite3_column_int64(stmt, 15);
 
     return 0;
 }
@@ -162,8 +165,8 @@ int nodus_validator_insert(nodus_witness_t *w,
         "  status, active_since_block, unstake_commit_block,"
         "  unstake_destination_fp, unstake_destination_pubkey,"
         "  last_validator_update_block, consecutive_missed_epochs,"
-        "  last_signed_block"
-        ") VALUES (?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?,  ?, ?, ?)",
+        "  last_signed_block, signed_blocks_this_epoch"
+        ") VALUES (?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?,  ?, ?, ?, ?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: insert prepare failed: %s\n",
@@ -206,7 +209,8 @@ int nodus_validator_get(nodus_witness_t *w,
         "       pending_effective_block, status, active_since_block,"
         "       unstake_commit_block, unstake_destination_fp,"
         "       unstake_destination_pubkey, last_validator_update_block,"
-        "       consecutive_missed_epochs, last_signed_block "
+        "       consecutive_missed_epochs, last_signed_block,"
+        "       signed_blocks_this_epoch "
         "FROM validators WHERE pubkey_hash = ?",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
@@ -253,7 +257,7 @@ int nodus_validator_update(nodus_witness_t *w,
         "  active_since_block = ?, unstake_commit_block = ?,"
         "  unstake_destination_fp = ?, unstake_destination_pubkey = ?,"
         "  last_validator_update_block = ?, consecutive_missed_epochs = ?,"
-        "  last_signed_block = ? "
+        "  last_signed_block = ?, signed_blocks_this_epoch = ? "
         "WHERE pubkey_hash = ?",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
@@ -263,7 +267,7 @@ int nodus_validator_update(nodus_witness_t *w,
     }
 
     bind_validator_mutable_fields(stmt, /*start=*/1, v);
-    sqlite3_bind_blob(stmt, 15, pubkey_hash, 64, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 16, pubkey_hash, 64, SQLITE_STATIC);
 
     rc = sqlite3_step(stmt);
     int changes = sqlite3_changes(w->db);
@@ -295,7 +299,8 @@ int nodus_validator_top_n(nodus_witness_t *w,
         "       pending_effective_block, status, active_since_block,"
         "       unstake_commit_block, unstake_destination_fp,"
         "       unstake_destination_pubkey, last_validator_update_block,"
-        "       consecutive_missed_epochs, last_signed_block "
+        "       consecutive_missed_epochs, last_signed_block,"
+        "       signed_blocks_this_epoch "
         "FROM validators "
         "WHERE status = ? "
         "  AND active_since_block + ? <= ? "
@@ -368,7 +373,8 @@ int nodus_validator_list_paged(nodus_witness_t *w,
           "       pending_effective_block, status, active_since_block,"
           "       unstake_commit_block, unstake_destination_fp,"
           "       unstake_destination_pubkey, last_validator_update_block,"
-          "       consecutive_missed_epochs, last_signed_block "
+          "       consecutive_missed_epochs, last_signed_block,"
+          "       signed_blocks_this_epoch "
           "FROM validators "
           "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC "
           "LIMIT ? OFFSET ?"
@@ -377,7 +383,8 @@ int nodus_validator_list_paged(nodus_witness_t *w,
           "       pending_effective_block, status, active_since_block,"
           "       unstake_commit_block, unstake_destination_fp,"
           "       unstake_destination_pubkey, last_validator_update_block,"
-          "       consecutive_missed_epochs, last_signed_block "
+          "       consecutive_missed_epochs, last_signed_block,"
+          "       signed_blocks_this_epoch "
           "FROM validators WHERE status = ? "
           "ORDER BY (self_stake + external_delegated) DESC, pubkey ASC "
           "LIMIT ? OFFSET ?";

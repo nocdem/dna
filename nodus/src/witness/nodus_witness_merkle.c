@@ -835,7 +835,8 @@ static void be64_into(uint64_t v, uint8_t out[8]) {
  *          || unstake_destination_pubkey[2592]
  *          || last_validator_update_block[8 BE]
  *          || consecutive_missed_epochs[8 BE]
- *          || last_signed_block[8 BE] )
+ *          || last_signed_block[8 BE]
+ *          || signed_blocks_this_epoch[8 BE] )
  * Canonical: ORDER BY pubkey ASC. */
 static int load_validator_leaves(nodus_witness_t *w,
                                   uint8_t **leaves_out,
@@ -850,7 +851,8 @@ static int load_validator_leaves(nodus_witness_t *w,
         "       pending_effective_block, status, active_since_block,"
         "       unstake_commit_block, unstake_destination_fp,"
         "       unstake_destination_pubkey, last_validator_update_block,"
-        "       consecutive_missed_epochs, last_signed_block "
+        "       consecutive_missed_epochs, last_signed_block,"
+        "       signed_blocks_this_epoch "
         "FROM validators ORDER BY pubkey ASC", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: validator scan prepare failed: %s\n",
@@ -937,6 +939,8 @@ static int load_validator_leaves(nodus_witness_t *w,
         be64_into((uint64_t)sqlite3_column_int64(stmt, 13), be);
         EVP_DigestUpdate(md, be, 8);
         be64_into((uint64_t)sqlite3_column_int64(stmt, 14), be);
+        EVP_DigestUpdate(md, be, 8);
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 15), be);
         EVP_DigestUpdate(md, be, 8);
 
         if (sha3_512_final(md, buf + n * 64) != 0) {

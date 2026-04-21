@@ -2748,32 +2748,41 @@ static int apply_epoch_settlement(nodus_witness_t *w,
         /* status byte at vrow + 2610 — unused here (RETIRING members stay
          * in committee for the epoch per design §3.6). */
 
-        /* Attendance gate (D6). Present = signed at least one block
-         * within the last DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS
-         * blocks ending at the settlement block. Decoupled from the
-         * full epoch range so a 1-hour epoch does not let a validator
-         * earn by signing only once per hour — the window enforces a
-         * recent-liveness requirement independent of epoch length.
+        /* Attendance gate (D6, SEC-01 mitigation).
+         *
+         * Historical v0.16 design used a binary "signed at least one
+         * block in the epoch range" check. Under EPOCH_LENGTH=720 that
+         * allowed 83% planned downtime per epoch (drive-by attacker
+         * signs one block, earns full hour). This gate replaces it
+         * with a count-based 80%-of-expected-proposer-slots threshold:
+         *
+         *   per-validator expected proposer slots per epoch
+         *     = EPOCH_LENGTH / COMMITTEE_SIZE (round-robin leader).
+         *   required slots = expected * LIVENESS_THRESHOLD_BPS / 10000.
+         *   present if signed_blocks_this_epoch >= required.
+         *
+         * Rearranged for exact integer math (no division, no truncation):
+         *   signed * COMMITTEE_SIZE * 10000 >= EPOCH_LENGTH * THRESHOLD_BPS.
+         *
+         * The counter is incremented by nodus_witness_record_attendance
+         * only for the block proposer (deterministic across all nodes
+         * because proposer_id is in the committed block header).
          *
          * Genesis special-case: at the very first settlement
          * (settling_epoch_start == 0), every genesis-seeded validator
-         * has last_signed_block = 0, so none could pass the recent-
-         * liveness gate. Treat all committee members as present for the
-         * bootstrap epoch to avoid burning the entire first-hour pool. */
+         * has signed_blocks_this_epoch = 0 but genuinely participated.
+         * Treat all committee members as present for the bootstrap
+         * epoch to avoid burning the entire first-hour pool. */
         dnac_validator_record_t current_v;
         bool present = false;
         if (settling_epoch_start == 0) {
             present = true;
         } else if (nodus_validator_get(w, vpk, &current_v) == 0) {
-            uint64_t settle_block = settling_epoch_start +
-                                     (uint64_t)DNAC_EPOCH_LENGTH;
-            uint64_t threshold =
-                (settle_block > (uint64_t)DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS)
-                    ? (settle_block -
-                       (uint64_t)DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS)
-                    : 0;
-            if (current_v.last_signed_block > 0 &&
-                current_v.last_signed_block >= threshold) {
+            uint64_t lhs = current_v.signed_blocks_this_epoch *
+                           (uint64_t)DNAC_COMMITTEE_SIZE * 10000ULL;
+            uint64_t rhs = (uint64_t)DNAC_EPOCH_LENGTH *
+                           (uint64_t)DNAC_LIVENESS_THRESHOLD_BPS;
+            if (lhs >= rhs) {
                 present = true;
             }
         }
@@ -2874,6 +2883,27 @@ static int apply_epoch_settlement(nodus_witness_t *w,
     sqlite3_finalize(utxo_ins_stmt);
     free(dels);
 
+    /* Reset per-epoch signed-block counters for the next epoch.
+     * Deterministic: every node issues the same UPDATE at the same
+     * boundary block, so all nodes enter the next epoch with counters
+     * at 0. Counters are part of the validator merkle leaf — reset
+     * MUST happen inside the same finalize_block transaction as the
+     * settlement UTXO emits for the leaf hashes to match across nodes. */
+    {
+        char *reset_err = NULL;
+        if (sqlite3_exec(w->db,
+                          "UPDATE validators SET signed_blocks_this_epoch = 0 "
+                          "WHERE signed_blocks_this_epoch > 0",
+                          NULL, NULL, &reset_err) != SQLITE_OK) {
+            fprintf(stderr,
+                    "%s: epoch_settlement: reset counters failed: %s\n",
+                    LOG_TAG, reset_err ? reset_err : "(null)");
+            if (reset_err) sqlite3_free(reset_err);
+            nodus_witness_epoch_free(&es);
+            return -1;
+        }
+    }
+
     /* Burn aggregated dust + offline shares. */
     if (total_burned_here > 0) {
         (void)nodus_witness_supply_add_burned(w, total_burned_here, tx_hash);
@@ -2921,10 +2951,10 @@ int nodus_witness_record_attendance(nodus_witness_t *w,
      * is part of the committed block header and is deterministic across
      * all nodes. Record attendance only for the proposer. Over a healthy
      * 7-member committee with round-robin leader election, each member
-     * proposes roughly every 7 blocks — well within the 16-block
-     * DNAC_LIVENESS_SHORT_WINDOW_BLOCKS. An offline member misses their
-     * slots → falls out of the liveness window → accumulator excludes
-     * them from the per-member fee split. */
+     * proposes roughly every 7 blocks. An offline proposer's
+     * last_signed_block falls out of the settlement attendance window
+     * (DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS) — its slot's pool share
+     * is burned at epoch settlement. */
     sqlite3_stmt *sel = NULL;
     int rc = sqlite3_prepare_v2(w->db,
         "SELECT pubkey, last_signed_block FROM validators "
@@ -2970,9 +3000,17 @@ int nodus_witness_record_attendance(nodus_witness_t *w,
         return -1;
     }
 
+    /* Update both last_signed_block (recent-activity watermark) AND
+     * signed_blocks_this_epoch counter (80%-threshold gate feed). The
+     * counter increments deterministically across nodes because every
+     * node credits only the proposer_id, which is in the committed
+     * block header and identical on all nodes. */
     sqlite3_stmt *upd = NULL;
     rc = sqlite3_prepare_v2(w->db,
-        "UPDATE validators SET last_signed_block = ? WHERE pubkey = ?",
+        "UPDATE validators SET "
+        "  last_signed_block = ?,"
+        "  signed_blocks_this_epoch = signed_blocks_this_epoch + 1 "
+        "WHERE pubkey = ?",
         -1, &upd, NULL);
     if (rc != SQLITE_OK) {
         sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);

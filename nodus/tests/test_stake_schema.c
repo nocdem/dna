@@ -159,8 +159,8 @@ int main(void) {
     CHECK_EQ(sqlite_master_count(w.db, "table", "rewards"), 0);
     CHECK_EQ(sqlite_master_count(w.db, "table", "validator_stats"), 1);
 
-    /* Column counts match v0.16 schema (delegations dropped reward_snapshot). */
-    CHECK_EQ(table_column_count(w.db, "validators"), 16);
+    /* Column counts match v0.17 schema (validators gained signed_blocks_this_epoch). */
+    CHECK_EQ(table_column_count(w.db, "validators"), 17);
     CHECK_EQ(table_column_count(w.db, "delegations"), 6);
     CHECK_EQ(table_column_count(w.db, "validator_stats"), 2);
 
