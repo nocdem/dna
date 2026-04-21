@@ -656,8 +656,8 @@ register_witness_test(test_locked_utxo)
 # Task 30 — MIN_TENURE (Rule R) committee eligibility boundary
 register_witness_test(test_min_tenure_boundary)
 
-# Task 31 — SPEND fees route to block_fee_pool (not burn UTXO)
-register_witness_test(test_fee_routing)
+# Task 31 (test_fee_routing) retired in v0.16 stage A.5 — block_fee_pool
+# field is gone; Stage C.3's route_tx_fee test will replace coverage.
 
 # Tasks 40-48 apply_* tests retired in v0.16 stage A.3 — the old
 # reward-state-touching unit tests are superseded by the Stage E/F

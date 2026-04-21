@@ -723,37 +723,18 @@ static int update_utxo_set(nodus_witness_t *w,
         fee = total_input - total_output;
     }
 
-    /* Phase 6 / Task 31 — fees route to block_fee_pool (native DNAC only).
-     *
-     * The legacy behavior (fee → UTXO owned by DNAC_BURN_ADDRESS) is
-     * removed. Fees now accumulate into w->block_fee_pool and Phase 9
-     * Task 49 drains that accumulator into the committee reward pool
-     * when the block finalizes. Custom-token fees remain a deferred
-     * concern — in the current TX format fees are charged in native
-     * DNAC for all supported TX types (see TOKEN_CREATE path above,
-     * which resets fee_token_id to zero). If a custom-token fee ever
-     * lands here it is still accounted as a delta from supply but does
-     * NOT get a burn UTXO — the log line calls it out. */
+    /* v0.16 stage A.5: fees no longer accumulate in w->block_fee_pool.
+     * Stage C.3 will wire route_tx_fee(w, tx_type, committed_fee) to
+     * burn the fee directly to total_burned. Until that lands, fees
+     * are observed (via fee_out) but not routed anywhere — the supply
+     * invariant is advisory in this transitional state and is
+     * re-activated as a hard gate in Stage F. */
     (void)fee_token_id;
+    (void)w;
     if (fee > 0) {
-        if (w) {
-            /* Overflow-safe add: 2^64 - 1 - pool is the ceiling we can
-             * accept. In practice the pool zeroes every block so this
-             * is effectively impossible, but the check keeps the
-             * invariant explicit for auditors. */
-            if (w->block_fee_pool > UINT64_MAX - fee) {
-                fprintf(stderr, "%s: block_fee_pool overflow (pool=%llu fee=%llu)\n",
-                        LOG_TAG,
-                        (unsigned long long)w->block_fee_pool,
-                        (unsigned long long)fee);
-                return -1;
-            }
-            w->block_fee_pool += fee;
-        }
-        fprintf(stderr, "%s: fee pool: +%llu native DNAC (block %llu, pool=%llu)\n",
+        fprintf(stderr, "%s: fee observed: %llu native DNAC (block %llu)\n",
                 LOG_TAG, (unsigned long long)fee,
-                (unsigned long long)block_height,
-                (unsigned long long)(w ? w->block_fee_pool : 0));
+                (unsigned long long)block_height);
     }
 
     if (fee_out) *fee_out = fee;
@@ -2479,49 +2460,12 @@ int finalize_block(nodus_witness_t *w,
         return -1;
     }
 
-    /* Block-reward inflation (v1) — mint new DNAC into block_fee_pool
-     * BEFORE the Phase 9 / Task 49 committee distribution. Inflation
-     * flows through the same accumulator pipeline as TX fees, so no
-     * new distribution code is needed; minted DNAC is split to the
-     * attending committee proportional to total_stake, then through
-     * validator commission to delegators.
-     *
-     * Schedule: 16 DNAC/block year 1, halving yearly to 1 DNAC floor.
-     * Deterministic (same height → same reward on every witness), so
-     * the new block_fee_pool value is consensus-safe.
-     *
-     * start_block = 1 means inflation activates from block 1 onward
-     * (block 0 is genesis — no reward). Set to 0 to disable.
-     *
-     * Hard-Fork v1 / Stage D: the start_block is now read from
-     * chain_config_history (DNAC_CFG_INFLATION_START_BLOCK). Default 1ULL
-     * preserves current semantics when no override is committed. The Q5
-     * monotonicity rule enforced in nodus_chain_config_apply prevents a
-     * malicious coalition from disabling inflation by setting it to 0
-     * once a non-zero value has been committed. */
-    {
-        uint64_t inflation_start =
-            nodus_chain_config_get_u64(w,
-                                        DNAC_CFG_INFLATION_START_BLOCK,
-                                        expected_height,
-                                        1ULL);
-        uint64_t mint = dnac_block_reward(expected_height, inflation_start);
-        if (mint > 0) {
-            if (w->block_fee_pool > UINT64_MAX - mint) {
-                fprintf(stderr, "%s: finalize_block: block_fee_pool overflow "
-                        "on mint (pool=%llu mint=%llu)\n",
-                        LOG_TAG,
-                        (unsigned long long)w->block_fee_pool,
-                        (unsigned long long)mint);
-                return -1;
-            }
-            w->block_fee_pool += mint;
-        }
-    }
-
-    /* v0.16: apply_accumulator_update removed. Stage E will wire
-     * apply_epoch_settlement here, triggered on block_height % 120 == 0
-     * when epoch boundary fires. Until then this is a no-op. */
+    /* v0.16 stage A.5: inflation mint is removed from finalize_block.
+     * Stage C.2 re-introduces it as per-block emission into the
+     * epoch_state.epoch_pool_accum (arriving in Stage B.1), and Stage
+     * E distributes it via apply_epoch_settlement at block_height %
+     * 120 == 0 boundaries. Until C.2 lands, no DNAC is minted — this
+     * is a transitional gap, not the final behavior. */
 
     /* Invalidate the cached UTXO checksum — the per-TX writes from this
      * batch made the previous root stale. Phase 11 renames this to
@@ -2561,22 +2505,12 @@ int finalize_block(nodus_witness_t *w,
         return -1;
     }
 
-    /* v0.16: block_fee_pool carry-forward debug trace removed with
-     * apply_accumulator_update. Pool is a stub in this transitional
-     * state; Stage A.5 removes the field entirely, Stage C.3 wires
-     * fee → total_burned. */
-
     return 0;
 }
 
-/* Phase 6 / Task 31 — accessor for the in-progress block fee pool.
- * Used by Phase 9 Task 49 to drain into the reward accumulator. */
-int nodus_witness_get_block_fee_pool(const nodus_witness_t *witness,
-                                       uint64_t *out) {
-    if (!witness) return -1;
-    if (out) *out = witness->block_fee_pool;
-    return 0;
-}
+/* v0.16 stage A.5: nodus_witness_get_block_fee_pool accessor removed
+ * with the block_fee_pool field itself. Stage C.3 replaces the
+ * concept with total_burned (fees) and epoch_pool_accum (mint). */
 
 /* nodus_witness_commit_block — DELETED in Phase 11 partial.
  *
@@ -4440,14 +4374,12 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
     nodus_witness_batch_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
 
-    /* F17 determinism fix: snapshot RAM state that apply_tx_to_state
-     * mutates in-place. On any rollback path below we MUST restore this
-     * so retried/attribution-replay passes don't pump w->block_fee_pool
-     * above the pre-batch value. Failure to restore made pool divergent
-     * across nodes (nodes with more failed attempts had higher pool).
-     * Note: v0.16 removes the pool entirely in Stage A.5; the snapshot
-     * becomes a no-op at that point. */
-    uint64_t saved_block_fee_pool = w->block_fee_pool;
+    /* F17 determinism fix historically snapshotted w->block_fee_pool
+     * here so rollback paths could restore it on retried/attribution-
+     * replay passes. v0.16 stage A.5 deletes the field outright — fees
+     * no longer live in RAM state at all — so the snapshot becomes a
+     * no-op. Stage F.1 re-enforces determinism through the hard supply
+     * invariant at finalize_block. */
 
     if (nodus_witness_db_begin(w) != 0) return -1;
 
@@ -4460,7 +4392,6 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
         nodus_witness_mempool_entry_t *e = entries[i];
         if (!e) {
             nodus_witness_db_rollback(w);
-            w->block_fee_pool = saved_block_fee_pool;
             return -1;
         }
 
@@ -4474,7 +4405,6 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
                                e->client_pubkey, e->client_sig) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "commit_batch: TX %d apply_tx failed", i);
             nodus_witness_db_rollback(w);
-            w->block_fee_pool = saved_block_fee_pool;
             return -1;
         }
 
@@ -4561,10 +4491,6 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
             }
             nodus_witness_db_rollback(w);
         }
-        /* Restore RAM state that apply_tx_to_state / attribution replay
-         * mutated in-place. DB is fully rolled back; the pool must
-         * match. */
-        w->block_fee_pool = saved_block_fee_pool;
         return -1;
     }
 
