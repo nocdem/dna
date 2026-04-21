@@ -70,12 +70,9 @@ static void print_dna_chain_help(void) {
     printf("                                  (amount >= DNAC_MIN_DELEGATION, raw units)\n");
     printf("  undelegate <validator_pubkey_hex> <amount>\n");
     printf("                                  Withdraw (part of) a delegation (raw units)\n");
-    printf("  claim <validator_pubkey_hex>    Claim accrued staking rewards\n");
-    printf("                                  (auto-queries pending + chain head)\n");
     printf("  validator-list [--status N]     List validators; N = 0..3\n");
     printf("                                  (0=ACTIVE, 1=RETIRING, 2=UNSTAKED, 3=AUTO_RETIRED)\n");
-    printf("  committee                       Show current epoch's top-7 committee\n");
-    printf("  pending-rewards [pubkey_hex]    Show pending rewards (default: caller)\n\n");
+    printf("  committee                       Show current epoch's top-7 committee\n\n");
 
     printf("Tokens:\n");
     printf("  token-create <name> <sym> <supply>\n");
@@ -344,11 +341,6 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
     else if (strcmp(cmd, "committee") == 0) {
         result = dna_chain_cmd_committee(ctx);
     }
-    else if (strcmp(cmd, "pending-rewards") == 0) {
-        /* Syntax: dna pending-rewards [<claimant_pubkey_hex>] */
-        const char *claimant = (sub + 1 < argc) ? argv[sub + 1] : NULL;
-        result = dna_chain_cmd_pending_rewards(ctx, claimant);
-    }
     else if (strcmp(cmd, "unstake") == 0) {
         /* Syntax: dna unstake (no args) */
         result = dna_chain_cmd_unstake(ctx);
@@ -389,17 +381,6 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
                     ctx, (uint16_t)commission_bps);
         }
     validator_update_done: ;
-    }
-    else if (strcmp(cmd, "claim") == 0) {
-        /* Syntax: dna claim <validator_pubkey_hex> */
-        if (sub + 1 >= argc) {
-            fprintf(stderr,
-                    "Usage: dna-connect-cli dna claim"
-                    " <validator_pubkey_hex>\n");
-            result = 1;
-        } else {
-            result = dna_chain_cmd_claim(ctx, argv[sub + 1]);
-        }
     }
     else if (strcmp(cmd, "delegate") == 0 || strcmp(cmd, "undelegate") == 0) {
         /* Syntax: dna delegate   <validator_pubkey_hex> <amount> [memo]
