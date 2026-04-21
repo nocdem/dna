@@ -2335,6 +2335,315 @@ static int apply_epoch_boundary_transitions(nodus_witness_t *w,
  * now burn directly to total_burned; validator rewards come from
  * inflation mint only, distributed atomically at block_height % 120 == 0. */
 
+/* ── Stage E — apply_epoch_settlement ─────────────────────────────────
+ *
+ * Fires at finalize_block whenever block_height > 0 &&
+ * block_height % DNAC_EPOCH_LENGTH == 0 — i.e. the first block of a
+ * new epoch. Settles the epoch that JUST ENDED (settling_epoch_start
+ * = block_height − DNAC_EPOCH_LENGTH).
+ *
+ * Reads the snapshot_blob captured at epoch start (Stage D.1) —
+ * committee list + per-delegation amounts — and drains
+ * epoch_state.epoch_pool_accum into UTXOs + burn according to the
+ * design §3.4 pseudocode:
+ *
+ *   per_slot   = pool / committee_count
+ *   outer_dust = pool − per_slot * committee_count → burn (D8)
+ *
+ *   for each committee validator V:
+ *     if V did NOT sign ANY block in the epoch:
+ *       per_slot → burn  (D7 offline-share)
+ *       continue
+ *     if V has no delegations:
+ *       emit_utxo(V.pubkey, per_slot)
+ *     else:
+ *       total_stake = V.self_stake + V.total_delegated
+ *       validator_base  = per_slot * V.self_stake / total_stake
+ *       delegator_gross = per_slot − validator_base
+ *       commission      = delegator_gross * V.commission_bps / 10000
+ *       validator_total = validator_base + commission
+ *       delegator_net   = delegator_gross − commission
+ *       for each delegation D of V (snapshot):
+ *         share = delegator_net * D.amount / V.total_delegated
+ *         emit_utxo(D.delegator_pubkey, share)
+ *       inner_dust = delegator_net − Σ shares → burn
+ *       emit_utxo(V.pubkey, validator_total)
+ *
+ *   delete epoch_state[settling_epoch_start]
+ *
+ * Attendance check (D6): we read validator.last_signed_block. A
+ * validator whose last_signed_block is within the settled epoch
+ * range is considered present. This is a coarser gate than the
+ * plan's "proposed ≥ 1 block" — last_signed_block is bumped in
+ * record_attendance for the BLOCK PROPOSER, so the two are
+ * equivalent in practice on a committed chain.
+ */
+static uint32_t be32_load(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] <<  8) |  (uint32_t)p[3];
+}
+static uint16_t be16_load(const uint8_t *p) {
+    return ((uint16_t)p[0] << 8) | (uint16_t)p[1];
+}
+static uint64_t be64_load(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v = (v << 8) | (uint64_t)p[i];
+    return v;
+}
+
+/* Settlement-UTXO tx_hash derivation: deterministic per epoch boundary.
+ *   tx_hash = SHA3-512("settlement" || epoch_start_height BE)
+ * Collision-free with any real TX hash (which is SHA3-512 over full
+ * TX body) modulo second-preimage resistance. */
+static void settlement_tx_hash(uint64_t settling_epoch_start,
+                                uint8_t out[64]) {
+    uint8_t preimage[10 + 8];
+    memcpy(preimage, "settlement", 10);
+    for (int i = 7; i >= 0; i--) {
+        preimage[10 + i] = (uint8_t)(settling_epoch_start & 0xff);
+        settling_epoch_start >>= 8;
+    }
+    qgp_sha3_512(preimage, sizeof(preimage), out);
+}
+
+/* Scan the delegations portion of the snapshot for rows whose
+ * validator_pubkey matches `validator_pubkey`. Caller owns
+ * dels_out — an array sized by the total delegation_count in the
+ * snapshot.
+ *
+ * Returns count written into dels_out / amount_out.
+ */
+typedef struct {
+    uint8_t  delegator_pubkey[DNAC_PUBKEY_SIZE];
+    uint64_t amount;
+} settlement_deleg_t;
+
+static int collect_delegations_for_validator(
+    const uint8_t *deleg_base, uint32_t deleg_count,
+    const uint8_t *validator_pubkey,
+    settlement_deleg_t *out, int max_out) {
+    const size_t per_row = DNAC_PUBKEY_SIZE + DNAC_PUBKEY_SIZE + 8;
+    int written = 0;
+    for (uint32_t i = 0; i < deleg_count && written < max_out; i++) {
+        const uint8_t *row = deleg_base + (size_t)i * per_row;
+        const uint8_t *dpk = row;
+        const uint8_t *vpk = row + DNAC_PUBKEY_SIZE;
+        if (memcmp(vpk, validator_pubkey, DNAC_PUBKEY_SIZE) != 0) continue;
+        uint64_t amt = be64_load(row + 2 * DNAC_PUBKEY_SIZE);
+        memcpy(out[written].delegator_pubkey, dpk, DNAC_PUBKEY_SIZE);
+        out[written].amount = amt;
+        written++;
+    }
+    return written;
+}
+
+/* Output-index reservation: one epoch's settlement may emit up to
+ * 7 committee validators × 65 (1 commission + 64 delegations) = 455
+ * UTXOs. We start synthetic output_index at 400 to stay clear of the
+ * UNDELEGATE principal/reward range (100-101) and the
+ * apply_epoch_boundary_transitions RETIRING graduation range (200-201). */
+#define NODUS_EPOCH_SETTLE_OUTPUT_INDEX_BASE 400
+
+static int apply_epoch_settlement(nodus_witness_t *w,
+                                    uint64_t settling_epoch_start) {
+    if (!w || !w->db) return -1;
+
+    /* Load the epoch_state row for the settling epoch. Missing row is
+     * fine — nothing to settle (first boundary in a fresh chain). */
+    nodus_epoch_state_t es = {0};
+    int grc = nodus_witness_epoch_get(w, settling_epoch_start, &es);
+    if (grc != 0) return 0;
+
+    uint64_t pool = es.epoch_pool_accum;
+    const uint8_t *blob = es.snapshot_blob;
+    size_t blob_len = es.snapshot_blob_len;
+
+    /* Canonical empty snapshot (Stage D.2) is 6 bytes: 0x0000 || 0x00000000.
+     * In that case there's no committee to distribute to — burn the
+     * whole pool (keeps supply bookkeeping closed) and retire the row. */
+    if (!blob || blob_len < 6) {
+        if (pool > 0) nodus_witness_supply_add_burned(w, pool, es.snapshot_hash);
+        nodus_witness_epoch_free(&es);
+        nodus_witness_epoch_delete(w, settling_epoch_start);
+        return 0;
+    }
+
+    size_t off = 0;
+    uint16_t committee_count = be16_load(blob + off); off += 2;
+
+    const size_t VAL_ROW = DNAC_PUBKEY_SIZE + 8 + 8 + 2 + 1;  /* 2611 */
+    if (off + (size_t)committee_count * VAL_ROW + 4 > blob_len) {
+        fprintf(stderr, "%s: epoch_settlement: truncated snapshot_blob\n",
+                LOG_TAG);
+        nodus_witness_epoch_free(&es);
+        return -1;
+    }
+    const uint8_t *val_base = blob + off;
+    off += (size_t)committee_count * VAL_ROW;
+
+    uint32_t deleg_count = be32_load(blob + off); off += 4;
+    const size_t DEL_ROW = DNAC_PUBKEY_SIZE + DNAC_PUBKEY_SIZE + 8;  /* 5192 */
+    if (off + (size_t)deleg_count * DEL_ROW > blob_len) {
+        fprintf(stderr, "%s: epoch_settlement: truncated snapshot delegations\n",
+                LOG_TAG);
+        nodus_witness_epoch_free(&es);
+        return -1;
+    }
+    const uint8_t *deleg_base = blob + off;
+
+    if (committee_count == 0) {
+        /* Empty committee but non-zero pool → burn it all. */
+        if (pool > 0) nodus_witness_supply_add_burned(w, pool, es.snapshot_hash);
+        nodus_witness_epoch_free(&es);
+        nodus_witness_epoch_delete(w, settling_epoch_start);
+        return 0;
+    }
+
+    uint64_t per_slot = pool / (uint64_t)committee_count;
+    uint64_t outer_dust = pool - per_slot * (uint64_t)committee_count;
+
+    uint8_t tx_hash[64];
+    settlement_tx_hash(settling_epoch_start, tx_hash);
+
+    uint32_t out_idx = NODUS_EPOCH_SETTLE_OUTPUT_INDEX_BASE;
+    uint64_t total_burned_here = outer_dust;
+
+    /* Temporary buffer for per-validator delegation list — sized to
+     * the worst case (all delegations belong to one validator). */
+    settlement_deleg_t *dels = NULL;
+    if (deleg_count > 0) {
+        dels = calloc(deleg_count, sizeof(*dels));
+        if (!dels) {
+            nodus_witness_epoch_free(&es);
+            return -1;
+        }
+    }
+
+    for (uint16_t vi = 0; vi < committee_count; vi++) {
+        const uint8_t *vrow = val_base + (size_t)vi * VAL_ROW;
+        const uint8_t *vpk = vrow;
+        uint64_t self_stake      = be64_load(vrow + DNAC_PUBKEY_SIZE);
+        uint64_t total_delegated = be64_load(vrow + DNAC_PUBKEY_SIZE + 8);
+        uint16_t commission_bps  = be16_load(vrow + DNAC_PUBKEY_SIZE + 16);
+        /* status byte at vrow + 2610 — unused here (RETIRING members stay
+         * in committee for the epoch per design §3.6). */
+
+        /* Attendance gate (D6). We query validator.last_signed_block
+         * from the current validators table — it reflects the latest
+         * block the validator signed, so any value >= epoch_start
+         * means they were present at least once in the epoch. */
+        dnac_validator_record_t current_v;
+        bool present = false;
+        if (nodus_validator_get(w, vpk, &current_v) == 0) {
+            uint64_t epoch_end = settling_epoch_start +
+                                 (uint64_t)DNAC_EPOCH_LENGTH - 1;
+            if (current_v.last_signed_block >= settling_epoch_start &&
+                current_v.last_signed_block <= epoch_end) {
+                present = true;
+            }
+        }
+        if (!present) {
+            total_burned_here += per_slot;
+            continue;
+        }
+
+        if (per_slot == 0) continue;  /* pool too small to split */
+
+        if (total_delegated == 0 || deleg_count == 0) {
+            /* Pure validator share. */
+            if (emit_synthetic_utxo(w, tx_hash, vpk, per_slot,
+                                      settling_epoch_start,
+                                      /*kind=*/0x20,
+                                      out_idx++, /*unlock=*/0) != 0) {
+                free(dels);
+                nodus_witness_epoch_free(&es);
+                return -1;
+            }
+            continue;
+        }
+
+        uint64_t total_stake = self_stake + total_delegated;
+        if (total_stake == 0) total_stake = 1;   /* defensive */
+
+        /* Use u128 for the multiply to avoid overflow. */
+        qgp_u128_t num = qgp_u128_from_u64(per_slot);
+        num = qgp_u128_mul_u64(num, self_stake);
+        uint64_t rem = 0;
+        qgp_u128_t q = qgp_u128_div_u64(num, total_stake, &rem);
+        uint64_t validator_base = q.lo;   /* high limb provably 0 here
+                                             since per_slot * self_stake
+                                             < 2^128 and /total_stake
+                                             compresses further */
+
+        uint64_t delegator_gross = (per_slot > validator_base)
+                                    ? (per_slot - validator_base) : 0;
+
+        uint64_t commission = 0;
+        if (commission_bps > 0 && delegator_gross > 0) {
+            qgp_u128_t cn = qgp_u128_from_u64(delegator_gross);
+            cn = qgp_u128_mul_u64(cn, (uint64_t)commission_bps);
+            qgp_u128_t cq = qgp_u128_div_u64(cn, 10000ULL, &rem);
+            commission = cq.lo;
+            if (commission > delegator_gross) commission = delegator_gross;
+        }
+        uint64_t validator_total = validator_base + commission;
+        uint64_t delegator_net   = delegator_gross - commission;
+
+        /* Collect this validator's delegations from snapshot. */
+        int n_dels = collect_delegations_for_validator(
+            deleg_base, deleg_count, vpk, dels, (int)deleg_count);
+
+        uint64_t distributed = 0;
+        for (int di = 0; di < n_dels; di++) {
+            /* share = delegator_net * D.amount / total_delegated */
+            qgp_u128_t sn = qgp_u128_from_u64(delegator_net);
+            sn = qgp_u128_mul_u64(sn, dels[di].amount);
+            qgp_u128_t sq = qgp_u128_div_u64(sn, total_delegated, &rem);
+            uint64_t share = sq.lo;
+
+            if (share > 0) {
+                if (emit_synthetic_utxo(w, tx_hash, dels[di].delegator_pubkey,
+                                         share, settling_epoch_start,
+                                         /*kind=*/0x21,
+                                         out_idx++, /*unlock=*/0) != 0) {
+                    free(dels);
+                    nodus_witness_epoch_free(&es);
+                    return -1;
+                }
+                distributed += share;
+            }
+        }
+        if (distributed > delegator_net) distributed = delegator_net;
+        uint64_t inner_dust = delegator_net - distributed;
+        total_burned_here += inner_dust;
+
+        /* Validator's consolidated UTXO (base + commission). */
+        if (validator_total > 0) {
+            if (emit_synthetic_utxo(w, tx_hash, vpk, validator_total,
+                                      settling_epoch_start,
+                                      /*kind=*/0x20,
+                                      out_idx++, /*unlock=*/0) != 0) {
+                free(dels);
+                nodus_witness_epoch_free(&es);
+                return -1;
+            }
+        }
+    }
+
+    free(dels);
+
+    /* Burn aggregated dust + offline shares. */
+    if (total_burned_here > 0) {
+        (void)nodus_witness_supply_add_burned(w, total_burned_here, tx_hash);
+    }
+
+    nodus_witness_epoch_free(&es);
+    /* Retire the settled epoch row. Design §3.1 — only the current
+     * epoch carries a live row; previous-epoch snapshot is discarded. */
+    nodus_witness_epoch_delete(w, settling_epoch_start);
+    return 0;
+}
+
 /* Phase 9 / Task 48 — per-block attendance record.
  *
  * For every PRECOMMIT voter whose witness_id maps to an ACTIVE
@@ -2594,6 +2903,27 @@ int finalize_block(nodus_witness_t *w,
                     LOG_TAG, add_rc);
                 return -1;
             }
+        }
+    }
+
+    /* Stage E — epoch settlement trigger.
+     *
+     * Fires strictly on block_height % DNAC_EPOCH_LENGTH == 0 &&
+     * block_height > 0 (RT-C1: no round/view dependency). Drains the
+     * prior epoch's epoch_pool_accum into UTXOs per the Stage E
+     * distribution rules and retires that epoch_state row. The NEW
+     * epoch's row was already auto-seeded by the C.2 path above, so
+     * compute_state_root below sees the updated table (settled row
+     * gone, new row present). */
+    if (expected_height > 0 &&
+        (expected_height % (uint64_t)DNAC_EPOCH_LENGTH) == 0) {
+        uint64_t settling_epoch_start =
+            expected_height - (uint64_t)DNAC_EPOCH_LENGTH;
+        if (apply_epoch_settlement(w, settling_epoch_start) != 0) {
+            fprintf(stderr,
+                "%s: finalize_block: epoch_settlement failed (epoch_start=%llu)\n",
+                LOG_TAG, (unsigned long long)settling_epoch_start);
+            return -1;
         }
     }
 
