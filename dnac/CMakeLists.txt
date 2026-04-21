@@ -306,9 +306,6 @@ if(DNAC_BUILD_TESTS)
     # Stake & delegation v1 — Phase 1 Task 1: TX type enum values
     register_dnac_test(test_tx_types)
 
-    # Stake & delegation v1 — Phase 1 Task 2: stake/committee/timing constants
-    register_dnac_test(test_stake_constants)
-
     # Stake & delegation v1 — Phase 1 Task 3: validator/delegation/reward record structs
     register_dnac_test(test_validator_structs)
 

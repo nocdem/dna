@@ -643,6 +643,9 @@ if(JSONC_FOUND)
     target_link_libraries(nodus-server ${JSONC_LIBRARIES})
 endif()
 
+# Stake & delegation v1 — stake/committee/timing constants pin
+register_witness_test(test_stake_constants)
+
 # Task 12 — validator tree DB CRUD (witness stake v1 / Phase 4)
 register_witness_test(test_validator_db)
 
