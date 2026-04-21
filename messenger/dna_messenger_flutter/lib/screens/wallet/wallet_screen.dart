@@ -20,7 +20,6 @@ import '../../ffi/dna_engine.dart' show DnacBalance, DnacToken, DnacTxHistory, f
 import 'address_book_screen.dart';
 import 'address_dialog.dart';
 import 'dnac_utxos_screen.dart';
-import '../rewards_screen.dart';
 import '../../providers/stake_provider.dart';
 import '../../l10n/app_localizations.dart';
 
@@ -1569,11 +1568,6 @@ class _AllBalancesSection extends ConsumerWidget {
               // DNAC tile after other assets
               if (showDnacTile)
                 _DnacAssetTile(balance: dnacBalance),
-              // Pending staking rewards card (Phase 16 Task 75).
-              // Only visible when rewards > 0 — keeps the wallet clean
-              // for users who aren't delegating.
-              if (showDnacTile)
-                const _PendingRewardsCard(),
               // Custom tokens below native DNAC
               if (showTokens)
                 ...dnacTokens.map((token) => _DnacTokenTile(token: token)),
@@ -4514,75 +4508,6 @@ class _GasSpeedChip extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// Pending staking rewards card (Phase 16 Task 75).
-///
-/// Only renders when the caller has a non-zero pending reward — keeps
-/// the wallet list uncluttered for users who aren't delegating. Tap
-/// navigates to [RewardsScreen] where the user picks an earner to
-/// claim from.
-class _PendingRewardsCard extends ConsumerWidget {
-  const _PendingRewardsCard();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final l10n = AppLocalizations.of(context);
-    final rewardsAsync = ref.watch(pendingRewardsProvider);
-    final totalRaw = rewardsAsync.valueOrNull ?? 0;
-    if (totalRaw <= 0) return const SizedBox.shrink();
-
-    final theme = Theme.of(context);
-    final totalDnac = totalRaw / 100000000;
-
-    return DnaCard(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      onTap: () {
-        Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => const RewardsScreen(),
-        ));
-      },
-      child: Row(
-        children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: theme.colorScheme.primary.withAlpha(40),
-              shape: BoxShape.circle,
-            ),
-            child: Center(
-              child: FaIcon(FontAwesomeIcons.gift,
-                  size: 18, color: theme.colorScheme.primary),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(l10n.rewardsHomeCardTitle,
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    )),
-                const SizedBox(height: 2),
-                Text(
-                    l10n.rewardsHomeCardAmount(
-                        totalDnac.toStringAsFixed(4)),
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: theme.colorScheme.primary,
-                      fontWeight: FontWeight.w700,
-                    )),
-              ],
-            ),
-          ),
-          FaIcon(FontAwesomeIcons.chevronRight,
-              size: 12, color: theme.colorScheme.onSurface.withAlpha(140)),
-        ],
       ),
     );
   }

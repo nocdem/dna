@@ -1615,9 +1615,6 @@ class AppLocalizationsTr extends AppLocalizations {
   String get dnacConfirmed => 'Kullanılabilir';
 
   @override
-  String get dnacPending => 'Beklemede';
-
-  @override
   String get dnacLocked => 'Kilitli';
 
   @override
@@ -1921,38 +1918,6 @@ class AppLocalizationsTr extends AppLocalizations {
   @override
   String get delegationStopDialogBody =>
       'Ne kadarını geri çekmek istersiniz? Kısa bir bekleme süresinden sonra iade edilir.';
-
-  @override
-  String get rewardsTitle => 'Ödülleriniz';
-
-  @override
-  String get rewardsPendingLabel => 'Çekilebilir tutar';
-
-  @override
-  String get rewardsClaimButton => 'Topla';
-
-  @override
-  String get rewardsClaimFromHeader => 'Bir kazanandan topla';
-
-  @override
-  String get rewardsClaimSuccess => 'Ödül toplandı.';
-
-  @override
-  String get rewardsClaimFailed => 'Toplanamadı — lütfen tekrar deneyin.';
-
-  @override
-  String get rewardsEmptyList => 'Henüz toplayacak bir kazanan yok.';
-
-  @override
-  String get rewardsLoadFailed => 'Ödüller yüklenemedi';
-
-  @override
-  String get rewardsHomeCardTitle => 'Ödülleriniz';
-
-  @override
-  String rewardsHomeCardAmount(String amount) {
-    return 'Toplamaya hazır $amount DNAC';
-  }
 
   @override
   String get validatorPanelTitle => 'Kazanan ayarları';

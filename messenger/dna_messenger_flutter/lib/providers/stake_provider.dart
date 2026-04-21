@@ -85,39 +85,6 @@ class CommitteeNotifier extends AsyncNotifier<List<DnacValidator>> {
 }
 
 // =============================================================================
-// PENDING REWARDS PROVIDER (caller's own total pending rewards)
-// =============================================================================
-
-final pendingRewardsProvider =
-    AsyncNotifierProvider<PendingRewardsNotifier, int>(
-  PendingRewardsNotifier.new,
-);
-
-class PendingRewardsNotifier extends AsyncNotifier<int> {
-  @override
-  Future<int> build() async {
-    final identityLoaded = ref.watch(identityLoadedProvider);
-    if (!identityLoaded) return 0;
-    return _fetch();
-  }
-
-  Future<int> _fetch() async {
-    try {
-      final engine = await ref.read(engineProvider.future);
-      // null = query caller's own rewards
-      return await engine.dnacGetPendingRewards();
-    } catch (e) {
-      logger.logError('STAKE', 'pending rewards fetch failed: $e');
-      return 0;
-    }
-  }
-
-  Future<void> refresh() async {
-    state = await AsyncValue.guard(_fetch);
-  }
-}
-
-// =============================================================================
 // MY VALIDATOR PROVIDER (is the current identity a validator?)
 // =============================================================================
 
@@ -213,20 +180,6 @@ class StakeActions {
     await _invalidateAll();
   }
 
-  Future<void> claimReward({
-    required Uint8List targetValidatorPubkey,
-    required int maxPendingAmount,
-    required int validBeforeBlock,
-  }) async {
-    final engine = await ref.read(engineProvider.future);
-    await engine.dnacClaimReward(
-      targetValidatorPubkey: targetValidatorPubkey,
-      maxPendingAmount: maxPendingAmount,
-      validBeforeBlock: validBeforeBlock,
-    );
-    await _invalidateAll();
-  }
-
   Future<void> validatorUpdate({
     required int newCommissionBps,
     required int signedAtBlock,
@@ -242,7 +195,6 @@ class StakeActions {
   Future<void> _invalidateAll() async {
     ref.invalidate(validatorListProvider);
     ref.invalidate(committeeProvider);
-    ref.invalidate(pendingRewardsProvider);
   }
 }
 
