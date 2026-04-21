@@ -1829,47 +1829,15 @@ int apply_tx_to_state(nodus_witness_t *w,
         }
     }
 
-    if (tx_type == NODUS_W_TX_GENESIS) {
-        /* Phase 3 / Task 3.1: total_supply param dropped from the per-TX
-         * primitive — always derive supply from tx_data outputs. The
-         * legacy single-TX caller used to pass an explicit total_supply
-         * for optimization, but the fallback path was always present and
-         * dead-equivalent. */
-        uint64_t supply = 0;
-        if (supply == 0 && tx_data && tx_len > 75) {
-            size_t off = 74;
-            uint8_t in_count = tx_data[off++];
-            off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64); /* nullifier + amount + token_id */
-            if (off < tx_len) {
-                uint8_t out_count = tx_data[off++];
-                for (int i = 0; i < out_count && off + 235 <= tx_len; i++) {
-                    off += 1;   /* version */
-                    off += 129; /* fingerprint */
-                    uint64_t amt;
-                    memcpy(&amt, tx_data + off, 8);
-                    supply += amt;
-                    off += 8;   /* amount */
-                    off += 64;  /* token_id */
-                    off += 32;  /* seed */
-                    uint8_t ml = tx_data[off++]; /* memo_len */
-                    off += ml;
-                }
-            }
-        }
-        int rc = nodus_witness_genesis_set(w, tx_hash, supply, tx_hash);
-        if (rc != 0 && rc != -2) {
-            fprintf(stderr, "%s: genesis record failed: %d\n", LOG_TAG, rc);
-            failed = true;
-        }
-        /* Initialize supply tracking table for invariant checks */
-        if (!failed) {
-            int src = nodus_witness_supply_init(w, supply, tx_hash);
-            if (src != 0 && src != -2) {
-                fprintf(stderr, "%s: supply_init failed: %d\n", LOG_TAG, src);
-                failed = true;
-            }
-        }
-    } else {
+    /* Genesis-specific DB init (genesis_set + supply_init) moved to
+     * commit_genesis — the only caller with tx_type==NODUS_W_TX_GENESIS.
+     * commit_genesis has cd_supply from the chain_def trailer, which is
+     * the correct initial_supply_raw. Deriving supply from output amounts
+     * here missed the validator self-stake locks seeded by
+     * genesis_seed_validators and tripped the supply invariant by exactly
+     * stake_locked on every block. Restores this function's stated role
+     * as pure per-TX state mutation (see function doc at top). */
+    if (tx_type != NODUS_W_TX_GENESIS) {
         for (int i = 0; i < nullifier_count; i++) {
             int rc = nodus_witness_nullifier_add(w, nullifiers[i], tx_hash);
             if (rc != 0 && rc != -2) {
@@ -4830,6 +4798,8 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
      * dnac/docs/plans/2026-04-19-genesis-ghost-stake-fix.md. */
     const uint8_t *cd_blob = NULL;
     uint32_t cd_blob_len = 0;
+    uint64_t cd_supply = 0;
+    uint8_t  cd_vcount = 0;
     {
         /* Walk TX wire format to find the optional chain_def trailer
          * appended after sender_signature by the v2 serialize path. */
@@ -4876,8 +4846,6 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
      * (or buggy client) creates a recipient UTXO equal to gross supply
      * without deducting validator self-stake locks. */
     if (cd_blob && cd_blob_len > 0) {
-        uint64_t cd_supply = 0;
-        uint8_t  cd_vcount = 0;
         if (nodus_witness_parse_cd_supply(cd_blob, (size_t)cd_blob_len,
                                            &cd_supply, &cd_vcount) != 0) {
             fprintf(stderr, "%s: Rule P.2 — chain_def parse failed\n", LOG_TAG);
@@ -4949,6 +4917,29 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
                            NULL, NULL) != 0) {
         nodus_witness_db_rollback(w);
         return -1;
+    }
+
+    /* v0.16 supply-invariant fix — write genesis_state + supply_tracking
+     * with the full initial_supply_raw from chain_def (cd_supply), not
+     * the outputs_sum. The supply invariant at finalize_block observes
+     * utxo + self_stake + delegated + pool; self_stake for the 7 bootstrap
+     * validators (7 × DNAC_SELF_STAKE_AMOUNT) is seeded next by
+     * genesis_seed_validators. Using cd_supply keeps
+     * expected = genesis_supply + minted − burned balanced against
+     * observed for every block starting at h=1. */
+    {
+        int rc = nodus_witness_genesis_set(w, tx_hash, cd_supply, tx_hash);
+        if (rc != 0 && rc != -2) {
+            fprintf(stderr, "%s: genesis record failed: %d\n", LOG_TAG, rc);
+            nodus_witness_db_rollback(w);
+            return -1;
+        }
+        int src = nodus_witness_supply_init(w, cd_supply, tx_hash);
+        if (src != 0 && src != -2) {
+            fprintf(stderr, "%s: supply_init failed: %d\n", LOG_TAG, src);
+            nodus_witness_db_rollback(w);
+            return -1;
+        }
     }
 
     /* Phase 12 Task 57 — seed validator_tree + reward_tree from the
