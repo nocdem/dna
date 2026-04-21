@@ -128,11 +128,21 @@ extern "C" {
 /** UNSTAKE locked-UTXO cooldown (24h at 5s block interval) */
 #define DNAC_UNSTAKE_COOLDOWN_BLOCKS  17280
 
-/** Epoch length in blocks (~10 min at 5s) */
-#define DNAC_EPOCH_LENGTH            120
+/** Epoch length in blocks (~1 hour at 5s).
+ *
+ * Drives: committee rotation cadence, epoch_state snapshot cadence,
+ * reward settlement cadence, Rule O delegation hold (Phase 8), Rule K
+ * VALIDATOR_UPDATE cooldown (Phase 8), AUTO_RETIRE counter.
+ *
+ * chain_config_tx grace periods and settlement attendance window are
+ * decoupled into their own constants below so they can be tuned
+ * independently. */
+#define DNAC_EPOCH_LENGTH            720
 
-/** Minimum tenure in pending pool before committee eligibility (Rule R) */
-#define DNAC_MIN_TENURE_BLOCKS       240  /* 2 × EPOCH_LENGTH */
+/** Minimum tenure in pending pool before committee eligibility (Rule R) —
+ *  derived from EPOCH_LENGTH so the "pending-then-eligible" two-epoch
+ *  discipline scales with the committee rotation cadence. */
+#define DNAC_MIN_TENURE_BLOCKS       (2 * DNAC_EPOCH_LENGTH)
 
 /** Fixed committee size (v1; v2 sortition may vary) */
 #define DNAC_COMMITTEE_SIZE          7
@@ -157,6 +167,23 @@ extern "C" {
 
 /** VALIDATOR_UPDATE freshness window: TX rejected if signed_at_block is older than this */
 #define DNAC_SIGN_FRESHNESS_WINDOW   32   /* blocks (~160s at 5s blocks) */
+
+/** Reward settlement attendance window — committee validator must have
+ *  signed at least one block within the last N blocks before settlement
+ *  runs, or its slot's pool is burned as offline. Decoupled from
+ *  EPOCH_LENGTH to avoid the "1 sig in 1 hour" loophole that would
+ *  otherwise trivialize the offline penalty. 120 blocks = 10 min of
+ *  recent liveness required. */
+#define DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS  120
+
+/** chain_config_tx grace — ergonomic params (MAX_TXS).
+ *  Propose → effective gap must be >= this many blocks. */
+#define DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS  720      /* 1 hour */
+
+/** chain_config_tx grace — safety-critical params (BLOCK_INTERVAL,
+ *  INFLATION_START). Decoupled from EPOCH_LENGTH so it can be tuned
+ *  independently; 24 hours gives operators + auditors time to react. */
+#define DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS     17280    /* 24 hours */
 
 /* ============================================================================
  * Block-Reward Inflation (v1) — validator incentive

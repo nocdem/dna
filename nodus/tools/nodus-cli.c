@@ -968,10 +968,12 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
            self_idx + 1, identity.fingerprint);
 
     /* 5. Anchor timing. signed_at_block is the committee snapshot height;
-     * valid_before gives ~6 × EPOCH for the collect+commit round trip. */
+     * valid_before gives plenty of slack for the collect+commit round
+     * trip — use the safety grace period as the outer bound so even
+     * safety-critical proposals can settle before valid_before lapses. */
     uint64_t signed_at_block = committee.block_height;
     uint64_t valid_before = committee.block_height +
-                             6ULL * (uint64_t)DNAC_EPOCH_LENGTH;
+                             (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
     if (effective_block <= signed_at_block) {
         fprintf(stderr, "--effective (%llu) must be > current block (%llu)\n",
                 (unsigned long long)effective_block,
@@ -980,7 +982,8 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     }
     if (valid_before <= effective_block) {
         /* Ensure Rule CC freshness math cannot trivially fail. */
-        valid_before = effective_block + (uint64_t)DNAC_EPOCH_LENGTH;
+        valid_before = effective_block +
+                       (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
     }
 
     /* 6. chain_id from supply query. */

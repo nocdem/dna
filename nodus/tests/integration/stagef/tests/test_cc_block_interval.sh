@@ -54,15 +54,15 @@ sleep 8
 bash "$(dirname "$0")/../stagef_diff.sh" "post-fund"
 
 # BLOCK_INTERVAL_SEC is a safety-critical param: grace tier is
-# 12 × EPOCH_LENGTH = 1440 blocks. The apply rule is
+# STAGEF_CC_GRACE_SAFETY blocks. The apply rule is
 # `effective_block >= commit_block + grace`, so we must choose an
-# effective block at least (head + 1 + 1440) blocks in the future.
+# effective block at least (head + 1 + grace) blocks in the future.
 # Activation at that height is intentionally unreachable in a 60-second
 # harness — we test only the propose → 7/7 vote → TX commit flow,
 # not the finalize_block consumer picking up the new value.
 head_block=$(sqlite3 "$(stagef_node_chain_db 1)" \
     "SELECT MAX(height) FROM blocks;")
-EFFECTIVE=$(( head_block + 1500 ))
+EFFECTIVE=$(( head_block + STAGEF_CC_GRACE_SAFETY + 60 ))
 NEW_INTERVAL=7   # seconds; range [1,15] per hard-fork v1 allowlist
 
 echo ""

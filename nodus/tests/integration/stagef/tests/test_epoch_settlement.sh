@@ -13,11 +13,12 @@
 #   3. Post-settlement state_root MUST still be identical 7/7. Any
 #      divergence is a Stage E determinism bug.
 #
-# Blocks to wait: DNAC_EPOCH_LENGTH (= 120 at canonical 5s blocks).
-# At 5s/block that is ~10 minutes per iteration — slow. The
-# stagef_env.sh harness can optionally override EPOCH_LENGTH at
-# bring-up (env var STAGEF_EPOCH_LENGTH) so local runs can settle
-# every 10–20 blocks. When unset, the full 120-block wait is used.
+# Blocks to wait: DNAC_EPOCH_LENGTH (= 720 at canonical 5s blocks).
+# At 5s/block that is ~1 hour per iteration — far beyond the harness
+# budget. The stagef_env.sh harness can optionally override
+# EPOCH_LENGTH at bring-up (env var STAGEF_EPOCH_LENGTH) so local runs
+# can settle every 10–20 blocks. When unset, the full EPOCH_LENGTH
+# wait is used.
 #
 # Requires an active Stage F harness (stagef_up.sh).
 #
@@ -37,7 +38,7 @@ if [ -z "${BASE_DIR:-}" ] || [ ! -d "$BASE_DIR" ]; then
     exit 1
 fi
 
-EPOCH_LENGTH="${STAGEF_EPOCH_LENGTH:-120}"
+EPOCH_LENGTH="${STAGEF_EPOCH_LENGTH:-720}"
 
 # ── Baseline: all nodes agree at bring-up ─────────────────────────────
 bash "$(dirname "$0")/../stagef_diff.sh" "pre-settlement" || exit 2

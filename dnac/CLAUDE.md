@@ -139,7 +139,7 @@ The witness roster in `main` is *dynamic* — every online nodus node automatica
 | Committee size | 7 (top by total stake; self + delegations) |
 | Self-stake | Fixed exactly 10,000,000 DNAC per witness |
 | Delegator stake | Unbounded (any holder may delegate any amount) |
-| Rotation | Per-epoch (deterministic re-rank from chain snapshot) |
+| Rotation | Per-epoch, 1 hour (720 blocks × 5 s); deterministic re-rank from chain snapshot |
 | Rewards | Per-block fee-pool accrual, pull-based `CLAIM_REWARD` TX |
 | Commission | Per-validator bps (set via `VALIDATOR_UPDATE`) |
 | Slashing | Not in v1 (deferred to v2 with sortition) |

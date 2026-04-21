@@ -777,15 +777,19 @@ static int derive_witness_id(const uint8_t pubkey[CC_PUBKEY_SIZE],
     return nodus_chain_config_derive_witness_id(pubkey, out_id);
 }
 
-/* Per-param grace minimum (Q4 Option B, CC-GOV-004 mitigation). */
+/* Per-param grace minimum (Q4 Option B, CC-GOV-004 mitigation).
+ * Safety-critical params (block interval, inflation start) get the
+ * longer operator-notice window; ergonomic params (max txs per block)
+ * get a shorter window. Both constants are decoupled from
+ * DNAC_EPOCH_LENGTH so either can be tuned without ripple effects. */
 static uint64_t grace_period_for_param(uint8_t param_id) {
     switch (param_id) {
         case CC_PARAM_BLOCK_INTERVAL:
         case CC_PARAM_INFLATION_START:
-            return 12ULL * (uint64_t)DNAC_EPOCH_LENGTH;
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS;
         case CC_PARAM_MAX_TXS:
         default:
-            return (uint64_t)DNAC_EPOCH_LENGTH;
+            return (uint64_t)DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS;
     }
 }
 

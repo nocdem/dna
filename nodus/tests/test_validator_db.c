@@ -193,11 +193,12 @@ int main(void) {
         CHECK_EQ(rc, 0);
     }
 
-    /* lookback_block must be >= active_since + MIN_TENURE, i.e. >= 240. */
+    /* lookback_block must be >= active_since + MIN_TENURE (=2 × EPOCH_LENGTH). */
     dnac_validator_record_t top[3];
     int count = 0;
     rc = nodus_validator_top_n(&w, 3,
-                               /*lookback_block=*/1000, top, &count);
+                               /*lookback_block=*/DNAC_MIN_TENURE_BLOCKS + 1,
+                               top, &count);
     CHECK_EQ(rc, 0);
     CHECK_EQ(count, 3);
 
@@ -224,7 +225,9 @@ int main(void) {
     CHECK_EQ(nodus_validator_insert(&w, &va), 0);
 
     dnac_validator_record_t tied[2];
-    rc = nodus_validator_top_n(&w, 2, /*lookback_block=*/1000, tied, &count);
+    rc = nodus_validator_top_n(&w, 2,
+                               /*lookback_block=*/DNAC_MIN_TENURE_BLOCKS + 1,
+                               tied, &count);
     CHECK_EQ(rc, 0);
     CHECK_EQ(count, 2);
     /* ASC on pubkey: 0x10 (va) before 0x20 (vb). */
@@ -239,7 +242,9 @@ int main(void) {
     CHECK_EQ(nodus_validator_insert(&w, &vr), 0);
 
     dnac_validator_record_t after[5];
-    rc = nodus_validator_top_n(&w, 5, /*lookback_block=*/1000, after, &count);
+    rc = nodus_validator_top_n(&w, 5,
+                               /*lookback_block=*/DNAC_MIN_TENURE_BLOCKS + 1,
+                               after, &count);
     CHECK_EQ(rc, 0);
     /* Only va + vb are ACTIVE; vr is RETIRING despite higher stake. */
     CHECK_EQ(count, 2);
@@ -254,8 +259,11 @@ int main(void) {
                    /*active_since=*/900, DNAC_VALIDATOR_ACTIVE);
     CHECK_EQ(nodus_validator_insert(&w, &fresh), 0);
 
-    /* lookback=1000 means tenure needs 900 + 240 = 1140 <= 1000 → FAIL. */
-    rc = nodus_validator_top_n(&w, 5, /*lookback_block=*/1000, after, &count);
+    /* lookback = MIN_TENURE + 1 clears va/vb (active_since=0) but not
+     * fresh (active_since=900 needs 900 + MIN_TENURE). */
+    rc = nodus_validator_top_n(&w, 5,
+                               /*lookback_block=*/DNAC_MIN_TENURE_BLOCKS + 1,
+                               after, &count);
     CHECK_EQ(rc, 0);
     CHECK_EQ(count, 2);  /* Still only va + vb. */
 

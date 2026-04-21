@@ -2,8 +2,8 @@
 #
 # Stage F test — block-production + validator-row stability check.
 #
-# DNAC_EPOCH_LENGTH = 120 blocks × 5 s block interval = 10 min, which
-# exceeds the < 60 s stagef budget. Full epoch-boundary logic is
+# DNAC_EPOCH_LENGTH = 720 blocks × 5 s block interval = 1 hour, which
+# far exceeds the < 60 s stagef budget. Full epoch-boundary logic is
 # covered by ctest `test_apply_epoch_boundary` (unit, mocked clock).
 #
 # This integration test verifies the weaker but still-useful invariant
@@ -86,4 +86,4 @@ snap_hash "post-UNDELEGATE"
 
 echo ""
 echo "[PASS] block-production + validator-row consensus intact across $STAGEF_COMMITTEE_SIZE nodes"
-echo "       (full 120-block epoch-boundary: covered by ctest test_apply_epoch_boundary)"
+echo "       (full epoch-boundary: covered by ctest test_apply_epoch_boundary)"

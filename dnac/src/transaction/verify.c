@@ -516,8 +516,11 @@ static int verify_chain_config_rules(const dnac_transaction_t *tx) {
      *     at commit_block - 1.
      *   - Each signature valid against committee member's Dilithium5 pubkey
      *     over proposal preimage (§5.4).
-     *   - commit_block + DNAC_EPOCH_LENGTH <= effective_block_height
-     *     (for safety-critical params: 12 × EPOCH per Q4 Option B).
+     *   - commit_block + DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS <=
+     *     effective_block_height (for ergonomic params: MAX_TXS).
+     *   - commit_block + DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS <=
+     *     effective_block_height (for safety-critical params:
+     *     BLOCK_INTERVAL, INFLATION_START).
      *   - commit_block <= valid_before_block (freshness).
      *   - INFLATION_START_BLOCK monotonicity (Q5): once non-zero committed,
      *     reject new_value == 0 and reject new_value > current_block.

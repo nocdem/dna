@@ -2668,17 +2668,24 @@ static int apply_epoch_settlement(nodus_witness_t *w,
         /* status byte at vrow + 2610 — unused here (RETIRING members stay
          * in committee for the epoch per design §3.6). */
 
-        /* Attendance gate (D6). We query validator.last_signed_block
-         * from the current validators table — it reflects the latest
-         * block the validator signed, so any value >= epoch_start
-         * means they were present at least once in the epoch. */
+        /* Attendance gate (D6). Present = signed at least one block
+         * within the last DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS
+         * blocks ending at the settlement block. Decoupled from the
+         * full epoch range so a 1-hour epoch does not let a validator
+         * earn by signing only once per hour — the window enforces a
+         * recent-liveness requirement independent of epoch length. */
         dnac_validator_record_t current_v;
         bool present = false;
         if (nodus_validator_get(w, vpk, &current_v) == 0) {
-            uint64_t epoch_end = settling_epoch_start +
-                                 (uint64_t)DNAC_EPOCH_LENGTH - 1;
-            if (current_v.last_signed_block >= settling_epoch_start &&
-                current_v.last_signed_block <= epoch_end) {
+            uint64_t settle_block = settling_epoch_start +
+                                     (uint64_t)DNAC_EPOCH_LENGTH;
+            uint64_t threshold =
+                (settle_block > (uint64_t)DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS)
+                    ? (settle_block -
+                       (uint64_t)DNAC_SETTLEMENT_ATTENDANCE_WINDOW_BLOCKS)
+                    : 0;
+            if (current_v.last_signed_block > 0 &&
+                current_v.last_signed_block >= threshold) {
                 present = true;
             }
         }

@@ -131,14 +131,16 @@ int main(void) {
     CHECK_EQ(nodus_witness_create_chain_db(&w, chain_id), 0);
 
     /* ── (1) epoch_start math ─────────────────────────────────────── */
-    /* For target_h = 721, epoch_start = (721/120)*120 = 720. */
-    uint64_t target_h      = 721;
+    /* For target_h one past the first epoch boundary,
+     * epoch_start = EPOCH_LENGTH. */
+    uint64_t target_h      = (uint64_t)DNAC_EPOCH_LENGTH + 1;
     uint64_t epoch_start   = (target_h / (uint64_t)DNAC_EPOCH_LENGTH) *
                               (uint64_t)DNAC_EPOCH_LENGTH;
-    CHECK_EQ(epoch_start, 720);
-    /* target_h = 120 (first block of epoch 1) -> epoch_start = 120. */
-    CHECK_EQ((120ULL / (uint64_t)DNAC_EPOCH_LENGTH) * (uint64_t)DNAC_EPOCH_LENGTH,
-             120ULL);
+    CHECK_EQ(epoch_start, (uint64_t)DNAC_EPOCH_LENGTH);
+    /* target_h == EPOCH_LENGTH (first block of epoch 1) -> epoch_start == EPOCH_LENGTH. */
+    CHECK_EQ(((uint64_t)DNAC_EPOCH_LENGTH / (uint64_t)DNAC_EPOCH_LENGTH) *
+             (uint64_t)DNAC_EPOCH_LENGTH,
+             (uint64_t)DNAC_EPOCH_LENGTH);
     /* target_h < EPOCH_LENGTH -> epoch_start = 0. */
     CHECK_EQ((50ULL / (uint64_t)DNAC_EPOCH_LENGTH) * (uint64_t)DNAC_EPOCH_LENGTH,
              0ULL);

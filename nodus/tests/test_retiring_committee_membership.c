@@ -208,10 +208,10 @@ int main(void) {
     /* Epoch 1 starts at block EPOCH_LENGTH. To avoid MIN_TENURE
      * gymnastics, route through the bootstrap path one more time by
      * holding block_height inside epoch 0 first and then calling with
-     * e_start exactly equal to DNAC_EPOCH_LENGTH. For e_start = 120
-     * (still < EPOCH_LENGTH+1=121 — bootstrap just barely), we stay on
-     * the bootstrap path but with a FRESH cache lookup because the key
-     * (e_start) changed from 0 to 120. */
+     * e_start exactly equal to DNAC_EPOCH_LENGTH. At e_start ==
+     * EPOCH_LENGTH we are still within the bootstrap window (< EPOCH_LENGTH+1),
+     * but with a FRESH cache lookup because the key (e_start) changed
+     * from 0 to EPOCH_LENGTH. */
     const uint64_t next_e_start = (uint64_t)DNAC_EPOCH_LENGTH;
 
     /* Force a cache miss for the next epoch by explicitly invalidating —

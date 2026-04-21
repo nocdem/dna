@@ -53,7 +53,7 @@ int main(void) {
     /* Empty chain: snapshot_apply should succeed. committee_get_for_block
      * returns empty committee; snapshot_blob becomes 0x0000 (u16
      * committee_count=0) || 0x00000000 (u32 delegation_count=0). */
-    uint64_t h = 120;
+    uint64_t h = (uint64_t)DNAC_EPOCH_LENGTH;
     CHECK_EQ(nodus_witness_epoch_snapshot_apply(&w, h), 0);
 
     /* Fetch the row. */

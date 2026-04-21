@@ -43,6 +43,19 @@ stagef_witness_port()  { echo "$(( 14000 + ( $1 - 1 ) * 10 + 4 ))"; }
 STAGEF_COMMITTEE_SIZE=7
 export STAGEF_COMMITTEE_SIZE
 
+# Timing constants — mirror dnac.h so tests can compute expected
+# boundaries parametrically instead of hardcoding literals. When tuning
+# the production constants these defaults MUST be updated in lockstep.
+#   EPOCH_LENGTH             — committee rotation + settlement cadence
+#   CC_GRACE_SAFETY          — chain_config_tx grace for safety params
+#   CC_GRACE_ERGONOMIC       — chain_config_tx grace for ergonomic params
+# STAGEF_EPOCH_LENGTH can be overridden at bring-up for local smoke
+# runs that need faster epoch boundaries (e.g. 10–20 blocks).
+STAGEF_EPOCH_LENGTH="${STAGEF_EPOCH_LENGTH:-720}"
+STAGEF_CC_GRACE_SAFETY="${STAGEF_CC_GRACE_SAFETY:-17280}"
+STAGEF_CC_GRACE_ERGONOMIC="${STAGEF_CC_GRACE_ERGONOMIC:-720}"
+export STAGEF_EPOCH_LENGTH STAGEF_CC_GRACE_SAFETY STAGEF_CC_GRACE_ERGONOMIC
+
 stagef_node_dir() {
     # $1 = node index 1..STAGEF_COMMITTEE_SIZE
     echo "$BASE_DIR/node$1"

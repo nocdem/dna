@@ -118,9 +118,11 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
  *   1. Parse TX body + appended chain_config fields.
  *   2. Re-verify local rules via dnac_tx_verify_chain_config_rules.
  *   3. Freshness: commit_block <= valid_before_block (Rule CC-G).
- *   4. Grace: effective_block >= commit_block + DNAC_EPOCH_LENGTH (Rule CC-C).
- *      Per Q4 Option B, safety-critical params (BLOCK_INTERVAL_SEC,
- *      INFLATION_START_BLOCK) require 12 × EPOCH_LENGTH.
+ *   4. Grace: effective_block >= commit_block + grace_period_for_param
+ *      (Rule CC-C). Ergonomic params (MAX_TXS) use
+ *      DNAC_CHAIN_CONFIG_GRACE_ERGONOMIC_BLOCKS (1 hour); safety-critical
+ *      params (BLOCK_INTERVAL_SEC, INFLATION_START_BLOCK) use
+ *      DNAC_CHAIN_CONFIG_GRACE_SAFETY_BLOCKS (24 hours).
  *   5. Committee membership: each vote's witness_id MUST be in the
  *      current top-7 committee at commit_block - 1 (Rule CC-F).
  *   6. Signature verify: each committee_votes[i].signature valid against

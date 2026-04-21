@@ -220,11 +220,11 @@ int main(void) {
     printf("  (3) epoch boundary transition — mid-epoch mutation "
            "applies to next epoch only\n");
     /* Seed block rows so the non-bootstrap path can compute committees
-     * for later epochs. EPOCH_LENGTH = 120, so:
-     *   epoch 4 (e_start=480): lookback = 480 - 120 - 1 = 359
-     *   epoch 5 (e_start=600): lookback = 479
-     * Both lookbacks are >= MIN_TENURE (240) past active_since=1, so all
-     * 7 validators remain eligible without the bootstrap carve-out. */
+     * for later epochs. Math is parametric on DNAC_EPOCH_LENGTH:
+     *   epoch 4 (e_start=4*EPOCH): lookback = 4*EPOCH - EPOCH - 1 = 3*EPOCH - 1
+     *   epoch 5 (e_start=5*EPOCH): lookback = 4*EPOCH - 1
+     * Both lookbacks are >= MIN_TENURE (2*EPOCH) past active_since=1,
+     * so all 7 validators remain eligible without the bootstrap carve-out. */
     const uint64_t epoch_len = (uint64_t)DNAC_EPOCH_LENGTH;
     const uint64_t e_a = epoch_len * 4;
     const uint64_t lookback_a = e_a - epoch_len - 1;

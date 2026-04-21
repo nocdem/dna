@@ -6,9 +6,9 @@
 # parameter. Verifies that the 7-node cluster commits the same
 # chain_config_history row and state_root 7/7 stays identical.
 #
-# Grace tier for INFLATION_START_BLOCK is 12 × EPOCH_LENGTH = 1440
-# blocks (safety-critical per CC-GOV-001 monotonicity rule). Activation
-# at that height is not testable in the 60 s budget; only the commit
+# Grace tier for INFLATION_START_BLOCK is STAGEF_CC_GRACE_SAFETY blocks
+# (safety-critical per CC-GOV-001 monotonicity rule). Activation at
+# that height is not testable in the 60 s budget; only the commit
 # path is verified here.
 #
 # Requires an active Stage F harness.
@@ -46,7 +46,7 @@ sleep 8
 
 head_block=$(sqlite3 "$(stagef_node_chain_db 1)" \
     "SELECT MAX(height) FROM blocks;")
-EFFECTIVE=$(( head_block + 1500 ))
+EFFECTIVE=$(( head_block + STAGEF_CC_GRACE_SAFETY + 60 ))
 NEW_INFL_START=1000000      # Rule CC-GOV-001: INFLATION_START_BLOCK must be
                             # non-zero. Range on v1 is [0, 2^48].
 
