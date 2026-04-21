@@ -177,15 +177,20 @@ extern "C" {
 #define NODUS_TREE_TAG_UTXO         0x01u
 #define NODUS_TREE_TAG_VALIDATOR    0x02u
 #define NODUS_TREE_TAG_DELEGATION   0x03u
-#define NODUS_TREE_TAG_REWARD       0x04u
+#define NODUS_TREE_TAG_REWARD       0x04u  /* Legacy — retired in v0.16 reward redesign;
+                                            * kept defined for combine_v2 archive-replay. */
 #define NODUS_TREE_TAG_CHAIN_CONFIG 0x05u  /* Hard-Fork v1 — chain_config_history tree */
+#define NODUS_TREE_TAG_EPOCH_STATE  0x06u  /* v0.16 — push-settlement epoch state tree */
 
 /* Composite state_root version byte (CC-AUDIT-002 / Q1 mitigation).
  * Prefixed to the outer SHA3-512 combiner input so cross-version replay
- * between the legacy 4-input and new 5-input composites is structurally
- * impossible. 0x01 = legacy 4-input formula; 0x02 = 5-input with chain_config. */
-#define NODUS_STATE_ROOT_VERSION_V1 0x01u  /* legacy 4-input */
-#define NODUS_STATE_ROOT_VERSION_V2 0x02u  /* 5-input, includes chain_config_root */
+ * between combiners is structurally impossible.
+ *   0x01 = legacy 4-input formula (utxo || validator || delegation || reward)
+ *   0x02 = 5-input (adds chain_config_root)
+ *   0x03 = 5-input (v0.16: replaces reward_root with epoch_state_root) */
+#define NODUS_STATE_ROOT_VERSION_V1 0x01u
+#define NODUS_STATE_ROOT_VERSION_V2 0x02u
+#define NODUS_STATE_ROOT_VERSION_V3 0x03u
 
 /* CC-OPS-002 / Q14 — Chain-config schema version advertised in w_ident
  * handshake so binary skew (6-of-7 new binary + 1 old) is detected at

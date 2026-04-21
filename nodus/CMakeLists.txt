@@ -140,6 +140,7 @@ if(NOT WIN32)
         src/witness/nodus_witness_spend_preimage.c
         src/witness/nodus_witness_validator.c
         src/witness/nodus_witness_delegation.c
+        src/witness/nodus_witness_epoch.c
         src/witness/nodus_witness_committee.c
         src/witness/nodus_witness_genesis_seed.c
         src/witness/nodus_witness_chain_config.c
@@ -643,6 +644,9 @@ endif()
 
 # Task 12 — validator tree DB CRUD (witness stake v1 / Phase 4)
 register_witness_test(test_validator_db)
+
+# v0.16 Stage B.1 — epoch_state table CRUD smoke test
+register_witness_test(test_epoch_state)
 
 # Task 62 — dnac_committee_query RPC shape (Phase 14)
 register_witness_test(test_committee_query_rpc)

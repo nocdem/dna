@@ -724,12 +724,13 @@ void nodus_merkle_combine_state_root(const uint8_t utxo_root[64],
  *                           || delegation_root(64) || reward_root(64)
  *                           || chain_config_root(64) )
  *
- * The leading version byte (CC-AUDIT-002 / Q1 mitigation) structurally
- * separates legacy v1 preimages from v2, preventing cross-version replay
- * even though both outputs are opaque 64-byte SHA3-512 digests.
+ * v0.16 note: superseded by combine_v3 (which replaces reward_root with
+ * epoch_state_root). Retained __attribute__((cold)) purely for archive-
+ * replay of pre-wipe blocks. Live hot-path callers use combine_v3.
  *
  * Pure function; safe to call from any thread.
  */
+__attribute__((cold))
 void nodus_merkle_combine_state_root_v2(const uint8_t utxo_root[64],
                                          const uint8_t validator_root[64],
                                          const uint8_t delegation_root[64],
@@ -764,52 +765,473 @@ void nodus_merkle_combine_state_root_v2(const uint8_t utxo_root[64],
     }
 }
 
+/* ── Composite state_root combiner — 5-input v3 (v0.16 reward redesign) ──
+ *
+ * state_root_v3 = SHA3-512( NODUS_STATE_ROOT_VERSION_V3 (1 byte)
+ *                           || utxo_root(64) || validator_root(64)
+ *                           || delegation_root(64) || epoch_state_root(64)
+ *                           || chain_config_root(64) )
+ *
+ * Replaces v2's reward_root with epoch_state_root — the push-settlement
+ * model keeps no per-validator reward accumulator state, only the current
+ * epoch's pool + snapshot. Domain-separation byte 0x03 prevents replay
+ * against v1/v2 roots. combine_v2 stays available as __attribute__((cold))
+ * for archive-replay of pre-wipe blocks.
+ */
+void nodus_merkle_combine_state_root_v3(const uint8_t utxo_root[64],
+                                         const uint8_t validator_root[64],
+                                         const uint8_t delegation_root[64],
+                                         const uint8_t epoch_state_root[64],
+                                         const uint8_t chain_config_root[64],
+                                         uint8_t out_state_root[64]) {
+    if (!out_state_root) return;
+    if (!utxo_root || !validator_root || !delegation_root ||
+        !epoch_state_root || !chain_config_root) {
+        merkle_tag_hash_zero_on_fail(out_state_root);
+        return;
+    }
+
+    EVP_MD_CTX *md = NULL;
+    if (sha3_512_init(&md) != 0) {
+        merkle_tag_hash_zero_on_fail(out_state_root);
+        return;
+    }
+    const uint8_t version = NODUS_STATE_ROOT_VERSION_V3;
+    if (EVP_DigestUpdate(md, &version,          1)  != 1 ||
+        EVP_DigestUpdate(md, utxo_root,         64) != 1 ||
+        EVP_DigestUpdate(md, validator_root,    64) != 1 ||
+        EVP_DigestUpdate(md, delegation_root,   64) != 1 ||
+        EVP_DigestUpdate(md, epoch_state_root,  64) != 1 ||
+        EVP_DigestUpdate(md, chain_config_root, 64) != 1) {
+        EVP_MD_CTX_free(md);
+        merkle_tag_hash_zero_on_fail(out_state_root);
+        return;
+    }
+    if (sha3_512_final(md, out_state_root) != 0) {
+        merkle_tag_hash_zero_on_fail(out_state_root);
+    }
+}
+
+/* ── Stage B.5 — validator_root (real) ─────────────────────────────── */
+
+/* Write a big-endian u64 into `out` (8 bytes). */
+static void be64_into(uint64_t v, uint8_t out[8]) {
+    for (int i = 7; i >= 0; i--) { out[i] = (uint8_t)(v & 0xff); v >>= 8; }
+}
+
+/* Validator leaf value hash:
+ *   SHA3-512( 0x02                      // tag
+ *          || pubkey[2592]
+ *          || self_stake[8 BE]
+ *          || total_delegated[8 BE]
+ *          || external_delegated[8 BE]
+ *          || commission_bps[2 BE]
+ *          || pending_commission_bps[2 BE]
+ *          || pending_effective_block[8 BE]
+ *          || status[1]
+ *          || active_since_block[8 BE]
+ *          || unstake_commit_block[8 BE]
+ *          || unstake_destination_fp[128 ASCII]
+ *          || unstake_destination_pubkey[2592]
+ *          || last_validator_update_block[8 BE]
+ *          || consecutive_missed_epochs[8 BE]
+ *          || last_signed_block[8 BE] )
+ * Canonical: ORDER BY pubkey ASC. */
+static int load_validator_leaves(nodus_witness_t *w,
+                                  uint8_t **leaves_out,
+                                  size_t *count_out) {
+    *leaves_out = NULL;
+    *count_out = 0;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT pubkey, self_stake, total_delegated, external_delegated,"
+        "       commission_bps, pending_commission_bps,"
+        "       pending_effective_block, status, active_since_block,"
+        "       unstake_commit_block, unstake_destination_fp,"
+        "       unstake_destination_pubkey, last_validator_update_block,"
+        "       consecutive_missed_epochs, last_signed_block "
+        "FROM validators ORDER BY pubkey ASC", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: validator scan prepare failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    size_t cap = 16, n = 0;
+    uint8_t *buf = malloc(cap * 64);
+    if (!buf) { sqlite3_finalize(stmt); return -1; }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (n >= cap) {
+            size_t new_cap = cap * 2;
+            uint8_t *new_buf = realloc(buf, new_cap * 64);
+            if (!new_buf) { free(buf); sqlite3_finalize(stmt); return -1; }
+            buf = new_buf; cap = new_cap;
+        }
+
+        EVP_MD_CTX *md = NULL;
+        if (sha3_512_init(&md) != 0) {
+            free(buf); sqlite3_finalize(stmt); return -1;
+        }
+        const uint8_t tag = NODUS_TREE_TAG_VALIDATOR;
+        EVP_DigestUpdate(md, &tag, 1);
+
+        const void *pubkey = sqlite3_column_blob(stmt, 0);
+        int pk_len = sqlite3_column_bytes(stmt, 0);
+        if (!pubkey || pk_len != DNAC_PUBKEY_SIZE) {
+            EVP_MD_CTX_free(md);
+            fprintf(stderr, "%s: validator row: bad pubkey\n", LOG_TAG);
+            continue;
+        }
+        EVP_DigestUpdate(md, pubkey, DNAC_PUBKEY_SIZE);
+
+        uint8_t be[8];
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 1), be);
+        EVP_DigestUpdate(md, be, 8);
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 2), be);
+        EVP_DigestUpdate(md, be, 8);
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 3), be);
+        EVP_DigestUpdate(md, be, 8);
+
+        uint16_t u16 = (uint16_t)sqlite3_column_int(stmt, 4);
+        uint8_t be2[2] = { (uint8_t)(u16 >> 8), (uint8_t)(u16 & 0xff) };
+        EVP_DigestUpdate(md, be2, 2);
+        u16 = (uint16_t)sqlite3_column_int(stmt, 5);
+        be2[0] = (uint8_t)(u16 >> 8); be2[1] = (uint8_t)(u16 & 0xff);
+        EVP_DigestUpdate(md, be2, 2);
+
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 6), be);
+        EVP_DigestUpdate(md, be, 8);
+        uint8_t st = (uint8_t)sqlite3_column_int(stmt, 7);
+        EVP_DigestUpdate(md, &st, 1);
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 8), be);
+        EVP_DigestUpdate(md, be, 8);
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 9), be);
+        EVP_DigestUpdate(md, be, 8);
+
+        /* unstake_destination_fp: 128 ASCII hex chars (fingerprint). Serialize
+         * as a fixed 128-byte window — if the row has fewer chars
+         * (shouldn't happen), pad with 0. */
+        const char *fp = (const char *)sqlite3_column_text(stmt, 10);
+        uint8_t fp_buf[128];
+        memset(fp_buf, 0, sizeof(fp_buf));
+        if (fp) {
+            size_t fp_len = strlen(fp);
+            if (fp_len > sizeof(fp_buf)) fp_len = sizeof(fp_buf);
+            memcpy(fp_buf, fp, fp_len);
+        }
+        EVP_DigestUpdate(md, fp_buf, sizeof(fp_buf));
+
+        const void *upk = sqlite3_column_blob(stmt, 11);
+        int upk_len = sqlite3_column_bytes(stmt, 11);
+        uint8_t upk_buf[DNAC_PUBKEY_SIZE];
+        memset(upk_buf, 0, sizeof(upk_buf));
+        if (upk && upk_len == DNAC_PUBKEY_SIZE) {
+            memcpy(upk_buf, upk, DNAC_PUBKEY_SIZE);
+        }
+        EVP_DigestUpdate(md, upk_buf, DNAC_PUBKEY_SIZE);
+
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 12), be);
+        EVP_DigestUpdate(md, be, 8);
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 13), be);
+        EVP_DigestUpdate(md, be, 8);
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 14), be);
+        EVP_DigestUpdate(md, be, 8);
+
+        if (sha3_512_final(md, buf + n * 64) != 0) {
+            free(buf); sqlite3_finalize(stmt); return -1;
+        }
+        n++;
+    }
+
+    sqlite3_finalize(stmt);
+    *leaves_out = buf;
+    *count_out  = n;
+    return 0;
+}
+
+int nodus_witness_merkle_compute_validator_root(nodus_witness_t *w,
+                                                 uint8_t *root_out) {
+    if (!w || !w->db || !root_out) return -1;
+    uint8_t *leaves = NULL;
+    size_t n = 0;
+    if (load_validator_leaves(w, &leaves, &n) != 0) return -1;
+
+    if (n == 0) {
+        free(leaves);
+        nodus_merkle_empty_root(NODUS_TREE_TAG_VALIDATOR, root_out);
+        return 0;
+    }
+
+    /* RFC 6962 leaf-hash prefix per CVE-2012-2459 closure. */
+    for (size_t i = 0; i < n; i++) {
+        uint8_t prehashed[64];
+        if (leaf_hash(leaves + i * 64, 64, prehashed) != 0) {
+            free(leaves); return -1;
+        }
+        memcpy(leaves + i * 64, prehashed, 64);
+    }
+    int rc = merkle_root_rfc6962(leaves, n, root_out);
+    free(leaves);
+    return rc;
+}
+
+/* ── Stage B.6 — delegation_root (real) ────────────────────────────── */
+
+/* Delegation leaf value hash:
+ *   SHA3-512( 0x03 || delegator_pubkey[2592] || validator_pubkey[2592]
+ *          || amount[8 BE] || delegated_at_block[8 BE] )
+ * Canonical: ORDER BY validator_pubkey ASC, delegator_pubkey ASC. */
+static int load_delegation_leaves(nodus_witness_t *w,
+                                   uint8_t **leaves_out,
+                                   size_t *count_out) {
+    *leaves_out = NULL;
+    *count_out = 0;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT delegator_pubkey, validator_pubkey, amount, delegated_at_block "
+        "FROM delegations "
+        "ORDER BY validator_pubkey ASC, delegator_pubkey ASC",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: delegation scan prepare failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    size_t cap = 16, n = 0;
+    uint8_t *buf = malloc(cap * 64);
+    if (!buf) { sqlite3_finalize(stmt); return -1; }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (n >= cap) {
+            size_t new_cap = cap * 2;
+            uint8_t *new_buf = realloc(buf, new_cap * 64);
+            if (!new_buf) { free(buf); sqlite3_finalize(stmt); return -1; }
+            buf = new_buf; cap = new_cap;
+        }
+
+        EVP_MD_CTX *md = NULL;
+        if (sha3_512_init(&md) != 0) {
+            free(buf); sqlite3_finalize(stmt); return -1;
+        }
+        const uint8_t tag = NODUS_TREE_TAG_DELEGATION;
+        EVP_DigestUpdate(md, &tag, 1);
+
+        const void *dpk = sqlite3_column_blob(stmt, 0);
+        const void *vpk = sqlite3_column_blob(stmt, 1);
+        int dpk_len = sqlite3_column_bytes(stmt, 0);
+        int vpk_len = sqlite3_column_bytes(stmt, 1);
+        if (!dpk || dpk_len != DNAC_PUBKEY_SIZE ||
+            !vpk || vpk_len != DNAC_PUBKEY_SIZE) {
+            EVP_MD_CTX_free(md);
+            fprintf(stderr, "%s: delegation row: bad pubkey\n", LOG_TAG);
+            continue;
+        }
+        EVP_DigestUpdate(md, dpk, DNAC_PUBKEY_SIZE);
+        EVP_DigestUpdate(md, vpk, DNAC_PUBKEY_SIZE);
+
+        uint8_t be[8];
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 2), be);
+        EVP_DigestUpdate(md, be, 8);
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 3), be);
+        EVP_DigestUpdate(md, be, 8);
+
+        if (sha3_512_final(md, buf + n * 64) != 0) {
+            free(buf); sqlite3_finalize(stmt); return -1;
+        }
+        n++;
+    }
+
+    sqlite3_finalize(stmt);
+    *leaves_out = buf;
+    *count_out  = n;
+    return 0;
+}
+
+int nodus_witness_merkle_compute_delegation_root(nodus_witness_t *w,
+                                                  uint8_t *root_out) {
+    if (!w || !w->db || !root_out) return -1;
+    uint8_t *leaves = NULL;
+    size_t n = 0;
+    if (load_delegation_leaves(w, &leaves, &n) != 0) return -1;
+
+    if (n == 0) {
+        free(leaves);
+        nodus_merkle_empty_root(NODUS_TREE_TAG_DELEGATION, root_out);
+        return 0;
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        uint8_t prehashed[64];
+        if (leaf_hash(leaves + i * 64, 64, prehashed) != 0) {
+            free(leaves); return -1;
+        }
+        memcpy(leaves + i * 64, prehashed, 64);
+    }
+    int rc = merkle_root_rfc6962(leaves, n, root_out);
+    free(leaves);
+    return rc;
+}
+
+/* ── Stage B.4 — epoch_state_root (real) ───────────────────────────── */
+
+/* epoch_state leaf value hash:
+ *   SHA3-512( 0x06 || epoch_start_height[8 BE] || epoch_pool_accum[8 BE]
+ *          || snapshot_hash[64] || total_minted[8 BE] || total_burned[8 BE] )
+ *
+ * total_minted + total_burned come from supply_tracking (global, not
+ * per-epoch) — embedding them in every epoch_state leaf provides
+ * state_root coverage for the supply-invariant counters without adding
+ * a separate supply_root subtree.
+ *
+ * Canonical: ORDER BY epoch_start_height ASC. */
+static int load_epoch_state_leaves(nodus_witness_t *w,
+                                    uint8_t **leaves_out,
+                                    size_t *count_out) {
+    *leaves_out = NULL;
+    *count_out = 0;
+
+    /* Fetch global total_minted + total_burned once — same for every leaf. */
+    nodus_witness_supply_t supply;
+    memset(&supply, 0, sizeof(supply));
+    if (nodus_witness_supply_get(w, &supply) != 0) {
+        /* No supply_tracking row yet (pre-genesis). Leaf hashes use zeros
+         * — the table is also empty, so this case produces the tagged-
+         * empty sentinel. */
+    }
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT epoch_start_height, epoch_pool_accum, snapshot_hash "
+        "FROM epoch_state ORDER BY epoch_start_height ASC",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "%s: epoch_state scan prepare failed: %s\n",
+                LOG_TAG, sqlite3_errmsg(w->db));
+        return -1;
+    }
+
+    size_t cap = 4, n = 0;
+    uint8_t *buf = malloc(cap * 64);
+    if (!buf) { sqlite3_finalize(stmt); return -1; }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (n >= cap) {
+            size_t new_cap = cap * 2;
+            uint8_t *new_buf = realloc(buf, new_cap * 64);
+            if (!new_buf) { free(buf); sqlite3_finalize(stmt); return -1; }
+            buf = new_buf; cap = new_cap;
+        }
+
+        EVP_MD_CTX *md = NULL;
+        if (sha3_512_init(&md) != 0) {
+            free(buf); sqlite3_finalize(stmt); return -1;
+        }
+        const uint8_t tag = NODUS_TREE_TAG_EPOCH_STATE;
+        EVP_DigestUpdate(md, &tag, 1);
+
+        uint8_t be[8];
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 0), be);
+        EVP_DigestUpdate(md, be, 8);
+        be64_into((uint64_t)sqlite3_column_int64(stmt, 1), be);
+        EVP_DigestUpdate(md, be, 8);
+
+        const void *snap = sqlite3_column_blob(stmt, 2);
+        int snap_len = sqlite3_column_bytes(stmt, 2);
+        uint8_t snap_buf[64];
+        memset(snap_buf, 0, sizeof(snap_buf));
+        if (snap && snap_len == 64) memcpy(snap_buf, snap, 64);
+        EVP_DigestUpdate(md, snap_buf, 64);
+
+        be64_into(supply.total_minted, be);
+        EVP_DigestUpdate(md, be, 8);
+        be64_into(supply.total_burned, be);
+        EVP_DigestUpdate(md, be, 8);
+
+        if (sha3_512_final(md, buf + n * 64) != 0) {
+            free(buf); sqlite3_finalize(stmt); return -1;
+        }
+        n++;
+    }
+
+    sqlite3_finalize(stmt);
+    *leaves_out = buf;
+    *count_out  = n;
+    return 0;
+}
+
+int nodus_witness_merkle_compute_epoch_state_root(nodus_witness_t *w,
+                                                   uint8_t *root_out) {
+    if (!w || !w->db || !root_out) return -1;
+    uint8_t *leaves = NULL;
+    size_t n = 0;
+    if (load_epoch_state_leaves(w, &leaves, &n) != 0) return -1;
+
+    if (n == 0) {
+        free(leaves);
+        nodus_merkle_empty_root(NODUS_TREE_TAG_EPOCH_STATE, root_out);
+        return 0;
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        uint8_t prehashed[64];
+        if (leaf_hash(leaves + i * 64, 64, prehashed) != 0) {
+            free(leaves); return -1;
+        }
+        memcpy(leaves + i * 64, prehashed, 64);
+    }
+    int rc = merkle_root_rfc6962(leaves, n, root_out);
+    free(leaves);
+    return rc;
+}
+
 /* ── Composite state_root: compute-from-witness wrapper ──────────────
  *
- * Pulls the UTXO subtree root via the existing compute_utxo_root path,
- * synthesizes the other three subtree roots from nodus_merkle_empty_root
- * (Phase 3 stubs — Phase 4+ replaces these with real table scans), and
- * runs the combiner. The per-tag NODUS_TREE_TAG_* constants are defined
- * in nodus/include/nodus/nodus_types.h.
+ * v0.16 (Stage B.7): state_root_v3 combines utxo + validator + delegation
+ * + epoch_state + chain_config. The reward-tree slot from v2 is retired
+ * with the accumulator reward system. validator and delegation subtrees
+ * are now computed from real table scans (Stages B.5 + B.6), not empty
+ * sentinels. epoch_state subtree is new (Stage B.4).
  *
- * NOTE: All existing callers that used compute_utxo_root as the chain
- * state_root (BFT finalize_block, cached_state_root cache, sync
- * checksum, peer identification) were migrated to this function in
- * Task 10. A remaining direct compute_utxo_root caller is
- * nodus_witness_merkle_build_proof, which returns the UTXO subtree
- * root for proof verification — that is intentionally unchanged since
- * proofs anchor to the UTXO subtree, not the composed state_root.
+ * compute_utxo_root remains the authoritative UTXO subtree; proofs built
+ * via nodus_witness_merkle_build_proof still anchor there.
  */
 int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
                                             uint8_t *root_out) {
     if (!w || !root_out) return -1;
 
     uint8_t utxo_root[64];
-    if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0) {
-        return -1;
-    }
+    if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0) return -1;
 
     uint8_t validator_root[64];
-    uint8_t delegation_root[64];
-    uint8_t reward_root[64];
-    nodus_merkle_empty_root(NODUS_TREE_TAG_VALIDATOR,  validator_root);
-    nodus_merkle_empty_root(NODUS_TREE_TAG_DELEGATION, delegation_root);
-    nodus_merkle_empty_root(NODUS_TREE_TAG_REWARD,     reward_root);
+    if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0) {
+        /* Transient DB fault — fall back to tagged-empty sentinel so a
+         * structurally-valid state_root is still emitted. */
+        nodus_merkle_empty_root(NODUS_TREE_TAG_VALIDATOR, validator_root);
+    }
 
-    /* Hard-Fork v1 — 5-input combiner with chain_config_root. Empty
-     * chain_config_history produces the tagged-empty sentinel
-     * nodus_merkle_empty_root(NODUS_TREE_TAG_CHAIN_CONFIG). */
+    uint8_t delegation_root[64];
+    if (nodus_witness_merkle_compute_delegation_root(w, delegation_root) != 0) {
+        nodus_merkle_empty_root(NODUS_TREE_TAG_DELEGATION, delegation_root);
+    }
+
+    uint8_t epoch_state_root[64];
+    if (nodus_witness_merkle_compute_epoch_state_root(w, epoch_state_root) != 0) {
+        nodus_merkle_empty_root(NODUS_TREE_TAG_EPOCH_STATE, epoch_state_root);
+    }
+
     uint8_t chain_config_root[64];
     if (nodus_chain_config_compute_root(w, chain_config_root) != 0) {
-        /* Fall back to empty sentinel on DB error so a transient fault
-         * doesn't produce a structurally-invalid state_root. */
         nodus_merkle_empty_root(NODUS_TREE_TAG_CHAIN_CONFIG, chain_config_root);
     }
 
-    nodus_merkle_combine_state_root_v2(utxo_root,
+    nodus_merkle_combine_state_root_v3(utxo_root,
                                         validator_root,
                                         delegation_root,
-                                        reward_root,
+                                        epoch_state_root,
                                         chain_config_root,
                                         root_out);
     return 0;

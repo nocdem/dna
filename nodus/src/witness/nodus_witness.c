@@ -172,8 +172,15 @@ static const char *WITNESS_DB_SCHEMA =
     ");"
     "CREATE INDEX IF NOT EXISTS idx_delegator ON delegations (delegator_hash);"
     "CREATE INDEX IF NOT EXISTS idx_validator ON delegations (validator_hash);"
-    /* v0.16: `rewards` table removed with the accumulator reward
-     * system. Stage B introduces `epoch_state` in its place. */
+    /* v0.16 stage B.1 — push-settlement epoch state. At most one row
+     * is active at a time (previous epoch deleted at settlement in
+     * Stage E). */
+    "CREATE TABLE IF NOT EXISTS epoch_state ("
+    "  epoch_start_height INTEGER PRIMARY KEY,"
+    "  epoch_pool_accum   INTEGER NOT NULL DEFAULT 0,"
+    "  snapshot_hash      BLOB NOT NULL,"
+    "  snapshot_blob      BLOB"
+    ");"
     "CREATE TABLE IF NOT EXISTS validator_stats ("
     "  key TEXT PRIMARY KEY,"
     "  value INTEGER NOT NULL"
