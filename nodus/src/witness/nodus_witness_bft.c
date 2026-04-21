@@ -771,23 +771,59 @@ static int update_utxo_set(nodus_witness_t *w,
      * Token-fee handling remains deferred: if fee_token_id is
      * non-zero (custom-token burn path), we also skip for v0.16.
      */
-    bool is_stake_family = (tx_type == NODUS_W_TX_STAKE      ||
-                            tx_type == NODUS_W_TX_DELEGATE   ||
-                            tx_type == NODUS_W_TX_UNSTAKE    ||
-                            tx_type == NODUS_W_TX_UNDELEGATE ||
-                            tx_type == NODUS_W_TX_CHAIN_CONFIG);
+    /* v0.16 stage C.3 — fee routing, per-TX-type.
+     *
+     * SPEND/TOKEN_CREATE: fee = input - output IS the user fee — burn all.
+     * STAKE: appended self_stake is fixed at DNAC_SELF_STAKE_AMOUNT, so
+     *   actual_fee = fee - DNAC_SELF_STAKE_AMOUNT — burn the residual.
+     * UNSTAKE/VALIDATOR_UPDATE/CHAIN_CONFIG: fee-only TXs (no state
+     *   amount moved) — burn full fee.
+     * DELEGATE/UNDELEGATE: variable state amount; apply_delegate /
+     *   apply_undelegate absorb the implicit fee into delegation_amount
+     *   (preserves invariant from their side). Separating actual fee
+     *   from state amount requires the committed_fee wire field
+     *   (tracked as SB-1) — no burn here until then.
+     * GENESIS: no fee concept.
+     *
+     * Pre-v0.16.1 this function blanket-skipped all stake-family TXs,
+     * leaking exactly one fee's worth per TX past the supply-invariant
+     * hard gate (which rejected every stake-family block). */
     uint8_t zeros_tok[64] = {0};
     bool native_fee = (memcmp(fee_token_id, zeros_tok, 64) == 0);
-    if (fee > 0 && !is_stake_family && native_fee) {
-        if (route_tx_fee(w, tx_type, fee, tx_hash) != 0) {
-            fprintf(stderr, "%s: route_tx_fee failed (fee=%llu)\n",
-                    LOG_TAG, (unsigned long long)fee);
-            return -1;
+    uint64_t actual_fee = 0;
+    if (fee > 0 && native_fee) {
+        switch (tx_type) {
+            case NODUS_W_TX_STAKE:
+                actual_fee = (fee > DNAC_SELF_STAKE_AMOUNT)
+                             ? fee - DNAC_SELF_STAKE_AMOUNT : 0;
+                break;
+            case NODUS_W_TX_DELEGATE:
+            case NODUS_W_TX_UNDELEGATE:
+                actual_fee = 0; /* absorbed into state transition */
+                break;
+            case NODUS_W_TX_GENESIS:
+                actual_fee = 0;
+                break;
+            default:
+                /* SPEND, TOKEN_CREATE, UNSTAKE, VALIDATOR_UPDATE, CHAIN_CONFIG. */
+                actual_fee = fee;
+                break;
         }
-    } else if (fee > 0) {
+        if (actual_fee > 0) {
+            if (route_tx_fee(w, tx_type, actual_fee, tx_hash) != 0) {
+                fprintf(stderr, "%s: route_tx_fee failed (fee=%llu actual=%llu)\n",
+                        LOG_TAG, (unsigned long long)fee,
+                        (unsigned long long)actual_fee);
+                return -1;
+            }
+        }
+    }
+    if (fee > 0 && actual_fee != fee) {
         fprintf(stderr,
-                "%s: fee observed %llu (tx_type=%u, routing deferred)\n",
-                LOG_TAG, (unsigned long long)fee, (unsigned)tx_type);
+                "%s: fee observed %llu routed %llu (tx_type=%u, %llu absorbed by state transition)\n",
+                LOG_TAG, (unsigned long long)fee,
+                (unsigned long long)actual_fee, (unsigned)tx_type,
+                (unsigned long long)(fee - actual_fee));
     }
 
     if (fee_out) *fee_out = fee;
