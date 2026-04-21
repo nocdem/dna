@@ -2584,6 +2584,64 @@ static int collect_delegations_for_validator(
  * apply_epoch_boundary_transitions RETIRING graduation range (200-201). */
 #define NODUS_EPOCH_SETTLE_OUTPUT_INDEX_BASE 400
 
+/* Settlement-loop-optimised variant of emit_synthetic_utxo that reuses a
+ * pre-prepared INSERT statement. Avoids the ~100µs sqlite3_prepare_v2
+ * per row; at N=10K delegators this is ~1 s of block latency saved. The
+ * caller is responsible for preparing `stmt` once before the loop and
+ * finalizing after. Identical semantics to emit_synthetic_utxo: same
+ * nullifier derivation, same owner-fp encoding, same UTXO row fields. */
+static int emit_synthetic_utxo_cached(nodus_witness_t *w,
+                                        sqlite3_stmt *stmt,
+                                        const uint8_t *tx_hash,
+                                        const uint8_t *owner_pubkey,
+                                        uint64_t amount,
+                                        uint64_t block_height,
+                                        uint8_t kind_byte,
+                                        uint32_t output_index,
+                                        uint64_t unlock_block) {
+    /* Derive synthetic nullifier: SHA3-512(tx_hash || kind || index_be). */
+    uint8_t preimage[64 + 1 + 4];
+    memcpy(preimage, tx_hash, 64);
+    preimage[64] = kind_byte;
+    preimage[65] = (uint8_t)((output_index >> 24) & 0xff);
+    preimage[66] = (uint8_t)((output_index >> 16) & 0xff);
+    preimage[67] = (uint8_t)((output_index >> 8) & 0xff);
+    preimage[68] = (uint8_t)(output_index & 0xff);
+    uint8_t nullifier[64];
+    qgp_sha3_512(preimage, sizeof(preimage), nullifier);
+
+    /* Owner fingerprint = hex-encoded SHA3-512(owner_pubkey). */
+    uint8_t owner_fp_raw[QGP_FP_RAW_BYTES];
+    qgp_sha3_512(owner_pubkey, DNAC_PUBKEY_SIZE, owner_fp_raw);
+    char owner_fp_hex[QGP_FP_HEX_BUFFER];
+    qgp_fp_raw_to_hex(owner_fp_raw, owner_fp_hex);
+
+    /* Native DNAC token_id = 64 zeros. */
+    static const uint8_t zero_token_id[64] = {0};
+
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    sqlite3_bind_blob(stmt, 1, nullifier, NODUS_T3_NULLIFIER_LEN, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, owner_fp_hex, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, (int64_t)amount);
+    sqlite3_bind_blob(stmt, 4, zero_token_id, 64, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 5, tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 6, (int)output_index);
+    sqlite3_bind_int64(stmt, 7, (int64_t)block_height);
+    sqlite3_bind_int64(stmt, 8, (int64_t)time(NULL));
+    sqlite3_bind_int64(stmt, 9, (int64_t)unlock_block);
+
+    int rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr,
+                "%s: emit_synthetic_utxo_cached: step failed (rc=%d, kind=0x%02x, idx=%u): %s\n",
+                LOG_TAG, rc, kind_byte, output_index,
+                sqlite3_errmsg(w->db));
+        return -1;
+    }
+    return 0;
+}
+
 static int apply_epoch_settlement(nodus_witness_t *w,
                                     uint64_t settling_epoch_start) {
     if (!w || !w->db) return -1;
@@ -2659,6 +2717,28 @@ static int apply_epoch_settlement(nodus_witness_t *w,
         }
     }
 
+    /* Cache the utxo INSERT statement across the emit loop — at N=10K
+     * delegators the per-row sqlite3_prepare_v2 dominates settlement
+     * block latency. Prepared once here, reused via reset+bind+step,
+     * finalized at every exit path below. */
+    sqlite3_stmt *utxo_ins_stmt = NULL;
+    {
+        int prc = sqlite3_prepare_v2(w->db,
+            "INSERT OR IGNORE INTO utxo_set "
+            "(nullifier, owner, amount, token_id, tx_hash, output_index, "
+            " block_height, created_at, unlock_block) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            -1, &utxo_ins_stmt, NULL);
+        if (prc != SQLITE_OK) {
+            fprintf(stderr,
+                    "%s: epoch_settlement: prepare utxo_add failed: %s\n",
+                    LOG_TAG, sqlite3_errmsg(w->db));
+            free(dels);
+            nodus_witness_epoch_free(&es);
+            return -1;
+        }
+    }
+
     for (uint16_t vi = 0; vi < committee_count; vi++) {
         const uint8_t *vrow = val_base + (size_t)vi * VAL_ROW;
         const uint8_t *vpk = vrow;
@@ -2706,10 +2786,12 @@ static int apply_epoch_settlement(nodus_witness_t *w,
 
         if (total_delegated == 0 || deleg_count == 0) {
             /* Pure validator share. */
-            if (emit_synthetic_utxo(w, tx_hash, vpk, per_slot,
-                                      settling_epoch_start,
-                                      /*kind=*/0x20,
-                                      out_idx++, /*unlock=*/0) != 0) {
+            if (emit_synthetic_utxo_cached(w, utxo_ins_stmt, tx_hash,
+                                             vpk, per_slot,
+                                             settling_epoch_start,
+                                             /*kind=*/0x20,
+                                             out_idx++, /*unlock=*/0) != 0) {
+                sqlite3_finalize(utxo_ins_stmt);
                 free(dels);
                 nodus_witness_epoch_free(&es);
                 return -1;
@@ -2757,10 +2839,12 @@ static int apply_epoch_settlement(nodus_witness_t *w,
             uint64_t share = sq.lo;
 
             if (share > 0) {
-                if (emit_synthetic_utxo(w, tx_hash, dels[di].delegator_pubkey,
-                                         share, settling_epoch_start,
-                                         /*kind=*/0x21,
-                                         out_idx++, /*unlock=*/0) != 0) {
+                if (emit_synthetic_utxo_cached(w, utxo_ins_stmt, tx_hash,
+                                                 dels[di].delegator_pubkey,
+                                                 share, settling_epoch_start,
+                                                 /*kind=*/0x21,
+                                                 out_idx++, /*unlock=*/0) != 0) {
+                    sqlite3_finalize(utxo_ins_stmt);
                     free(dels);
                     nodus_witness_epoch_free(&es);
                     return -1;
@@ -2774,10 +2858,12 @@ static int apply_epoch_settlement(nodus_witness_t *w,
 
         /* Validator's consolidated UTXO (base + commission). */
         if (validator_total > 0) {
-            if (emit_synthetic_utxo(w, tx_hash, vpk, validator_total,
-                                      settling_epoch_start,
-                                      /*kind=*/0x20,
-                                      out_idx++, /*unlock=*/0) != 0) {
+            if (emit_synthetic_utxo_cached(w, utxo_ins_stmt, tx_hash,
+                                             vpk, validator_total,
+                                             settling_epoch_start,
+                                             /*kind=*/0x20,
+                                             out_idx++, /*unlock=*/0) != 0) {
+                sqlite3_finalize(utxo_ins_stmt);
                 free(dels);
                 nodus_witness_epoch_free(&es);
                 return -1;
@@ -2785,6 +2871,7 @@ static int apply_epoch_settlement(nodus_witness_t *w,
         }
     }
 
+    sqlite3_finalize(utxo_ins_stmt);
     free(dels);
 
     /* Burn aggregated dust + offline shares. */
