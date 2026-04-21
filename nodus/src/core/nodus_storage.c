@@ -47,7 +47,9 @@ static const char *GET_SQL =
 
 static const char *GET_ALL_SQL =
     "SELECT key_hash, owner_fp, value_id, data, type, ttl, created_at, expires_at, seq, owner_pk, signature "
-    "FROM nodus_values WHERE key_hash = ?";
+    "FROM nodus_values WHERE key_hash = ? "
+    "ORDER BY seq DESC, owner_fp ASC "
+    "LIMIT 10000";  /* == NODUS_GET_ALL_MAX_ROWS — DoS cap, deterministic order */
 
 static const char *DELETE_SQL =
     "DELETE FROM nodus_values WHERE key_hash = ? AND owner_fp = ? AND value_id = ?";
@@ -388,6 +390,7 @@ int nodus_storage_get_all(nodus_storage_t *store,
     /* Collect results */
     size_t cap = 16;
     size_t count = 0;
+    size_t total_bytes = 0;  /* cumulative response size — cap at NODUS_GET_ALL_MAX_BYTES */
     nodus_value_t **vals = calloc(cap, sizeof(nodus_value_t *));
     if (!vals) return -1;
 
@@ -404,8 +407,15 @@ int nodus_storage_get_all(nodus_storage_t *store,
             vals = new_vals;
         }
         vals[count] = row_to_value(s);
-        if (vals[count])
-            count++;
+        if (!vals[count]) continue;
+        /* Enforce byte budget. SQL LIMIT bounds row count; this bounds memory. */
+        if (total_bytes + vals[count]->data_len > NODUS_GET_ALL_MAX_BYTES) {
+            nodus_value_free(vals[count]);
+            vals[count] = NULL;
+            break;
+        }
+        total_bytes += vals[count]->data_len;
+        count++;
     }
 
     if (count == 0) {

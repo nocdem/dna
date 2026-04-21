@@ -155,6 +155,86 @@ static void test_get_all_multiwriter(void) {
     test_storage_close(&store);
 }
 
+static void test_get_all_seq_order(void) {
+    TEST("get_all returns values in seq DESC order");
+    nodus_storage_t store;
+    test_storage_open(&store);
+
+    nodus_key_t key_hash;
+    nodus_hash((const uint8_t *)"test:order", 10, &key_hash);
+
+    /* Put 3 values with different seq; insertion order unrelated to seq. */
+    uint64_t seqs[] = {5, 1, 3};
+    for (int i = 0; i < 3; i++) {
+        nodus_value_t *v = NULL;
+        nodus_value_create(&key_hash, (const uint8_t *)"x", 1,
+                           NODUS_VALUE_EPHEMERAL, NODUS_DEFAULT_TTL,
+                           (uint64_t)(i + 1), seqs[i], &test_id.pk, &v);
+        nodus_value_sign(v, &test_id.sk);
+        nodus_storage_put(&store, v);
+        nodus_value_free(v);
+    }
+
+    nodus_value_t **vals = NULL;
+    size_t count = 0;
+    int rc = nodus_storage_get_all(&store, &key_hash, &vals, &count);
+
+    /* Expected: seq=5, 3, 1 (DESC). Deterministic across nodes. */
+    if (rc == 0 && count == 3 &&
+        vals[0]->seq == 5 && vals[1]->seq == 3 && vals[2]->seq == 1) {
+        PASS();
+    } else {
+        FAIL("ordering wrong");
+    }
+
+    for (size_t i = 0; i < count; i++) nodus_value_free(vals[i]);
+    free(vals);
+    test_storage_close(&store);
+}
+
+static void test_get_all_byte_cap(void) {
+    TEST("get_all caps cumulative byte budget at 16MB");
+    nodus_storage_t store;
+    test_storage_open(&store);
+
+    /* 5 × 3.5 MB = 17.5 MB under same key. Byte cap (16 MB) truncates at 4. */
+    const size_t val_size = 3 * 1024 * 1024 + 512 * 1024;  /* 3.5 MB */
+    char *big_data = malloc(val_size);
+    if (!big_data) { FAIL("malloc"); test_storage_close(&store); return; }
+    memset(big_data, 'X', val_size);
+
+    nodus_key_t key_hash;
+    nodus_hash((const uint8_t *)"test:bytecap", 12, &key_hash);
+
+    nodus_value_t *vals_in[5] = {0};
+    for (int i = 0; i < 5; i++) {
+        nodus_value_create(&key_hash, (const uint8_t *)big_data, val_size,
+                           NODUS_VALUE_EPHEMERAL, NODUS_DEFAULT_TTL,
+                           (uint64_t)(100 + i), 0, &test_id.pk, &vals_in[i]);
+        nodus_value_sign(vals_in[i], &test_id.sk);
+        nodus_storage_put(&store, vals_in[i]);
+    }
+    free(big_data);
+
+    nodus_value_t **vals = NULL;
+    size_t count = 0;
+    int rc = nodus_storage_get_all(&store, &key_hash, &vals, &count);
+
+    /* 4 × 3.5MB = 14MB; 5th would push to 17.5MB > 16MB → stop at 4. */
+    if (rc == 0 && count == 4) {
+        PASS();
+    } else {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "expected 4, got %zu", count);
+        FAIL(msg);
+    }
+
+    for (size_t i = 0; i < count; i++) nodus_value_free(vals[i]);
+    free(vals);
+    for (int i = 0; i < 5; i++) nodus_value_free(vals_in[i]);
+    test_storage_close(&store);
+}
+
 static void test_delete(void) {
     TEST("delete specific value");
     nodus_storage_t store;
@@ -473,6 +553,8 @@ int main(void) {
     test_put_get();
     test_put_replace();
     test_get_all_multiwriter();
+    test_get_all_seq_order();
+    test_get_all_byte_cap();
     test_delete();
     test_cleanup_expired();
     test_count();

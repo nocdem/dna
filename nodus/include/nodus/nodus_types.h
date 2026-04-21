@@ -22,8 +22,8 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  16
-#define NODUS_VERSION_PATCH  2
-#define NODUS_VERSION_STRING "0.16.2"
+#define NODUS_VERSION_PATCH  3
+#define NODUS_VERSION_STRING "0.16.3"
 
 /* Wire frame */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
@@ -67,6 +67,12 @@ extern "C" {
 #define NODUS_PERMANENT_TTL     0           /* 0 = never expires */
 #define NODUS_MAX_VALUE_SIZE    (4 * 1024 * 1024)   /* 4 MB value payload */
 #define NODUS_MAX_VALUES_PER_OWNER 10000
+
+/* get_all response caps — DoS protection. Row cap aligns with the
+ * per-message wire cap; byte cap bounds memory when many writers store
+ * large values under one key. Both enforced in nodus_storage_get_all. */
+#define NODUS_GET_ALL_MAX_ROWS   10000
+#define NODUS_GET_ALL_MAX_BYTES  (16 * 1024 * 1024)  /* 16 MB */
 
 /* Channel limits */
 #define NODUS_UUID_BYTES        16          /* UUID v4 */
