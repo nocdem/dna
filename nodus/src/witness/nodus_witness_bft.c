@@ -2673,10 +2673,18 @@ static int apply_epoch_settlement(nodus_witness_t *w,
          * blocks ending at the settlement block. Decoupled from the
          * full epoch range so a 1-hour epoch does not let a validator
          * earn by signing only once per hour — the window enforces a
-         * recent-liveness requirement independent of epoch length. */
+         * recent-liveness requirement independent of epoch length.
+         *
+         * Genesis special-case: at the very first settlement
+         * (settling_epoch_start == 0), every genesis-seeded validator
+         * has last_signed_block = 0, so none could pass the recent-
+         * liveness gate. Treat all committee members as present for the
+         * bootstrap epoch to avoid burning the entire first-hour pool. */
         dnac_validator_record_t current_v;
         bool present = false;
-        if (nodus_validator_get(w, vpk, &current_v) == 0) {
+        if (settling_epoch_start == 0) {
+            present = true;
+        } else if (nodus_validator_get(w, vpk, &current_v) == 0) {
             uint64_t settle_block = settling_epoch_start +
                                      (uint64_t)DNAC_EPOCH_LENGTH;
             uint64_t threshold =
