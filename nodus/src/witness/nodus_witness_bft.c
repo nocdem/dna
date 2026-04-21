@@ -25,6 +25,8 @@
 #include "witness/nodus_witness_validator.h"
 #include "witness/nodus_witness_committee.h"
 #include "witness/nodus_witness_delegation.h"
+#include "witness/nodus_witness_epoch.h"
+#include "witness/nodus_witness_emission.h"
 #include "witness/nodus_witness_genesis_seed.h"
 #include "nodus/nodus_chain_config.h"          /* Hard-Fork v1 apply dispatch */
 #include "protocol/nodus_tier3.h"
@@ -557,6 +559,31 @@ static int nodus_derive_chain_id(const char *genesis_fp,
     return 0;
 }
 
+/* v0.16 stage C.3 — TX-type-aware fee burn helper.
+ *
+ * In v0.16 the reward system moved from "fees pooled + redistributed"
+ * (accumulator model) to "fees burn immediately + rewards come from
+ * inflation mint" (push-settlement model). route_tx_fee is the single
+ * destination for every TX's committed_fee — it always adds to
+ * supply_tracking.total_burned, regardless of tx_type.
+ *
+ * The tx_type parameter is kept in the signature for future variants
+ * (e.g. per-type burn fraction); today it is intentionally unused.
+ *
+ * @param w            witness context (DB must be open)
+ * @param tx_type      NODUS_W_TX_* (unused in v0.16 — see above)
+ * @param committed_fee  fee amount in raw DNAC units (may be 0)
+ * @param tx_hash      tx_hash the fee came from (for the
+ *                     supply_tracking.last_tx_hash audit trail)
+ * @return 0 on success or no-op (fee == 0), -1 on overflow / DB error
+ */
+static int route_tx_fee(nodus_witness_t *w, uint32_t tx_type,
+                          uint64_t committed_fee, const uint8_t *tx_hash) {
+    (void)tx_type;
+    if (committed_fee == 0) return 0;
+    return nodus_witness_supply_add_burned(w, committed_fee, tx_hash);
+}
+
 static int update_utxo_set(nodus_witness_t *w,
                               const uint8_t *tx_hash,
                               uint8_t tx_type,
@@ -723,18 +750,44 @@ static int update_utxo_set(nodus_witness_t *w,
         fee = total_input - total_output;
     }
 
-    /* v0.16 stage A.5: fees no longer accumulate in w->block_fee_pool.
-     * Stage C.3 will wire route_tx_fee(w, tx_type, committed_fee) to
-     * burn the fee directly to total_burned. Until that lands, fees
-     * are observed (via fee_out) but not routed anywhere — the supply
-     * invariant is advisory in this transitional state and is
-     * re-activated as a hard gate in Stage F. */
-    (void)fee_token_id;
-    (void)w;
-    if (fee > 0) {
-        fprintf(stderr, "%s: fee observed: %llu native DNAC (block %llu)\n",
-                LOG_TAG, (unsigned long long)fee,
-                (unsigned long long)block_height);
+    /* v0.16 stage C.3 — fees burn directly into total_burned.
+     *
+     * route_tx_fee ignores tx_type in v0.16 (all fees burn regardless
+     * of TX type), but carries the type parameter per design §2.2 so
+     * future per-type routing variants (e.g. congestion-dependent
+     * burn fraction) can slot in without another signature change.
+     *
+     * ⚠ Transitional SB-1 note:
+     *   For SPEND + TOKEN_CREATE the implicit `fee = input_sum −
+     *   output_sum` equals the user-intended fee — correctly burned.
+     *   For STAKE / DELEGATE / UNDELEGATE / UNSTAKE the same
+     *   subtraction inflates the fee by the stake/delegation amount
+     *   (SB-1 original cause). Routing THAT figure to burn would
+     *   reintroduce supply deflation. Until a committed_fee wire
+     *   field lands (separate change), these TX types burn ZERO:
+     *   apply_delegate + siblings treat all input − output as state-
+     *   transition amount, and fee routing is skipped.
+     *
+     * Token-fee handling remains deferred: if fee_token_id is
+     * non-zero (custom-token burn path), we also skip for v0.16.
+     */
+    bool is_stake_family = (tx_type == NODUS_W_TX_STAKE      ||
+                            tx_type == NODUS_W_TX_DELEGATE   ||
+                            tx_type == NODUS_W_TX_UNSTAKE    ||
+                            tx_type == NODUS_W_TX_UNDELEGATE ||
+                            tx_type == NODUS_W_TX_CHAIN_CONFIG);
+    uint8_t zeros_tok[64] = {0};
+    bool native_fee = (memcmp(fee_token_id, zeros_tok, 64) == 0);
+    if (fee > 0 && !is_stake_family && native_fee) {
+        if (route_tx_fee(w, tx_type, fee, tx_hash) != 0) {
+            fprintf(stderr, "%s: route_tx_fee failed (fee=%llu)\n",
+                    LOG_TAG, (unsigned long long)fee);
+            return -1;
+        }
+    } else if (fee > 0) {
+        fprintf(stderr,
+                "%s: fee observed %llu (tx_type=%u, routing deferred)\n",
+                LOG_TAG, (unsigned long long)fee, (unsigned)tx_type);
     }
 
     if (fee_out) *fee_out = fee;
@@ -1027,21 +1080,19 @@ static int apply_delegate(nodus_witness_t *w,
 
     /* Compute delegation_amount from native-DNAC flows.
      *
-     * DELEGATE wire semantics (design 2.2): inputs = amount + fee + change,
-     * outputs = change only. So (input_sum - output_sum) == amount + fee.
+     * v0.16 transitional state (Stage C.4): DELEGATE carries zero
+     * protocol fee because the TX wire format does not yet include an
+     * explicit `committed_fee` field. update_utxo_set's fee routing
+     * (Stage C.3) also skips the stake-family TX types for the same
+     * reason. With fee ≡ 0, (input_sum − output_sum) equals the
+     * delegation amount exactly and the SB-1 supply-inflation class is
+     * neutralized (no fee is double-counted into total_burned).
      *
-     * update_utxo_set currently assigns the entire (input - output)
-     * excess to block_fee_pool as "fee", which double-counts the
-     * staked amount on this path. Deferred to Phase 9 (Task 48-51
-     * block_fee_pool routing) — then the fee routing will become
-     * TX-type aware and committed_fee here will be the true fee.
-     *
-     * For now, Phase 8 records delegation_amount = input_sum - output_sum
-     * (which includes the fee as noise, bounded by current_fee ~0.01% of
-     * amount). The committed_fee parameter is accepted but unused
-     * pending the fee-routing fix. Once update_utxo_set learns DELEGATE
-     * semantics, switch to the exact formula
-     *     delegation_amount = input_sum - output_sum - committed_fee
+     * Final fix — add an explicit fee field to the TX wire body and
+     * switch to
+     *     delegation_amount = input_sum − output_sum − committed_fee;
+     * the committed_fee parameter below is kept in the signature so
+     * that upgrade is a local edit.
      */
     (void)committed_fee;
     uint64_t input_sum = 0, output_sum = 0;
@@ -2460,12 +2511,80 @@ int finalize_block(nodus_witness_t *w,
         return -1;
     }
 
-    /* v0.16 stage A.5: inflation mint is removed from finalize_block.
-     * Stage C.2 re-introduces it as per-block emission into the
-     * epoch_state.epoch_pool_accum (arriving in Stage B.1), and Stage
-     * E distributes it via apply_epoch_settlement at block_height %
-     * 120 == 0 boundaries. Until C.2 lands, no DNAC is minted — this
-     * is a transitional gap, not the final behavior. */
+    /* v0.16 stage C.2 — per-block inflation emission.
+     *
+     * Every block height mints nodus_emission_per_block(bh) raw DNAC
+     * (see nodus_witness_emission.h for the 32→16→8→4→2→1 schedule).
+     * The mint accrues into:
+     *   (a) supply_tracking.total_minted — bumps current_supply too.
+     *   (b) epoch_state.epoch_pool_accum — Stage E's
+     *       apply_epoch_settlement drains this into UTXOs.
+     *
+     * Hard-Fork v1: the INFLATION_START_BLOCK override (chain_config)
+     * gates activation. Pre-wipe chains passed 0 (=disabled) here;
+     * v0.16 chains default to 1 (active from block 1). An unfetchable
+     * override is treated as 1ULL so that a transient DB fault cannot
+     * silently turn off emission cross-nodes.
+     */
+    {
+        uint64_t inflation_start =
+            nodus_chain_config_get_u64(w,
+                                        DNAC_CFG_INFLATION_START_BLOCK,
+                                        expected_height,
+                                        1ULL);
+        uint64_t emission = 0;
+        if (inflation_start != 0 && expected_height >= inflation_start) {
+            emission = nodus_emission_per_block(expected_height);
+        }
+
+        if (emission > 0) {
+            /* Global supply counters. */
+            if (nodus_witness_supply_add_minted(w, emission) != 0) {
+                fprintf(stderr, "%s: finalize_block: supply_add_minted failed\n",
+                        LOG_TAG);
+                return -1;
+            }
+
+            /* Per-epoch pool accumulator. Canonical epoch_start_height
+             * formula: floor(block_height / DNAC_EPOCH_LENGTH) *
+             * DNAC_EPOCH_LENGTH. Auto-seed the row on first touch per
+             * epoch; Stage D.1 will layer snapshot_hash + snapshot_blob
+             * on top of it at the first block of each new epoch. */
+            uint64_t epoch_start = (expected_height / (uint64_t)DNAC_EPOCH_LENGTH) *
+                                   (uint64_t)DNAC_EPOCH_LENGTH;
+            int add_rc = nodus_witness_epoch_add_pool(w, epoch_start, emission);
+            if (add_rc == 1) {
+                /* Row missing — seed with zeroed snapshot_hash and the
+                 * current mint as the starting pool. Stage D.1
+                 * overwrites snapshot_hash at epoch-start. */
+                nodus_epoch_state_t seed = {0};
+                seed.epoch_start_height = epoch_start;
+                seed.epoch_pool_accum   = emission;
+                int ins_rc = nodus_witness_epoch_insert(w, &seed);
+                if (ins_rc != 0 && ins_rc != -2) {
+                    fprintf(stderr,
+                        "%s: finalize_block: epoch_insert seed failed rc=%d\n",
+                        LOG_TAG, ins_rc);
+                    return -1;
+                }
+                /* If -2 (another path raced us), retry add_pool. */
+                if (ins_rc == -2) {
+                    if (nodus_witness_epoch_add_pool(w, epoch_start, emission)
+                        != 0) {
+                        fprintf(stderr,
+                            "%s: finalize_block: epoch_add_pool retry failed\n",
+                            LOG_TAG);
+                        return -1;
+                    }
+                }
+            } else if (add_rc != 0) {
+                fprintf(stderr,
+                    "%s: finalize_block: epoch_add_pool failed rc=%d\n",
+                    LOG_TAG, add_rc);
+                return -1;
+            }
+        }
+    }
 
     /* Invalidate the cached UTXO checksum — the per-TX writes from this
      * batch made the previous root stale. Phase 11 renames this to
