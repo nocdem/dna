@@ -649,9 +649,6 @@ register_witness_test(test_validator_db)
 register_witness_test(test_delegation_db)
 register_witness_test(test_reward_db)
 
-# Task 61 — dnac_pending_rewards_query RPC helper (Phase 14)
-register_witness_test(test_pending_rewards_rpc)
-
 # Task 62 — dnac_committee_query RPC shape (Phase 14)
 register_witness_test(test_committee_query_rpc)
 
@@ -678,9 +675,6 @@ register_witness_test(test_apply_unstake)
 
 # Task 43 — UNDELEGATE state mutation (dual-UTXO auto-claim, always-emit)
 register_witness_test(test_apply_undelegate)
-
-# Task 44 — CLAIM_REWARD state mutation (validator + delegator paths)
-register_witness_test(test_apply_claim_reward)
 
 # Task 45 — VALIDATOR_UPDATE state mutation with pending semantics
 register_witness_test(test_apply_validator_update)

@@ -38,8 +38,7 @@ typedef struct {
 } dnac_pending_entry_t;
 
 /**
- * Compute pending rewards for `claimant_pubkey`. Mirrors the u128 math
- * in apply_claim_reward (commit 5d46d5c2). One entry per active
+ * Compute pending rewards for `claimant_pubkey`. One entry per active
  * delegation with non-zero pending, plus a final entry for the
  * validator-self path if the claimant is itself a validator with
  * validator_unclaimed > 0.

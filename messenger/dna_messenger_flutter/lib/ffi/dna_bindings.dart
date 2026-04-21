@@ -4712,25 +4712,6 @@ class DnaBindings {
         engine, validator_pubkey, amount, callback, user_data);
   }
 
-  late final _dna_engine_dnac_claim_reward = _lib.lookupFunction<
-      Uint64 Function(Pointer<dna_engine_t>, Pointer<Uint8>, Uint64, Uint64,
-          Pointer<DnaCompletionCb>, Pointer<Void>),
-      int Function(Pointer<dna_engine_t>, Pointer<Uint8>, int, int,
-          Pointer<DnaCompletionCb>,
-          Pointer<Void>)>('dna_engine_dnac_claim_reward');
-
-  int dna_engine_dnac_claim_reward(
-    Pointer<dna_engine_t> engine,
-    Pointer<Uint8> target_validator_pubkey,
-    int max_pending_amount,
-    int valid_before_block,
-    Pointer<DnaCompletionCb> callback,
-    Pointer<Void> user_data,
-  ) {
-    return _dna_engine_dnac_claim_reward(engine, target_validator_pubkey,
-        max_pending_amount, valid_before_block, callback, user_data);
-  }
-
   late final _dna_engine_dnac_validator_update = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Uint16, Uint64,
           Pointer<DnaCompletionCb>, Pointer<Void>),

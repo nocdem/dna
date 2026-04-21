@@ -245,45 +245,6 @@ extension DnacStakeDelegation on DnaEngine {
     }
   }
 
-  /// CLAIM_REWARD — pull accrued staking rewards for a validator.
-  ///
-  /// [maxPendingAmount] and [validBeforeBlock] are anti-replay bounds
-  /// enforced server-side.
-  Future<void> dnacClaimReward({
-    required Uint8List targetValidatorPubkey,
-    required int maxPendingAmount,
-    required int validBeforeBlock,
-  }) async {
-    final completer = Completer<void>();
-    void onComplete(int requestId, int error, Pointer<Void> userData) {
-      if (error == 0) {
-        completer.complete();
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, bindings));
-      }
-    }
-
-    final cb = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
-    final pkPtr = _pubkeyToNative(targetValidatorPubkey);
-    try {
-      final requestId = bindings.dna_engine_dnac_claim_reward(
-        engine,
-        pkPtr,
-        maxPendingAmount,
-        validBeforeBlock,
-        cb.nativeFunction.cast(),
-        nullptr,
-      );
-      if (requestId == 0) {
-        throw DnaEngineException(-1, 'Failed to submit DNAC claim request');
-      }
-      await completer.future;
-    } finally {
-      calloc.free(pkPtr);
-      cb.close();
-    }
-  }
-
   /// VALIDATOR_UPDATE — change commission on the caller's validator record.
   ///
   /// An increase takes effect at the next epoch boundary; a decrease is

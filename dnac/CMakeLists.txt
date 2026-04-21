@@ -104,7 +104,6 @@ set(DNAC_SOURCES
     src/transaction/token_create.c
     src/transaction/stake.c
     src/transaction/delegate.c
-    src/transaction/claim.c
     src/transaction/validator_update.c
     src/transaction/chain_config.c
     src/transaction/rewards_query.c
@@ -329,9 +328,8 @@ if(DNAC_BUILD_TESTS)
     # Stake & delegation v1 — Phase 5 Task 17: DELEGATE appended-field serialization
     register_dnac_test(test_delegate_serialize)
 
-    # Stake & delegation v1 — Phase 5 Task 18: UNDELEGATE + CLAIM_REWARD appended fields
+    # Stake & delegation v1 — Phase 5 Task 18: UNDELEGATE appended fields
     register_dnac_test(test_undelegate_serialize)
-    register_dnac_test(test_claim_reward_serialize)
 
     # Stake & delegation v1 — Phase 5 Task 19: VALIDATOR_UPDATE appended fields
     register_dnac_test(test_validator_update_serialize)
@@ -353,9 +351,6 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 6 Task 25: UNDELEGATE verify rules (local subset)
     register_dnac_test(test_undelegate_verify)
-
-    # Stake & delegation v1 — Phase 6 Task 26: CLAIM_REWARD verify rules (local subset)
-    register_dnac_test(test_claim_reward_verify)
 
     # Stake & delegation v1 — Phase 6 Task 27: VALIDATOR_UPDATE verify rules (local subset)
     register_dnac_test(test_validator_update_verify)
@@ -386,9 +381,6 @@ if(DNAC_BUILD_TESTS)
 
     # Stake & delegation v1 — Phase 7 Task 35: DELEGATE / UNDELEGATE builder API
     register_dnac_test(test_delegate_builder)
-
-    # Stake & delegation v1 — Phase 7 Task 36: CLAIM_REWARD builder API
-    register_dnac_test(test_claim_builder)
 
     # Stake & delegation v1 — Phase 7 Task 37: VALIDATOR_UPDATE builder API
     register_dnac_test(test_validator_update_builder)

@@ -253,9 +253,6 @@ static inline uint64_t dnac_total_minted_at(uint64_t block_height,
     return total;
 }
 
-/** CLAIM_REWARD dust floor in raw units (Rule L — dynamic dust = max(this, 10× current_fee)) */
-#define DNAC_DUST_FLOOR              1000000ULL   /* 0.01 DNAC = 10^6 raw */
-
 /** Maximum commission in basis points (100% = 10000) */
 #define DNAC_COMMISSION_BPS_MAX      10000
 
@@ -296,7 +293,6 @@ typedef enum {
     DNAC_TX_DELEGATE         = 5,   /**< Delegator stakes onto a validator */
     DNAC_TX_UNSTAKE          = 6,   /**< Validator withdraws self-stake (unbonding) */
     DNAC_TX_UNDELEGATE       = 7,   /**< Delegator withdraws delegation (unbonding) */
-    DNAC_TX_CLAIM_REWARD     = 8,   /**< Claim accrued staking/delegation rewards */
     DNAC_TX_VALIDATOR_UPDATE = 9,   /**< Update validator metadata (commission, moniker, etc.) */
     DNAC_TX_CHAIN_CONFIG     = 10   /**< Committee-voted consensus parameter change (hard-fork mechanism v1) */
 } dnac_tx_type_t;
@@ -750,36 +746,6 @@ int dnac_undelegate(dnac_context_t *ctx,
                     void *user_data);
 
 /**
- * @brief Submit a CLAIM_REWARD TX — withdraw accrued staking rewards.
- *
- * Builder-level API exposes max_pending_amount and valid_before_block as
- * explicit parameters so CLI + early Flutter can call it before Phase 14
- * ships dnac_get_pending_rewards(). A future wrapper
- * dnac_claim_reward_auto(ctx, validator) will query the witness for the
- * pending amount + current block height and call this builder.
- *
- * @param ctx                     DNAC context
- * @param target_validator_pubkey Validator whose accrued rewards to claim
- *                                (DNAC_PUBKEY_SIZE bytes)
- * @param max_pending_amount      Client-supplied upper bound on the pending
- *                                reward (replay defense — witness enforces
- *                                actual_pending <= max_pending_amount)
- * @param valid_before_block      Block-height expiry — witness rejects the
- *                                claim when current_block > this value
- *                                (typically current_block +
- *                                 DNAC_SIGN_FRESHNESS_WINDOW)
- * @param callback                Completion callback (can be NULL)
- * @param user_data               Callback user data
- * @return DNAC_SUCCESS or error code
- */
-int dnac_claim_reward(dnac_context_t *ctx,
-                      const uint8_t *target_validator_pubkey,
-                      uint64_t max_pending_amount,
-                      uint64_t valid_before_block,
-                      dnac_callback_t callback,
-                      void *user_data);
-
-/**
  * @brief Submit a VALIDATOR_UPDATE TX — change validator commission rate.
  *
  * Fee-only TX. Must be called by the validator operator (signer pubkey
@@ -877,9 +843,9 @@ int dnac_chain_config_propose(dnac_context_t *ctx,
  * in Phase 14 Task 61. Until then this function returns
  * DNAC_ERROR_NOT_IMPLEMENTED and zeroes *total_pending_out for safety.
  *
- * The builder for CLAIM_REWARD already exists (see dnac_claim_reward);
- * once the Phase 14 RPC is wired the auto-claim helper can call this
- * function to obtain `max_pending_amount` before building the TX.
+ * v0.16 NOTE: the pending-rewards query is slated for removal in stage
+ * A.3 alongside the rewards table. Left here so the RPC wiring still
+ * resolves until then.
  *
  * @param ctx              DNAC context
  * @param claimant_pubkey  Claimant's Dilithium5 pubkey

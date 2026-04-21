@@ -2231,7 +2231,7 @@ static void handle_dnac_token_info(nodus_witness_t *w,
  * Request:  "a": {"claimant": bstr(2592)}
  * Response: "r": {"total": u64, "entries":[{"v":bstr(2592), "amt":u64}, ...]}
  *
- * Math mirrors apply_claim_reward (commit 5d46d5c2) exactly:
+ * Math (accumulator-based; slated for removal in v0.16 stage A.3):
  *
  *   delegator pending = ((V.accumulator − D.reward_snapshot) × D.amount) >> 64
  *   validator pending = R.validator_unclaimed
@@ -2292,7 +2292,7 @@ int nodus_witness_compute_pending_rewards(nodus_witness_t *w,
 
         qgp_u128_t diff = qgp_u128_sub(acc, snap);
         qgp_u128_t wide = qgp_u128_mul_u64(diff, d->amount);
-        /* >> 64: take hi limb (design §3.5, mirrors apply_claim_reward). */
+        /* >> 64: take hi limb (design §3.5). */
         uint64_t pending = wide.hi;
         if (pending == 0) continue;
 

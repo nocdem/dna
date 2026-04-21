@@ -25,7 +25,6 @@ int main(void) {
     CHECK_EQ(DNAC_TX_DELEGATE, 5);
     CHECK_EQ(DNAC_TX_UNSTAKE, 6);
     CHECK_EQ(DNAC_TX_UNDELEGATE, 7);
-    CHECK_EQ(DNAC_TX_CLAIM_REWARD, 8);
     CHECK_EQ(DNAC_TX_VALIDATOR_UPDATE, 9);
     printf("test_tx_types: PASS\n");
     return 0;

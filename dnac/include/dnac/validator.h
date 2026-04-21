@@ -113,10 +113,8 @@ typedef struct {
 /**
  * @brief Delegation tree leaf value.
  *
- * One record per (delegator, validator) pair. Tracks the delegated amount,
- * the block it was created/updated at (for Rule O min-hold enforcement),
- * and the snapshot of the reward accumulator at last claim (for incremental
- * reward computation in CLAIM_REWARD).
+ * One record per (delegator, validator) pair. Tracks the delegated amount
+ * and the block it was created/updated at (for Rule O min-hold enforcement).
  */
 typedef struct {
     /** Delegator Dilithium5 pubkey. */

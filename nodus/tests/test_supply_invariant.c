@@ -2,7 +2,7 @@
  * Nodus — Phase 17 Task 81
  *
  * Supply-invariant property test. Drives 1000 randomly-generated TX
- * sequences (STAKE / DELEGATE / UNSTAKE / UNDELEGATE / CLAIM_REWARD /
+ * sequences (STAKE / DELEGATE / UNSTAKE / UNDELEGATE /
  * VALIDATOR_UPDATE / SPEND + transfer) through a simplified state
  * machine and asserts the conservation invariant at every step.
  *
@@ -12,7 +12,7 @@
  *   those for a property test is (a) slow and (b) exercises the
  *   signer/verifier rather than the conservation math. The
  *   apply_* unit tests (test_apply_stake / _delegate / _unstake /
- *   _undelegate / _claim_reward / _validator_update) ALREADY cover
+ *   _undelegate / _validator_update) ALREADY cover
  *   the wire-format -> state-mutation path per type. What they do
  *   NOT cover is "applied in a random interleaving across 1000
  *   steps, does total supply stay == 1e17 raw?" — that is exactly
@@ -321,18 +321,6 @@ static void tx_undelegate(sim_state_t *s) {
     del->amount = 0;
 }
 
-/* TX: CLAIM_REWARD (validator path). Drains unclaimed_val into utxo. */
-static void tx_claim_reward(sim_state_t *s) {
-    if (s->validator_count == 0) return;
-    int v = (int)prng_range(0, (uint64_t)(s->validator_count - 1));
-    uint64_t amount = s->validators[v].unclaimed_val;
-    if (amount == 0) return;
-
-    s->validators[v].unclaimed_val = 0;
-    s->unclaimed_val_total         -= amount;
-    s->utxo_total                  += amount;
-}
-
 /* TX: VALIDATOR_UPDATE. Metadata-only — no value movement. */
 static void tx_validator_update(sim_state_t *s) {
     (void)s;
@@ -376,16 +364,15 @@ static void run_sequence(uint64_t seed, int steps, int n_validators) {
     sim_genesis(&s, n_validators);
 
     for (int i = 0; i < steps; i++) {
-        /* Pick a TX type uniformly from the 7 shown enum values. */
-        uint64_t pick = prng_range(0, 6);
+        /* Pick a TX type uniformly from the 6 shown enum values. */
+        uint64_t pick = prng_range(0, 5);
         switch (pick) {
             case 0: tx_spend(&s);            break;  /* DNAC_TX_SPEND */
             case 1: tx_stake(&s);            break;  /* DNAC_TX_STAKE */
             case 2: tx_delegate(&s);         break;  /* DNAC_TX_DELEGATE */
             case 3: tx_unstake(&s);          break;  /* DNAC_TX_UNSTAKE */
             case 4: tx_undelegate(&s);       break;  /* DNAC_TX_UNDELEGATE */
-            case 5: tx_claim_reward(&s);     break;  /* DNAC_TX_CLAIM_REWARD */
-            case 6: tx_validator_update(&s); break;  /* DNAC_TX_VALIDATOR_UPDATE */
+            case 5: tx_validator_update(&s); break;  /* DNAC_TX_VALIDATOR_UPDATE */
         }
 
         /* After each TX: accrue to simulate a block boundary on 1/8
@@ -421,7 +408,6 @@ int main(void) {
     CHECK_EQ_U64(DNAC_TX_DELEGATE, 5);
     CHECK_EQ_U64(DNAC_TX_UNSTAKE, 6);
     CHECK_EQ_U64(DNAC_TX_UNDELEGATE, 7);
-    CHECK_EQ_U64(DNAC_TX_CLAIM_REWARD, 8);
     CHECK_EQ_U64(DNAC_TX_VALIDATOR_UPDATE, 9);
 
     /* Three independent runs. Each runs 1000 steps, so >= 3000 TX

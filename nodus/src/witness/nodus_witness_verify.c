@@ -91,7 +91,7 @@
 #define TX_TYPE_DELEGATE             NODUS_W_TX_DELEGATE           /* 5 */
 #define TX_TYPE_UNSTAKE              NODUS_W_TX_UNSTAKE            /* 6 */
 #define TX_TYPE_UNDELEGATE           NODUS_W_TX_UNDELEGATE         /* 7 */
-#define TX_TYPE_CLAIM_REWARD         NODUS_W_TX_CLAIM_REWARD       /* 8 */
+/* 8 was CLAIM_REWARD — removed in v0.16 reward redesign. */
 #define TX_TYPE_VALIDATOR_UPDATE     NODUS_W_TX_VALIDATOR_UPDATE   /* 9 */
 #define TX_TYPE_CHAIN_CONFIG         NODUS_W_TX_CHAIN_CONFIG       /* 10 */
 
@@ -289,13 +289,6 @@ int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
         remaining -= NODUS_PK_BYTES;
     } else if (type_byte == TX_TYPE_UNDELEGATE) {
         size_t need = NODUS_PK_BYTES + 8;
-        if (remaining < need) goto fail;
-        memcpy(buf + buf_pos, p, need);
-        buf_pos += need;
-        p += need;
-        remaining -= need;
-    } else if (type_byte == TX_TYPE_CLAIM_REWARD) {
-        size_t need = NODUS_PK_BYTES + 8 + 8;
         if (remaining < need) goto fail;
         memcpy(buf + buf_pos, p, need);
         buf_pos += need;

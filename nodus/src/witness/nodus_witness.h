@@ -79,7 +79,8 @@ typedef struct {
 #define NODUS_W_TX_DELEGATE          5
 #define NODUS_W_TX_UNSTAKE           6
 #define NODUS_W_TX_UNDELEGATE        7
-#define NODUS_W_TX_CLAIM_REWARD      8
+/* Value 8 was NODUS_W_TX_CLAIM_REWARD — removed in v0.16 reward redesign.
+ * Left as a gap so VALIDATOR_UPDATE / CHAIN_CONFIG keep their wire values. */
 #define NODUS_W_TX_VALIDATOR_UPDATE  9
 #define NODUS_W_TX_CHAIN_CONFIG     10   /* Hard-Fork v1 parameter change */
 

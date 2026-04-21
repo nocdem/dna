@@ -208,7 +208,6 @@ typedef enum {
     TASK_DNAC_UNSTAKE,
     TASK_DNAC_DELEGATE,
     TASK_DNAC_UNDELEGATE,
-    TASK_DNAC_CLAIM_REWARD,
     TASK_DNAC_VALIDATOR_UPDATE,
     TASK_DNAC_GET_PENDING_REWARDS,
     TASK_DNAC_VALIDATOR_LIST,
@@ -644,12 +643,6 @@ typedef union {
         uint8_t  validator_pubkey[2592];
         uint64_t amount;                       /* raw units */
     } dnac_undelegate;
-
-    struct {
-        uint8_t  target_validator_pubkey[2592];
-        uint64_t max_pending_amount;
-        uint64_t valid_before_block;
-    } dnac_claim_reward;
 
     struct {
         uint16_t new_commission_bps;
