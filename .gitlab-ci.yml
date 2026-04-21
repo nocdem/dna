@@ -71,6 +71,7 @@ build:native-android-arm64:
       if [ ! -d ".cache/android-ndk/android-ndk-r${ANDROID_NDK_VERSION}" ]; then
         mkdir -p .cache/android-ndk && cd .cache/android-ndk
         wget -q https://dl.google.com/android/repository/android-ndk-r${ANDROID_NDK_VERSION}-linux.zip
+        echo "ad73c0370f0b0a87d1671ed2fd5a9ac9acfd1eb5c43a7fbfbd330f85d19dd632  android-ndk-r${ANDROID_NDK_VERSION}-linux.zip" | sha256sum -c -
         unzip -q android-ndk-r${ANDROID_NDK_VERSION}-linux.zip
         rm -f android-ndk-r${ANDROID_NDK_VERSION}-linux.zip
         cd "${CI_PROJECT_DIR}"
@@ -96,6 +97,7 @@ build:native-android-arm64:
         echo "Building GMP for Android..."
         cd /tmp && rm -rf gmp-6.3.0*
         wget -q https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz
+        echo "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898  gmp-6.3.0.tar.xz" | sha256sum -c -
         tar xf gmp-6.3.0.tar.xz && cd gmp-6.3.0
         ./configure --host=aarch64-linux-android \
           --prefix="${DEPS_DIR}/gmp-arm64" \
@@ -111,6 +113,7 @@ build:native-android-arm64:
         echo "Building Nettle for Android..."
         cd /tmp && rm -rf nettle-3.10*
         wget -q https://ftp.gnu.org/gnu/nettle/nettle-3.10.tar.gz
+        echo "b4c518adb174e484cb4acea54118f02380c7133771e7e9beb98a0787194ee47c  nettle-3.10.tar.gz" | sha256sum -c -
         tar xzf nettle-3.10.tar.gz && cd nettle-3.10
         ./configure --host=aarch64-linux-android \
           --prefix="${DEPS_DIR}/nettle-arm64" \
@@ -130,6 +133,7 @@ build:native-android-arm64:
         echo "Building libtasn1 for Android..."
         cd /tmp && rm -rf libtasn1-4.19.0*
         wget -q https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.19.0.tar.gz
+        echo "1613f0ac1cf484d6ec0ce3b8c06d56263cc7242f1c23b30d82d23de345a63f7a  libtasn1-4.19.0.tar.gz" | sha256sum -c -
         tar xzf libtasn1-4.19.0.tar.gz && cd libtasn1-4.19.0
         ./configure --host=aarch64-linux-android \
           --prefix="${DEPS_DIR}/libtasn1-arm64" \
@@ -145,6 +149,7 @@ build:native-android-arm64:
         echo "Building GnuTLS for Android..."
         cd /tmp && rm -rf gnutls-3.8.7*
         wget -q https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.7.tar.xz
+        echo "fe302f2b6ad5a564bcb3678eb61616413ed5277aaf8e7bf7cdb9a95a18d9f477  gnutls-3.8.7.tar.xz" | sha256sum -c -
         tar xf gnutls-3.8.7.tar.xz && cd gnutls-3.8.7
         ./configure --host=aarch64-linux-android \
           --prefix="${DEPS_DIR}/gnutls-arm64" \
@@ -174,6 +179,7 @@ build:native-android-arm64:
         echo "Building argon2 for Android..."
         cd /tmp && rm -rf phc-winner-argon2-*
         wget -q https://github.com/P-H-C/phc-winner-argon2/archive/refs/tags/20190702.tar.gz -O argon2.tar.gz
+        echo "daf972a89577f8772602bf2eb38b6a3dd3d922bf5724d45e7f9589b5e830442c  argon2.tar.gz" | sha256sum -c -
         tar xzf argon2.tar.gz && cd phc-winner-argon2-20190702
         make CC="${CC}" AR="${AR}" CFLAGS="-fPIC -Iinclude" LIBRARY_REL=lib PREFIX="${DEPS_DIR}/argon2-arm64" OPTTARGET=none libargon2.a
         mkdir -p "${DEPS_DIR}/argon2-arm64/lib" "${DEPS_DIR}/argon2-arm64/include"
@@ -187,6 +193,7 @@ build:native-android-arm64:
         echo "Building fmt for Android..."
         cd /tmp && rm -rf fmt-*
         wget -q https://github.com/fmtlib/fmt/archive/refs/tags/10.2.1.tar.gz -O fmt.tar.gz
+        echo "1250e4cc58bf06ee631567523f48848dc4596133e163f02615c97f78bab6c811  fmt.tar.gz" | sha256sum -c -
         tar xzf fmt.tar.gz && cd fmt-10.2.1 && mkdir build && cd build
         cmake .. \
           -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
@@ -205,6 +212,7 @@ build:native-android-arm64:
         echo "Downloading ASIO..."
         cd /tmp && rm -rf asio-*
         wget -q https://sourceforge.net/projects/asio/files/asio/1.30.2%20%28Stable%29/asio-1.30.2.tar.gz/download -O asio.tar.gz
+        echo "12e7bb4dada8bc1191de9d550a59ee658ce4e645ffc97c911c099ab4e8699d55  asio.tar.gz" | sha256sum -c -
         tar xzf asio.tar.gz
         mkdir -p "${DEPS_DIR}/asio-1.30.2/include"
         cp -r asio-1.30.2/include/* "${DEPS_DIR}/asio-1.30.2/include/"
@@ -216,6 +224,7 @@ build:native-android-arm64:
         echo "Downloading msgpack..."
         cd /tmp && rm -rf msgpack-*
         wget -q https://github.com/msgpack/msgpack-c/releases/download/cpp-6.1.1/msgpack-cxx-6.1.1.tar.gz
+        echo "5fd555742e37bbd58d166199e669f01f743c7b3c6177191dd7b31fb0c37fa191  msgpack-cxx-6.1.1.tar.gz" | sha256sum -c -
         tar xzf msgpack-cxx-6.1.1.tar.gz
         mkdir -p "${DEPS_DIR}/msgpack-arm64/include"
         cp -r msgpack-cxx-6.1.1/include/* "${DEPS_DIR}/msgpack-arm64/include/"
@@ -227,6 +236,7 @@ build:native-android-arm64:
         echo "Building OpenSSL for Android..."
         cd /tmp && rm -rf openssl-*
         wget -q https://www.openssl.org/source/openssl-3.3.2.tar.gz
+        echo "2e8a40b01979afe8be0bbfb3de5dc1c6709fedb46d6c89c10da114ab5fc3d281  openssl-3.3.2.tar.gz" | sha256sum -c -
         tar xzf openssl-3.3.2.tar.gz && cd openssl-3.3.2
         export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
         export PATH="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
@@ -244,6 +254,8 @@ build:native-android-arm64:
         cd /tmp && rm -rf sqlcipher
         git clone --depth 1 --branch v4.6.1 https://github.com/sqlcipher/sqlcipher.git
         cd sqlcipher
+        # Pin to specific commit SHA — tags are mutable, commits are not
+        git rev-parse HEAD | grep -q "^fef10de5dfe3b2a0f740020d605636d4cc206c28$" || { echo "sqlcipher v4.6.1 commit mismatch"; exit 1; }
         # Step 1: Generate amalgamation with HOST compiler (not cross-compiler)
         # Use --with-crypto-lib=none to skip link check (we only need the .c/.h)
         CC=gcc ./configure --enable-tempstore=yes \
@@ -269,6 +281,7 @@ build:native-android-arm64:
         echo "Building json-c for Android..."
         cd /tmp && rm -rf json-c-*
         wget -q https://github.com/json-c/json-c/archive/refs/tags/json-c-0.17-20230812.tar.gz
+        echo "024d302a3aadcbf9f78735320a6d5aedf8b77876c8ac8bbb95081ca55054c7eb  json-c-0.17-20230812.tar.gz" | sha256sum -c -
         tar xzf json-c-0.17-20230812.tar.gz && cd json-c-json-c-0.17-20230812
         mkdir build && cd build
         cmake .. \
@@ -288,6 +301,7 @@ build:native-android-arm64:
         echo "Building curl for Android..."
         cd /tmp && rm -rf curl-*
         wget -q https://curl.se/download/curl-8.10.1.tar.gz
+        echo "d15ebab765d793e2e96db090f0e172d127859d78ca6f6391d7eafecfd894bbc0  curl-8.10.1.tar.gz" | sha256sum -c -
         tar xzf curl-8.10.1.tar.gz && cd curl-8.10.1
         ./configure --host=aarch64-linux-android \
           --prefix="${DEPS_DIR}/curl-arm64" \
@@ -311,6 +325,7 @@ build:native-android-arm64:
         echo "Building zstd for Android..."
         cd /tmp && rm -rf zstd-*
         wget -q https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz
+        echo "8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1  zstd-1.5.6.tar.gz" | sha256sum -c -
         tar xzf zstd-1.5.6.tar.gz && cd zstd-1.5.6/build/cmake
         cmake . \
           -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
@@ -426,6 +441,7 @@ build:flutter-linux:
     - chmod +x AppDir/AppRun
     # Download appimagetool and create AppImage
     - wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+    - echo "b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2  appimagetool" | sha256sum -c -
     - chmod +x appimagetool
     - ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir dist/dna-connect-${CI_COMMIT_SHORT_SHA}-x86_64.AppImage
   artifacts:
