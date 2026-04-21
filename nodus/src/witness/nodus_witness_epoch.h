@@ -87,6 +87,36 @@ int nodus_witness_epoch_delete(nodus_witness_t *w,
 /** Release the heap-allocated snapshot_blob inside an epoch_state row. */
 void nodus_witness_epoch_free(nodus_epoch_state_t *e);
 
+/**
+ * v0.16 Stage D.1 — capture the committee + delegation snapshot for the
+ * epoch that starts at `epoch_start_height` and persist
+ * (snapshot_hash, snapshot_blob) onto the epoch_state row.
+ *
+ * The snapshot IS the distribution basis for Stage E's settlement —
+ * once written, it is immutable for the epoch. Idempotent: a second
+ * call with the same height overwrites with identical bytes.
+ *
+ * Canonical serialization (design §3.3 + RT-C3):
+ *   committee_count (u16 BE)
+ *   for each committee validator (sorted by pubkey ASC):
+ *     pubkey(2592) || self_stake(u64 BE) || total_delegated(u64 BE)
+ *     || commission_bps(u16 BE) || status(u8)
+ *   delegation_count (u32 BE)
+ *   for each delegation to any committee validator
+ *        (sorted by validator_pubkey then delegator_pubkey ASC):
+ *     delegator_pubkey(2592) || validator_pubkey(2592) || amount(u64 BE)
+ *
+ * snapshot_hash = SHA3-512(snapshot_blob)
+ *
+ * If the epoch_state row is missing the function inserts one with
+ * epoch_pool_accum = 0. Tolerant of pre-schema test fixtures
+ * (returns 0 with no-op).
+ *
+ * @return 0 on success, -1 on fatal internal error.
+ */
+int nodus_witness_epoch_snapshot_apply(nodus_witness_t *w,
+                                        uint64_t epoch_start_height);
+
 #ifdef __cplusplus
 }
 #endif

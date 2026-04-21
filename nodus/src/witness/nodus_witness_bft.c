@@ -2577,6 +2577,17 @@ int finalize_block(nodus_witness_t *w,
                         return -1;
                     }
                 }
+
+                /* Stage D.1: first time an epoch_state row is seeded,
+                 * capture the committee + delegation snapshot for
+                 * this epoch. Idempotent — a retry with the same
+                 * state produces the same snapshot_hash. */
+                if (nodus_witness_epoch_snapshot_apply(w, epoch_start) != 0) {
+                    fprintf(stderr,
+                        "%s: finalize_block: epoch_snapshot_apply failed\n",
+                        LOG_TAG);
+                    return -1;
+                }
             } else if (add_rc != 0) {
                 fprintf(stderr,
                     "%s: finalize_block: epoch_add_pool failed rc=%d\n",

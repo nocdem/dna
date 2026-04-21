@@ -652,6 +652,9 @@ register_witness_test(test_epoch_state)
 # v0.16 Stage C.1 — emission_per_block halving-boundary KAT (RT-C2)
 register_witness_test(test_emission_boundaries)
 
+# v0.16 Stage D.2 — epoch snapshot empty-chain hash + idempotence smoke
+register_witness_test(test_epoch_snapshot)
+
 # Task 62 — dnac_committee_query RPC shape (Phase 14)
 register_witness_test(test_committee_query_rpc)
 
