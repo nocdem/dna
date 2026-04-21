@@ -26,28 +26,27 @@ if [ -z "${BASE_DIR:-}" ] || [ ! -d "$BASE_DIR" ]; then
     exit 1
 fi
 
-USER_FP=$(cat "$BASE_DIR/user_fp.txt")
+# Create a fresh funded test user, stake them, then test UNSTAKE.
+# Self-contained — avoids ordering collisions with test_delegate_to_retiring
+# (which already retires stagef_user) or test_stake (which stakes stagef_user).
+TEST_HOME=$(stagef_mk_funded_user "unstake" 1200000000000000) || exit 1
+USER_FP=$(cat "$TEST_HOME/fp.txt")
 
-# Ensure the user is already a validator. If not, stake first.
-db0=$(stagef_node_chain_db 1)
-user_is_validator=$(sqlite3 "$db0" \
-  "SELECT COUNT(*) FROM validators WHERE unstake_destination_fp = '$USER_FP';")
-if [ "$user_is_validator" = "0" ]; then
-    echo "[info] user not yet a validator — staking first"
-    stagef_dna -q dna stake > "$BASE_DIR/test_unstake_prestake.log" 2>&1 || {
-        echo "[FAIL] pre-stake failed" >&2
-        tail -10 "$BASE_DIR/test_unstake_prestake.log" >&2
-        exit 2
-    }
-    sleep 8
-fi
+# Stake the test user — test UNSTAKE always starts from fresh ACTIVE state.
+echo "[info] staking test user before UNSTAKE"
+stagef_dna_as "$TEST_HOME" -q dna stake > "$BASE_DIR/test_unstake_prestake.log" 2>&1 || {
+    echo "[FAIL] pre-stake failed" >&2
+    tail -10 "$BASE_DIR/test_unstake_prestake.log" >&2
+    exit 2
+}
+sleep 8
 
 bash "$(dirname "$0")/../stagef_diff.sh" "pre-UNSTAKE"
 
 # ── UNSTAKE ─────────────────────────────────────────────────────────
 echo ""
 echo "== UNSTAKE (trigger RETIRING + cooldown) =="
-stagef_dna -q dna unstake \
+stagef_dna_as "$TEST_HOME" -q dna unstake \
     > "$BASE_DIR/test_unstake.log" 2>&1 || {
     echo "[FAIL] unstake submit failed" >&2
     tail -10 "$BASE_DIR/test_unstake.log" >&2

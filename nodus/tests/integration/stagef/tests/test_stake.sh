@@ -19,7 +19,11 @@ if [ -z "${BASE_DIR:-}" ] || [ ! -d "$BASE_DIR" ]; then
     exit 1
 fi
 
-# Baseline state_root (post-genesis).
+# Create a fresh funded test user — avoids contaminating stagef_user state
+# and sidesteps ordering collisions with test_delegate_to_retiring.
+TEST_HOME=$(stagef_mk_funded_user "stake" 1200000000000000) || exit 1
+
+# Baseline state_root (post-fund — test user's funding block already landed).
 bash "$(dirname "$0")/../stagef_diff.sh" "baseline"
 
 # Snapshot validator row count across all 7 nodes.
@@ -34,7 +38,7 @@ echo "[info] validator rows before STAKE: ${v_before[*]}"
 # ── STAKE (default 10M DNAC self-stake, 5% commission) ──────────────
 echo ""
 echo "== STAKE 10M self-stake (default commission 500 bps) =="
-stagef_dna -q dna stake \
+stagef_dna_as "$TEST_HOME" -q dna stake \
     > "$BASE_DIR/test_stake.log" 2>&1 || {
     echo "[FAIL] stake submit failed" >&2
     tail -10 "$BASE_DIR/test_stake.log" >&2
@@ -55,8 +59,8 @@ for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     fi
 done
 
-# Verify the staker's pubkey matches the user identity on every node.
-USER_FP=$(cat "$BASE_DIR/user_fp.txt")
+# Verify the staker's pubkey matches the TEST user identity (not stagef_user).
+USER_FP=$(cat "$TEST_HOME/fp.txt")
 for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
     db=$(stagef_node_chain_db "$n")
     row=$(sqlite3 "$db" \
