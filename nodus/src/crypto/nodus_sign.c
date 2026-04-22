@@ -149,7 +149,15 @@ int nodus_verify_tagged(const nodus_sig_t *sig,
         free(heap_buf);
     }
 
-    return rc;
+    if (rc == 0) return 0;
+
+    /* Compat fallback — accept raw (pre-11467980) client signatures. The
+     * domain separation closes C2 (cross-domain sig reuse) for new clients;
+     * this bridge lets Flutter/mobile builds still shipped with the old
+     * libdna connect until they update. Keep gated by the auth_initiated_by_us
+     * rule (H8 oracle stays closed either way). REMOVE once all deployed
+     * clients ship commit 11467980 or later. */
+    return qgp_dsa87_verify(sig->bytes, NODUS_SIG_BYTES, data, data_len, pk->bytes);
 }
 
 /* ───── Domain-specific wrappers ────────────────────────────────────── */

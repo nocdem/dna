@@ -166,21 +166,22 @@ static void test_every_pair_rejects(void) {
     PASS();
 }
 
-/* ── Negative: raw sig cannot be verified under any tagged domain ─── */
+/* ── Compat: raw sig accepted by tagged verify (fallback bridge) ───── */
 
-static void test_raw_sig_rejected_by_tagged_verify(void) {
-    TEST("raw nodus_sign sig rejected by tagged verify (legacy isolation)");
+static void test_raw_sig_accepted_via_fallback(void) {
+    TEST("raw nodus_sign sig accepted by tagged verify via compat fallback");
     uint8_t nonce[NODUS_NONCE_LEN];
     nodus_random(nonce, sizeof(nonce));
 
     nodus_sig_t sig;
-    /* Sign RAW (the old oracle path, no tag) */
+    /* Sign RAW (pre-11467980 client path — e.g. shipped Flutter libdna) */
     if (nodus_sign(&sig, nonce, sizeof(nonce), &g_sk) != 0) { FAIL("raw sign"); return; }
 
-    /* Try to verify as auth_challenge — must fail because tagged verifier
-     * prepends "NDS1"+purpose+len before dilithium_verify. */
-    if (nodus_verify_auth_challenge(&sig, nonce, &g_pk) == 0) {
-        FAIL("tagged verify accepted raw sig — migration compat broken");
+    /* Tagged verify must ACCEPT this via the compat fallback in
+     * nodus_verify_tagged(). Remove this case + the fallback path once
+     * all deployed clients ship commit 11467980 or later. */
+    if (nodus_verify_auth_challenge(&sig, nonce, &g_pk) != 0) {
+        FAIL("compat fallback missing — pre-11467980 clients cannot auth");
         return;
     }
     PASS();
@@ -220,7 +221,7 @@ int main(void) {
     test_cert_roundtrip();
     test_cross_domain_fails();
     test_every_pair_rejects();
-    test_raw_sig_rejected_by_tagged_verify();
+    test_raw_sig_accepted_via_fallback();
     test_tampered_data_fails();
 
     printf("\n%d passed, %d failed\n", passed, failed);
