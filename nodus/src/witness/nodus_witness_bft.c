@@ -1966,10 +1966,18 @@ int apply_tx_to_state(nodus_witness_t *w,
                 }
             }
 
-            /* Skip witness signatures to reach sender pubkey */
+            /* Skip witness signatures to reach signer_count */
             if (off < tx_len) {
                 uint8_t wit_count = tx_data[off++];
                 off += (size_t)wit_count * (32 + 4627 + 8 + 2592);
+            }
+
+            /* Skip signer_count byte; pubkey of signer[0] follows.
+             * Wire: ... signer_count(1) || signers[each = pubkey(2592)+sig(4627)]
+             * Historical off-by-one: hashed signer_count+pubkey[0..2590] →
+             * fake fp stored for every TX (chain <00eef674> on v0.17.5). */
+            if (off < tx_len) {
+                off++;  /* signer_count */
             }
 
             /* Sender pubkey (2592 bytes) → SHA3-512 → hex fingerprint */
