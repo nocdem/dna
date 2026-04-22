@@ -192,29 +192,52 @@ The wallet address is a **SHA3-512 hash of the Dilithium5 public key**:
 - 64 bytes = 128 hexadecimal characters
 - Same as DNA Connect identity fingerprint
 
-## Transaction Format (v1)
+## Transaction Format (v2 — since v0.17.1)
 
 ```
-DNAC TRANSACTION v1:
+DNAC TRANSACTION v2:
 ┌─────────────────────────────────────────────────────────────┐
-│ HEADER                                                      │
-│   version: u8 = 1                                           │
-│   type: u8 = TX_SPEND | TX_TOKEN_CREATE                     │
-│   timestamp: u64                                            │
-│   tx_hash: bytes[64] (SHA3-512)                             │
+│ HEADER (82 bytes, DNAC_TX_HEADER_SIZE)                      │
+│   version: u8 = 2 (DNAC_PROTOCOL_VERSION)                   │
+│   type: u8 = TX_SPEND | TX_TOKEN_CREATE | TX_STAKE | ...    │
+│   timestamp: u64 (LE on wire, BE in preimage)               │
+│   tx_hash: bytes[64] (SHA3-512 over preimage)               │
+│   committed_fee: u64 BE (v0.17.1+, fee the TX pays)         │
 ├─────────────────────────────────────────────────────────────┤
 │ INPUTS: nullifier[64] + amount + token_id[64]               │
 ├─────────────────────────────────────────────────────────────┤
-│ OUTPUTS: recipient_fingerprint[64] + amount + token_id[64]  │
+│ OUTPUTS: version + recipient_fp[129] + amount + token_id    │
+│          + seed[32] + memo_len + memo                       │
 │   (token_id = zeros for native DNAC)                        │
 ├─────────────────────────────────────────────────────────────┤
-│ BALANCE: sum(inputs) >= sum(outputs), difference = burned fee│
+│ BALANCE: sum(inputs) == sum(outputs) + committed_fee         │
+│          (fee is explicit on wire, no longer inferred)      │
 ├─────────────────────────────────────────────────────────────┤
-│ WITNESS ATTESTATIONS (2+ required): Dilithium5 signatures   │
+│ WITNESSES: 32B id + Dilithium5 sig + timestamp + pubkey     │
 ├─────────────────────────────────────────────────────────────┤
-│ SENDER AUTHORIZATION: Dilithium5 signature                  │
+│ SIGNERS (1..4): Dilithium5 pubkey + signature               │
+├─────────────────────────────────────────────────────────────┤
+│ TYPE-SPECIFIC APPENDED FIELDS                               │
+│   STAKE:      commission_bps + unstake_dest_fp + purpose_tag │
+│   DELEGATE:   validator_pubkey + delegation_amount           │
+│   UNDELEGATE: validator_pubkey + amount                     │
+│   VALIDATOR_UPDATE: new_commission_bps + signed_at_block    │
+│   CHAIN_CONFIG:  param_id + new_value + effective_block     │
+│                  + proposal_nonce + signed_at_block         │
+│                  + valid_before_block + committee_votes[]   │
+├─────────────────────────────────────────────────────────────┤
+│ OPTIONAL: has_chain_def + chain_def blob (genesis TX only)  │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**Preimage domain separator (SEC-06):** `"DNAC_TX_V2\0"` (11B) prevents
+any future version preimage from colliding with v2. All multi-byte
+integers in the preimage are BIG-ENDIAN so the hash is platform-stable.
+
+**Min-fee gate:** non-GENESIS TXs must have
+`committed_fee >= DNAC_MIN_FEE_RAW` (0.01 DNAC = 10⁶ raw). Witness
+`nodus_witness_verify.c::Check 0` rejects before Dilithium5 sig verify
+(~500 µs/signer saved on DoS).
 
 ## Witness Infrastructure
 

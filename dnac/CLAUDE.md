@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines
 
-**Last Updated:** 2026-04-17 | **Status:** DESIGN | **Version:** v0.17.0-stake.wip (feature branch `stake-delegation-v1`)
+**Last Updated:** 2026-04-22 | **Status:** DESIGN | **Version:** v0.17.3-stake.wip (feature branch `stake-delegation-v1`)
 
 **Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains DNAC-specific guidelines only.
 
@@ -106,6 +106,61 @@ make -j$(nproc)
 | `DNAC_SIGNATURE_SIZE` | 4627 | Dilithium5 signature |
 | `DNAC_PUBKEY_SIZE` | 2592 | Dilithium5 public key |
 | `DNAC_WITNESSES_REQUIRED` | 2 | Witnesses needed for valid TX |
+| `DNAC_TX_HEADER_SIZE` | 82 | v0.17.1 TX wire header (see below) |
+| `DNAC_MIN_FEE_RAW` | 1,000,000 | 0.01 DNAC minimum fee for non-GENESIS |
+| `DNAC_PROTOCOL_VERSION` | 2 (`V2`) | Current TX wire version |
+
+---
+
+## TX Wire Format (v2 — since v0.17.1)
+
+Canonical layout from `dnac/src/transaction/serialize.c`. Offsets in the
+82-byte header are fixed constants exposed in `dnac/include/dnac/transaction.h`
+(`DNAC_TX_HEADER_SIZE`, `DNAC_TX_COMMITTED_FEE_OFF`, `DNAC_TX_BODY_OFF`).
+
+```
+offset  size  field
+------  ----  -----
+     0     1  version            (u8, DNAC_PROTOCOL_VERSION = 2)
+     1     1  type               (u8, DNAC_TX_*)
+     2     8  timestamp          (u64 LE on wire, BE in preimage)
+    10    64  tx_hash            (SHA3-512 over preimage below)
+    74     8  committed_fee     (u64 BE, v0.17.1+ — fee the TX pays)
+    82     1  input_count
+    83   ...  inputs             each: nullifier(64) + amount(u64 LE) + token_id(64) = 136B
+    ...    1  output_count
+    ...  ...  outputs            each: version(1) + fp(129) + amount(u64 LE) + token_id(64)
+                                       + seed(32) + memo_len(1) + memo[memo_len]
+    ...    1  witness_count
+    ...  ...  witnesses          each: witness_id(32) + sig(4627) + ts(8) + pk(2592)
+    ...    1  signer_count
+    ...  ...  signers            each: pubkey(2592) + sig(4627)
+    ...  ...  type-specific appended fields (STAKE/DELEGATE/etc.)
+    ...    1  has_chain_def      (u8, genesis TX only — optional trailer)
+    ...  ...  chain_def blob     (if has_chain_def)
+```
+
+**Preimage** (what `dnac_tx_compute_hash` / `nodus_witness_recompute_tx_hash`
+SHA3-512 over, all multi-byte integers BIG-ENDIAN):
+```
+"DNAC_TX_V2\0" (11B domain separator, SEC-06) ||
+version || type || timestamp_BE || chain_id[32] || committed_fee_BE ||
+inputs (nullifier + amount_BE + token_id)... ||
+outputs (version + fp + amount_BE + token_id + seed + memo_len + memo)... ||
+signer_count || signer_pubkeys... ||
+type_specific_appended_fields
+```
+
+**Min-fee gate:** non-GENESIS TXs must have `committed_fee >= DNAC_MIN_FEE_RAW`.
+Witness `verify.c::Check 0` rejects before expensive Dilithium5 sig verify.
+
+**When bumping header size again:** grep every `\b<old_size>\b` and
+`tx_len [<>] <old_size>` literal across `dnac/src/transaction/` AND
+`nodus/src/witness/`. The v1→v2 migration missed ~10 sites in nodus
+witness code (handlers, peer, bft, db, sync, chain_config, verify) and
+cost hours of debugging. Consolidate via `DNAC_TX_HEADER_SIZE` and
+`dnac_tx_read_committed_fee()` (static inline in `transaction.h` so
+`libnodus` standalone builds link without `libdna`).
 
 ---
 
