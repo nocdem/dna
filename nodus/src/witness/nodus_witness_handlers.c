@@ -1776,7 +1776,8 @@ static void handle_dnac_spend(nodus_witness_t *w,
                                                   DNAC_COMMITTEE_SIZE,
                                                   &cm_count);
 
-            uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
+            /* C7 fix: block-height epoch — cluster-agreed, no clock-skew fork risk */
+            uint64_t epoch = next_bh / (uint64_t)DNAC_EPOCH_LENGTH;
             const uint8_t *leader_pk = NULL;
             int leader_roster_idx = -1;
 

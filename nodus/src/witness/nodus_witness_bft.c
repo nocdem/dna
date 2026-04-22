@@ -384,7 +384,8 @@ bool nodus_witness_bft_is_leader(nodus_witness_t *w) {
     }
 
     if (my_idx < 0 || count <= 0) return false;
-    uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
+    /* C7 fix: block-height epoch — cluster-agreed, no clock-skew fork risk */
+    uint64_t epoch = next_bh / (uint64_t)DNAC_EPOCH_LENGTH;
     int leader = nodus_witness_bft_leader_index(epoch, w->current_view,
                                                   count);
     return leader == my_idx;
@@ -3739,7 +3740,8 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
             sender_idx = gossip_idx;
         }
 
-        uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
+        /* C7 fix: block-height epoch — cluster-agreed, no clock-skew fork risk */
+    uint64_t epoch = next_bh / (uint64_t)DNAC_EPOCH_LENGTH;
         int leader = nodus_witness_bft_leader_index(epoch, hdr->view, count);
         if (sender_idx < 0 || sender_idx != leader) {
             fprintf(stderr,
@@ -4714,7 +4716,8 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
         sender_idx = gossip_idx;
     }
 
-    uint64_t epoch = (uint64_t)time(NULL) / NODUS_T3_EPOCH_DURATION_SEC;
+    /* C7 fix: block-height epoch — cluster-agreed, no clock-skew fork risk */
+    uint64_t epoch = next_bh / (uint64_t)DNAC_EPOCH_LENGTH;
     int expected_leader = nodus_witness_bft_leader_index(
         epoch, nv->new_view, count);
     if (sender_idx < 0 || sender_idx != expected_leader) {
