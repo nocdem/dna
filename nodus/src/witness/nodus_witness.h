@@ -199,6 +199,33 @@ typedef struct {
     uint8_t     voter_id[NODUS_T3_WITNESS_ID_LEN];
     uint64_t    last_committed_round;
     uint8_t     signature[NODUS_SIG_BYTES];
+    /* C5 — prepared cert carried on the VIEW_CHANGE wire. Populated by
+     * handle_viewchg only after the incoming prepared_sigs verify
+     * against the PREPARED preimage + committee pubkey lookup AND reach
+     * 2f+1 quorum. has_prepared stays false if verification fails, if
+     * the sender did not carry a prepared cert, or if the cert had
+     * fewer than quorum-many valid sigs. Used by the new-leader scan at
+     * view-change quorum to pick the PBFT reproposal (highest height).
+     *
+     * sigs[] is sized to DNAC_COMMITTEE_SIZE (not NODUS_T3_MAX_WITNESSES)
+     * because prepared is committee-bound like prevotes/precommits —
+     * at most 2f+1 sigs fit. view_changes[DNAC_COMMITTEE_SIZE] × sigs
+     * [NODUS_T3_MAX_WITNESSES=64] would have blown past the stack
+     * budget of tests that stack-allocate nodus_witness_t (see F17 A1
+     * note above). Wire format stays NODUS_T3_MAX_WITNESSES-sized
+     * (nodus_tier3.h); handle_viewchg caps the decode loop at
+     * DNAC_COMMITTEE_SIZE when copying into this struct. */
+    struct {
+        bool       has_prepared;
+        uint64_t   height;
+        uint32_t   view;
+        uint8_t    tx_hash[NODUS_T3_TX_HASH_LEN];
+        uint32_t   n_sigs;
+        struct {
+            uint8_t voter_id[NODUS_T3_WITNESS_ID_LEN];
+            uint8_t signature[NODUS_SIG_BYTES];
+        } sigs[DNAC_COMMITTEE_SIZE];
+    } prepared;
 } nodus_witness_vc_record_t;
 
 /* ── Witness peer connection ─────────────────────────────────────── */
@@ -456,6 +483,17 @@ typedef struct nodus_witness {
             uint8_t signature[4627];              /* NODUS_SIG_BYTES */
         } sigs[64];                                /* NODUS_T3_MAX_WITNESSES */
     } last_prepared;
+
+    /* C5 — NEW_VIEW re-proposal binding.
+     *
+     * Set in handle_newview when the leader's NEW_VIEW arrives with
+     * has_reproposal=true: this witness will only accept a PROPOSE
+     * matching reproposal_tx_hash at reproposal_height as the first
+     * proposal under the new view. Cleared on first matching PROPOSE
+     * (gate satisfied) or on a subsequent NEW_VIEW that resets. */
+    bool        reproposal_required;
+    uint64_t    reproposal_height;
+    uint8_t     reproposal_tx_hash[NODUS_T3_TX_HASH_LEN];
 
     bool        running;
 } nodus_witness_t;
