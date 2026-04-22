@@ -70,8 +70,8 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
         return -1;
     }
 
-    /* Verify signature of nonce using client's public key */
-    int rc = nodus_verify(sig, sess->nonce, NODUS_NONCE_LEN, &sess->client_pk);
+    /* Verify signature of nonce using client's public key (C2: domain-tagged) */
+    int rc = nodus_verify_auth_challenge(sig, sess->nonce, &sess->client_pk);
     if (rc != 0) {
         size_t len = 0;
         nodus_t2_error(txn_id, NODUS_ERR_INVALID_SIGNATURE,
@@ -135,7 +135,8 @@ int nodus_auth_handle_auth(nodus_server_t *srv, nodus_session_t *sess,
         memcpy(sign_data + NODUS_KYBER_PK_BYTES, sess->nonce, NODUS_NONCE_LEN);
 
         nodus_sig_t kpk_sig;
-        if (nodus_sign(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) != 0) {
+        /* C2: KYBER_BIND domain */
+        if (nodus_sign_kyber_bind(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) != 0) {
             fprintf(stderr, "AUTH: Failed to sign Kyber PK for AUTH_OK\n");
             nodus_t2_auth_ok(txn_id, sess->token, buf, sizeof(buf), &len);
             nodus_tcp_send(sess->conn, buf, len);

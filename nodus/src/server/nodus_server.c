@@ -2529,9 +2529,11 @@ static void bf_handle_event(nodus_server_t *srv, int fd, uint32_t events) {
             bf_forward_fail(srv, b, c); return;
         }
 
-        /* Sign nonce with our secret key */
+        /* C2 fix: domain-tagged AUTH_CHALLENGE. bf_forward owns its own TCP
+         * socket and only runs outbound (we dialed the leader), so no
+         * inbound-conn oracle vector exists here — just the domain tag. */
         nodus_sig_t sig;
-        if (nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN, &srv->identity.sk) != 0) {
+        if (nodus_sign_auth_challenge(&sig, msg.nonce, &srv->identity.sk) != 0) {
             nodus_t2_msg_free(&msg);
             bf_forward_fail(srv, b, c); return;
         }
@@ -3955,10 +3957,24 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         /* Handle auth RESPONSES for outgoing inter-node connections (this
          * node opened the conn, sent hello, now receives challenge/auth_ok).
          * These must be handled regardless of require_peer_auth — they
-         * complete auth initiated by us. */
+         * complete auth initiated by us.
+         *
+         * C2 fix: enforce outbound-only gate. If an inbound conn sends a
+         * challenge frame, refuse to sign (closes the Dilithium5 oracle). */
         if (strcmp(msg.method, "challenge") == 0) {
+            if (!sess->conn->auth_initiated_by_us) {
+                fprintf(stderr, "INTER: challenge on inbound conn — refusing to sign (C2)\n");
+                uint8_t err_buf[256];
+                size_t err_len = 0;
+                nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                                "unexpected challenge on inbound conn",
+                                err_buf, sizeof(err_buf), &err_len);
+                nodus_tcp_send_raw(sess->conn, err_buf, err_len);
+                nodus_t2_msg_free(&msg);
+                return;
+            }
             nodus_sig_t sig;
-            nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN, &srv->identity.sk);
+            nodus_sign_auth_challenge(&sig, msg.nonce, &srv->identity.sk);
             uint8_t buf[8192];
             size_t rlen = 0;
             nodus_t2_auth(msg.txn_id, &sig, buf, sizeof(buf), &rlen);
@@ -4058,7 +4074,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     nodus_tcp_send_raw(sess->conn, resp_buf, rlen);
                 }
             } else if (strcmp(msg.method, "auth") == 0 && sess->nonce_pending) {
-                int rc = nodus_verify(&msg.sig, sess->nonce, NODUS_NONCE_LEN, &sess->client_pk);
+                /* C2: domain-tagged AUTH_CHALLENGE verify */
+                int rc = nodus_verify_auth_challenge(&msg.sig, sess->nonce, &sess->client_pk);
                 if (rc != 0) {
                     size_t rlen = 0;
                     nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
@@ -4079,7 +4096,8 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                         memcpy(sign_data, srv->identity.kyber_pk, NODUS_KYBER_PK_BYTES);
                         memcpy(sign_data + NODUS_KYBER_PK_BYTES, sess->nonce, NODUS_NONCE_LEN);
                         nodus_sig_t kpk_sig;
-                        if (nodus_sign(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) == 0) {
+                        /* C2: KYBER_BIND domain */
+                        if (nodus_sign_kyber_bind(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) == 0) {
                             nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
                                                     &srv->identity.pk, &kpk_sig,
                                                     resp_buf, sizeof(resp_buf), &rlen);
@@ -4647,7 +4665,8 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 nodus_tcp_send_raw(conn, resp_buf, rlen);
             }
         } else if (strcmp(msg.method, "auth") == 0 && conn->auth_nonce_pending) {
-            int rc = nodus_verify(&msg.sig, conn->auth_nonce, NODUS_NONCE_LEN, &conn->peer_pk);
+            /* C2: domain-tagged AUTH_CHALLENGE verify */
+            int rc = nodus_verify_auth_challenge(&msg.sig, conn->auth_nonce, &conn->peer_pk);
             if (rc != 0) {
                 size_t rlen = 0;
                 nodus_t2_error(msg.txn_id, NODUS_ERR_INVALID_SIGNATURE,
@@ -4666,7 +4685,8 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                     memcpy(sign_data, srv->identity.kyber_pk, NODUS_KYBER_PK_BYTES);
                     memcpy(sign_data + NODUS_KYBER_PK_BYTES, conn->auth_nonce, NODUS_NONCE_LEN);
                     nodus_sig_t kpk_sig;
-                    if (nodus_sign(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) == 0) {
+                    /* C2: KYBER_BIND domain */
+                    if (nodus_sign_kyber_bind(&kpk_sig, sign_data, sizeof(sign_data), &srv->identity.sk) == 0) {
                         nodus_t2_auth_ok_kyber(msg.txn_id, token, srv->identity.kyber_pk,
                                                 &srv->identity.pk, &kpk_sig,
                                                 resp_buf, sizeof(resp_buf), &rlen);
@@ -4684,12 +4704,22 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
                 fprintf(stderr, "WITNESS_AUTH_OK: inbound peer authenticated on port 4004\n");
             }
         } else if (strcmp(msg.method, "challenge") == 0) {
-            /* Outbound auth: sign the nonce and send auth response */
-            nodus_sig_t sig;
-            nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN, &srv->identity.sk);
-            size_t rlen = 0;
-            nodus_t2_auth(msg.txn_id, &sig, resp_buf, sizeof(resp_buf), &rlen);
-            nodus_tcp_send_raw(conn, resp_buf, rlen);
+            /* Outbound auth: sign the nonce and send auth response.
+             * C2 fix: outbound-only gate + domain-tagged sign. */
+            if (!conn->auth_initiated_by_us) {
+                fprintf(stderr, "WITNESS: challenge on inbound conn — refusing to sign (C2)\n");
+                size_t rlen = 0;
+                nodus_t2_error(msg.txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                                "unexpected challenge on inbound conn",
+                                resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send_raw(conn, resp_buf, rlen);
+            } else {
+                nodus_sig_t sig;
+                nodus_sign_auth_challenge(&sig, msg.nonce, &srv->identity.sk);
+                size_t rlen = 0;
+                nodus_t2_auth(msg.txn_id, &sig, resp_buf, sizeof(resp_buf), &rlen);
+                nodus_tcp_send_raw(conn, resp_buf, rlen);
+            }
         } else if (strcmp(msg.method, "auth_ok") == 0) {
             /* Outbound auth complete — send w_ident immediately */
             conn->authenticated = true;
@@ -4720,24 +4750,15 @@ static void on_witness_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
         return;
     }
 
-    /* C-02: Handle auth responses for OUTGOING connections (fallback).
-     * This path is reached when conn->authenticated is already true
-     * but a stale T2 message arrives. */
+    /* H8 fix: Post-auth stale-challenge branch removed. It was a secondary
+     * signing oracle (any post-auth peer could pump for sigs). Legitimate
+     * stale challenges simply get ignored or error-replied via the default
+     * case below — no signing. */
     {
         nodus_tier2_msg_t msg;
         memset(&msg, 0, sizeof(msg));
         if (nodus_t2_decode(payload, len, &msg) == 0) {
-            if (strcmp(msg.method, "challenge") == 0) {
-                /* Late challenge on already-authenticated connection */
-                nodus_sig_t sig;
-                nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN, &srv->identity.sk);
-                uint8_t buf[8192];
-                size_t rlen = 0;
-                nodus_t2_auth(msg.txn_id, &sig, buf, sizeof(buf), &rlen);
-                nodus_tcp_send_raw(conn, buf, rlen);
-                nodus_t2_msg_free(&msg);
-                return;
-            } else if (strcmp(msg.method, "auth_ok") == 0) {
+            if (strcmp(msg.method, "auth_ok") == 0) {
                 /* Already authenticated — ignore */
                 nodus_t2_msg_free(&msg);
                 return;

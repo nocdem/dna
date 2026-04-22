@@ -189,9 +189,9 @@ static void test_auth(void) {
         FAIL("expected challenge"); return;
     }
 
-    /* Step 2: Sign nonce, send AUTH */
+    /* Step 2: Sign nonce, send AUTH (C2: domain-tagged) */
     nodus_sig_t sig;
-    nodus_sign(&sig, last_resp.nonce, NODUS_NONCE_LEN, &client_id.sk);
+    nodus_sign_auth_challenge(&sig, last_resp.nonce, &client_id.sk);
 
     txn = next_txn++;
     nodus_t2_auth(txn, &sig, proto_buf, sizeof(proto_buf), &len);
@@ -480,9 +480,9 @@ static void test_ch_auth(void) {
         FAIL("expected challenge"); return;
     }
 
-    /* Step 2: Sign nonce, send AUTH */
+    /* Step 2: Sign nonce, send AUTH (C2: domain-tagged) */
     nodus_sig_t sig;
-    nodus_sign(&sig, ch_last_resp.nonce, NODUS_NONCE_LEN, &client_id.sk);
+    nodus_sign_auth_challenge(&sig, ch_last_resp.nonce, &client_id.sk);
 
     txn = ch_next_txn++;
     nodus_t2_auth(txn, &sig, ch_proto_buf, sizeof(ch_proto_buf), &len);

@@ -123,9 +123,9 @@ static int do_auth(void) {
         return -1;
     }
 
-    /* Step 2: Sign nonce and send AUTH */
+    /* Step 2: Sign nonce and send AUTH (C2: domain-tagged AUTH_CHALLENGE) */
     nodus_sig_t sig;
-    nodus_sign(&sig, last_response.nonce, NODUS_NONCE_LEN, &identity.sk);
+    nodus_sign_auth_challenge(&sig, last_response.nonce, &identity.sk);
 
     txn = next_txn++;
     nodus_t2_auth(txn, &sig, proto_buf, sizeof(proto_buf), &len);
@@ -726,8 +726,9 @@ static int cmd_ch_listen(const char *server_ip, uint16_t ch_port,
         return 1;
     }
 
+    /* C2: domain-tagged AUTH_CHALLENGE */
     nodus_sig_t sig;
-    nodus_sign(&sig, last_response.nonce, NODUS_NONCE_LEN, &identity.sk);
+    nodus_sign_auth_challenge(&sig, last_response.nonce, &identity.sk);
     txn = next_txn++;
     nodus_t2_auth(txn, &sig, proto_buf, sizeof(proto_buf), &len);
     nodus_tcp_send(conn, proto_buf, len);

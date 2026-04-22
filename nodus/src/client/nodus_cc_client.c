@@ -265,8 +265,9 @@ int nodus_client_cc_vote_send(const char *peer_address,
     /* ── Phase 2: sign challenge nonce, send auth, await auth_ok ─── */
     {
         nodus_sig_t sig;
-        if (nodus_sign(&sig, ctx.challenge_nonce, NODUS_NONCE_LEN,
-                        caller_sk) != 0) {
+        /* C2: domain-tagged AUTH_CHALLENGE sign (client is always outbound here) */
+        if (nodus_sign_auth_challenge(&sig, ctx.challenge_nonce,
+                                        caller_sk) != 0) {
             rc = -1; goto cleanup;
         }
         static uint8_t buf[NODUS_SIG_BYTES + 256];

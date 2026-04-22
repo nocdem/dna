@@ -139,7 +139,8 @@ int nodus_value_sign(nodus_value_t *val, const nodus_seckey_t *sk) {
     if (nodus_value_sign_payload(val, &payload, &payload_len) != 0)
         return -1;
 
-    int rc = nodus_sign(&val->signature, payload, payload_len, sk);
+    /* C2: VALUE_STORE domain */
+    int rc = nodus_sign_value_store(&val->signature, payload, payload_len, sk);
     free(payload);
     return rc;
 }
@@ -182,7 +183,8 @@ int nodus_value_verify(const nodus_value_t *val) {
         return -1;
     }
 
-    int rc = nodus_verify(&val->signature, payload, payload_len, &val->owner_pk);
+    /* C2: VALUE_STORE domain verify */
+    int rc = nodus_verify_value_store(&val->signature, payload, payload_len, &val->owner_pk);
     if (rc != 0) {
         char owner_hex[17];
         for (int i = 0; i < 8; i++)

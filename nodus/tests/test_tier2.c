@@ -71,11 +71,11 @@ static void test_challenge_roundtrip(void) {
 
 static void test_auth_roundtrip(void) {
     TEST("auth encode/decode");
-    /* Sign a nonce */
+    /* Sign a nonce (C2: domain-tagged AUTH_CHALLENGE) */
     uint8_t nonce[NODUS_NONCE_LEN];
     memset(nonce, 0xBB, sizeof(nonce));
     nodus_sig_t sig;
-    nodus_sign(&sig, nonce, sizeof(nonce), &test_id.sk);
+    nodus_sign_auth_challenge(&sig, nonce, &test_id.sk);
 
     size_t len = 0;
     nodus_t2_auth(2, &sig, msgbuf, sizeof(msgbuf), &len);

@@ -256,6 +256,11 @@ add_executable(test_cbor tests/test_cbor.c)
 target_link_libraries(test_cbor nodus)
 add_test(NAME test_cbor COMMAND test_cbor)
 
+# C2 domain separation test (needs extra nodus for dsa -> qgp_randombytes -> nodus circular dep)
+add_executable(test_sign_domain_separation tests/test_sign_domain_separation.c)
+target_link_libraries(test_sign_domain_separation nodus dsa nodus)
+add_test(NAME test_sign_domain_separation COMMAND test_sign_domain_separation)
+
 # Wire frame test
 add_executable(test_wire tests/test_wire.c)
 target_link_libraries(test_wire nodus)

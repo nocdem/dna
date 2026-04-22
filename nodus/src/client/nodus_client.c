@@ -653,7 +653,8 @@ static int do_auth(nodus_client_t *client) {
     uint8_t auth_nonce[NODUS_NONCE_LEN];
     memcpy(auth_nonce, resp->nonce, NODUS_NONCE_LEN);
     nodus_sig_t sig;
-    nodus_sign(&sig, auth_nonce, NODUS_NONCE_LEN, &client->identity.sk);
+    /* C2: domain-tagged AUTH_CHALLENGE sign (client-side, always outbound) */
+    nodus_sign_auth_challenge(&sig, auth_nonce, &client->identity.sk);
     free_pending(client, req);
 
     len = 0;
@@ -700,8 +701,9 @@ static int do_auth(nodus_client_t *client) {
             memcpy(sign_data, resp->kyber_pk, NODUS_KYBER_PK_BYTES);
             memcpy(sign_data + NODUS_KYBER_PK_BYTES, auth_nonce, NODUS_NONCE_LEN);
 
-            if (nodus_verify(&resp->kpk_sig, sign_data, sizeof(sign_data),
-                              &resp->server_pk) != 0) {
+            /* C2: KYBER_BIND domain verify */
+            if (nodus_verify_kyber_bind(&resp->kpk_sig, sign_data, sizeof(sign_data),
+                                          &resp->server_pk) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "Auth: ⚠ Kyber PK signature INVALID — possible MITM!");
                 free_pending(client, req);
                 free(buf);
@@ -4314,9 +4316,9 @@ static int ch_conn_do_auth(nodus_ch_conn_t *ch) {
         return -1;
     }
 
-    /* Step 2: Sign nonce and send AUTH */
+    /* Step 2: Sign nonce and send AUTH (C2: domain-tagged, channel client always outbound) */
     nodus_sig_t sig;
-    nodus_sign(&sig, resp->nonce, NODUS_NONCE_LEN, &ch->identity.sk);
+    nodus_sign_auth_challenge(&sig, resp->nonce, &ch->identity.sk);
     ch_conn_free_pending(ch, req);
 
     len = 0;

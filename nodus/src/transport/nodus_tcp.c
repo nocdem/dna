@@ -720,6 +720,9 @@ nodus_tcp_conn_t *nodus_tcp_connect(nodus_tcp_t *tcp,
     conn->fd = fd;
     conn->state = NODUS_CONN_CONNECTING;
     conn->port = port;
+    /* C2 fix: this is an outbound conn — we opened it. Challenge handler will
+     * only sign auth responses when this flag is true (closes signing oracle). */
+    conn->auth_initiated_by_us = true;
 
     /* Phase 3.2d: bind fd to slot, log it. */
     fprintf(stderr, "TCP_CONN: FD_SET slot=%d fd=%d direction=connect "

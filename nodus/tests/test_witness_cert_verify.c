@@ -16,6 +16,7 @@
  */
 
 #include "witness/nodus_witness_cert.h"
+#include "crypto/nodus_sign.h"
 #include "crypto/sign/qgp_dilithium.h"
 
 #include <stdio.h>

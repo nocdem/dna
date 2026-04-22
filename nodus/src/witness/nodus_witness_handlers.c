@@ -928,6 +928,12 @@ static void handle_dnac_spend_replay(nodus_witness_t *w,
 
     nodus_sig_t sig;
     memset(&sig, 0, sizeof(sig));
+    /* CERT domain kept RAW — DNAC client (dnac/src/transaction/builder.c:518)
+     * verifies witness cert sigs via qgp_dsa87_verify on the raw preimage.
+     * Adding domain tag here would break messenger-side verify without
+     * cross-repo migration. Deferred to a future lockstep nodus+dnac change.
+     * Preimage is 221B (block_hash + voter_id + height + chain_id + tx_index
+     * + status) — rich context, no overlap with other sign domains. */
     nodus_sign(&sig, preimage, sizeof(preimage), &w->server->identity.sk);
 
     uint8_t buf[8192];
@@ -1982,6 +1988,8 @@ void nodus_witness_send_spend_result(nodus_witness_t *w,
 
     nodus_sig_t sig;
     memset(&sig, 0, sizeof(sig));
+    /* CERT domain kept RAW — see dnac_spend_replay handler above for rationale
+     * (DNAC client cross-repo coupling, deferred to future migration). */
     nodus_sign(&sig, preimage, sizeof(preimage), &w->server->identity.sk);
 
     /* Build response with extended fields (status, wid, wpk, ts, bnr, ti,

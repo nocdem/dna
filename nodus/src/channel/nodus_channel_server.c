@@ -202,9 +202,9 @@ static void handle_client_auth(nodus_channel_server_t *cs,
         return;
     }
 
-    /* Verify signature over nonce */
-    if (nodus_verify(&msg->sig, sess->nonce, NODUS_NONCE_LEN,
-                      &sess->client_pk) != 0) {
+    /* Verify signature over nonce (C2: domain-tagged AUTH_CHALLENGE) */
+    if (nodus_verify_auth_challenge(&msg->sig, sess->nonce,
+                                     &sess->client_pk) != 0) {
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INVALID_SIGNATURE,
                         "invalid signature", buf, sizeof(buf), &len);
@@ -271,9 +271,9 @@ static void handle_node_auth(nodus_channel_server_t *cs,
         return;
     }
 
-    /* Verify signature over nonce */
-    if (nodus_verify(&msg->sig, sess->nonce, NODUS_NONCE_LEN,
-                      &sess->node_pk) != 0) {
+    /* Verify signature over nonce (C2: domain-tagged AUTH_CHALLENGE) */
+    if (nodus_verify_auth_challenge(&msg->sig, sess->nonce,
+                                     &sess->node_pk) != 0) {
         size_t len = 0;
         nodus_t2_error(msg->txn_id, NODUS_ERR_INVALID_SIGNATURE,
                         "invalid signature", buf, sizeof(buf), &len);
@@ -785,19 +785,25 @@ static void on_ch_frame(nodus_tcp_conn_t *conn,
             handle_node_auth(cs, ns, &msg);
         } else if (strcmp(msg.method, "challenge") == 0 && !ns->authenticated) {
             /* Outbound: peer sent challenge in response to our node_hello.
-             * Sign the nonce and send auth response. */
-            QGP_LOG_DEBUG(LOG_TAG, "Outbound: received challenge from %s:%u",
-                         conn->ip, (unsigned)conn->port);
-            nodus_sig_t sig;
-            if (nodus_sign(&sig, msg.nonce, NODUS_NONCE_LEN,
-                            &cs->identity->sk) == 0) {
-                uint8_t buf[8192];
-                size_t out_len = 0;
-                nodus_t2_auth(msg.txn_id, &sig,
-                               buf, sizeof(buf), &out_len);
-                nodus_tcp_send(conn, buf, out_len);
-                QGP_LOG_DEBUG(LOG_TAG, "Outbound: sent auth to %s:%u",
+             * Sign the nonce and send auth response.
+             * C2 fix: refuse to sign on inbound conns (closes signing oracle). */
+            if (!conn->auth_initiated_by_us) {
+                QGP_LOG_WARN(LOG_TAG, "Inbound channel conn sent challenge — "
+                                       "refusing to sign (C2)");
+            } else {
+                QGP_LOG_DEBUG(LOG_TAG, "Outbound: received challenge from %s:%u",
                              conn->ip, (unsigned)conn->port);
+                nodus_sig_t sig;
+                if (nodus_sign_auth_challenge(&sig, msg.nonce,
+                                                &cs->identity->sk) == 0) {
+                    uint8_t buf[8192];
+                    size_t out_len = 0;
+                    nodus_t2_auth(msg.txn_id, &sig,
+                                   buf, sizeof(buf), &out_len);
+                    nodus_tcp_send(conn, buf, out_len);
+                    QGP_LOG_DEBUG(LOG_TAG, "Outbound: sent auth to %s:%u",
+                                 conn->ip, (unsigned)conn->port);
+                }
             }
         } else if ((strcmp(msg.method, "auth_ok") == 0 ||
                      strcmp(msg.method, "node_auth_ok") == 0) &&

@@ -381,9 +381,9 @@ int nodus_t3_encode(const nodus_t3_msg_t *msg, const nodus_seckey_t *sk,
     if (enc_sign_payload(msg, buf, cap, &sign_len) != 0)
         return -1;
 
-    /* Step 2: Sign the payload */
+    /* Step 2: Sign the payload (C2: T3_ENVELOPE domain) */
     nodus_sig_t wsig;
-    if (nodus_sign(&wsig, buf, sign_len, sk) != 0)
+    if (nodus_sign_t3_envelope(&wsig, buf, sign_len, sk) != 0)
         return -1;
 
     /* Step 3: Encode full wire message (overwrites buf) */
@@ -1377,7 +1377,8 @@ int nodus_t3_verify(const nodus_t3_msg_t *msg, const nodus_pubkey_t *pk) {
 
     nodus_sig_t sig;
     memcpy(sig.bytes, msg->wsig, NODUS_SIG_BYTES);
-    int result = nodus_verify(&sig, sign_buf, sign_len, pk);
+    /* C2: T3_ENVELOPE domain verify */
+    int result = nodus_verify_t3_envelope(&sig, sign_buf, sign_len, pk);
     free(sign_buf);
     return result;
 }

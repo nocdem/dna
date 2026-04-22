@@ -75,6 +75,12 @@ typedef struct nodus_tcp_conn {
     bool                auth_nonce_pending;
     bool                authenticated;   /* Dilithium5 challenge-response completed */
 
+    /* C2 fix: set true when WE opened this outbound conn (via nodus_tcp_connect).
+     * Challenge handlers only sign auth responses on outbound conns to close the
+     * Dilithium5 signing oracle. Default false (calloc zero init) so inbound
+     * accepted conns correctly reject challenge frames. */
+    bool                auth_initiated_by_us;
+
     /* Auth state machine (inter-node / witness connections) */
     nodus_conn_auth_state_t auth_state;
     bool                    auth_required;

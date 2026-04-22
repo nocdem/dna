@@ -8,6 +8,7 @@
 
 #include "witness/nodus_witness_cert.h"
 
+#include "crypto/nodus_sign.h"
 #include "crypto/sign/qgp_dilithium.h"
 #include "crypto/utils/qgp_log.h"
 
@@ -82,6 +83,10 @@ int nodus_witness_verify_sync_certs(const uint8_t *block_hash,
                                                   preimage) != 0)
             continue;
 
+        /* CERT verify kept RAW — DNAC client also verifies these sigs via
+         * qgp_dsa87_verify in dnac/src/transaction/builder.c:518 and
+         * dnac/src/transaction/genesis.c:329. Tagging only one side breaks
+         * compat. Deferred to a future cross-repo migration. */
         if (qgp_dsa87_verify(c->signature, NODUS_SIG_BYTES,
                               preimage, sizeof(preimage),
                               voter->pubkey) != 0) {
