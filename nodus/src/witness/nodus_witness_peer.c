@@ -28,6 +28,7 @@
 #include "core/nodus_value.h"
 #include "witness/nodus_witness_sync.h"
 #include "crypto/utils/qgp_log.h"
+#include "dnac/transaction.h"   /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 
 #include <stdio.h>
 #include <string.h>
@@ -801,10 +802,11 @@ int nodus_witness_peer_handle_fwd_req(nodus_witness_t *w,
             LOG_TAG, fwd->tx_len, (unsigned long)fwd->fee);
 
     /* Extract nullifiers from tx_data for mempool entry.
-     * DNAC serialization: [version(1)] [type(1)] [timestamp(8)] [tx_hash(64)]
-     *                     [input_count(1)] [inputs...]
-     * Each input: [nullifier(64)] [amount(8)] */
-    const size_t input_count_offset = 1 + 1 + 8 + NODUS_T3_TX_HASH_LEN;
+     * DNAC v0.17.1 serialization:
+     *   [version(1)] [type(1)] [timestamp(8)] [tx_hash(64)] [committed_fee(8)]
+     *   [input_count(1)] [inputs...]
+     * Each input: [nullifier(64)] [amount(8)] [token_id(64)]. */
+    const size_t input_count_offset = DNAC_TX_HEADER_SIZE;
 
     if (fwd->tx_len < 2) return -1;
     uint8_t tx_type = fwd->tx_data[1];

@@ -29,6 +29,27 @@ extern "C" {
 #define DNAC_TX_MAX_WITNESSES       3
 #define DNAC_TX_MAX_SIGNERS         4
 
+/* v0.17.1+ wire format (see dnac/docs/plans/2026-04-22-committed-fee-wire-field-design.md).
+ *
+ *   Header (DNAC_TX_HEADER_SIZE = 82 B):
+ *     offset  0  version(1)        — must equal DNAC_PROTOCOL_VERSION (= DNAC_PROTOCOL_V2 = 2)
+ *     offset  1  type(1)
+ *     offset  2  timestamp(8, host-endian memcpy — legacy)
+ *     offset 10  tx_hash(64)       — SHA3-512 of preimage (v2 domain separator + body)
+ *     offset 74  committed_fee(8, BE)
+ *     offset 82  — body starts here (input_count ...)
+ *
+ *   Version byte: use DNAC_PROTOCOL_VERSION (from dnac.h) — single source of truth. */
+#define DNAC_TX_HEADER_SIZE         82   /* v1 was 74; bumped +8 for committed_fee */
+#define DNAC_TX_COMMITTED_FEE_OFF   74   /* offset of committed_fee in header */
+#define DNAC_TX_BODY_OFF            82   /* offset where input_count starts */
+#define DNAC_TX_INPUT_RECORD_SIZE   136  /* nullifier(64) + amount(8) + token_id(64) */
+
+/* Preimage domain separator (SEC-06): prepended to every v2 preimage before hashing.
+ * Prevents cross-version preimage collisions if a future v3 format reorders fields. */
+#define DNAC_TX_PREIMAGE_DOMAIN_V2   "DNAC_TX_V2\0"
+#define DNAC_TX_PREIMAGE_DOMAIN_V2_LEN  11   /* sizeof("DNAC_TX_V2") + 1 NUL */
+
 /* STAKE TX appended fields — wire & preimage constants
  * (design §2.3, Phase 5 Task 16).
  *
@@ -77,6 +98,11 @@ typedef struct {
  */
 typedef struct {
     uint8_t validator_pubkey[DNAC_PUBKEY_SIZE];   /**< Dilithium5 pubkey (2592B) */
+    uint64_t delegation_amount;                   /**< Explicit state amount (v0.17.1+, BE on wire).
+                                                   *   verify_tx enforces:
+                                                   *     delegation_amount >= 1
+                                                   *     delegation_amount <= DNAC_DEFAULT_TOTAL_SUPPLY
+                                                   *     Σ(native_in) == Σ(native_out) + committed_fee + delegation_amount */
 } dnac_tx_delegate_fields_t;
 
 /**
@@ -225,10 +251,14 @@ typedef struct {
  */
 struct dnac_transaction {
     /* Header */
-    uint8_t version;                             /**< Protocol version */
+    uint8_t version;                             /**< Protocol version (DNAC_TX_VERSION = 2 in v0.17.1+) */
     dnac_tx_type_t type;                         /**< MINT, SPEND, or BURN */
     uint64_t timestamp;                          /**< Unix timestamp */
-    uint8_t tx_hash[DNAC_TX_HASH_SIZE];         /**< SHA3-512 of transaction */
+    uint8_t tx_hash[DNAC_TX_HASH_SIZE];         /**< SHA3-512 of preimage */
+    uint64_t committed_fee;                      /**< Explicit native-DNAC fee (v0.17.1+, BE on wire).
+                                                  *   MUST be 0 for GENESIS, >= DNAC_MIN_FEE_RAW otherwise.
+                                                  *   verify_tx enforces:
+                                                  *     Σ(native_in) == Σ(native_out) + committed_fee + state_amount(tx_type) */
 
     /* Inputs */
     dnac_tx_input_t inputs[DNAC_TX_MAX_INPUTS];
@@ -573,6 +603,42 @@ uint64_t dnac_tx_total_input(const dnac_transaction_t *tx);
  * @return Total output amount
  */
 uint64_t dnac_tx_total_output(const dnac_transaction_t *tx);
+
+/**
+ * @brief Canonical reader for the committed_fee wire field (v0.17.1+).
+ *
+ * Single source of truth for parsing the committed_fee from a serialized
+ * TX buffer. All consumers (client verify, witness verify, apply_*, fee
+ * routing) MUST call this helper rather than reading offset 74 directly.
+ * Centralises the length check + version gate so a malformed v1 buffer
+ * cannot cause an out-of-bounds read (SEC-02).
+ *
+ * Defined `static inline` here so both libdna and libnodus compile their
+ * own copy against the same header-owned constants — no cross-library
+ * link dependency.
+ *
+ * @param tx_data    serialized TX bytes (wire format)
+ * @param tx_len     length of tx_data in bytes
+ * @param fee_out    [out] committed_fee in raw DNAC base units
+ * @return 0 on success, -1 if:
+ *           - tx_data is NULL, tx_len < DNAC_TX_HEADER_SIZE, OR
+ *           - tx_data[0] != DNAC_PROTOCOL_VERSION (i.e. v1 or unknown version)
+ *         On -1 the out value is left untouched.
+ *
+ * Big-endian decoding per §3 of the committed_fee design doc.
+ */
+static inline int dnac_tx_read_committed_fee(const uint8_t *tx_data,
+                                              size_t tx_len,
+                                              uint64_t *fee_out) {
+    if (!tx_data || !fee_out) return -1;
+    if (tx_len < DNAC_TX_HEADER_SIZE) return -1;
+    if (tx_data[0] != DNAC_PROTOCOL_VERSION) return -1;
+    uint64_t v = 0;
+    const uint8_t *p = tx_data + DNAC_TX_COMMITTED_FEE_OFF;
+    for (int i = 0; i < 8; i++) v = (v << 8) | (uint64_t)p[i];
+    *fee_out = v;
+    return 0;
+}
 
 /* ============================================================================
  * Genesis Transactions (v0.5.0)

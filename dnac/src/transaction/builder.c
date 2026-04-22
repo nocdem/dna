@@ -277,6 +277,9 @@ int dnac_tx_builder_build(dnac_tx_builder_t *builder,
     memcpy(builder->tx->signers[0].pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
     builder->tx->signer_count = 1;
 
+    /* v0.17.1 — explicit committed_fee in wire/preimage (design §3-§4). */
+    builder->tx->committed_fee = fee;
+
     /* Task 14 / design §2.3 — bind chain_id into the TX hash preimage.
      * dnac_get_chain_id returns NULL pre-genesis; in that case the
      * chain_id field stays zero (signature binds to the zero chain). */

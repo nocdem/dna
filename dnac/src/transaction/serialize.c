@@ -1,13 +1,25 @@
 /**
  * @file serialize.c
- * @brief Transaction serialization (v1 transparent)
+ * @brief Transaction serialization (v2: committed_fee + delegation_amount)
  *
- * v1 Wire Format:
- * - Header: version(1) + type(1) + timestamp(8) + tx_hash(64)
- * - Inputs: count(1) + [nullifier(64) + amount(8)]...
- * - Outputs: count(1) + [version(1) + fingerprint(129) + amount(8) + seed(32) + memo_len(1) + memo(n)]...
+ * v2 Wire Format (design: dnac/docs/plans/2026-04-22-committed-fee-wire-field-design.md):
+ * - Header (DNAC_TX_HEADER_SIZE = 82 B):
+ *     version(1) + type(1) + timestamp(8) + tx_hash(64) + committed_fee(8, BE)
+ * - Inputs:   count(1) + [nullifier(64) + amount(8) + token_id(64)]...
+ * - Outputs:  count(1) + [version(1) + fingerprint(129) + amount(8) + token_id(64) + seed(32) + memo_len(1) + memo(n)]...
  * - Witnesses: count(1) + [witness_id(32) + signature(4627) + timestamp(8) + server_pubkey(2592)]...
- * - Signers: count(1) + [pubkey(2592) + signature(4627)]...
+ * - Signers:   count(1) + [pubkey(2592) + signature(4627)]...
+ * - Type-specific appended fields:
+ *     STAKE        : commission_bps(u16 BE) + unstake_destination_fp(64) + purpose_tag(17)
+ *     DELEGATE     : validator_pubkey(2592) + delegation_amount(u64 BE)   [delegation_amount NEW in v2]
+ *     UNDELEGATE   : validator_pubkey(2592) + amount(u64 BE)
+ *     VALIDATOR_UPDATE : new_commission_bps(u16 BE) + signed_at_block(u64 BE)
+ *     CHAIN_CONFIG : (see shared/dnac/chain_config_wire.h)
+ * - Optional trailer: has_chain_def flag + chain_def blob (genesis only)
+ *
+ * v1 serializer + deserializer have been DELETED. Dead chains stay on disk under
+ * /var/lib/nodus/data.pre-v0.17.1/ for forensic inspection; use
+ * `git checkout 7893f1fa` to decode them.
  */
 
 #include "dnac/transaction.h"
@@ -60,15 +72,13 @@ static inline uint64_t be64_from_bytes(const uint8_t in[8]) {
     return v;
 }
 
-/* Calculate v1 transaction size */
-static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
+/* Calculate v2 transaction size */
+static size_t calc_tx_size(const dnac_transaction_t *tx) {
     size_t size = 0;
 
-    /* Header */
-    size += 1;  /* version */
-    size += 1;  /* type */
-    size += 8;  /* timestamp */
-    size += DNAC_TX_HASH_SIZE;  /* tx_hash (64) */
+    /* Header (82 bytes in v2) */
+    size += DNAC_TX_HEADER_SIZE;
+    /* = version(1) + type(1) + timestamp(8) + tx_hash(64) + committed_fee(8) */
 
     /* Inputs */
     size += 1;  /* input_count */
@@ -95,9 +105,9 @@ static size_t calc_tx_size_v1(const dnac_transaction_t *tx) {
     if (tx->type == DNAC_TX_STAKE) {
         size += 2 + DNAC_STAKE_UNSTAKE_DEST_FP_SIZE + DNAC_STAKE_PURPOSE_TAG_LEN;
     }
-    /* Phase 5 Task 17. DELEGATE carries validator_pubkey(2592). */
+    /* Phase 5 Task 17. DELEGATE carries validator_pubkey(2592) + delegation_amount(u64 BE, v0.17.1+). */
     if (tx->type == DNAC_TX_DELEGATE) {
-        size += DNAC_PUBKEY_SIZE;
+        size += DNAC_PUBKEY_SIZE + 8;
     }
     /* Phase 5 Task 18. UNDELEGATE carries validator_pubkey(2592) + amount(u64). */
     if (tx->type == DNAC_TX_UNDELEGATE) {
@@ -135,7 +145,7 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
                       size_t *written_out) {
     if (!tx || !buffer || !written_out) return DNAC_ERROR_INVALID_PARAM;
 
-    size_t needed = calc_tx_size_v1(tx);
+    size_t needed = calc_tx_size(tx);
     if (buffer_len < needed) {
         *written_out = needed;  /* Return needed size */
         return DNAC_ERROR_INVALID_PARAM;
@@ -143,11 +153,17 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
 
     uint8_t *ptr = buffer;
 
-    /* Header */
+    /* Header (v2: 82 bytes, see DNAC_TX_HEADER_SIZE) */
     WRITE_U8(ptr, tx->version);
     WRITE_U8(ptr, tx->type);
     WRITE_U64(ptr, tx->timestamp);
     WRITE_BLOB(ptr, tx->tx_hash, DNAC_TX_HASH_SIZE);
+    /* committed_fee: 8 bytes, big-endian (v0.17.1+) */
+    {
+        uint8_t fee_be[8];
+        be64_to_bytes(tx->committed_fee, fee_be);
+        WRITE_BLOB(ptr, fee_be, 8);
+    }
 
     /* Inputs */
     WRITE_U8(ptr, tx->input_count);
@@ -198,9 +214,12 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
                    DNAC_STAKE_UNSTAKE_DEST_FP_SIZE);
         WRITE_BLOB(ptr, DNAC_STAKE_PURPOSE_TAG, DNAC_STAKE_PURPOSE_TAG_LEN);
     }
-    /* Phase 5 Task 17. DELEGATE: validator_pubkey[2592]. */
+    /* Phase 5 Task 17 + v0.17.1. DELEGATE: validator_pubkey[2592] || delegation_amount(u64 BE). */
     if (tx->type == DNAC_TX_DELEGATE) {
         WRITE_BLOB(ptr, tx->delegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
+        uint8_t amount_be[8];
+        be64_to_bytes(tx->delegate_fields.delegation_amount, amount_be);
+        WRITE_BLOB(ptr, amount_be, 8);
     }
     /* Phase 5 Task 18. UNDELEGATE: validator_pubkey[2592] || amount(u64 BE). */
     if (tx->type == DNAC_TX_UNDELEGATE) {
@@ -275,7 +294,14 @@ int dnac_tx_serialize(const dnac_transaction_t *tx,
 int dnac_tx_deserialize(const uint8_t *buffer,
                         size_t buffer_len,
                         dnac_transaction_t **tx_out) {
-    if (!buffer || !tx_out || buffer_len < 74) {  /* Minimum header size */
+    /* v2 header minimum (SEC-02: length check MUST precede any offset
+     * read including the committed_fee at offset 74). */
+    if (!buffer || !tx_out || buffer_len < DNAC_TX_HEADER_SIZE) {
+        return DNAC_ERROR_INVALID_PARAM;
+    }
+    /* v2 version gate (SEC-02): reject v1 (and unknown future versions)
+     * BEFORE reading any wire field beyond byte 0. */
+    if (buffer[0] != DNAC_PROTOCOL_VERSION) {
         return DNAC_ERROR_INVALID_PARAM;
     }
 
@@ -285,7 +311,7 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     const uint8_t *ptr = buffer;
     const uint8_t *end = buffer + buffer_len;
 
-    /* Header */
+    /* Header (v2: 82 bytes) */
     READ_U8(ptr, tx->version);
     READ_U8(ptr, tx->type);
     /* M-32: Validate tx_type is within known range.
@@ -297,6 +323,9 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     }
     READ_U64(ptr, tx->timestamp);
     READ_BLOB(ptr, tx->tx_hash, DNAC_TX_HASH_SIZE);
+    /* committed_fee: 8 bytes, big-endian (v0.17.1+) */
+    tx->committed_fee = be64_from_bytes(ptr);
+    ptr += 8;
 
     /* Inputs */
     uint8_t input_count;
@@ -410,13 +439,15 @@ int dnac_tx_deserialize(const uint8_t *buffer,
         }
         ptr += DNAC_STAKE_PURPOSE_TAG_LEN;
     }
-    /* Phase 5 Task 17. DELEGATE: validator_pubkey[2592]. */
+    /* Phase 5 Task 17 + v0.17.1. DELEGATE: validator_pubkey[2592] || delegation_amount(u64 BE). */
     if (tx->type == DNAC_TX_DELEGATE) {
-        if (ptr + DNAC_PUBKEY_SIZE > end) {
+        if (ptr + DNAC_PUBKEY_SIZE + 8 > end) {
             free(tx);
             return DNAC_ERROR_INVALID_PARAM;
         }
         READ_BLOB(ptr, tx->delegate_fields.validator_pubkey, DNAC_PUBKEY_SIZE);
+        tx->delegate_fields.delegation_amount = be64_from_bytes(ptr);
+        ptr += 8;
     }
     /* Phase 5 Task 18. UNDELEGATE: validator_pubkey[2592] || amount(u64 BE). */
     if (tx->type == DNAC_TX_UNDELEGATE) {
@@ -498,3 +529,6 @@ int dnac_tx_deserialize(const uint8_t *buffer,
     *tx_out = tx;
     return DNAC_SUCCESS;
 }
+
+/* dnac_tx_read_committed_fee moved to dnac/transaction.h as static inline
+ * so libnodus (nodus_witness_*.c) can use it without linking libdna. */

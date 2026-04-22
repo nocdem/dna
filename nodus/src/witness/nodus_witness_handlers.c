@@ -23,6 +23,7 @@
 #include "witness/nodus_witness_committee.h"
 #include "protocol/nodus_cbor.h"
 #include "protocol/nodus_tier2.h"
+#include "dnac/transaction.h"   /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 #include "transport/nodus_tcp.h"
 #include "server/nodus_server.h"
 #include "crypto/nodus_sign.h"
@@ -1573,15 +1574,17 @@ static void handle_dnac_spend(nodus_witness_t *w,
     }
 
     /* Extract nullifiers from tx_data.
-     * DNAC serialization: [version(1)] [type(1)] [timestamp(8)] [tx_hash(64)]
-     *                     [input_count(1)] [inputs...]
-     * Each input: [nullifier(64)] [amount(8)]
-     * For GENESIS: input_count == 0 */
+     * DNAC v0.17.1 serialization:
+     *   [version(1)] [type(1)] [timestamp(8)] [tx_hash(64)] [committed_fee(8)]
+     *   [input_count(1)] [inputs...]
+     * Each input: [nullifier(64)] [amount(8)] [token_id(64)]
+     * For GENESIS: input_count == 0. Offset comes from the canonical
+     * dnac/transaction.h DNAC_TX_HEADER_SIZE so libnodus and libdna stay
+     * wire-identical. */
     uint8_t nullifiers[NODUS_T3_MAX_TX_INPUTS][NODUS_T3_NULLIFIER_LEN];
     uint8_t nullifier_count = 0;
 
-    /* Header: version(1) + type(1) + timestamp(8) + tx_hash(64) = 74 bytes */
-    const size_t input_count_offset = 1 + 1 + 8 + NODUS_T3_TX_HASH_LEN;
+    const size_t input_count_offset = DNAC_TX_HEADER_SIZE;
 
     if (tx_type != NODUS_W_TX_GENESIS) {
         if (tx_len < input_count_offset + 1) {

@@ -40,6 +40,7 @@
 #include "crypto/utils/qgp_fingerprint.h"
 
 #include "dnac/dnac.h"
+#include "dnac/safe_math.h"      /* safe_add_u64 for SEC-01 consistency check */
 #include "dnac/validator.h"
 #include "dnac/transaction.h"   /* DNAC_STAKE_PURPOSE_TAG_LEN */
 
@@ -592,7 +593,8 @@ static int update_utxo_set(nodus_witness_t *w,
                               const uint8_t *tx_data,
                               uint32_t tx_len,
                               uint64_t *fee_out) {
-    if (!tx_data || tx_len < 75) {
+    /* v2 wire: need at least the 82-byte header + 1 input_count byte. */
+    if (!tx_data || tx_len < DNAC_TX_HEADER_SIZE + 1) {
         fprintf(stderr, "%s: update_utxo_set: invalid tx_data (ptr=%p len=%u)\n",
                 LOG_TAG, (void *)tx_data, tx_len);
         return -1;
@@ -605,9 +607,9 @@ static int update_utxo_set(nodus_witness_t *w,
         }
     }
 
-    /* Parse to output section:
-     * Header: version(1) + type(1) + timestamp(8) + tx_hash(64) = 74 */
-    size_t offset = 74;
+    /* Parse to output section.
+     * v2 header (82 B): version(1) + type(1) + timestamp(8) + tx_hash(64) + committed_fee(8) */
+    size_t offset = DNAC_TX_HEADER_SIZE;
     if (offset >= tx_len) {
         fprintf(stderr, "%s: update_utxo_set: tx_data too short for inputs (len=%u)\n",
                 LOG_TAG, tx_len);
@@ -701,145 +703,56 @@ static int update_utxo_set(nodus_witness_t *w,
         }
     }
 
-    /* ── Burn UTXO for fee ──────────────────────────────────────── */
-    /* Determine fee token_id from first input (zeros = native DNAC).
-     * For token transfers, fee is charged in the same token being sent;
-     * for TOKEN_CREATE, fee is always native DNAC (enforced below). */
-    uint8_t fee_token_id[64] = {0};
-    if (tx_type != NODUS_W_TX_GENESIS && nullifier_count > 0 && tx_len >= 74 + 1 + 64 + 8 + 64) {
-        /* Input layout: nullifier(64) + amount(8) + token_id(64)
-         * First input's token_id starts at offset 74 + 1 + 64 + 8 = 147 */
-        memcpy(fee_token_id, tx_data + 74 + 1 + 64 + 8, 64);
-    }
-
-    uint64_t fee = 0;
-    if (tx_type == NODUS_W_TX_TOKEN_CREATE) {
-        /* TOKEN_CREATE: fee = input DNAC - change DNAC output.
-         * total_output includes token genesis supply (different token),
-         * so we sum only native DNAC outputs for fee calculation. */
-        uint8_t zeros[64];
-        memset(zeros, 0, sizeof(zeros));
-        uint64_t dnac_output = 0;
-        /* Re-parse outputs to sum only native DNAC amounts */
-        size_t foff = 74; /* header */
-        uint8_t ic = tx_data[foff++];
-        for (int i = 0; i < ic; i++)
-            foff += 64 + 8 + 64; /* nullifier + amount + token_id */
-        uint8_t oc = tx_data[foff++];
-        for (int i = 0; i < oc; i++) {
-            foff += 1; /* version */
-            foff += 129; /* fingerprint */
-            uint64_t oamt;
-            memcpy(&oamt, tx_data + foff, 8);
-            foff += 8;
-            uint8_t otid[64];
-            memcpy(otid, tx_data + foff, 64);
-            foff += 64;
-            foff += 32; /* nullifier_seed */
-            uint8_t mlen = tx_data[foff++];
-            foff += mlen;
-            if (memcmp(otid, zeros, 64) == 0)
-                dnac_output += oamt;
-        }
-        if (total_input > dnac_output)
-            fee = total_input - dnac_output;
-        /* TOKEN_CREATE fee is always native DNAC (creating a new token
-         * shouldn't charge fee in that token since creator doesn't own any yet). */
-        memset(fee_token_id, 0, 64);
-    } else if (tx_type != NODUS_W_TX_GENESIS && total_input > total_output) {
-        fee = total_input - total_output;
-    }
-
-    /* v0.16 stage C.3 — fees burn directly into total_burned.
+    /* ── v0.17.1 fee routing: read committed_fee directly from TX wire ──
      *
-     * route_tx_fee ignores tx_type in v0.16 (all fees burn regardless
-     * of TX type), but carries the type parameter per design §2.2 so
-     * future per-type routing variants (e.g. congestion-dependent
-     * burn fraction) can slot in without another signature change.
+     * Prior versions inferred `fee = total_input − total_output`, then
+     * used a first-input-token_id proxy to guard against "token-as-fee"
+     * paths (the `native_fee` bool). That proxy misfired on every token
+     * SPEND (first input was the token UTXO, so the guard skipped the
+     * burn — invariant hard gate rejected the block: see
+     * dnac/docs/plans/2026-04-22-committed-fee-wire-field-design.md §1).
      *
-     * ⚠ Transitional SB-1 note:
-     *   For SPEND + TOKEN_CREATE the implicit `fee = input_sum −
-     *   output_sum` equals the user-intended fee — correctly burned.
-     *   For STAKE / DELEGATE / UNDELEGATE / UNSTAKE the same
-     *   subtraction inflates the fee by the stake/delegation amount
-     *   (SB-1 original cause). Routing THAT figure to burn would
-     *   reintroduce supply deflation. Until a committed_fee wire
-     *   field lands (separate change), these TX types burn ZERO:
-     *   apply_delegate + siblings treat all input − output as state-
-     *   transition amount, and fee routing is skipped.
+     * v0.17.1 ships the explicit `committed_fee` wire field in the TX
+     * header, hashed into the signed preimage. route_tx_fee burns it
+     * unconditionally for every non-GENESIS TX. DELEGATE and UNDELEGATE
+     * no longer absorb the fee into state amount — their `delegation_
+     * amount` / `amount` type-specific fields are now independent wire
+     * values (SB-1 debt closed).
      *
-     * Token-fee handling remains deferred: if fee_token_id is
-     * non-zero (custom-token burn path), we also skip for v0.16.
+     * total_input/total_output remain computed above (still logged) for
+     * operator visibility; the supply-invariant hard gate is the
+     * authoritative consensus check.
      */
-    /* v0.16 stage C.3 — fee routing, per-TX-type.
-     *
-     * SPEND/TOKEN_CREATE: fee = input - output IS the user fee — burn all.
-     * STAKE: appended self_stake is fixed at DNAC_SELF_STAKE_AMOUNT, so
-     *   actual_fee = fee - DNAC_SELF_STAKE_AMOUNT — burn the residual.
-     * UNSTAKE/VALIDATOR_UPDATE/CHAIN_CONFIG: fee-only TXs (no state
-     *   amount moved) — burn full fee.
-     * DELEGATE/UNDELEGATE: variable state amount; apply_delegate /
-     *   apply_undelegate absorb the implicit fee into delegation_amount
-     *   (preserves invariant from their side). Separating actual fee
-     *   from state amount requires the committed_fee wire field
-     *   (tracked as SB-1) — no burn here until then.
-     * GENESIS: no fee concept.
-     *
-     * Pre-v0.16.1 this function blanket-skipped all stake-family TXs,
-     * leaking exactly one fee's worth per TX past the supply-invariant
-     * hard gate (which rejected every stake-family block). */
-    uint8_t zeros_tok[64] = {0};
-    bool native_fee = (memcmp(fee_token_id, zeros_tok, 64) == 0);
-    uint64_t actual_fee = 0;
-    if (fee > 0 && native_fee) {
-        switch (tx_type) {
-            case NODUS_W_TX_STAKE:
-                actual_fee = (fee > DNAC_SELF_STAKE_AMOUNT)
-                             ? fee - DNAC_SELF_STAKE_AMOUNT : 0;
-                break;
-            case NODUS_W_TX_DELEGATE:
-                /* apply_delegate computes delegation_amount = input - output,
-                 * which implicitly absorbs the user fee into the delegation.
-                 * Pre-committed_fee wire field this is the v0.16 SB-1 contract. */
-                actual_fee = 0;
-                break;
-            /* UNDELEGATE falls through to default: apply_undelegate emits a
-             * synthetic UTXO for the wire-field amount (separate from TX
-             * outputs), so fee = input - output is NOT absorbed by any state
-             * transition — burn it like other fee-only TXs. */
-            case NODUS_W_TX_GENESIS:
-                actual_fee = 0;
-                break;
-            default:
-                /* SPEND, TOKEN_CREATE, UNSTAKE, VALIDATOR_UPDATE, CHAIN_CONFIG. */
-                actual_fee = fee;
-                break;
+    uint64_t committed_fee = 0;
+    if (tx_type != NODUS_W_TX_GENESIS) {
+        if (dnac_tx_read_committed_fee(tx_data, tx_len, &committed_fee) != 0) {
+            fprintf(stderr,
+                    "%s: update_utxo_set: dnac_tx_read_committed_fee failed "
+                    "(tx_type=%u, len=%u) — malformed or v1 wire\n",
+                    LOG_TAG, (unsigned)tx_type, tx_len);
+            return -1;
         }
-        if (actual_fee > 0) {
-            if (route_tx_fee(w, tx_type, actual_fee, tx_hash) != 0) {
-                fprintf(stderr, "%s: route_tx_fee failed (fee=%llu actual=%llu)\n",
-                        LOG_TAG, (unsigned long long)fee,
-                        (unsigned long long)actual_fee);
+        if (committed_fee > 0) {
+            if (route_tx_fee(w, tx_type, committed_fee, tx_hash) != 0) {
+                fprintf(stderr,
+                        "%s: route_tx_fee failed (committed_fee=%llu)\n",
+                        LOG_TAG, (unsigned long long)committed_fee);
                 return -1;
             }
         }
     }
-    if (fee > 0 && actual_fee != fee) {
-        fprintf(stderr,
-                "%s: fee observed %llu routed %llu (tx_type=%u, %llu absorbed by state transition)\n",
-                LOG_TAG, (unsigned long long)fee,
-                (unsigned long long)actual_fee, (unsigned)tx_type,
-                (unsigned long long)(fee - actual_fee));
-    }
 
-    if (fee_out) *fee_out = fee;
+    if (fee_out) *fee_out = committed_fee;
 
-    fprintf(stderr, "%s: UTXO set updated: -%d spent, +%d/%d outputs, fee=%llu (block %llu)\n",
+    fprintf(stderr,
+            "%s: UTXO set updated: -%d spent, +%d/%d outputs, fee=%llu (block %llu)\n",
             LOG_TAG,
             (tx_type != NODUS_W_TX_GENESIS) ? nullifier_count : 0,
             stored, output_count,
-            (unsigned long long)fee,
+            (unsigned long long)committed_fee,
             (unsigned long long)block_height);
+    (void)total_input;
+    (void)total_output;
     return 0;
 }
 
@@ -1112,9 +1025,9 @@ static int compute_appended_fields_offset(const uint8_t *tx_data,
                                             const uint8_t **signer_pk_out) {
     if (!tx_data || !off_out) return -1;
 
-    /* header: version(1) + type(1) + timestamp(8) + tx_hash(64) = 74 */
-    if (tx_len < 74) return -1;
-    size_t off = 74;
+    /* v2 header: version(1) + type(1) + timestamp(8) + tx_hash(64) + committed_fee(8) = 82 */
+    if (tx_len < DNAC_TX_HEADER_SIZE) return -1;
+    size_t off = DNAC_TX_HEADER_SIZE;
 
     /* Inputs */
     if (off >= tx_len) return -1;
@@ -1168,12 +1081,12 @@ static int sum_native_dnac_in_out(const uint8_t *tx_data,
     static const uint8_t zero_tid[64] = {0};
 
     if (!tx_data || !in_sum_out || !out_sum_out) return -1;
-    if (tx_len < 74) return -1;
+    if (tx_len < DNAC_TX_HEADER_SIZE) return -1;
 
     uint64_t in_sum = 0;
     uint64_t out_sum = 0;
 
-    size_t off = 74;
+    size_t off = DNAC_TX_HEADER_SIZE;
 
     if (off >= tx_len) return -1;
     uint8_t input_count = tx_data[off++];
@@ -1237,8 +1150,10 @@ static int apply_delegate(nodus_witness_t *w,
         return -1;
     }
 
-    if (off + DNAC_PUBKEY_SIZE > tx_len) {
-        fprintf(stderr, "%s: apply_delegate: truncated appended fields\n", LOG_TAG);
+    /* v0.17.1 DELEGATE type-specific fields: validator_pubkey(2592) || delegation_amount(u64 BE). */
+    if (off + DNAC_PUBKEY_SIZE + 8 > tx_len) {
+        fprintf(stderr, "%s: apply_delegate: truncated appended fields (need %zu, have %u)\n",
+                LOG_TAG, off + DNAC_PUBKEY_SIZE + 8, tx_len);
         return -1;
     }
     const uint8_t *validator_pubkey = tx_data + off;
@@ -1250,37 +1165,59 @@ static int apply_delegate(nodus_witness_t *w,
         return -1;
     }
 
-    /* Compute delegation_amount from native-DNAC flows.
-     *
-     * v0.16 transitional state (Stage C.4): DELEGATE carries zero
-     * protocol fee because the TX wire format does not yet include an
-     * explicit `committed_fee` field. update_utxo_set's fee routing
-     * (Stage C.3) also skips the stake-family TX types for the same
-     * reason. With fee ≡ 0, (input_sum − output_sum) equals the
-     * delegation amount exactly and the SB-1 supply-inflation class is
-     * neutralized (no fee is double-counted into total_burned).
-     *
-     * Final fix — add an explicit fee field to the TX wire body and
-     * switch to
-     *     delegation_amount = input_sum − output_sum − committed_fee;
-     * the committed_fee parameter below is kept in the signature so
-     * that upgrade is a local edit.
-     */
-    (void)committed_fee;
+    /* Read explicit delegation_amount from wire (v0.17.1: no more implicit
+     * input−output inference; SB-1 debt closed). The canonical consistency
+     * rule Σ(native_in) == Σ(native_out) + committed_fee + delegation_amount
+     * is enforced below with safe_add to rule out unsigned-wrap attacks
+     * (SEC-01). */
+    const uint8_t *delegation_amount_be = tx_data + off + DNAC_PUBKEY_SIZE;
+    uint64_t delegation_amount = 0;
+    for (int i = 0; i < 8; i++) {
+        delegation_amount = (delegation_amount << 8) | (uint64_t)delegation_amount_be[i];
+    }
+
+    /* SEC-01 bounds: delegation_amount must be non-zero and within supply. */
+    if (delegation_amount == 0) {
+        fprintf(stderr, "%s: apply_delegate: zero delegation_amount rejected\n",
+                LOG_TAG);
+        return -1;
+    }
+    if (delegation_amount > DNAC_DEFAULT_TOTAL_SUPPLY) {
+        fprintf(stderr, "%s: apply_delegate: delegation_amount (%llu) exceeds total supply\n",
+                LOG_TAG, (unsigned long long)delegation_amount);
+        return -1;
+    }
+
+    /* Addition-only consistency check (SEC-01): reject any TX where the
+     * native flow does not balance against the declared fee + state amount.
+     * Overflow in the RHS accumulation is itself a reject signal. */
     uint64_t input_sum = 0, output_sum = 0;
     if (sum_native_dnac_in_out(tx_data, tx_len, &input_sum, &output_sum) != 0) {
         fprintf(stderr, "%s: apply_delegate: sum_native_dnac_in_out failed\n",
                 LOG_TAG);
         return -1;
     }
-    if (input_sum <= output_sum) {
-        fprintf(stderr, "%s: apply_delegate: input_sum (%llu) <= output_sum (%llu)\n",
+    uint64_t expected_in = 0;
+    if (safe_add_u64(output_sum, committed_fee, &expected_in) != 0 ||
+        safe_add_u64(expected_in, delegation_amount, &expected_in) != 0) {
+        fprintf(stderr, "%s: apply_delegate: RHS overflow (out=%llu fee=%llu delegation=%llu)\n",
                 LOG_TAG,
-                (unsigned long long)input_sum,
-                (unsigned long long)output_sum);
+                (unsigned long long)output_sum,
+                (unsigned long long)committed_fee,
+                (unsigned long long)delegation_amount);
         return -1;
     }
-    uint64_t delegation_amount = input_sum - output_sum;
+    if (input_sum != expected_in) {
+        fprintf(stderr,
+                "%s: apply_delegate: consistency violation "
+                "(in=%llu != out=%llu + fee=%llu + delegation=%llu)\n",
+                LOG_TAG,
+                (unsigned long long)input_sum,
+                (unsigned long long)output_sum,
+                (unsigned long long)committed_fee,
+                (unsigned long long)delegation_amount);
+        return -1;
+    }
 
     /* Fetch target validator. */
     dnac_validator_record_t v;
@@ -1966,8 +1903,8 @@ int apply_tx_to_state(nodus_witness_t *w,
         uint8_t out_tids[NODUS_WITNESS_MAX_TX_OUTPUTS][64];
         int    out_total = 0;
 
-        if (tx_len > 75) {
-            size_t off = 74; /* skip header: version(1)+type(1)+timestamp(8)+tx_hash(64) */
+        if (tx_len > DNAC_TX_HEADER_SIZE) {
+            size_t off = DNAC_TX_HEADER_SIZE; /* v0.17.1: header = ver(1)+type(1)+ts(8)+tx_hash(64)+committed_fee(8) = 82 */
             uint8_t in_count = tx_data[off++];
             off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64); /* nullifier + amount + token_id */
 
@@ -2023,10 +1960,10 @@ int apply_tx_to_state(nodus_witness_t *w,
         }
 
         /* ── TOKEN_CREATE: register token in tokens table ──────── */
-        if (tx_type == NODUS_W_TX_TOKEN_CREATE && tx_len > 75) {
+        if (tx_type == NODUS_W_TX_TOKEN_CREATE && tx_len > DNAC_TX_HEADER_SIZE) {
             /* Re-parse to extract output[0]'s token_id, amount, and memo.
              * Memo format: "name:symbol:decimals" */
-            size_t toff = 74;
+            size_t toff = DNAC_TX_HEADER_SIZE;
             uint8_t tc_in_count = tx_data[toff++];
             toff += (size_t)tc_in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
 
@@ -3485,8 +3422,8 @@ static int nodus_compute_output_nullifier(const char *owner_fp,
 static int nodus_extract_output_nullifiers(const uint8_t *tx_data, uint32_t tx_len,
                                              uint8_t out_nullifiers[][64],
                                              int max_outputs) {
-    if (!tx_data || tx_len < 75 || !out_nullifiers || max_outputs <= 0) return 0;
-    size_t off = 74;  /* version(1)+type(1)+timestamp(8)+tx_hash(64) */
+    if (!tx_data || tx_len < DNAC_TX_HEADER_SIZE + 1 || !out_nullifiers || max_outputs <= 0) return 0;
+    size_t off = DNAC_TX_HEADER_SIZE;  /* v0.17.1: +committed_fee → 82 */
     if (off >= tx_len) return 0;
     uint8_t in_count = tx_data[off++];
     off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
@@ -4949,12 +4886,12 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
 
     /* Chain DB bootstrap — lifted from legacy nodus_witness_commit_block */
     if (!w->db) {
-        if (tx_len < 77 + 129) {
+        if (tx_len < DNAC_TX_HEADER_SIZE + 3 + 129) {
             fprintf(stderr, "%s: genesis tx_data too short for fingerprint (len=%u)\n",
                     LOG_TAG, tx_len);
             return -1;
         }
-        size_t fp_off = 74;
+        size_t fp_off = DNAC_TX_HEADER_SIZE;
         uint8_t in_count = tx_data[fp_off++];
         fp_off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
         if (fp_off >= tx_len) return -1;
@@ -4987,8 +4924,8 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
          * appended after sender_signature by the v2 serialize path. */
         const uint8_t *p = tx_data;
         const uint8_t *end = tx_data + tx_len;
-        if (tx_len >= 74) {
-            p += 74;  /* header: version + type + timestamp + tx_hash */
+        if (tx_len >= DNAC_TX_HEADER_SIZE) {
+            p += DNAC_TX_HEADER_SIZE;  /* v2 header: version + type + timestamp + tx_hash + committed_fee */
             if (p < end) {
                 uint8_t ic = *p++; p += (size_t)ic * (64 + 8 + 64); /* inputs */
             }
@@ -5036,8 +4973,8 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
         if (cd_vcount > 0) {
             /* Parse outputs_sum (native DNAC only) from tx_data. */
             uint64_t outputs_sum = 0;
-            if (tx_len > 75) {
-                size_t off = 74;
+            if (tx_len > DNAC_TX_HEADER_SIZE) {
+                size_t off = DNAC_TX_HEADER_SIZE;
                 uint8_t in_count = tx_data[off++];
                 off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
                 if (off < tx_len) {
@@ -5196,8 +5133,8 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
          * helper is file-static. Rather than widen that helper's
          * visibility, re-derive here. */
         /* Parse tx_data outputs and compute nullifiers */
-        if (e->tx_data && e->tx_len > 75) {
-            size_t off = 74;
+        if (e->tx_data && e->tx_len > DNAC_TX_HEADER_SIZE) {
+            size_t off = DNAC_TX_HEADER_SIZE;
             uint8_t in_count = e->tx_data[off++];
             off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);
             if (off < e->tx_len) {

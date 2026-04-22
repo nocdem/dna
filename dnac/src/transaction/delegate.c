@@ -132,9 +132,10 @@ int dnac_delegate(dnac_context_t *ctx,
         }
     }
 
-    /* 4. Appended fields. */
+    /* 4. Appended fields (v0.17.1: delegation_amount is explicit on wire). */
     memcpy(tx->delegate_fields.validator_pubkey, validator_pubkey,
            DNAC_PUBKEY_SIZE);
+    tx->delegate_fields.delegation_amount = amount;
 
     /* 5. Chain_id binding. */
     {
@@ -142,9 +143,10 @@ int dnac_delegate(dnac_context_t *ctx,
         if (cid) memcpy(tx->chain_id, cid, 32);
     }
 
-    /* 6. Signer. */
+    /* 6. Signer + committed_fee. */
     memcpy(tx->signers[0].pubkey, signer_pubkey, DNAC_PUBKEY_SIZE);
     tx->signer_count = 1;
+    tx->committed_fee = fee;   /* v0.17.1 — explicit native fee in wire/preimage */
 
     /* 7. Hash + sign. */
     rc = dnac_tx_compute_hash(tx, tx->tx_hash);
@@ -267,7 +269,7 @@ int dnac_undelegate(dnac_context_t *ctx,
         if (cid) memcpy(tx->chain_id, cid, 32);
     }
 
-    /* 6. Signer. */
+    /* 6. Signer + committed_fee. */
     rc = dna_engine_get_signing_public_key(engine, tx->signers[0].pubkey,
                                            DNAC_PUBKEY_SIZE);
     if (rc < 0) {
@@ -275,6 +277,7 @@ int dnac_undelegate(dnac_context_t *ctx,
         return DNAC_ERROR_CRYPTO;
     }
     tx->signer_count = 1;
+    tx->committed_fee = fee;   /* v0.17.1 — explicit native fee in wire/preimage */
 
     /* 7. Hash + sign. */
     rc = dnac_tx_compute_hash(tx, tx->tx_hash);

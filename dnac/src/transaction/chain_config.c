@@ -160,6 +160,7 @@ int dnac_chain_config_propose(dnac_context_t *ctx,
         return DNAC_ERROR_CRYPTO;
     }
     tx->signer_count = 1;
+    tx->committed_fee = fee;   /* v0.17.1 — fee-only TX */
 
     /* 9. Compute tx_hash (binds all chain_config_fields including votes). */
     rc = dnac_tx_compute_hash(tx, tx->tx_hash);

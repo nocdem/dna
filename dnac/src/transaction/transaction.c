@@ -312,21 +312,31 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
     }
 
     /* ──────────────────────────────────────────────────────────────────
-     * Canonical TX hash preimage (design §2.3, F-CRYPTO-10):
+     * Canonical TX hash preimage (v0.17.1 — committed_fee design §4 + SEC-06):
      *
+     *   "DNAC_TX_V2\0" (11 bytes, domain separator) ||
      *   version (u8) || type (u8) || timestamp (u64 BE) || chain_id[32] ||
+     *   committed_fee (u64 BE) ||
      *   inputs[0..input_count]      each: nullifier(64) || amount(u64 BE) || token_id(32) ||
      *   outputs[0..output_count]    each: version(u8) || fp(129) || amount(u64 BE) ||
      *                                     token_id(32) || seed(32) || memo_len(u8) || memo(memo_len) ||
      *   signer_count (u8) || signers[0..signer_count].pubkey ||
      *   type_specific_appended_fields
      *
+     * Domain separator (SEC-06): literal "DNAC_TX_V2\0" prevents any future
+     * version's preimage from colliding with v2, even under partial field
+     * reorderings.
+     *
      * All multi-byte integers are BIG-ENDIAN so the hash is identical
      * across platforms. Byte-arrays (nullifier, token_id, pubkey, fp,
      * seed, memo) are hashed verbatim (no endianness).
      * ────────────────────────────────────────────────────────────────── */
 
-    /* Header: version, type, timestamp (BE), chain_id */
+    /* Domain separator (SEC-06) */
+    EVP_DigestUpdate(ctx, DNAC_TX_PREIMAGE_DOMAIN_V2,
+                     DNAC_TX_PREIMAGE_DOMAIN_V2_LEN);
+
+    /* Header: version, type, timestamp (BE), chain_id, committed_fee (BE) */
     uint8_t type_byte = (uint8_t)tx->type;
     uint8_t ts_be[8];
     tx_be64_into(tx->timestamp, ts_be);
@@ -334,6 +344,10 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
     EVP_DigestUpdate(ctx, &type_byte, sizeof(type_byte));
     EVP_DigestUpdate(ctx, ts_be, sizeof(ts_be));
     EVP_DigestUpdate(ctx, tx->chain_id, sizeof(tx->chain_id));
+    /* committed_fee: 8 bytes BE (v0.17.1+) */
+    uint8_t fee_be[8];
+    tx_be64_into(tx->committed_fee, fee_be);
+    EVP_DigestUpdate(ctx, fee_be, sizeof(fee_be));
 
     /* Inputs: nullifier || amount (BE) || token_id */
     for (int i = 0; i < tx->input_count; i++) {
@@ -382,10 +396,13 @@ int dnac_tx_compute_hash(const dnac_transaction_t *tx, uint8_t *hash_out) {
         /* purpose_tag: 17-byte literal "DNAC_VALIDATOR_v1" (F-CRYPTO-05) */
         EVP_DigestUpdate(ctx, DNAC_STAKE_PURPOSE_TAG, DNAC_STAKE_PURPOSE_TAG_LEN);
     }
-    /* Phase 5 Task 17. DELEGATE: validator_pubkey[2592]. */
+    /* Phase 5 Task 17 + v0.17.1. DELEGATE: validator_pubkey[2592] || delegation_amount(u64 BE). */
     if (tx->type == DNAC_TX_DELEGATE) {
         EVP_DigestUpdate(ctx, tx->delegate_fields.validator_pubkey,
                          DNAC_PUBKEY_SIZE);
+        uint8_t delegation_be[8];
+        tx_be64_into(tx->delegate_fields.delegation_amount, delegation_be);
+        EVP_DigestUpdate(ctx, delegation_be, sizeof(delegation_be));
     }
     /* Phase 5 Task 18. UNDELEGATE: validator_pubkey[2592] || amount(u64 BE). */
     if (tx->type == DNAC_TX_UNDELEGATE) {

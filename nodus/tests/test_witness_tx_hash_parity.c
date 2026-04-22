@@ -23,6 +23,8 @@
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/hash/qgp_sha3.h"
+#include "dnac/dnac.h"            /* DNAC_PROTOCOL_VERSION, DNAC_MIN_FEE_RAW */
+#include "dnac/transaction.h"     /* DNAC_TX_PREIMAGE_DOMAIN_V2* */
 
 #include <stdio.h>
 #include <string.h>
@@ -77,6 +79,7 @@ static void le64_into(uint64_t v, uint8_t out[8]) {
 typedef struct {
     uint8_t type;
     uint64_t timestamp;
+    uint64_t committed_fee;   /* v0.17.1+ explicit fee in wire/preimage */
 
     int input_count;
     uint8_t inputs_null[4][NULLIFIER_LEN];
@@ -102,7 +105,7 @@ typedef struct {
 } tx_t;
 
 static size_t wire_size(const tx_t *t) {
-    size_t s = 10 + TX_HASH_LEN;  /* header */
+    size_t s = 10 + TX_HASH_LEN + 8;  /* v2 header = 82 (committed_fee added) */
     s += 1 + (size_t)t->input_count * (NULLIFIER_LEN + 8 + TOKEN_ID_LEN);
     s += 1;
     for (int i = 0; i < t->output_count; i++) {
@@ -120,12 +123,14 @@ static uint8_t *build_wire(const tx_t *t, uint32_t *len_out) {
     if (!buf) return NULL;
     uint8_t *p = buf;
 
-    /* Header: version + type + timestamp (LE) + tx_hash placeholder */
-    p[0] = 1;                /* version */
+    /* Header: version + type + timestamp (LE) + tx_hash placeholder + committed_fee(BE) */
+    p[0] = DNAC_PROTOCOL_VERSION;    /* v2 */
     p[1] = t->type;
     le64_into(t->timestamp, p + 2);
     p += 10;
     p += TX_HASH_LEN;        /* tx_hash zeros */
+    /* committed_fee: 8 bytes big-endian at offset 74 (v0.17.1+) */
+    be64_into(t->committed_fee, p); p += 8;
 
     /* Inputs */
     *p++ = (uint8_t)t->input_count;
@@ -186,11 +191,16 @@ static int reference_hash(const tx_t *t, const uint8_t chain_id[CHAIN_ID_LEN],
     uint8_t be8[8];
     uint8_t be2[2];
 
+    /* Domain separator (SEC-06, v0.17.1+) — prevents cross-version preimage collision */
+    PUT(DNAC_TX_PREIMAGE_DOMAIN_V2, DNAC_TX_PREIMAGE_DOMAIN_V2_LEN);
+
     /* header */
-    u8 = 1; PUT(&u8, 1);          /* version */
+    u8 = DNAC_PROTOCOL_VERSION; PUT(&u8, 1);   /* v2 */
     PUT(&t->type, 1);
     be64_into(t->timestamp, be8); PUT(be8, 8);
     PUT(chain_id, CHAIN_ID_LEN);
+    /* committed_fee (u64 BE, v0.17.1+) */
+    be64_into(t->committed_fee, be8); PUT(be8, 8);
 
     /* inputs */
     for (int i = 0; i < t->input_count; i++) {
@@ -248,6 +258,7 @@ static void populate_baseline(tx_t *t, uint8_t type) {
     memset(t, 0, sizeof(*t));
     t->type = type;
     t->timestamp = 0x1122334455667788ULL;
+    t->committed_fee = (type == TX_GENESIS) ? 0 : DNAC_MIN_FEE_RAW;
 
     t->input_count = 1;
     memset(t->inputs_null[0], 0xAA, NULLIFIER_LEN);
@@ -341,11 +352,14 @@ int main(void) {
         if (run_scenario("STAKE parity", &t, chain_id) != 0) failed++;
     }
 
-    /* Scenario 3: DELEGATE — validator_pubkey[2592] */
+    /* Scenario 3: DELEGATE — validator_pubkey[2592] + delegation_amount(u64 BE, v0.17.1+) */
     {
         tx_t t; populate_baseline(&t, TX_DELEGATE);
         for (int i = 0; i < PK_BYTES; i++) t.tail[i] = (uint8_t)((i * 7) & 0xff);
-        t.tail_len = PK_BYTES;
+        /* delegation_amount = 100000000 raw (1 DNAC) BE */
+        uint8_t be8[8]; be64_into(100000000ULL, be8);
+        memcpy(t.tail + PK_BYTES, be8, 8);
+        t.tail_len = PK_BYTES + 8;
         if (run_scenario("DELEGATE parity", &t, chain_id) != 0) failed++;
     }
 

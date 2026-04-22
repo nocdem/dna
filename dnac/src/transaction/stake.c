@@ -149,7 +149,9 @@ int dnac_stake(dnac_context_t *ctx,
         if (cid) memcpy(tx->chain_id, cid, 32);
     }
 
-    /* 8. Signer: caller's Dilithium5 pubkey. */
+    /* 8. Signer + committed_fee. STAKE preimage: fee is explicit (v0.17.1);
+     *    the 10M self_stake is separate and carried via input-output delta.
+     *    Consistency rule at verify: Σ(native_in) = Σ(native_out) + fee + 10M. */
     rc = dna_engine_get_signing_public_key(engine, tx->signers[0].pubkey,
                                            DNAC_PUBKEY_SIZE);
     if (rc < 0) {
@@ -157,6 +159,7 @@ int dnac_stake(dnac_context_t *ctx,
         return DNAC_ERROR_CRYPTO;
     }
     tx->signer_count = 1;
+    tx->committed_fee = fee;
 
     /* 9. Compute preimage hash (now binds stake_fields + purpose tag). */
     rc = dnac_tx_compute_hash(tx, tx->tx_hash);
@@ -274,7 +277,7 @@ int dnac_unstake(dnac_context_t *ctx,
         if (cid) memcpy(tx->chain_id, cid, 32);
     }
 
-    /* 8. Signer. */
+    /* 8. Signer + committed_fee. UNSTAKE is fee-only (no state amount). */
     rc = dna_engine_get_signing_public_key(engine, tx->signers[0].pubkey,
                                            DNAC_PUBKEY_SIZE);
     if (rc < 0) {
@@ -282,6 +285,7 @@ int dnac_unstake(dnac_context_t *ctx,
         return DNAC_ERROR_CRYPTO;
     }
     tx->signer_count = 1;
+    tx->committed_fee = fee;   /* v0.17.1 */
 
     /* 9. Hash. */
     rc = dnac_tx_compute_hash(tx, tx->tx_hash);

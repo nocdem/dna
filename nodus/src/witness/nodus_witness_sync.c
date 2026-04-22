@@ -14,6 +14,7 @@
 #include "transport/nodus_tcp.h"
 #include "server/nodus_server.h"
 #include "crypto/nodus_sign.h"
+#include "dnac/transaction.h"   /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 
 #include <openssl/evp.h>
 #include <stdio.h>
@@ -363,9 +364,9 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
         btx->fee = 0;
         /* Parse input nullifiers from tx_data for the wire, mirrors
          * the existing batch-propose pattern. */
-        if (rows[i].tx_data && rows[i].tx_len > 75 &&
+        if (rows[i].tx_data && rows[i].tx_len > DNAC_TX_HEADER_SIZE &&
             rows[i].tx_type != NODUS_W_TX_GENESIS) {
-            size_t off = 74;
+            size_t off = DNAC_TX_HEADER_SIZE;
             uint8_t nc = rows[i].tx_data[off++];
             if (nc > NODUS_T3_MAX_TX_INPUTS) nc = NODUS_T3_MAX_TX_INPUTS;
             btx->nullifier_count = nc;

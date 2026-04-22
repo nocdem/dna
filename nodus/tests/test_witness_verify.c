@@ -18,6 +18,8 @@
 #include "witness/nodus_witness_db.h"
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
+#include "dnac/dnac.h"            /* DNAC_PROTOCOL_VERSION, DNAC_MIN_FEE_RAW */
+#include "dnac/transaction.h"     /* DNAC_TX_HEADER_SIZE */
 
 #include <stdio.h>
 #include <string.h>
@@ -99,9 +101,10 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
                                 uint8_t *output_fps, int output_count,
                                 uint64_t *output_amounts,
                                 const uint8_t *sender_pubkey,
+                                uint64_t committed_fee,
                                 uint32_t *out_len) {
-    /* Calculate size */
-    size_t size = 10 + TX_HASH_LEN;  /* version+type+timestamp+tx_hash */
+    /* v2 header (82 B): version+type+timestamp(10) + tx_hash(64) + committed_fee(8) */
+    size_t size = 10 + TX_HASH_LEN + 8;
     size += 1;  /* input_count */
     size += input_count * (NULLIFIER_LEN + 8 + TOKEN_ID_LEN);
     size += 1;  /* output_count */
@@ -126,6 +129,11 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
 
     /* tx_hash placeholder (64 bytes of zeros — will be filled later) */
     p += TX_HASH_LEN;
+
+    /* committed_fee (v0.17.1+): 8 bytes big-endian at offset 74 */
+    for (int i = 7; i >= 0; i--) {
+        *p++ = (uint8_t)((committed_fee >> (i * 8)) & 0xff);
+    }
 
     /* Inputs */
     *p++ = (uint8_t)input_count;
@@ -190,9 +198,10 @@ static uint8_t *build_tx_data(uint8_t version, uint8_t type, uint64_t timestamp,
  * Walks the wire format to find the signer signature slot. */
 static void embed_signer_sig(uint8_t *tx_data, uint32_t tx_len,
                               const uint8_t *sig_bytes) {
-    /* Skip: header(74) + inputs + outputs + witnesses → signer_count(1) + pubkey → sig */
-    const uint8_t *p = tx_data + 74;  /* after header */
-    size_t remaining = tx_len - 74;
+    /* Skip: header(82, v2: includes committed_fee) + inputs + outputs + witnesses
+     *       → signer_count(1) + pubkey → sig */
+    const uint8_t *p = tx_data + DNAC_TX_HEADER_SIZE;
+    size_t remaining = tx_len - DNAC_TX_HEADER_SIZE;
 
     /* Skip inputs */
     uint8_t ic = *p++; remaining--;
@@ -273,10 +282,10 @@ static void test_valid_spend(void) {
     memset(out_fp, 0xBB, FP_LEN);
 
     uint32_t tx_len;
-    uint8_t *tx_data = build_tx_data(1, 1, 12345678ULL,
+    uint8_t *tx_data = build_tx_data(DNAC_PROTOCOL_VERSION, 1, 12345678ULL,
                                       nullifier, 1, &in_amt,
                                       out_fp, 1, &out_amt,
-                                      sender.pk.bytes, &tx_len);
+                                      sender.pk.bytes, DNAC_MIN_FEE_RAW, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     /* Get the embedded hash */
@@ -330,10 +339,10 @@ static void test_tampered_hash(void) {
     memset(out_fp, 0xDD, FP_LEN);
 
     uint32_t tx_len;
-    uint8_t *tx_data = build_tx_data(1, 1, 100ULL,
+    uint8_t *tx_data = build_tx_data(DNAC_PROTOCOL_VERSION, 1, 100ULL,
                                       nullifier, 1, &in_amt,
                                       out_fp, 1, &out_amt,
-                                      sender.pk.bytes, &tx_len);
+                                      sender.pk.bytes, DNAC_MIN_FEE_RAW, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     /* Tamper with the hash */
@@ -379,10 +388,10 @@ static void test_invalid_signature(void) {
     memset(out_fp, 0x11, FP_LEN);
 
     uint32_t tx_len;
-    uint8_t *tx_data = build_tx_data(1, 1, 200ULL,
+    uint8_t *tx_data = build_tx_data(DNAC_PROTOCOL_VERSION, 1, 200ULL,
                                       nullifier, 1, &in_amt,
                                       out_fp, 1, &out_amt,
-                                      sender.pk.bytes, &tx_len);
+                                      sender.pk.bytes, DNAC_MIN_FEE_RAW, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     uint8_t tx_hash[64];
@@ -442,10 +451,10 @@ static void test_insufficient_balance(void) {
     memset(out_fp, 0x33, FP_LEN);
 
     uint32_t tx_len;
-    uint8_t *tx_data = build_tx_data(1, 1, 300ULL,
+    uint8_t *tx_data = build_tx_data(DNAC_PROTOCOL_VERSION, 1, 300ULL,
                                       nullifier, 1, &in_amt,
                                       out_fp, 1, &out_amt,
-                                      sender.pk.bytes, &tx_len);
+                                      sender.pk.bytes, DNAC_MIN_FEE_RAW, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     uint8_t tx_hash[64];
@@ -502,10 +511,12 @@ static void test_fee_too_low(void) {
     memset(out_fp, 0x55, FP_LEN);
 
     uint32_t tx_len;
-    uint8_t *tx_data = build_tx_data(1, 1, 400ULL,
+    /* "fee too low" test — committed_fee below DNAC_MIN_FEE_RAW must reject. */
+    uint8_t *tx_data = build_tx_data(DNAC_PROTOCOL_VERSION, 1, 400ULL,
                                       nullifier, 1, &in_amt,
                                       out_fp, 1, &out_amt,
-                                      sender.pk.bytes, &tx_len);
+                                      sender.pk.bytes,
+                                      DNAC_MIN_FEE_RAW - 1, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     uint8_t tx_hash[64];
@@ -520,7 +531,9 @@ static void test_fee_too_low(void) {
                   1, nullifier, 1, sender.pk.bytes, sig.bytes, 1,
                   reason, sizeof(reason));
 
-    if (rc == -1 && strstr(reason, "fee too low")) {
+    /* v0.17.1 Check-0 rejects via committed_fee min-fee message. */
+    if (rc == -1 && (strstr(reason, "fee too low") ||
+                     strstr(reason, "below minimum"))) {
         PASS();
     } else {
         FAIL(reason[0] ? reason : "wrong return code");
@@ -557,10 +570,10 @@ static void test_duplicate_nullifiers(void) {
     memset(out_fp, 0x77, FP_LEN);
 
     uint32_t tx_len;
-    uint8_t *tx_data = build_tx_data(1, 1, 500ULL,
+    uint8_t *tx_data = build_tx_data(DNAC_PROTOCOL_VERSION, 1, 500ULL,
                                       nullifiers, 2, in_amts,
                                       out_fp, 1, &out_amt,
-                                      NULL, &tx_len);
+                                      NULL, DNAC_MIN_FEE_RAW, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     memcpy(tx_hash, tx_data + 10, 64);
@@ -595,10 +608,11 @@ static void test_genesis_skips_checks(void) {
     memset(out_fp, 0x99, FP_LEN);
 
     uint32_t tx_len;
-    uint8_t *tx_data = build_tx_data(1, 0 /* GENESIS */, 999ULL,
+    uint8_t *tx_data = build_tx_data(DNAC_PROTOCOL_VERSION, 0 /* GENESIS */, 999ULL,
                                       NULL, 0, NULL,
                                       out_fp, 1, &out_amt,
-                                      NULL, &tx_len);
+                                      NULL, 0 /* committed_fee==0 for GENESIS */,
+                                      &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     uint8_t tx_hash[64];
@@ -630,9 +644,12 @@ static void test_truncated_tx_data(void) {
     nodus_witness_t w;
     if (setup_witness(&w) != 0) { FAIL("db setup"); return; }
 
-    /* Only 50 bytes — less than minimum header (74+1) */
+    /* Only 50 bytes — less than minimum header (DNAC_TX_HEADER_SIZE+1 = 83).
+     * Version byte must be valid so we exercise the truncation path, not
+     * the v0.17.1 Check-0 version gate. */
     uint8_t short_data[50];
     memset(short_data, 0, sizeof(short_data));
+    short_data[0] = DNAC_PROTOCOL_VERSION;
 
     uint8_t tx_hash[64];
     memset(tx_hash, 0, 64);
@@ -641,10 +658,12 @@ static void test_truncated_tx_data(void) {
     int rc = nodus_witness_verify_transaction(&w, short_data, 50, tx_hash,
                   1, NULL, 0, NULL, NULL, 0, reason, sizeof(reason));
 
-    if (rc == -1 && strstr(reason, "truncated")) {
+    /* Accept any rejection — short buffers fail at Check-0 committed_fee
+     * read, Dilithium5 parse, or hash recompute length gate. */
+    if (rc == -1) {
         PASS();
     } else {
-        FAIL(reason[0] ? reason : "wrong return code");
+        FAIL(reason[0] ? reason : "accepted truncated TX");
     }
 
     cleanup_witness(&w);
@@ -684,10 +703,10 @@ static void test_double_spend(void) {
     memset(out_fp, 0xCC, FP_LEN);
 
     uint32_t tx_len;
-    uint8_t *tx_data = build_tx_data(1, 1, 600ULL,
+    uint8_t *tx_data = build_tx_data(DNAC_PROTOCOL_VERSION, 1, 600ULL,
                                       nullifier, 1, &in_amt,
                                       out_fp, 1, &out_amt,
-                                      sender.pk.bytes, &tx_len);
+                                      sender.pk.bytes, DNAC_MIN_FEE_RAW, &tx_len);
     if (!tx_data) { FAIL("build_tx_data"); cleanup_witness(&w); return; }
 
     uint8_t tx_hash[64];

@@ -38,6 +38,9 @@
 #include "witness/nodus_witness_db.h"
 #include "crypto/nodus_sign.h"
 #include "crypto/hash/qgp_sha3.h"
+#include "dnac/dnac.h"            /* DNAC_PROTOCOL_VERSION, DNAC_MIN_FEE_RAW */
+#include "dnac/transaction.h"     /* DNAC_TX_HEADER_SIZE, dnac_tx_read_committed_fee */
+#include "dnac/safe_math.h"       /* safe_add_u64 (SEC-01 consistency check) */
 
 #include <stdio.h>
 #include <string.h>
@@ -48,12 +51,15 @@
 #define LOG_TAG "WITNESS-VERIFY"
 
 /* Wire format constants */
-#define TX_HEADER_SIZE      74  /* version(1)+type(1)+timestamp(8)+tx_hash(64) */
+/* TX_HEADER_SIZE kept for backward-compat within this file; v0.17.1 bumped to 82
+ * (committed_fee added). Single source of truth is DNAC_TX_HEADER_SIZE in
+ * dnac/transaction.h — this local define mirrors it. */
+#define TX_HEADER_SIZE      DNAC_TX_HEADER_SIZE
 #define TX_VERSION_OFF      0
 #define TX_TYPE_OFF         1
 #define TX_TIMESTAMP_OFF    2
 #define TX_HASH_OFF         10  /* After version+type+timestamp */
-#define TX_INPUTS_OFF       74  /* After header */
+#define TX_INPUTS_OFF       TX_HEADER_SIZE  /* After header (82 in v0.17.1: hdr74 + committed_fee(8)) */
 
 #define INPUT_NULLIFIER_LEN 64
 #define INPUT_AMOUNT_LEN    8
@@ -146,6 +152,11 @@ int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
     const uint8_t *p = tx_data;
     size_t remaining = tx_len;
 
+    /* ── Domain separator "DNAC_TX_V2\0" (SEC-06, 11 bytes) ────── */
+    memcpy(buf + buf_pos, DNAC_TX_PREIMAGE_DOMAIN_V2,
+           DNAC_TX_PREIMAGE_DOMAIN_V2_LEN);
+    buf_pos += DNAC_TX_PREIMAGE_DOMAIN_V2_LEN;
+
     /* ── Header: version(u8) || type(u8) || timestamp(u64 BE) || chain_id[32] ── */
     if (remaining < 10) goto fail;
     uint8_t version_byte = p[0];
@@ -165,6 +176,16 @@ int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
     if (remaining < 64) goto fail;
     p += 64;
     remaining -= 64;
+
+    /* ── committed_fee (u64 BE, v0.17.1+) — read from wire, add to preimage ── */
+    if (remaining < 8) goto fail;
+    uint64_t committed_fee = 0;
+    for (int i = 0; i < 8; i++)
+        committed_fee = (committed_fee << 8) | (uint64_t)p[i];
+    be64_into(committed_fee, buf + buf_pos);
+    buf_pos += 8;
+    p += 8;
+    remaining -= 8;
 
     /* ── Inputs: nullifier(64) || amount(u64 BE) || token_id(64) ── */
     if (remaining < 1) goto fail;
@@ -282,11 +303,13 @@ int nodus_witness_recompute_tx_hash(const uint8_t *chain_id,
         p += need;
         remaining -= need;
     } else if (type_byte == TX_TYPE_DELEGATE) {
-        if (remaining < NODUS_PK_BYTES) goto fail;
-        memcpy(buf + buf_pos, p, NODUS_PK_BYTES);
-        buf_pos += NODUS_PK_BYTES;
-        p += NODUS_PK_BYTES;
-        remaining -= NODUS_PK_BYTES;
+        /* v0.17.1+: DELEGATE appended = validator_pubkey(2592) + delegation_amount(u64 BE). */
+        size_t need = NODUS_PK_BYTES + 8;
+        if (remaining < need) goto fail;
+        memcpy(buf + buf_pos, p, need);
+        buf_pos += need;
+        p += need;
+        remaining -= need;
     } else if (type_byte == TX_TYPE_UNDELEGATE) {
         size_t need = NODUS_PK_BYTES + 8;
         if (remaining < need) goto fail;
@@ -498,6 +521,34 @@ int nodus_witness_verify_transaction(nodus_witness_t *w,
 
     bool is_genesis = (tx_type == NODUS_W_TX_GENESIS);
     bool is_token_create = (tx_type == NODUS_W_TX_TOKEN_CREATE);
+
+    /* ── Check 0: v0.17.1 wire version + min-fee (cheap DoS gate).
+     * Runs BEFORE Dilithium5 signer verification (PERF-04): version-byte
+     * mismatch and sub-minimum fee don't deserve 300–500 µs/signer of
+     * wasted CPU. dnac_tx_read_committed_fee() also validates the header
+     * length, so an 82-byte-short buffer cannot leak via the offset-74
+     * read (SEC-02). */
+    if (tx_len >= 1 && tx_data[0] != DNAC_PROTOCOL_VERSION) {
+        snprintf(reject_reason, reason_size,
+                 "wrong TX wire version (got %u, expected %u)",
+                 (unsigned)tx_data[0], (unsigned)DNAC_PROTOCOL_VERSION);
+        return -1;
+    }
+    if (!is_genesis) {
+        uint64_t committed_fee = 0;
+        if (dnac_tx_read_committed_fee(tx_data, tx_len, &committed_fee) != 0) {
+            snprintf(reject_reason, reason_size,
+                     "committed_fee unreadable (malformed header)");
+            return -1;
+        }
+        if (committed_fee < DNAC_MIN_FEE_RAW) {
+            snprintf(reject_reason, reason_size,
+                     "committed_fee %llu below minimum %llu",
+                     (unsigned long long)committed_fee,
+                     (unsigned long long)DNAC_MIN_FEE_RAW);
+            return -1;
+        }
+    }
 
     /* ── Check 1: Duplicate nullifiers within TX ───────────────── */
     if (!is_genesis && nullifiers && nullifier_count > 1) {

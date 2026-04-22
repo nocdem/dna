@@ -191,6 +191,8 @@ int dnac_token_create(dnac_context_t *ctx,
 
     memcpy(tx->signers[0].pubkey, sender_pubkey, DNAC_PUBKEY_SIZE);
     tx->signer_count = 1;
+    /* v0.17.1 — TOKEN_CREATE fee is the full 1% supply burn (10M DNAC for 1B supply). */
+    tx->committed_fee = TOKEN_CREATE_FEE;
 
     /* Task 14 / design §2.3 — bind chain_id into the TX hash preimage. */
     {

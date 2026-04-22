@@ -154,6 +154,7 @@ int dnac_validator_update(dnac_context_t *ctx,
         return DNAC_ERROR_CRYPTO;
     }
     tx->signer_count = 1;
+    tx->committed_fee = fee;   /* v0.17.1 — fee-only TX */
 
     /* 9. Compute preimage hash (binds validator_update_fields via Phase 5). */
     rc = dnac_tx_compute_hash(tx, tx->tx_hash);

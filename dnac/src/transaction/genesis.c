@@ -229,6 +229,9 @@ int dnac_tx_create_genesis(const dnac_genesis_recipient_t *recipients,
         }
     }
 
+    /* v0.17.1 — GENESIS must have committed_fee = 0 (verify_tx enforces). */
+    tx->committed_fee = 0;
+
     /* Compute transaction hash */
     int rc = dnac_tx_compute_hash(tx, tx->tx_hash);
     if (rc != DNAC_SUCCESS) {

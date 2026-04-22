@@ -13,6 +13,7 @@
 #include "nodus/nodus_chain_config.h"
 #include "nodus/nodus_types.h"        /* NODUS_TREE_TAG_CHAIN_CONFIG */
 #include "dnac/chain_config_wire.h"   /* shared CHAIN_CONFIG extension codec */
+#include "dnac/transaction.h"         /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 
 #include "witness/nodus_witness.h"
 #include "witness/nodus_witness_committee.h"
@@ -61,8 +62,10 @@ static const uint8_t CC_PURPOSE_TAG[CC_PURPOSE_TAG_LEN] = {
     'D','N','A','C','_','C','C','_','v','1',0,0,0,0,0,0
 };
 
-/* Wire-format constants from dnac/src/transaction/serialize.c layout. */
-#define CC_TX_HEADER_SIZE    (1 + 1 + 8 + CC_TX_HASH_SIZE)  /* 74 */
+/* Wire-format constants from dnac/src/transaction/serialize.c layout.
+ * v0.17.1: committed_fee(8) added after tx_hash → 82 bytes. Mirror via
+ * the dnac header to keep a single source of truth. */
+#define CC_TX_HEADER_SIZE    DNAC_TX_HEADER_SIZE  /* 82 in v0.17.1 */
 #define CC_NULLIFIER_LEN     NODUS_T3_NULLIFIER_LEN          /* 64 */
 #define CC_TOKEN_ID_LEN      64
 #define CC_FINGERPRINT_LEN   129

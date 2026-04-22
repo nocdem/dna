@@ -15,6 +15,7 @@
 #include "witness/nodus_witness_db.h"
 #include "nodus/nodus_chain_config.h"  /* Hard-Fork v1 schema migration */
 #include "crypto/nodus_sign.h"
+#include "dnac/transaction.h"          /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
@@ -990,12 +991,12 @@ static void fill_memos_from_raw_tx(nodus_witness_t *w,
     uint32_t tx_len = 0;
     uint64_t bh = 0;
     if (nodus_witness_tx_get(w, entry->tx_hash, &tx_type, &tx_data,
-                              &tx_len, &bh) != 0 || !tx_data || tx_len < 75) {
+                              &tx_len, &bh) != 0 || !tx_data || tx_len < DNAC_TX_HEADER_SIZE + 1) {
         free(tx_data);
         return;
     }
 
-    size_t off = 74; /* header: version+type+timestamp+tx_hash */
+    size_t off = DNAC_TX_HEADER_SIZE; /* v0.17.1: ver+type+ts+tx_hash+committed_fee = 82 */
     if (off >= tx_len) { free(tx_data); return; }
     uint8_t in_count = tx_data[off++];
     off += (size_t)in_count * (NODUS_T3_NULLIFIER_LEN + 8 + 64);

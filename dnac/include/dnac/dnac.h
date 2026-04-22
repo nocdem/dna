@@ -66,14 +66,17 @@ extern "C" {
  * Protocol Versions
  * ========================================================================== */
 
-/** Protocol version 1: Transparent amounts */
+/** Protocol version 1: transparent amounts (retired at v0.17.1 wipe) */
 #define DNAC_PROTOCOL_V1            1
 
-/** Protocol version 2: PQ ZK amounts (future - STARKs) */
+/** Protocol version 2: explicit committed_fee + delegation_amount wire fields (v0.17.1+).
+ *  Bumped from V1 in the committed_fee design (2026-04-22) after the live chain
+ *  halt from the native_fee guard bug. The earlier "PQ ZK amounts / STARKs"
+ *  reservation moves to a future V3+ when that feature ships. */
 #define DNAC_PROTOCOL_V2            2
 
-/** Current protocol version */
-#define DNAC_PROTOCOL_VERSION       DNAC_PROTOCOL_V1
+/** Current protocol version — used as the TX wire version byte. */
+#define DNAC_PROTOCOL_VERSION       DNAC_PROTOCOL_V2
 
 /* ============================================================================
  * Constants
@@ -115,6 +118,12 @@ extern "C" {
 
 /** Fixed self-stake amount per validator: exactly 10,000,000 DNAC */
 #define DNAC_SELF_STAKE_AMOUNT       (10000000ULL * 100000000ULL)   /* 10M × 10^8 raw */
+
+/** Minimum TX fee enforced at verify time (v0.17.1+).
+ *  All non-GENESIS TXs must have `committed_fee >= DNAC_MIN_FEE_RAW`.
+ *  Value is 0.01 DNAC = 10^6 raw units. Raise/lower via future release
+ *  (compile-time constant, not a chain_config_tx parameter in v0.17.x). */
+#define DNAC_MIN_FEE_RAW             1000000ULL   /* 0.01 DNAC = 10^6 raw */
 
 /** Minimum delegation amount: 100 DNAC (raised from 1 per F-DOS-02 audit finding) */
 #define DNAC_MIN_DELEGATION          (100ULL * 100000000ULL)         /* 100 × 10^8 raw */
