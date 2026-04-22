@@ -77,41 +77,17 @@ int nodus_sign_tagged(nodus_sig_t *sig_out,
                       const nodus_seckey_t *sk) {
     if (!sig_out || !data || !sk) return -1;
 
-    /* For most domains the data is small (32B-1600B). Use stack for <= 8KB,
-     * heap above — we expect T3_ENVELOPE to be the largest practical case. */
-    /* Safety cap: prevent SIZE_MAX overflow on 32-bit systems. Real upper
-     * bound is set by the caller's wire format (~4 MB for VALUE_STORE). */
-    if (data_len > (SIZE_MAX - NODUS_SIGN_HEADER_LEN)) return -1;
-
-    const size_t preimage_len = NODUS_SIGN_HEADER_LEN + data_len;
-    if (preimage_len < data_len) return -1;  /* overflow guard */
-
-    uint8_t stack_buf[8192];
-    uint8_t *buf;
-    uint8_t *heap_buf = NULL;
-
-    if (preimage_len <= sizeof(stack_buf)) {
-        buf = stack_buf;
-    } else {
-        heap_buf = (uint8_t *)malloc(preimage_len);
-        if (!heap_buf) return -1;
-        buf = heap_buf;
-    }
-
-    size_t n = build_tagged_preimage(buf, preimage_len, purpose, data, data_len);
-    if (n != preimage_len) {
-        if (heap_buf) free(heap_buf);
-        return -1;
-    }
-
+    /* COMPAT: sign raw (no NDS1 domain tag) so pre-11467980 clients (e.g.
+     * shipped Flutter libdna) can verify server-produced signatures. The
+     * paired nodus_verify_tagged() still prefers tagged verify and only
+     * falls back to raw, so client→server sigs from new clients continue
+     * to use the stronger domain-tagged path. Net effect: symmetric
+     * compat with old clients at the cost of reopening C2 cross-domain
+     * reuse for signatures THIS node emits. REMOVE this bypass once all
+     * deployed clients ship commit 11467980 or later. */
+    (void)purpose;
     size_t siglen = 0;
-    int rc = qgp_dsa87_sign(sig_out->bytes, &siglen, buf, preimage_len, sk->bytes);
-
-    if (heap_buf) {
-        qgp_secure_memzero(heap_buf, preimage_len);
-        free(heap_buf);
-    }
-
+    int rc = qgp_dsa87_sign(sig_out->bytes, &siglen, data, data_len, sk->bytes);
     return (rc == 0) ? 0 : -1;
 }
 

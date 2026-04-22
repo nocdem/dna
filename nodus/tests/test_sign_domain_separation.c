@@ -219,8 +219,14 @@ int main(void) {
     test_t3_envelope_roundtrip();
     test_value_store_roundtrip();
     test_cert_roundtrip();
-    test_cross_domain_fails();
-    test_every_pair_rejects();
+    /* v0.17.5 compat mode: nodus_sign_tagged() now signs raw so pre-11467980
+     * clients can verify. Cross-domain rejection no longer holds — same
+     * bytes signed under different domains produce identical sigs, and the
+     * verify-side raw fallback accepts them. Re-enable these two tests
+     * and restore domain-tagged signing once all deployed clients ship
+     * commit 11467980 or later. */
+    /* test_cross_domain_fails(); */
+    /* test_every_pair_rejects(); */
     test_raw_sig_accepted_via_fallback();
     test_tampered_data_fails();
 
