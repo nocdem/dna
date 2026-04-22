@@ -254,8 +254,13 @@ build:native-android-arm64:
         cd /tmp && rm -rf sqlcipher
         git clone --depth 1 --branch v4.6.1 https://github.com/sqlcipher/sqlcipher.git
         cd sqlcipher
-        # Pin to specific commit SHA — tags are mutable, commits are not
-        git rev-parse HEAD | grep -q "^fef10de5dfe3b2a0f740020d605636d4cc206c28$" || { echo "sqlcipher v4.6.1 commit mismatch"; exit 1; }
+        # Pin to specific commit SHA — tags are mutable, commits are not.
+        # NOTE: this is the COMMIT sha (what `git rev-parse HEAD` returns
+        # after `--branch v4.6.1` checkout), NOT the annotated tag-object
+        # sha (what `git show-ref v4.6.1` returns — fef10de5dfe...).
+        # v4.6.1 is GPG-signed by Stephen Lombardo (SQLCipher creator) —
+        # verify supply chain via `git tag -v v4.6.1` after rotating pin.
+        git rev-parse HEAD | grep -q "^c5bd336ece77922433aaf6d6fe8cf203b0c299d5$" || { echo "sqlcipher v4.6.1 commit mismatch"; exit 1; }
         # Step 1: Generate amalgamation with HOST compiler (not cross-compiler)
         # Use --with-crypto-lib=none to skip link check (we only need the .c/.h)
         CC=gcc ./configure --enable-tempstore=yes \
