@@ -146,16 +146,46 @@ typedef struct {
     uint8_t         tx_root[NODUS_T3_TX_HASH_LEN];
 } nodus_t3_commit_t;
 
-/** w_viewchg: Witness requests view change */
+/** w_viewchg: Witness requests view change.
+ *
+ * C5 — PBFT prepared-certificate extension. When has_prepared=true, the
+ * sender is advertising "the highest (view, height, tx_hash) I observed
+ * reach PREVOTE quorum locally, with 2f+1 witness sigs over the
+ * PREPARED preimage (view(4B BE) || height(8B BE) || tx_hash(64B))".
+ * The new leader uses this to pick the re-proposal per PBFT rule. When
+ * has_prepared=false, this sender has no prepared-but-uncommitted block
+ * to protect — the rest of the fields are ignored. */
 typedef struct {
     uint32_t    new_view;
     uint64_t    last_committed_round;
+    bool        has_prepared;
+    uint64_t    prepared_height;
+    uint32_t    prepared_view;
+    uint8_t     prepared_tx_hash[NODUS_T3_TX_HASH_LEN];
+    uint32_t    prepared_n_sigs;
+    nodus_t3_cert_entry_t prepared_sigs[NODUS_T3_MAX_WITNESSES];
 } nodus_t3_viewchg_t;
 
-/** w_newview: New leader after view change */
+/** w_newview: New leader after view change.
+ *
+ * C5 — PBFT re-proposal constraint. When has_reproposal=true, the new
+ * leader is committing to re-propose (reproposal_tx_hash, reproposal_height)
+ * as the first PROPOSE under new_view. Followers verify this against
+ * their own local VIEW_CHANGE log (w->view_changes[]) — the
+ * reproposal_tx_hash MUST match one of the prepared-cert tx_hashes the
+ * follower saw in a VIEW_CHANGE for this new_view. When
+ * has_reproposal=false, no VIEW_CHANGE carried a prepared cert, so the
+ * new leader is free to propose any TX from the mempool.
+ *
+ * n_proofs stays as observability field; quorum is established
+ * client-side from the follower's own view_changes[] log, NOT from
+ * wire-carried proofs. */
 typedef struct {
     uint32_t    new_view;
     uint32_t    n_proofs;
+    bool        has_reproposal;
+    uint64_t    reproposal_height;
+    uint8_t     reproposal_tx_hash[NODUS_T3_TX_HASH_LEN];
 } nodus_t3_newview_t;
 
 /** w_fwd_req: Non-leader forwards client request to leader */

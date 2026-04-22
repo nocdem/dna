@@ -302,6 +302,7 @@ static void test_viewchg(void) {
     fill_header(&in.header);
     in.viewchg.new_view = 5;
     in.viewchg.last_committed_round = 41;
+    /* has_prepared defaults to false (memset) — legacy 2-key wire. */
 
     int rc = roundtrip(&in, &out);
     if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
@@ -309,6 +310,9 @@ static void test_viewchg(void) {
     if (out.type != NODUS_T3_VIEWCHG) { TEST_FAIL(name, "type"); return; }
     if (out.viewchg.new_view != 5) { TEST_FAIL(name, "new_view"); return; }
     if (out.viewchg.last_committed_round != 41) { TEST_FAIL(name, "lcr"); return; }
+    if (out.viewchg.has_prepared) {
+        TEST_FAIL(name, "has_prepared should be false"); return;
+    }
     if (nodus_t3_verify(&out, &test_id.pk) != 0) {
         TEST_FAIL(name, "wsig verify"); return;
     }
@@ -328,6 +332,7 @@ static void test_newview(void) {
     fill_header(&in.header);
     in.newview.new_view = 5;
     in.newview.n_proofs = 3;
+    /* has_reproposal defaults to false (memset) — legacy 2-key wire. */
 
     int rc = roundtrip(&in, &out);
     if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
@@ -335,6 +340,113 @@ static void test_newview(void) {
     if (out.type != NODUS_T3_NEWVIEW) { TEST_FAIL(name, "type"); return; }
     if (out.newview.new_view != 5) { TEST_FAIL(name, "new_view"); return; }
     if (out.newview.n_proofs != 3) { TEST_FAIL(name, "n_proofs"); return; }
+    if (out.newview.has_reproposal) {
+        TEST_FAIL(name, "has_reproposal should be false"); return;
+    }
+    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
+        TEST_FAIL(name, "wsig verify"); return;
+    }
+
+    TEST_PASS(name);
+}
+
+/* ── Test: w_viewchg with prepared-cert (C5) ─────────────────────── */
+
+static void test_viewchg_with_prepared(void) {
+    const char *name = "w_viewchg (prepared)";
+    nodus_t3_msg_t in, out;
+    memset(&in, 0, sizeof(in));
+
+    in.type = NODUS_T3_VIEWCHG;
+    in.txn_id = 120;
+    fill_header(&in.header);
+    in.viewchg.new_view = 7;
+    in.viewchg.last_committed_round = 99;
+    in.viewchg.has_prepared = true;
+    in.viewchg.prepared_height = 42;
+    in.viewchg.prepared_view = 6;
+    memset(in.viewchg.prepared_tx_hash, 0x55, NODUS_T3_TX_HASH_LEN);
+    in.viewchg.prepared_n_sigs = 3;
+    for (uint32_t i = 0; i < 3; i++) {
+        memset(in.viewchg.prepared_sigs[i].voter_id,
+               0x60 + (int)i, NODUS_T3_WITNESS_ID_LEN);
+        memset(in.viewchg.prepared_sigs[i].signature,
+               0x70 + (int)i, NODUS_SIG_BYTES);
+    }
+
+    int rc = roundtrip(&in, &out);
+    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
+
+    if (out.type != NODUS_T3_VIEWCHG) { TEST_FAIL(name, "type"); return; }
+    if (out.viewchg.new_view != 7) { TEST_FAIL(name, "new_view"); return; }
+    if (out.viewchg.last_committed_round != 99) { TEST_FAIL(name, "lcr"); return; }
+    if (!out.viewchg.has_prepared) {
+        TEST_FAIL(name, "has_prepared not set"); return;
+    }
+    if (out.viewchg.prepared_height != 42) {
+        TEST_FAIL(name, "prepared_height"); return;
+    }
+    if (out.viewchg.prepared_view != 6) {
+        TEST_FAIL(name, "prepared_view"); return;
+    }
+    if (memcmp(out.viewchg.prepared_tx_hash, in.viewchg.prepared_tx_hash,
+               NODUS_T3_TX_HASH_LEN) != 0) {
+        TEST_FAIL(name, "prepared_tx_hash"); return;
+    }
+    if (out.viewchg.prepared_n_sigs != 3) {
+        TEST_FAIL(name, "prepared_n_sigs"); return;
+    }
+    for (uint32_t i = 0; i < 3; i++) {
+        if (memcmp(out.viewchg.prepared_sigs[i].voter_id,
+                   in.viewchg.prepared_sigs[i].voter_id,
+                   NODUS_T3_WITNESS_ID_LEN) != 0) {
+            TEST_FAIL(name, "prepared voter_id"); return;
+        }
+        if (memcmp(out.viewchg.prepared_sigs[i].signature,
+                   in.viewchg.prepared_sigs[i].signature,
+                   NODUS_SIG_BYTES) != 0) {
+            TEST_FAIL(name, "prepared signature"); return;
+        }
+    }
+    if (nodus_t3_verify(&out, &test_id.pk) != 0) {
+        TEST_FAIL(name, "wsig verify"); return;
+    }
+
+    TEST_PASS(name);
+}
+
+/* ── Test: w_newview with re-proposal (C5) ───────────────────────── */
+
+static void test_newview_with_reproposal(void) {
+    const char *name = "w_newview (reproposal)";
+    nodus_t3_msg_t in, out;
+    memset(&in, 0, sizeof(in));
+
+    in.type = NODUS_T3_NEWVIEW;
+    in.txn_id = 121;
+    fill_header(&in.header);
+    in.newview.new_view = 8;
+    in.newview.n_proofs = 5;
+    in.newview.has_reproposal = true;
+    in.newview.reproposal_height = 42;
+    memset(in.newview.reproposal_tx_hash, 0x88, NODUS_T3_TX_HASH_LEN);
+
+    int rc = roundtrip(&in, &out);
+    if (rc != 0) { TEST_FAIL(name, rc == -1 ? "encode failed" : "decode failed"); return; }
+
+    if (out.type != NODUS_T3_NEWVIEW) { TEST_FAIL(name, "type"); return; }
+    if (out.newview.new_view != 8) { TEST_FAIL(name, "new_view"); return; }
+    if (out.newview.n_proofs != 5) { TEST_FAIL(name, "n_proofs"); return; }
+    if (!out.newview.has_reproposal) {
+        TEST_FAIL(name, "has_reproposal not set"); return;
+    }
+    if (out.newview.reproposal_height != 42) {
+        TEST_FAIL(name, "reproposal_height"); return;
+    }
+    if (memcmp(out.newview.reproposal_tx_hash, in.newview.reproposal_tx_hash,
+               NODUS_T3_TX_HASH_LEN) != 0) {
+        TEST_FAIL(name, "reproposal_tx_hash"); return;
+    }
     if (nodus_t3_verify(&out, &test_id.pk) != 0) {
         TEST_FAIL(name, "wsig verify"); return;
     }
@@ -753,7 +865,9 @@ int main(void) {
     test_precommit();
     test_commit();
     test_viewchg();
+    test_viewchg_with_prepared();
     test_newview();
+    test_newview_with_reproposal();
     test_fwd_req();
     test_fwd_rsp();
     test_rost_q();

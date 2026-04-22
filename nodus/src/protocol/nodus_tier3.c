@@ -160,15 +160,46 @@ static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
 }
 
 static void enc_viewchg_args(cbor_encoder_t *enc, const nodus_t3_viewchg_t *v) {
-    cbor_encode_map(enc, 2);
+    /* C5 — when has_prepared, emit 5 additional keys: prepared_height,
+     * prepared_view, prepared_tx_hash, prepared_n_sigs, prepared_sigs. No
+     * explicit has_prepared wire key: receiver sets has_prepared=true
+     * when it decodes the prepared_tx_hash key (mirrors has_block_height
+     * pattern in enc_ident_args). */
+    cbor_encode_map(enc, v->has_prepared ? 7 : 2);
     cbor_encode_cstr(enc, "nv");  cbor_encode_uint(enc, v->new_view);
     cbor_encode_cstr(enc, "lcr"); cbor_encode_uint(enc, v->last_committed_round);
+    if (v->has_prepared) {
+        cbor_encode_cstr(enc, "ph");  cbor_encode_uint(enc, v->prepared_height);
+        cbor_encode_cstr(enc, "pv");  cbor_encode_uint(enc, v->prepared_view);
+        cbor_encode_cstr(enc, "pth");
+        cbor_encode_bstr(enc, v->prepared_tx_hash, NODUS_T3_TX_HASH_LEN);
+        cbor_encode_cstr(enc, "psc"); cbor_encode_uint(enc, v->prepared_n_sigs);
+        cbor_encode_cstr(enc, "psgs");
+        cbor_encode_array(enc, (size_t)v->prepared_n_sigs);
+        for (uint32_t i = 0; i < v->prepared_n_sigs; i++) {
+            cbor_encode_map(enc, 2);
+            cbor_encode_cstr(enc, "vid");
+            cbor_encode_bstr(enc, v->prepared_sigs[i].voter_id,
+                             NODUS_T3_WITNESS_ID_LEN);
+            cbor_encode_cstr(enc, "sig");
+            cbor_encode_bstr(enc, v->prepared_sigs[i].signature,
+                             NODUS_SIG_BYTES);
+        }
+    }
 }
 
 static void enc_newview_args(cbor_encoder_t *enc, const nodus_t3_newview_t *n) {
-    cbor_encode_map(enc, 2);
+    /* C5 — when has_reproposal, emit reproposal_height + reproposal_tx_hash.
+     * has_reproposal=false keeps 2-key backward-compat wire (no VIEW_CHANGE
+     * carried a prepared cert, so new leader is free). */
+    cbor_encode_map(enc, n->has_reproposal ? 4 : 2);
     cbor_encode_cstr(enc, "nv"); cbor_encode_uint(enc, n->new_view);
     cbor_encode_cstr(enc, "np"); cbor_encode_uint(enc, n->n_proofs);
+    if (n->has_reproposal) {
+        cbor_encode_cstr(enc, "rh"); cbor_encode_uint(enc, n->reproposal_height);
+        cbor_encode_cstr(enc, "rth");
+        cbor_encode_bstr(enc, n->reproposal_tx_hash, NODUS_T3_TX_HASH_LEN);
+    }
 }
 
 static void enc_fwd_req_args(cbor_encoder_t *enc, const nodus_t3_fwd_req_t *f) {
@@ -697,6 +728,9 @@ static void dec_commit_args(cbor_decoder_t *dec, size_t count,
 
 static void dec_viewchg_args(cbor_decoder_t *dec, size_t count,
                                nodus_t3_viewchg_t *v) {
+    /* v is already zero-initialized by the outer msg memset, so
+     * has_prepared defaults to false and is flipped to true when we see
+     * a valid prepared_tx_hash key. */
     for (size_t i = 0; i < count; i++) {
         cbor_item_t key = cbor_decode_next(dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
@@ -710,6 +744,68 @@ static void dec_viewchg_args(cbor_decoder_t *dec, size_t count,
             if (val.type == CBOR_ITEM_UINT)
                 v->last_committed_round = val.uint_val;
         }
+        else if (KEY_IS(key, "ph")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) v->prepared_height = val.uint_val;
+        }
+        else if (KEY_IS(key, "pv")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                v->prepared_view = (uint32_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "pth")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN) {
+                memcpy(v->prepared_tx_hash, val.bstr.ptr,
+                       NODUS_T3_TX_HASH_LEN);
+                v->has_prepared = true;
+            }
+        }
+        else if (KEY_IS(key, "psc")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                v->prepared_n_sigs = (uint32_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "psgs")) {
+            cbor_item_t arr = cbor_decode_next(dec);
+            if (arr.type == CBOR_ITEM_ARRAY) {
+                size_t max = arr.count < NODUS_T3_MAX_WITNESSES ?
+                             arr.count : NODUS_T3_MAX_WITNESSES;
+                for (size_t j = 0; j < max; j++) {
+                    cbor_item_t m = cbor_decode_next(dec);
+                    if (m.type != CBOR_ITEM_MAP) {
+                        cbor_decode_skip(dec);
+                        continue;
+                    }
+                    for (size_t k = 0; k < m.count; k++) {
+                        cbor_item_t mk = cbor_decode_next(dec);
+                        if (mk.type != CBOR_ITEM_TSTR) {
+                            cbor_decode_skip(dec);
+                            continue;
+                        }
+                        if (KEY_IS(mk, "vid")) {
+                            cbor_item_t mv = cbor_decode_next(dec);
+                            if (mv.type == CBOR_ITEM_BSTR &&
+                                mv.bstr.len == NODUS_T3_WITNESS_ID_LEN)
+                                memcpy(v->prepared_sigs[j].voter_id,
+                                       mv.bstr.ptr,
+                                       NODUS_T3_WITNESS_ID_LEN);
+                        } else if (KEY_IS(mk, "sig")) {
+                            cbor_item_t mv = cbor_decode_next(dec);
+                            if (mv.type == CBOR_ITEM_BSTR &&
+                                mv.bstr.len == NODUS_SIG_BYTES)
+                                memcpy(v->prepared_sigs[j].signature,
+                                       mv.bstr.ptr, NODUS_SIG_BYTES);
+                        } else {
+                            cbor_decode_skip(dec);
+                        }
+                    }
+                }
+                for (size_t j = max; j < arr.count; j++)
+                    cbor_decode_skip(dec);
+            }
+        }
         else {
             cbor_decode_skip(dec);
         }
@@ -718,6 +814,8 @@ static void dec_viewchg_args(cbor_decoder_t *dec, size_t count,
 
 static void dec_newview_args(cbor_decoder_t *dec, size_t count,
                                nodus_t3_newview_t *n) {
+    /* n is zero-initialized by outer msg memset; has_reproposal flips to
+     * true when we see a valid reproposal_tx_hash key. */
     for (size_t i = 0; i < count; i++) {
         cbor_item_t key = cbor_decode_next(dec);
         if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
@@ -729,6 +827,20 @@ static void dec_newview_args(cbor_decoder_t *dec, size_t count,
         else if (KEY_IS(key, "np")) {
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_UINT) n->n_proofs = (uint32_t)val.uint_val;
+        }
+        else if (KEY_IS(key, "rh")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                n->reproposal_height = val.uint_val;
+        }
+        else if (KEY_IS(key, "rth")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN) {
+                memcpy(n->reproposal_tx_hash, val.bstr.ptr,
+                       NODUS_T3_TX_HASH_LEN);
+                n->has_reproposal = true;
+            }
         }
         else {
             cbor_decode_skip(dec);
