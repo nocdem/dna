@@ -424,6 +424,18 @@ typedef struct nodus_witness {
      * inside exactly one outer transaction (design F-STATE-02). */
     bool        in_block_transaction;
 
+    /* C3 fix — safety halt on state_root divergence.
+     *
+     * Set by commit_batch/finalize_block when the follower's locally
+     * computed state_root doesn't match the leader's claim. Once set,
+     * every BFT handler refuses to participate: no PREVOTE, no PRECOMMIT,
+     * no COMMIT applied, no new PROPOSE issued. The operator must
+     * investigate (divergence root cause) and restart the process after
+     * remediation. halt_block_height records the height at which the
+     * divergence was detected for diagnostics. */
+    bool        safety_halt;
+    uint64_t    halt_block_height;
+
     bool        running;
 } nodus_witness_t;
 

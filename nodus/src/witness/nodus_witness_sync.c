@@ -634,10 +634,17 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
                                                 rsp->timestamp,
                                                 rsp->proposer_id);
         } else {
+            /* C3 fix: sync_rsp does not currently include state_root on
+             * the wire — pass NULL. Divergence in sync path is caught
+             * later by cert verify (verify_sync_certs) when validating
+             * voter sigs against historical committee pubkeys. Adding
+             * state_root to sync_rsp is a wire format change — deferred
+             * to a follow-up that also bumps sync protocol version. */
             rc = nodus_witness_replay_block(w, db_height, entry_ptrs,
                                               rsp->tx_count,
                                               rsp->timestamp,
-                                              rsp->proposer_id);
+                                              rsp->proposer_id,
+                                              NULL);
         }
         if (rc != 0) {
             fprintf(stderr, "%s: block replay failed at height %llu\n",

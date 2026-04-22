@@ -82,6 +82,13 @@ static int setup_witness(nodus_witness_t *w) {
         "  flags INTEGER NOT NULL DEFAULT 0,"
         "  block_height INTEGER NOT NULL DEFAULT 0,"
         "  timestamp INTEGER NOT NULL DEFAULT 0"
+        ");"
+        /* C4 fix: record_attendance needs validators table (empty → skip). */
+        "CREATE TABLE validators ("
+        "  pubkey BLOB PRIMARY KEY,"
+        "  status INTEGER NOT NULL DEFAULT 0,"
+        "  last_signed_block INTEGER NOT NULL DEFAULT 0,"
+        "  signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0"
         ");";
     char *err = NULL;
     if (sqlite3_exec(w->db, schema, NULL, NULL, &err) != SQLITE_OK) {
@@ -115,7 +122,7 @@ static void test_replay_block_out_of_order_rejected(void) {
     uint8_t proposer[32];
     memset(proposer, 0xAA, 32);
 
-    int rc = nodus_witness_replay_block(&w, 5, entries, 1, 1700000000, proposer);
+    int rc = nodus_witness_replay_block(&w, 5, entries, 1, 1700000000, proposer, NULL);
     if (rc != -1) { FAIL("expected -1"); goto done; }
 
     sqlite3_stmt *stmt;
@@ -141,12 +148,12 @@ static void test_commit_batch_empty_or_bad_count_rejected(void) {
     uint8_t proposer[32];
     memset(proposer, 0xBB, 32);
 
-    int rc = nodus_witness_commit_batch(&w, NULL, 0, 1700000000, proposer);
+    int rc = nodus_witness_commit_batch(&w, NULL, 0, 1700000000, proposer, NULL);
     if (rc != -1) { FAIL("count=0 not rejected"); sqlite3_close(w.db); return; }
 
     nodus_witness_mempool_entry_t *dummy[20];
     for (int i = 0; i < 20; i++) dummy[i] = NULL;
-    rc = nodus_witness_commit_batch(&w, dummy, 20, 1700000000, proposer);
+    rc = nodus_witness_commit_batch(&w, dummy, 20, 1700000000, proposer, NULL);
     if (rc != -1) { FAIL("count=20 not rejected"); sqlite3_close(w.db); return; }
 
     PASS();
@@ -165,7 +172,7 @@ static void test_commit_batch_single_tx_writes_block(void) {
     uint8_t proposer[32];
     memset(proposer, 0xCC, 32);
 
-    int rc = nodus_witness_commit_batch(&w, entries, 1, 1700000000, proposer);
+    int rc = nodus_witness_commit_batch(&w, entries, 1, 1700000000, proposer, NULL);
     if (rc != 0) { FAIL("commit_batch returned non-zero"); goto done; }
 
     sqlite3_stmt *stmt;
@@ -196,7 +203,7 @@ static void test_replay_block_in_order_succeeds(void) {
     uint8_t proposer[32];
     memset(proposer, 0xDD, 32);
 
-    int rc = nodus_witness_replay_block(&w, 1, entries, 1, 1700000000, proposer);
+    int rc = nodus_witness_replay_block(&w, 1, entries, 1, 1700000000, proposer, NULL);
     if (rc != 0) { FAIL("replay_block returned non-zero"); goto done; }
 
     PASS();

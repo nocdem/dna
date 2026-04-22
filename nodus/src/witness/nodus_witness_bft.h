@@ -97,7 +97,8 @@ int nodus_witness_replay_block(nodus_witness_t *w,
                                  nodus_witness_mempool_entry_t **entries,
                                  int count,
                                  uint64_t timestamp,
-                                 const uint8_t *proposer_id);
+                                 const uint8_t *proposer_id,
+                                 const uint8_t *expected_state_root);
 
 /* Phase 9 / Task 48 — per-block liveness attendance record.
  *

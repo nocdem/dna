@@ -96,6 +96,14 @@ static int setup_witness(nodus_witness_t *w) {
         "  flags INTEGER NOT NULL DEFAULT 0,"
         "  block_height INTEGER NOT NULL DEFAULT 0,"
         "  timestamp INTEGER NOT NULL DEFAULT 0"
+        ");"
+        /* C4 fix: attendance is now atomic with block commit — record_attendance
+         * prepares against `validators`. Empty table → matched=false → skip. */
+        "CREATE TABLE validators ("
+        "  pubkey BLOB PRIMARY KEY,"
+        "  status INTEGER NOT NULL DEFAULT 0,"
+        "  last_signed_block INTEGER NOT NULL DEFAULT 0,"
+        "  signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0"
         ");";
 
     char *err = NULL;
@@ -143,7 +151,7 @@ static void test_happy_path(void) {
     uint8_t proposer[32];
     memset(proposer, 0x42, 32);
 
-    int rc = nodus_witness_commit_batch(&w, entries, 1, 1700000000, proposer);
+    int rc = nodus_witness_commit_batch(&w, entries, 1, 1700000000, proposer, NULL);
     CHECK_EQ(rc, 0);
 
     CHECK_EQ(w.in_block_transaction, false);
@@ -165,7 +173,7 @@ static void test_finalize_without_wrapper(void) {
     uint8_t proposer[32];
     memset(proposer, 0xCC, 32);
 
-    int rc = finalize_block(&w, tx_hash, 1, proposer, 1700000000, 1, NULL, 0);
+    int rc = finalize_block(&w, tx_hash, 1, proposer, 1700000000, 1, NULL, 0, NULL);
     CHECK_EQ(rc, -1);
 
     CHECK_EQ(count_rows(&w, "SELECT COUNT(*) FROM blocks"), 0);
@@ -188,7 +196,7 @@ static void test_mid_batch_abort_rolls_back(void) {
     uint8_t proposer[32];
     memset(proposer, 0x55, 32);
 
-    int rc = nodus_witness_commit_batch(&w, entries, 2, 1700000000, proposer);
+    int rc = nodus_witness_commit_batch(&w, entries, 2, 1700000000, proposer, NULL);
     CHECK_EQ(rc, -1);
 
     CHECK_EQ(w.in_block_transaction, false);

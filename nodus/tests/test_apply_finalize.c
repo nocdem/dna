@@ -120,7 +120,7 @@ static void test_finalize_block_no_proposer_is_noop(void) {
     nodus_witness_t w;
     if (setup_full_witness(&w) != 0) { FAIL("setup"); return; }
 
-    int rc = finalize_block(&w, NULL, 0, NULL, 0, 0, NULL, 0);
+    int rc = finalize_block(&w, NULL, 0, NULL, 0, 0, NULL, 0, NULL);
     if (rc != 0) { FAIL("expected 0"); sqlite3_close(w.db); return; }
 
     sqlite3_stmt *stmt;
@@ -154,7 +154,7 @@ static void test_finalize_block_writes_row(void) {
     if (nodus_witness_db_begin(&w) != 0) {
         FAIL("begin"); sqlite3_close(w.db); return;
     }
-    int rc = finalize_block(&w, fake_tx_hash, 1, proposer, 1700000000, 1, NULL, 0);
+    int rc = finalize_block(&w, fake_tx_hash, 1, proposer, 1700000000, 1, NULL, 0, NULL);
     if (rc != 0) {
         nodus_witness_db_rollback(&w);
         FAIL("finalize_block returned non-zero"); sqlite3_close(w.db); return;
@@ -205,7 +205,7 @@ static void test_finalize_block_rejects_zero_tx_count(void) {
     uint8_t proposer[32];
     memset(proposer, 0x77, 32);
 
-    int rc = finalize_block(&w, NULL, 0, proposer, 1700000000, 1, NULL, 0);
+    int rc = finalize_block(&w, NULL, 0, proposer, 1700000000, 1, NULL, 0, NULL);
     if (rc != -1) { FAIL("expected -1"); sqlite3_close(w.db); return; }
 
     sqlite3_stmt *stmt;

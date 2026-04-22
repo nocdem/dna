@@ -108,6 +108,10 @@ int apply_tx_to_state(nodus_witness_t *w,
  *
  * Returns 0 on success, -1 on supply violation or block_add failure.
  */
+/* C3 fix — expected_state_root (non-NULL on follower replay paths)
+ *   Compared against the locally computed state_root after the per-block
+ *   mutations. Mismatch → safety halt + rollback. Pass NULL for genesis
+ *   and leader-originated commits. */
 int finalize_block(nodus_witness_t *w,
                     const uint8_t *tx_hashes,
                     uint32_t tx_count,
@@ -115,7 +119,8 @@ int finalize_block(nodus_witness_t *w,
                     uint64_t timestamp,
                     uint64_t expected_height,
                     const uint8_t *chain_def_blob,
-                    size_t chain_def_blob_len);
+                    size_t chain_def_blob_len,
+                    const uint8_t *expected_state_root);
 
 /* Phase 6 commit wrappers.
  *
@@ -151,7 +156,8 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
                                  nodus_witness_mempool_entry_t **entries,
                                  int count,
                                  uint64_t timestamp,
-                                 const uint8_t *proposer_id);
+                                 const uint8_t *proposer_id,
+                                 const uint8_t *expected_state_root);
 
 /* Task 6.3 — replay a block from a sync_rsp.
  *
@@ -165,7 +171,8 @@ int nodus_witness_replay_block(nodus_witness_t *w,
                                  nodus_witness_mempool_entry_t **entries,
                                  int count,
                                  uint64_t timestamp,
-                                 const uint8_t *proposer_id);
+                                 const uint8_t *proposer_id,
+                                 const uint8_t *expected_state_root);
 
 /* Phase 9 / Task 48 — nodus_witness_record_attendance is declared
  * publicly in nodus_witness_bft.h. Tests include that header. */

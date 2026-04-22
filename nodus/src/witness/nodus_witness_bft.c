@@ -74,7 +74,8 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
                                  nodus_witness_mempool_entry_t **entries,
                                  int count,
                                  uint64_t timestamp,
-                                 const uint8_t *proposer_id);
+                                 const uint8_t *proposer_id,
+                                 const uint8_t *expected_state_root);
 
 /* ── Time helper ─────────────────────────────────────────────────── */
 
@@ -2930,19 +2931,13 @@ int nodus_witness_record_attendance(nodus_witness_t *w,
     if (!matched) return 0;  /* proposer not a known validator — skip */
     if (block_height <= match_last_signed) return 0;  /* monotonic */
 
-    char *err = NULL;
-    if (sqlite3_exec(w->db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr, "%s: record_attendance: BEGIN failed: %s\n",
-                LOG_TAG, err ? err : "(null)");
-        if (err) sqlite3_free(err);
-        return -1;
-    }
-
-    /* Update both last_signed_block (recent-activity watermark) AND
-     * signed_blocks_this_epoch counter (80%-threshold gate feed). The
-     * counter increments deterministically across nodes because every
-     * node credits only the proposer_id, which is in the committed
-     * block header and identical on all nodes. */
+    /* C4 fix: no BEGIN/COMMIT here — caller (commit_batch) owns the outer
+     * transaction so this UPDATE is atomic with the block's finalize_block.
+     * Without this, SQLITE_BUSY on a single witness would silently roll
+     * back the counter bump while other witnesses succeed, producing
+     * different signed_blocks_this_epoch values in the validator_root
+     * feeding the NEXT block's state_root → chain fork under no Byzantine
+     * actor. */
     sqlite3_stmt *upd = NULL;
     rc = sqlite3_prepare_v2(w->db,
         "UPDATE validators SET "
@@ -2950,26 +2945,13 @@ int nodus_witness_record_attendance(nodus_witness_t *w,
         "  signed_blocks_this_epoch = signed_blocks_this_epoch + 1 "
         "WHERE pubkey = ?",
         -1, &upd, NULL);
-    if (rc != SQLITE_OK) {
-        sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
-        return -1;
-    }
+    if (rc != SQLITE_OK) return -1;
+
     sqlite3_bind_int64(upd, 1, (int64_t)block_height);
     sqlite3_bind_blob(upd, 2, match_pubkey, DNAC_PUBKEY_SIZE, SQLITE_STATIC);
     int urc = sqlite3_step(upd);
     sqlite3_finalize(upd);
-    if (urc != SQLITE_DONE) {
-        sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
-        return -1;
-    }
-
-    if (sqlite3_exec(w->db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr, "%s: record_attendance: COMMIT failed: %s\n",
-                LOG_TAG, err ? err : "(null)");
-        if (err) sqlite3_free(err);
-        sqlite3_exec(w->db, "ROLLBACK", NULL, NULL, NULL);
-        return -1;
-    }
+    if (urc != SQLITE_DONE) return -1;
 
     QGP_LOG_DEBUG(LOG_TAG,
         "record_attendance: block %llu — proposer credited",
@@ -3002,7 +2984,8 @@ int finalize_block(nodus_witness_t *w,
                     uint64_t timestamp,
                     uint64_t expected_height,
                     const uint8_t *chain_def_blob,
-                    size_t chain_def_blob_len) {
+                    size_t chain_def_blob_len,
+                    const uint8_t *expected_state_root) {
     if (!w || !w->db) return -1;
     if (!proposer_id) return 0;  /* legacy: skip block_add when no proposer */
     if (tx_count == 0 || tx_count > NODUS_W_MAX_BLOCK_TXS) return -1;
@@ -3160,6 +3143,34 @@ int finalize_block(nodus_witness_t *w,
     if (nodus_witness_merkle_compute_state_root(w, state_root) != 0) {
         fprintf(stderr, "%s: finalize_block: state_root compute failed\n",
                 LOG_TAG);
+        return -1;
+    }
+
+    /* C3 fix — HALT on state_root divergence from the leader's claim.
+     *
+     * expected_state_root == NULL: genesis, or the leader's own commit
+     * path (we are the state_root oracle). Non-NULL: follower replay
+     * from a COMMIT / sync_rsp — must match byte-for-byte or the
+     * block does not persist, the outer txn rolls back, and we enter
+     * safety halt. This replaces the former WARN-only divergence log
+     * which silently accepted the block's certs against a state this
+     * node did not actually have. */
+    if (expected_state_root &&
+        memcmp(state_root, expected_state_root, NODUS_T3_TX_HASH_LEN) != 0) {
+        char local_hex[17], leader_hex[17];
+        for (int i = 0; i < 8; i++) {
+            snprintf(local_hex + i * 2, sizeof(local_hex) - i * 2,
+                     "%02x", state_root[i]);
+            snprintf(leader_hex + i * 2, sizeof(leader_hex) - i * 2,
+                     "%02x", expected_state_root[i]);
+        }
+        fprintf(stderr,
+            "%s: FATAL: state_root DIVERGED at h=%llu — local=%s... "
+            "leader=%s... — entering safety halt\n",
+            LOG_TAG, (unsigned long long)expected_height,
+            local_hex, leader_hex);
+        w->safety_halt = true;
+        w->halt_block_height = expected_height;
         return -1;
     }
 
@@ -3675,6 +3686,13 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                                        const nodus_t3_msg_t *msg) {
     if (!w || !msg) return -1;
 
+    /* C3 fix: refuse all BFT participation once safety_halt is latched. */
+    if (w->safety_halt) {
+        fprintf(stderr, "%s: propose rejected — safety halt (h=%llu)\n",
+                LOG_TAG, (unsigned long long)w->halt_block_height);
+        return -1;
+    }
+
     const nodus_t3_propose_t *prop = &msg->propose;
     const nodus_t3_header_t *hdr = &msg->header;
 
@@ -3981,6 +3999,9 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
                                     const nodus_t3_msg_t *msg) {
     if (!w || !msg) return -1;
 
+    /* C3 fix: refuse all BFT participation once safety_halt is latched. */
+    if (w->safety_halt) return -1;
+
     const nodus_t3_vote_t *vote = &msg->vote;
     const nodus_t3_header_t *hdr = &msg->header;
 
@@ -4204,11 +4225,13 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
                                 w->round_state.proposal_timestamp,
                                 w->round_state.proposer_id) != 0);
         } else {
+            /* Leader path — this node computes state_root, no expected. */
             batch_failed = (nodus_witness_commit_batch(w,
                                 w->round_state.batch_entries,
                                 w->round_state.batch_count,
                                 w->round_state.proposal_timestamp,
-                                w->round_state.proposer_id) != 0);
+                                w->round_state.proposer_id,
+                                NULL) != 0);
         }
 
         if (batch_failed) {
@@ -4221,11 +4244,10 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             nodus_witness_cert_store(w, bh, w->round_state.precommits,
                                       w->round_state.precommit_count);
 
-            /* Phase 9 / Task 48 — liveness attendance. Credit the block's
-             * proposer (deterministic across all nodes — proposer_id is
-             * in the committed block header). See record_attendance. */
-            nodus_witness_record_attendance(w, bh,
-                                              w->round_state.proposer_id);
+            /* Phase 9 / Task 48 — liveness attendance.
+             * C4 fix: attendance is now credited inside commit_batch
+             * before finalize_block, atomic with the block persist. The
+             * former out-of-txn call here is removed. */
 
             fprintf(stderr, "%s: BATCH COMMITTED round %lu (%d TXs, height %llu)\n",
                     LOG_TAG, (unsigned long)w->round_state.round,
@@ -4322,6 +4344,13 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
 int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                                       const nodus_t3_msg_t *msg) {
     if (!w || !msg) return -1;
+
+    /* C3 fix: refuse all BFT participation once safety_halt is latched. */
+    if (w->safety_halt) {
+        fprintf(stderr, "%s: commit rejected — safety halt (h=%llu)\n",
+                LOG_TAG, (unsigned long long)w->halt_block_height);
+        return -1;
+    }
 
     const nodus_t3_commit_t *cmt = &msg->commit;
     const nodus_t3_header_t *hdr = &msg->header;
@@ -4421,10 +4450,12 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                                     cmt->proposal_timestamp,
                                     cmt->proposer_id) != 0);
         } else {
+            /* C3 fix: pass leader's state_root claim — follower must match. */
             rmt_batch_failed = (nodus_witness_commit_batch(w, entry_ptrs,
                                     cmt->batch_count,
                                     cmt->proposal_timestamp,
-                                    cmt->proposer_id) != 0);
+                                    cmt->proposer_id,
+                                    cmt->state_root) != 0);
         }
 
         if (rmt_batch_failed) {
@@ -4454,8 +4485,10 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
 
         /* Phase 9 / Task 48 — liveness attendance. Credit this block's
          * proposer (cmt->proposer_id), not the precommit voters — the
-         * voter set diverges per node, the proposer_id does not. */
-        nodus_witness_record_attendance(w, bh, cmt->proposer_id);
+         * voter set diverges per node, the proposer_id does not.
+         * C4 fix: attendance is now credited inside commit_batch /
+         * replay_block before finalize_block, atomic with the block
+         * persist. Out-of-txn call here removed. */
     }
 
     /* Compute chain state_root and compare with leader's (Phase 3 / Task 10).
@@ -4481,17 +4514,12 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                          (unsigned long long)hdr->round, hex);
 
             /* Compare with leader's checksum (if present) */
-            uint8_t zero_ck[NODUS_KEY_BYTES];
-            memset(zero_ck, 0, NODUS_KEY_BYTES);
-            if (memcmp(cmt->state_root, zero_ck, NODUS_KEY_BYTES) != 0) {
-                if (memcmp(utxo_cksum, cmt->state_root, NODUS_KEY_BYTES) != 0) {
-                    QGP_LOG_WARN(LOG_TAG, "state_root DIVERGED from "
-                                 "leader at round %llu!",
-                                 (unsigned long long)hdr->round);
-                }
-            }
-            /* F-CONS-06: retain locally-computed value only, never the
-             * leader's claim. */
+            /* C3 fix: state_root mismatch is now caught inside
+             * finalize_block (commit_batch → rollback + safety_halt
+             * before this point is reached). By the time we're here the
+             * block persisted ⇒ local root matches leader's. The post-
+             * commit recompute below exists only to refresh cached_state_
+             * root for future operations. */
             memcpy(w->cached_state_root, utxo_cksum, NODUS_KEY_BYTES);
             w->cached_state_root_valid = true;
         }
@@ -4579,6 +4607,9 @@ int nodus_witness_bft_initiate_view_change(nodus_witness_t *w) {
 int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
                                        const nodus_t3_msg_t *msg) {
     if (!w || !msg) return -1;
+
+    /* C3 fix: refuse all BFT participation once safety_halt is latched. */
+    if (w->safety_halt) return -1;
 
     const nodus_t3_viewchg_t *vc = &msg->viewchg;
     const nodus_t3_header_t *hdr = &msg->header;
@@ -4683,6 +4714,9 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
 int nodus_witness_bft_handle_newview(nodus_witness_t *w,
                                        const nodus_t3_msg_t *msg) {
     if (!w || !msg) return -1;
+
+    /* C3 fix: refuse all BFT participation once safety_halt is latched. */
+    if (w->safety_halt) return -1;
 
     const nodus_t3_newview_t *nv = &msg->newview;
     const nodus_t3_header_t *hdr = &msg->header;
@@ -5075,7 +5109,7 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
     }
 
     if (finalize_block(w, tx_hash, 1, proposer_id, timestamp, bh,
-                       cd_blob, (size_t)cd_blob_len) != 0) {
+                       cd_blob, (size_t)cd_blob_len, NULL) != 0) {
         nodus_witness_db_rollback(w);
         return -1;
     }
@@ -5087,7 +5121,8 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
                                  nodus_witness_mempool_entry_t **entries,
                                  int count,
                                  uint64_t timestamp,
-                                 const uint8_t *proposer_id) {
+                                 const uint8_t *proposer_id,
+                                 const uint8_t *expected_state_root) {
     if (!w || !entries || count <= 0 || count > NODUS_W_MAX_BLOCK_TXS) return -1;
 
     nodus_witness_batch_ctx_t ctx;
@@ -5177,8 +5212,22 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
         memcpy(tx_hashes + i * NODUS_T3_TX_HASH_LEN, e->tx_hash, NODUS_T3_TX_HASH_LEN);
     }
 
+    /* C4 fix: credit proposer attendance INSIDE the outer txn BEFORE
+     * finalize_block so the counter bump is part of THIS block's
+     * validator_root → state_root. Moves what used to be a separate txn
+     * in the leader/follower commit handlers into an atomic unit with
+     * the block persist. If the UPDATE fails here, db_rollback below
+     * reverts the whole block (safer than the old silent-divergence
+     * behaviour). */
+    if (nodus_witness_record_attendance(w, bh, proposer_id) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "commit_batch: record_attendance failed");
+        nodus_witness_db_rollback(w);
+        return -1;
+    }
+
     if (finalize_block(w, tx_hashes, (uint32_t)count, proposer_id,
-                        timestamp, bh, NULL, 0) != 0) {
+                        timestamp, bh, NULL, 0,
+                        expected_state_root) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "commit_batch: finalize_block failed");
         nodus_witness_db_rollback(w);
         /* fall through to attribution replay */
@@ -5232,7 +5281,8 @@ int nodus_witness_replay_block(nodus_witness_t *w,
                                  nodus_witness_mempool_entry_t **entries,
                                  int count,
                                  uint64_t timestamp,
-                                 const uint8_t *proposer_id) {
+                                 const uint8_t *proposer_id,
+                                 const uint8_t *expected_state_root) {
     if (!w || !entries || count <= 0 || count > NODUS_W_MAX_BLOCK_TXS) return -1;
 
     uint64_t local_height = nodus_witness_block_height(w);
@@ -5247,5 +5297,6 @@ int nodus_witness_replay_block(nodus_witness_t *w,
     /* replay_block uses the same body as commit_batch — the only
      * difference is the height precondition above. Delegate to avoid
      * duplicating the apply+finalize+output-nullifier-append loop. */
-    return nodus_witness_commit_batch(w, entries, count, timestamp, proposer_id);
+    return nodus_witness_commit_batch(w, entries, count, timestamp,
+                                        proposer_id, expected_state_root);
 }
