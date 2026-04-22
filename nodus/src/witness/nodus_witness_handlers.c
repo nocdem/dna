@@ -410,6 +410,25 @@ static void handle_dnac_utxo(nodus_witness_t *w,
         return;
     }
 
+    /* C11 fix: require owner == authenticated session fingerprint */
+    if (!conn->peer_id_set) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                    "session not authenticated");
+        return;
+    }
+    {
+        char session_hex[NODUS_KEY_HEX_LEN];
+        for (int i = 0; i < NODUS_KEY_BYTES; i++)
+            snprintf(session_hex + i * 2, NODUS_KEY_HEX_LEN - i * 2, "%02x",
+                     conn->peer_id.bytes[i]);
+        session_hex[128] = '\0';
+        if (strcmp(owner, session_hex) != 0) {
+            send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                        "owner must match authenticated session fingerprint");
+            return;
+        }
+    }
+
     nodus_witness_utxo_entry_t *utxos = calloc((size_t)max_results,
                                                   sizeof(nodus_witness_utxo_entry_t));
     if (!utxos) {
@@ -1324,6 +1343,25 @@ static void handle_dnac_history(nodus_witness_t *w,
         send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
                     "missing owner field");
         return;
+    }
+
+    /* C11 fix: require owner == authenticated session fingerprint */
+    if (!conn->peer_id_set) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                    "session not authenticated");
+        return;
+    }
+    {
+        char session_hex[NODUS_KEY_HEX_LEN];
+        for (int i = 0; i < NODUS_KEY_BYTES; i++)
+            snprintf(session_hex + i * 2, NODUS_KEY_HEX_LEN - i * 2, "%02x",
+                     conn->peer_id.bytes[i]);
+        session_hex[128] = '\0';
+        if (strcmp(owner, session_hex) != 0) {
+            send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                        "owner must match authenticated session fingerprint");
+            return;
+        }
     }
 
     nodus_witness_tx_history_entry_t *entries = calloc((size_t)max_results,
