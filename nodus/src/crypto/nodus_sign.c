@@ -224,6 +224,20 @@ int nodus_verify_cert(const nodus_sig_t *sig,
                                 preimage, preimage_len, pk);
 }
 
+int nodus_sign_prepared_vote(nodus_sig_t *sig_out,
+                              const uint8_t *preimage, size_t preimage_len,
+                              const nodus_seckey_t *sk) {
+    return nodus_sign_tagged(sig_out, NODUS_PURPOSE_PREPARED,
+                              preimage, preimage_len, sk);
+}
+
+int nodus_verify_prepared_vote(const nodus_sig_t *sig,
+                                const uint8_t *preimage, size_t preimage_len,
+                                const nodus_pubkey_t *pk) {
+    return nodus_verify_tagged(sig, NODUS_PURPOSE_PREPARED,
+                                preimage, preimage_len, pk);
+}
+
 /* ───── Hash / identity helpers (unchanged) ─────────────────────────── */
 
 int nodus_hash(const uint8_t *data, size_t data_len, nodus_key_t *hash_out) {

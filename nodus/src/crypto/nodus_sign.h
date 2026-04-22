@@ -40,6 +40,8 @@ extern "C" {
 #define NODUS_PURPOSE_VALUE_STORE    0x04  /**< DHT PUT value signature */
 #define NODUS_PURPOSE_CERT           0x05  /**< BFT commit certificate */
 /* 0x06 reserved for POST (channel posts); not implemented — channels disabled */
+#define NODUS_PURPOSE_PREPARED       0x07  /**< C5: PBFT prepared-cert (per-voter
+                                              sig over view+height+tx_hash) */
 
 /** Tagged preimage layout:
  *    MAGIC (4) || purpose (1) || data_len_be (4) || data (data_len)
@@ -124,6 +126,15 @@ int nodus_sign_cert(nodus_sig_t *sig_out,
 int nodus_verify_cert(const nodus_sig_t *sig,
                       const uint8_t *preimage, size_t preimage_len,
                       const nodus_pubkey_t *pk);
+
+/** PREPARED domain (C5) — PBFT prepared-cert per-voter signature.
+ *  Preimage: view(4B BE) || height(8B BE) || tx_hash(64B) = 76 bytes. */
+int nodus_sign_prepared_vote(nodus_sig_t *sig_out,
+                              const uint8_t *preimage, size_t preimage_len,
+                              const nodus_seckey_t *sk);
+int nodus_verify_prepared_vote(const nodus_sig_t *sig,
+                                const uint8_t *preimage, size_t preimage_len,
+                                const nodus_pubkey_t *pk);
 
 /* ───── Hash / identity helpers (unchanged) ─────────────────────────── */
 

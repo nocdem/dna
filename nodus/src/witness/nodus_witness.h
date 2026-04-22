@@ -436,6 +436,27 @@ typedef struct nodus_witness {
     bool        safety_halt;
     uint64_t    halt_block_height;
 
+    /* C5 — PBFT prepared-cert tracker.
+     *
+     * When PREVOTE quorum reached for (view, height, tx_hash), populate
+     * this slot with the 2f+1 prevoter sigs over PREPARED preimage.
+     * Cleared on successful commit_batch of that block, or on a NEW_VIEW
+     * that rolls past this height. Carried on VIEW_CHANGE so the new
+     * leader respects the "re-propose highest prepared or null" rule.
+     */
+    struct {
+        bool      present;
+        uint64_t  height;
+        uint32_t  view;
+        uint32_t  round;
+        uint8_t   tx_hash[64];                     /* NODUS_T3_TX_HASH_LEN */
+        uint32_t  n_sigs;
+        struct {
+            uint8_t voter_id[32];                 /* NODUS_T3_WITNESS_ID_LEN */
+            uint8_t signature[4627];              /* NODUS_SIG_BYTES */
+        } sigs[64];                                /* NODUS_T3_MAX_WITNESSES */
+    } last_prepared;
+
     bool        running;
 } nodus_witness_t;
 
