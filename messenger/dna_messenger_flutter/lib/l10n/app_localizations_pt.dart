@@ -1037,6 +1037,9 @@ class AppLocalizationsPt extends AppLocalizations {
   String get walletReceive => 'Receber';
 
   @override
+  String get walletEarn => 'Earn';
+
+  @override
   String get walletHistory => 'Histórico';
 
   @override

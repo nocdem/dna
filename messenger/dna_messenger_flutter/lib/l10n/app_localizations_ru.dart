@@ -1035,6 +1035,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get walletReceive => 'Получить';
 
   @override
+  String get walletEarn => 'Earn';
+
+  @override
   String get walletHistory => 'История';
 
   @override

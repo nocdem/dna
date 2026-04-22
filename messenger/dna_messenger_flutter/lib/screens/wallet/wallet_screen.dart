@@ -18,6 +18,7 @@ import '../../providers/price_provider.dart';
 import '../../providers/dnac_provider.dart';
 import '../../ffi/dna_engine.dart' show DnacBalance, DnacToken, DnacTxHistory, formatDnacAmount, formatTokenAmount, parseDnacAmount, parseTokenAmount;
 import 'address_book_screen.dart';
+import '../stake_dashboard_screen.dart';
 import 'address_dialog.dart';
 import 'dnac_utxos_screen.dart';
 import '../../providers/stake_provider.dart';
@@ -331,11 +332,11 @@ class _ActionButtonsRow extends ConsumerWidget {
           const SizedBox(width: 8),
           Expanded(
             child: _ActionButton(
-              icon: FontAwesomeIcons.addressBook,
-              label: l10n.walletContacts,
+              icon: FontAwesomeIcons.sackDollar,
+              label: l10n.walletEarn,
               onPressed: () => Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const AddressBookScreen()),
+                MaterialPageRoute(builder: (_) => const StakeDashboardScreen()),
               ),
             ),
           ),

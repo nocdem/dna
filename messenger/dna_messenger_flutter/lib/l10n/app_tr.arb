@@ -310,6 +310,7 @@
   "walletTotalBalance": "Toplam Bakiye",
   "walletSend": "Gönder",
   "walletReceive": "Al",
+  "walletEarn": "Kazan",
   "walletHistory": "Geçmiş",
   "walletNoTransactions": "Henüz işlem yok",
   "walletCopyAddress": "Adresi Kopyala",

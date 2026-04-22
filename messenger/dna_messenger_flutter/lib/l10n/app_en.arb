@@ -559,6 +559,10 @@
   "walletTotalBalance": "Total Balance",
   "walletSend": "Send",
   "walletReceive": "Receive",
+  "walletEarn": "Earn",
+  "@walletEarn": {
+    "description": "Wallet action button for staking/delegation — opens the Earners (validators) list"
+  },
   "walletHistory": "History",
   "walletNoTransactions": "No transactions yet",
   "walletCopyAddress": "Copy Address",

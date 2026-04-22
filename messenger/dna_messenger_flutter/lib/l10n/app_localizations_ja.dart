@@ -1014,6 +1014,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get walletReceive => '受け取る';
 
   @override
+  String get walletEarn => 'Earn';
+
+  @override
   String get walletHistory => '履歴';
 
   @override

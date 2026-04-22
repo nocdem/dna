@@ -1033,6 +1033,9 @@ class AppLocalizationsNl extends AppLocalizations {
   String get walletReceive => 'Ontvangen';
 
   @override
+  String get walletEarn => 'Earn';
+
+  @override
   String get walletHistory => 'Geschiedenis';
 
   @override

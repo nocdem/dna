@@ -1976,6 +1976,12 @@ abstract class AppLocalizations {
   /// **'Receive'**
   String get walletReceive;
 
+  /// Wallet action button for staking/delegation — opens the Earners (validators) list
+  ///
+  /// In en, this message translates to:
+  /// **'Earn'**
+  String get walletEarn;
+
   /// No description provided for @walletHistory.
   ///
   /// In en, this message translates to:

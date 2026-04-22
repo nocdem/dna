@@ -1009,6 +1009,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get walletReceive => '接收';
 
   @override
+  String get walletEarn => 'Earn';
+
+  @override
   String get walletHistory => '历史';
 
   @override

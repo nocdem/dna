@@ -1024,6 +1024,9 @@ class AppLocalizationsAr extends AppLocalizations {
   String get walletReceive => 'استلام';
 
   @override
+  String get walletEarn => 'Earn';
+
+  @override
   String get walletHistory => 'السجل';
 
   @override

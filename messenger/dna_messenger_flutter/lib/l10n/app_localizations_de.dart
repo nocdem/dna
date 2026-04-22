@@ -1042,6 +1042,9 @@ class AppLocalizationsDe extends AppLocalizations {
   String get walletReceive => 'Empfangen';
 
   @override
+  String get walletEarn => 'Earn';
+
+  @override
   String get walletHistory => 'Verlauf';
 
   @override

@@ -1034,6 +1034,9 @@ class AppLocalizationsTr extends AppLocalizations {
   String get walletReceive => 'Al';
 
   @override
+  String get walletEarn => 'Kazan';
+
+  @override
   String get walletHistory => 'Geçmiş';
 
   @override
