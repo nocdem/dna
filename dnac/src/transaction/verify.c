@@ -128,8 +128,8 @@ static int verify_stake_rules(const dnac_transaction_t *tx) {
  *
  * Exposed so unit tests can exercise the rule layer without assembling
  * real Dilithium5 signer signatures and witness attestations. The normal
- * verify path (dnac_tx_verify) also calls verify_stake_rules internally
- * for STAKE-typed TXs. */
+ * verify path (dnac_tx_verify_full) also calls verify_stake_rules
+ * internally for STAKE-typed TXs. */
 int dnac_tx_verify_stake_rules(const dnac_transaction_t *tx) {
     if (!tx) return DNAC_ERROR_INVALID_PARAM;
     if (tx->type != DNAC_TX_STAKE) return DNAC_ERROR_INVALID_TX_TYPE;
@@ -630,10 +630,13 @@ static bool is_known_witness_pubkey(const uint8_t *pubkey) {
             }
         }
     } else {
-        /* No roster cached yet — allow verification to pass (bootstrap/offline).
-         * This is safe: the signature itself is still verified with Dilithium5.
-         * Pinning kicks in once the first roster fetch succeeds. */
-        found = true;
+        /* C13 fix: No roster cached yet — FAIL CLOSED. The empty-roster
+         * TOFU fallback previously returned found=true, allowing any
+         * Dilithium5 keypair to impersonate a witness on cold-start and
+         * enabling fund theft (audit chain X-5). Callers must ensure
+         * dnac_discover_witnesses() populates the roster BEFORE the
+         * first verify. */
+        found = false;
     }
     pthread_mutex_unlock(&g_witness_cache_mutex);
     return found;

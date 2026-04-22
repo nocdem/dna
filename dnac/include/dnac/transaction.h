@@ -395,16 +395,6 @@ int dnac_tx_add_signer(dnac_transaction_t *tx,
                        const uint8_t *signature);
 
 /**
- * @brief Verify transaction
- *
- * Verifies sum(inputs) == sum(outputs), signature valid, 2+ witnesses.
- *
- * @param tx Transaction
- * @return DNAC_SUCCESS if valid, error code otherwise
- */
-int dnac_tx_verify(const dnac_transaction_t *tx);
-
-/**
  * @brief Verify STAKE-type rules only (design §2.4, Phase 6 Task 22)
  *
  * Runs the locally-verifiable STAKE rule subset without exercising the

@@ -45,17 +45,6 @@ const uint8_t DNAC_CHAIN_CONFIG_PURPOSE_TAG[DNAC_CHAIN_CONFIG_PURPOSE_TAG_LEN] =
     'D','N','A','C','_','C','C','_','v','1',0,0,0,0,0,0
 };
 
-/* Forward declarations for verification functions (verify.c) */
-extern int verify_witnesses(const dnac_transaction_t *tx);
-extern int verify_signers(const dnac_transaction_t *tx);
-extern int dnac_tx_verify_stake_rules_internal(const dnac_transaction_t *tx);
-extern int dnac_tx_verify_delegate_rules_internal(const dnac_transaction_t *tx);
-extern int dnac_tx_verify_unstake_rules_internal(const dnac_transaction_t *tx);
-extern int dnac_tx_verify_undelegate_rules_internal(const dnac_transaction_t *tx);
-extern int dnac_tx_verify_validator_update_rules_internal(const dnac_transaction_t *tx);
-extern int dnac_tx_verify_chain_config_rules_internal(const dnac_transaction_t *tx);
-extern int dnac_tx_verify_genesis_rules_internal(const dnac_transaction_t *tx);
-
 dnac_transaction_t* dnac_tx_create(dnac_tx_type_t type) {
     dnac_transaction_t *tx = calloc(1, sizeof(dnac_transaction_t));
     if (!tx) return NULL;
@@ -184,111 +173,6 @@ int dnac_tx_add_signer(dnac_transaction_t *tx,
     tx->signer_count++;
     return DNAC_SUCCESS;
 }
-
-/* dnac_tx_verify pulls in the full menagerie of per-tx-type rule
- * modules (stake/delegate/unstake/undelegate/claim/validator_update/
- * chain_config/genesis) plus witness + signer signature verify.  These
- * modules depend on the libdna engine (db, DHT, nodus client singleton).
- * Pure-builder consumers (e.g. nodus-cli's chain-config propose verb)
- * only need create/add_input/add_output/finalize/compute_hash/serialize
- * and would drag the entire engine into their binary otherwise.  The
- * `DNAC_TX_BUILDER_ONLY` guard compiles verify out of those lighter
- * builds.  libdna itself (messenger tree) leaves the guard undefined and
- * gets the full surface. */
-#ifndef DNAC_TX_BUILDER_ONLY
-int dnac_tx_verify(const dnac_transaction_t *tx) {
-    if (!tx) return DNAC_ERROR_INVALID_PARAM;
-
-    /* STAKE-type rules (design §2.4, Phase 6 Task 22) — runs before the
-     * generic balance/witness/signer checks so rule violations surface with
-     * specific error codes (e.g. commission > 10000) rather than being
-     * masked by the weaker "inputs >= outputs" check. */
-    if (tx->type == DNAC_TX_STAKE) {
-        int rc = dnac_tx_verify_stake_rules_internal(tx);
-        if (rc != DNAC_SUCCESS) return rc;
-    }
-
-    /* DELEGATE-type rules (design §2.4, Phase 6 Task 23). */
-    if (tx->type == DNAC_TX_DELEGATE) {
-        int rc = dnac_tx_verify_delegate_rules_internal(tx);
-        if (rc != DNAC_SUCCESS) return rc;
-    }
-
-    /* UNSTAKE-type rules (design §2.4, Phase 6 Task 24). */
-    if (tx->type == DNAC_TX_UNSTAKE) {
-        int rc = dnac_tx_verify_unstake_rules_internal(tx);
-        if (rc != DNAC_SUCCESS) return rc;
-    }
-
-    /* UNDELEGATE-type rules (design §2.4, Phase 6 Task 25). */
-    if (tx->type == DNAC_TX_UNDELEGATE) {
-        int rc = dnac_tx_verify_undelegate_rules_internal(tx);
-        if (rc != DNAC_SUCCESS) return rc;
-    }
-
-    /* VALIDATOR_UPDATE-type rules (design §2.4, Phase 6 Task 27). */
-    if (tx->type == DNAC_TX_VALIDATOR_UPDATE) {
-        int rc = dnac_tx_verify_validator_update_rules_internal(tx);
-        if (rc != DNAC_SUCCESS) return rc;
-    }
-
-    /* CHAIN_CONFIG-type rules (hard-fork v1, design §6.3). */
-    if (tx->type == DNAC_TX_CHAIN_CONFIG) {
-        int rc = dnac_tx_verify_chain_config_rules_internal(tx);
-        if (rc != DNAC_SUCCESS) return rc;
-    }
-
-    /* Genesis: 0 inputs, outputs create coins (witness-authorized).
-     * GENESIS-type rule verify (design §2.4 / §5.2 Rule P, Phase 6 Task 28)
-     * — enforces Σ outputs == DNAC_DEFAULT_TOTAL_SUPPLY supply invariance. */
-    if (tx->type == DNAC_TX_GENESIS) {
-        int rc = dnac_tx_verify_genesis_rules_internal(tx);
-        if (rc != DNAC_SUCCESS) {
-            QGP_LOG_ERROR(LOG_TAG, "verify failed: genesis rule check rc=%d", rc);
-            return rc;
-        }
-    } else {
-        /* v0.8.0: sum(inputs) >= sum(outputs), difference is burned fee */
-        uint64_t total_in = dnac_tx_total_input(tx);
-        uint64_t total_out = dnac_tx_total_output(tx);
-
-        QGP_LOG_DEBUG(LOG_TAG, "verify: total_in=%llu, total_out=%llu",
-                      (unsigned long long)total_in, (unsigned long long)total_out);
-
-        if (total_in < total_out) {
-            QGP_LOG_ERROR(LOG_TAG, "verify failed: outputs exceed inputs");
-            return DNAC_ERROR_INVALID_PROOF;
-        }
-    }
-
-    /* Verify we have enough witnesses
-     * BFT mode: 1 attestation proves consensus (quorum agreement happened internally) */
-    QGP_LOG_DEBUG(LOG_TAG, "verify: witness_count=%d (BFT: 1 sufficient)", tx->witness_count);
-    if (tx->witness_count < 1) {
-        QGP_LOG_ERROR(LOG_TAG, "verify failed: no witnesses");
-        return DNAC_ERROR_WITNESS_FAILED;
-    }
-
-    /* Verify witness signatures */
-    int rc = verify_witnesses(tx);
-    if (rc != DNAC_SUCCESS) {
-        QGP_LOG_ERROR(LOG_TAG, "verify failed: witness sig verify rc=%d", rc);
-        return rc;
-    }
-
-    /* Sender signature (skip for genesis - witnesses authorize) */
-    if (tx->type != DNAC_TX_GENESIS) {
-        rc = verify_signers(tx);
-        if (rc != DNAC_SUCCESS) {
-            QGP_LOG_ERROR(LOG_TAG, "verify failed: signer sig verify rc=%d", rc);
-            return rc;
-        }
-    }
-
-    QGP_LOG_DEBUG(LOG_TAG, "verify OK");
-    return DNAC_SUCCESS;
-}
-#endif /* DNAC_TX_BUILDER_ONLY */
 
 /* Big-endian serialization helpers for the canonical TX hash preimage.
  * Design §2.3 (F-CRYPTO-10) requires multi-byte integers in the preimage

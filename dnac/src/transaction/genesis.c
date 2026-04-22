@@ -82,9 +82,10 @@ static int verify_genesis_rules(const dnac_transaction_t *tx) {
         return DNAC_ERROR_INVALID_TX_TYPE;
     }
 
-    /* GENESIS creates coins — no inputs allowed. Existing dnac_tx_verify
-     * already enforces this, but the rule helper re-checks for defense
-     * in depth and so the unit test can exercise it directly. */
+    /* GENESIS creates coins — no inputs allowed. dnac_tx_verify_full
+     * also enforces this via the rule dispatch, but the rule helper
+     * re-checks for defense in depth and so the unit test can exercise
+     * it directly. */
     if (tx->input_count != 0) {
         QGP_LOG_ERROR(LOG_TAG, "GENESIS: input_count=%d != 0", tx->input_count);
         return DNAC_ERROR_INVALID_PROOF;
