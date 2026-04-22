@@ -515,59 +515,10 @@ build:flutter-android:
       - dist/*.aab
     expire_in: 1 day
 
-# Full Windows build (native lib + Flutter) on Windows runner
-# Uses MSYS2/MinGW for native lib (GCC compatible), Flutter for app
-# Prerequisites on runner: MSYS2 with mingw-w64 packages, Flutter SDK
-build:windows:
-  stage: build-native
-  tags:
-    - windows
-  timeout: 2h
-  variables:
-    GIT_SUBMODULE_STRATEGY: recursive
-    MSYS2_PATH: C:\tools\msys64
-    GIT_CONFIG_PARAMETERS: "'core.longPaths=true'"
-  before_script:
-    # Clean Flutter build to avoid long path issues with cached files
-    - if (Test-Path messenger\dna_messenger_flutter\build) { Remove-Item -Recurse -Force messenger\dna_messenger_flutter\build -ErrorAction SilentlyContinue }
-  script:
-    # Install SQLCipher for Windows (MSYS2 package)
-    - $env:MSYSTEM = "MINGW64"
-    - C:\tools\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm --needed mingw-w64-x86_64-sqlcipher"
-    # Build native library with MSYS2/MinGW
-    - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR/messenger' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON && mingw32-make -j4 dna"
-    # Copy native library to Flutter
-    - mkdir -p messenger\dna_messenger_flutter\windows\libs
-    - copy messenger\build-windows\libdna.dll messenger\dna_messenger_flutter\windows\libs\dna.dll
-    # Build Flutter Windows app (requires LongPathsEnabled in registry)
-    - cd messenger\dna_messenger_flutter
-    # Ensure NuGet.exe is available (required by flutter_local_notifications etc.)
-    - if (-not (Get-Command nuget -ErrorAction SilentlyContinue)) { choco install nuget.commandline -y --no-progress; refreshenv }
-    - flutter pub upgrade
-    - flutter pub get
-    - flutter build windows --release
-    # Package — output to messenger/dist/ (installer.iss expects paths relative to messenger/)
-    - mkdir -p ..\dist\flutter-windows
-    - xcopy /E /I build\windows\x64\runner\Release ..\dist\flutter-windows
-    - copy windows\libs\dna.dll ..\dist\flutter-windows\
-    # Bundle MinGW runtime DLLs that dna.dll depends on
-    - cd ..
-    - copy C:\tools\msys64\mingw64\bin\*.dll dist\flutter-windows\
-    # Check artifact size
-    - powershell -Command "(Get-ChildItem -Path dist\flutter-windows -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB"
-    # Build Windows installer with Inno Setup (pre-installed on runner)
-    - '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="${CI_COMMIT_SHORT_SHA}" scripts\installer.iss'
-    - move dist\dna-connect-setup.exe dist\dna-connect-setup-${CI_COMMIT_SHORT_SHA}.exe
-  artifacts:
-    name: "dna-connect-windows-${CI_COMMIT_SHORT_SHA}"
-    paths:
-      - messenger/dist/flutter-windows/
-      - messenger/dist/dna-connect-setup-*.exe
-    expire_in: 1 day
-  allow_failure: true
-  rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-      when: always
+# Windows build temporarily removed (no Windows runner registered on
+# gitlab.cpunk.io). Restore from git history when a windows-tagged
+# runner comes online. The deploy:artifacts job's optional needs entry
+# for build:windows has been removed alongside this block.
 
 # Flutter macOS build (requires macOS runner)
 build:flutter-macos:
@@ -620,9 +571,6 @@ deploy:artifacts:
       artifacts: true
     - job: build:flutter-android
       artifacts: true
-    - job: build:windows
-      artifacts: true
-      optional: true
   script:
     - chmod +x messenger/scripts/deploy-artifacts.sh
     - sh messenger/scripts/deploy-artifacts.sh
