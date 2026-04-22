@@ -1158,6 +1158,12 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
     }
     memcpy(tx->chain_id, supply.chain_id, 32);
 
+    /* v0.17.1: committed_fee MUST be set before compute_hash — preimage
+     * includes it at offset 74 and witness Check 0 rejects committed_fee=0
+     * for non-GENESIS TXs. Same value is passed to dnac_spend RPC below
+     * so the witness sees matching wire fee + RPC fee. */
+    tx->committed_fee = fee;
+
     /* Signer = proposer. */
     memcpy(tx->signers[0].pubkey, identity.pk.bytes, DNAC_PUBKEY_SIZE);
     tx->signer_count = 1;
