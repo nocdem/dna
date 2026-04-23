@@ -171,10 +171,10 @@ dna/
 
 | Component | Version |
 |-----------|---------|
-| Messenger C Library | v0.11.3 |
-| Flutter App | v1.0.0-rc232 |
-| Nodus | v0.17.5 |
-| DNAC | v0.17.3-stake.wip |
+| Messenger C Library | v0.11.4 |
+| Flutter App | v1.0.0-rc233 |
+| Nodus | v0.17.6 |
+| DNAC | v0.17.5-stake.wip |
 
 ---
 
