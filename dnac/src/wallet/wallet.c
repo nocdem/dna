@@ -10,7 +10,6 @@
 #include "dnac/db.h"
 #include "dnac/ledger.h"
 #include "dnac/commitment.h"
-#include "dnac/genesis_anchor.h"
 #include "dnac/trusted_state.h"
 #include "dnac/block.h"
 #include <dna/dna_engine.h>
@@ -52,73 +51,73 @@ struct dnac_context {
  * ========================================================================== */
 
 /**
- * Phase 12 — Bootstrap anchored trust state from the hardcoded chain_id.
+ * Audit C6 (2026-04-22) — Bootstrap anchored trust state via quorum.
  *
- * Fetches the genesis block from a witness via dnac_request_genesis, compares
- * its computed block_hash against DNAC_KNOWN_CHAINS[0].chain_id, and if it
- * matches, populates the process-global trusted state via
- * dnac_set_current_trusted_state().
+ * The hardcoded DNAC_KNOWN_CHAINS[0].chain_id anchor was removed. Trust
+ * now derives from a BFT quorum across the bootstrap peer set: all
+ * configured bootstrap nodes are queried for the genesis block, each
+ * response's block_hash is computed locally, and the chain_id is
+ * accepted only when DNAC_GENESIS_QUORUM_THRESHOLD (2f+1 = 5/7) peers
+ * agree on the same hash. A single compromised bootstrap returning a
+ * forged chain_id is out-voted by the honest majority.
  *
- * Failure is non-fatal: the wallet continues in "degraded mode" with no
- * anchored verification. UTXOs remain marked verified=false until Phase 13
- * lands a real chain_id and the sync path wires full UTXO verification.
- *
- * Current reality: DNAC_KNOWN_CHAINS[0].chain_id is all-zero placeholder, so
- * this function intentionally short-circuits and logs a single INFO line
- * until Phase 13 replaces the placeholder with the real chain_id.
+ * Tri-state outcome:
+ *   - VERIFIED : quorum reached → trusted_state populated
+ *   - PENDING  : too few peers responded (network / cold-cluster) → the
+ *                wallet continues without trust, sync retries later
+ *   - REJECTED : enough peers responded but they diverge below the
+ *                quorum threshold → attack signal, trust left empty so
+ *                DNAC ops refuse to proceed (messaging unaffected)
  */
 static void bootstrap_trusted_state(dnac_context_t *ctx) {
     if (!ctx) return;
 
-    if (DNAC_KNOWN_CHAINS_COUNT == 0) {
-        QGP_LOG_WARN(LOG_TAG,
-            "trust: no known chains configured, anchored verification disabled");
-        return;
-    }
-
-    const dnac_known_chain_t *kc = &DNAC_KNOWN_CHAINS[0];
-
-    /* Skip if chain_id is still the all-zero placeholder (pre-Phase-13). */
-    static const uint8_t zero[DNAC_BLOCK_HASH_SIZE] = {0};
-    if (memcmp(kc->chain_id, zero, DNAC_BLOCK_HASH_SIZE) == 0) {
-        QGP_LOG_INFO(LOG_TAG,
-            "trust: chain_id placeholder unset, anchored verification deferred to Phase 13");
-        return;
-    }
-
     dnac_block_t genesis;
     memset(&genesis, 0, sizeof(genesis));
-    int rc = dnac_request_genesis(ctx, &genesis);
-    if (rc != DNAC_SUCCESS) {
+    int verified = 0;
+    int total = 0;
+    int rc = dnac_request_genesis_quorum(ctx, &genesis, &verified, &total);
+
+    if (rc == DNAC_ERROR_TIMEOUT) {
         QGP_LOG_WARN(LOG_TAG,
-            "trust: dnac_request_genesis failed (rc=%d), degraded mode", rc);
+            "trust: PENDING — only %d peers responded (need >= %d); "
+            "DNAC ops deferred, will retry on next sync",
+            total, DNAC_GENESIS_QUORUM_THRESHOLD);
         return;
     }
 
-    if (memcmp(genesis.block_hash, kc->chain_id, DNAC_BLOCK_HASH_SIZE) != 0) {
+    if (rc == DNAC_ERROR_WITNESS_FAILED) {
         QGP_LOG_ERROR(LOG_TAG,
-            "trust: genesis chain_id mismatch for '%s' — possible MITM, degraded mode",
-            kc->name ? kc->name : "?");
-        /* Do NOT abort init — Phase 13 will tighten this to hard fail. */
+            "trust: REJECTED — %d/%d peers disagree below quorum (%d); "
+            "possible compromised bootstrap or chain divergence, "
+            "DNAC ops disabled",
+            verified, total, DNAC_GENESIS_QUORUM_THRESHOLD);
+        return;
+    }
+
+    if (rc != DNAC_SUCCESS) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "trust: quorum bootstrap failed rc=%d, DNAC ops deferred", rc);
         return;
     }
 
     dnac_trusted_state_t trust;
     memset(&trust, 0, sizeof(trust));
-    memcpy(trust.chain_id, kc->chain_id, DNAC_BLOCK_HASH_SIZE);
+    memcpy(trust.chain_id, genesis.block_hash, DNAC_BLOCK_HASH_SIZE);
     memcpy(&trust.chain_def, &genesis.chain_def, sizeof(genesis.chain_def));
     /* latest_verified_anchor intentionally zeroed — populated on first
-     * anchor_verify in the sync path (Phase 13 wiring). */
+     * anchor_verify in the sync path. */
 
     if (dnac_set_current_trusted_state(&trust) != 0) {
-        QGP_LOG_WARN(LOG_TAG,
-            "trust: dnac_set_current_trusted_state failed, degraded mode");
+        QGP_LOG_ERROR(LOG_TAG,
+            "trust: dnac_set_current_trusted_state failed, DNAC ops deferred");
         return;
     }
 
     QGP_LOG_INFO(LOG_TAG,
-        "trust: anchored state initialized: chain='%s', %u witnesses",
-        trust.chain_def.chain_name,
+        "trust: VERIFIED — %d/%d peers agree on genesis; chain='%s', "
+        "%u witnesses",
+        verified, total, trust.chain_def.chain_name,
         (unsigned)trust.chain_def.witness_count);
 }
 

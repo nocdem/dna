@@ -422,6 +422,48 @@ int dnac_witness_ping(dnac_context_t *ctx,
  */
 int dnac_request_genesis(dnac_context_t *ctx, dnac_block_t *block_out);
 
+/**
+ * BFT quorum threshold for trust bootstrap (2f+1 for f=2, N=7 cluster).
+ *
+ * Under a compromised-bootstrap threat model, a single witness node
+ * returning a forged genesis block must not mislead the client. The
+ * quorum-based fetch requires this many bootstrap peers to agree on the
+ * same block_hash before anchoring the trusted state.
+ */
+#define DNAC_GENESIS_QUORUM_THRESHOLD 5
+
+/**
+ * @brief Quorum-verified genesis fetch for trust bootstrap (audit C6).
+ *
+ * Fan out dnac_genesis queries to all configured bootstrap peers, compute
+ * the block_hash of each response locally, tally by hash, and accept the
+ * block only when at least DNAC_GENESIS_QUORUM_THRESHOLD peers agree.
+ *
+ * This replaces the single-node call from bootstrap_trusted_state and
+ * closes the "compromised bootstrap returns forged chain_id" attack
+ * surface flagged by the 2026-04-22 red-team audit (finding C6).
+ *
+ * @param ctx                   DNAC client context (identity must be
+ *                              loaded via messenger init).
+ * @param block_out             [out] Majority-consensus genesis block,
+ *                              only populated when the return value is
+ *                              DNAC_SUCCESS.
+ * @param verified_count_out    [out, optional] Number of peers agreeing
+ *                              with the majority hash.
+ * @param total_responses_out   [out, optional] Total peers that produced
+ *                              a usable response.
+ * @return DNAC_SUCCESS on quorum verification,
+ *         DNAC_ERROR_TIMEOUT when too few peers respond (retryable),
+ *         DNAC_ERROR_WITNESS_FAILED on divergent responses below quorum,
+ *         DNAC_ERROR_NOT_INITIALIZED when the messenger layer has no
+ *         loaded identity / bootstrap list available,
+ *         DNAC_ERROR_INVALID_PARAM on argument errors.
+ */
+int dnac_request_genesis_quorum(dnac_context_t *ctx,
+                                 dnac_block_t *block_out,
+                                 int *verified_count_out,
+                                 int *total_responses_out);
+
 #ifdef __cplusplus
 }
 #endif

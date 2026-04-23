@@ -1161,6 +1161,26 @@ bool nodus_messenger_is_initialized(void) {
     return atomic_load(&g_initialized);
 }
 
+int nodus_messenger_get_bootstrap_servers(nodus_server_endpoint_t *out,
+                                           int max_count) {
+    if (!out || max_count <= 0) return -1;
+    if (!atomic_load(&g_initialized)) return -1;
+
+    nodus_client_t *c = nodus_singleton_get();
+    if (!c) return -1;
+
+    int copied = 0;
+    int rc = nodus_client_get_servers(c, out, max_count, &copied);
+    nodus_singleton_release();
+    if (rc != 0) return -1;
+    return copied;
+}
+
+const nodus_identity_t *nodus_messenger_get_identity_ref(void) {
+    if (!atomic_load(&g_initialized)) return NULL;
+    return &g_stored_identity;
+}
+
 void nodus_messenger_set_status_callback(nodus_messenger_status_cb_t cb, void *user_data) {
     /* CONCURRENCY.md L3: g_nodus_init_mutex
      * Store cb + user_data under the mutex to avoid a torn fn-ptr/user-data

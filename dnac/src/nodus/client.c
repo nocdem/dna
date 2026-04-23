@@ -380,6 +380,175 @@ int dnac_request_genesis(dnac_context_t *ctx, dnac_block_t *block_out) {
     return DNAC_SUCCESS;
 }
 
+/* Messenger/nodus layer helpers — declared in messenger/dht/shared/nodus_init.h
+ * but not on the DNAC include path, so forward-declare here. */
+extern int nodus_messenger_get_bootstrap_servers(nodus_server_endpoint_t *out,
+                                                  int max_count);
+extern const nodus_identity_t *nodus_messenger_get_identity_ref(void);
+
+/* ── Per-peer genesis fetch helper ──────────────────────────────────
+ * Opens a short-lived nodus client against a single endpoint, queries
+ * dnac_genesis, reassembles the block, and computes its block_hash.
+ * Returns 0 on success with `block_out` fully populated (including
+ * block_hash). Non-zero return means this peer couldn't produce a
+ * usable response — caller should skip it in the tally.
+ */
+static int fetch_genesis_from_peer(const nodus_server_endpoint_t *endpoint,
+                                    const nodus_identity_t *identity,
+                                    dnac_block_t *block_out) {
+    if (!endpoint || !identity || !block_out) return -1;
+
+    nodus_client_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.servers[0] = *endpoint;
+    cfg.server_count = 1;
+    cfg.request_timeout_ms = 5000;
+
+    nodus_client_t client;
+    memset(&client, 0, sizeof(client));
+
+    if (nodus_client_init(&client, &cfg, identity) != 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "genesis quorum: init fail for %s:%u",
+                      endpoint->ip, (unsigned)endpoint->port);
+        return -1;
+    }
+
+    int rc = -1;
+    if (nodus_client_connect(&client) != 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "genesis quorum: connect fail %s:%u",
+                      endpoint->ip, (unsigned)endpoint->port);
+        goto done;
+    }
+
+    nodus_dnac_genesis_result_t result;
+    memset(&result, 0, sizeof(result));
+    int qrc = nodus_client_dnac_genesis(&client, &result);
+    if (qrc != 0 || !result.found ||
+        !result.chain_def_blob || result.chain_def_blob_len == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "genesis quorum: query fail %s:%u rc=%d",
+                      endpoint->ip, (unsigned)endpoint->port, qrc);
+        nodus_client_free_genesis_result(&result);
+        goto done;
+    }
+
+    memset(block_out, 0, sizeof(*block_out));
+    block_out->block_height = result.height;
+    memcpy(block_out->prev_block_hash, result.prev_hash, DNAC_BLOCK_HASH_SIZE);
+    memcpy(block_out->state_root, result.state_root, DNAC_BLOCK_HASH_SIZE);
+    memcpy(block_out->tx_root, result.tx_root, DNAC_BLOCK_HASH_SIZE);
+    block_out->tx_count = result.tx_count;
+    block_out->timestamp = result.timestamp;
+    memcpy(block_out->proposer_id, result.proposer_id, DNAC_BLOCK_PROPOSER_SIZE);
+    block_out->is_genesis = true;
+
+    if (dnac_chain_def_decode(result.chain_def_blob,
+                               result.chain_def_blob_len,
+                               &block_out->chain_def) != 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "genesis quorum: chain_def decode fail %s:%u",
+                      endpoint->ip, (unsigned)endpoint->port);
+        nodus_client_free_genesis_result(&result);
+        memset(block_out, 0, sizeof(*block_out));
+        goto done;
+    }
+
+    nodus_client_free_genesis_result(&result);
+
+    if (dnac_block_compute_hash(block_out) != 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "genesis quorum: block_compute_hash fail %s:%u",
+                      endpoint->ip, (unsigned)endpoint->port);
+        memset(block_out, 0, sizeof(*block_out));
+        goto done;
+    }
+
+    rc = 0;
+
+done:
+    nodus_client_close(&client);
+    return rc;
+}
+
+int dnac_request_genesis_quorum(dnac_context_t *ctx,
+                                 dnac_block_t *block_out,
+                                 int *verified_count_out,
+                                 int *total_responses_out) {
+    if (!ctx || !block_out) return DNAC_ERROR_INVALID_PARAM;
+
+    if (verified_count_out) *verified_count_out = 0;
+    if (total_responses_out) *total_responses_out = 0;
+
+    nodus_server_endpoint_t servers[NODUS_CLIENT_MAX_SERVERS];
+    int server_count = nodus_messenger_get_bootstrap_servers(
+        servers, NODUS_CLIENT_MAX_SERVERS);
+    if (server_count < DNAC_GENESIS_QUORUM_THRESHOLD) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "genesis quorum: bootstrap list has %d peers, need >= %d",
+            server_count, DNAC_GENESIS_QUORUM_THRESHOLD);
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
+
+    const nodus_identity_t *identity = nodus_messenger_get_identity_ref();
+    if (!identity) {
+        QGP_LOG_ERROR(LOG_TAG, "genesis quorum: no loaded identity");
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
+
+    dnac_block_t *blocks = calloc((size_t)server_count, sizeof(dnac_block_t));
+    if (!blocks) return DNAC_ERROR_OUT_OF_MEMORY;
+
+    int got = 0;
+    for (int i = 0; i < server_count; i++) {
+        if (fetch_genesis_from_peer(&servers[i], identity, &blocks[got]) == 0) {
+            got++;
+        }
+    }
+
+    if (total_responses_out) *total_responses_out = got;
+
+    if (got == 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "genesis quorum: no peers returned a usable response");
+        free(blocks);
+        return DNAC_ERROR_TIMEOUT;
+    }
+
+    /* Tally by block_hash — find the majority */
+    int best_votes = 0;
+    int best_idx = -1;
+    for (int i = 0; i < got; i++) {
+        int votes = 0;
+        for (int j = 0; j < got; j++) {
+            if (memcmp(blocks[i].block_hash, blocks[j].block_hash,
+                        DNAC_BLOCK_HASH_SIZE) == 0) {
+                votes++;
+            }
+        }
+        if (votes > best_votes) {
+            best_votes = votes;
+            best_idx = i;
+        }
+    }
+
+    if (verified_count_out) *verified_count_out = best_votes;
+
+    if (best_votes < DNAC_GENESIS_QUORUM_THRESHOLD) {
+        QGP_LOG_ERROR(LOG_TAG,
+            "genesis quorum: only %d/%d peers agree, need >= %d — possible "
+            "compromised bootstrap or chain divergence",
+            best_votes, got, DNAC_GENESIS_QUORUM_THRESHOLD);
+        free(blocks);
+        return (got < DNAC_GENESIS_QUORUM_THRESHOLD)
+                   ? DNAC_ERROR_TIMEOUT
+                   : DNAC_ERROR_WITNESS_FAILED;
+    }
+
+    QGP_LOG_INFO(LOG_TAG,
+        "genesis quorum: %d/%d peers agree on genesis block (height=%llu)",
+        best_votes, got, (unsigned long long)blocks[best_idx].block_height);
+    memcpy(block_out, &blocks[best_idx], sizeof(dnac_block_t));
+    free(blocks);
+    return DNAC_SUCCESS;
+}
+
 int dnac_witness_ping(dnac_context_t *ctx,
                       const uint8_t *server_id,
                       int *latency_ms_out) {

@@ -10,6 +10,7 @@
 #ifndef NODUS_INIT_H
 #define NODUS_INIT_H
 
+#include "nodus/nodus.h"
 #include "nodus/nodus_types.h"
 #include <stdbool.h>
 
@@ -92,6 +93,30 @@ void nodus_messenger_resume(void);
  * @return true if ready, false if timed out
  */
 bool nodus_messenger_wait_for_ready(int timeout_ms);
+
+/**
+ * Copy the active bootstrap server list into a caller-provided buffer.
+ * Used by quorum-based protocols (e.g., DNAC genesis anchor bootstrap)
+ * that need to fan out queries across all bootstrap peers.
+ *
+ * @param out        Caller buffer (at least `max_count` entries)
+ * @param max_count  Capacity of `out`
+ * @return Number of servers copied (>=0), -1 on error
+ */
+int nodus_messenger_get_bootstrap_servers(nodus_server_endpoint_t *out,
+                                           int max_count);
+
+/**
+ * Return a const reference to the loaded identity, or NULL if no
+ * identity has been loaded via nodus_messenger_init().
+ *
+ * Used by quorum-based protocols that spin up short-lived nodus clients
+ * against individual bootstrap peers and need to pass the same identity
+ * for authentication.
+ *
+ * @return Const pointer to the loaded identity, or NULL.
+ */
+const nodus_identity_t *nodus_messenger_get_identity_ref(void);
 
 #ifdef __cplusplus
 }
