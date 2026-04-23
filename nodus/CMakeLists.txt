@@ -518,6 +518,9 @@ add_test(NAME test_sync_rsp_guards COMMAND test_sync_rsp_guards)
 # Phase 11 follow-up — block_txs_get DB query test
 register_witness_test(test_block_txs_get)
 
+# "My Delegations" query — DB layer test backing dnac_delegations T3 RPC
+register_witness_test(test_witness_delegations_query)
+
 # Phase 12 / Task 12.6 — spend_result preimage layout tests
 add_executable(test_spend_preimage tests/test_spend_preimage.c)
 target_link_libraries(test_spend_preimage nodus dsa nodus crypto)

@@ -58,6 +58,10 @@
 /* Max validator entries returned per validator_list_query. Page size cap. */
 #define DNAC_VALIDATOR_LIST_MAX_RESULTS   256
 
+/* Max delegation rows returned per dnac_delegations query. Expected real-world
+ * cardinality per delegator is small; 256 covers v1 scale with headroom. */
+#define DNAC_MAX_DELEGATIONS_RESULTS      256
+
 /* ── CBOR response helpers ───────────────────────────────────────── */
 
 /**
@@ -1508,6 +1512,174 @@ static void handle_dnac_history(nodus_witness_t *w,
 }
 
 /* ════════════════════════════════════════════════════════════════════
+ * dnac_delegations — Query active delegations for the caller
+ *
+ * Request:  "a": {"pubkey": bstr(2592), "limit": uint}
+ * Response: "r": {"count": N, "entries": [{"validator": tstr(128),
+ *                  "amount": uint, "block": uint}, ...]}
+ *
+ * Auth (C11): SHA3-512(pubkey) must match the authenticated session
+ * fingerprint (conn->peer_id). A user can only query their own
+ * delegations — privacy by design.
+ *
+ * Lookup uses the existing nodus_delegation_list_by_delegator() helper
+ * which computes delegator_hash = SHA3-512(0x03 || pubkey) and hits
+ * the idx_delegator index. No schema change.
+ *
+ * validator_fp in the response is derived server-side from the stored
+ * validator_pubkey BLOB via SHA3-512(validator_pubkey), rendered as
+ * 128 lowercase hex. Matches the fp formula used in BFT roster code
+ * (nodus_witness_bft.c:1379) so downstream UI can correlate against
+ * validator list entries.
+ * ════════════════════════════════════════════════════════════════════ */
+
+static void handle_dnac_delegations(nodus_witness_t *w,
+                                      struct nodus_tcp_conn *conn,
+                                      const uint8_t *payload, size_t len,
+                                      uint32_t txn_id) {
+    cbor_decoder_t dec;
+    size_t args_count;
+    if (decode_args(payload, len, &dec, &args_count) != 0) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing args map");
+        return;
+    }
+
+    const uint8_t *req_pubkey = NULL;
+    size_t req_pubkey_len = 0;
+    int max_results = DNAC_MAX_DELEGATIONS_RESULTS;
+
+    for (size_t i = 0; i < args_count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key_match(&key, "pubkey")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_BSTR) {
+                req_pubkey = val.bstr.ptr;
+                req_pubkey_len = val.bstr.len;
+            }
+        } else if (key_match(&key, "limit")) {
+            cbor_item_t val = cbor_decode_next(&dec);
+            if (val.type == CBOR_ITEM_UINT) {
+                max_results = (int)val.uint_val;
+                if (max_results <= 0 ||
+                    max_results > DNAC_MAX_DELEGATIONS_RESULTS)
+                    max_results = DNAC_MAX_DELEGATIONS_RESULTS;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    if (!req_pubkey || req_pubkey_len != DNAC_PUBKEY_SIZE) {
+        send_error(conn, txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                    "missing or malformed pubkey field");
+        return;
+    }
+
+    /* C11: require SHA3-512(pubkey) == authenticated session fingerprint */
+    if (!conn->peer_id_set) {
+        send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                    "session not authenticated");
+        return;
+    }
+    {
+        uint8_t fp_from_pubkey[QGP_SHA3_512_DIGEST_LENGTH];
+        if (qgp_sha3_512(req_pubkey, DNAC_PUBKEY_SIZE,
+                          fp_from_pubkey) != 0) {
+            send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                        "fp hash failed");
+            return;
+        }
+        if (memcmp(fp_from_pubkey, conn->peer_id.bytes,
+                    NODUS_KEY_BYTES) != 0) {
+            send_error(conn, txn_id, NODUS_ERR_NOT_AUTHENTICATED,
+                        "pubkey does not match authenticated session fingerprint");
+            return;
+        }
+    }
+
+    dnac_delegation_record_t *entries =
+        calloc((size_t)max_results, sizeof(dnac_delegation_record_t));
+    if (!entries) {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return;
+    }
+
+    int count = 0;
+    int list_rc = nodus_delegation_list_by_delegator(w, req_pubkey,
+                                                       entries,
+                                                       max_results,
+                                                       &count);
+    if (list_rc != 0) {
+        free(entries);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "delegations query failed");
+        return;
+    }
+
+    /* Response buffer: per-entry budget = 128-char fp + amount + block +
+     * CBOR keys/overhead ≈ 200B. 1 KB header + 256B per entry is ample. */
+    size_t buf_size = 1024 + ((size_t)count * 256);
+    uint8_t *buf = malloc(buf_size);
+    if (!buf) {
+        free(entries);
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "allocation failed");
+        return;
+    }
+
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, buf_size);
+    enc_dnac_response(&enc, txn_id, "dnac_delegations", 2);
+
+    cbor_encode_cstr(&enc, "count");
+    cbor_encode_uint(&enc, (uint64_t)count);
+
+    cbor_encode_cstr(&enc, "entries");
+    cbor_encode_array(&enc, (size_t)count);
+
+    for (int i = 0; i < count; i++) {
+        /* Derive validator_fp server-side from stored validator_pubkey.
+         * Same helper used in BFT roster / chain_def paths. */
+        uint8_t v_fp_raw[QGP_SHA3_512_DIGEST_LENGTH];
+        char    v_fp_hex[NODUS_KEY_HEX_LEN];
+
+        if (qgp_sha3_512(entries[i].validator_pubkey, DNAC_PUBKEY_SIZE,
+                          v_fp_raw) != 0) {
+            /* Should not happen — defensive fallback: empty fp so the
+             * row is recognizably malformed client-side. */
+            memset(v_fp_hex, '0', 128);
+            v_fp_hex[128] = '\0';
+        } else {
+            for (int b = 0; b < NODUS_KEY_BYTES; b++)
+                snprintf(v_fp_hex + b * 2, NODUS_KEY_HEX_LEN - b * 2,
+                         "%02x", v_fp_raw[b]);
+            v_fp_hex[128] = '\0';
+        }
+
+        cbor_encode_map(&enc, 3);
+        cbor_encode_cstr(&enc, "validator");
+        cbor_encode_cstr(&enc, v_fp_hex);
+        cbor_encode_cstr(&enc, "amount");
+        cbor_encode_uint(&enc, entries[i].amount);
+        cbor_encode_cstr(&enc, "block");
+        cbor_encode_uint(&enc, entries[i].delegated_at_block);
+    }
+
+    size_t rlen = cbor_encoder_len(&enc);
+    if (rlen > 0) {
+        nodus_tcp_send(conn, buf, rlen);
+    } else {
+        send_error(conn, txn_id, NODUS_ERR_INTERNAL_ERROR,
+                    "response buffer overflow");
+    }
+
+    free(buf);
+    free(entries);
+}
+
+/* ════════════════════════════════════════════════════════════════════
  * dnac_spend — Submit TX for BFT consensus
  *
  * Request:  "a": {"tx":bstr, "hash":bstr(64), "pk":bstr(2592),
@@ -2472,6 +2644,8 @@ void nodus_witness_handle_dnac(nodus_witness_t *w,
         handle_dnac_genesis(w, conn, txn_id);
     } else if (strcmp(method, "dnac_history") == 0) {
         handle_dnac_history(w, conn, payload, len, txn_id);
+    } else if (strcmp(method, "dnac_delegations") == 0) {
+        handle_dnac_delegations(w, conn, payload, len, txn_id);
     } else if (strcmp(method, "dnac_token_list") == 0) {
         handle_dnac_token_list(w, conn, txn_id);
     } else if (strcmp(method, "dnac_token_info") == 0) {
