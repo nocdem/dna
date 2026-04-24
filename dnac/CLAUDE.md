@@ -1,6 +1,6 @@
 # DNAC - Development Guidelines
 
-**Last Updated:** 2026-04-22 | **Status:** DESIGN | **Version:** v0.17.3-stake.wip (feature branch `stake-delegation-v1`)
+**Last Updated:** 2026-04-24 | **Status:** DESIGN | **Version:** v0.17.6-stake.wip (feature branch `stake-delegation-v1` merged to main)
 
 **Note:** Framework rules (checkpoints, identity override, protocol mode, violations) are in root `/opt/dna/CLAUDE.md`. This file contains DNAC-specific guidelines only.
 
