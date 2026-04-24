@@ -34,7 +34,7 @@ STAGEF_ENV="$REPO_ROOT/nodus/tests/integration/stagef/stagef_env.sh"
 
 CONCURRENCY=4
 DURATION=30
-OUTPUT_DIR="results_$(date -u +%Y%m%d_%H%M%S)"
+OUTPUT_DIR="/tmp/bench_run_$(date -u +%Y%m%d_%H%M%S)"
 SKIP_CLUSTER=0
 BASELINE=""
 
