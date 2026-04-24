@@ -444,9 +444,11 @@ build:flutter-linux:
       exec "./dna_connect" "$@"
       APPRUN
     - chmod +x AppDir/AppRun
-    # Download appimagetool and create AppImage
-    - wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
-    - echo "b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2  appimagetool" | sha256sum -c -
+    # Download appimagetool (C9 audit fix: pinned to tagged release 1.9.1
+    # instead of mutable "continuous" tag — binary now comes from
+    # AppImage/appimagetool repo, the active home for the tool).
+    - wget -q https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage -O appimagetool
+    - echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | sha256sum -c -
     - chmod +x appimagetool
     - ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir dist/dna-connect-${CI_COMMIT_SHORT_SHA}-x86_64.AppImage
   artifacts:
