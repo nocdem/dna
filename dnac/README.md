@@ -1,6 +1,6 @@
 # DNAC - Post-Quantum Zero-Knowledge Cash over DHT
 
-**Version:** v0.13.0 | **Protocol:** v1 (Transparent Amounts)
+**Version:** v0.17.6-stake.wip | **TX Wire:** v2 (since v0.17.1) | **Protocol Amounts:** v1 (Transparent)
 
 DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](https://github.com/nocdem/dna). It lives in the DNA monorepo at `/opt/dna/dnac/`.
 
@@ -28,6 +28,12 @@ DNAC is a privacy-preserving digital cash system built on top of [DNA Connect](h
 - **Token Creation** - TX_TOKEN_CREATE transaction type with 1 DNAC fee burn (v0.13.0)
 - **Per-Token Balances** - Wallet tracks separate UTXO sets per token_id (v0.13.0)
 - **Name Resolution** - CLI send accepts DNA name, auto-resolves to fingerprint (v0.13.0)
+- **TX Wire v2** - 82-byte header with explicit `committed_fee` field, SEC-06 domain separator, min-fee gate 0.01 DNAC (v0.17.1)
+- **Stake-Delegation v1** - Stake-weighted top-7 committee as BFT voting authority; per-block reward accrual; pull-based `CLAIM_REWARD` (`stake-delegation-v1`, v0.17.x)
+- **F17 Committee Enforcement** - Genesis committee cache pin, fee_pool rollback on commit failure (nodus v0.15.1)
+- **Hard-Fork Mechanism v1** - `DNAC_TX_CHAIN_CONFIG` allows committee-voted consensus-parameter changes without chain wipe (v0.14+; design: `docs/plans/2026-04-19-hard-fork-mechanism-design.md`)
+- **Merkle State Root** - Block commits include SHA3-512 `state_root` over UTXO/validator/delegation/reward/chain_config roots (v0.11.0; v0.14+ added chain_config input)
+- **Inflation Model** - 16→1 DNAC halving schedule shipped in code (`2d344281`/`6cd14f17`); not yet deployed
 
 ## Protocol Versions
 
@@ -295,7 +301,7 @@ All blockchain state is stored on BFT witnesses. DHT inbox delivery was removed 
 
 ## Status
 
-**Development Phase** - v0.13.0. Not for production use.
+**Development Phase** - v0.17.6-stake.wip. Not for production use. Feature branch `stake-delegation-v1` merged to main; chain wipe required at next deploy. Live testnet chain: `4a68e146` (9 blocks, 7/7 consistent).
 
 ### Implemented
 

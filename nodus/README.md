@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="Apache 2.0"></a>
-  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v0.10.30-orange" alt="RC"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/Status-RC%20v0.17.7-orange" alt="RC"></a>
   <a href="#security"><img src="https://img.shields.io/badge/Crypto-Dilithium5%20(FIPS%20204)-red" alt="Dilithium5"></a>
 </p>
 

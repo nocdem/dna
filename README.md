@@ -36,7 +36,7 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 └──────────┬───────────────────────────────────────────┘
            │ dart:ffi
 ┌──────────▼───────────────────────────────────────────┐
-│  DNA Engine (C) — 23 engine modules                  │
+│  DNA Engine (C) — 22 engine modules                  │
 │  messaging · contacts · groups · wallet · presence   │
 │  identity · backup · lifecycle · version · signing   │
 │  wall · media · follow · dnac · channels + more      │
