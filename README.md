@@ -226,7 +226,7 @@ DNA uses the Nodus DHT network. Anyone can run a Nodus node — the network is o
 |-----------|---------|
 | Messenger C Library | [Apache License 2.0](messenger/LICENSE) |
 | Nodus DHT Server | [Apache License 2.0](nodus/LICENSE) |
-| DNAC | [MIT License](dnac/LICENSE) |
+| DNAC | [Apache License 2.0](dnac/LICENSE) |
 | Shared Crypto | [Apache License 2.0](LICENSE) |
 | CPUNK Platform | [Apache License 2.0](cpunk/LICENSE) |
 | Flutter App | [Source-Available (Proprietary)](messenger/dna_messenger_flutter/LICENSE) |

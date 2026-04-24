@@ -360,7 +360,7 @@ All blockchain state is stored on BFT witnesses. DHT inbox delivery was removed 
 
 ## License
 
-MIT
+Licensed under the [Apache License 2.0](LICENSE). Aligns with the rest of the DNA monorepo (messenger, nodus, shared-crypto). Changed from MIT on 2026-04-24 — the original MIT claim was a footer in the v0.1.0 initial commit without a LICENSE file; Apache 2.0 includes an explicit patent grant which is preferable for a post-quantum blockchain component.
 
 ## Related Projects
 
