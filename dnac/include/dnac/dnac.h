@@ -881,6 +881,45 @@ typedef struct {
 } dnac_validator_list_entry_t;
 
 /**
+ * @brief One active delegation made by the wallet owner, as returned by
+ *        dnac_get_my_delegations().
+ *
+ * validator_fp is the 128-char hex SHA3-512(pubkey) fingerprint —
+ * matches validator identities surfaced by dnac_validator_list() so UI
+ * can correlate the two views without extra derivation.
+ */
+typedef struct {
+    char     validator_fp[DNAC_FINGERPRINT_SIZE]; /**< 128 hex + NUL */
+    uint64_t amount_raw;                           /**< Raw units (8 decimals) */
+    uint64_t delegated_at_block;                   /**< Block height of DELEGATE */
+} dnac_delegation_t;
+
+/**
+ * @brief Query the wallet owner's active delegations.
+ *
+ * Asks the witness for all rows in the `delegations` table where the
+ * delegator pubkey matches this wallet's signing key. Enforced
+ * server-side via C11 auth (session fingerprint == SHA3-512(pubkey)),
+ * so callers cannot query other users' delegations.
+ *
+ * @param ctx         DNAC context
+ * @param list_out    Heap-allocated array of entries (caller frees via
+ *                    dnac_free_delegations())
+ * @param count_out   Number of entries written (always set; 0 if empty)
+ * @return DNAC_SUCCESS on success, DNAC_ERROR_NOT_INITIALIZED if the
+ *         engine/singleton/identity is unavailable,
+ *         DNAC_ERROR_NETWORK on witness transport failure,
+ *         DNAC_ERROR_OUT_OF_MEMORY on allocation failure,
+ *         DNAC_ERROR_INVALID_PARAM on null args.
+ */
+int dnac_get_my_delegations(dnac_context_t *ctx,
+                             dnac_delegation_t **list_out,
+                             int *count_out);
+
+/** Free a heap-allocated delegations list. Safe with list == NULL. */
+void dnac_free_delegations(dnac_delegation_t *list, int count);
+
+/**
  * @brief List validators known to the witness, optionally filtered by
  *        status.
  *

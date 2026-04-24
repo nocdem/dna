@@ -26,6 +26,7 @@
 #include "crypto/utils/qgp_log.h"
 #include "crypto/utils/qgp_fingerprint.h"
 #include "crypto/hash/qgp_sha3.h"
+#include <dna/dna_engine.h>   /* dna_engine_get_signing_public_key */
 
 /* Nodus client SDK (public API) */
 #include "nodus/nodus.h"
@@ -839,6 +840,102 @@ int dnac_get_remote_history(dnac_context_t *ctx,
     }
 
     nodus_client_free_history_result(&result);
+    return DNAC_SUCCESS;
+}
+
+/* ============================================================================
+ * My Delegations (from Nodus witnesses)
+ * ========================================================================== */
+
+void dnac_free_delegations(dnac_delegation_t *list, int count) {
+    (void)count;  /* Entries are plain POD, a single free() suffices. */
+    free(list);
+}
+
+int dnac_get_my_delegations(dnac_context_t *ctx,
+                              dnac_delegation_t **list_out,
+                              int *count_out) {
+    if (!ctx || !list_out || !count_out)
+        return DNAC_ERROR_INVALID_PARAM;
+
+    *list_out = NULL;
+    *count_out = 0;
+
+    /* The wire protocol sends the raw Dilithium5 pubkey (not fp) so the
+     * witness can both authenticate the session AND compute the
+     * delegator_hash PK column lookup in one place. dnac_context stores
+     * only the fp — pull the live pubkey from the engine's signing
+     * identity. Mirrors the stake.c / genesis.c / builder.c patterns. */
+    dna_engine_t *engine = dnac_get_engine(ctx);
+    if (!engine) {
+        QGP_LOG_ERROR(LOG_TAG, "my_delegations: engine is NULL");
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
+
+    uint8_t pubkey[DNAC_PUBKEY_SIZE];
+    /* Success returns pubkey size (positive); only negative is a failure.
+     * Matches genesis.c:275 / stake.c:157 convention. Previously checked
+     * rc != 0 which would have tripped on every successful call. */
+    int pk_rc = dna_engine_get_signing_public_key(engine, pubkey,
+                                                    sizeof(pubkey));
+    if (pk_rc < 0) {
+        QGP_LOG_ERROR(LOG_TAG,
+                      "my_delegations: get_signing_public_key failed: %d",
+                      pk_rc);
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
+
+    nodus_client_t *client = nodus_singleton_get();
+    if (!client) {
+        QGP_LOG_ERROR(LOG_TAG, "my_delegations: nodus singleton is NULL");
+        return DNAC_ERROR_NOT_INITIALIZED;
+    }
+
+    nodus_singleton_lock();
+
+    nodus_dnac_delegations_result_t result;
+    int rc = nodus_client_dnac_delegations(client, pubkey, sizeof(pubkey),
+                                             NODUS_DNAC_MAX_DELEGATIONS_RESULTS,
+                                             &result);
+
+    nodus_singleton_unlock();
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "my_delegations: nodus query failed: %d",
+                      rc);
+        return DNAC_ERROR_NETWORK;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "my_delegations: received %d entries from Nodus",
+                 result.count);
+
+    if (result.count > 0) {
+        dnac_delegation_t *list = calloc((size_t)result.count,
+                                           sizeof(dnac_delegation_t));
+        if (!list) {
+            nodus_client_free_delegations_result(&result);
+            return DNAC_ERROR_OUT_OF_MEMORY;
+        }
+
+        for (int i = 0; i < result.count; i++) {
+            const nodus_dnac_delegation_entry_t *src = &result.entries[i];
+            dnac_delegation_t *dst = &list[i];
+
+            /* validator_fp is already 128-hex + NUL on the wire; copy
+             * defensively with bounds just in case a future schema
+             * revision shortens DNAC_FINGERPRINT_SIZE. */
+            strncpy(dst->validator_fp, src->validator_fp,
+                    DNAC_FINGERPRINT_SIZE - 1);
+            dst->validator_fp[DNAC_FINGERPRINT_SIZE - 1] = '\0';
+            dst->amount_raw          = src->amount;
+            dst->delegated_at_block  = src->delegated_at_block;
+        }
+
+        *list_out  = list;
+        *count_out = result.count;
+    }
+
+    nodus_client_free_delegations_result(&result);
     return DNAC_SUCCESS;
 }
 
