@@ -1,70 +1,32 @@
 # DHT Functions
 
-Core DHT (Distributed Hash Table) operations for decentralized storage.
+**Directory:** `dht/`
+
+Domain-layer DHT wrappers used by the messenger for offline messaging, groups, profiles, contact lists, keyserver lookups, wall posts, and media.
+
+> **Architectural note:** raw DHT primitives (`dht_put`, `dht_get`, `dht_context_*`, `dht_singleton_*`, `dht_value_storage_*`, `dht_chunked_*`, `dht_publish_queue_*`, `dht_bootstrap_discovery_*`, `dht_identity_*`) **no longer live in messenger**. The DHT layer is provided by **Nodus**, a purpose-built post-quantum Kademlia DHT (repo root: `/opt/dna/nodus/`). Messenger talks to Nodus through `nodus_ops_*` (Section 12 below); the domain wrappers in this file sit on top of that.
+>
+> - Need PUT/GET on an arbitrary key? Use `nodus_ops_put()` / `nodus_ops_get()` from `dht/shared/nodus_ops.h`.
+> - Need LISTEN on a key? Use `nodus_ops_listen()` / `nodus_ops_listen_v2()`.
+> - Need chunked large values / media? Use `nodus_ops_media_put()` / `nodus_ops_media_get()` (replaces the removed `dht_chunked_*`).
 
 ---
 
-## 9. DHT Core
+## 9. DHT Core wrappers
 
 **Directory:** `dht/core/`
 
-### 9.1 Context Management (`dht_context.h`)
+### 9.1 DHT Listen Helpers (`dht_listen.h`)
 
-| Function | Description |
-|----------|-------------|
-| `dht_context_t* dht_context_new(const dht_config_t*)` | Initialize DHT context |
-| `int dht_context_start(dht_context_t*)` | Start DHT node |
-| `int dht_context_start_with_identity(dht_context_t*, dht_identity_t*)` | Start with provided identity |
-| `void dht_context_stop(dht_context_t*)` | Stop DHT node |
-| `void dht_context_free(dht_context_t*)` | Free DHT context |
-| `bool dht_context_is_ready(dht_context_t*)` | Check if DHT has peers |
-| `bool dht_context_is_running(dht_context_t*)` | Check if DHT is running |
-| `void dht_context_set_status_callback(dht_context_t*, dht_status_callback_t, void*)` | Set status change callback |
-| `int dht_context_bootstrap_runtime(dht_context_t*, const char*, uint16_t)` | Bootstrap to additional node |
-
-### 9.2 DHT Put Operations (`dht_context.h`)
-
-| Function | Description |
-|----------|-------------|
-| `int dht_put(dht_context_t*, const uint8_t*, size_t, const uint8_t*, size_t)` | Put value (7-day TTL) |
-| `int dht_put_ttl(dht_context_t*, const uint8_t*, size_t, const uint8_t*, size_t, unsigned int)` | Put value with custom TTL |
-| `int dht_put_permanent(dht_context_t*, const uint8_t*, size_t, const uint8_t*, size_t)` | Put value (never expires) |
-| `int dht_put_signed(dht_context_t*, const uint8_t*, size_t, const uint8_t*, size_t, uint64_t, unsigned int)` | Put signed value with fixed ID |
-| `int dht_put_signed_permanent(dht_context_t*, const uint8_t*, size_t, const uint8_t*, size_t, uint64_t)` | Put signed value permanently |
-| `int dht_republish_packed(dht_context_t*, const char*, const uint8_t*, size_t)` | Republish serialized Value |
-
-### 9.3 DHT Get Operations (`dht_context.h`)
-
-| Function | Description |
-|----------|-------------|
-| `int dht_get(dht_context_t*, const uint8_t*, size_t, uint8_t**, size_t*)` | Get first value (blocking) |
-| `void dht_get_async(dht_context_t*, const uint8_t*, size_t, void(*)(uint8_t*, size_t, void*), void*)` | Get value (async) |
-| `int dht_get_all(dht_context_t*, const uint8_t*, size_t, uint8_t***, size_t**, size_t*)` | Get all values |
-| `int dht_get_all_with_ids(dht_context_t*, const uint8_t*, size_t, uint8_t***, size_t**, uint64_t**, size_t*)` | Get all values with value_ids (for multi-writer filtering) |
-| `void dht_get_batch(dht_context_t*, const uint8_t**, const size_t*, size_t, dht_batch_callback_t, void*)` | Batch GET (parallel) |
-| `int dht_get_batch_sync(dht_context_t*, const uint8_t**, const size_t*, size_t, dht_batch_result_t**)` | Batch GET (blocking) |
-| `void dht_batch_results_free(dht_batch_result_t*, size_t)` | Free batch results |
-
-### 9.4 DHT Node Info (`dht_context.h`)
-
-| Function | Description |
-|----------|-------------|
-| `int dht_get_node_id(dht_context_t*, char*)` | Get node ID (SHA3-512 hex) |
-| `int dht_get_owner_value_id(dht_context_t*, uint64_t*)` | Get unique value_id for node |
-
-### 9.5 DHT Listen (`dht_listen.h`)
+Thin wrappers that register subscriptions with Nodus under a messenger-specific listener table.
 
 | Function | Description |
 |----------|-------------|
 | `size_t dht_listen(dht_context_t*, const uint8_t*, size_t, dht_listen_callback_t, void*)` | Start listening (wrapper for `dht_listen_ex` with NULL cleanup) |
-| `void dht_cancel_listen(dht_context_t*, size_t)` | Cancel listen subscription |
-| `size_t dht_get_active_listen_count(dht_context_t*)` | Get active subscription count |
+| `void dht_cancel_listen(dht_context_t*, size_t)` | Cancel a single listen subscription |
 | `size_t dht_listen_ex(dht_context_t*, const uint8_t*, size_t, dht_listen_callback_t, void*, dht_listen_cleanup_t)` | Listen with cleanup callback |
-| `void dht_cancel_all_listeners(dht_context_t*)` | Cancel all listeners |
-| `void dht_suspend_all_listeners(dht_context_t*)` | Suspend listeners for reinit |
-| `size_t dht_resubscribe_all_listeners(dht_context_t*)` | Resubscribe after reconnect |
 
-### 9.6 DHT Keyserver (`dht_keyserver.h`)
+### 9.2 DHT Keyserver (`dht_keyserver.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -76,7 +38,7 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 | `void dht_keyserver_reverse_lookup_async(const char*, void(*)(char*, void*), void*)` | Async reverse lookup. Callback receives NULL identity on any failure. |
 | `bool dht_keyserver_is_valid_registered_name(const char*)` | Rejects NULL/empty/overlong/fingerprint-format strings. Used as invariant check by reverse_lookup and as migration guard for stale caches. |
 
-### 9.7 DNA Name System (`dht_keyserver.h`)
+### 9.3 DNA Name System (`dht_keyserver.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -89,32 +51,15 @@ Core DHT (Distributed Hash Table) operations for decentralized storage.
 | `bool dna_is_name_expired(const dna_unified_identity_t*)` | Check if name expired |
 | `int dna_resolve_address(dht_context_t*, const char*, const char*, char**)` | Resolve name to wallet address |
 
-### 9.8 DHT Statistics (`dht_stats.h`)
-
-| Function | Description |
-|----------|-------------|
-| `int dht_get_stats(dht_context_t*, size_t*, size_t*)` | Get node count and stored values |
-| `struct dht_value_storage* dht_get_storage(dht_context_t*)` | Get storage pointer |
-
-### 9.9 Bootstrap Registry (`dht_bootstrap_registry.h`)
-
-| Function | Description |
-|----------|-------------|
-| `int dht_bootstrap_registry_register(dht_context_t*, const char*, uint16_t, const char*, const char*, uint64_t)` | Register bootstrap node |
-| `int dht_bootstrap_registry_fetch(dht_context_t*, bootstrap_registry_t*)` | Fetch bootstrap registry |
-| `void dht_bootstrap_registry_filter_active(bootstrap_registry_t*)` | Filter active nodes |
-| `char* dht_bootstrap_registry_to_json(const bootstrap_registry_t*)` | Serialize to JSON |
-| `int dht_bootstrap_registry_from_json(const char*, bootstrap_registry_t*)` | Deserialize from JSON |
-
 ---
 
-## 10. DHT Shared
+## 10. DHT Shared (domain wrappers)
 
 **Directory:** `dht/shared/`
 
-Shared DHT modules for offline messaging, groups, profiles, and storage.
+Shared DHT modules for offline messaging, groups, profiles, contact requests, and GEK storage.
 
-### 10.1 DM Outbox Daily Buckets (`dht_dm_outbox.h`) - v0.5.0+
+### 10.1 DM Outbox Daily Buckets (`dht_dm_outbox.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -132,9 +77,9 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 | `void dht_dm_outbox_cache_clear(void)` | Clear local outbox cache |
 | `int dht_dm_outbox_cache_sync_pending(...)` | Sync pending cached entries |
 
-### 10.1.1 Offline Queue Legacy (`dht_offline_queue.h`)
+#### Offline Queue Legacy (`dht_offline_queue.h`)
 
-**Note:** `dht_queue_message()` now redirects to `dht_dm_queue_message()` (v0.5.0+)
+**Note:** `dht_queue_message()` redirects to `dht_dm_queue_message()` (v0.5.0+)
 
 | Function | Description |
 |----------|-------------|
@@ -146,7 +91,7 @@ Shared DHT modules for offline messaging, groups, profiles, and storage.
 
 **CORE-04 (v0.9.197+):** Removed `dht_retrieve_queued_messages_from_contacts`, `dht_retrieve_queued_messages_from_contacts_parallel`, and `dht_generate_outbox_key`. These produced deterministic unsalted `SHA3-512(sender:outbox:recipient)` keys leaking communication metadata, had zero callers, and were removed per the No Dead Code rule. The live salted DM retrieval path is `dht_dm_outbox_fetch_*` in `dht_dm_outbox.h`.
 
-### 10.2 ACK API (`dht_offline_queue.h`) - v15 Replaces Watermarks
+### 10.2 ACK API (`dht_offline_queue.h`) — v15 replaces watermarks
 
 Simple per-contact ACK timestamps for delivery confirmation. When recipient syncs messages, they publish an ACK. Sender marks ALL sent messages as RECEIVED.
 
@@ -205,73 +150,7 @@ Simple per-contact ACK timestamps for delivery confirmation. When recipient sync
 | `bool dht_profile_validate(const dht_profile_t*)` | Validate profile data |
 | `void dht_profile_init_empty(dht_profile_t*)` | Create empty profile |
 
-### 10.6 Chunked Storage (`dht_chunked.h`)
-
-Transparent chunking for large data storage in DHT with ZSTD compression.
-Chunk format v2 (v0.5.25+) adds content hash to chunk 0 for smart sync optimization.
-
-**Constants:**
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `DHT_CHUNK_MAX_CHUNKS` | 10000 | Security limit: max chunks per fetch (~450MB). Prevents DoS via malicious total_chunks. |
-| `DHT_CHUNK_DATA_SIZE` | 44975 | Effective payload per chunk (45KB - 25B header) |
-| `DHT_CHUNK_KEY_SIZE` | 32 | DHT key size (SHA3-512 truncated) |
-
-| Function | Description |
-|----------|-------------|
-| `int dht_chunked_publish(dht_context_t*, const char*, const uint8_t*, size_t, uint32_t)` | Publish with chunking (v2: includes SHA3-256 content hash) |
-| `int dht_chunked_fetch(dht_context_t*, const char*, uint8_t**, size_t*)` | Fetch chunked data |
-| `int dht_chunked_fetch_metadata(dht_context_t*, const char*, uint8_t[32], uint32_t*, uint32_t*, bool*)` | Fetch chunk 0 metadata only (v0.5.25+) |
-| `int dht_chunked_delete(dht_context_t*, const char*, uint32_t)` | Delete chunked data |
-| `const char* dht_chunked_strerror(int)` | Get error message |
-| `int dht_chunked_make_key(const char*, uint32_t, uint8_t[32])` | Generate chunk key |
-| `uint32_t dht_chunked_estimate_chunks(size_t)` | Estimate chunk count |
-| `int dht_chunked_fetch_batch(dht_context_t*, const char**, size_t, dht_chunked_batch_result_t**)` | Batch fetch |
-| `void dht_chunked_batch_results_free(dht_chunked_batch_result_t*, size_t)` | Free batch results |
-
-### 10.6a Publish Queue (`dht_publish_queue.h`) - v0.6.80+
-
-Non-blocking async publish queue with automatic retry and per-key serialization.
-
-**Constants:**
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `DHT_PUBLISH_QUEUE_MAX_ITEMS` | 256 | Maximum queue size |
-| `DHT_PUBLISH_QUEUE_MAX_RETRIES` | 3 | Retry attempts per item |
-| `DHT_PUBLISH_QUEUE_RETRY_DELAY_MS` | 1000 | Initial retry delay |
-
-**Status Codes:**
-| Code | Value | Description |
-|------|-------|-------------|
-| `DHT_PUBLISH_STATUS_OK` | 0 | Success |
-| `DHT_PUBLISH_STATUS_FAILED` | -1 | Failed after retries |
-| `DHT_PUBLISH_STATUS_CANCELLED` | -2 | Cancelled |
-| `DHT_PUBLISH_STATUS_QUEUE_FULL` | -3 | Queue at capacity |
-
-| Function | Description |
-|----------|-------------|
-| `dht_publish_queue_t* dht_publish_queue_create(void)` | Create queue and start worker thread |
-| `void dht_publish_queue_destroy(dht_publish_queue_t*)` | Stop worker and destroy queue |
-| `dht_publish_request_id_t dht_chunked_publish_async(dht_publish_queue_t*, dht_context_t*, const char*, const uint8_t*, size_t, uint32_t, dht_publish_callback_t, void*)` | Submit async publish (non-blocking) |
-| `int dht_publish_queue_cancel(dht_publish_queue_t*, dht_publish_request_id_t)` | Cancel pending request |
-| `size_t dht_publish_queue_pending_count(dht_publish_queue_t*)` | Get queue size |
-| `bool dht_publish_queue_is_running(dht_publish_queue_t*)` | Check if worker is active |
-
-### 10.7 Value Storage (`dht_value_storage.h`)
-
-| Function | Description |
-|----------|-------------|
-| `dht_value_storage_t* dht_value_storage_new(const char*)` | Create value storage |
-| `void dht_value_storage_free(dht_value_storage_t*)` | Free storage |
-| `int dht_value_storage_put(dht_value_storage_t*, const dht_value_metadata_t*)` | Store value |
-| `int dht_value_storage_get(...)` | Get values for key |
-| `void dht_value_storage_free_results(dht_value_metadata_t*, size_t)` | Free results |
-| `int dht_value_storage_restore_async(dht_value_storage_t*, struct dht_context*)` | Restore values (async) |
-| `int dht_value_storage_cleanup(dht_value_storage_t*)` | Clean up expired values |
-| `int dht_value_storage_get_stats(dht_value_storage_t*, dht_storage_stats_t*)` | Get storage stats |
-| `bool dht_value_storage_should_persist(uint32_t, uint64_t)` | Check if should persist |
-
-### 10.8 GEK Storage (`dht_gek_storage.h`)
+### 10.6 GEK Storage (`dht_gek_storage.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -286,58 +165,17 @@ Non-blocking async publish queue with automatic retry and per-key serialization.
 
 ## 11. DHT Client (`dht/client/`)
 
-High-level DHT client operations including singleton management, identity backup, contact lists, profiles, and channels.
+High-level DHT client operations including identity import/export, contact lists, group lists, GEK sync, profiles, wall, message backup, and group outbox.
 
-### 11.1 DHT Singleton (`dht_singleton.h`)
+### 11.1 Identity Backup — REMOVED (v0.3.0)
 
-**v0.6.0+:** Engine owns DHT context. Singleton uses "borrowed context" for backwards compatibility.
-
-| Function | Description |
-|----------|-------------|
-| `int dht_singleton_init(void)` | DEPRECATED: Initialize global DHT singleton (ephemeral identity) |
-| `int dht_singleton_init_with_identity(dht_identity_t*)` | DEPRECATED: Initialize DHT singleton with user identity |
-| `dht_context_t* dht_singleton_get(void)` | Get DHT context (borrowed from engine, or NULL) |
-| `bool dht_singleton_is_initialized(void)` | Check if singleton is initialized |
-| `bool dht_singleton_is_ready(void)` | Check if DHT is connected and ready |
-| `void dht_singleton_cleanup(void)` | Cleanup global DHT singleton |
-| `int dht_singleton_reinit(void)` | Reinitialize DHT after network change (restarts with same identity) |
-| `void dht_singleton_set_status_callback(dht_status_callback_t, void*)` | Set connection status callback |
-| `dht_context_t* dht_create_context_with_identity(dht_identity_t*)` | v0.6.0+: Create engine-owned DHT context |
-| `void dht_singleton_set_borrowed_context(dht_context_t*)` | v0.6.0+: Set borrowed context from engine |
-
-**Bootstrap Discovery (`dht_bootstrap_discovery.h`):**
-
-Client-side discovery of bootstrap nodes from DHT registry for decentralization.
-
-| Function | Description |
-|----------|-------------|
-| `int dht_bootstrap_from_cache(dht_config_t*, size_t)` | Populate config with best cached nodes |
-| `int dht_bootstrap_discovery_start(dht_context_t*)` | Start background discovery thread (non-blocking) |
-| `void dht_bootstrap_discovery_stop(void)` | Stop discovery thread |
-| `bool dht_bootstrap_discovery_is_running(void)` | Check if discovery is running |
-| `void dht_bootstrap_discovery_set_callback(dht_discovery_callback_t, void*)` | Set discovery completion callback |
-| `int dht_bootstrap_discovery_run_sync(dht_context_t*)` | Run discovery synchronously (blocking) |
-
-### 11.2 DHT Identity (`dht_identity.h`)
-
-| Function | Description |
-|----------|-------------|
-| `int dht_identity_generate_dilithium5(dht_identity_t**)` | Generate Dilithium5 DHT identity |
-| `int dht_identity_generate_from_seed(const uint8_t* seed, dht_identity_t**)` | Generate DHT identity deterministically from 32-byte seed (v0.3.0+) |
-| `int dht_identity_export_to_buffer(dht_identity_t*, uint8_t**, size_t*)` | Export identity to binary buffer |
-| `int dht_identity_import_from_buffer(const uint8_t*, size_t, dht_identity_t**)` | Import identity from buffer |
-| `void dht_identity_free(dht_identity_t*)` | Free DHT identity |
-
-### 11.3 Identity Backup - REMOVED (v0.3.0)
-
-**Note:** As of v0.3.0, DHT identity is derived deterministically from the BIP39 master seed.
-The backup system is no longer needed. Same mnemonic = same DHT identity.
+As of v0.3.0, DHT identity is derived deterministically from the BIP39 master seed. The backup system is no longer needed. Same mnemonic = same DHT identity.
 
 Files removed:
 - `dht/client/dht_identity_backup.c`
 - `dht/client/dht_identity_backup.h`
 
-### 11.4 Contact List (`dht_contactlist.h`)
+### 11.2 Contact List (`dht_contactlist.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -351,7 +189,7 @@ Files removed:
 | `bool dht_contactlist_exists(dht_context_t*, const char*)` | Check if contact list exists |
 | `int dht_contactlist_get_timestamp(dht_context_t*, const char*, uint64_t*)` | Get contact list timestamp |
 
-### 11.4a Group List (`dht_grouplist.h`) - v0.5.26+
+### 11.3 Group List (`dht_grouplist.h`) — v0.5.26+
 
 Per-identity encrypted group membership list storage in DHT.
 
@@ -370,10 +208,9 @@ Per-identity encrypted group membership list storage in DHT.
 **Magic:** `GLST` (0x474C5354)
 **Security:** Self-encrypted with Kyber1024, signed with Dilithium5
 
-### 11.4b GEK Sync (`dht_geks.h`) - v0.6.49+
+### 11.4 GEK Sync (`dht_geks.h`) — v0.6.49+
 
-Per-identity encrypted GEK (Group Encryption Key) storage in DHT for multi-device sync.
-GEKs are self-encrypted and synced across devices, eliminating the need for per-device IKP fetches.
+Per-identity encrypted GEK (Group Encryption Key) storage in DHT for multi-device sync. GEKs are self-encrypted and synced across devices, eliminating the need for per-device IKP fetches.
 
 | Function | Description |
 |----------|-------------|
@@ -395,16 +232,11 @@ GEKs are self-encrypted and synced across devices, eliminating the need for per-
 
 | Function | Description |
 |----------|-------------|
-| `dna_profile_data_t* dna_profile_create(void)` | Create new profile data structure |
-| `void dna_profile_free(dna_profile_data_t*)` | Free profile data |
 | `dna_unified_identity_t* dna_identity_create(void)` | Create new unified identity |
 | `void dna_identity_free(dna_unified_identity_t*)` | Free unified identity |
-| `char* dna_profile_to_json(const dna_profile_data_t*)` | Serialize profile to JSON |
-| `int dna_profile_from_json(const char*, dna_profile_data_t**)` | Parse profile from JSON |
 | `char* dna_identity_to_json(const dna_unified_identity_t*)` | Serialize identity to JSON |
 | `char* dna_identity_to_json_unsigned(const dna_unified_identity_t*)` | Serialize identity without signature |
 | `int dna_identity_from_json(const char*, dna_unified_identity_t**)` | Parse identity from JSON |
-| `int dna_profile_validate(const dna_profile_data_t*)` | Validate profile data |
 | `bool dna_validate_wallet_address(const char*, const char*)` | Validate wallet address format |
 | `bool dna_validate_name(const char*)` | Validate DNA name format |
 | `bool dna_network_is_cellframe(const char*)` | Check if Cellframe network |
@@ -413,48 +245,9 @@ GEKs are self-encrypted and synced across devices, eliminating the need for per-
 | `const char* dna_identity_get_wallet(const dna_unified_identity_t*, const char*)` | Get wallet for network |
 | `int dna_identity_set_wallet(dna_unified_identity_t*, const char*, const char*)` | Set wallet for network |
 
-### 11.6 DNA Channels (`dna_channels.h`)
+### 11.6 Wall (Personal Wall Posts — Daily Bucket Storage v0.9.141+)
 
-RSS-like public channels with flat text posts and day-bucket discovery.
-Uses `dna:channels:` DHT namespace.
-
-#### Channel Operations (`dna_channels.c`)
-
-| Function | Description |
-|----------|-------------|
-| `int dna_channel_create(dht_context_t*, const char*, const char*, bool, const char*, const uint8_t*)` | Create channel with name, description, is_public flag |
-| `int dna_channel_get(dht_context_t*, const char*)` | Get channel info by UUID |
-| `int dna_channel_delete(dht_context_t*, const char*, const char*, const uint8_t*)` | Delete channel (creator only) |
-| `int dna_channel_discover(dht_context_t*, int, dna_channel_t**, size_t*)` | Discover channels by scanning recent day-buckets |
-| `int dna_channel_post(dht_context_t*, const char*, const char*, const char*, const uint8_t*)` | Post message to channel |
-| `int dna_channel_get_posts(dht_context_t*, const char*, int days_back, int, int, dna_channel_post_t**, size_t*)` | Get posts from channel (paginated, iterates daily buckets) |
-
-#### Internal DHT Functions (`dna_channels.h`)
-
-| Function | Description |
-|----------|-------------|
-| `int dna_channel_posts_get(dht_context_t*, const char*, int days_back, dna_channel_post_internal_t**, size_t*)` | Fetch posts from daily buckets (newest first, iterates `days_back` days) |
-| `int dna_channel_make_posts_key(const char *uuid, const char *date, uint8_t*, size_t*)` | Generate DHT key for posts; `date` = "YYYYMMDD" for daily bucket, NULL for legacy undated key |
-| `void channel_get_today_date(char *date_out)` | Get today's date as "YYYYMMDD" string (UTC) |
-| `void channel_get_date_offset(int days_ago, char *date_out)` | Get date N days ago as "YYYYMMDD" string (UTC) |
-| `int dna_channel_make_meta_key(const char *uuid, uint8_t*, size_t*)` | Generate DHT key for channel metadata |
-| `int dna_channel_make_index_key(const char *date_str, uint8_t*, size_t*)` | Generate DHT key for channel index day-bucket |
-
-#### Subscription Sync (`dht_channel_subscriptions.c`)
-
-| Function | Description |
-|----------|-------------|
-| `int dht_channel_subscriptions_sync_to_dht(dht_context_t*, const char*, const uint8_t*)` | Sync subscription list to DHT (multi-device backup) |
-| `int dht_channel_subscriptions_sync_from_dht(dht_context_t*, const char*)` | Sync subscriptions from DHT (restore on new device) |
-
-### 11.7 Wall (Personal Wall Posts — Daily Bucket Storage v0.9.141+)
-
-Wall posts use daily bucket storage: each day's posts stored under `dna:wall:<fp>:<YYYY-MM-DD>`,
-with a meta key `dna:wall:meta:<fp>` listing which days have posts. Buckets are written as
-`NODUS_VALUE_EXCLUSIVE` (since v0.9.160 / 2026-04-01) — never expire and only the original
-writer can update. Refresh only fetches today's bucket; older days loaded on scroll (lazy load).
-Note: buckets created before v0.9.160 were written as ephemeral with a 30-day TTL and may have
-expired naturally; `dna_wall_delete()` treats DHT NOT_FOUND as idempotent success.
+Wall posts use daily bucket storage: each day's posts stored under `dna:wall:<fp>:<YYYY-MM-DD>`, with a meta key `dna:wall:meta:<fp>` listing which days have posts. Buckets are written as `NODUS_VALUE_EXCLUSIVE` (since v0.9.160 / 2026-04-01) — never expire and only the original writer can update. Refresh only fetches today's bucket; older days loaded on scroll (lazy load). Note: buckets created before v0.9.160 were written as ephemeral with a 30-day TTL and may have expired naturally; `dna_wall_delete()` treats DHT NOT_FOUND as idempotent success.
 
 | Function | Description |
 |----------|-------------|
@@ -474,11 +267,9 @@ expired naturally; `dna_wall_delete()` treats DHT NOT_FOUND as idempotent succes
 | `char* dna_wall_to_json(const dna_wall_t *wall)` | Serialize wall to JSON string |
 | `int dna_wall_from_json(const char *json, dna_wall_t *wall)` | Deserialize wall from JSON string |
 
-### 11.7a Wall Comments (`dna_wall.h`) - v0.7.0+
+### 11.6a Wall Comments (`dna_wall.h`) — v0.7.0+
 
-Single-level threaded comment system for wall posts. Comments are stored as multi-owner
-chunked values under a per-post DHT key (`SHA3-512("dna:wall:comments:<post_uuid>")`).
-Each commenter stores their own value_id slot, allowing concurrent writers without conflict.
+Single-level threaded comment system for wall posts. Comments are stored as multi-owner chunked values under a per-post DHT key (`SHA3-512("dna:wall:comments:<post_uuid>")`). Each commenter stores their own value_id slot, allowing concurrent writers without conflict.
 
 | Function | Description |
 |----------|-------------|
@@ -496,7 +287,7 @@ Each commenter stores their own value_id slot, allowing concurrent writers witho
 | `int dna_wall_like_verify(const dna_wall_like_t *like, const char *post_uuid, const uint8_t *public_key)` | Verify like Dilithium5 signature (0=valid) |
 | `void dna_wall_likes_free(dna_wall_like_t *likes, size_t count)` | Free likes array returned by dna_wall_likes_get |
 
-### 11.8 Group Outbox (`dna_group_outbox.h`)
+### 11.7 Group Outbox (`dna_group_outbox.h`)
 
 #### Send/Receive API
 
@@ -540,7 +331,7 @@ Each commenter stores their own value_id slot, allowing concurrent writers witho
 | `void dna_group_outbox_free_bucket(dna_group_outbox_bucket_t*)` | Free bucket structure |
 | `void dna_group_outbox_set_db(void*)` | Set database handle |
 
-### 11.9 Message Backup (`dht_message_backup.h`)
+### 11.8 Message Backup (`dht_message_backup.h`)
 
 | Function | Description |
 |----------|-------------|
@@ -555,7 +346,7 @@ Each commenter stores their own value_id slot, allowing concurrent writers witho
 
 ## 12. Nodus Ops (`dht/shared/nodus_ops.h`)
 
-Convenience wrappers around the Nodus singleton for DHT operations and presence.
+Convenience wrappers around the Nodus singleton for DHT operations, presence, and media. **This is the authoritative messenger→DHT interface. New code should reach for these, not the legacy `dht_*` primitives.**
 
 ### 12.1 Presence (v0.9.0+)
 
@@ -580,18 +371,13 @@ Convenience wrappers around the Nodus singleton for DHT operations and presence.
 
 ### 12.4 LISTEN timeout semantics (v0.10.6+)
 
-`nodus_ops_listen()` / `nodus_ops_listen_v2()` treat `NODUS_ERR_TIMEOUT` from
-the underlying client as a **soft success**: the callback is still installed
-in the listener table and a valid token is returned. Rationale: when LISTEN
-times out, the server may already have registered the subscription (only the
-`listen_ok` response was lost). Discarding the callback would cause silent
-push-event loss. The nodus client also tracks the key in `listen_keys[]` so
-`resubscribe_all()` retries the LISTEN on the next reconnect.
+`nodus_ops_listen()` / `nodus_ops_listen_v2()` treat `NODUS_ERR_TIMEOUT` from the underlying client as a **soft success**: the callback is still installed in the listener table and a valid token is returned. Rationale: when LISTEN times out, the server may already have registered the subscription (only the `listen_ok` response was lost). Discarding the callback would cause silent push-event loss. The nodus client also tracks the key in `listen_keys[]` so `resubscribe_all()` retries the LISTEN on the next reconnect.
 
-Server-side error responses (`type == 'e'`) remain hard failures — no token
-is returned.
+Server-side error responses (`type == 'e'`) remain hard failures — no token is returned.
 
 ### 12.5 Media Operations (v0.9.147+)
+
+Replaces the removed `dht_chunked_*` API. Hashes chunks, distributes them across the Nodus DHT, and reassembles on read.
 
 | Function | Description |
 |----------|-------------|

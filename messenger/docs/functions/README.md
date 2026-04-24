@@ -1,10 +1,14 @@
 # DNA Connect Function Reference
 
-**Version:** 0.3.0
-**Generated:** 2025-12-30
-**Scope:** All functions (public + static/internal)
+**Library version at last sweep:** 0.11.5
+**Last audited:** 2026-04-24 (triage via code-hit grep; see commit history for deltas)
+**Scope:** Public + static/internal function signatures, organized by module.
 
-This directory provides a comprehensive reference for all functions in the DNA Connect codebase, organized by module.
+This directory provides a function-level reference for the DNA Connect codebase. Functions are grouped by subsystem.
+
+> **Reading order:** start at `public-api.md` (the engine façade UI/FFI uses). Drop into subject files only when implementing a new feature in that subsystem.
+
+> **Authoritative note:** file paths listed below are the current headers. When you update a function signature, update the corresponding `docs/functions/*.md` entry in the same commit.
 
 ---
 

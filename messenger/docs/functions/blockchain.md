@@ -4,6 +4,8 @@
 
 Modular blockchain interface for multi-chain wallet operations.
 
+> **API shift (since v0.7.x):** wallet lifecycle moved from file-based (`_create_from_seed` + `_save` + `_load` + `_get_address`) to pure seed-derivation. Each chain now exposes `_generate(seed, &wallet_t)` as the only wallet-lifecycle entry point; storage is caller-managed. The cross-chain entry points are `blockchain_derive_wallets_from_seed()` and `blockchain_send_tokens_with_seed()`. The legacy file-based API (`wallet_read_cellframe_*`, `eth_wallet_save/load`, `sol_wallet_save/load`, `trx_wallet_save/load`, `blockchain_create_*`, `blockchain_list_wallets`, `blockchain_send_tokens`) has been removed.
+
 ---
 
 ## 14. Blockchain - Common Interface
@@ -29,22 +31,18 @@ Modular blockchain interface for multi-chain wallet operations.
 
 ### 14.2 Blockchain Wallet (`blockchain_wallet.h`)
 
+Cross-chain wallet façade. Seed-derivation only — no file-based wallets.
+
 | Function | Description |
 |----------|-------------|
 | `const char* blockchain_type_name(blockchain_type_t)` | Get blockchain name string |
 | `const char* blockchain_type_ticker(blockchain_type_t)` | Get blockchain ticker |
-| `int blockchain_create_all_wallets(const uint8_t*, const char*, const char*, const char*)` | Create all wallets from seed |
-| `int blockchain_create_missing_wallets(const char*, const uint8_t*, int*)` | Create missing wallets |
-| `int blockchain_create_wallet(blockchain_type_t, const uint8_t*, const char*, const char*, char*)` | Create wallet for blockchain |
-| `int blockchain_list_wallets(const char*, blockchain_wallet_list_t**)` | List wallets for identity |
-| `void blockchain_wallet_list_free(blockchain_wallet_list_t*)` | Free wallet list |
-| `int blockchain_get_balance(blockchain_type_t, const char*, blockchain_balance_t*)` | Get wallet balance |
-| `bool blockchain_validate_address(blockchain_type_t, const char*)` | Validate address format |
-| `int blockchain_get_address_from_file(blockchain_type_t, const char*, char*)` | Get address from wallet file |
-| `int blockchain_estimate_eth_gas(int, blockchain_gas_estimate_t*)` | Estimate ETH gas fee |
-| `int blockchain_send_tokens(blockchain_type_t, const char*, const char*, const char*, const char*, int, char*)` | Send tokens |
-| `int blockchain_derive_wallets_from_seed(const uint8_t*, const char*, const char*, blockchain_wallet_list_t**)` | Derive wallets on-demand |
-| `int blockchain_send_tokens_with_seed(blockchain_type_t, const uint8_t*, const char*, const char*, const char*, const char*, int, char*)` | Send using derived key |
+| `int blockchain_derive_wallets_from_seed(const uint8_t*, const char*, const char*, blockchain_wallet_list_t**)` | Derive all chains' addresses on-demand from BIP39 seed |
+| `void blockchain_wallet_list_free(blockchain_wallet_list_t*)` | Free derived wallet list |
+| `int blockchain_get_balance(blockchain_type_t, const char*, blockchain_balance_t*)` | Get wallet balance by address |
+| `bool blockchain_validate_address(blockchain_type_t, const char*)` | Validate address format per chain |
+| `int blockchain_estimate_eth_gas(int, blockchain_gas_estimate_t*)` | Estimate ETH gas fee (also reused by BSC) |
+| `int blockchain_send_tokens_with_seed(blockchain_type_t, const uint8_t*, const char*, const char*, const char*, const char*, int, char*)` | Send tokens; derives signing key from seed on the fly (no file I/O) |
 
 ---
 
@@ -52,19 +50,21 @@ Modular blockchain interface for multi-chain wallet operations.
 
 Cellframe blockchain integration with Dilithium post-quantum signatures.
 
-### 15.1 Cellframe Wallet (`cellframe_wallet.h`)
+### 15.1 Cellframe Wallet Types (`cellframe_wallet.h`)
+
+Types only — `cellframe_wallet_t` struct + `wallet_sig_type_t` enum (Dilithium / Picnic / Bliss / Tesla). No function declarations live here any more; the legacy `wallet_read_*` / `wallet_list_*` file-based API was removed when Cellframe wallets moved to seed-derivation.
+
+### 15.1a Cellframe Wallet Creation (`cellframe_wallet_create.h`)
+
+Seed-derivation entry points for Cellframe wallets.
 
 | Function | Description |
 |----------|-------------|
-| `int wallet_read_cellframe_path(const char*, cellframe_wallet_t**)` | Read wallet from full path |
-| `int wallet_read_cellframe(const char*, cellframe_wallet_t**)` | Read wallet from standard dir |
-| `int wallet_list_cellframe(wallet_list_t**)` | List all Cellframe wallets |
-| `int wallet_list_from_dna_dir(wallet_list_t**)` | List wallets from ~/.dna/wallets |
-| `int wallet_list_for_identity(const char*, wallet_list_t**)` | List wallets for identity |
-| `int wallet_get_address(const cellframe_wallet_t*, const char*, char*)` | Get wallet address |
-| `void wallet_free(cellframe_wallet_t*)` | Free wallet structure |
-| `void wallet_list_free(wallet_list_t*)` | Free wallet list |
-| `const char* wallet_sig_type_name(wallet_sig_type_t)` | Get signature type name |
+| `int cellframe_derive_seed_from_mnemonic(const char *mnemonic, uint8_t cf_seed[])` | Derive Cellframe-specific seed from BIP39 mnemonic |
+| `int cellframe_wallet_derive_address(const uint8_t *cf_seed, char *address_out)` | Derive address only (no private key) |
+| `int cellframe_wallet_derive_keys(const uint8_t *cf_seed, cellframe_wallet_t **wallet_out)` | Derive full wallet (address + Dilithium keypair) |
+| `int cellframe_send_with_wallet(const cellframe_wallet_t *wallet, const char *net, const char *to, uint256_t amount, const char *token, char *tx_hash_out)` | Build, sign, and submit a Cellframe TX using a derived wallet |
+| `void wallet_free(cellframe_wallet_t *wallet)` | Free wallet structure (zeroes private key) |
 
 ### 15.2 Cellframe Address (`cellframe_addr.h`)
 
@@ -124,14 +124,12 @@ Ethereum blockchain with secp256k1 ECDSA signatures.
 
 ### 16.1 Ethereum Wallet (`eth_wallet.h`)
 
+Seed-derived only. Save/load/get-from-file removed; caller holds `eth_wallet_t` in memory.
+
 | Function | Description |
 |----------|-------------|
-| `int eth_wallet_create_from_seed(const uint8_t*, size_t, const char*, const char*, char*)` | Create wallet from seed |
-| `int eth_wallet_generate(const uint8_t*, size_t, eth_wallet_t*)` | Generate wallet in memory |
-| `void eth_wallet_clear(eth_wallet_t*)` | Clear wallet securely |
-| `int eth_wallet_save(const eth_wallet_t*, const char*, const char*)` | Save wallet to file |
-| `int eth_wallet_load(const char*, eth_wallet_t*)` | Load wallet from file |
-| `int eth_wallet_get_address(const char*, char*, size_t)` | Get address from file |
+| `int eth_wallet_generate(const uint8_t*, size_t, eth_wallet_t*)` | Generate wallet from BIP39 seed (BIP-44 path `m/44'/60'/0'/0/0`) |
+| `void eth_wallet_clear(eth_wallet_t*)` | Securely wipe private key from memory |
 | `int eth_address_from_private_key(const uint8_t*, uint8_t*)` | Derive address from privkey |
 | `int eth_address_to_hex(const uint8_t*, char*)` | Format checksummed hex |
 | `bool eth_validate_address(const char*)` | Validate address format |
@@ -201,13 +199,12 @@ Solana blockchain with Ed25519 signatures.
 
 ### 17.1 Solana Wallet (`sol_wallet.h`)
 
+Seed-derived only.
+
 | Function | Description |
 |----------|-------------|
-| `int sol_wallet_generate(const uint8_t*, size_t, sol_wallet_t*)` | Generate wallet from seed |
-| `int sol_wallet_create_from_seed(const uint8_t*, size_t, const char*, const char*, char*)` | Create and save wallet |
-| `int sol_wallet_load(const char*, sol_wallet_t*)` | Load wallet from file |
-| `int sol_wallet_save(const sol_wallet_t*, const char*, const char*)` | Save wallet to file |
-| `void sol_wallet_clear(sol_wallet_t*)` | Clear wallet from memory |
+| `int sol_wallet_generate(const uint8_t*, size_t, sol_wallet_t*)` | Generate wallet from BIP39 seed |
+| `void sol_wallet_clear(sol_wallet_t*)` | Securely wipe private key from memory |
 | `int sol_pubkey_to_address(const uint8_t*, char*)` | Public key to base58 |
 | `int sol_address_to_pubkey(const char*, uint8_t*)` | Base58 to public key |
 | `bool sol_validate_address(const char*)` | Validate address format |
@@ -256,14 +253,12 @@ TRON blockchain with secp256k1 signatures.
 
 ### 18.1 TRON Wallet (`trx_wallet.h`)
 
+Seed-derived only.
+
 | Function | Description |
 |----------|-------------|
-| `int trx_wallet_generate(const uint8_t*, size_t, trx_wallet_t*)` | Generate wallet from seed |
-| `int trx_wallet_create_from_seed(const uint8_t*, size_t, const char*, const char*, char*)` | Create and save wallet |
-| `void trx_wallet_clear(trx_wallet_t*)` | Clear wallet securely |
-| `int trx_wallet_save(const trx_wallet_t*, const char*, const char*)` | Save wallet to file |
-| `int trx_wallet_load(const char*, trx_wallet_t*)` | Load wallet from file |
-| `int trx_wallet_get_address(const char*, char*, size_t)` | Get address from file |
+| `int trx_wallet_generate(const uint8_t*, size_t, trx_wallet_t*)` | Generate wallet from BIP39 seed |
+| `void trx_wallet_clear(trx_wallet_t*)` | Securely wipe private key from memory |
 | `int trx_address_from_pubkey(const uint8_t*, uint8_t*)` | Derive address from pubkey |
 | `int trx_address_to_base58(const uint8_t*, char*, size_t)` | Encode address as base58 |
 | `int trx_address_from_base58(const char*, uint8_t*)` | Decode base58 address |
@@ -285,3 +280,52 @@ TRON blockchain with secp256k1 signatures.
 | `int trx_parse_amount(const char*, uint64_t*)` | Parse TRX to SUN |
 | `int trx_hex_to_base58(const char*, char*, size_t)` | Hex to base58 |
 | `int trx_base58_to_hex(const char*, char*, size_t)` | Base58 to hex |
+
+---
+
+## 19. Blockchain - BSC (`blockchain/bsc/`)
+
+BNB Smart Chain. EVM-compatible — reuses Ethereum's secp256k1 key derivation, address format, and signing path. The same BIP39 seed yields the same 0x-address on both ETH and BSC (BIP-44 path `m/44'/60'/0'/0/0`).
+
+### 19.1 BSC Wallet (`bsc_wallet.h`)
+
+Thin aliases over `eth_wallet_*`. `bsc_wallet_t` is a typedef for `eth_wallet_t`.
+
+| Function | Description |
+|----------|-------------|
+| `static inline int bsc_wallet_generate(...)` | Alias of `eth_wallet_generate()` |
+| `static inline void bsc_wallet_clear(...)` | Alias of `eth_wallet_clear()` |
+| `static inline bool bsc_validate_address(...)` | Alias of `eth_validate_address()` |
+
+### 19.2 BSC Transactions (`bsc_tx.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int bsc_tx_get_nonce(const char*, uint64_t*)` | Get transaction nonce |
+| `int bsc_tx_get_gas_price(uint64_t*)` | Get current BSC gas price |
+| `int bsc_tx_send(const eth_signed_tx_t*, char*)` | Broadcast (reuses ETH signed-tx type) |
+| `int bsc_send_bnb_with_gas(...)` | Send BNB with gas preset |
+
+### 19.3 BSC RPC (`bsc_rpc.h`)
+
+| Function | Description |
+|----------|-------------|
+| `int bsc_rpc_get_balance(const char*, char*, size_t)` | Get BNB balance |
+| `int bsc_rpc_set_endpoint(const char*)` | Set RPC endpoint |
+| `const char* bsc_rpc_get_endpoint(void)` | Get RPC endpoint |
+| `int bsc_rpc_get_transactions(const char*, bsc_transaction_t**, int*)` | Get native BNB tx history |
+| `int bsc_rpc_get_token_transactions(const char*, const char*, uint8_t, bsc_transaction_t**, int*)` | Get BEP-20 tx history |
+| `void bsc_rpc_free_transactions(bsc_transaction_t*, int)` | Free transactions array |
+
+### 19.4 BEP-20 Token (`bsc_bep20.h`)
+
+BSC's equivalent of ERC-20 (same ABI).
+
+| Function | Description |
+|----------|-------------|
+| `int bsc_bep20_get_token(const char*, bsc_bep20_token_t*)` | Get token info by symbol |
+| `bool bsc_bep20_is_supported(const char*)` | Check if BEP-20 symbol is supported |
+| `int bsc_bep20_get_balance(const char*, const char*, uint8_t, char*, size_t)` | Get BEP-20 balance |
+| `int bsc_bep20_get_balance_by_symbol(const char*, const char*, char*, size_t)` | Get balance by symbol |
+| `int bsc_bep20_send(const uint8_t*, const char*, const char*, const char*, const char*, uint8_t, int, char*)` | Send BEP-20 tokens |
+| `int bsc_bep20_send_by_symbol(const uint8_t*, const char*, const char*, const char*, const char*, int, char*)` | Send by symbol |

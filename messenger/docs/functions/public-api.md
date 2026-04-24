@@ -156,6 +156,8 @@ The main public API for DNA Connect. All UI/FFI bindings use these functions.
 
 ## 1.10 Channels (RSS-like Public Channels)
 
+> **Status:** Soft-disabled since 2026-03-28 (ifdef-guarded, `DNA_CHANNELS_ENABLED`). Declarations kept; runtime paths inert. Functions below are listed for API compatibility only; calling them is a no-op until the subsystem is re-enabled.
+
 Named channels with flat text posts. Open posting, day-bucket discovery.
 
 | Function | Description |
@@ -175,9 +177,6 @@ Named channels with flat text posts. Open posting, day-bucket discovery.
 | `int dna_engine_channel_mark_read(engine, uuid)` | Mark a channel as read (sync) |
 | `void dna_free_channel_info(dna_channel_info_t*)` | Free single channel info |
 | `void dna_free_channel_infos(dna_channel_info_t*, int)` | Free channel infos array |
-| `void dna_free_channel_post_info(dna_channel_post_info_t*)` | Free single channel post info |
-| `void dna_free_channel_post_infos(dna_channel_post_info_t*, int)` | Free channel post infos array |
-| `void dna_free_channel_subscription_infos(dna_channel_subscription_info_t*, int)` | Free channel subscription infos array |
 
 **Structures and Types:**
 
@@ -303,9 +302,6 @@ One-directional follow system. No approval needed, private to owner.
 | `void dna_free_transactions(dna_transaction_t*, int)` | Free transactions array |
 | `void dna_free_channel_info(dna_channel_info_t*)` | Free single channel info |
 | `void dna_free_channel_infos(dna_channel_info_t*, int)` | Free channel infos array |
-| `void dna_free_channel_post_info(dna_channel_post_info_t*)` | Free single channel post info |
-| `void dna_free_channel_post_infos(dna_channel_post_info_t*, int)` | Free channel post infos array |
-| `void dna_free_channel_subscription_infos(dna_channel_subscription_info_t*, int)` | Free channel subscription infos array |
 | `void dna_free_wall_posts(dna_wall_post_info_t*, int)` | Free wall posts array |
 | `void dna_free_wall_comments(dna_wall_comment_info_t*, int)` | Free wall comments array |
 | `void dna_free_profile(dna_profile_t*)` | Free profile |

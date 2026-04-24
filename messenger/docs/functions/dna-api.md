@@ -1,8 +1,8 @@
 # DNA API Functions
 
-**File:** `dna_api.h`
+**File:** `messenger/dna_api.h` (legacy standalone API; primary UI/FFI path is `include/dna/dna_engine.h` — see [public-api.md](public-api.md))
 
-Low-level cryptographic API for message encryption/decryption with post-quantum algorithms.
+Low-level cryptographic API for message encryption/decryption with post-quantum algorithms. Kept for direct-library consumers (CLI, tests, DB integration). New features should be added to the engine modular handler pattern, not here.
 
 ---
 

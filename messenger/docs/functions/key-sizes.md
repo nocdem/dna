@@ -1,5 +1,7 @@
 # Key Sizes Reference
 
+**Last verified:** 2026-04-24 against `shared/crypto/` headers. Values are cryptographic-spec constants; verify during any crypto upgrade.
+
 Quick reference for cryptographic algorithm key and component sizes.
 
 ---

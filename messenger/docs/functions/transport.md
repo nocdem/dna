@@ -24,9 +24,7 @@ Transport layer providing offline message queue. Presence is handled natively by
 
 ### Presence System
 
-| Function | Description |
-|----------|-------------|
-| `int transport_register_presence(transport_t*)` | **No-op (v0.9.0+).** Presence is tracked natively by Nodus server. Kept for API compatibility. |
+Presence is handled natively by Nodus server (v0.9.0+). The legacy `transport_register_presence()` stub was removed; there is no transport-level presence API to call. Query presence via `messenger_transport_peer_online()` / `messenger_transport_lookup_presence()` below (they read the locally-cached last-seen populated by Nodus batch query).
 
 ### DHT Offline Queue
 
@@ -59,8 +57,7 @@ Transport layer providing offline message queue. Presence is handled natively by
 |----------|-------------|
 | `bool messenger_transport_peer_online(messenger_context_t*, const char*)` | Check if peer is online (reads from presence cache) |
 | `int messenger_transport_list_online_peers(messenger_context_t*, char***, int*)` | Get list of online peers |
-| `int messenger_transport_refresh_presence(messenger_context_t*)` | **No-op (v0.9.0+).** Presence is tracked natively by Nodus server. |
-| `int messenger_transport_lookup_presence(messenger_context_t*, const char*, uint64_t*)` | Lookup peer's last-seen timestamp from local presence cache (populated by batch TCP query) |
+| `int messenger_transport_lookup_presence(messenger_context_t*, const char*, uint64_t*)` | Lookup peer's last-seen timestamp from local presence cache (populated by Nodus batch TCP query) |
 
 ### Offline Messages
 

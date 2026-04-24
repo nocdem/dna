@@ -200,11 +200,11 @@ SQLite cache for discovered bootstrap nodes, enabling decentralization.
 
 ## 13.9 Channel Cache (`database/channel_cache.h`)
 
-Global SQLite cache for channel metadata and posts.
+Global SQLite cache for channel metadata and posts. JSON-blob oriented (store full channel/posts payload under a key; consumer parses).
+
+> **Status:** Channels subsystem soft-disabled since 2026-03-28; cache API remains callable but inert from the engine path.
 
 **Database:** `~/.dna/db/channel_cache.db`
-
-**Tables:** channels, channel_posts
 
 ### Lifecycle
 
@@ -212,22 +212,23 @@ Global SQLite cache for channel metadata and posts.
 |----------|-------------|
 | `int channel_cache_init(void)` | Initialize channel cache database |
 | `void channel_cache_close(void)` | Close channel cache database |
-| `int channel_cache_evict_expired(void)` | Evict expired entries |
+| `int channel_cache_evict_old(void)` | Evict stale entries |
 
 ### Channel Operations
 
 | Function | Description |
 |----------|-------------|
-| `int channel_cache_store(const dna_channel_info_t*)` | Store/update channel info |
-| `int channel_cache_get(const char*, dna_channel_info_t*)` | Get channel info by UUID |
-| `int channel_cache_delete(const char*)` | Delete channel from cache |
+| `int channel_cache_put_channel_json(const char *uuid, const char *channel_json, ...)` | Store/replace channel JSON payload by UUID |
+| `int channel_cache_get_channel_json(const char *uuid, char **channel_json_out)` | Fetch channel JSON by UUID (caller frees output) |
+| `int channel_cache_invalidate(const char *cache_key)` | Invalidate a cache entry (triggers refetch) |
+| `int channel_cache_mark_fresh(const char *cache_key)` | Mark entry fresh (stale-while-revalidate) |
 
 ### Post Operations
 
 | Function | Description |
 |----------|-------------|
-| `int channel_cache_store_post(const dna_channel_post_info_t*)` | Store/update channel post |
-| `int channel_cache_get_posts(const char*, int, int, dna_channel_post_info_t**, size_t*)` | Get posts for channel (paginated) |
+| `int channel_cache_put_posts(const char *channel_uuid, const char *posts_json, ...)` | Store/replace posts JSON for a channel |
+| `int channel_cache_get_posts(const char *channel_uuid, char **posts_json_out, ...)` | Fetch posts JSON for a channel (caller frees output) |
 
 ---
 
