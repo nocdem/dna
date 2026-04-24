@@ -113,11 +113,14 @@ done
 echo "[bench_run] wallets:"
 cat "$WALLETS_FILE"
 
-# Destination: reuse stagef_user's fp as the recipient.
-RECIPIENT_FP=$(cat "$(stagef_user_home)/fp.txt" 2>/dev/null \
-    || cat "$BASE_DIR/user/fp.txt" 2>/dev/null || true)
+# Destination: reuse stagef master user's fp as the recipient. stagef_up.sh
+# writes this to $BASE_DIR/user_fp.txt (see stagef_up.sh:283 +  tests/test_*.sh).
+RECIPIENT_FP=""
+if [ -f "$BASE_DIR/user_fp.txt" ]; then
+    RECIPIENT_FP=$(cat "$BASE_DIR/user_fp.txt")
+fi
 if [ -z "$RECIPIENT_FP" ]; then
-    echo "[FAIL] could not locate recipient fingerprint" >&2
+    echo "[FAIL] could not locate recipient fingerprint at $BASE_DIR/user_fp.txt" >&2
     exit 1
 fi
 echo "[bench_run] recipient: ${RECIPIENT_FP:0:16}..."
