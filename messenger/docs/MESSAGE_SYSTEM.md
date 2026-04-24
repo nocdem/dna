@@ -1,7 +1,8 @@
 # DNA Connect - Message System Documentation
 
 **Version:** v0.12 (Message Deletion + Cross-Device Sync + SQLCipher + Media)
-**Last Updated:** 2026-04-10
+**Last Updated:** 2026-04-24
+**Library:** v0.11.5 | **Nodus:** v0.17.7
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document describes how the DNA Connect message system works, with all facts verified directly from source code.

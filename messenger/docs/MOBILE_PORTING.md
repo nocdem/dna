@@ -1,7 +1,7 @@
 # DNA Connect Mobile Porting Guide
 
-**Last Updated:** 2026-04-10
-**Status:** Android SDK Complete (Phases 1-6, 14)
+**Last Updated:** 2026-04-24
+**Status:** Android SDK Complete; Flutter UI shipping on Android (v1.0.0-rc235+)
 **Target:** Android first, iOS later
 
 ---

@@ -1,7 +1,19 @@
 # DNA Nodus - Post-Quantum DHT Network
 
-**Current Version:** Nodus v0.10.30
+**Current Version:** Nodus v0.17.7 | **Last Updated:** 2026-04-24
 **Security:** FIPS 204 / ML-DSA-87 (Dilithium5) - NIST Category 5
+
+> **Since v0.10.30 (2026-04-10) Nodus shipped:**
+> - **v0.10.14**: Mempool + batch BFT (5s block timer, up to 10 TXs per round) — see `nodus/docs/MEMPOOL_BLOCK_TIME.md`.
+> - **v0.11.0**: DNAC Merkle `state_root` in BFT commit; chain id `4a68e146` live.
+> - **v0.14.1**: `CLAIM_REWARD` + `UNDELEGATE` finalized (accumulator attendance determinism fix).
+> - **v0.15.0–v0.15.1** (F17): chain-derived top-7 committee is now the BFT voting authority; gossip roster is transport-only.
+> - **v0.17.1**: TX wire v2 — `committed_fee` field in 82-byte header; `DNAC_MIN_FEE_RAW = 0.01 DNAC` gate.
+> - **v0.17.7**: current release; 7/7 cluster live.
+>
+> **Hard-fork mechanism (`DNAC_TX_CHAIN_CONFIG`)** shipped 2026-04-19: committee-voted consensus-parameter changes without chain wipe. See `dnac/docs/plans/2026-04-19-hard-fork-mechanism-design.md`.
+>
+> **Channel system (TCP 4003)** is **SOFT-DISABLED** (2026-03-28, ifdef `DNA_CHANNELS_ENABLED`). Infrastructure remains, port listens, but messenger does not exercise it.
 
 ## Overview
 
@@ -38,11 +50,16 @@ DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Connect. It
 |  +-----------------------------------------------------------+ |
 |                                                                 |
 |  +-----------------------------------------------------------+ |
-|  |      Channel Layer (port 4003) - PRIMARY/BACKUP            | |
-|  |  - Dedicated TCP port for all channel traffic              | |
-|  |  - Client: create, post, get, subscribe                    | |
-|  |  - Inter-node: replication, sync, ring management          | |
-|  |  - Hashring-deterministic: 3 nodes per channel             | |
+|  |    Channel Layer (port 4003) [SOFT-DISABLED 2026-03-28]    | |
+|  |  - Port listens; runtime paths guarded by                  | |
+|  |    DNA_CHANNELS_ENABLED ifdef (inert)                      | |
+|  +-----------------------------------------------------------+ |
+
+|  +-----------------------------------------------------------+ |
+|  |      Witness BFT (port 4004) — DNAC consensus              | |
+|  |  - PROPOSE / PREVOTE / PRECOMMIT / COMMIT                  | |
+|  |  - Chain-derived top-7 committee (since F17, v0.15.x)      | |
+|  |  - Mempool + 5s batch timer; up to 10 TXs per round        | |
 |  +-----------------------------------------------------------+ |
 |                                                                 |
 |  +-----------------------------------------------------------+ |
@@ -59,7 +76,7 @@ DNA Nodus is the DHT (Distributed Hash Table) infrastructure for DNA Connect. It
 - **Transport layers:**
   - **Tier 1 (Kademlia):** ping, find_node, put, get (UDP 4000, inter-node)
   - **Tier 2 (Client DHT):** auth, dht_put, dht_get, listen (TCP 4001, client-facing)
-  - **Channel (TCP 4003):** ch_create, ch_post, ch_get, ch_sub, ch_rep (dedicated port)
+  - **Channel (TCP 4003):** *(soft-disabled 2026-03-28; port listens, runtime paths ifdef-guarded)*
   - **Witness BFT (TCP 4004):** DNAC consensus — propose, prevote, precommit, commit
 
 ### DNAC Witness (Block Production)
@@ -96,11 +113,11 @@ The messenger integrates directly with Nodus -- no compatibility layer, no OpenD
 
 **Internal Read Thread:** The Nodus client SDK runs an internal read thread after `nodus_client_connect()` that continuously reads TCP via blocking `epoll_wait`. Push notifications (value_changed, ch_ntf, offline messages) are delivered instantly via callbacks. `nodus_client_poll()` is a no-op when the read thread is running. Zero battery impact (kernel wait queue, no CPU spin).
 
-**Channel Connection Pool (v0.8.0+):** The messenger maintains a pool of TCP 4003 connections in `nodus_ops.c` — one per active channel. On subscribe, the client connects to the PRIMARY node (discovered via DHT lookup) and auto-subscribes. Ring changes trigger automatic disconnect and reconnect to the new PRIMARY, with catch-up for missed posts via `ch_get(since=last_received_at)`.
+**Channel Connection Pool (v0.8.0+, soft-disabled 2026-03-28):** infrastructure retained but the messenger no longer opens TCP 4003 connections for channel traffic. The pool / subscribe / ring-change reconnect paths are guarded by `DNA_CHANNELS_ENABLED` and compile to inert stubs.
 
 ## Nodus Production Cluster
 
-Seven nodes running v0.10.30 with cluster membership formed and cross-node replication verified.
+Seven nodes running v0.17.7 with cluster membership formed, cross-node replication verified, and DNAC chain `4a68e146` live (9 blocks, 7/7 consistent).
 
 | Node | IP | UDP | TCP (DHT) | TCP (Inter-node) | TCP (Channel) | TCP (Witness) |
 |------|-----|-----|-----------|-------------------|---------------|---------------|
@@ -156,7 +173,7 @@ Nodus uses `/etc/nodus.conf`:
 ## Legacy Servers (REMOVED)
 
 The legacy dna-nodus v0.4.5 (OpenDHT-based) has been completely removed. All 7 production
-nodes now run Nodus v0.10.30 (pure C). The `vendor/opendht-pq/` directory was deleted.
+nodes now run Nodus v0.17.7 (pure C). The `vendor/opendht-pq/` directory was deleted.
 
 ## Building
 

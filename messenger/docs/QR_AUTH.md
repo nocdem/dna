@@ -1,8 +1,10 @@
-# QR Authentication Protocol
+# QR Authentication Protocol (v1 – v3)
 
-**Last Updated:** 2026-01-14
-**Version:** v3 (current) | v2, v1 (legacy)
+**Last Updated:** 2026-01-14 (content); header reconciled 2026-04-24
+**Versions covered:** v3 (stateful, session-backed) | v2, v1 (legacy)
 **Implementation:** `dna_messenger_flutter/lib/services/qr_auth_service.dart`
+
+> **Also see:** [QR_AUTH_V4.md](QR_AUTH_V4.md) — v4 stateless / CDN-scale flow, also live in the same service file. v3 and v4 coexist; the service picks the branch based on the presence of an `st` token in the QR payload.
 
 ---
 

@@ -1,6 +1,6 @@
 # DNA Connect - Comprehensive Architecture Documentation
 
-**Version:** 0.9.187 | **Last Updated:** 2026-04-10 | **Phase:** 7 (Flutter UI)
+**Version:** 0.11.5 | **Nodus:** v0.17.7 | **Flutter:** v1.0.0-rc235 | **Last Updated:** 2026-04-24 | **Phase:** 7 (Flutter UI)
 
 This document provides a complete technical architecture reference for DNA Connect, derived entirely from source code analysis.
 

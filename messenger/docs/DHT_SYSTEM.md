@@ -1,10 +1,12 @@
 # DHT System Documentation
 
-**Last Updated:** 2026-04-10
+**Last Updated:** 2026-04-24
 **Phase:** 7 (Flutter UI)
-**Version:** 0.9.187
+**Versions:** Messenger v0.11.5 | Nodus v0.17.7
 
-Comprehensive documentation of the DNA Connect DHT (Distributed Hash Table) system. The DHT layer is powered by Nodus, a pure C Kademlia DHT with PBFT consensus. OpenDHT has been completely removed.
+Comprehensive documentation of the DNA Connect DHT (Distributed Hash Table) system. The DHT layer is powered by **Nodus**, a pure C Kademlia DHT. OpenDHT has been completely removed.
+
+> **BFT vs Kademlia:** Nodus's Kademlia routing (k=8, 512-bit keyspace) handles peer discovery and value replication; it is *not* PBFT. BFT consensus runs only in the DNAC witness layer (TCP 4004) for blockchain state commits — not for DHT put/get operations. Do not conflate the two.
 
 ---
 

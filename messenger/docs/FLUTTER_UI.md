@@ -1,7 +1,7 @@
 # DNA Connect Flutter UI
 
-**Last Updated:** 2026-04-10
-**Status:** Phase 4 — Design System + UI Redesign Complete
+**Last Updated:** 2026-04-24 | **App:** v1.0.0-rc235 | **Library:** v0.11.5
+**Status:** Phase 4 complete; Phase 5 (Platform Builds) shipping — Android APK + Linux builds live; iOS pending
 **Target:** Mobile-first, all platforms from single codebase
 
 ---

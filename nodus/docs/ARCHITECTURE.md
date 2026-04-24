@@ -1,6 +1,8 @@
 # Nodus — Architecture Documentation
 
-**Version:** 0.10.11 | **Language:** C (pure) | **License:** Proprietary
+**Version:** 0.17.7 | **Language:** C (pure) | **License:** Proprietary | **Last Updated:** 2026-04-24
+
+> **Note (2026-04-24):** This document captures Nodus's foundational architecture (motivation, two-tier protocol, wire format, storage). Features landed since v0.10.11 — F17 committee enforcement, stake-delegation v1, hard-fork mechanism (`DNAC_TX_CHAIN_CONFIG`), Genesis Protocol harness, inflation — are documented in their own design docs under `dnac/docs/plans/` and in `nodus/CLAUDE.md`. The architecture below still applies; those features extend it rather than replace it.
 
 ---
 

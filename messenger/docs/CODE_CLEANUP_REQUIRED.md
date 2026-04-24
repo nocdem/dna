@@ -1,8 +1,10 @@
 # DNA Connect - Code Cleanup Required
 
-**Generated:** 2025-12-07 | **Updated:** 2026-04-10 | **Status:** Phase 1 Complete | **Priority:** Medium
+**Generated:** 2025-12-07 | **Last Item-Audit:** 2026-04-10 | **Header Refreshed:** 2026-04-24 | **Priority:** Medium
 
-This document tracks all stubs, dead code, unused functions, and incomplete implementations that need cleanup before production release.
+> **Tracker status (2026-04-24):** item-level entries below have not been re-verified against current code in this refresh. Many TODOs listed may have shipped since Phase 1 without the line being ticked; conversely, new debt has likely accumulated that is not captured here. Treat this as a **Phase 1 snapshot**, not a live list. For current cleanup work, consult `messenger/BUGS.md`, git log, and fresh grep sweeps of `TODO`/`FIXME` comments in the tree.
+
+This document tracks stubs, dead code, unused functions, and incomplete implementations that need cleanup before production release.
 
 ---
 

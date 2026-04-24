@@ -1,7 +1,8 @@
 # DNA Connect - Protocol Specifications
 
 **Version:** 1.1
-**Last Updated:** 2026-04-10
+**Last Updated:** 2026-04-24
+**Library:** v0.11.5 | **Nodus:** v0.17.7
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document specifies all wire formats and protocols used by DNA Connect.

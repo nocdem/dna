@@ -1,6 +1,8 @@
 # Mempool & Block Time — Implementation Summary
 
-**Version:** v0.10.14 | **Branch:** `feat/mempool-block-time` | **Date:** 2026-04-08
+**Shipped in:** Nodus v0.10.14 | **Branch:** `feat/mempool-block-time` (merged) | **Date:** 2026-04-08 | **Last Reviewed:** 2026-04-24
+
+> **Status (2026-04-24):** Mempool + 5s batch-BFT timer described below is live since v0.10.14. Block proposal / BFT flow below reflects the model at merge time; the F17 committee enforcement (v0.15.1) and stake-delegation v1 added chain-derived top-7 committee as the voting roster but preserved the mempool and batching described here.
 
 ---
 

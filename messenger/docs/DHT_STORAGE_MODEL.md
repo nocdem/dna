@@ -1,8 +1,8 @@
 # DHT Storage Model
 
-**Last Updated:** 2026-04-10
-**Version:** 0.9.187
-**Status:** Verified from source code
+**Last Updated:** 2026-04-24
+**Version:** Library v0.11.5 | Nodus v0.17.7
+**Status:** Verified from source code (2026-04-10); versions refreshed 2026-04-24
 
 This document describes how each data type in DNA Connect is stored on the Nodus DHT network. It covers key derivation, bucket strategies, serialization formats, TTLs, ownership models, and sync patterns.
 

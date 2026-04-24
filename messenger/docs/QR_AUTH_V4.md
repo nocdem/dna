@@ -1,8 +1,10 @@
 # QR Authentication Protocol v4 (Stateless/CDN-Scale)
 
-**Last Updated:** 2026-01-15
-**Version:** v4
+**Last Updated:** 2026-01-15 (content); header reconciled 2026-04-24
+**Version:** v4 (stateless) — coexists with v3 (stateful) documented in [QR_AUTH.md](QR_AUTH.md)
 **Implementation:** `dna_messenger_flutter/lib/services/qr_auth_service.dart`
+
+> **v4 vs v3 selection:** the service dispatches by payload shape — QR with an `st` token uses v4 stateless verify; QR without uses v3 stateful verify. Both branches are live in production.
 
 ---
 

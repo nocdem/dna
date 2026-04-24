@@ -1,6 +1,6 @@
 # DNA Connect - Git Workflow
 
-**Last Updated:** 2026-04-10
+**Last Updated:** 2026-04-24
 
 ---
 
@@ -37,7 +37,7 @@ Detailed description:
 - Why it changed
 - Any breaking changes
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 ```
 
 **Commit Types:** `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `debug`
@@ -47,7 +47,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 - `[RELEASE]` — Triggers website deploy + DHT version publish (used with `release` command)
 - `[ENFORCED]` — Forces all users to update (used with `release enforced` command)
 
-**Version in Message:** Include version bump in parentheses: `feat: something (v0.9.187) [BUILD]`
+**Version in Message:** Include version bump in parentheses: `feat: something (v0.11.5) [BUILD]`
 
 **Example:**
 ```
@@ -59,7 +59,7 @@ feat: Add GEK group encryption (v0.9.50) [BUILD]
 - Dilithium5 owner signatures
 - 57/57 unit tests passing
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 ```
 
 ---

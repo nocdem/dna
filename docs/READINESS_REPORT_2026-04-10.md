@@ -1,8 +1,10 @@
-# DNA Monorepo - Project Readiness Report
+# DNA Monorepo - Project Readiness Report (2026-04-10 snapshot)
 
-**Date:** 2026-04-10
+**Date:** 2026-04-10 (frozen)
 **Auditor:** Claude Code (Anthropic)
 **Audit Depth:** Exhaustive (all source files read, all builds verified, all tests executed)
+
+> **ARCHIVED SNAPSHOT (renamed 2026-04-24):** this file captures the project state at 2026-04-10. Versions cited below (Nodus v0.10.30, Messenger v0.9.187, DNAC v0.13.0) reflect that point in time and are intentionally frozen. A fresh readiness audit should land in a new dated file (e.g. `READINESS_REPORT_YYYY-MM-DD.md`) rather than edit this one — the point is a durable comparison baseline.
 
 ---
 

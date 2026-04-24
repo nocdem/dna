@@ -1,6 +1,6 @@
 # P2P Architecture - Transport Layer
 
-**Current Version:** Nodus v0.10.30, Messenger v0.9.187
+**Current Version:** Nodus v0.17.7, Messenger v0.11.5 | **Last Updated:** 2026-04-24
 
 ## Overview
 
@@ -136,7 +136,7 @@ Channel traffic on TCP 4003 can be encrypted using Kyber1024 key encapsulation. 
 | OpenDHT-PQ | v0.8.0 | Replaced by Nodus |
 | Manual `nodus_client_poll()` cycling | v0.5.6 | Replaced by internal read thread |
 
-## Server Discovery & TOFU Key Cache (v0.9.172+, current v0.9.187)
+## Server Discovery & TOFU Key Cache (introduced v0.9.172)
 
 Client bootstrap order: **known_nodes → config → hardcoded fallback**.
 
