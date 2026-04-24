@@ -293,6 +293,17 @@ int dna_chain_cmd_validator_list(dnac_context_t *ctx, int filter_status);
 int dna_chain_cmd_committee(dnac_context_t *ctx);
 
 /**
+ * @brief `dna delegations` verb — list the wallet's own active delegations.
+ *
+ * Authenticated via C11 at the witness (session fp == SHA3-512(pubkey)),
+ * so only this wallet's delegations are ever returned.
+ *
+ * @param ctx  DNAC context
+ * @return 0 on success (including the empty-list case), non-zero on error
+ */
+int dna_chain_cmd_delegations(dnac_context_t *ctx);
+
+/**
  * @brief Read-only TX file inspector
  *
  * Opens @p tx_file, deserializes it via dnac_tx_deserialize, and pretty-prints

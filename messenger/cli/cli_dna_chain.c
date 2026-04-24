@@ -72,7 +72,8 @@ static void print_dna_chain_help(void) {
     printf("                                  Withdraw (part of) a delegation (raw units)\n");
     printf("  validator-list [--status N]     List validators; N = 0..3\n");
     printf("                                  (0=ACTIVE, 1=RETIRING, 2=UNSTAKED, 3=AUTO_RETIRED)\n");
-    printf("  committee                       Show current epoch's top-7 committee\n\n");
+    printf("  committee                       Show current epoch's top-7 committee\n");
+    printf("  delegations                     List your active delegations\n\n");
 
     printf("Tokens:\n");
     printf("  token-create <name> <sym> <supply>\n");
@@ -214,6 +215,9 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
             limit = atoi(argv[sub + 1]);
         }
         result = dna_chain_cmd_history(ctx, limit);
+    }
+    else if (strcmp(cmd, "delegations") == 0) {
+        result = dna_chain_cmd_delegations(ctx);
     }
     else if (strcmp(cmd, "tx") == 0) {
         if (sub + 1 >= argc) {

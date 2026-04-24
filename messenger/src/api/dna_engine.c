@@ -1043,6 +1043,7 @@ void dna_free_task_params(dna_task_t *task) {
         case TASK_DNAC_VALIDATOR_UPDATE:
         case TASK_DNAC_VALIDATOR_LIST:
         case TASK_DNAC_GET_COMMITTEE:
+        case TASK_DNAC_GET_DELEGATIONS:
         default:
             break;
     }
@@ -1193,6 +1194,7 @@ void dna_handle_dnac_undelegate(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_validator_update(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_validator_list(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_dnac_get_committee(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_dnac_get_delegations(dna_engine_t *engine, dna_task_t *task);
 
 void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
     switch (task->type) {
@@ -1566,6 +1568,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_DNAC_GET_COMMITTEE:
             dna_handle_dnac_get_committee(engine, task);
+            break;
+        case TASK_DNAC_GET_DELEGATIONS:
+            dna_handle_dnac_get_delegations(engine, task);
             break;
     }
 }

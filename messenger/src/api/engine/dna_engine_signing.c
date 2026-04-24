@@ -113,3 +113,35 @@ int dna_engine_get_signing_public_key(
     QGP_LOG_DEBUG(LOG_TAG, "get_signing_public_key: returned %zu bytes", result);
     return (int)result;
 }
+
+/**
+ * Compute SHA3-512(pubkey) hex-encoded fingerprint (128 chars + NUL).
+ *
+ * Pure function — no engine state touched. Exposed so the Flutter FFI
+ * layer can correlate fp-keyed records (delegations, history sender_fp)
+ * with validator entries that only carry the raw pubkey. Avoids
+ * shipping a pure-Dart SHA3-512 implementation.
+ */
+int dna_engine_pubkey_to_fingerprint(const uint8_t *pubkey,
+                                       size_t pubkey_len,
+                                       char *out_hex,
+                                       size_t out_hex_size) {
+    /* Hard-bound pubkey_len — Dilithium5 is the only identity key used
+     * anywhere in the project, so accepting arbitrary lengths would
+     * create a footgun for UI callers that accidentally pass a
+     * truncated/padded buffer. */
+    if (!pubkey || !out_hex) return DNA_ERROR_INVALID_ARG;
+    if (pubkey_len != QGP_DSA87_PUBLICKEYBYTES) return DNA_ERROR_INVALID_ARG;
+    if (out_hex_size < 129) return DNA_ERROR_INVALID_ARG;
+
+    uint8_t raw[QGP_SHA3_512_DIGEST_LENGTH];
+    if (qgp_sha3_512(pubkey, pubkey_len, raw) != 0) return DNA_ERROR_CRYPTO;
+
+    static const char hex[16] = "0123456789abcdef";
+    for (size_t i = 0; i < QGP_SHA3_512_DIGEST_LENGTH; i++) {
+        out_hex[2 * i]     = hex[(raw[i] >> 4) & 0xF];
+        out_hex[2 * i + 1] = hex[raw[i] & 0xF];
+    }
+    out_hex[128] = '\0';
+    return 0;
+}

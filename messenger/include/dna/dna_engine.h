@@ -3991,6 +3991,28 @@ DNA_API int dna_engine_get_signing_public_key(
     size_t pubkey_out_len
 );
 
+/**
+ * Compute the canonical 128-char lowercase-hex fingerprint of a
+ * Dilithium5 public key (= SHA3-512(pubkey) hex-encoded).
+ *
+ * Pure function — does not touch engine state. Provided here so the
+ * Flutter FFI layer can correlate fp-keyed records (e.g. delegations)
+ * with validator entries that only carry the raw pubkey, without
+ * needing a pure-Dart SHA3 implementation.
+ *
+ * @param pubkey        Raw pubkey bytes
+ * @param pubkey_len    Length in bytes — must be DNAC_PUBKEY_SIZE (2592)
+ * @param out_hex       Caller-allocated output buffer
+ * @param out_hex_size  Capacity of out_hex — must be >= 129 (128 + NUL)
+ * @return 0 on success, non-zero on invalid args / buffer too small
+ */
+DNA_API int dna_engine_pubkey_to_fingerprint(
+    const uint8_t *pubkey,
+    size_t pubkey_len,
+    char *out_hex,
+    size_t out_hex_size
+);
+
 /* ============================================================================
  * DEBUG LOG INBOX (v0.9.164+)
  * ============================================================================ */
@@ -4340,6 +4362,42 @@ DNA_API dna_request_id_t dna_engine_dnac_validator_list(
 DNA_API dna_request_id_t dna_engine_dnac_get_committee(
     dna_engine_t *engine,
     dna_dnac_validator_list_cb callback,
+    void *user_data);
+
+/**
+ * Active delegation entry (mirror of dnac_delegation_t).
+ *
+ * validator_fp: 128 lowercase hex (= SHA3-512(validator_pubkey)) + NUL.
+ * amount_raw:   delegated amount in raw units (8 decimals per DNAC).
+ */
+typedef struct {
+    char     validator_fp[129];
+    uint64_t amount_raw;
+    uint64_t delegated_at_block;
+} dna_dnac_delegation_t;
+
+/** "My delegations" result callback */
+typedef void (*dna_dnac_delegations_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const dna_dnac_delegation_t *entries,
+    int count,
+    void *user_data);
+
+/** Free the delegations array allocated by the engine on callback. */
+DNA_API void dna_engine_dnac_free_delegations(
+    dna_dnac_delegation_t *entries, int count);
+
+/**
+ * Fetch the caller's own active delegations from witnesses.
+ *
+ * Authenticated server-side via C11 (session fp must match
+ * SHA3-512(signing_pubkey)); there is no way for the app to query
+ * another user's delegations over this API.
+ */
+DNA_API dna_request_id_t dna_engine_dnac_get_delegations(
+    dna_engine_t *engine,
+    dna_dnac_delegations_cb callback,
     void *user_data);
 
 #ifdef __cplusplus

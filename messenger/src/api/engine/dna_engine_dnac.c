@@ -734,6 +734,59 @@ void dna_handle_dnac_get_committee(dna_engine_t *engine, dna_task_t *task) {
     emit_validator_list(task, buf, count);
 }
 
+/* --- My Delegations (stake-delegation v1 query) --- */
+
+void dna_engine_dnac_free_delegations(dna_dnac_delegation_t *entries,
+                                       int count) {
+    (void)count;  /* plain POD; single free() is sufficient */
+    free(entries);
+}
+
+void dna_handle_dnac_get_delegations(dna_engine_t *engine,
+                                      dna_task_t *task) {
+    dnac_context_t *ctx = ensure_dnac_init(engine);
+    if (!ctx) {
+        task->callback.dnac_delegations(task->request_id,
+            DNA_ENGINE_ERROR_NOT_INITIALIZED, NULL, 0, task->user_data);
+        return;
+    }
+
+    dnac_delegation_t *list = NULL;
+    int count = 0;
+    int ret = dnac_get_my_delegations(ctx, &list, &count);
+    if (ret != DNAC_SUCCESS) {
+        QGP_LOG_DEBUG(LOG_TAG, "dnac_get_my_delegations: %d (%s)",
+                      ret, dnac_error_string(ret));
+        task->callback.dnac_delegations(task->request_id, ret, NULL, 0,
+                                         task->user_data);
+        return;
+    }
+
+    /* Translate libdnac struct → FFI-stable struct. Heap-allocate so the
+     * Dart side can free via dna_engine_dnac_free_delegations. */
+    dna_dnac_delegation_t *result = NULL;
+    if (count > 0) {
+        result = calloc((size_t)count, sizeof(*result));
+        if (!result) {
+            dnac_free_delegations(list, count);
+            task->callback.dnac_delegations(task->request_id,
+                DNA_ERROR_INTERNAL, NULL, 0, task->user_data);
+            return;
+        }
+        for (int i = 0; i < count; i++) {
+            strncpy(result[i].validator_fp, list[i].validator_fp, 128);
+            result[i].validator_fp[128]     = '\0';
+            result[i].amount_raw            = list[i].amount_raw;
+            result[i].delegated_at_block    = list[i].delegated_at_block;
+        }
+    }
+    dnac_free_delegations(list, count);
+
+    QGP_LOG_DEBUG(LOG_TAG, "get_my_delegations: %d entries", count);
+    task->callback.dnac_delegations(task->request_id, 0, result, count,
+                                     task->user_data);
+}
+
 /* --- Public API wrappers --- */
 
 dna_request_id_t dna_engine_dnac_stake(dna_engine_t *engine,
@@ -831,5 +884,16 @@ dna_request_id_t dna_engine_dnac_get_committee(dna_engine_t *engine,
     dna_task_callback_t cb = {0};
     cb.dnac_validator_list = callback;
     return dna_submit_task(engine, TASK_DNAC_GET_COMMITTEE, &params, cb,
+                            user_data);
+}
+
+dna_request_id_t dna_engine_dnac_get_delegations(dna_engine_t *engine,
+                                                  dna_dnac_delegations_cb callback,
+                                                  void *user_data) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+    dna_task_params_t params = {0};
+    dna_task_callback_t cb = {0};
+    cb.dnac_delegations = callback;
+    return dna_submit_task(engine, TASK_DNAC_GET_DELEGATIONS, &params, cb,
                             user_data);
 }

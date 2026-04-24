@@ -462,6 +462,62 @@ int dna_chain_cmd_history(dnac_context_t *ctx, int limit) {
     return 0;
 }
 
+int dna_chain_cmd_delegations(dnac_context_t *ctx) {
+    dnac_delegation_t *list = NULL;
+    int count = 0;
+
+    int rc = dnac_get_my_delegations(ctx, &list, &count);
+    if (rc != DNAC_SUCCESS) {
+        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        return 1;
+    }
+
+    if (count == 0) {
+        printf("No active delegations.\n");
+        return 0;
+    }
+
+    printf("Your Delegations (%d %s)\n",
+           count, count == 1 ? "delegation" : "delegations");
+    printf("%-20s  %-16s  %s\n", "VALIDATOR", "AMOUNT", "BLOCK");
+    printf("--------------------  ----------------  -----\n");
+
+    uint64_t total = 0;
+    for (int i = 0; i < count; i++) {
+        char vshort[21];  /* "xxxxxxxx...yyyyyyyy" + NUL */
+        /* Render as 8 leading + "..." + 8 trailing so both ends of the
+         * 128-char fp are visible — helps when comparing with the
+         * validator list or the DelegationScreen pubkey column. */
+        const char *fp = list[i].validator_fp;
+        size_t flen = strlen(fp);
+        if (flen >= 16) {
+            memcpy(vshort, fp, 8);
+            memcpy(vshort + 8, "...", 3);
+            memcpy(vshort + 11, fp + flen - 8, 8);
+            vshort[19] = '\0';
+        } else {
+            strncpy(vshort, fp, sizeof(vshort) - 1);
+            vshort[sizeof(vshort) - 1] = '\0';
+        }
+
+        char amt_str[64];
+        format_amount(list[i].amount_raw, amt_str, sizeof(amt_str));
+
+        printf("%-20s  %-16s  %llu\n",
+               vshort, amt_str,
+               (unsigned long long)list[i].delegated_at_block);
+
+        total += list[i].amount_raw;
+    }
+
+    char total_str[64];
+    format_amount(total, total_str, sizeof(total_str));
+    printf("\nTotal locked: %s DNAC\n", total_str);
+
+    dnac_free_delegations(list, count);
+    return 0;
+}
+
 int dna_chain_cmd_tx_details(dnac_context_t *ctx, const char *tx_hash_hex) {
     /* Validate and convert hex hash */
     if (strlen(tx_hash_hex) != DNAC_TX_HASH_SIZE * 2) {

@@ -211,6 +211,7 @@ typedef enum {
     TASK_DNAC_VALIDATOR_UPDATE,
     TASK_DNAC_VALIDATOR_LIST,
     TASK_DNAC_GET_COMMITTEE,
+    TASK_DNAC_GET_DELEGATIONS,
 
     TASK_SEND_REACTION,
     TASK_GET_REACTIONS
@@ -705,6 +706,7 @@ typedef union {
     dna_dnac_fee_cb dnac_fee;
     dna_dnac_token_list_cb dnac_token_list;
     dna_dnac_validator_list_cb dnac_validator_list;
+    dna_dnac_delegations_cb dnac_delegations;
 } dna_task_callback_t;
 
 /**
