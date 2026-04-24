@@ -561,7 +561,7 @@
   "walletReceive": "Receive",
   "walletEarn": "Earn",
   "@walletEarn": {
-    "description": "Wallet action button for staking/delegation — opens the Earners (validators) list"
+    "description": "Wallet action button for staking/delegation — opens the Witnesses (validators) list"
   },
   "walletHistory": "History",
   "walletNoTransactions": "No transactions yet",
@@ -926,19 +926,19 @@
     }
   },
 
-  "stakeDashboardTitle": "Earners",
+  "stakeDashboardTitle": "Witnesses",
   "@stakeDashboardTitle": {
-    "description": "App bar title for the validator list screen. 'Earners' is the non-technical framing — the real thing is a validator."
+    "description": "App bar title for the witness list screen. 'Witness' is the non-technical framing — the real thing is a validator / BFT witness."
   },
   "stakeRefresh": "Refresh",
-  "stakeEarnersHeader": "People earning together",
-  "stakeEarnersSubtitle": "{count, plural, =1{1 active earner} other{{count} active earners}}",
+  "stakeEarnersHeader": "Witnesses",
+  "stakeEarnersSubtitle": "{count, plural, =1{1 active witness} other{{count} active witnesses}}",
   "@stakeEarnersSubtitle": {
     "placeholders": {
       "count": { "type": "int" }
     }
   },
-  "stakeEarnerName": "Earner {id}",
+  "stakeEarnerName": "Witness {id}",
   "@stakeEarnerName": {
     "placeholders": {
       "id": { "type": "String" }
@@ -951,25 +951,61 @@
       "pct": { "type": "String" }
     }
   },
-  "stakeEarnerTotalLocked": "{amount} DNAC locked in support",
+  "stakeEarnerTotalLocked": "{amount} DNAC backing this witness",
   "@stakeEarnerTotalLocked": {
     "placeholders": {
       "amount": { "type": "String" }
     }
   },
-  "stakeTrustedBadge": "Trusted",
+  "stakeTrustedBadge": "On duty today",
   "@stakeTrustedBadge": {
-    "description": "Badge shown on validators currently in the BFT committee — they are actively trusted to write blocks this epoch."
+    "description": "Badge shown on witnesses currently in the BFT committee — they are actively writing blocks this epoch."
   },
-  "stakeNoEarners": "No earners yet",
+  "stakeNoEarners": "No witnesses yet",
   "stakeNoEarnersSubtitle": "Come back in a few minutes — the network is getting started.",
-  "stakeLoadFailed": "Couldn't load earners",
+  "stakeLoadFailed": "Couldn't load witnesses",
+
+  "onboardingStakeP1Title": "Witnesses keep the network running",
+  "@onboardingStakeP1Title": {
+    "description": "First page of the stake onboarding sheet — what witnesses are."
+  },
+  "onboardingStakeP1Body": "Witnesses check every payment and keep everyone honest. Think of them as the network's on-duty crew.",
+  "onboardingStakeP2Title": "Back one and share the reward",
+  "onboardingStakeP2Body": "Put some DNAC behind a witness. When they do their shift, you get a share of what they earn.",
+  "onboardingStakeP3Title": "You can pull your DNAC back anytime",
+  "onboardingStakeP3Body": "There's a short cool-down (about 10 minutes), then your DNAC comes right back to your wallet. You never give it away.",
+  "onboardingStakeNext": "Next",
+  "onboardingStakeGotIt": "Got it",
+  "@onboardingStakeGotIt": {
+    "description": "Final button on the stake onboarding sheet — dismisses and persists the shown flag."
+  },
+
+  "heroYouSupport": "You are supporting",
+  "@heroYouSupport": {
+    "description": "Hero header at the top of the stake dashboard when the user has active delegations."
+  },
+  "heroSupportedAmount": "{amount} DNAC",
+  "@heroSupportedAmount": {
+    "placeholders": { "amount": { "type": "String" } }
+  },
+  "heroInWitnesses": "{count, plural, =1{in 1 witness} other{across {count} witnesses}}",
+  "@heroInWitnesses": {
+    "placeholders": { "count": { "type": "int" } }
+  },
+  "heroEstimatedMonthly": "Estimated earnings: ~{amount} DNAC / month",
+  "@heroEstimatedMonthly": {
+    "placeholders": { "amount": { "type": "String" } }
+  },
+  "heroEstimatedDisclaimer": "Approximate — actual rewards depend on block production.",
+  "@heroEstimatedDisclaimer": {
+    "description": "Small print under the estimated monthly earnings — warns that the number is a forward-looking projection, not a guarantee."
+  },
 
   "stakeYourSupportsHeader": "Your supports",
   "@stakeYourSupportsHeader": {
     "description": "Header for the section listing the user's own active delegations at the top of the stake dashboard."
   },
-  "stakeNoSupports": "You are not supporting any earners yet.",
+  "stakeNoSupports": "You are not supporting any witnesses yet.",
   "@stakeNoSupports": {
     "description": "Empty state shown inside Your supports card when the user has no active delegations."
   },
@@ -978,7 +1014,7 @@
     "placeholders": { "block": { "type": "int" } },
     "description": "Subtitle under each Your supports row showing the block height at which the delegation was made."
   },
-  "stakeValidatorUnavailable": "Earner info not available yet — pull to refresh.",
+  "stakeValidatorUnavailable": "Witness info not available yet — pull to refresh.",
   "@stakeValidatorUnavailable": {
     "description": "Toast shown when tapping a Your supports row whose validator record is not yet in the list."
   },
@@ -989,11 +1025,11 @@
     "description": "Line shown on DelegationScreen when the user already supports this earner — displays the currently staked amount."
   },
 
-  "delegationTitle": "Support earner {id}",
+  "delegationTitle": "Support witness {id}",
   "@delegationTitle": {
     "placeholders": { "id": { "type": "String" } }
   },
-  "delegationEarnerLabel": "Earner {id}",
+  "delegationEarnerLabel": "Witness {id}",
   "@delegationEarnerLabel": {
     "placeholders": { "id": { "type": "String" } }
   },
@@ -1002,27 +1038,27 @@
   "delegationAmountRequired": "Enter an amount",
   "delegationAmountInvalid": "Enter a valid amount",
   "delegationAmountTooSmall": "Minimum is 100 DNAC",
-  "delegationHoldInfo": "About a 10 minute hold before you can stop supporting this earner again.",
-  "delegationRewardInfo": "You'll share in the earner's rewards every block.",
-  "delegationSupportButton": "Support this earner",
+  "delegationHoldInfo": "About a 10 minute hold before you can stop supporting this witness again.",
+  "delegationRewardInfo": "You'll share in the witness's rewards every block.",
+  "delegationSupportButton": "Support this witness",
   "delegationStopButton": "Stop supporting",
   "delegationSubmitting": "Working...",
-  "delegationSupportSuccess": "You're now supporting this earner.",
+  "delegationSupportSuccess": "You're now supporting this witness.",
   "delegationSupportFailed": "Couldn't complete — please try again.",
-  "delegationStopSuccess": "Stopped supporting this earner.",
+  "delegationStopSuccess": "Stopped supporting this witness.",
   "delegationStopFailed": "Couldn't stop — please try again.",
-  "delegationStopDialogTitle": "Stop supporting earner {id}",
+  "delegationStopDialogTitle": "Stop supporting witness {id}",
   "@delegationStopDialogTitle": {
     "placeholders": { "id": { "type": "String" } }
   },
   "delegationStopDialogBody": "How much would you like to pull back? You'll get it back after a short hold.",
 
-  "validatorPanelTitle": "Earner settings",
+  "validatorPanelTitle": "Witness settings",
   "@validatorPanelTitle": {
-    "description": "Operator panel for a user who is a validator (earner). Controls for commission + unstake."
+    "description": "Operator panel for a user who is a witness (validator). Controls for commission + unstake."
   },
-  "validatorPanelNotValidator": "You're not running an earner right now. Start one from the DNAC command line.",
-  "validatorStatusLabel": "Earner {id}",
+  "validatorPanelNotValidator": "You're not running a witness right now. Start one from the DNAC command line.",
+  "validatorStatusLabel": "Witness {id}",
   "@validatorStatusLabel": {
     "placeholders": { "id": { "type": "String" } }
   },
@@ -1037,12 +1073,12 @@
   "validatorUpdateCommissionButton": "Save fee",
   "validatorUpdateSuccess": "Fee updated.",
   "validatorUpdateFailed": "Couldn't update the fee — please try again.",
-  "validatorUnstakeSection": "Shut down earner",
-  "validatorUnstakeWarning": "This will stop your earner and start the cool-down. Your supporters will be notified and their stake will unwind.",
-  "validatorUnstakeButton": "Shut down earner",
-  "validatorUnstakeConfirmTitle": "Shut down this earner?",
+  "validatorUnstakeSection": "Shut down witness",
+  "validatorUnstakeWarning": "This will stop your witness and start the cool-down. Your supporters will be notified and their stake will unwind.",
+  "validatorUnstakeButton": "Shut down witness",
+  "validatorUnstakeConfirmTitle": "Shut down this witness?",
   "validatorUnstakeConfirmBody": "This cannot be undone. Your self-stake will come back after the cool-down and your supporters will have their stake returned.",
   "validatorUnstakeConfirmAction": "Yes, shut down",
-  "validatorUnstakeSuccess": "Earner shutting down.",
+  "validatorUnstakeSuccess": "Witness shutting down.",
   "validatorUnstakeFailed": "Couldn't shut down — please try again."
 }

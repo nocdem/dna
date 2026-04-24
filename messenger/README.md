@@ -199,7 +199,7 @@ cd messenger
 | Component | Version |
 |-----------|---------|
 | C Library | v0.11.5 |
-| Flutter App | v1.0.0-rc234 |
+| Flutter App | v1.0.0-rc235 |
 | Nodus | v0.17.7 |
 | DNAC | v0.17.6-stake.wip |
 

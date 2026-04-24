@@ -1976,7 +1976,7 @@ abstract class AppLocalizations {
   /// **'Receive'**
   String get walletReceive;
 
-  /// Wallet action button for staking/delegation — opens the Earners (validators) list
+  /// Wallet action button for staking/delegation — opens the Witnesses (validators) list
   ///
   /// In en, this message translates to:
   /// **'Earn'**
@@ -3440,10 +3440,10 @@ abstract class AppLocalizations {
   /// **'{name} reacted {emoji} to your message'**
   String reactionNotificationBody(String name, String emoji);
 
-  /// App bar title for the validator list screen. 'Earners' is the non-technical framing — the real thing is a validator.
+  /// App bar title for the witness list screen. 'Witness' is the non-technical framing — the real thing is a validator / BFT witness.
   ///
   /// In en, this message translates to:
-  /// **'Earners'**
+  /// **'Witnesses'**
   String get stakeDashboardTitle;
 
   /// No description provided for @stakeRefresh.
@@ -3455,19 +3455,19 @@ abstract class AppLocalizations {
   /// No description provided for @stakeEarnersHeader.
   ///
   /// In en, this message translates to:
-  /// **'People earning together'**
+  /// **'Witnesses'**
   String get stakeEarnersHeader;
 
   /// No description provided for @stakeEarnersSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'{count, plural, =1{1 active earner} other{{count} active earners}}'**
+  /// **'{count, plural, =1{1 active witness} other{{count} active witnesses}}'**
   String stakeEarnersSubtitle(int count);
 
   /// No description provided for @stakeEarnerName.
   ///
   /// In en, this message translates to:
-  /// **'Earner {id}'**
+  /// **'Witness {id}'**
   String stakeEarnerName(String id);
 
   /// Commission — fraction of rewards the validator keeps before distributing the rest to delegators.
@@ -3479,19 +3479,19 @@ abstract class AppLocalizations {
   /// No description provided for @stakeEarnerTotalLocked.
   ///
   /// In en, this message translates to:
-  /// **'{amount} DNAC locked in support'**
+  /// **'{amount} DNAC backing this witness'**
   String stakeEarnerTotalLocked(String amount);
 
-  /// Badge shown on validators currently in the BFT committee — they are actively trusted to write blocks this epoch.
+  /// Badge shown on witnesses currently in the BFT committee — they are actively writing blocks this epoch.
   ///
   /// In en, this message translates to:
-  /// **'Trusted'**
+  /// **'On duty today'**
   String get stakeTrustedBadge;
 
   /// No description provided for @stakeNoEarners.
   ///
   /// In en, this message translates to:
-  /// **'No earners yet'**
+  /// **'No witnesses yet'**
   String get stakeNoEarners;
 
   /// No description provided for @stakeNoEarnersSubtitle.
@@ -3503,8 +3503,86 @@ abstract class AppLocalizations {
   /// No description provided for @stakeLoadFailed.
   ///
   /// In en, this message translates to:
-  /// **'Couldn\'t load earners'**
+  /// **'Couldn\'t load witnesses'**
   String get stakeLoadFailed;
+
+  /// First page of the stake onboarding sheet — what witnesses are.
+  ///
+  /// In en, this message translates to:
+  /// **'Witnesses keep the network running'**
+  String get onboardingStakeP1Title;
+
+  /// No description provided for @onboardingStakeP1Body.
+  ///
+  /// In en, this message translates to:
+  /// **'Witnesses check every payment and keep everyone honest. Think of them as the network\'s on-duty crew.'**
+  String get onboardingStakeP1Body;
+
+  /// No description provided for @onboardingStakeP2Title.
+  ///
+  /// In en, this message translates to:
+  /// **'Back one and share the reward'**
+  String get onboardingStakeP2Title;
+
+  /// No description provided for @onboardingStakeP2Body.
+  ///
+  /// In en, this message translates to:
+  /// **'Put some DNAC behind a witness. When they do their shift, you get a share of what they earn.'**
+  String get onboardingStakeP2Body;
+
+  /// No description provided for @onboardingStakeP3Title.
+  ///
+  /// In en, this message translates to:
+  /// **'You can pull your DNAC back anytime'**
+  String get onboardingStakeP3Title;
+
+  /// No description provided for @onboardingStakeP3Body.
+  ///
+  /// In en, this message translates to:
+  /// **'There\'s a short cool-down (about 10 minutes), then your DNAC comes right back to your wallet. You never give it away.'**
+  String get onboardingStakeP3Body;
+
+  /// No description provided for @onboardingStakeNext.
+  ///
+  /// In en, this message translates to:
+  /// **'Next'**
+  String get onboardingStakeNext;
+
+  /// Final button on the stake onboarding sheet — dismisses and persists the shown flag.
+  ///
+  /// In en, this message translates to:
+  /// **'Got it'**
+  String get onboardingStakeGotIt;
+
+  /// Hero header at the top of the stake dashboard when the user has active delegations.
+  ///
+  /// In en, this message translates to:
+  /// **'You are supporting'**
+  String get heroYouSupport;
+
+  /// No description provided for @heroSupportedAmount.
+  ///
+  /// In en, this message translates to:
+  /// **'{amount} DNAC'**
+  String heroSupportedAmount(String amount);
+
+  /// No description provided for @heroInWitnesses.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{in 1 witness} other{across {count} witnesses}}'**
+  String heroInWitnesses(int count);
+
+  /// No description provided for @heroEstimatedMonthly.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated earnings: ~{amount} DNAC / month'**
+  String heroEstimatedMonthly(String amount);
+
+  /// Small print under the estimated monthly earnings — warns that the number is a forward-looking projection, not a guarantee.
+  ///
+  /// In en, this message translates to:
+  /// **'Approximate — actual rewards depend on block production.'**
+  String get heroEstimatedDisclaimer;
 
   /// Header for the section listing the user's own active delegations at the top of the stake dashboard.
   ///
@@ -3515,7 +3593,7 @@ abstract class AppLocalizations {
   /// Empty state shown inside Your supports card when the user has no active delegations.
   ///
   /// In en, this message translates to:
-  /// **'You are not supporting any earners yet.'**
+  /// **'You are not supporting any witnesses yet.'**
   String get stakeNoSupports;
 
   /// Subtitle under each Your supports row showing the block height at which the delegation was made.
@@ -3527,7 +3605,7 @@ abstract class AppLocalizations {
   /// Toast shown when tapping a Your supports row whose validator record is not yet in the list.
   ///
   /// In en, this message translates to:
-  /// **'Earner info not available yet — pull to refresh.'**
+  /// **'Witness info not available yet — pull to refresh.'**
   String get stakeValidatorUnavailable;
 
   /// Line shown on DelegationScreen when the user already supports this earner — displays the currently staked amount.
@@ -3539,13 +3617,13 @@ abstract class AppLocalizations {
   /// No description provided for @delegationTitle.
   ///
   /// In en, this message translates to:
-  /// **'Support earner {id}'**
+  /// **'Support witness {id}'**
   String delegationTitle(String id);
 
   /// No description provided for @delegationEarnerLabel.
   ///
   /// In en, this message translates to:
-  /// **'Earner {id}'**
+  /// **'Witness {id}'**
   String delegationEarnerLabel(String id);
 
   /// No description provided for @delegationAmountLabel.
@@ -3581,19 +3659,19 @@ abstract class AppLocalizations {
   /// No description provided for @delegationHoldInfo.
   ///
   /// In en, this message translates to:
-  /// **'About a 10 minute hold before you can stop supporting this earner again.'**
+  /// **'About a 10 minute hold before you can stop supporting this witness again.'**
   String get delegationHoldInfo;
 
   /// No description provided for @delegationRewardInfo.
   ///
   /// In en, this message translates to:
-  /// **'You\'ll share in the earner\'s rewards every block.'**
+  /// **'You\'ll share in the witness\'s rewards every block.'**
   String get delegationRewardInfo;
 
   /// No description provided for @delegationSupportButton.
   ///
   /// In en, this message translates to:
-  /// **'Support this earner'**
+  /// **'Support this witness'**
   String get delegationSupportButton;
 
   /// No description provided for @delegationStopButton.
@@ -3611,7 +3689,7 @@ abstract class AppLocalizations {
   /// No description provided for @delegationSupportSuccess.
   ///
   /// In en, this message translates to:
-  /// **'You\'re now supporting this earner.'**
+  /// **'You\'re now supporting this witness.'**
   String get delegationSupportSuccess;
 
   /// No description provided for @delegationSupportFailed.
@@ -3623,7 +3701,7 @@ abstract class AppLocalizations {
   /// No description provided for @delegationStopSuccess.
   ///
   /// In en, this message translates to:
-  /// **'Stopped supporting this earner.'**
+  /// **'Stopped supporting this witness.'**
   String get delegationStopSuccess;
 
   /// No description provided for @delegationStopFailed.
@@ -3635,7 +3713,7 @@ abstract class AppLocalizations {
   /// No description provided for @delegationStopDialogTitle.
   ///
   /// In en, this message translates to:
-  /// **'Stop supporting earner {id}'**
+  /// **'Stop supporting witness {id}'**
   String delegationStopDialogTitle(String id);
 
   /// No description provided for @delegationStopDialogBody.
@@ -3644,22 +3722,22 @@ abstract class AppLocalizations {
   /// **'How much would you like to pull back? You\'ll get it back after a short hold.'**
   String get delegationStopDialogBody;
 
-  /// Operator panel for a user who is a validator (earner). Controls for commission + unstake.
+  /// Operator panel for a user who is a witness (validator). Controls for commission + unstake.
   ///
   /// In en, this message translates to:
-  /// **'Earner settings'**
+  /// **'Witness settings'**
   String get validatorPanelTitle;
 
   /// No description provided for @validatorPanelNotValidator.
   ///
   /// In en, this message translates to:
-  /// **'You\'re not running an earner right now. Start one from the DNAC command line.'**
+  /// **'You\'re not running a witness right now. Start one from the DNAC command line.'**
   String get validatorPanelNotValidator;
 
   /// No description provided for @validatorStatusLabel.
   ///
   /// In en, this message translates to:
-  /// **'Earner {id}'**
+  /// **'Witness {id}'**
   String validatorStatusLabel(String id);
 
   /// No description provided for @validatorFieldSelfStake.
@@ -3731,25 +3809,25 @@ abstract class AppLocalizations {
   /// No description provided for @validatorUnstakeSection.
   ///
   /// In en, this message translates to:
-  /// **'Shut down earner'**
+  /// **'Shut down witness'**
   String get validatorUnstakeSection;
 
   /// No description provided for @validatorUnstakeWarning.
   ///
   /// In en, this message translates to:
-  /// **'This will stop your earner and start the cool-down. Your supporters will be notified and their stake will unwind.'**
+  /// **'This will stop your witness and start the cool-down. Your supporters will be notified and their stake will unwind.'**
   String get validatorUnstakeWarning;
 
   /// No description provided for @validatorUnstakeButton.
   ///
   /// In en, this message translates to:
-  /// **'Shut down earner'**
+  /// **'Shut down witness'**
   String get validatorUnstakeButton;
 
   /// No description provided for @validatorUnstakeConfirmTitle.
   ///
   /// In en, this message translates to:
-  /// **'Shut down this earner?'**
+  /// **'Shut down this witness?'**
   String get validatorUnstakeConfirmTitle;
 
   /// No description provided for @validatorUnstakeConfirmBody.
@@ -3767,7 +3845,7 @@ abstract class AppLocalizations {
   /// No description provided for @validatorUnstakeSuccess.
   ///
   /// In en, this message translates to:
-  /// **'Earner shutting down.'**
+  /// **'Witness shutting down.'**
   String get validatorUnstakeSuccess;
 
   /// No description provided for @validatorUnstakeFailed.

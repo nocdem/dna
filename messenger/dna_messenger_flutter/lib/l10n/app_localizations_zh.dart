@@ -1777,28 +1777,28 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get stakeDashboardTitle => 'Earners';
+  String get stakeDashboardTitle => 'Witnesses';
 
   @override
   String get stakeRefresh => 'Refresh';
 
   @override
-  String get stakeEarnersHeader => 'People earning together';
+  String get stakeEarnersHeader => 'Witnesses';
 
   @override
   String stakeEarnersSubtitle(int count) {
     String _temp0 = intl.Intl.pluralLogic(
       count,
       locale: localeName,
-      other: '$count active earners',
-      one: '1 active earner',
+      other: '$count active witnesses',
+      one: '1 active witness',
     );
     return '$_temp0';
   }
 
   @override
   String stakeEarnerName(String id) {
-    return 'Earner $id';
+    return 'Witness $id';
   }
 
   @override
@@ -1808,27 +1808,82 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String stakeEarnerTotalLocked(String amount) {
-    return '$amount DNAC locked in support';
+    return '$amount DNAC backing this witness';
   }
 
   @override
-  String get stakeTrustedBadge => 'Trusted';
+  String get stakeTrustedBadge => 'On duty today';
 
   @override
-  String get stakeNoEarners => 'No earners yet';
+  String get stakeNoEarners => 'No witnesses yet';
 
   @override
   String get stakeNoEarnersSubtitle =>
       'Come back in a few minutes — the network is getting started.';
 
   @override
-  String get stakeLoadFailed => 'Couldn\'t load earners';
+  String get stakeLoadFailed => 'Couldn\'t load witnesses';
+
+  @override
+  String get onboardingStakeP1Title => 'Witnesses keep the network running';
+
+  @override
+  String get onboardingStakeP1Body =>
+      'Witnesses check every payment and keep everyone honest. Think of them as the network\'s on-duty crew.';
+
+  @override
+  String get onboardingStakeP2Title => 'Back one and share the reward';
+
+  @override
+  String get onboardingStakeP2Body =>
+      'Put some DNAC behind a witness. When they do their shift, you get a share of what they earn.';
+
+  @override
+  String get onboardingStakeP3Title => 'You can pull your DNAC back anytime';
+
+  @override
+  String get onboardingStakeP3Body =>
+      'There\'s a short cool-down (about 10 minutes), then your DNAC comes right back to your wallet. You never give it away.';
+
+  @override
+  String get onboardingStakeNext => 'Next';
+
+  @override
+  String get onboardingStakeGotIt => 'Got it';
+
+  @override
+  String get heroYouSupport => 'You are supporting';
+
+  @override
+  String heroSupportedAmount(String amount) {
+    return '$amount DNAC';
+  }
+
+  @override
+  String heroInWitnesses(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'across $count witnesses',
+      one: 'in 1 witness',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String heroEstimatedMonthly(String amount) {
+    return 'Estimated earnings: ~$amount DNAC / month';
+  }
+
+  @override
+  String get heroEstimatedDisclaimer =>
+      'Approximate — actual rewards depend on block production.';
 
   @override
   String get stakeYourSupportsHeader => 'Your supports';
 
   @override
-  String get stakeNoSupports => 'You are not supporting any earners yet.';
+  String get stakeNoSupports => 'You are not supporting any witnesses yet.';
 
   @override
   String stakeYourSupportSinceBlock(int block) {
@@ -1837,7 +1892,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get stakeValidatorUnavailable =>
-      'Earner info not available yet — pull to refresh.';
+      'Witness info not available yet — pull to refresh.';
 
   @override
   String delegationYourAmount(String amount) {
@@ -1846,12 +1901,12 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String delegationTitle(String id) {
-    return 'Support earner $id';
+    return 'Support witness $id';
   }
 
   @override
   String delegationEarnerLabel(String id) {
-    return 'Earner $id';
+    return 'Witness $id';
   }
 
   @override
@@ -1871,14 +1926,14 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get delegationHoldInfo =>
-      'About a 10 minute hold before you can stop supporting this earner again.';
+      'About a 10 minute hold before you can stop supporting this witness again.';
 
   @override
   String get delegationRewardInfo =>
-      'You\'ll share in the earner\'s rewards every block.';
+      'You\'ll share in the witness\'s rewards every block.';
 
   @override
-  String get delegationSupportButton => 'Support this earner';
+  String get delegationSupportButton => 'Support this witness';
 
   @override
   String get delegationStopButton => 'Stop supporting';
@@ -1887,21 +1942,21 @@ class AppLocalizationsZh extends AppLocalizations {
   String get delegationSubmitting => 'Working...';
 
   @override
-  String get delegationSupportSuccess => 'You\'re now supporting this earner.';
+  String get delegationSupportSuccess => 'You\'re now supporting this witness.';
 
   @override
   String get delegationSupportFailed =>
       'Couldn\'t complete — please try again.';
 
   @override
-  String get delegationStopSuccess => 'Stopped supporting this earner.';
+  String get delegationStopSuccess => 'Stopped supporting this witness.';
 
   @override
   String get delegationStopFailed => 'Couldn\'t stop — please try again.';
 
   @override
   String delegationStopDialogTitle(String id) {
-    return 'Stop supporting earner $id';
+    return 'Stop supporting witness $id';
   }
 
   @override
@@ -1909,15 +1964,15 @@ class AppLocalizationsZh extends AppLocalizations {
       'How much would you like to pull back? You\'ll get it back after a short hold.';
 
   @override
-  String get validatorPanelTitle => 'Earner settings';
+  String get validatorPanelTitle => 'Witness settings';
 
   @override
   String get validatorPanelNotValidator =>
-      'You\'re not running an earner right now. Start one from the DNAC command line.';
+      'You\'re not running a witness right now. Start one from the DNAC command line.';
 
   @override
   String validatorStatusLabel(String id) {
-    return 'Earner $id';
+    return 'Witness $id';
   }
 
   @override
@@ -1956,17 +2011,17 @@ class AppLocalizationsZh extends AppLocalizations {
       'Couldn\'t update the fee — please try again.';
 
   @override
-  String get validatorUnstakeSection => 'Shut down earner';
+  String get validatorUnstakeSection => 'Shut down witness';
 
   @override
   String get validatorUnstakeWarning =>
-      'This will stop your earner and start the cool-down. Your supporters will be notified and their stake will unwind.';
+      'This will stop your witness and start the cool-down. Your supporters will be notified and their stake will unwind.';
 
   @override
-  String get validatorUnstakeButton => 'Shut down earner';
+  String get validatorUnstakeButton => 'Shut down witness';
 
   @override
-  String get validatorUnstakeConfirmTitle => 'Shut down this earner?';
+  String get validatorUnstakeConfirmTitle => 'Shut down this witness?';
 
   @override
   String get validatorUnstakeConfirmBody =>
@@ -1976,7 +2031,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get validatorUnstakeConfirmAction => 'Yes, shut down';
 
   @override
-  String get validatorUnstakeSuccess => 'Earner shutting down.';
+  String get validatorUnstakeSuccess => 'Witness shutting down.';
 
   @override
   String get validatorUnstakeFailed =>

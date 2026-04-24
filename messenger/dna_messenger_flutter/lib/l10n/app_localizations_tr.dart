@@ -1811,28 +1811,28 @@ class AppLocalizationsTr extends AppLocalizations {
   }
 
   @override
-  String get stakeDashboardTitle => 'Kazananlar';
+  String get stakeDashboardTitle => 'Tanıklar';
 
   @override
   String get stakeRefresh => 'Yenile';
 
   @override
-  String get stakeEarnersHeader => 'Birlikte kazananlar';
+  String get stakeEarnersHeader => 'Tanıklar';
 
   @override
   String stakeEarnersSubtitle(int count) {
     String _temp0 = intl.Intl.pluralLogic(
       count,
       locale: localeName,
-      other: '$count aktif kazanan',
-      one: '1 aktif kazanan',
+      other: '$count aktif tanık',
+      one: '1 aktif tanık',
     );
     return '$_temp0';
   }
 
   @override
   String stakeEarnerName(String id) {
-    return 'Kazanan $id';
+    return 'Tanık $id';
   }
 
   @override
@@ -1842,27 +1842,82 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String stakeEarnerTotalLocked(String amount) {
-    return 'Destek olarak $amount DNAC bağlı';
+    return '$amount DNAC bu tanığın arkasında';
   }
 
   @override
-  String get stakeTrustedBadge => 'Güvenilir';
+  String get stakeTrustedBadge => 'Bugün nöbette';
 
   @override
-  String get stakeNoEarners => 'Henüz kazanan yok';
+  String get stakeNoEarners => 'Henüz tanık yok';
 
   @override
   String get stakeNoEarnersSubtitle =>
       'Birkaç dakika sonra tekrar bakın — ağ henüz başlıyor.';
 
   @override
-  String get stakeLoadFailed => 'Kazananlar yüklenemedi';
+  String get stakeLoadFailed => 'Tanıklar yüklenemedi';
+
+  @override
+  String get onboardingStakeP1Title => 'Tanıklar ağı çalışır tutar';
+
+  @override
+  String get onboardingStakeP1Body =>
+      'Tanıklar her ödemeyi kontrol eder ve kimsenin hile yapmamasını sağlar. Ağın nöbetçi ekibi gibi düşün.';
+
+  @override
+  String get onboardingStakeP2Title => 'Birine destek ol, payından al';
+
+  @override
+  String get onboardingStakeP2Body =>
+      'DNAC\'ini bir tanığın arkasına koy. O nöbetini tutunca, kazandığından payına düşeni alırsın.';
+
+  @override
+  String get onboardingStakeP3Title => 'İstediğin zaman geri çekersin';
+
+  @override
+  String get onboardingStakeP3Body =>
+      'Kısa bir bekleme süresi var (yaklaşık 10 dakika), sonra DNAC\'in cüzdanına geri döner. Asla vermiş olmuyorsun.';
+
+  @override
+  String get onboardingStakeNext => 'İleri';
+
+  @override
+  String get onboardingStakeGotIt => 'Anladım';
+
+  @override
+  String get heroYouSupport => 'Desteklediğin';
+
+  @override
+  String heroSupportedAmount(String amount) {
+    return '$amount DNAC';
+  }
+
+  @override
+  String heroInWitnesses(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count tanıkta',
+      one: '1 tanıkta',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String heroEstimatedMonthly(String amount) {
+    return 'Yaklaşık kazanç: ~$amount DNAC / ay';
+  }
+
+  @override
+  String get heroEstimatedDisclaimer =>
+      'Yaklaşık — gerçek ödüller blok üretimine bağlı.';
 
   @override
   String get stakeYourSupportsHeader => 'Desteklediklerin';
 
   @override
-  String get stakeNoSupports => 'Henüz hiçbir kazananı desteklemiyorsun.';
+  String get stakeNoSupports => 'Henüz hiçbir tanığı desteklemiyorsun.';
 
   @override
   String stakeYourSupportSinceBlock(int block) {
@@ -1871,7 +1926,7 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get stakeValidatorUnavailable =>
-      'Kazanan bilgisi henüz yok — yenilemek için çek.';
+      'Tanık bilgisi henüz yok — yenilemek için çek.';
 
   @override
   String delegationYourAmount(String amount) {
@@ -1880,12 +1935,12 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String delegationTitle(String id) {
-    return '$id kazananına destek ol';
+    return '$id tanığına destek ol';
   }
 
   @override
   String delegationEarnerLabel(String id) {
-    return 'Kazanan $id';
+    return 'Tanık $id';
   }
 
   @override
@@ -1909,10 +1964,10 @@ class AppLocalizationsTr extends AppLocalizations {
 
   @override
   String get delegationRewardInfo =>
-      'Her blokta kazananın ödüllerinden pay alırsınız.';
+      'Her blokta tanığın ödüllerinden pay alırsınız.';
 
   @override
-  String get delegationSupportButton => 'Bu kazanana destek ol';
+  String get delegationSupportButton => 'Bu tanığa destek ol';
 
   @override
   String get delegationStopButton => 'Desteği bırak';
@@ -1921,21 +1976,21 @@ class AppLocalizationsTr extends AppLocalizations {
   String get delegationSubmitting => 'İşleniyor...';
 
   @override
-  String get delegationSupportSuccess => 'Bu kazanana destek oluyorsunuz.';
+  String get delegationSupportSuccess => 'Bu tanığa destek oluyorsunuz.';
 
   @override
   String get delegationSupportFailed =>
       'İşlem tamamlanamadı — lütfen tekrar deneyin.';
 
   @override
-  String get delegationStopSuccess => 'Bu kazananın desteği bırakıldı.';
+  String get delegationStopSuccess => 'Bu tanığın desteği bırakıldı.';
 
   @override
   String get delegationStopFailed => 'Durdurulamadı — lütfen tekrar deneyin.';
 
   @override
   String delegationStopDialogTitle(String id) {
-    return '$id kazananının desteğini bırak';
+    return '$id tanığının desteğini bırak';
   }
 
   @override
@@ -1943,15 +1998,15 @@ class AppLocalizationsTr extends AppLocalizations {
       'Ne kadarını geri çekmek istersiniz? Kısa bir bekleme süresinden sonra iade edilir.';
 
   @override
-  String get validatorPanelTitle => 'Kazanan ayarları';
+  String get validatorPanelTitle => 'Tanık ayarları';
 
   @override
   String get validatorPanelNotValidator =>
-      'Şu anda bir kazanan çalıştırmıyorsunuz. DNAC komut satırından başlatabilirsiniz.';
+      'Şu anda bir tanık çalıştırmıyorsunuz. DNAC komut satırından başlatabilirsiniz.';
 
   @override
   String validatorStatusLabel(String id) {
-    return 'Kazanan $id';
+    return 'Tanık $id';
   }
 
   @override
@@ -1991,17 +2046,17 @@ class AppLocalizationsTr extends AppLocalizations {
       'Pay güncellenemedi — lütfen tekrar deneyin.';
 
   @override
-  String get validatorUnstakeSection => 'Kazananı kapat';
+  String get validatorUnstakeSection => 'Tanığı kapat';
 
   @override
   String get validatorUnstakeWarning =>
-      'Bu, kazananınızı durdurur ve bekleme süresini başlatır. Destekçilere haber verilir ve bağlı tutarları iade edilir.';
+      'Bu, tanığınızı durdurur ve bekleme süresini başlatır. Destekçilere haber verilir ve bağlı tutarları iade edilir.';
 
   @override
-  String get validatorUnstakeButton => 'Kazananı kapat';
+  String get validatorUnstakeButton => 'Tanığı kapat';
 
   @override
-  String get validatorUnstakeConfirmTitle => 'Bu kazanan kapatılsın mı?';
+  String get validatorUnstakeConfirmTitle => 'Bu tanık kapatılsın mı?';
 
   @override
   String get validatorUnstakeConfirmBody =>
@@ -2011,7 +2066,7 @@ class AppLocalizationsTr extends AppLocalizations {
   String get validatorUnstakeConfirmAction => 'Evet, kapat';
 
   @override
-  String get validatorUnstakeSuccess => 'Kazanan kapanıyor.';
+  String get validatorUnstakeSuccess => 'Tanık kapanıyor.';
 
   @override
   String get validatorUnstakeFailed => 'Kapatılamadı — lütfen tekrar deneyin.';

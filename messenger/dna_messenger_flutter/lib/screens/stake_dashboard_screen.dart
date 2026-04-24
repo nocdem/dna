@@ -6,17 +6,41 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../ffi/dnac_bindings.dart';
 import '../l10n/app_localizations.dart';
 import '../providers/engine_provider.dart';
 import '../providers/stake_provider.dart';
 import 'delegation_screen.dart';
+import 'stake_onboarding_sheet.dart';
 
-class StakeDashboardScreen extends ConsumerWidget {
+class StakeDashboardScreen extends ConsumerStatefulWidget {
   const StakeDashboardScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<StakeDashboardScreen> createState() =>
+      _StakeDashboardScreenState();
+}
+
+class _StakeDashboardScreenState extends ConsumerState<StakeDashboardScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Onboarding sheet on first-ever visit. Check the sp flag after the
+    // first frame so the scaffold is on screen under the modal — otherwise
+    // the sheet sometimes races the TabBar animation and looks janky.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final prefs = await SharedPreferences.getInstance();
+      final shown = prefs.getBool(kStakeOnboardingShownKey) ?? false;
+      if (!shown && mounted) {
+        StakeOnboardingSheet.show(context);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     final earnersAsync = ref.watch(validatorListProvider);
     final committeeAsync = ref.watch(committeeProvider);
@@ -43,12 +67,19 @@ class StakeDashboardScreen extends ConsumerWidget {
           if (active.isEmpty) {
             return _EmptyState(l10n: l10n);
           }
-          // Sort by total stake descending so biggest earners are on top.
-          active.sort((a, b) => b.totalStakeRaw.compareTo(a.totalStakeRaw));
-
           final committee = committeeAsync.valueOrNull ?? const [];
           final committeeIds =
               committee.map((v) => v.shortId).toSet();
+
+          // Sort: on-duty (committee members) first, then by total stake
+          // desc within each group. Gives users the "most trusted now"
+          // signal at the top instead of just biggest-stake.
+          active.sort((a, b) {
+            final aOn = committeeIds.contains(a.shortId);
+            final bOn = committeeIds.contains(b.shortId);
+            if (aOn != bOn) return aOn ? -1 : 1;
+            return b.totalStakeRaw.compareTo(a.totalStakeRaw);
+          });
 
           return RefreshIndicator(
             onRefresh: () async {
@@ -56,15 +87,18 @@ class StakeDashboardScreen extends ConsumerWidget {
               await ref.read(committeeProvider.notifier).refresh();
             },
             child: ListView.builder(
-              itemCount: active.length + 2,
+              itemCount: active.length + 3,
               itemBuilder: (context, index) {
                 if (index == 0) {
-                  return _YourSupportsSection(l10n: l10n);
+                  return _SupportsHeroCard(l10n: l10n);
                 }
                 if (index == 1) {
+                  return _YourSupportsSection(l10n: l10n);
+                }
+                if (index == 2) {
                   return _StakeHeader(l10n: l10n, total: active.length);
                 }
-                final earner = active[index - 2];
+                final earner = active[index - 3];
                 final onCommittee = committeeIds.contains(earner.shortId);
                 return _EarnerTile(
                   earner: earner,
@@ -278,6 +312,134 @@ class _ErrorState extends StatelessWidget {
             label: Text(l10n.stakeRefresh),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _SupportsHeroCard extends ConsumerWidget {
+  const _SupportsHeroCard({required this.l10n});
+  final AppLocalizations l10n;
+
+  // Projection constants — documented in dnac/CLAUDE.md inflation design:
+  //   - 5s block interval  (CLAUDE.md "Block Production" table)
+  //   - 16 DNAC initial block reward (memory: 16→1 halving)
+  // 518,400 = 30 * 24 * 3600 / 5 blocks per 30-day month.
+  static const int _rawPerDnac = 100000000;
+  static const int _blocksPerMonth = 518400;
+  static const int _blockRewardRaw = 16 * _rawPerDnac;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final delegations =
+        ref.watch(myDelegationsProvider).valueOrNull ?? const <DnacDelegation>[];
+    if (delegations.isEmpty) {
+      // No delegations → hero tells you nothing. Hide completely; the
+      // _YourSupportsSection empty-state covers the onboarding hint.
+      return const SizedBox.shrink();
+    }
+
+    final totalSupportRaw = delegations.fold<int>(0, (s, d) => s + d.amountRaw);
+    final totalSupportDnac = totalSupportRaw / _rawPerDnac;
+
+    // Projected monthly — Σ(my_share × (1-commission) × block_reward × blocks/mo)
+    // Requires validator list (for commission) + committee total stake. If
+    // either provider isn't ready we fall back to the simpler hero card
+    // without the estimate line.
+    final validators =
+        ref.watch(validatorListProvider).valueOrNull ?? const <DnacValidator>[];
+    final committee =
+        ref.watch(committeeProvider).valueOrNull ?? const <DnacValidator>[];
+    final engine = ref.watch(engineProvider).valueOrNull;
+
+    double estimatedMonthlyDnac = 0.0;
+    bool estimateReady = false;
+    final committeeTotalStakeRaw =
+        committee.fold<int>(0, (s, v) => s + v.totalStakeRaw);
+
+    if (engine != null && validators.isNotEmpty && committeeTotalStakeRaw > 0) {
+      double totalEstimatedRaw = 0.0;
+      for (final d in delegations) {
+        // Find this delegation's validator record to read its commission.
+        double commissionFrac = 0.05;  // reasonable default if not found
+        for (final v in validators) {
+          try {
+            if (engine.pubkeyToFingerprint(v.pubkey) == d.validatorFp) {
+              commissionFrac = v.commissionBps / 10000.0;
+              break;
+            }
+          } catch (_) {
+            continue;
+          }
+        }
+        // my_share_of_rewards = amount / committee_total_stake
+        // monthly_reward_my_share = my_share × block_reward × blocks/mo
+        // my_take = monthly × (1 - commission)
+        totalEstimatedRaw += d.amountRaw.toDouble() *
+            (1 - commissionFrac) *
+            _blockRewardRaw *
+            _blocksPerMonth /
+            committeeTotalStakeRaw;
+      }
+      estimatedMonthlyDnac = totalEstimatedRaw / _rawPerDnac;
+      estimateReady = true;
+    }
+
+    final theme = Theme.of(context);
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                FaIcon(FontAwesomeIcons.handHoldingHeart,
+                    size: 18, color: theme.colorScheme.primary),
+                const SizedBox(width: 10),
+                Text(l10n.heroYouSupport,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    )),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              l10n.heroSupportedAmount(totalSupportDnac.toStringAsFixed(2)),
+              style: theme.textTheme.displaySmall?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: theme.colorScheme.primary,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              l10n.heroInWitnesses(delegations.length),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurface.withAlpha(180),
+              ),
+            ),
+            if (estimateReady) ...[
+              const SizedBox(height: 14),
+              Text(
+                l10n.heroEstimatedMonthly(
+                    estimatedMonthlyDnac.toStringAsFixed(2)),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                l10n.heroEstimatedDisclaimer,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontSize: 11,
+                  color: theme.colorScheme.onSurface.withAlpha(140),
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
