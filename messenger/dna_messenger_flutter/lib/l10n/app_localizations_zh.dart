@@ -1825,6 +1825,26 @@ class AppLocalizationsZh extends AppLocalizations {
   String get stakeLoadFailed => 'Couldn\'t load earners';
 
   @override
+  String get stakeYourSupportsHeader => 'Your supports';
+
+  @override
+  String get stakeNoSupports => 'You are not supporting any earners yet.';
+
+  @override
+  String stakeYourSupportSinceBlock(int block) {
+    return 'Supporting since block $block';
+  }
+
+  @override
+  String get stakeValidatorUnavailable =>
+      'Earner info not available yet — pull to refresh.';
+
+  @override
+  String delegationYourAmount(String amount) {
+    return 'Your delegation: $amount DNAC';
+  }
+
+  @override
   String delegationTitle(String id) {
     return 'Support earner $id';
   }

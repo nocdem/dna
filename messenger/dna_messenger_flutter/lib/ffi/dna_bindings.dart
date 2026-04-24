@@ -3743,6 +3743,21 @@ class DnaBindings {
     return _dna_engine_get_signing_public_key(engine, pubkeyOut, pubkeyOutLen);
   }
 
+  late final _dna_engine_pubkey_to_fingerprint = _lib.lookupFunction<
+      Int32 Function(Pointer<Uint8>, Size, Pointer<Utf8>, Size),
+      int Function(Pointer<Uint8>, int, Pointer<Utf8>, int)>(
+      'dna_engine_pubkey_to_fingerprint');
+
+  int dna_engine_pubkey_to_fingerprint(
+    Pointer<Uint8> pubkey,
+    int pubkeyLen,
+    Pointer<Utf8> outHex,
+    int outHexSize,
+  ) {
+    return _dna_engine_pubkey_to_fingerprint(pubkey, pubkeyLen, outHex,
+        outHexSize);
+  }
+
   // Feed v2 API removed - replaced by Channels system
   // (dna_engine_feed_* function lookups and dna_free_feed_* all removed)
 
@@ -4770,6 +4785,30 @@ class DnaBindings {
       Pointer<dna_dnac_validator_entry_t> entries, int count) {
     _dna_engine_dnac_free_validator_entries(entries, count);
   }
+
+  late final _dna_engine_dnac_get_delegations = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaDnacDelegationsCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaDnacDelegationsCb>,
+          Pointer<Void>)>('dna_engine_dnac_get_delegations');
+
+  int dna_engine_dnac_get_delegations(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaDnacDelegationsCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_dnac_get_delegations(engine, callback, user_data);
+  }
+
+  late final _dna_engine_dnac_free_delegations = _lib.lookupFunction<
+      Void Function(Pointer<dna_dnac_delegation_t>, Int32),
+      void Function(Pointer<dna_dnac_delegation_t>,
+          int)>('dna_engine_dnac_free_delegations');
+
+  void dna_engine_dnac_free_delegations(
+      Pointer<dna_dnac_delegation_t> entries, int count) {
+    _dna_engine_dnac_free_delegations(entries, count);
+  }
 }
 
 // =============================================================================
@@ -4956,6 +4995,35 @@ typedef DnaDnacValidatorListCbNative = Void Function(
   Pointer<Void> user_data,
 );
 typedef DnaDnacValidatorListCb = NativeFunction<DnaDnacValidatorListCbNative>;
+
+/// Active delegation entry — mirrors dna_dnac_delegation_t in
+/// messenger/include/dna/dna_engine.h. Layout:
+///   validator_fp[129] + pad(7) + amount_raw(8) + delegated_at_block(8)
+/// = 152 bytes (129 + 7 tail pad + 16).
+final class dna_dnac_delegation_t extends Struct {
+  @Array(129)
+  external Array<Char> validator_fp;
+
+  // 7 bytes padding to align uint64_t to 8-byte boundary
+  @Array(7)
+  external Array<Uint8> _padding1;
+
+  @Uint64()
+  external int amount_raw;
+
+  @Uint64()
+  external int delegated_at_block;
+}
+
+/// My-delegations callback — native
+typedef DnaDnacDelegationsCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_dnac_delegation_t> entries,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaDnacDelegationsCb = NativeFunction<DnaDnacDelegationsCbNative>;
 
 // =============================================================================
 // HELPER EXTENSIONS

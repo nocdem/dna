@@ -567,6 +567,13 @@
   "stakeNoEarnersSubtitle": "Birkaç dakika sonra tekrar bakın — ağ henüz başlıyor.",
   "stakeLoadFailed": "Kazananlar yüklenemedi",
 
+  "stakeYourSupportsHeader": "Desteklediklerin",
+  "stakeNoSupports": "Henüz hiçbir kazananı desteklemiyorsun.",
+  "stakeYourSupportSinceBlock": "Blok {block} tan beri destekliyorsun",
+  "stakeValidatorUnavailable": "Kazanan bilgisi henüz yok — yenilemek için çek.",
+
+  "delegationYourAmount": "Desteğin: {amount} DNAC",
+
   "delegationTitle": "{id} kazananına destek ol",
   "delegationEarnerLabel": "Kazanan {id}",
   "delegationAmountLabel": "Tutar",

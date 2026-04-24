@@ -965,6 +965,30 @@
   "stakeNoEarnersSubtitle": "Come back in a few minutes — the network is getting started.",
   "stakeLoadFailed": "Couldn't load earners",
 
+  "stakeYourSupportsHeader": "Your supports",
+  "@stakeYourSupportsHeader": {
+    "description": "Header for the section listing the user's own active delegations at the top of the stake dashboard."
+  },
+  "stakeNoSupports": "You are not supporting any earners yet.",
+  "@stakeNoSupports": {
+    "description": "Empty state shown inside Your supports card when the user has no active delegations."
+  },
+  "stakeYourSupportSinceBlock": "Supporting since block {block}",
+  "@stakeYourSupportSinceBlock": {
+    "placeholders": { "block": { "type": "int" } },
+    "description": "Subtitle under each Your supports row showing the block height at which the delegation was made."
+  },
+  "stakeValidatorUnavailable": "Earner info not available yet — pull to refresh.",
+  "@stakeValidatorUnavailable": {
+    "description": "Toast shown when tapping a Your supports row whose validator record is not yet in the list."
+  },
+
+  "delegationYourAmount": "Your delegation: {amount} DNAC",
+  "@delegationYourAmount": {
+    "placeholders": { "amount": { "type": "String" } },
+    "description": "Line shown on DelegationScreen when the user already supports this earner — displays the currently staked amount."
+  },
+
   "delegationTitle": "Support earner {id}",
   "@delegationTitle": {
     "placeholders": { "id": { "type": "String" } }

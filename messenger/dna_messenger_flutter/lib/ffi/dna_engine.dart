@@ -5816,6 +5816,34 @@ class DnaEngine {
     }
   }
 
+  /// Compute the canonical 128-char lowercase-hex fingerprint of a
+  /// Dilithium5 pubkey via the C FFI helper (= SHA3-512(pubkey)).
+  ///
+  /// Synchronous — the underlying C function is pure (no engine state).
+  /// Throws [ArgumentError] if the pubkey is not exactly 2592 bytes.
+  String pubkeyToFingerprint(Uint8List pubkey) {
+    if (pubkey.length != 2592) {
+      throw ArgumentError(
+          'Dilithium5 pubkey must be 2592 bytes, got ${pubkey.length}');
+    }
+    final pkPtr = calloc<Uint8>(pubkey.length);
+    final outPtr = calloc<Uint8>(129).cast<Utf8>();
+    try {
+      for (var i = 0; i < pubkey.length; i++) {
+        pkPtr[i] = pubkey[i];
+      }
+      final rc = _bindings.dna_engine_pubkey_to_fingerprint(
+          pkPtr, pubkey.length, outPtr, 129);
+      if (rc != 0) {
+        throw DnaEngineException(rc, 'pubkey_to_fingerprint failed');
+      }
+      return outPtr.toDartString();
+    } finally {
+      calloc.free(pkPtr);
+      calloc.free(outPtr);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // GROUP INFO OPERATIONS
   // ---------------------------------------------------------------------------

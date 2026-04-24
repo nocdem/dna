@@ -85,6 +85,40 @@ class CommitteeNotifier extends AsyncNotifier<List<DnacValidator>> {
 }
 
 // =============================================================================
+// MY DELEGATIONS PROVIDER (the caller's own active delegations)
+// =============================================================================
+
+/// Lazy async list of the current identity's active delegations. Refreshes
+/// on identity change and on any delegate/undelegate action (see
+/// StakeActions._invalidateAll). Empty list on witness error so UI can
+/// render degraded-but-usable (rather than surfacing network errors).
+final myDelegationsProvider = AsyncNotifierProvider<
+    MyDelegationsNotifier, List<DnacDelegation>>(MyDelegationsNotifier.new);
+
+class MyDelegationsNotifier extends AsyncNotifier<List<DnacDelegation>> {
+  @override
+  Future<List<DnacDelegation>> build() async {
+    final identityLoaded = ref.watch(identityLoadedProvider);
+    if (!identityLoaded) return <DnacDelegation>[];
+    return _fetch();
+  }
+
+  Future<List<DnacDelegation>> _fetch() async {
+    try {
+      final engine = await ref.read(engineProvider.future);
+      return await engine.dnacGetMyDelegations();
+    } catch (e) {
+      logger.logError('STAKE', 'my delegations fetch failed: $e');
+      return <DnacDelegation>[];
+    }
+  }
+
+  Future<void> refresh() async {
+    state = await AsyncValue.guard(_fetch);
+  }
+}
+
+// =============================================================================
 // MY VALIDATOR PROVIDER (is the current identity a validator?)
 // =============================================================================
 
@@ -195,6 +229,7 @@ class StakeActions {
   Future<void> _invalidateAll() async {
     ref.invalidate(validatorListProvider);
     ref.invalidate(committeeProvider);
+    ref.invalidate(myDelegationsProvider);
   }
 }
 

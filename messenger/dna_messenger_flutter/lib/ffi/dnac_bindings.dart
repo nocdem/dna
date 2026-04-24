@@ -74,6 +74,27 @@ abstract class DnacValidatorStatus {
   static const int unstaked = 2;
 }
 
+/// One of the wallet owner's active delegations (mirror of
+/// dnac_delegation_t in dnac/include/dnac/dnac.h).
+class DnacDelegation {
+  /// 128-char lowercase hex fingerprint of the validator's pubkey.
+  /// Rendered server-side — correlate against a validator's pubkey via
+  /// DnaEngine.pubkeyToFingerprint when cross-referencing.
+  final String validatorFp;
+
+  /// Delegated amount in raw units (1 DNAC = 100_000_000 raw).
+  final int amountRaw;
+
+  /// Block height at which the DELEGATE TX committed.
+  final int delegatedAtBlock;
+
+  const DnacDelegation({
+    required this.validatorFp,
+    required this.amountRaw,
+    required this.delegatedAtBlock,
+  });
+}
+
 /// Extension mixing stake/delegation APIs into the main DnaEngine class.
 /// Each call submits a task to the async engine and awaits the completion /
 /// result callback.
@@ -383,6 +404,66 @@ extension DnacStakeDelegation on DnaEngine {
       if (requestId == 0) {
         throw DnaEngineException(
             -1, 'Failed to submit DNAC committee request');
+      }
+      return await completer.future;
+    } finally {
+      cb.close();
+    }
+  }
+
+  /// Fetch the caller's own active delegations from witnesses. Authenticated
+  /// server-side via C11 (session fp must match SHA3-512(signing_pubkey)),
+  /// so this only ever returns THIS wallet's positions — never another
+  /// user's.
+  ///
+  /// Returns an empty list if the wallet has no active delegations OR the
+  /// witness query fails (graceful degradation for offline/degraded UX).
+  /// Specific error codes are logged but not surfaced to the caller.
+  Future<List<DnacDelegation>> dnacGetMyDelegations() async {
+    final completer = Completer<List<DnacDelegation>>();
+    void onComplete(int requestId, int error,
+        Pointer<dna_dnac_delegation_t> entries, int count,
+        Pointer<Void> userData) {
+      try {
+        if (error != 0) {
+          logger.log('DNAC_STAKE', 'my_delegations error $error');
+          completer.complete(<DnacDelegation>[]);
+          return;
+        }
+        final out = <DnacDelegation>[];
+        for (var i = 0; i < count; i++) {
+          final s = (entries + i).ref;
+          // validator_fp is NUL-terminated 128-hex; pull chars until NUL.
+          final fpBuf = StringBuffer();
+          for (var j = 0; j < 129; j++) {
+            final c = s.validator_fp[j];
+            if (c == 0) break;
+            fpBuf.writeCharCode(c);
+          }
+          out.add(DnacDelegation(
+            validatorFp: fpBuf.toString(),
+            amountRaw: s.amount_raw,
+            delegatedAtBlock: s.delegated_at_block,
+          ));
+        }
+        completer.complete(out);
+      } finally {
+        if (count > 0 && entries != nullptr) {
+          bindings.dna_engine_dnac_free_delegations(entries, count);
+        }
+      }
+    }
+
+    final cb = NativeCallable<DnaDnacDelegationsCbNative>.listener(onComplete);
+    try {
+      final requestId = bindings.dna_engine_dnac_get_delegations(
+        engine,
+        cb.nativeFunction.cast(),
+        nullptr,
+      );
+      if (requestId == 0) {
+        throw DnaEngineException(
+            -1, 'Failed to submit DNAC my-delegations request');
       }
       return await completer.future;
     } finally {

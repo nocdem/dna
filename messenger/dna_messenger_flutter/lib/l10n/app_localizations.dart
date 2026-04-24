@@ -3506,6 +3506,36 @@ abstract class AppLocalizations {
   /// **'Couldn\'t load earners'**
   String get stakeLoadFailed;
 
+  /// Header for the section listing the user's own active delegations at the top of the stake dashboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Your supports'**
+  String get stakeYourSupportsHeader;
+
+  /// Empty state shown inside Your supports card when the user has no active delegations.
+  ///
+  /// In en, this message translates to:
+  /// **'You are not supporting any earners yet.'**
+  String get stakeNoSupports;
+
+  /// Subtitle under each Your supports row showing the block height at which the delegation was made.
+  ///
+  /// In en, this message translates to:
+  /// **'Supporting since block {block}'**
+  String stakeYourSupportSinceBlock(int block);
+
+  /// Toast shown when tapping a Your supports row whose validator record is not yet in the list.
+  ///
+  /// In en, this message translates to:
+  /// **'Earner info not available yet — pull to refresh.'**
+  String get stakeValidatorUnavailable;
+
+  /// Line shown on DelegationScreen when the user already supports this earner — displays the currently staked amount.
+  ///
+  /// In en, this message translates to:
+  /// **'Your delegation: {amount} DNAC'**
+  String delegationYourAmount(String amount);
+
   /// No description provided for @delegationTitle.
   ///
   /// In en, this message translates to:

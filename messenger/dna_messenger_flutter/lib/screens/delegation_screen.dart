@@ -14,6 +14,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../ffi/dnac_bindings.dart';
 import '../l10n/app_localizations.dart';
+import '../providers/engine_provider.dart';
 import '../providers/stake_provider.dart';
 import '../utils/logger.dart' as logger;
 
@@ -33,6 +34,28 @@ class _DelegationScreenState extends ConsumerState<DelegationScreen> {
   final _amountController = TextEditingController();
   bool _submitting = false;
 
+  /// Fingerprint of widget.earner.pubkey, computed once via FFI. Used to
+  /// cross-reference myDelegationsProvider entries. Empty until the first
+  /// build-time resolve — falls back to empty-match if the FFI helper
+  /// fails (non-fatal; UI just hides the "Your delegation" row).
+  String _earnerFp = '';
+
+  @override
+  void initState() {
+    super.initState();
+    // Resolve fp lazily after first frame so we can access the engine
+    // provider. engineProvider returns a Future so we defer via micro-task.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        final engine = await ref.read(engineProvider.future);
+        final fp = engine.pubkeyToFingerprint(widget.earner.pubkey);
+        if (mounted) setState(() => _earnerFp = fp);
+      } catch (e) {
+        logger.logError('STAKE', 'earner fp compute failed: $e');
+      }
+    });
+  }
+
   @override
   void dispose() {
     _amountController.dispose();
@@ -44,6 +67,20 @@ class _DelegationScreenState extends ConsumerState<DelegationScreen> {
     final l10n = AppLocalizations.of(context);
     final earner = widget.earner;
     final totalDnac = earner.totalStakeRaw / _rawPerDnac;
+
+    // Look up our own delegation to THIS validator. Null means either we
+    // have none OR the fp hasn't resolved yet (first paint before FFI).
+    final delegations =
+        ref.watch(myDelegationsProvider).valueOrNull ?? const <DnacDelegation>[];
+    DnacDelegation? myDelegation;
+    if (_earnerFp.isNotEmpty) {
+      for (final d in delegations) {
+        if (d.validatorFp == _earnerFp) {
+          myDelegation = d;
+          break;
+        }
+      }
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -74,6 +111,18 @@ class _DelegationScreenState extends ConsumerState<DelegationScreen> {
                     const SizedBox(height: 4),
                     Text(l10n.stakeEarnerTotalLocked(
                         totalDnac.toStringAsFixed(2))),
+                    if (myDelegation != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        l10n.delegationYourAmount(
+                            (myDelegation.amountRaw / _rawPerDnac)
+                                .toStringAsFixed(2)),
+                        style: TextStyle(
+                          color: Colors.green.shade700,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -169,11 +218,27 @@ class _DelegationScreenState extends ConsumerState<DelegationScreen> {
 
   Future<void> _onStopSupporting() async {
     final l10n = AppLocalizations.of(context);
+    // Pre-fill the dialog with the user's current delegation amount (if
+    // known) so they don't have to re-type it. One-shot read — snapshot
+    // at dialog open time is fine.
+    final delegations = ref.read(myDelegationsProvider).valueOrNull ??
+        const <DnacDelegation>[];
+    double? prefillDnac;
+    if (_earnerFp.isNotEmpty) {
+      for (final d in delegations) {
+        if (d.validatorFp == _earnerFp) {
+          prefillDnac = d.amountRaw / _rawPerDnac;
+          break;
+        }
+      }
+    }
+
     // Prompt for amount to withdraw.
     final amountDnac = await showDialog<double>(
       context: context,
       builder: (dialogCtx) => _UndelegateAmountDialog(
         earnerShortId: widget.earner.shortId,
+        prefillDnac: prefillDnac,
       ),
     );
     if (amountDnac == null || amountDnac <= 0) return;
@@ -233,8 +298,16 @@ class _InfoTile extends StatelessWidget {
 }
 
 class _UndelegateAmountDialog extends StatefulWidget {
-  const _UndelegateAmountDialog({required this.earnerShortId});
+  const _UndelegateAmountDialog({
+    required this.earnerShortId,
+    this.prefillDnac,
+  });
   final String earnerShortId;
+
+  /// When non-null, pre-populates the amount field with the user's current
+  /// delegation so they don't have to re-type it. Still editable — users
+  /// may want partial withdrawals.
+  final double? prefillDnac;
 
   @override
   State<_UndelegateAmountDialog> createState() =>
@@ -242,7 +315,11 @@ class _UndelegateAmountDialog extends StatefulWidget {
 }
 
 class _UndelegateAmountDialogState extends State<_UndelegateAmountDialog> {
-  final _controller = TextEditingController();
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.prefillDnac != null
+        ? widget.prefillDnac!.toStringAsFixed(2)
+        : '',
+  );
 
   @override
   void dispose() {

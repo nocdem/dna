@@ -1859,6 +1859,26 @@ class AppLocalizationsTr extends AppLocalizations {
   String get stakeLoadFailed => 'Kazananlar yüklenemedi';
 
   @override
+  String get stakeYourSupportsHeader => 'Desteklediklerin';
+
+  @override
+  String get stakeNoSupports => 'Henüz hiçbir kazananı desteklemiyorsun.';
+
+  @override
+  String stakeYourSupportSinceBlock(int block) {
+    return 'Blok $block tan beri destekliyorsun';
+  }
+
+  @override
+  String get stakeValidatorUnavailable =>
+      'Kazanan bilgisi henüz yok — yenilemek için çek.';
+
+  @override
+  String delegationYourAmount(String amount) {
+    return 'Desteğin: $amount DNAC';
+  }
+
+  @override
   String delegationTitle(String id) {
     return '$id kazananına destek ol';
   }
