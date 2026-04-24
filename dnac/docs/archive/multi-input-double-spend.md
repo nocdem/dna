@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-04-24** — RESOLVED in v0.4.0. `dnac_spend_request_t` now carries the full serialized TX instead of a single nullifier; witnesses extract and verify ALL input nullifiers. See `dnac/include/dnac/nodus.h:105-106` ("v0.4.0: Now carries full serialized transaction...") and `dnac/src/transaction/builder.c:335-361` (loop over `tx->inputs[i].nullifier`). The "Status: CRITICAL" below is stale. Kept for history.
+
 # Problem: Multi-Input Double-Spend Vulnerability
 
 **Status:** CRITICAL

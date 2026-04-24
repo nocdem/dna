@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-04-24** — Work is done and shipped. File kept for history; do not treat as active TODO. Current auth behavior is the production default.
+
 # Inter-Node Peer Authentication — FIXED
 
 **Status:** FIXED (2026-04-06) — Deployed to production, `require_peer_auth=true` on all 7 nodes.

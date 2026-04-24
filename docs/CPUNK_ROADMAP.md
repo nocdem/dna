@@ -28,7 +28,7 @@
 ### Documentation Complete
 - [x] Design document (`docs/DNAC_CPUNK_DESIGN.md`)
 - [x] Whitepaper (`docs/CPUNK_WHITEPAPER.md`)
-- [x] Tokenomics Paper (`docs/CPUNK_TOKENOMICS.md`)
+- [x] Tokenomics Paper (`docs/archive/CPUNK_TOKENOMICS.md` — archived 2026-04-24 as v0.1 Draft; replacement pending deployed-param pin-down)
 - [x] Technical Specification (`docs/CPUNK_TECHNICAL_SPEC.md`)
 
 ### Not Started

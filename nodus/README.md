@@ -256,7 +256,7 @@ Source: `src/circuit/`
 | [Architecture](docs/ARCHITECTURE.md) | Nodus system architecture and design |
 | [Circuit Protocol](docs/CIRCUIT_PROTOCOL.md) | Circuit relay protocol specification |
 | [Replication Design](docs/REPLICATION_DESIGN.md) | DHT value replication strategy |
-| [Channel Rewrite Design](docs/CHANNEL_REWRITE_DESIGN.md) | Channel TCP 4003 redesign |
+| [Channel Rewrite Design](docs/archive/CHANNEL_REWRITE_DESIGN.md) | Channel TCP 4003 redesign (archived — channels disabled) |
 | [Dynamic Witness Design](docs/DYNAMIC_WITNESS_DESIGN.md) | Witness discovery and roster |
 | [Version Enforcement](docs/PLAN_VERSION_ENFORCEMENT.md) | Version update enforcement plan |
 

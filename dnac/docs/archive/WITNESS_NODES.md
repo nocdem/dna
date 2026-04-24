@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-04-24** — Witness topology has changed substantially since this was written (v0.10.2, 2026-03-02). BFT voting authority is now the chain-derived top-7 stake-weighted committee (see `dnac/CLAUDE.md` §Committee, Stake & Delegation, and `dnac/docs/plans/2026-04-17-witness-stake-delegation-design.md`). Gossip roster is transport-only since F17 (nodus v0.15.0). Kept for history.
+
 # DNAC Witness Nodes - BFT Consensus Cluster
 
 **Created:** 2026-01-21 | **Updated:** 2026-03-02 | **Version:** v0.10.2

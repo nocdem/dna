@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-04-24** — DNAC CLI was merged into the main messenger CLI. There is no standalone `dnac-cli`; commands live in `dna-connect-cli dna <verb>` (handlers in `messenger/cli/cli_dna_chain*.c`). This doc (v0.7.1, 2026-01-24) predates that move. Use `dna-connect-cli dna --help` for current commands.
+
 # DNAC CLI Commands Reference
 
 **Version:** v0.7.1 | **Last Updated:** 2026-01-24

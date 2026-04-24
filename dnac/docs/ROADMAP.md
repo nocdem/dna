@@ -188,7 +188,7 @@ DNAC is a post-quantum digital cash system that integrates with DNA Connect:
 - [x] `dnac-cli address` - Output fingerprint only (for scripting)
 - [x] `dnac-cli query <name|fp>` - Lookup identity by name or fingerprint
 - [x] Auto-detect name vs fingerprint (128 hex = fingerprint)
-- [x] Documentation: `docs/CLI_COMMANDS.md`
+- [x] Documentation: `docs/archive/CLI_COMMANDS.md` (archived 2026-04-24 — CLI now in `dna-connect-cli dna <verb>`)
 
 ### Phase 17: Permanent DHT Storage ✅ COMPLETE (v0.1.29)
 - [x] All DHT data stored permanently (cash doesn't expire)

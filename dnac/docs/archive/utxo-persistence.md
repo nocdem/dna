@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-04-24** — RESOLVED (DHT removed + burn address supply invariant). See MEMORY: `project_dnac_permanent_utxo`. Kept for history; the "Status: OPEN" below is stale.
+
 # Problem: UTXO Persistence and Recovery
 
 **Status:** OPEN

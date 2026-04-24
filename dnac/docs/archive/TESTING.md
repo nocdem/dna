@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-04-24** — Pre-genesis-harness (v0.10.2, 2026-03-02). The current consensus-shakedown test is the Genesis Protocol harness (see MEMORY: `project_genesis_protocol_harness`, `feedback_genesis_protocol`). Local integration runner: `nodus/tests/integration/stagef/`. Kept for history.
+
 # DNAC Testing Documentation
 
 **Last Updated:** 2026-03-02 | **Version:** v0.10.2

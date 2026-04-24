@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-04-24** — Pre-DNAC-blockchain era (v0.6.x, 2026-02-22). Many milestones have shipped; many listed items are now irrelevant. Kept for history. Current direction lives in top-level `docs/` (CPUNK_ROADMAP, READINESS_REPORT) and `dnac/docs/ROADMAP.md` + `dnac/docs/TODO.md`.
+
 # DNA Connect - Development Roadmap
 
 **Version:** 0.6.x | **Last Updated:** 2026-02-22

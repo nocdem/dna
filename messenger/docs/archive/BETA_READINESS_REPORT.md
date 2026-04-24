@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-04-24** — Pre-blockchain era snapshot (2026-01-03, v0.3.73/v0.99.27/v0.4.3). System has evolved extensively since: DNAC blockchain, Merkle proofs, BFT witness, stake delegation, chain_config hard-fork mechanism. Kept for history. Current posture: `AUDIT.md` and `docs/READINESS_REPORT.md`.
+
 # DNA Connect - Beta Readiness Report
 
 **Date:** 2026-01-03
