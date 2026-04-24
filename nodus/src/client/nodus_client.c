@@ -2917,6 +2917,135 @@ int nodus_client_dnac_history(nodus_client_t *client,
     return 0;
 }
 
+/* ── My Delegations Query (stake-delegation v1) ─────────────────── */
+
+void nodus_client_free_delegations_result(nodus_dnac_delegations_result_t *result) {
+    if (!result) return;
+    free(result->entries);
+    result->entries = NULL;
+    result->count = 0;
+}
+
+int nodus_client_dnac_delegations(nodus_client_t *client,
+                                    const uint8_t *delegator_pubkey,
+                                    size_t pubkey_len,
+                                    int max_results,
+                                    nodus_dnac_delegations_result_t *result_out) {
+    if (!nodus_client_is_ready(client) || !delegator_pubkey || !result_out)
+        return -1;
+    /* Pubkey size is a protocol invariant — fail fast on any mismatch
+     * rather than shipping a malformed frame that would be rejected
+     * server-side with a less actionable error. */
+    if (pubkey_len != NODUS_PK_BYTES)
+        return -1;
+
+    memset(result_out, 0, sizeof(*result_out));
+    if (max_results <= 0) max_results = NODUS_DNAC_MAX_DELEGATIONS_RESULTS;
+    if (max_results > NODUS_DNAC_MAX_DELEGATIONS_RESULTS)
+        max_results = NODUS_DNAC_MAX_DELEGATIONS_RESULTS;
+
+    uint8_t *buf = malloc(CLIENT_BUF_SIZE);
+    if (!buf) return -1;
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, buf, CLIENT_BUF_SIZE);
+    uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
+    nodus_pending_t *req = alloc_pending(client, txn);
+    if (!req) { free(buf); return -1; }
+
+    enc_dnac_query(&enc, txn, client->token, "dnac_delegations", 2);
+
+    cbor_encode_cstr(&enc, "pubkey");
+    cbor_encode_bstr(&enc, delegator_pubkey, pubkey_len);
+    cbor_encode_cstr(&enc, "limit");
+    cbor_encode_uint(&enc, (uint64_t)max_results);
+
+    size_t len = cbor_encoder_len(&enc);
+    if (len == 0) { free_pending(client, req); free(buf); return -1; }
+    if (send_request(client, buf, len) != 0) {
+        free_pending(client, req); free(buf); return -1;
+    }
+    free(buf);
+
+    nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
+    if (!wait_response(client, req, client->config.request_timeout_ms)) {
+        free_pending(client, req); return NODUS_ERR_TIMEOUT;
+    }
+    if (resp->type == 'e') {
+        int rc = resp->error_code; free_pending(client, req); return rc;
+    }
+
+    cbor_decoder_t dec;
+    size_t mc;
+    if (find_response_map(req->raw_response, req->raw_response_len,
+                           &dec, &mc) != 0) {
+        free_pending(client, req);
+        return NODUS_ERR_PROTOCOL_ERROR;
+    }
+
+    for (size_t i = 0; i < mc; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+
+        if (key.tstr.len == 5 && memcmp(key.tstr.ptr, "count", 5) == 0) {
+            cbor_item_t v = cbor_decode_next(&dec);
+            (void)v; /* informational — real count comes from array len below */
+        } else if (key.tstr.len == 7 && memcmp(key.tstr.ptr, "entries", 7) == 0) {
+            cbor_item_t arr = cbor_decode_next(&dec);
+            if (arr.type != CBOR_ITEM_ARRAY) continue;
+
+            if (arr.count > 0) {
+                result_out->entries = calloc(arr.count,
+                                              sizeof(nodus_dnac_delegation_entry_t));
+                if (!result_out->entries) {
+                    free_pending(client, req);
+                    return NODUS_ERR_INTERNAL_ERROR;
+                }
+            }
+
+            for (size_t j = 0; j < arr.count; j++) {
+                cbor_item_t emap = cbor_decode_next(&dec);
+                if (emap.type != CBOR_ITEM_MAP) continue;
+
+                nodus_dnac_delegation_entry_t *e =
+                    &result_out->entries[result_out->count];
+                memset(e, 0, sizeof(*e));
+
+                for (size_t k = 0; k < emap.count; k++) {
+                    cbor_item_t ek = cbor_decode_next(&dec);
+                    if (ek.type != CBOR_ITEM_TSTR) {
+                        cbor_decode_skip(&dec); continue;
+                    }
+                    if (ek.tstr.len == 9 &&
+                        memcmp(ek.tstr.ptr, "validator", 9) == 0) {
+                        cbor_item_t ev = cbor_decode_next(&dec);
+                        if (ev.type == CBOR_ITEM_TSTR && ev.tstr.len < 129) {
+                            memcpy(e->validator_fp, ev.tstr.ptr, ev.tstr.len);
+                            e->validator_fp[ev.tstr.len] = '\0';
+                        }
+                    } else if (ek.tstr.len == 6 &&
+                               memcmp(ek.tstr.ptr, "amount", 6) == 0) {
+                        cbor_item_t ev = cbor_decode_next(&dec);
+                        if (ev.type == CBOR_ITEM_UINT) e->amount = ev.uint_val;
+                    } else if (ek.tstr.len == 5 &&
+                               memcmp(ek.tstr.ptr, "block", 5) == 0) {
+                        cbor_item_t ev = cbor_decode_next(&dec);
+                        if (ev.type == CBOR_ITEM_UINT)
+                            e->delegated_at_block = ev.uint_val;
+                    } else {
+                        cbor_decode_skip(&dec);
+                    }
+                }
+                result_out->count++;
+            }
+        } else {
+            cbor_decode_skip(&dec);
+        }
+    }
+
+    free_pending(client, req);
+    return 0;
+}
+
 /* ── TX Query (v0.10.0 hub/spoke) ───────────────────────────────── */
 
 int nodus_client_dnac_tx(nodus_client_t *client,

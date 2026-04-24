@@ -500,6 +500,31 @@ typedef struct {
 /** Max history entries per query */
 #define NODUS_DNAC_MAX_HISTORY_RESULTS 100
 
+/** Delegation entry in "my delegations" query (one per active position).
+ *
+ * validator_fp is derived server-side from the stored validator_pubkey
+ * via SHA3-512(pubkey) so the client never needs to round-trip the raw
+ * 2.6 KB Dilithium5 pubkey per row. Matches the fp formula used
+ * elsewhere (BFT roster, chain_def) — client UI can correlate against
+ * validator list entries without any extra derivation. */
+typedef struct {
+    char     validator_fp[129];        /* 128 hex + NUL */
+    uint64_t amount;                   /* Raw units (8 decimals per DNAC) */
+    uint64_t delegated_at_block;       /* Block height of the DELEGATE TX */
+} nodus_dnac_delegation_entry_t;
+
+/** "My delegations" query result. Caller frees via
+ *  nodus_client_free_delegations_result(). */
+typedef struct {
+    int count;
+    nodus_dnac_delegation_entry_t *entries;  /* Heap-allocated, caller frees */
+} nodus_dnac_delegations_result_t;
+
+/** Max delegation entries per query — matches the witness-side clamp
+ *  (DNAC_MAX_DELEGATIONS_RESULTS). Real-world cardinality is expected
+ *  to be very small (single-digit delegations per user in v1). */
+#define NODUS_DNAC_MAX_DELEGATIONS_RESULTS 256
+
 /** Roster witness entry */
 typedef struct {
     uint8_t  witness_id[NODUS_T3_WITNESS_ID_LEN];

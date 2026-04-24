@@ -989,6 +989,36 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
 /** Free heap allocation inside a validator-list result. */
 void nodus_client_free_validator_list_result(nodus_dnac_validator_list_result_t *result);
 
+/**
+ * Query the caller's own active delegations.
+ *
+ * Sends the raw 2592-byte Dilithium5 pubkey on the wire. The witness
+ * C11-authenticates by computing SHA3-512(pubkey) and comparing against
+ * the authenticated session fingerprint — mismatch yields
+ * NODUS_ERR_NOT_AUTHENTICATED. Response entries carry validator_fp
+ * rendered server-side so the client never sees raw validator pubkeys.
+ *
+ * Caller must free result_out with nodus_client_free_delegations_result().
+ *
+ * @param client         Active nodus client (authenticated session)
+ * @param delegator_pubkey  Raw pubkey — must match the session identity
+ * @param pubkey_len     Must equal NODUS_PK_BYTES (2592); otherwise
+ *                        returns -1
+ * @param max_results    Upper bound (capped at NODUS_DNAC_MAX_DELEGATIONS_RESULTS)
+ * @param result_out     Query result
+ * @return 0 on success, error code on failure
+ */
+int nodus_client_dnac_delegations(nodus_client_t *client,
+                                    const uint8_t *delegator_pubkey,
+                                    size_t pubkey_len,
+                                    int max_results,
+                                    nodus_dnac_delegations_result_t *result_out);
+
+/**
+ * Free heap allocation inside a delegations result.
+ */
+void nodus_client_free_delegations_result(nodus_dnac_delegations_result_t *result);
+
 /* ── Media Operations ──────────────────────────────────────────────── */
 
 /**
