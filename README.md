@@ -41,9 +41,9 @@ DNA is a suite of decentralized applications built on **NIST-approved post-quant
 │  identity · backup · lifecycle · version · signing   │
 │  wall · media · follow · dnac · channels + more      │
 ├──────────────────────────────────────────────────────┤
-│  Post-Quantum Crypto    │  Multi-Chain Wallet        │
-│  Kyber1024 · Dilithium5 │  ETH · BSC · SOL · TRON · Cell │
-│  AES-256 · SHA3-512     │  ERC20 · BEP20 · SPL · TRC20  │
+│  Post-Quantum Crypto    │  Wallet (5 external + DNAC native) │
+│  Kyber1024 · Dilithium5 │  ETH · BSC · SOL · TRON · Cell · DNAC │
+│  AES-256 · SHA3-512     │  ERC20 · BEP20 · SPL · TRC20 · native │
 └──────────┬───────────────────────────────────────────┘
            │ Nodus Client SDK
 ┌──────────▼───────────────────────────────────────────┐

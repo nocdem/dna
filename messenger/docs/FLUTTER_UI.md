@@ -255,7 +255,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 
 3. **Wallet:**
    - Send tokens with recipient, amount selection
-   - Supported tokens across 5 chains: **Cellframe** (CELL, CPUNK, USDC), **Ethereum** (ETH, USDT, USDC), **Solana** (SOL, USDT, USDC), **TRON** (TRX, USDT, USDC), **BSC** (BNB, USDT, USDC)
+   - Supported tokens across **5 external chains + DNAC native**: **Cellframe** (CELL, CPUNK, USDC), **Ethereum** (ETH, USDT, USDC), **Solana** (SOL, USDT, USDC), **TRON** (TRX, USDT, USDC), **BSC** (BNB, USDT, USDC), plus **DNAC** (post-quantum native cash)
    - Transaction history UI with address resolution:
      - Resolves `otherAddress` to contact name (via profile wallet fields) or address book label
      - Resolution runs once per fetch, re-resolves reactively when contacts or address book change
@@ -264,7 +264,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
    - Balances display per wallet (fetched via Cellframe RPC)
    - **Multi-token send via chat:** Transfer tokens directly from chat conversation
      - "$" button in chat input bar opens multi-token send bottom sheet
-     - Token dropdown with options across 5 chains (Cellframe, Ethereum, Solana, TRON, BSC)
+     - Token dropdown with options across 5 external chains (Cellframe, Ethereum, Solana, TRON, BSC) plus DNAC native
      - Only tokens for chains where the contact has a registered wallet address are shown
      - Transaction speed selector (slow/normal/fast) only shown for Cellframe chain
      - Transfer message JSON includes `token`, `network`, and `chain` fields
@@ -510,7 +510,7 @@ To re-enable: define `DNA_CHANNELS_ENABLED` in CMake, restore Flutter channel sc
 - Message status indicators: pending (spinner), sent (checkmark), failed (red X)
 - Enter sends message, Shift+Enter adds newline
 - Emoji picker with shortcode support (:smile: etc.)
-- **Multi-token transfer via chat:** Send tokens from any supported chain directly from conversation via "$" button. Token dropdown shows options across 5 chains (Cellframe, Ethereum, Solana, TRON, BSC), filtered by contact's available wallet addresses. Verified transfer bubble (orange=pending, green=verified, red=failed). Message type: `token_transfer`. Both sides verify independently via blockchain RPC.
+- **Multi-token transfer via chat:** Send tokens from any supported chain directly from conversation via "$" button. Token dropdown shows options across 5 external chains (Cellframe, Ethereum, Solana, TRON, BSC) plus DNAC native, filtered by contact's available wallet addresses. Verified transfer bubble (orange=pending, green=verified, red=failed). Message type: `token_transfer`. Both sides verify independently via blockchain RPC.
 
 **Background Tasks:**
 - Initial DHT offline message poll on login (15 second delay)

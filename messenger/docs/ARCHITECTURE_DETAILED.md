@@ -1100,7 +1100,7 @@ int contacts_db_clear_all(void);
 
 **Location:** `blockchain/blockchain_wallet.h`
 
-DNA Connect supports multiple blockchains through a modular wallet architecture:
+DNA Connect supports 5 external blockchains through a modular wallet architecture. Note: the **DNAC native chain** is separate — it's the project's own post-quantum UTXO chain and is not represented in `blockchain_type_t`. See § 9.9 (DNAC Witness Consensus) for DNAC. User-visible wallet surface = 5 external chains + DNAC native = 6 asset families.
 
 ```c
 typedef enum {

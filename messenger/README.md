@@ -51,7 +51,7 @@ DNA Connect is a **fully decentralized** communication platform and **multi-chai
 - **Boost system** — 1 per day limit
 
 ### Integrated Multi-Chain Wallet
-- **5 Networks:** Cellframe (CF20), Ethereum (ERC20), BNB Smart Chain (BEP20), TRON (TRC20), Solana (SPL)
+- **5 external networks + DNAC native:** Cellframe (CF20), Ethereum (ERC20), BNB Smart Chain (BEP20), TRON (TRC20), Solana (SPL), plus **DNAC** (post-quantum native chain, see bullet below)
 - **9+ Tokens:** CPUNK, CELL, KEL, NYS, QEVM, ETH, BNB, SOL, TRX, USDT
 - **DNAC (DNA Cash)** — Post-quantum digital cash with BFT witness consensus
 - **Send crypto from chat** — Auto-resolves contact's wallet address
