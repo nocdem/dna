@@ -4,6 +4,7 @@
 #include <openssl/evp.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+#include "crypto/utils/qgp_bench.h"         /* perf harness — ((void)0) in production */
 
 /**
  * Compute SHA3-512 hash of data
@@ -20,6 +21,8 @@ int qgp_sha3_512(const uint8_t *data, size_t len, uint8_t *hash_out) {
     if (!data || !hash_out) {
         return -1;
     }
+
+    QGP_BENCH_START(QGP_BENCH_SHA3_512);
 
     EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
     if (!mdctx) {
@@ -52,6 +55,7 @@ int qgp_sha3_512(const uint8_t *data, size_t len, uint8_t *hash_out) {
         return -1;
     }
 
+    QGP_BENCH_END(QGP_BENCH_SHA3_512);
     return 0;
 }
 

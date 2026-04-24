@@ -33,6 +33,7 @@
 #include "server/nodus_server.h"
 #include "transport/nodus_tcp.h"
 #include "crypto/nodus_sign.h"
+#include "crypto/utils/qgp_bench.h"   /* perf harness — ((void)0) in production */
 
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/sign/qgp_dilithium.h"
@@ -3450,7 +3451,10 @@ static int bft_start_round_internal(nodus_witness_t *w,
 int nodus_witness_bft_start_round_from_entries(nodus_witness_t *w,
                                                  nodus_witness_mempool_entry_t **entries,
                                                  int count) {
-    return bft_start_round_internal(w, entries, count);
+    QGP_BENCH_START(QGP_BENCH_BFT_ROUND);
+    int _rc = bft_start_round_internal(w, entries, count);
+    QGP_BENCH_END(QGP_BENCH_BFT_ROUND);
+    return _rc;
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -3700,7 +3704,9 @@ int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
     }
 
     /* Start batch BFT round */
+    QGP_BENCH_START(QGP_BENCH_BFT_ROUND);
     int rc = bft_start_round_internal(w, batch, valid);
+    QGP_BENCH_END(QGP_BENCH_BFT_ROUND);
     if (rc != 0) {
         QGP_LOG_WARN(LOG_TAG, "batch start_round failed: %d", rc);
         /* Put entries back into mempool or free them */

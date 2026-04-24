@@ -10,6 +10,7 @@
 #include <stdio.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+#include "crypto/utils/qgp_bench.h"         /* perf harness — ((void)0) in production */
 
 // QGP DSA-87 API (ML-DSA-87)
 // Wrapper for vendored pq-crystals/dilithium reference implementation
@@ -89,7 +90,10 @@ int qgp_dsa87_sign(uint8_t *sig, size_t *siglen,
 
     // Call upstream Dilithium5 detached signature (ML-DSA-87)
     // Context (ctx) is NULL and ctxlen is 0 for pure Dilithium
-    return pqcrystals_dilithium5_ref_signature(sig, siglen, m, mlen, NULL, 0, sk);
+    QGP_BENCH_START(QGP_BENCH_DILITHIUM_SIGN);
+    int _rc = pqcrystals_dilithium5_ref_signature(sig, siglen, m, mlen, NULL, 0, sk);
+    QGP_BENCH_END(QGP_BENCH_DILITHIUM_SIGN);
+    return _rc;
 }
 
 int qgp_dsa87_verify(const uint8_t *sig, size_t siglen,
@@ -102,5 +106,8 @@ int qgp_dsa87_verify(const uint8_t *sig, size_t siglen,
 
     // Call upstream Dilithium5 signature verification (ML-DSA-87)
     // Context (ctx) is NULL and ctxlen is 0 for pure Dilithium
-    return pqcrystals_dilithium5_ref_verify(sig, siglen, m, mlen, NULL, 0, pk);
+    QGP_BENCH_START(QGP_BENCH_DILITHIUM_VERIFY);
+    int _rc = pqcrystals_dilithium5_ref_verify(sig, siglen, m, mlen, NULL, 0, pk);
+    QGP_BENCH_END(QGP_BENCH_DILITHIUM_VERIFY);
+    return _rc;
 }

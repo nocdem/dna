@@ -1,0 +1,18 @@
+{
+  "nodus_version": "0.17.7",
+  "git_sha": "46bc386f",
+  "captured_at": "2026-04-24T10:47:00Z",
+  "build_mode": "QGP_BENCH=ON (injection live)",
+  "results": [
+    {"op":"dilithium5_verify","n":10000,"total_us":3963313.7,"per_op_us":396.331,"p50_us":369.602,"p95_us":408.947,"p99_us":535.182,"min_us":341.761,"max_us":18964.907,"impl":"ref","siglen":4627,"msglen":64,"cpu":"Intel(R) Core(TM) i5-7400T CPU @ 2.40GHz","timestamp":"2026-04-24T10:47:04Z"},
+    {"op":"dilithium5_sign","n":1000,"total_us":1055086.4,"per_op_us":1055.086,"p50_us":890.875,"p95_us":2330.964,"p99_us":3022.625,"min_us":488.506,"max_us":4155.039,"impl":"ref","msglen":64,"cpu":"Intel(R) Core(TM) i5-7400T CPU @ 2.40GHz","timestamp":"2026-04-24T10:47:05Z"},
+    {"op":"sha3_512_64B","n":100000,"total_us":125878.9,"per_op_us":1.259,"p50_us":1.176,"p95_us":1.274,"p99_us":1.397,"min_us":1.108,"max_us":113.530,"msg_bytes":64,"cpu":"Intel(R) Core(TM) i5-7400T CPU @ 2.40GHz","timestamp":"2026-04-24T10:47:05Z"},
+    {"op":"sha3_512_1KB","n":100000,"total_us":765622.4,"per_op_us":7.656,"p50_us":7.313,"p95_us":7.782,"p99_us":20.306,"min_us":7.003,"max_us":438.089,"msg_bytes":1024,"cpu":"Intel(R) Core(TM) i5-7400T CPU @ 2.40GHz","timestamp":"2026-04-24T10:47:06Z"},
+    {"op":"merkle_tx_root_1","n":1000,"total_us":1140.8,"per_op_us":1.141,"p50_us":1.110,"p95_us":1.131,"p99_us":1.144,"min_us":1.094,"max_us":1.383,"n_txs":1,"cpu":"Intel(R) Core(TM) i5-7400T CPU @ 2.40GHz","timestamp":"2026-04-24T10:47:06Z"},
+    {"op":"merkle_tx_root_5","n":1000,"total_us":13360.8,"per_op_us":13.361,"p50_us":11.950,"p95_us":12.423,"p99_us":26.989,"min_us":11.498,"max_us":394.275,"n_txs":5,"cpu":"Intel(R) Core(TM) i5-7400T CPU @ 2.40GHz","timestamp":"2026-04-24T10:47:06Z"},
+    {"op":"merkle_tx_root_10","n":1000,"total_us":26614.0,"per_op_us":26.614,"p50_us":25.568,"p95_us":31.464,"p99_us":47.192,"min_us":24.514,"max_us":95.766,"n_txs":10,"cpu":"Intel(R) Core(TM) i5-7400T CPU @ 2.40GHz","timestamp":"2026-04-24T10:47:06Z"},
+    {"op":"sqlite_commit_wal_normal","n":100,"total_us":3837.1,"per_op_us":38.371,"p50_us":12.806,"p95_us":40.502,"p99_us":55.606,"min_us":12.080,"max_us":73.256,"sync":"NORMAL","journal":"WAL","inserts_per_commit":16,"cpu":"Intel(R) Core(TM) i5-7400T CPU @ 2.40GHz","timestamp":"2026-04-24T10:47:06Z"},
+    {"op":"sqlite_commit_wal_off","n":100,"total_us":3622.9,"per_op_us":36.229,"p50_us":12.684,"p95_us":35.700,"p99_us":41.007,"min_us":12.107,"max_us":59.763,"sync":"OFF","journal":"WAL","inserts_per_commit":16,"cpu":"Intel(R) Core(TM) i5-7400T CPU @ 2.40GHz","timestamp":"2026-04-24T10:47:06Z"},
+    {"op":"sqlite_commit_wal_full","n":100,"total_us":243805.8,"per_op_us":2438.058,"p50_us":2469.758,"p95_us":3057.391,"p99_us":3836.815,"min_us":1626.091,"max_us":5797.893,"sync":"FULL","journal":"WAL","inserts_per_commit":16,"cpu":"Intel(R) Core(TM) i5-7400T CPU @ 2.40GHz","timestamp":"2026-04-24T10:47:07Z"}
+  ]
+}

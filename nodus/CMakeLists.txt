@@ -39,6 +39,17 @@ endif()
 # are already provided by dht_lib. Set NODUS_STANDALONE=OFF to skip them.
 option(NODUS_STANDALONE "Include shared crypto sources and log shim" ON)
 
+# ── QGP bench instrumentation (perf harness, 2026-04-24) ───────────
+# When ON, hot paths record per-op timing into atomic counters via
+# QGP_BENCH_START/END macros. Default OFF: macros expand to ((void)0)
+# and no instrumentation runs. See:
+#   shared/crypto/utils/qgp_bench.h
+#   nodus/docs/plans/2026-04-24-perf-harness-design.md
+option(QGP_BENCH "Enable perf bench instrumentation" OFF)
+if(QGP_BENCH)
+    add_compile_definitions(QGP_BENCH)
+endif()
+
 # ── ML-KEM-1024 (Kyber) ────────────────────────────────────────────
 if(NOT TARGET kem)
     add_subdirectory(${SHARED_DIR}/crypto/enc/kem ${CMAKE_BINARY_DIR}/crypto/kem)
@@ -57,6 +68,7 @@ if(NODUS_STANDALONE)
         ${SHARED_DIR}/crypto/utils/qgp_random.c
         ${SHARED_DIR}/crypto/utils/qgp_u128.c
         ${SHARED_DIR}/crypto/utils/qgp_fingerprint.c
+        ${SHARED_DIR}/crypto/utils/qgp_bench.c
         # qgp_log.c depends on dna_config.h — use nodus_log_shim.c instead
     )
 
@@ -715,3 +727,8 @@ register_witness_test(test_retiring_committee_membership)
 add_executable(test_supply_invariant tests/test_supply_invariant.c)
 target_link_libraries(test_supply_invariant nodus dsa nodus)
 add_test(NAME test_supply_invariant COMMAND test_supply_invariant)
+
+# Performance benchmark harness (Phase 1 — micro-benchmarks).
+# See nodus/docs/plans/2026-04-24-perf-harness-design.md.
+# Run with: ctest -L bench
+add_subdirectory(tests/bench)

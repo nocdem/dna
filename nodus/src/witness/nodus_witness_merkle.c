@@ -10,6 +10,7 @@
 #include "witness/nodus_witness_db.h"
 #include "nodus/nodus_types.h"
 #include "nodus/nodus_chain_config.h"  /* Hard-Fork v1: chain_config_root in compute_state_root */
+#include "crypto/utils/qgp_bench.h"    /* perf harness — ((void)0) in production */
 
 #include <openssl/evp.h>
 #include <sqlite3.h>
@@ -1206,9 +1207,13 @@ int nodus_witness_merkle_compute_epoch_state_root(nodus_witness_t *w,
 int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
                                             uint8_t *root_out) {
     if (!w || !root_out) return -1;
+    QGP_BENCH_START(QGP_BENCH_MERKLE_COMPUTE);
 
     uint8_t utxo_root[64];
-    if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0) return -1;
+    if (nodus_witness_merkle_compute_utxo_root(w, utxo_root) != 0) {
+        QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
+        return -1;
+    }
 
     uint8_t validator_root[64];
     if (nodus_witness_merkle_compute_validator_root(w, validator_root) != 0) {
@@ -1238,6 +1243,7 @@ int nodus_witness_merkle_compute_state_root(nodus_witness_t *w,
                                         epoch_state_root,
                                         chain_config_root,
                                         root_out);
+    QGP_BENCH_END(QGP_BENCH_MERKLE_COMPUTE);
     return 0;
 }
 

@@ -23,6 +23,7 @@
 #include <openssl/evp.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
+#include "crypto/utils/qgp_bench.h"         /* perf harness — ((void)0) in production */
 
 #define LOG_TAG "WITNESS_DB"
 
@@ -1602,7 +1603,9 @@ int nodus_witness_db_begin(nodus_witness_t *w) {
 int nodus_witness_db_commit(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
     char *err = NULL;
+    QGP_BENCH_START(QGP_BENCH_SQLITE_COMMIT);
     int rc = sqlite3_exec(w->db, "COMMIT", NULL, NULL, &err);
+    QGP_BENCH_END(QGP_BENCH_SQLITE_COMMIT);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "%s: COMMIT failed: %s\n", LOG_TAG, err);
         sqlite3_free(err);
