@@ -100,7 +100,7 @@ class DnacBalanceNotifier extends AsyncNotifier<DnacBalance?>
   /// Send DNAC payment and refresh all state.
   ///
   /// [tokenId] selects a custom token (64 bytes). When null, sends native
-  /// DNAC. Fee (0.1%) is charged in the same token either way.
+  /// DNAC. Fee is charged in the same token either way.
   Future<void> sendPayment({
     required String recipientFingerprint,
     required int amount,
@@ -108,6 +108,17 @@ class DnacBalanceNotifier extends AsyncNotifier<DnacBalance?>
     Uint8List? tokenId,
   }) async {
     final engine = await ref.read(engineProvider.future);
+    // Pre-flight: refresh UTXO set from witnesses. The local DB
+    // confirmed total can include UTXOs the witnesses no longer treat
+    // as spendable (already-spent races, stake locks). Without this,
+    // a balance check that passes locally produces "Insufficient
+    // funds" at the witness. Silent-best-effort: a sync RPC failure
+    // falls back to whatever is cached.
+    try {
+      await engine.dnacSync();
+    } catch (_) {
+      // proceed with cached UTXOs; the witness still has final say
+    }
     await engine.dnacSend(
       recipientFingerprint: recipientFingerprint,
       amount: amount,
