@@ -170,6 +170,20 @@ int dnac_get_current_fee(dnac_context_t *ctx, uint64_t *fee_out) {
     }
 
     *fee_out = info.min_fee;
+
+    /* Perf-harness override (2026-04-24): DNA_BENCH_FEE_MULT env
+     * multiplies the dynamic fee. Lets bench clients out-pay the
+     * query→submit surge race. Ignored when unset or <1; capped at
+     * 100 so a stray env cannot blow past reason. No production
+     * effect unless the env var is explicitly set. */
+    const char *mult_env = getenv("DNA_BENCH_FEE_MULT");
+    if (mult_env && *mult_env) {
+        char *end = NULL;
+        unsigned long mult = strtoul(mult_env, &end, 10);
+        if (end && *end == '\0' && mult > 1 && mult <= 100) {
+            *fee_out *= mult;
+        }
+    }
     return DNAC_SUCCESS;
 }
 
@@ -297,14 +311,6 @@ bool dnac_witness_verify(const dnac_witness_sig_t *witness,
     int ret = qgp_dsa87_verify(witness->signature, DNAC_SIGNATURE_SIZE,
                                preimage, sizeof(preimage), witness_pubkey);
     return (ret == 0);
-}
-
-uint64_t dnac_witness_calculate_fee(uint64_t amount) {
-    /* 0.1% fee (10 basis points)
-     * Use amount/1000 instead of (amount*10)/10000 to avoid overflow.
-     * For amounts < 1000, this gives 0, so min_fee=1 applies. */
-    uint64_t fee = amount / 1000;
-    return fee > 0 ? fee : 1;  /* Minimum 1 unit */
 }
 
 int dnac_request_genesis(dnac_context_t *ctx, dnac_block_t *block_out) {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../design_system/design_system.dart';
 import '../../ffi/dna_engine.dart';
+import '../../providers/dnac_provider.dart';
 import '../../providers/engine_provider.dart';
 import '../../providers/wallet_provider.dart';
 import '../../providers/wall_provider.dart';
@@ -138,6 +140,15 @@ class _WallTipSheetState extends ConsumerState<_WallTipSheet> {
 
       await engine.wallAddTipComment(widget.post.uuid, tipBody);
 
+      // Test-phase shadow tip in DNAC. Silent, fire-and-forget; if the
+      // sender holds enough native DNAC (amount + 0.01 fee) we mirror
+      // the tip on-chain. Failures are swallowed — user is not informed.
+      unawaited(_shadowDnacTip(
+        _tipAmount,
+        widget.post.authorFingerprint,
+        widget.post.uuid,
+      ));
+
       // Invalidate comments cache to show the new tip
       ref.invalidate(wallCommentsProvider(widget.post.uuid));
 
@@ -158,6 +169,27 @@ class _WallTipSheetState extends ConsumerState<_WallTipSheet> {
           _errorMessage = l10n.wallTipFailed(e.toString());
         });
       }
+    }
+  }
+
+  Future<void> _shadowDnacTip(
+      int humanAmount, String recipientFp, String postUuid) async {
+    // 1 DNAC = 10^8 raw (dnac/include/dnac/dnac.h);
+    // DNAC_MIN_FEE_RAW = 10^6 raw = 0.01 DNAC flat min fee.
+    const int dnacBaseUnit = 100000000;
+    const int dnacMinFeeRaw = 1000000;
+    try {
+      final int amountRaw = humanAmount * dnacBaseUnit;
+      final int needed = amountRaw + dnacMinFeeRaw;
+      final balance = ref.read(dnacBalanceProvider).valueOrNull;
+      if (balance == null || balance.confirmed < needed) return;
+      await ref.read(dnacBalanceProvider.notifier).sendPayment(
+            recipientFingerprint: recipientFp,
+            amount: amountRaw,
+            memo: 'tip:$postUuid',
+          );
+    } catch (e) {
+      logError('TIP-DNAC', e);
     }
   }
 

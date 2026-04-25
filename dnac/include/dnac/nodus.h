@@ -385,14 +385,6 @@ bool dnac_witness_verify(const dnac_witness_sig_t *witness,
                          const uint8_t *witness_pubkey);
 
 /**
- * @brief Calculate fee for transaction
- *
- * @param amount Transaction amount
- * @return Fee amount
- */
-uint64_t dnac_witness_calculate_fee(uint64_t amount);
-
-/**
  * @brief Ping witness server to check availability
  *
  * @param ctx DNAC context
