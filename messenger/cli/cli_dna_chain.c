@@ -168,6 +168,21 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
         result = dna_chain_cmd_utxos(ctx);
     }
     else if (strcmp(cmd, "send") == 0) {
+        /* Pre-scan for --bench flag; remove from argv if found.
+         * Bench mode emits machine-parseable single-line JSON (success
+         * or error) and bypasses the human-readable prints + the
+         * post-send 5s "DHT propagation" sleep. Used by the dna-bench
+         * tool which fork/execs this CLI per wallet. */
+        bool bench_mode = false;
+        for (int i = sub + 1; i < argc; i++) {
+            if (strcmp(argv[i], "--bench") == 0) {
+                bench_mode = true;
+                for (int j = i; j < argc - 1; j++) argv[j] = argv[j + 1];
+                argc--;
+                break;
+            }
+        }
+
         /* Check for --token flag: send --token <id> <fp> <amount> [memo] */
         if (sub + 1 < argc && strcmp(argv[sub + 1], "--token") == 0) {
             if (sub + 4 >= argc) {
@@ -189,7 +204,11 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
             }
         } else {
             if (sub + 2 >= argc) {
-                fprintf(stderr, "Usage: dna-connect-cli dna send <fingerprint> <amount> [memo]\n");
+                if (bench_mode) {
+                    printf("{\"error\":\"usage\",\"msg\":\"missing arguments: send <fingerprint> <amount> [memo]\"}\n");
+                } else {
+                    fprintf(stderr, "Usage: dna-connect-cli dna send <fingerprint> <amount> [memo]\n");
+                }
                 result = 1;
             } else {
                 const char *recipient = argv[sub + 1];
@@ -197,11 +216,16 @@ int dispatch_dna_chain(dna_engine_t *engine, int argc, char **argv, int sub) {
                 errno = 0;
                 uint64_t amount = strtoull(argv[sub + 2], &endptr, 10);
                 if (errno == ERANGE || !endptr || *endptr != '\0' || amount == 0) {
-                    fprintf(stderr, "Error: Invalid amount '%s'\n", argv[sub + 2]);
+                    if (bench_mode) {
+                        printf("{\"error\":\"invalid_amount\",\"msg\":\"amount must be a positive integer; got '%s'\"}\n",
+                               argv[sub + 2]);
+                    } else {
+                        fprintf(stderr, "Error: Invalid amount '%s'\n", argv[sub + 2]);
+                    }
                     result = 1;
                 } else {
                     const char *memo = (sub + 3 < argc) ? argv[sub + 3] : NULL;
-                    result = dna_chain_cmd_send(ctx, recipient, amount, memo);
+                    result = dna_chain_cmd_send(ctx, recipient, amount, memo, bench_mode);
                 }
             }
         }

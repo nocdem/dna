@@ -327,6 +327,16 @@ target_link_libraries(test_fp_converter ${TEST_LIBS})
 add_test(NAME test_fp_converter COMMAND test_fp_converter)
 
 # =============================================================================
+# Phase 0 (dna-bench prereq): `dna send --bench` JSON output contract.
+# Subprocess-based test (forks dna-connect-cli). No library link needed.
+# Skips (exit 77) if the CLI binary isn't built yet — set
+# DNA_CONNECT_CLI env var to override the default path.
+# =============================================================================
+add_executable(test_cli_send_bench test_cli_send_bench.c)
+add_test(NAME test_cli_send_bench COMMAND test_cli_send_bench)
+set_tests_properties(test_cli_send_bench PROPERTIES SKIP_RETURN_CODE 77)
+
+# =============================================================================
 # CTest integration
 # =============================================================================
 enable_testing()

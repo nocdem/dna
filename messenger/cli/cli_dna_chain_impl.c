@@ -324,38 +324,81 @@ static int resolve_recipient(dnac_context_t *ctx, const char *recipient,
     return 0;
 }
 
+/* Emit a single-line JSON error object on stdout. Used by --bench mode
+ * to give the bench parent a parseable signal even on failure paths.
+ * Escapes only " and \ in msg; control chars become space. */
+static void bench_json_emit_error(const char *code, const char *msg) {
+    char esc[512];
+    size_t j = 0;
+    if (!msg) msg = "";
+    for (size_t i = 0; msg[i] && j + 2 < sizeof(esc); i++) {
+        unsigned char c = (unsigned char)msg[i];
+        if (c == '"' || c == '\\') {
+            if (j + 3 >= sizeof(esc)) break;
+            esc[j++] = '\\';
+            esc[j++] = (char)c;
+        } else if (c < 0x20) {
+            esc[j++] = ' ';
+        } else {
+            esc[j++] = (char)c;
+        }
+    }
+    esc[j] = '\0';
+    printf("{\"error\":\"%s\",\"msg\":\"%s\"}\n", code, esc);
+}
+
 int dna_chain_cmd_send(dnac_context_t *ctx, const char *recipient,
-                  uint64_t amount, const char *memo) {
+                  uint64_t amount, const char *memo, bool bench_mode) {
     char resolved_fp[129];
     if (resolve_recipient(ctx, recipient, resolved_fp) != 0) {
+        if (bench_mode) {
+            bench_json_emit_error("name_not_found", recipient);
+        }
         return 1;
     }
 
     char amount_str[64];
     format_amount(amount, amount_str, sizeof(amount_str));
 
-    printf("Sending %s to %s...\n", amount_str, resolved_fp);
+    if (!bench_mode) {
+        printf("Sending %s to %s...\n", amount_str, resolved_fp);
+    }
 
     /* Estimate fee */
     uint64_t fee = 0;
     int rc = dnac_estimate_fee(ctx, amount, &fee);
     if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "Error estimating fee: %s\n", dnac_error_string(rc));
+        if (bench_mode) {
+            bench_json_emit_error("estimate_fail", dnac_error_string(rc));
+        } else {
+            fprintf(stderr, "Error estimating fee: %s\n", dnac_error_string(rc));
+        }
         return 1;
     }
 
-    char fee_str[64];
-    format_amount(fee, fee_str, sizeof(fee_str));
-    printf("Fee: %s\n", fee_str);
+    if (!bench_mode) {
+        char fee_str[64];
+        format_amount(fee, fee_str, sizeof(fee_str));
+        printf("Fee: %s\n", fee_str);
+    }
 
-    /* Send payment */
+    /* Send payment — measure submit time around the call for bench output. */
+    struct timespec ts0, ts1;
+    clock_gettime(CLOCK_MONOTONIC, &ts0);
     rc = dnac_send(ctx, resolved_fp, amount, memo, NULL, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &ts1);
     if (rc != DNAC_SUCCESS) {
-        fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        if (bench_mode) {
+            bench_json_emit_error("send_fail", dnac_error_string(rc));
+        } else {
+            fprintf(stderr, "Error: %s\n", dnac_error_string(rc));
+        }
         return 1;
     }
 
-    printf("Payment sent successfully!\n");
+    if (!bench_mode) {
+        printf("Payment sent successfully!\n");
+    }
 
     /* Phase 13 / Task 13.4 — print the witness receipt if available. */
     {
@@ -363,18 +406,38 @@ int dna_chain_cmd_send(dnac_context_t *ctx, const char *recipient,
         uint32_t ti = 0;
         uint8_t  txh[64];
         if (dnac_last_send_receipt(ctx, &bh, &ti, txh) == DNAC_SUCCESS) {
-            printf("Block:        %" PRIu64 "\n", bh);
-            printf("Tx index:     %" PRIu32 "\n", ti);
-            printf("Tx hash:      ");
-            for (int i = 0; i < DNAC_TX_HASH_SIZE; i++)
-                printf("%02x", txh[i]);
-            printf("\n");
+            if (bench_mode) {
+                int64_t dt_ns = (int64_t)(ts1.tv_sec - ts0.tv_sec) * 1000000000LL
+                              + (int64_t)(ts1.tv_nsec - ts0.tv_nsec);
+                uint64_t submit_ms = (dt_ns > 0) ? (uint64_t)(dt_ns / 1000000LL) : 0;
+                printf("{\"tx_hash\":\"");
+                for (int i = 0; i < DNAC_TX_HASH_SIZE; i++) printf("%02x", txh[i]);
+                printf("\",\"block\":%" PRIu64 ",\"tx_index\":%" PRIu32
+                       ",\"fee_raw\":%" PRIu64 ",\"submit_ms\":%" PRIu64 "}\n",
+                       bh, ti, fee, submit_ms);
+            } else {
+                printf("Block:        %" PRIu64 "\n", bh);
+                printf("Tx index:     %" PRIu32 "\n", ti);
+                printf("Tx hash:      ");
+                for (int i = 0; i < DNAC_TX_HASH_SIZE; i++)
+                    printf("%02x", txh[i]);
+                printf("\n");
+            }
+        } else if (bench_mode) {
+            /* dnac_send returned success but receipt is unavailable.
+             * Emit a degraded JSON line with warn so the bench parent
+             * doesn't get an empty line. */
+            printf("{\"tx_hash\":\"\",\"block\":0,\"tx_index\":0,"
+                   "\"fee_raw\":%" PRIu64 ",\"submit_ms\":0,\"warn\":\"no_receipt\"}\n",
+                   fee);
         }
     }
 
-    /* Allow DHT time to replicate the published TX data */
-    printf("Waiting for DHT propagation...\n");
-    sleep(5);
+    if (!bench_mode) {
+        /* Allow DHT time to replicate the published TX data */
+        printf("Waiting for DHT propagation...\n");
+        sleep(5);
+    }
 
     return 0;
 }

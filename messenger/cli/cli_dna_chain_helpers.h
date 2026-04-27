@@ -12,6 +12,8 @@
 #ifndef CLI_DNA_CHAIN_HELPERS_H
 #define CLI_DNA_CHAIN_HELPERS_H
 
+#include <stdbool.h>
+
 #include "dnac/dnac.h"
 
 #ifdef __cplusplus
@@ -50,7 +52,7 @@ int dna_chain_cmd_utxos(dnac_context_t *ctx);
  * @return 0 on success, non-zero on failure
  */
 int dna_chain_cmd_send(dnac_context_t *ctx, const char *recipient,
-                  uint64_t amount, const char *memo);
+                  uint64_t amount, const char *memo, bool bench_mode);
 
 /**
  * @brief Sync wallet from DHT
