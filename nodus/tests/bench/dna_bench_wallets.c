@@ -254,19 +254,27 @@ int dna_bench_wallet_init(int idx, char *fp_out, size_t fp_n) {
     char *out = NULL;
     size_t out_len = 0;
     int rc = run_capture_stdout(argv, &out, &out_len, 90);
-    if (rc != 0) {
-        fprintf(stderr, "[dna-bench] w%02d: identity create exit=%d\n", idx, rc);
+    /* `identity create` exits 1 with "Internal error" when the optional
+     * DHT name-registration step fails, even though the local identity
+     * (keys/identity.{dsa,kem}, mnemonic.enc) is fully written and
+     * loadable via `identity whoami`. The bench only needs the
+     * fingerprint, so accept whichever exit code as long as the
+     * Fingerprint: line is in stdout. */
+    char fp[160] = {0};
+    int fp_ok = (out && parse_fingerprint_from_text(out, fp, sizeof(fp)) == 0);
+    if (!fp_ok) {
+        fprintf(stderr,
+            "[dna-bench] w%02d: identity create exit=%d, no Fingerprint parsed\n",
+            idx, rc);
         if (out) { memset(out, 0, out_len); free(out); }
         free(wdir);
         return -1;
     }
-
-    char fp[160] = {0};
-    if (parse_fingerprint_from_text(out, fp, sizeof(fp)) != 0) {
-        fprintf(stderr, "[dna-bench] w%02d: no Fingerprint in output\n", idx);
-        memset(out, 0, out_len); free(out);
-        free(wdir);
-        return -1;
+    if (rc != 0) {
+        fprintf(stderr,
+            "[dna-bench] w%02d: identity create exit=%d "
+            "(local identity OK, DHT registration likely failed — proceeding)\n",
+            idx, rc);
     }
     /* zero captured stdout BEFORE free (mnemonic was in there) */
     memset(out, 0, out_len);
@@ -294,7 +302,13 @@ int dna_bench_wallet_init(int idx, char *fp_out, size_t fp_n) {
 }
 
 /* Send `amount_raw` from punk master (HOME=~/) to wallet idx's fp via
- * `dna send <fp> <amount> bench-fund --bench`. Returns 0 on success. */
+ * `dna send <fp> <amount> bench-fund --bench`. Returns 0 on success.
+ *
+ * Retries up to 3 times on transient DHT errors ("Network error" or
+ * "Insufficient funds" caused by a failed pre-flight sync that leaves
+ * the local UTXO cache stale). 3-second backoff between attempts to
+ * give DHT clients time to reconnect to a healthy peer.
+ */
 int dna_bench_wallet_fund(int idx, const char *fp, uint64_t amount_raw) {
     const char *cli = dna_bench_cli_bin();
     char amount_str[32];
@@ -305,26 +319,52 @@ int dna_bench_wallet_fund(int idx, const char *fp, uint64_t amount_raw) {
         cli, "-q", "dna", "send", fp, amount_str, "bench-fund", "--bench", NULL,
     };
 
-    char *out = NULL;
-    size_t out_len = 0;
-    int rc = run_capture_stdout(argv, &out, &out_len, DNA_BENCH_FUND_TIMEOUT_S);
-    if (rc != 0) {
-        fprintf(stderr, "[dna-bench] w%02d: fund exit=%d, output:\n%s",
-                idx, rc, out ? out : "(empty)");
+    int max_attempts = 3;
+    for (int attempt = 1; attempt <= max_attempts; attempt++) {
+        /* Pre-sync punk's local UTXO cache. The internal pre-flight sync
+         * inside `dna send` (rc237) sometimes fails with "Network error"
+         * and leaves the cache in a stale state, which then causes
+         * "Insufficient funds" on subsequent attempts. Running an
+         * explicit sync first reduces that window — and on retry it
+         * re-populates whatever the broken send left empty. */
+        const char *sync_argv[] = {
+            cli, "-q", "dna", "sync", NULL,
+        };
+        char *sync_out = NULL;
+        size_t sync_len = 0;
+        (void)run_capture_stdout(sync_argv, &sync_out, &sync_len, 30);
+        if (sync_out) free(sync_out);
+
+        char *out = NULL;
+        size_t out_len = 0;
+        int rc = run_capture_stdout(argv, &out, &out_len,
+                                    DNA_BENCH_FUND_TIMEOUT_S);
+        char tx_hash[160] = {0};
+        if (out && parse_tx_hash_json(out, tx_hash, sizeof(tx_hash)) == 0) {
+            free(out);
+            fprintf(stderr,
+                "[dna-bench] w%02d: funded tx=%.16s... amount=%llu (attempt %d)\n",
+                idx, tx_hash, (unsigned long long)amount_raw, attempt);
+            return 0;
+        }
+        /* Failure path: log + decide whether to retry. */
+        const char *body = out ? out : "(no stdout)";
+        bool transient =
+            (out && (strstr(out, "Network error") ||
+                     strstr(out, "Insufficient funds") ||
+                     strstr(out, "send_fail")));
+        fprintf(stderr,
+            "[dna-bench] w%02d: fund attempt %d/%d failed exit=%d "
+            "(transient=%d):\n%s",
+            idx, attempt, max_attempts, rc, transient ? 1 : 0, body);
         if (out) free(out);
-        return -1;
+        if (!transient || attempt == max_attempts) {
+            return -1;
+        }
+        /* Backoff to let DHT clients re-elect a healthy peer. */
+        sleep(3);
     }
-    char tx_hash[160] = {0};
-    if (parse_tx_hash_json(out, tx_hash, sizeof(tx_hash)) != 0) {
-        fprintf(stderr, "[dna-bench] w%02d: fund: no tx_hash in JSON: %s\n",
-                idx, out ? out : "");
-        free(out);
-        return -1;
-    }
-    free(out);
-    fprintf(stderr, "[dna-bench] w%02d: funded tx=%.16s... amount=%llu\n",
-            idx, tx_hash, (unsigned long long)amount_raw);
-    return 0;
+    return -1;
 }
 
 /* Read `dna balance` confirmed line; convert "X.YY DNAC" -> raw (×10^8). */
