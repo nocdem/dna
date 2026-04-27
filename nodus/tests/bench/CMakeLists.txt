@@ -43,6 +43,25 @@ target_include_directories(bench_cluster_tps PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bench_cluster_tps nodus dsa nodus pthread)
 
+# dna-bench — Phase 1 prod-cluster load generator + meter.
+#
+# Architecture: pure fork/exec orchestrator over dna-connect-cli (resolved
+# via $BENCH_CLI_BIN env or default /opt/dna/messenger/build/cli/...).
+# Does NOT link libdna.so — every wallet op is a child process so the
+# parent never loads ASan symbols. Plan: 2026-04-27-dna-bench-design.md.
+add_executable(dna_bench
+    dna_bench.c
+    dna_bench_pool.c
+    dna_bench_wallets.c
+    dna_bench_run.c
+    dna_bench_reconcile.c
+    dna_bench_observe.c
+    dna_bench_output.c
+)
+target_include_directories(dna_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(dna_bench nodus dsa nodus pthread)
+# Manual invocation only — not registered via add_test (requires prod cluster).
+
 # SQLite bench has an extra dependency — link sqlite3 explicitly.
 add_executable(bench_sqlite_commit
     bench_sqlite_commit.c
