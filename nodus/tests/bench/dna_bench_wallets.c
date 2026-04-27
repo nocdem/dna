@@ -1,6 +1,17 @@
-/* dna_bench_wallets.c — wallets {create,list,reset,drain} subcommand.
+/* dna_bench_wallets.c — wallets {create,list,reset,drain}.
  *
- * Phase 1.A scaffolding: dispatch + stub returns. Real impl in 1.B.
+ * Architecture: every wallet operation forks dna-connect-cli (resolved
+ * via $BENCH_CLI_BIN) so the parent process never loads libdna/ASan.
+ *
+ * Per-wallet layout (mode 0700 throughout):
+ *   ~/.dna_bench/wallets/wNN/.dna/    CLI's data dir (--data-dir target)
+ *   ~/.dna_bench/wallets/wNN/fp.txt   128-hex fingerprint cache
+ *
+ * Mnemonics are NEVER persisted (red-team B1/B2/B3). cmd_create's
+ * stdout (which contains the mnemonic display) is read into a heap
+ * buffer, parsed for the "Fingerprint:" line, and freed. Buffer
+ * memset-zeroed before free() to reduce window where memory dumps /
+ * swap could leak the mnemonic.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -8,13 +19,170 @@
 
 #include "dna_bench_internal.h"
 
+#include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <ftw.h>
+#include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
 
+#define EX_OOM_OR_INTERNAL 71
+#define MAX_STDOUT_BUF (256 * 1024)  /* 256 KiB; mnemonic + identity output */
+
+static char *xstrdup_w(const char *s) {
+    char *r = strdup(s ? s : "");
+    if (!r) { perror("strdup"); exit(EX_OOM_OR_INTERNAL); }
+    return r;
+}
+
+/* ── Subprocess helpers ────────────────────────────────────────── */
+
+/* Run argv[] with stdin closed, capture stdout into a heap buffer (caller
+ * frees), discard stderr. Returns child exit status (0 on success).
+ * Sets *out_buf to NULL/0 on fork or pipe failure. */
+static int run_capture_stdout(const char *const argv[], char **out_buf,
+                              size_t *out_len, int timeout_s) {
+    *out_buf = NULL;
+    *out_len = 0;
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) { perror("pipe"); return -1; }
+
+    pid_t pid = fork();
+    if (pid < 0) { perror("fork"); close(pipefd[0]); close(pipefd[1]); return -1; }
+    if (pid == 0) {
+        /* child */
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+        /* stdin from /dev/null so init / register can't block on read */
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) { dup2(devnull, STDIN_FILENO); close(devnull); }
+        /* stderr inherited so the operator sees diagnostics live */
+        execv(argv[0], (char *const *)argv);
+        fprintf(stderr, "[dna-bench] execv %s failed: %s\n",
+                argv[0], strerror(errno));
+        _exit(127);
+    }
+    close(pipefd[1]);
+
+    /* Read with a soft timeout. If the deadline passes, kill the child. */
+    char *buf = calloc(1, MAX_STDOUT_BUF + 1);
+    if (!buf) { close(pipefd[0]); waitpid(pid, NULL, 0); return -1; }
+    size_t total = 0;
+    time_t deadline = time(NULL) + (timeout_s > 0 ? timeout_s : 600);
+
+    while (1) {
+        if (g_dna_bench_shutdown) {
+            kill(pid, SIGTERM);
+            break;
+        }
+        if (time(NULL) > deadline) {
+            fprintf(stderr, "[dna-bench] child %d timed out after %ds\n",
+                    (int)pid, timeout_s);
+            kill(pid, SIGTERM);
+            sleep(1);
+            kill(pid, SIGKILL);
+            break;
+        }
+        ssize_t n = read(pipefd[0], buf + total, MAX_STDOUT_BUF - total);
+        if (n == 0) break;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        total += (size_t)n;
+        if (total >= MAX_STDOUT_BUF) break;
+    }
+    close(pipefd[0]);
+    buf[total] = '\0';
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    *out_buf = buf;
+    *out_len = total;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
+}
+
+/* Locate "Fingerprint: <hex>" anywhere in buf; copy hex into out (max
+ * 128 chars). Returns 0 ok, -1 not found / malformed. */
+static int parse_fingerprint_from_text(const char *buf, char *out,
+                                       size_t out_n) {
+    const char *p = strstr(buf, "Fingerprint:");
+    if (!p) return -1;
+    p += strlen("Fingerprint:");
+    while (*p == ' ' || *p == '\t') p++;
+    size_t i = 0;
+    while (*p && i + 1 < out_n) {
+        char c = *p;
+        if ((c >= '0' && c <= '9') ||
+            (c >= 'a' && c <= 'f') ||
+            (c >= 'A' && c <= 'F')) {
+            out[i++] = c;
+            p++;
+        } else {
+            break;
+        }
+    }
+    out[i] = '\0';
+    return (i == 128) ? 0 : -1;
+}
+
+/* Look for { "tx_hash": "<hex>", ... } single-line JSON. Returns 0 ok. */
+static int parse_tx_hash_json(const char *buf, char *out, size_t out_n) {
+    const char *p = strstr(buf, "\"tx_hash\":\"");
+    if (!p) return -1;
+    p += strlen("\"tx_hash\":\"");
+    size_t i = 0;
+    while (*p && *p != '"' && i + 1 < out_n) out[i++] = *p++;
+    out[i] = '\0';
+    return (i > 0) ? 0 : -1;
+}
+
+/* ── Recursive rmdir (~/.dna_bench cleanup) ────────────────────── */
+
+static int rmtree_visit(const char *path, const struct stat *sb,
+                        int type, struct FTW *ftwbuf) {
+    (void)sb; (void)ftwbuf;
+    if (type == FTW_DP) {
+        if (rmdir(path) != 0 && errno != ENOENT) {
+            fprintf(stderr, "[dna-bench] rmdir %s: %s\n", path, strerror(errno));
+        }
+    } else {
+        if (unlink(path) != 0 && errno != ENOENT) {
+            fprintf(stderr, "[dna-bench] unlink %s: %s\n", path, strerror(errno));
+        }
+    }
+    return 0;
+}
+
+static int rmtree_secure(const char *root) {
+    /* Refuse to delete suspicious paths. */
+    if (!root || !*root || strstr(root, "..") || strcmp(root, "/") == 0) {
+        fprintf(stderr, "[dna-bench] refusing to rmtree %s\n",
+                root ? root : "(null)");
+        return -1;
+    }
+    return nftw(root, rmtree_visit, 16, FTW_DEPTH | FTW_PHYS);
+}
+
+/* ── Subcommands ───────────────────────────────────────────────── */
+
+static int cmd_wallets_reset(int argc, char **argv);
 static int cmd_wallets_create(int argc, char **argv);
 static int cmd_wallets_list(int argc, char **argv);
-static int cmd_wallets_reset(int argc, char **argv);
 static int cmd_wallets_drain(int argc, char **argv);
 
 int cmd_wallets(int argc, char **argv) {
@@ -31,40 +199,329 @@ int cmd_wallets(int argc, char **argv) {
     return DNA_BENCH_EXIT_USAGE;
 }
 
-static int cmd_wallets_create(int argc, char **argv) {
+static int cmd_wallets_reset(int argc, char **argv) {
     (void)argc; (void)argv;
-    fprintf(stderr, "[dna-bench] wallets create: not yet implemented (Phase 1.B)\n");
-    return DNA_BENCH_EXIT_NOT_IMPLEMENTED;
+    char *root = dna_bench_root();
+    struct stat st;
+    if (stat(root, &st) != 0) {
+        fprintf(stderr, "[dna-bench] reset: %s does not exist (nothing to do)\n", root);
+        free(root);
+        return 0;
+    }
+    fprintf(stderr, "[dna-bench] reset: removing %s\n", root);
+    int rc = rmtree_secure(root);
+    free(root);
+    return (rc == 0) ? 0 : 1;
 }
+
+/* ── wallets create ────────────────────────────────────────────── */
+
+static void random_hex6(char *out) {
+    /* 6 hex chars from urandom; non-crypto purpose (name suffix). */
+    unsigned char b[3];
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) { read(fd, b, 3); close(fd); }
+    else { srand((unsigned)(time(NULL) ^ getpid())); for (int i=0;i<3;i++) b[i]=rand()&0xFF; }
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 3; i++) {
+        out[i*2]   = hex[(b[i] >> 4) & 0xF];
+        out[i*2+1] = hex[b[i] & 0xF];
+    }
+    out[6] = '\0';
+}
+
+/* Create wallet idx: data dir + identity create + cache fp.txt. */
+int dna_bench_wallet_init(int idx, char *fp_out, size_t fp_n) {
+    char *wdir = dna_bench_wallet_dir(idx);
+    char data_dir[1280];
+    snprintf(data_dir, sizeof(data_dir), "%s/.dna", wdir);
+    if (dna_bench_mkdir_p_secure(data_dir) != 0) {
+        fprintf(stderr, "[dna-bench] mkdir %s: %s\n", data_dir, strerror(errno));
+        free(wdir);
+        return -1;
+    }
+    char name[32];
+    snprintf(name, sizeof(name), "stress_");
+    random_hex6(name + 7);
+
+    const char *cli = dna_bench_cli_bin();
+    const char *argv[] = {
+        cli, "-q", "-d", data_dir,
+        "identity", "create", name, NULL,
+    };
+    fprintf(stderr, "[dna-bench] w%02d: identity create %s ...\n", idx, name);
+
+    char *out = NULL;
+    size_t out_len = 0;
+    int rc = run_capture_stdout(argv, &out, &out_len, 90);
+    if (rc != 0) {
+        fprintf(stderr, "[dna-bench] w%02d: identity create exit=%d\n", idx, rc);
+        if (out) { memset(out, 0, out_len); free(out); }
+        free(wdir);
+        return -1;
+    }
+
+    char fp[160] = {0};
+    if (parse_fingerprint_from_text(out, fp, sizeof(fp)) != 0) {
+        fprintf(stderr, "[dna-bench] w%02d: no Fingerprint in output\n", idx);
+        memset(out, 0, out_len); free(out);
+        free(wdir);
+        return -1;
+    }
+    /* zero captured stdout BEFORE free (mnemonic was in there) */
+    memset(out, 0, out_len);
+    free(out);
+
+    /* Write fp.txt */
+    char *fp_path = dna_bench_wallet_fp_path(idx);
+    int fd = open(fp_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) {
+        fprintf(stderr, "[dna-bench] w%02d: open %s: %s\n", idx, fp_path,
+                strerror(errno));
+        free(fp_path); free(wdir);
+        return -1;
+    }
+    dprintf(fd, "%s\n", fp);
+    close(fd);
+    free(fp_path);
+    free(wdir);
+
+    if (fp_out && fp_n) {
+        snprintf(fp_out, fp_n, "%s", fp);
+    }
+    fprintf(stderr, "[dna-bench] w%02d: created %.16s...\n", idx, fp);
+    return 0;
+}
+
+/* Send `amount_raw` from punk master (HOME=~/) to wallet idx's fp via
+ * `dna send <fp> <amount> bench-fund --bench`. Returns 0 on success. */
+int dna_bench_wallet_fund(int idx, const char *fp, uint64_t amount_raw) {
+    const char *cli = dna_bench_cli_bin();
+    char amount_str[32];
+    snprintf(amount_str, sizeof(amount_str), "%llu",
+             (unsigned long long)amount_raw);
+
+    const char *argv[] = {
+        cli, "-q", "dna", "send", fp, amount_str, "bench-fund", "--bench", NULL,
+    };
+
+    char *out = NULL;
+    size_t out_len = 0;
+    int rc = run_capture_stdout(argv, &out, &out_len, DNA_BENCH_FUND_TIMEOUT_S);
+    if (rc != 0) {
+        fprintf(stderr, "[dna-bench] w%02d: fund exit=%d, output:\n%s",
+                idx, rc, out ? out : "(empty)");
+        if (out) free(out);
+        return -1;
+    }
+    char tx_hash[160] = {0};
+    if (parse_tx_hash_json(out, tx_hash, sizeof(tx_hash)) != 0) {
+        fprintf(stderr, "[dna-bench] w%02d: fund: no tx_hash in JSON: %s\n",
+                idx, out ? out : "");
+        free(out);
+        return -1;
+    }
+    free(out);
+    fprintf(stderr, "[dna-bench] w%02d: funded tx=%.16s... amount=%llu\n",
+            idx, tx_hash, (unsigned long long)amount_raw);
+    return 0;
+}
+
+/* Read `dna balance` confirmed line; convert "X.YY DNAC" -> raw (×10^8). */
+int dna_bench_wallet_balance(int idx, uint64_t *raw_out) {
+    *raw_out = 0;
+    char *wdir = dna_bench_wallet_dir(idx);
+    char data_dir[1280];
+    snprintf(data_dir, sizeof(data_dir), "%s/.dna", wdir);
+
+    const char *cli = dna_bench_cli_bin();
+    const char *argv[] = { cli, "-q", "-d", data_dir, "dna", "balance", NULL };
+
+    char *out = NULL;
+    size_t out_len = 0;
+    int rc = run_capture_stdout(argv, &out, &out_len, 30);
+    free(wdir);
+    if (rc != 0 || !out) {
+        if (out) free(out);
+        return -1;
+    }
+
+    /* Parse "Confirmed:    X.YY DNAC" */
+    const char *p = strstr(out, "Confirmed:");
+    if (!p) { free(out); return -1; }
+    p += strlen("Confirmed:");
+    while (*p == ' ' || *p == '\t') p++;
+    /* Read floating value */
+    char *end = NULL;
+    double dnac = strtod(p, &end);
+    if (end == p) { free(out); return -1; }
+    free(out);
+    *raw_out = (uint64_t)(dnac * 1.0e8 + 0.5);
+    return 0;
+}
+
+static void usage_create(void) {
+    fprintf(stderr,
+        "usage: dna_bench wallets create <N> [--fund <amount-raw>]\n"
+        "                                    [--fresh] [--allow-large]\n");
+}
+
+static int cmd_wallets_create(int argc, char **argv) {
+    int n = -1;
+    uint64_t fund_raw = DNA_BENCH_DEFAULT_FUND_RAW;
+    bool fresh = false;
+    bool allow_large = false;
+
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (a[0] != '-') {
+            if (n < 0) {
+                char *end;
+                long v = strtol(a, &end, 10);
+                if (*end != '\0' || v <= 0) {
+                    fprintf(stderr, "[dna-bench] invalid N: %s\n", a);
+                    return DNA_BENCH_EXIT_USAGE;
+                }
+                n = (int)v;
+            } else {
+                fprintf(stderr, "[dna-bench] unexpected arg: %s\n", a);
+                return DNA_BENCH_EXIT_USAGE;
+            }
+        } else if (strcmp(a, "--fund") == 0 && i + 1 < argc) {
+            fund_raw = strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--fresh") == 0) {
+            fresh = true;
+        } else if (strcmp(a, "--allow-large") == 0) {
+            allow_large = true;
+        } else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
+            usage_create();
+            return 0;
+        } else {
+            fprintf(stderr, "[dna-bench] unknown flag: %s\n", a);
+            usage_create();
+            return DNA_BENCH_EXIT_USAGE;
+        }
+    }
+    if (n <= 0) { usage_create(); return DNA_BENCH_EXIT_USAGE; }
+
+    /* Operator safety caps (red-team C3, B10). */
+    if (n > DNA_BENCH_MAX_WALLETS_DEFAULT && !allow_large) {
+        fprintf(stderr,
+                "[dna-bench] N=%d exceeds default cap %d; pass --allow-large to bypass\n",
+                n, DNA_BENCH_MAX_WALLETS_DEFAULT);
+        return DNA_BENCH_EXIT_USAGE;
+    }
+    if (n > DNA_BENCH_MAX_WALLETS_HARD) {
+        fprintf(stderr, "[dna-bench] N=%d exceeds hard cap %d (no override)\n",
+                n, DNA_BENCH_MAX_WALLETS_HARD);
+        return DNA_BENCH_EXIT_USAGE;
+    }
+
+    /* Pool exists? */
+    if (dna_bench_pool_exists() && !fresh) {
+        fprintf(stderr, "[dna-bench] pool already exists; pass --fresh or run "
+                        "'wallets reset'\n");
+        return 1;
+    }
+    if (fresh) {
+        fprintf(stderr, "[dna-bench] --fresh: removing existing pool\n");
+        cmd_wallets_reset(0, NULL);
+    }
+
+    /* Punk identity lock: refuse if dna-punk-debug-inbox is up (red-team C2). */
+    int sysrc = system("systemctl is-active --quiet dna-punk-debug-inbox 2>/dev/null");
+    if (WIFEXITED(sysrc) && WEXITSTATUS(sysrc) == 0) {
+        fprintf(stderr,
+            "[dna-bench] WARN: dna-punk-debug-inbox.service is active; punk "
+            "identity is locked.\n"
+            "           Stop it first:  sudo systemctl stop dna-punk-debug-inbox\n");
+        return DNA_BENCH_EXIT_PUNK_LOCKED;
+    }
+
+    char *root = dna_bench_root();
+    if (dna_bench_mkdir_p_secure(root) != 0) {
+        fprintf(stderr, "[dna-bench] mkdir %s: %s\n", root, strerror(errno));
+        free(root);
+        return 1;
+    }
+    free(root);
+
+    fprintf(stderr, "[dna-bench] creating %d wallets, fund=%llu raw each\n",
+            n, (unsigned long long)fund_raw);
+
+    int funded = 0;
+    int created = 0;
+    for (int i = 0; i < n && !g_dna_bench_shutdown; i++) {
+        char fp[160] = {0};
+        if (dna_bench_wallet_init(i, fp, sizeof(fp)) != 0) {
+            fprintf(stderr, "[dna-bench] w%02d: init FAILED\n", i);
+            continue;
+        }
+        created++;
+        if (dna_bench_wallet_fund(i, fp, fund_raw) != 0) {
+            fprintf(stderr, "[dna-bench] w%02d: fund FAILED\n", i);
+            continue;
+        }
+        funded++;
+    }
+
+    int min_required = (n / 2 < 5) ? 5 : (n / 2);
+    if (n < 5) min_required = n;  /* small smoke pool */
+    if (funded < min_required) {
+        fprintf(stderr,
+            "[dna-bench] only %d/%d funded (min required %d) — aborting; "
+            "check punk balance and DHT connectivity\n",
+            funded, n, min_required);
+        return 1;
+    }
+
+    /* Persist pool.json */
+    struct dna_bench_pool p = {0};
+    p.count = funded;
+    p.fund_per_wallet_raw = fund_raw;
+    if (dna_bench_pool_save(&p) != 0) {
+        fprintf(stderr, "[dna-bench] failed to persist pool.json\n");
+        return 1;
+    }
+    fprintf(stderr, "[dna-bench] pool created: %d/%d wallets funded (created=%d)\n",
+            funded, n, created);
+    return 0;
+}
+
+/* ── wallets list ──────────────────────────────────────────────── */
 
 static int cmd_wallets_list(int argc, char **argv) {
     (void)argc; (void)argv;
-    fprintf(stderr, "[dna-bench] wallets list: not yet implemented (Phase 1.B)\n");
-    return DNA_BENCH_EXIT_NOT_IMPLEMENTED;
+    struct dna_bench_pool p = {0};
+    int rc = dna_bench_pool_load(&p);
+    if (rc != 0) {
+        fprintf(stderr, "[dna-bench] no pool found (rc=%d)\n", rc);
+        return 1;
+    }
+    fprintf(stderr, "[dna-bench] pool: count=%d fund_per_wallet=%llu created=%s\n",
+            p.count, (unsigned long long)p.fund_per_wallet_raw, p.created_at);
+    printf("idx  fp_short          balance_raw   balance_dnac\n");
+    for (int i = 0; i < p.count; i++) {
+        char *fp_path = dna_bench_wallet_fp_path(i);
+        char *fp = dna_bench_read_first_line(fp_path);
+        free(fp_path);
+        uint64_t bal = 0;
+        (void)dna_bench_wallet_balance(i, &bal);
+        char fp_short[32] = "?";
+        if (fp) { snprintf(fp_short, sizeof(fp_short), "%.16s", fp); free(fp); }
+        printf("%-3d  %-17s %12llu  %.4f DNAC\n",
+               i, fp_short, (unsigned long long)bal, bal / 1.0e8);
+    }
+    return 0;
 }
 
-static int cmd_wallets_reset(int argc, char **argv) {
-    (void)argc; (void)argv;
-    fprintf(stderr, "[dna-bench] wallets reset: not yet implemented (Phase 1.B)\n");
-    return DNA_BENCH_EXIT_NOT_IMPLEMENTED;
-}
+/* ── wallets drain ─ deferred (not on smoke path) ──────────────── */
 
 static int cmd_wallets_drain(int argc, char **argv) {
     (void)argc; (void)argv;
-    fprintf(stderr, "[dna-bench] wallets drain: not yet implemented (Phase 1.B)\n");
+    fprintf(stderr,
+        "[dna-bench] drain: deferred. For now, send remaining balances "
+        "manually with `dna-connect-cli -d <wallet>/.dna dna send <to> ...` "
+        "or run `wallets reset` to discard the pool.\n");
     return DNA_BENCH_EXIT_NOT_IMPLEMENTED;
-}
-
-/* Wallet ops — Phase 1.B implementations live here too. Stubs for now. */
-int dna_bench_wallet_init(int idx, char *fp_out, size_t fp_n) {
-    (void)idx; (void)fp_out; (void)fp_n;
-    return -1;
-}
-int dna_bench_wallet_fund(int idx, const char *fp, uint64_t amount_raw) {
-    (void)idx; (void)fp; (void)amount_raw;
-    return -1;
-}
-int dna_bench_wallet_balance(int idx, uint64_t *raw_out) {
-    (void)idx; (void)raw_out;
-    return -1;
 }
