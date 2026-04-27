@@ -409,6 +409,7 @@ static void run_one_round(struct run_state *st, int target_tps,
     uint64_t round_lats[1024];
     int round_lat_n = 0;
 
+    char first_err[256] = {0};
     for (int i = 0; i < N; i++) {
         if (slots[i].pid <= 0) { round_fail++; st->fail++; continue; }
         round_submit++;
@@ -428,6 +429,18 @@ static void run_one_round(struct run_state *st, int target_tps,
                 round_rl++; st->rate_limited++;
             }
             round_fail++; st->fail++;
+            if (first_err[0] == '\0') {
+                /* Capture first child's stdout snippet for diagnosis. */
+                size_t len = slots[i].stdout_len;
+                if (len > sizeof(first_err) - 1) len = sizeof(first_err) - 1;
+                memcpy(first_err, slots[i].stdout_buf, len);
+                first_err[len] = '\0';
+                /* Strip trailing whitespace */
+                while (len > 0 && (first_err[len - 1] == '\n' ||
+                                   first_err[len - 1] == ' ')) {
+                    first_err[--len] = '\0';
+                }
+            }
         }
         if (slots[i].exit_ns > slots[i].fork_ns) {
             uint64_t lat_us = (slots[i].exit_ns - slots[i].fork_ns) / 1000;
@@ -443,6 +456,12 @@ static void run_one_round(struct run_state *st, int target_tps,
 
     uint64_t round_dt_ns = now_ns() - round_start;
     st->rounds++;
+
+    if (round_fail > 0 && first_err[0]) {
+        fprintf(stderr,
+            "[dna-bench] round %d: %d/%d failed; first child stdout: %.180s\n",
+            st->rounds, round_fail, round_submit, first_err);
+    }
 
     /* Sustained / soak: pace the round */
     if (st->cfg->mode == DNA_BENCH_MODE_SUSTAINED ||
@@ -499,9 +518,18 @@ static struct {
 
 static void *tick_thread(void *arg) {
     (void)arg;
+    /* Sleep in 200ms steps so tick_stop() can return promptly without
+     * needing pthread_kill (SIGUSR2 default action is process-terminate;
+     * installing a handler in a multi-threaded program is fragile). */
     while (1) {
-        struct timespec ts = { g_tick.interval_s, 0 };
-        nanosleep(&ts, NULL);
+        for (int slept = 0; slept < g_tick.interval_s * 1000; slept += 200) {
+            pthread_mutex_lock(&g_tick.lock);
+            int running = g_tick.running;
+            pthread_mutex_unlock(&g_tick.lock);
+            if (!running) return NULL;
+            struct timespec ts = { 0, 200 * 1000 * 1000L };
+            nanosleep(&ts, NULL);
+        }
         pthread_mutex_lock(&g_tick.lock);
         if (!g_tick.running) { pthread_mutex_unlock(&g_tick.lock); break; }
         struct run_state *st = g_tick.st;
@@ -539,7 +567,8 @@ static void tick_stop(void) {
     pthread_mutex_lock(&g_tick.lock);
     g_tick.running = 0;
     pthread_mutex_unlock(&g_tick.lock);
-    pthread_kill(g_tick.t, SIGUSR2);   /* wake nanosleep early */
+    /* Tick thread polls running flag every 200ms; will exit on its
+     * next iteration. Worst case we wait ~200ms in pthread_join. */
     pthread_join(g_tick.t, NULL);
     pthread_mutex_destroy(&g_tick.lock);
 }
@@ -716,6 +745,36 @@ int cmd_run(int argc, char **argv) {
     }
 
     g_rng_state = (unsigned)(time(NULL) ^ getpid());
+
+    /* Pre-run warm sync: a freshly-funded wallet's local UTXO cache is
+     * sometimes stale after `wallets create` despite the per-fund sync,
+     * which makes the FIRST `dna send` fail with "Insufficient funds"
+     * even though the chain has the UTXO. Force each wallet to sync
+     * once now so coin selection sees the funding TX. Sequential is
+     * fine — this is a one-time warm-up before the parallel rounds. */
+    fprintf(stderr, "[dna-bench] warm-sync %d wallet(s)...\n", pool_size);
+    for (int i = 0; i < pool_size; i++) {
+        const char *cli = dna_bench_cli_bin();
+        const char *sync_argv[] = {
+            cli, "-q", "-d", pool[i].data_dir, "dna", "sync", NULL,
+        };
+        pid_t pid = fork();
+        if (pid == 0) {
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) {
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                close(devnull);
+            }
+            execv(sync_argv[0], (char *const *)sync_argv);
+            _exit(127);
+        }
+        if (pid > 0) {
+            int status;
+            waitpid(pid, &status, 0);
+        }
+    }
+    fprintf(stderr, "[dna-bench] warm-sync done.\n");
 
     struct run_state st = {0};
     st.pool = pool;
