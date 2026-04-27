@@ -418,29 +418,36 @@ static void run_one_round(struct run_state *st, int target_tps,
         waitpid(sync_pids[i], &status, 0);
     }
 
-    /* Now fire the actual sends. Sequential per-wallet, with retry on
-     * transient errors (Network error / send_fail without explicit
-     * "Insufficient funds"). The chain itself accepts these TXs once
-     * the DHT round-trip stabilizes — single retry typically clears
-     * the failure. Up to 2 retries (3 attempts total). */
-    const int MAX_SEND_ATTEMPTS = 3;
+    /* PARALLEL send fire — all wallets at once. With per-attempt
+     * retry: after first parallel pass, identify wallets that failed
+     * with transient errors (Network error / send_fail without
+     * "Insufficient funds"), re-sync them, fire the failed ones again
+     * in parallel. Up to 3 attempts total. */
+    char targets[MAX_POOL][160];
     for (int i = 0; i < N; i++) {
-        const char *target = NULL;
         if (st->cfg->fixed_recipient) {
-            target = st->cfg->recipient_fp;
+            snprintf(targets[i], sizeof(targets[i]), "%s",
+                     st->cfg->recipient_fp);
         } else {
             int j;
-            if (N == 1) j = 0; /* degenerate: send to self (allowed for smoke) */
+            if (N == 1) j = 0;
             else {
                 j = (i + 1 + (rand_step() % (N - 1))) % N;
                 if (j == i) j = (j + 1) % N;
             }
-            target = st->pool[j].fp;
+            snprintf(targets[i], sizeof(targets[i]), "%s", st->pool[j].fp);
         }
         slots[i].wallet_idx = st->pool[i].idx;
+    }
 
-        for (int attempt = 0; attempt < MAX_SEND_ATTEMPTS; attempt++) {
-            /* Reset slot for this attempt */
+    const int MAX_SEND_ATTEMPTS = 3;
+    bool need[MAX_POOL];
+    for (int i = 0; i < N; i++) need[i] = true;
+
+    for (int attempt = 0; attempt < MAX_SEND_ATTEMPTS; attempt++) {
+        /* Fire all wallets that still need a send (parallel). */
+        for (int i = 0; i < N; i++) {
+            if (!need[i]) continue;
             slots[i].pid = 0;
             slots[i].stdout_len = 0;
             slots[i].stdout_buf[0] = '\0';
@@ -448,32 +455,42 @@ static void run_one_round(struct run_state *st, int target_tps,
             slots[i].fork_ns = 0;
             slots[i].exit_ns = 0;
             slots[i].status = 0;
-
-            if (fork_send(&slots[i], &st->pool[i], target, memo) != 0) {
+            if (fork_send(&slots[i], &st->pool[i], targets[i], memo) != 0) {
                 slots[i].reaped = 1;
                 slots[i].pid = -1;
                 slots[i].status = -1;
-                break;  /* fork failure: no retry */
             }
-            uint64_t deadline = now_ns() + (uint64_t)DNA_BENCH_CHILD_TIMEOUT_S
-                                         * 1000000000ULL;
-            reap_round(&slots[i], 1, deadline);
+        }
+        uint64_t deadline = now_ns() + (uint64_t)DNA_BENCH_CHILD_TIMEOUT_S
+                                     * 1000000000ULL;
+        reap_round(slots, N, deadline);
 
+        /* Classify each wallet: success, retryable, or final fail. */
+        int retry_count = 0;
+        for (int i = 0; i < N; i++) {
+            if (!need[i]) continue;
             char tx[160];
-            if (parse_tx_hash(slots[i].stdout_buf, tx, sizeof(tx)) == 0) {
-                break;  /* success */
+            if (slots[i].pid > 0 &&
+                parse_tx_hash(slots[i].stdout_buf, tx, sizeof(tx)) == 0) {
+                need[i] = false;
+                continue;
             }
-            if (attempt + 1 >= MAX_SEND_ATTEMPTS) break;
-
-            /* Failure classification: every retryable error gets one
-             * more shot. "Insufficient funds" is included because
-             * empirically the wallet's local SQLite UTXO state lags
-             * the chain even after `dna sync` returns success — a
-             * second sync between attempts forces the local DB to
-             * pick up the change UTXO from the previous round. */
+            if (slots[i].pid <= 0) { need[i] = false; continue; }
+            if (attempt + 1 >= MAX_SEND_ATTEMPTS) { need[i] = false; continue; }
             const char *body = slots[i].stdout_buf;
-            (void)body;
-            /* Force re-sync this wallet before the next attempt. */
+            bool transient =
+                (strstr(body, "Network error") != NULL) ||
+                (strstr(body, "Insufficient funds") != NULL);
+            if (!transient) { need[i] = false; continue; }
+            retry_count++;
+        }
+        if (retry_count == 0) break;
+
+        /* Re-sync only the wallets we'll retry, in parallel. */
+        pid_t resync_pids[MAX_POOL];
+        int resync_count = 0;
+        for (int i = 0; i < N; i++) {
+            if (!need[i]) continue;
             const char *cli2 = dna_bench_cli_bin();
             const char *resync_argv[] = {
                 cli2, "-q", "-d", st->pool[i].data_dir, "dna", "sync", NULL,
@@ -487,15 +504,14 @@ static void run_one_round(struct run_state *st, int target_tps,
                 execv(resync_argv[0], (char *const *)resync_argv);
                 _exit(127);
             }
-            if (rs_pid > 0) {
-                int rs_status;
-                waitpid(rs_pid, &rs_status, 0);
-            }
-            /* Brief backoff so the chain has time to commit pending
-             * blocks and DHT to converge. */
-            struct timespec ts = { 2, 0 };
-            nanosleep(&ts, NULL);
+            if (rs_pid > 0) resync_pids[resync_count++] = rs_pid;
         }
+        for (int i = 0; i < resync_count; i++) {
+            int rs_status;
+            waitpid(resync_pids[i], &rs_status, 0);
+        }
+        struct timespec ts = { 1, 0 };
+        nanosleep(&ts, NULL);
     }
 
     int round_submit = 0, round_commit = 0, round_fail = 0, round_rl = 0;
