@@ -857,13 +857,14 @@ int cmd_run(int argc, char **argv) {
 
     g_rng_state = (unsigned)(time(NULL) ^ getpid());
 
-    /* Pre-run warm sync: a freshly-funded wallet's local UTXO cache is
-     * sometimes stale after `wallets create` despite the per-fund sync,
-     * which makes the FIRST `dna send` fail with "Insufficient funds"
-     * even though the chain has the UTXO. Force each wallet to sync
-     * once now so coin selection sees the funding TX. Sequential is
-     * fine — this is a one-time warm-up before the parallel rounds. */
-    fprintf(stderr, "[dna-bench] warm-sync %d wallet(s)...\n", pool_size);
+    /* Pre-run warm sync: parallel fork ALL wallets at once; wait for
+     * all. Sequential here scales O(N × 15s) which becomes 6+ minutes
+     * for N=27 — longer than the entire test duration. Parallel scales
+     * to ~30s regardless of N. */
+    fprintf(stderr, "[dna-bench] warm-sync %d wallet(s) (parallel)...\n",
+            pool_size);
+    pid_t warm_pids[MAX_POOL];
+    int warm_count = 0;
     for (int i = 0; i < pool_size; i++) {
         const char *cli = dna_bench_cli_bin();
         const char *sync_argv[] = {
@@ -877,13 +878,16 @@ int cmd_run(int argc, char **argv) {
                 dup2(devnull, STDERR_FILENO);
                 close(devnull);
             }
+            int dni = open("/dev/null", O_RDONLY);
+            if (dni >= 0) { dup2(dni, STDIN_FILENO); close(dni); }
             execv(sync_argv[0], (char *const *)sync_argv);
             _exit(127);
         }
-        if (pid > 0) {
-            int status;
-            waitpid(pid, &status, 0);
-        }
+        if (pid > 0) warm_pids[warm_count++] = pid;
+    }
+    for (int i = 0; i < warm_count; i++) {
+        int status;
+        waitpid(warm_pids[i], &status, 0);
     }
     fprintf(stderr, "[dna-bench] warm-sync done.\n");
 
