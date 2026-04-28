@@ -131,57 +131,42 @@ static uint8_t *read_file_all(const char *path, size_t *len_out) {
     return buf;
 }
 
-/* Pull biggest unspent UTXO from wallet's dnac.db. Returns 0 on success. */
-static int load_initial_utxo_from_db(struct bench_wallet *w) {
-    char db_path[1280];
-    snprintf(db_path, sizeof(db_path), "%s/dnac.db", w->data_dir);
-
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
-        fprintf(stderr, "[wXX %d] cannot open %s: %s\n",
-                w->idx, db_path, sqlite3_errmsg(db));
-        if (db) sqlite3_close(db);
+/* Query chain (post-connect) for biggest unspent native UTXO.
+ * Local DB is unreliable across bench runs (change UTXOs from prior
+ * runs land on chain but never sync into the wallet's dnac.db).
+ * Returns 0 on success. */
+static int load_initial_utxo_from_chain(struct bench_wallet *w) {
+    nodus_dnac_utxo_result_t r = {0};
+    if (nodus_client_dnac_utxo(&w->client, w->fp, 100, &r) != 0) {
+        fprintf(stderr, "[w%02d] dnac_utxo query failed\n", w->idx);
         return -1;
     }
-
-    /* Native DNAC token only (token_id all zeros). status=0 = unspent. */
-    const char *sql =
-        "SELECT tx_hash, output_index, amount, nullifier "
-        "FROM dnac_utxos WHERE status = 0 "
-        "AND token_id = zeroblob(64) "
-        "ORDER BY amount DESC LIMIT 1";
-
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-        fprintf(stderr, "[w%02d] sqlite prepare: %s\n",
-                w->idx, sqlite3_errmsg(db));
-        sqlite3_close(db);
+    if (r.count <= 0) {
+        fprintf(stderr, "[w%02d] no on-chain UTXOs (drained?)\n", w->idx);
+        if (r.entries) free(r.entries);
         return -1;
     }
-
-    int found = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        const void *txh = sqlite3_column_blob(stmt, 0);
-        int txh_len = sqlite3_column_bytes(stmt, 0);
-        int output_idx = sqlite3_column_int(stmt, 1);
-        sqlite3_int64 amount = sqlite3_column_int64(stmt, 2);
-        const void *nul = sqlite3_column_blob(stmt, 3);
-        int nul_len = sqlite3_column_bytes(stmt, 3);
-        if (txh_len == 64 && nul_len == 64 && amount > 0) {
-            memcpy(w->cur_tx_hash, txh, 64);
-            memcpy(w->cur_nullifier, nul, 64);
-            w->cur_output_index = (uint32_t)output_idx;
-            w->cur_amount = (uint64_t)amount;
-            found = 1;
+    /* Pick the largest native (token_id all zero) UTXO. */
+    int best = -1;
+    uint64_t best_amount = 0;
+    static const uint8_t zero_token[64] = {0};
+    for (int i = 0; i < r.count; i++) {
+        if (memcmp(r.entries[i].token_id, zero_token, 64) != 0) continue;
+        if (r.entries[i].amount > best_amount) {
+            best = i;
+            best_amount = r.entries[i].amount;
         }
     }
-
-    sqlite3_finalize(stmt);
-    sqlite3_close(db);
-    if (!found) {
-        fprintf(stderr, "[w%02d] no usable UTXO in %s\n", w->idx, db_path);
+    if (best < 0) {
+        fprintf(stderr, "[w%02d] no native UTXO\n", w->idx);
+        if (r.entries) free(r.entries);
         return -1;
     }
+    memcpy(w->cur_tx_hash, r.entries[best].tx_hash, 64);
+    memcpy(w->cur_nullifier, r.entries[best].nullifier, 64);
+    w->cur_output_index = r.entries[best].output_index;
+    w->cur_amount = r.entries[best].amount;
+    if (r.entries) free(r.entries);
     return 0;
 }
 
@@ -194,10 +179,9 @@ static int wallet_init(struct bench_wallet *w, int idx, const char *wallet_dir,
     pthread_mutex_init(&w->state_mu, NULL);
     pthread_mutex_init(&w->err_mu, NULL);
 
-    /* 1. Load initial UTXO from local DB. */
-    if (load_initial_utxo_from_db(w) != 0) return -1;
+    /* UTXO state is loaded AFTER client connect (chain query). */
 
-    /* 2. Import nodus identity from cached dht_identity.bin. */
+    /* 1. Import nodus identity from cached dht_identity.bin. */
     char id_path[1280];
     snprintf(id_path, sizeof(id_path), "%s/dht_identity.bin", w->data_dir);
     size_t id_len = 0;
@@ -262,7 +246,7 @@ static int wallet_client_connect(struct bench_wallet *w) {
     }
     cfg.server_count = j;
     cfg.connect_timeout_ms = 5000;
-    cfg.request_timeout_ms = 30000;
+    cfg.request_timeout_ms = 60000;
     cfg.auto_reconnect = true;
 
     if (nodus_client_init(&w->client, &cfg, &w->identity) != 0) {
@@ -431,6 +415,20 @@ static void *wallet_thread(void *arg) {
         ? ((double)ta->pool_size / (double)ta->target_tps_total)
         : 0.0;
 
+    /* Stagger thread starts so requests trickle into the cluster at the
+     * target_tps rate from t=0 rather than bursting all wallets at
+     * once (which causes BFT mempool overflow + timeouts). */
+    if (per_wallet_period_s > 0 && ta->pool_size > 0) {
+        double offset_s = per_wallet_period_s
+                        * ((double)w->idx / (double)ta->pool_size);
+        if (offset_s > 0.001) {
+            struct timespec ts;
+            ts.tv_sec  = (time_t)offset_s;
+            ts.tv_nsec = (long)((offset_s - (time_t)offset_s) * 1e9);
+            nanosleep(&ts, NULL);
+        }
+    }
+
     int round = 0;
     while (!atomic_load(&g_run_done) && now_ns_native() < ta->deadline_ns) {
         round++;
@@ -581,6 +579,20 @@ int dna_bench_native_run(struct dna_bench_run_cfg *cfg,
         fprintf(stderr, "[dna-bench] WARN: chain_id query failed; TXs will fail\n");
     }
     fflush(stderr);
+
+    /* Bootstrap each wallet's UTXO state from the chain (parallel). */
+    int utxo_ok = 0;
+    for (int i = 0; i < g_wallet_count; i++) {
+        if (!g_wallets[i].client_ready) continue;
+        if (load_initial_utxo_from_chain(&g_wallets[i]) == 0) utxo_ok++;
+    }
+    fprintf(stderr, "[dna-bench] %d/%d wallets have a usable on-chain UTXO\n",
+            utxo_ok, connected);
+    fflush(stderr);
+    if (utxo_ok == 0) {
+        if (g_tx_hashes_fp) fclose(g_tx_hashes_fp);
+        return 1;
+    }
 
     /* Spawn per-wallet send threads. */
     g_run_started_ns = now_ns_native();
