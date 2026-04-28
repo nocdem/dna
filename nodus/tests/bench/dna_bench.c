@@ -1,7 +1,10 @@
-/* dna_bench — main + subcommand dispatch.
+/* dna_bench — single-binary TPS bench against the prod 7-node cluster.
  *
- * Replaces bench_cluster_tps.c (kept side-by-side until Phase 1.H).
- * See nodus/docs/plans/2026-04-27-dna-bench-design.md (local-only).
+ * Usage:
+ *   dna_bench --tps N --duration T [--wallets N] [--fund X] [--reset]
+ *
+ * Pool is auto-created at ~/.dna_bench/ on first run. Reset with --reset.
+ * Optional advanced verbs (`reconcile <run.json>`) preserved.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -25,51 +28,49 @@ static void install_signal_handlers(void) {
     struct sigaction sa = {0};
     sa.sa_handler = on_signal;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0; /* no SA_RESTART: let waitpid/poll return EINTR */
+    sa.sa_flags = 0;
     sigaction(SIGINT,  &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
-    /* Children are reaped explicitly; ignore SIGPIPE so a broken pipe
-     * doesn't kill the parent during stream writes. */
     signal(SIGPIPE, SIG_IGN);
 }
 
 static void print_usage(void) {
     fprintf(stderr,
-"dna-bench %s — load generator + meter for the prod 7-node cluster.\n"
+"dna-bench %s — single-binary TPS bench against the prod 7-node cluster.\n"
 "\n"
-"Usage:\n"
-"  dna_bench wallets create <N> [--fund <amount-raw>] [--fresh] [--allow-large]\n"
-"  dna_bench wallets list\n"
-"  dna_bench wallets reset\n"
-"  dna_bench wallets drain --to <FP> --confirm-name <name> [--yes]\n"
-"  dna_bench run --mode <burst|sustained|rampup|soak> [opts]\n"
-"  dna_bench reconcile <run.json>\n"
-"  dna_bench observe [--duration T]\n"
+"Run a TPS test:\n"
+"  dna_bench --tps N --duration T            sustained @ N tps for duration T\n"
 "\n"
-"Run modes:\n"
-"  --mode burst                            (max load, no pace; capped at\n"
-"                                           %d tps unless --allow-stress)\n"
-"  --mode sustained --tps N --duration T   (paced)\n"
-"  --mode rampup --start A --end B --step S --hold H\n"
-"  --mode soak --tps 1 --duration 24h      (alias for sustained)\n"
+"Pool management (auto-creates if missing):\n"
+"  --wallets N                               pool size (default 27, max 200)\n"
+"  --fund X                                  raw units per wallet (default %llu)\n"
+"  --reset                                   wipe pool before run\n"
 "\n"
-"Common opts:\n"
-"  --recipient mesh|fixed:<FP>      default mesh\n"
-"  --status-interval N              live stderr tick (s); default 5\n"
-"  --stream FILE.jsonl              round-by-round JSONL append\n"
-"  --output FILE.json               final summary; default <run-dir>/run.json\n"
-"  --abort-on-fail-rate <fraction>  optional early-exit guard\n"
-"  --allow-stress                   uncap burst max-tps\n"
-"  --allow-long                     bypass 48h duration cap\n"
+"Output options:\n"
+"  --output FILE.json                        final summary (default <run-dir>/run.json)\n"
+"  --stream FILE.jsonl                       round-by-round JSONL append\n"
+"  --status-interval N                       live stderr tick (s); default 5\n"
+"  --abort-on-fail-rate <fraction>           optional early-exit guard\n"
+"  --allow-long                              bypass 48h duration cap\n"
+"\n"
+"Advanced verbs:\n"
+"  dna_bench reconcile <run.json>            verify tx_hashes on chain\n"
+"\n"
+"Examples:\n"
+"  dna_bench --tps 1 --duration 1h\n"
+"  dna_bench --tps 10 --duration 5m --wallets 50\n"
+"  dna_bench --reset --wallets 30 --tps 1 --duration 1h\n"
 "\n"
 "Env:\n"
 "  BENCH_HOME       Override pool root (default ~/.dna_bench)\n"
 "  BENCH_CLI_BIN    Override dna-connect-cli path\n"
-"\n"
-"Pool location: ~/.dna_bench/ (mode 0700).\n"
             , DNA_BENCH_TOOL_VERSION
-            , DNA_BENCH_BURST_DEFAULT_TPS);
+            , (unsigned long long)DNA_BENCH_DEFAULT_FUND_RAW);
 }
+
+/* run_with_autopool — top-level entry point: parse flags, ensure pool
+ * exists (create if --reset or pool missing), invoke run loop. */
+int dna_bench_main(int argc, char **argv);
 
 int main(int argc, char **argv) {
     install_signal_handlers();
@@ -78,30 +79,24 @@ int main(int argc, char **argv) {
         print_usage();
         return DNA_BENCH_EXIT_USAGE;
     }
-    const char *cmd = argv[1];
 
-    if (strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {
-        print_usage();
-        return DNA_BENCH_EXIT_OK;
+    /* Help / version */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage();
+            return DNA_BENCH_EXIT_OK;
+        }
+        if (strcmp(argv[i], "--version") == 0) {
+            printf("dna-bench %s\n", DNA_BENCH_TOOL_VERSION);
+            return DNA_BENCH_EXIT_OK;
+        }
     }
-    if (strcmp(cmd, "--version") == 0) {
-        printf("dna-bench %s\n", DNA_BENCH_TOOL_VERSION);
-        return DNA_BENCH_EXIT_OK;
-    }
-    if (strcmp(cmd, "wallets") == 0) {
-        return cmd_wallets(argc - 1, argv + 1);
-    }
-    if (strcmp(cmd, "run") == 0) {
-        return cmd_run(argc - 1, argv + 1);
-    }
-    if (strcmp(cmd, "reconcile") == 0) {
+
+    /* Advanced: reconcile is a separate verb. */
+    if (strcmp(argv[1], "reconcile") == 0) {
         return cmd_reconcile(argc - 1, argv + 1);
     }
-    if (strcmp(cmd, "observe") == 0) {
-        return cmd_observe(argc - 1, argv + 1);
-    }
 
-    fprintf(stderr, "unknown subcommand: %s\n", cmd);
-    print_usage();
-    return DNA_BENCH_EXIT_USAGE;
+    /* Default path: --tps / --duration etc. parsed in dna_bench_main. */
+    return dna_bench_main(argc, argv);
 }

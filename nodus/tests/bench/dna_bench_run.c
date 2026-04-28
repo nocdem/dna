@@ -377,46 +377,17 @@ static void run_one_round(struct run_state *st, int target_tps,
     char memo[64];
     snprintf(memo, sizeof(memo), "bench-%s-r%d", phase, st->rounds + 1);
 
+    fprintf(stderr, "[dna-bench] round %d: syncing %d wallet(s)...\n",
+            st->rounds + 1, N);
+    fflush(stderr);
+
     uint64_t round_start = now_ns();
-    /* ROOT CAUSE FIX: rc237's pre-flight UTXO sync is in
-     * dnac_provider.sendPayment (Flutter), NOT in the C CLI's
-     * dna_chain_cmd_send. So a fresh `dna-connect-cli dna send` runs
-     * with whatever state the wallet's SQLite DB had on disk. After a
-     * commit, local DB doesn't auto-refresh — the next round's send
-     * tries to rebuild from stale UTXO state and fails with
-     * "Insufficient funds" (coin selection sees the initial UTXO
-     * still marked unspent + the freshly-created change UTXO as
-     * pending, neither selectable for another send).
-     *
-     * Workaround: explicit sync per wallet BEFORE its send each round.
-     * This is what the Flutter wallet does. It costs ~5-10s per
-     * wallet but takes the round-loop fail rate from ~33-90% to
-     * near-zero. Sync runs in parallel via fork (output discarded).
-     */
-    pid_t sync_pids[MAX_POOL];
-    int sync_count = 0;
-    for (int i = 0; i < N; i++) {
-        const char *cli = dna_bench_cli_bin();
-        const char *sync_argv[] = {
-            cli, "-q", "-d", st->pool[i].data_dir, "dna", "sync", NULL,
-        };
-        pid_t pid = fork();
-        if (pid == 0) {
-            int dn = open("/dev/null", O_WRONLY);
-            if (dn >= 0) { dup2(dn, STDOUT_FILENO); dup2(dn, STDERR_FILENO); close(dn); }
-            int dni = open("/dev/null", O_RDONLY);
-            if (dni >= 0) { dup2(dni, STDIN_FILENO); close(dni); }
-            execv(sync_argv[0], (char *const *)sync_argv);
-            _exit(127);
-        }
-        if (pid > 0) {
-            sync_pids[sync_count++] = pid;
-        }
-    }
-    for (int i = 0; i < sync_count; i++) {
-        int status;
-        waitpid(sync_pids[i], &status, 0);
-    }
+    /* No pre-round sync: it cost ~15s of silent blocking per round,
+     * making the operator give up before seeing any commit. Retry
+     * loop below catches "Insufficient funds" caused by stale local
+     * UTXO state and re-syncs only the affected wallet between
+     * attempts. First round on a fresh pool succeeds immediately
+     * because the funding TX UTXO is still in each wallet's DB. */
 
     /* PARALLEL send fire — all wallets at once. With per-attempt
      * retry: after first parallel pass, identify wallets that failed
@@ -857,39 +828,21 @@ int cmd_run(int argc, char **argv) {
 
     g_rng_state = (unsigned)(time(NULL) ^ getpid());
 
-    /* Pre-run warm sync: parallel fork ALL wallets at once; wait for
-     * all. Sequential here scales O(N × 15s) which becomes 6+ minutes
-     * for N=27 — longer than the entire test duration. Parallel scales
-     * to ~30s regardless of N. */
-    fprintf(stderr, "[dna-bench] warm-sync %d wallet(s) (parallel)...\n",
-            pool_size);
-    pid_t warm_pids[MAX_POOL];
-    int warm_count = 0;
-    for (int i = 0; i < pool_size; i++) {
-        const char *cli = dna_bench_cli_bin();
-        const char *sync_argv[] = {
-            cli, "-q", "-d", pool[i].data_dir, "dna", "sync", NULL,
-        };
-        pid_t pid = fork();
-        if (pid == 0) {
-            int devnull = open("/dev/null", O_WRONLY);
-            if (devnull >= 0) {
-                dup2(devnull, STDOUT_FILENO);
-                dup2(devnull, STDERR_FILENO);
-                close(devnull);
-            }
-            int dni = open("/dev/null", O_RDONLY);
-            if (dni >= 0) { dup2(dni, STDIN_FILENO); close(dni); }
-            execv(sync_argv[0], (char *const *)sync_argv);
-            _exit(127);
-        }
-        if (pid > 0) warm_pids[warm_count++] = pid;
+    /* In-process libnodus path (sustained/soak only). Each wallet runs
+     * its own thread + nodus_client_t; no fork-exec per send. */
+    extern int dna_bench_native_run(struct dna_bench_run_cfg *cfg,
+                                    void *pool_entries, int pool_size,
+                                    const char *run_dir);
+    if (cfg.mode == DNA_BENCH_MODE_SUSTAINED ||
+        cfg.mode == DNA_BENCH_MODE_SOAK) {
+        int rc = dna_bench_native_run(&cfg, pool, pool_size, run_dir);
+        free(pool);
+        free(run_dir);
+        return rc;
     }
-    for (int i = 0; i < warm_count; i++) {
-        int status;
-        waitpid(warm_pids[i], &status, 0);
-    }
-    fprintf(stderr, "[dna-bench] warm-sync done.\n");
+
+    fprintf(stderr, "[dna-bench] starting test (legacy fork-exec path)\n");
+    fflush(stderr);
 
     struct run_state st = {0};
     st.pool = pool;
@@ -980,4 +933,85 @@ int cmd_run(int argc, char **argv) {
 int dna_bench_run_main(struct dna_bench_run_cfg *cfg) {
     (void)cfg;
     return DNA_BENCH_EXIT_NOT_IMPLEMENTED;
+}
+
+/* ── Top-level single-binary entry point ──────────────────────────
+ *
+ * Accepts the simple form:
+ *   dna_bench --tps N --duration T [--wallets N] [--fund X] [--reset]
+ *
+ * Auto-creates the pool (~/.dna_bench/) if missing, then runs the
+ * sustained-mode loop. Passes through cmd_run's optional flags
+ * (--output / --stream / --status-interval / --abort-on-fail-rate /
+ *  --allow-long).
+ */
+int dna_bench_main(int argc, char **argv) {
+    /* Parse the autocreate-related flags ourselves so we can decide
+     * whether to call cmd_wallets first; the rest are forwarded to
+     * cmd_run with `run --mode sustained` injected. */
+    int  pool_size_arg = 27;
+    uint64_t fund_arg  = DNA_BENCH_DEFAULT_FUND_RAW;
+    bool reset_arg     = false;
+
+    /* New argv for cmd_run: ["run", "--mode", "sustained", <rest...>] */
+    int max_argv = argc + 8;
+    char **run_argv = calloc(max_argv, sizeof(char *));
+    if (!run_argv) return EX_OOM_OR_INTERNAL;
+    int run_argc = 0;
+    run_argv[run_argc++] = (char *)"run";
+    run_argv[run_argc++] = (char *)"--mode";
+    run_argv[run_argc++] = (char *)"sustained";
+
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (strcmp(a, "--wallets") == 0 && i + 1 < argc) {
+            pool_size_arg = atoi(argv[++i]);
+        } else if (strcmp(a, "--fund") == 0 && i + 1 < argc) {
+            fund_arg = strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--reset") == 0) {
+            reset_arg = true;
+        } else {
+            /* Forward everything else (including --tps / --duration). */
+            run_argv[run_argc++] = (char *)a;
+            if (run_argc >= max_argv) break;
+        }
+    }
+
+    /* Pool management: reset if asked; create if missing. */
+    if (reset_arg) {
+        char *reset_argv[] = { "wallets", "reset", NULL };
+        cmd_wallets(2, reset_argv);
+    }
+    if (!dna_bench_pool_exists()) {
+        fprintf(stderr,
+            "[dna-bench] no pool found — auto-creating %d wallet(s) "
+            "(fund=%llu raw each)\n",
+            pool_size_arg, (unsigned long long)fund_arg);
+        char n_str[16], fund_str[32];
+        snprintf(n_str, sizeof(n_str), "%d", pool_size_arg);
+        snprintf(fund_str, sizeof(fund_str), "%llu",
+                 (unsigned long long)fund_arg);
+        char *create_argv[] = {
+            "wallets", "create", n_str, "--fund", fund_str, NULL
+        };
+        int crc = cmd_wallets(5, create_argv);
+        if (crc != 0) {
+            fprintf(stderr,
+                "[dna-bench] pool create failed (rc=%d) — aborting\n", crc);
+            free(run_argv);
+            return crc;
+        }
+    } else {
+        struct dna_bench_pool meta = {0};
+        if (dna_bench_pool_load(&meta) == 0) {
+            fprintf(stderr,
+                "[dna-bench] using existing pool: %d funded wallet(s) "
+                "(created %s)\n",
+                meta.count, meta.created_at);
+        }
+    }
+
+    int rc = cmd_run(run_argc, run_argv);
+    free(run_argv);
+    return rc;
 }
