@@ -3346,6 +3346,12 @@ static int bft_start_round_internal(nodus_witness_t *w,
     w->round_state.round = w->current_round;
     w->round_state.view = w->current_view;
     w->round_state.phase = NODUS_W_PHASE_PREVOTE;
+    /* A2 fix — anchor the proposed-block height at round start. All
+     * cert_sig signing/verification within this round reads from
+     * round_state.block_height, not from a fresh
+     * nodus_witness_block_height(w)+1 lookup, so leader and followers
+     * agree on the round's height even when local heights have drifted. */
+    w->round_state.block_height = nodus_witness_block_height(w) + 1;
     memcpy(w->round_state.tx_root, block_hash, NODUS_T3_TX_HASH_LEN);
     memcpy(w->round_state.tx_hash, block_hash, NODUS_T3_TX_HASH_LEN);
     w->round_state.proposal_timestamp = (uint64_t)time(NULL);
@@ -3370,13 +3376,15 @@ static int bft_start_round_internal(nodus_witness_t *w,
     w->round_state.prevote_count = 1;
     w->round_state.prevote_approve_count = 1;
 
-    /* C5 — sign PREPARED preimage (view, height+1, tx_hash). Attached to
-     * our self-recorded prevotes[0].signature AND to the outgoing PREVOTE's
-     * cert_sig so receivers can verify and the PREVOTE-quorum hook can
-     * assemble w->last_prepared. Failure aborts the round — view-change
-     * timeout kicks liveness via new leader. */
+    /* C5 — sign PREPARED preimage (view, block_height, tx_hash). Attached
+     * to our self-recorded prevotes[0].signature AND to the outgoing
+     * PREVOTE's cert_sig so receivers can verify and the PREVOTE-quorum
+     * hook can assemble w->last_prepared. Failure aborts the round —
+     * view-change timeout kicks liveness via new leader.
+     * A2 fix — height comes from round_state (set just above) so leader
+     * and followers sign over the same anchor. */
     uint8_t prep_preimage[NODUS_WITNESS_PREPARED_PREIMAGE_LEN];
-    uint64_t prep_height = nodus_witness_block_height(w) + 1;
+    uint64_t prep_height = w->round_state.block_height;
     if (compute_prepared_preimage(w->current_view, prep_height, block_hash,
                                     prep_preimage) != 0) {
         fprintf(stderr, "%s: prepared preimage compute failed — "
@@ -3402,6 +3410,12 @@ static int bft_start_round_internal(nodus_witness_t *w,
 
     proposal.propose.batch_count = count;
     memcpy(proposal.propose.tx_root, block_hash, NODUS_T3_TX_HASH_LEN);
+    /* A2 fix — broadcast our claimed proposed-block height so all
+     * receivers anchor their PREPARED-preimage signing/verification on
+     * the same value. Followers re-validate (height == local + 1) before
+     * trusting it; the leader cannot force followers off-chain via this
+     * field, only assert "I am proposing block H." */
+    proposal.propose.block_height = w->round_state.block_height;
 
     for (int i = 0; i < count; i++) {
         nodus_t3_batch_tx_t *btx = &proposal.propose.batch_txs[i];
@@ -3747,6 +3761,17 @@ int nodus_witness_bft_start_round_from_mempool(nodus_witness_t *w) {
  *   design doc 2026-04-17-witness-stake-delegation-design.md §F-CONS-06
  *   and the regression test tests/test_prevote_state_root_mutation.c
  *   before editing this flow.
+ *
+ * A2 fix — block_height is leader-claimed but LOCALLY VALIDATABLE:
+ *   prop->block_height carries the round's anchor so PREPARED-preimage
+ *   signing is consistent across drift. The follower re-checks
+ *   prop->block_height == nodus_witness_block_height(w) + 1 before
+ *   accepting; mismatch → reject + sync. This does NOT violate
+ *   F-CONS-06 because (a) height is a single uint64_t with a trivial
+ *   local oracle, not an independent state computation, and (b) the
+ *   leader gains no new authority — they could already drive height by
+ *   choosing whether to commit the prior block. The field anchors
+ *   round identity; it does not substitute for state recompute.
  * ════════════════════════════════════════════════════════════════════ */
 
 int nodus_witness_bft_handle_propose(nodus_witness_t *w,
@@ -3862,6 +3887,33 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
                 "gate cleared\n", LOG_TAG);
     }
 
+    /* A2 fix — locally validate the leader-claimed proposed-block height
+     * before any state mutation. Drift between leader and this follower
+     * would otherwise produce mismatched PREPARED-preimage signatures
+     * (the original "PREVOTE cert_sig verify FAILED" loop). Backward-
+     * compat: legacy peers send block_height=0; treat that as "unset"
+     * and reject so the follower triggers sync_check on the next epoch
+     * tick rather than signing under an unknown anchor. */
+    {
+        uint64_t expected_height = nodus_witness_block_height(w) + 1;
+        if (prop->block_height == 0) {
+            fprintf(stderr,
+                    "%s: propose rejected — missing block_height "
+                    "(legacy peer or malformed proposal); sync needed\n",
+                    LOG_TAG);
+            return -1;
+        }
+        if (prop->block_height != expected_height) {
+            fprintf(stderr,
+                    "%s: propose rejected — height mismatch "
+                    "(proposal=%llu local_next=%llu); sync needed\n",
+                    LOG_TAG,
+                    (unsigned long long)prop->block_height,
+                    (unsigned long long)expected_height);
+            return -1;
+        }
+    }
+
     /* Initialize round state from proposal */
     w->current_round = hdr->round;
     w->current_view = hdr->view;
@@ -3872,6 +3924,10 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     w->round_state.round = hdr->round;
     w->round_state.view = hdr->view;
     w->round_state.phase = NODUS_W_PHASE_PREVOTE;
+    /* A2 fix — anchor height from the proposal (already validated above
+     * as == local_next). All cert_sig sign/verify within this round
+     * reads from round_state.block_height. */
+    w->round_state.block_height = prop->block_height;
     w->round_state.phase_start_time = time_ms();
     w->round_state.proposal_timestamp = hdr->timestamp;
     memcpy(w->round_state.proposer_id, hdr->sender_id,
@@ -4058,7 +4114,11 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     bool have_prep_sig = false;
     if (my_vote == NODUS_W_VOTE_APPROVE) {
         uint8_t prep_preimage[NODUS_WITNESS_PREPARED_PREIMAGE_LEN];
-        uint64_t prep_height = nodus_witness_block_height(w) + 1;
+        /* A2 fix — height comes from round_state (set in handle_propose
+         * after sanity-check against local_next), so this signature
+         * matches the leader's PREPARED preimage even when local heights
+         * have drifted across the cluster. */
+        uint64_t prep_height = w->round_state.block_height;
         if (compute_prepared_preimage(w->current_view, prep_height,
                                         w->round_state.tx_hash,
                                         prep_preimage) == 0 &&
@@ -4225,7 +4285,11 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     if (msg->type == NODUS_T3_PREVOTE &&
         vote->vote == NODUS_W_VOTE_APPROVE) {
         uint8_t prep_preimage[NODUS_WITNESS_PREPARED_PREIMAGE_LEN];
-        uint64_t prep_height = nodus_witness_block_height(w) + 1;
+        /* A2 fix — verifier and sender BOTH read height from
+         * round_state (set at round init from leader's proposal),
+         * eliminating the drift-induced PREVOTE cert_sig verify FAILED
+         * loop. */
+        uint64_t prep_height = w->round_state.block_height;
         if (compute_prepared_preimage(w->current_view, prep_height,
                                         w->round_state.tx_hash,
                                         prep_preimage) != 0) {

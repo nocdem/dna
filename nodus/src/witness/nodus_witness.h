@@ -141,6 +141,14 @@ typedef struct {
     uint32_t    view;
     nodus_witness_phase_t phase;
 
+    /* A2 fix — proposed block's height for THIS round. Set once at
+     * round start (leader: nodus_witness_block_height(w)+1; follower:
+     * prop->block_height after sanity check). All callers of
+     * compute_prepared_preimage MUST source height from here, not from
+     * nodus_witness_block_height(w)+1, so sender and verifier agree on
+     * the round's anchor regardless of local-state drift. */
+    uint64_t    block_height;
+
     /* tx_hash mirrors block_hash for vote message addressing — every
      * round is now batch-shaped (Phase 7), so the two values are equal
      * by construction. Kept as a separate field only so vote message

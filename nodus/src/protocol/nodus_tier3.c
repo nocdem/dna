@@ -106,10 +106,15 @@ static void enc_batch_tx(cbor_encoder_t *enc, const nodus_t3_batch_tx_t *tx) {
 }
 
 static void enc_propose_args(cbor_encoder_t *enc, const nodus_t3_propose_t *p) {
-    /* Phase 9 / Task 9.4 — wire key bh -> tr, field block_hash -> tx_root. */
-    cbor_encode_map(enc, 2);
+    /* Phase 9 / Task 9.4 — wire key tr is the tx_root (RFC 6962 Merkle).
+     * A2 fix — wire key bh is the leader-claimed proposed-block height,
+     * carried so all witnesses sign the PREPARED preimage with the same
+     * height regardless of local block_height drift. */
+    cbor_encode_map(enc, 3);
     cbor_encode_cstr(enc, "tr");
     cbor_encode_bstr(enc, p->tx_root, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "bh");
+    cbor_encode_uint(enc, p->block_height);
     cbor_encode_cstr(enc, "btx");
     cbor_encode_array(enc, (size_t)p->batch_count);
     for (int i = 0; i < p->batch_count; i++)
@@ -581,6 +586,15 @@ static void dec_propose_args(cbor_decoder_t *dec, size_t count,
             if (val.type == CBOR_ITEM_BSTR &&
                 val.bstr.len == NODUS_T3_TX_HASH_LEN)
                 memcpy(p->tx_root, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        }
+        else if (KEY_IS(key, "bh")) {
+            /* A2 fix — leader-claimed proposed-block height (uint). If
+             * absent (e.g., legacy peer), p->block_height stays 0 and
+             * handle_propose's sanity check rejects the proposal so the
+             * follower triggers sync rather than signing under drift. */
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT)
+                p->block_height = val.uint_val;
         }
         /* Phase 9 / Task 9.2 — legacy single-TX propose keys
          * (txh/nlc/nls/tty/txd/pk/csig/fee) decoder branches deleted. */

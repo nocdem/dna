@@ -100,11 +100,20 @@ typedef struct {
  * Phase 9 / Task 9.1 — legacy single-TX fields removed.
  * Phase 9 / Task 9.4 — block_hash field renamed to tx_root (it is the
  * RFC 6962 Merkle root over the batch's TX hashes, NOT the full block
- * header hash — that is computed by nodus_witness_compute_block_hash). */
+ * header hash — that is computed by nodus_witness_compute_block_hash).
+ * A2 fix — block_height is the leader-claimed proposed-block height
+ * (= leader's local height + 1). Carried on the wire so all witnesses
+ * sign the PREPARED preimage with the same height (preventing the
+ * cert_sig verify FAILED loop when followers have drifted). The follower
+ * MUST validate prop->block_height == nodus_witness_block_height(w) + 1
+ * before signing — leader's claim is locally checkable, no F-CONS-06
+ * fast-path is introduced (the field anchors the round, it does not
+ * substitute for state recompute). */
 typedef struct {
     int             batch_count;
     nodus_t3_batch_tx_t batch_txs[NODUS_W_MAX_BLOCK_TXS];
     uint8_t         tx_root[NODUS_T3_TX_HASH_LEN];
+    uint64_t        block_height;
 } nodus_t3_propose_t;
 
 /** w_prevote / w_precommit: Witness votes on a proposal.
