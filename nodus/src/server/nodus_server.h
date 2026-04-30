@@ -108,8 +108,13 @@ typedef struct {
     /* Peer protocol version (from hello) */
     uint32_t            proto_version;
 
-    /* Channel encryption (Kyber handshake for inter-node) */
-    nodus_channel_crypto_t  channel_crypto;
+    /* Channel encryption (Kyber handshake for inter-node).
+     * B3 fix — channel_crypto storage moved to nodus_tcp_conn_t.
+     * Read via sess->conn->channel_crypto. The pending_* fields stay
+     * here because they're per-handshake-attempt state, not session
+     * state — a new key_init can arrive before the previous handshake
+     * completes, and the conn's channel_crypto only becomes valid on
+     * key_ack/key_init completion. */
     uint8_t             pending_ss[32];     /* shared secret awaiting key_ack */
     uint8_t             pending_nc[32];     /* client nonce awaiting key_ack */
     bool                pending_kyber;
@@ -145,8 +150,9 @@ typedef struct {
     /* Client protocol version (0=legacy, 2=channel encryption support) */
     uint32_t                proto_version;
 
-    /* Channel encryption (Kyber handshake) */
-    nodus_channel_crypto_t  channel_crypto;
+    /* Channel encryption (Kyber handshake).
+     * B3 fix — channel_crypto storage moved to nodus_tcp_conn_t.
+     * Read via sess->conn->channel_crypto. */
 } nodus_session_t;
 
 /* ── Iterative Kademlia FIND_NODE Lookup (UDP) ───────────────────── */

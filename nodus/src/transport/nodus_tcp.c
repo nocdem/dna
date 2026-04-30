@@ -144,8 +144,9 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     tcp->count--;
     pending_free_all(conn);   /* Phase 3: drop any queued frames */
 
-    /* Phase 3.2b-inv: conn lifecycle visibility at TCP layer */
-    int had_crypto = (conn->crypto != NULL) ? 1 : 0;
+    /* Phase 3.2b-inv: conn lifecycle visibility at TCP layer.
+     * B3 fix — read crypto state from inline channel_crypto field. */
+    int had_crypto = conn->channel_crypto.established ? 1 : 0;
     fprintf(stderr,
             "TCP_CONN: FREE slot=%d peer=%s:%u had_crypto=%d "
             "send_ok=%llu send_full=%llu pending=%zu\n",
@@ -153,6 +154,11 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             (unsigned long long)conn->send_ok_count,
             (unsigned long long)conn->send_full_count,
             conn->pending_count);
+
+    /* B3 fix — secure-zero the per-conn AES-GCM key + counters before the
+     * struct is freed. Defensive even though the entire struct is about to
+     * disappear; key material should never linger on the freelist. */
+    nodus_channel_crypto_clear(&conn->channel_crypto);
 
     free(conn->pending_buf);
     free(conn->rbuf);
@@ -285,8 +291,10 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         /* Snapshot crypto state before dispatching — if it changes mid-loop
          * (e.g., key_init handler activates crypto), remaining buffered frames
          * are plaintext but crypto would try to decrypt them. Break and let
-         * the next poll iteration handle them correctly. */
-        void *crypto_before = conn->crypto;
+         * the next poll iteration handle them correctly.
+         * B3 fix — no pointer alias to snapshot; track the established flag
+         * which is the actual gate (false → true on init). */
+        bool established_before = conn->channel_crypto.established;
 
         nodus_frame_t frame;
         int rc = nodus_frame_decode(conn->rbuf, conn->rlen, &frame);
@@ -308,48 +316,47 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
             return true;
         }
 
-        /* Valid frame — decrypt if channel crypto active */
+        /* Valid frame — decrypt if channel crypto active.
+         * B3 fix — read inline channel_crypto directly; no pointer alias. */
         size_t consumed = (size_t)rc;
         const uint8_t *dispatch_payload = frame.payload;
         size_t dispatch_len = frame.payload_len;
         uint8_t *dec_buf = NULL;
 
-        if (conn->crypto) {
-            nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
-            if (cc->established && frame.payload_len > NODUS_CHANNEL_OVERHEAD) {
-                size_t pt_max = frame.payload_len - NODUS_CHANNEL_OVERHEAD;
-                dec_buf = malloc(pt_max > 0 ? pt_max : 1);
-                if (dec_buf) {
-                    size_t pt_len = 0;
-                    if (nodus_channel_decrypt(cc, frame.payload, frame.payload_len,
-                                              dec_buf, pt_max, &pt_len) == 0) {
-                        dispatch_payload = dec_buf;
-                        dispatch_len = pt_len;
-                    } else {
-                        /* Decrypt failed — drop the frame, do NOT reset
-                         * rx_counter. A reset opens a silent replay window:
-                         * later legitimate out-of-order frames would be
-                         * (mis)accepted or (mis)rejected against a stale
-                         * baseline. If this is truly an in-flight plaintext
-                         * leftover it is rare and self-heals; if it is a
-                         * real replay/attack we want rx_counter to stay
-                         * strictly monotonic. */
-                        conn->decrypt_skip_count++;   /* Phase 3.2a visibility */
-                        QGP_LOG_WARN(LOG_TAG_TCP,
-                                     "decrypt skip: conn=%s:%d slot=%d cc=%p frame_len=%u skip_count=%u (in-flight plaintext)",
-                                     conn->ip, conn->port, conn->slot,
-                                     (void *)conn->crypto,
-                                     (unsigned)frame.payload_len,
-                                     (unsigned)conn->decrypt_skip_count);
-                        free(dec_buf);
-                        dec_buf = NULL;
-                        /* Skip this frame, continue processing */
-                        size_t remaining = conn->rlen - consumed;
-                        if (remaining > 0)
-                            memmove(conn->rbuf, conn->rbuf + consumed, remaining);
-                        conn->rlen = remaining;
-                        continue;
-                    }
+        nodus_channel_crypto_t *cc = &conn->channel_crypto;
+        if (cc->established && frame.payload_len > NODUS_CHANNEL_OVERHEAD) {
+            size_t pt_max = frame.payload_len - NODUS_CHANNEL_OVERHEAD;
+            dec_buf = malloc(pt_max > 0 ? pt_max : 1);
+            if (dec_buf) {
+                size_t pt_len = 0;
+                if (nodus_channel_decrypt(cc, frame.payload, frame.payload_len,
+                                          dec_buf, pt_max, &pt_len) == 0) {
+                    dispatch_payload = dec_buf;
+                    dispatch_len = pt_len;
+                } else {
+                    /* Decrypt failed — drop the frame, do NOT reset
+                     * rx_counter. A reset opens a silent replay window:
+                     * later legitimate out-of-order frames would be
+                     * (mis)accepted or (mis)rejected against a stale
+                     * baseline. If this is truly an in-flight plaintext
+                     * leftover it is rare and self-heals; if it is a
+                     * real replay/attack we want rx_counter to stay
+                     * strictly monotonic. */
+                    conn->decrypt_skip_count++;   /* Phase 3.2a visibility */
+                    QGP_LOG_WARN(LOG_TAG_TCP,
+                                 "decrypt skip: conn=%s:%d slot=%d cc=%p frame_len=%u skip_count=%u (in-flight plaintext)",
+                                 conn->ip, conn->port, conn->slot,
+                                 (void *)cc,
+                                 (unsigned)frame.payload_len,
+                                 (unsigned)conn->decrypt_skip_count);
+                    free(dec_buf);
+                    dec_buf = NULL;
+                    /* Skip this frame, continue processing */
+                    size_t remaining = conn->rlen - consumed;
+                    if (remaining > 0)
+                        memmove(conn->rbuf, conn->rbuf + consumed, remaining);
+                    conn->rlen = remaining;
+                    continue;
                 }
             }
         }
@@ -359,8 +366,9 @@ static bool try_parse_frames(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
         free(dec_buf);
 
         /* If crypto state changed during dispatch (Kyber handshake completed),
-         * stop processing — remaining frames in rbuf need different handling */
-        if (conn->crypto != crypto_before) {
+         * stop processing — remaining frames in rbuf need different handling.
+         * B3 fix — compare established flag (false → true on init). */
+        if (conn->channel_crypto.established != established_before) {
             size_t remaining = conn->rlen - consumed;
             if (remaining > 0)
                 memmove(conn->rbuf, conn->rbuf + consumed, remaining);
@@ -874,12 +882,9 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
      * INTER_FRAME_FIRST to detect any cross-conn fd alias. */
     if (!conn->first_send_logged) {
         conn->first_send_logged = true;
-        int has_crypto = (conn->crypto != NULL) ? 1 : 0;
-        int established = 0;
-        if (conn->crypto) {
-            nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
-            established = cc->established ? 1 : 0;
-        }
+        /* B3 fix — read inline channel_crypto state. */
+        int established = conn->channel_crypto.established ? 1 : 0;
+        int has_crypto = established;
         fprintf(stderr,
                 "TCP_SEND_FIRST: slot=%d fd=%d peer=%s:%u len=%zu "
                 "has_crypto=%d est=%d state=%d auth_state=%d "
@@ -890,13 +895,14 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                 (void *)conn->tcp_parent, (void *)conn);
     }
 
-    /* Encrypt payload if channel crypto is established */
+    /* Encrypt payload if channel crypto is established.
+     * B3 fix — read inline channel_crypto, no pointer alias. */
     uint8_t *enc_buf = NULL;
     const uint8_t *send_payload = payload;
     size_t send_len = len;
 
-    if (conn->crypto) {
-        nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
+    {
+        nodus_channel_crypto_t *cc = &conn->channel_crypto;
         if (cc->established) {
             /* Phase 3.2b-inv: log the first encrypted send on this conn
              * so we can correlate "sender established crypto" with the
@@ -920,7 +926,7 @@ int nodus_tcp_send_progress(nodus_tcp_conn_t *conn,
                         "cc=%p conn_crypto=%p len=%zu\n",
                         conn->slot, conn->ip, (unsigned)conn->port,
                         (unsigned long long)cc->tx_counter,
-                        (void *)cc, (void *)conn->crypto, len);
+                        (void *)cc, (void *)cc, len);
             }
             size_t enc_needed = len + NODUS_CHANNEL_OVERHEAD;
             enc_buf = malloc(enc_needed);

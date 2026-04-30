@@ -778,9 +778,11 @@ static int do_auth(nodus_client_t *client) {
             return -1;
         }
 
-        /* Init channel crypto */
-        if (nodus_channel_crypto_init(&client->channel_crypto, shared_secret,
-                                       nonce_c, resp->key_nonce) != 0) {
+        /* Init channel crypto.
+         * B3 fix — init the per-conn channel_crypto directly; storage is
+         * now owned by the conn struct, no separate alias to attach. */
+        if (nodus_channel_crypto_init(&((nodus_tcp_conn_t *)client->conn)->channel_crypto,
+                                       shared_secret, nonce_c, resp->key_nonce) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Auth: channel crypto init failed");
             qgp_secure_memzero(shared_secret, sizeof(shared_secret));
             free_pending(client, req);
@@ -790,9 +792,6 @@ static int do_auth(nodus_client_t *client) {
 
         qgp_secure_memzero(shared_secret, sizeof(shared_secret));
         free_pending(client, req);
-
-        /* Attach crypto to connection */
-        ((nodus_tcp_conn_t *)client->conn)->crypto = &client->channel_crypto;
 
         /* Cache server Kyber pubkey for reconnect */
         memcpy(client->cached_server_kyber_pk, server_kyber_pk, NODUS_KYBER_PK_BYTES);

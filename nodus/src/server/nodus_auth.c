@@ -178,24 +178,30 @@ int nodus_auth_handle_key_init(nodus_server_t *srv, nodus_session_t *sess,
     uint8_t nonce_s[NODUS_NONCE_LEN];
     nodus_random(nonce_s, NODUS_NONCE_LEN);
 
-    /* Init channel crypto */
-    rc = nodus_channel_crypto_init(&sess->channel_crypto, shared_secret, nonce_c, nonce_s);
-    qgp_secure_memzero(shared_secret, sizeof(shared_secret));
-    if (rc != 0) {
-        size_t len = 0;
-        nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
-                        "channel crypto init failed", buf, sizeof(buf), &len);
-        nodus_tcp_send(sess->conn, buf, len);
-        return -1;
-    }
-
-    /* Send KEY_ACK BEFORE enabling encryption (must arrive plaintext) */
+    /* B3 fix — KEY_ACK MUST go out plaintext (peer hasn't completed
+     * its side of the handshake yet, has no derived AES key). So we:
+     *   (1) build + send KEY_ACK while conn->channel_crypto.established
+     *       is still false (encrypt path early-returns)
+     *   (2) THEN call nodus_channel_crypto_init which flips established=true
+     * From the next frame onward, encrypt is active. This matches the
+     * pre-B3 ordering where conn->crypto was attached only after KEY_ACK
+     * was on the wire. */
     size_t len = 0;
     nodus_t2_key_ack(txn_id, nonce_s, buf, sizeof(buf), &len);
     nodus_tcp_send_raw(sess->conn, buf, len);
 
-    /* NOW attach crypto to connection — all subsequent frames will be encrypted */
-    sess->conn->crypto = &sess->channel_crypto;
+    /* Init channel crypto AFTER KEY_ACK is queued for send. Storage lives
+     * on the conn struct (B3); no separate session-level alias. */
+    rc = nodus_channel_crypto_init(&sess->conn->channel_crypto,
+                                    shared_secret, nonce_c, nonce_s);
+    qgp_secure_memzero(shared_secret, sizeof(shared_secret));
+    if (rc != 0) {
+        size_t err_len = 0;
+        nodus_t2_error(txn_id, NODUS_ERR_PROTOCOL_ERROR,
+                        "channel crypto init failed", buf, sizeof(buf), &err_len);
+        nodus_tcp_send(sess->conn, buf, err_len);
+        return -1;
+    }
 
     /* Phase 3.2b-inv: tagged format consistent with inter-node crypto logs */
     fprintf(stderr,

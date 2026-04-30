@@ -12,6 +12,7 @@
 #define NODUS_TCP_H
 
 #include "nodus/nodus_types.h"
+#include "crypto/nodus_channel_crypto.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -95,8 +96,13 @@ typedef struct nodus_tcp_conn {
     uint64_t            last_activity;
     int                 slot;        /* Index in pool */
 
-    /* Channel encryption (set after Kyber handshake, NULL = plaintext) */
-    void               *crypto;     /* nodus_channel_crypto_t*, opaque to avoid circular include */
+    /* Channel encryption — owned per-conn (B3 fix). Inline storage
+     * eliminates the pointer-aliasing race that caused production
+     * "Replay detected: counter=N < expected=M" loops when multiple
+     * conns recycled through the same slot shared a session-level cc
+     * struct. Encrypt/decrypt sites read &conn->channel_crypto directly;
+     * established=false (zero-init) until handshake completes. */
+    nodus_channel_crypto_t channel_crypto;
 
     /* Send diagnostics (Phase 1 visibility — no behavior change) */
     uint64_t            send_ok_count;      /* frames accepted into wbuf */

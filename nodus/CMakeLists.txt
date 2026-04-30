@@ -625,6 +625,14 @@ add_executable(test_channel_crypto tests/test_channel_crypto.c)
 target_link_libraries(test_channel_crypto nodus dsa kem nodus)
 add_test(NAME test_channel_crypto COMMAND test_channel_crypto)
 
+# B3 fix — per-conn channel_crypto isolation regression test.
+# Asserts that two nodus_tcp_conn_t structs have separate inline
+# channel_crypto storage (no pointer aliasing), independent counters,
+# and clean recycle after conn_free + zero-init.
+add_executable(test_inter_conn_crypto_isolation tests/test_inter_conn_crypto_isolation.c)
+target_link_libraries(test_inter_conn_crypto_isolation nodus dsa kem nodus)
+add_test(NAME test_inter_conn_crypto_isolation COMMAND test_inter_conn_crypto_isolation)
+
 # ── Tools ────────────────────────────────────────────────────────────
 #
 # Hard-Fork v1 Stage E.3 `chain-config propose` verb needs pure DNAC TX

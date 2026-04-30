@@ -124,13 +124,18 @@ static nodus_inter_session_t *inter_session_for_conn(nodus_server_t *srv,
 static void inter_session_clear(nodus_inter_session_t *sess,
                                  int slot, const char *caller) {
     /* Phase 3.2c: log every clear so we can correlate session resets with
-     * downstream T1 decode failures. The session memset wipes
-     * channel_crypto inline, so any conn pointer still aliasing
-     * &sess->channel_crypto is now staring at a zeroed AES-GCM context. */
+     * downstream T1 decode failures.
+     * B3 fix — channel_crypto storage now lives on the conn struct, not
+     * inline in this session. Read counters via sess->conn (NULL-guarded
+     * because the conn may already be freed by the time we get here). */
     void *prev_conn = sess->conn;
-    int prev_established = sess->channel_crypto.established ? 1 : 0;
-    unsigned long long prev_tx = (unsigned long long)sess->channel_crypto.tx_counter;
-    unsigned long long prev_rx = (unsigned long long)sess->channel_crypto.rx_counter;
+    int prev_established = 0;
+    unsigned long long prev_tx = 0, prev_rx = 0;
+    if (sess->conn) {
+        prev_established = sess->conn->channel_crypto.established ? 1 : 0;
+        prev_tx = (unsigned long long)sess->conn->channel_crypto.tx_counter;
+        prev_rx = (unsigned long long)sess->conn->channel_crypto.rx_counter;
+    }
     fprintf(stderr,
             "SESS_CLEAR: slot=%d caller=%s prev_conn=%p prev_established=%d "
             "prev_tx=%llu prev_rx=%llu\n",
@@ -1103,12 +1108,9 @@ static void dht_send_stats_dump(nodus_server_t *srv) {
         if (c->send_ok_count == 0 && c->send_full_count == 0 &&
             c->pending_enqueued_count == 0 && c->decrypt_skip_count == 0) continue;
 
-        /* Phase 3.2a: crypto state tag for asymmetry diagnosis */
-        const char *crypto_state = "none";
-        if (c->crypto) {
-            nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)c->crypto;
-            crypto_state = cc->established ? "est" : "pend";
-        }
+        /* Phase 3.2a: crypto state tag for asymmetry diagnosis.
+         * B3 fix — read inline channel_crypto field directly. */
+        const char *crypto_state = c->channel_crypto.established ? "est" : "none";
 
         fprintf(stderr,
                 "SEND_STATS: peer=%s:%u slot=%d crypto=%s ok=%llu full=%llu "
@@ -1241,8 +1243,9 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
      * If crypto is active, we must go through nodus_tcp_send() so the
      * payload gets encrypted. Extract payload from pre-framed data and
      * send via the normal path. */
-    if (conn->crypto) {
-        /* frame = [7-byte header][payload]. Extract payload. */
+    if (conn->channel_crypto.established) {
+        /* frame = [7-byte header][payload]. Extract payload.
+         * B3 fix — read inline channel_crypto. */
         if (flen <= NODUS_FRAME_HEADER_SIZE) return -1;
         const uint8_t *payload = frame + NODUS_FRAME_HEADER_SIZE;
         size_t payload_len = flen - NODUS_FRAME_HEADER_SIZE;
@@ -1250,13 +1253,13 @@ static int dht_republish_send(nodus_server_t *srv, const char *ip,
          * calls per conn logged via cc->tx_counter check inside send_progress;
          * this log just tags the entry point so we know which caller. */
         {
-            nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
+            nodus_channel_crypto_t *cc = &conn->channel_crypto;
             if (cc->tx_counter < 3) {
                 fprintf(stderr,
                         "REPUBLISH_SEND slot=%d peer=%s:%u crypto=%p "
                         "tx_counter=%llu flen=%zu\n",
                         conn->slot, conn->ip, (unsigned)conn->port,
-                        (void *)conn->crypto,
+                        (void *)cc,
                         (unsigned long long)cc->tx_counter, flen);
             }
         }
@@ -3950,7 +3953,7 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                         (unsigned)sess->conn->port, msg.method,
                         (int)sess->conn->auth_state,
                         sess->conn->authenticated ? 1 : 0,
-                        sess->conn->crypto ? 1 : 0);
+                        sess->conn->channel_crypto.established ? 1 : 0);
             }
         }
 
@@ -4019,11 +4022,12 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     sess->conn ? sess->conn->ip : "?",
                     sess->conn ? (unsigned)sess->conn->port : 0,
                     msg.has_key_nonce ? 1 : 0, (void *)sess);
-            /* Complete inter-node Kyber handshake */
+            /* Complete inter-node Kyber handshake.
+             * B3 fix — init the per-conn channel_crypto directly; no
+             * separate crypto-pointer alias needed. */
             if (msg.has_key_nonce) {
-                nodus_channel_crypto_init(&sess->channel_crypto,
+                nodus_channel_crypto_init(&sess->conn->channel_crypto,
                                            sess->pending_ss, sess->pending_nc, msg.key_nonce);
-                sess->conn->crypto = &sess->channel_crypto;
                 fprintf(stderr,
                         "CRYPTO: SET_OUTGOING slot=%d peer=%s:%u (inter-node encrypted)\n",
                         sess->conn->slot, sess->conn->ip, (unsigned)sess->conn->port);
@@ -4147,8 +4151,9 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                     size_t ka_len = 0;
                     nodus_t2_key_ack(msg.txn_id, ns, ka_buf, sizeof(ka_buf), &ka_len);
                     nodus_tcp_send_raw(sess->conn, ka_buf, ka_len);
-                    nodus_channel_crypto_init(&sess->channel_crypto, ss_buf, msg.key_nonce, ns);
-                    sess->conn->crypto = &sess->channel_crypto;
+                    /* B3 fix — init per-conn channel_crypto directly. */
+                    nodus_channel_crypto_init(&sess->conn->channel_crypto,
+                                               ss_buf, msg.key_nonce, ns);
                     qgp_secure_memzero(ss_buf, sizeof(ss_buf));
                     fprintf(stderr,
                             "CRYPTO: SET_INCOMING slot=%d peer=%s:%u (inter-node encrypted)\n",
@@ -4433,25 +4438,26 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
         for (size_t i = 0; i < dumplen; i++)
             snprintf(hexdump + i * 2, 3, "%02x", payload[i]);
 
+        /* B3 fix — channel_crypto storage now lives on the conn struct.
+         * Read counters/state from there directly; no alias to validate. */
         const char *crypto_state = "none";
         uint64_t tx_ctr = 0, rx_ctr = 0;
-        if (sess->conn && sess->conn->crypto) {
-            nodus_channel_crypto_t *cc =
-                (nodus_channel_crypto_t *)sess->conn->crypto;
-            crypto_state = cc->established ? "established" : "pending";
+        if (sess->conn) {
+            nodus_channel_crypto_t *cc = &sess->conn->channel_crypto;
+            crypto_state = cc->established ? "established" :
+                           (cc->tx_counter || cc->rx_counter ? "pending" : "none");
             tx_ctr = cc->tx_counter;
             rx_ctr = cc->rx_counter;
         }
         int authed = (sess->conn && sess->conn->authenticated) ? 1 : 0;
         int peer_id_set = (sess->conn && sess->conn->peer_id_set) ? 1 : 0;
-        /* Phase 3.2c: include sess->channel_crypto.established. If conn->crypto
-         * is NULL but sess channel_crypto IS established, that means the conn
-         * pointer alias was lost — we have crypto state but the conn doesn't
-         * see it. Plus auth_state, dispatch_mask, decrypt_skip_count for full
-         * forensics. sess_aliases_conn==0 means conn->crypto != &sess->cc. */
-        int sess_cc_est = sess->channel_crypto.established ? 1 : 0;
-        int sess_aliases_conn = (sess->conn && sess->conn->crypto ==
-            (void *)&sess->channel_crypto) ? 1 : 0;
+        /* B3 — sess_cc_est and sess_aliases_conn fields are obsolete; the
+         * Phase 3.2c forensic logic was diagnosing the very pointer-alias
+         * race that B3 eliminates by removing the alias entirely. Keep the
+         * field names with constant values for log-format compatibility
+         * with downstream parsers; they will always read 1 / 1 now. */
+        int sess_cc_est = (sess->conn) ? sess->conn->channel_crypto.established : 0;
+        int sess_aliases_conn = 1;  /* always — storage IS the conn now */
         fprintf(stderr,
                 "REPL_TCP: T1 decode failed (len=%zu) slot=%d src=%s:%u "
                 "head=%s crypto=%s tx=%llu rx=%llu authed=%d peer_id_set=%d "
@@ -4537,7 +4543,8 @@ static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
      * never sent anything (TCP-only churn). */
     if (!conn->first_frame_logged) {
         conn->first_frame_logged = true;
-        int has_crypto = (conn->crypto != NULL) ? 1 : 0;
+        /* B3 fix — read inline channel_crypto state. */
+        int has_crypto = conn->channel_crypto.established ? 1 : 0;
         /* Phase 3.2d: include fd so we can detect any cross-conn fd alias
          * by matching against TCP_CONN: FD_SET and TCP_SEND_FIRST logs. */
         fprintf(stderr,
@@ -4568,13 +4575,10 @@ static void on_inter_disconnect(nodus_tcp_conn_t *conn, void *ctx) {
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
 
     /* Phase 3.2b-inv: conn lifecycle visibility — capture crypto state
-     * before we clear the session. */
-    int had_crypto = (conn->crypto != NULL) ? 1 : 0;
-    int established = 0;
-    if (conn->crypto) {
-        nodus_channel_crypto_t *cc = (nodus_channel_crypto_t *)conn->crypto;
-        established = cc->established ? 1 : 0;
-    }
+     * before we clear the session.
+     * B3 fix — read inline channel_crypto state directly. */
+    int had_crypto = conn->channel_crypto.established ? 1 : 0;
+    int established = had_crypto;
     /* Phase 3.2c: include auth_state at disconnect — tells us how far the
      * handshake got before the conn died. INBOUND conn that drops with
      * auth_state=NONE means peer never even sent hello. */
