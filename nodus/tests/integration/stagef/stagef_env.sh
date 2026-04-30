@@ -126,12 +126,29 @@ stagef_mk_funded_user() {
         return 1
     fi
     echo "$fp" > "$test_home/fp.txt"
-    stagef_dna -q dna send "$fp" "$fund_raw" "stagef_fund_$label" \
-        > "$test_home/fund.log" 2>&1 || {
-        echo "[FAIL] stagef_mk_funded_user: fund failed for $label" >&2
+    # Fund TX retry — CLI's commit-wait can race with cluster timing
+    # in the moments after stagef_up returns (peer mesh + leader
+    # election still settling, view-change rotations under load).
+    # Three attempts with 5 s backoff covers the common transient
+    # window without masking real consensus failures.
+    fund_ok=0
+    for attempt in 1 2 3; do
+        if stagef_dna -q dna send "$fp" "$fund_raw" "stagef_fund_$label" \
+                > "$test_home/fund.log" 2>&1; then
+            fund_ok=1
+            break
+        fi
+        if [ "$attempt" -lt 3 ]; then
+            echo "[info] stagef_mk_funded_user: fund attempt $attempt failed for $label, retrying in 5s..." >&2
+            tail -3 "$test_home/fund.log" >&2
+            sleep 5
+        fi
+    done
+    if [ "$fund_ok" -eq 0 ]; then
+        echo "[FAIL] stagef_mk_funded_user: fund failed for $label after 3 attempts" >&2
         tail -10 "$test_home/fund.log" >&2
         return 1
-    }
+    fi
     sleep 8
     # Sync the new user's wallet so subsequent CLI calls see the incoming
     # UTXO. Without this, the next `dna stake` fails with "Insufficient

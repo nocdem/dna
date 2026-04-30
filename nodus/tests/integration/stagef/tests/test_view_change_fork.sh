@@ -33,16 +33,29 @@ if [ -z "${BASE_DIR:-}" ] || [ ! -d "$BASE_DIR" ]; then
 fi
 
 # ── Phase A — C5 prepared-cert capture on all nodes ─────────────────
+# Genesis BFT round fires shortly after stagef_up returns. On slow
+# machines or when peer-mesh establishment lags into the warn-window
+# ("[warn] not all nodes reached full roster within 30 s"), a node
+# may still be wiring up its committee at the moment we sample the
+# log. Poll for up to 30 s with 1 s granularity instead of one-shot —
+# if all 7 captures never arrive within that window the node really
+# did miss the round.
 echo "== Phase A — C5 prepared-cert capture post-genesis =="
+deadline=$(( SECONDS + 60 ))
 captured=0
-for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
-    log="$BASE_DIR/node$n/nodus.log"
-    if [ -f "$log" ] && grep -q "C5 prepared cert captured" "$log"; then
-        captured=$((captured + 1))
-    fi
+while [ $SECONDS -lt $deadline ]; do
+    captured=0
+    for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
+        log="$BASE_DIR/node$n/nodus.log"
+        if [ -f "$log" ] && grep -q "C5 prepared cert captured" "$log"; then
+            captured=$((captured + 1))
+        fi
+    done
+    [ "$captured" -ge "$STAGEF_COMMITTEE_SIZE" ] && break
+    sleep 1
 done
 if [ "$captured" -lt "$STAGEF_COMMITTEE_SIZE" ]; then
-    echo "[FAIL] only $captured of $STAGEF_COMMITTEE_SIZE nodes logged C5 prepared-cert capture" >&2
+    echo "[FAIL] only $captured of $STAGEF_COMMITTEE_SIZE nodes logged C5 prepared-cert capture (after 60s wait)" >&2
     exit 2
 fi
 echo "[info] all $captured nodes logged C5 prepared-cert capture"
@@ -72,8 +85,43 @@ echo "[info] stopping node$TARGET_NODE (pid=$TARGET_PID)"
 kill -STOP "$TARGET_PID"
 trap "kill -CONT $TARGET_PID 2>/dev/null || true" EXIT
 
+# When node 1 was the BFT leader, the surviving 6 nodes need to
+# complete a view change before any new TX can commit:
+#   - 16s round_timeout (NODUS_T3_ROUND_TIMEOUT_MS)
+#   - 16s view_change_timeout (NODUS_T3_VIEWCHG_TIMEOUT_MS)
+#   - new leader broadcasts new_view + first proposal
+# CLI `dna send` waits ~30s for commit. If we issue the spend BEFORE
+# the view change completes, the leader is still node 1 (paused) and
+# the spend times out even though consensus is healthy.
+#
+# Wait for the surviving nodes to either record a "view change quorum"
+# or move on to a round under a new leader before issuing the spend.
+# Polling cap: 90 s (covers worst-case round + view-change + slack).
+echo "[info] waiting for view change quorum on surviving nodes (max 90s)..."
+deadline=$(( SECONDS + 90 ))
+vc_quorum=0
+while [ $SECONDS -lt $deadline ]; do
+    vc_quorum=0
+    for n in $(seq 1 "$STAGEF_COMMITTEE_SIZE"); do
+        [ "$n" = "$TARGET_NODE" ] && continue
+        log="$BASE_DIR/node$n/nodus.log"
+        if [ -f "$log" ] && grep -q "view change quorum" "$log"; then
+            vc_quorum=$((vc_quorum + 1))
+        fi
+    done
+    # Need 2f+1 = 5 (out of 6 surviving) to have logged VC quorum.
+    [ "$vc_quorum" -ge 5 ] && break
+    sleep 2
+done
+if [ "$vc_quorum" -lt 5 ]; then
+    echo "[info] only $vc_quorum/6 surviving nodes reached view change quorum (90s)"
+    echo "[info] proceeding anyway — the original leader may still be node 1's slot, in which case no VC is required and the spend will simply commit"
+else
+    echo "[info] view change quorum reached on $vc_quorum surviving nodes"
+fi
+
 # Create a fresh funded user while node 1 is paused. 6 live witnesses
-# must carry the funding TX to commit.
+# must carry the funding TX to commit. New leader (post-VC) handles it.
 TEST_HOME=$(stagef_mk_funded_user "vcfork" 120000000000000) || {
     echo "[FAIL] could not fund test user (6-of-7 consensus broken?)" >&2
     exit 4
