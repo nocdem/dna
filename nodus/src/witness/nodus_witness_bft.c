@@ -4653,6 +4653,19 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                 return -1;
             }
             if (cmt->block_height != expected_height) {
+                /* 2026-05-02 audit M-2: silent drop for distant-future
+                 * COMMITs while sync is already in-flight. Catch-up
+                 * sync produces 6+ COMMIT rejects per round per peer
+                 * which would otherwise log-spam during recovery. */
+                if (cmt->block_height > expected_height &&
+                    w->sync_state.syncing) {
+                    QGP_LOG_DEBUG(LOG_TAG,
+                        "commit silently dropped — sync in flight "
+                        "(commit=%lu local_next=%lu)",
+                        (unsigned long)cmt->block_height,
+                        (unsigned long)expected_height);
+                    return -1;
+                }
                 fprintf(stderr,
                     "%s: commit rejected — height mismatch "
                     "(commit=%llu local_next=%llu); triggering sync\n",
@@ -4661,7 +4674,9 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                     (unsigned long long)expected_height);
                 /* Active recovery: do not wait for the next periodic
                  * sync_check tick. sync_check honors its own rate limit
-                 * + IDLE phase guard so spamming this is safe. */
+                 * + IDLE phase guard so spamming this is safe. Future
+                 * Faz 5 hardening: cert verify BEFORE this trigger so
+                 * unauthenticated COMMITs cannot DoS the sync layer. */
                 nodus_witness_sync_check(w);
                 return -1;
             }

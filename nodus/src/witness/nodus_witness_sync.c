@@ -171,6 +171,16 @@ void nodus_witness_sync_check(nodus_witness_t *w) {
     uint64_t now = (uint64_t)time(NULL);
     if (now - w->sync_state.last_sync_attempt < SYNC_MIN_INTERVAL_SEC) return;
 
+    /* 2026-05-02 audit C-3: stamp last_sync_attempt as soon as we
+     * pass the basic guards (running, IDLE, syncing, rate-limit).
+     * Without this, every early-return path below (no peer ahead,
+     * no fork, peer behind, quorum unset) bypasses the rate limit
+     * and a malicious COMMIT storm pays the full peer-table walk
+     * + state_root Merkle recompute on each call. The original
+     * timestamp set deeper in the function only fired on the
+     * "actually start syncing" path. */
+    w->sync_state.last_sync_attempt = now;
+
     /* Check for height gap — find peer with higher chain */
     int peer_idx = find_sync_peer(w);
     if (peer_idx < 0) return;  /* No peer ahead of us */
