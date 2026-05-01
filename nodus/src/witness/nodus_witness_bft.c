@@ -28,6 +28,7 @@
 #include "witness/nodus_witness_epoch.h"
 #include "witness/nodus_witness_emission.h"
 #include "witness/nodus_witness_genesis_seed.h"
+#include "witness/nodus_witness_sync.h"        /* A2 simetri: active sync_check trigger */
 #include "nodus/nodus_chain_config.h"          /* Hard-Fork v1 apply dispatch */
 #include "protocol/nodus_tier3.h"
 #include "server/nodus_server.h"
@@ -4626,6 +4627,41 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
     if (cmt->batch_count > 0) {
         QGP_LOG_INFO(LOG_TAG, "received batch COMMIT for round %lu (%d TXs)",
                      (unsigned long)hdr->round, cmt->batch_count);
+
+        /* 2026-05-02 — A2 simetri: validate leader-claimed block_height
+         * mirrors handle_propose:3898-3914. Without this check the
+         * follower's commit_batch defaulted to local_chain_head+1 and
+         * applied wrong-height blocks during round skip → state_root
+         * divergence → safety halt latched. Live cluster bug 2026-05-01
+         * (US-1 halted at h=114). Bug ref:
+         * project_witness_commit_height_asymmetry.
+         *
+         * Backward-compat: legacy peers (pre-Faz 2 wire) emit bh=0;
+         * frame layer version reject (NODUS_FRAME_VERSION 0x02) should
+         * already block legacy frames, but defense in depth here in
+         * case CBOR-level cross-version slips through. */
+        {
+            uint64_t expected_height = nodus_witness_block_height(w) + 1;
+            if (cmt->block_height == 0) {
+                fprintf(stderr,
+                    "%s: commit rejected — missing block_height "
+                    "(legacy peer or malformed); sync needed\n", LOG_TAG);
+                return -1;
+            }
+            if (cmt->block_height != expected_height) {
+                fprintf(stderr,
+                    "%s: commit rejected — height mismatch "
+                    "(commit=%llu local_next=%llu); triggering sync\n",
+                    LOG_TAG,
+                    (unsigned long long)cmt->block_height,
+                    (unsigned long long)expected_height);
+                /* Active recovery: do not wait for the next periodic
+                 * sync_check tick. sync_check honors its own rate limit
+                 * + IDLE phase guard so spamming this is safe. */
+                nodus_witness_sync_check(w);
+                return -1;
+            }
+        }
 
         /* Phase 7 / Task 7.6 — multi-tx block via Phase 6 wrappers.
          *
