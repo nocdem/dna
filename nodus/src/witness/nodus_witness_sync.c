@@ -341,6 +341,10 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
     memcpy(rsp.sync_rsp.proposer_id, blk.proposer_id, NODUS_T3_WITNESS_ID_LEN);
     memcpy(rsp.sync_rsp.prev_hash, blk.prev_hash, NODUS_T3_TX_HASH_LEN);
     memcpy(rsp.sync_rsp.tx_root, blk.tx_root, NODUS_T3_TX_HASH_LEN);
+    /* 2026-05-02 — C3 fix follow-up (Faz 2 wire field "sr"): include
+     * sender's stored state_root so the receiver's replay_block can
+     * verify against finalize_block's mismatch check. */
+    memcpy(rsp.sync_rsp.state_root, blk.state_root, NODUS_KEY_BYTES);
     rsp.sync_rsp.tx_count = row_count;
 
     /* Phase 11 follow-up — committed_transactions now stores
@@ -634,17 +638,17 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
                                                 rsp->timestamp,
                                                 rsp->proposer_id);
         } else {
-            /* C3 fix: sync_rsp does not currently include state_root on
-             * the wire — pass NULL. Divergence in sync path is caught
-             * later by cert verify (verify_sync_certs) when validating
-             * voter sigs against historical committee pubkeys. Adding
-             * state_root to sync_rsp is a wire format change — deferred
-             * to a follow-up that also bumps sync protocol version. */
+            /* 2026-05-02 — C3 fix follow-up landed in Faz 2: sync_rsp
+             * now carries state_root on the wire (key "sr"). Pass it
+             * to replay_block so finalize_block's existing mismatch
+             * check (nodus_witness_bft.c:3186-3211) catches Byzantine
+             * peer fake blocks before any state mutation. Defense in
+             * depth alongside cert verify (verify_sync_certs). */
             rc = nodus_witness_replay_block(w, db_height, entry_ptrs,
                                               rsp->tx_count,
                                               rsp->timestamp,
                                               rsp->proposer_id,
-                                              NULL);
+                                              rsp->state_root);
         }
         if (rc != 0) {
             fprintf(stderr, "%s: block replay failed at height %llu\n",
