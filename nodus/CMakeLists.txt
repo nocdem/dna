@@ -729,6 +729,37 @@ register_witness_test(test_bft_roster_committee)
 # Task 60 — RETIRING validator stays in epoch committee until graduation
 register_witness_test(test_retiring_committee_membership)
 
+# ── Faz 1A — commit_t block_height bundle fix (RED state) ────────────
+# See nodus/docs/plans/2026-05-02-commit-t-block-height-fix-design.md
+# Bug ref: project_witness_commit_height_asymmetry (live cluster
+# 2026-05-01: US-1 halted at h=114 — round skip → state_root divergence)
+# These tests are stubs returning failure; concrete assertions land
+# after Faz 2 (wire format) and Faz 3 (handler updates).
+register_witness_test(test_witness_commit_height_skip)
+register_witness_test(test_witness_commit_height_match)
+register_witness_test(test_witness_commit_height_zero_legacy)
+register_witness_test(test_witness_sync_rsp_state_root_verify)
+
+# ── Faz 1B — BLOCKERS (audit B-1, B-2, B-3 + C-4) ────────────────────
+register_witness_test(test_block_hash_includes_state_root)
+register_witness_test(test_recovery_sentinel_crash_safety)
+register_witness_test(test_halt_auto_recover_default_off)
+register_witness_test(test_halt_recovery_historical_committee)
+
+# ── Faz 1C — CRITICAL (audit C-1..C-5) ────────────────────────────────
+register_witness_test(test_heartbeat_signed_checksum)
+register_witness_test(test_precommit_cert_verify_lazy)
+register_witness_test(test_sync_check_dos_rate_limit)
+register_witness_test(test_replay_block_historical_committee)
+register_witness_test(test_wire_protocol_version_reject)
+
+# ── Faz 1D — MAJOR (audit M-1..M-4, M-6) ─────────────────────────────
+register_witness_test(test_commit_batch_toctou)
+register_witness_test(test_multi_round_skip_silent_drop)
+register_witness_test(test_halt_cooldown_expedite)
+register_witness_test(test_halt_entry_phase_reset)
+register_witness_test(test_fault_inject_round_skip)
+
 # Task 81 — supply invariance property test (Phase 17).
 # Pure-C simulated state machine — does NOT need the witness internal
 # API, only DNAC public enum + constants. Linked without NODUS_WITNESS_INTERNAL_API.
