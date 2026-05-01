@@ -153,10 +153,15 @@ static void enc_commit_certs(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
 }
 
 static void enc_commit_args(cbor_encoder_t *enc, const nodus_t3_commit_t *c) {
-    /* Phase 9 / Task 9.4 — wire key bh -> tr, field block_hash -> tx_root. */
-    cbor_encode_map(enc, 7);
+    /* Phase 9 / Task 9.4 — wire key bh -> tr, field block_hash -> tx_root.
+     * 2026-05-02 — A2 simetri: "bh" key reintroduced as block_height
+     * (uint), bumping map size 7 -> 8. Decoder treats absent/zero as
+     * legacy-peer reject signal (mirrors enc_propose_args). */
+    cbor_encode_map(enc, 8);
     cbor_encode_cstr(enc, "tr");
     cbor_encode_bstr(enc, c->tx_root, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "bh");
+    cbor_encode_uint(enc, c->block_height);
     cbor_encode_cstr(enc, "btx");
     cbor_encode_array(enc, (size_t)c->batch_count);
     for (int i = 0; i < c->batch_count; i++)
@@ -336,8 +341,10 @@ static void enc_sync_req_args(cbor_encoder_t *enc, const nodus_t3_sync_req_t *r)
 
 static void enc_sync_rsp_args(cbor_encoder_t *enc, const nodus_t3_sync_rsp_t *r) {
     /* Phase 11 / Task 11.2 — multi-tx sync_rsp encoder.
-     * Map shape (found): f, h, ts, pid, ph, tr, btx, cer = 8 keys. */
-    cbor_encode_map(enc, r->found ? 8 : 2);
+     * 2026-05-02 — C3 fix follow-up: "sr" (state_root) added so the
+     * receiver can verify Byzantine peer rejection in replay_block.
+     * Map shape (found): f, h, ts, pid, ph, tr, sr, btx, cer = 9 keys. */
+    cbor_encode_map(enc, r->found ? 9 : 2);
     cbor_encode_cstr(enc, "f");  cbor_encode_bool(enc, r->found);
     cbor_encode_cstr(enc, "h");  cbor_encode_uint(enc, r->height);
     if (!r->found) return;
@@ -348,6 +355,8 @@ static void enc_sync_rsp_args(cbor_encoder_t *enc, const nodus_t3_sync_rsp_t *r)
                                                     NODUS_T3_TX_HASH_LEN);
     cbor_encode_cstr(enc, "tr");  cbor_encode_bstr(enc, r->tx_root,
                                                     NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "sr");  cbor_encode_bstr(enc, r->state_root,
+                                                    NODUS_KEY_BYTES);
     cbor_encode_cstr(enc, "btx");
     cbor_encode_array(enc, (size_t)r->tx_count);
     for (int i = 0; i < r->tx_count; i++)
@@ -654,6 +663,13 @@ static void dec_commit_field(cbor_decoder_t *dec, const cbor_item_t *key,
         if (val.type == CBOR_ITEM_BSTR &&
             val.bstr.len == NODUS_T3_WITNESS_ID_LEN)
             memcpy(c->proposer_id, val.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
+    }
+    else if (KEY_IS(*key, "bh")) {
+        /* 2026-05-02 — A2 simetri: leader-claimed block_height. Absent
+         * (legacy peer) leaves c->block_height = 0; handle_commit
+         * rejects 0 with sync trigger (mirrors propose A2 behavior). */
+        cbor_item_t val = cbor_decode_next(dec);
+        if (val.type == CBOR_ITEM_UINT) c->block_height = val.uint_val;
     }
     else if (KEY_IS(*key, "npc")) {
         cbor_item_t val = cbor_decode_next(dec);
@@ -1289,6 +1305,16 @@ static void dec_sync_rsp_args(cbor_decoder_t *dec, size_t count,
             if (val.type == CBOR_ITEM_BSTR &&
                 val.bstr.len == NODUS_T3_TX_HASH_LEN)
                 memcpy(r->tx_root, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        }
+        else if (KEY_IS(key, "sr")) {
+            /* 2026-05-02 — C3 fix follow-up: leader's state_root claim
+             * for the synced block. Receiver passes this to replay_block
+             * as expected_state_root so finalize_block can detect
+             * Byzantine peer fake blocks before any state mutation. */
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_KEY_BYTES)
+                memcpy(r->state_root, val.bstr.ptr, NODUS_KEY_BYTES);
         }
         else if (KEY_IS(key, "btx")) {
             cbor_item_t arr = cbor_decode_next(dec);

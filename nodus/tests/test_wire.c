@@ -22,7 +22,7 @@ static void test_encode_basic(void) {
     size_t total = nodus_frame_encode(buf, sizeof(buf), payload, 5);
     if (total == 12 &&
         buf[0] == 0x4E && buf[1] == 0x44 &&  /* "ND" */
-        buf[2] == 0x01 &&                      /* version 1 */
+        buf[2] == NODUS_FRAME_VERSION &&       /* version byte */
         buf[3] == 5 && buf[4] == 0 && buf[5] == 0 && buf[6] == 0 &&  /* len=5 LE */
         memcmp(buf + 7, "hello", 5) == 0)
         PASS();
@@ -64,7 +64,7 @@ static void test_decode_basic(void) {
     nodus_frame_t frame;
     int rc = nodus_frame_decode(buf, 12, &frame);
     if (rc == 12 &&
-        frame.version == 1 &&
+        frame.version == NODUS_FRAME_VERSION &&
         frame.payload_len == 5 &&
         memcmp(frame.payload, "world", 5) == 0)
         PASS();

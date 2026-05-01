@@ -142,10 +142,24 @@ typedef struct {
 
 /** w_commit: Leader broadcasts commit after quorum.
  * Phase 9 / Task 9.1 — legacy single-TX fields removed. Every commit
- * is batch-shaped post Phase 7. */
+ * is batch-shaped post Phase 7.
+ *
+ * 2026-05-02 — A2 simetrisi: block_height field added (matches the
+ * propose-side A2 fix). Without it, a follower that missed round N's
+ * PRECOMMIT/COMMIT messages and receives round N+1's COMMIT cannot
+ * detect the round skip — commit_batch defaults to local_chain_head+1
+ * which mismatches the leader's actual height. Live cluster bug
+ * 2026-05-01: US-1 halted at h=114 because of this exact path.
+ *
+ * Backward-compat: legacy peers (pre-Faz 2) emit block_height=0 by
+ * struct zero-init; handle_commit treats 0 as "missing/legacy" and
+ * rejects with sync trigger (mirrors enc_propose_args A2 fix).
+ *
+ * Wire key: "bh" (uint). */
 typedef struct {
     uint64_t        proposal_timestamp;
     uint8_t         proposer_id[NODUS_T3_WITNESS_ID_LEN];
+    uint64_t        block_height;                /* A2 simetrisi (2026-05-02) */
     uint32_t        n_precommits;
     uint8_t         state_root[NODUS_KEY_BYTES]; /* RFC 6962 Merkle root over UTXO set */
     nodus_t3_cert_entry_t certs[NODUS_T3_MAX_WITNESSES]; /* Precommit signatures */
@@ -333,6 +347,12 @@ typedef struct {
     uint8_t     proposer_id[NODUS_T3_WITNESS_ID_LEN];
     uint8_t     prev_hash[NODUS_T3_TX_HASH_LEN];
     uint8_t     tx_root[NODUS_T3_TX_HASH_LEN];   /* sender's claim — receiver MUST recompute */
+    uint8_t     state_root[NODUS_KEY_BYTES];     /* C3 fix follow-up (2026-05-02): sender's
+                                                   * post-block state root. Receiver passes
+                                                   * to replay_block as expected_state_root
+                                                   * so finalize_block can reject Byzantine
+                                                   * blocks before any state mutation.
+                                                   * Wire key: "sr". */
 
     int         tx_count;
     nodus_t3_batch_tx_t batch_txs[NODUS_W_MAX_BLOCK_TXS];

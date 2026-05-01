@@ -25,9 +25,19 @@ extern "C" {
 #define NODUS_VERSION_PATCH  9
 #define NODUS_VERSION_STRING "0.17.9"
 
-/* Wire frame */
+/* Wire frame.
+ *
+ * Version 0x02 (2026-05-02) — wire format break for the witness
+ * COMMIT block_height bundle (commit_t.block_height field +
+ * sync_rsp.state_root field per design doc 2026-05-02). Bumping the
+ * frame version forces version-mismatch rejection at nodus_frame_
+ * validate() (nodus_wire.c:76), preventing a stray legacy v0.17 binary
+ * (e.g. systemd auto-restart during deploy) from joining a v0.18
+ * cluster and silently triggering the original round-skip bug. Bundle
+ * deploys with chain wipe (memory: feedback_consensus_deploy_stop_all).
+ */
 #define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
-#define NODUS_FRAME_VERSION     0x01
+#define NODUS_FRAME_VERSION     0x02
 #define NODUS_FRAME_HEADER_SIZE 7           /* magic(2) + ver(1) + len(4) */
 #define NODUS_MAX_FRAME_TCP     (5 * 1024 * 1024)  /* 5 MB (value + overhead) */
 #define NODUS_MAX_FRAME_UDP     1400        /* Safe MTU */
