@@ -75,6 +75,7 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
 int nodus_witness_commit_batch(nodus_witness_t *w,
                                  nodus_witness_mempool_entry_t **entries,
                                  int count,
+                                 uint64_t expected_height,
                                  uint64_t timestamp,
                                  const uint8_t *proposer_id,
                                  const uint8_t *expected_state_root);
@@ -4479,10 +4480,13 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
                                 w->round_state.proposal_timestamp,
                                 w->round_state.proposer_id) != 0);
         } else {
-            /* Leader path — this node computes state_root, no expected. */
+            /* Leader path — this node computes state_root, no expected.
+             * Pass round_state.block_height (set at handle_propose's A2
+             * fix or local round-init) as expected_height. */
             batch_failed = (nodus_witness_commit_batch(w,
                                 w->round_state.batch_entries,
                                 w->round_state.batch_count,
+                                w->round_state.block_height,
                                 w->round_state.proposal_timestamp,
                                 w->round_state.proposer_id,
                                 NULL) != 0);
@@ -4739,9 +4743,13 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
                                     cmt->proposal_timestamp,
                                     cmt->proposer_id) != 0);
         } else {
-            /* C3 fix: pass leader's state_root claim — follower must match. */
+            /* C3 fix: pass leader's state_root claim — follower must match.
+             * 2026-05-02: pass cmt->block_height (already validated by
+             * the A2 simetri block above) so commit_batch's TOCTOU
+             * snapshot guard catches any race window. */
             rmt_batch_failed = (nodus_witness_commit_batch(w, entry_ptrs,
                                     cmt->batch_count,
+                                    cmt->block_height,
                                     cmt->proposal_timestamp,
                                     cmt->proposer_id,
                                     cmt->state_root) != 0);
@@ -5643,6 +5651,7 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
 int nodus_witness_commit_batch(nodus_witness_t *w,
                                  nodus_witness_mempool_entry_t **entries,
                                  int count,
+                                 uint64_t expected_height,
                                  uint64_t timestamp,
                                  const uint8_t *proposer_id,
                                  const uint8_t *expected_state_root) {
@@ -5660,7 +5669,25 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
 
     if (nodus_witness_db_begin(w) != 0) return -1;
 
-    uint64_t bh = nodus_witness_block_height(w) + 1;
+    /* 2026-05-02 audit M-1 — TOCTOU snapshot guard. handle_commit
+     * pre-validated cmt->block_height == local_next; commit_batch
+     * re-checks under the DB transaction so any race window between
+     * the two reads (single-threaded epoll guarantees none today, but
+     * defense in depth for future threading) is caught. Rollback +
+     * return -1 instead of applying at the wrong height — that was
+     * the live bug US-1 hit at h=114 on 2026-05-01. */
+    uint64_t local_next = nodus_witness_block_height(w) + 1;
+    if (expected_height != local_next) {
+        fprintf(stderr,
+            "%s: commit_batch height mismatch "
+            "(expected=%llu local_next=%llu) — rollback\n",
+            LOG_TAG,
+            (unsigned long long)expected_height,
+            (unsigned long long)local_next);
+        nodus_witness_db_rollback(w);
+        return -1;
+    }
+    uint64_t bh = expected_height;
 
     /* Flat buffer of all TX hashes for finalize_block's tx_root compute */
     uint8_t tx_hashes[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_TX_HASH_LEN];
@@ -5827,7 +5854,9 @@ int nodus_witness_replay_block(nodus_witness_t *w,
 
     /* replay_block uses the same body as commit_batch — the only
      * difference is the height precondition above. Delegate to avoid
-     * duplicating the apply+finalize+output-nullifier-append loop. */
-    return nodus_witness_commit_batch(w, entries, count, timestamp,
+     * duplicating the apply+finalize+output-nullifier-append loop.
+     * 2026-05-02: pass rsp_height as expected_height (already
+     * validated == local + 1 by the precondition above). */
+    return nodus_witness_commit_batch(w, entries, count, rsp_height, timestamp,
                                         proposer_id, expected_state_root);
 }

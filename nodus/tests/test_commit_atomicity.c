@@ -151,7 +151,7 @@ static void test_happy_path(void) {
     uint8_t proposer[32];
     memset(proposer, 0x42, 32);
 
-    int rc = nodus_witness_commit_batch(&w, entries, 1, 1700000000, proposer, NULL);
+    int rc = nodus_witness_commit_batch(&w, entries, 1, 1, 1700000000, proposer, NULL);
     CHECK_EQ(rc, 0);
 
     CHECK_EQ(w.in_block_transaction, false);
@@ -196,7 +196,7 @@ static void test_mid_batch_abort_rolls_back(void) {
     uint8_t proposer[32];
     memset(proposer, 0x55, 32);
 
-    int rc = nodus_witness_commit_batch(&w, entries, 2, 1700000000, proposer, NULL);
+    int rc = nodus_witness_commit_batch(&w, entries, 2, 1, 1700000000, proposer, NULL);
     CHECK_EQ(rc, -1);
 
     CHECK_EQ(w.in_block_transaction, false);

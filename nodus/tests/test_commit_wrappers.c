@@ -148,12 +148,14 @@ static void test_commit_batch_empty_or_bad_count_rejected(void) {
     uint8_t proposer[32];
     memset(proposer, 0xBB, 32);
 
-    int rc = nodus_witness_commit_batch(&w, NULL, 0, 1700000000, proposer, NULL);
+    /* expected_height=1 placeholder; reject paths fire on entries/count
+     * arg validation before the height check (Faz 3B 2026-05-02). */
+    int rc = nodus_witness_commit_batch(&w, NULL, 0, 1, 1700000000, proposer, NULL);
     if (rc != -1) { FAIL("count=0 not rejected"); sqlite3_close(w.db); return; }
 
     nodus_witness_mempool_entry_t *dummy[20];
     for (int i = 0; i < 20; i++) dummy[i] = NULL;
-    rc = nodus_witness_commit_batch(&w, dummy, 20, 1700000000, proposer, NULL);
+    rc = nodus_witness_commit_batch(&w, dummy, 20, 1, 1700000000, proposer, NULL);
     if (rc != -1) { FAIL("count=20 not rejected"); sqlite3_close(w.db); return; }
 
     PASS();
@@ -172,7 +174,8 @@ static void test_commit_batch_single_tx_writes_block(void) {
     uint8_t proposer[32];
     memset(proposer, 0xCC, 32);
 
-    int rc = nodus_witness_commit_batch(&w, entries, 1, 1700000000, proposer, NULL);
+    /* setup_witness leaves h=0; first commit lands at h=1. */
+    int rc = nodus_witness_commit_batch(&w, entries, 1, 1, 1700000000, proposer, NULL);
     if (rc != 0) { FAIL("commit_batch returned non-zero"); goto done; }
 
     sqlite3_stmt *stmt;

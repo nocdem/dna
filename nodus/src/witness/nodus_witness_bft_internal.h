@@ -152,9 +152,17 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
  * individually under a SAVEPOINT to identify the specific offender
  * — emits "attribution: TX %d ..." log lines — then discards the
  * replay transaction. */
+/* expected_height (2026-05-02 audit M-1 fix): the height the block
+ * should land at. Caller MUST pass leader's claim (cmt->block_height
+ * from a remote COMMIT, or local_chain_head + 1 for leader path).
+ * Mismatch with local_chain_head + 1 inside commit_batch → rollback +
+ * return -1, defends against TOCTOU race between handle_commit's
+ * pre-check and commit_batch entry. Bug ref:
+ * project_witness_commit_height_asymmetry. */
 int nodus_witness_commit_batch(nodus_witness_t *w,
                                  nodus_witness_mempool_entry_t **entries,
                                  int count,
+                                 uint64_t expected_height,
                                  uint64_t timestamp,
                                  const uint8_t *proposer_id,
                                  const uint8_t *expected_state_root);
