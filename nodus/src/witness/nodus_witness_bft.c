@@ -3210,6 +3210,13 @@ int finalize_block(nodus_witness_t *w,
             local_hex, leader_hex);
         w->safety_halt = true;
         w->halt_block_height = expected_height;
+        /* 2026-05-02 audit M-4: reset round phase to IDLE so the
+         * subsequent halt_recovery_check / sync_check tick (Faz 4D-E)
+         * is not gated by the IDLE guard at sync.c:165. Without this
+         * reset, a halt latched mid-PRECOMMIT (US-1's actual case at
+         * 11:14:47) leaves phase=PREVOTE/PRECOMMIT until view-change
+         * timeout, silently blocking auto-recovery. */
+        w->round_state.phase = NODUS_W_PHASE_IDLE;
         return -1;
     }
 
