@@ -4722,6 +4722,46 @@ int nodus_witness_bft_handle_commit(nodus_witness_t *w,
             }
         }
 
+        /* === Faz 3D — PRECOMMIT cert verify (C-2 defense in depth) ===
+         * Verify witness signatures BEFORE state mutation. CRITICAL:
+         * the existing precommit sign path (line ~4442) passes
+         * round_state.tx_hash to compute_cert_preimage; that field is
+         * actually tx_root (line 3977/3389: tx_hash := tx_root). The
+         * "block_hash" parameter name in the verify helper is
+         * misleading. Pass cmt->tx_root here to match the sign side.
+         *
+         * B-1 (cert preimage MUST include state_root) is a SEPARATE
+         * task: it requires changing the sign side too (witnesses sign
+         * full block_hash including state_root, not just tx_root) and
+         * is incompatible with this current sign path. Leave as future
+         * audit work. */
+        if (cmt->block_height >= 2 && cmt->n_precommits > 0) {
+            nodus_t3_sync_cert_t sync_certs[NODUS_T3_MAX_WITNESSES];
+            uint32_t cc = (cmt->n_precommits < NODUS_T3_MAX_WITNESSES)
+                        ? cmt->n_precommits : NODUS_T3_MAX_WITNESSES;
+            for (uint32_t i = 0; i < cc; i++) {
+                memcpy(sync_certs[i].voter_id, cmt->certs[i].voter_id,
+                       NODUS_T3_WITNESS_ID_LEN);
+                memcpy(sync_certs[i].signature, cmt->certs[i].signature,
+                       NODUS_SIG_BYTES);
+            }
+
+            if (nodus_witness_verify_sync_certs(cmt->tx_root,
+                                                  cmt->block_height,
+                                                  w->chain_id,
+                                                  &w->roster,
+                                                  sync_certs, cc,
+                                                  w->bft_config.quorum) < 0) {
+                fprintf(stderr,
+                    "%s: PRECOMMIT cert quorum verify FAILED "
+                    "(h=%llu, votes=%u, quorum=%u)\n",
+                    LOG_TAG, (unsigned long long)cmt->block_height,
+                    cc, w->bft_config.quorum);
+                return -1;
+            }
+        }
+        /* === end Faz 3D === */
+
         /* Phase 7 / Task 7.6 — multi-tx block via Phase 6 wrappers.
          *
          * Build stack-allocated mempool entries from cmt->batch_txs.
