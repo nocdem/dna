@@ -3925,6 +3925,13 @@ static void idle_timeout_sweep(nodus_server_t *srv) {
 
 static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
                             const uint8_t *payload, size_t len) {
+    /* DBG: trace dispatch entries on encrypted conns (v0.18.1) */
+    if (sess->conn && sess->conn->channel_crypto.established) {
+        fprintf(stderr, "DBG_DISP_ENC: slot=%d peer=%s:%u len=%zu\n",
+                sess->conn->slot, sess->conn->ip,
+                (unsigned)sess->conn->port, len);
+    }
+
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
 
@@ -4366,6 +4373,14 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
     nodus_tier1_msg_t t1msg;
     memset(&t1msg, 0, sizeof(t1msg));
     if (nodus_t1_decode(payload, len, &t1msg) == 0) {
+        /* DBG: T1 decode success on encrypted conn (v0.18.1) */
+        if (sess->conn && sess->conn->channel_crypto.established) {
+            fprintf(stderr,
+                    "DBG_T1_OK: slot=%d method=%s has_value=%d\n",
+                    sess->conn->slot,
+                    t1msg.method[0] ? t1msg.method : "(empty)",
+                    t1msg.value ? 1 : 0);
+        }
 
         if (strcmp(t1msg.method, "sv") == 0 && t1msg.value) {
             /* STORE_VALUE: replication from another node */
@@ -4536,6 +4551,14 @@ static void on_inter_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     nodus_server_t *srv = (nodus_server_t *)ctx;
     nodus_inter_session_t *sess = inter_session_for_conn(srv, conn);
     if (!sess) return;
+
+    /* DBG: trace encrypted frames for replication diagnosis (v0.18.1) */
+    if (conn->channel_crypto.established) {
+        fprintf(stderr,
+                "DBG_RX_ENC: slot=%d peer=%s:%u len=%zu auth_state=%d\n",
+                conn->slot, conn->ip, (unsigned)conn->port, len,
+                (int)conn->auth_state);
+    }
 
     /* Phase 3.2c: log first frame seen on this conn — tells us whether
      * an INBOUND ACCEPT ever made it past the TCP handshake into actual
