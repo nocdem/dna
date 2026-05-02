@@ -14,6 +14,7 @@
 #include "transport/nodus_tcp.h"
 #include "server/nodus_server.h"
 #include "crypto/nodus_sign.h"
+#include "nodus/nodus_chain_config.h"  /* derive_witness_id (Faz 4D halt_recovery_check) */
 #include "dnac/transaction.h"   /* DNAC_TX_HEADER_SIZE (v0.17.1) */
 
 #include <openssl/evp.h>
@@ -240,6 +241,127 @@ static int drop_witness_db(nodus_witness_t *w) {
     fprintf(stderr, "%s: dropped witness DB %s for fork rebuild\n",
             LOG_TAG, db_path);
     return 0;
+}
+
+/* ── Halt recovery — Hybrid model (Faz 4D, audit B-3/C-4/M-3) ───────
+ *
+ * After finalize_block latches safety_halt and snapshots
+ * halt_committee_pubkeys at halt_block_height, this checker runs on
+ * each periodic tick. Hybrid policy:
+ *   - default OFF (config.halt_auto_recover = false): never auto-drop;
+ *     operator must clear sentinel + restart.
+ *   - opt-in ON: 60s cooldown gate; bypassed if disagree-quorum is
+ *     immediately clear (M-3 expedite).
+ *
+ * Disagree counts ONLY peers whose pubkey hashes to a witness_id in
+ * the halt_committee snapshot — phantom committee members spawned
+ * during halt window cannot inflate the vote (B-3).
+ *
+ * On qualified drop: arm sentinel BEFORE drop_witness_db (B-2 crash
+ * safety). Sentinel cleared by sync_handle_rsp on first replayed
+ * block (Faz 4D follow-up).
+ */
+
+#define HALT_COOLDOWN_SEC 60
+
+void nodus_witness_halt_recovery_check(nodus_witness_t *w) {
+    if (!w || !w->safety_halt) return;
+    if (!w->config.halt_auto_recover) return;          /* B-3 default off */
+    if (w->halt_committee_count == 0) return;          /* snapshot failed */
+
+    uint64_t now = (uint64_t)time(NULL);
+    uint64_t cooldown_remaining = 0;
+    if (w->halt_timestamp > 0 && now > w->halt_timestamp) {
+        uint64_t elapsed = now - w->halt_timestamp;
+        cooldown_remaining = (elapsed >= HALT_COOLDOWN_SEC) ? 0
+                                : HALT_COOLDOWN_SEC - elapsed;
+    } else if (w->halt_timestamp >= now) {
+        cooldown_remaining = HALT_COOLDOWN_SEC;
+    }
+
+    /* Compute peer disagreement against halt-time committee snapshot. */
+    uint8_t local_cksum[NODUS_KEY_BYTES];
+    if (w->cached_state_root_valid) {
+        memcpy(local_cksum, w->cached_state_root, NODUS_KEY_BYTES);
+    } else if (nodus_witness_merkle_compute_state_root(w, local_cksum) != 0) {
+        return;  /* can't compute — wait for next tick */
+    }
+    static const uint8_t zero_cksum[NODUS_KEY_BYTES] = {0};
+
+    /* Pre-derive witness_ids for halt_committee pubkeys (~7 SHA3-512). */
+    uint8_t hist_wids[DNAC_COMMITTEE_SIZE][NODUS_T3_WITNESS_ID_LEN];
+    int hist_n = w->halt_committee_count;
+    if (hist_n > DNAC_COMMITTEE_SIZE) hist_n = DNAC_COMMITTEE_SIZE;
+    for (int i = 0; i < hist_n; i++) {
+        if (nodus_chain_config_derive_witness_id(w->halt_committee_pubkeys[i],
+                                                   hist_wids[i]) != 0) {
+            /* Snapshot corruption → bail to inconclusive. */
+            return;
+        }
+    }
+
+    int agree = 0, disagree = 0;
+    for (int i = 0; i < w->peer_count; i++) {
+        if (!w->peers[i].identified) continue;
+        if (memcmp(w->peers[i].remote_checksum, zero_cksum,
+                   NODUS_KEY_BYTES) == 0) continue;
+
+        bool in_hist = false;
+        for (int j = 0; j < hist_n; j++) {
+            if (memcmp(w->peers[i].witness_id, hist_wids[j],
+                       NODUS_T3_WITNESS_ID_LEN) == 0) {
+                in_hist = true;
+                break;
+            }
+        }
+        if (!in_hist) continue;  /* phantom or non-committee → ignore */
+
+        if (memcmp(w->peers[i].remote_checksum, local_cksum,
+                   NODUS_KEY_BYTES) == 0) {
+            agree++;
+        } else {
+            disagree++;
+        }
+    }
+
+    int quorum = (int)w->bft_config.quorum;
+    bool clear_quorum = (quorum > 0 && disagree >= quorum && disagree > agree);
+
+    /* M-3 expedite: clear quorum bypasses cooldown. */
+    if (cooldown_remaining > 0 && !clear_quorum) {
+        return;
+    }
+
+    if (!clear_quorum) {
+        /* Cooldown elapsed but no quorum — admin will need to act. */
+        return;
+    }
+
+    fprintf(stderr,
+        "%s: halt_recovery: historical-committee quorum reached "
+        "(disagree=%d agree=%d quorum=%d) at halt_height=%llu — "
+        "arming sentinel and dropping DB\n",
+        LOG_TAG, disagree, agree, quorum,
+        (unsigned long long)w->halt_block_height);
+
+    if (nodus_witness_recovery_sentinel_create(w, w->halt_block_height) != 0) {
+        fprintf(stderr, "%s: halt_recovery: sentinel arm failed — refusing drop\n",
+                LOG_TAG);
+        return;
+    }
+    if (drop_witness_db(w) != 0) {
+        fprintf(stderr, "%s: halt_recovery: drop failed — sentinel persists, "
+                "manual intervention required\n", LOG_TAG);
+        return;
+    }
+
+    /* Clear halt state — sentinel persists until first replayed block. */
+    w->safety_halt = false;
+    w->halt_block_height = 0;
+    w->halt_timestamp = 0;
+    w->halt_committee_count = 0;
+    fprintf(stderr, "%s: halt_recovery: halt cleared, sync will re-fetch chain\n",
+            LOG_TAG);
 }
 
 /* ── Find best sync peer ────────────────────────────────────────── */
@@ -798,6 +920,13 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
 
     fprintf(stderr, "%s: replayed block %llu OK\n",
             LOG_TAG, (unsigned long long)db_height);
+
+    /* Faz 4D 2026-05-02 — clear recovery sentinel after first
+     * successful replay. Idempotent: returns 0 when already absent.
+     * Failure here is non-fatal but logged; the sentinel will linger
+     * and force admin intervention on the NEXT crash, which is the
+     * correct conservative behavior. */
+    (void)nodus_witness_recovery_sentinel_clear(w);
 
     w->sync_state.sync_current_height = expected_height + 1;
 

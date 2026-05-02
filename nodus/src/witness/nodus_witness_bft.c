@@ -3210,6 +3210,31 @@ int finalize_block(nodus_witness_t *w,
             local_hex, leader_hex);
         w->safety_halt = true;
         w->halt_block_height = expected_height;
+        w->halt_timestamp = (uint64_t)time(NULL);
+        /* 2026-05-02 audit B-3 + C-4: capture historical committee
+         * snapshot AT halt height so halt_recovery_check (Faz 4D-E)
+         * can tally disagree-quorum against pinned membership rather
+         * than current gossip roster. Phantom committee members
+         * spawned during halt window cannot influence the vote.
+         * Failure to capture (DB error, etc) leaves halt_committee_
+         * count = 0 → halt_recovery_check treats as inconclusive. */
+        nodus_committee_member_t halt_cm[DNAC_COMMITTEE_SIZE];
+        int halt_cm_count = 0;
+        if (nodus_committee_get_for_block(w, expected_height, halt_cm,
+                                            DNAC_COMMITTEE_SIZE,
+                                            &halt_cm_count) == 0) {
+            w->halt_committee_count = halt_cm_count;
+            for (int i = 0; i < halt_cm_count && i < DNAC_COMMITTEE_SIZE; i++) {
+                memcpy(w->halt_committee_pubkeys[i], halt_cm[i].pubkey,
+                       DNAC_PUBKEY_SIZE);
+            }
+        } else {
+            w->halt_committee_count = 0;
+            fprintf(stderr,
+                "%s: halt committee snapshot failed at h=%llu — "
+                "halt_recovery_check will treat as inconclusive\n",
+                LOG_TAG, (unsigned long long)expected_height);
+        }
         /* 2026-05-02 audit M-4: reset round phase to IDLE so the
          * subsequent halt_recovery_check / sync_check tick (Faz 4D-E)
          * is not gated by the IDLE guard at sync.c:165. Without this

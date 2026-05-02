@@ -484,6 +484,24 @@ typedef struct nodus_witness {
      * divergence was detected for diagnostics. */
     bool        safety_halt;
     uint64_t    halt_block_height;
+    /* 2026-05-02 audit B-3 + C-4 + M-3 — halt-recovery snapshot.
+     *
+     * Set when finalize_block latches safety_halt. Pinning the
+     * committee at halt_block_height defends against an attacker
+     * spawning phantom committee members during the halt window to
+     * inflate disagree-quorum votes — halt_recovery_check (Faz 4D-E)
+     * counts only members of THIS snapshot, not the gossip-current
+     * roster. halt_timestamp drives the 60s cooldown gate (M-3
+     * expedite). halt_committee_count == 0 means snapshot capture
+     * itself failed; halt_recovery_check treats this as inconclusive
+     * and blocks auto-drop. */
+    uint64_t    halt_timestamp;
+    /* Pubkey snapshot only — sufficient for membership check during
+     * halt-recovery quorum tally. Mirrors cached_committee_pubkeys
+     * pattern below to avoid pulling nodus_committee_member_t into
+     * this header. */
+    uint8_t     halt_committee_pubkeys[DNAC_COMMITTEE_SIZE][DNAC_PUBKEY_SIZE];
+    int         halt_committee_count;
 
     /* C5 — PBFT prepared-cert tracker.
      *

@@ -617,6 +617,10 @@ void nodus_witness_tick(nodus_witness_t *witness) {
 
     /* State sync: check if behind peers and need to catch up */
     nodus_witness_sync_check(witness);
+    /* Faz 4D 2026-05-02 — halt recovery (Hybrid model). No-op unless
+     * safety_halt latched AND config.halt_auto_recover enabled AND
+     * historical committee snapshot present. Default: false / no-op. */
+    nodus_witness_halt_recovery_check(witness);
 }
 
 /* ── Tier 3 dispatch (BFT message routing) ───────────────────────── */

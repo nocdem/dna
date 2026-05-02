@@ -84,6 +84,19 @@ int nodus_witness_recovery_sentinel_clear(nodus_witness_t *w);
 int nodus_witness_recovery_sentinel_check(const char *data_path,
                                             uint64_t *out_halt_height);
 
+/* ── Halt recovery (Faz 4D, audit B-3/C-4/M-3) ───────────────────────
+ *
+ * Hybrid policy: default OFF (config.halt_auto_recover = false). When
+ * opt-in ON, evaluates disagree-quorum among historical committee
+ * members (snapshot at halt_block_height) and, when met, arms the
+ * recovery sentinel + drops the witness DB. Cooldown: 60s default,
+ * bypassed on immediately-clear quorum (M-3 expedite).
+ *
+ * Called from the periodic witness tick alongside sync_check.
+ * No-ops when !safety_halt or auto_recover disabled or snapshot empty.
+ */
+void nodus_witness_halt_recovery_check(nodus_witness_t *w);
+
 #ifdef __cplusplus
 }
 #endif
