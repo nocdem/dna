@@ -58,6 +58,12 @@ run_one() {
 }
 
 if [ $SCENARIOS_ONLY -eq 0 ]; then
+    # Defensive teardown — leftover stagef nodes from a previous run
+    # (incomplete Phase 4 cleanup, Ctrl+C, etc.) hold ports 14001-34004
+    # and would cause test_server to fail in Phase 1 with "Failed to
+    # listen on TCP 127.0.0.1:14001". Idempotent — no-op if no run.
+    bash "$HERE/stagef_down.sh" >/dev/null 2>&1 || true
+
     banner "Phase 1: nodus ctest (unit suite)"
     ctest_log="$(mktemp)"
     trap "rm -f $ctest_log" EXIT
@@ -75,11 +81,17 @@ if [ $SCENARIOS_ONLY -eq 0 ]; then
             if [[ $line =~ ^[[:space:]]*[0-9]+[[:space:]]*-[[:space:]]*([a-zA-Z0-9_]+)[[:space:]]*\(Failed\) ]]; then
                 test_name="${BASH_REMATCH[1]}"
                 test_bin="$NODUS_BUILD/$test_name"
-                if [ -x "$test_bin" ] && "$test_bin" 2>&1 | grep -q "STUB — failing by design"; then
-                    stub_skips+=("$test_name")
-                else
-                    real_fails+=("$test_name")
+                # Capture stdout via command substitution + `|| true` —
+                # STUB binaries exit 1 by design, which would trip
+                # `set -o pipefail` if we piped directly into grep.
+                if [ -x "$test_bin" ]; then
+                    test_out="$("$test_bin" 2>&1 || true)"
+                    if [[ "$test_out" == *"STUB — failing by design"* ]]; then
+                        stub_skips+=("$test_name")
+                        continue
+                    fi
                 fi
+                real_fails+=("$test_name")
             fi
         done < "$ctest_log"
 
