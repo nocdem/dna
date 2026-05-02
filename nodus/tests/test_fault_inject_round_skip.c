@@ -41,15 +41,21 @@
  * Blocked on Faz 5.4 (build flag + dispatch hook).
  */
 
+/* Faz 5.4 fault injection harness (-DQGP_FAULT_INJECT=ON +
+ * nodus_witness_test_inject_drop predicate API) is M5 task scope —
+ * NOT shipped yet. Concrete coverage here is intentionally a SKIP
+ * (rc=99 sentinel, picked up by Genesis Protocol harness after
+ * M1 STUB filter). When M5 lands the predicate API hook, this stub
+ * will be rewritten to install a drop predicate and assert that
+ * the stagef cluster recovers from a synthetic round-skip. */
+
 #define NODUS_WITNESS_INTERNAL_API 1
 
 #include <stdio.h>
 #include <stdlib.h>
 
 int main(void) {
-    fprintf(stderr,
-        "test_fault_inject_round_skip: STUB — failing by design.\n"
-        "  Concrete assertion blocked on Faz 5.4 fault injection\n"
-        "  harness (-DQGP_FAULT_INJECT=ON build flag).\n");
-    return 1;
+    printf("Faz 1.18 SKIP (Faz 5.4 fault injection harness not yet "
+        "shipped; tracked as M5 task)\n");
+    return 99;  /* SKIP sentinel — Genesis Protocol harness honours */
 }
