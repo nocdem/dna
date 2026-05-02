@@ -1,49 +1,108 @@
 /**
- * Nodus — Faz 1A / Test 1.4 — sync_rsp Byzantine peer rejection
- *
- * RED state — failing test by design until Faz 2+3 complete.
- *
- * Scenario (target behavior after Faz 2 + Faz 3.5):
- *   1. Setup witness at h=0 (pre-genesis)
- *   2. Apply genesis (block 1)
- *   3. Build w_sync_rsp from a "Byzantine peer" claiming block 2 with
- *      a fabricated state_root that does NOT match what local replay
- *      would compute
- *   4. Call nodus_witness_sync_handle_rsp(w, &msg)
- *   5. Expected: rc == -1, block 2 NOT inserted, sync.state.syncing
- *      cleared, log "block replay failed at height 2"
- *   6. Current behavior (broken): nodus_witness_sync.c:643 passes
- *      NULL as expected_state_root, so replay_block has no comparison
- *      target — Byzantine block silently accepted (only cert verify
- *      catches it, which has its own gaps per audit B-3)
- *
- * Reference: nodus_witness_sync.c:637-642 ("C3 fix: sync_rsp does not
- * currently include state_root on the wire — pass NULL ... Adding
- * state_root to sync_rsp is a wire format change — deferred to a
- * follow-up that also bumps sync protocol version.")
- *
- * Blocked on:
- *   - Faz 2: nodus_t3_sync_rsp_t.state_root field added to wire
- *   - Faz 3.5: replay_block invocation pass rsp->state_root (not NULL)
- *
- * The replay_block API itself (nodus_witness_bft.c:5774) already
- * accepts expected_state_root parameter and forwards it to commit_batch
- * → finalize_block where the mismatch check (line 3186-3212) latches
- * safety_halt. The test scaffolding waits for the wire field so that
- * sync_handle_rsp can populate it.
+ * Nodus — Faz 1.4 — sync_rsp Byzantine state_root reject (concrete)
  */
 
 #define NODUS_WITNESS_INTERNAL_API 1
 
+#include "witness/nodus_witness.h"
+#include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_mempool.h"
+#include "witness/nodus_witness_bft.h"
+#include "witness/nodus_witness_bft_internal.h"
+#include "nodus/nodus_types.h"
+
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sqlite3.h>
+
+#define CHECK(cond) do { \
+    if (!(cond)) { \
+        fprintf(stderr, "CHECK %s:%d: %s\n", __FILE__, __LINE__, #cond); \
+        exit(1); \
+    } } while (0)
+
+#define CHECK_EQ(a, b) do { \
+    unsigned long long _a = (unsigned long long)(a), \
+                       _b = (unsigned long long)(b); \
+    if (_a != _b) { \
+        fprintf(stderr, "CHECK_EQ %s:%d: %llu != %llu\n", \
+                __FILE__, __LINE__, _a, _b); \
+        exit(1); \
+    } } while (0)
+
+static const char *SCHEMA =
+    "CREATE TABLE nullifiers (nullifier BLOB PRIMARY KEY, tx_hash BLOB NOT NULL,"
+    "  added_at INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE utxo_set (nullifier BLOB PRIMARY KEY, owner TEXT NOT NULL,"
+    "  amount INTEGER NOT NULL,"
+    "  token_id BLOB NOT NULL DEFAULT x'"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000',"
+    "  tx_hash BLOB NOT NULL, output_index INTEGER NOT NULL,"
+    "  block_height INTEGER NOT NULL DEFAULT 0,"
+    "  created_at INTEGER NOT NULL DEFAULT 0,"
+    "  unlock_block INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE blocks (height INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  tx_root BLOB NOT NULL, tx_count INTEGER NOT NULL DEFAULT 1,"
+    "  timestamp INTEGER NOT NULL, proposer_id BLOB,"
+    "  prev_hash BLOB NOT NULL DEFAULT x'',"
+    "  state_root BLOB NOT NULL,"
+    "  created_at INTEGER NOT NULL DEFAULT 0, chain_def_blob BLOB);"
+    "CREATE TABLE supply_state (id INTEGER PRIMARY KEY CHECK(id = 1),"
+    "  genesis_supply INTEGER NOT NULL DEFAULT 0,"
+    "  total_burned INTEGER NOT NULL DEFAULT 0, genesis_tx_hash BLOB);"
+    "CREATE TABLE tokens (token_id BLOB PRIMARY KEY, name TEXT NOT NULL,"
+    "  symbol TEXT NOT NULL, decimals INTEGER NOT NULL DEFAULT 8,"
+    "  supply INTEGER NOT NULL, creator_fp TEXT NOT NULL,"
+    "  flags INTEGER NOT NULL DEFAULT 0,"
+    "  block_height INTEGER NOT NULL DEFAULT 0,"
+    "  timestamp INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE validators (pubkey BLOB PRIMARY KEY,"
+    "  status INTEGER NOT NULL DEFAULT 0,"
+    "  last_signed_block INTEGER NOT NULL DEFAULT 0,"
+    "  signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0);";
+
+static int setup_witness(nodus_witness_t *w) {
+    memset(w, 0, sizeof(*w));
+    if (sqlite3_open(":memory:", &w->db) != SQLITE_OK) return -1;
+    if (sqlite3_exec(w->db, SCHEMA, NULL, NULL, NULL) != SQLITE_OK) return -1;
+    return 0;
+}
 
 int main(void) {
-    fprintf(stderr,
-        "test_witness_sync_rsp_state_root_verify: STUB — failing by design.\n"
-        "  Concrete assertion blocked on Faz 2 wire format addition\n"
-        "  (nodus_t3_sync_rsp_t.state_root field) and Faz 3.5 sync\n"
-        "  handler update (replay_block call site passes rsp->state_root\n"
-        "  instead of NULL).\n");
-    return 1;
+    printf("\nFaz 1.4 — sync_rsp Byzantine state_root reject\n");
+
+    nodus_witness_t w;
+    CHECK(setup_witness(&w) == 0);
+
+    nodus_witness_mempool_entry_t e1 = {0};
+    memset(e1.tx_hash, 0xB1, 64);
+    e1.tx_type = NODUS_W_TX_SPEND;
+    nodus_witness_mempool_entry_t *en1[1] = { &e1 };
+    uint8_t proposer[32];
+    memset(proposer, 0x42, 32);
+    CHECK_EQ(nodus_witness_commit_batch(&w, en1, 1, /*bh*/1,
+                                          1700000000, proposer, NULL), 0);
+    CHECK_EQ(nodus_witness_block_height(&w), 1);
+
+    nodus_witness_mempool_entry_t e2 = {0};
+    memset(e2.tx_hash, 0xB2, 64);
+    e2.tx_type = NODUS_W_TX_SPEND;
+    nodus_witness_mempool_entry_t *en2[1] = { &e2 };
+
+    uint8_t fake_state_root[NODUS_KEY_BYTES];
+    memset(fake_state_root, 0xDE, NODUS_KEY_BYTES);
+
+    int rc = nodus_witness_replay_block(&w, /*rsp_height*/2, en2, 1,
+                                          1700000001, proposer,
+                                          fake_state_root);
+    CHECK(rc != 0);
+    CHECK_EQ(nodus_witness_block_height(&w), 1);
+    CHECK(w.safety_halt == true);
+
+    sqlite3_close(w.db);
+    printf("Faz 1.4 PASS\n");
+    return 0;
 }

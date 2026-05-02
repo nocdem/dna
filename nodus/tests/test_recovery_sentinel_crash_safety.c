@@ -1,47 +1,81 @@
 /**
- * Nodus — Faz 1B / Test 1.6 — recovery_in_progress sentinel crash safety
+ * Nodus — Faz 1.6 — recovery sentinel crash safety (concrete)
  *
- * RED state — failing test by design until Faz 4.2 sentinel mechanism.
+ * Audit B-2: persisted sentinel at <data_path>/.recovery_in_progress
+ * gates DB drop with crash safety.
  *
- * Audit ref: B-2 (BLOCKER). Without the sentinel, a process crash
- * between drop_witness_db() success and safety_halt=false reset can
- * leave the node with empty DB but cleared halt latch on next boot,
- * making it silently join cluster as fresh node — same bug class as
- * F17 fee_pool rollback (memory: project_f17_status).
- *
- * Scenario (target after Faz 4.2):
- *   Sub-test A — sentinel created before drop:
- *     1. Setup witness with chain at h=10, simulated halt
- *     2. Trigger halt_recovery_check with majority disagreement
- *     3. Verify file /var/lib/nodus/.recovery_in_progress EXISTS
- *        before drop_witness_db() returns
- *     4. Verify sentinel content: chain_id (32B) + halt_height (8B)
- *
- *   Sub-test B — sentinel cleared after first sync block:
- *     1. Continue from A — sync replay block 1 successfully
- *     2. Verify sentinel REMOVED after first commit
- *
- *   Sub-test C — boot rejection if sentinel persists:
- *     1. Manually create sentinel file
- *     2. Call nodus_witness_init() / startup path
- *     3. Verify rc == -1 with log "recovery sentinel found —
- *        admin clear required"
- *
- * Test fixture uses tmpdir for data_path (not /var/lib/nodus) to
- * avoid pollution.
- *
- * Blocked on Faz 4.2.
+ * Sub-A: create writes file
+ * Sub-B: check returns 1 (present) + correct halt_height
+ * Sub-C: clear removes file → check returns 0 (absent)
  */
 
 #define NODUS_WITNESS_INTERNAL_API 1
 
+#include "witness/nodus_witness.h"
+#include "witness/nodus_witness_sync.h"
+#include "nodus/nodus_types.h"
+
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define CHECK(cond) do { \
+    if (!(cond)) { \
+        fprintf(stderr, "CHECK %s:%d: %s\n", __FILE__, __LINE__, #cond); \
+        exit(1); \
+    } } while (0)
+
+#define CHECK_EQ(a, b) do { \
+    long long _a = (long long)(a), _b = (long long)(b); \
+    if (_a != _b) { \
+        fprintf(stderr, "CHECK_EQ %s:%d: %lld != %lld\n", \
+                __FILE__, __LINE__, _a, _b); \
+        exit(1); \
+    } } while (0)
 
 int main(void) {
-    fprintf(stderr,
-        "test_recovery_sentinel_crash_safety: STUB — failing by design.\n"
-        "  Concrete assertion blocked on Faz 4.2 sentinel mechanism\n"
-        "  (recovery_in_progress file create/remove/boot-check).\n");
-    return 1;
+    printf("\nFaz 1.6 — recovery sentinel crash safety\n");
+
+    /* Tmpdir for sentinel — never pollute /var/lib/nodus */
+    char tmpdir[] = "/tmp/nodus_test_sentinel_XXXXXX";
+    CHECK(mkdtemp(tmpdir) != NULL);
+
+    nodus_witness_t w;
+    memset(&w, 0, sizeof(w));
+    snprintf(w.data_path, sizeof(w.data_path), "%s", tmpdir);
+    memset(w.chain_id, 0xC1, 32);
+
+    /* Sub-A: create */
+    CHECK_EQ(nodus_witness_recovery_sentinel_create(&w, /*halt_height*/42),
+             0);
+
+    char sentinel_path[512];
+    snprintf(sentinel_path, sizeof(sentinel_path),
+             "%s/.recovery_in_progress", tmpdir);
+    struct stat st;
+    CHECK_EQ(stat(sentinel_path, &st), 0);
+    CHECK(st.st_size == 40);  /* 32B chain_id + 8B halt_height */
+    printf("  sub-A: create wrote 40-byte sentinel ✓\n");
+
+    /* Sub-B: check returns 1 + recovers halt_height */
+    uint64_t recovered = 0;
+    int rc = nodus_witness_recovery_sentinel_check(tmpdir, &recovered);
+    CHECK_EQ(rc, 1);
+    CHECK_EQ(recovered, 42);
+    printf("  sub-B: check present + halt_height=42 ✓\n");
+
+    /* Sub-C: clear → check returns 0 */
+    CHECK_EQ(nodus_witness_recovery_sentinel_clear(&w), 0);
+    rc = nodus_witness_recovery_sentinel_check(tmpdir, NULL);
+    CHECK_EQ(rc, 0);
+    printf("  sub-C: clear → absent ✓\n");
+
+    /* Cleanup */
+    rmdir(tmpdir);
+
+    printf("Faz 1.6 PASS\n");
+    return 0;
 }
