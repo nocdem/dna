@@ -1359,6 +1359,21 @@ static void dht_republish(nodus_server_t *srv) {
         nodus_peer_t closest[NODUS_R];
         int n = nodus_routing_find_closest(&srv->routing, &val->key_hash, closest, NODUS_R);
 
+        /* DBG: log per-value republish targets (v0.18.1) */
+        {
+            char dbg_kh[17];
+            for (int x = 0; x < 8; x++)
+                snprintf(dbg_kh + x*2, sizeof(dbg_kh) - x*2,
+                         "%02x", val->key_hash.bytes[x]);
+            dbg_kh[16] = '\0';
+            fprintf(stderr, "DBG_REPUB_PEERS: key=%s vid=%llu n=%d",
+                    dbg_kh, (unsigned long long)val->value_id, n);
+            for (int j = 0; j < n; j++) {
+                fprintf(stderr, " %s", closest[j].ip);
+            }
+            fprintf(stderr, "\n");
+        }
+
         /* Republish is a best-effort periodic maintenance operation.
          * We do NOT queue hinted handoffs here — the next republish
          * cycle (10 min) will retry any failed sends. Queueing hints
