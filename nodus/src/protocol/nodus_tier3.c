@@ -312,10 +312,10 @@ static void enc_cc_vote_rsp_args(cbor_encoder_t *enc,
 
 static void enc_ident_args(cbor_encoder_t *enc, const nodus_t3_ident_t *id) {
     /* Map count: wid, pk, addr, tsl, nv, ccs = 6 base;
-     * +4 for bh, sr, vw, rn when has_block_height. CC-OPS-002 / Q14
-     * adds nv + ccs unconditionally so legacy-peer detection works even
-     * before a peer starts reporting block_height. */
-    cbor_encode_map(enc, id->has_block_height ? 10 : 6);
+     * +4 for bh, sr, vw, rn when has_block_height; +1 for csg
+     * (Faz 4F C-1 heartbeat sig) when has_block_height (the signature
+     * binds bh+sr+ts so it only meaningful when those are present). */
+    cbor_encode_map(enc, id->has_block_height ? 11 : 6);
     cbor_encode_cstr(enc, "wid");  cbor_encode_bstr(enc, id->witness_id,
                                                      NODUS_T3_WITNESS_ID_LEN);
     cbor_encode_cstr(enc, "pk");   cbor_encode_bstr(enc, id->pubkey,
@@ -331,6 +331,8 @@ static void enc_ident_args(cbor_encoder_t *enc, const nodus_t3_ident_t *id) {
                                                         NODUS_KEY_BYTES);
         cbor_encode_cstr(enc, "vw");  cbor_encode_uint(enc, id->current_view);
         cbor_encode_cstr(enc, "rn");  cbor_encode_uint(enc, id->roster_size);
+        cbor_encode_cstr(enc, "csg"); cbor_encode_bstr(enc, id->checksum_sig,
+                                                        NODUS_SIG_BYTES);
     }
 }
 
@@ -1155,6 +1157,17 @@ static void dec_ident_args(cbor_decoder_t *dec, size_t count,
             if (val.type == CBOR_ITEM_BSTR &&
                 val.bstr.len == NODUS_KEY_BYTES)
                 memcpy(id->state_root, val.bstr.ptr, NODUS_KEY_BYTES);
+        }
+        else if (KEY_IS(key, "csg")) {
+            /* 2026-05-02 audit C-1: heartbeat checksum signature.
+             * Decoder accepts; verifier (handle_ident) checks the
+             * Dilithium5 sig against the 152-byte preimage. Absent or
+             * length-mismatch leaves checksum_sig zero → halt-recovery
+             * path treats as unverified. */
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_SIG_BYTES)
+                memcpy(id->checksum_sig, val.bstr.ptr, NODUS_SIG_BYTES);
         }
         else if (KEY_IS(key, "vw")) {
             cbor_item_t val = cbor_decode_next(dec);

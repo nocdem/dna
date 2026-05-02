@@ -286,6 +286,23 @@ typedef struct {
      * at 0, which receivers interpret as "legacy binary". */
     uint32_t        nodus_version;                      /* 0 = legacy peer */
     uint32_t        chain_config_schema;                /* 0 = legacy peer */
+    /* 2026-05-02 audit C-1: heartbeat checksum signature.
+     *
+     * Dilithium5 signature over the 152-byte preimage:
+     *   "wid\0\0\0\0\0" (8) || sender witness_id (32) || chain_id (32) ||
+     *   ts_local (8 LE) || block_height (8 LE) || state_root (64) = 152
+     *
+     * Receiver verifies before any halt-recovery-quorum tally consults
+     * peer.remote_checksum. Without this, a single Byzantine peer
+     * could spoof remote_checksum to coerce halt_recovery_check into
+     * either spurious DB drops or denial-of-recovery on honest halted
+     * nodes (B-3 + C-1 combined risk).
+     *
+     * Wire key: "csg" (bstr 4627B). Backward-compat: legacy peers
+     * (pre Faz 4F) emit zeros; receiver treats all-zero as unsigned
+     * heartbeat — accepted for non-recovery uses (skew probe, height
+     * advertisement) but ignored by halt_recovery_check. */
+    uint8_t         checksum_sig[NODUS_SIG_BYTES];
 } nodus_t3_ident_t;
 
 /** w_sync_req: Request block at height N for sync */
