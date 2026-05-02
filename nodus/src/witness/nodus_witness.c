@@ -654,6 +654,15 @@ void nodus_witness_tick(nodus_witness_t *witness) {
 
 /* ── Tier 3 dispatch (BFT message routing) ───────────────────────── */
 
+#ifdef QGP_FAULT_INJECT
+/* Faz 5.4 — fault-inject drop predicate (test-build-only). */
+static nodus_witness_drop_predicate_t g_drop_pred = NULL;
+
+void nodus_witness_test_inject_drop(nodus_witness_drop_predicate_t pred) {
+    g_drop_pred = pred;
+}
+#endif
+
 void nodus_witness_dispatch_t3(nodus_witness_t *witness,
                                struct nodus_tcp_conn *conn,
                                const uint8_t *payload, size_t len) {
@@ -674,6 +683,15 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
                 conn ? conn->ip : "?", conn ? conn->port : 0, hex);
         return;
     }
+
+#ifdef QGP_FAULT_INJECT
+    /* Faz 5.4 — drop predicate check (post-decode, pre-handler).
+     * The drop is silent: no log spam, no state mutation, no peer
+     * upsert. Tests can install a predicate scoped to specific
+     * msg.type / sender_id combinations to simulate partition. */
+    if (g_drop_pred && g_drop_pred(&msg, msg.header.sender_id))
+        return;
+#endif
 
     /* Look up sender in roster to get public key for verification */
     int sender_idx = nodus_witness_roster_find(&witness->roster,

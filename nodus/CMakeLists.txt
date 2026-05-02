@@ -256,6 +256,21 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NODUS_WITNESS_TEST_HOOKS)
         "production checks would be bypassable in the shipped binary")
 endif()
 
+# Faz 5.4 fault injection (M5). QGP_FAULT_INJECT enables the
+# nodus_witness_test_inject_drop predicate hook in dispatch_t3.
+# Same Release guard as the other test hooks above — a Release
+# binary with this flag would let a runtime caller silently drop
+# any T3 message via a stale predicate pointer.
+option(QGP_FAULT_INJECT "Enable T3 drop-predicate hook (test builds only)" OFF)
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND QGP_FAULT_INJECT)
+    message(FATAL_ERROR
+        "QGP_FAULT_INJECT must not be set in Release builds — "
+        "the drop predicate hook would be live in the shipped binary")
+endif()
+if(QGP_FAULT_INJECT)
+    add_compile_definitions(QGP_FAULT_INJECT)
+endif()
+
 function(register_witness_test name)
     add_executable(${name} tests/${name}.c)
     target_link_libraries(${name} nodus dsa nodus)
@@ -759,6 +774,10 @@ register_witness_test(test_multi_round_skip_silent_drop)
 register_witness_test(test_halt_cooldown_expedite)
 register_witness_test(test_halt_entry_phase_reset)
 register_witness_test(test_fault_inject_round_skip)
+# Faz 5.4 — concrete only when -DQGP_FAULT_INJECT=ON; default build
+# returns rc=99 (SKIP). ctest treats rc=99 as Skipped via this prop.
+set_tests_properties(test_fault_inject_round_skip
+    PROPERTIES SKIP_RETURN_CODE 99)
 
 # Task 81 — supply invariance property test (Phase 17).
 # Pure-C simulated state machine — does NOT need the witness internal

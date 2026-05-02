@@ -617,6 +617,30 @@ void nodus_witness_dispatch_dnac(nodus_witness_t *witness,
 void nodus_witness_peer_conn_closed(nodus_witness_t *witness,
                                      struct nodus_tcp_conn *conn);
 
+#ifdef QGP_FAULT_INJECT
+/**
+ * Faz 5.4 — Fault injection: drop-frame predicate.
+ *
+ * When set, dispatch_t3 calls the predicate against every decoded
+ * inbound T3 message. Predicate returning true causes the message
+ * to be silently dropped (handler never invoked) — used by stagef
+ * harness to simulate network partition / round skip without
+ * iptables. Pass NULL to clear.
+ *
+ * `msg` is a `const nodus_t3_msg_t *` — declared as `void *` in
+ * the public header to avoid pulling protocol/nodus_tier3.h into
+ * every consumer. Tests cast back to `nodus_t3_msg_t *` when
+ * dereferencing fields.
+ *
+ * Compiled in only when -DQGP_FAULT_INJECT=ON. Release builds
+ * reject the flag at CMake time (mirrors NODUS_WITNESS_TEST_HOOKS).
+ */
+typedef bool (*nodus_witness_drop_predicate_t)(
+    const void *msg, const uint8_t *peer_id);
+
+void nodus_witness_test_inject_drop(nodus_witness_drop_predicate_t pred);
+#endif /* QGP_FAULT_INJECT */
+
 /**
  * Create chain-specific witness DB on genesis commit.
  * Filename: witness_<chain_id_hex>.db in data directory.
