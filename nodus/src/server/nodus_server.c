@@ -4395,6 +4395,20 @@ static void dispatch_inter(nodus_server_t *srv, nodus_inter_session_t *sess,
 
             if (nodus_value_verify(t1msg.value) == 0) {
                 int put_rc = nodus_storage_put_if_newer(&srv->storage, t1msg.value);
+                /* DBG: log put_rc for replication diagnosis (v0.18.1) */
+                if (put_rc != 0) {
+                    char dbg_kh[17];
+                    for (int x = 0; x < 8; x++)
+                        snprintf(dbg_kh + x*2, sizeof(dbg_kh) - x*2,
+                                 "%02x", t1msg.value->key_hash.bytes[x]);
+                    dbg_kh[16] = '\0';
+                    fprintf(stderr,
+                            "DBG_PUT_SKIP: put_rc=%d key=%s vid=%llu seq=%llu type=%d\n",
+                            put_rc, dbg_kh,
+                            (unsigned long long)t1msg.value->value_id,
+                            (unsigned long long)t1msg.value->seq,
+                            (int)t1msg.value->type);
+                }
                 if (put_rc == 0) {
                     notify_listeners(srv, &t1msg.value->key_hash, t1msg.value);
                     /* Forward to remote subscribers (Scribe pattern) */
