@@ -62,10 +62,20 @@ stagef_node_dir() {
 }
 
 stagef_node_chain_db() {
-    # Returns path to witness_*.db if exactly one exists; empty otherwise.
+    # Returns path to the active witness_*.db (largest non-empty file).
+    #
+    # Stub files of size 0 may appear alongside the real chain DB —
+    # observed 2026-05-03 when a chain_id never seen in nodus.log was
+    # touched on all 7 nodes within 36 ms (likely halt-recovery / orphan
+    # chain_id sqlite3_open path). When sorted alphabetically those
+    # stubs can shadow the real chain and surface as "no such table"
+    # SQL errors in tests. Filter them out and pick the live DB.
     local node_data="$BASE_DIR/node$1/data"
     local found
-    found=$(ls "$node_data"/witness_*.db 2>/dev/null | head -1 || true)
+    found=$(ls -S "$node_data"/witness_*.db 2>/dev/null | head -1 || true)
+    if [ -n "$found" ] && [ ! -s "$found" ]; then
+        found=""
+    fi
     echo "$found"
 }
 
