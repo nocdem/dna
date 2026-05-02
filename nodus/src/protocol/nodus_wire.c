@@ -73,7 +73,8 @@ bool nodus_frame_validate(const nodus_frame_t *frame, bool is_udp) {
     if (!frame)
         return false;
 
-    if (frame->version != NODUS_FRAME_VERSION)
+    if (frame->version != NODUS_FRAME_VERSION &&
+        frame->version != NODUS_FRAME_VERSION_LEGACY)
         return false;
 
     uint32_t max_size = is_udp ? NODUS_MAX_FRAME_UDP : NODUS_MAX_FRAME_TCP;

@@ -22,22 +22,29 @@ extern "C" {
 
 #define NODUS_VERSION_MAJOR  0
 #define NODUS_VERSION_MINOR  18
-#define NODUS_VERSION_PATCH  2
-#define NODUS_VERSION_STRING "0.18.2"
+#define NODUS_VERSION_PATCH  3
+#define NODUS_VERSION_STRING "0.18.3"
 
 /* Wire frame.
  *
- * Version 0x02 (2026-05-02) — wire format break for the witness
- * COMMIT block_height bundle (commit_t.block_height field +
- * sync_rsp.state_root field per design doc 2026-05-02). Bumping the
- * frame version forces version-mismatch rejection at nodus_frame_
- * validate() (nodus_wire.c:76), preventing a stray legacy v0.17 binary
- * (e.g. systemd auto-restart during deploy) from joining a v0.18
- * cluster and silently triggering the original round-skip bug. Bundle
- * deploys with chain wipe (memory: feedback_consensus_deploy_stop_all).
+ * Current version 0x02 (2026-05-02) — wire format extended for the
+ * witness COMMIT block_height bundle (commit_t.block_height,
+ * sync_rsp.state_root). CBOR map decoders silently ignore unknown keys
+ * and zero-init missing fields, so v0x02 nodes can decode v0x01
+ * frames without semantic loss; handle_commit treats bh=0 as
+ * "missing/legacy → sync trigger" (Faz 3 path).
+ *
+ * NODUS_FRAME_VERSION_LEGACY (0x01) accepted at validate-time so
+ * pre-v0.18 client APKs continue to connect. The previous hard cutover
+ * (commit 9494d402, 2026-05-02) reverted with this change because it
+ * locked out every legacy client without a migration path. T3 BFT
+ * messages still emit v0x02 via NODUS_T3_BFT_PROTOCOL_VER for
+ * cluster-internal traffic; legacy acceptance is purely a frame-layer
+ * compatibility shim.
  */
-#define NODUS_FRAME_MAGIC       0x4E44      /* "ND" */
-#define NODUS_FRAME_VERSION     0x02
+#define NODUS_FRAME_MAGIC          0x4E44   /* "ND" */
+#define NODUS_FRAME_VERSION        0x02
+#define NODUS_FRAME_VERSION_LEGACY 0x01
 #define NODUS_FRAME_HEADER_SIZE 7           /* magic(2) + ver(1) + len(4) */
 #define NODUS_MAX_FRAME_TCP     (5 * 1024 * 1024)  /* 5 MB (value + overhead) */
 #define NODUS_MAX_FRAME_UDP     1400        /* Safe MTU */

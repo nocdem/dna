@@ -164,6 +164,20 @@ static void test_validate_bad_version(void) {
         FAIL("should reject bad version");
 }
 
+static void test_validate_legacy_version(void) {
+    TEST("validate accepts legacy v0x01 (backward-compat)");
+    nodus_frame_t frame = {
+        .version = NODUS_FRAME_VERSION_LEGACY,
+        .payload_len = 10,
+        .payload = NULL
+    };
+
+    if (nodus_frame_validate(&frame, false))
+        PASS();
+    else
+        FAIL("should accept legacy v0x01 frame");
+}
+
 static void test_roundtrip_large_payload(void) {
     TEST("roundtrip with 1000-byte payload");
     uint8_t buf[2048];
@@ -199,6 +213,7 @@ int main(void) {
     test_validate_udp();
     test_validate_tcp();
     test_validate_bad_version();
+    test_validate_legacy_version();
     test_roundtrip_large_payload();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
