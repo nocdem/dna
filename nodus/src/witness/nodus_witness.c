@@ -459,6 +459,35 @@ int nodus_witness_init(nodus_witness_t *witness,
     snprintf(witness->data_path, sizeof(witness->data_path), "%s",
              server->config.data_path);
 
+    /* Faz 4D follow-up 2026-05-02 — recovery sentinel boot gate (B-2
+     * closure). If a previous halt_recovery_check armed the sentinel
+     * but crashed before clearing it (between drop_witness_db and
+     * the first replayed block), this node MUST NOT silently boot as
+     * a fresh witness — the chain DB is gone but the halt context is
+     * lost, and joining the cluster would mask the original divergence
+     * forensically. Refuse startup; operator must investigate +
+     * delete the sentinel by hand. */
+    {
+        uint64_t prior_halt_height = 0;
+        int sc = nodus_witness_recovery_sentinel_check(witness->data_path,
+                                                         &prior_halt_height);
+        if (sc < 0) {
+            fprintf(stderr,
+                "%s: recovery sentinel check failed at %s — refusing init\n",
+                LOG_TAG, witness->data_path);
+            return -1;
+        }
+        if (sc > 0) {
+            fprintf(stderr,
+                "%s: REFUSING START — recovery sentinel present "
+                "(prior halt at h=%llu). Investigate divergence root "
+                "cause, then `rm %s/.recovery_in_progress` to clear.\n",
+                LOG_TAG, (unsigned long long)prior_halt_height,
+                witness->data_path);
+            return -1;
+        }
+    }
+
     /* Scan for existing chain DB (witness_<chain_id>.db).
      * If found: opens DB + sets chain_id.
      * If not found: db = NULL (pre-genesis state, waiting for genesis TX). */
