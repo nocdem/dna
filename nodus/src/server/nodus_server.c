@@ -1375,16 +1375,24 @@ static void dht_republish(nodus_server_t *srv) {
         }
 
         /* Republish is a best-effort periodic maintenance operation.
-         * We do NOT queue hinted handoffs here — the next republish
-         * cycle (10 min) will retry any failed sends. Queueing hints
-         * for republish failures caused massive duplication (same frame
-         * inserted every cycle → 367 unique frames expanding to 134K
-         * hint entries in production). Fresh client PUTs still queue
-         * hints via replicate_value() → do_replicate_store_frame(). */
+         * Failures queue into the hinted handoff table; the dedup index
+         * (node_id, frame_hash) keys on SHA3-512 of frame_data, so
+         * the same frame to the same peer collapses to one row even if
+         * many cycles fail. */
         for (int j = 0; j < n; j++) {
             if (nodus_key_cmp(&closest[j].node_id, &srv->identity.node_id) == 0) continue;
-            (void)dht_republish_send(srv, closest[j].ip, closest[j].tcp_port, frame, flen);
-            /* Ignore failures — next republish cycle retries. */
+            int rc = dht_republish_send(srv, closest[j].ip, closest[j].tcp_port,
+                                         frame, flen);
+            if (rc != 0) {
+                uint64_t offline = nodus_cluster_peer_offline_secs(&srv->cluster,
+                                                                    &closest[j].node_id);
+                if (offline < NODUS_HINT_OFFLINE_SKIP_SEC) {
+                    nodus_storage_hinted_insert(&srv->storage,
+                                                 &closest[j].node_id,
+                                                 closest[j].ip, closest[j].tcp_port,
+                                                 frame, flen);
+                }
+            }
         }
 
         rs->last_key = val->key_hash;
