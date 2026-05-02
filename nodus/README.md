@@ -136,9 +136,9 @@ ctest --output-on-failure    # All 41 unit tests
 | Protocol | `test_tier1`, `test_tier3`, `test_wire`, `test_cbor` |
 | Witness | `test_witness_verify` |
 
-Integration tests (requires SSH access to test cluster):
+Integration tests (Genesis Protocol harness, 7-node localhost):
 ```bash
-bash nodus/tests/integration_test.sh
+bash nodus/tests/integration/stagef/stagef_up.sh
 ```
 
 ---

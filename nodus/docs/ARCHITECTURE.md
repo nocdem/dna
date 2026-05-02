@@ -138,8 +138,7 @@ nodus/
 │   ├── test_channel_protocol.c  # Channel protocol message tests
 │   ├── test_tcp.c               # TCP transport tests
 │   ├── test_client.c          # Client SDK tests
-│   ├── test_server.c          # Server integration tests
-│   └── integration_test.sh    # E2E integration test suite
+│   └── test_server.c          # Server integration tests
 ├── CMakeLists.txt             # Build system
 └── docs/
     └── ARCHITECTURE.md        # This file
@@ -1186,12 +1185,12 @@ to `/usr/local/bin/`, and restarts the systemd service.
 
 ### Integration Tests
 
-`integration_test.sh` runs end-to-end scenarios:
-- Start a server, connect a client, authenticate
-- PUT/GET round-trip
-- LISTEN + value change notification
-- Channel create/post/get
-- Multi-server replication
+Genesis Protocol harness (`tests/integration/stagef/stagef_up.sh`) runs
+a 7-node localhost cluster end-to-end:
+- Identity bootstrap, genesis commit, witness BFT round
+- DHT replication (PUT/GET/LISTEN) across all 7 nodes
+- Cross-node state_root convergence (7/7 identical proof)
+- Failover / round skip / recovery paths
 
 ### Build & Run
 

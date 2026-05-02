@@ -392,7 +392,7 @@ apt install -t bookworm-backports libsqlcipher-dev
 
 | Project | Unit Tests | Integration Tests |
 |---------|-----------|-------------------|
-| Nodus | `cd nodus/build && ctest` | `bash nodus/tests/integration_test.sh` (SSH to cluster) |
+| Nodus | `cd nodus/build && ctest` | Genesis Protocol harness: `bash nodus/tests/integration/stagef/stagef_up.sh` (7-node localhost) |
 | Messenger | `cd messenger/build && ctest` | CLI tool: `messenger/build/cli/dna-connect-cli` |
 | DNAC | `cd dnac/build && ./test_real`, `./test_gaps` | `./test_remote` (cross-machine) |
 
