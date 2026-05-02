@@ -1,41 +1,109 @@
 /**
- * Nodus — Faz 1D / Test 1.17 — halt entry phase reset (M-4)
- *
- * RED state — failing test by design until Faz 4.1 phase reset.
- *
- * Audit ref: M-4 (MAJOR). nodus_witness_sync_check returns early if
- * `phase != NODUS_W_PHASE_IDLE` (sync.c:165). When safety_halt is
- * latched mid-PRECOMMIT (the bug we hit on US-1 at 11:14:47), phase
- * stays at PRECOMMIT until view-change timeout reset. During this
- * window, halt_recovery_check (which reuses sync_check logic) would
- * silently skip recovery.
- *
- * Mitigation: at safety_halt entry (finalize_block:3209), explicitly
- * reset round_state.phase = NODUS_W_PHASE_IDLE so subsequent
- * sync_check / halt_recovery_check tick is not gated.
- *
- * Scenario (target after Faz 4.1):
- *   1. Setup witness, drive into PRECOMMIT phase via partial round
- *   2. Trigger state_root divergence (set expected_state_root != local)
- *   3. finalize_block returns -1, sets w->safety_halt = true
- *   4. Expected: w->round_state.phase == NODUS_W_PHASE_IDLE
- *      (reset at halt entry)
- *   5. Call halt_recovery_check (with auto_recover=true + clear quorum)
- *   6. Expected: NOT skipped due to phase guard
- *   7. Current (broken): phase stays PRECOMMIT, recovery silently
- *      skipped, halt persists indefinitely until manual restart
- *
- * Blocked on Faz 4.1.
+ * Nodus — Faz 1.17 — halt entry phase reset (M-4 concrete)
  */
 
 #define NODUS_WITNESS_INTERNAL_API 1
 
+#include "witness/nodus_witness.h"
+#include "witness/nodus_witness_db.h"
+#include "witness/nodus_witness_mempool.h"
+#include "witness/nodus_witness_bft.h"
+#include "witness/nodus_witness_bft_internal.h"
+#include "nodus/nodus_types.h"
+
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sqlite3.h>
+
+#define CHECK(cond) do { \
+    if (!(cond)) { \
+        fprintf(stderr, "CHECK %s:%d: %s\n", __FILE__, __LINE__, #cond); \
+        exit(1); \
+    } } while (0)
+
+#define CHECK_EQ(a, b) do { \
+    long long _a = (long long)(a), _b = (long long)(b); \
+    if (_a != _b) { \
+        fprintf(stderr, "CHECK_EQ %s:%d: %lld != %lld\n", \
+                __FILE__, __LINE__, _a, _b); \
+        exit(1); \
+    } } while (0)
+
+static const char *SCHEMA =
+    "CREATE TABLE nullifiers (nullifier BLOB PRIMARY KEY, tx_hash BLOB NOT NULL,"
+    "  added_at INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE utxo_set (nullifier BLOB PRIMARY KEY, owner TEXT NOT NULL,"
+    "  amount INTEGER NOT NULL,"
+    "  token_id BLOB NOT NULL DEFAULT x'"
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000000000000000',"
+    "  tx_hash BLOB NOT NULL, output_index INTEGER NOT NULL,"
+    "  block_height INTEGER NOT NULL DEFAULT 0,"
+    "  created_at INTEGER NOT NULL DEFAULT 0,"
+    "  unlock_block INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE blocks (height INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  tx_root BLOB NOT NULL, tx_count INTEGER NOT NULL DEFAULT 1,"
+    "  timestamp INTEGER NOT NULL, proposer_id BLOB,"
+    "  prev_hash BLOB NOT NULL DEFAULT x'',"
+    "  state_root BLOB NOT NULL,"
+    "  created_at INTEGER NOT NULL DEFAULT 0, chain_def_blob BLOB);"
+    "CREATE TABLE supply_state (id INTEGER PRIMARY KEY CHECK(id = 1),"
+    "  genesis_supply INTEGER NOT NULL DEFAULT 0,"
+    "  total_burned INTEGER NOT NULL DEFAULT 0, genesis_tx_hash BLOB);"
+    "CREATE TABLE tokens (token_id BLOB PRIMARY KEY, name TEXT NOT NULL,"
+    "  symbol TEXT NOT NULL, decimals INTEGER NOT NULL DEFAULT 8,"
+    "  supply INTEGER NOT NULL, creator_fp TEXT NOT NULL,"
+    "  flags INTEGER NOT NULL DEFAULT 0,"
+    "  block_height INTEGER NOT NULL DEFAULT 0,"
+    "  timestamp INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE validators (pubkey BLOB PRIMARY KEY,"
+    "  status INTEGER NOT NULL DEFAULT 0,"
+    "  last_signed_block INTEGER NOT NULL DEFAULT 0,"
+    "  signed_blocks_this_epoch INTEGER NOT NULL DEFAULT 0);";
+
+static int setup_witness(nodus_witness_t *w) {
+    memset(w, 0, sizeof(*w));
+    if (sqlite3_open(":memory:", &w->db) != SQLITE_OK) return -1;
+    if (sqlite3_exec(w->db, SCHEMA, NULL, NULL, NULL) != SQLITE_OK) return -1;
+    return 0;
+}
 
 int main(void) {
-    fprintf(stderr,
-        "test_halt_entry_phase_reset: STUB — failing by design.\n"
-        "  Concrete assertion blocked on Faz 4.1 phase reset at halt.\n");
-    return 1;
+    printf("\nFaz 1.17 — halt entry phase reset\n");
+
+    nodus_witness_t w;
+    CHECK(setup_witness(&w) == 0);
+
+    nodus_witness_mempool_entry_t e1 = {0};
+    memset(e1.tx_hash, 0xE1, 64);
+    e1.tx_type = NODUS_W_TX_SPEND;
+    nodus_witness_mempool_entry_t *en1[1] = { &e1 };
+    uint8_t proposer[32];
+    memset(proposer, 0x42, 32);
+    CHECK_EQ(nodus_witness_commit_batch(&w, en1, 1, 1, 1700000000,
+                                          proposer, NULL), 0);
+
+    w.round_state.phase = NODUS_W_PHASE_PRECOMMIT;
+    CHECK_EQ(w.round_state.phase, NODUS_W_PHASE_PRECOMMIT);
+
+    nodus_witness_mempool_entry_t e2 = {0};
+    memset(e2.tx_hash, 0xE2, 64);
+    e2.tx_type = NODUS_W_TX_SPEND;
+    nodus_witness_mempool_entry_t *en2[1] = { &e2 };
+
+    uint8_t fake_state_root[NODUS_KEY_BYTES];
+    memset(fake_state_root, 0xDE, NODUS_KEY_BYTES);
+
+    int rc = nodus_witness_replay_block(&w, 2, en2, 1, 1700000001,
+                                          proposer, fake_state_root);
+    CHECK(rc != 0);
+    CHECK(w.safety_halt == true);
+    CHECK_EQ(w.round_state.phase, NODUS_W_PHASE_IDLE);
+    printf("  phase reset PRECOMMIT → IDLE on safety_halt latch ✓\n");
+
+    sqlite3_close(w.db);
+    printf("Faz 1.17 PASS\n");
+    return 0;
 }
