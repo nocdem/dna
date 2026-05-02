@@ -4598,6 +4598,14 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
     c_msg.commit.proposal_timestamp = w->round_state.proposal_timestamp;
     memcpy(c_msg.commit.proposer_id, w->round_state.proposer_id,
            NODUS_T3_WITNESS_ID_LEN);
+    /* 2026-05-02 Faz 3A bugfix: populate block_height (A2 simetri).
+     * Without this, every receiver rejects the COMMIT with "missing
+     * block_height (legacy peer or malformed)" — exactly the
+     * regression caught by stagef test_view_change_fork. The leader
+     * has already proven height authority via handle_propose's A2
+     * check; reuse round_state.block_height which finalize_block also
+     * used. */
+    c_msg.commit.block_height = w->round_state.block_height;
     c_msg.commit.n_precommits = w->round_state.precommit_count;
     for (int i = 0; i < w->round_state.precommit_count &&
                     i < NODUS_T3_MAX_WITNESSES; i++) {
