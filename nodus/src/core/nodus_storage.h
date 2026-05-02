@@ -153,14 +153,23 @@ int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val)
  * Pass NULL for after_key to start from the beginning.
  * Finalizes statement immediately (no held cursor — safe for WAL).
  *
+ * Bookmark uses composite (key_hash, owner_fp, value_id) to avoid skipping
+ * rows with the same key_hash across batch boundaries — PRIMARY KEY of
+ * nodus_values is composite, and bookmarking only on key_hash drops the
+ * remaining tied rows on the next batch.
+ *
  * @param store      Storage handle
- * @param after_key  Bookmark (last key from previous batch), or NULL for first batch
+ * @param after_key  Bookmark key_hash, or NULL for first batch
+ * @param after_owner Bookmark owner_fp (used only when after_key set)
+ * @param after_vid  Bookmark value_id (used only when after_key set)
  * @param batch_out  Output array (must hold batch_size entries, caller frees each)
  * @param batch_size Maximum values to fetch
  * @return Number of values fetched (< batch_size means end of data)
  */
 int nodus_storage_fetch_batch(nodus_storage_t *store,
                                const nodus_key_t *after_key,
+                               const nodus_key_t *after_owner,
+                               uint64_t after_vid,
                                nodus_value_t **batch_out,
                                int batch_size);
 

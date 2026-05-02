@@ -50,7 +50,7 @@ static void test_empty_database(void) {
     test_storage_open(&store);
 
     nodus_value_t *batch[5];
-    int fetched = nodus_storage_fetch_batch(&store, NULL, batch, 5);
+    int fetched = nodus_storage_fetch_batch(&store, NULL, NULL, 0, batch, 5);
 
     if (fetched == 0)
         PASS();
@@ -76,7 +76,7 @@ static void test_first_batch(void) {
     }
 
     nodus_value_t *batch[5];
-    int fetched = nodus_storage_fetch_batch(&store, NULL, batch, 5);
+    int fetched = nodus_storage_fetch_batch(&store, NULL, NULL, 0, batch, 5);
 
     if (fetched == 3) {
         PASS();
@@ -110,15 +110,23 @@ static void test_pagination(void) {
     int total = 0;
     nodus_key_t *bookmark = NULL;
     nodus_key_t last_key;
+    nodus_key_t last_owner;
+    uint64_t    last_vid = 0;
+    nodus_key_t *bookmark_owner = NULL;
 
     for (int round = 0; round < 5; round++) {
         nodus_value_t *batch[3];
-        int fetched = nodus_storage_fetch_batch(&store, bookmark, batch, 3);
+        int fetched = nodus_storage_fetch_batch(&store, bookmark,
+                                                 bookmark_owner, last_vid,
+                                                 batch, 3);
         if (fetched == 0) break;
 
         total += fetched;
         last_key = batch[fetched - 1]->key_hash;
+        last_owner = batch[fetched - 1]->owner_fp;
+        last_vid = batch[fetched - 1]->value_id;
         bookmark = &last_key;
+        bookmark_owner = &last_owner;
 
         for (int i = 0; i < fetched; i++)
             nodus_value_free(batch[i]);
@@ -153,7 +161,7 @@ static void test_batch_ordering(void) {
     }
 
     nodus_value_t *batch[5];
-    int fetched = nodus_storage_fetch_batch(&store, NULL, batch, 5);
+    int fetched = nodus_storage_fetch_batch(&store, NULL, NULL, 0, batch, 5);
 
     bool ordered = true;
     for (int i = 1; i < fetched; i++) {

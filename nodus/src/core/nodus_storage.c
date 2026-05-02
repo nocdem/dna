@@ -74,9 +74,16 @@ static const char *PUT_IF_NEWER_SQL =
     "  AND (seq > ?9 OR (seq = ?9 AND data_hash >= ?12))"
     ")";
 
+/* Composite bookmark on (key_hash, owner_fp, value_id) — PRIMARY KEY tuple.
+ * Bookmarking on key_hash alone skipped tied rows at batch boundaries
+ * (republication bug: ~15% of multi-row keys lost per cycle). */
 static const char *FETCH_BATCH_SQL =
     "SELECT key_hash, owner_fp, value_id, data, type, ttl, created_at, expires_at, seq, owner_pk, signature "
-    "FROM nodus_values WHERE key_hash > ? ORDER BY key_hash LIMIT ?";
+    "FROM nodus_values "
+    "WHERE (key_hash > ?1) "
+    "   OR (key_hash = ?1 AND owner_fp > ?2) "
+    "   OR (key_hash = ?1 AND owner_fp = ?2 AND value_id > ?3) "
+    "ORDER BY key_hash, owner_fp, value_id LIMIT ?4";
 
 /* ── DHT Hinted Handoff SQL ──────────────────────────────────────── */
 
@@ -566,6 +573,8 @@ int nodus_storage_put_if_newer(nodus_storage_t *store, const nodus_value_t *val)
 
 int nodus_storage_fetch_batch(nodus_storage_t *store,
                                const nodus_key_t *after_key,
+                               const nodus_key_t *after_owner,
+                               uint64_t after_vid,
                                nodus_value_t **batch_out,
                                int batch_size) {
     if (!store || !store->db || !batch_out || batch_size <= 0) return 0;
@@ -573,19 +582,22 @@ int nodus_storage_fetch_batch(nodus_storage_t *store,
     sqlite3_stmt *s = store->stmt_fetch_batch;
     sqlite3_reset(s);
 
-    /* Function-scope buffer: SQLITE_STATIC requires the blob to remain
-     * valid until sqlite3_step completes (and subsequent steps). If we
-     * declared `zeros` inside the else block it would go out of scope
-     * before sqlite3_step ran — a real stack-use-after-scope bug caught
-     * by AddressSanitizer. */
-    uint8_t zeros[NODUS_KEY_BYTES] = {0};
+    /* Function-scope buffers: SQLITE_STATIC requires the blob to remain
+     * valid until sqlite3_step completes (and subsequent steps). */
+    uint8_t zeros_key[NODUS_KEY_BYTES] = {0};
+    uint8_t zeros_owner[NODUS_KEY_BYTES] = {0};
     if (after_key) {
         sqlite3_bind_blob(s, 1, after_key->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
     } else {
-        /* First batch: start from beginning (all zeros) */
-        sqlite3_bind_blob(s, 1, zeros, NODUS_KEY_BYTES, SQLITE_STATIC);
+        sqlite3_bind_blob(s, 1, zeros_key, NODUS_KEY_BYTES, SQLITE_STATIC);
     }
-    sqlite3_bind_int(s, 2, batch_size);
+    if (after_owner) {
+        sqlite3_bind_blob(s, 2, after_owner->bytes, NODUS_KEY_BYTES, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_blob(s, 2, zeros_owner, NODUS_KEY_BYTES, SQLITE_STATIC);
+    }
+    sqlite3_bind_int64(s, 3, (sqlite3_int64)after_vid);
+    sqlite3_bind_int(s, 4, batch_size);
 
     int fetched = 0;
     while (sqlite3_step(s) == SQLITE_ROW && fetched < batch_size) {

@@ -332,6 +332,8 @@ typedef struct {
 /** Republish state (persistent across ticks) */
 typedef struct {
     nodus_key_t last_key;       /**< Bookmark: last key_hash processed */
+    nodus_key_t last_owner;     /**< Bookmark: last owner_fp (composite tie-break) */
+    uint64_t    last_vid;       /**< Bookmark: last value_id (composite tie-break) */
     bool        active;         /**< Republish cycle in progress */
     bool        first_batch;    /**< First batch of cycle (no bookmark yet) */
     uint64_t    cycle_start;    /**< When current cycle began */

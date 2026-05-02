@@ -1327,15 +1327,22 @@ static void dht_republish(nodus_server_t *srv) {
         /* Wait for routing table to have enough peers */
         if (nodus_routing_count(&srv->routing) < NODUS_REPLICATION_MIN) return;
         memset(&rs->last_key, 0, sizeof(rs->last_key));
+        memset(&rs->last_owner, 0, sizeof(rs->last_owner));
+        rs->last_vid = 0;
         rs->active = true;
         rs->first_batch = true;
         rs->cycle_start = now;
     }
 
-    /* Fetch BATCH values using bookmark pagination */
+    /* Fetch BATCH values using composite (key_hash, owner_fp, value_id)
+     * bookmark — required because nodus_values PRIMARY KEY is composite,
+     * and bookmarking only on key_hash skipped tied rows at batch
+     * boundaries (~15% loss per cycle on multi-row keys). */
     nodus_value_t *batch[NODUS_REPUBLISH_BATCH];
     int fetched = nodus_storage_fetch_batch(&srv->storage,
                                              rs->first_batch ? NULL : &rs->last_key,
+                                             rs->first_batch ? NULL : &rs->last_owner,
+                                             rs->first_batch ? 0 : rs->last_vid,
                                              batch, NODUS_REPUBLISH_BATCH);
     rs->first_batch = false;
 
@@ -1396,6 +1403,8 @@ static void dht_republish(nodus_server_t *srv) {
         }
 
         rs->last_key = val->key_hash;
+        rs->last_owner = val->owner_fp;
+        rs->last_vid = val->value_id;
         free(frame);
         nodus_value_free(val);
     }
