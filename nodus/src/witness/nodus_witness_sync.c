@@ -104,6 +104,110 @@ static void compute_prev_hash(nodus_witness_t *w,
     free(cd_alloc);
 }
 
+/* ── Recovery sentinel — audit B-2 fix ───────────────────────────────
+ *
+ * Persisted at <data_path>/.recovery_in_progress when drop_witness_db
+ * is invoked from a halt-recovery path. Cleared after the first
+ * successful sync block replay. On boot (nodus_witness_init), presence
+ * rejects startup unless an operator manually clears the file —
+ * forensic gate against the F17-class bug where a process crash
+ * between drop_witness_db and safety_halt = false would leave the node
+ * with empty DB + cleared halt latch on restart.
+ *
+ * Format: 40 bytes binary
+ *   [0..31]  chain_id  (32 bytes)
+ *   [32..39] halt_height (uint64 little-endian)
+ */
+
+#define RECOVERY_SENTINEL_NAME ".recovery_in_progress"
+#define RECOVERY_SENTINEL_LEN  40
+
+static void recovery_sentinel_path(const char *data_path,
+                                     char *out, size_t out_len) {
+    snprintf(out, out_len, "%s/" RECOVERY_SENTINEL_NAME, data_path);
+}
+
+int nodus_witness_recovery_sentinel_create(nodus_witness_t *w,
+                                             uint64_t halt_height) {
+    if (!w || w->data_path[0] == '\0') return -1;
+    char path[512];
+    recovery_sentinel_path(w->data_path, path, sizeof(path));
+
+    uint8_t buf[RECOVERY_SENTINEL_LEN];
+    memcpy(buf, w->chain_id, 32);
+    for (int i = 0; i < 8; i++)
+        buf[32 + i] = (uint8_t)((halt_height >> (i * 8)) & 0xFF);
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        fprintf(stderr, "%s: sentinel create failed at %s: %s\n",
+                LOG_TAG, path, strerror(errno));
+        return -1;
+    }
+    size_t written = fwrite(buf, 1, RECOVERY_SENTINEL_LEN, fp);
+    int flush_rc = fflush(fp);
+    int sync_rc = 0;
+#ifdef __linux__
+    /* fsync for crash safety — sentinel must hit disk before drop runs.
+     * If fsync fails we still close + report; the drop will likely also
+     * fail in that case but at minimum the partial write is on disk. */
+    sync_rc = fsync(fileno(fp));
+#endif
+    fclose(fp);
+    if (written != RECOVERY_SENTINEL_LEN || flush_rc != 0 || sync_rc != 0) {
+        fprintf(stderr, "%s: sentinel write incomplete at %s\n",
+                LOG_TAG, path);
+        return -1;
+    }
+    fprintf(stderr, "%s: recovery sentinel armed at %s (halt_height=%llu)\n",
+            LOG_TAG, path, (unsigned long long)halt_height);
+    return 0;
+}
+
+int nodus_witness_recovery_sentinel_clear(nodus_witness_t *w) {
+    if (!w || w->data_path[0] == '\0') return -1;
+    char path[512];
+    recovery_sentinel_path(w->data_path, path, sizeof(path));
+    if (unlink(path) != 0) {
+        if (errno == ENOENT) return 0;  /* already clean */
+        fprintf(stderr, "%s: sentinel clear failed at %s: %s\n",
+                LOG_TAG, path, strerror(errno));
+        return -1;
+    }
+    fprintf(stderr, "%s: recovery sentinel cleared at %s\n", LOG_TAG, path);
+    return 0;
+}
+
+/* Returns 0 if absent (clean boot), 1 if present (admin clear required),
+ * -1 on read error. Reads halt_height into *out_halt_height when present. */
+int nodus_witness_recovery_sentinel_check(const char *data_path,
+                                            uint64_t *out_halt_height) {
+    char path[512];
+    recovery_sentinel_path(data_path, path, sizeof(path));
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        if (errno == ENOENT) return 0;
+        fprintf(stderr, "%s: sentinel check open failed at %s: %s\n",
+                LOG_TAG, path, strerror(errno));
+        return -1;
+    }
+    uint8_t buf[RECOVERY_SENTINEL_LEN];
+    size_t got = fread(buf, 1, sizeof(buf), fp);
+    fclose(fp);
+    if (got != RECOVERY_SENTINEL_LEN) {
+        fprintf(stderr, "%s: sentinel truncated at %s (got %zu, need %d)\n",
+                LOG_TAG, path, got, RECOVERY_SENTINEL_LEN);
+        return -1;
+    }
+    if (out_halt_height) {
+        uint64_t h = 0;
+        for (int i = 0; i < 8; i++)
+            h |= ((uint64_t)buf[32 + i]) << (i * 8);
+        *out_halt_height = h;
+    }
+    return 1;
+}
+
 /* ── Helper: drop witness DB for fork rebuild ───────────────────── */
 
 static int drop_witness_db(nodus_witness_t *w) {

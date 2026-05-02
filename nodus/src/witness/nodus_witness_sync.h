@@ -64,6 +64,26 @@ int nodus_witness_sync_handle_req(nodus_witness_t *w,
 int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
                                    const nodus_t3_msg_t *msg);
 
+/* ── Recovery sentinel — audit B-2 fix (2026-05-02) ──────────────────
+ *
+ * Persisted at <data_path>/.recovery_in_progress to gate any halt-
+ * recovery DB drop with crash safety. Written before drop_witness_db
+ * (Faz 4D-E callers), cleared after the first successful sync block.
+ * Boot path (Faz 4D-E follow-up) must call _check and reject startup
+ * when present until an operator manually clears.
+ *
+ * Format: 40 bytes binary
+ *   [0..31]  chain_id  (32 bytes)
+ *   [32..39] halt_height (uint64 little-endian)
+ */
+int nodus_witness_recovery_sentinel_create(nodus_witness_t *w,
+                                             uint64_t halt_height);
+int nodus_witness_recovery_sentinel_clear(nodus_witness_t *w);
+/* Returns 0 if absent (clean), 1 if present (admin clear required),
+ * -1 on read error. out_halt_height optional. */
+int nodus_witness_recovery_sentinel_check(const char *data_path,
+                                            uint64_t *out_halt_height);
+
 #ifdef __cplusplus
 }
 #endif
