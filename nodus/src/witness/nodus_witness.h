@@ -43,9 +43,23 @@ struct nodus_tcp_conn;
 /* ── Witness configuration ───────────────────────────────────────── */
 
 typedef struct {
-    /* No config needed — all nodes are automatic witnesses.
-     * Struct kept for future extensibility (e.g. stake threshold). */
-    uint8_t  _reserved;
+    /* 2026-05-02 audit B-3 — halt-recovery auto policy.
+     *
+     * Default false: when finalize_block latches safety_halt, the node
+     * REMAINS halted until an operator clears the recovery sentinel
+     * file (Faz 4B) and restarts the service. Default chosen to deny
+     * an "all-Byzantine peer" attacker the ability to coerce an
+     * isolated honest node into wiping its own (correct) DB and
+     * re-syncing from the attacker's chain.
+     *
+     * When true: halt_recovery_check (Faz 4D-E) evaluates same-height
+     * disagreement quorum against the historical committee snapshot
+     * pinned at halt_block_height; if quorum is clear the node auto-
+     * drops its DB + re-syncs. Use only in trusted-network deployments
+     * (test/staging clusters) or after operator review.
+     *
+     * Wire/JSON key: "halt_auto_recover" (bool). */
+    bool     halt_auto_recover;
 } nodus_witness_config_t;
 
 /* ── Roster entry ────────────────────────────────────────────────── */

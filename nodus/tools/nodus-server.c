@@ -95,7 +95,10 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
         snprintf(cfg->data_path, sizeof(cfg->data_path), "%s",
                  json_object_get_string(val));
 
-    /* Witness module — all nodes are automatic witnesses (no config needed) */
+    /* Witness module config — Faz 4C 2026-05-02. */
+    if (json_object_object_get_ex(root, "halt_auto_recover", &val))
+        cfg->witness.halt_auto_recover = json_object_get_boolean(val);
+    /* Default: false (kept by memset in main()). */
 
     if (json_object_object_get_ex(root, "seed_nodes", &val) &&
         json_object_is_type(val, json_type_array)) {
