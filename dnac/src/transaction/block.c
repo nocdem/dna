@@ -83,8 +83,17 @@ static inline uint64_t dec_u64_le(const uint8_t in[8]) {
 
 /* Standard header layout matches the hash preimage exactly:
  *   height(8 LE) || prev_block_hash(64) || state_root(64) || tx_root(64)
- *   || tx_count(4 LE) || timestamp(8 LE) || proposer_id(32)  = 244 bytes */
-#define DNAC_BLOCK_HEADER_BYTES 244
+ *   || tx_count(4 LE) || proposer_id(32)  = 236 bytes
+ *
+ * PR 2 (2026-05-03): timestamp was REMOVED from the preimage. The
+ * `block.timestamp` field stays in the struct + DB for display only
+ * (see header doc). Rationale: leader's `time(NULL)` at start_round
+ * differed from broadcast `hdr.timestamp`; followers stored
+ * hdr.timestamp; leader stored its own time(NULL); divergent
+ * block_hash → cascading prev_hash divergence (live: chain
+ * `e154cff9` EU-4 block 193+ corruption). See
+ * docs/plans/2026-05-03-pr2-timestamp-determinism-impl.md. */
+#define DNAC_BLOCK_HEADER_BYTES 236
 
 /* ============================================================================
  * Block hash
@@ -139,9 +148,8 @@ int dnac_block_compute_hash(dnac_block_t *block) {
     enc_u32_le(block->tx_count, tx_count_le);
     UPD(tx_count_le, 4);
 
-    uint8_t timestamp_le[8];
-    enc_u64_le(block->timestamp, timestamp_le);
-    UPD(timestamp_le, 8);
+    /* PR 2 (2026-05-03): timestamp dropped from preimage. See
+     * DNAC_BLOCK_HEADER_BYTES comment above. */
 
     UPD(block->proposer_id, DNAC_BLOCK_PROPOSER_SIZE);
 

@@ -43,9 +43,9 @@ int main(void) {
 
     uint8_t hash_A[64], hash_B[64];
     nodus_witness_compute_block_hash(5, prev_hash, state_root_A, tx_root,
-                                       1, 1700000000, proposer, hash_A);
+                                       1, proposer, hash_A);
     nodus_witness_compute_block_hash(5, prev_hash, state_root_B, tx_root,
-                                       1, 1700000000, proposer, hash_B);
+                                       1, proposer, hash_B);
 
     CHECK(memcmp(hash_A, hash_B, 64) != 0);
     printf("  state_root_A vs state_root_B → distinct block_hash ✓\n");
@@ -53,7 +53,7 @@ int main(void) {
     /* Sanity: same inputs reproduce same hash */
     uint8_t hash_A2[64];
     nodus_witness_compute_block_hash(5, prev_hash, state_root_A, tx_root,
-                                       1, 1700000000, proposer, hash_A2);
+                                       1, proposer, hash_A2);
     CHECK(memcmp(hash_A, hash_A2, 64) == 0);
     printf("  determinism preserved ✓\n");
 

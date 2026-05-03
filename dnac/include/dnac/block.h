@@ -185,10 +185,15 @@ typedef struct {
 /**
  * @brief Compute block_hash from header fields (multi-tx)
  *
- * Hash input (244 bytes — Phase 1 / Task 1.2):
+ * Hash input (236 bytes — PR 2 2026-05-03, timestamp dropped):
  *   SHA3-512( height(8 LE) || prev_hash(64) || state_root(64)
- *             || tx_root(64) || tx_count(4 LE) || timestamp(8 LE)
- *             || proposer_id(32) )
+ *             || tx_root(64) || tx_count(4 LE) || proposer_id(32) )
+ *
+ * NOTE (PR 2): timestamp was REMOVED from the preimage 2026-05-03 to
+ * eliminate the leader/follower stored-timestamp divergence chain-split
+ * path. block.timestamp field stays in this struct and in the DB for
+ * display/info only. See
+ * docs/plans/2026-05-03-pr2-timestamp-determinism-impl.md.
  *
  * @param block Block to compute hash for (block_hash field is filled)
  * @return 0 on success, -1 on error

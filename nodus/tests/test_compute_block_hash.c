@@ -5,10 +5,18 @@
  * nodus_witness_compute_block_hash pure function that both block_add
  * and sync compute_prev_hash call.
  *
+ * Updated 2026-05-03 (PR 2): timestamp removed from preimage; preimage
+ * shrunk from 244 to 236 bytes. See
+ * docs/plans/2026-05-03-pr2-timestamp-determinism-impl.md.
+ *
  * Scenarios:
  *   1. Deterministic — same inputs → same output
- *   2. Sensitivity — any single-byte flip in any field changes the
- *      output (verifies every field enters the SHA3 preimage)
+ *   2. Sensitivity — any single-byte flip in any non-timestamp field
+ *      changes the output (verifies every preimage field enters the
+ *      SHA3 input). Timestamp independence is covered separately by
+ *      test_block_hash_timestamp_excluded.c.
+ *   3. Reference formula — bit-exact match against a manual SHA3-512
+ *      of the canonical 236-byte preimage.
  */
 
 #include "witness/nodus_witness_db.h"
@@ -40,9 +48,9 @@ static void test_deterministic(void) {
 
     uint8_t h1[64], h2[64];
     nodus_witness_compute_block_hash(5, prev_hash, state_root, tx_root,
-                                      10, 1234567890, proposer, h1);
+                                      10, proposer, h1);
     nodus_witness_compute_block_hash(5, prev_hash, state_root, tx_root,
-                                      10, 1234567890, proposer, h2);
+                                      10, proposer, h2);
 
     if (memcmp(h1, h2, 64) != 0) { FAIL("two calls differed"); return; }
     PASS();
@@ -52,10 +60,10 @@ static void test_deterministic(void) {
 #define FLIP_TEST(field_name, buf, offset) do {                              \
     uint8_t h_before[64], h_after[64];                                       \
     nodus_witness_compute_block_hash(height, prev_hash, state_root, tx_root, \
-                                      tx_count, timestamp, proposer, h_before); \
+                                      tx_count, proposer, h_before);        \
     (buf)[offset] ^= 0x01;                                                   \
     nodus_witness_compute_block_hash(height, prev_hash, state_root, tx_root, \
-                                      tx_count, timestamp, proposer, h_after);  \
+                                      tx_count, proposer, h_after);         \
     if (memcmp(h_before, h_after, 64) == 0) {                                \
         FAIL("flipping " field_name " did not change hash"); return;         \
     }                                                                        \
@@ -63,11 +71,10 @@ static void test_deterministic(void) {
 } while (0)
 
 static void test_each_field_affects_hash(void) {
-    TEST("every field flip changes the hash");
+    TEST("every preimage field flip changes the hash");
 
     uint64_t height = 7;
     uint32_t tx_count = 3;
-    uint64_t timestamp = 1700000000;
     uint8_t prev_hash[64], state_root[64], tx_root[64], proposer[32];
     fill(prev_hash, 64, 0xA0);
     fill(state_root, 64, 0xB0);
@@ -83,32 +90,29 @@ static void test_each_field_affects_hash(void) {
     FLIP_TEST("proposer",   proposer,   0);
     FLIP_TEST("proposer",   proposer,   31);
 
-    /* Scalar fields: change directly */
+    /* Scalar fields: change directly. NOTE (PR 2): timestamp is NOT
+     * tested here — it's deliberately excluded from the preimage and
+     * tested in test_block_hash_timestamp_excluded.c. */
     uint8_t h_before[64], h_after[64];
     nodus_witness_compute_block_hash(height, prev_hash, state_root, tx_root,
-                                      tx_count, timestamp, proposer, h_before);
+                                      tx_count, proposer, h_before);
 
     nodus_witness_compute_block_hash(height + 1, prev_hash, state_root, tx_root,
-                                      tx_count, timestamp, proposer, h_after);
+                                      tx_count, proposer, h_after);
     if (memcmp(h_before, h_after, 64) == 0) { FAIL("height not in preimage"); return; }
 
     nodus_witness_compute_block_hash(height, prev_hash, state_root, tx_root,
-                                      tx_count + 1, timestamp, proposer, h_after);
+                                      tx_count + 1, proposer, h_after);
     if (memcmp(h_before, h_after, 64) == 0) { FAIL("tx_count not in preimage"); return; }
-
-    nodus_witness_compute_block_hash(height, prev_hash, state_root, tx_root,
-                                      tx_count, timestamp + 1, proposer, h_after);
-    if (memcmp(h_before, h_after, 64) == 0) { FAIL("timestamp not in preimage"); return; }
 
     PASS();
 }
 
 static void test_matches_reference_formula(void) {
-    TEST("hash matches reference SHA3-512 of the expected 244-byte preimage");
+    TEST("hash matches reference SHA3-512 of the expected 236-byte preimage");
 
     uint64_t height = 42;
     uint32_t tx_count = 5;
-    uint64_t timestamp = 1700123456;
     uint8_t prev_hash[64], state_root[64], tx_root[64], proposer[32];
     for (int i = 0; i < 64; i++) {
         prev_hash[i]  = (uint8_t)(0x10 + i);
@@ -119,17 +123,17 @@ static void test_matches_reference_formula(void) {
 
     uint8_t got[64];
     nodus_witness_compute_block_hash(height, prev_hash, state_root, tx_root,
-                                      tx_count, timestamp, proposer, got);
+                                      tx_count, proposer, got);
 
-    /* Build the expected preimage manually, then SHA3 it. */
-    uint8_t buf[244];
+    /* Build the expected preimage manually, then SHA3 it. PR 2: 236 bytes
+     * (was 244 before timestamp drop). */
+    uint8_t buf[236];
     size_t off = 0;
     for (int i = 0; i < 8; i++) buf[off++] = (uint8_t)((height >> (i*8)) & 0xff);
     memcpy(buf + off, prev_hash, 64);  off += 64;
     memcpy(buf + off, state_root, 64); off += 64;
     memcpy(buf + off, tx_root, 64);    off += 64;
     for (int i = 0; i < 4; i++) buf[off++] = (uint8_t)((tx_count >> (i*8)) & 0xff);
-    for (int i = 0; i < 8; i++) buf[off++] = (uint8_t)((timestamp >> (i*8)) & 0xff);
     memcpy(buf + off, proposer, 32);   off += 32;
 
     uint8_t expected[64];

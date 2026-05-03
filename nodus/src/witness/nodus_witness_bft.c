@@ -466,14 +466,29 @@ int nodus_witness_roster_add(nodus_witness_t *w,
 
 /* ── Fill T3 message header with identity ────────────────────────── */
 
-static void fill_header(nodus_witness_t *w, nodus_t3_header_t *hdr) {
+/* PR 2 (2026-05-03) Option C — explicit-timestamp variant. Used by the
+ * broadcast path for PROPOSE messages so the wire-carried timestamp
+ * matches the leader's stored block timestamp exactly. Compile-time
+ * enforced (callers cannot forget): broadcast() dispatches by msg->type
+ * and only PROPOSE takes the explicit-ts path. See
+ * docs/plans/2026-05-03-pr2-timestamp-determinism-impl.md. */
+static void fill_header_with_ts(nodus_witness_t *w,
+                                  nodus_t3_header_t *hdr,
+                                  uint64_t ts) {
     hdr->version = NODUS_T3_BFT_PROTOCOL_VER;
     hdr->round = w->current_round;
     hdr->view = w->current_view;
     memcpy(hdr->sender_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
-    hdr->timestamp = (uint64_t)time(NULL);
+    hdr->timestamp = ts;
     hdr->nonce = generate_nonce();
     memcpy(hdr->chain_id, w->chain_id, 32);
+}
+
+static void fill_header(nodus_witness_t *w, nodus_t3_header_t *hdr) {
+    /* Default — operational wall-clock for non-block-storage messages
+     * (PREVOTE, PRECOMMIT, COMMIT, sync_*, fwd_rsp, etc.). PROPOSE goes
+     * through fill_header_with_ts via the broadcast dispatch. */
+    fill_header_with_ts(w, hdr, (uint64_t)time(NULL));
 }
 
 /* ── Broadcast T3 message to all connected witness peers ─────────── */
@@ -481,8 +496,22 @@ static void fill_header(nodus_witness_t *w, nodus_t3_header_t *hdr) {
 int nodus_witness_bft_broadcast(nodus_witness_t *w, nodus_t3_msg_t *msg) {
     if (!w || !msg) return -1;
 
-    /* Fill header with our identity */
-    fill_header(w, &msg->header);
+    /* PR 2 (2026-05-03) Option C — for PROPOSE messages, the wire
+     * timestamp MUST equal the leader's authoritative
+     * round_state.proposal_timestamp (captured once at start_round),
+     * NOT a fresh time(NULL). Otherwise leader's stored block timestamp
+     * differs from what followers extract from hdr.timestamp and store
+     * (live bug: chain `e154cff9` EU-4 prev_hash divergence from
+     * block 193). Followers' handle_propose copies hdr.timestamp into
+     * round_state.proposal_timestamp (bft.c:3978); leader uses the
+     * same field for its own commit_batch (bft.c:4524, 4534). With
+     * this fix, leader and followers store the SAME value. */
+    if (msg->type == NODUS_T3_PROPOSE) {
+        fill_header_with_ts(w, &msg->header,
+                              w->round_state.proposal_timestamp);
+    } else {
+        fill_header(w, &msg->header);
+    }
 
     /* Set method string from type */
     const char *method = nodus_t3_type_to_method(msg->type);

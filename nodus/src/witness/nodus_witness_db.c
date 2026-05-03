@@ -544,7 +544,6 @@ int nodus_witness_block_add(nodus_witness_t *w, const uint8_t *tx_root,
                                               prev_block.state_root,
                                               prev_block.tx_root,
                                               prev_block.tx_count,
-                                              prev_block.timestamp,
                                               prev_block.proposer_id,
                                               prev_cd_blob, prev_cd_len,
                                               prev_hash);
@@ -1688,11 +1687,10 @@ void nodus_witness_compute_block_hash(uint64_t height,
                                        const uint8_t state_root[64],
                                        const uint8_t tx_root[64],
                                        uint32_t tx_count,
-                                       uint64_t timestamp,
                                        const uint8_t proposer_id[32],
                                        uint8_t out[64]) {
     nodus_witness_compute_block_hash_ex(height, prev_hash, state_root,
-                                          tx_root, tx_count, timestamp,
+                                          tx_root, tx_count,
                                           proposer_id, NULL, 0, out);
 }
 
@@ -1701,12 +1699,13 @@ void nodus_witness_compute_block_hash_ex(uint64_t height,
                                            const uint8_t state_root[64],
                                            const uint8_t tx_root[64],
                                            uint32_t tx_count,
-                                           uint64_t timestamp,
                                            const uint8_t proposer_id[32],
                                            const uint8_t *chain_def_blob,
                                            size_t chain_def_blob_len,
                                            uint8_t out[64]) {
-    uint8_t buf[8 + 64 + 64 + 64 + 4 + 8 + 32];  /* 244 bytes standard header */
+    /* PR 2 (2026-05-03): timestamp dropped from preimage. Buffer shrunk
+     * from 244 to 236 bytes. See header comment for rationale. */
+    uint8_t buf[8 + 64 + 64 + 64 + 4 + 32];  /* 236 bytes standard header */
     uint8_t *p = buf;
 
     enc_u64_le(height, p);        p += 8;
@@ -1714,7 +1713,6 @@ void nodus_witness_compute_block_hash_ex(uint64_t height,
     memcpy(p, state_root, 64);    p += 64;
     memcpy(p, tx_root, 64);       p += 64;
     enc_u32_le_v(tx_count, p);    p += 4;
-    enc_u64_le(timestamp, p);     p += 8;
     memcpy(p, proposer_id, 32);
 
     EVP_MD_CTX *md = EVP_MD_CTX_new();

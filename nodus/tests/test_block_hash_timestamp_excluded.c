@@ -1,27 +1,24 @@
 /**
  * Nodus — PR 2: nodus block_hash must NOT depend on timestamp
  *
- * Regression test for the timestamp determinism fix
- * (docs/plans/2026-05-03-witness-auto-bootstrap-design.md PR 2).
+ * See docs/plans/2026-05-03-pr2-timestamp-determinism-impl.md.
  *
- * Bug recap: leader's `time(NULL)` at start_round differs from broadcast
- * `hdr.timestamp`; followers store `hdr.timestamp`, leader stores its
- * own time(NULL). With timestamp in the block_hash preimage, this
- * produces divergent block_hashes → cascading prev_hash divergence
- * (observed live: EU-4 chain `e154cff9` block 193+ corruption).
+ * Pre-PR-2 (RED): nodus_witness_compute_block_hash_ex took a
+ * `uint64_t timestamp` parameter, included it in the SHA3 preimage,
+ * and produced different hashes for different timestamps.
  *
- * Fix (Option C + belt-and-suspenders): drop timestamp from BOTH hash
- * preimages entirely (this test) AND make leader/follower use the same
- * timestamp value so stored values match.
+ * Post-PR-2 (GREEN): timestamp parameter REMOVED from the signature
+ * entirely. This test now serves a structural role: if any future
+ * change re-introduces a timestamp parameter, this test will FAIL to
+ * compile (function arity mismatch). That compile error IS the
+ * regression catch — the deeper property (timestamp independence) is
+ * now enforced by the type system itself.
  *
- * Test asserts: with all OTHER fields identical, two different
- * timestamps produce the SAME hash.
- *
- * Pre-fix RED: hashes differ → memcmp != 0 → assertion FAILS.
- * Post-fix GREEN: hashes identical → memcmp == 0 → PASS.
- *
- * Companion test for the dnac-side implementation
- * (dnac_block_compute_hash) lives in dnac/tests/.
+ * For the dnac-side equivalent (which keeps timestamp as a struct
+ * field but excludes it from preimage), see
+ * dnac/tests/test_block_hash_timestamp_excluded.c — that test stays
+ * as a runtime check because the field can't be deleted from the
+ * dnac_block_t struct (used for storage/display).
  */
 
 #define NODUS_WITNESS_INTERNAL_API 1
@@ -44,7 +41,7 @@ static void fill_seed(uint8_t *buf, size_t n, uint8_t seed) {
 }
 
 int main(void) {
-    printf("\nPR 2 — nodus block_hash timestamp independence\n");
+    printf("\nPR 2 — nodus block_hash signature regression guard\n");
 
     uint64_t       height       = 42;
     uint8_t        prev_hash[64];
@@ -58,20 +55,26 @@ int main(void) {
     fill_seed(tx_root,    64, 0xA3);
     fill_seed(proposer,   32, 0xA4);
 
+    /* If a future change re-introduces a timestamp parameter to either
+     * function, these calls will fail to compile (arity mismatch). */
     uint8_t out_a[64], out_b[64];
     nodus_witness_compute_block_hash_ex(height, prev_hash, state_root,
                                           tx_root, tx_count,
-                                          /*timestamp=*/ 1700000000,
                                           proposer, NULL, 0, out_a);
     nodus_witness_compute_block_hash_ex(height, prev_hash, state_root,
                                           tx_root, tx_count,
-                                          /*timestamp=*/ 1700009999,
                                           proposer, NULL, 0, out_b);
-
-    /* RED on main: timestamp in preimage → out_a != out_b. */
-    /* GREEN post-PR-2: timestamp dropped from preimage → out_a == out_b. */
     CHECK(memcmp(out_a, out_b, 64) == 0);
 
-    printf("PR 2 (nodus) PASS\n");
+    /* Same for the non-extended variant. */
+    nodus_witness_compute_block_hash(height, prev_hash, state_root,
+                                       tx_root, tx_count,
+                                       proposer, out_a);
+    nodus_witness_compute_block_hash(height, prev_hash, state_root,
+                                       tx_root, tx_count,
+                                       proposer, out_b);
+    CHECK(memcmp(out_a, out_b, 64) == 0);
+
+    printf("PR 2 (nodus signature guard) PASS\n");
     return 0;
 }

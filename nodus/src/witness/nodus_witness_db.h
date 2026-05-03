@@ -384,16 +384,24 @@ int  nodus_witness_db_rollback(nodus_witness_t *w);
 int  nodus_witness_db_savepoint(nodus_witness_t *w, const char *name);
 int  nodus_witness_db_rollback_to_savepoint(nodus_witness_t *w, const char *name);
 
-/* Block hash computation (Phase 5 / Task 5.1).
+/* Block hash computation (Phase 5 / Task 5.1; PR 2 2026-05-03 — timestamp dropped).
  *
  * Pure function — no DB access. Computes the canonical block hash
  * preimage and returns its SHA3-512 digest. Single source of truth
  * for both the block-add path (writes the hash) and the sync path
  * (recomputes the hash to verify a peer's block).
  *
- * Preimage layout (244 bytes, little-endian per project convention):
+ * Preimage layout (236 bytes, little-endian per project convention):
  *   height(8) || prev_hash(64) || state_root(64) || tx_root(64)
- *            || tx_count(4)   || timestamp(8)   || proposer_id(32)
+ *            || tx_count(4)   || proposer_id(32)
+ *
+ * NOTE (PR 2): timestamp was REMOVED from the preimage 2026-05-03 to
+ * eliminate a chain-split path where leader's `time(NULL)` at
+ * start_round differed from broadcast `hdr.timestamp` (followers
+ * stored hdr.timestamp; leader stored its own time(NULL); divergent
+ * block_hash → cascading prev_hash divergence). Stored block.timestamp
+ * is preserved in DB for display/info purposes; only excluded from
+ * hash. See docs/plans/2026-05-03-pr2-timestamp-determinism-impl.md.
  *
  * Caller passes every field by value — the helper does NOT touch any
  * witness state. This makes it trivial to unit-test and lets sync
@@ -404,7 +412,6 @@ void nodus_witness_compute_block_hash(uint64_t height,
                                        const uint8_t state_root[64],
                                        const uint8_t tx_root[64],
                                        uint32_t tx_count,
-                                       uint64_t timestamp,
                                        const uint8_t proposer_id[32],
                                        uint8_t out[64]);
 
@@ -417,7 +424,6 @@ void nodus_witness_compute_block_hash_ex(uint64_t height,
                                            const uint8_t state_root[64],
                                            const uint8_t tx_root[64],
                                            uint32_t tx_count,
-                                           uint64_t timestamp,
                                            const uint8_t proposer_id[32],
                                            const uint8_t *chain_def_blob,
                                            size_t chain_def_blob_len,

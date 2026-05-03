@@ -98,7 +98,6 @@ static void compute_prev_hash(nodus_witness_t *w,
                                           blk->state_root,
                                           blk->tx_root,
                                           blk->tx_count,
-                                          blk->timestamp,
                                           blk->proposer_id,
                                           cd_blob, cd_len,
                                           prev_hash_out);
@@ -818,7 +817,6 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
                                        NULL,
                                        local_tx_root,
                                        (uint32_t)rsp->tx_count,
-                                       rsp->timestamp,
                                        rsp->proposer_id,
                                        local_block_hash);
 
