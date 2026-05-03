@@ -48,6 +48,39 @@ This rule is the blockchain-context superset of: `No shortcut fixes`, `No assump
 
 ---
 
+## DESIGN DOC STANDARDS
+
+**Every design doc** (`docs/plans/YYYY-MM-DD-<topic>-design.md` in nodus / dnac / messenger / shared) MUST contain three required sections, in this exact order, before any implementation begins:
+
+1. **Determinism guarantees** — *the determinism claim*
+2. **Threat Model & Security Goals** — *the security claim*
+3. **Red-team audit** — *the test of both claims*
+
+The pattern is **claim / claim / test** — inside-out (author declares invariants and security goals) then outside-in (adversarial review). Folding any pair loses a distinct artifact.
+
+### Section content (summary)
+
+- **Determinism guarantees**: enumerate every invariant where two nodes seeing the same input MUST produce the same output (iteration order, state_root composition, randomness seeding, cache key derivation, time-source). Out-of-scope items listed explicitly. Tied to `PRIMARY OBJECTIVE: DETERMINISM`. Test plan link (Genesis Protocol harness, ctest).
+- **Threat Model & Security Goals**: adversary model + capability + goal; numbered security goals (G1, G2, ...); trust assumptions; out-of-scope adversaries; cross-reference existing security memory. Title is "Threat Model & Security Goals" (NOT "Security Guarantees") to avoid implying perfect security.
+- **Red-team audit**: multi-agent adversarial review per `feedback_red_team_every_design.md`. Each finding tags which Determinism invariant or Security Goal it violates — anchor is explicit, never free-floating.
+
+### Scope
+
+- All `docs/plans/YYYY-MM-DD-<topic>-design.md` files: **all 3 sections required**.
+- Roadmap / sequencing docs: **may skip** if they're pure prioritization; the per-optimization design docs they reference must comply.
+- Trivial bug-fix design notes (~1 page, single-function-scope): **may collapse** into one combined paragraph block.
+- Pure tooling docs: **Determinism still required**; Threat Model + Red-team may be one-line "out of scope: tooling only" with engineering justification.
+
+### Why both Determinism AND Threat Model
+
+Folding them is an anti-pattern. A design can be deterministic but insecure (timing channels expose ordering); secure but non-deterministic (different witnesses produce different state_roots → chain split). The two failure modes are independent. Two explicit claims force the author to address both, and give the red-team two anchors to attack.
+
+### Cross-references
+
+`feedback_design_doc_required_sections.md` (this rule's full memory) | `feedback_red_team_every_design.md` (red-team mechanics, attack surfaces) | `feedback_no_flaky_blockchain.md` (determinism rule) | `feedback_no_quick_wins.md` (three-section discipline is non-negotiable).
+
+---
+
 ## SUBAGENT BYPASS (Task Tool)
 **If you were spawned as a subagent via the Task tool:** Skip ALL checkpoints (1-9).
 Execute the task prompt directly. You are NOT the main EXECUTOR.
