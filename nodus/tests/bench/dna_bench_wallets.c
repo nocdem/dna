@@ -185,11 +185,13 @@ static int cmd_wallets_create(int argc, char **argv);
 static int cmd_wallets_list(int argc, char **argv);
 static int cmd_wallets_drain(int argc, char **argv);
 static int cmd_wallets_refund(int argc, char **argv);
+static int cmd_wallets_extend(int argc, char **argv);
 
 int cmd_wallets(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr,
-            "usage: dna_bench wallets {create|list|reset|drain|refund} ...\n");
+            "usage: dna_bench wallets "
+            "{create|list|reset|drain|refund|extend} ...\n");
         return DNA_BENCH_EXIT_USAGE;
     }
     const char *sub = argv[1];
@@ -198,6 +200,7 @@ int cmd_wallets(int argc, char **argv) {
     if (strcmp(sub, "reset")  == 0) return cmd_wallets_reset(argc - 1, argv + 1);
     if (strcmp(sub, "drain")  == 0) return cmd_wallets_drain(argc - 1, argv + 1);
     if (strcmp(sub, "refund") == 0) return cmd_wallets_refund(argc - 1, argv + 1);
+    if (strcmp(sub, "extend") == 0) return cmd_wallets_extend(argc - 1, argv + 1);
     fprintf(stderr, "wallets: unknown subcommand '%s'\n", sub);
     return DNA_BENCH_EXIT_USAGE;
 }
@@ -736,5 +739,167 @@ static int cmd_wallets_refund(int argc, char **argv) {
         "[dna-bench] refund: %d/%d wallets re-funded "
         "(missing fp=%d). Pool ready for `dna_bench --tps ...`.\n",
         funded, meta.count, missing_fp);
+    return 0;
+}
+
+/* ── wallets extend ────────────────────────────────────────────── */
+/*
+ * Grow an existing pool from current count C to a target N (N > C),
+ * keeping wallets/wNN/.dna/ + fp.txt for every existing index. Only
+ * indices [C, N) get fresh Dilithium5 identities.
+ *
+ * The complementary subcommand to `wallets refund`: refund tops up
+ * existing wallets without identity churn; extend adds new wallets
+ * without touching existing ones.
+ *
+ * pool.json's count is bumped to N on success, so subsequent
+ * `dna_bench --tps ...` runs see all N wallets, and `wallets refund`
+ * tops up all of them.
+ *
+ * Flags:
+ *   N         (positional) target pool size (1 < N <= MAX_HARD)
+ *   --fund X  raw units per new wallet (default: pool.json's
+ *             fund_per_wallet_raw, falling back to
+ *             DNA_BENCH_DEFAULT_FUND_RAW if pool default is 0)
+ *
+ * Existing wallet balances and pool's fund_per_wallet_raw are NOT
+ * changed by this command. Use `wallets refund [--fund X]` to top
+ * up the whole pool to X.
+ */
+static void usage_extend(void) {
+    fprintf(stderr,
+"usage: dna_bench wallets extend N [--fund X]\n"
+"\n"
+"Grow an existing pool from its current count to N (N > current).\n"
+"Existing identities + funds are preserved.\n"
+"\n"
+"  N          target pool size (must be larger than current count)\n"
+"  --fund X   raw units per NEW wallet (default: pool's existing\n"
+"             fund_per_wallet_raw, or %llu if unset)\n",
+        (unsigned long long)DNA_BENCH_DEFAULT_FUND_RAW);
+}
+
+static int cmd_wallets_extend(int argc, char **argv) {
+    int target = -1;
+    uint64_t fund_override = 0;
+    bool have_override = false;
+
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (a[0] != '-') {
+            if (target < 0) {
+                char *end;
+                long v = strtol(a, &end, 10);
+                if (*end != '\0' || v <= 1) {
+                    fprintf(stderr,
+                        "[dna-bench] extend: invalid target N: %s\n", a);
+                    return DNA_BENCH_EXIT_USAGE;
+                }
+                target = (int)v;
+            } else {
+                fprintf(stderr, "[dna-bench] extend: unexpected arg: %s\n", a);
+                return DNA_BENCH_EXIT_USAGE;
+            }
+        } else if (strcmp(a, "--fund") == 0 && i + 1 < argc) {
+            fund_override = strtoull(argv[++i], NULL, 10);
+            have_override = true;
+        } else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
+            usage_extend();
+            return 0;
+        } else {
+            fprintf(stderr, "[dna-bench] extend: unknown flag: %s\n", a);
+            usage_extend();
+            return DNA_BENCH_EXIT_USAGE;
+        }
+    }
+    if (target < 0) { usage_extend(); return DNA_BENCH_EXIT_USAGE; }
+    if (target > DNA_BENCH_MAX_WALLETS_HARD) {
+        fprintf(stderr, "[dna-bench] extend: N=%d exceeds hard cap %d\n",
+                target, DNA_BENCH_MAX_WALLETS_HARD);
+        return DNA_BENCH_EXIT_USAGE;
+    }
+
+    struct dna_bench_pool meta = {0};
+    int rc = dna_bench_pool_load(&meta);
+    if (rc != 0) {
+        fprintf(stderr,
+            "[dna-bench] extend: no pool found (rc=%d). "
+            "Run `wallets create N` first.\n", rc);
+        return 1;
+    }
+    if (target <= meta.count) {
+        fprintf(stderr,
+            "[dna-bench] extend: target %d <= current %d. "
+            "Nothing to do; pass a strictly larger N.\n",
+            target, meta.count);
+        return DNA_BENCH_EXIT_USAGE;
+    }
+
+    uint64_t fund_raw = have_override
+        ? fund_override
+        : (meta.fund_per_wallet_raw ? meta.fund_per_wallet_raw
+                                    : DNA_BENCH_DEFAULT_FUND_RAW);
+    if (fund_raw == 0) {
+        fprintf(stderr,
+            "[dna-bench] extend: fund amount is 0; pass --fund X\n");
+        return DNA_BENCH_EXIT_USAGE;
+    }
+
+    /* Same punk lock guard as create / refund. */
+    int sysrc = system("systemctl is-active --quiet dna-punk-debug-inbox 2>/dev/null");
+    if (WIFEXITED(sysrc) && WEXITSTATUS(sysrc) == 0) {
+        fprintf(stderr,
+            "[dna-bench] extend: dna-punk-debug-inbox.service is active; "
+            "punk identity is locked.\n"
+            "           Stop it first:  sudo systemctl stop dna-punk-debug-inbox\n");
+        return DNA_BENCH_EXIT_PUNK_LOCKED;
+    }
+
+    int new_count = target - meta.count;
+    fprintf(stderr,
+        "[dna-bench] extend: %d -> %d (%d new wallets, fund=%llu raw each)\n",
+        meta.count, target, new_count, (unsigned long long)fund_raw);
+
+    int created = 0;
+    int funded = 0;
+    for (int i = meta.count; i < target && !g_dna_bench_shutdown; i++) {
+        char fp[160] = {0};
+        if (dna_bench_wallet_init(i, fp, sizeof(fp)) != 0) {
+            fprintf(stderr, "[dna-bench] w%02d: init FAILED\n", i);
+            continue;
+        }
+        created++;
+        if (dna_bench_wallet_fund(i, fp, fund_raw) != 0) {
+            fprintf(stderr, "[dna-bench] w%02d: fund FAILED\n", i);
+            continue;
+        }
+        funded++;
+    }
+
+    if (funded == 0) {
+        fprintf(stderr,
+            "[dna-bench] extend: 0 new wallets funded; pool unchanged\n");
+        return 1;
+    }
+
+    /* Persist pool.json: count = old + funded (don't bump for unfunded
+     * wallets — they have no on-chain UTXO so a later refund can't
+     * salvage them, but `extend` can be re-run to retry). */
+    struct dna_bench_pool out = {0};
+    out.count = meta.count + funded;
+    out.fund_per_wallet_raw = meta.fund_per_wallet_raw
+        ? meta.fund_per_wallet_raw : fund_raw;
+    snprintf(out.created_at, sizeof(out.created_at), "%s", meta.created_at);
+    snprintf(out.chain_genesis_id, sizeof(out.chain_genesis_id), "%s",
+             meta.chain_genesis_id);
+    if (dna_bench_pool_save(&out) != 0) {
+        fprintf(stderr, "[dna-bench] extend: failed to persist pool.json\n");
+        return 1;
+    }
+
+    fprintf(stderr,
+        "[dna-bench] extend: %d/%d new wallets funded, pool now %d "
+        "(created=%d, fund_failed=%d)\n",
+        funded, new_count, out.count, created, created - funded);
     return 0;
 }
