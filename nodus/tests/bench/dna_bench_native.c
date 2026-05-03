@@ -71,6 +71,14 @@ struct bench_wallet {
     atomic_int fail;
     char     last_error[256];
     pthread_mutex_t err_mu;
+
+    /* Per-TX submit→outcome wall-time samples (ns). Owned by this
+     * wallet's thread — no contention, so plain non-atomic ints +
+     * realloc-on-grow are safe. Aggregated by the main thread after
+     * every wallet thread joins. */
+    uint64_t *commit_lat_ns;
+    int       commit_lat_count;
+    int       commit_lat_cap;
 };
 
 static struct bench_wallet g_wallets[MAX_WALLETS];
@@ -129,6 +137,15 @@ static uint8_t *read_file_all(const char *path, size_t *len_out) {
     if (r != (size_t)sz) { free(buf); return NULL; }
     *len_out = (size_t)sz;
     return buf;
+}
+
+/* qsort comparator for ascending uint64_t. File scope so the
+ * nested-function trampoline isn't generated (avoids "executable
+ * stack" linker warning). */
+static int cmp_uint64_asc(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a;
+    uint64_t y = *(const uint64_t *)b;
+    return (x < y) ? -1 : (x > y) ? 1 : 0;
 }
 
 /* Query chain (post-connect) for biggest unspent native UTXO.
@@ -473,10 +490,26 @@ static void *wallet_thread(void *arg) {
         atomic_fetch_add(&g_total_submit, 1);
         uint64_t t0 = now_ns_native();
         int rc = do_one_send(w, &rng, round);
-        (void)t0;
+        uint64_t lat_ns = now_ns_native() - t0;
         if (rc == 0) {
             atomic_fetch_add(&w->commit, 1);
             atomic_fetch_add(&g_total_commit, 1);
+            /* Append commit-side latency to per-wallet vector. Only
+             * this thread writes, so no lock. realloc grows by 2x
+             * (amortised O(1)). */
+            if (w->commit_lat_count >= w->commit_lat_cap) {
+                int new_cap = w->commit_lat_cap == 0 ? 256
+                                                     : w->commit_lat_cap * 2;
+                uint64_t *p = (uint64_t *)realloc(w->commit_lat_ns,
+                                                  (size_t)new_cap * sizeof(*p));
+                if (p) {
+                    w->commit_lat_ns = p;
+                    w->commit_lat_cap = new_cap;
+                }
+            }
+            if (w->commit_lat_count < w->commit_lat_cap) {
+                w->commit_lat_ns[w->commit_lat_count++] = lat_ns;
+            }
         } else {
             atomic_fetch_add(&w->fail, 1);
             atomic_fetch_add(&g_total_fail, 1);
@@ -676,18 +709,56 @@ int dna_bench_native_run(struct dna_bench_run_cfg *cfg,
     char ended_at[32];
     iso_utc_native(ended_at, sizeof(ended_at), time(NULL));
 
+    /* Aggregate per-wallet commit latencies. All wallet threads have
+     * joined, so reads are race-free. */
+    int total_lat = 0;
+    for (int i = 0; i < g_wallet_count; i++) total_lat += g_wallets[i].commit_lat_count;
+    uint64_t lat_min = 0, lat_p50 = 0, lat_p95 = 0, lat_p99 = 0, lat_max = 0;
+    double   lat_mean_ns = 0.0;
+    if (total_lat > 0) {
+        uint64_t *all = (uint64_t *)malloc((size_t)total_lat * sizeof(uint64_t));
+        if (all) {
+            int k = 0;
+            uint64_t sum = 0;
+            for (int i = 0; i < g_wallet_count; i++) {
+                struct bench_wallet *w = &g_wallets[i];
+                for (int j = 0; j < w->commit_lat_count && k < total_lat; j++) {
+                    all[k] = w->commit_lat_ns[j];
+                    sum   += w->commit_lat_ns[j];
+                    k++;
+                }
+            }
+            qsort(all, (size_t)k, sizeof(uint64_t), cmp_uint64_asc);
+            lat_min = all[0];
+            lat_max = all[k - 1];
+            lat_p50 = all[(int)((double)(k - 1) * 0.50 + 0.5)];
+            lat_p95 = all[(int)((double)(k - 1) * 0.95 + 0.5)];
+            lat_p99 = all[(int)((double)(k - 1) * 0.99 + 0.5)];
+            lat_mean_ns = (double)sum / (double)k;
+            free(all);
+        }
+    }
+    /* Free per-wallet latency vectors. */
+    for (int i = 0; i < g_wallet_count; i++) {
+        free(g_wallets[i].commit_lat_ns);
+        g_wallets[i].commit_lat_ns = NULL;
+        g_wallets[i].commit_lat_count = g_wallets[i].commit_lat_cap = 0;
+    }
+
     char run_json_path[1280];
     snprintf(run_json_path, sizeof(run_json_path), "%s/run.json", g_run_dir);
     FILE *rf = fopen(run_json_path, "w");
     if (rf) {
         fprintf(rf,
-"{\"schema_version\":2,\"tool_version\":\"%s\","
+"{\"schema_version\":3,\"tool_version\":\"%s\","
 "\"started_at\":\"%s\",\"ended_at\":\"%s\","
 "\"config\":{\"mode\":\"sustained\",\"tps_target\":%d,\"duration_s\":%d,"
 "\"wallets\":%d,\"recipient\":\"mesh\"},"
 "\"totals\":{\"submit\":%d,\"commit_h\":%d,\"fail\":%d,"
 "\"tps_submit\":%.3f,\"tps_commit_h\":%.3f,"
 "\"submit_success_rate\":%.4f},"
+"\"latency_ns_commit\":{\"samples\":%d,\"min\":%llu,\"p50\":%llu,"
+"\"p95\":%llu,\"p99\":%llu,\"max\":%llu,\"mean\":%.0f},"
 "\"actual_duration_s\":%d,\"reconciled\":false,"
 "\"architecture\":\"in_process_libnodus\"}\n",
             DNA_BENCH_TOOL_VERSION, started_at, ended_at,
@@ -696,6 +767,13 @@ int dna_bench_native_run(struct dna_bench_run_cfg *cfg,
             (double)submit / actual_s,
             (double)commit / actual_s,
             submit > 0 ? (double)commit / (double)submit : 0.0,
+            total_lat,
+            (unsigned long long)lat_min,
+            (unsigned long long)lat_p50,
+            (unsigned long long)lat_p95,
+            (unsigned long long)lat_p99,
+            (unsigned long long)lat_max,
+            lat_mean_ns,
             actual_s);
         fclose(rf);
     }
@@ -708,6 +786,17 @@ int dna_bench_native_run(struct dna_bench_run_cfg *cfg,
         "\n[dna-bench] DONE: submit=%d commit=%d fail=%d "
         "tps_commit=%.2f duration=%ds run_dir=%s\n",
         submit, commit, fail, (double)commit / actual_s, actual_s, g_run_dir);
+    if (total_lat > 0) {
+        fprintf(stderr,
+            "[dna-bench] commit latency (ms): "
+            "p50=%.1f p95=%.1f p99=%.1f max=%.1f mean=%.1f n=%d\n",
+            (double)lat_p50 / 1.0e6,
+            (double)lat_p95 / 1.0e6,
+            (double)lat_p99 / 1.0e6,
+            (double)lat_max / 1.0e6,
+            lat_mean_ns / 1.0e6,
+            total_lat);
+    }
     fflush(stderr);
 
     /* Cleanup. */
