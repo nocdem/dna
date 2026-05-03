@@ -32,16 +32,21 @@ STAGEF_UP="$REPO_ROOT/nodus/tests/integration/stagef/stagef_up.sh"
 STAGEF_DOWN="$REPO_ROOT/nodus/tests/integration/stagef/stagef_down.sh"
 STAGEF_ENV="$REPO_ROOT/nodus/tests/integration/stagef/stagef_env.sh"
 
-CONCURRENCY=4
+WALLETS=20            # Phase 6: burst mode — pool of funded wallets
 DURATION=30
+BURST_SIZE=0          # 0 = all wallets
+FEE_MULT=0            # 0 = don't override; >1 = DNA_BENCH_FEE_MULT for burst
 OUTPUT_DIR="/tmp/bench_run_$(date -u +%Y%m%d_%H%M%S)"
 SKIP_CLUSTER=0
 BASELINE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --concurrency) CONCURRENCY="$2"; shift 2 ;;
+        --wallets)     WALLETS="$2"; shift 2 ;;
+        --concurrency) WALLETS="$2"; shift 2 ;;   # legacy alias
         --duration)    DURATION="$2"; shift 2 ;;
+        --burst-size)  BURST_SIZE="$2"; shift 2 ;;
+        --fee-mult)    FEE_MULT="$2"; shift 2 ;;
         --output)      OUTPUT_DIR="$2"; shift 2 ;;
         --skip-cluster) SKIP_CLUSTER=1; shift ;;
         --baseline)    BASELINE="$2"; shift 2 ;;
@@ -65,7 +70,7 @@ done
 
 mkdir -p "$OUTPUT_DIR"
 echo "[bench_run] output dir: $OUTPUT_DIR"
-echo "[bench_run] concurrency=$CONCURRENCY duration=${DURATION}s"
+echo "[bench_run] wallets=$WALLETS duration=${DURATION}s burst_size=${BURST_SIZE:-all}"
 
 NODUS_VERSION=$(grep -oP 'NODUS_VERSION_STRING\s+"\K[^"]+' \
     "$REPO_ROOT/nodus/include/nodus/nodus_types.h" 2>/dev/null || echo unknown)
@@ -100,18 +105,29 @@ trap cleanup EXIT
 
 # ── Create funded bench wallets ─────────────────────────────────
 
-echo "[bench_run] creating $CONCURRENCY funded wallets..."
+echo "[bench_run] creating up to $WALLETS funded wallets..."
 WALLETS_FILE="$OUTPUT_DIR/wallets.txt"
 : > "$WALLETS_FILE"
-for i in $(seq 1 "$CONCURRENCY"); do
+MIN_WALLETS=5
+
+# NOTE: stagef_mk_funded_user is serial with an 8 s commit-wait per
+# wallet. Master wallet UTXO contention can cause fund timeouts once
+# ~10+ consecutive sends stack up. We tolerate partial funding down
+# to MIN_WALLETS: the bench runs burst-mode on whatever succeeded.
+funded=0
+for i in $(seq 1 "$WALLETS"); do
     wallet_home=$(stagef_mk_funded_user "bench_${i}" 1000000000) || {
-        echo "[FAIL] could not create funded wallet $i" >&2
-        exit 1
+        echo "[warn] wallet $i funding failed; continuing" >&2
+        continue
     }
     echo "$wallet_home" >> "$WALLETS_FILE"
+    funded=$((funded + 1))
 done
-echo "[bench_run] wallets:"
-cat "$WALLETS_FILE"
+echo "[bench_run] wallets funded: $funded / $WALLETS"
+if [ "$funded" -lt "$MIN_WALLETS" ]; then
+    echo "[FAIL] only $funded wallets funded; need >= $MIN_WALLETS" >&2
+    exit 1
+fi
 
 # Destination: reuse stagef master user's fp as the recipient. stagef_up.sh
 # writes this to $BASE_DIR/user_fp.txt (see stagef_up.sh:283 +  tests/test_*.sh).
@@ -132,13 +148,27 @@ echo "[bench_run] recipient: ${RECIPIENT_FP:0:16}..."
 
 # ── Run the load generator ──────────────────────────────────────
 
-echo "[bench_run] running bench_cluster_tps..."
-"$BENCH_BIN" \
+echo "[bench_run] running bench_cluster_tps (burst mode)..."
+BURST_ARG=()
+if [ "$BURST_SIZE" -gt 0 ]; then
+    BURST_ARG=(--burst-size "$BURST_SIZE")
+fi
+
+# Fee multiplier: child CLIs inherit this env and pay MULT x the
+# current dynamic min_fee. Defeats the query-vs-submit surge race so
+# bursts >7 TXs don't get rejected by fee_too_low.
+FEE_ENV=()
+if [ "$FEE_MULT" -gt 1 ]; then
+    FEE_ENV=(env DNA_BENCH_FEE_MULT="$FEE_MULT")
+    echo "[bench_run]   fee override: DNA_BENCH_FEE_MULT=$FEE_MULT"
+fi
+
+"${FEE_ENV[@]}" "$BENCH_BIN" \
     --cli "$CLI_BIN" \
     --wallets "$WALLETS_FILE" \
     --recipient "$RECIPIENT_FP" \
-    --concurrency "$CONCURRENCY" \
     --duration "$DURATION" \
+    "${BURST_ARG[@]}" \
     --version "$NODUS_VERSION" \
     --output "$OUTPUT_DIR/throughput.json"
 

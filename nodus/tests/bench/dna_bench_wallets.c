@@ -230,11 +230,32 @@ static void random_hex6(char *out) {
     out[6] = '\0';
 }
 
-/* Create wallet idx: data dir + identity create + cache fp.txt. */
+/* Create wallet idx: data dir + identity create + cache fp.txt.
+ *
+ * IDEMPOTENT: if fp.txt already exists with a valid 128-hex
+ * fingerprint, skip identity creation (no DHT keyserver pollution,
+ * no fresh Dilithium keypair). Returns 0 immediately, populating
+ * fp_out from the cached file. Bench wallets are persistent and
+ * re-used across sessions per design. */
 int dna_bench_wallet_init(int idx, char *fp_out, size_t fp_n) {
     char *wdir = dna_bench_wallet_dir(idx);
     char data_dir[1280];
     snprintf(data_dir, sizeof(data_dir), "%s/.dna", wdir);
+
+    /* Fast path: existing wallet — skip identity create. */
+    char *cached_fp_path = dna_bench_wallet_fp_path(idx);
+    char *cached_fp = dna_bench_read_first_line(cached_fp_path);
+    free(cached_fp_path);
+    if (cached_fp && strlen(cached_fp) == 128) {
+        fprintf(stderr, "[dna-bench] w%02d: REUSING existing identity %.16s...\n",
+                idx, cached_fp);
+        if (fp_out && fp_n) snprintf(fp_out, fp_n, "%s", cached_fp);
+        free(cached_fp);
+        free(wdir);
+        return 0;
+    }
+    if (cached_fp) free(cached_fp);
+
     if (dna_bench_mkdir_p_secure(data_dir) != 0) {
         fprintf(stderr, "[dna-bench] mkdir %s: %s\n", data_dir, strerror(errno));
         free(wdir);
