@@ -489,14 +489,25 @@ int nodus_witness_bft_broadcast(nodus_witness_t *w, nodus_t3_msg_t *msg) {
     if (method)
         snprintf(msg->method, sizeof(msg->method), "%s", method);
 
-    /* Encode (signs with our secret key) */
-    uint8_t buf[NODUS_T3_MAX_MSG_SIZE];
+    /* Encode (signs with our secret key).
+     * Heap-allocated 1 MB buffer (NODUS_W_MAX_SYNC_RSP_SIZE) so that
+     * PROPOSE for 8+ full-size TXs and COMMIT (which bundles batch_txs +
+     * cert array) fit. The 128 KB NODUS_T3_MAX_MSG_SIZE is too small
+     * for those — leader silently fails to broadcast under load.
+     * Receiver verify uses the same cap (nodus_t3_verify). */
+    uint8_t *buf = malloc(NODUS_W_MAX_SYNC_RSP_SIZE);
+    if (!buf) {
+        fprintf(stderr, "%s: malloc failed for T3 %s encode\n",
+                LOG_TAG, msg->method);
+        return -1;
+    }
     size_t len = 0;
 
     if (nodus_t3_encode(msg, &w->server->identity.sk,
-                         buf, sizeof(buf), &len) != 0) {
+                         buf, NODUS_W_MAX_SYNC_RSP_SIZE, &len) != 0) {
         fprintf(stderr, "%s: failed to encode T3 %s\n",
                 LOG_TAG, msg->method);
+        free(buf);
         return -1;
     }
 
@@ -509,6 +520,7 @@ int nodus_witness_bft_broadcast(nodus_witness_t *w, nodus_t3_msg_t *msg) {
         }
     }
 
+    free(buf);
     return sent;
 }
 

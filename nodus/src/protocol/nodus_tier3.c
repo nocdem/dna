@@ -1530,12 +1530,16 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
 int nodus_t3_verify(const nodus_t3_msg_t *msg, const nodus_pubkey_t *pk) {
     if (!msg || !pk || !msg->wsig) return -1;
 
-    /* Heap-allocate sign buffer (thread-safe, no persistent 131KB BSS) */
-    uint8_t *sign_buf = malloc(NODUS_T3_MAX_MSG_SIZE);
+    /* Heap-allocate sign buffer at NODUS_W_MAX_SYNC_RSP_SIZE (1 MB) so
+     * sync_rsp / COMMIT / PROPOSE messages whose {q, wh, a} payload
+     * exceeds the 128 KB NODUS_T3_MAX_MSG_SIZE — produced by the
+     * matching sender caps in nodus_witness_sync.c:647 and
+     * nodus_witness_bft.c — verify symmetrically. */
+    uint8_t *sign_buf = malloc(NODUS_W_MAX_SYNC_RSP_SIZE);
     if (!sign_buf) return -1;
 
     size_t sign_len = 0;
-    if (enc_sign_payload(msg, sign_buf, NODUS_T3_MAX_MSG_SIZE, &sign_len) != 0) {
+    if (enc_sign_payload(msg, sign_buf, NODUS_W_MAX_SYNC_RSP_SIZE, &sign_len) != 0) {
         free(sign_buf);
         return -1;
     }

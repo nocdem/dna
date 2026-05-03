@@ -393,6 +393,13 @@ add_executable(test_tier3 tests/test_tier3.c)
 target_link_libraries(test_tier3 nodus dsa nodus)
 add_test(NAME test_tier3 COMMAND test_tier3)
 
+# Tier 3 oversize sync_rsp wsig verify regression
+# (Regression for the 2026-05-03 production halt: receiver verify cap
+#  < sender sync_rsp cap, see nodus_t3_verify in nodus_tier3.c.)
+add_executable(test_tier3_oversize tests/test_tier3_oversize.c)
+target_link_libraries(test_tier3_oversize nodus dsa nodus)
+add_test(NAME test_tier3_oversize COMMAND test_tier3_oversize)
+
 # Channel storage test
 add_executable(test_channel_store tests/test_channel_store.c)
 target_link_libraries(test_channel_store nodus dsa nodus)
