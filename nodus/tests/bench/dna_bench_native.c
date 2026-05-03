@@ -134,22 +134,59 @@ static uint8_t *read_file_all(const char *path, size_t *len_out) {
 /* Query chain (post-connect) for biggest unspent native UTXO.
  * Local DB is unreliable across bench runs (change UTXOs from prior
  * runs land on chain but never sync into the wallet's dnac.db).
+ *
+ * Retries up to LOAD_INITIAL_UTXO_MAX_ATTEMPTS times with 2 s backoff
+ * when the chain query reports zero UTXOs. The witness this client
+ * is talking to may not have applied the most recent fund TX yet —
+ * either it propagated to a different leader for that round, or the
+ * commit just landed and replication hasn't fanned out to all 7
+ * nodes. Empirically (2026-05-03) this prevents the systemic
+ * 2-of-27 startup miss seen on a 1 TPS × 10 min real-cluster run
+ * where `wallets refund` had succeeded for those wallets but the
+ * single startup query landed on a witness that hadn't applied
+ * those refund TXs yet.
+ *
  * Returns 0 on success. */
+#define LOAD_INITIAL_UTXO_MAX_ATTEMPTS  5
+#define LOAD_INITIAL_UTXO_BACKOFF_USEC  2000000  /* 2 s */
+
 static int load_initial_utxo_from_chain(struct bench_wallet *w) {
     nodus_dnac_utxo_result_t r = {0};
-    if (nodus_client_dnac_utxo(&w->client, w->fp, 100, &r) != 0) {
-        fprintf(stderr, "[w%02d] dnac_utxo query failed\n", w->idx);
-        return -1;
+    int attempts = 0;
+    static const uint8_t zero_token[64] = {0};
+
+    while (attempts++ < LOAD_INITIAL_UTXO_MAX_ATTEMPTS) {
+        memset(&r, 0, sizeof(r));
+        if (nodus_client_dnac_utxo(&w->client, w->fp, 100, &r) != 0) {
+            fprintf(stderr, "[w%02d] dnac_utxo query failed (attempt %d/%d)\n",
+                    w->idx, attempts, LOAD_INITIAL_UTXO_MAX_ATTEMPTS);
+            if (r.entries) { free(r.entries); r.entries = NULL; }
+            if (attempts < LOAD_INITIAL_UTXO_MAX_ATTEMPTS) {
+                usleep(LOAD_INITIAL_UTXO_BACKOFF_USEC);
+                continue;
+            }
+            return -1;
+        }
+        if (r.count > 0) break;  /* got UTXOs, drop to picker below */
+
+        /* Zero count: maybe the witness we asked hasn't applied a recent
+         * fund TX yet. Sleep + retry; nodus_client may pick a different
+         * leader or the missing replication completes in the gap. */
+        if (r.entries) { free(r.entries); r.entries = NULL; }
+        if (attempts >= LOAD_INITIAL_UTXO_MAX_ATTEMPTS) {
+            fprintf(stderr, "[w%02d] no on-chain UTXOs after %d attempts "
+                            "(real drain or unreplicated fund)\n",
+                    w->idx, attempts);
+            return -1;
+        }
+        fprintf(stderr, "[w%02d] no UTXOs (attempt %d/%d) — retrying in 2s\n",
+                w->idx, attempts, LOAD_INITIAL_UTXO_MAX_ATTEMPTS);
+        usleep(LOAD_INITIAL_UTXO_BACKOFF_USEC);
     }
-    if (r.count <= 0) {
-        fprintf(stderr, "[w%02d] no on-chain UTXOs (drained?)\n", w->idx);
-        if (r.entries) free(r.entries);
-        return -1;
-    }
+
     /* Pick the largest native (token_id all zero) UTXO. */
     int best = -1;
     uint64_t best_amount = 0;
-    static const uint8_t zero_token[64] = {0};
     for (int i = 0; i < r.count; i++) {
         if (memcmp(r.entries[i].token_id, zero_token, 64) != 0) continue;
         if (r.entries[i].amount > best_amount) {
