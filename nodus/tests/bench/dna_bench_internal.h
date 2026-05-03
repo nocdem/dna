@@ -108,7 +108,7 @@ enum dna_bench_mode {
 
 struct dna_bench_run_cfg {
     enum dna_bench_mode mode;
-    int      tps_target;
+    double   tps_target;     /* fractional rates allowed (e.g. 1.5) */
     int      duration_s;
     int      ramp_start;
     int      ramp_end;

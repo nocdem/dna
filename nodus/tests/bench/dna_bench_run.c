@@ -311,7 +311,7 @@ static void emit_final_json(FILE *out,
     fprintf(out,
 "{\"schema_version\":%d,\"tool_version\":\"%s\","
 "\"started_at\":\"%s\",\"ended_at\":\"%s\","
-"\"config\":{\"mode\":\"%s\",\"tps_target\":%d,\"duration_s\":%d,"
+"\"config\":{\"mode\":\"%s\",\"tps_target\":%g,\"duration_s\":%d,"
 "\"wallets\":%d,\"recipient\":\"%s\",\"fund_per_wallet_raw\":%llu},"
 "\"totals\":{\"rounds\":%d,\"submit\":%d,\"commit_h\":%d,\"fail\":%d,"
 "\"rate_limited\":%d,\"tps_submit\":%.3f,\"tps_commit_h\":%.3f,"
@@ -710,7 +710,7 @@ int cmd_run(int argc, char **argv) {
         if (strcmp(a, "--mode") == 0 && i + 1 < argc) {
             cfg.mode = parse_mode(argv[++i]);
         } else if (strcmp(a, "--tps") == 0 && i + 1 < argc) {
-            cfg.tps_target = atoi(argv[++i]);
+            cfg.tps_target = strtod(argv[++i], NULL);
         } else if (strcmp(a, "--duration") == 0 && i + 1 < argc) {
             if (parse_duration_strict(argv[++i], &cfg.duration_s) != 0) {
                 fprintf(stderr, "[dna-bench] invalid --duration\n");
@@ -862,7 +862,7 @@ int cmd_run(int argc, char **argv) {
     st.started_ns = now_ns();
 
     fprintf(stderr,
-        "[dna-bench] mode=%s tps=%d duration=%ds wallets=%d recipient=%s "
+        "[dna-bench] mode=%s tps=%g duration=%ds wallets=%d recipient=%s "
         "run_dir=%s\n",
         cfg.mode == DNA_BENCH_MODE_BURST     ? "burst" :
         cfg.mode == DNA_BENCH_MODE_SUSTAINED ? "sustained" :

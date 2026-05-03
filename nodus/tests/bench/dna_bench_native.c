@@ -453,7 +453,7 @@ err:
 
 struct thread_args {
     struct bench_wallet *w;
-    int    target_tps_total;
+    double target_tps_total;     /* fractional rates allowed */
     int    pool_size;
     uint64_t deadline_ns;
 };
@@ -669,7 +669,7 @@ int dna_bench_native_run(struct dna_bench_run_cfg *cfg,
     char started_at[32];
     iso_utc_native(started_at, sizeof(started_at), time(NULL));
     fprintf(stderr,
-        "[dna-bench] mode=sustained tps=%d duration=%ds wallets=%d run_dir=%s\n"
+        "[dna-bench] mode=sustained tps=%g duration=%ds wallets=%d run_dir=%s\n"
         "[dna-bench] starting send threads at %s\n",
         cfg->tps_target, cfg->duration_s, g_wallet_count,
         g_run_dir, started_at);
@@ -752,7 +752,7 @@ int dna_bench_native_run(struct dna_bench_run_cfg *cfg,
         fprintf(rf,
 "{\"schema_version\":3,\"tool_version\":\"%s\","
 "\"started_at\":\"%s\",\"ended_at\":\"%s\","
-"\"config\":{\"mode\":\"sustained\",\"tps_target\":%d,\"duration_s\":%d,"
+"\"config\":{\"mode\":\"sustained\",\"tps_target\":%g,\"duration_s\":%d,"
 "\"wallets\":%d,\"recipient\":\"mesh\"},"
 "\"totals\":{\"submit\":%d,\"commit_h\":%d,\"fail\":%d,"
 "\"tps_submit\":%.3f,\"tps_commit_h\":%.3f,"
