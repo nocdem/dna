@@ -184,10 +184,12 @@ static int cmd_wallets_reset(int argc, char **argv);
 static int cmd_wallets_create(int argc, char **argv);
 static int cmd_wallets_list(int argc, char **argv);
 static int cmd_wallets_drain(int argc, char **argv);
+static int cmd_wallets_refund(int argc, char **argv);
 
 int cmd_wallets(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: dna_bench wallets {create|list|reset|drain} ...\n");
+        fprintf(stderr,
+            "usage: dna_bench wallets {create|list|reset|drain|refund} ...\n");
         return DNA_BENCH_EXIT_USAGE;
     }
     const char *sub = argv[1];
@@ -195,6 +197,7 @@ int cmd_wallets(int argc, char **argv) {
     if (strcmp(sub, "list")   == 0) return cmd_wallets_list(argc - 1, argv + 1);
     if (strcmp(sub, "reset")  == 0) return cmd_wallets_reset(argc - 1, argv + 1);
     if (strcmp(sub, "drain")  == 0) return cmd_wallets_drain(argc - 1, argv + 1);
+    if (strcmp(sub, "refund") == 0) return cmd_wallets_refund(argc - 1, argv + 1);
     fprintf(stderr, "wallets: unknown subcommand '%s'\n", sub);
     return DNA_BENCH_EXIT_USAGE;
 }
@@ -585,4 +588,153 @@ static int cmd_wallets_drain(int argc, char **argv) {
         "manually with `dna-connect-cli -d <wallet>/.dna dna send <to> ...` "
         "or run `wallets reset` to discard the pool.\n");
     return DNA_BENCH_EXIT_NOT_IMPLEMENTED;
+}
+
+/* ── wallets refund ────────────────────────────────────────────── */
+/*
+ * Re-fund every wallet in an existing pool from punk WITHOUT
+ * touching identity files. Use this after a chain wipe leaves the
+ * pool's on-chain UTXOs invalid: pool.json + wallets/wNN/{fp.txt,
+ * .dna/} stay intact, only fresh fund TXs are sent on the current
+ * chain.
+ *
+ * `wallets reset` would regenerate Dilithium5 identities → DHT
+ * keyserver pollution + wallet-FP churn. `wallets refund` reuses
+ * the cached fingerprints (verified via fp.txt at 128 hex chars).
+ *
+ * Optional flags:
+ *   --fund X      override fund_per_wallet_raw for this top-up
+ *                 (default: pool.json's fund_per_wallet_raw)
+ *
+ * Side effects: pool.json is rewritten with the refunded count and
+ * (if --fund passed) the new fund_per_wallet_raw. created_at is
+ * preserved so the pool's identity/age semantics are unchanged.
+ */
+static void usage_refund(void) {
+    fprintf(stderr,
+"usage: dna_bench wallets refund [--fund X]\n"
+"\n"
+"Re-fund every wallet in the existing pool from punk WITHOUT\n"
+"regenerating identities. Use after a chain wipe drains UTXOs.\n"
+"\n"
+"  --fund X    raw units per wallet (default: pool.json value)\n"
+"\n"
+"Identity files in wallets/wNN/.dna/ + fp.txt are preserved.\n");
+}
+
+static int cmd_wallets_refund(int argc, char **argv) {
+    uint64_t fund_override = 0;
+    bool have_override = false;
+
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (strcmp(a, "--fund") == 0 && i + 1 < argc) {
+            fund_override = strtoull(argv[++i], NULL, 10);
+            have_override = true;
+        } else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
+            usage_refund();
+            return 0;
+        } else {
+            fprintf(stderr, "[dna-bench] refund: unknown arg: %s\n", a);
+            usage_refund();
+            return DNA_BENCH_EXIT_USAGE;
+        }
+    }
+
+    struct dna_bench_pool meta = {0};
+    int rc = dna_bench_pool_load(&meta);
+    if (rc != 0) {
+        fprintf(stderr,
+            "[dna-bench] refund: no pool found (rc=%d). "
+            "Run `wallets create N` first.\n", rc);
+        return 1;
+    }
+    if (meta.count <= 0) {
+        fprintf(stderr, "[dna-bench] refund: pool has count=0\n");
+        return 1;
+    }
+
+    uint64_t fund_raw = have_override ? fund_override : meta.fund_per_wallet_raw;
+    if (fund_raw == 0) {
+        fprintf(stderr,
+            "[dna-bench] refund: fund amount is 0 "
+            "(pool default missing and no --fund given)\n");
+        return DNA_BENCH_EXIT_USAGE;
+    }
+
+    /* Same punk-locked guard as `wallets create`: refund TXs come from
+     * the punk identity, so the listener service must be down. */
+    int sysrc = system("systemctl is-active --quiet dna-punk-debug-inbox 2>/dev/null");
+    if (WIFEXITED(sysrc) && WEXITSTATUS(sysrc) == 0) {
+        fprintf(stderr,
+            "[dna-bench] refund: dna-punk-debug-inbox.service is active; "
+            "punk identity is locked.\n"
+            "           Stop it first:  sudo systemctl stop dna-punk-debug-inbox\n");
+        return DNA_BENCH_EXIT_PUNK_LOCKED;
+    }
+
+    fprintf(stderr,
+        "[dna-bench] refund: %d wallets, fund=%llu raw each "
+        "(pool created %s)\n",
+        meta.count, (unsigned long long)fund_raw, meta.created_at);
+
+    int funded = 0;
+    int missing_fp = 0;
+    for (int i = 0; i < meta.count && !g_dna_bench_shutdown; i++) {
+        char *fp_path = dna_bench_wallet_fp_path(i);
+        char *fp = dna_bench_read_first_line(fp_path);
+        free(fp_path);
+        if (!fp || strlen(fp) != 128) {
+            fprintf(stderr,
+                "[dna-bench] w%02d: no cached fp (skip — run `wallets reset` "
+                "if pool is corrupted)\n", i);
+            if (fp) free(fp);
+            missing_fp++;
+            continue;
+        }
+        fprintf(stderr,
+            "[dna-bench] w%02d: refund %.16s... <- punk\n", i, fp);
+        if (dna_bench_wallet_fund(i, fp, fund_raw) != 0) {
+            fprintf(stderr, "[dna-bench] w%02d: fund FAILED\n", i);
+        } else {
+            funded++;
+        }
+        free(fp);
+    }
+
+    if (missing_fp == meta.count) {
+        fprintf(stderr,
+            "[dna-bench] refund: every wallet missing fp.txt — pool "
+            "is corrupted; run `wallets reset` then `wallets create`.\n");
+        return 1;
+    }
+
+    int min_required = (meta.count / 2 < 5) ? 5 : (meta.count / 2);
+    if (meta.count < 5) min_required = meta.count;
+    if (funded < min_required) {
+        fprintf(stderr,
+            "[dna-bench] refund: only %d/%d funded (min required %d) — "
+            "check punk balance and DHT connectivity\n",
+            funded, meta.count, min_required);
+        return 1;
+    }
+
+    /* Persist updated pool.json: count = funded, fund_per_wallet_raw =
+     * what we actually paid, created_at preserved (pool age unchanged). */
+    struct dna_bench_pool out = {0};
+    out.count = funded;
+    out.fund_per_wallet_raw = fund_raw;
+    snprintf(out.created_at, sizeof(out.created_at), "%s", meta.created_at);
+    snprintf(out.chain_genesis_id, sizeof(out.chain_genesis_id), "%s",
+             meta.chain_genesis_id);
+    if (dna_bench_pool_save(&out) != 0) {
+        fprintf(stderr, "[dna-bench] refund: failed to persist pool.json\n");
+        return 1;
+    }
+
+    fprintf(stderr,
+        "[dna-bench] refund: %d/%d wallets re-funded "
+        "(missing fp=%d). Pool ready for `dna_bench --tps ...`.\n",
+        funded, meta.count, missing_fp);
+    return 0;
 }

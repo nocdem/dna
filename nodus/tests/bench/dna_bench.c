@@ -44,7 +44,10 @@ static void print_usage(void) {
 "Pool management (auto-creates if missing):\n"
 "  --wallets N                               pool size (default 27, max 200)\n"
 "  --fund X                                  raw units per wallet (default %llu)\n"
-"  --reset                                   wipe pool before run\n"
+"  --reset                                   wipe pool before run (DESTROYS\n"
+"                                            wallet identities; use\n"
+"                                            `wallets refund` to re-fund\n"
+"                                            existing pool after a chain wipe)\n"
 "\n"
 "Output options:\n"
 "  --output FILE.json                        final summary (default <run-dir>/run.json)\n"
@@ -95,6 +98,14 @@ int main(int argc, char **argv) {
     /* Advanced: reconcile is a separate verb. */
     if (strcmp(argv[1], "reconcile") == 0) {
         return cmd_reconcile(argc - 1, argv + 1);
+    }
+
+    /* Pool management verb: `dna_bench wallets {create|list|reset|drain|refund} ...`
+     * Used directly when the operator wants to refund/inspect/reset the pool
+     * without touching the run loop. The internal --reset flag in the run
+     * path still calls cmd_wallets() programmatically. */
+    if (strcmp(argv[1], "wallets") == 0) {
+        return cmd_wallets(argc - 1, argv + 1);
     }
 
     /* Default path: --tps / --duration etc. parsed in dna_bench_main. */
