@@ -765,6 +765,10 @@ register_witness_test(test_witness_commit_height_match)
 register_witness_test(test_witness_commit_height_zero_legacy)
 register_witness_test(test_witness_sync_rsp_state_root_verify)
 
+# ── PR 1 (2026-05-03) — bft_config follower-path refresh (C-3 fix) ───
+# See docs/plans/2026-05-03-witness-auto-bootstrap-design.md
+register_witness_test(test_witness_bft_config_refresh)
+
 # ── Faz 1B — BLOCKERS (audit B-1, B-2, B-3 + C-4) ────────────────────
 register_witness_test(test_block_hash_includes_state_root)
 register_witness_test(test_recovery_sentinel_crash_safety)
