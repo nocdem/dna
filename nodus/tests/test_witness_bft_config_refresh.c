@@ -116,12 +116,13 @@ int main(void) {
     CHECK_EQ(w.bft_config.n_witnesses, 7);
     CHECK_EQ(w.bft_config.quorum,      5);  /* (2*7)/3 + 1 */
 
-    /* Simulate committee shrink to 5. */
+    /* Simulate committee shrink to 5. The committee cache stays at
+     * memset(0) initial state (epoch_start=0, count=0); both blocks
+     * fall in epoch 0 and hit the cache with count=0 → refresh
+     * fallback re-reads roster each time. Mutating roster is the
+     * simplest way to vary refresh output across commits without
+     * seeding the full validator schema. */
     w.roster.n_witnesses = 5;
-
-    /* Invalidate committee cache so fallback re-reads roster. */
-    w.cached_committee_epoch_start = UINT64_MAX;
-    w.cached_committee_count       = -1;
 
     /* Block 2: commit with roster of 5 → bft_config should reflect 5. */
     nodus_witness_mempool_entry_t e2 = {0};

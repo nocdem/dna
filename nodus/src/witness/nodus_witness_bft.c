@@ -314,8 +314,8 @@ static int load_committee_at_height(nodus_witness_t *w,
  * @return 0 on success (consensus_active may be true or false based on
  *         config state), -1 on DB error (w->bft_config left
  *         untouched, caller should fail-closed). */
-static int refresh_bft_config_from_committee(nodus_witness_t *w,
-                                                uint64_t block_height) {
+int refresh_bft_config_from_committee(nodus_witness_t *w,
+                                       uint64_t block_height) {
     if (!w) return -1;
     nodus_committee_member_t committee[DNAC_COMMITTEE_SIZE];
     int count = 0;
@@ -5936,6 +5936,31 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
      * db_commit failure so a retry path can still re-propose. */
     if (commit_rc == 0) {
         w->last_prepared.present = false;
+
+        /* PR 1 (2026-05-03): Refresh bft_config from on-chain committee
+         * AFTER successful commit, mirroring the leader-side round-start
+         * refresh at line 3346. Without this, follower nodes silently
+         * drift from cluster committee on CHAIN_CONFIG TX changes
+         * (red-team finding C-3, design doc
+         * docs/plans/2026-05-03-witness-auto-bootstrap-design.md).
+         * replay_block delegates to commit_batch (line 5967), so this
+         * single insertion covers both follower paths.
+         *
+         * Pass block_height(w) + 1 to match leader semantics: refresh
+         * loads the committee for the NEXT round. On failure latch
+         * safety_halt and return -1 — same severity as leader path
+         * (line 3346 returns -1 on refresh failure). Block is durably
+         * committed at this point; the halt prevents further BFT
+         * participation with potentially stale bft_config. */
+        uint64_t next_bh = nodus_witness_block_height(w) + 1;
+        if (refresh_bft_config_from_committee(w, next_bh) != 0) {
+            QGP_LOG_ERROR(LOG_TAG,
+                "commit_batch: post-commit bft_config refresh failed "
+                "(next_bh=%llu) — latching safety_halt",
+                (unsigned long long)next_bh);
+            w->safety_halt = true;
+            return -1;
+        }
     }
     return commit_rc;
 }

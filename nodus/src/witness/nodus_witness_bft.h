@@ -29,6 +29,23 @@ extern "C" {
 void nodus_witness_bft_config_init(nodus_witness_bft_config_t *cfg,
                                      uint32_t n_witnesses);
 
+/** Recompute w->bft_config from the on-chain committee at block_height.
+ *
+ * Authoritative quorum source. Called from leader-side round-start
+ * AND from follower-side commit_batch success path (PR 1, 2026-05-03 —
+ * fixes red-team C-3 from
+ * docs/plans/2026-05-03-witness-auto-bootstrap-design.md). Without the
+ * follower-side call, follower nodes silently drift from cluster
+ * committee on CHAIN_CONFIG TX changes → divergent quorum → chain
+ * split.
+ *
+ * Bootstrap fallback: empty committee → falls through to gossip-roster
+ * size (F17 A5).
+ *
+ * @return 0 on success, -1 on DB error (w->bft_config left untouched). */
+int  refresh_bft_config_from_committee(nodus_witness_t *w,
+                                        uint64_t block_height);
+
 /** Returns true if consensus is active (enough witnesses for quorum). */
 bool nodus_witness_bft_consensus_active(const nodus_witness_t *w);
 
