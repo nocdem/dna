@@ -10,6 +10,44 @@ When you find a security vulnerability, flag it immediately with a WARNING comme
 
 ---
 
+## PRIMARY OBJECTIVE: DETERMINISM (NO FLAKINESS)
+
+**THIS IS A BLOCKCHAIN. Flaky / non-deterministic code, tests, deploys, or workflows are FORBIDDEN anywhere in the project.**
+
+Flaky behavior in a BFT consensus system is not a quality nuisance — it is a **chain split** waiting to happen. If two witnesses execute the same transaction batch and produce different `state_root`s, the chain forks. Genesis Protocol harness enforces 7/7 `state_root` identity exactly because this is unacceptable.
+
+**This applies to every component**: messenger, nodus, dnac, witness, transport, channel, CLI, harness, CI, deploy scripts, Flutter UI, tests — no exceptions.
+
+### FORBIDDEN patterns
+
+- "Sometimes works" / "rarely fails" / "race rarely triggers" — all bugs, all P0.
+- Retry loops that mask the underlying failure (the retry hides the bug; the bug ships).
+- "Flaky test, just rerun the pipeline" — the test is reporting a real defect; rerunning is lying to yourself.
+- Unordered iteration over hash maps, sets, or unsorted query results in any path that affects `state_root`, block content, witness vote, or replication.
+- Time-of-day / wall-clock dependent branches inside consensus paths.
+- Random selection without a seeded, deterministic PRNG (committee selection, sortition, tie-breaking).
+- Order-dependent floating-point reductions in any consensus-affecting calculation.
+- Network-timing-dependent control flow ("if response within 50ms then X else Y") in deterministic state transitions.
+- "Eventually consistent" cache reads in code paths that decide block validity, vote, or admission.
+- Tests that pass under low load but fail under CI parallelism — the bug is yours, not the test runner's.
+
+### REQUIRED approach
+
+- Every failure (unit test, ctest, Genesis Protocol harness, smoke run, deploy) is reproduced and root-caused before a fix lands. No "rerun until green."
+- Iteration order over collections in consensus paths must be explicitly sorted by a stable, total key.
+- Any randomness in consensus is seeded from on-chain state (block hash, epoch, etc.), never `rand()`, `srand(time(NULL))`, or `getrandom()`.
+- Caches in consensus paths must have the symmetric invariant: writer and reader see the same key/value derivation, and a cache miss MUST produce the same answer as a cache hit.
+- "Reproducible failure" is the ship-blocker bar — if a failure cannot be reproduced, work continues until it can be.
+- If a behavior feels timing-sensitive, treat it as a P0 defect, not a quirk.
+
+### Cross-references
+
+This rule is the blockchain-context superset of: `No shortcut fixes`, `No assumptions`, `Test with real data`, `Verify cache symmetry`, `Verify provider state`, `Read code first`, `Diff before assumption`. They all enforce the same discipline; this section makes the chain-split consequence explicit.
+
+**Violation triggers**: If you catch yourself writing or proposing any forbidden pattern above, STOP and surface it. If the user catches you, expect immediate halt and rework — `feedback_no_flaky_blockchain.md` in memory will be cited.
+
+---
+
 ## SUBAGENT BYPASS (Task Tool)
 **If you were spawned as a subagent via the Task tool:** Skip ALL checkpoints (1-9).
 Execute the task prompt directly. You are NOT the main EXECUTOR.

@@ -8,6 +8,22 @@
 
 ---
 
+## HARD RULE: NO FLAKY BEHAVIOR
+
+**This is a blockchain project. Flaky / non-deterministic code, tests, or deploys are FORBIDDEN.** See root `/opt/dna/CLAUDE.md` (`PRIMARY OBJECTIVE: DETERMINISM`) and memory `feedback_no_flaky_blockchain.md` for the full rule.
+
+**Messenger-specific examples (all forbidden):**
+- DHT `put`/`get` retry loops that mask actual replication failures — fix the replication path, do not paper over with retries.
+- Race-prone listener wakeups where "usually the second listener fires" — listener semantics must be deterministic, every call.
+- Time-dependent branches in `dna_engine_messaging.c` retry/backoff that change the message content or order across nodes.
+- Cache reads in `dna_engine_*` modules where a cache miss returns a different shape/content than a hit.
+- "Test passed locally, CI sometimes fails" Flutter widget tests — the test is reporting a real race or async ordering bug; root-cause it.
+- Background worker pool ordering that depends on thread-scheduling for correctness (only timing for performance is acceptable).
+
+If a failure cannot be reproduced, work continues until it can be. **No `rerun pipeline until green` — ever.**
+
+---
+
 ## Engine Modules
 
 The DNA Engine (`src/api/dna_engine.c`) is a modular async C library with 18 domain modules in `src/api/engine/`:

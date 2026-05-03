@@ -8,6 +8,27 @@
 
 ---
 
+## HARD RULE: NO FLAKY BEHAVIOR
+
+**DNAC is the consensus core. Flaky / non-deterministic code is the single fastest path to a chain split.** See root `/opt/dna/CLAUDE.md` (`PRIMARY OBJECTIVE: DETERMINISM`) and memory `feedback_no_flaky_blockchain.md` for the full rule.
+
+**DNAC-specific examples (all forbidden):**
+- UTXO selection / coin selection that depends on iteration order of an unordered set — must sort by deterministic key (e.g., outpoint hash) before selection.
+- Nullifier insert/check order that depends on map traversal — explicit sorted ordering required.
+- `state_root` divergence between witnesses on the same block: any difference is a P0 chain-split bug. Genesis Protocol harness 7/7 enforcement catches this; never bypass or weaken the harness.
+- Double-spend detection that "rarely misses a race" — the rare case ships and burns money.
+- Committee selection / sortition without a seeded, on-chain-derived PRNG (block hash + epoch, never `rand()`).
+- Fee calculation order-dependent on input ordering — must be commutative or explicitly ordered.
+- Per-block reward accrual that depends on local node clock — must be derived from block height / on-chain state only.
+- TX validation that passes locally but fails on a peer — the validator disagreement is the bug; the deploy is blocked until reproduced and fixed.
+- Tests that pass with `ctest -j1` but fail with `ctest -j$(nproc)` — race in production code, not flakiness in tests.
+
+**Stake/delegation feature:** every code path that affects committee membership, reward accrual, or claim must be reviewed against this rule before merge. Sortition v2 (memory: `project_dnac_stake_v2_sortition`) MUST use deterministic seeded PRNG.
+
+If a Genesis Protocol harness run is not 7/7 identical `state_root`, that is a deploy-blocker, not a "let's investigate later." **No production deploy on a flaky harness.**
+
+---
+
 ## Project Overview
 
 DNAC is a **Post-Quantum Zero-Knowledge Cash** system built on top of DNA Connect.
