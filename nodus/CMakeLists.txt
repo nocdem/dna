@@ -769,6 +769,10 @@ register_witness_test(test_witness_sync_rsp_state_root_verify)
 # See docs/plans/2026-05-03-witness-auto-bootstrap-design.md
 register_witness_test(test_witness_bft_config_refresh)
 
+# ── PR 2 (2026-05-03) — timestamp determinism (drop from hash preimage) ─
+# See docs/plans/2026-05-03-pr2-timestamp-determinism-impl.md
+register_witness_test(test_block_hash_timestamp_excluded)
+
 # ── Faz 1B — BLOCKERS (audit B-1, B-2, B-3 + C-4) ────────────────────
 register_witness_test(test_block_hash_includes_state_root)
 register_witness_test(test_recovery_sentinel_crash_safety)

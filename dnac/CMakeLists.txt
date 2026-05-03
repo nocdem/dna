@@ -295,6 +295,10 @@ if(DNAC_BUILD_TESTS)
     # Chain-def codec roundtrip + determinism (anchored-merkle-proofs Task 9)
     register_dnac_test(test_chain_def_codec)
 
+    # PR 2 (2026-05-03) — dnac_block_compute_hash timestamp independence
+    # See docs/plans/2026-05-03-pr2-timestamp-determinism-impl.md
+    register_dnac_test(test_block_hash_timestamp_excluded)
+
     # Fixed-vector test for dnac_merkle_verify_proof (anchored-merkle-proofs Task 17)
     register_dnac_test(test_merkle_verify)
     register_dnac_test(test_anchor_verify)
