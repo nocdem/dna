@@ -115,6 +115,24 @@ void nodus_witness_bootstrap_handle_genesis_rsp(nodus_witness_t *w,
 #include <stdbool.h>
 
 /**
+ * PR 3 / E3 — H-1 per-source rate limit on incoming w_chain_q.
+ *
+ * Pure function returning true if a w_chain_q from a source whose
+ * last response was sent at `last_response_ms` (monotonic) should be
+ * allowed at `now_ms`. last_response_ms == 0 means "never responded
+ * to this source before" -> always allow on first request.
+ *
+ * `min_interval_ms` is the minimum gap between signed responses to
+ * the same source (defends Dilithium5 sign-cost amplification, A12).
+ *
+ * Pure, no I/O, no state mutation — testable in isolation.
+ */
+bool nodus_witness_bootstrap_chain_q_rate_limit_allow(
+    uint64_t last_response_ms,
+    uint64_t now_ms,
+    uint64_t min_interval_ms);
+
+/**
  * PR 3 / E4 — H-9 mixed-version cluster detection.
  *
  * Scan w->peers and return true if ANY peer has reported a non-zero

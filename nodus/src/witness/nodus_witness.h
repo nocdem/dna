@@ -283,6 +283,14 @@ typedef struct {
     uint32_t    remote_nodus_version;
     uint32_t    remote_chain_config_schema;
     bool        version_compatible;         /* false if schema/version mismatch */
+
+    /* PR 3 / E3 — H-1 per-source rate limit on incoming w_chain_q.
+     * A sign-amplification adversary spams w_chain_q expecting a
+     * Dilithium5-signed w_chain_r per request — this timestamp records
+     * the last response we sent to this peer (monotonic ms) so the
+     * bootstrap handler can drop excess requests inside the
+     * NODUS_W_BOOTSTRAP_CHAIN_Q_MIN_INTERVAL_MS window. */
+    uint64_t    last_chain_q_response_ms;
 } nodus_witness_peer_t;
 
 /* ── Main witness context ────────────────────────────────────────── */

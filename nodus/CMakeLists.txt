@@ -505,6 +505,15 @@ target_link_libraries(test_witness_bootstrap_mixed_version nodus dsa nodus)
 add_test(NAME test_witness_bootstrap_mixed_version
          COMMAND test_witness_bootstrap_mixed_version)
 
+# PR 3 / E3 — H-1 per-source rate limit on incoming w_chain_q.
+# RED until the GREEN commit replaces the always-allow stub with
+# the real (now - last >= min_interval) check.
+add_executable(test_witness_bootstrap_chain_q_rate_limit
+                tests/test_witness_bootstrap_chain_q_rate_limit.c)
+target_link_libraries(test_witness_bootstrap_chain_q_rate_limit nodus dsa nodus)
+add_test(NAME test_witness_bootstrap_chain_q_rate_limit
+         COMMAND test_witness_bootstrap_chain_q_rate_limit)
+
 # RFC 6962 Merkle domain tag tests (Phase 2 / Tasks 2.1, 2.2, 2.4)
 add_executable(test_merkle_domain_tags tests/test_merkle_domain_tags.c)
 target_link_libraries(test_merkle_domain_tags nodus dsa nodus crypto)

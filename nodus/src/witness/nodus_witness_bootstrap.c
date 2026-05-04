@@ -37,6 +37,14 @@
 
 #define NODUS_W_BOOTSTRAP_DEFAULT_ROUND_TIMEOUT_MS  5000U
 #define NODUS_W_BOOTSTRAP_MAX_ATTEMPTS              10
+
+/* PR 3 / E3 — H-1 per-source rate limit interval. A bootstrap
+ * client realistically retries at the round-timeout cadence
+ * (~5s default), so 1 second is loose enough for legitimate
+ * traffic while throttling sign-amplification attacks (Dilithium5
+ * verify is ~370us, sign is ~1ms — at ~1ms each a single source
+ * could otherwise extract ~1000 signatures/sec/cpu). */
+#define NODUS_W_BOOTSTRAP_CHAIN_Q_MIN_INTERVAL_MS   1000U
 #define NODUS_W_BOOTSTRAP_ROUND_TIMEOUT_MS          10000U
 #define NODUS_W_BOOTSTRAP_MAX_RESPONSES             64
 
@@ -357,6 +365,21 @@ int nodus_witness_bootstrap_start(nodus_witness_t *w) {
             "threshold=%d (= (2*N)/3 + 1)\n",
             seed_count, discover_quorum_threshold(seed_count));
     return 0;
+}
+
+/* PR 3 / E3 — H-1 per-source rate limit (RED stub).
+ * Stub returns true unconditionally (never rate-limit); RED test
+ * asserts the "within window -> deny" cases all fail. The GREEN
+ * commit replaces this body with the real (now - last < min) check
+ * and wires it into handle_chain_q. */
+bool nodus_witness_bootstrap_chain_q_rate_limit_allow(
+    uint64_t last_response_ms,
+    uint64_t now_ms,
+    uint64_t min_interval_ms) {
+    (void)last_response_ms;
+    (void)now_ms;
+    (void)min_interval_ms;
+    return true;
 }
 
 /* PR 3 / E4 — H-9 mixed-version cluster detection.
