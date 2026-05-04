@@ -573,6 +573,17 @@ typedef struct nodus_witness {
     uint64_t    bootstrap_round_deadline_ms;
     uint8_t     bootstrap_round_nonce[16];   /* NODUS_W_BOOTSTRAP_NONCE_LEN */
 
+    /* PR 3 / E2 — bootstrap observability. discover_entered_ms is the
+     * monotonic timestamp at which the state machine first transitioned
+     * into DISCOVER (set ONCE per bootstrap_start; not reset across
+     * round attempts). last_heartbeat_log_ms is the last hourly stuck-
+     * in-DISCOVER heartbeat we emitted; both 0 outside DISCOVER. The
+     * heartbeat fires once per hour while DISCOVER persists past the
+     * first hour so an operator monitoring journalctl sees a steady
+     * pulse rather than going silent. */
+    uint64_t    bootstrap_discover_entered_ms;
+    uint64_t    bootstrap_last_heartbeat_log_ms;
+
     bool        running;
 } nodus_witness_t;
 

@@ -45,6 +45,16 @@
  * verify is ~370us, sign is ~1ms — at ~1ms each a single source
  * could otherwise extract ~1000 signatures/sec/cpu). */
 #define NODUS_W_BOOTSTRAP_CHAIN_Q_MIN_INTERVAL_MS   1000U
+
+/* PR 3 / E2 — observability budgets. The heartbeat fires once per
+ * hour while DISCOVER persists past the first hour, giving operators
+ * a steady journalctl pulse to triage stuck bootstraps. The tick
+ * watchdog warns if a single tick takes longer than 100 ms — the
+ * tick is supposed to be a short housekeeping pass, and an overrun
+ * suggests downstream blocking I/O (rare in practice; the warning
+ * is the only signal). */
+#define NODUS_W_BOOTSTRAP_HEARTBEAT_INTERVAL_MS     3600000ULL
+#define NODUS_W_BOOTSTRAP_TICK_WATCHDOG_BUDGET_MS   100ULL
 #define NODUS_W_BOOTSTRAP_ROUND_TIMEOUT_MS          10000U
 #define NODUS_W_BOOTSTRAP_MAX_RESPONSES             64
 
@@ -359,6 +369,12 @@ int nodus_witness_bootstrap_start(nodus_witness_t *w) {
     w->bootstrap_attempt = 0;
     /* First attempt fires on the first tick (no wait before attempt 1). */
     w->bootstrap_next_attempt_ms = monotonic_ms();
+    /* PR 3 / E2 — observability: stamp DISCOVER entry so the tick
+     * heartbeat can compute "stuck for N hours". last_heartbeat_log_ms
+     * stays 0 here so the very first heartbeat fires after the
+     * configured interval rather than immediately on entry. */
+    w->bootstrap_discover_entered_ms = monotonic_ms();
+    w->bootstrap_last_heartbeat_log_ms = 0;
 
     fprintf(stderr,
             "WITNESS-BOOTSTRAP: state=DISCOVER seed_count=%d "
@@ -440,6 +456,38 @@ void nodus_witness_bootstrap_tick(nodus_witness_t *w) {
     if (!w) return;
     if (w->bootstrap_state != (int)NODUS_W_BOOTSTRAP_DISCOVER) return;
 
+    /* PR 3 / E2 — observability: tick watchdog entry timestamp.
+     * Captured at the top so the budget check at the bottom covers
+     * everything (mixed-version scan, attempt scheduling, encode
+     * cost via start_discover_round). */
+    uint64_t tick_entry_ms = monotonic_ms();
+
+    /* PR 3 / E2 — heartbeat: once DISCOVER has persisted past the
+     * heartbeat interval, emit one log line per interval so an
+     * operator monitoring journalctl sees a steady pulse rather
+     * than going silent for hours while max-attempt backoffs run.
+     * Reuses the rate-limit helper for the time arithmetic — same
+     * "now - last >= interval" semantic, different action on true. */
+    {
+        uint64_t age_ms = (tick_entry_ms >= w->bootstrap_discover_entered_ms)
+            ? (tick_entry_ms - w->bootstrap_discover_entered_ms)
+            : 0;
+        if (age_ms >= NODUS_W_BOOTSTRAP_HEARTBEAT_INTERVAL_MS &&
+            nodus_witness_bootstrap_chain_q_rate_limit_allow(
+                w->bootstrap_last_heartbeat_log_ms,
+                tick_entry_ms,
+                NODUS_W_BOOTSTRAP_HEARTBEAT_INTERVAL_MS)) {
+            fprintf(stderr,
+                "WITNESS-BOOTSTRAP: HEARTBEAT stuck=%lluh attempt=%d/%d "
+                "(operator: confirm seed_nodes reachable + verify "
+                "rolling deploy completion)\n",
+                (unsigned long long)(age_ms / 3600000ULL),
+                w->bootstrap_attempt,
+                NODUS_W_BOOTSTRAP_MAX_ATTEMPTS);
+            w->bootstrap_last_heartbeat_log_ms = tick_entry_ms;
+        }
+    }
+
     /* PR 3 / E4 — H-9 mixed-version fail-fast. Run on every DISCOVER
      * tick: if any authd peer reports an older nodus_version, the
      * rolling deploy is incomplete and bootstrap cannot succeed —
@@ -513,6 +561,24 @@ void nodus_witness_bootstrap_tick(nodus_witness_t *w) {
     w->bootstrap_attempt++;
     start_discover_round(w);
     schedule_next_attempt(w);
+
+    /* PR 3 / E2 — tick watchdog. Covers the slow-path tick that just
+     * encoded + sent a w_chain_q broadcast (Dilithium5 sign cost is
+     * the dominant term, ~1 ms × seed_count). Early-return paths
+     * above are short housekeeping and are not budgeted. */
+    {
+        uint64_t tick_exit_ms = monotonic_ms();
+        uint64_t elapsed_ms = (tick_exit_ms >= tick_entry_ms)
+            ? (tick_exit_ms - tick_entry_ms) : 0;
+        if (elapsed_ms > NODUS_W_BOOTSTRAP_TICK_WATCHDOG_BUDGET_MS) {
+            fprintf(stderr,
+                "WITNESS-BOOTSTRAP: tick overran budget (%llums > %llums) "
+                "attempt=%d — investigate downstream blocking I/O\n",
+                (unsigned long long)elapsed_ms,
+                (unsigned long long)NODUS_W_BOOTSTRAP_TICK_WATCHDOG_BUDGET_MS,
+                w->bootstrap_attempt);
+        }
+    }
 }
 
 /* ── T3 dispatch handlers ────────────────────────────────────────── */
