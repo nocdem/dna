@@ -519,6 +519,29 @@ int nodus_witness_init(nodus_witness_t *witness,
     /* Initialize peer mesh (builds roster, connects seeds on witness port) */
     nodus_witness_peer_init(witness);
 
+    /* PR 3 Yol B / C6 — kick off the auto-bootstrap state machine.
+     *
+     * - HAVE_CHAIN branch: refresh bft_config from the on-chain
+     *   committee, set H-4 settle window, transition to DONE
+     *   immediately. The existing sync_check + replay path catches up
+     *   to the actual tip.
+     * - DISCOVER branch (chain DB absent): C-1 startup gate first
+     *   (seed_count >= committee_size); on pass schedules round 1 to
+     *   fire on the next nodus_witness_tick. On C-1 fail returns -1
+     *   so init aborts cleanly with an explicit operator-facing log.
+     * - DB error: returns -1, init aborts.
+     *
+     * Pre-PR-3 behaviour was "silent pre-genesis wait". The new fail-
+     * fast on C-1 is intentional: a misconfigured fresh node is
+     * better stopped at startup than running in a partially-bootstrapped
+     * state. */
+    if (nodus_witness_bootstrap_start(witness) != 0) {
+        fprintf(stderr,
+                "%s: bootstrap_start returned -1 — refusing init\n",
+                LOG_TAG);
+        return -1;
+    }
+
     fprintf(stderr, "%s: initialized (roster=%d witnesses, "
             "chain_db=%s)\n",
             LOG_TAG, witness->roster.n_witnesses,

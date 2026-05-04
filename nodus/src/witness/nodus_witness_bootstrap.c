@@ -220,8 +220,17 @@ int nodus_witness_bootstrap_start(nodus_witness_t *w) {
     w->bootstrap_next_attempt_ms = 0;
     w->bootstrap_round_deadline_ms = 0;
 
-    int64_t tip = chain_tip_height(w->db);
-    if (tip < 0) return -1;
+    /* w->db == NULL means witness_scan_chain_db found no witness_*.db
+     * file — fresh node, no genesis yet. Treat as tip == 0 so we
+     * fall through to the DISCOVER branch instead of the DB-error
+     * path. */
+    int64_t tip;
+    if (w->db == NULL) {
+        tip = 0;
+    } else {
+        tip = chain_tip_height(w->db);
+        if (tip < 0) return -1;
+    }
 
     if (tip >= 1) {
         /* HAVE_CHAIN branch (C2 — unchanged in C3). */
