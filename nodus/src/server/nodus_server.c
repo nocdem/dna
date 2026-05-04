@@ -33,7 +33,9 @@ extern void qgp_secure_memzero(void *ptr, size_t len);
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <dirent.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -5501,12 +5503,56 @@ static void ch_startup_rejoin(nodus_server_t *srv)
 
 /* ── PR 3 / E5 — Partial-wipe XOR check (H-10) ──────────────────── */
 
-/* Stub returning 0 (no-op). The RED test asserts that partial-wipe
- * scenarios are detected and refused; this stub does neither, so the
- * RED test fails as designed. The GREEN commit replaces this body. */
 int nodus_server_check_partial_wipe(const char *data_path) {
     if (!data_path) return -1;
-    return 0;
+
+    char nodus_db[640];
+    char channels_db[640];
+    int n1 = snprintf(nodus_db, sizeof(nodus_db),
+                      "%s/nodus.db", data_path);
+    int n2 = snprintf(channels_db, sizeof(channels_db),
+                      "%s/channels.db", data_path);
+    if (n1 < 0 || (size_t)n1 >= sizeof(nodus_db) ||
+        n2 < 0 || (size_t)n2 >= sizeof(channels_db))
+        return -1;
+
+    struct stat st;
+    int has_nodus    = (stat(nodus_db,    &st) == 0) ? 1 : 0;
+    int has_channels = (stat(channels_db, &st) == 0) ? 1 : 0;
+
+    /* Witness DB filename is chain-id-suffixed and not known until
+     * genesis lands, so scan for any witness_<hex>.db (excluding the
+     * -wal / -shm sidecars whose presence alone is not enough — they
+     * vanish on clean shutdown). */
+    int has_witness = 0;
+    DIR *dir = opendir(data_path);
+    if (dir) {
+        struct dirent *e;
+        while ((e = readdir(dir)) != NULL) {
+            if (strncmp(e->d_name, "witness_", 8) != 0) continue;
+            size_t len = strlen(e->d_name);
+            if (len < 11) continue;  /* "witness_" + at least 1 char + ".db" */
+            if (strcmp(e->d_name + len - 3, ".db") != 0) continue;
+            has_witness = 1;
+            break;
+        }
+        closedir(dir);
+    }
+
+    int present = has_nodus + has_channels + has_witness;
+    if (present == 0 || present == 3) return 0;
+
+    fprintf(stderr,
+        "%s: PARTIAL WIPE DETECTED at %s — "
+        "nodus.db=%s channels.db=%s witness_*.db=%s. "
+        "REFUSING START. The 3 SQLite DBs MUST be all-present (normal "
+        "boot) or all-absent (fresh node). Investigate the missing "
+        "file(s); restore from backup or wipe ALL 3 to restart fresh.\n",
+        LOG_TAG, data_path,
+        has_nodus    ? "yes" : "MISSING",
+        has_channels ? "yes" : "MISSING",
+        has_witness  ? "yes" : "MISSING");
+    return -1;
 }
 
 /* ── Public API ──────────────────────────────────────────────────── */
@@ -5515,6 +5561,18 @@ int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) 
     if (!srv || !config) return -1;
     memset(srv, 0, sizeof(*srv));
     srv->config = *config;
+
+    /* PR 3 / E5 — H-10 partial-wipe XOR boot gate. MUST run BEFORE
+     * nodus_storage_open / nodus_channel_store_open below — those
+     * calls auto-create missing files and would silently mask a
+     * partial-wipe accident. Skip when no persistent data_path is
+     * configured (dev/test default falls back to /tmp inside the
+     * storage opens). */
+    if (config->data_path[0] != '\0') {
+        if (nodus_server_check_partial_wipe(config->data_path) != 0) {
+            return -1;
+        }
+    }
 
     /* Phase 3.2e FIX: bf_state.batches[].forwards[].fd starts at 0 from
      * memset above, but 0 is a VALID stdio fd (stdin). Cleanup paths use
