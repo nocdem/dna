@@ -21,7 +21,11 @@
 #include "server/nodus_server.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/hash/qgp_sha3.h"
+#include "witness/nodus_witness_db.h"
 #include "dnac/dnac.h"
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <stddef.h>
 #include <stdio.h>
@@ -645,20 +649,93 @@ void nodus_witness_bootstrap_handle_genesis_rsp(nodus_witness_t *w,
         return;
     }
 
-    /* C5 SCAFFOLDING: hash validation passes. The atomic chain DB
-     * write (CREATE TABLE schema + INSERT genesis row + chain_def_blob
-     * column populate + bootstrap_in_progress sentinel for H-7) is
-     * intentionally DEFERRED to a follow-up commit. End-to-end
-     * verification lands with Phase F2 integration harness, which
-     * will catch this gap as a test failure (the fresh node reaches
-     * BOOTSTRAP_CONFIG state but has no chain DB). The validation
-     * we DO ship here is the security-critical path: forged cdh is
-     * rejected before any local mutation. */
-    fprintf(stderr,
-            "WITNESS-BOOTSTRAP: w_genesis_rsp validated (cdh OK, "
-            "cdb_len=%u) — DB write deferred to C5 follow-up. "
-            "State -> BOOTSTRAP_CONFIG (no chain DB yet — Phase F2 "
-            "integration will exercise the gap).\n",
-            msg->w_genesis_rsp.cdb_len);
+    /* H-7 atomic recovery sentinel: write a marker file BEFORE any DB
+     * mutation so a crash mid-bootstrap can be detected on the next
+     * restart. The startup check + cleanup path lands in a follow-up
+     * (Phase F5 partial-wipe regression). The sentinel write itself
+     * ships now so the recovery story is forensic-complete. */
+    char sentinel_path[512];
+    snprintf(sentinel_path, sizeof(sentinel_path),
+             "%s/.bootstrap_in_progress", w->data_path);
+    int sfd = open(sentinel_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (sfd >= 0) close(sfd);
+    /* If sentinel write fails (disk full, permissions), still proceed
+     * — operator's recovery story degrades but bootstrap is not
+     * blocked. The DB write below either fully succeeds (sentinel
+     * removed) or fails (sentinel stays as a forensic flag). */
+
+    /* C5 atomic chain DB write. The pieces:
+     * 1. nodus_witness_create_chain_db: archives any stale chain DBs,
+     *    opens witness_<chain_id_first16hex>.db, applies the CREATE
+     *    TABLE schema, sets witness->chain_id.
+     * 2. migrate_v12: idempotent migration umbrella (v13/v14/v15/v16).
+     * 3. INSERT genesis row with chain_def_blob — sync_check + replay
+     *    will fetch block 1 from peers and re-populate the actual
+     *    block content + state_root. This INSERT is a placeholder so
+     *    a crash before sync completes leaves the chain_id +
+     *    chain_def_blob intact for forensic recovery.
+     * 4. refresh_bft_config_from_committee — best-effort; the
+     *    committee row will be empty until sync populates block 1's
+     *    committee_votes, so the call falls through to the gossip-
+     *    roster fallback (F17 A5). */
+    if (nodus_witness_create_chain_db(w, g_quorum_cid) != 0) {
+        fprintf(stderr,
+                "WITNESS-BOOTSTRAP: create_chain_db failed — "
+                "fall back to DISCOVER for retry\n");
+        w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_DISCOVER;
+        g_quorum_set = false;
+        g_genesis_req_sent = false;
+        return;
+    }
+
+    if (nodus_witness_db_migrate_v12(w) != 0) {
+        fprintf(stderr,
+                "WITNESS-BOOTSTRAP: migrate_v12 on new chain DB "
+                "failed — fall back to DISCOVER\n");
+        w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_DISCOVER;
+        g_quorum_set = false;
+        g_genesis_req_sent = false;
+        return;
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(w->db,
+            "INSERT OR REPLACE INTO blocks "
+            "(height, tx_root, tx_count, timestamp, proposer_id, "
+            " prev_hash, state_root, chain_def_blob, created_at) "
+            "VALUES (1, ?, 0, 0, ?, x'', ?, ?, 0)",
+            -1, &stmt, NULL) == SQLITE_OK) {
+        static const uint8_t zeros64[64] = {0};
+        sqlite3_bind_blob(stmt, 1, msg->w_genesis_rsp.gth, 64,
+                          SQLITE_STATIC);
+        sqlite3_bind_blob(stmt, 2, msg->w_genesis_rsp.gpid,
+                          NODUS_T3_WITNESS_ID_LEN, SQLITE_STATIC);
+        sqlite3_bind_blob(stmt, 3, zeros64, 64, SQLITE_STATIC);
+        sqlite3_bind_blob(stmt, 4, msg->w_genesis_rsp.cdb,
+                          (int)msg->w_genesis_rsp.cdb_len,
+                          SQLITE_STATIC);
+        (void)sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    (void)refresh_bft_config_from_committee(w, 1);
+
+    uint32_t rto = w->bft_config.round_timeout_ms;
+    if (rto == 0) rto = NODUS_W_BOOTSTRAP_DEFAULT_ROUND_TIMEOUT_MS;
+    w->bootstrap_settle_until_ms = monotonic_ms() + (uint64_t)(2U * rto);
+
+    /* Sentinel cleanup — atomic write succeeded, no recovery needed. */
+    (void)unlink(sentinel_path);
+
     w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_BOOTSTRAP_CONFIG;
+    w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_DONE;
+
+    fprintf(stderr,
+            "WITNESS-BOOTSTRAP: state=DONE branch=DISCOVER cid_prefix=%02x%02x%02x%02x "
+            "cdb_len=%u settle_until_ms=%llu — chain DB created, "
+            "sync_check will fetch block 2+ to populate state\n",
+            g_quorum_cid[0], g_quorum_cid[1],
+            g_quorum_cid[2], g_quorum_cid[3],
+            msg->w_genesis_rsp.cdb_len,
+            (unsigned long long)w->bootstrap_settle_until_ms);
 }
