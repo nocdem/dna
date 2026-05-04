@@ -1573,6 +1573,17 @@ static void dec_w_genesis_rsp_args(cbor_decoder_t *dec, size_t count,
         else if (KEY_IS(key, "cdb")) {
             cbor_item_t val = cbor_decode_next(dec);
             if (val.type == CBOR_ITEM_BSTR) {
+                /* H-2 strict cap (A4): reject before sig verify so a
+                 * malicious peer cannot waste Dilithium5 verify cycles
+                 * (≈300 µs) with arbitrarily large cdb payloads. The
+                 * matching encoder cap (in enc_args dispatch) means
+                 * honest binaries never emit oversize cdb; this branch
+                 * defends against custom/forked encoders. dec->error
+                 * propagates to nodus_t3_decode return value -1. */
+                if (val.bstr.len > NODUS_W_MAX_CHAIN_DEF_BLOB) {
+                    dec->error = true;
+                    return;
+                }
                 m->cdb = val.bstr.ptr;
                 m->cdb_len = (uint32_t)val.bstr.len;
             }

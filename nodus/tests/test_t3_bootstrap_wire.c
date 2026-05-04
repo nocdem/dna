@@ -383,12 +383,124 @@ static void test_w_genesis_rsp_cap_over_limit(void) {
         TEST_FAIL(name, "encoder accepted cdb above 64 KB cap");
         return;
     }
-    /* Encoder rejected — that's the correct behavior for senders. We do
-     * NOT also try a decode-side adversarial test here because forging a
-     * CBOR blob with cdb_len = cap+1 requires hand-rolled bytes; that
-     * adversarial case is covered separately once dec_args is in place
-     * (Phase A4 strict cap enforcement). */
+    /* Encoder rejected — that's the correct behavior for senders. The
+     * decoder-side adversarial path (custom encoder bypasses our cap on
+     * the wire) is exercised separately by
+     * test_w_genesis_rsp_decoder_strict_cap below. */
     TEST_PASS(name);
+}
+
+/* ── Test: A4 — decoder strict cap defends against custom encoders ── */
+
+/* Build a minimal valid T3 envelope with arg "a" carrying a w_genesis_rsp
+ * map whose "cdb" bstr is len bytes long. We bypass nodus_t3_encode (and
+ * its enc_args cap) by calling cbor_encode_* primitives directly. wsig
+ * is filled with zeros — nodus_t3_decode does NOT verify the signature,
+ * it only parses, so the strict cap rejection happens at parse time. */
+static int build_genesis_rsp_wire_with_cdb_len(uint8_t *out, size_t out_cap,
+                                                 const uint8_t *cdb, size_t cdb_len,
+                                                 size_t *out_len) {
+    cbor_encoder_t enc;
+    cbor_encoder_init(&enc, out, out_cap);
+
+    /* Outer map: 6 keys (t, y, q, wh, a, wsig). */
+    cbor_encode_map(&enc, 6);
+
+    cbor_encode_cstr(&enc, "t");
+    cbor_encode_uint(&enc, 0xDEADBEEF);
+
+    cbor_encode_cstr(&enc, "y");
+    cbor_encode_cstr(&enc, "q");
+
+    cbor_encode_cstr(&enc, "q");
+    cbor_encode_cstr(&enc, "w_genesis_rsp");
+
+    /* Header — minimal valid wh map (7 keys to match decoder expectation). */
+    cbor_encode_cstr(&enc, "wh");
+    cbor_encode_map(&enc, 7);
+    cbor_encode_cstr(&enc, "v");   cbor_encode_uint(&enc, 1);
+    cbor_encode_cstr(&enc, "rnd"); cbor_encode_uint(&enc, 0);
+    cbor_encode_cstr(&enc, "vw");  cbor_encode_uint(&enc, 0);
+    cbor_encode_cstr(&enc, "sid");
+    static const uint8_t fake_sid[NODUS_T3_WITNESS_ID_LEN] = {0};
+    cbor_encode_bstr(&enc, fake_sid, NODUS_T3_WITNESS_ID_LEN);
+    cbor_encode_cstr(&enc, "ts");  cbor_encode_uint(&enc, 0);
+    cbor_encode_cstr(&enc, "nc");  cbor_encode_uint(&enc, 0);
+    cbor_encode_cstr(&enc, "cid");
+    static const uint8_t fake_cid[32] = {0};
+    cbor_encode_bstr(&enc, fake_cid, 32);
+
+    /* Args map — w_genesis_rsp with oversized cdb. */
+    cbor_encode_cstr(&enc, "a");
+    cbor_encode_map(&enc, 5);
+    cbor_encode_cstr(&enc, "cid");
+    cbor_encode_bstr(&enc, fake_cid, 32);
+    cbor_encode_cstr(&enc, "cdb");
+    cbor_encode_bstr(&enc, cdb, cdb_len);  /* THE OVERSIZE PAYLOAD */
+    cbor_encode_cstr(&enc, "gth");
+    static const uint8_t fake_hash[NODUS_T3_TX_HASH_LEN] = {0};
+    cbor_encode_bstr(&enc, fake_hash, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(&enc, "gts");
+    cbor_encode_uint(&enc, 1709300000ULL);
+    cbor_encode_cstr(&enc, "gpid");
+    cbor_encode_bstr(&enc, fake_sid, NODUS_T3_WITNESS_ID_LEN);
+
+    /* wsig — zeros. Decode does not verify; parse only. */
+    cbor_encode_cstr(&enc, "wsig");
+    static const uint8_t fake_wsig[NODUS_SIG_BYTES] = {0};
+    cbor_encode_bstr(&enc, fake_wsig, NODUS_SIG_BYTES);
+
+    if (enc.error) return -1;
+    *out_len = cbor_encoder_len(&enc);
+    return *out_len > 0 ? 0 : -1;
+}
+
+static void test_w_genesis_rsp_decoder_strict_cap(void) {
+    const char *name = "w_genesis_rsp_decoder_strict_cap";
+
+    /* Adversarial cdb: one byte above the cap. */
+    static uint8_t big_cdb[NODUS_W_MAX_CHAIN_DEF_BLOB + 1];
+    for (size_t i = 0; i < sizeof(big_cdb); i++)
+        big_cdb[i] = (uint8_t)((i * 17 + 3) & 0xFF);
+
+    size_t wire_len = 0;
+    int build_rc = build_genesis_rsp_wire_with_cdb_len(
+        enc_buf, sizeof(enc_buf), big_cdb, sizeof(big_cdb), &wire_len);
+    if (build_rc != 0) {
+        TEST_FAIL(name, "test wire builder failed (output buffer too small?)");
+        return;
+    }
+
+    /* Decode MUST reject the oversize cdb before any further processing. */
+    nodus_t3_msg_t out = {0};
+    int dec_rc = nodus_t3_decode(enc_buf, wire_len, &out);
+    if (dec_rc == 0) {
+        TEST_FAIL(name, "decoder accepted cdb above 64 KB cap");
+        return;
+    }
+    TEST_PASS(name);
+
+    /* Sanity: same builder with cdb at exactly the cap MUST decode. */
+    static uint8_t cap_cdb[NODUS_W_MAX_CHAIN_DEF_BLOB];
+    for (size_t i = 0; i < sizeof(cap_cdb); i++)
+        cap_cdb[i] = (uint8_t)(i & 0xFF);
+
+    build_rc = build_genesis_rsp_wire_with_cdb_len(
+        enc_buf, sizeof(enc_buf), cap_cdb, sizeof(cap_cdb), &wire_len);
+    if (build_rc != 0) {
+        TEST_FAIL(name, "exact-cap wire build failed");
+        return;
+    }
+    nodus_t3_msg_t out2 = {0};
+    dec_rc = nodus_t3_decode(enc_buf, wire_len, &out2);
+    if (dec_rc != 0) {
+        TEST_FAIL(name, "decoder rejected cdb at exact 64 KB cap");
+        return;
+    }
+    if (out2.w_genesis_rsp.cdb_len != sizeof(cap_cdb)) {
+        TEST_FAIL(name, "exact-cap decode lost cdb_len");
+        return;
+    }
 }
 
 /* ── main ────────────────────────────────────────────────────────── */
@@ -404,6 +516,7 @@ int main(void) {
     test_w_genesis_rsp_roundtrip();
     test_w_genesis_rsp_cap_at_limit();
     test_w_genesis_rsp_cap_over_limit();
+    test_w_genesis_rsp_decoder_strict_cap();
 
     if (failures > 0) {
         fprintf(stderr, "test_t3_bootstrap_wire: %d FAILURE(S)\n", failures);
