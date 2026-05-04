@@ -422,6 +422,17 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
     return 0;
 }
 
+/* ── PR 3 / E0 — Orphan bootstrap sentinel check ─────────────────── */
+
+/* Stub returning 0 (no-op). The RED test asserts that an orphan
+ * sentinel is cleared and partial chain DBs are archived; this stub
+ * does neither, so the RED test fails as designed. The GREEN commit
+ * replaces this body with the real recovery logic. */
+int nodus_witness_check_orphan_bootstrap_sentinel(const char *data_path) {
+    if (!data_path) return -1;
+    return 0;
+}
+
 /* ── Identity setup ──────────────────────────────────────────────── */
 
 static void witness_setup_identity(nodus_witness_t *witness) {

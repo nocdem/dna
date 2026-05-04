@@ -480,6 +480,14 @@ target_link_libraries(test_witness_bootstrap_state_machine nodus dsa nodus)
 add_test(NAME test_witness_bootstrap_state_machine
          COMMAND test_witness_bootstrap_state_machine)
 
+# PR 3 / E0 — Orphan bootstrap sentinel cleanup at startup.
+# RED until the GREEN commit replaces the no-op stub in nodus_witness.c.
+add_executable(test_witness_bootstrap_orphan_sentinel
+                tests/test_witness_bootstrap_orphan_sentinel.c)
+target_link_libraries(test_witness_bootstrap_orphan_sentinel nodus dsa nodus)
+add_test(NAME test_witness_bootstrap_orphan_sentinel
+         COMMAND test_witness_bootstrap_orphan_sentinel)
+
 # RFC 6962 Merkle domain tag tests (Phase 2 / Tasks 2.1, 2.2, 2.4)
 add_executable(test_merkle_domain_tags tests/test_merkle_domain_tags.c)
 target_link_libraries(test_merkle_domain_tags nodus dsa nodus crypto)

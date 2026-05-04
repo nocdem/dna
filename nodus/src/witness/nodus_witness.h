@@ -680,6 +680,27 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
                                     const uint8_t *chain_id);
 
 /**
+ * PR 3 / E0 — Orphan bootstrap sentinel check (H-7 startup-side closure).
+ *
+ * The bootstrap path writes <data_path>/.bootstrap_in_progress BEFORE
+ * any chain-DB mutation in handle_genesis_rsp, and unlinks it on the
+ * success path. If we boot and the file is still present, a previous
+ * FETCH_GENESIS crashed mid-write — partial chain DB may exist with a
+ * placeholder block 1 row whose state is NOT authoritative.
+ *
+ * Action: archive every witness_<hex>.db* file under <data_path> into
+ * <data_path>/archive/, unlink the sentinel, and return 1 so the
+ * caller knows a recovery occurred. The witness_scan_chain_db() that
+ * runs next will then find an empty data_path and the bootstrap state
+ * machine will re-run DISCOVER on a clean slate.
+ *
+ * Returns: 0 if no sentinel present (no-op),
+ *          1 if sentinel was present and recovery completed,
+ *         -1 on any internal error (caller MUST refuse init).
+ */
+int nodus_witness_check_orphan_bootstrap_sentinel(const char *data_path);
+
+/**
  * Phase 6 / Task 31 — read the current block fee pool.
  *
  * Returns the accumulated native DNAC fee amount for the in-progress
