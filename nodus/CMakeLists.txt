@@ -496,6 +496,15 @@ target_link_libraries(test_server_partial_wipe_xor nodus dsa nodus)
 add_test(NAME test_server_partial_wipe_xor
          COMMAND test_server_partial_wipe_xor)
 
+# PR 3 / E4 — H-9 mixed-version cluster detection at bootstrap.
+# RED until the GREEN commit replaces the no-op stub in
+# nodus_witness_bootstrap.c with the per-peer remote_nodus_version scan.
+add_executable(test_witness_bootstrap_mixed_version
+                tests/test_witness_bootstrap_mixed_version.c)
+target_link_libraries(test_witness_bootstrap_mixed_version nodus dsa nodus)
+add_test(NAME test_witness_bootstrap_mixed_version
+         COMMAND test_witness_bootstrap_mixed_version)
+
 # RFC 6962 Merkle domain tag tests (Phase 2 / Tasks 2.1, 2.2, 2.4)
 add_executable(test_merkle_domain_tags tests/test_merkle_domain_tags.c)
 target_link_libraries(test_merkle_domain_tags nodus dsa nodus crypto)

@@ -359,6 +359,18 @@ int nodus_witness_bootstrap_start(nodus_witness_t *w) {
     return 0;
 }
 
+/* PR 3 / E4 — H-9 mixed-version detect (RED stub). The real impl
+ * scans w->peers for any non-zero remote_nodus_version < local_nv;
+ * stub returns false unconditionally so the RED test asserts the
+ * "older peer detected" cases all fail. The GREEN commit replaces
+ * this body with the real scan. */
+bool nodus_witness_bootstrap_any_peer_older(const nodus_witness_t *w,
+                                             uint32_t local_nv) {
+    (void)w;
+    (void)local_nv;
+    return false;
+}
+
 void nodus_witness_bootstrap_tick(nodus_witness_t *w) {
     if (!w) return;
     if (w->bootstrap_state != (int)NODUS_W_BOOTSTRAP_DISCOVER) return;

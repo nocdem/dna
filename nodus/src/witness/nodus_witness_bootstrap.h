@@ -112,6 +112,30 @@ void nodus_witness_bootstrap_handle_genesis_req(nodus_witness_t *w,
 void nodus_witness_bootstrap_handle_genesis_rsp(nodus_witness_t *w,
                                                  const nodus_t3_msg_t *msg);
 
+#include <stdbool.h>
+
+/**
+ * PR 3 / E4 — H-9 mixed-version cluster detection.
+ *
+ * Scan w->peers and return true if ANY peer has reported a non-zero
+ * remote_nodus_version that is strictly less than `local_nv`. The
+ * encoding matches the existing CC-OPS-002 packing:
+ *   local_nv = (MAJOR << 16) | (MINOR << 8) | PATCH
+ *
+ * Peers with remote_nodus_version == 0 (legacy pre-CC-OPS-002 binary
+ * OR w_ident not yet completed) are ignored — they are not a positive
+ * mixed-version signal.
+ *
+ * The bootstrap_tick caller treats a true return as "rolling deploy
+ * incomplete; refuse to participate in bootstrap" and exits the
+ * process with code 3 so systemd / the operator sees a clear signal
+ * and can finish the rolling upgrade before relying on bootstrap.
+ *
+ * Pure scan, no I/O, no state mutation — testable in isolation.
+ */
+bool nodus_witness_bootstrap_any_peer_older(const nodus_witness_t *w,
+                                             uint32_t local_nv);
+
 #ifdef __cplusplus
 }
 #endif
