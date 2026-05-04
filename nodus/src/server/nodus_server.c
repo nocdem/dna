@@ -5499,6 +5499,16 @@ static void ch_startup_rejoin(nodus_server_t *srv)
 }
 #endif /* !NODUS_CHANNELS_DISABLED */
 
+/* ── PR 3 / E5 — Partial-wipe XOR check (H-10) ──────────────────── */
+
+/* Stub returning 0 (no-op). The RED test asserts that partial-wipe
+ * scenarios are detected and refused; this stub does neither, so the
+ * RED test fails as designed. The GREEN commit replaces this body. */
+int nodus_server_check_partial_wipe(const char *data_path) {
+    if (!data_path) return -1;
+    return 0;
+}
+
 /* ── Public API ──────────────────────────────────────────────────── */
 
 int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config) {

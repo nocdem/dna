@@ -457,6 +457,29 @@ typedef struct nodus_server {
 int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config);
 
 /**
+ * PR 3 / E5 — Partial-wipe XOR check (H-10 mitigation).
+ *
+ * The 3 SQLite DB files under <data_path> (nodus.db, channels.db,
+ * any witness_<hex>.db) MUST be in a consistent state at boot:
+ *   - all 3 absent  -> brand-new fresh node, OK
+ *   - all 3 present -> normal running state, OK
+ *   - 1 or 2 present -> partial wipe accident, REFUSE START
+ *
+ * Without this check, an operator who deletes only one DB by mistake
+ * would silently boot into a half-initialized state where, for
+ * instance, the witness chain is intact but presence/channel state
+ * is missing — a class of state-hole bug that has caused real
+ * production incidents in BFT systems.
+ *
+ * MUST be called BEFORE nodus_storage_open / nodus_channel_store_open
+ * — those calls auto-create the missing files and defeat detection.
+ *
+ * Returns: 0 on consistent state (caller proceeds),
+ *         -1 on partial-wipe detected (caller MUST refuse init).
+ */
+int nodus_server_check_partial_wipe(const char *data_path);
+
+/**
  * Run the server event loop (blocks until stopped).
  */
 int nodus_server_run(nodus_server_t *srv);

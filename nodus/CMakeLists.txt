@@ -488,6 +488,14 @@ target_link_libraries(test_witness_bootstrap_orphan_sentinel nodus dsa nodus)
 add_test(NAME test_witness_bootstrap_orphan_sentinel
          COMMAND test_witness_bootstrap_orphan_sentinel)
 
+# PR 3 / E5 — H-10 partial-wipe XOR check on the 3 SQLite DBs.
+# RED until the GREEN commit replaces the no-op stub in nodus_server.c.
+add_executable(test_server_partial_wipe_xor
+                tests/test_server_partial_wipe_xor.c)
+target_link_libraries(test_server_partial_wipe_xor nodus dsa nodus)
+add_test(NAME test_server_partial_wipe_xor
+         COMMAND test_server_partial_wipe_xor)
+
 # RFC 6962 Merkle domain tag tests (Phase 2 / Tasks 2.1, 2.2, 2.4)
 add_executable(test_merkle_domain_tags tests/test_merkle_domain_tags.c)
 target_link_libraries(test_merkle_domain_tags nodus dsa nodus crypto)
