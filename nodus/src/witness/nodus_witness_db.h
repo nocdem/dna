@@ -449,6 +449,27 @@ void nodus_witness_compute_block_hash_ex(uint64_t height,
  */
 int  nodus_witness_db_migrate_v12(nodus_witness_t *w);
 
+/* PR 3 Yol B / H-5 mitigation: persist BFT runtime state across
+ * witness restart so a HAVE_CHAIN node does not re-enter consensus at
+ * view 0 with empty last_prepared and find its votes rejected by peers
+ * that already advanced (A15 in design threat model).
+ *
+ * save: write w->current_view + w->last_prepared into the singleton
+ *       pbft_state row (UPSERT). Returns 0 on success, -1 on SQLite
+ *       error (logged via fprintf).
+ *
+ * load: restore w->current_view + w->last_prepared from the row, if it
+ *       exists. Fresh DB or NULL columns leave the in-memory fields at
+ *       their default. last_prepared blob size mismatch (e.g., after a
+ *       binary upgrade that changed the struct layout) is tolerated by
+ *       falling back to present=false rather than corrupting state.
+ *       Returns 0 on success, -1 on SQLite error.
+ *
+ * Both functions assume nodus_witness_db_migrate_v12 has already run
+ * so the pbft_state table exists. */
+int  nodus_witness_db_save_pbft_state(nodus_witness_t *w);
+int  nodus_witness_db_load_pbft_state(nodus_witness_t *w);
+
 #ifdef __cplusplus
 }
 #endif

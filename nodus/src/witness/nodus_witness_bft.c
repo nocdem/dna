@@ -3992,6 +3992,9 @@ int nodus_witness_bft_handle_propose(nodus_witness_t *w,
     /* Initialize round state from proposal */
     w->current_round = hdr->round;
     w->current_view = hdr->view;
+    /* H-5: persist current_view across restart so a fresh restart does
+     * not vote at view 0 against peers that already advanced. */
+    nodus_witness_db_save_pbft_state(w);
 
     round_state_free_batch(&w->round_state);
     memset(&w->round_state, 0, sizeof(w->round_state));
@@ -4470,6 +4473,9 @@ int nodus_witness_bft_handle_vote(nodus_witness_t *w,
             collected++;
         }
         w->last_prepared.n_sigs = collected;
+        /* H-5: persist last_prepared so VIEW_CHANGE after a restart
+         * carries the highest prepared cert this witness saw. */
+        nodus_witness_db_save_pbft_state(w);
         fprintf(stderr, "%s: C5 prepared cert captured (height=%llu, "
                 "view=%u, n_sigs=%u)\n", LOG_TAG,
                 (unsigned long long)cert_height, w->current_view,
@@ -5268,6 +5274,8 @@ int nodus_witness_bft_handle_viewchg(nodus_witness_t *w,
             LOG_TAG, w->view_change_target);
 
     w->current_view = w->view_change_target;
+    /* H-5: persist new view across restart. */
+    nodus_witness_db_save_pbft_state(w);
     w->view_change_in_progress = false;
     w->round_state.phase = NODUS_W_PHASE_IDLE;
 
@@ -5418,6 +5426,8 @@ int nodus_witness_bft_handle_newview(nodus_witness_t *w,
     /* Accept new view if higher than current */
     if (nv->new_view > w->current_view) {
         w->current_view = nv->new_view;
+        /* H-5: persist new view across restart. */
+        nodus_witness_db_save_pbft_state(w);
         w->view_change_in_progress = false;
         round_state_free_batch(&w->round_state);
         w->round_state.phase = NODUS_W_PHASE_IDLE;
@@ -5965,6 +5975,10 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
      * db_commit failure so a retry path can still re-propose. */
     if (commit_rc == 0) {
         w->last_prepared.present = false;
+        /* H-5: persist the cleared last_prepared so a post-commit
+         * restart does not re-attach a stale prepared cert to a
+         * future VIEW_CHANGE. */
+        nodus_witness_db_save_pbft_state(w);
 
         /* PR 1 (2026-05-03): Refresh bft_config from on-chain committee
          * AFTER successful commit, mirroring the leader-side round-start

@@ -1743,6 +1743,7 @@ void nodus_witness_compute_block_hash_ex(uint64_t height,
 static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w);
 static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w);
 static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w);
+static void nodus_witness_db_migrate_v16_pbft_state(nodus_witness_t *w);
 
 int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     if (!w || !w->db) return -1;
@@ -1809,6 +1810,9 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
 
     /* Hard-Fork v1 — chain_config_history table (CREATE TABLE IF NOT EXISTS). */
     nodus_chain_config_db_migrate(w);
+
+    /* PR 3 Yol B — pbft_state singleton table (current_view + last_prepared). */
+    nodus_witness_db_migrate_v16_pbft_state(w);
 
     return 0;
 }
@@ -1885,4 +1889,137 @@ static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w) {
         }
         if (err) sqlite3_free(err);
     }
+}
+
+/* ── PR 3 Yol B / H-5 PBFT state persistence ─────────────────────── */
+
+/* Schema v16 migration: singleton pbft_state table.
+ *
+ * Holds two pieces of BFT runtime state that MUST survive a witness
+ * restart:
+ *
+ *   current_view       INTEGER  BFT view number (monotonic per chain).
+ *   last_prepared_blob BLOB     Serialized PBFT-prepared certificate
+ *                               from the most recent PREVOTE quorum
+ *                               this witness observed locally.
+ *
+ * Without persistence, a HAVE_CHAIN restart re-enters consensus at
+ * view 0 and finds its votes rejected by peers that already advanced
+ * past it (A15 in the PR 3 design threat model). The cluster stalls
+ * until that node re-enters via VIEW_CHANGE.
+ *
+ * Singleton via CHECK(id = 1) — same pattern as genesis_state. The
+ * UPSERT in nodus_witness_db_save_pbft_state ensures only one row
+ * ever exists. Idempotent: CREATE TABLE IF NOT EXISTS. */
+static void nodus_witness_db_migrate_v16_pbft_state(nodus_witness_t *w) {
+    if (!w || !w->db) return;
+    char *err = NULL;
+    int rc = sqlite3_exec(w->db,
+        "CREATE TABLE IF NOT EXISTS pbft_state ("
+        "  id INTEGER PRIMARY KEY CHECK(id = 1),"
+        "  current_view INTEGER,"
+        "  last_prepared_blob BLOB"
+        ")",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr,
+                "MIGRATION FAILURE: CREATE TABLE pbft_state "
+                "sqlite error %d: %s\n", rc, err ? err : "(null)");
+        if (err) sqlite3_free(err);
+        abort();
+    }
+}
+
+/* Save current BFT runtime state (current_view + last_prepared) into
+ * the pbft_state singleton row.
+ *
+ * Serialization: w->last_prepared is dumped as raw struct bytes. This
+ * is acceptable because the BLOB never crosses a binary version
+ * boundary — it is written and read back by the SAME nodus binary
+ * across a restart. If a future schema change resizes/reorders
+ * last_prepared fields, that change MUST also bump the BLOB encoding
+ * (e.g., add a 4-byte version prefix and tolerate version mismatch by
+ * loading present=false). For now, raw bytes keep the implementation
+ * minimal. last_prepared.present == false is encoded as a NULL BLOB
+ * to avoid persisting stale slot bytes. */
+int nodus_witness_db_save_pbft_state(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(w->db,
+        "INSERT INTO pbft_state (id, current_view, last_prepared_blob) "
+        "VALUES (1, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET "
+        "  current_view = excluded.current_view, "
+        "  last_prepared_blob = excluded.last_prepared_blob",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[H-5] prepare save_pbft_state failed: %s\n",
+                sqlite3_errmsg(w->db));
+        return -1;
+    }
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)w->current_view);
+    if (w->last_prepared.present) {
+        sqlite3_bind_blob(stmt, 2, &w->last_prepared,
+                          (int)sizeof(w->last_prepared), SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 2);
+    }
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "[H-5] save_pbft_state step failed: %s\n",
+                sqlite3_errmsg(w->db));
+        return -1;
+    }
+    return 0;
+}
+
+/* Load BFT runtime state from the pbft_state singleton row. Idempotent
+ * for fresh DBs (no row → leave w->current_view at default 0 and
+ * w->last_prepared.present at false). The intended call site is
+ * nodus_witness_init AFTER schema migration but BEFORE the witness
+ * registers for any T3 dispatch. */
+int nodus_witness_db_load_pbft_state(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(w->db,
+        "SELECT current_view, last_prepared_blob "
+        "FROM pbft_state WHERE id = 1",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[H-5] prepare load_pbft_state failed: %s\n",
+                sqlite3_errmsg(w->db));
+        return -1;
+    }
+    rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        if (sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
+            w->current_view = (uint32_t)sqlite3_column_int64(stmt, 0);
+        }
+        if (sqlite3_column_type(stmt, 1) != SQLITE_NULL) {
+            const void *blob = sqlite3_column_blob(stmt, 1);
+            int blob_len = sqlite3_column_bytes(stmt, 1);
+            if (blob && blob_len == (int)sizeof(w->last_prepared)) {
+                memcpy(&w->last_prepared, blob, sizeof(w->last_prepared));
+            } else if (blob && blob_len > 0) {
+                /* Size mismatch — likely a schema change between this
+                 * binary and the one that wrote the row. Treat as
+                 * absent to avoid corrupting in-memory state. */
+                fprintf(stderr,
+                    "[H-5] last_prepared blob size mismatch (%d vs %zu) "
+                    "— ignoring, present=false\n",
+                    blob_len, sizeof(w->last_prepared));
+                memset(&w->last_prepared, 0, sizeof(w->last_prepared));
+            }
+        }
+    } else if (rc != SQLITE_DONE) {
+        fprintf(stderr, "[H-5] load_pbft_state step failed: %s\n",
+                sqlite3_errmsg(w->db));
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+    sqlite3_finalize(stmt);
+    return 0;
 }

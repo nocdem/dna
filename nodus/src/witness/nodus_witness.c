@@ -258,6 +258,13 @@ static int witness_db_open_path(nodus_witness_t *witness, const char *db_path) {
      * unrecoverable error. */
     nodus_witness_db_migrate_v12(witness);
 
+    /* PR 3 Yol B / H-5: restore PBFT runtime state across restart.
+     * MUST happen after migrate_v12 (which creates the pbft_state
+     * table) and BEFORE this witness participates in any consensus
+     * round. Fresh DB or NULL row leaves current_view at 0 and
+     * last_prepared.present at false — same as today's behaviour. */
+    nodus_witness_db_load_pbft_state(witness);
+
     fprintf(stderr, "%s: opened database %s\n", LOG_TAG, db_path);
     return 0;
 }
