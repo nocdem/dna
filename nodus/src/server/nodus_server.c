@@ -5506,6 +5506,28 @@ static void ch_startup_rejoin(nodus_server_t *srv)
 int nodus_server_check_partial_wipe(const char *data_path) {
     if (!data_path) return -1;
 
+    /* The strict XOR invariant only applies AFTER the chain DB has
+     * been created at least once. Without the marker, the file-level
+     * state (nodus.db + channels.db present, witness_*.db absent) is
+     * the legitimate mid-bootstrap state — stagef_up.sh's identity-gen
+     * pre-spawn produces it, and a real production node can land
+     * there too if it crashes between storage_open and the first
+     * FETCH_GENESIS commit. Gating on the marker prevents false
+     * positives in both cases without weakening the post-genesis
+     * operator-mistake detection. */
+    char marker[640];
+    int nm = snprintf(marker, sizeof(marker), "%s/%s",
+                      data_path, NODUS_PARTIAL_WIPE_GENESIS_MARKER);
+    if (nm < 0 || (size_t)nm >= sizeof(marker)) return -1;
+
+    struct stat mst;
+    if (stat(marker, &mst) != 0) {
+        /* No marker: pre-genesis state (or operator wiped marker +
+         * everything, which is the intended fresh-restart path). Any
+         * subset of the 3 DB files is allowed. */
+        return 0;
+    }
+
     char nodus_db[640];
     char channels_db[640];
     int n1 = snprintf(nodus_db, sizeof(nodus_db),
@@ -5544,10 +5566,14 @@ int nodus_server_check_partial_wipe(const char *data_path) {
 
     fprintf(stderr,
         "%s: PARTIAL WIPE DETECTED at %s — "
-        "nodus.db=%s channels.db=%s witness_*.db=%s. "
-        "REFUSING START. The 3 SQLite DBs MUST be all-present (normal "
-        "boot) or all-absent (fresh node). Investigate the missing "
-        "file(s); restore from backup or wipe ALL 3 to restart fresh.\n",
+        "nodus.db=%s channels.db=%s witness_*.db=%s "
+        "(genesis marker " NODUS_PARTIAL_WIPE_GENESIS_MARKER " present). "
+        "REFUSING START. After this node has crossed genesis the 3 "
+        "SQLite DBs MUST be all-present (normal boot) or all-absent "
+        "(treated as fresh-restart). Investigate the missing file(s); "
+        "restore from backup, OR wipe ALL 3 DBs (keep the marker) to "
+        "trigger a clean re-bootstrap from peers, OR wipe ALL 3 DBs "
+        "AND the marker to force a fresh first-boot path.\n",
         LOG_TAG, data_path,
         has_nodus    ? "yes" : "MISSING",
         has_channels ? "yes" : "MISSING",

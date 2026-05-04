@@ -425,6 +425,52 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
 
     nodus_witness_set_chain_id(witness, chain_id);
 
+    /* PR 3 Yol B — transition bootstrap state to DONE the moment a
+     * valid chain DB exists, regardless of which path created it.
+     *
+     * Two call sites:
+     *   1. nodus_witness_bft.c:commit_genesis — legacy genesis BFT
+     *      path. Without this transition, every node in a freshly
+     *      bootstrapped cluster stays in DISCOVER permanently. The
+     *      C-2 cabal protection in handle_chain_q then drops every
+     *      CHAIN_Q from any later joiner, breaking auto-bootstrap
+     *      recovery (caught by stagef test_bootstrap_join_live).
+     *   2. nodus_witness_bootstrap.c:handle_genesis_rsp — the
+     *      bootstrap FETCH_GENESIS path's own create. The handler
+     *      also re-asserts state=DONE a few lines later, which
+     *      becomes a redundant-but-harmless write.
+     *
+     * settle_until_ms is intentionally NOT set here: the legacy
+     * caller has already participated in the BFT round committing
+     * genesis, so no settle window applies; the bootstrap caller
+     * sets it explicitly after this returns. */
+    witness->bootstrap_state = (int)NODUS_W_BOOTSTRAP_DONE;
+
+    /* PR 3 / E5 (revised) — drop the genesis marker that gates the
+     * server-side partial-wipe XOR check. The marker's presence tells
+     * a future boot "this node has crossed the genesis boundary at
+     * least once, so the all-or-nothing DB invariant now applies."
+     * Failure to write is not fatal — worst case the gate stays open
+     * after a partial wipe — but log loudly so an operator can
+     * investigate. fopen("w") + fclose is sufficient: the file's
+     * presence is the signal, contents are not read. */
+    char marker[640];
+    int nm = snprintf(marker, sizeof(marker), "%s/%s",
+                      witness->data_path,
+                      NODUS_PARTIAL_WIPE_GENESIS_MARKER);
+    if (nm > 0 && (size_t)nm < sizeof(marker)) {
+        FILE *fp = fopen(marker, "w");
+        if (fp) {
+            fclose(fp);
+        } else {
+            fprintf(stderr,
+                "%s: warning: failed to write partial-wipe genesis "
+                "marker at %s: %s — partial-wipe gate will stay open "
+                "on next boot of this node\n",
+                LOG_TAG, marker, strerror(errno));
+        }
+    }
+
     fprintf(stderr, "%s: created chain DB %s\n", LOG_TAG, db_path);
     return 0;
 }

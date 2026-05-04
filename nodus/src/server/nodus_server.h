@@ -457,19 +457,39 @@ typedef struct nodus_server {
 int nodus_server_init(nodus_server_t *srv, const nodus_server_config_t *config);
 
 /**
+ * Marker file written by the witness module when the chain DB is first
+ * created (nodus_witness_create_chain_db on genesis commit). Its
+ * presence under <data_path> means "this node has crossed the genesis
+ * boundary at least once" and is the signal that allows the
+ * partial-wipe gate below to enforce its strict invariant.
+ *
+ * Without this marker, the gate cannot distinguish two file-level
+ * indistinguishable states:
+ *   - fresh node mid-bootstrap (storage opens populated nodus.db +
+ *     channels.db before FETCH_GENESIS lands the first witness DB)
+ *   - post-genesis node where the operator wiped only witness_*.db
+ * Both look like (nodus=Y, channels=Y, witness=N) on disk.
+ *
+ * The marker is itself wipeable. Threat model: catches operator
+ * MISTAKES (rm of one DB by accident), not a determined adversary
+ * (who would just wipe everything → fresh state → bootstrap, the
+ * intended recovery path).
+ */
+#define NODUS_PARTIAL_WIPE_GENESIS_MARKER  ".witness_db_seen"
+
+/**
  * PR 3 / E5 — Partial-wipe XOR check (H-10 mitigation).
  *
  * The 3 SQLite DB files under <data_path> (nodus.db, channels.db,
- * any witness_<hex>.db) MUST be in a consistent state at boot:
- *   - all 3 absent  -> brand-new fresh node, OK
- *   - all 3 present -> normal running state, OK
- *   - 1 or 2 present -> partial wipe accident, REFUSE START
+ * any witness_<hex>.db) MUST be in a consistent state at boot, but
+ * the invariant is gated on the genesis marker above:
  *
- * Without this check, an operator who deletes only one DB by mistake
- * would silently boot into a half-initialized state where, for
- * instance, the witness chain is intact but presence/channel state
- * is missing — a class of state-hole bug that has caused real
- * production incidents in BFT systems.
+ *   - marker absent  -> pre-genesis (fresh node or mid-bootstrap),
+ *                       any subset of the 3 DBs is allowed; pass
+ *   - marker present + all 3 absent  -> someone wiped DBs but left
+ *                                       the marker; treat as fresh
+ *   - marker present + all 3 present -> normal running, pass
+ *   - marker present + 1 or 2 present -> partial wipe, REFUSE START
  *
  * MUST be called BEFORE nodus_storage_open / nodus_channel_store_open
  * — those calls auto-create the missing files and defeat detection.

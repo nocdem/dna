@@ -38,6 +38,15 @@
 #define NODUS_W_BOOTSTRAP_DEFAULT_ROUND_TIMEOUT_MS  5000U
 #define NODUS_W_BOOTSTRAP_MAX_ATTEMPTS              10
 
+/* Forward declaration: handle_chain_q (above) needs to compute the
+ * cdh from the local genesis chain_def_blob, but load_genesis_chain_def
+ * is defined as static further down (alongside its primary caller,
+ * handle_genesis_req). Declare here rather than reorder to keep the
+ * git diff minimal and the original logical grouping intact. */
+static int load_genesis_chain_def(sqlite3 *db,
+                                    uint8_t *out_blob, size_t out_cap,
+                                    size_t *out_len, uint8_t out_tx_root[64]);
+
 /* PR 3 / E3 — H-1 per-source rate limit interval. A bootstrap
  * client realistically retries at the round-timeout cadence
  * (~5s default), so 1 second is loose enough for legitimate
@@ -657,10 +666,27 @@ void nodus_witness_bootstrap_handle_chain_q(nodus_witness_t *w,
 
     memcpy(rsp.w_chain_r.cid, w->chain_id, 32);
     rsp.w_chain_r.tip = (uint64_t)tip;
-    /* gh / cdh are filled in by C5. For the C3 wire-up we emit zeroes
-     * and rely on the C-2 + nonce-echo invariants for security; the
-     * receiver's quorum check still groups by (cid, cdh) so all-zero
-     * cdh entries cluster together harmlessly. */
+
+    /* C5 — populate cdh = SHA3-512(chain_def_blob) so the requester's
+     * later w_genesis_rsp validation (line ~835) can compare what the
+     * peer SAID it would serve in DISCOVER vs what it actually serves
+     * in FETCH_GENESIS. Without this, every honest responder ships an
+     * all-zero cdh; the requester's quorum agrees on zeros; the
+     * subsequent SHA3 of the real cdb fails the agree-check on every
+     * round and bootstrap loops forever. F2 (test_bootstrap_join_live)
+     * surfaced this as a "forged chain_def" loop on every retry. */
+    static uint8_t cdh_cdb[NODUS_W_MAX_CHAIN_DEF_BLOB];
+    size_t cdh_cdb_len = 0;
+    if (load_genesis_chain_def(w->db, cdh_cdb, sizeof(cdh_cdb),
+                                &cdh_cdb_len, NULL) == 0 &&
+        cdh_cdb_len > 0) {
+        qgp_sha3_512(cdh_cdb, cdh_cdb_len, rsp.w_chain_r.cdh);
+    }
+    /* If the cdb is unavailable (corrupt local genesis row), leave cdh
+     * as the zero memset above. Such a node will be a minority outlier
+     * in the requester's quorum and will be ignored — same fail-safe
+     * as the C3 placeholder, but no longer the only path. */
+
     memcpy(rsp.w_chain_r.nonce, msg->w_chain_q.nonce,
            NODUS_W_BOOTSTRAP_NONCE_LEN);
 
