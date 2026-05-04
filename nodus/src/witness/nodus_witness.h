@@ -535,6 +535,23 @@ typedef struct nodus_witness {
     uint64_t    reproposal_height;
     uint8_t     reproposal_tx_hash[NODUS_T3_TX_HASH_LEN];
 
+    /* PR 3 Yol B — auto-bootstrap state machine fields.
+     *
+     * bootstrap_state moves through INIT → HAVE_CHAIN | DISCOVER →
+     * FETCH_GENESIS → BOOTSTRAP_CONFIG → DONE during witness startup.
+     * After DONE the existing nodus_witness_sync_check + replay path
+     * takes over; nothing in steady state mutates these fields.
+     *
+     * bootstrap_settle_until_ms (H-4 mitigation): wall-clock deadline
+     * after which this witness will accept being elected leader. While
+     * the field is in the future the leader-election path treats this
+     * node as ineligible so a mid-round bootstrap completion does not
+     * disrupt an in-flight consensus round on peers. Set when state
+     * transitions out of BOOTSTRAP_CONFIG; 0 means "no settle window
+     * required" (legacy / pre-bootstrap nodes). */
+    int         bootstrap_state;            /* nodus_witness_bootstrap_state_t */
+    uint64_t    bootstrap_settle_until_ms;
+
     bool        running;
 } nodus_witness_t;
 

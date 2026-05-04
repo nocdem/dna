@@ -157,6 +157,7 @@ if(NOT WIN32)
         src/witness/nodus_witness_committee.c
         src/witness/nodus_witness_genesis_seed.c
         src/witness/nodus_witness_chain_config.c
+        src/witness/nodus_witness_bootstrap.c
     )
 endif()
 
