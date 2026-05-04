@@ -48,6 +48,21 @@ extern "C" {
  */
 #define NODUS_W_MAX_SYNC_RSP_SIZE  (1024 * 1024)
 
+/* PR 3 Yol B — bootstrap protocol bounds.
+ *
+ * NODUS_W_MAX_CHAIN_DEF_BLOB caps the chain_def_blob size carried in a
+ * w_genesis_rsp message. H-2 mitigation against resource-exhaustion DoS
+ * (A7 in design Section 5): decoder rejects oversize cdb BEFORE running
+ * the Dilithium5 wsig verify so an attacker cannot waste verify cycles
+ * with arbitrarily large payloads. Realistic chain_def is ~5-10 KB; the
+ * 64 KB cap leaves headroom without enabling abuse.
+ *
+ * NODUS_W_BOOTSTRAP_NONCE_LEN sized for collision resistance in the
+ * w_chain_q → w_chain_r round (C-4 mitigation): 16 random bytes echoed
+ * in the response sig preimage prevent replay across chain wipes. */
+#define NODUS_W_MAX_CHAIN_DEF_BLOB   (64 * 1024)
+#define NODUS_W_BOOTSTRAP_NONCE_LEN  16
+
 /* ── Message types ───────────────────────────────────────────────── */
 
 typedef enum {
@@ -67,6 +82,11 @@ typedef enum {
     /* Hard-Fork v1 Stage C.2 — chain_config vote-collect RPC. */
     NODUS_T3_CC_VOTE_REQ = 14,  /* proposer asks peer to sign a proposal */
     NODUS_T3_CC_VOTE_RSP = 15,  /* peer returns (witness_id, signature) or reject */
+    /* PR 3 Yol B — witness auto-bootstrap discovery + chain fetch. */
+    NODUS_T3_CHAIN_Q     = 16,  /* fresh node asks peer "what chain are you on?" */
+    NODUS_T3_CHAIN_R     = 17,  /* peer replies cid + tip + gh + cdh + nonce echo */
+    NODUS_T3_GENESIS_REQ = 18,  /* fresh node fetches chain_def + genesis from agreeing peer */
+    NODUS_T3_GENESIS_RSP = 19,  /* peer sends chain_def_blob + genesis anchor */
 } nodus_t3_msg_type_t;
 
 /* ── Common witness header ───────────────────────────────────────── */
@@ -344,6 +364,76 @@ typedef struct {
     char            reject_reason[128];
 } nodus_t3_cc_vote_rsp_t;
 
+/* ── PR 3 Yol B — witness auto-bootstrap (chain discovery + fetch) ── */
+
+/** w_chain_q: Fresh node asks any peer "what chain are you on?".
+ *
+ * Sent broadcast-style during the DISCOVER bootstrap state. Receivers
+ * that are themselves DISCOVER (no chain DB) MUST NOT respond — that's
+ * the C-2 cabal protection that prevents two fresh nodes from agreeing
+ * on a fictitious chain.
+ *
+ * The 16-byte nonce protects against replay: it's covered by the
+ * w_chain_r sig preimage so a captured response cannot be replayed to a
+ * different fresh node (different nonce = different sig).
+ *
+ * Wire keys: "n" (16B nonce). */
+typedef struct {
+    uint8_t     nonce[NODUS_W_BOOTSTRAP_NONCE_LEN];
+} nodus_t3_w_chain_q_t;
+
+/** w_chain_r: HAVE_CHAIN peer responds with chain identity + nonce echo.
+ *
+ * Fresh node collects responses from all auth'd peers, requires
+ * 2f+1-of-seed_nodes agreement on (cid, cdh) before advancing to
+ * FETCH_GENESIS. The "tip" field is informational and does not feed the
+ * quorum decision.
+ *
+ * Wire keys: "cid" (32B), "tip" (uint), "gh" (64B), "cdh" (64B), "n" (16B). */
+typedef struct {
+    uint8_t     cid[32];                                /* peer's chain_id */
+    uint64_t    tip;                                    /* peer's block_height */
+    uint8_t     gh[NODUS_T3_TX_HASH_LEN];               /* genesis block hash, 64B */
+    uint8_t     cdh[NODUS_T3_TX_HASH_LEN];              /* SHA3-512(chain_def_blob), 64B */
+    uint8_t     nonce[NODUS_W_BOOTSTRAP_NONCE_LEN];     /* echo of w_chain_q nonce */
+} nodus_t3_w_chain_r_t;
+
+/** w_genesis_req: Fresh node fetches chain_def + genesis anchor.
+ *
+ * Sent ONLY after w_chain_r quorum agrees on a (cid, cdh). Target peer
+ * is randomly selected from the agreeing-quorum set with a deterministic
+ * PRNG seeded from SHA3(local_chain_q_nonce) — Section 4 #2 invariant.
+ *
+ * Wire keys: "cid" (32B). */
+typedef struct {
+    uint8_t     cid[32];                                /* requested chain_id */
+} nodus_t3_w_genesis_req_t;
+
+/** w_genesis_rsp: Peer sends chain_def_blob + genesis anchor.
+ *
+ * Receiver MUST validate before any DB write:
+ *   1. cdb_len <= NODUS_W_MAX_CHAIN_DEF_BLOB (64 KB) — H-2 mitigation
+ *   2. SHA3-512(cdb) == quorum-agreed cdh from w_chain_r — A6 mitigation
+ *   3. gth (genesis tx_hash) matches the genesis anchor inside cdb
+ * Steps 1-3 happen BEFORE the Dilithium5 wsig is even verified at
+ * dispatch level so an oversize/forged response cannot waste verify
+ * cycles.
+ *
+ * cdb is a zero-copy pointer into the decode buffer (matches tx_data
+ * pattern elsewhere in tier3); valid only while the input CBOR buffer
+ * is alive.
+ *
+ * Wire keys: "cid" (32B), "cdb" (var, ≤64KB), "gth" (64B), "gts" (uint),
+ * "gpid" (32B). */
+typedef struct {
+    uint8_t         cid[32];                            /* must match request */
+    const uint8_t  *cdb;                                /* ptr into decode buf */
+    uint32_t        cdb_len;
+    uint8_t         gth[NODUS_T3_TX_HASH_LEN];          /* genesis tx_hash, 64B */
+    uint64_t        gts;                                /* genesis timestamp (informational) */
+    uint8_t         gpid[NODUS_T3_WITNESS_ID_LEN];      /* genesis proposer_id, 32B */
+} nodus_t3_w_genesis_rsp_t;
+
 /** w_sync_rsp: Full block data for sync (Phase 11 / Task 11.1).
  *
  * Multi-tx replay payload: the sender serializes EVERY committed
@@ -402,6 +492,10 @@ typedef struct {
         nodus_t3_sync_rsp_t sync_rsp;
         nodus_t3_cc_vote_req_t cc_vote_req;
         nodus_t3_cc_vote_rsp_t cc_vote_rsp;
+        nodus_t3_w_chain_q_t     w_chain_q;
+        nodus_t3_w_chain_r_t     w_chain_r;
+        nodus_t3_w_genesis_req_t w_genesis_req;
+        nodus_t3_w_genesis_rsp_t w_genesis_rsp;
     };
 } nodus_t3_msg_t;
 

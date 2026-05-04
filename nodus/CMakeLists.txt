@@ -400,6 +400,13 @@ add_executable(test_tier3_oversize tests/test_tier3_oversize.c)
 target_link_libraries(test_tier3_oversize nodus dsa nodus)
 add_test(NAME test_tier3_oversize COMMAND test_tier3_oversize)
 
+# PR 3 Yol B — witness auto-bootstrap wire format regression.
+# Covers w_chain_q / w_chain_r / w_genesis_req / w_genesis_rsp roundtrip,
+# nonce echo invariant, and 64 KB chain_def_blob cap. RED until A3 lands.
+add_executable(test_t3_bootstrap_wire tests/test_t3_bootstrap_wire.c)
+target_link_libraries(test_t3_bootstrap_wire nodus dsa nodus)
+add_test(NAME test_t3_bootstrap_wire COMMAND test_t3_bootstrap_wire)
+
 # Channel storage test
 add_executable(test_channel_store tests/test_channel_store.c)
 target_link_libraries(test_channel_store nodus dsa nodus)
