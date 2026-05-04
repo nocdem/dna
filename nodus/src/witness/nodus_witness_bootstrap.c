@@ -359,21 +359,64 @@ int nodus_witness_bootstrap_start(nodus_witness_t *w) {
     return 0;
 }
 
-/* PR 3 / E4 — H-9 mixed-version detect (RED stub). The real impl
- * scans w->peers for any non-zero remote_nodus_version < local_nv;
- * stub returns false unconditionally so the RED test asserts the
- * "older peer detected" cases all fail. The GREEN commit replaces
- * this body with the real scan. */
+/* PR 3 / E4 — H-9 mixed-version cluster detection.
+ *
+ * Scan peers for any non-zero remote_nodus_version that is strictly
+ * older than local_nv. Peers reporting 0 are skipped — they either
+ * have not completed w_ident yet OR are running a pre-CC-OPS-002
+ * legacy binary that never advertised its version. Neither case is a
+ * positive mixed-version signal: legacy peers existed long before
+ * PR 3 landed and the cluster has been operating with them.
+ *
+ * Bounded loop on peer_count; the array width NODUS_T3_MAX_WITNESSES
+ * is the same upper bound used by handle_ident. */
 bool nodus_witness_bootstrap_any_peer_older(const nodus_witness_t *w,
                                              uint32_t local_nv) {
-    (void)w;
-    (void)local_nv;
+    if (!w) return false;
+    int n = w->peer_count;
+    if (n > (int)NODUS_T3_MAX_WITNESSES) n = (int)NODUS_T3_MAX_WITNESSES;
+    for (int i = 0; i < n; i++) {
+        uint32_t pv = w->peers[i].remote_nodus_version;
+        if (pv == 0) continue;
+        if (pv < local_nv) return true;
+    }
     return false;
+}
+
+/* Compute the locally-running nodus version as packed by handle_ident
+ * (CC-OPS-002 / Q14). Same encoding so the comparison in
+ * nodus_witness_bootstrap_any_peer_older is symmetric with the
+ * mismatch log line in nodus_witness_peer.c. */
+static inline uint32_t local_nodus_version(void) {
+    return ((uint32_t)NODUS_VERSION_MAJOR << 16) |
+           ((uint32_t)NODUS_VERSION_MINOR <<  8) |
+            (uint32_t)NODUS_VERSION_PATCH;
 }
 
 void nodus_witness_bootstrap_tick(nodus_witness_t *w) {
     if (!w) return;
     if (w->bootstrap_state != (int)NODUS_W_BOOTSTRAP_DISCOVER) return;
+
+    /* PR 3 / E4 — H-9 mixed-version fail-fast. Run on every DISCOVER
+     * tick: if any authd peer reports an older nodus_version, the
+     * rolling deploy is incomplete and bootstrap cannot succeed —
+     * the older peers will not understand the T3 types 16-19 we are
+     * about to send. exit(3) so systemd / the operator sees a
+     * distinct exit code (vs the existing exit(2) on attempts
+     * exhausted at the bottom of this function). */
+    {
+        uint32_t local_nv = local_nodus_version();
+        if (nodus_witness_bootstrap_any_peer_older(w, local_nv)) {
+            fprintf(stderr,
+                "WITNESS-BOOTSTRAP: MIXED VERSION CLUSTER DETECTED "
+                "local_nv=0x%06x peer_count=%d — at least one peer "
+                "reports an older nodus_version. Finish the rolling "
+                "upgrade before starting fresh-node bootstrap. "
+                "Exiting with code 3 (H-9).\n",
+                (unsigned)local_nv, w->peer_count);
+            exit(3);
+        }
+    }
 
     uint64_t now = monotonic_ms();
     int seed_count = w->server ? w->server->config.seed_count : 0;
