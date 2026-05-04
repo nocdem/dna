@@ -459,6 +459,16 @@ add_executable(test_schema_migration tests/test_schema_migration.c)
 target_link_libraries(test_schema_migration nodus dsa nodus)
 add_test(NAME test_schema_migration COMMAND test_schema_migration)
 
+# PR 3 Yol B — schema v16 PBFT-state migration regression.
+# Verifies migrate_v12 dispatches into the new sub-step that creates the
+# singleton pbft_state table with current_view + last_prepared_blob
+# columns. RED until B2 lands the migration.
+add_executable(test_witness_pbft_state_persist
+                tests/test_witness_pbft_state_persist.c)
+target_link_libraries(test_witness_pbft_state_persist nodus dsa nodus)
+add_test(NAME test_witness_pbft_state_persist
+         COMMAND test_witness_pbft_state_persist)
+
 # RFC 6962 Merkle domain tag tests (Phase 2 / Tasks 2.1, 2.2, 2.4)
 add_executable(test_merkle_domain_tags tests/test_merkle_domain_tags.c)
 target_link_libraries(test_merkle_domain_tags nodus dsa nodus crypto)
