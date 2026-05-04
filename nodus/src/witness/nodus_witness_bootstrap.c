@@ -367,19 +367,39 @@ int nodus_witness_bootstrap_start(nodus_witness_t *w) {
     return 0;
 }
 
-/* PR 3 / E3 — H-1 per-source rate limit (RED stub).
- * Stub returns true unconditionally (never rate-limit); RED test
- * asserts the "within window -> deny" cases all fail. The GREEN
- * commit replaces this body with the real (now - last < min) check
- * and wires it into handle_chain_q. */
+/* PR 3 / E3 — H-1 per-source rate limit on incoming w_chain_q.
+ *
+ * Pure function: caller passes the per-peer last-response timestamp
+ * and the current monotonic time. last_response_ms == 0 (never
+ * responded) is always allowed; otherwise we require
+ *   now_ms - last_response_ms >= min_interval_ms
+ * with the additional defensive check that now_ms < last_response_ms
+ * (impossible under monotonic_ms, but if it ever happens we deny —
+ * a clock jump backward is not a license to extra signing). */
 bool nodus_witness_bootstrap_chain_q_rate_limit_allow(
     uint64_t last_response_ms,
     uint64_t now_ms,
     uint64_t min_interval_ms) {
-    (void)last_response_ms;
-    (void)now_ms;
-    (void)min_interval_ms;
-    return true;
+    if (last_response_ms == 0) return true;
+    if (now_ms < last_response_ms) return false;
+    return (now_ms - last_response_ms) >= min_interval_ms;
+}
+
+/* Find the peer entry whose witness_id matches `sender_id`. Returns
+ * the peer index, or -1 if not in the peer table. Linear scan
+ * bounded by peer_count; the same pattern handle_ident +
+ * handle_view_change use elsewhere in the witness module. */
+static int find_peer_by_sender_id(const nodus_witness_t *w,
+                                   const uint8_t *sender_id) {
+    if (!w || !sender_id) return -1;
+    int n = w->peer_count;
+    if (n > (int)NODUS_T3_MAX_WITNESSES) n = (int)NODUS_T3_MAX_WITNESSES;
+    for (int i = 0; i < n; i++) {
+        if (memcmp(w->peers[i].witness_id, sender_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0)
+            return i;
+    }
+    return -1;
 }
 
 /* PR 3 / E4 — H-9 mixed-version cluster detection.
@@ -527,6 +547,30 @@ void nodus_witness_bootstrap_handle_chain_q(nodus_witness_t *w,
                 "than one node with this flag.\n");
     }
 
+    /* PR 3 / E3 — H-1 per-source rate limit. Drop excess requests
+     * BEFORE nodus_t3_encode (which performs the Dilithium5 sign).
+     * Find the peer entry by sender_id; if not in the peer table
+     * the request is from an unauthd source — drop without log
+     * (auth layer should have rejected it earlier; this is defense
+     * in depth). */
+    int pi = find_peer_by_sender_id(w, msg->header.sender_id);
+    if (pi < 0) return;
+    uint64_t now_ms = monotonic_ms();
+    if (!nodus_witness_bootstrap_chain_q_rate_limit_allow(
+            w->peers[pi].last_chain_q_response_ms,
+            now_ms,
+            NODUS_W_BOOTSTRAP_CHAIN_Q_MIN_INTERVAL_MS)) {
+        fprintf(stderr,
+                "WITNESS-BOOTSTRAP: w_chain_q rate-limited from "
+                "peer=%s (gap=%llums < min=%ums) — H-1 sign-amplification "
+                "defense\n",
+                w->peers[pi].address,
+                (unsigned long long)(now_ms -
+                    w->peers[pi].last_chain_q_response_ms),
+                (unsigned)NODUS_W_BOOTSTRAP_CHAIN_Q_MIN_INTERVAL_MS);
+        return;
+    }
+
     /* Otherwise this witness has a chain — fetch tip + cdh and send
      * back a w_chain_r echo. The actual chain_def_blob hash lookup is
      * implemented in C5 (chain_def is stored on the genesis block row
@@ -560,6 +604,13 @@ void nodus_witness_bootstrap_handle_chain_q(nodus_witness_t *w,
                          buf, sizeof(buf), &len) != 0)
         return;
     if (conn) (void)nodus_tcp_send(conn, buf, len);
+
+    /* PR 3 / E3 — record successful sign-and-send so the next
+     * incoming w_chain_q from this peer is rate-limited within the
+     * configured min interval. Recorded only on the encode-success
+     * path so a repeated encode failure does not silently lock out
+     * a peer; pi was validated > -1 by the rate-limit check above. */
+    w->peers[pi].last_chain_q_response_ms = now_ms;
 }
 
 void nodus_witness_bootstrap_handle_chain_r(nodus_witness_t *w,
