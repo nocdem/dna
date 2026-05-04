@@ -470,6 +470,16 @@ target_link_libraries(test_witness_pbft_state_persist nodus dsa nodus)
 add_test(NAME test_witness_pbft_state_persist
          COMMAND test_witness_pbft_state_persist)
 
+# PR 3 Yol B — bootstrap state machine regression.
+# Covers HAVE_CHAIN branch: chain DB present → reaches DONE without
+# network I/O, sets bootstrap_settle_until_ms in the future (H-4).
+# RED until C2 implementation lands.
+add_executable(test_witness_bootstrap_state_machine
+                tests/test_witness_bootstrap_state_machine.c)
+target_link_libraries(test_witness_bootstrap_state_machine nodus dsa nodus)
+add_test(NAME test_witness_bootstrap_state_machine
+         COMMAND test_witness_bootstrap_state_machine)
+
 # RFC 6962 Merkle domain tag tests (Phase 2 / Tasks 2.1, 2.2, 2.4)
 add_executable(test_merkle_domain_tags tests/test_merkle_domain_tags.c)
 target_link_libraries(test_merkle_domain_tags nodus dsa nodus crypto)
