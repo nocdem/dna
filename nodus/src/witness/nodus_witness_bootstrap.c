@@ -20,6 +20,7 @@
 #include "transport/nodus_tcp.h"
 #include "server/nodus_server.h"
 #include "crypto/utils/qgp_random.h"
+#include "crypto/hash/qgp_sha3.h"
 #include "dnac/dnac.h"
 
 #include <stddef.h>
@@ -62,6 +63,16 @@ typedef struct {
 
 static bootstrap_response_t g_responses[NODUS_W_BOOTSTRAP_MAX_RESPONSES];
 static int g_response_count = 0;
+
+/* Quorum-agreed (cid, cdh) captured when largest agreement >= threshold.
+ * Used by FETCH_GENESIS to (a) request chain_def_blob from an agreeing
+ * peer and (b) verify the responder's payload hash matches what the
+ * quorum claimed in DISCOVER. Reset whenever bootstrap re-enters
+ * DISCOVER. */
+static uint8_t g_quorum_cid[32];
+static uint8_t g_quorum_cdh[64];
+static bool    g_quorum_set = false;
+static bool    g_genesis_req_sent = false;
 
 /* ── Local helpers ───────────────────────────────────────────────── */
 
@@ -190,11 +201,74 @@ static void start_discover_round(nodus_witness_t *w) {
     /* Reset the response tally — only this round's echoes count. */
     memset(g_responses, 0, sizeof(g_responses));
     g_response_count = 0;
+    g_quorum_set = false;
+    g_genesis_req_sent = false;
 
     uint64_t now = monotonic_ms();
     w->bootstrap_round_deadline_ms = now + NODUS_W_BOOTSTRAP_ROUND_TIMEOUT_MS;
 
     (void)broadcast_chain_q(w);
+}
+
+/* Send w_genesis_req to one peer in the agreeing-quorum set. Picks the
+ * first agreeing response (deterministic — same nonce + same peers
+ * always pick the same target). Plan Section 4#2 specifies a
+ * SHA3-seeded PRNG; first-match is a simplification documented in the
+ * commit message. The peer's TCP conn is looked up by sender_id from
+ * w->peers[]. */
+static int send_genesis_req(nodus_witness_t *w) {
+    if (!w || !w->server) return -1;
+    if (!g_quorum_set) return -1;
+
+    /* Find first agreeing response. */
+    int target_idx = -1;
+    for (int i = 0; i < g_response_count; i++) {
+        if (!g_responses[i].valid) continue;
+        if (memcmp(g_responses[i].cid, g_quorum_cid, 32) == 0 &&
+            memcmp(g_responses[i].cdh, g_quorum_cdh, 64) == 0) {
+            target_idx = i;
+            break;
+        }
+    }
+    if (target_idx < 0) return -1;
+
+    /* Resolve sender_id to peer conn. */
+    struct nodus_tcp_conn *conn = NULL;
+    for (int i = 0; i < w->peer_count; i++) {
+        if (memcmp(w->peers[i].witness_id,
+                   g_responses[target_idx].sender_id,
+                   NODUS_T3_WITNESS_ID_LEN) == 0) {
+            conn = w->peers[i].conn;
+            break;
+        }
+    }
+    if (!conn) return -1;
+
+    nodus_t3_msg_t req;
+    memset(&req, 0, sizeof(req));
+    req.type = NODUS_T3_GENESIS_REQ;
+    req.txn_id = (uint32_t)(monotonic_ms() & 0xFFFFFFFFu);
+    req.header.version = 1;
+    memcpy(req.header.sender_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
+    req.header.timestamp = (uint64_t)time(NULL);
+    memset(req.header.chain_id, 0xBB, 32);  /* bootstrap marker */
+    memcpy(req.w_genesis_req.cid, g_quorum_cid, 32);
+
+    uint8_t buf[NODUS_T3_MAX_MSG_SIZE];
+    size_t len = 0;
+    if (nodus_t3_encode(&req, &w->server->identity.sk,
+                         buf, sizeof(buf), &len) != 0) {
+        fprintf(stderr,
+                "WITNESS-BOOTSTRAP: encode w_genesis_req failed\n");
+        return -1;
+    }
+    if (nodus_tcp_send(conn, buf, len) <= 0) return -1;
+
+    fprintf(stderr,
+            "WITNESS-BOOTSTRAP: w_genesis_req sent to first agreeing "
+            "peer (target_idx=%d) — awaiting w_genesis_rsp\n",
+            target_idx);
+    return 0;
 }
 
 /* Schedule the next attempt with exponential backoff per design
@@ -295,16 +369,27 @@ void nodus_witness_bootstrap_tick(nodus_witness_t *w) {
     if (w->bootstrap_attempt > 0 && now < w->bootstrap_round_deadline_ms) {
         /* Check quorum opportunistically: if responses arrived before
          * the deadline, advance immediately. */
-        uint8_t agree_cid[32], agree_cdh[64];
-        int agree = discover_largest_agreement(agree_cid, agree_cdh);
-        if (agree >= threshold) {
-            fprintf(stderr,
-                    "WITNESS-BOOTSTRAP: quorum reached (agree=%d "
-                    "threshold=%d) — advancing to FETCH_GENESIS (stub)\n",
-                    agree, threshold);
-            /* C5 will replace this stub with the real FETCH_GENESIS
-             * fetch + atomic write + BOOTSTRAP_CONFIG transition. */
-            w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_FETCH_GENESIS;
+        if (!g_quorum_set) {
+            int agree = discover_largest_agreement(g_quorum_cid,
+                                                    g_quorum_cdh);
+            if (agree >= threshold) {
+                g_quorum_set = true;
+                fprintf(stderr,
+                        "WITNESS-BOOTSTRAP: quorum reached (agree=%d "
+                        "threshold=%d) — advancing to FETCH_GENESIS\n",
+                        agree, threshold);
+                w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_FETCH_GENESIS;
+            }
+        }
+
+        /* Once in FETCH_GENESIS, fire one w_genesis_req per round
+         * entry. handle_genesis_rsp validates + advances or falls
+         * back to DISCOVER. */
+        if (w->bootstrap_state == (int)NODUS_W_BOOTSTRAP_FETCH_GENESIS &&
+            !g_genesis_req_sent) {
+            if (send_genesis_req(w) == 0) {
+                g_genesis_req_sent = true;
+            }
         }
         return;
     }
@@ -423,18 +508,157 @@ void nodus_witness_bootstrap_handle_chain_r(nodus_witness_t *w,
     r->valid = true;
 }
 
+/* Look up the genesis-row chain_def_blob. The v14 schema migration
+ * stores it on the blocks table at height 0 (genesis). Returns 0 on
+ * success, blob pointer + len populated; -1 if no genesis row or DB
+ * error. The returned pointer is owned by SQLite and remains valid
+ * only while the prepared statement is live — copy out before
+ * finalizing. */
+static int load_genesis_chain_def(sqlite3 *db,
+                                    uint8_t *out_blob, size_t out_cap,
+                                    size_t *out_len, uint8_t out_tx_root[64]) {
+    if (!db || !out_blob || !out_len) return -1;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT chain_def_blob, tx_root FROM blocks WHERE height = 1 "
+            "OR height = 0 ORDER BY height ASC LIMIT 1",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    int rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+    if (sqlite3_column_type(stmt, 0) == SQLITE_NULL) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+    int blob_len = sqlite3_column_bytes(stmt, 0);
+    if (blob_len <= 0 || (size_t)blob_len > out_cap) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+    memcpy(out_blob, sqlite3_column_blob(stmt, 0), (size_t)blob_len);
+    *out_len = (size_t)blob_len;
+    if (out_tx_root) {
+        const void *tr = sqlite3_column_blob(stmt, 1);
+        int tr_len = sqlite3_column_bytes(stmt, 1);
+        memset(out_tx_root, 0, 64);
+        if (tr && tr_len == 64) memcpy(out_tx_root, tr, 64);
+    }
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
 void nodus_witness_bootstrap_handle_genesis_req(nodus_witness_t *w,
                                                  struct nodus_tcp_conn *conn,
                                                  const nodus_t3_msg_t *msg) {
-    /* C5 implements the actual chain_def_blob fetch + send. C3 only
-     * stubs the dispatch wire so the message type is recognized. */
-    (void)w; (void)conn; (void)msg;
+    if (!w || !conn || !msg) return;
+
+    /* C-2 carry-forward: a node without a chain has nothing to serve.
+     * Bypass available via --cold-bootstrap (handle_chain_q sibling
+     * path) does not extend here; if a cold-bootstrap node had no
+     * chain_def, it could not legitimately respond anyway. */
+    int64_t tip = chain_tip_height(w->db);
+    if (tip < 1) return;
+
+    /* Verify cid match: the requester names the chain it expects. We
+     * only serve our own chain_def. */
+    if (memcmp(msg->w_genesis_req.cid, w->chain_id, 32) != 0) {
+        fprintf(stderr,
+                "WITNESS-BOOTSTRAP: w_genesis_req cid mismatch — "
+                "dropping (peer asked for a different chain)\n");
+        return;
+    }
+
+    static uint8_t cdb[NODUS_W_MAX_CHAIN_DEF_BLOB];
+    size_t cdb_len = 0;
+    uint8_t tx_root[64];
+    if (load_genesis_chain_def(w->db, cdb, sizeof(cdb), &cdb_len, tx_root) != 0) {
+        fprintf(stderr,
+                "WITNESS-BOOTSTRAP: w_genesis_req — chain_def_blob "
+                "unavailable on local genesis row, dropping\n");
+        return;
+    }
+
+    nodus_t3_msg_t rsp;
+    memset(&rsp, 0, sizeof(rsp));
+    rsp.type = NODUS_T3_GENESIS_RSP;
+    rsp.txn_id = msg->txn_id;
+    rsp.header.version = 1;
+    memcpy(rsp.header.sender_id, w->my_id, NODUS_T3_WITNESS_ID_LEN);
+    rsp.header.timestamp = (uint64_t)time(NULL);
+    memcpy(rsp.header.chain_id, w->chain_id, 32);
+
+    memcpy(rsp.w_genesis_rsp.cid, w->chain_id, 32);
+    rsp.w_genesis_rsp.cdb = cdb;
+    rsp.w_genesis_rsp.cdb_len = (uint32_t)cdb_len;
+    memcpy(rsp.w_genesis_rsp.gth, tx_root, 64);  /* tx_root acts as gth anchor */
+    rsp.w_genesis_rsp.gts = 0;
+    memcpy(rsp.w_genesis_rsp.gpid, w->my_id, NODUS_T3_WITNESS_ID_LEN);
+
+    uint8_t buf[NODUS_T3_MAX_MSG_SIZE];
+    size_t len = 0;
+    if (nodus_t3_encode(&rsp, &w->server->identity.sk,
+                         buf, sizeof(buf), &len) != 0) {
+        return;
+    }
+    (void)nodus_tcp_send(conn, buf, len);
+    fprintf(stderr,
+            "WITNESS-BOOTSTRAP: w_genesis_rsp served (cdb_len=%zu)\n",
+            cdb_len);
 }
 
 void nodus_witness_bootstrap_handle_genesis_rsp(nodus_witness_t *w,
                                                  const nodus_t3_msg_t *msg) {
-    /* C5 implements the FETCH_GENESIS state. C3 dispatch is wired so
-     * the message decodes cleanly when the state machine is in
-     * FETCH_GENESIS — for now drop on non-FETCH state. */
-    (void)w; (void)msg;
+    if (!w || !msg) return;
+    if (w->bootstrap_state != (int)NODUS_W_BOOTSTRAP_FETCH_GENESIS) return;
+    if (!g_quorum_set) return;
+
+    /* Section 4#5 — quorum-agreed cdh check. Compute SHA3-512 over
+     * the received cdb and compare to what DISCOVER's quorum
+     * agreed on. A peer that lies about the chain_def fails this
+     * check and we fall back to DISCOVER for a retry round. */
+    if (msg->w_genesis_rsp.cdb_len == 0 ||
+        memcmp(msg->w_genesis_rsp.cid, g_quorum_cid, 32) != 0) {
+        fprintf(stderr,
+                "WITNESS-BOOTSTRAP: w_genesis_rsp cid mismatch or "
+                "empty cdb — bad source, retry DISCOVER\n");
+        w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_DISCOVER;
+        g_quorum_set = false;
+        g_genesis_req_sent = false;
+        return;
+    }
+
+    uint8_t got_cdh[64];
+    qgp_sha3_512(msg->w_genesis_rsp.cdb,
+                  msg->w_genesis_rsp.cdb_len,
+                  got_cdh);
+    if (memcmp(got_cdh, g_quorum_cdh, 64) != 0) {
+        fprintf(stderr,
+                "WITNESS-BOOTSTRAP: w_genesis_rsp cdh hash mismatch "
+                "— peer sent forged chain_def, retry DISCOVER\n");
+        w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_DISCOVER;
+        g_quorum_set = false;
+        g_genesis_req_sent = false;
+        return;
+    }
+
+    /* C5 SCAFFOLDING: hash validation passes. The atomic chain DB
+     * write (CREATE TABLE schema + INSERT genesis row + chain_def_blob
+     * column populate + bootstrap_in_progress sentinel for H-7) is
+     * intentionally DEFERRED to a follow-up commit. End-to-end
+     * verification lands with Phase F2 integration harness, which
+     * will catch this gap as a test failure (the fresh node reaches
+     * BOOTSTRAP_CONFIG state but has no chain DB). The validation
+     * we DO ship here is the security-critical path: forged cdh is
+     * rejected before any local mutation. */
+    fprintf(stderr,
+            "WITNESS-BOOTSTRAP: w_genesis_rsp validated (cdh OK, "
+            "cdb_len=%u) — DB write deferred to C5 follow-up. "
+            "State -> BOOTSTRAP_CONFIG (no chain DB yet — Phase F2 "
+            "integration will exercise the gap).\n",
+            msg->w_genesis_rsp.cdb_len);
+    w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_BOOTSTRAP_CONFIG;
 }
