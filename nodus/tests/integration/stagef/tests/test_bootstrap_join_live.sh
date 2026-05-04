@@ -213,23 +213,33 @@ touch "$SENTINEL"
 echo "stub" > "$STUB_DB"
 echo "[ok] simulated prior crash: sentinel + stub DB present"
 
+# Snapshot log size BEFORE respawn so the grep below only inspects log
+# content emitted by this Phase-B attempt — Phase A may have produced
+# unrelated output, and a stale "orphan-sentinel cleanup complete"
+# string from an earlier test run on this same node would otherwise
+# false-positive.
+PRE_B_LOG_SIZE=$(stat -c%s "$TARGET_LOG" 2>/dev/null || echo 0)
+
 B_PID=$(respawn_target)
 echo "[ok] node$TARGET respawned pid=$B_PID (post-crash recovery)"
 
 # Verify the E0 cleanup log line appears within a few seconds.
 for _ in $(seq 1 20); do
-    if grep -q "ORPHAN BOOTSTRAP SENTINEL detected" "$TARGET_LOG"; then
+    if tail -c +"$((PRE_B_LOG_SIZE + 1))" "$TARGET_LOG" \
+            | grep -q "ORPHAN BOOTSTRAP SENTINEL detected"; then
         break
     fi
     sleep 0.5
 done
-if ! grep -q "ORPHAN BOOTSTRAP SENTINEL detected" "$TARGET_LOG"; then
+if ! tail -c +"$((PRE_B_LOG_SIZE + 1))" "$TARGET_LOG" \
+        | grep -q "ORPHAN BOOTSTRAP SENTINEL detected"; then
     echo "[FAIL] orphan-sentinel cleanup log line never appeared" >&2
     tail -30 "$TARGET_LOG" >&2 || true
     kill_target "$B_PID"
     exit 3
 fi
-if ! grep -q "orphan-sentinel cleanup complete" "$TARGET_LOG"; then
+if ! tail -c +"$((PRE_B_LOG_SIZE + 1))" "$TARGET_LOG" \
+        | grep -q "orphan-sentinel cleanup complete"; then
     echo "[FAIL] orphan-sentinel cleanup did not complete" >&2
     tail -30 "$TARGET_LOG" >&2 || true
     kill_target "$B_PID"

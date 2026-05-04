@@ -63,6 +63,13 @@ respawn_target() {
 
 kill_pid() {
     local pid=$1
+    # Defensive: kill 0 means "every process in the calling process
+    # group", NOT "kill PID zero". Scenarios 2+3 pass "0" as the
+    # placeholder for "no prior PID to kill" — that previously
+    # SIGTERM'd the test runner. Reject 0 / empty / non-positive.
+    if [ -z "$pid" ] || [ "$pid" -le 0 ] 2>/dev/null; then
+        return 0
+    fi
     if kill -0 "$pid" 2>/dev/null; then
         kill "$pid" 2>/dev/null || true
         for _ in 1 2 3 4 5; do
@@ -189,7 +196,7 @@ test_partial_wipe_one_db() {
     fi
 
     echo "[ok] $label-only wipe correctly refused start (exit detected, "\
-"log line present)"
+"log line present)" >&2
     echo "0"
     return 0
 }
