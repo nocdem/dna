@@ -79,6 +79,21 @@ typedef struct {
     /* C-01/C-02: Require Dilithium5 auth on inter-node (4002) and witness (4004) ports.
      * Default false for backward compat. Set true once all nodes are updated. */
     bool        require_peer_auth;
+
+    /* PR 3 Yol B / C-2 cold-DR escape (C4 in plan).
+     *
+     * When all 7 nodes are wiped simultaneously, every fresh node sits
+     * in DISCOVER and refuses to respond to incoming w_chain_q (C-2
+     * cabal protection). The cluster deadlocks because no peer
+     * advertises a chain. The operator's escape: start ONE node with
+     * --cold-bootstrap so it bypasses the C-2 reject and answers
+     * w_chain_q queries even from its own (empty/bootstrapping) state.
+     * The other 6 fresh nodes then DISCOVER from this seed.
+     *
+     * MUST NOT be set on more than one node at a time — two
+     * cold-bootstrap nodes can re-create the cabal vulnerability they
+     * mitigate. Operator responsibility, not protocol-enforced. */
+    bool        is_cold_bootstrap;
 } nodus_server_config_t;
 
 /* ── Inter-node session (lightweight — rate limiting only, no auth) ── */

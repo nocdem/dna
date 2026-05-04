@@ -338,13 +338,26 @@ void nodus_witness_bootstrap_handle_chain_q(nodus_witness_t *w,
     /* C-2 cabal protection: a node that does not yet have a chain MUST
      * NOT respond to w_chain_q. Otherwise two fresh nodes can agree on
      * a fictitious chain_id between themselves before the operator
-     * notices. Only HAVE_CHAIN / DONE peers respond. */
-    if (w->bootstrap_state == (int)NODUS_W_BOOTSTRAP_DISCOVER ||
-        w->bootstrap_state == (int)NODUS_W_BOOTSTRAP_FETCH_GENESIS) {
+     * notices. Only HAVE_CHAIN / DONE peers respond — UNLESS the
+     * --cold-bootstrap operator escape is set (C4), in which case
+     * this node is the explicit cold-DR seed and answers anyway.
+     * Operator MUST set the flag on exactly one node; multiple
+     * cold-bootstrap seeds re-introduce the cabal risk. */
+    bool is_cold = w->server && w->server->config.is_cold_bootstrap;
+    if (!is_cold &&
+        (w->bootstrap_state == (int)NODUS_W_BOOTSTRAP_DISCOVER ||
+         w->bootstrap_state == (int)NODUS_W_BOOTSTRAP_FETCH_GENESIS)) {
         fprintf(stderr,
                 "WITNESS-BOOTSTRAP: w_chain_q from peer dropped "
                 "(C-2: own state=DISCOVER/FETCH_GENESIS, no chain to advertise)\n");
         return;
+    }
+    if (is_cold) {
+        fprintf(stderr,
+                "WITNESS-BOOTSTRAP: w_chain_q answered via "
+                "--cold-bootstrap operator escape (C4); cabal "
+                "protection bypassed — operator MUST not run more "
+                "than one node with this flag.\n");
     }
 
     /* Otherwise this witness has a chain — fetch tip + cdh and send
