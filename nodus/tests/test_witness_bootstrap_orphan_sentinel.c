@@ -59,15 +59,18 @@ static void rmrf_dir(const char *root) {
     (void)rc;
 }
 
-/* Count regular-file entries whose name starts with "witness_" inside
- * the given directory. Returns -1 if dir cannot be opened. */
+/* Count regular-file entries whose name CONTAINS "witness_" inside
+ * the given directory. The archive helper renames db files to
+ * "<timestamp>_witness_<hex>.db*", so a substring match is what the
+ * forensic-recovery contract guarantees. Returns -1 if dir cannot be
+ * opened. */
 static int count_witness_files(const char *dir) {
     DIR *d = opendir(dir);
     if (!d) return -1;
     int n = 0;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
-        if (strncmp(e->d_name, "witness_", 8) == 0) n++;
+        if (strstr(e->d_name, "witness_") != NULL) n++;
     }
     closedir(d);
     return n;

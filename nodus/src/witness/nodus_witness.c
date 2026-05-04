@@ -30,6 +30,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
 
@@ -325,23 +326,27 @@ static int witness_scan_chain_db(nodus_witness_t *witness) {
 
 /* ── Archive stale chain DB files (Fix 1 — prevent orphan forks) ──
  *
- * Before creating a new witness_<chain>.db, move every existing
- * witness_<other>.db (and its -wal / -shm siblings) into <data>/archive/.
+ * Move every existing witness_<hex>.db* file (db, db-wal, db-shm)
+ * under <data_path> into <data_path>/archive/, except those matching
+ * `keep_filename` (basename comparison). Pass keep_filename = NULL to
+ * archive ALL chain DB files unconditionally — used by the PR 3 / E0
+ * orphan-sentinel recovery path.
+ *
  * Never deletes — only renames atomically so we can recover for forensics.
  *
- * This plugs the orphan-DB class of bug that produced the EU-6 fork on
- * 2026-04-10: the scanner's first-match-wins behavior silently picks up
- * a stale file from a prior chain lifecycle and activates the wrong chain.
+ * Originally written for the EU-6 fork (2026-04-10): the scanner's
+ * first-match-wins behavior silently picked up a stale file from a
+ * prior chain lifecycle and activated the wrong chain.
  */
-static int witness_archive_stale_chain_dbs(nodus_witness_t *witness,
+static int witness_archive_stale_chain_dbs(const char *data_path,
                                            const char *keep_filename) {
-    const char *data_path = witness->data_path;
+    if (!data_path) return -1;
 
     char archive_dir[512];
     snprintf(archive_dir, sizeof(archive_dir), "%s/archive", data_path);
     /* mkdir -p; ignore EEXIST */
     if (mkdir(archive_dir, 0700) != 0 && errno != EEXIST) {
-        fprintf(stderr, "%s: archive mkdir failed: %s (continuing)\n",
+        fprintf(stderr, "%s: archive mkdir failed: %s\n",
                 LOG_TAG, strerror(errno));
         return -1;
     }
@@ -355,12 +360,14 @@ static int witness_archive_stale_chain_dbs(nodus_witness_t *witness,
     while ((entry = readdir(dir)) != NULL) {
         /* Only match witness_<hex>.db* (db, db-wal, db-shm) */
         if (strncmp(entry->d_name, "witness_", 8) != 0) continue;
-        /* Skip the file we're about to open — match its prefix exactly */
+        /* Compare against keep_filename's basename prefix */
         const char *dot_db = strstr(entry->d_name, ".db");
         if (!dot_db) continue;
         size_t prefix_len = (size_t)(dot_db - entry->d_name) + 3;  /* include ".db" */
         if (prefix_len > strlen(entry->d_name)) continue;
-        if (strncmp(entry->d_name, keep_filename, prefix_len) == 0) continue;
+        if (keep_filename != NULL &&
+            strncmp(entry->d_name, keep_filename, prefix_len) == 0)
+            continue;
 
         char src[768];
         char dst[1024];
@@ -380,7 +387,7 @@ static int witness_archive_stale_chain_dbs(nodus_witness_t *witness,
     closedir(dir);
 
     if (archived > 0)
-        fprintf(stderr, "%s: archived %d stale chain file(s) before creating new chain DB\n",
+        fprintf(stderr, "%s: archived %d stale chain file(s)\n",
                 LOG_TAG, archived);
     return 0;
 }
@@ -408,7 +415,7 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
     /* Fix 1: atomically archive any pre-existing witness_*.db files that
      * do NOT match the target chain. Prevents orphaned chain DBs from
      * co-existing on disk and fooling the next restart's scanner. */
-    witness_archive_stale_chain_dbs(witness, basename);
+    witness_archive_stale_chain_dbs(witness->data_path, basename);
 
     char db_path[512];
     snprintf(db_path, sizeof(db_path), "%s/%s", witness->data_path, basename);
@@ -424,13 +431,53 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
 
 /* ── PR 3 / E0 — Orphan bootstrap sentinel check ─────────────────── */
 
-/* Stub returning 0 (no-op). The RED test asserts that an orphan
- * sentinel is cleared and partial chain DBs are archived; this stub
- * does neither, so the RED test fails as designed. The GREEN commit
- * replaces this body with the real recovery logic. */
 int nodus_witness_check_orphan_bootstrap_sentinel(const char *data_path) {
     if (!data_path) return -1;
-    return 0;
+
+    char sentinel[640];
+    int n = snprintf(sentinel, sizeof(sentinel),
+                     "%s/.bootstrap_in_progress", data_path);
+    if (n < 0 || (size_t)n >= sizeof(sentinel)) return -1;
+
+    struct stat st;
+    if (stat(sentinel, &st) != 0) {
+        if (errno == ENOENT) return 0;  /* clean state */
+        fprintf(stderr,
+            "%s: orphan-sentinel stat failed at %s: %s — refusing init\n",
+            LOG_TAG, sentinel, strerror(errno));
+        return -1;
+    }
+
+    fprintf(stderr,
+        "%s: ORPHAN BOOTSTRAP SENTINEL detected at %s "
+        "(prior FETCH_GENESIS crashed) — archiving any partial "
+        "witness_*.db files and clearing sentinel\n",
+        LOG_TAG, sentinel);
+
+    /* Pass keep_filename=NULL to archive every witness_<hex>.db* file
+     * in data_path. The placeholder block 1 row that the partial DB
+     * may contain is NOT authoritative (state_root=zeros, prev_hash
+     * empty) — keeping it would let witness_scan_chain_db pick up the
+     * stale file and fool the next bootstrap. */
+    if (witness_archive_stale_chain_dbs(data_path, NULL) != 0) {
+        fprintf(stderr,
+            "%s: orphan-sentinel cleanup: archive failed — refusing init\n",
+            LOG_TAG);
+        return -1;
+    }
+
+    if (unlink(sentinel) != 0) {
+        fprintf(stderr,
+            "%s: orphan-sentinel cleanup: unlink failed at %s: %s — "
+            "refusing init\n",
+            LOG_TAG, sentinel, strerror(errno));
+        return -1;
+    }
+
+    fprintf(stderr,
+        "%s: orphan-sentinel cleanup complete — DISCOVER will restart\n",
+        LOG_TAG);
+    return 1;
 }
 
 /* ── Identity setup ──────────────────────────────────────────────── */
@@ -505,6 +552,29 @@ int nodus_witness_init(nodus_witness_t *witness,
                 witness->data_path);
             return -1;
         }
+    }
+
+    /* PR 3 / E0 — orphan bootstrap sentinel boot gate (H-7 closure).
+     * The bootstrap path's FETCH_GENESIS handler writes
+     * .bootstrap_in_progress BEFORE create_chain_db and unlinks it on
+     * the success path. If we boot and the file is still present, a
+     * previous bootstrap crashed mid-write — any partial witness_*.db
+     * is NOT authoritative (state_root = zeros, prev_hash empty) and
+     * MUST be archived before witness_scan_chain_db runs, or the
+     * scanner would silently pick up the stale file and skip
+     * DISCOVER. */
+    {
+        int rc = nodus_witness_check_orphan_bootstrap_sentinel(
+            witness->data_path);
+        if (rc < 0) {
+            fprintf(stderr,
+                "%s: orphan-sentinel boot gate failed — refusing init\n",
+                LOG_TAG);
+            return -1;
+        }
+        /* rc == 1 -> recovery performed, fall through to scan (which
+         * will now find an empty data_path and report pre-genesis).
+         * rc == 0 -> no sentinel, normal boot path. */
     }
 
     /* Scan for existing chain DB (witness_<chain_id>.db).
