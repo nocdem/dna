@@ -41,6 +41,10 @@ const char *nodus_t3_type_to_method(nodus_t3_msg_type_t type) {
         case NODUS_T3_SYNC_RSP:  return "w_sync_rsp";
         case NODUS_T3_CC_VOTE_REQ: return "w_cc_vote_req";
         case NODUS_T3_CC_VOTE_RSP: return "w_cc_vote_rsp";
+        case NODUS_T3_CHAIN_Q:     return "w_chain_q";
+        case NODUS_T3_CHAIN_R:     return "w_chain_r";
+        case NODUS_T3_GENESIS_REQ: return "w_genesis_req";
+        case NODUS_T3_GENESIS_RSP: return "w_genesis_rsp";
         default:                 return NULL;
     }
 }
@@ -62,7 +66,26 @@ nodus_t3_msg_type_t nodus_t3_method_to_type(const char *method) {
     if (strcmp(method, "w_sync_rsp") == 0)  return NODUS_T3_SYNC_RSP;
     if (strcmp(method, "w_cc_vote_req") == 0) return NODUS_T3_CC_VOTE_REQ;
     if (strcmp(method, "w_cc_vote_rsp") == 0) return NODUS_T3_CC_VOTE_RSP;
+    if (strcmp(method, "w_chain_q") == 0)     return NODUS_T3_CHAIN_Q;
+    if (strcmp(method, "w_chain_r") == 0)     return NODUS_T3_CHAIN_R;
+    if (strcmp(method, "w_genesis_req") == 0) return NODUS_T3_GENESIS_REQ;
+    if (strcmp(method, "w_genesis_rsp") == 0) return NODUS_T3_GENESIS_RSP;
     return 0;
+}
+
+/* ── PR 3 Yol B — bootstrap sig domain separator ─────────────────── */
+
+/* H-3 mitigation: a wsig over (q, wh, a) for one bootstrap method must
+ * not be reusable as a wsig for a different method. The 4 new bootstrap
+ * messages prepend this fixed domain string + the method name into the
+ * Dilithium5 signing input. Existing T3 message types (PROPOSE, COMMIT,
+ * IDENT, ...) keep their legacy CBOR-only preimage so old/new binaries
+ * remain wire-compatible during rolling deploy. */
+#define NODUS_T3_BOOTSTRAP_SIG_DOMAIN "nodus-t3-v1-bootstrap"
+
+static bool is_bootstrap_type(nodus_t3_msg_type_t t) {
+    return t == NODUS_T3_CHAIN_Q     || t == NODUS_T3_CHAIN_R ||
+           t == NODUS_T3_GENESIS_REQ || t == NODUS_T3_GENESIS_RSP;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -374,9 +397,59 @@ static void enc_sync_rsp_args(cbor_encoder_t *enc, const nodus_t3_sync_rsp_t *r)
     }
 }
 
+/* ── PR 3 Yol B — witness auto-bootstrap arg encoders ────────────── */
+
+static void enc_w_chain_q_args(cbor_encoder_t *enc,
+                                const nodus_t3_w_chain_q_t *m) {
+    cbor_encode_map(enc, 1);
+    cbor_encode_cstr(enc, "n");
+    cbor_encode_bstr(enc, m->nonce, NODUS_W_BOOTSTRAP_NONCE_LEN);
+}
+
+static void enc_w_chain_r_args(cbor_encoder_t *enc,
+                                const nodus_t3_w_chain_r_t *m) {
+    cbor_encode_map(enc, 5);
+    cbor_encode_cstr(enc, "cid"); cbor_encode_bstr(enc, m->cid, 32);
+    cbor_encode_cstr(enc, "tip"); cbor_encode_uint(enc, m->tip);
+    cbor_encode_cstr(enc, "gh");
+    cbor_encode_bstr(enc, m->gh, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "cdh");
+    cbor_encode_bstr(enc, m->cdh, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "n");
+    cbor_encode_bstr(enc, m->nonce, NODUS_W_BOOTSTRAP_NONCE_LEN);
+}
+
+static void enc_w_genesis_req_args(cbor_encoder_t *enc,
+                                    const nodus_t3_w_genesis_req_t *m) {
+    cbor_encode_map(enc, 1);
+    cbor_encode_cstr(enc, "cid"); cbor_encode_bstr(enc, m->cid, 32);
+}
+
+static void enc_w_genesis_rsp_args(cbor_encoder_t *enc,
+                                    const nodus_t3_w_genesis_rsp_t *m) {
+    /* Sender side. The H-2 cap check happens upstream in enc_args
+     * before any bytes are emitted. */
+    cbor_encode_map(enc, 5);
+    cbor_encode_cstr(enc, "cid"); cbor_encode_bstr(enc, m->cid, 32);
+    cbor_encode_cstr(enc, "cdb"); cbor_encode_bstr(enc, m->cdb, m->cdb_len);
+    cbor_encode_cstr(enc, "gth");
+    cbor_encode_bstr(enc, m->gth, NODUS_T3_TX_HASH_LEN);
+    cbor_encode_cstr(enc, "gts"); cbor_encode_uint(enc, m->gts);
+    cbor_encode_cstr(enc, "gpid");
+    cbor_encode_bstr(enc, m->gpid, NODUS_T3_WITNESS_ID_LEN);
+}
+
 /* ── Args dispatch ───────────────────────────────────────────────── */
 
 static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
+    /* H-2 sender-side cap on chain_def_blob: refuse to emit oversize
+     * payload so a misconfigured/buggy responder cannot blast a
+     * fresh-node decoder with >64 KB cdb. The matching decoder cap
+     * lands in A4 (strict cap pass before sig verify). */
+    if (msg->type == NODUS_T3_GENESIS_RSP &&
+        msg->w_genesis_rsp.cdb_len > NODUS_W_MAX_CHAIN_DEF_BLOB) {
+        return -1;
+    }
     cbor_encode_cstr(enc, "a");
     switch (msg->type) {
         case NODUS_T3_PROPOSE:   enc_propose_args(enc, &msg->propose);   break;
@@ -394,6 +467,14 @@ static int enc_args(cbor_encoder_t *enc, const nodus_t3_msg_t *msg) {
         case NODUS_T3_CC_VOTE_RSP: enc_cc_vote_rsp_args(enc, &msg->cc_vote_rsp); break;
         case NODUS_T3_SYNC_REQ:  enc_sync_req_args(enc, &msg->sync_req); break;
         case NODUS_T3_SYNC_RSP:  enc_sync_rsp_args(enc, &msg->sync_rsp); break;
+        case NODUS_T3_CHAIN_Q:
+            enc_w_chain_q_args(enc, &msg->w_chain_q);     break;
+        case NODUS_T3_CHAIN_R:
+            enc_w_chain_r_args(enc, &msg->w_chain_r);     break;
+        case NODUS_T3_GENESIS_REQ:
+            enc_w_genesis_req_args(enc, &msg->w_genesis_req); break;
+        case NODUS_T3_GENESIS_RSP:
+            enc_w_genesis_rsp_args(enc, &msg->w_genesis_rsp); break;
         default: return -1;
     }
     return 0;
@@ -406,14 +487,33 @@ static int enc_sign_payload(const nodus_t3_msg_t *msg,
     const char *method = nodus_t3_type_to_method(msg->type);
     if (!method) return -1;
 
+    /* H-3 mitigation: bootstrap types (CHAIN_Q, CHAIN_R, GENESIS_REQ,
+     * GENESIS_RSP) prepend a fixed domain separator + the method name to
+     * the Dilithium5 sign input so a captured wsig over one method's
+     * (q, wh, a) cannot be passed off as a wsig for a different method.
+     * The prefix never enters the wire frame; it only conditions the
+     * signing/verifying input. Existing T3 message types keep the
+     * legacy CBOR-only preimage to remain wire-compatible with old
+     * binaries during rolling deploy. */
+    size_t prefix_len = 0;
+    if (is_bootstrap_type(msg->type)) {
+        const char *dom = NODUS_T3_BOOTSTRAP_SIG_DOMAIN;
+        size_t dom_len = strlen(dom);
+        size_t method_len = strlen(method);
+        if (dom_len + method_len > cap) return -1;
+        memcpy(buf, dom, dom_len);
+        memcpy(buf + dom_len, method, method_len);
+        prefix_len = dom_len + method_len;
+    }
+
     cbor_encoder_t enc;
-    cbor_encoder_init(&enc, buf, cap);
+    cbor_encoder_init(&enc, buf + prefix_len, cap - prefix_len);
     cbor_encode_map(&enc, 3);
     cbor_encode_cstr(&enc, "q"); cbor_encode_cstr(&enc, method);
     enc_wh(&enc, &msg->header);
     if (enc_args(&enc, msg) != 0) return -1;
 
-    *out_len = cbor_encoder_len(&enc);
+    *out_len = prefix_len + cbor_encoder_len(&enc);
     return *out_len > 0 ? 0 : -1;
 }
 
@@ -1384,6 +1484,119 @@ static void dec_sync_rsp_args(cbor_decoder_t *dec, size_t count,
     }
 }
 
+/* ── PR 3 Yol B — witness auto-bootstrap arg decoders ────────────── */
+
+static void dec_w_chain_q_args(cbor_decoder_t *dec, size_t count,
+                                nodus_t3_w_chain_q_t *m) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+
+        if (KEY_IS(key, "n")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_W_BOOTSTRAP_NONCE_LEN)
+                memcpy(m->nonce, val.bstr.ptr, NODUS_W_BOOTSTRAP_NONCE_LEN);
+        }
+        else { cbor_decode_skip(dec); }
+    }
+}
+
+static void dec_w_chain_r_args(cbor_decoder_t *dec, size_t count,
+                                nodus_t3_w_chain_r_t *m) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+
+        if (KEY_IS(key, "cid")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(m->cid, val.bstr.ptr, 32);
+        }
+        else if (KEY_IS(key, "tip")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->tip = val.uint_val;
+        }
+        else if (KEY_IS(key, "gh")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(m->gh, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        }
+        else if (KEY_IS(key, "cdh")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(m->cdh, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        }
+        else if (KEY_IS(key, "n")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_W_BOOTSTRAP_NONCE_LEN)
+                memcpy(m->nonce, val.bstr.ptr, NODUS_W_BOOTSTRAP_NONCE_LEN);
+        }
+        else { cbor_decode_skip(dec); }
+    }
+}
+
+static void dec_w_genesis_req_args(cbor_decoder_t *dec, size_t count,
+                                    nodus_t3_w_genesis_req_t *m) {
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+
+        if (KEY_IS(key, "cid")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(m->cid, val.bstr.ptr, 32);
+        }
+        else { cbor_decode_skip(dec); }
+    }
+}
+
+static void dec_w_genesis_rsp_args(cbor_decoder_t *dec, size_t count,
+                                    nodus_t3_w_genesis_rsp_t *m) {
+    /* Receiver side. The chain_def_blob is plumbed through as a
+     * zero-copy pointer into the input CBOR buffer (matches tx_data
+     * pattern elsewhere). The strict 64 KB cap rejection lands in A4
+     * as a pre-sig-verify pass; A3 just decodes whatever the wire
+     * carried so the GREEN test can confirm roundtrip. */
+    for (size_t i = 0; i < count; i++) {
+        cbor_item_t key = cbor_decode_next(dec);
+        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(dec); continue; }
+
+        if (KEY_IS(key, "cid")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR && val.bstr.len == 32)
+                memcpy(m->cid, val.bstr.ptr, 32);
+        }
+        else if (KEY_IS(key, "cdb")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR) {
+                m->cdb = val.bstr.ptr;
+                m->cdb_len = (uint32_t)val.bstr.len;
+            }
+        }
+        else if (KEY_IS(key, "gth")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_TX_HASH_LEN)
+                memcpy(m->gth, val.bstr.ptr, NODUS_T3_TX_HASH_LEN);
+        }
+        else if (KEY_IS(key, "gts")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_UINT) m->gts = val.uint_val;
+        }
+        else if (KEY_IS(key, "gpid")) {
+            cbor_item_t val = cbor_decode_next(dec);
+            if (val.type == CBOR_ITEM_BSTR &&
+                val.bstr.len == NODUS_T3_WITNESS_ID_LEN)
+                memcpy(m->gpid, val.bstr.ptr, NODUS_T3_WITNESS_ID_LEN);
+        }
+        else { cbor_decode_skip(dec); }
+    }
+}
+
 /* ── Public decode ───────────────────────────────────────────────── */
 
 int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
@@ -1511,6 +1724,20 @@ int nodus_t3_decode(const uint8_t *buf, size_t len, nodus_t3_msg_t *msg) {
                     break;
                 case NODUS_T3_CC_VOTE_RSP:
                     dec_cc_vote_rsp_args(&dec, args.count, &msg->cc_vote_rsp);
+                    break;
+                case NODUS_T3_CHAIN_Q:
+                    dec_w_chain_q_args(&dec, args.count, &msg->w_chain_q);
+                    break;
+                case NODUS_T3_CHAIN_R:
+                    dec_w_chain_r_args(&dec, args.count, &msg->w_chain_r);
+                    break;
+                case NODUS_T3_GENESIS_REQ:
+                    dec_w_genesis_req_args(&dec, args.count,
+                                            &msg->w_genesis_req);
+                    break;
+                case NODUS_T3_GENESIS_RSP:
+                    dec_w_genesis_rsp_args(&dec, args.count,
+                                            &msg->w_genesis_rsp);
                     break;
                 default:
                     break;
