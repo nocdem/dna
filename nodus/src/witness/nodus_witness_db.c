@@ -1710,7 +1710,19 @@ void nodus_witness_compute_block_hash_ex(uint64_t height,
 
     enc_u64_le(height, p);        p += 8;
     memcpy(p, prev_hash, 64);     p += 64;
-    memcpy(p, state_root, 64);    p += 64;
+    /* state_root may be NULL on the cert-preimage path (sync_handle_rsp
+     * recomputes block_hash before knowing state_root, then verifies
+     * against the wire's certs). The original sync.c comment claimed
+     * this helper accepts NULL but the implementation here was missing
+     * the guard, segfaulting on the first sync that took the
+     * cert-preimage branch. Treat NULL as 64 zero bytes — same hash
+     * input as the all-zero case the legacy code wrote into the buffer
+     * stack-memory before this fix when it happened to be zeroed. */
+    if (state_root)
+        memcpy(p, state_root, 64);
+    else
+        memset(p, 0, 64);
+    p += 64;
     memcpy(p, tx_root, 64);       p += 64;
     enc_u32_le_v(tx_count, p);    p += 4;
     memcpy(p, proposer_id, 32);

@@ -919,25 +919,46 @@ void nodus_witness_bootstrap_handle_genesis_rsp(nodus_witness_t *w,
         return;
     }
 
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(w->db,
-            "INSERT OR REPLACE INTO blocks "
-            "(height, tx_root, tx_count, timestamp, proposer_id, "
-            " prev_hash, state_root, chain_def_blob, created_at) "
-            "VALUES (1, ?, 0, 0, ?, x'', ?, ?, 0)",
-            -1, &stmt, NULL) == SQLITE_OK) {
-        static const uint8_t zeros64[64] = {0};
-        sqlite3_bind_blob(stmt, 1, msg->w_genesis_rsp.gth, 64,
-                          SQLITE_STATIC);
-        sqlite3_bind_blob(stmt, 2, msg->w_genesis_rsp.gpid,
-                          NODUS_T3_WITNESS_ID_LEN, SQLITE_STATIC);
-        sqlite3_bind_blob(stmt, 3, zeros64, 64, SQLITE_STATIC);
-        sqlite3_bind_blob(stmt, 4, msg->w_genesis_rsp.cdb,
-                          (int)msg->w_genesis_rsp.cdb_len,
-                          SQLITE_STATIC);
-        (void)sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-    }
+    /* PR 3 (Phase G unblock) — DROP the placeholder block INSERT.
+     *
+     * The original C5 design wrote a stub row at height 1 with
+     * state_root=zeros and expected sync_check to "re-populate the
+     * actual block content + state_root" later. Two problems:
+     *
+     *   1. sync_check triggers on tip-gap. A height-1 placeholder
+     *      makes local tip equal peer tip; sync sees no gap and
+     *      never fetches the real block. The placeholder's zero
+     *      state_root permanently diverges this node from the
+     *      cluster.
+     *
+     *   2. Trying a height-0 placeholder instead (so sync sees a
+     *      gap) caused commit_genesis to crash on replay: when sync
+     *      writes block 1, finalize_block calls block_add, which
+     *      reads block_get_latest = the placeholder at height 0,
+     *      which routes into the dead-code-until-now
+     *      `if (prev_block.height == 0)` branch in block_add — that
+     *      branch had no production coverage and segfaulted on the
+     *      cdb-load path.
+     *
+     * The clean fix is to write NO placeholder at all. The chain DB
+     * file already encodes chain_id in its filename (forensic
+     * recovery for "what chain was this node joining" comes from
+     * the filename, not a row). sync_check sees an empty blocks
+     * table → MAX(height) returns NULL → block_height returns 0.
+     * Peer tip = 1. Gap detected, sync fires, peer's authoritative
+     * block 1 is replayed via commit_genesis, which parses cd_blob
+     * from the tx_data trailer and writes it into the real block 1
+     * row via the well-tested legacy path. No placeholder, no
+     * dead-code branch, no fork-detection ambiguity.
+     *
+     * If a crash strikes between create_chain_db (above) and the
+     * first sync replay, the next boot finds an empty chain DB +
+     * the .witness_db_seen marker (from create_chain_db). The
+     * partial-wipe gate treats this as the marker-present /
+     * all-DBs-empty state (return 0, fresh-equivalent), then
+     * bootstrap_start sees tip=0 → DISCOVER again, and the
+     * recovery path retries cleanly.
+     */
 
     (void)refresh_bft_config_from_committee(w, 1);
 
@@ -950,6 +971,19 @@ void nodus_witness_bootstrap_handle_genesis_rsp(nodus_witness_t *w,
 
     w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_BOOTSTRAP_CONFIG;
     w->bootstrap_state = (int)NODUS_W_BOOTSTRAP_DONE;
+
+    /* Reset sync_state.last_sync_attempt so the next witness tick's
+     * sync_check call passes the SYNC_MIN_INTERVAL_SEC rate limit
+     * immediately. Without this, the early sync_check call that
+     * fired during DISCOVER (when bft_config.quorum was still 0) had
+     * already stamped last_sync_attempt; the next 30s of sync_check
+     * calls then return silently from the rate-limit guard, which
+     * means the height-0 placeholder we just wrote sits at tip=0
+     * for the rest of the rate-limit window with no peer fetch
+     * attempted. F2's 60s budget can race that. Resetting to 0
+     * forces the next tick to evaluate the gap (local=0, peer=1)
+     * and start sync immediately. */
+    w->sync_state.last_sync_attempt = 0;
 
     fprintf(stderr,
             "WITNESS-BOOTSTRAP: state=DONE branch=DISCOVER cid_prefix=%02x%02x%02x%02x "
