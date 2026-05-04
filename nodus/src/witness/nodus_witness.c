@@ -12,6 +12,7 @@
 #include "witness/nodus_witness_handlers.h"
 #include "witness/nodus_witness_sync.h"
 #include "witness/nodus_witness_mempool.h"
+#include "witness/nodus_witness_bootstrap.h"
 #include "nodus/nodus_chain_config.h"  /* Stage C.2 vote-req handler */
 #include "crypto/utils/qgp_log.h"
 #include "crypto/hash/qgp_sha3.h"
@@ -546,6 +547,9 @@ void nodus_witness_tick(nodus_witness_t *witness) {
     /* BFT timeout checks */
     nodus_witness_bft_check_timeout(witness);
 
+        /* PR 3 Yol B — bootstrap state machine retry/timeout. */
+    nodus_witness_bootstrap_tick(witness);
+
     /* H-15: Pending forward timeout (30s) */
     {
         uint64_t now_s = nodus_time_now();
@@ -799,6 +803,20 @@ void nodus_witness_dispatch_t3(nodus_witness_t *witness,
     /* Hard-Fork v1 Stage C.2 — chain_config vote-collect. */
     case NODUS_T3_CC_VOTE_REQ:
         nodus_witness_handle_cc_vote_req(witness, conn, &msg);
+        break;
+
+    /* PR 3 Yol B — witness auto-bootstrap dispatch (C3). */
+    case NODUS_T3_CHAIN_Q:
+        nodus_witness_bootstrap_handle_chain_q(witness, conn, &msg);
+        break;
+    case NODUS_T3_CHAIN_R:
+        nodus_witness_bootstrap_handle_chain_r(witness, &msg);
+        break;
+    case NODUS_T3_GENESIS_REQ:
+        nodus_witness_bootstrap_handle_genesis_req(witness, conn, &msg);
+        break;
+    case NODUS_T3_GENESIS_RSP:
+        nodus_witness_bootstrap_handle_genesis_rsp(witness, &msg);
         break;
     case NODUS_T3_CC_VOTE_RSP:
         /* Receiver-side: handled by CLI proposer's client helper when

@@ -27,14 +27,17 @@
 
 #include <stdint.h>
 
+#include "protocol/nodus_tier3.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Forward declaration to avoid pulling nodus_witness.h into every TU
- * that #includes this header. */
+/* Forward declarations for types we only handle through pointers, so
+ * this header does not need nodus_witness.h or nodus_tcp.h. */
 struct nodus_witness;
 typedef struct nodus_witness nodus_witness_t;
+struct nodus_tcp_conn;
 
 /* Bootstrap state machine values.
  *
@@ -71,6 +74,43 @@ typedef enum {
  *         state machine reaches DONE.
  */
 int nodus_witness_bootstrap_start(nodus_witness_t *w);
+
+/**
+ * Drive the bootstrap state machine on each witness tick. No-op when
+ * state is not DISCOVER.
+ *
+ * Responsibilities while in DISCOVER:
+ *   - On round-deadline elapsed without quorum: schedule next attempt
+ *     with exponential backoff (10s -> 30s -> 60s -> ... -> 300s x5).
+ *   - On agree-quorum reached during the in-flight collection window:
+ *     transition to FETCH_GENESIS.
+ *   - After the 10th attempt fails to reach quorum: log + exit(2) so
+ *     systemd's RestartSec / StartLimitBurst envelope handles outer
+ *     recovery (H-11 mitigation). */
+void nodus_witness_bootstrap_tick(nodus_witness_t *w);
+
+/**
+ * T3 dispatch handlers. All four are called from
+ * nodus_witness_dispatch_t3 after wsig verify but before any other
+ * handler runs. The bootstrap module checks the local bootstrap_state
+ * and either responds, drops, or accumulates state as appropriate.
+ *
+ * - handle_chain_q: respond with cid/tip/cdh if HAVE_CHAIN/DONE; drop
+ *                   if DISCOVER (C-2 cabal protection).
+ * - handle_chain_r: stale-nonce filter, dedup-by-sender, append to
+ *                   round tally; tick checks quorum.
+ * - handle_genesis_req: stub in C3, full impl in C5.
+ * - handle_genesis_rsp: stub in C3, full impl in C5. */
+void nodus_witness_bootstrap_handle_chain_q(nodus_witness_t *w,
+                                             struct nodus_tcp_conn *conn,
+                                             const nodus_t3_msg_t *msg);
+void nodus_witness_bootstrap_handle_chain_r(nodus_witness_t *w,
+                                             const nodus_t3_msg_t *msg);
+void nodus_witness_bootstrap_handle_genesis_req(nodus_witness_t *w,
+                                                 struct nodus_tcp_conn *conn,
+                                                 const nodus_t3_msg_t *msg);
+void nodus_witness_bootstrap_handle_genesis_rsp(nodus_witness_t *w,
+                                                 const nodus_t3_msg_t *msg);
 
 #ifdef __cplusplus
 }

@@ -18,6 +18,8 @@
 #include "witness/nodus_witness_bootstrap.h"
 #include "witness/nodus_witness_db.h"
 #include "witness/nodus_witness.h"
+#include "server/nodus_server.h"
+#include "dnac/dnac.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -194,6 +196,91 @@ static void test_null_witness_rejected(void) {
     PASS();
 }
 
+/* C3 — DISCOVER state coverage. ──────────────────────────────────── */
+
+/* Build a stub server config with the given seed_count. The DISCOVER
+ * branch only reads seed_count for the C-1 gate; the actual seed
+ * addresses are not exercised at the unit-test level.
+ *
+ * Heap-allocated because nodus_server_t embeds large session arrays
+ * and transport structs that would overflow the default test stack. */
+static nodus_server_t *make_server_with_seeds(int seed_count) {
+    nodus_server_t *srv = (nodus_server_t *)calloc(1, sizeof(*srv));
+    if (!srv) return NULL;
+    srv->config.seed_count = seed_count;
+    for (int i = 0; i < seed_count && i < (int)NODUS_MAX_SEED_NODES; i++) {
+        snprintf(srv->config.seed_nodes[i],
+                 sizeof(srv->config.seed_nodes[i]), "127.0.0.1");
+        srv->config.seed_ports[i] = 14000 + (uint16_t)(i * 10);
+    }
+    return srv;
+}
+
+static void test_c1_gate_rejects_short_seed_list(void) {
+    TEST("C-1 gate rejects empty DB + seed_count < committee_size");
+
+    sqlite3 *db = NULL;
+    if (setup_schema(&db) != 0) { FAIL("schema setup"); return; }
+
+    nodus_witness_t w;
+    memset(&w, 0, sizeof(w));
+    w.db = db;
+    nodus_server_t *srv = make_server_with_seeds(DNAC_COMMITTEE_SIZE - 1);
+    if (!srv) { FAIL("calloc server"); sqlite3_close(db); return; }
+    w.server = srv;
+
+    if (nodus_witness_db_migrate_v12(&w) != 0) {
+        FAIL("migrate_v12");
+        free(srv); sqlite3_close(db); return;
+    }
+
+    /* Empty DB (no block 1 inserted) + insufficient seeds → -1. */
+    int rc = nodus_witness_bootstrap_start(&w);
+    if (rc == 0) {
+        FAIL("bootstrap_start should refuse C-1 gate violation");
+        free(srv); sqlite3_close(db); return;
+    }
+    PASS();
+    free(srv);
+    sqlite3_close(db);
+}
+
+static void test_discover_entry_with_full_committee(void) {
+    TEST("DISCOVER state entry on empty DB + committee_size seeds");
+
+    sqlite3 *db = NULL;
+    if (setup_schema(&db) != 0) { FAIL("schema setup"); return; }
+
+    nodus_witness_t w;
+    memset(&w, 0, sizeof(w));
+    w.db = db;
+    nodus_server_t *srv = make_server_with_seeds(DNAC_COMMITTEE_SIZE);
+    if (!srv) { FAIL("calloc server"); sqlite3_close(db); return; }
+    w.server = srv;
+
+    if (nodus_witness_db_migrate_v12(&w) != 0) {
+        FAIL("migrate_v12");
+        free(srv); sqlite3_close(db); return;
+    }
+
+    int rc = nodus_witness_bootstrap_start(&w);
+    if (rc != 0) {
+        FAIL("bootstrap_start should accept C-1 gate at exact committee size");
+        free(srv); sqlite3_close(db); return;
+    }
+    if (w.bootstrap_state != (int)NODUS_W_BOOTSTRAP_DISCOVER) {
+        FAIL("expected state=DISCOVER on empty DB + sufficient seeds");
+        free(srv); sqlite3_close(db); return;
+    }
+    if (w.bootstrap_attempt != 0) {
+        FAIL("attempt should start at 0 — first tick increments it");
+        free(srv); sqlite3_close(db); return;
+    }
+    PASS();
+    free(srv);
+    sqlite3_close(db);
+}
+
 int main(void) {
     printf("\nNodus Witness Auto-Bootstrap State Machine Tests\n");
     printf("=================================================\n\n");
@@ -201,6 +288,8 @@ int main(void) {
     test_null_witness_rejected();
     test_have_chain_branch_reaches_done();
     test_have_chain_sets_settle_window();
+    test_c1_gate_rejects_short_seed_list();
+    test_discover_entry_with_full_committee();
 
     printf("\n=================================================\n");
     printf("Results: %d passed, %d failed\n\n", passed, failed);

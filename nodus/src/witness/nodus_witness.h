@@ -552,6 +552,19 @@ typedef struct nodus_witness {
     int         bootstrap_state;            /* nodus_witness_bootstrap_state_t */
     uint64_t    bootstrap_settle_until_ms;
 
+    /* DISCOVER-state retry + quorum tracking. attempt counts the
+     * w_chain_q rounds emitted (1..10); next_attempt_ms is the
+     * monotonic wall after which the next w_chain_q broadcast may
+     * fire (exponential backoff schedule from design Section 3);
+     * round_deadline_ms is the monotonic wall after which the current
+     * round's collect window expires. round_nonce is the random 16B
+     * seed echoed back in w_chain_r — captured responses with a stale
+     * nonce do not count toward quorum. */
+    int         bootstrap_attempt;
+    uint64_t    bootstrap_next_attempt_ms;
+    uint64_t    bootstrap_round_deadline_ms;
+    uint8_t     bootstrap_round_nonce[16];   /* NODUS_W_BOOTSTRAP_NONCE_LEN */
+
     bool        running;
 } nodus_witness_t;
 
