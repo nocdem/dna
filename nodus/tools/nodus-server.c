@@ -17,6 +17,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <getopt.h>
 
 #ifdef NODUS_HAS_JSONC
 #include <json-c/json.h>
@@ -45,8 +46,23 @@ static void usage(const char *prog) {
     fprintf(stderr, "  -i <identity_dir> Identity directory\n");
     fprintf(stderr, "  -d <data_dir>     Data directory (default: /var/lib/nodus)\n");
     fprintf(stderr, "  -s <ip:port>      Add seed node (repeatable)\n");
+    fprintf(stderr, "  --cold-bootstrap  PR 3 / Yol B: bypass C-2 cabal protection\n");
+    fprintf(stderr, "                    so this node responds to w_chain_q from\n");
+    fprintf(stderr, "                    DISCOVER peers. Operator MUST start exactly\n");
+    fprintf(stderr, "                    ONE node with this flag during full-cluster\n");
+    fprintf(stderr, "                    cold disaster recovery; setting it on more\n");
+    fprintf(stderr, "                    than one node re-creates the cabal vector.\n");
     fprintf(stderr, "  -h                Show this help\n");
 }
+
+/* PR 3 / E1 — long-option IDs for getopt_long. Numeric > 255 to avoid
+ * collision with single-char short options. */
+#define LONGOPT_COLD_BOOTSTRAP 1000
+
+static const struct option g_longopts[] = {
+    {"cold-bootstrap", no_argument, NULL, LONGOPT_COLD_BOOTSTRAP},
+    {0, 0, 0, 0}
+};
 
 static int parse_seed(const char *str, char *ip, size_t ip_len, uint16_t *port) {
     const char *colon = strrchr(str, ':');
@@ -119,6 +135,11 @@ static int load_config_json(const char *path, nodus_server_config_t *cfg) {
     if (json_object_object_get_ex(root, "require_peer_auth", &val))
         cfg->require_peer_auth = json_object_get_boolean(val);
 
+    /* PR 3 / E1 — cold-bootstrap operator override (Yol B C-2 escape).
+     * MUST NOT be set on more than one node concurrently. */
+    if (json_object_object_get_ex(root, "cold_bootstrap", &val))
+        cfg->is_cold_bootstrap = json_object_get_boolean(val);
+
     json_object_put(root);
     return 0;
 }
@@ -140,7 +161,8 @@ int main(int argc, char **argv) {
     const char *config_file = NULL;
     int opt;
 
-    while ((opt = getopt(argc, argv, "c:b:u:t:p:C:W:i:d:s:h")) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:b:u:t:p:C:W:i:d:s:h",
+                              g_longopts, NULL)) != -1) {
         switch (opt) {
         case 'c': config_file = optarg; break;
         case 'b': snprintf(config.bind_ip, sizeof(config.bind_ip), "%s", optarg); break;
@@ -159,6 +181,9 @@ int main(int argc, char **argv) {
                            &config.seed_ports[config.seed_count]);
                 config.seed_count++;
             }
+            break;
+        case LONGOPT_COLD_BOOTSTRAP:
+            config.is_cold_bootstrap = true;
             break;
         case 'h':
         default:
@@ -189,7 +214,8 @@ int main(int argc, char **argv) {
 
         /* Re-parse CLI args to override file config */
         optind = 1;
-        while ((opt = getopt(argc, argv, "c:b:u:t:p:C:W:i:d:s:h")) != -1) {
+        while ((opt = getopt_long(argc, argv, "c:b:u:t:p:C:W:i:d:s:h",
+                                  g_longopts, NULL)) != -1) {
             switch (opt) {
             case 'b': snprintf(config.bind_ip, sizeof(config.bind_ip), "%s", optarg); break;
             case 'u': config.udp_port = (uint16_t)atoi(optarg); break;
@@ -207,6 +233,9 @@ int main(int argc, char **argv) {
                                &config.seed_ports[config.seed_count]);
                     config.seed_count++;
                 }
+                break;
+            case LONGOPT_COLD_BOOTSTRAP:
+                config.is_cold_bootstrap = true;
                 break;
             default: break;
             }
