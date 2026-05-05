@@ -151,8 +151,17 @@ typedef struct {
     uint8_t     nullifier_count;
 } nodus_witness_ledger_entry_t;
 
+/* PR 3 (2026-05-05) — block_height + block_timestamp added to thread
+ * deterministic context through to the row insert. Pre-fix used
+ * time(NULL) at every node's local insert moment, producing different
+ * ledger_entries.{epoch,timestamp} across BFT-original vs sync-replay
+ * paths (the bootstrap-recovered node observed different wall-clock
+ * vs the cluster). Cluster-wide consensus state must derive only
+ * from values agreed on the wire. */
 int  nodus_witness_ledger_add(nodus_witness_t *w, const uint8_t *tx_hash,
-                                uint8_t tx_type, uint8_t nullifier_count);
+                                uint8_t tx_type, uint8_t nullifier_count,
+                                uint64_t block_height,
+                                uint64_t block_timestamp);
 int  nodus_witness_ledger_get(nodus_witness_t *w, uint64_t seq,
                                 nodus_witness_ledger_entry_t *out);
 int  nodus_witness_ledger_get_by_hash(nodus_witness_t *w, const uint8_t *tx_hash,
@@ -301,9 +310,14 @@ int  nodus_witness_tx_output_add(nodus_witness_t *w, const uint8_t *tx_hash,
 
 /* ── Committed transaction storage ───────────────────────────────── */
 
+/* PR 3 (2026-05-05) — block_timestamp added; pre-fix used time(NULL)
+ * inside which caused the same wall-clock divergence as ledger_add.
+ * Both now take the consensus-agreed block timestamp from the
+ * proposer's header (or sync_rsp echo). */
 int  nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
                               uint8_t tx_type, const uint8_t *tx_data,
                               uint32_t tx_len, uint64_t block_height,
+                              uint64_t block_timestamp,
                               const char *sender_fp, uint64_t fee,
                               const uint8_t *client_pubkey,
                               const uint8_t *client_sig);

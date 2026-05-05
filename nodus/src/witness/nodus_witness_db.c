@@ -354,11 +354,19 @@ int nodus_witness_utxo_by_owner(nodus_witness_t *w, const char *owner,
 /* ── Ledger operations ───────────────────────────────────────────── */
 
 int nodus_witness_ledger_add(nodus_witness_t *w, const uint8_t *tx_hash,
-                                uint8_t tx_type, uint8_t nullifier_count) {
+                                uint8_t tx_type, uint8_t nullifier_count,
+                                uint64_t block_height,
+                                uint64_t block_timestamp) {
     if (!w || !w->db || !tx_hash) return -1;
 
-    uint64_t now = (uint64_t)time(NULL);
-    uint64_t epoch = now / NODUS_T3_EPOCH_DURATION_SEC;
+    /* Determinism: epoch is the consensus-agreed block height divided
+     * by the chain-config epoch length (each block is in exactly one
+     * epoch). timestamp is the consensus-agreed block timestamp from
+     * the proposer's header (set at propose time, replicated unchanged
+     * to followers, sync_rsp echoes it on replay). Both values are
+     * byte-identical across all nodes for a given block. */
+    uint64_t epoch = (block_height == 0) ? 0
+                                          : (block_height - 1) / DNAC_EPOCH_LENGTH;
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(w->db,
@@ -373,7 +381,7 @@ int nodus_witness_ledger_add(nodus_witness_t *w, const uint8_t *tx_hash,
     sqlite3_bind_blob(stmt, 1, tx_hash, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
     sqlite3_bind_int(stmt, 2, tx_type);
     sqlite3_bind_int64(stmt, 3, (int64_t)epoch);
-    sqlite3_bind_int64(stmt, 4, (int64_t)now);
+    sqlite3_bind_int64(stmt, 4, (int64_t)block_timestamp);
     sqlite3_bind_int(stmt, 5, nullifier_count);
 
     rc = sqlite3_step(stmt);
@@ -803,7 +811,14 @@ int nodus_witness_genesis_set(nodus_witness_t *w, const uint8_t *tx_hash,
         sqlite3_bind_blob(stmt, 3, commitment, NODUS_T3_TX_HASH_LEN, SQLITE_STATIC);
     else
         sqlite3_bind_null(stmt, 3);
-    sqlite3_bind_int64(stmt, 4, (int64_t)time(NULL));
+    /* created_at deterministic = 0 (informational only; was time(NULL)
+     * which produces different values on each node — bootstrap-replayed
+     * nodes ran genesis at a later wall-clock moment than original BFT
+     * nodes, diverging this row. Even though the field is not in
+     * state_root today, the row content is read by debug/forensic
+     * queries that downstream code may eventually fold into consensus.
+     * Determinism-by-default per PRIMARY OBJECTIVE: DETERMINISM. */
+    sqlite3_bind_int64(stmt, 4, 0);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -1154,6 +1169,7 @@ int nodus_witness_tx_output_add(nodus_witness_t *w, const uint8_t *tx_hash,
 int nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
                               uint8_t tx_type, const uint8_t *tx_data,
                               uint32_t tx_len, uint64_t block_height,
+                              uint64_t block_timestamp,
                               const char *sender_fp, uint64_t fee,
                               const uint8_t *client_pubkey,
                               const uint8_t *client_sig) {
@@ -1176,7 +1192,10 @@ int nodus_witness_tx_store(nodus_witness_t *w, const uint8_t *tx_hash,
     sqlite3_bind_blob(stmt, 3, tx_data, (int)tx_len, SQLITE_STATIC);
     sqlite3_bind_int(stmt, 4, (int)tx_len);
     sqlite3_bind_int64(stmt, 5, (int64_t)block_height);
-    sqlite3_bind_int64(stmt, 6, (int64_t)time(NULL));
+    /* Determinism: block_timestamp is the consensus-agreed block
+     * timestamp from the proposer's header. Pre-fix used time(NULL)
+     * which produced different per-node values on the same TX. */
+    sqlite3_bind_int64(stmt, 6, (int64_t)block_timestamp);
 
     if (sender_fp && sender_fp[0])
         sqlite3_bind_text(stmt, 7, sender_fp, -1, SQLITE_STATIC);

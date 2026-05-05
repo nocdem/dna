@@ -144,7 +144,8 @@ int nodus_chain_config_compute_root(nodus_witness_t *w, uint8_t out_root[64]);
 int nodus_chain_config_apply(nodus_witness_t *w,
                               const uint8_t *tx_data,
                               uint32_t tx_len,
-                              uint64_t block_height);
+                              uint64_t block_height,
+                              uint64_t block_timestamp);
 
 /* ============================================================================
  * Vote primitives (Stage C — pure functions used by CLI + RPC handlers)

@@ -799,7 +799,8 @@ static uint64_t grace_period_for_param(uint8_t param_id) {
 int nodus_chain_config_apply(nodus_witness_t *w,
                               const uint8_t *tx_data,
                               uint32_t tx_len,
-                              uint64_t block_height) {
+                              uint64_t block_height,
+                              uint64_t block_timestamp) {
     if (!w || !w->db || !tx_data) {
         QGP_LOG_ERROR(LOG_TAG, "apply: invalid args");
         return -1;
@@ -958,7 +959,7 @@ int nodus_chain_config_apply(nodus_witness_t *w,
         "INSERT INTO chain_config_history "
         "(param_id, new_value, effective_block, commit_block, tx_hash, "
         " proposal_nonce, created_at_unix) "
-        "VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'))";
+        "VALUES (?, ?, ?, ?, ?, ?, ?)";
     sqlite3_stmt *ins = NULL;
     if (sqlite3_prepare_v2(w->db, ins_sql, -1, &ins, NULL) != SQLITE_OK) {
         QGP_LOG_ERROR(LOG_TAG, "apply: insert prepare failed: %s",
@@ -971,6 +972,10 @@ int nodus_chain_config_apply(nodus_witness_t *w,
     sqlite3_bind_int64(ins, 4, (sqlite3_int64)block_height);
     sqlite3_bind_blob (ins, 5, tx_hash, CC_TX_HASH_SIZE, SQLITE_TRANSIENT);
     sqlite3_bind_int64(ins, 6, (sqlite3_int64)cc.proposal_nonce);
+    /* Determinism: created_at_unix from consensus-agreed block timestamp.
+     * Pre-fix used strftime('now') which produced different values on
+     * each node for the same TX. */
+    sqlite3_bind_int64(ins, 7, (sqlite3_int64)block_timestamp);
 
     int srv = sqlite3_step(ins);
     sqlite3_finalize(ins);

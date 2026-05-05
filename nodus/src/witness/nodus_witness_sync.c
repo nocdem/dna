@@ -950,8 +950,24 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
         /* Phase 9 / Task 48 — liveness attendance during sync replay.
          * Credit this block's proposer (deterministic across nodes),
          * matching the live-follower behavior. Precommit voter set
-         * diverges per node; proposer_id does not. */
-        nodus_witness_record_attendance(w, stored_bh, rsp->proposer_id);
+         * diverges per node; proposer_id does not.
+         *
+         * EXCEPTION: skip for genesis (height == 1). The BFT-original
+         * commit_genesis path does NOT call record_attendance (only
+         * commit_batch does, see nodus_witness_bft.c:5918). If sync
+         * credits the genesis proposer here, the bootstrap-recovered
+         * node's validators table for the genesis row diverges from
+         * peers' (last_signed_block 1 vs 0, signed_blocks_this_epoch
+         * 1 vs 0). That non-determinism propagates into state_root on
+         * the next block under any code path that reads the
+         * validator's signed counters, producing a chain split.
+         * Symmetry with the BFT-original path is the consensus
+         * invariant; both paths must produce byte-identical
+         * post-replay state. F2/F5 expose this; pre-PR3 nothing ever
+         * sync-replayed genesis so the asymmetry never surfaced. */
+        if (stored_bh > 1) {
+            nodus_witness_record_attendance(w, stored_bh, rsp->proposer_id);
+        }
     }
 
     /* Update cached state_root (Phase 3 / Task 10: 4-subtree composite). */

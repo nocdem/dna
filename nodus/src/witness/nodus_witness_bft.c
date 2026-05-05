@@ -1850,6 +1850,7 @@ int apply_tx_to_state(nodus_witness_t *w,
                        const uint8_t *tx_data,
                        uint32_t tx_len,
                        uint64_t block_height,
+                       uint64_t block_timestamp,
                        nodus_witness_batch_ctx_t *batch_ctx,
                        const uint8_t *client_pubkey,
                        const uint8_t *client_sig) {
@@ -1941,7 +1942,8 @@ int apply_tx_to_state(nodus_witness_t *w,
             }
         } else if (tx_type == NODUS_W_TX_CHAIN_CONFIG) {
             if (nodus_chain_config_apply(w, tx_data, tx_len,
-                                          block_height) != 0) {
+                                          block_height,
+                                          block_timestamp) != 0) {
                 failed = true;
             }
         }
@@ -2031,7 +2033,7 @@ int apply_tx_to_state(nodus_witness_t *w,
         }
 
         nodus_witness_tx_store(w, tx_hash, tx_type, tx_data, tx_len, bh,
-                               sender_fp, committed_fee,
+                               block_timestamp, sender_fp, committed_fee,
                                client_pubkey, client_sig);
 
         /* Insert each output into tx_outputs table (with token_id) */
@@ -2109,7 +2111,8 @@ int apply_tx_to_state(nodus_witness_t *w,
 
     if (failed) return -1;
 
-    nodus_witness_ledger_add(w, tx_hash, tx_type, nullifier_count);
+    nodus_witness_ledger_add(w, tx_hash, tx_type, nullifier_count,
+                              block_height, block_timestamp);
 
     /* Phase 3 / Task 3.2: state_root + cached_state_root invalidation +
      * block_add moved to finalize_block. The caller is expected to call
@@ -5746,7 +5749,7 @@ int nodus_witness_commit_genesis(nodus_witness_t *w,
 
     uint64_t bh = nodus_witness_block_height(w) + 1;
     if (apply_tx_to_state(w, tx_hash, NODUS_W_TX_GENESIS, NULL, 0,
-                           tx_data, tx_len, bh, NULL,
+                           tx_data, tx_len, bh, timestamp, NULL,
                            NULL, NULL) != 0) {
         nodus_witness_db_rollback(w);
         return -1;
@@ -5851,7 +5854,7 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
 
         if (apply_tx_to_state(w, e->tx_hash, e->tx_type, nul_ptrs,
                                e->nullifier_count, e->tx_data, e->tx_len,
-                               bh, &ctx,
+                               bh, timestamp, &ctx,
                                e->client_pubkey, e->client_sig) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "commit_batch: TX %d apply_tx failed", i);
             nodus_witness_db_rollback(w);
@@ -5944,7 +5947,7 @@ int nodus_witness_commit_batch(nodus_witness_t *w,
                 apply_tx_to_state(w, entries[i]->tx_hash, entries[i]->tx_type,
                                    nul_ptrs, entries[i]->nullifier_count,
                                    entries[i]->tx_data, entries[i]->tx_len,
-                                   bh, &empty_ctx,
+                                   bh, timestamp, &empty_ctx,
                                    entries[i]->client_pubkey,
                                    entries[i]->client_sig);
                 if (supply_invariant_violated(w)) {
