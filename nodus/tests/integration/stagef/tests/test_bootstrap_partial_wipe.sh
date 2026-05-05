@@ -118,11 +118,20 @@ test_partial_wipe_one_db() {
     # Bring it up briefly so all 3 DBs get created via normal init,
     # then bring it down again — that gives us a healthy on-disk
     # snapshot of all 3 SQLite files to selectively wipe from.
+    #
+    # The seed wait must be at least as long as F2's 60 s budget: a
+    # freshly-respawned node has to peer-auth all 6 partners, run
+    # DISCOVER → quorum → FETCH_GENESIS, then sync block 1 from a
+    # peer (witness_*.db only lands after the sync replay, since
+    # the bootstrap path no longer writes a placeholder row). 30 s
+    # was the original budget but is too tight when peer auth
+    # contention is high; 60 s mirrors F2 and leaves comfortable
+    # headroom on a developer laptop.
     local seed_pid
     seed_pid=$(respawn_target)
     # Wait for all 3 DB files to exist on disk.
     local all_present=0
-    for _ in $(seq 1 30); do
+    for _ in $(seq 1 60); do
         if [ -e "$TARGET_DATA/nodus.db" ] && \
            [ -e "$TARGET_DATA/channels.db" ] && \
            ls "$TARGET_DATA"/witness_*.db >/dev/null 2>&1; then
