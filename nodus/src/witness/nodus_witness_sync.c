@@ -809,22 +809,64 @@ int nodus_witness_sync_handle_rsp(nodus_witness_t *w,
         return -1;
     }
 
-    /* Step b — recompute block_hash with the locally-derived tx_root.
-     * state_root is unknown until replay so pass NULL; the helper
-     * accepts a NULL state_root for the cert-preimage path. */
+    /* Step b — compute the SAME block_hash the cert preimage was
+     * signed over. The original sync code used
+     * nodus_witness_compute_block_hash() — a wholly different hash
+     * formulation that mixes prev_hash + state_root + tx_root +
+     * tx_count + proposer_id. That hash never matches what BFT
+     * signs. The actual cert preimage's "block_hash" field is
+     * SHA3-512 over the concatenated tx_hashes of the block (see
+     * nodus_witness_bft.c:3398-3414 leader path; the follower
+     * path at :4024-4045 verifies the same formula). The
+     * round_state.tx_hash field stored at signing time IS
+     * SHA3(concat tx_hashes), so cert_preimage(round_state.tx_hash,
+     * ...) and our cert_preimage(this hash, ...) produce
+     * byte-identical preimages → cert verify passes.
+     *
+     * F2 (test_bootstrap_join_live) caught the original
+     * compute_block_hash misuse: every fresh-bootstrap node failed
+     * cert verify at height 1 because its "block_hash" had nothing
+     * to do with the cert preimage's "block_hash" field name. The
+     * shared name with two different meanings was the trap. */
     uint8_t local_block_hash[NODUS_T3_TX_HASH_LEN];
-    nodus_witness_compute_block_hash(db_height, rsp->prev_hash,
-                                       NULL,
-                                       local_tx_root,
-                                       (uint32_t)rsp->tx_count,
-                                       rsp->proposer_id,
-                                       local_block_hash);
+    {
+        uint8_t hash_input[NODUS_W_MAX_BLOCK_TXS * NODUS_T3_TX_HASH_LEN];
+        size_t total_len = 0;
+        for (int i = 0; i < rsp->tx_count; i++) {
+            memcpy(hash_input + total_len,
+                   rsp->batch_txs[i].tx_hash, NODUS_T3_TX_HASH_LEN);
+            total_len += NODUS_T3_TX_HASH_LEN;
+        }
+        nodus_key_t bh;
+        if (nodus_hash(hash_input, total_len, &bh) != 0) {
+            fprintf(stderr,
+                "%s: cert-preimage block_hash compute failed at "
+                "height %llu\n", LOG_TAG, (unsigned long long)db_height);
+            w->sync_state.syncing = false;
+            return -1;
+        }
+        memcpy(local_block_hash, bh.bytes, NODUS_T3_TX_HASH_LEN);
+    }
 
-    /* Step c — verify cert sigs against the LOCAL block_hash */
+    /* Step c — verify cert sigs against the LOCAL block_hash.
+     *
+     * Genesis-block special case (db_height == 1): the BFT signer's
+     * w->chain_id is still all-zeros at PRECOMMIT sign time, because
+     * derive_chain_id only runs in commit_genesis (the COMMIT phase
+     * AFTER quorum). So the cert preimage at sign time used a zero
+     * chain_id; verify must mirror that or the chain_id field in
+     * the preimage diverges between signer (zeros) and verifier
+     * (post-derive value), making every cert appear invalid.
+     *
+     * For height >= 2 the chain_id is set on every node before
+     * cert signing, so the existing w->chain_id is correct. */
+    uint8_t cert_chain_id_zero[32] = {0};
+    const uint8_t *cert_chain_id =
+        (db_height == 1) ? cert_chain_id_zero : w->chain_id;
     {
         int verified = nodus_witness_verify_sync_certs(local_block_hash,
                                                          db_height,
-                                                         w->chain_id,
+                                                         cert_chain_id,
                                                          &w->roster,
                                                          rsp->certs,
                                                          rsp->cert_count,

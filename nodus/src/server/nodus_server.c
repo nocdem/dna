@@ -5506,6 +5506,24 @@ static void ch_startup_rejoin(nodus_server_t *srv)
 int nodus_server_check_partial_wipe(const char *data_path) {
     if (!data_path) return -1;
 
+    /* If the orphan-bootstrap sentinel (.bootstrap_in_progress) is
+     * present the previous bootstrap's FETCH_GENESIS crashed mid-
+     * write. The downstream witness init runs E0
+     * (nodus_witness_check_orphan_bootstrap_sentinel) which archives
+     * any partial witness_*.db, clears the sentinel, and lets
+     * DISCOVER restart. If we run the strict-XOR gate first, the
+     * crashed-mid-bootstrap state (marker present, only the partial
+     * witness file present) trips the gate and we never reach the
+     * E0 cleanup — operator has to manually clear sentinel + wipe.
+     * The orphan sentinel takes precedence; defer to E0. */
+    char sentinel[640];
+    int ns = snprintf(sentinel, sizeof(sentinel),
+                      "%s/.bootstrap_in_progress", data_path);
+    if (ns > 0 && (size_t)ns < sizeof(sentinel)) {
+        struct stat sst;
+        if (stat(sentinel, &sst) == 0) return 0;
+    }
+
     /* The strict XOR invariant only applies AFTER the chain DB has
      * been created at least once. Without the marker, the file-level
      * state (nodus.db + channels.db present, witness_*.db absent) is
