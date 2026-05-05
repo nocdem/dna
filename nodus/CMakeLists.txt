@@ -514,6 +514,17 @@ target_link_libraries(test_witness_bootstrap_chain_q_rate_limit nodus dsa nodus)
 add_test(NAME test_witness_bootstrap_chain_q_rate_limit
          COMMAND test_witness_bootstrap_chain_q_rate_limit)
 
+# C-4 nonce-stale filter (PR 3 / F6 — replaces SKIP-by-default
+# integration replay scenario with unit-level coverage of the same
+# security property: handle_chain_r drops responses whose nonce
+# does not match the current bootstrap_round_nonce, so a captured
+# w_chain_r from round N cannot be replayed into round N+1.
+add_executable(test_witness_bootstrap_nonce_stale
+                tests/test_witness_bootstrap_nonce_stale.c)
+target_link_libraries(test_witness_bootstrap_nonce_stale nodus dsa nodus)
+add_test(NAME test_witness_bootstrap_nonce_stale
+         COMMAND test_witness_bootstrap_nonce_stale)
+
 # RFC 6962 Merkle domain tag tests (Phase 2 / Tasks 2.1, 2.2, 2.4)
 add_executable(test_merkle_domain_tags tests/test_merkle_domain_tags.c)
 target_link_libraries(test_merkle_domain_tags nodus dsa nodus crypto)

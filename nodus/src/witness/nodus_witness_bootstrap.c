@@ -733,6 +733,22 @@ void nodus_witness_bootstrap_handle_chain_r(nodus_witness_t *w,
     r->valid = true;
 }
 
+/* PR 3 / F6 — test introspection for C-4 nonce-stale filter coverage.
+ * Exposes g_response_count and a reset hook so unit tests can drive
+ * handle_chain_r with crafted msgs and assert the filter dropped or
+ * accepted as expected. NOT declared in the public bootstrap.h
+ * header — only the unit test redeclares the prototypes. Always
+ * compiled into libnodus.a (small, no side effects); production
+ * code has no way to reach them through the documented API. */
+int nodus_witness_bootstrap_test_response_count(void) {
+    return g_response_count;
+}
+void nodus_witness_bootstrap_test_reset_responses(void) {
+    memset(g_responses, 0, sizeof(g_responses));
+    g_response_count = 0;
+    g_quorum_set = false;
+}
+
 /* Look up the genesis-row chain_def_blob. The v14 schema migration
  * stores it on the blocks table at height 0 (genesis). Returns 0 on
  * success, blob pointer + len populated; -1 if no genesis row or DB

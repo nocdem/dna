@@ -10,6 +10,7 @@
  */
 
 #include "server/nodus_server.h"
+#include "witness/nodus_witness_peer.h"   /* PR 3 / F4 — mock_version setter */
 #include "nodus/nodus_types.h"
 
 #include <stdio.h>
@@ -57,10 +58,12 @@ static void usage(const char *prog) {
 
 /* PR 3 / E1 — long-option IDs for getopt_long. Numeric > 255 to avoid
  * collision with single-char short options. */
-#define LONGOPT_COLD_BOOTSTRAP 1000
+#define LONGOPT_COLD_BOOTSTRAP    1000
+#define LONGOPT_MOCK_NODUS_VER    1001
 
 static const struct option g_longopts[] = {
-    {"cold-bootstrap", no_argument, NULL, LONGOPT_COLD_BOOTSTRAP},
+    {"cold-bootstrap",     no_argument,       NULL, LONGOPT_COLD_BOOTSTRAP},
+    {"mock-nodus-version", required_argument, NULL, LONGOPT_MOCK_NODUS_VER},
     {0, 0, 0, 0}
 };
 
@@ -185,6 +188,16 @@ int main(int argc, char **argv) {
         case LONGOPT_COLD_BOOTSTRAP:
             config.is_cold_bootstrap = true;
             break;
+        case LONGOPT_MOCK_NODUS_VER: {
+            uint32_t mock = (uint32_t)strtoul(optarg, NULL, 0);
+            nodus_witness_peer_set_mock_version(mock);
+            fprintf(stderr,
+                "[dev] mock nodus_version active: 0x%06x — w_ident "
+                "advertises this packed value instead of compiled "
+                "version. Used by F4 mixed-version harness only.\n",
+                (unsigned)mock);
+            break;
+        }
         case 'h':
         default:
             usage(argv[0]);
@@ -237,6 +250,11 @@ int main(int argc, char **argv) {
             case LONGOPT_COLD_BOOTSTRAP:
                 config.is_cold_bootstrap = true;
                 break;
+            case LONGOPT_MOCK_NODUS_VER: {
+                uint32_t mock = (uint32_t)strtoul(optarg, NULL, 0);
+                nodus_witness_peer_set_mock_version(mock);
+                break;
+            }
             default: break;
             }
         }

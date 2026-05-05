@@ -33,6 +33,24 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+
+/* PR 3 / F4 — mock nodus_version override for H-9 mixed-version
+ * harness coverage. When non-zero, w_ident sends this value in place
+ * of the real packed (MAJOR<<16|MINOR<<8|PATCH) version. Enables
+ * test_bootstrap_mixed_version.sh to bring up 1 fake-old node + 6
+ * normal nodes and verify the H-9 exit(3) on a fresh-bootstrap node.
+ *
+ * Set via the dev-only --mock-nodus-version=N CLI flag (or JSON
+ * config key mock_nodus_version); zero / unset means use the real
+ * compile-time constants. */
+static uint32_t g_mock_nodus_version = 0;
+
+void nodus_witness_peer_set_mock_version(uint32_t packed) {
+    g_mock_nodus_version = packed;
+}
+uint32_t nodus_witness_peer_get_mock_version(void) {
+    return g_mock_nodus_version;
+}
 #include <time.h>
 
 #include "crypto/utils/qgp_safe_string.h"   /* Phase 03: unsafe-string poison guard */
@@ -427,11 +445,21 @@ int nodus_witness_peer_send_ident(nodus_witness_t *w,
 
     /* CC-OPS-002 / Q14 — advertise binary + schema version so peers can
      * detect skew at handshake time instead of via silent state_root
-     * divergence post-first-block. Packed version: MAJOR<<16 | MINOR<<8 | PATCH. */
-    msg.ident.nodus_version =
-        ((uint32_t)NODUS_VERSION_MAJOR << 16) |
-        ((uint32_t)NODUS_VERSION_MINOR <<  8) |
-        ((uint32_t)NODUS_VERSION_PATCH);
+     * divergence post-first-block. Packed version: MAJOR<<16 | MINOR<<8 | PATCH.
+     *
+     * F4 mock override: when --mock-nodus-version=N is set, send N
+     * instead of the real version. Used by stagef
+     * test_bootstrap_mixed_version.sh to verify H-9 exit(3) on a
+     * fresh-bootstrap node when the cluster has any peer reporting
+     * an older version. */
+    if (g_mock_nodus_version != 0) {
+        msg.ident.nodus_version = g_mock_nodus_version;
+    } else {
+        msg.ident.nodus_version =
+            ((uint32_t)NODUS_VERSION_MAJOR << 16) |
+            ((uint32_t)NODUS_VERSION_MINOR <<  8) |
+            ((uint32_t)NODUS_VERSION_PATCH);
+    }
     msg.ident.chain_config_schema = NODUS_CHAIN_CONFIG_SCHEMA_VERSION;
 
     /* Fill header */

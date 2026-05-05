@@ -37,6 +37,13 @@ void nodus_witness_peer_tick(nodus_witness_t *w);
 /** Clean up peer references (connections owned by server TCP). */
 void nodus_witness_peer_close(nodus_witness_t *w);
 
+/* PR 3 / F4 — mock nodus_version override for the H-9 mixed-version
+ * harness scenario. Set non-zero to make w_ident report the supplied
+ * packed (MAJOR<<16|MINOR<<8|PATCH) version instead of the real
+ * compile-time value. Zero (default) means real version. */
+void     nodus_witness_peer_set_mock_version(uint32_t packed);
+uint32_t nodus_witness_peer_get_mock_version(void);
+
 /* ── Message handlers (called from nodus_witness_dispatch_t3) ──── */
 
 /** Handle w_ident: map inbound connection to roster entry. */
