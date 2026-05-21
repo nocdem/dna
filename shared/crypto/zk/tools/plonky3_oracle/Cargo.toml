@@ -1,0 +1,36 @@
+[package]
+name = "plonky3_oracle"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "DNAC-ZK Plonky3 reference oracle — emits test vectors for C primitives to byte-match against."
+publish = false
+
+# Plonky3 dependencies pinned to commit 82cfad73 (2026-05-20).
+# Per dnac/docs/plans/2026-05-21-stark-range-proof-keccak-design.md header pin.
+# DO NOT bump without a design-doc revision and full test-vector re-validation.
+[dependencies]
+p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "82cfad73cd734d37a0d51953094f970c531817ec" }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+
+# SHA3-512 for Merkle / transcript / commitment hashing. The `sha3` crate
+# implements FIPS-202 verbatim — same standard DNAC's crypto/hash/qgp_sha3.c
+# wraps via OpenSSL. Cross-validation gate: both implementations are FIPS-202
+# compliant, so a byte-identity check is meaningful.
+sha3 = "0.10"
+
+[profile.release]
+# Determinism flags. lto=fat for stable layout; codegen-units=1 to avoid
+# parallel codegen non-determinism.
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "none"
+
+# Aggressive reproducibility: pin the dep graph fully at build time.
+# Cargo.lock will be committed once first build succeeds on a Rust-equipped host.
